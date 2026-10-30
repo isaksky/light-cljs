@@ -48,9 +48,13 @@ fn node(script: &str) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 fn both(javascript: &str, expected: &str) {
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    let result = e.evaluate_js(javascript).unwrap();
-    assert_eq!(e.print(result).unwrap(), expected, "QuickJS");
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let result = e.evaluate_js(javascript).unwrap();
+        assert_eq!(e.print(result).unwrap(), expected, "QuickJS");
+    }
     // Namespace bundles return their final expression's native JS representation.
     assert_eq!(
         node(&format!("console.log(String({javascript}));")),
@@ -150,6 +154,8 @@ fn regex_failures_reuse_sessions_and_reset_clears_state_and_bounds() {
     assert_eq!(session.print(value).unwrap(), "\"aaa\"");
     assert!(session.eval_string("re").is_err());
 }
+// Poll budgets and cancellation of the QuickJS evaluator are the subject.
+#[cfg(feature = "quickjs")]
 #[test]
 fn built_in_backtracking_observes_budget_deadline_and_cancellation() {
     // The bounded input causes pathological backtracking inside native RegExp,

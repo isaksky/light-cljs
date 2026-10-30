@@ -15,6 +15,7 @@
 //! duplicate errors) is the one a literal built at its site gives, which these
 //! tests check at every level in Node and QuickJS, down to the runtime's
 //! internal entries and trie nodes.
+#[cfg(feature = "quickjs")]
 use super::constant_hashes::agrees;
 use super::constant_pool::calls;
 use super::generated::{SEEDS, namespace_program};
@@ -41,6 +42,8 @@ fn emit(program: &Program, level: OptimizationLevel) -> String {
     prepare_application(program, readable(level)).emit_js()
 }
 
+// Runs the program in QuickJS.
+#[cfg(feature = "quickjs")]
 /// The value of the JavaScript string expression `expression` in a fresh
 /// QuickJS evaluator.
 fn quickjs(expression: &str) -> String {
@@ -57,6 +60,8 @@ fn quickjs(expression: &str) -> String {
     evaluator.string(value).unwrap()
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 /// What the program, whose value is a string, gives at every level, in Node
 /// and in QuickJS: the same string, which is returned. `None` is the oracle.
 fn every_level(program: &Program) -> String {
@@ -172,6 +177,8 @@ fn edge_cases() -> String {
     )
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn shaped_maps_behave_as_maps_built_at_their_site() {
     let program = program(&edge_cases());
@@ -191,6 +198,8 @@ fn shaped_maps_behave_as_maps_built_at_their_site() {
     assert!(advanced.contains("rt$arrayMapFromArray([rt$identity("));
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn keys_the_pool_cannot_tell_apart_are_built_at_their_site() {
     // `{:a 1}` and `{:a 1.0}` are reader-distinct and `=`, so the builder
@@ -231,6 +240,8 @@ fn keys_the_pool_cannot_tell_apart_are_built_at_their_site() {
     assert!(!advanced.contains("Shape("), "{advanced}");
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn set_literals_add_their_other_members_to_a_shape_of_their_first_members() {
     // The reader orders set members, so which members come first depends on
@@ -426,6 +437,8 @@ for (let trial = 0; trial < 600; trial++) {
 return `${maps} array maps, ${hashMaps} hash maps, ${sets} sets, ${duplicates} duplicate errors`;
 "#;
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn shapes_build_the_entries_and_tries_the_builders_build() {
     // The strongest form of "behaves as built at its site": the runtime's
@@ -506,6 +519,8 @@ if (!c.equal(halved, I.mapFromArray(rest, "hash-map")) || c.count(edited) !== ex
 return `${original.size} nodes kept, ${c.count(edited)} edited, ${c.count(halved)} after removal`;
 "#;
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn transient_hash_maps_edit_the_nodes_they_own_in_place() {
     // light-cljs-235, from review: as upstream's TransientHashMap, a
@@ -571,6 +586,8 @@ if (!c.equal(halved, I.setFromArray(expected.filter(i => i % 2))) || c.count(edi
 return `${original.size} nodes kept, ${c.count(edited)} edited, ${c.count(halved)} after removal`;
 "#;
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn transient_hash_sets_edit_the_nodes_they_own_in_place() {
     // light-cljs-236: a transient hash set edits the trie it shares with
@@ -588,6 +605,8 @@ fn transient_hash_sets_edit_the_nodes_they_own_in_place() {
     );
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn shape_key_hashes_are_the_runtime_hashes() {
     // Each shape embeds its keys' hashes from `src/value_hash.rs`; the

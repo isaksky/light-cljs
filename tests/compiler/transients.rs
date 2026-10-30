@@ -13,12 +13,16 @@ use std::{
 fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        e.print(e.evaluate(&p).unwrap()).unwrap(),
-        expected,
-        "QuickJS: {source}"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            e.print(e.evaluate(&p).unwrap()).unwrap(),
+            expected,
+            "QuickJS: {source}"
+        );
+    }
     let script = format!(
         "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
         emit_js_unit(&p)

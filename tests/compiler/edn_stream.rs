@@ -22,13 +22,17 @@ fn compile(
 
 fn both(host: &mut MacroHost, source: &str) {
     let js = compile(host, source).unwrap_or_else(|e| panic!("{e}"));
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        evaluator
-            .string(evaluator.evaluate_js(&js).unwrap())
-            .unwrap(),
-        "true"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            evaluator
+                .string(evaluator.evaluate_js(&js).unwrap())
+                .unwrap(),
+            "true"
+        );
+    }
     let output = Command::new("node")
         .args(["-e", &format!("console.log({js});")])
         .output()

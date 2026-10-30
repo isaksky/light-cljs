@@ -61,6 +61,8 @@ fn node(script: &str) -> String {
     assert!(out.stderr.is_empty(), "unexpected Node stderr");
     String::from_utf8(out.stdout).unwrap().trim_end().into()
 }
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn record_receiver_binding_executes_in_actual_phases_and_lifecycles() {
     let artifacts = TempDir::named_by("LIGHT_RECORD_RECEIVER_ARTIFACTS", "record-receiver");
@@ -146,6 +148,8 @@ fn record_receiver_binding_executes_in_actual_phases_and_lifecycles() {
     }
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn demanded_receiver_methods_and_failure_recover_in_same_host() {
     for reused in [false, true] {
@@ -191,6 +195,8 @@ fn demanded_receiver_methods_and_failure_recover_in_same_host() {
     }
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "Independent replay of retained actual QuickJS inputs"]
 fn replay_actual_quickjs_inputs() {

@@ -84,14 +84,18 @@ fn original_local_api_sources_execute_in_both_phases_and_host_lifecycles(start: 
                     compile_namespace_with_macros("user", std::slice::from_ref(&root), host)
                         .unwrap_or_else(|error| panic!("{id} {host_kind} {phase}: {error}"));
                 std::fs::write(root.join("compiled.js"), &javascript).unwrap();
-                let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-                let actual = evaluator
-                    .string(evaluator.evaluate_js(&javascript).unwrap())
-                    .unwrap();
-                println!(
-                    "local-api-source-observation\t{id}\t{host_kind}\t{phase}\tQuickJS\t{actual}"
-                );
-                assert_eq!(actual, "true", "{id} {host_kind} {phase} QuickJS");
+                // The Pants build embeds no QuickJS to run this half of the check.
+                #[cfg(feature = "quickjs")]
+                {
+                    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+                    let actual = evaluator
+                        .string(evaluator.evaluate_js(&javascript).unwrap())
+                        .unwrap();
+                    println!(
+                        "local-api-source-observation\t{id}\t{host_kind}\t{phase}\tQuickJS\t{actual}"
+                    );
+                    assert_eq!(actual, "true", "{id} {host_kind} {phase} QuickJS");
+                }
                 let script = format!("console.log({javascript});");
                 std::fs::write(root.join("node.js"), &script).unwrap();
                 let actual = node(&script);

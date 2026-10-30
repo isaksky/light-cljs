@@ -35,13 +35,17 @@ fn node(source: &str) -> String {
 }
 fn both(source: &str, host: &mut MacroHost, expected: &str) {
     let js = light_cljs::compile_with_macros(source, host).unwrap();
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        evaluator
-            .string(evaluator.evaluate_js(&js).unwrap())
-            .unwrap(),
-        expected
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            evaluator
+                .string(evaluator.evaluate_js(&js).unwrap())
+                .unwrap(),
+            expected
+        );
+    }
     assert_eq!(
         node(&format!("console.log(String(eval({js:?})));")),
         expected
@@ -57,13 +61,17 @@ fn both_namespace(namespace: &str, source: &str, host: &mut MacroHost, expected:
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, source).unwrap();
     let js = compile_namespace_with_macros(namespace, &[root.to_path_buf()], host).unwrap();
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        evaluator
-            .string(evaluator.evaluate_js(&js).unwrap())
-            .unwrap(),
-        expected
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            evaluator
+                .string(evaluator.evaluate_js(&js).unwrap())
+                .unwrap(),
+            expected
+        );
+    }
     assert_eq!(
         node(&format!("console.log(String(eval({js:?})));")),
         expected

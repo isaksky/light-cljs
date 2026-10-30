@@ -24,11 +24,15 @@ fn ns_name_result_types_execute_in_both_engines_and_macro_phase() {
     let mut host = MacroHost::new();
     for _ in 0..2 {
         let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host).unwrap();
-        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-        for _ in 0..2 {
-            let value = evaluator.evaluate(&program).unwrap();
-            assert_eq!(evaluator.print(value).unwrap(), "[true true true]");
-            evaluator.release(value).unwrap();
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        {
+            let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            for _ in 0..2 {
+                let value = evaluator.evaluate(&program).unwrap();
+                assert_eq!(evaluator.print(value).unwrap(), "[true true true]");
+                evaluator.release(value).unwrap();
+            }
         }
         let script = format!(
             "const rt = {RUNTIME_SOURCE}; const run = {}; for(let i=0;i<2;i++) console.log(rt.core.prStr(run(rt)));",

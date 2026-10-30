@@ -49,6 +49,8 @@ fn hex(value: &[u8]) -> String {
     value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn canonical(evaluator: &Evaluator, expression: &str) -> String {
     let source = format!(
         "JSON.stringify((function sort(v) {{ if (Array.isArray(v)) return v.map(sort); \
@@ -61,6 +63,8 @@ fn canonical(evaluator: &Evaluator, expression: &str) -> String {
         .unwrap()
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "The standalone helper supplies exact 22 contexts and records fresh provenance"]
 fn exact_library_contexts_execute_in_both_phases_and_host_lifecycles() {

@@ -110,20 +110,25 @@ fn original_namespace_bodies_execute_in_fresh_and_reused_hosts() {
                 "(() => {{ {loader}; const run = {captured}; return ({})(globalThis.lightRuntime)('{id}',observe => run(observe)); }})()",
                 include_str!("../support/sci_execution_observation.js")
             );
-            let runtime = rquickjs::Runtime::new().unwrap();
-            runtime.set_memory_limit(128 * 1024 * 1024);
-            runtime.set_max_stack_size(4 * 1024 * 1024);
-            let context = rquickjs::Context::full(&runtime).unwrap();
-            let observed = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
-            writeln!(
-                output,
-                "{id}\t{variant}\t{}\t{}\t{}\t{}",
-                hex(source),
-                hex(&javascript),
-                hex(&observed),
-                if reuse { hex(&warmup) } else { "-".into() }
-            )
-            .unwrap();
+            // The Pants build embeds no QuickJS to run this half of the check.
+            #[cfg(feature = "quickjs")]
+            {
+                let runtime = rquickjs::Runtime::new().unwrap();
+                runtime.set_memory_limit(128 * 1024 * 1024);
+                runtime.set_max_stack_size(4 * 1024 * 1024);
+                let context = rquickjs::Context::full(&runtime).unwrap();
+                let observed =
+                    context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
+                writeln!(
+                    output,
+                    "{id}\t{variant}\t{}\t{}\t{}\t{}",
+                    hex(source),
+                    hex(&javascript),
+                    hex(&observed),
+                    if reuse { hex(&warmup) } else { "-".into() }
+                )
+                .unwrap();
+            }
         }
     }
 }

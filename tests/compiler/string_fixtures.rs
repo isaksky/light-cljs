@@ -257,6 +257,8 @@ fn node(script: &str) -> String {
     );
     String::from_utf8(out.stdout).unwrap()
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
     let cases = native::cases(include_str!("../fixtures/sci-outcomes.tsv")).unwrap();
@@ -352,6 +354,8 @@ fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
     );
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn verbatim_pinned_upstream_string_api_and_capitalization_property_execute() {
     let sources = Sources::new();

@@ -1172,6 +1172,8 @@ fn generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality() 
         execute(&compile_with_macros(source, &mut h).unwrap()),
         "1 null a/b a b\n"
     );
+    // The Pants build embeds no QuickJS; Node still runs every program.
+    #[cfg(feature = "quickjs")]
     let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
     // The exact direct-source fixtures also pass through ordinary source macro
     // imports. Generated keys keep both sets of parts; the generated literal
@@ -1191,17 +1193,20 @@ fn generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality() 
             compile_with_macros(&format!("(js/console.log (pr-str {source}))"), &mut h).unwrap();
         let expected = format!("{}\n", columns[2]);
         assert_eq!(execute(&js), expected, "Node: {}", columns[0]);
-        let value = evaluator
-            .evaluate_js(&format!(
-                "(() => {{ let output = ''; globalThis.console = {{log: value => {{ output += value + '\\n'; }}}}; try {{ {js}; return output; }} finally {{ delete globalThis.console; }} }})()"
-            ))
-            .unwrap();
-        assert_eq!(
-            evaluator.string(value).unwrap(),
-            expected,
-            "QuickJS: {}",
-            columns[0]
-        );
+        #[cfg(feature = "quickjs")]
+        {
+            let value = evaluator
+                .evaluate_js(&format!(
+                    "(() => {{ let output = ''; globalThis.console = {{log: value => {{ output += value + '\\n'; }}}}; try {{ {js}; return output; }} finally {{ delete globalThis.console; }} }})()"
+                ))
+                .unwrap();
+            assert_eq!(
+                evaluator.string(value).unwrap(),
+                expected,
+                "QuickJS: {}",
+                columns[0]
+            );
+        }
     }
 }
 
@@ -1523,9 +1528,13 @@ fn imported_macro_environment_keeps_qualified_ids_across_a_long_shadow_chain() {
         assert_eq!(result(&js), format!("{expected}\n"));
         // Application evaluation owns a fresh heap: macro mutation is quoted
         // into the expansion, while the imported application atom stays zero.
-        let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-        let value = e.evaluate_js(&js).unwrap();
-        assert_eq!(e.string(value).unwrap(), expected);
+        // The Pants build embeds no QuickJS; Node ran the program above.
+        #[cfg(feature = "quickjs")]
+        {
+            let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+            let value = e.evaluate_js(&js).unwrap();
+            assert_eq!(e.string(value).unwrap(), expected);
+        }
     }
 }
 
@@ -1705,6 +1714,8 @@ fn generated_metadata_evaluates_runtime_forms_and_preserves_macro_definition_met
 
 // Compiler/QuickJS bridge observations, with emitted macro functions and source
 // declarations. The numeric fixtures retain their pinned expected outcomes.
+// The QuickJS form bridge is the subject.
+#[cfg(feature = "quickjs")]
 mod javascript_form_bridge {
     use super::*;
     use light_cljs::{
@@ -3580,9 +3591,13 @@ fn ordinary_dual_use_require_executes_exact_tools_example_through_api_and_cli() 
         for host in [&mut h, &mut MacroHost::new()] {
             let js = s.compile_host("app", host).unwrap();
             assert_eq!(inspect(&js), "[42 42 42]\n");
-            let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-            let value = evaluator.evaluate_js(&format!("String({js})")).unwrap();
-            assert_eq!(evaluator.print(value).unwrap(), "\"[42 42 42]\"");
+            // The Pants build embeds no QuickJS; Node ran the program above.
+            #[cfg(feature = "quickjs")]
+            {
+                let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+                let value = evaluator.evaluate_js(&format!("String({js})")).unwrap();
+                assert_eq!(evaluator.print(value).unwrap(), "\"[42 42 42]\"");
+            }
         }
     }
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
@@ -3791,9 +3806,13 @@ mod top_level_definition_groups {
     fn checked(source: &str, host: &mut MacroHost) {
         let js = compile_with_macros(source, host).unwrap();
         assert_eq!(result(&js), "true\n");
-        let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-        let value = evaluator.evaluate_js(&format!("Number({js})")).unwrap();
-        assert_eq!(evaluator.number(value).unwrap(), 1.0);
+        // The Pants build embeds no QuickJS; Node ran the program above.
+        #[cfg(feature = "quickjs")]
+        {
+            let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+            let value = evaluator.evaluate_js(&format!("Number({js})")).unwrap();
+            assert_eq!(evaluator.number(value).unwrap(), 1.0);
+        }
     }
 
     #[test]

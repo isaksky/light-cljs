@@ -14,11 +14,15 @@ fn execute(unit: &str, expected: &str, directory: &Path) {
         light_cljs::evaluator::RUNTIME_SOURCE,
         unit
     );
-    let runtime = rquickjs::Runtime::new().unwrap();
-    let context = rquickjs::Context::full(&runtime).unwrap();
-    let quickjs = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
-    fs::write(directory.join("quickjs.txt"), &quickjs).unwrap();
-    assert_eq!(quickjs, expected);
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        let quickjs = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
+        fs::write(directory.join("quickjs.txt"), &quickjs).unwrap();
+        assert_eq!(quickjs, expected);
+    }
     let mut child = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
         .stdin(Stdio::piped())
@@ -53,19 +57,23 @@ fn uncaught_application(failed_unit: &str, recovery_unit: &str, message: &str, d
         light_cljs::evaluator::RUNTIME_SOURCE,
         failed_unit
     );
-    let runtime = rquickjs::Runtime::new().unwrap();
-    let context = rquickjs::Context::full(&runtime).unwrap();
-    context.with(|ctx| {
-        assert!(ctx.eval::<String, _>(script.as_bytes()).is_err());
-        let failure = ctx.catch();
-        let actual: String = failure.as_object().unwrap().get("message").unwrap();
-        assert_eq!(actual, message);
-        fs::write(directory.join("application-quickjs-failure.txt"), actual).unwrap();
-        let recovery = format!("rt.core.prStr(({})(rt));", recovery_unit);
-        let actual: String = ctx.eval(recovery.as_bytes()).unwrap();
-        assert_eq!(actual, "42");
-        fs::write(directory.join("application-quickjs-recovered.txt"), actual).unwrap();
-    });
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        context.with(|ctx| {
+            assert!(ctx.eval::<String, _>(script.as_bytes()).is_err());
+            let failure = ctx.catch();
+            let actual: String = failure.as_object().unwrap().get("message").unwrap();
+            assert_eq!(actual, message);
+            fs::write(directory.join("application-quickjs-failure.txt"), actual).unwrap();
+            let recovery = format!("rt.core.prStr(({})(rt));", recovery_unit);
+            let actual: String = ctx.eval(recovery.as_bytes()).unwrap();
+            assert_eq!(actual, "42");
+            fs::write(directory.join("application-quickjs-recovered.txt"), actual).unwrap();
+        });
+    }
     let mut child = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
         .stdin(Stdio::piped())

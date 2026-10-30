@@ -221,15 +221,19 @@ fn value(
     let js = compile_namespace_with_macros(namespace, &[root.to_path_buf()], host)
         .unwrap_or_else(|e| panic!("{context}: {e}"));
     fs::write(root.join("compiled.js"), &js).unwrap();
-    let evaluator = Evaluator::new(EvaluatorOptions {
-        timeout: TIMEOUT,
-        ..EvaluatorOptions::default()
-    })
-    .unwrap();
-    let actual = evaluator
-        .string(evaluator.evaluate_js(&js).unwrap())
+    // The Pants build embeds no QuickJS; Node still runs the program below.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions {
+            timeout: TIMEOUT,
+            ..EvaluatorOptions::default()
+        })
         .unwrap();
-    assert_eq!(actual, case.expected, "{context} QuickJS");
+        let actual = evaluator
+            .string(evaluator.evaluate_js(&js).unwrap())
+            .unwrap();
+        assert_eq!(actual, case.expected, "{context} QuickJS");
+    }
     let actual = node(&format!("console.log(String({js}));"));
     assert_eq!(actual.trim(), case.expected, "{context} Node");
 }
@@ -270,13 +274,17 @@ fn observed(
         )
     };
     fs::write(root.join("script.js"), &script).unwrap();
-    let quickjs = rquickjs::Runtime::new().unwrap();
-    let quickjs = rquickjs::Context::full(&quickjs).unwrap();
-    let actual = quickjs.with(|ctx| {
-        ctx.eval::<String, _>(format!("(0, eval)({script:?})").as_bytes())
-            .unwrap_or_else(|e| panic!("{context} observer: {e:?} {:?}", ctx.catch()))
-    });
-    assert_eq!(actual, case.expected, "{context} QuickJS");
+    // The Pants build embeds no QuickJS; Node still runs the script below.
+    #[cfg(feature = "quickjs")]
+    {
+        let quickjs = rquickjs::Runtime::new().unwrap();
+        let quickjs = rquickjs::Context::full(&quickjs).unwrap();
+        let actual = quickjs.with(|ctx| {
+            ctx.eval::<String, _>(format!("(0, eval)({script:?})").as_bytes())
+                .unwrap_or_else(|e| panic!("{context} observer: {e:?} {:?}", ctx.catch()))
+        });
+        assert_eq!(actual, case.expected, "{context} QuickJS");
+    }
     let actual = node(&format!("console.log({script});"));
     assert_eq!(actual, case.expected, "{context} Node");
 }

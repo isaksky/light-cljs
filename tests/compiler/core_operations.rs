@@ -380,11 +380,15 @@ fn signatures_hold_on_sample_arguments() {
 }})()"#,
         rows = rows.join(",\n  ")
     );
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    let report = evaluator.evaluate_js(&script).unwrap();
-    let violations = evaluator.string(report).unwrap();
-    assert!(
-        violations.is_empty(),
-        "src/core_operations.tsv disagrees with the runtime:\n{violations}"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let report = evaluator.evaluate_js(&script).unwrap();
+        let violations = evaluator.string(report).unwrap();
+        assert!(
+            violations.is_empty(),
+            "src/core_operations.tsv disagrees with the runtime:\n{violations}"
+        );
+    }
 }

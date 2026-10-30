@@ -13,13 +13,17 @@ use std::{
 fn both(host: &mut MacroHost, source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), host)
         .unwrap_or_else(|error| panic!("{source}: {error}"));
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        evaluator
-            .print(evaluator.evaluate(&program).unwrap())
-            .unwrap(),
-        expected
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            evaluator
+                .print(evaluator.evaluate(&program).unwrap())
+                .unwrap(),
+            expected
+        );
+    }
     let mut child = Command::new("node")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

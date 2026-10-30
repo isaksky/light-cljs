@@ -52,6 +52,8 @@ fn script(
     ))
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn execute(script: &str) -> (String, String) {
     let mut node = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
@@ -85,6 +87,8 @@ fn execute(script: &str) -> (String, String) {
     (node, quickjs)
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 fn execute_case(line: &str, root: &std::path::Path) -> String {
     let fields: Vec<_> = line.split('\t').collect();
     assert_eq!(fields.len(), 3);
@@ -111,6 +115,8 @@ fn execute_case(line: &str, root: &std::path::Path) -> String {
     }
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn library_import_fixture_preserves_values_and_callbacks_in_both_engines() {
     let root = TempDir::new("cljs-library-bridge");
@@ -159,6 +165,8 @@ fn library_import_fixture_preserves_values_and_callbacks_in_both_engines() {
     });
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "explicit complete SCI library/import original-contract audit"]
 fn retained_library_sources_execute_in_node_and_quickjs() {

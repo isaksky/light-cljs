@@ -121,11 +121,15 @@ const CONTRACT: &str = r#"
 fn both(source: &str) {
     let mut host = MacroHost::new();
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        evaluator.print(evaluator.evaluate(&p).unwrap()).unwrap(),
-        "true"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            evaluator.print(evaluator.evaluate(&p).unwrap()).unwrap(),
+            "true"
+        );
+    }
     let script = format!(
         "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
         emit_js_unit(&p)

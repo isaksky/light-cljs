@@ -19,6 +19,8 @@ fn unhex(text: &str) -> String {
     )
     .unwrap()
 }
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn observe(script: &str) -> [(String, String); 2] {
     let runtime = rquickjs::Runtime::new().unwrap();
     let context = rquickjs::Context::full(&runtime).unwrap();
@@ -50,6 +52,8 @@ fn observe(script: &str) -> [(String, String); 2] {
         ),
     ]
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "Explicit unchanged source applications and demanded macro observation audit"]
 fn original_gap_sources_execute_through_actual_macro_hosts() {

@@ -2,6 +2,8 @@
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, compile_with_macros, parse};
 
+// Runs the program in QuickJS.
+#[cfg(feature = "quickjs")]
 fn result(source: &str) -> String {
     let mut host = MacroHost::new();
     let syntax = parse(source).unwrap();
@@ -25,6 +27,8 @@ fn invalid(source: &str, message: &str) {
     );
 }
 
+// Runs the program only in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn logical_and_conditional_macros_preserve_short_circuit_values_and_effects() {
     assert_eq!(
@@ -43,6 +47,8 @@ fn logical_and_conditional_macros_preserve_short_circuit_values_and_effects() {
     );
 }
 
+// Runs the program only in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn conditional_bindings_distinguish_false_from_nil_and_destructure() {
     assert_eq!(
@@ -68,6 +74,8 @@ fn conditional_bindings_distinguish_false_from_nil_and_destructure() {
     }
 }
 
+// Runs the program only in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn threading_families_preserve_order_and_nil_semantics() {
     assert_eq!(
@@ -89,6 +97,8 @@ fn threading_families_preserve_order_and_nil_semantics() {
     invalid("(cond->> 1 true)", "test/step pairs");
 }
 
+// Runs the program only in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn case_and_condp_preserve_grouping_defaults_and_predicate_results() {
     assert_eq!(
@@ -114,6 +124,8 @@ fn case_and_condp_preserve_grouping_defaults_and_predicate_results() {
     invalid("(cond true)", "even number");
 }
 
+// Runs the program only in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn iteration_and_volatile_macros_preserve_input_evaluation_counts() {
     assert_eq!(
@@ -132,6 +144,8 @@ fn iteration_and_volatile_macros_preserve_input_evaluation_counts() {
     invalid("(dotimes [i 2 j 3] i)", "exactly two");
 }
 
+// Runs the program only in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn volatile_swap_rechecks_target_after_evaluating_the_function() {
     assert_eq!(
@@ -152,6 +166,8 @@ fn volatile_swap_rechecks_target_after_evaluating_the_function() {
     );
 }
 
+// Runs the program only in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn interop_macros_execute_in_quickjs() {
     assert_eq!(
@@ -170,6 +186,8 @@ fn interop_macros_execute_in_quickjs() {
     );
 }
 
+// Runs the program only in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn comprehensions_lazy_cat_and_selector_use_source_macros() {
     assert_eq!(
@@ -187,6 +205,8 @@ fn comprehensions_lazy_cat_and_selector_use_source_macros() {
     invalid("(selector {})", "at least one");
 }
 
+// Runs the program only in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn source_declarations_are_compile_time_only_and_can_use_ecmascript() {
     assert_eq!(
@@ -220,6 +240,8 @@ fn bootstrap_failure_and_expansion_limits_leave_reused_host_clean() {
     assert!(compile_with_macros("(when true 7)", &mut host).is_ok());
 }
 
+// Runs the program only in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn seed_bindings_assertions_and_reflection_remain_native_free() {
     assert_eq!(
@@ -239,16 +261,22 @@ fn seed_bindings_assertions_and_reflection_remain_native_free() {
     );
 }
 
+// Runs the program only in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn default_compile_and_analyze_emit_have_identical_literal_results() {
     let source = "(reduce + (for [x [1 2 3]] (if-some [y x] (-> y inc) 0)))";
     let js = light_cljs::compile(source).unwrap();
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        evaluator
-            .number(evaluator.evaluate_js(&js).unwrap())
-            .unwrap(),
-        9.0
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            evaluator
+                .number(evaluator.evaluate_js(&js).unwrap())
+                .unwrap(),
+            9.0
+        );
+    }
     assert_eq!(result(source), "9");
 }

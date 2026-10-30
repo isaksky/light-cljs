@@ -13,16 +13,20 @@ use std::{
 fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        e.print(
-            e.evaluate(&p)
-                .unwrap_or_else(|error| panic!("QuickJS {source}: {error}"))
-        )
-        .unwrap(),
-        expected,
-        "QuickJS: {source}"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            e.print(
+                e.evaluate(&p)
+                    .unwrap_or_else(|error| panic!("QuickJS {source}: {error}"))
+            )
+            .unwrap(),
+            expected,
+            "QuickJS: {source}"
+        );
+    }
     let script = format!(
         "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
         emit_js_unit(&p)
@@ -61,12 +65,16 @@ fn complete_upstream_sorted_bodies_execute_in_both_engines() {
     let script = format!(
         "JSON.stringify(({javascript})(() => {{ throw new Error('unexpected observer'); }}))"
     );
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        e.string(e.evaluate_js(&script).unwrap()).unwrap(),
-        "true",
-        "QuickJS complete multimethod/sorted body"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            e.string(e.evaluate_js(&script).unwrap()).unwrap(),
+            "true",
+            "QuickJS complete multimethod/sorted body"
+        );
+    }
     assert_eq!(
         reference_node(&format!("console.log({script});")).trim(),
         "true",

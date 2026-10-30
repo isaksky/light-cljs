@@ -5,14 +5,18 @@ use std::process::Command;
 
 fn both(host: &mut MacroHost, source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), host).unwrap();
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        evaluator
-            .print(evaluator.evaluate(&program).unwrap())
-            .unwrap(),
-        expected,
-        "QuickJS: {source}"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            evaluator
+                .print(evaluator.evaluate(&program).unwrap())
+                .unwrap(),
+            expected,
+            "QuickJS: {source}"
+        );
+    }
     let output = Command::new("node")
         .args([
             "-e",

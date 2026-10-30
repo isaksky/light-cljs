@@ -78,11 +78,15 @@ fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|e| panic!("{source}\n{e}"));
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    let value = evaluator
-        .evaluate(&program)
-        .unwrap_or_else(|e| panic!("{source}\n{e}"));
-    assert_eq!(evaluator.print(value).unwrap(), expected);
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let value = evaluator
+            .evaluate(&program)
+            .unwrap_or_else(|e| panic!("{source}\n{e}"));
+        assert_eq!(evaluator.print(value).unwrap(), expected);
+    }
     let script = format!(
         "const rt = {}; console.log(rt.core.prStr(({})(rt)));",
         light_cljs::evaluator::RUNTIME_SOURCE,

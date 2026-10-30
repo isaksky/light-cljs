@@ -67,6 +67,8 @@ fn clocks_random_sources_and_taps_are_explicit_session_capabilities() {
     );
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn runtime_scheduler_admission_bounded_reentrancy_and_arities() {
     let checks = r#"
@@ -120,6 +122,8 @@ fn runtime_scheduler_admission_bounded_reentrancy_and_arities() {
     evaluator.release(result).unwrap();
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn host_hooks_have_macro_application_phase_witnesses() {
     let source = r#"

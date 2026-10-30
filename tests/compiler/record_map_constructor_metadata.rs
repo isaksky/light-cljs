@@ -60,6 +60,8 @@ fn node(script: &str) -> String {
     assert!(out.stderr.is_empty(), "unexpected Node stderr");
     String::from_utf8(out.stdout).unwrap().trim_end().into()
 }
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn record_factory_metadata_executes_in_actual_phases_and_lifecycles() {
     let artifacts = TempDir::named_by("LIGHT_RECORD_METADATA_ARTIFACTS", "record-metadata");
@@ -145,6 +147,8 @@ fn record_factory_metadata_executes_in_actual_phases_and_lifecycles() {
     }
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn reflected_factory_metadata_does_not_force_unrelated_roots_and_failure_recovers() {
     for reused in [false, true] {

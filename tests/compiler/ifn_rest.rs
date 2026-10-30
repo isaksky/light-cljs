@@ -10,9 +10,13 @@ fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    let value = evaluator.evaluate(&program).unwrap();
-    assert_eq!(evaluator.print(value).unwrap(), expected);
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let value = evaluator.evaluate(&program).unwrap();
+        assert_eq!(evaluator.print(value).unwrap(), expected);
+    }
     let script = format!(
         "const rt = {}; console.log(rt.core.prStr(({})(rt)));",
         light_cljs::evaluator::RUNTIME_SOURCE,
@@ -100,9 +104,13 @@ fn invalid_rest_forms_and_failed_invocations_leave_reused_sessions_usable() {
     let js =
         light_cljs::compile_with_macros(&format!("{source} (pr-str (restored-rest))"), &mut host)
             .unwrap();
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    let value = evaluator.evaluate_js(&js).unwrap();
-    assert_eq!(evaluator.string(value).unwrap(), "[1 2]");
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let value = evaluator.evaluate_js(&js).unwrap();
+        assert_eq!(evaluator.string(value).unwrap(), "[1 2]");
+    }
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in

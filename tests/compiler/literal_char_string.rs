@@ -20,6 +20,8 @@ fn unhex(s: &str) -> String {
     )
     .unwrap()
 }
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
     let runtime = rquickjs::Runtime::new().unwrap();
     let context = rquickjs::Context::full(&runtime).unwrap();
@@ -67,6 +69,8 @@ fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
         ),
     ]
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "explicit original .cljc filename and actual phase audit"]
 fn literal_char_string_sources_execute_in_fresh_and_reused_macro_hosts() {
@@ -205,6 +209,8 @@ fn literal_char_string_sources_execute_in_fresh_and_reused_macro_hosts() {
     output.flush().unwrap();
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn canonical(context: &rquickjs::Context, value: &str) -> String {
     let script = format!(
         "JSON.stringify((function sort(v) {{ if(Array.isArray(v)) return v.map(sort); if(v && typeof v==='object') {{ const out={{}}; Object.keys(v).sort().forEach(k=>out[k]=sort(v[k])); return out; }} return v; }})(JSON.parse({value:?})))"
@@ -212,6 +218,8 @@ fn canonical(context: &rquickjs::Context, value: &str) -> String {
     context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap())
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn canonical_literal_constants_and_same_host_diagnostic_recovery() {
     let mut host = MacroHost::new();

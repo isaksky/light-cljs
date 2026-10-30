@@ -4,6 +4,13 @@
 //! Run one suite with `cargo nextest run --test compiler <feature>::` or
 //! `cargo test --test compiler <feature>::`.
 
+// The Pants build compiles out the QuickJS half of cross-engine checks, which
+// leaves some of their imports, helpers and inputs unused there.
+#![cfg_attr(
+    not(feature = "quickjs"),
+    allow(unused_imports, unused_variables, unused_mut, dead_code)
+)]
+
 // `row_tests!` declares one test per fixture row, row range or share of the rows.
 #[macro_use]
 #[path = "../support/row_tests.rs"]

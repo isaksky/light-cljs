@@ -20,6 +20,8 @@ fn unhex(s: &str) -> String {
     )
     .unwrap()
 }
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
     let runtime = rquickjs::Runtime::new().unwrap();
     let context = rquickjs::Context::full(&runtime).unwrap();
@@ -67,6 +69,8 @@ fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
         ),
     ]
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "explicit original .cljc filename and actual phase audit"]
 fn accepted_original_cljc_sources_execute_in_fresh_and_reused_macro_hosts() {
@@ -160,6 +164,8 @@ mod transport {
         path::PathBuf,
         process::{Command, Stdio},
     };
+    // Canonicalizes or compares engine results with QuickJS.
+    #[cfg(feature = "quickjs")]
     fn observe(script: &str, root: &std::path::Path) -> [(String, String); 2] {
         let rt = rquickjs::Runtime::new().unwrap();
         let ctx = rquickjs::Context::full(&rt).unwrap();
@@ -199,6 +205,8 @@ mod transport {
             ),
         ]
     }
+    // Compares the Node result with the QuickJS result.
+    #[cfg(feature = "quickjs")]
     #[test]
     #[ignore = "explicit complete original source transport proof"]
     fn original_cljc_transport_values_execute_in_both_phases_and_host_lifecycles() {

@@ -38,6 +38,8 @@ fn node(source: &str) -> String {
     assert!(output.stderr.is_empty());
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn execute(identity: &str) {
     let rows: Vec<_> = FIXTURE
         .lines()
@@ -93,22 +95,32 @@ fn execute(identity: &str) {
         }
     }
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn ifn_receiver_zero_through_six_execute_in_both_phases() {
     execute("callable-fixed-0-6");
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn ifn_receiver_seven_through_fourteen_execute_in_both_phases() {
     execute("callable-fixed-7-14");
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn ifn_receiver_fifteen_through_twenty_execute_in_both_phases() {
     execute("callable-fixed-15-20");
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn ifn_receiver_terminal_rest_slot_executes_in_both_phases() {
     execute("callable-receiver-rest-22");
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn ifn_receiver_metadata_failure_and_recovery_execute_in_both_phases() {
     execute("callable-receiver-copy-failure");

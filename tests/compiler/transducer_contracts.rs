@@ -10,12 +10,16 @@ fn program(source: &str) -> light_cljs::Program {
 }
 fn both(source: &str, expected: &str) {
     let p = program(source);
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        e.print(e.evaluate(&p).unwrap()).unwrap(),
-        expected,
-        "QuickJS: {source}"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            e.print(e.evaluate(&p).unwrap()).unwrap(),
+            expected,
+            "QuickJS: {source}"
+        );
+    }
     let script = format!(
         "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
         emit_js_unit(&p)
@@ -101,11 +105,15 @@ fn state_and_captures_survive_collection_and_failed_reentrant_completion() {
       aa = a(aa, 2); bb = b(bb);
       return c.vector(c.first(c.first(aa))(), c.nth(c.first(aa), 1), bb);
     })()"#;
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        e.print(e.evaluate_js(js).unwrap()).unwrap(),
-        "[[42] 2 [[4]]]"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            e.print(e.evaluate_js(js).unwrap()).unwrap(),
+            "[[42] 2 [[4]]]"
+        );
+    }
     let script = format!("const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr({js}));");
     let out = Command::new("node")
         .args(["--expose-gc", "-e", &script])
@@ -122,6 +130,8 @@ fn state_and_captures_survive_collection_and_failed_reentrant_completion() {
     );
 }
 
+// Cancellation of the QuickJS evaluator is the subject.
+#[cfg(feature = "quickjs")]
 #[test]
 fn cancellation_at_each_boundary_stops_exactly_and_keeps_session_terminal() {
     use std::sync::{Arc, Mutex};

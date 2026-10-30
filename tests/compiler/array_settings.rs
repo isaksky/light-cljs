@@ -24,12 +24,16 @@ fn program(
     (p, warnings)
 }
 fn both(p: &Program, expected: &str) {
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        e.print(e.evaluate(p).unwrap()).unwrap(),
-        expected,
-        "QuickJS"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            e.print(e.evaluate(p).unwrap()).unwrap(),
+            expected,
+            "QuickJS"
+        );
+    }
     let script = format!(
         "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
         emit_js_unit(p)
@@ -228,12 +232,16 @@ fn complete_source_bodies_retain_modules_and_file_isolation() {
         let source = format!(
             "JSON.stringify(({js})(() => {{ throw new Error('unexpected host request'); }}))"
         );
-        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-        assert_eq!(
-            e.string(e.evaluate_js(&source).unwrap()).unwrap(),
-            "true",
-            "{name} QuickJS"
-        );
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        {
+            let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            assert_eq!(
+                e.string(e.evaluate_js(&source).unwrap()).unwrap(),
+                "true",
+                "{name} QuickJS"
+            );
+        }
         let out = Command::new("node")
             .args(["-e", &format!("console.log({source});")])
             .output()
@@ -274,8 +282,12 @@ fn checked_options_reset_between_loaded_files_and_capture_definitions() {
     .unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
     let script = format!("JSON.stringify(({js})())");
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(e.string(e.evaluate_js(&script).unwrap()).unwrap(), "true");
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(e.string(e.evaluate_js(&script).unwrap()).unwrap(), "true");
+    }
     let out = Command::new("node")
         .args(["-e", &format!("console.log({script});")])
         .output()

@@ -8,8 +8,12 @@ fn program(source: &str) -> light_cljs::Program {
 }
 fn both(source: &str, expected: &str) {
     let p = program(source);
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(e.print(e.evaluate(&p).unwrap()).unwrap(), expected);
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(e.print(e.evaluate(&p).unwrap()).unwrap(), expected);
+    }
     let script = format!(
         "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
         emit_js_unit(&p)
@@ -66,6 +70,8 @@ fn user_iterators_and_callable_transforms_preserve_source_order() {
     );
 }
 
+// Cancellation of the QuickJS evaluator is the subject.
+#[cfg(feature = "quickjs")]
 #[test]
 fn cancellation_in_sequence_construction_demand_and_completion_is_terminal() {
     use std::sync::{Arc, Mutex};
@@ -108,6 +114,8 @@ fn cancellation_in_sequence_construction_demand_and_completion_is_terminal() {
     }
 }
 
+// The QuickJS evaluator's heap retention is the subject.
+#[cfg(feature = "quickjs")]
 #[test]
 fn abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines() {
     let batch = r#"(() => {

@@ -20,6 +20,8 @@ fn unhex(s: &str) -> String {
     )
     .unwrap()
 }
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
     let runtime = rquickjs::Runtime::new().unwrap();
     let context = rquickjs::Context::full(&runtime).unwrap();
@@ -67,6 +69,8 @@ fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
         ),
     ]
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "explicit original .cljc filename and actual phase audit"]
 fn iterator_name_original_rejects_in_fresh_and_reused_macro_hosts() {
@@ -150,6 +154,8 @@ fn iterator_name_original_rejects_in_fresh_and_reused_macro_hosts() {
     out.flush().unwrap();
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn canonical_iterator_name_preserves_rejection_and_same_host_recovery() {
     let original = include_str!("../fixtures/compiler-iterator-name-original.cljc");

@@ -30,6 +30,8 @@ fn unhex(value: &str) -> String {
     )
     .unwrap()
 }
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn canonical(context: &rquickjs::Context, value: &str) -> String {
     let script = format!(
         "JSON.stringify((function sort(v) {{ if(Array.isArray(v)) return v.map(sort); if(v && typeof v==='object') {{ const result={{}}; Object.keys(v).sort().forEach(k=>result[k]=sort(v[k])); return result; }} return v; }})(JSON.parse({value:?})))"
@@ -37,6 +39,8 @@ fn canonical(context: &rquickjs::Context, value: &str) -> String {
     context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap())
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "Explicit exact original source and current both-pin provenance helper"]
 fn original_symbol_keyword_source_executes_in_both_phases_and_lifecycles() {

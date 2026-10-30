@@ -73,12 +73,16 @@ fn literal(identity: &str) {
         let parsed = parse(&observed_source).unwrap();
         let program =
             analyze_with_macros(&observed_source, &parsed, &mut MacroHost::new()).unwrap();
-        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-        let actual = evaluator
-            .string(evaluator.evaluate(&program).unwrap())
-            .unwrap();
-        println!("syntax-observation\t{identity}\tmacro={macro_phase}\tQuickJS\t{actual}");
-        assert_eq!(actual, expected, "{identity} macro={macro_phase} QuickJS");
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        {
+            let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            let actual = evaluator
+                .string(evaluator.evaluate(&program).unwrap())
+                .unwrap();
+            println!("syntax-observation\t{identity}\tmacro={macro_phase}\tQuickJS\t{actual}");
+            assert_eq!(actual, expected, "{identity} macro={macro_phase} QuickJS");
+        }
         let script = format!(
             "const rt = {RUNTIME_SOURCE}; console.log(({})(rt));",
             emit_js_unit(&program)
@@ -142,14 +146,18 @@ fn syntax_namespace_context_executes_with_actual_macro_environment() {
             &mut MacroHost::new(),
         )
         .unwrap();
-        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-        let actual = evaluator
-            .string(evaluator.evaluate_js(&javascript).unwrap())
-            .unwrap();
-        println!(
-            "syntax-observation\tnamespace-header-context\tmacro={macro_phase}\tQuickJS\t{actual}"
-        );
-        assert_eq!(actual, "true");
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        {
+            let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            let actual = evaluator
+                .string(evaluator.evaluate_js(&javascript).unwrap())
+                .unwrap();
+            println!(
+                "syntax-observation\tnamespace-header-context\tmacro={macro_phase}\tQuickJS\t{actual}"
+            );
+            assert_eq!(actual, "true");
+        }
         let actual = node(&format!("console.log({javascript});"));
         println!(
             "syntax-observation\tnamespace-header-context\tmacro={macro_phase}\tNode\t{actual}"
@@ -185,11 +193,15 @@ fn syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts() {
                     host,
                 )
                 .unwrap();
-                let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-                let actual = evaluator
-                    .string(evaluator.evaluate_js(&javascript).unwrap())
-                    .unwrap();
-                assert_eq!(actual, "true", "ns* macro={macro_phase} QuickJS");
+                // The Pants build embeds no QuickJS to run this half of the check.
+                #[cfg(feature = "quickjs")]
+                {
+                    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+                    let actual = evaluator
+                        .string(evaluator.evaluate_js(&javascript).unwrap())
+                        .unwrap();
+                    assert_eq!(actual, "true", "ns* macro={macro_phase} QuickJS");
+                }
                 assert_eq!(
                     node(&format!("console.log({javascript});")),
                     "true",
@@ -318,13 +330,17 @@ fn raw_nsstar_imports_keep_ordinary_cljs_macro_and_definition_ownership() {
                 host,
             )
             .unwrap();
-            let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-            assert_eq!(
-                evaluator
-                    .string(evaluator.evaluate_js(&javascript).unwrap())
-                    .unwrap(),
-                "true"
-            );
+            // The Pants build embeds no QuickJS to run this half of the check.
+            #[cfg(feature = "quickjs")]
+            {
+                let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+                assert_eq!(
+                    evaluator
+                        .string(evaluator.evaluate_js(&javascript).unwrap())
+                        .unwrap(),
+                    "true"
+                );
+            }
             assert_eq!(node(&format!("console.log({javascript});")), "true");
         }
     }

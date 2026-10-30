@@ -8,8 +8,12 @@ fn program(source: &str) -> light_cljs::Program {
 }
 fn both(source: &str, expected: &str) {
     let p = program(source);
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(e.print(e.evaluate(&p).unwrap()).unwrap(), expected);
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(e.print(e.evaluate(&p).unwrap()).unwrap(), expected);
+    }
     let script = format!(
         "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
         emit_js_unit(&p)
@@ -54,6 +58,8 @@ fn eduction_public_arities_run_as_shared_macro_and_application_helpers() {
     );
 }
 
+// Recovery and cancellation of the QuickJS evaluator are the subject.
+#[cfg(feature = "quickjs")]
 #[test]
 fn throwing_application_and_macro_views_recover_in_fresh_sessions() {
     let p = program("(into [] (eduction (map #(throw (js/Error. \"view failed\"))) [1 2]))");
@@ -74,6 +80,8 @@ fn throwing_application_and_macro_views_recover_in_fresh_sessions() {
     );
 }
 
+// Recovery and cancellation of the QuickJS evaluator are the subject.
+#[cfg(feature = "quickjs")]
 #[test]
 fn cancellation_in_eduction_construction_demand_and_completion_is_terminal() {
     use std::sync::{Arc, Mutex};
@@ -124,6 +132,8 @@ fn cancellation_in_eduction_construction_demand_and_completion_is_terminal() {
     }
 }
 
+// The QuickJS evaluator's heap retention is the subject.
+#[cfg(feature = "quickjs")]
 #[test]
 fn abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines() {
     let batch = r#"(() => {

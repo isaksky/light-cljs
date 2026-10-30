@@ -55,6 +55,8 @@ fn script(id: &str, source: &str) -> Result<String, String> {
     ))
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn execute(script: &str) -> (String, String) {
     let mut node = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
@@ -88,6 +90,8 @@ fn execute(script: &str) -> (String, String) {
     (node, quickjs)
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn original_source_macro_declarations_execute_phase_and_application_contracts() {
     for (id, source, expected) in [
@@ -124,6 +128,8 @@ fn original_source_macro_declarations_execute_phase_and_application_contracts() 
     }
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "explicit original SCI declaration/namespace context audit"]
 fn retained_sources_execute_with_original_namespace_and_positions() {

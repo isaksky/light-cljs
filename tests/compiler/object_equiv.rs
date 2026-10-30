@@ -10,9 +10,13 @@ fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    let value = evaluator.evaluate(&program).unwrap();
-    assert_eq!(evaluator.print(value).unwrap(), expected);
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let value = evaluator.evaluate(&program).unwrap();
+        assert_eq!(evaluator.print(value).unwrap(), expected);
+    }
     let script = format!(
         "const rt = {}; console.log(rt.core.prStr(({})(rt)));",
         light_cljs::evaluator::RUNTIME_SOURCE,
@@ -101,8 +105,12 @@ fn failed_equiv_calls_leave_reused_application_and_macro_hosts_usable() {
     assert!(light_cljs::compile_with_macros("(defmacro broken-equiv [] (.equiv [1] (map (fn [_] (throw (js/Error. \"equiv failure\"))) [1]))) (broken-equiv)", &mut host).is_err());
     let source = "(defmacro restored-equiv [] (.equiv [1 2] '(1 2))) (restored-equiv)";
     let js = light_cljs::compile_with_macros(source, &mut host).unwrap();
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    let value = evaluator.evaluate_js(&js).unwrap();
-    assert_eq!(evaluator.print(value).unwrap(), "true");
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let value = evaluator.evaluate_js(&js).unwrap();
+        assert_eq!(evaluator.print(value).unwrap(), "true");
+    }
     both(source, "true");
 }

@@ -26,6 +26,8 @@ fn reader_identity_checks_do_not_retain_executable_names() {
     }
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn canonical(context: &rquickjs::Context, value: &str) -> String {
     let script = format!(
         "JSON.stringify((function sort(v) {{ if(Array.isArray(v)) return v.map(sort); if(v && typeof v==='object') {{ const out={{}}; Object.keys(v).sort().forEach(k=>out[k]=sort(v[k])); return out; }} return v; }})(JSON.parse({value:?})))"
@@ -33,6 +35,8 @@ fn canonical(context: &rquickjs::Context, value: &str) -> String {
     context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap())
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn independent_map_sources_preserve_thresholds_groups_metadata_and_recovery() {
     let runtime = rquickjs::Runtime::new().unwrap();

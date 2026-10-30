@@ -4,6 +4,8 @@ use std::fs;
 const ORIGINAL: &str = "(defprotocol P (p [x])) (let [kept [40]] (defrecord R [x] P (p [this] (fn [] [x (first kept) (= this this)])))) ((p (->R 2)))";
 const WARMUP: &str = "(defmacro phase-ready [] true) (phase-ready)";
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "Explicit finite original source and phase-boundary diagnostic control"]
 fn original_closure_and_ownership_controls() {

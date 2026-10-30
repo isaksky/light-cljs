@@ -17,6 +17,8 @@ impl Sources {
         light_cljs::compile_namespace_with_macros("user", std::slice::from_ref(self.0.path()), host)
     }
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 fn both(js: &str, expected: &str) {
     let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
     assert_eq!(e.string(e.evaluate_js(js).unwrap()).unwrap(), expected);
@@ -65,6 +67,8 @@ const CASES: &[(&str, &str)] = &[
     ("''#?(:clj 1) 2", "(quote 2)"),
     ("[(meta '^:private #?(:clj x) z)]", "[{:private true}]"),
 ];
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn scalar_splice_and_nested_prefix_controls_execute_both_phases_and_lifecycles() {
     let sources = Sources::new();
@@ -90,6 +94,8 @@ fn scalar_splice_and_nested_prefix_controls_execute_both_phases_and_lifecycles()
         }
     }
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn located_active_and_missing_target_errors_recover_in_hosts_and_sessions() {
     let sources = Sources::new();
@@ -195,6 +201,8 @@ fn nested_discarded_readers_keep_canonical_effect_order() {
     }
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn nested_discarded_readers_execute_once_in_plain_and_shared_source_hosts() {
     use light_cljs::compiler_data::Name;
@@ -243,6 +251,8 @@ mod original_reader_rejections {
         )
         .unwrap()
     }
+    // Compares the Node result with the QuickJS result.
+    #[cfg(feature = "quickjs")]
     fn observe(js: &str) -> [(&'static str, String); 2] {
         let script = format!("JSON.stringify({js})");
         let rt = rquickjs::Runtime::new().unwrap();
@@ -270,6 +280,8 @@ mod original_reader_rejections {
         ]
     }
 
+    // Compares the Node result with the QuickJS result.
+    #[cfg(feature = "quickjs")]
     #[test]
     fn unchanged_original_reader_rejections_preserve_source_and_host_recovery() {
         let supplied = std::env::var("LIGHT_CLJC_REJECTIONS_ROOT").ok();

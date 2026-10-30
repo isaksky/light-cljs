@@ -81,13 +81,17 @@ fn complete_residual_namespace_bodies_execute_in_both_phases() {
                     },
                 )
                 .unwrap_or_else(|error| panic!("{} macro={macro_phase}: {error}", fields[0]));
-                let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-                assert_eq!(
-                    evaluator
-                        .string(evaluator.evaluate_js(&javascript).unwrap())
-                        .unwrap(),
-                    "true"
-                );
+                // The Pants build embeds no QuickJS to run this half of the check.
+                #[cfg(feature = "quickjs")]
+                {
+                    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+                    assert_eq!(
+                        evaluator
+                            .string(evaluator.evaluate_js(&javascript).unwrap())
+                            .unwrap(),
+                        "true"
+                    );
+                }
                 let output = Command::new("node")
                     .args(["-e", &format!("console.log({javascript});")])
                     .output()

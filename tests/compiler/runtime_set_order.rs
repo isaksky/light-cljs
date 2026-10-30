@@ -12,9 +12,13 @@ fn both(source: &str) {
             source.to_owned()
         };
         let js = light_cljs::compile_with_macros(&text, &mut host).unwrap();
-        let rt = rquickjs::Runtime::new().unwrap();
-        let ctx = rquickjs::Context::full(&rt).unwrap();
-        ctx.with(|ctx| assert!(ctx.eval::<bool, _>(js.as_bytes()).unwrap(), "{text}"));
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        {
+            let rt = rquickjs::Runtime::new().unwrap();
+            let ctx = rquickjs::Context::full(&rt).unwrap();
+            ctx.with(|ctx| assert!(ctx.eval::<bool, _>(js.as_bytes()).unwrap(), "{text}"));
+        }
         let mut child = Command::new("node")
             .arg("-")
             .stdin(Stdio::piped())

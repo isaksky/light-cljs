@@ -6,14 +6,18 @@ use std::process::Command;
 fn both(source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        evaluator
-            .print(evaluator.evaluate(&program).unwrap())
-            .unwrap(),
-        expected,
-        "QuickJS: {source}"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            evaluator
+                .print(evaluator.evaluate(&program).unwrap())
+                .unwrap(),
+            expected,
+            "QuickJS: {source}"
+        );
+    }
     let output = Command::new("node")
         .args([
             "-e",
@@ -103,13 +107,17 @@ fn unsupported_protocol_values_keep_expansion_diagnostics_and_recover() {
         );
         let source = "(defmacro good [] (inst-ms #inst \"1970-01-01T00:00:00.042Z\")) (good)";
         let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-        assert_eq!(
-            evaluator
-                .print(evaluator.evaluate(&program).unwrap())
-                .unwrap(),
-            "42"
-        );
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        {
+            let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            assert_eq!(
+                evaluator
+                    .print(evaluator.evaluate(&program).unwrap())
+                    .unwrap(),
+                "42"
+            );
+        }
     }
 }
 

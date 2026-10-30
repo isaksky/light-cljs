@@ -17,13 +17,17 @@ fn recovered_core_var_metadata_executes_in_applications_and_macros() {
     );
     let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{e}"));
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        evaluator
-            .print(evaluator.evaluate(&program).unwrap())
-            .unwrap(),
-        "[true true]"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            evaluator
+                .print(evaluator.evaluate(&program).unwrap())
+                .unwrap(),
+            "[true true]"
+        );
+    }
     let script = format!(
         "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
         emit_js_unit(&program)

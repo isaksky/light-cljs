@@ -15,8 +15,12 @@ fn both(source: &str, expected: &str) {
             &mut MacroHost::new(),
         )
         .unwrap();
-        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-        assert_eq!(e.print(e.evaluate_js(&js).unwrap()).unwrap(), expected);
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        {
+            let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            assert_eq!(e.print(e.evaluate_js(&js).unwrap()).unwrap(), expected);
+        }
         let out = Command::new("node")
             .args(["-e", &format!("console.log({js});")])
             .output()
@@ -31,12 +35,16 @@ fn both(source: &str, expected: &str) {
     }
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        e.print(e.evaluate(&p).unwrap()).unwrap(),
-        expected,
-        "QuickJS: {source}"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            e.print(e.evaluate(&p).unwrap()).unwrap(),
+            expected,
+            "QuickJS: {source}"
+        );
+    }
     let out = Command::new("node")
         .args([
             "-e",
@@ -349,6 +357,8 @@ fn public_writer_helpers_and_console_hooks_execute_in_both_phases() {
     );
 }
 
+// Printing of QuickJS evaluator values is the subject.
+#[cfg(feature = "quickjs")]
 #[test]
 fn rust_display_escapes_isolated_surrogates_and_preserves_valid_pairs() {
     let e = Evaluator::new(EvaluatorOptions::default()).unwrap();

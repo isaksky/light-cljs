@@ -20,6 +20,8 @@ fn unhex(s: &str) -> String {
     )
     .unwrap()
 }
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
     let runtime = rquickjs::Runtime::new().unwrap();
     let context = rquickjs::Context::full(&runtime).unwrap();
@@ -68,6 +70,8 @@ fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
     ]
 }
 
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn both(source: &str, expected: &str, host: &mut MacroHost) {
     let js = light_cljs::compile_with_macros(source, host).unwrap();
     let anchor = " = // Original bounded runtime";
@@ -98,6 +102,8 @@ fn both(source: &str, expected: &str, host: &mut MacroHost) {
     );
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn public_print_helper_contracts_preserve_callbacks_options_failures_and_sessions() {
     let mut reused = MacroHost::new();
@@ -123,6 +129,8 @@ fn public_print_helper_contracts_preserve_callbacks_options_failures_and_session
     }
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn writer_macro_results_reject_and_reused_hosts_recover_without_phase_state() {
     let mut host = MacroHost::new();
@@ -142,6 +150,8 @@ fn writer_macro_results_reject_and_reused_hosts_recover_without_phase_state() {
     both(source, expected, &mut host);
     both(source, expected, &mut host);
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "explicit public printing helper actual phase audit"]
 fn public_print_helpers_execute_in_fresh_and_reused_macro_hosts() {

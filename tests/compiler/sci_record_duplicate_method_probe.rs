@@ -26,11 +26,15 @@ fn execute(javascript: &str, expected_value: &str, directory: &std::path::Path) 
     let expected = format!(
         r#"{{"id":"duplicate-method","outcome":{{"status":"returned","value":{expected_value}}},"trace":[],"stdout":""}}"#
     );
-    let runtime = rquickjs::Runtime::new().unwrap();
-    let context = rquickjs::Context::full(&runtime).unwrap();
-    let quickjs = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
-    fs::write(directory.join("quickjs.json"), &quickjs).unwrap();
-    assert_eq!(quickjs, expected);
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        let quickjs = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
+        fs::write(directory.join("quickjs.json"), &quickjs).unwrap();
+        assert_eq!(quickjs, expected);
+    }
     let mut node = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
         .stdin(Stdio::piped())

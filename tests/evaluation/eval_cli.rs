@@ -465,6 +465,8 @@ fn imported_macro_helpers_run_script_initializers_once() {
     );
 }
 
+// Evaluates the output in QuickJS and drives `--repl`, which runs on QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn definition_metadata_uses_text_file_and_incremental_repl_locations() {
     let probe = "(def ^{:file \"fake\" :line 0 :column 0} x 1) [(:file (meta #'x)) (:line (meta #'x)) (:column (meta #'x))]";

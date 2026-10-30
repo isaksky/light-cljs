@@ -27,11 +27,15 @@ impl Sources {
 fn both(body: &str, expected: &str) {
     let sources = Sources::new();
     let js = sources.compile(body);
-    let evaluator = Evaluator::new(Default::default()).unwrap();
-    let value = evaluator
-        .evaluate_js(&format!("JSON.stringify({js})"))
-        .unwrap();
-    assert_eq!(evaluator.string(value).unwrap(), expected, "QuickJS {body}");
+    // The Pants build embeds no QuickJS; Node still runs the program below.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(Default::default()).unwrap();
+        let value = evaluator
+            .evaluate_js(&format!("JSON.stringify({js})"))
+            .unwrap();
+        assert_eq!(evaluator.string(value).unwrap(), expected, "QuickJS {body}");
+    }
     let out = Command::new("node")
         .args(["--eval", &format!("console.log(JSON.stringify({js}));")])
         .output()
@@ -117,12 +121,16 @@ fn macros_use_libraries_without_native_registration() {
         "(ns probe.main (:require [helper.lib :refer [compute]])) (= (compute) [42])",
     );
     let js = compile_namespace("probe.main", std::slice::from_ref(sources.0.path())).unwrap();
-    let e = Evaluator::new(Default::default()).unwrap();
-    assert_eq!(
-        e.string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
-            .unwrap(),
-        "true"
-    );
+    // The Pants build embeds no QuickJS to run the program; it still compiles it.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(Default::default()).unwrap();
+        assert_eq!(
+            e.string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
+                .unwrap(),
+            "true"
+        );
+    }
 }
 #[test]
 fn traversal_limits_and_session_recovery() {
@@ -148,20 +156,24 @@ fn traversal_limits_and_session_recovery() {
     );
     let sources = Sources::new();
     let bad = sources.compile("(try (w/prewalk (fn [x] [x]) 1) (catch js/Error e (.-message e)))");
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert!(
-        e.string(e.evaluate_js(&bad).unwrap())
-            .unwrap()
-            .contains("walk depth limit")
-    );
-    assert_eq!(e.number(e.evaluate_js("40+2").unwrap()).unwrap(), 42.0);
-    let infinite = sources.compile("(w/postwalk identity (range))");
-    let e = Evaluator::new(EvaluatorOptions {
-        poll_budget: 1000,
-        ..Default::default()
-    })
-    .unwrap();
-    assert!(e.evaluate_js(&infinite).is_err());
+    // The limits and recovery checked below are QuickJS evaluator limits.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert!(
+            e.string(e.evaluate_js(&bad).unwrap())
+                .unwrap()
+                .contains("walk depth limit")
+        );
+        assert_eq!(e.number(e.evaluate_js("40+2").unwrap()).unwrap(), 42.0);
+        let infinite = sources.compile("(w/postwalk identity (range))");
+        let e = Evaluator::new(EvaluatorOptions {
+            poll_budget: 1000,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(e.evaluate_js(&infinite).is_err());
+    }
 }
 
 use crate::sci_protocol as native_fixture;
@@ -207,6 +219,8 @@ fn literal(value: &native_fixture::Value) -> String {
         _ => panic!("unexpected exact-number native fixture: {value:?}"),
     }
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn all_supported_native_set_and_walk_fixtures_migrate_with_values_and_effects() {
     let cases = native_fixture::cases(include_str!("../fixtures/sci-outcomes.tsv")).unwrap();
@@ -317,8 +331,11 @@ fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     .unwrap();
     let source = "#_ #test/tag 1 (let [x #test/tag 2] (if false #test/tag 3 x)) #_ #test/tag 4";
     let js = compile_with_macros(&format!("(pr-str (do {source}))"), &mut host).unwrap();
+    // The Pants build embeds no QuickJS to run the programs; it still compiles them.
+    #[cfg(feature = "quickjs")]
     let e = Evaluator::new(Default::default()).unwrap();
     // Every read occurs, including a discarded form and an untaken branch.
+    #[cfg(feature = "quickjs")]
     assert_eq!(e.string(e.evaluate_js(&js).unwrap()).unwrap(), "[2 [1 2]]");
     let source = Source::new("owned.cljs", "#test/tag 5");
     let form = host.read_compiler_form(&source).unwrap().unwrap();
@@ -327,14 +344,9 @@ fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     assert_eq!(form.span().source().name(), "owned.cljs");
     host.register_compiler_data_reader(Name::new(None, "inst"), "(fn [x] (+ x 10))")
         .unwrap();
-    assert_eq!(
-        e.number(
-            e.evaluate_js(&compile_with_macros("#inst 5", &mut host).unwrap())
-                .unwrap()
-        )
-        .unwrap(),
-        15.0
-    );
+    let inst = compile_with_macros("#inst 5", &mut host).unwrap();
+    #[cfg(feature = "quickjs")]
+    assert_eq!(e.number(e.evaluate_js(&inst).unwrap()).unwrap(), 15.0);
     for handler in [
         "(fn [x] (atom x))",
         "(fn [x] (fn [] x))",
@@ -388,12 +400,16 @@ fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
 fn upstream_set_and_walk_witnesses_execute_with_full_setup() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compiler-libraries");
     let js = compile_namespace("library.upstream", &[root]).unwrap();
-    let e = Evaluator::new(Default::default()).unwrap();
-    assert_eq!(
-        e.string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
-            .unwrap(),
-        "true"
-    );
+    // The Pants build embeds no QuickJS; Node still runs the program below.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(Default::default()).unwrap();
+        assert_eq!(
+            e.string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
+                .unwrap(),
+            "true"
+        );
+    }
     let mut child = Command::new("node")
         .arg("-")
         .stdin(std::process::Stdio::piped())

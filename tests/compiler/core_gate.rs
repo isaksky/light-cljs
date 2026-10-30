@@ -49,15 +49,19 @@ fn both(source: &str, expected: &str, identity: &str) {
     let parsed = parse(source).unwrap_or_else(|error| panic!("{identity}: {error}"));
     let program = analyze_with_macros(source, &parsed, &mut MacroHost::new())
         .unwrap_or_else(|error| panic!("{identity}: {error}"));
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    let value = evaluator
-        .evaluate(&program)
-        .unwrap_or_else(|error| panic!("QuickJS {identity}: {error}"));
-    assert_eq!(
-        evaluator.print(value).unwrap(),
-        expected,
-        "QuickJS {identity}"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let value = evaluator
+            .evaluate(&program)
+            .unwrap_or_else(|error| panic!("QuickJS {identity}: {error}"));
+        assert_eq!(
+            evaluator.print(value).unwrap(),
+            expected,
+            "QuickJS {identity}"
+        );
+    }
     let script = format!(
         "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
         emit_js_unit(&program)

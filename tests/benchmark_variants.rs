@@ -6,6 +6,8 @@ mod subset;
 use subset::{Token, Tokenizer};
 use variants::{CompactTokenizer, MatchTokenizer, SourceTooLarge};
 
+// The level benchmark times QuickJS beside Node.
+#[cfg(feature = "quickjs")]
 #[path = "../benches/support/levels.rs"]
 mod levels;
 #[path = "support/ratchet_fixtures.rs"]
@@ -18,6 +20,8 @@ mod temp_dir;
 
 /// `cargo bench --bench compiler -- --levels` at its smallest: two fixtures, one
 /// timed round, tiny steady-state inputs. Every sample is checked as in a real run.
+// The level benchmark times QuickJS beside Node.
+#[cfg(feature = "quickjs")]
 #[test]
 fn level_benchmark_harness_checks_and_records_every_level() {
     let output = temp_dir::TempDir::new("cljs-levels-smoke");

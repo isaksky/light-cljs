@@ -83,17 +83,23 @@ fn retained_sci_sources_execute_in_node_and_quickjs() {
                 String::from_utf8_lossy(&result.stderr).replace(['\n', '\t'], " ")
             )
         };
-        let runtime = rquickjs::Runtime::new().unwrap();
-        runtime.set_memory_limit(128 * 1024 * 1024);
-        runtime.set_max_stack_size(4 * 1024 * 1024);
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
-            Ok(value) => value,
-            Err(error) => {
-                format!("HARNESS:{error:?}: {:?}", ctx.catch()).replace(['\n', '\t'], " ")
-            }
-        });
-        writeln!(observations, "{id}\texecuted\t{node}\t{quickjs}").unwrap();
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        {
+            let runtime = rquickjs::Runtime::new().unwrap();
+            runtime.set_memory_limit(128 * 1024 * 1024);
+            runtime.set_max_stack_size(4 * 1024 * 1024);
+            let context = rquickjs::Context::full(&runtime).unwrap();
+            let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
+                Ok(value) => value,
+                Err(error) => {
+                    format!("HARNESS:{error:?}: {:?}", ctx.catch()).replace(['\n', '\t'], " ")
+                }
+            });
+            writeln!(observations, "{id}\texecuted\t{node}\t{quickjs}").unwrap();
+        }
+        #[cfg(not(feature = "quickjs"))]
+        writeln!(observations, "{id}\texecuted\t{node}").unwrap();
         count += 1;
         if count % 100 == 0 {
             eprintln!("SCI Node/QuickJS raw observations: {count}");

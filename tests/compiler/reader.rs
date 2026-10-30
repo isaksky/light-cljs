@@ -26,13 +26,17 @@ fn run(js: &str) -> String {
 }
 fn check(source: &str, expected: &str) {
     let js = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
-    let quickjs = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-    let value = quickjs.evaluate_js(&format!("String({js})")).unwrap();
-    assert_eq!(
-        quickjs.string(value).unwrap(),
-        expected,
-        "QuickJS: {source}"
-    );
+    // The Pants build embeds no QuickJS; Node still runs the program below.
+    #[cfg(feature = "quickjs")]
+    {
+        let quickjs = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+        let value = quickjs.evaluate_js(&format!("String({js})")).unwrap();
+        assert_eq!(
+            quickjs.string(value).unwrap(),
+            expected,
+            "QuickJS: {source}"
+        );
+    }
     assert_eq!(run(&js), format!("{expected}\n"));
 }
 
@@ -55,11 +59,15 @@ fn complete_pinned_syntax_quote_and_tagged_bodies_execute_in_both_engines() {
         )
         .unwrap();
         assert_eq!(run(&js), format!("{assertions}\n"));
-        let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-        assert_eq!(
-            e.number(e.evaluate_js(&js).unwrap()).unwrap().to_string(),
-            assertions
-        );
+        // The Pants build embeds no QuickJS; Node ran the program above.
+        #[cfg(feature = "quickjs")]
+        {
+            let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+            assert_eq!(
+                e.number(e.evaluate_js(&js).unwrap()).unwrap().to_string(),
+                assertions
+            );
+        }
     }
 }
 
@@ -69,12 +77,16 @@ fn reader_api_arities_and_rest_execute_in_application_and_macro_phases() {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reader-coverage");
     let js = light_cljs::compile_namespace("reader.api", &[root]).unwrap();
     assert_eq!(run(&js), "true\n");
-    let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-    assert_eq!(
-        e.string(e.evaluate_js(&format!("String({js})")).unwrap())
-            .unwrap(),
-        "true"
-    );
+    // The Pants build embeds no QuickJS; Node ran the program above.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+        assert_eq!(
+            e.string(e.evaluate_js(&format!("String({js})")).unwrap())
+                .unwrap(),
+            "true"
+        );
+    }
 }
 
 #[test]
@@ -106,12 +118,16 @@ fn spelling_metadata_gensyms_and_public_tagged_data_execute_in_both_phases() {
     )
     .unwrap();
     assert_eq!(run(&js), "true\n");
-    let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-    assert_eq!(
-        e.string(e.evaluate_js(&format!("String({js})")).unwrap())
-            .unwrap(),
-        "true"
-    );
+    // The Pants build embeds no QuickJS; Node ran the program above.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+        assert_eq!(
+            e.string(e.evaluate_js(&format!("String({js})")).unwrap())
+                .unwrap(),
+            "true"
+        );
+    }
 }
 
 #[test]
@@ -533,12 +549,16 @@ fn runtime_reader_registers_aliases_refers_and_source_namespace_entries() {
     .unwrap();
     let js =
         light_cljs::compile_namespace("reader.app", std::slice::from_ref(root.path())).unwrap();
-    let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-    assert_eq!(
-        e.string(e.evaluate_js(&format!("String({js})")).unwrap())
-            .unwrap(),
-        "true"
-    );
+    // The Pants build embeds no QuickJS; Node runs the program below.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+        assert_eq!(
+            e.string(e.evaluate_js(&format!("String({js})")).unwrap())
+                .unwrap(),
+            "true"
+        );
+    }
     assert_eq!(run(&js), "true\n");
 }
 
@@ -677,8 +697,12 @@ fn runtime_reader_profiles_missing_alias_locations_and_nested_tag_reads() {
         include_str!("../../src/js_runtime.js"),
         checks
     );
-    let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-    e.evaluate_js(&script).unwrap();
+    // The Pants build embeds no QuickJS; the same checks run in Node elsewhere.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+        e.evaluate_js(&script).unwrap();
+    }
 }
 
 #[test]
@@ -721,11 +745,15 @@ fn anonymous_nonpositive_bindings_execute_in_application_and_macro_phases() {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reader-coverage");
     let js = light_cljs::compile_namespace("reader.nonpositive", &[root]).unwrap();
     assert_eq!(run(&js), "[true [true 1] 0]\n");
-    let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-    assert_eq!(
-        e.string(e.evaluate_js(&js).unwrap()).unwrap(),
-        "[true [true 1] 0]"
-    );
+    // The Pants build embeds no QuickJS; Node ran the program above.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+        assert_eq!(
+            e.string(e.evaluate_js(&js).unwrap()).unwrap(),
+            "[true [true 1] 0]"
+        );
+    }
 }
 
 #[test]
@@ -836,11 +864,16 @@ fn local_macro_shadows_referred_value_in_syntax_quote() {
             ),
         ],
     );
-    let e =
-        light_cljs::evaluator::Evaluator::new(light_cljs::evaluator::EvaluatorOptions::default())
-            .unwrap();
-    assert_eq!(
-        e.print(e.evaluate(&program).unwrap()).unwrap(),
-        "[2 app/value 1]"
-    );
+    // Evaluating an analyzed program needs the QuickJS evaluator.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = light_cljs::evaluator::Evaluator::new(
+            light_cljs::evaluator::EvaluatorOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            e.print(e.evaluate(&program).unwrap()).unwrap(),
+            "[2 app/value 1]"
+        );
+    }
 }

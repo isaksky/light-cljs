@@ -40,6 +40,8 @@ fn host() -> MacroHost {
     host
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phases() {
     let mut reused = host();
@@ -122,6 +124,8 @@ fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phase
     );
 }
 
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 fn declaration_demand_failures_ownership_and_generations_recover() {
     let mut host = host();

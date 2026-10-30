@@ -19,6 +19,8 @@ fn program(source: &str) -> Program {
     analyze(source, &parse(source).unwrap()).unwrap_or_else(|error| panic!("{source}\n{error}"))
 }
 
+// Runs the program in QuickJS.
+#[cfg(feature = "quickjs")]
 fn quickjs(expression: &str) -> String {
     let evaluator = Evaluator::new(EvaluatorOptions {
         memory_limit: 1 << 30,
@@ -45,6 +47,8 @@ fn every_level(source: &str, expected: &str) -> Vec<String> {
                 format!("{expected}\n"),
                 "Node at {level}: {source}"
             );
+            // The Pants build embeds no QuickJS; Node ran the program above.
+            #[cfg(feature = "quickjs")]
             assert_eq!(quickjs(&js), expected, "QuickJS at {level}: {source}");
             prepare_application(&program, readable(level)).emit_js()
         })

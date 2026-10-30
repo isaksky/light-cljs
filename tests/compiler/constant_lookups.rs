@@ -29,6 +29,8 @@ fn emit(program: &Program, level: OptimizationLevel) -> String {
     prepare_application(program, ApplicationOptions::new(level)).emit_js()
 }
 
+// Runs the program in QuickJS.
+#[cfg(feature = "quickjs")]
 /// The value of the JavaScript string expression `expression` in a fresh
 /// QuickJS evaluator.
 fn quickjs(expression: &str) -> String {
@@ -56,6 +58,8 @@ fn every_level(source: &str, expected: &str) -> String {
             format!("{expected}\n"),
             "Node at {level}: {source}"
         );
+        // The Pants build embeds no QuickJS; Node ran the program above.
+        #[cfg(feature = "quickjs")]
         assert_eq!(quickjs(&js), expected, "QuickJS at {level}: {source}");
     }
     let advanced = prepare_application(&program, readable(OptimizationLevel::Advanced)).emit_js();

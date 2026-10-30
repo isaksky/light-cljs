@@ -21,6 +21,8 @@ fn unhex(s: &str) -> String {
     )
     .unwrap()
 }
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn execute(script: &str) -> [(String, String); 2] {
     let rt = rquickjs::Runtime::new().unwrap();
     rt.set_memory_limit(128 * 1024 * 1024);
@@ -54,6 +56,8 @@ fn execute(script: &str) -> [(String, String); 2] {
     };
     [("QuickJS".into(), quickjs), ("Node".into(), node)]
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "Explicit independently owned seven-source evidence candidate"]
 fn unchanged_seven_sources_execute_actual_phases_and_lifecycles() {

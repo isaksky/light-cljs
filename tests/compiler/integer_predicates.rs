@@ -5,14 +5,18 @@ use std::process::Command;
 
 fn both(host: &mut MacroHost, source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), host).unwrap();
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        evaluator
-            .print(evaluator.evaluate(&program).unwrap())
-            .unwrap(),
-        expected,
-        "QuickJS: {source}"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            evaluator
+                .print(evaluator.evaluate(&program).unwrap())
+                .unwrap(),
+            expected,
+            "QuickJS: {source}"
+        );
+    }
     let output = Command::new("node")
         .args([
             "-e",
@@ -106,14 +110,18 @@ mod original_table {
         String::from_utf8(out.stdout).unwrap()
     }
     fn assert_complete_table(packet: &str) {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        let passed = context.with(|ctx| {
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        {
+            let runtime = rquickjs::Runtime::new().unwrap();
+            let context = rquickjs::Context::full(&runtime).unwrap();
+            let passed = context.with(|ctx| {
         ctx.eval::<bool, _>(format!(
             "(() => {{const packet=JSON.parse({packet:?}); const rows=packet.outcome.value.$vector[1].$vector; return packet.outcome.status==='returned' && rows.length===112 && rows.every(row=>row.$vector[1]===true);}})()"
         )).unwrap()
     });
-        assert!(passed, "all 112 original comparisons must pass: {packet}");
+            assert!(passed, "all 112 original comparisons must pass: {packet}");
+        }
     }
 
     #[test]
@@ -170,15 +178,19 @@ mod original_table {
                 fs::write(folder.join("script.js"), &script).unwrap();
                 let input = format!("(0, eval)({script:?})");
                 fs::write(folder.join("quickjs.stdin"), &input).unwrap();
-                let runtime = rquickjs::Runtime::new().unwrap();
-                let context = rquickjs::Context::full(&runtime).unwrap();
-                let qjs = context.with(|ctx| match ctx.eval::<String, _>(input.as_bytes()) {
-                    Ok(value) => value,
-                    Err(e) => format!("ERROR {e:?} {:?}", ctx.catch()),
-                });
-                fs::write(folder.join("quickjs.stdout"), &qjs).unwrap();
-                println!("integer-table-observation\t{lifecycle}\t{phase}\tQuickJS\t{qjs}");
-                assert_complete_table(&qjs);
+                // The Pants build embeds no QuickJS to run this half of the check.
+                #[cfg(feature = "quickjs")]
+                {
+                    let runtime = rquickjs::Runtime::new().unwrap();
+                    let context = rquickjs::Context::full(&runtime).unwrap();
+                    let qjs = context.with(|ctx| match ctx.eval::<String, _>(input.as_bytes()) {
+                        Ok(value) => value,
+                        Err(e) => format!("ERROR {e:?} {:?}", ctx.catch()),
+                    });
+                    fs::write(folder.join("quickjs.stdout"), &qjs).unwrap();
+                    println!("integer-table-observation\t{lifecycle}\t{phase}\tQuickJS\t{qjs}");
+                    assert_complete_table(&qjs);
+                }
                 let node_input = format!("console.log({script});");
                 fs::write(folder.join("node.stdin"), &node_input).unwrap();
                 let raw = node(&node_input);

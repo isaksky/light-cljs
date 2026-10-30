@@ -2433,6 +2433,8 @@ fn a_data_readers_conversions_need_the_node_limit_they_took() {
     assert_eq!(failed, 1);
 }
 
+// Takes its execution control from a QuickJS evaluator.
+#[cfg(feature = "quickjs")]
 /// Cancelling the compilation while a namespace installs stops it there:
 /// nothing after it is installed, or analyzed in its place, and the
 /// cancelled compilation captures no further artifact. The cancellation

@@ -27,14 +27,18 @@ fn both(source: &str, expected: &str, macro_phase: bool) {
         &mut MacroHost::new(),
     )
     .unwrap_or_else(|error| panic!("macro_phase={macro_phase}: {source}: {error}"));
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    assert_eq!(
-        evaluator
-            .string(evaluator.evaluate_js(&javascript).unwrap())
-            .unwrap(),
-        expected,
-        "QuickJS macro_phase={macro_phase}: {source}"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        assert_eq!(
+            evaluator
+                .string(evaluator.evaluate_js(&javascript).unwrap())
+                .unwrap(),
+            expected,
+            "QuickJS macro_phase={macro_phase}: {source}"
+        );
+    }
     let output = Command::new("node")
         .args(["-e", &format!("console.log({javascript});")])
         .output()

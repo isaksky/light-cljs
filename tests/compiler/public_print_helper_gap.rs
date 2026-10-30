@@ -69,10 +69,14 @@ fn public_print_helper_rejection_and_actual_macro_recovery() {
                 fs::write(folder.join("recovery.cljs"), control).unwrap();
                 let js = light_cljs::compile_with_macros(control, host).unwrap();
                 fs::write(folder.join("recovery.js"), &js).unwrap();
-                let runtime = rquickjs::Runtime::new().unwrap();
-                let context = rquickjs::Context::full(&runtime).unwrap();
-                let value = context.with(|ctx| ctx.eval::<i32, _>(js.as_bytes()).unwrap());
-                assert_eq!(value, 42);
+                // The Pants build embeds no QuickJS to run this half of the check.
+                #[cfg(feature = "quickjs")]
+                {
+                    let runtime = rquickjs::Runtime::new().unwrap();
+                    let context = rquickjs::Context::full(&runtime).unwrap();
+                    let value = context.with(|ctx| ctx.eval::<i32, _>(js.as_bytes()).unwrap());
+                    assert_eq!(value, 42);
+                }
                 let input = format!("console.log({js});");
                 fs::write(folder.join("node.stdin"), &input).unwrap();
                 let mut child = Command::new(std::env::var("NODE").unwrap())

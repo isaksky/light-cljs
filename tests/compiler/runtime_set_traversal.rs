@@ -20,6 +20,8 @@ fn unhex(s: &str) -> String {
     )
     .unwrap()
 }
+// Canonicalizes or compares engine results with QuickJS.
+#[cfg(feature = "quickjs")]
 fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
     let runtime = rquickjs::Runtime::new().unwrap();
     let context = rquickjs::Context::full(&runtime).unwrap();
@@ -67,6 +69,8 @@ fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
         ),
     ]
 }
+// Compares the Node result with the QuickJS result.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "explicit original .cljc filename and actual phase audit"]
 fn runtime_set_traversal_sources_execute_in_fresh_and_reused_macro_hosts() {
