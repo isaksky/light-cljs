@@ -339,6 +339,68 @@ fn a_thunk_that_needs_its_own_sequence_fails_instead_of_recursing() {
     assert_eq!(v.view(), ValueView::Bool(true));
 }
 
+/// A `cljRealizeAll` that parks on a shared sequence another task is
+/// realizing keeps its walk (light-cljs-622): the lists it already built
+/// survive collections while it waits, and it continues where it stopped,
+/// running no thunk again.
+#[test]
+fn a_realize_all_parked_mid_walk_keeps_its_walk_across_collection() {
+    let rt = Runtime::new();
+    let host = Thunks::default();
+    let lazy = eval(
+        &rt,
+        "return __rt.lazySeq(() => {
+           __rt.effect(1, 0);
+           let n = 0;
+           for (let i = 0; i < 200; i++) n += 1;
+           return __rt.formList(n, 1);
+         });",
+    );
+    rt.publish(&lazy).unwrap();
+    let walk = compile_function(
+        "function walk(shared) {
+           let own = 0;
+           const inner = __rt.lazySeq(() => { own++; return __rt.formList('x'); });
+           const mine = __rt.lazySeq(() => { own++; return __rt.formList(inner, 2); });
+           const r = __rt.cljRealizeAll(__rt.formVector(mine, shared, mine));
+           const m = __rt.formList(__rt.formList('x'), 2);
+           return own === 2
+             && __rt.formEquals(r, __rt.formVector(m, __rt.formList(200, 1), m))
+             && __rt.formNth(r, 0) === __rt.formNth(r, 2);
+         }",
+    )
+    .unwrap();
+    let (a, b) = (reader(&rt, &lazy), rt.spawn(&walk, &[&lazy]).unwrap());
+    drop(lazy);
+    // A enters the shared thunk and yields inside it, holding the claim.
+    let mut steps = 0;
+    while host.runs.load(Ordering::SeqCst) == 0 {
+        assert!(matches!(
+            a.run_with(Budget::instructions(1), &mut host.clone())
+                .unwrap(),
+            RunOutcome::Yielded
+        ));
+        steps += 1;
+        assert!(steps < 1000);
+    }
+    // B realizes `mine` and parks at the shared sequence: its walk holds
+    // the only reference to the list it built for `mine`.
+    let RunOutcome::Waiting(key) = b.run_with(Budget::UNLIMITED, &mut host.clone()).unwrap() else {
+        panic!("B did not park");
+    };
+    assert_eq!(key.kind(), LAZY_REALIZATION);
+    rt.collect().unwrap();
+    rt.collect().unwrap();
+    assert_eq!(
+        complete(a.run_with(Budget::UNLIMITED, &mut host.clone()).unwrap()),
+        ValueView::Number(201.0)
+    );
+    assert_eq!(rt.take_lazy_wakeups().len(), 1);
+    rt.collect().unwrap();
+    assert_eq!(complete(b.run().unwrap()), ValueView::Bool(true));
+    assert_eq!(host.runs.load(Ordering::SeqCst), 1);
+}
+
 #[test]
 fn a_cancelled_realizer_gives_its_claim_to_a_parked_reader() {
     let rt = Runtime::new();

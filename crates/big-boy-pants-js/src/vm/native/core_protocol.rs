@@ -470,6 +470,7 @@ impl State {
             operands: retry.operands,
             answers: retry.answers,
             fallback: retry.core_resolved,
+            walk: None,
         })
     }
 

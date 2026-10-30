@@ -2276,7 +2276,9 @@ the metadata the legacy runtime's sequences have (an explicit `nil` for a
 `IntegerRange`), so expansions are the legacy compiler's. An operation over an
 unrealized sequence executes again after each cell it realizes; `count` (so
 `doall`), the runtime's array helpers and the result's realization realize the
-rest of a chain at once and stay linear, while `=` and `hash` of an unrealized
+rest of a chain at once and stay linear, and the result's realization continues
+where it stopped rather than from the start (light-cljs-622), so it is linear in
+the size of the whole result; `=` and `hash` of an unrealized
 sequence of `k` cells and `n` elements read `O(k * n)` elements. Chunked
 sources realize 32 elements a cell.
 

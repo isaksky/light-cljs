@@ -413,6 +413,9 @@ pub(crate) enum Action {
         operands: Vec<Value>,
         answers: crate::collections::form::SortedAnswers,
         fallback: bool,
+        /// The `cljRealizeAll` walk it continues, if one stopped at the
+        /// sequence realized meanwhile.
+        walk: Option<Box<crate::collections::clj::RealizeAll>>,
     },
     /// Read a dependency in the task's world, suspending if it is pending.
     Need {
@@ -4023,6 +4026,7 @@ fn apply_action(
             operands,
             answers,
             fallback: false,
+            walk,
         } => {
             state.natives.pop();
             for v in operands {
@@ -4030,6 +4034,7 @@ fn apply_action(
             }
             // Taken by the instruction's next execution, which runs at once.
             state.sorted_answers = answers;
+            state.realize_all = walk;
             Ok(Flow::Resume(instr))
         }
         Action::Retry {
@@ -4037,8 +4042,10 @@ fn apply_action(
             operands,
             answers,
             fallback: true,
+            walk,
         } => {
             state.sorted_answers = answers;
+            state.realize_all = walk;
             form_fallback(state, heap, host, instr, operands)
         }
         Action::FormFallback { instr, operands } => {

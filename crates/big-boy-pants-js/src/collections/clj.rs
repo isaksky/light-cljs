@@ -53,8 +53,11 @@
 
 use super::form::{self, FormBody, FormKind};
 use super::{CollectionError, PVector, index_from_value, lazy};
-use crate::heap::{Heap, HeapObject};
+use crate::heap::budget::ByteReservation;
+use crate::heap::gc::{Trace, TraceEdge};
+use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::value::{JsString, Value};
+use std::collections::{HashMap, HashSet};
 
 /// Why a Clojure core operation failed.
 #[derive(Debug)]
@@ -1566,73 +1569,246 @@ pub(crate) fn chunk_cons(
     Ok(form::new_cons(heap, items, 0, rest, kind, count)?)
 }
 
+/// How [`realize_all`] rebuilds a form whose parts it replaced.
+#[derive(Clone)]
+enum Rebuild {
+    /// A lazy or cons sequence; whether it exports with metadata
+    /// (`nil` when none was given), as the light-cljs runtime's
+    /// `LazySeq` and `ChunkedCons` do and its `Cons` does not.
+    Seq(bool),
+    /// Another form (a symbol): only its metadata.
+    Meta,
+    List,
+    Vector,
+    Set(bool),
+    Map(bool),
+    SortedMap,
+    /// A sorted-map-by map: realization keeps its comparator and order.
+    SortedMapBy,
+    CompilerLiteral(JsString),
+}
+
+/// One step of a [`realize_all`] walk.
+enum Work {
+    Enter(Value),
+    Exit {
+        id: ObjectId,
+        original: Value,
+        rebuild: Rebuild,
+        children: Vec<Value>,
+        meta: Option<Value>,
+    },
+}
+
+/// A [`realize_all`] walk: what is left to do, the results built so far,
+/// the forms already converted (each is converted once, so shared parts
+/// stay shared) and the forms being converted (one met again inside itself
+/// is a lazy sequence that contains itself).
+///
+/// When the walk meets an unrealized lazy sequence, the VM realizes it and
+/// executes the instruction again (`crate::vm::native::realize`). The walk
+/// is kept meanwhile, in the realization frame with the instruction's
+/// operands, and the next execution continues it at the sequence it
+/// stopped at instead of walking the realized part of the result again
+/// (light-cljs-622): realizing a result is linear in its size, where a
+/// restart per pending sequence made it quadratic. The sequences are
+/// realized in the same order, as the walk meets them in the same order,
+/// and every form the walk already read is immutable (a realized cell
+/// included), so continuing gives what one complete walk gives.
+///
+/// While kept, its values are roots ([`Trace`]) and its storage is
+/// charged to the heap's byte budget ([`RealizeAll::charge`]).
+pub(crate) struct RealizeAll {
+    /// The walk's operand: it continues only for the same one.
+    root: Value,
+    work: Vec<Work>,
+    /// The `children` the `Exit` steps in `work` hold, for the charge.
+    pending_children: usize,
+    results: Vec<Value>,
+    memo: HashMap<ObjectId, Value>,
+    active: HashSet<ObjectId>,
+    charge: ByteReservation,
+    charged: usize,
+}
+
+impl std::fmt::Debug for RealizeAll {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RealizeAll")
+            .field("work", &self.work.len())
+            .field("results", &self.results.len())
+            .field("memo", &self.memo.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Trace for RealizeAll {
+    fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
+        self.root.trace(visit);
+        for work in &self.work {
+            match work {
+                Work::Enter(v) => v.trace(visit),
+                Work::Exit {
+                    id,
+                    original,
+                    children,
+                    meta,
+                    ..
+                } => {
+                    visit((*id).into());
+                    original.trace(visit);
+                    children.trace(visit);
+                    if let Some(meta) = meta {
+                        meta.trace(visit);
+                    }
+                }
+            }
+        }
+        self.results.trace(visit);
+        for (id, result) in &self.memo {
+            visit((*id).into());
+            result.trace(visit);
+        }
+        for id in &self.active {
+            visit((*id).into());
+        }
+    }
+}
+
+impl RealizeAll {
+    fn new(root: &Value) -> Self {
+        RealizeAll {
+            root: root.clone(),
+            work: vec![Work::Enter(root.clone())],
+            pending_children: 0,
+            results: Vec::new(),
+            memo: HashMap::new(),
+            active: HashSet::new(),
+            charge: ByteReservation::default(),
+            charged: 0,
+        }
+    }
+
+    /// Charge the walk's storage to the heap's byte budget before it is
+    /// kept, growing the charge geometrically; `false` (keep nothing) when
+    /// the budget refuses it.
+    fn charge(&mut self, heap: &Heap) -> bool {
+        use std::mem::size_of;
+        let entry = size_of::<ObjectId>() + 1;
+        let needed = self.work.capacity() * size_of::<Work>()
+            + self.pending_children * size_of::<Value>()
+            + self.results.capacity() * size_of::<Value>()
+            + self.memo.capacity() * (entry + size_of::<Value>())
+            + self.active.capacity() * entry;
+        if needed <= self.charged {
+            return true;
+        }
+        let target = needed.max(self.charged.saturating_mul(2));
+        match heap.reserve_bytes(target - self.charged) {
+            Some(more) => {
+                self.charge.merge(more);
+                self.charged = target;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Keep this walk, stopped at a pending sequence, for the
+    /// instruction's next execution, unless that execution must start
+    /// over: when this one also recorded another request (a lazy sequence
+    /// met by hashing, or a `sorted-map-by` comparison) or used an answer
+    /// to a comparison, since an execution is given its answers in the
+    /// order a complete walk meets the comparisons; or when the budget
+    /// refuses its storage. Starting over gives the same result, only
+    /// slower.
+    fn suspend(mut self, heap: &Heap) {
+        if lazy::has_request() || form::sorted_comparisons_met() || !self.charge(heap) {
+            return;
+        }
+        WALK.with(|w| *w.borrow_mut() = Some(Box::new(self)));
+    }
+}
+
+thread_local! {
+    // The walk the running instruction continues, then the one it leaves
+    // at a pending sequence. Set and taken around one instruction
+    // (`crate::vm::intrinsics`), which never parks or collects meanwhile.
+    static WALK: std::cell::RefCell<Option<Box<RealizeAll>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The values the walks on this thread entered, for the tests that
+    /// their work is linear.
+    static ENTERED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The number of values [`realize_all`] walks entered on this thread.
+#[cfg(test)]
+pub(crate) fn realize_all_entered() -> usize {
+    ENTERED.with(std::cell::Cell::get)
+}
+
+/// Make `walk` (from the instruction's last execution) the walk the
+/// instruction about to run continues, replacing any left over.
+pub(crate) fn install_realize_all(walk: Option<Box<RealizeAll>>) {
+    WALK.with(|w| *w.borrow_mut() = walk);
+}
+
+/// Take the walk the instruction left at a pending sequence, if it may be
+/// continued.
+pub(crate) fn take_realize_all() -> Option<Box<RealizeAll>> {
+    WALK.with(|w| w.borrow_mut().take())
+}
+
 /// `v` with every lazy and cons sequence inside it (elements, keys,
 /// values and metadata, at any depth) replaced by a list of its realized
 /// elements, realizing them; parts without one keep their identity. A
 /// macro's result is converted so before the bridge exports it, which
-/// reads finite forms only. An explicit stack: no native recursion.
+/// reads finite forms only. An explicit stack: no native recursion. An
+/// unrealized lazy sequence stops the walk with a realization request,
+/// and the instruction's next execution continues it ([`RealizeAll`]).
 pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
-    #[derive(Clone)]
-    enum Rebuild {
-        /// A lazy or cons sequence; whether it exports with metadata
-        /// (`nil` when none was given), as the light-cljs runtime's
-        /// `LazySeq` and `ChunkedCons` do and its `Cons` does not.
-        Seq(bool),
-        /// Another form (a symbol): only its metadata.
-        Meta,
-        List,
-        Vector,
-        Set(bool),
-        Map(bool),
-        SortedMap,
-        /// A sorted-map-by map: realization keeps its comparator and order.
-        SortedMapBy,
-        CompilerLiteral(JsString),
-    }
-    enum Work {
-        Enter(Value),
-        Exit {
-            id: crate::heap::ObjectId,
-            original: Value,
-            rebuild: Rebuild,
-            children: Vec<Value>,
-            meta: Option<Value>,
-        },
-    }
     // Only objects are ever replaced: a primitive result is its input.
     let kept = |a: &Value, b: &Value| !matches!(a, Value::Object(_)) || a.same_object(b);
-    let mut memo: std::collections::HashMap<crate::heap::ObjectId, Value> =
-        std::collections::HashMap::new();
-    let mut work = vec![Work::Enter(v.clone())];
-    let mut results: Vec<Value> = Vec::new();
-    // Forms being converted: one met again inside itself is a lazy
-    // sequence that contains itself.
-    let mut active: std::collections::HashSet<crate::heap::ObjectId> =
-        std::collections::HashSet::new();
-    while let Some(item) = work.pop() {
+    let mut walk = match take_realize_all() {
+        Some(walk) if walk.root.same_object(v) => *walk,
+        _ => RealizeAll::new(v),
+    };
+    while let Some(item) = walk.work.pop() {
         match item {
             Work::Enter(v) => {
+                #[cfg(test)]
+                ENTERED.with(|e| e.set(e.get() + 1));
                 let Value::Object(id) = v else {
-                    results.push(v);
+                    walk.results.push(v);
                     continue;
                 };
-                if let Some(done) = memo.get(&id) {
-                    results.push(done.clone());
+                if let Some(done) = walk.memo.get(&id) {
+                    walk.results.push(done.clone());
                     continue;
                 }
                 let Some(f) = form::form_object(heap, &v) else {
-                    results.push(v);
+                    walk.results.push(v);
                     continue;
                 };
                 let (rebuild, children) = match f.body() {
-                    FormBody::Lazy(_) => (
-                        Rebuild::Seq(true),
-                        seq_items(heap, "seq", &v)?.unwrap_or_default(),
-                    ),
-                    FormBody::Cons(c) => (
-                        Rebuild::Seq(c.has_metadata()),
-                        seq_items(heap, "seq", &v)?.unwrap_or_default(),
-                    ),
+                    FormBody::Lazy(_) | FormBody::Cons(_) => {
+                        let meta = match f.body() {
+                            FormBody::Cons(c) => c.has_metadata(),
+                            _ => true,
+                        };
+                        match seq_items(heap, "seq", &v) {
+                            Ok(children) => (Rebuild::Seq(meta), children.unwrap_or_default()),
+                            Err(CljError::Realize(lazy)) => {
+                                walk.work.push(Work::Enter(v));
+                                walk.suspend(heap);
+                                return Err(CljError::Realize(lazy));
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
                     FormBody::List(items) => (Rebuild::List, items.to_vec()),
                     FormBody::Vector(items) => (Rebuild::Vector, items.to_vec()),
                     FormBody::CompilerLiteral { tag, payload, .. } => {
@@ -1655,11 +1831,11 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                     ),
                     _ if f.meta().is_some() => (Rebuild::Meta, Vec::new()),
                     _ => {
-                        results.push(v);
+                        walk.results.push(v);
                         continue;
                     }
                 };
-                if !active.insert(id) {
+                if !walk.active.insert(id) {
                     return Err(CljError::Infinite);
                 }
                 let meta = f.meta().cloned();
@@ -1668,15 +1844,16 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                 let enter_meta = meta.clone().map(Work::Enter);
                 let enter_children: Vec<Work> =
                     children.iter().rev().cloned().map(Work::Enter).collect();
-                work.push(Work::Exit {
+                walk.pending_children += children.len();
+                walk.work.push(Work::Exit {
                     id,
                     original: v,
                     rebuild,
                     children,
                     meta,
                 });
-                work.extend(enter_meta);
-                work.extend(enter_children);
+                walk.work.extend(enter_meta);
+                walk.work.extend(enter_children);
             }
             Work::Exit {
                 id,
@@ -1685,12 +1862,13 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                 children,
                 meta,
             } => {
+                walk.pending_children -= children.len();
                 let new_meta = match meta {
-                    Some(_) => results.pop(),
+                    Some(_) => walk.results.pop(),
                     None => None,
                 };
-                active.remove(&id);
-                let new_children = results.split_off(results.len() - children.len());
+                walk.active.remove(&id);
+                let new_children = walk.results.split_off(walk.results.len() - children.len());
                 let unchanged = !matches!(rebuild, Rebuild::Seq(_))
                     && meta
                         .as_ref()
@@ -1735,12 +1913,12 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                         None => rebuilt,
                     }
                 };
-                memo.insert(id, result.clone());
-                results.push(result);
+                walk.memo.insert(id, result.clone());
+                walk.results.push(result);
             }
         }
     }
-    Ok(results.pop().unwrap_or(Value::Null))
+    Ok(walk.results.pop().unwrap_or(Value::Null))
 }
 
 /// A sequential view used by tests: the elements of a list or vector.

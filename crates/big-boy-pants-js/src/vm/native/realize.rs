@@ -10,6 +10,11 @@
 //! already resolved, so that resolution is not replayed). The claim is given up if the frame is dropped
 //! unfinished (a cancellation unwinding through it, or the task's state
 //! being dropped), so the cell's other readers are never left waiting.
+//!
+//! `cljRealizeAll` does not start over when it executes again: the frame
+//! keeps its walk ([`clj::RealizeAll`]) and gives it back to the next
+//! execution, which continues at the sequence it stopped at, so realizing a
+//! macro's result is linear in its size (light-cljs-622).
 
 use std::sync::Arc;
 
@@ -37,6 +42,9 @@ pub(crate) struct Realize {
     /// The task runtime's answers to the instruction's sorted-map-by
     /// comparisons so far, given back when it executes again.
     answers: form::SortedAnswers,
+    /// The `cljRealizeAll` walk the instruction stopped at this sequence,
+    /// which its next execution continues (light-cljs-622).
+    walk: Option<Box<clj::RealizeAll>>,
     /// The lazy form, which keeps the cell alive.
     lazy: Value,
     cell: Arc<LazyCell>,
@@ -61,6 +69,7 @@ impl Realize {
         operands: Vec<Value>,
         lazy: Value,
         answers: form::SortedAnswers,
+        walk: Option<Box<clj::RealizeAll>>,
     ) -> Option<Realize> {
         let cell = form::form_object(heap, &lazy)?.lazy_cell()?.clone();
         Some(Realize {
@@ -68,6 +77,7 @@ impl Realize {
             operands,
             core_resolved: false,
             answers,
+            walk,
             lazy,
             cell,
             attempt: None,
@@ -99,6 +109,7 @@ impl Realize {
             operands: std::mem::take(&mut self.operands),
             answers: std::mem::take(&mut self.answers),
             fallback: self.core_resolved,
+            walk: self.walk.take(),
         }
     }
 
@@ -326,6 +337,9 @@ impl Trace for Realize {
             v.trace(visit);
         }
         self.answers.trace(visit);
+        if let Some(walk) = &self.walk {
+            walk.trace(visit);
+        }
         if let Some(e) = &self.failed {
             e.value.trace(visit);
         }
@@ -361,6 +375,7 @@ pub(crate) fn start(
     n: usize,
     lazy: Value,
     answers: form::SortedAnswers,
+    walk: Option<Box<clj::RealizeAll>>,
 ) -> Result<(), Fault> {
     let ops = state.operands();
     let at = ops
@@ -368,10 +383,75 @@ pub(crate) fn start(
         .checked_sub(n)
         .ok_or(Fault::Internal("operand stack underflow"))?;
     let operands = ops[at..].to_vec();
-    let realize = Realize::new(heap, instr, operands, lazy, answers).ok_or(Fault::Internal(
-        "realization request for a value that is not lazy",
-    ))?;
+    let realize = Realize::new(heap, instr, operands, lazy, answers, walk).ok_or(
+        Fault::Internal("realization request for a value that is not lazy"),
+    )?;
     let base = state.stack_len() - n;
     state.truncate_operands(base)?;
     super::push_native(state, super::NativeState::Realize(Box::new(realize)))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::collections::clj::realize_all_entered;
+    use crate::frontend::compile_function;
+    use crate::{RunOutcome, Runtime};
+
+    /// `cljRealizeAll` on a list of `n` syntax-quote-shaped lazy sequences,
+    /// `(seq (concat (list 'a) (list i) (list (lazy-seq (list 'b i)))))`,
+    /// each holding another: the realization's report (the result's kind
+    /// and count, whether it equals the same forms built without laziness,
+    /// and the order the thunks ran in) and the values the walk entered.
+    fn realize_nested(n: usize) -> (String, usize) {
+        let rt = Runtime::new();
+        let f = compile_function(&format!(
+            "function test() {{
+               const order = [];
+               const item = (i) => __rt.lazySeq(() => {{
+                 order.push(i);
+                 const inner = __rt.lazySeq(() => {{ order.push(-i - 1); return __rt.formList('b', i); }});
+                 return __rt.cljSeq(__rt.cljConcat(__rt.formList('a'),
+                   __rt.cljConcat(__rt.formList(i), __rt.formList(inner))));
+               }});
+               let xs = null, expected = null;
+               for (let i = {n} - 1; i >= 0; i--) {{
+                 xs = __rt.cljCons(item(i), xs);
+                 expected = __rt.cljCons(__rt.formList('a', i, __rt.formList('b', i)), expected);
+               }}
+               const r = __rt.cljRealizeAll(xs);
+               return [__rt.formKind(r), __rt.cljCount(r), __rt.formEquals(r, expected),
+                       order.join(',')].join(';');
+             }}"
+        ))
+        .unwrap();
+        let before = realize_all_entered();
+        let RunOutcome::Complete(v) = rt.spawn(&f, &[]).unwrap().run().unwrap() else {
+            panic!("realization failed");
+        };
+        let entered = realize_all_entered() - before;
+        (v.string().unwrap().to_string_lossy(), entered)
+    }
+
+    /// Realizing a result is linear in its size (light-cljs-622): the walk
+    /// continues at each pending sequence instead of entering the realized
+    /// part of the result again, so twice the sequences take twice the
+    /// steps, not four times. The thunks still run once each, in the order
+    /// the walk meets them, and the result is the same.
+    #[test]
+    fn realizing_nested_lazy_sequences_is_linear_in_their_number() {
+        let mut steps = Vec::new();
+        for n in [50, 100, 200] {
+            let (report, entered) = realize_nested(n);
+            let order: Vec<String> = (0..n as i64)
+                .flat_map(|i| [i.to_string(), (-i - 1).to_string()])
+                .collect();
+            assert_eq!(report, format!("list;{n};true;{}", order.join(",")));
+            steps.push(entered);
+        }
+        // Eight a sequence (it is entered pending and again realized, its
+        // three elements, and its inner sequence's second entry and two
+        // elements) and the outer list. Restarting the walk instead entered
+        // 15,351, 60,701 and 241,401 values.
+        assert_eq!(steps, [401, 801, 1601], "values entered at 50, 100, 200");
+    }
 }

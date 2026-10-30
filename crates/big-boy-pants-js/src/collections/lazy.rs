@@ -97,7 +97,10 @@
 //! time, executing again from its start after each. `count`, `cljList` and
 //! `cljRealizeAll`, which read their sequence to its end, realize the rest of
 //! a chain in the same realization frame (in chain order, the order they
-//! would request it), so they stay linear in its length. Equality compares
+//! would request it), so they stay linear in its length. `cljRealizeAll`
+//! also continues its walk of a nested form where it stopped instead of
+//! from its start (light-cljs-622, `crate::collections::clj::RealizeAll`),
+//! so it is linear in the size of the whole form. Equality compares
 //! sequences element by element and stops at the first unequal pair, so it
 //! realizes no further; `hash` of an unrealized sequence of `n` elements
 //! reads `O(k * n)` realized elements. Chunked sources (32 elements a cell)

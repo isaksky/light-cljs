@@ -2571,3 +2571,55 @@ mod tests {
         assert_eq!(outputs, ["[12 [1 9]]", "[12 [1 9]]"]);
     }
 }
+
+/// How long the Pants build takes to run the `doseq` bootstrap definition
+/// through [`MacroHost::expand_core_javascript`] with raised limits, for
+/// `(doseq [x0 xs ... xN-1 xs] (f x0))` at each N of
+/// `LIGHT_CLJS_DOSEQ_BINDINGS` (default `4,5,6,7`): realizing the
+/// definition's result is linear in its size (light-cljs-622), so the time
+/// should about double per binding. A measurement, not a check:
+/// `cargo test --no-default-features --features bbp-macros --lib
+/// doseq_definition_timing -- --ignored --nocapture`.
+#[cfg(all(test, feature = "bbp-macros"))]
+mod doseq_timing {
+    use super::*;
+
+    #[test]
+    #[ignore = "timing measurement"]
+    fn doseq_definition_timing() {
+        let counts = std::env::var("LIGHT_CLJS_DOSEQ_BINDINGS").unwrap_or("4,5,6,7".into());
+        for n in counts
+            .split(',')
+            .map(|n| n.trim().parse::<usize>().unwrap())
+        {
+            let mut host = MacroHost::new();
+            host.use_native_macros();
+            host.limits.generated_nodes = 100_000_000;
+            host.limits.expansions = 1 << 20;
+            host.evaluator_options.timeout = std::time::Duration::from_secs(3600);
+            host.evaluator_options.memory_limit = 4 << 30;
+            let bindings = (0..n).map(|i| format!("x{i} xs")).collect::<Vec<_>>();
+            let source = format!("(doseq [{}] (f x0))", bindings.join(" "));
+            let call = host
+                .read_compiler_form(&Source::new("doseq.cljs", &source))
+                .unwrap()
+                .unwrap();
+            let environment = DataBuilder.map(&[]).unwrap();
+            let _names = crate::generated_names::enter_namespace(7);
+            // Install the definition first, so the time is the call's.
+            let warm = host
+                .read_compiler_form(&Source::new("warm.cljs", "(doseq [x0 xs] (f x0))"))
+                .unwrap()
+                .unwrap();
+            host.expand_core_javascript("doseq", &warm, &environment, None)
+                .unwrap();
+            let start = std::time::Instant::now();
+            let expanded = host
+                .expand_core_javascript("doseq", &call, &environment, None)
+                .unwrap();
+            let elapsed = start.elapsed();
+            let nodes = crate::macro_host::WorkMarks::nodes(&expanded.data());
+            println!("doseq bindings={n} nodes={nodes} time={elapsed:.3?}");
+        }
+    }
+}

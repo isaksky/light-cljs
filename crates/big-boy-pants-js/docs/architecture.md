@@ -646,7 +646,9 @@ which a realized value must be shareable. Equality and hashing record a
 realization request in a thread-local slot instead of returning one, and the
 instruction takes it. Cons cells (realized elements before an unrealized tail)
 and `__rt.cljChunk*` operations give chunked sequences; `__rt.cljRealizeAll`
-replaces every lazy sequence inside a form with a list. Tests:
+replaces every lazy sequence inside a form with a list, in time linear in the
+form's size: it keeps its walk across the realizations it waits for and
+continues it (light-cljs-622). Tests:
 `tests/lazy_seqs.rs`.
 
 ## Atomic references

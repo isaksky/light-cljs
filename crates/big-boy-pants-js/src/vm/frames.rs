@@ -385,6 +385,9 @@ pub(crate) struct VmState {
     /// Answers to `sorted-map-by` comparisons for the form instruction about
     /// to execute again (`crate::vm::intrinsics`); it takes them. Traced.
     pub(crate) sorted_answers: crate::collections::form::SortedAnswers,
+    /// The `cljRealizeAll` walk the form instruction about to execute again
+    /// continues (`crate::collections::clj::RealizeAll`); it takes it. Traced.
+    pub(crate) realize_all: Option<Box<crate::collections::clj::RealizeAll>>,
     /// Set once the task's consumer cancellation started running its
     /// finally blocks (`crate::task`, "Cancellation and finally blocks").
     pub(crate) cancelling: bool,
@@ -592,6 +595,7 @@ impl VmState {
             natives: Vec::new(),
             core_resolver: None,
             sorted_answers: Default::default(),
+            realize_all: None,
             cancelling: false,
         }
     }
@@ -1687,6 +1691,9 @@ impl Trace for VmState {
         self.natives.iter().for_each(|n| n.trace(visit));
         self.core_resolver.iter().for_each(|v| v.trace(visit));
         self.sorted_answers.trace(visit);
+        if let Some(walk) = &self.realize_all {
+            walk.trace(visit);
+        }
     }
 }
 

@@ -1303,6 +1303,15 @@ pub(crate) fn take_sorted_request() -> Option<SortedRequest> {
     SORTED_EQUALITIES.with(|s| s.borrow_mut().request.take())
 }
 
+/// Whether the running instruction met a `sorted-map-by` comparison so far:
+/// it used an answer or recorded a request.
+pub(crate) fn sorted_comparisons_met() -> bool {
+    SORTED_EQUALITIES.with(|s| {
+        let s = s.borrow();
+        s.next > 0 || s.request.is_some()
+    })
+}
+
 /// The answer for the next comparison met, which an execution meets in the
 /// same order as the last (the operands are immutable values; a sequence
 /// realized meanwhile only lets it go further).

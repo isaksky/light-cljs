@@ -430,7 +430,9 @@ pub(crate) fn step(
 /// unrealized lazy sequence, and the clj operations read sequences through:
 /// then the instruction realizes it and executes again instead of
 /// completing (light-cljs-479; [`crate::collections::lazy`]), whatever
-/// result or failure it computed past the request. Likewise structural
+/// result or failure it computed past the request (`cljRealizeAll` instead
+/// stops at the request and continues its walk there, light-cljs-622;
+/// [`clj::RealizeAll`]). Likewise structural
 /// equality that compares a map with a `sorted-map-by` map asks the task
 /// runtime's `=` (which calls the comparator) for that comparison, and the
 /// instruction executes again with every answer it was given so far, so no
@@ -460,6 +462,7 @@ fn form_step(
         .checked_sub(n)
         .ok_or(Fault::Internal("operand stack underflow"))?;
     form::install_sorted_answers(std::mem::take(&mut state.sorted_answers));
+    clj::install_realize_all(state.realize_all.take());
     let ops = &state.operands()[start..];
     // A request left by an embedder's comparison is not this instruction's.
     let _ = lazy::take_request();
@@ -467,6 +470,7 @@ fn form_step(
     let _ = form::take_sorted_request();
     let made = form_value(heap, host, instr, ops);
     let answers = form::take_sorted_answers();
+    let walk = clj::take_realize_all();
     let sorted = form::take_sorted_request();
     if lazy::take_cycle() {
         let _ = lazy::take_request();
@@ -475,7 +479,7 @@ fn form_step(
         ));
     }
     if let Some(pending) = lazy::take_request() {
-        return realize::start(heap, state, instr, n, pending, answers);
+        return realize::start(heap, state, instr, n, pending, answers, walk);
     }
     // Without a task runtime to ask, the comparison's failure stands.
     if let Some(request) = sorted
