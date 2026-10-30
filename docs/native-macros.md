@@ -168,6 +168,62 @@ Pants-build gap. The V8 build runs the same tests as before these gates
 `compiler` bench, which times QuickJS beside Node, requires the `quickjs`
 feature.
 
+### Runtime functions, services and accounting (light-cljs-612, 2026-10-30)
+
+The Pants build now supports compile-time output bindings and host-value
+printing, code-profile reads with namespace visibility, scalar constructors,
+collection utilities, iteration, custom reductions and instance protocol
+implementations. Inline protocol and type declarations install their products
+through a private compiler write target; the public root object keeps ordinary
+JavaScript property semantics. Atom metadata, validators and watch maps follow
+the shared atom across tasks, including failures after state has committed.
+Compiler-service callbacks run from parked tasks on the shared runtime and may
+request further compilation without replaying the caller's effects.
+
+Root-read traces use the existing trace format. Pants pool statistics count
+resumed task steps and report zero worker isolates. The stats tests retain the
+V8 build's assertions and check the Pants build's actual scheduler invariants.
+Host-entry trace counts include catalog setup; Pants declaration dispatch can
+avoid redundant protocol and type root reads. These differences are intentional.
+
+Additional tests of per-isolate ownership, extension journals, worker heap
+installation and memory admission require QuickJS or V8. The inline JavaScript
+bundle transaction test also requires those engines: the Pants build demands
+catalog units instead. Their gates state the engine-specific reason; ordinary
+language tests continue to run. Library-free regressions exercise output
+restoration, readers, declarations, shared watches, nested compiler services,
+custom reductions and iteration termination. Name munging reuses the canonical
+character and reserved-name tables; nested association, merging with a combine
+function and integer sign predicates also run at compile time.
+
+On base `d766f81d`, the full run at `274b2426` took 935.435 s at 8 test
+threads: 2096 run, 1750 passed, 344 failed and two hit nextest's 600-second
+cutoff; 105 were skipped. Rechecks at `a28e8ebb` and `dd6cd1c3` fix five
+of those failures (catalog property semantics, gensym munging, both integer
+predicate tests and local API sources 061–070); the new library-free utility
+regression passes too. This leaves 341 nonpassing tests, compared with 405 in
+the initial checkout's run (2021 run at `4a1009c7` over `3bc3e11b`) and 403
+in 608's published same-base baseline. Test gates changed between those bases.
+
+The exact remaining names and first failure signatures are in light-cljs-619:
+207 stop at core macro expansion and remain owned by light-cljs-611; one is
+the nested-workspace playground failure above; 133 remain in runtime functions,
+protocol dispatch, declaration demands, cache accounting and scheduling.
+Built-in protocol values and `satisfies?` must coordinate with light-cljs-592.
+The two cache sweeps timed out; their functional result is unverified.
+The catalog property test also hit an aggregate deadline under concurrent
+load, then passed alone in 4.427 s. No property expectations were changed.
+
+The V8 build at `dd6cd1c3` runs 2139 tests in 245.355 s: 2138 pass and
+only the confirmed nested-workspace playground check fails (109 skipped).
+Strict Clippy passes for the V8 build. The Pants build's strict check stops
+at eight existing engine diagnostics (`deprecated`,
+`chunks_exact_to_as_chunks`, `byte_char_slices`); allowing those categories
+exposes two existing feature-specific unused variables and the unchanged
+`execution.rs` `unused_enumerate_index` lint. Allowing only these categories
+passes. The engine-free strict check has that same test lint and passes when
+only that category is allowed. Compiler formatting passes.
+
 ## Core macros on the Pants build (light-cljs-611)
 
 The Pants build expands core macro calls in Rust
@@ -559,8 +615,9 @@ depend on the local zone. Original payloads remain unchanged.
 Date's default string and time zone remain engine/host dependent.
 The compiler reader still rejects metadata directly on a `#js` source literal;
 metadata on surrounding forms, payloads and API-created descriptors is retained.
-The EDN reader's `#inst`, `#uuid` and `#queue` value services, and code-profile
-namespace resolution, remain separate unsupported boundaries. `#queue` source
+The EDN reader's `#inst`, `#uuid` and `#queue` value services remain
+separate unsupported boundaries. Code-profile namespace resolution is supported
+by the compile-time runtime (light-cljs-612). `#queue` source
 syntax expands to an `into` form before macro input; an explicit queue descriptor
 can also originate from `PersistentQueue.EMPTY` in a macro unit. Ordinary host
 arrays and objects, including frozen objects, still produce located non-form
@@ -1091,9 +1148,10 @@ including when their builtin handlers come from another task's table. Native
 `#js` values and cross-task builtin identity are now supported by the explicit
 compiler literal forms above. Custom
 handlers for those names can return supported native data. Code-profile
-`cljs.core/read-string` and its namespace qualification remain unsupported;
-the new services expose the data profiles used by `cljs.reader` and
-`clojure.edn`. Native `merge` supplies the facade's option-map operations.
+`cljs.core/read-string` now uses the bounded reader with the macro's namespace,
+aliases, refers, exclusions and lexical scope (light-cljs-612). The data profiles
+used by `cljs.reader` and `clojure.edn` retain their own options. Native `merge`
+supplies the facade's option-map operations.
 Legacy engines and emitted applications retain their original adapters and
 builtin literals.
 
