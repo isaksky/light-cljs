@@ -288,6 +288,80 @@ diagnostics; the engine-free configuration retains the existing test
 enumeration lint. Diagnostic isolation passes with only the previously
 documented engine and feature-specific test categories allowed.
 
+### Remaining runtime and compiler groups (light-cljs-619, 2026-10-30)
+
+The Pants build supports transformed `sequence` inputs, completion and multiple
+collections, preserving the input identity of the one-argument form. Sequence
+reducer call members are read before their source arguments; `map-indexed`
+runs its mapper before reading the reducer's call member. Separate
+traversals keep separate reducer state. Map selection and updates, predicate
+combinators, grouping, frequencies, scalar conversions, parsing, hashing and
+array helpers use the ordinary runtime contracts. Scalar and array helpers
+reuse the canonical runtime source units rather than a second implementation.
+Non-map key/value projections remain unfinished: mapping their entries eagerly
+does not preserve the reference's separate head and tail demand.
+Unsupported macro results identify their category and container path without
+calling getters to classify functions. Existing positional-literal holes still
+export as nil; compiler data readers continue to reject undefined.
+
+Definition groups retain prior conditional products and completed siblings,
+respect `defonce`, and retain a failed owner's error. Their products use the
+shared initializer, so pooled demands do not replay initializer effects.
+Compiler reads carry their declaration location and retain cycle paths; public
+root properties keep ordinary JavaScript behavior. Library-free regressions
+cover these contracts, including publication at 1, 2, 4 and 8 threads.
+
+Fresh compilations reuse only the fixed runtime's immutable compiled code.
+Heaps, globals, task state and execution controls remain separate; a regression
+checks code identity, independent globals and rejection of cross-heap handles.
+On the active test thread, a sample of the previously long cache sweep put
+1102 of 1379 samples in runtime construction. The cache-boundary sweep
+completes below nextest's cutoff; warning-order accounting remains unfinished.
+
+Pants task views count as scheduler workers and report zero worker isolates.
+Existing worker and cache tests check that distinction while retaining every
+V8 worker-isolate assertion. The macro-free tests also assert Pants' additional
+proven macro-free function and its independent admission of shared-runtime
+jobs. No execution or artifact assertions, resource limits or test gates were
+relaxed.
+
+At product/test tree `ee6d3a3a` on `14c68c44`, the full Pants suite at 8 test
+threads changes from **2114 run, 1934 passed, 180 failed** to **2126 run,
+1980 passed, 146 failed**; both skip 105 tests. Thirty-four baseline failures
+are fixed, twelve new tests pass, and there are no new failing names. An
+intermediate full run had two additional failures: the recursive-expansion
+budget check and the worker steady-memory check (the latter hit its JavaScript
+session deadline). Both pass alone and in the final full run. The exact 146
+remaining signatures and the intermediate check names are recorded in
+**light-cljs-625**. Protocol values and predicates
+remain owned by 592, large `doseq` by 620/621, and missing constructors and
+related core functions by 623.
+
+The regenerated seed-42 200k project builds without cache at 1 thread with
+both release compilers. All three application files compare byte for byte;
+`workload.main.js` keeps SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+Both programs print `530807` with default arguments and `484264` for `42 3`,
+matching the generated Babashka reference. These are output checks, not
+compiler performance measurements.
+
+The final V8 full suite passes 2147 of 2148 tests, with only the known
+`playground_crate_checks_for_wasm32` workspace failure (109 skipped).
+Both mixed builds pass their library and `bbp_macros` suites completely:
+Pants+QuickJS has 659 passes and V8+Pants has 702. The engine's 2217 tests and
+seven doctests pass; these results are reused after changes confined to the
+compiler runtime, root tests and documentation.
+
+Verification uses macOS aarch64, Rust 1.99.1, Node 26.12.1, four Cargo build
+jobs, eight compiler test threads and three engine test threads. Feature
+combinations run sequentially. Both formatting checks and strict V8 Clippy
+pass. Strict Pants Clippy stops at eight existing engine diagnostics; strict
+engine Clippy has nine. Allowing only `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` passes the
+engine check; Pants additionally needs the two existing feature-specific
+unused variables and `execution.rs`'s `unused_enumerate_index` allowance.
+The engine-free check passes allowing only that same enumeration lint.
+
 ## Core macros on the Pants build (light-cljs-611)
 
 The Pants build expands core macro calls in Rust
