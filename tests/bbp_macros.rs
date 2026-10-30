@@ -7591,6 +7591,24 @@ fn native_protocol_redeclaration_identity_matches_quickjs_at_all_threads() {
     );
 }
 
+/// The sequences the reference-typed constructors make (`butlast`, `drop`,
+/// `list*`, `keys`, `rseq`, `repeat`, map, string and chunked seqs) are
+/// exported from a macro as the QuickJS reference exports them, a `Repeat`
+/// and a `ChunkedCons` with their nil metadata (light-cljs-592).
+#[test]
+fn native_reference_typed_sequences_export_like_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defmacro m [] (list (quote quote) [(butlast [1 2 3]) (drop 1 [1 2 3]) (drop 1 {:a 1 :b 2}) (list* 1 2 [3])
+            (keys {:a 1}) (vals {:a 1}) (rseq [1 2]) (repeat 1 :z) (rest (repeat 3 :w)) (seq {:a 1}) (drop 2 (range 5))
+            (seq "ab") (rseq (sorted-map 1 2)) (take 3 (repeat :x)) (repeat 2 :y) (seq (map inc (range 3)))
+            (seq (vec (range 40))) (seq (concat (range 3) [4])) (rest (seq (map inc (range 3)))) (seq (filter odd? (range 5)))]))
+      (js/console.log (pr-str (m)))"#,
+        "[(1 2) (2 3) ([:b 2]) (1 2 3) (:a) (1) (2 1) (:z) (:w :w) ([:a 1]) (2 3 4) (\"a\" \"b\") ([1 2]) (:x :x :x) (:y :y) \
+(1 2 3) (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39) \
+(0 1 2 4) (2 3) (1 3)]\n",
+    );
+}
+
 /// A defprotocol a macro expands to, and one in a macro's body, which
 /// defines the protocol when the macro runs (light-cljs-592).
 #[test]

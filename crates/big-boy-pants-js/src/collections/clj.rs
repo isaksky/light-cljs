@@ -1846,9 +1846,22 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                     continue;
                 };
                 let (rebuild, children) = match f.body() {
-                    FormBody::Lazy(_) | FormBody::Cons(_) => {
-                        let meta = match f.body() {
-                            FormBody::Cons(c) => c.has_metadata(),
+                    // The reference's `Repeat` and `ChunkedCons` have metadata, nil,
+                    // as a `LazySeq` does.
+                    body if matches!(body, FormBody::Lazy(_) | FormBody::Cons(_))
+                        || matches!(
+                            form::object_reference_type(&f),
+                            Some("repeat" | "chunked-cons")
+                        ) =>
+                    {
+                        let meta = match body {
+                            FormBody::Cons(c) => {
+                                c.has_metadata()
+                                    || matches!(
+                                        form::object_reference_type(&f),
+                                        Some("repeat" | "chunked-cons")
+                                    )
+                            }
                             _ => true,
                         };
                         match seq_items(heap, "seq", &v) {

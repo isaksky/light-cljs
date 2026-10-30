@@ -754,6 +754,11 @@ impl FormObject {
         object
     }
 
+    /// The QuickJS reference's type where the body alone does not tell it.
+    pub(crate) fn brand(&self) -> Brand {
+        self.brand
+    }
+
     pub(crate) fn is_sorted(&self) -> bool {
         self.sorted
     }
@@ -1666,6 +1671,11 @@ pub(crate) fn new_sequence(
 /// non-form).
 pub(crate) fn reference_type(heap: &Heap, value: &Value) -> Option<&'static str> {
     let f = form_object(heap, &unwrap(heap, value.clone()))?;
+    object_reference_type(&f)
+}
+
+/// [`reference_type`] of a form object.
+pub(crate) fn object_reference_type(f: &FormObject) -> Option<&'static str> {
     if let Some(name) = f.brand.name() {
         return Some(name);
     }
@@ -1735,7 +1745,7 @@ pub(crate) fn with_brand(
     let brand = match name {
         Value::String(s) => Brand::ALL
             .iter()
-            .find(|(_, n)| !n.is_empty() && s.to_string() == *n)
+            .find(|(_, n)| !n.is_empty() && *s == *n)
             .map(|(b, _)| *b),
         _ => None,
     }
