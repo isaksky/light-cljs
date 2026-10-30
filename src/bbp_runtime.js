@@ -85,6 +85,14 @@ const decl = (() => {
   // that partition blocks host/default fallback for a missing core marker,
   // as protocolMasks/satisfies in the shared runtime do.
   const partition0 = new Set('IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref IDerefWithTimeout IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable ISequential IList IRecord IReversible ISorted IPrintWithWriter IWriter'.split(' '));
+  // The second partition does the same for its protocols. Both come from the
+  // legacy runtime's fixed mask ABI (`protocolMaskNames`): a protocol's
+  // partition property and bit, a repeated name taking its last position.
+  // Built on first use, as nearly every task needs neither.
+  let maskTable = null;
+  const mask = name => (maskTable ??= new Map([...partition0, ...'IPrintWithWriter IPending IWatchable IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IMultiFn IChunkedSeq IChunkedNext IComparable INamed ICloneable IAtom IReset ISwap IIterable IDrop'.split(' ')].map((n, i) =>
+    [n, ['cljs$lang$protocol_mask$partition' + (i >> 5) + '$', 1 << (i % 32)]]))).get(name);
+  const inPartition1 = name => mask(name)?.[0] === 'cljs$lang$protocol_mask$partition1$';
   let order = 0, frontier = Infinity, version = 0;
   const table = (key, name, arity) => {
     let t = tables.get(key);
@@ -335,6 +343,10 @@ const decl = (() => {
     if(ownMethod(__rt.formValue(x),key,0)!==undefined)return true;
     const t = methodTable(key, 0);
     resolve(t, x);
+    // A host object implements a protocol directly only as a mutable
+    // type's instance, or a Promise: unless the table extends one, its tag
+    // and prototype are not read.
+    if (!t.mutable && t.promise === undefined && __rt.structTypeOf(x) === null && __rt.formKind(__rt.formValue(x)) === null) return false;
     const direct = directKey(x);
     return direct !== null && __rt.getOr(t.map, direct, null) !== null;
   };
@@ -349,6 +361,34 @@ const decl = (() => {
     // bundles and overlays add direct markers without changing that mask.
     if (views.get(ty)?.mask0) return false;
     return satisfies(key,x);
+  };
+  // Whether the declaration of the struct `x`'s type set the mask partition
+  // of the core protocol `name`, which the legacy `satisfies` reads before a
+  // host-type or default extension. (A mutable type's instance has the
+  // legacy mask properties on its prototype.)
+  const masked = (name, x) => {
+    const p0 = partition0.has(name);
+    if (!p0 && !inPartition1(name)) return false;
+    declare(x);
+    const ty = __rt.structTypeOf(x), info = ty === null ? undefined : views.get(ty);
+    return info !== undefined && (p0 ? info.mask0 : info.mask1);
+  };
+  // The legacy `protocol[nativeType(x)] || protocol._`: an extension of the
+  // protocol `key` to the JavaScript type of `x` (every object, a form or a
+  // struct too, is "object") or `default`, never a type's own. Demand runs
+  // as dispatch's does, and the table is read after it.
+  const extended = (key, x) => {
+    const t = methodTable(key, 0);
+    declare(x);
+    if (t.version !== version || t.frontier !== frontier) build(t);
+    demandFor(t.protocol, x);
+    if (t.version !== version || t.frontier !== frontier) build(t);
+    return (__rt.getOr(t.map, hostType(x), null) ?? __rt.getOr(t.map, '_', null)) !== null;
+  };
+  // The legacy `nativeType`: a struct type is a constructor function there.
+  const hostType = x => {
+    const value = __rt.formValue(x);
+    return value == null ? 'null' : Array.isArray(value) ? 'array' : __rt.formKind(value) === 'type' ? 'function' : typeof value;
   };
   // Owned core implementations precede object/default extensions. Explicit
   // extensions of the receiver's native type still replace that implementation.
@@ -426,19 +466,26 @@ const decl = (() => {
     const sample = __rt.structNew(ty), record = __rt.formKind(sample) === 'record';
     const mutableFields = __rt.structState(sample) !== 0;
     const mask0 = record || specs.some(([name, arity]) => arity === 0 && partition0.has(name));
+    const mask1 = record || specs.some(([name, arity]) => arity === 0 && inPartition1(name));
     // Keep one compiler-munged member per declared field: multiple fields
     // may share a member, and property enumeration may reorder names.
     // Raw call/apply use the type's declared IFn entries. Protocol extensions
     // do not replace those entries or install JavaScript callable members.
     // `installs` are the later installations into the type (`extend`).
     const ifn = specs.filter(s=>s[0]==='IFn/-invoke').map(s=>[s[1],s[2],s[4]!=null,s[3]??s[2]]);
-    const info = {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), memberFunctions: new Map(), ifn, installs: [], declaring: true, mutable, mutableFields, record, mask0};
+    const info = {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), memberFunctions: new Map(), ifn, installs: [], declaring: true, mutable, mutableFields, record, mask0, mask1};
     views.set(ty, info);
     declared = __rt.assoc(declared, ty, true);
     if (mutable) {
       view.__lightNativeType = ty;
       view.prototype.__lightNativeType = ty;
       view.prototype[TYPE_KEY] = ty;
+      // The declared protocols' mask bits, where the legacy instance's
+      // prototype has them, for `satisfies?` to read as it does there.
+      for (const [name, arity] of specs) {
+        const bits = arity === 0 ? mask(name) : undefined;
+        if (bits !== undefined) view.prototype[bits[0]] = (view.prototype[bits[0]] ?? 0) | bits[1];
+      }
     }
     if (mutable || mutableFields) {
       mutableTypes.add(ty);
@@ -678,7 +725,7 @@ const decl = (() => {
   return {makeBundle, productGetter, index, reserve: n => { const base = bundleCount; bundleCount += n; return base; },
     extend, extendInstance, inheritInstance:(x,parent)=>instances.set(x,instances.get(parent)),
     instanceMethods:instances,
-    method, satisfies, implementsDirectly, predicate, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
+    method, satisfies, implementsDirectly, predicate, masked, mask, extended, hostType, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
     callable, invokeIFn, applyIFn, callMember, borrowedIFn,
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
@@ -1536,6 +1583,15 @@ const native = (() => {
   const chain = (xs, test) => { if (xs.length === 0) arity(0); for (let i = 1; i < xs.length; i++) if (!test(val(xs[i - 1]), val(xs[i]))) return false; return true; };
   const fix = x => x >= 0 ? Math.floor(x) : Math.ceil(x);
   const multiplyInt = Math.imul;
+  // `min`/`max`: one argument is returned as it is; otherwise the legacy
+  // fold, where a NaN operand (after JavaScript coercion) wins.
+  const extremum = test => (...xs) => {
+    if (xs.length === 1) return xs[0];
+    const pick = (a, b) => isNaN(a) ? a : isNaN(b) ? b : test(a, b) ? a : b;
+    let value = pick(val(xs[0]), val(xs[1]));
+    for (let i = 2; i < xs.length; i++) value = pick(value, val(xs[i]));
+    return value;
+  };
   const bitOp = op => (x,y,...more) => {
     let result=op(val(x),val(y));
     for(const value of more)result=op(result,val(value));
@@ -2629,7 +2685,7 @@ const native = (() => {
     Cons:function(metadata,head,tail){return __rt.cljWithMeta(__rt.cljCons(head,tail),metadata);},
     ensureReduced:x=>__rt.cljIsReduced(x)?x:__rt.cljReduced(x),
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
-    imul:(a,b)=>multiplyInt(val(a),val(b)),
+    imul:(a,b)=>multiplyInt(val(a),val(b)), min:extremum((a,b)=>a<b), max:extremum((a,b)=>a>b),
     rotateLeft:(x,d)=>(val(x)<<val(d))|(val(x)>>>(32-val(d))),
     bitOr:bitOp((x,y)=>x|y),bitAnd:bitOp((x,y)=>x&y),bitXor:bitOp((x,y)=>x^y),bitAndNot:bitOp((x,y)=>x&~y),
     bitNot:x=>~val(x),bitClear:(x,n)=>val(x)&~(1<<val(n)),bitFlip:(x,n)=>val(x)^(1<<val(n)),
@@ -2947,8 +3003,208 @@ const native = (() => {
   for (const [name, key] of [['Keyword','keyword'],['Symbol','symbol'],['PersistentVector','vector'],
     ['PersistentArrayMap','map'],['PersistentHashMap','map'],['PersistentHashSet','set'],['List','list'],['EmptyList','empty-list']])
     decl.coreKeys.set(core[name], key);
+  // Protocol values and `satisfies?`/`implements?` (light-cljs-592;
+  // docs/native-macros.md, "Protocol values and predicates").
+  const protocols = (() => {
+    // A protocol's value is one function per protocol name for the whole
+    // compilation: the first task to need it publishes it in the shared
+    // members cell under its name, beside the entry from the function back
+    // to the name. Only a value found there is a protocol. The lookup is by
+    // identity, never user equality, and no other frozen object qualifies.
+    const local = new Map();
+    const value = name => {
+      let p = local.get(name);
+      if (p !== undefined) return p;
+      let candidate;
+      for (;;) {
+        const current = __rt.atomLoad(rawMembersCell);
+        const found = current === null ? undefined : __rt.getOr(current, 'protocol:' + name, undefined);
+        if (found !== undefined) { p = found; break; }
+        if (candidate === undefined) candidate = function () {};
+        const next = __rt.assoc(__rt.assoc(current === null ? __rt.map() : current, 'protocol:' + name, candidate), candidate, name);
+        if (Object.is(__rt.atomCas(rawMembersCell, current, next), current)) { p = candidate; break; }
+      }
+      local.set(name, p);
+      return p;
+    };
+    const nameOf = p => {
+      if (typeof p !== 'function') return undefined;
+      const current = __rt.atomLoad(rawMembersCell);
+      const name = current === null ? undefined : __rt.getOr(current, p, undefined);
+      return typeof name === 'string' ? name : undefined;
+    };
+    // A program protocol's name is qualified (`ns/P`), a core one's is not.
+    const isCore = name => name.indexOf('/') < 0;
+    // The core protocols, read through `core` (`known`), built on first use.
+    let coreNames = null;
+    const known = name => (coreNames ??= new Set('Inst IUUID ASeq IDerefWithTimeout INamed IMultiFn IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IEncodeJS IEncodeClojure IChunk IChunkedNext IDrop IPending Fn IList IMapEntry IFind ISorted IChunkedSeq IRecord ICloneable IPrintWithWriter IWriter IReduce IKVReduce IVector IMap ICollection IEmptyableCollection ISet IStack IReversible IComparable IIterable IHash IEquiv IFn ISeqable ISeq INext ICounted IIndexed ILookup ISequential IAssociative IMeta IWithMeta IDeref IAtom IReset ISwap IVolatile IWatchable'.split(' '))).has(name);
+    // The core protocols each runtime-owned kind implements natively, as the
+    // legacy runtime's type of that kind does (`builtinCoreImplementation`).
+    // A kind standing for several legacy types answers the protocols they
+    // share and fails explicitly on the others (`unsure`).
+    // Built on first use: most tasks never ask.
+    let tables = null;
+    const built = () => tables ??= build();
+    const build = () => {
+      const native = new Map(), unsure = new Map();
+      const kinds = (tags, names, doubtful = '') => {
+        for (const tag of tags.split(' ')) {
+          native.set(tag, new Set(names.split(' ')));
+          if (doubtful !== '') unsure.set(tag, new Set(doubtful.split(' ')));
+        }
+      };
+      const seqBase = 'IPrintWithWriter IReduce ICollection IEmptyableCollection ISeqable ISeq INext ISequential IMeta IWithMeta';
+      kinds('keyword', 'INamed IPrintWithWriter IComparable IHash IEquiv IFn');
+      kinds('symbol', 'INamed IPrintWithWriter IComparable IHash IEquiv IFn IMeta IWithMeta');
+      kinds('vector', 'IEditableCollection IDrop IFind ICloneable IPrintWithWriter IReduce IKVReduce IVector ICollection IEmptyableCollection IStack IReversible IComparable IIterable IHash IEquiv IFn ISeqable ICounted IIndexed ILookup ISequential IAssociative IMeta IWithMeta');
+      kinds('map-entry', 'IDrop IMapEntry IFind IPrintWithWriter IReduce IVector ICollection IEmptyableCollection IStack IReversible IComparable IIterable IHash IEquiv IFn ISeqable ICounted IIndexed ILookup ISequential IAssociative IMeta IWithMeta');
+      // Array and hash maps are one kind; only array maps implement IDrop.
+      kinds('map', 'IEditableCollection IFind ICloneable IPrintWithWriter IReduce IKVReduce IMap ICollection IEmptyableCollection IIterable IHash IEquiv IFn ISeqable ICounted ILookup IAssociative IMeta IWithMeta', 'IDrop');
+      kinds('sorted-map', 'IFind ISorted ICloneable IPrintWithWriter IReduce IKVReduce IMap ICollection IEmptyableCollection IReversible IIterable IHash IEquiv IFn ISeqable ICounted ILookup IAssociative IMeta IWithMeta');
+      kinds('set', 'IEditableCollection ICloneable IPrintWithWriter ICollection IEmptyableCollection ISet IIterable IHash IEquiv IFn ISeqable ICounted ILookup IMeta IWithMeta');
+      kinds('empty-list', 'IList ICloneable IStack IIterable IHash IEquiv ICounted ' + seqBase);
+      kinds('list', 'ASeq IList ICloneable IStack IIterable IHash IEquiv ICounted ' + seqBase);
+      kinds('cons', 'ASeq IList ICloneable IStack IIterable IHash IEquiv ' + seqBase);
+      kinds('lazy-seq', 'IPending IIterable IHash IEquiv ' + seqBase);
+      kinds('array-seq', 'ASeq IDrop ICloneable IReversible IIterable IHash IEquiv ICounted IIndexed ' + seqBase);
+      // Counted and uncounted sequences of other kinds: indexed, chunked,
+      // map, key/value, reversed, set and iterated sequences and ranges.
+      kinds('sequence', 'IIterable IHash IEquiv ICounted ' + seqBase, 'ASeq IChunkedNext IDrop IChunkedSeq ICloneable IReversible IIndexed');
+      kinds('sequence+chunked', 'IChunkedNext IChunkedSeq IHash IEquiv ' + seqBase, 'ASeq IDrop ICloneable IReduce IIterable ICounted IIndexed');
+      kinds('uncounted-sequence', seqBase, 'IPending ICloneable IStack IIterable IHash IEquiv ICounted');
+      kinds('uncounted-sequence+chunked', 'IChunkedNext IChunkedSeq ICloneable IIterable IHash IEquiv ' + seqBase);
+      kinds('queue', 'ICloneable IPrintWithWriter ICollection IEmptyableCollection IStack IIterable IHash IEquiv ISeqable ISeq INext ICounted ISequential IMeta IWithMeta');
+      kinds('atom', 'IPrintWithWriter IHash IEquiv IMeta IDeref IAtom IWatchable');
+      kinds('reduced', 'IPrintWithWriter IHash IEquiv IDeref');
+      kinds('multifn', 'INamed IMultiFn IPrintWithWriter IHash IEquiv IFn');
+      kinds('var', 'Fn IPrintWithWriter IHash IEquiv IFn IMeta IWithMeta IDeref');
+      // A record's own protocols (the legacy runtime owns records as maps).
+      kinds('record', 'IRecord ICloneable IPrintWithWriter IKVReduce IMap ICollection IIterable IHash IEquiv ISeqable ICounted ILookup IAssociative IMeta IWithMeta');
+      // The legacy protocol objects' own types (`IMeta.function = true`, ...).
+      const defaults = new Map([['IMeta','function'],['Fn','function'],['ICounted','null'],['IHash','_'],['IEquiv','_']]);
+      let dispatchKeys = __rt.map();
+      for (const k of ['list','empty-list','sequence','uncounted-sequence','vector','map-entry','map','set','keyword','symbol','lazy-seq','cons','reduced'])
+        dispatchKeys = __rt.assoc(dispatchKeys, k, k);
+      const munging = {'-':'_',':':'_COLON_','+':'_PLUS_','>':'_GT_','<':'_LT_','=':'_EQ_','~':'_TILDE_','!':'_BANG_','@':'_CIRCA_','#':'_SHARP_',"'":'_SINGLEQUOTE_','"':'_DOUBLEQUOTE_','%':'_PERCENT_','^':'_CARET_','&':'_AMPERSAND_','*':'_STAR_','|':'_BAR_','{':'_LBRACE_','}':'_RBRACE_','[':'_LBRACK_',']':'_RBRACK_','/':'$','\\':'_BSLASH_','?':'_QMARK_'};
+      return {native, unsure, defaults, dispatchKeys, munging, markers: new Map()};
+    };
+    const unsupportedKind = what => { throw new Error('unsupported operation: native macro runtime satisfies? of ' + what); };
+    // The kind of a value the runtime owns, or null: a primitive, host
+    // object, function, struct or type.
+    const kindOf = x => {
+      const v = val(x);
+      if (v === null || v === undefined || typeof v !== 'object' && typeof v !== 'function') return null;
+      if (arraySeqs.has(v)) return 'array-seq';
+      if (__rt.cljIsAtom(x)) return 'atom';
+      if (isVar(x)) return 'var';
+      if (multi.is(x)) return 'multifn';
+      const k = __rt.formKind(v);
+      if (k === null || k === 'struct' || k === 'type') return null;
+      if (k === 'record') return k;
+      if (k === 'compiler-literal') {
+        const literal = __rt.formName(v);
+        if (literal === 'regex' || literal === 'js-array' || literal === 'js-object') return null;
+        return literal === 'queue' ? literal : unsupportedKind('compiler literal ' + literal);
+      }
+      const key = __rt.cljDispatch(built().dispatchKeys, x);
+      if (key === null) return unsupportedKind(k);
+      if ((key === 'map' || key === 'set') && !__rt.cljIsEditable(x)) return key === 'map' ? 'sorted-map' : unsupportedKind('sorted set');
+      return (key === 'sequence' || key === 'uncounted-sequence') && __rt.cljChunkedSeq(x) ? key + '+chunked' : key;
+    };
+    // A JavaScript object or function the legacy runtime would read the
+    // protocol's properties of: getters and Proxy traps run as they do there.
+    const host = (v, tag) => tag === null && v !== null && (typeof v === 'object' || typeof v === 'function')
+      && __rt.formKind(v) === null && !__rt.cljIsAtom(v);
+    const munge = s => Array.from(s, c => built().munging[c] ?? c).join('');
+    // The legacy marker property of a protocol (`protocolSlot(key, 0)`).
+    const marker = key => {
+      const markers = built().markers;
+      let m = markers.get(key);
+      if (m === undefined) {
+        const slash = key.indexOf('/');
+        m = munge(slash < 0 ? 'cljs.core' : key.slice(0, slash)).replaceAll('.', '$') + '$' + munge(slash < 0 ? key : key.slice(slash + 1)) + '$';
+        markers.set(key, m);
+      }
+      return m;
+    };
+    // `implements?` of a core protocol: its mask bit or marker, then the
+    // value's native implementation (`coreProtocolImplementation`).
+    const implementsCore = (name, x, tag) => {
+      const v = val(x), object = host(v, tag), mask = decl.mask(name);
+      if (object) {
+        if (mask !== undefined && (v[mask[0]] & mask[1])) return true;
+        v[marker(name)];
+      }
+      if (decl.implementsDirectly(name, x)) return true;
+      if (tag !== null) {
+        const {native, unsure} = built();
+        if (native.get(tag)?.has(name)) return true;
+        if (unsure.get(tag)?.has(name)) unsupportedKind(name + ' of ' + tag);
+        return false;
+      }
+      if (object) switch (name) {
+        case 'Inst': case 'IComparable': return v instanceof Date;
+        case 'IFn': Object.getPrototypeOf(v); break;
+        case 'IAtom': v[marker(name)]; break;
+      }
+      return false;
+    };
+    // `satisfies?` of a core protocol: its implementation; else, for a
+    // value the runtime does not own and whose type set no mask in the
+    // protocol's partition, an extension to its JavaScript type or
+    // `default`, or the protocol's own defaults.
+    const satisfiesCore = (name, x) => {
+      const tag = kindOf(x);
+      if (implementsCore(name, x, tag)) return true;
+      if (tag !== null) return false;
+      const v = val(x), mask = decl.mask(name);
+      if (mask !== undefined && (host(v, tag) ? v[mask[0]] : decl.masked(name, x))) return false;
+      const d = built().defaults.get(name);
+      if (d !== undefined && (d === '_' || d === decl.hostType(x))) return true;
+      return decl.extended(name, x);
+    };
+    // A program protocol `key`: its marker, read on a host object as the
+    // legacy `directMethod` does, then the type's own implementation.
+    const implementsProgram = (key, x) => {
+      const v = val(x);
+      if (host(v, kindOf(x))) v[marker(key)];
+      return decl.implementsDirectly(key, x);
+    };
+    const satisfies = (p, x) => {
+      const name = nameOf(p);
+      if (name === undefined) return false;
+      return isCore(name) ? satisfiesCore(name, x) : predicate(p, name, x, false);
+    };
+    const implementsProtocol = (p, x) => {
+      const name = nameOf(p);
+      if (name === undefined) return false;
+      return isCore(name) ? implementsCore(name, x, kindOf(x)) : implementsProgram(name, x);
+    };
+    // `(satisfies? P x)` of the protocol value `p` read under the name
+    // `key` (`protocolPredicate`): the type's own implementation of `key`,
+    // then, unless only that counts, an extension of `p` itself to the
+    // value's JavaScript type (every object's is "object") or `default`.
+    // Read under another name (a Var or local holding the protocol), `p`'s
+    // implementations by types do not count, as in the legacy runtime.
+    const predicate = (p, key, x, direct) => {
+      if (implementsProgram(key, x)) return true;
+      if (direct) return false;
+      const name = nameOf(p) ?? key;
+      const d = isCore(name) ? built().defaults.get(name) : undefined;
+      if (d !== undefined && (d === '_' || d === decl.hostType(x))) return true;
+      return decl.extended(name, x);
+    };
+    // The predicates as values capture nothing of this task, so that a
+    // helper holding one publishes: each call reads the calling task's.
+    core.satisfies = (p, x) => globalThis.__lightNativeRuntime.protocolSatisfies(p, x);
+    core.implements = (p, x) => globalThis.__lightNativeRuntime.protocolImplements(p, x);
+    return {value, known, predicate, satisfies, implementsProtocol};
+  })();
   /* NATIVE_READER */
-  for (const name of [/* CORE_KEYS */]) if (!(name in core)) Object.defineProperty(core,name,{get:unsupported('core.'+name)});
+  // A core protocol's value is the getter of its name, as unsupported
+  // entries are: the runtime builds nothing for either until it is read.
+  const missing = name => function(){return protocols.known(name)?protocols.value(name):unsupported('core.'+name)();};
+  for (const name of [/* CORE_KEYS */]) if (!(name in core)) Object.defineProperty(core,name,{get:missing(name)});
   // Compact identity snapshot before user core writes. Bootstrap data entries
   // have the same order in every task; live/unsupported getters are nonenumerable.
   // Descriptors store an index, never a task-owned function or property table.
@@ -2985,9 +3241,10 @@ const native = (() => {
     nativeCoreBinding:name=>Object.getOwnPropertyDescriptor(core,name),
     nativeInterop:interop,intrinsicRegExp,nativeRegExp,nativeRegExpCall,nativeRegExpMember:function(_,...a){return nativeRegExpCall(intrinsicRegExp)(...a);},nativeConstruct:(C,...a)=>nativeRegExp(C)(...a),declarationReceiver:x=>{decl.demandObject(x);return x;},
     nativeStoreValue:(x,v)=>__rt.structState(x)!==0?v:interop(v),
-    protocol:name=>Object.freeze({name}),
+    protocol:protocols.value,
     protocolMethod:(key,name,arities,viaMetadata)=>decl.method(key,name,arities,viaMetadata===true),
-    protocolPredicate:(protocol,key,x,direct)=>direct?decl.implementsDirectly(key,x):decl.satisfies(key,x),
+    protocolPredicate:protocols.predicate,
+    protocolSatisfies:protocols.satisfies, protocolImplements:protocols.implementsProtocol,
     extendType:(target,specs)=>decl.extend(target,specs),
     extendInstance:decl.extendInstance, reify,
     nativeType:(fields,specs,record,name,view,mutable,ty,fieldMembers)=>decl.type(fields,specs,view,mutable,ty,fieldMembers),

@@ -6679,6 +6679,21 @@ fn native_integer_rotation_matches_quickjs() {
 }
 
 #[test]
+fn native_min_and_max_match_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+      (let [f max g min seen (js/Array.)
+            a (js* "({valueOf(){~{}.push('a'); return 3;}})" seen)
+            b (js* "({valueOf(){~{}.push('b'); return 5;}})" seen)
+            n (+ 0 (max a b 1))]
+        (list 'quote [(max 1 2 3) (min 1 2 3) (max 4) (min "x") (f 1 5 2) (g 4 2 8) (min 2 (js/parseFloat "x") 1)
+                      (apply min [3 1 2]) (apply max 1 [7 2]) (max 1.5 -2) (min "b" "a") n (vec seen)])))
+      (js/console.log (pr-str (probe)))"#,
+        "[3 1 4 \"x\" 5 2 ##NaN 1 7 1.5 \"b\" 5 [\"a\" \"b\" \"a\" \"b\" \"b\" \"b\" \"b\"]]\n",
+    );
+}
+
+#[test]
 fn native_bit_operations_match_quickjs() {
     assert_native_matches_legacy(
         r#"(defmacro probe []
@@ -6767,6 +6782,314 @@ fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
     assert_eq!(
         program_output(&reference),
         "[[[0 1 0 1 true false] [10 11] 5 8 13] [[1 2 1 2 true false] [11 12] 10 16 14]]\n"
+    );
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for threads in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert!(
+            reference == build(false, threads, 0).0,
+            "QuickJS reference: {threads} threads"
+        );
+        for seed in 1..=seeds {
+            let (actual, helpers) = build(true, threads, seed);
+            assert!(
+                reference == actual,
+                "{threads} threads, seed {seed}: {}",
+                program_output(&actual)
+            );
+            assert!(helpers.published > 0, "{helpers:?}");
+            assert_eq!(helpers.per_task, 0, "{helpers:?}");
+        }
+    }
+}
+
+/// Every core protocol, as a value (`ps`) and to `satisfies?`/`implements?`
+/// saved as functions (light-cljs-592).
+const CORE_PROTOCOL_VALUES: &str = "[Inst IUUID ASeq IDerefWithTimeout INamed IMultiFn \
+    IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector \
+    ITransientSet IEncodeJS IEncodeClojure IChunk IChunkedNext IDrop IPending Fn IList IMapEntry IFind \
+    ISorted IChunkedSeq IRecord ICloneable IPrintWithWriter IWriter IReduce IKVReduce IVector IMap \
+    ICollection IEmptyableCollection ISet IStack IReversible IComparable IIterable IHash IEquiv IFn \
+    ISeqable ISeq INext ICounted IIndexed ILookup ISequential IAssociative IMeta IWithMeta IDeref IAtom \
+    IReset ISwap IVolatile IWatchable]";
+
+#[test]
+fn native_satisfies_of_a_core_protocol_matches_quickjs() {
+    assert_native_matches_legacy(
+        "(defmacro check-meta [] (satisfies? IWithMeta [])) (js/console.log (check-meta))",
+        "true\n",
+    );
+    assert_native_matches_legacy(
+        "(defmacro probe [] [(satisfies? IWithMeta []) (implements? IWithMeta []) (satisfies? IWithMeta 1) \
+         (implements? ICounted nil) (satisfies? ICounted nil) (satisfies? IHash (js-obj)) (implements? IHash (js-obj)) \
+         (satisfies? IFn :k) (satisfies? Fn inc) (implements? Fn inc) (satisfies? IDeref (atom 1))]) \
+         (js/console.log (pr-str (probe)))",
+        "[true true false false true true false true true false true]\n",
+    );
+}
+
+/// Each core protocol against values of every kind the runtime owns,
+/// primitives, functions, host objects, structs (with protocols in either
+/// mask partition or none), records, mutable types, multimethods, Vars and
+/// types: `s` satisfies and implements, `+` satisfies only, `.` neither.
+#[test]
+fn native_core_protocol_predicate_matrix_matches_quickjs() {
+    let source = format!(
+        "(deftype T [a]) (deftype C [a] ICounted (-count [_] 1)) (deftype W [a] IPending (-realized? [_] true)) \
+         (deftype F [a] IFind (-find [_ k] nil)) (defrecord R [a]) (deftype M [^:mutable a]) \
+         (def some-var 1) \
+         (defmacro probe [] \
+           (let [ps {CORE_PROTOCOL_VALUES} s satisfies? i implements? \
+                 row (fn [x] (apply str (map (fn [p] (let [a (s p x) b (i p x)] (if a (if b \"s\" \"+\") (if b \"i\" \".\")))) ps)))] \
+             (mapv row [nil false 0 \"s\" :k 'sym [] [1] (first {{:a 1}}) #{{}} #{{1}} '() '(1) (cons 1 nil) (cons 1 [2]) \
+                        (list 1 2) (lazy-seq nil) (map inc [1]) (concat [1] [2]) (seq (js/Array. 1 2)) (range) \
+                        (sorted-map 1 2) (atom 1) (reduced 1) (fn [] 1) inc (js/Array.) (js-obj) (js/Date.) #\"a\" \
+                        (T. 1) (C. 1) (W. 1) (F. 1) (->R 1) (M. 1) (var some-var) T]))) \
+         (js/console.log (apply str (interpose \"\\n\" (probe))))"
+    );
+    assert_native_matches_legacy(
+        &source,
+        ".......................................++....+............
+.......................................++.................
+.......................................++.................
+.......................................++.................
+....s.....................s..........s.sss................
+....s.....................s..........s.sss........ss......
+......s.........s....s...ss.sss.ss.ssssssss..sssssss......
+......s.........s....s...ss.sss.ss.ssssssss..sssssss......
+................s...ss....s.s.s.ss.ssssssss..sssssss......
+......s..................ss.....sss...sssss..s.s..ss......
+......s..................ss.....sss...sssss..s.s..ss......
+...................s.....ss.s...ss.s..sss.ssss..s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+..s................s.....ss.s...ss.s..sss.sss...s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+...............s.......s.ss.s...ss....sss.sss...s.ss......
+.....................ss..ss.ss.sss..s.sssss..s.s.sss......
+..........................s............ss.........s.ss...s
+..........................s............ss...........s.....
+..................+....................++.........+.......
+..................+....................++.........+.......
+.......................................++.................
+.......................................++.................
+s....................................s.++.................
+.......................................++.................
+.......................................++.................
+.............................................s............
+.................s.....................++.................
+.....................s.................++.................
+........................sss..s.ss.....sss.s..s.s.sss......
+.......................................++.................
+..................s.......s............sss........sss.....
+..................+....................++.........+.......
+",
+    );
+}
+
+/// Sequences and maps of a kind that stands for several QuickJS-reference
+/// types answer the protocols those types share, and fail explicitly on the
+/// others rather than guess.
+#[test]
+fn native_shared_sequence_and_map_protocols_match_quickjs() {
+    assert_native_matches_legacy(
+        "(defmacro probe [] \
+           (let [ps [IPrintWithWriter IReduce ICollection IEmptyableCollection ISeqable ISeq INext ISequential IMeta \
+                     IWithMeta IVector IMap ISet IFn ILookup IAssociative IDeref IList IRecord IMapEntry ISorted] \
+                 s satisfies? i implements? \
+                 row (fn [x] (apply str (map (fn [p] (let [a (s p x) b (i p x)] (if a (if b \"s\" \"+\") (if b \"i\" \".\")))) ps))) \
+                 maps [IEditableCollection IFind ICloneable IKVReduce IMap IIterable IHash IEquiv ICounted ISeq IVector]] \
+             [(mapv row [(seq [1 2]) (rest [1 2]) (next [1 2 3]) (seq {:a 1}) (keys {:a 1}) (vals {:a 1}) (rseq [1 2]) \
+                         (range 3) (seq (vec (range 40))) (iterate inc 0) (seq #{1}) (seq \"ab\")]) \
+              (mapv (fn [m] (apply str (map (fn [p] (if (s p m) \"s\" \".\")) maps))) \
+                    [{} {:a 1} (apply hash-map [:a 1]) (zipmap (range 9) (range 9))])])) \
+         (js/console.log (pr-str (probe)))",
+        "[[\"ssssssssss...........\" \"ssssssssss...........\" \"ssssssssss...........\" \"ssssssssss...........\" \
+\"ssssssssss...........\" \"ssssssssss...........\" \"ssssssssss...........\" \"ssssssssss...........\" \
+\"ssssssssss...........\" \"ssssssssss...........\" \"ssssssssss...........\" \"ssssssssss...........\"] \
+[\"sssssssss..\" \"sssssssss..\" \"sssssssss..\" \"sssssssss..\"]]\n",
+    );
+    for (value, protocol, kind) in [
+        ("(seq [1 2])", "IReversible", "sequence"),
+        ("(seq {:a 1})", "ASeq", "sequence"),
+        ("(range 3)", "IIndexed", "sequence+chunked"),
+        ("(keys {:a 1})", "IHash", "uncounted-sequence"),
+        ("{:a 1}", "IDrop", "map"),
+    ] {
+        for predicate in ["satisfies?", "implements?"] {
+            let source = format!("(defmacro probe [] ({predicate} {protocol} {value})) (probe)");
+            let mut host = MacroHost::new();
+            host.use_native_macros();
+            let message = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+                .err()
+                .unwrap()
+                .to_string();
+            let expected = format!(
+                "unsupported operation: native macro runtime satisfies? of {protocol} of {kind}"
+            );
+            assert!(message.contains(&expected), "{source}: {message}");
+        }
+    }
+}
+
+/// User extensions of core protocols to host types, `object` and `default`,
+/// and to a type, under each mask partition, before and after the
+/// expansion's frontier and from macro code; program protocols through the
+/// saved predicates; and protocol values saved in Vars, locals and atoms.
+#[test]
+fn native_protocol_extensions_and_saved_protocols_match_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defprotocol P (p [x]))
+      (deftype T [a]) (deftype C [a] ICounted (-count [_] 1)) (deftype W [a] IPending (-realized? [_] true))
+      (defrecord R [a])
+      (defmacro early [] (let [s satisfies?] [(satisfies? ICounted "s") (s ICounted 1) (satisfies? P "s")]))
+      (def e (early))
+      (extend-protocol ICounted string (-count [s] 7) default (-count [_] 9))
+      (extend-protocol IPrintWithWriter object (-pr-writer [o w _] (-write w "obj")))
+      (extend-protocol IIterable default (-iterator [_] nil))
+      (extend-protocol IDrop default (-drop [_ n] nil))
+      (extend-protocol IFind default (-find [_ k] nil))
+      (extend-protocol P string (p [_] 1) object (p [_] 2))
+      (extend-type T IWithMeta (-with-meta [x m] x))
+      (defn install [] (extend-protocol IDeref number (-deref [x] x)))
+      (def P2 IWithMeta) (def Q P) (def saved-core IHash)
+      (defmacro late []
+        (let [s satisfies? i implements? before (satisfies? IDeref 1) _ (install) local-p ICounted]
+          [(satisfies? ICounted "s") (s ICounted 1) (s ICounted :k) (s ICounted [1]) (s ICounted nil)
+           (s IPrintWithWriter (js-obj)) (s IPrintWithWriter (T. 1)) (s IPrintWithWriter (C. 1)) (s IPrintWithWriter [])
+           (s IIterable (T. 1)) (s IIterable (W. 1)) (s IIterable (C. 1)) (s IIterable (->R 1))
+           (s IDrop (->R 1)) (s IFind (->R 1)) (s IFind (C. 1)) (s ICounted (->R 1)) (s ICounted (C. 1))
+           (s P "s") (s P []) (s P :k) (s P (T. 1)) (s P 1) (i P "s") (i P [])
+           (s IWithMeta (T. 1)) (i IWithMeta (T. 1)) (s IWithMeta (C. 1))
+           before (satisfies? IDeref 1) (s IDeref 2) (i IDeref 2)
+           (satisfies? P2 []) (satisfies? P2 "s") (satisfies? Q "s") (satisfies? Q []) (satisfies? Q (T. 1))
+           (satisfies? saved-core []) (satisfies? local-p "s") (satisfies? local-p []) (implements? local-p "s")
+           (= IWithMeta P2) (identical? IHash saved-core) (= P Q) (s @(atom P2) []) (apply satisfies? [IMeta (fn [])])
+           (s ICounted T) (s IMeta T) (s Fn T) (s IFn T)]))
+      (js/console.log (pr-str [e (late)]))"#,
+        "[[false false false] [true true false true true true true false true true false true true false false true \
+true true true true true true false false false true true false false true true false false false true true true \
+true true true false true true true true true true true true false]]\n",
+    );
+}
+
+/// A host object's protocol properties are read as the QuickJS reference
+/// reads them: the mask partition, the marker, then the mask again where
+/// membership fails, each getter once per read; an argument is evaluated
+/// once, before them; and a host object's mask bits count.
+#[test]
+fn native_protocol_predicates_read_host_properties_like_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defprotocol P (p [x]))
+      (extend-protocol P default (p [_] 0))
+      (defmacro probe []
+        (let [log (js/Array.)
+              watch (fn [o k v] (js/Object.defineProperty o k (js-obj "get" (fn [] (.push log k) v))) o)
+              o (reduce (fn [o [k v]] (watch o k v)) (js-obj)
+                        [["cljs$lang$protocol_mask$partition0$" 0] ["cljs$lang$protocol_mask$partition1$" 0]
+                         ["cljs$core$IWithMeta$" nil] ["cljs$core$ICounted$" nil] ["cljs$core$IAtom$" nil]
+                         ["cljs$user$P$" nil]])
+              masked (watch (js-obj) "cljs$lang$protocol_mask$partition0$" 262144)
+              s satisfies? i implements?
+              mark (fn [label] (.push log label))
+              arg (fn [v] (.push log "arg") v)
+              r [(satisfies? IWithMeta (arg o)) (mark "|") (implements? IWithMeta o) (mark "|")
+                 (s ICounted o) (mark "|") (s IAtom o) (mark "|") (s IHash o) (mark "|") (s Inst o) (mark "|")
+                 (satisfies? P o) (mark "|") (implements? P o) (mark "|") (s P o) (mark "|") (i P o) (mark "|")
+                 (s IWithMeta masked) (i IWithMeta masked) (s IMeta masked) (s IHash masked) (s Inst (js/Date.))]]
+          (pr-str [r (vec log)])))
+      (js/console.log (probe))"#,
+        concat!(
+            r#"[[false 5 false 8 false 12 false 17 true 20 false 21 true 23 false 25 true 27 false 29 true true false false true] ["arg" "cljs$lang$protocol_mask$partition0$" "cljs$core$IWithMeta$" "cljs$lang$protocol_mask$partition0$" "|" "cljs$lang$protocol_mask$partition0$" "cljs$core$IWithMeta$" "|" "cljs$lang$protocol_mask$partition0$" "cljs$core$ICounted$" "cljs$lang$protocol_mask$partition0$" "|" "cljs$lang$protocol_mask$partition1$" "cljs$core$IAtom$" "cljs$core$IAtom$" "cljs$lang$protocol_mask$partition1$" "|" "cljs$lang$protocol_mask$partition0$" "cljs$lang$protocol_mask$partition0$" "|" "|" "cljs$user$P$" "|" "cljs$user$P$" "|" "cljs$user$P$" "|" "cljs$user$P$" "|" "cljs$lang$protocol_mask$partition0$" "cljs$lang$protocol_mask$partition0$" "cljs$lang$protocol_mask$partition0$" "cljs$lang$protocol_mask$partition0$" "cljs$lang$protocol_mask$partition0$" "cljs$lang$protocol_mask$partition0$"]]"#,
+            "\n"
+        ),
+    );
+}
+
+/// Protocol values, core and program, published in atoms and in helpers
+/// that other namespaces' macros call, at 1, 2, 4 and 8 threads.
+#[test]
+fn protocol_values_publish_and_match_quickjs_at_all_threads() {
+    let root = temp_dir::TempDir::new("protocol-values");
+    for (file, source) in [
+        (
+            "state.cljs",
+            r#"(ns state)
+          (defprotocol P (p [x]))
+          (deftype T [a] P (p [_] a))
+          (extend-protocol P string (p [_] :s))
+          (def a (atom nil))
+          (def saved P)
+          (def saved-core IWithMeta) (defmulti mm identity)
+          (def protocols (atom [IWithMeta ICounted P IMultiFn]))
+          (def check (let [s satisfies? i implements?] (fn [x] (mapv (fn [q] [(s q x) (i q x)]) @protocols))))
+          (defmacro probe [v]
+            (reset! a saved)
+            (swap! protocols conj saved-core)
+            (list 'quote [(some? @a) (= @a P) (identical? @a P) (identical? saved-core IWithMeta)
+                          (check v) (check (T. 1)) (check "s") (check []) (check mm) (count @protocols)]))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [state :refer [probe]])) (def value (probe 1))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [a] [state :refer [probe]])) (def value (probe nil))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (js/console.log (pr-str [a/value b/value]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |pants, threads, seed| {
+        let mut host = MacroHost::new();
+        if pants {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(threads).unwrap(),
+                stats: Some(&mut stats),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: pants.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("Pants {pants}, {threads} threads, seed {seed}: {e}"));
+        (emit_js(&program), stats.native_helpers)
+    };
+    let (reference, _) = build(false, 1, 0);
+    assert_eq!(
+        program_output(&reference),
+        "[[true true true true [[false false] [false false] [false false] [false false] [false false]] \
+         [[false false] [false false] [true true] [false false] [false false]] \
+         [[false false] [false false] [true false] [false false] [false false]] \
+         [[true true] [true true] [false false] [false false] [true true]] \
+         [[false false] [false false] [false false] [true true] [false false]] 5] \
+         [true true true true [[false false] [true false] [false false] [false false] [false false] [false false]] \
+         [[false false] [false false] [true true] [false false] [false false] [false false]] \
+         [[false false] [false false] [true false] [false false] [false false] [false false]] \
+         [[true true] [true true] [false false] [false false] [true true] [true true]] \
+         [[false false] [false false] [false false] [true true] [false false] [false false]] 6]]\n"
     );
     let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
         .ok()

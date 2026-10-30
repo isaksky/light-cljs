@@ -395,6 +395,75 @@ as the expansion doubles; seven bindings 32 s). light-cljs-622 tracks it.
 
 ## Supported boundary
 
+### Protocol values and predicates (light-cljs-592)
+
+Macro code in the Pants build reads the core protocols (`IWithMeta`,
+`ICounted` and the other 56 that `cljs.core` defines) as values, and calls
+`satisfies?` and `implements?` on them directly, as saved functions
+(`(let [s satisfies?] (s ICounted x))`, `apply`) and with protocol values
+saved in Vars, locals and atoms. The answers are the QuickJS reference's:
+
+- `implements?` of a core protocol counts the value's mask bit or marker (its
+  type's own declaration, or an `extend-type` of that type) and the
+  runtime's own implementation for that kind of value: a vector implements
+  `IWithMeta`, a keyword `IFn`, an atom `IDeref`.
+- `satisfies?` also counts, for a value the runtime does not own (a
+  primitive, function, host object, struct or type; not a collection,
+  sequence, keyword, symbol, record, atom, Var, multimethod or `reduced`)
+  whose type set no mask in the protocol's partition, an extension of the
+  protocol to the value's JavaScript type (`string`, `number`, `function`,
+  `array`, `object`, which every form and struct is there) or `default`, and
+  the reference's own defaults: `IHash` and `IEquiv` of everything, `ICounted`
+  of nil, `Fn` and `IMeta` of functions and types.
+- A program protocol answers as before, except that an extension to `object`
+  now covers forms too, as in the reference. Read under another name (`(def Q
+  P)`, a local), `satisfies?` sees only the protocol's extensions by
+  JavaScript type and `default`, not a type's own implementation, again as the
+  reference does.
+- A bundle's extensions follow the expansion's declaration frontier;
+  extensions that macro code runs are visible at once.
+
+On a host object (a JavaScript object, array or function) the predicates
+read the properties the reference reads, in its order: the protocol's mask
+partition property, its marker property, the native test's own reads
+(`instanceof Date` for `Inst` and `IComparable`, the prototype for `IFn`, the
+`IAtom` marker again), and the mask property once more where membership
+fails. Getters and Proxy traps run once per read, and a host object's mask
+bits count as they do there. A mutable type's host instances carry their
+declared protocols' mask bits on their prototype. Forms, structs and the
+runtime's other values have no such properties to read.
+
+The Pants build has fewer sequence kinds than the reference has types. A
+counted sequence (`(seq [1 2])`, `(seq {:a 1})`, `(rest v)`), a chunked one
+(`(range 3)`, a long vector's `seq`), an uncounted one (`keys`, `vals`,
+`rseq`, `iterate`, a set's `seq`) and a map (array or hash map) each answer
+the protocols all the reference types they stand for share, and throw
+`unsupported operation: native macro runtime satisfies? of P of KIND` for the
+others, such as `IReversible`, `IIndexed` or `ASeq` of a counted sequence and
+`IDrop` of a map. A lazy sequence answers as a `LazySeq` and a list as a
+`List`, including the lazy sequences `repeat` and `drop` of a vector make and
+the lists `butlast` and `list*` make, where the reference makes a `Repeat`,
+an indexed seq and a `Cons`. Values the build cannot make (sorted sets,
+transients, volatiles, delays, functions with metadata) stay unsupported.
+
+A protocol's value is a function, as in the reference, and there is one per
+protocol name for the whole compilation. The first task that reads it
+publishes it in the runtime's shared member table, with an entry from the
+function back to the name, and every task then reads that function. Saved in
+an atom or a helper it publishes like any shareable function, and `=` and
+`identical?` compare it by identity. Only a function found in that table is
+a protocol: the predicates find it by identity, never with user equality or
+hashing, so another function or frozen object is not one (`satisfies?` of it
+is false). A program protocol declared again under the same name keeps its
+value; the reference makes a new one.
+
+`tests/bbp_macros.rs` compares the Pants build with the QuickJS reference on
+each core protocol against every kind of value
+(`native_core_protocol_predicate_matrix_matches_quickjs`), on the shared
+protocols of the merged kinds, on extensions, frontiers and saved protocols,
+on host property reads, and, at 1/2/4/8 threads under seeded scheduling, on
+protocol values published in atoms and helpers.
+
 ### Sharing mutable deftypes (light-cljs-564)
 
 The Pants build shares the identity and current fields of an ordinary
@@ -5033,3 +5102,66 @@ hit its 5 s wall-clock wait once at load average about 30 and passes alone; the
 combined library (374) and `bbp_macros` (222) then pass in a full rerun. Penpot `app.render` still matches the V8 build byte for byte
 at 1 and 4 threads, `app.main` stops at `core.satisfies`, and three
 alternating 200k pairs keep identical outputs printing `484264`.
+
+## Protocol values and predicates: verification (light-cljs-592, 2026-10-30)
+
+The contract is in "Protocol values and predicates (light-cljs-592)" above.
+The same pellet supplies `min` and `max` (one argument returned as it is,
+otherwise the QuickJS reference's fold, where a NaN operand wins), the next
+small gap of the same Penpot macro after `satisfies?`.
+
+Each library-free reduction in `tests/bbp_macros.rs` fails before its fix:
+with master's runtime the direct, matrix and shared-kind reductions stop at
+`unsupported operation: native macro runtime core.satisfies` (`core.Inst`,
+`core.IPrintWithWriter`), the published-protocol reduction at
+`Atom(NotShareable)` (a program protocol's value was a task-owned frozen
+object), and `min`/`max` at `core.min`. The publication reduction compares
+the Pants build with the QuickJS reference at 1, 2, 4 and 8 threads under 12
+scheduling seeds, with every helper published and none per task.
+
+The protocol tables, the mask table and the set of core protocol names are
+built on a task's first predicate or protocol read, and a core protocol's
+getter is the one the unsupported entry already had: a task's starting heap
+is unchanged, which the 4 MiB evaluator tests in `src/bbp_evaluator/tests.rs`
+check (building the tables at startup failed three of them).
+
+Penpot, from Pants and V8 release builds rebased on master `ad6038e0`, with
+the five read-only roots, every budget above and `--source-map
+--source-map-include-sources`, at load average 5-17 from peers: `app.render`
+builds at 1 thread (7.54 s wall, 7.07 s user, 493,764,608 bytes peak memory)
+and 4 threads (5.87 s, 8.47 s user, 579,960,832 bytes); the V8 build takes
+2.52 s (2.81 s user, 520,962,048 bytes) and 1.65 s (4.04 s user, 707,444,736
+bytes). All four 12,681,008-byte outputs are byte-identical, SHA-256
+`d67471d1…38caff056`, and so are their source maps, `a4b1c163…cfd12da4481a`.
+`app.main` passes `satisfies?` and `min` and stops, at 1 and 4 threads, in the
+same macro at:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro expansion: while expanding precompile-cljs-grammar: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro instaparse.abnf/precompile-cljs-grammar: big-boy-pants-js: Error: unsupported operation: native macro runtime core.Delay; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:104:1 (bytes 5039..5064)
+```
+
+that is, `delay` values, light-cljs-613 (reduction: `(defmacro m []
+@(delay 1))`). The failing runs take 46.13 s wall, 44.90 s user and
+738,377,728 bytes peak memory at 1 thread, and 43.13 s, 53.87 s user and
+975,699,968 bytes at 4 threads. There is no Pants-build main output to
+compare.
+
+V8 build: the changes are in `src/bbp_runtime.js`, which the V8 build does not
+include. Three alternating `release bench --no-cache` pairs on the regenerated
+200k project (a master `62dcd6f0` V8 release build first, each in its own
+target directory): median 8.43 s on master and 8.23 s on the branch; all six
+outputs keep SHA-256 prefix `1a75bc87b26f3121`, and the program prints
+`484264`.
+
+On macOS arm64 with Homebrew Rust/Cargo 1.99.1, Node 24.22.1, the read-only
+ClojureScript pin `a5e94c98` and `LIGHT_CLJS_STRESS_SEEDS=12`: Pants-only
+`bbp_macros` 237 (one existing ignored stress case); Pants plus QuickJS
+reference library 389 and `bbp_macros` 239; V8 plus Pants `bbp_macros` 239;
+V8-build nextest (`-j 8`) 2,138 of 2,139, failing only the existing worktree
+`playground_crate_checks_for_wasm32` diagnostic (those on `ad6038e0`). Rebased
+on `d766f81d`, the Pants build's full suite ("The Pants build's full test
+suite" above, `-j 8`) runs 2,094 tests: 1,691 pass and 403 fail, every one also
+failing with master's runtime, which fails 411: the seven new reductions and
+`catalog_objects_match_plain_objects_before_and_after_demand` now pass, and no
+test newly fails. Formatting and strict V8-build Clippy pass; combined Clippy
+passes allowing the three baseline categories. The engine is unchanged.
