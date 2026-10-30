@@ -6142,8 +6142,11 @@ fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
             r#"(ns state)
           (defprotocol Cell (read-cell [x]) (write-cell [x v]))
           (deftype Box [^:volatile-mutable value]
-            Cell (read-cell [_] value) (write-cell [_ v] (set! value v)))
-          (def saved (let [b (Box. 0)] (fn [v] (let [old (read-cell b)] (write-cell b v) [old (read-cell b)]))))
+            Cell (read-cell [_] value) (write-cell [_ v] (set! value v))
+            IHash (-hash [_] value)
+            IEquiv (-equiv [_ other] (= value (.-value other))))
+          (def saved (let [b (Box. 0)] (fn [v] (let [old (read-cell b) before (hash b)]
+            (write-cell b v) [old (read-cell b) before (hash b) (= b (Box. v)) (= b (Box. (inc v)))]))))
           (def listeners (atom [(let [b (Box. 10)] (fn [v] (let [old (read-cell b)] (write-cell b v) [old (read-cell b)])))]))
           (def multiply imul)
           (defmacro probe [v] (list 'quote [(saved v) ((first @listeners) (+ v 10)) (multiply v 5)]))"#,
@@ -6192,7 +6195,7 @@ fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
     let (reference, _) = build(false, 1, 0);
     assert_eq!(
         program_output(&reference),
-        "[[[0 1] [10 11] 5] [[1 2] [11 12] 10]]\n"
+        "[[[0 1 0 1 true false] [10 11] 5] [[1 2 1 2 true false] [11 12] 10]]\n"
     );
     let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
         .ok()
