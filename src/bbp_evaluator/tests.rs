@@ -3261,6 +3261,69 @@ fn adopted_catalogs_match_applied_catalogs_whatever_is_read_first() {
 }
 
 #[test]
+fn adopted_catalog_defonce_history_is_linear() {
+    use crate::compilation_session::{BundleRecord, Registration};
+    let applied = |count| {
+        let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+        let service: UnitService = Rc::new(|_, id| {
+            Ok(format!(
+                "rt => {{ globalThis.__lightCompilerBundleProducts.m = {id}; return null; }}"
+            ))
+        });
+        let task = || {
+            let task = Rc::new(shared.evaluator().unwrap());
+            task.clone()
+                .install_compiler_service("__lightCompileUnit", service.clone())
+                .unwrap();
+            task
+        };
+        let catalog: Vec<_> = (1..=count)
+            .map(|unit| {
+                Registration::Bundle(Arc::new(BundleRecord {
+                    products: vec!["m".into()],
+                    unit,
+                    extensions: vec![],
+                    location: "fixture:1".into(),
+                    once: true,
+                    group: false,
+                }))
+            })
+            .collect();
+        let parent = task();
+        parent.install_catalog(0, &catalog).unwrap();
+        let child = parent
+            .spawn_producer(
+                &parent.cx().unwrap(),
+                parent.service.borrow().clone(),
+                |_| {},
+            )
+            .unwrap();
+        let reference = task();
+        reference.install_catalog(0, &catalog).unwrap();
+        assert_eq!(numeric_global(&child, "__lightCatalogApplied"), 0.0);
+        for task in [&*reference, &child] {
+            let value = task
+                .evaluate_unit(
+                    "rt => { globalThis.answer = (globalThis.__lightCompilerRootReceiver ?? globalThis.__lightCompilerRoots).m; return null; }",
+                )
+                .unwrap();
+            task.release(value).unwrap();
+            // All the later defonce bundles keep the first product.
+            assert_eq!(numeric_global(task, "answer"), 1.0);
+        }
+        numeric_global(&child, "__lightCatalogApplied")
+    };
+    let small = applied(16);
+    let large = applied(32);
+    assert!(small > 0.0);
+    assert_eq!(
+        large,
+        small * 2.0,
+        "16 bundles: {small}, 32 bundles: {large}"
+    );
+}
+
+#[test]
 fn catalog_producers_share_data_without_evaluating_registration_sources() {
     use crate::compilation_session::Registration;
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();

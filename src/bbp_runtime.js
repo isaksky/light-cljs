@@ -2583,7 +2583,7 @@ const lazyAdopt=snapshot=>{
     base:decl.reserve(__rt.nth(snapshot,3)),
     // Each resolved name's state at adoption, each bundle's whether it is
     // registered (a defonce bundle may not be), and its task object.
-    resolved:new Map(),effective:new Map(),bundles:new Map(),protocolsDone:new Set(),
+    resolved:new Map(),prefixes:new Map(),effective:new Map(),bundles:new Map(),protocolsDone:new Set(),
     // Names the catalog created, at the position that created each, and
     // the target's keys before it: `materializeAll` restores key order.
     created:new Map(),pre:new Set(pre),global};
@@ -2622,10 +2622,24 @@ const lazyStep=(c,s,p)=>{
     fresh:s.slot?s.fresh:true,pre:s.pre||s.slot&&!s.fresh,owner:p,first:s.own?s.first:p};
 };
 const lazyStateBefore=(c,name,p)=>{
-  let s=c.resolved.get(name)??liveState(name);
   const at=__rt.getOr(c.names,name,null);
-  if(at!==null)for(let i=0,n=__rt.count(at);i<n;i++){const q=__rt.nth(at,i);if(q>=p)break;s=lazyStep(c,s,q);}
-  return s;
+  let states=c.prefixes.get(name);
+  // Keep the adoption state even after this name is installed or written.
+  // states[i] includes exactly the first i registrations of this name.
+  if(states===undefined){states=[c.resolved.get(name)??liveState(name)];c.prefixes.set(name,states);}
+  if(at===null)return states[0];
+  let i=states.length-1;
+  // Dependencies of an earlier defonce may ask for an already cached prefix.
+  if(i>0&&__rt.nth(at,i-1)>=p){
+    let lo=0,hi=i;
+    while(lo<hi){const mid=Math.floor((lo+hi)/2);if(__rt.nth(at,mid)<p)lo=mid+1;else hi=mid;}
+    return states[lo];
+  }
+  for(const n=__rt.count(at);i<n;i++){
+    const q=__rt.nth(at,i);if(q>=p)break;
+    states.push(lazyStep(c,states[i],q));
+  }
+  return states[i];
 };
 // Whether bundle `p` registers: a defonce bundle does not when every one
 // of its products is kept (`__lightCompilerRootKept`) before it.
@@ -2661,8 +2675,7 @@ function lazyResolve(name){
   if(at===null)return;
   const start=liveState(name);
   c.resolved.set(name,start);
-  let s=start;
-  for(let i=0,n=__rt.count(at);i<n;i++){const q=__rt.nth(at,i);if(q>=c.end)break;s=lazyStep(c,s,q);}
+  const s=lazyStateBefore(c,name,c.end);
   if(s.owner<0)return;
   const previous=roots.get(name);
   if(s.pre)__rt.initializerSlotSet(previous,4,true);
