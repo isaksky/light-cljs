@@ -4199,3 +4199,28 @@ median **7.06 s on master and 7.08 s on the branch** (ranges 7.01–7.11 and
 jobs 1 (13.45 s wall, 414,318,592 bytes maximum RSS) and jobs 4 (9.24 s,
 515,801,088 bytes) is byte-identical to V8 (2.08 s), SHA-256
 `d352af3a…a8d9a3`.
+
+#### Review-fix round 3 (2026-10-29)
+
+Round 2's demand read every receiver's `__lightNativeType`, so a host array
+with a throwing getter aborted a dispatch the QuickJS reference answers;
+typed arrays, `arguments` objects and Proxies already threw on master,
+from dispatch's own tag fallback. Receivers are now classified without
+reading host properties (see "Classifying the receiver" above), and the
+table has a row for each of the four. The product-demand row is removed:
+it never reached its extension bundle.
+
+Verification at `84294955` (master `4ad6fd92`; the rebase onto `313a51b3`
+adds a documentation file only), same toolchain: combined
+`bbp-macros,quickjs` with `LIGHT_CLJS_STRESS_SEEDS=12` passes the
+library's 368 tests and `bbp_macros`' 168, the Pants build's
+`bbp_macros` 166 (one ignored each); engine all-targets 2,196 and seven
+doctests; V8 build nextest 2,133 (225.1 s; only the worktree
+`playground_crate_checks_for_wasm32` diagnostic fails); Clippy and
+formatting as before. Five alternating 200k pairs against a fresh V8
+release build of master `313a51b3`, load average about 4–8 from peers:
+median **7.52 s on master and 7.52 s on the branch** (ranges 7.46–7.62
+and 7.45–7.67 s), all ten outputs byte-identical. Penpot `app.render`
+from the Pants build at jobs 1 (14.59 s wall, 420,724,736 bytes maximum
+RSS) and jobs 4 (9.85 s, 504,004,608 bytes) is byte-identical to the V8
+build (2.12 s), SHA-256 `d352af3a…a8d9a3`.
