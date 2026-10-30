@@ -1811,9 +1811,9 @@ sweep: it tests one watched bit per object slot, in slot order, looks up the
 watch list only for a slot with a pending watch, and delivers each queue's
 notifications once per collection.
 
-Measured at `0689509c` (light-cljs-590's producer setup included) before and
-`f783b85c` after, with the same seed-42 projects, release configuration and
-2 GiB macro memory limit as above: `cargo build --release --locked
+Measured at `0689509c` (light-cljs-590's producer setup included) before, and
+with this change applied to it after, with the same seed-42 projects,
+release configuration and 2 GiB macro memory limit as above: `cargo build --release --locked
 --no-default-features --features bbp-macros`, then `BINARY release bench
 --no-cache --stats --jobs 1` (**1 thread**). Other workers were active (load
 average 8-26), so times are medians of 3-6 runs at 200k and 2-4 at 800k, with
