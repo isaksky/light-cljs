@@ -4702,3 +4702,13 @@ and 4 threads still matches the V8 build byte for byte (the same SHA-256s),
 and `app.main` stops at the same `core.satisfies` error. Three alternating
 200k pairs keep all six outputs identical (median 7.78 s on master
 `e8761f9b`, 7.93 s on the branch, load average 8-13).
+
+Review round 2 (Proxy classification under a tag-named field, no resolver) at
+`bc9540bb` on master `993dc86c`: engine 2,211 tests and the seven doctests;
+Pants-only `bbp_macros` 220; V8-build nextest 2,135 of 2,136 (the same
+worktree diagnostic); formatting and Clippy as above. In the combined build's
+library run, `concurrent_initializer_cycle_is_diagnosed_and_wakes_both_consumers`
+hit its 5 s wall-clock wait once at load average about 30 and passes alone; the
+combined library (374) and `bbp_macros` (222) then pass in a full rerun. Penpot `app.render` still matches the V8 build byte for byte
+at 1 and 4 threads, `app.main` stops at `core.satisfies`, and three
+alternating 200k pairs keep identical outputs printing `484264`.
