@@ -109,15 +109,31 @@
 //! # Delays
 //!
 //! A ClojureScript `delay` is the same once-cell in another form kind
-//! ([`FormKind::Delay`], `formKind` `"delay"`, made by `__rt.delay(thunk)`;
-//! light-cljs-613). Its realization, waiting, failure, reentry, sharing and
+//! ([`FormKind::Delay`], `formKind` `"delay"`, made by `__rt.delay(thunk,
+//! seed)`; light-cljs-613). Its realization, waiting, failure, sharing and
 //! collection rules are the ones above, but its value is kept as the thunk
 //! returned it (a vector stays a vector, `nil` is a value), and nothing
 //! reads through it: sequence operations reject it, equality and hashing
-//! are its identity's, and only `cljForce` realizes it (`cljRealized`
-//! answers without realizing). Reentry is the catchable `RangeError` `delay
-//! realization reentered its own body`, where ClojureScript calls the body
-//! again.
+//! are its identity's, and only `cljForce` realizes it (`cljRealized` and
+//! `cljDelayState` answer without realizing).
+//!
+//! As ClojureScript's `Delay` has fields `f` and `value`, the cell keeps a
+//! pending value (`seed`, the second argument of `(Delay. f v)`) that it
+//! prints until a run succeeds, also after a run throws; a nil or false
+//! body makes a delay realized to it at once (a false one printing as
+//! pending, as the reference's does). Publication checks the pending value
+//! under `.seed`.
+//!
+//! Reentry differs from a lazy sequence's: a body that forces its own
+//! delay calls the body again, as ClojureScript does, so a guarded
+//! reentry terminates. That inner run is an ordinary call in the realizing
+//! task, which holds the claim: its value is the realizing task's answer
+//! (for `cljForce`, `cljRealized` and the printer's state) until the outer
+//! run ends, and the outer run's value is the one installed, as the
+//! reference's last assignment is; if the outer run throws after an inner
+//! run returned, the inner value is installed, as the reference's inner run
+//! left it set. Other tasks still wait for the outer run. An unguarded
+//! reentry recurses until the native call depth limit, a catchable error.
 //!
 //! # Thread-local requests
 //!
@@ -201,6 +217,14 @@ struct LazyState {
     /// lock, against the state the check read): a value installed from
     /// then on must be shareable.
     shared: bool,
+    /// A delay's pending value: the second argument of `(Delay. f v)`,
+    /// what it prints until a run succeeds (`Undefined` for a lazy
+    /// sequence, and once realized).
+    seed: Value,
+    /// A delay's value from a run its realizing task made while realizing
+    /// it (its body forced the delay again, "Delays" in the module docs):
+    /// that task's answer until the outer run ends.
+    provisional: Option<Value>,
 }
 
 /// The once-realized cell of a lazy sequence. See the module docs.
@@ -213,6 +237,9 @@ pub(crate) struct LazyCell {
     /// A `delay` (light-cljs-613): the thunk's value is kept as it is, not
     /// made a sequence, and no sequence operation reads through the cell.
     delay: bool,
+    /// A delay made realized from a `false` body (`(Delay. false v)`),
+    /// which the reference prints as pending although it is realized.
+    prints_pending: bool,
     /// A lock-free copy of `LazyState::shared` for the realizer's early
     /// check; `settle` decides under the lock.
     shared: AtomicBool,
@@ -237,6 +264,13 @@ pub(crate) enum Claim {
     Failed(LazyFailure),
     /// This task is already realizing the cell.
     Reentered,
+    /// This task is already realizing the delay: as in ClojureScript, it
+    /// calls `thunk` again, or reads `provisional`, the value an earlier
+    /// such call returned.
+    Reenter {
+        thunk: Value,
+        provisional: Option<Value>,
+    },
 }
 
 /// Why [`LazyCell::settle`] did not install a value.
@@ -257,9 +291,24 @@ impl LazyCell {
         LazyCell::of(colls, true, false)
     }
 
-    /// The cell of a `delay` whose body is `thunk` (light-cljs-613).
-    pub(crate) fn delay(thunk: Value) -> LazyCell {
-        LazyCell::of(thunk, false, true)
+    /// The cell of a `delay` whose body is `thunk` and whose pending value
+    /// is `seed` (light-cljs-613): `(Delay. thunk seed)`. A `nil` or
+    /// `false` body, as in ClojureScript, is a delay already realized to
+    /// `seed`.
+    pub(crate) fn delay(thunk: Value, seed: Value) -> LazyCell {
+        let absent = matches!(thunk, Value::Null | Value::Undefined | Value::Bool(false));
+        let prints_pending = matches!(thunk, Value::Bool(false));
+        let mut cell = LazyCell::of(if absent { Value::Undefined } else { thunk }, false, true);
+        cell.prints_pending = prints_pending;
+        if absent {
+            let _ = cell.realized.set(seed);
+        } else {
+            cell.state
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .seed = seed;
+        }
+        cell
     }
 
     fn of(thunk: Value, concat: bool, delay: bool) -> LazyCell {
@@ -269,6 +318,7 @@ impl LazyCell {
             serial: NEXT.fetch_add(1, Ordering::Relaxed),
             concat,
             delay,
+            prints_pending: false,
             shared: AtomicBool::new(false),
             attributed: AtomicBool::new(false),
             realized: OnceLock::new(),
@@ -280,8 +330,47 @@ impl LazyCell {
                 waiters: Vec::new(),
                 waits: None,
                 shared: false,
+                seed: Value::Undefined,
+                provisional: None,
             }),
         }
+    }
+
+    /// A delay's state as the reference's printer reads it, without
+    /// running its body: whether it prints as ready, and its value (the
+    /// realized value; the value a run of `task`'s own, reentering, has
+    /// returned while `task` realizes it; or the pending value).
+    pub(crate) fn delay_state(&self, task: Option<TaskId>) -> (bool, Value) {
+        if let Some(v) = self.realized.get() {
+            return (!self.prints_pending, v.clone());
+        }
+        let state = lock(&self.state);
+        match (&state.provisional, state.realizer) {
+            (Some(v), Some((t, _))) if Some(t) == task => (true, v.clone()),
+            _ => (false, state.seed.clone()),
+        }
+    }
+
+    /// Whether `task` sees the delay realized: it is, or `task` is
+    /// realizing it and a reentering run has returned (as ClojureScript's
+    /// inner run sets the value).
+    pub(crate) fn realized_for(&self, task: Option<TaskId>) -> bool {
+        self.realized.get().is_some() || (self.delay && self.delay_state(task).0)
+    }
+
+    /// Record `value`, returned by a reentering run of `task`, which is
+    /// realizing the delay: the value `task` reads until its outer run
+    /// ends, as ClojureScript's inner run sets the value.
+    pub(crate) fn set_provisional(&self, task: TaskId, value: Value) {
+        let mut state = lock(&self.state);
+        if state.realizer.map(|(t, _)| t) == Some(task) {
+            state.provisional = Some(value);
+        }
+    }
+
+    /// The value a reentering run recorded for the current attempt.
+    pub(crate) fn provisional(&self) -> Option<Value> {
+        lock(&self.state).provisional.clone()
     }
 
     /// Whether this is a lazy `concat`, realized in Rust.
@@ -372,6 +461,10 @@ impl LazyCell {
             return Claim::Realized;
         }
         match state.realizer {
+            Some((t, _)) if t == task && self.delay => Claim::Reenter {
+                thunk: state.thunk.clone(),
+                provisional: state.provisional.clone(),
+            },
             Some((t, _)) if t == task => Claim::Reentered,
             Some((_, attempt)) => Claim::Busy { attempt },
             None => {
@@ -460,12 +553,14 @@ impl LazyCell {
                 return Err(Unsettled::NeedsCheck);
             }
             state.realizer = None;
+            state.provisional = None;
             let waiters = std::mem::take(&mut state.waiters);
             match outcome {
                 Some(Ok(value)) => {
                     // Under the lock: a reader's recheck cannot miss it.
                     let _ = self.realized.set(value);
                     state.thunk = record.unwrap_or(Value::Undefined);
+                    state.seed = Value::Undefined;
                 }
                 Some(Err(failure)) if !waiters.is_empty() => state.failures.push(Failed {
                     attempt,
@@ -501,6 +596,10 @@ impl Trace for LazyCell {
         // safepoint, and no safepoint falls inside a critical section.
         let state = lock(&self.state);
         state.thunk.trace(visit);
+        state.seed.trace(visit);
+        if let Some(v) = &state.provisional {
+            v.trace(visit);
+        }
         for failed in &state.failures {
             if let LazyFailure::Thrown(v) = &failed.failure {
                 v.trace(visit);
@@ -523,6 +622,14 @@ impl LazyCell {
             ),
             None => (false, state.thunk.clone(), None),
         }
+    }
+
+    /// An unrealized delay's pending value, which other tasks print and so
+    /// must be shareable too; `None` once realized or when it has none.
+    pub(crate) fn publication_seed(&self) -> Option<Value> {
+        let state = lock(&self.state);
+        (self.realized.get().is_none() && state.seed != Value::Undefined)
+            .then(|| state.seed.clone())
     }
 }
 
@@ -669,6 +776,12 @@ pub(crate) fn begin_consumption(runtime: u64, task: TaskId) {
             });
         }
     });
+}
+
+/// The task whose run this thread executes now ([`begin_consumption`]):
+/// which task a delay's reentering run belongs to (light-cljs-613).
+pub(crate) fn running_task() -> Option<TaskId> {
+    CONSUMED.with(|c| c.borrow().as_ref().map(|c| c.owner.1))
 }
 
 /// Note that the running task read the realized value of `cell`, if an

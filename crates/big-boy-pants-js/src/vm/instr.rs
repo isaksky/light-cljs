@@ -1609,15 +1609,19 @@ pub enum FormOp {
     FnWithApplyTo = 113,
     /// value → immutable apply entry, or null.
     FnApplyToEntry = 114,
-    /// thunk → a `delay` whose body is `thunk` (`delay`, light-cljs-613).
+    /// thunk seed → a `delay` whose body is `thunk` and pending value `seed`,
+    /// realized to `seed` when `thunk` is nil or false (`delay`, light-cljs-613).
     Delay = 115,
     /// v → a delay's value, realizing it once, or v itself (`cljForce`).
     CljForce = 116,
+    /// delay → `[ready value]` as the reference prints it, without running
+    /// its body (`cljDelayState`, light-cljs-613).
+    CljDelayState = 117,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 117] = [
+    pub const ALL: [FormOp; 118] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1735,6 +1739,7 @@ impl FormOp {
         FormOp::FnApplyToEntry,
         FormOp::Delay,
         FormOp::CljForce,
+        FormOp::CljDelayState,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1809,7 +1814,7 @@ impl FormOp {
             | FormOp::StructState
             | FormOp::ReferenceType
             | FormOp::ReferencePayload
-            | FormOp::Delay
+            | FormOp::CljDelayState
             | FormOp::CljForce => 1,
             FormOp::Keyword
             | FormOp::FnWithApplyTo
@@ -1844,6 +1849,7 @@ impl FormOp {
             | FormOp::CljChunkCons
             | FormOp::SortedRemove
             | FormOp::Compare
+            | FormOp::Delay
             | FormOp::CljSymbolNs => 2,
             FormOp::Get
             | FormOp::InitializerSlotSet
@@ -1952,6 +1958,7 @@ impl FormOp {
             FormOp::ReferencePayload => "formReferencePayload",
             FormOp::Delay => "delay",
             FormOp::CljForce => "cljForce",
+            FormOp::CljDelayState => "cljDelayState",
             FormOp::StructField => "structField",
             FormOp::StructTypeOf => "structTypeOf",
             FormOp::RecordFromMap => "recordFromMap",

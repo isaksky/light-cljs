@@ -2834,10 +2834,15 @@ pub(crate) fn new_lazy(heap: &Heap, thunk: Value) -> Result<Value, CollectionErr
         .ok_or(CollectionError::OutOfMemory)
 }
 
-/// A new `delay` whose body is the function `thunk` (light-cljs-613). Like
+/// A new `delay` whose body is the function `thunk` and whose pending value
+/// is `seed`, or, when `thunk` is `nil` or `false`, already realized to
+/// `seed` (`(Delay. thunk seed)`, light-cljs-613). Like
 /// a lazy sequence, never known shareable at allocation.
-pub(crate) fn new_delay(heap: &Heap, thunk: Value) -> Result<Value, CollectionError> {
-    let object = FormObject::new(FormBody::Delay(Arc::new(LazyCell::delay(thunk))), None);
+pub(crate) fn new_delay(heap: &Heap, thunk: Value, seed: Value) -> Result<Value, CollectionError> {
+    let object = FormObject::new(
+        FormBody::Delay(Arc::new(LazyCell::delay(thunk, seed))),
+        None,
+    );
     heap.alloc(HeapObject::Form(Arc::new(object)))
         .map(Value::Object)
         .ok_or(CollectionError::OutOfMemory)

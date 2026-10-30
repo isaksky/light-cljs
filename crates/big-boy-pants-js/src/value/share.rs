@@ -368,6 +368,9 @@ pub enum PathStep {
     LazyThunk,
     /// What a lazy sequence realized. Displayed `.realized`.
     LazyValue,
+    /// An unrealized delay's pending value (light-cljs-613). Displayed
+    /// `.seed`.
+    DelaySeed,
     /// The tail of a cons sequence. Displayed `.rest`.
     Rest,
 }
@@ -402,6 +405,7 @@ impl fmt::Display for ValuePath {
                 PathStep::Metadata => f.write_str(".meta")?,
                 PathStep::LazyThunk => f.write_str(".thunk")?,
                 PathStep::LazyValue => f.write_str(".realized")?,
+                PathStep::DelaySeed => f.write_str(".seed")?,
                 PathStep::Rest => f.write_str(".rest")?,
             }
         }
@@ -461,6 +465,7 @@ enum Step {
     Metadata,
     LazyThunk,
     LazyValue,
+    DelaySeed,
     Rest,
 }
 
@@ -498,6 +503,8 @@ enum Children {
         realized: bool,
         edge: Value,
         record: Option<Value>,
+        /// An unrealized delay's pending value (`.seed`, light-cljs-613).
+        seed: Option<Value>,
         meta: Option<Value>,
     },
     Native(Vec<ObjectId>),
@@ -605,6 +612,7 @@ impl Children {
                 realized,
                 edge,
                 record,
+                seed,
                 meta,
                 ..
             } => {
@@ -616,6 +624,9 @@ impl Children {
                 f(step, edge);
                 if let Some(record) = record {
                     f(Step::LazyValue, record);
+                }
+                if let Some(seed) = seed {
+                    f(Step::DelaySeed, seed);
                 }
                 if let Some(meta) = meta {
                     f(Step::Metadata, meta);
@@ -675,6 +686,7 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
                         realized,
                         edge,
                         record,
+                        seed: cell.publication_seed(),
                         meta: form.meta().cloned(),
                     }
                 }
@@ -941,6 +953,7 @@ fn name_step(heap: &Heap, step: Step) -> PathStep {
         Step::Metadata => PathStep::Metadata,
         Step::LazyThunk => PathStep::LazyThunk,
         Step::LazyValue => PathStep::LazyValue,
+        Step::DelaySeed => PathStep::DelaySeed,
         Step::Rest => PathStep::Rest,
     }
 }

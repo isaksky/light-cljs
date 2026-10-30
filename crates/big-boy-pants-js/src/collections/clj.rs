@@ -486,6 +486,23 @@ pub(crate) fn force(heap: &Heap, v: &Value) -> Result<Value> {
     }
 }
 
+/// A delay's `[ready value]` as the QuickJS reference prints it, without
+/// running its body: its realized value (ready unless made from a `false`
+/// body), the value a reentering run of the running task returned (ready),
+/// or its pending value (light-cljs-613).
+pub(crate) fn delay_state(heap: &Heap, v: &Value) -> Result<Value> {
+    let unwrapped = form::unwrap(heap, v.clone());
+    let shape = shape(heap, &unwrapped);
+    let Shape::Form(_, f) = &shape else {
+        return Err(unsupported("delay state", &shape));
+    };
+    let FormBody::Delay(cell) = f.body() else {
+        return Err(unsupported("delay state", &shape));
+    };
+    let (ready, value) = cell.delay_state(crate::collections::lazy::running_task());
+    Ok(form::new_vector(heap, &[Value::Bool(ready), value])?)
+}
+
 /// Unwrap exactly one early-termination marker, preserving other operands
 /// (including occurrences) by identity.
 pub(crate) fn unreduced(heap: &Heap, v: &Value) -> Value {
@@ -1482,6 +1499,9 @@ pub(crate) fn realized(heap: &Heap, v: &Value) -> Result<Value> {
             Ok(Value::Bool(true))
         }
         Shape::Form(_, f) => match f.once_cell() {
+            Some(cell) if cell.is_delay() => Ok(Value::Bool(
+                cell.realized_for(crate::collections::lazy::running_task()),
+            )),
             Some(cell) => Ok(Value::Bool(cell.realized().is_some())),
             None => Err(unsupported("realized?", &shape)),
         },

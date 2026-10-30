@@ -8515,6 +8515,181 @@ const DELAY_PROTOCOLS_OUTPUT: &str = ".................s........s............ss.
 const DELAY_PUBLICATION_OUTPUT: &str = r##"[[:a 42 [2 3 4] 43 [:one 3] [:one 3] true "never" true "#object[cljs.core.Delay {:status :ready, :val [:one 3]}]" [:shared :chained :one]] [:b 42 [2 3 4] 43 [:b 4] [:b 4] true "never" true "#object[cljs.core.Delay {:status :ready, :val [:one 3]}]" [:shared :chained :one :b]] [:c 42 [2 3 4] 43 [:one 3] [:one 3] true "never" true "#object[cljs.core.Delay {:status :ready, :val [:one 3]}]" [:shared :chained :one :b]] [:d 42 [2 3 4] 43 [:one 3] [:one 3] true "never" true "#object[cljs.core.Delay {:status :ready, :val [:one 3]}]" [:shared :chained :one :b]]]
 "##;
 
+/// A delay's body that forces its own delay calls the body again, as the
+/// QuickJS reference does, so a guarded reentry terminates (light-cljs-613
+/// review): the outer run's value is the one kept, the inner run's is seen
+/// (realized, printed, forced) until then, and kept when the outer run
+/// throws.
+const DELAY_REENTRY: &str = r#"(defmacro probe []
+    (let [n (atom 0) h (atom nil) seen (atom [])
+          d (delay (let [v (swap! n inc)]
+                     (if (= v 1)
+                       (let [inner @@h]
+                         (swap! seen conj [inner (realized? @h) (pr-str @h) @@h @n])
+                         (+ 10 inner))
+                       v)))
+          _ (reset! h d)
+          r [@d @d @n (realized? d) @seen (pr-str d)]
+          m (atom 0) g (atom nil)
+          e (delay (let [v (swap! m inc)]
+                     (if (= v 1) (do @@g (throw (ex-info "outer" {}))) (* 100 v))))
+          _ (reset! g e)
+          f (try @e (catch :default x (ex-message x)))
+          k (atom 0) j (atom nil)
+          deep (delay (let [v (swap! k inc)] (if (< v 3) (+ 1 @@j) v)))
+          _ (reset! j deep)]
+      (list 'quote [r f (realized? e) @e @m (pr-str e) @deep @k])))
+  (js/console.log (pr-str (probe)))"#;
+
+#[test]
+fn native_delay_guarded_reentry_matches_quickjs() {
+    assert_native_matches_legacy(DELAY_REENTRY, DELAY_REENTRY_OUTPUT);
+}
+
+/// An explicit `(Delay. f v)`: a nil or false `f` is a delay already
+/// realized to `v`, and otherwise `v` is the pending value it prints until
+/// a run succeeds, also after a run throws (light-cljs-613 review).
+const DELAY_CONSTRUCTOR: &str = r#"(defmacro probe []
+    (let [f (Delay. false 7) u (Delay. nil 8)
+          s (Delay. (fn [] [:forced]) :seed)
+          k (atom 0)
+          t (Delay. (fn [] (swap! k inc) (throw (ex-info "no" {}))) :kept)]
+      (list 'quote [[(realized? f) @f @f (force f) (pr-str f) (realized? f)]
+                    [(realized? u) @u (pr-str u)]
+                    [(realized? s) (pr-str s) @s (pr-str s) (realized? s)]
+                    [(try @t (catch :default e (ex-message e))) (realized? t) (pr-str t)
+                     (try (force t) (catch :default e (ex-message e))) @k]])))
+  (js/console.log (pr-str (probe)))"#;
+
+#[test]
+fn native_delay_constructor_values_match_quickjs() {
+    assert_native_matches_legacy(DELAY_CONSTRUCTOR, DELAY_CONSTRUCTOR_OUTPUT);
+}
+
+/// The collection predicates treat a delay as a value the runtime owns:
+/// extensions of core protocols to `default` and `object` do not make it a
+/// seq or a counted collection (light-cljs-613 review).
+const DELAY_EXTENSIONS: &str = r#"(extend-protocol ISeq default (-first [_] nil) (-rest [_] nil))
+  (extend-protocol ICounted object (-count [_] 0))
+  (extend-protocol ISeqable default (-seq [_] nil))
+  (extend-protocol ISequential object)
+  (defmacro probe []
+    (let [s satisfies? d (delay 1) r (doto (delay 2) deref)]
+      (list 'quote (mapv (fn [x] [(seq? x) (s ISeq x) (s ICounted x) (coll? x)
+                                  (sequential? x) (s ISequential x) (s ISeqable x)
+                                  (map? x) (vector? x) (list? x)])
+                         [d r]))))
+  (js/console.log (pr-str (probe)))"#;
+
+#[test]
+fn native_delay_protocol_extensions_match_quickjs() {
+    assert_native_matches_legacy(DELAY_EXTENSIONS, DELAY_EXTENSIONS_OUTPUT);
+}
+
+/// Published delays that reenter their own body, explicit delays with a
+/// pending value and a false body, forced from four namespaces at 1, 2, 4
+/// and 8 threads under seeded scheduling (light-cljs-613 review): the
+/// guarded reentry keeps the outer run's value, every body runs as in the
+/// QuickJS reference, and every helper publishes.
+#[test]
+fn delay_reentry_and_constructors_publish_at_all_threads() {
+    let root = temp_dir::TempDir::new("delay-reentry-publication");
+    for (file, source) in [
+        (
+            "state.cljs",
+            r#"(ns state)
+          (def n (atom 0))
+          (def d (delay (let [v (swap! n inc)] (if (= v 1) (+ 10 @d) v))))
+          (def seeded (Delay. (fn [] (swap! n + 100) [:forced]) :seed))
+          (def fixed (Delay. false 7))
+          (defmacro probe [tag]
+            (list 'quote [tag @d (realized? d) @seeded (pr-str seeded) (realized? fixed) @fixed
+                          (pr-str fixed) (= 7 (force fixed))]))
+          (defmacro runs [] @n)"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [state :refer [probe]])) (def value (probe :a))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [state :refer [probe]])) (def value (probe :b))",
+        ),
+        (
+            "c.cljs",
+            "(ns c (:require [state :refer [probe]])) (def value (probe :c))",
+        ),
+        (
+            "d.cljs",
+            "(ns d (:require [a] [b] [c] [state :refer [probe runs]])) (def value [(probe :d) (runs)])",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b] [c] [d])) \
+             (js/console.log (pr-str [a/value b/value c/value d/value]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |pants, threads, seed| {
+        let mut host = MacroHost::new();
+        if pants {
+            host.use_native_macros();
+        }
+        host.evaluator_options.timeout = std::time::Duration::from_secs(600);
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(threads).unwrap(),
+                stats: Some(&mut stats),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: pants.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("Pants {pants}, {threads} threads, seed {seed}: {e}"));
+        (program_output(&emit_js(&program)), stats.native_helpers)
+    };
+    let (reference, _) = build(false, 1, 0);
+    assert_eq!(reference, DELAY_REENTRY_PUBLICATION_OUTPUT);
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for threads in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(
+            reference,
+            build(false, threads, 0).0,
+            "QuickJS reference: {threads} threads"
+        );
+        for seed in 1..=seeds {
+            let (actual, helpers) = build(true, threads, seed);
+            assert_eq!(reference, actual, "{threads} threads, seed {seed}");
+            assert!(helpers.published > 0, "{helpers:?}");
+            assert_eq!(helpers.per_task, 0, "{helpers:?}");
+        }
+    }
+}
+
+/// What the QuickJS reference prints for the four review tests above.
+const DELAY_REENTRY_OUTPUT: &str = r##"[[12 12 2 true [[2 true "#object[cljs.core.Delay {:status :ready, :val 2}]" 2 2]] "#object[cljs.core.Delay {:status :ready, :val 12}]"] "outer" true 200 2 "#object[cljs.core.Delay {:status :ready, :val 200}]" 5 3]
+"##;
+const DELAY_CONSTRUCTOR_OUTPUT: &str = r##"[[true 7 7 7 "#object[cljs.core.Delay {:status :pending, :val 7}]" true] [true 8 "#object[cljs.core.Delay {:status :ready, :val 8}]"] [false "#object[cljs.core.Delay {:status :pending, :val :seed}]" [:forced] "#object[cljs.core.Delay {:status :ready, :val [:forced]}]" true] ["no" false "#object[cljs.core.Delay {:status :pending, :val :kept}]" "no" 2]]
+"##;
+const DELAY_EXTENSIONS_OUTPUT: &str = "[[false false false false false false false false false false] \
+    [false false false false false false false false false false]]\n";
+const DELAY_REENTRY_PUBLICATION_OUTPUT: &str = r##"[[:a 12 true [:forced] "#object[cljs.core.Delay {:status :ready, :val [:forced]}]" true 7 "#object[cljs.core.Delay {:status :pending, :val 7}]" true] [:b 12 true [:forced] "#object[cljs.core.Delay {:status :ready, :val [:forced]}]" true 7 "#object[cljs.core.Delay {:status :pending, :val 7}]" true] [:c 12 true [:forced] "#object[cljs.core.Delay {:status :ready, :val [:forced]}]" true 7 "#object[cljs.core.Delay {:status :pending, :val 7}]" true] [[:d 12 true [:forced] "#object[cljs.core.Delay {:status :ready, :val [:forced]}]" true 7 "#object[cljs.core.Delay {:status :pending, :val 7}]" true] 102]]
+"##;
+
 /// Compare the complete emission, including source positions and names, under
 /// both macro backends. A namespace exercises the task-local bridge at 1/4 jobs.
 fn assert_backend_emission(source: &str) {

@@ -60,6 +60,10 @@ pub(crate) struct Realize {
     task: Option<TaskId>,
     /// What the thunk threw, delivered by the native catch.
     failed: Option<Exception>,
+    /// This frame runs a delay's body again for the task already
+    /// realizing it (`Claim::Reenter`): its value is that task's answer
+    /// until the outer run ends, not the delay's.
+    reentry: bool,
 }
 
 impl Realize {
@@ -87,6 +91,7 @@ impl Realize {
             waited: None,
             task: None,
             failed: None,
+            reentry: false,
         })
     }
 
@@ -122,6 +127,15 @@ impl Realize {
         input: Input,
     ) -> Result<Action, Fault> {
         if let Some(exception) = self.failed.take() {
+            // A delay whose body forced it again and returned there is
+            // realized to that value, as ClojureScript's inner run sets it,
+            // although the outer run throws.
+            if self.attempt.is_some()
+                && self.cell.is_delay()
+                && let Some(value) = self.cell.provisional()
+            {
+                let _ = self.realized(heap, value);
+            }
             self.realizing = None;
             if let Some(attempt) = self.attempt.take() {
                 let failure = failure(heap, task, &exception.value);
@@ -133,6 +147,12 @@ impl Realize {
             Input::CallResult(value) => Some(value),
             _ => None,
         };
+        if self.reentry
+            && let Some(value) = produced.take()
+        {
+            self.cell.set_provisional(task, value.clone());
+            return Ok(Action::Return(value));
+        }
         // The lazy `concat` cells this step realized through: one met again
         // is a `concat` that contains itself.
         let mut concats: Vec<usize> = Vec::new();
@@ -192,11 +212,24 @@ impl Realize {
                     return Err(Fault::TypeError(message.to_string_lossy()));
                 }
                 Claim::Reentered => {
-                    return Err(Fault::RangeError(if self.cell.is_delay() {
-                        "delay realization reentered its own body".to_string()
-                    } else {
-                        "lazy sequence realization reentered its own thunk".to_string()
-                    }));
+                    return Err(Fault::RangeError(
+                        "lazy sequence realization reentered its own thunk".to_string(),
+                    ));
+                }
+                // A delay forced again by the task running its body: as in
+                // ClojureScript, the value an earlier such run returned, or
+                // the body called again.
+                Claim::Reenter {
+                    provisional: Some(value),
+                    ..
+                } => return Ok(Action::Return(value)),
+                Claim::Reenter { thunk, .. } => {
+                    self.reentry = true;
+                    return Ok(Action::Call {
+                        callee: thunk,
+                        this: Value::Undefined,
+                        args: vec![],
+                    });
                 }
             }
         }

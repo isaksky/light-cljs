@@ -4954,7 +4954,7 @@ fn pooled_lazy_reader_inherits_lane_and_wakes_after_cold_helper() {
 #[test]
 fn pooled_delay_reader_inherits_lane_and_wakes_after_cold_helper() {
     assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
-        "__rt.delay",
+        "(f => __rt.delay(f, null))",
         "tree",
         "rt => pair => __rt.cljFirst(rt.core.deref(__rt.formNth(pair, 1)))",
     );

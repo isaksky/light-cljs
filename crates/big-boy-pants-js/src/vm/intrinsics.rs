@@ -597,7 +597,8 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
         FormOp::WithReferenceType => Some(form::reference_type_op(heap, 1, args)?),
         FormOp::ReferencePayload => Some(form::reference_type_op(heap, 2, args)?),
         FormOp::CljDrop => Some(form::reference_type_op(heap, 3, args)?),
-        FormOp::Delay => Some(form::new_delay(heap, a(0))?),
+        FormOp::Delay => Some(form::new_delay(heap, a(0), a(1))?),
+        FormOp::CljDelayState => Some(clj::delay_state(heap, &a(0))?),
         FormOp::CljForce => Some(clj::force(heap, &a(0))?),
         FormOp::CljIsZero => Some(Value::Bool(clj::is_zero(heap, &a(0)))),
         FormOp::CljIsFalse => Some(Value::Bool(clj::is_false(heap, &a(0)))),
@@ -917,7 +918,8 @@ fn strict_form_op(
         | FormOp::CljDrop
         | FormOp::ReferencePayload
         | FormOp::Delay
-        | FormOp::CljForce => Value::Undefined,
+        | FormOp::CljForce
+        | FormOp::CljDelayState => Value::Undefined,
     })
 }
 

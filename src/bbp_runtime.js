@@ -428,7 +428,7 @@ const decl = (() => {
     const direct = directKey(x);
     return direct !== null && __rt.getOr(t.map, direct, null) !== null;
   };
-  const ownedKinds = new Set(['keyword','symbol','list','vector','map','record','set','lazy-seq','cons','reduced']);
+  const ownedKinds = new Set(['keyword','symbol','list','vector','map','record','set','lazy-seq','cons','reduced','delay']);
   const predicate = (key, x, owned = false) => {
     if (implementsDirectly(key,x)) return true;
     const value=__rt.formValue(x),kind=__rt.formKind(value);
@@ -1577,11 +1577,12 @@ const native = (() => {
     const kind=__rt.formKind(x);
     if(__rt.cljIsAtom(x)){write(writer,'#object[cljs.core.Atom {:val ');printWriter(core.deref(x),writer,options);return write(writer,'}]');}
     if(kind==='reduced')return write(writer,'#object[Reduced [object Object]]');
-    // A delay shows its value once realized; printing never realizes it.
+    // A delay prints its state as the reference's fields hold it (its
+    // pending value until a run succeeds); printing never runs its body.
     if(kind==='delay'){
-      const ready=__rt.cljRealized(x);
-      write(writer,'#object[cljs.core.Delay {:status '+(ready?':ready':':pending')+', :val ');
-      printWriter(ready?__rt.cljForce(x):null,writer,options);return write(writer,'}]');
+      const state=__rt.cljDelayState(x);
+      write(writer,'#object[cljs.core.Delay {:status '+(__rt.formNth(state,0)?':ready':':pending')+', :val ');
+      printWriter(__rt.formNth(state,1),writer,options);return write(writer,'}]');
     }
     if(kind==='keyword'||kind==='symbol')return write(writer,namedText(x));
     if(kind==='type')return write(writer,__rt.formName(x));
@@ -3196,8 +3197,9 @@ const native = (() => {
     LazySeq:function(m,f,s){const x=f==null?__rt.lazySeq(()=>s):__rt.lazySeq(f);return m==null?x:__rt.cljWithMeta(x,m);},
     realized:x=>__rt.cljRealized(x),
     // Delays (light-cljs-613): the engine's once-realized cells, as lazy
-    // sequences are. An explicit `(Delay. nil v)` is realized to `v`.
-    Delay:function(f,v){if(val(f)==null){const d=__rt.delay(()=>v);__rt.cljForce(d);return d;}return __rt.delay(f);},
+    // sequences are. An explicit `(Delay. f v)` keeps `v` as its pending
+    // value, and with a nil or false `f` is realized to it.
+    Delay:function(f,v){const g=val(f);return __rt.delay(g==null||g===false?g:f,v);},
     force:x=>__rt.cljForce(x), isDelay:x=>__rt.formKind(val(x))==='delay',
     mapSeq:(...a)=>a.length===0?lazy(()=>null):a.length===1?mapTransform(a[0]):a.length===2?mapOne(mapOne,a[0],a[1]):mapMany(mapMany,a[0],list(a.slice(1))),
     mapIndexed:(...args)=>{

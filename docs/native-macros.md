@@ -2648,16 +2648,30 @@ opening, actual reader resubmission and exactly-once effects after a cold helper
 ### Delays (light-cljs-613)
 
 Macro code's `delay` values answer as the QuickJS reference's: `(delay
-body)` (and `(Delay. f v)`, realized to `v` when `f` is nil) makes one,
-`deref`, `@` and `force` run its body on first use and return its value
-after, `force` of anything else returns it, `realized?` and `delay?` answer
-without running it, `instance? Delay` holds, `pr-str` prints `#object[cljs.core.Delay
-{:status :pending, :val nil}]` until it is realized and `{:status :ready,
-:val v}` after, `str` gives `[object Object]`, `=` and `hash` are
-identity's, and the core protocols it satisfies and implements are
-`IPending`, `IPrintWithWriter`, `IHash`, `IEquiv` and `IDeref`. A body that
-throws propagates its exception and leaves the delay unrealized, so the
-next `deref` runs the body again.
+body)` makes one, `deref`, `@` and `force` run its body on first use and
+return its value after, `force` of anything else returns it, `realized?`
+and `delay?` answer without running it, `instance? Delay` holds, `pr-str`
+prints `#object[cljs.core.Delay {:status :pending, :val nil}]` until it is
+realized and `{:status :ready, :val v}` after, `str` gives `[object
+Object]`, `=` and `hash` are identity's, and the core protocols it
+satisfies and implements are `IPending`, `IPrintWithWriter`, `IHash`,
+`IEquiv` and `IDeref`; the collection predicates (`seq?`, `coll?` and the
+others) do not count `default` or `object` extensions for it, as for the
+runtime's other values. A body that throws propagates its exception and
+leaves the delay unrealized, so the next `deref` runs the body again.
+
+An explicit `(Delay. f v)` keeps `v` as its pending value: it prints
+`{:status :pending, :val v}` until a run succeeds, also after a run throws.
+A nil or false `f` makes a delay realized to `v`; a false one prints as
+pending, as the reference's does.
+
+A body that forces its own delay calls the body again, as the reference
+does, so a guarded reentry terminates: the inner run's value is what that
+task's `deref`, `realized?` and printing see until the outer run ends, the
+outer run's value is the one kept, and an outer run that throws after an
+inner run returned leaves the delay realized to the inner value. Other
+tasks wait for the outer run. An unguarded reentry recurses until the
+call depth limit, a catchable error.
 
 A delay is the engine's once-realized cell, the one a lazy sequence has
 ("Lazy sequences" above), whose value is kept as the body returned it. The
@@ -2666,19 +2680,17 @@ task that forces it while another runs the body parks (holding no worker)
 and reads the value when that run ends, lending its effect lane to the run
 as a lazy sequence's reader does. Readers parked on a run that throws
 observe that failure (the thrown value when it is shareable, otherwise an
-`Error` with its message); a later `deref` runs the body again. A body that
-forces its own delay fails with a catchable `RangeError` (`delay
-realization reentered its own body`), where the reference calls the body
-again.
+`Error` with its message); a later `deref` runs the body again.
 
-Sharing: a delay can be shared when its body can, before it is realized,
-or its value can, after. A helper's `(def d (delay ...))`, or a delay a
+Sharing: a delay can be shared when its body and pending value can, before
+it is realized, or its value can, after. A helper's `(def d (delay ...))`, or a delay a
 macro saves in an atom, publishes like any value whose parts are
 persistent: a body that captures only shareable values (forms, atoms,
 shareable functions; definitions it reads by name are not captures)
 publishes, and every task then runs or waits for the one realization. A
 body that captures task-owned state (a mutable local, a JavaScript object)
-does not: the publication error names the path through `.thunk`, and a
+does not: the publication error names the path through `.thunk` (`.seed`
+for a pending value), and a
 helper holding it stays per task, as any helper whose value cannot be
 shared does, each task with its own delay. A shared
 delay whose body returns a value that cannot be shared fails that run with
