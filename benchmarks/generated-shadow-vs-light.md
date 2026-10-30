@@ -1127,3 +1127,49 @@ Conclusions:
 
 Pellets light-cljs-563, 564 and 565 were still open when this ran; the user
 chose to measure master `0ad2514f` now rather than after them.
+
+## Pants build cache reuse (October 29, 2026, light-cljs-571)
+
+The October 29 comparison above found that the Pants build's rebuild with
+nothing changed hit no namespace on the 200k project: all 569 missed with "no
+artifact was published", ran all 94,592 macro calls again and republished
+221 MB. The cause was not the store. Before analysis, the Pants build scans
+every source for spelled writes to core functions, and skips every cache
+lookup once the program may write one, because cached macro code may call a
+core function directly. The scan read `set!`, `binding` and `with-redefs` as
+calls only at the head of a list, so `#(binding [...] ...)`, which three
+namespaces of the 200k project contain (none of the 5k or 50k ones), counted
+as a mutation operator used as a value, which marks every core function
+written. It now reads an anonymous function literal like a list; a build
+that does skip lookups now reports each namespace as a `core-write` miss.
+
+Setup: the commit that fixed it on `b1ed620d`, release binaries of the V8
+build and the Pants build (`--no-default-features --features bbp-macros`),
+same machine as above but not reserved: peer workers kept the 1-minute load
+average at 11-17 (up to 30 during one Pants clean build) on 24 logical CPUs.
+`compare.bb DIR --light BIN --runs 3 --light-only --leaf
+src/workload/babomhol.cljs`; 4 threads through a wrapper adding `--jobs 4`
+(and `--macro-memory-limit 1073741824` for the V8 build). Medians of 3, wall
+time, peak memory.
+
+| Build, threads | clean build | rebuild, nothing changed | rebuild after a one-file edit |
+| --- | --- | --- | --- |
+| V8, 1 | 8.49 s, 1.09 GB | 1.19 s, 0.53 GB | 6.23 s, 1.02 GB |
+| V8, 4 | 5.83 s, 1.38 GB | 1.15 s, 0.57 GB | 6.24 s, 1.28 GB |
+| Pants, 1 | 43.32 s (39.15-58.08), 1.21 GB | 1.49 s, 0.57 GB | 10.72 s, 1.11 GB |
+| Pants, 4 | 19.61 s, 1.46 GB | 1.44 s, 0.57 GB | 10.20 s, 1.32 GB |
+
+Before the fix the Pants build's rebuild with nothing changed took 35.8 s at
+1 thread and 20.6 s at 4 (the October 29 table); it now takes 1.49 and 1.44 s
+with 569 of 569 hits, and the rebuild after a one-file edit falls from 38.0
+and 22.8 s to 10.7 and 10.2 s. That edit hits 463 and misses 106 namespaces
+(the edited one and 105 whose coarse view covers it) with 20,020 macro
+calls, exactly as the V8 build does. Every output, clean, rebuilt and
+edited, on both builds, has SHA-256 `1a75bc87b26f3121...` and prints the
+oracle's `484264`.
+
+The V8 build is unchanged: alternating master and the fix three times under
+the same load, clean builds took 8.40, 8.03, 8.16 s against 8.05, 8.14,
+8.58 s, and rebuilds with nothing changed 1.20-1.31 s against 1.17 s, all with
+569 of 569 hits and the same output. The 8.1-8.5 s against the 7.0 s of the
+reserved October 29 run is the load.
