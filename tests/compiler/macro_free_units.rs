@@ -11,6 +11,11 @@ use light_cljs::scheduler::Slots;
 use light_cljs::{CompileStats, MacroHost, emit_js};
 use std::{fs, process::Command};
 
+const PANTS_BUILD: bool = cfg!(all(
+    feature = "bbp-macros",
+    not(any(light_v8, light_quickjs))
+));
+
 pub(crate) struct Sources(TempDir);
 
 impl Sources {
@@ -322,8 +327,13 @@ fn trial_expansions_admit_no_call_the_engine_expands() {
         host.evaluator_options.memory_limit = 32 << 20;
         let pooled = build_with(&sources, "app.b", slots, false, host);
         assert_eq!(pooled.output, serial.output, "{slots} slots");
-        // `if-let`'s definition and `ok`.
-        assert_eq!(pooled.stats.deferred_units.macro_free, 2, "{slots} slots");
+        // `if-let`'s definition and `ok`. The Pants build also proves `f`
+        // macro-free; its guarded analysis must never enter the runtime.
+        assert_eq!(
+            pooled.stats.deferred_units.macro_free,
+            if PANTS_BUILD { 3 } else { 2 },
+            "{slots} slots"
+        );
     }
 }
 
@@ -401,7 +411,15 @@ fn declaration_bundles_are_pooled_and_macro_free_ones_need_no_engine() {
         // (`CompilationSession::pools_bundle`): it takes only `total`.
         assert_eq!(
             pooled.stats.deferred_units.pooled,
-            if slots == 2 { 1 } else { 8 },
+            if slots == 2 {
+                if PANTS_BUILD { 2 } else { 1 }
+            } else if PANTS_BUILD {
+                // Shared-runtime tasks also admit the four units that
+                // these per-isolate memory limits exclude on the V8 build.
+                12
+            } else {
+                8
+            },
             "{slots} slots"
         );
     }

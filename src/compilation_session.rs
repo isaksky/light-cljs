@@ -4210,7 +4210,10 @@ fn worker_view(
             return Err("compiler workers need an embedded engine".into());
         }
     };
-    let counted = engine.is_some();
+    let engine_view = engine.is_some();
+    let counted = engine
+        .as_ref()
+        .is_some_and(|engine| engine.native_bridge_stats().is_none());
     let view = WorkerView::new(
         shared.clone(),
         MacroHost::bind(environment.clone(), engine)?,
@@ -4226,11 +4229,16 @@ fn worker_view(
             .isolates
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         PoolCounters::add(&counters.startup_ns, started);
-        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
-        if let Some(perturbation) = shared.perturbation.get() {
-            (perturbation.isolates).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
     }
+    // Scheduling perturbations observe task-view creation too. They are
+    // separate from the public count of worker isolates: Pants tasks all
+    // execute in the compilation's shared runtime.
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    if engine_view && let Some(perturbation) = shared.perturbation.get() {
+        (perturbation.isolates).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(not(any(debug_assertions, feature = "scheduling-stress")))]
+    let _ = engine_view;
     Ok(view)
 }
 /// A pool slot's state, made and dropped on its thread: its catalog view,
@@ -5011,17 +5019,28 @@ mod worker_tests {
 
     /// The unit's prepared JavaScript as the main thread's session has it.
     fn main_code(session: &CompilationSession, id: usize) -> String {
+        let prepare = |program: &Program| {
+            #[cfg(feature = "bbp-macros")]
+            if session
+                .shared
+                .native_units
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                return crate::emitter::DeferredUnit::prepare_native(program, &[])
+                    .code()
+                    .to_owned();
+            }
+            crate::emitter::DeferredUnit::prepare(program)
+                .code()
+                .to_owned()
+        };
         let state = session.shared.lock().units[id].state.clone();
         match state {
             AnalysisState::Prepared(_, _, prepared) => prepared.code().to_owned(),
-            AnalysisState::Analyzed(program, _) => crate::emitter::DeferredUnit::prepare(&program)
-                .code()
-                .to_owned(),
+            AnalysisState::Analyzed(program, _) => prepare(&program),
             AnalysisState::Unstarted => {
                 let (program, _) = session.analyze(id, None).unwrap();
-                crate::emitter::DeferredUnit::prepare(&program)
-                    .code()
-                    .to_owned()
+                prepare(&program)
             }
             _ => panic!("unit {id} did not analyze"),
         }
@@ -5038,6 +5057,7 @@ mod worker_tests {
         )
         .unwrap();
         let jobs = RETAINED.take().unwrap();
+        let native = host.native_macro_backend();
         let session = host.session_handle().unwrap();
         let name = |id: usize| session.shared.unit_name(id);
         let mut expected: Vec<_> = jobs
@@ -5046,9 +5066,12 @@ mod worker_tests {
             .collect();
         expected.sort();
         assert!(
-            expected
-                .iter()
-                .any(|(name, code)| name == "cljs.user/plain" && code.contains("rt.core.add")),
+            expected.iter().any(|(name, code)| name == "cljs.user/plain"
+                && if native {
+                    code.contains("__rt.formValue(l0) + __rt.formValue(1)")
+                } else {
+                    code.contains("rt.core.add")
+                }),
             "{expected:?}"
         );
         // The core macros expanded: no call of them is left.
@@ -5057,13 +5080,27 @@ mod worker_tests {
                 .iter()
                 .any(|(name, code)| name == "cljs.user/expanded"
                     && !code.contains("when")
-                    && code.contains("rt.core.isPositive")
-                    && code.contains("rt.core.multiply")),
+                    && if native {
+                        code.contains("core.isPositive") && code.contains("* __rt.formValue(2)")
+                    } else {
+                        code.contains("rt.core.isPositive") && code.contains("rt.core.multiply")
+                    }),
             "{expected:?}"
         );
         let names: HashMap<usize, String> = jobs.iter().map(|(id, ..)| (*id, name(*id))).collect();
         // The jobs cross to another thread, which binds its own engine.
         let found = std::thread::spawn(move || {
+            let prepare = |program: &Program| {
+                #[cfg(feature = "bbp-macros")]
+                if native {
+                    return crate::emitter::DeferredUnit::prepare_native(program, &[])
+                        .code()
+                        .to_owned();
+                }
+                crate::emitter::DeferredUnit::prepare(program)
+                    .code()
+                    .to_owned()
+            };
             let mut found: Vec<_> = jobs
                 .into_iter()
                 .map(|(id, form, snapshot, environment)| {
@@ -5072,9 +5109,7 @@ mod worker_tests {
                     let (program, _) =
                         crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, None)
                             .unwrap();
-                    let code = crate::emitter::DeferredUnit::prepare(&program)
-                        .code()
-                        .to_owned();
+                    let code = prepare(&program);
                     // A unit that expands no macro needs no engine at all.
                     if names[&id] == "cljs.user/plain" {
                         let mut host = MacroHost::bind(environment, None).unwrap();
@@ -5082,7 +5117,7 @@ mod worker_tests {
                             &form, &mut host, &snapshot, None,
                         )
                         .unwrap();
-                        assert_eq!(crate::emitter::DeferredUnit::prepare(&program).code(), code);
+                        assert_eq!(prepare(&program), code);
                     }
                     (names[&id].clone(), code)
                 })
