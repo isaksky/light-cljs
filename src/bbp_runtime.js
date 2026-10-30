@@ -1477,7 +1477,9 @@ const native = (() => {
     if (x instanceof RegExp) return x;
     if (typeof x !== 'string') throw new TypeError('regex pattern requires a string');
     const prefix = /^\(\?([dgimsuxy]*)\)/.exec(x);
-    return shareRegExp(new RegExp(prefix ? x.slice(prefix[0].length) : x, prefix ? prefix[1] : ''));
+    // The current global RegExp, as in QuickJS; only the intrinsic one
+    // makes a shareable regex (`nativeRegExp`, below).
+    return nativeRegExp(RegExp)(prefix ? x.slice(prefix[0].length) : x, prefix ? prefix[1] : '');
   };
   // `(js/RegExp. …)` and `(js/RegExp …)` take the constructor as it was
   // evaluated, before the operands: the intrinsic RegExp makes shareable

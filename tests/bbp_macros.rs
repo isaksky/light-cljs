@@ -11896,9 +11896,15 @@ fn native_regexp_adapters_preserve_callee_before_arguments() {
                    (src (try (first (mapv js/RegExp [(swap)])) (finally (restore))))
                    (src (try (set! js/RegExp (fn [& _] "changed")) (js/RegExp "a") (finally (restore))))
                    (src (try (set! js/RegExp (fn [& _] "changed")) (R "a") (finally (restore))))
-                   (regexp? (js/RegExp "b"))])))
+                   (regexp? (js/RegExp "b"))
+                   (try (set! js/RegExp (js* "(function (O) { return function (s, f) { const r = new O(s, f); r.marker = 42; return r; }; })(~{})" orig))
+                        (let [r (re-pattern "(?i)c")] [(.-marker r) (.-source r) (.-flags r)])
+                        (finally (restore)))
+                   (try (set! js/RegExp (fn [& _] (js-obj "source" "object")))
+                        (.-source (re-pattern "d"))
+                        (finally (restore)))])))
             (js/console.log (pr-str (m)))"##,
-        "[\"a\" \"a\" \"a\" \"a\" \"a\" \"a\" \"changed\" \"a\" true]\n",
+        "[\"a\" \"a\" \"a\" \"a\" \"a\" \"a\" \"changed\" \"a\" true [42 \"c\" \"i\"] \"object\"]\n",
     );
 }
 
