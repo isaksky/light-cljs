@@ -780,7 +780,9 @@ const decl = (() => {
       lazyResolve(name);
       const old = Object.getOwnPropertyDescriptor(registry(), name);
       if (old !== undefined && 'value' in old) continue;
-      if (old?.get !== undefined) (b.previous ??= new Map()).set(name, old.get);
+      // A declaration alone (`defprotocol`'s, before its bundle) is no
+      // previous definition: it keeps the fast product read.
+      if (old?.get !== undefined && !declarationOnly(name)) (b.previous ??= new Map()).set(name, old.get);
       globalThis.__lightInstallCompilerProduct(name, productGetter(b, name), b);
     }
     if (lazyCatalog !== null) for (const [protocol] of b.indices) catalogProtocol(protocol);
@@ -3595,6 +3597,11 @@ globalThis.__lightRegisterUnit=(name,unit,once=false,location='',test=null)=>{
   if(unit!==null)unitSlots.set(unit,slot);
   Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot,decl.bundles())});return null;
 };
+// Whether `name`'s root is a declaration alone: no unit, never defined.
+function declarationOnly(name){
+  const slot=roots.get(name);
+  return slot!==undefined&&__rt.initializerSlotGet(slot,0)===null&&__rt.initializerSlotGet(slot,4)!==true;
+}
 // `frontier`: the bundles registered before the root, whose products its
 // initializer reads (`decl.atDeclarationFrontier`).
 const rootGetter=(name,unit,slot,frontier=Infinity)=>()=>{
@@ -3887,14 +3894,14 @@ const catalogFrontier=(c,p)=>{
 // an earlier entry of the catalog defines it: the entry that owns the name
 // just before `b` (`lazyStateBefore`, where a declaration keeps an earlier
 // definition): a bundle's product, or an ordinary root's initializer at
-// its own declaration frontier, which fails for a declaration alone.
+// its own declaration frontier; not a declaration alone (`declarationOnly`).
 const catalogPrevious=(b,name)=>{
   const c=b.catalog;
   if(__rt.getOr(c.names,name,null)===null)return undefined;
   const s=lazyStateBefore(c,name,b.entry),q=s.owner;
   if(q<0)return undefined;
   if(__rt.nth(__rt.nth(c.entries,q),0)===1)return decl.productGetter(lazyBundle(c,q),name);
-  if(s.unit===null)return rootGetter(name,null,null);
+  if(s.unit===null)return undefined;
   let slot=unitSlots.get(s.unit);
   if(slot===undefined){slot=__rt.initializerSlot(s.unit,name);unitSlots.set(s.unit,slot);}
   return rootGetter(name,s.unit,slot,catalogFrontier(c,q));
