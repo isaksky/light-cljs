@@ -5673,3 +5673,35 @@ average 9-11, with JavaScript and source map byte-identical to the V8
 build's (`d67471d1…`, `3c4f4cba…`); `app.main` stops where it did, in
 `app.util.object/add-properties!` (light-cljs-632), after 35.56 s at 1
 thread. No V8-build input changed.
+
+### Review fixes: state reads, reentrant failures, consumption and collection (light-cljs-613, 2026-10-30)
+
+The second review round found check-then-act and delivery gaps between
+tasks; the contract above now covers them. Each has an engine test that
+fails before its fix: `delay_state_racing_settlement_is_consistent` (a
+unit test whose hook settles the delay between the printer state's
+lock-free miss and its lock; before, pending with the cleared pending
+value), `reentrant_outer_failure_reaches_parked_readers` (barriers hold a
+reentered run while another task parks on it; before, that reader got the
+kept inner value instead of the outer run's exception),
+`printing_a_settled_attributed_delay_records_consumption` (before, an
+empty consumption log for a reader that only printed the delay), and
+`pending_delay_seed_survives_collection` and
+`provisional_delay_value_survives_collection` (without the two trace
+edges, reclaimed objects). Every delay state transition was checked for
+the same pattern: the publication walk now reads a delay's thunk, value
+and pending value in one critical section, and the others (claim, reentry,
+provisional values, settlement) already decide under the cell lock.
+
+Rebased on master `87043393` (light-cljs-619 landed), with
+`LIGHT_CLJS_STRESS_SEEDS=12`: Pants-only `bbp_macros` 298, Pants plus
+QuickJS reference and V8 plus Pants 300 each (one existing ignored case in
+each); the engine's suite (all targets) 2,238 and its doctests; formatting,
+engine Clippy and Pants plus QuickJS Clippy pass allowing the three engine
+baseline categories. Penpot `app.render` from Pants and V8 release builds of
+this tree, at load average 8-9: 8.16 s wall (7.67 s user, 497,975,296 bytes
+peak memory) and 6.51 s (10.25 s user, 595,902,464 bytes) at 1 and 4
+threads; the V8 build 2.30 s and 1.52 s. All four outputs and their source
+maps are byte-identical (`d67471d1…`, `3c4f4cba…`). `app.main` still stops
+in `app.util.object/add-properties!` (light-cljs-632), after 35.01 s at 1
+thread.
