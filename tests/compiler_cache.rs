@@ -269,6 +269,7 @@ fn mutations_in_anonymous_functions_reuse_cached_artifacts() {
 /// On the Pants build, a program that may write a core function's value
 /// installs no artifact, since cached macro code may call that function
 /// directly, and each miss says so instead of "no artifact was published".
+/// It publishes nothing either: an identical rebuild would not look it up.
 #[cfg(all(
     feature = "bbp-macros",
     not(feature = "v8-macros"),
@@ -285,8 +286,14 @@ fn core_function_writes_name_their_miss() {
     ]);
     let oracle = project.uncached("main");
     assert_eq!(oracle.run(), "h42\n");
-    project.cached("main", &[]);
+    let populating = project.cached("main", &[]);
     let warm = project.cached("main", &[]);
+    for build in [&populating, &warm] {
+        assert_eq!(build.stat("cache.published"), 0, "{}", build.stats);
+        assert_eq!(build.stat("cache.bytes-written"), 0, "{}", build.stats);
+        assert_eq!(build.stat("cache.output.stored"), 0, "{}", build.stats);
+        assert_eq!(build.js, oracle.js);
+    }
     assert_eq!(warm.stat("cache.hits"), 0, "{}", warm.stats);
     assert_eq!(warm.stat("cache.miss.core-write"), 2, "{}", warm.stats);
     let reason = "miss core-write: the build may write the core function inc, which cached macro code may call directly";
@@ -295,6 +302,80 @@ fn core_function_writes_name_their_miss() {
         [format!("util {reason}"), format!("main {reason}")]
     );
     assert_eq!(warm.js, oracle.js);
+}
+
+/// A real core write inside an anonymous function literal, `#(...)`, or a
+/// `fn` is found by the Pants build's scan like one in a list: once a
+/// consumer adds one, the cached provider whose helper calls the written
+/// function is analyzed again rather than installed, and expansion sees the
+/// write. Covers `set!`, `binding`, `with-redefs` and a `js*` hole.
+#[cfg(all(
+    feature = "bbp-macros",
+    not(feature = "v8-macros"),
+    not(feature = "quickjs")
+))]
+#[test]
+fn anonymous_core_writes_reject_cached_providers() {
+    for (redefine, expected) in [
+        (
+            "(let [before (util/probe)] (#(set! cljs.core/even? (fn [_] false))) [before (util/probe)])",
+            "[true false]",
+        ),
+        (
+            "(#(with-redefs [cljs.core/even? (fn [_] false)] (util/probe)))",
+            "false",
+        ),
+        (
+            "((fn [] (binding [cljs.core/even? (fn [_] false)] (util/probe))))",
+            "false",
+        ),
+        (
+            "(let [before (util/probe)] (#(js* \"(~{} = function (_) { return false; })\" cljs.core/even?)) [before (util/probe)])",
+            "[true false]",
+        ),
+    ] {
+        let project = Project::new(&[
+            ("util.cljs", "(ns util) (defn probe [] (even? 2))"),
+            (
+                "macros.cljs",
+                "(ns macros (:require [util])) (defmacro check [] (util/probe))",
+            ),
+            (
+                "main.cljs",
+                "(ns main (:require [macros :refer [check]])) (js/console.log (check))",
+            ),
+        ]);
+        project.cached("main", &[]);
+        let warm = project.cached("main", &[]);
+        assert_eq!(warm.stat("cache.hits"), 3, "{}", warm.stats);
+        assert_eq!(warm.run(), "true\n");
+
+        project.write(
+            "main.cljs",
+            &format!(
+                "(ns main (:require [util] [macros :refer [check]])) \
+                 (defmacro redefined [] {redefine}) \
+                 (js/console.log (check) (pr-str (redefined)))"
+            ),
+        );
+        let oracle = project.uncached("main");
+        assert_eq!(oracle.run(), format!("true {expected}\n"), "{redefine}");
+        let edited = project.cached("main", &[]);
+        assert_eq!(edited.stat("cache.hits"), 0, "{redefine}: {}", edited.stats);
+        assert_eq!(
+            edited.stat("cache.miss.core-write"),
+            3,
+            "{redefine}: {}",
+            edited.stats
+        );
+        assert_eq!(
+            edited.stat("cache.published"),
+            0,
+            "{redefine}: {}",
+            edited.stats
+        );
+        assert_eq!(edited.js, oracle.js, "{redefine}");
+    }
 }
 
 /// Computed mutation symbols leave no lexical core-write hint. Installing the

@@ -3002,12 +3002,9 @@ fn analyze_entry(
             let native_core_writes = core_write.is_some();
             let cached = match (cache.as_deref_mut(), &loader.record) {
                 (Some(cache), Some(_)) if let Some(core) = core_write => {
-                    cache.not_looked_up(
-                        "core-write",
-                        format!(
-                            "the build may write the core function {core}, which cached macro code may call directly"
-                        ),
-                    );
+                    cache.core_write(format!(
+                        "the build may write the core function {core}, which cached macro code may call directly"
+                    ));
                     None
                 }
                 (Some(cache), Some(record)) => {
