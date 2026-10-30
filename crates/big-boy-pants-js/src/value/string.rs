@@ -685,7 +685,6 @@ impl JsString {
 /// Incremental rope flattening for consumers that require a contiguous input.
 /// Each step visits one rope node, copies one unit, or releases one leaf.
 /// Flat inputs are reused. No heap edges or final buffer copy.
-#[derive(Debug)]
 pub(crate) struct StringFlatten {
     // A linked stack avoids an input-sized reallocation/copy on a deep rope.
     pending: std::collections::LinkedList<JsString>,
@@ -693,6 +692,19 @@ pub(crate) struct StringFlatten {
     units: Vec<u16>,
     ready: Option<JsString>,
     reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
+}
+
+// Traversals can retain linked ropes whose flat credit was refunded.
+// Formatting those handles would flatten them without an admitted copy.
+impl fmt::Debug for StringFlatten {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StringFlatten")
+            .field("pending_nodes", &self.pending.len())
+            .field("leaf_offset", &self.leaf.as_ref().map(|(_, offset)| offset))
+            .field("copied_units", &self.units.len())
+            .field("ready_len", &self.ready.as_ref().map(JsString::len))
+            .finish_non_exhaustive()
+    }
 }
 
 impl StringFlatten {
@@ -788,11 +800,20 @@ pub(crate) enum CursorStep {
     End,
 }
 
-#[derive(Debug)]
 pub(crate) struct UnitCursor {
     // A deep rope must not cause an input-sized stack reallocation in a step.
     pending: std::collections::LinkedList<(JsString, usize)>,
 }
+
+// Like StringFlatten, never format the retained string handles themselves.
+impl fmt::Debug for UnitCursor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnitCursor")
+            .field("pending_nodes", &self.pending.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl UnitCursor {
     pub(crate) fn new(text: JsString) -> Self {
         Self {
@@ -3036,6 +3057,64 @@ mod byte_budget_tests {
         assert_eq!(heap.byte_budget().used(), used - credit);
         assert_eq!(third.code_units().len(), 3 * UNITS);
         assert_eq!(second.code_units()[..UNITS], third.code_units()[..UNITS]);
+    }
+
+    #[test]
+    fn traversal_debug_does_not_flatten_uncredited_ropes() {
+        const UNITS: usize = 1000;
+        let heap = crate::heap::Heap::with_byte_limit(1 << 20);
+        let baseline = heap.byte_budget().used();
+        let leaf = JsString::copy_units(&heap, &[120; UNITS]).unwrap();
+        let prefix = leaf.concat_accounted(&heap, &leaf).ok().unwrap();
+        // Inspect the linked body without keeping an ordinary handle alive.
+        let prefix_body = Arc::clone(&prefix.0);
+        let parent = prefix.concat_accounted(&heap, &leaf).ok().unwrap();
+        let used = heap.byte_budget().used();
+        let credit = 2 * prefix.len() + BODY_BYTES;
+        drop(prefix);
+        let retained = heap.byte_budget().used();
+        assert_eq!(retained, used - credit);
+        let Storage::Rope(rope) = &prefix_body.storage else {
+            panic!("prefix must be a rope");
+        };
+        assert!(rope.flat_credit.lock().unwrap().is_none());
+
+        let before = JsString::copied_code_units();
+        let mut cursor = UnitCursor::new(parent.clone());
+        assert!(matches!(cursor.step(), CursorStep::Continue));
+        assert_eq!(rope.handles.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let debug = format!("{cursor:?}");
+        assert!(debug.contains("UnitCursor"), "{debug}");
+        assert!(debug.contains("pending_nodes: 2"), "{debug}");
+        assert_eq!(JsString::copied_code_units(), before);
+        assert!(prefix_body.flat.get().is_none());
+        assert!(parent.0.flat.get().is_none());
+        assert_eq!(heap.byte_budget().used(), retained);
+        drop(cursor);
+
+        let mut flatten = StringFlatten::new_accounted(&heap, parent.clone())
+            .ok()
+            .unwrap();
+        assert!(flatten.advance(1).is_none());
+        assert_eq!(rope.handles.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let admitted = heap.byte_budget().used();
+        let debug = format!("{flatten:?}");
+        assert!(debug.contains("StringFlatten"), "{debug}");
+        assert!(debug.contains("pending_nodes: 2"), "{debug}");
+        assert_eq!(JsString::copied_code_units(), before);
+        assert!(prefix_body.flat.get().is_none());
+        assert!(parent.0.flat.get().is_none());
+        assert_eq!(heap.byte_budget().used(), admitted);
+        drop(flatten);
+        assert_eq!(heap.byte_budget().used(), retained);
+
+        assert_eq!(parent.code_units(), &[120; 3 * UNITS]);
+        assert!(prefix_body.flat.get().is_none());
+        assert_eq!(heap.byte_budget().used(), retained);
+        drop(parent);
+        drop(prefix_body);
+        drop(leaf);
+        assert_eq!(heap.byte_budget().used(), baseline);
     }
 
     /// A large shared first piece and short later pieces: the output's
