@@ -82,6 +82,35 @@ engine source, and includes preloaded helper source.
 
 ## Supported boundary
 
+### Sharing mutable deftypes (light-cljs-564)
+
+The Pants build shares the identity and current fields of an ordinary
+`deftype` with `^:mutable`, `^:unsynchronized-mutable` or
+`^:volatile-mutable` fields. A closure stored in a compile-time atom or
+published as a helper retains that same instance. Its fields are shared
+state, rather than a copy or a cache private to each task. Protocol calls,
+field `set!`, identity equality/hash and printing use that instance in every
+task. Shared field reads and writes enter the same source-order effect
+lanes as compile-time atoms, preserving the result at 1/2/4/8 threads.
+This does not make a read followed by a write an atomic transaction.
+
+Before publication, fields can hold task-owned host values. Publication
+checks the complete current field graph, including closure captures and
+cycles, and promotes the field cell only if its version still matches the
+checked snapshot. Every later store checks its new value before installing
+it. A rejected store throws a catchable `TypeError` and leaves the field
+unchanged. Publishing an instance that still holds a mutable host object
+fails with the existing publication diagnostic, just as storing that host
+object directly in an atom does. Ordinary JavaScript objects, arrays,
+Maps and Sets remain task-owned. Raw `deftype*` bodies and mutable records
+keep their existing task-owned representation.
+
+The field cell is traced through its current contents, shares the aggregate
+memory budget and runs no user code under its lock. Publishing a cell cannot
+race an unchecked store. The application runtime and V8 build are unchanged.
+Library-free source reductions compare the atom/closure case and a published
+helper with the QuickJS reference under seeded scheduling at 1/2/4/8 threads.
+
 ### List and sequence markers (light-cljs-546)
 
 Native `list?` distinguishes lists and plain Cons cells from positional,

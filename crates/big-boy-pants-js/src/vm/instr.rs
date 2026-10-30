@@ -1585,11 +1585,17 @@ pub enum FormOp {
     /// source flags → a shareable regex value (`formRegex`, light-cljs-563,
     /// `crate::regexp::shared`).
     Regex = 104,
+    /// name fields record members → a type with mutable field storage.
+    MutableStructType = 105,
+    /// struct source-field-name value → assigned value.
+    StructSet = 106,
+    /// value → 0 (ordinary), 1 (private fields), 2 (shared fields).
+    StructState = 107,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 105] = [
+    pub const ALL: [FormOp; 108] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1695,6 +1701,9 @@ impl FormOp {
         FormOp::IsSortedBy,
         FormOp::IsArrayMap,
         FormOp::Regex,
+        FormOp::MutableStructType,
+        FormOp::StructSet,
+        FormOp::StructState,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1763,7 +1772,8 @@ impl FormOp {
             | FormOp::CljChunkRest
             | FormOp::CljChunkNext
             | FormOp::CljRealizeAll
-            | FormOp::CljSymbol => 1,
+            | FormOp::CljSymbol
+            | FormOp::StructState => 1,
             FormOp::Keyword
             | FormOp::InitializerSlot
             | FormOp::InitializerSlotGet
@@ -1804,12 +1814,14 @@ impl FormOp {
             | FormOp::CljGet
             | FormOp::CljAssoc
             | FormOp::SortedEntry
-            | FormOp::SortedReplace => 3,
+            | FormOp::SortedReplace
+            | FormOp::StructSet => 3,
             FormOp::CljInvoke
             | FormOp::CljProtocolLookup
             | FormOp::CljRangeCons
             | FormOp::SortedInsert
-            | FormOp::StructType => 4,
+            | FormOp::StructType
+            | FormOp::MutableStructType => 4,
         }
     }
 
@@ -1888,6 +1900,9 @@ impl FormOp {
             FormOp::CljSymbol => "cljSymbol",
             FormOp::CljSymbolNs => "cljSymbolNs",
             FormOp::StructType => "structType",
+            FormOp::MutableStructType => "mutableStructType",
+            FormOp::StructSet => "structSet",
+            FormOp::StructState => "structState",
             FormOp::StructField => "structField",
             FormOp::StructTypeOf => "structTypeOf",
             FormOp::RecordFromMap => "recordFromMap",

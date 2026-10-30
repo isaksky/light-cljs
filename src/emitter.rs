@@ -7235,7 +7235,7 @@ impl<'a> Emitter<'a> {
             fields,
             ..
         } = layout;
-        let mutable = Self::mutable_type(record, layout);
+        let mutable = (record || layout.body.is_some()) && Self::mutable_type(record, layout);
         let wrapper = self.iife_open(id, true);
         self.output.push(' ');
         self.product(global);
@@ -7269,8 +7269,13 @@ impl<'a> Emitter<'a> {
             .collect::<Vec<_>>()
             .join(", ");
         let index = self.native_types.len();
+        let type_intrinsic = if layout.mutable && !mutable {
+            "mutableStructType"
+        } else {
+            "structType"
+        };
         self.native_types.push(format!(
-            "__rt.structType({}, __rt.formVector({names}), {record}, __rt.formVector({member_names}))",
+            "__rt.{type_intrinsic}({}, __rt.formVector({names}), {record}, __rt.formVector({member_names}))",
             quoted(&name)
         ));
         write!(self.output, " }}, {mutable}, __lightUnitType{index}, ").unwrap();

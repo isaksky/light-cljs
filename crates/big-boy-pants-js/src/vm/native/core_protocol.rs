@@ -50,6 +50,36 @@ pub(crate) fn start_member(
     start_named(state, form, key, false)
 }
 
+/// A field write uses the task runtime for effect ordering before its leaf
+/// store. Both the resolver and store continuation can park without replay.
+pub(crate) fn start_set_member(
+    state: &mut VmState,
+    form: Value,
+    key: &crate::vm::property::Key,
+    value: Value,
+) -> Result<(), Fault> {
+    let (Some(resolver), crate::vm::property::Key::Name(name)) = (state.core_resolver.clone(), key)
+    else {
+        return Err(Fault::TypeError(
+            "mutable struct write without a runtime resolver".into(),
+        ));
+    };
+    push_native(
+        state,
+        NativeState::CoreProtocol(State {
+            op: FormOp::StructSet,
+            operands: vec![form.clone(), Value::String(name.clone()), value],
+            resolver,
+            receiver: form,
+            through_lazy: false,
+            called: false,
+            member: None,
+            presence: false,
+            retry: None,
+        }),
+    )
+}
+
 /// Whether the task's resolver supplies the member `key` of `form`
 /// (`property::Presence::Form`): the member is resolved, not called.
 pub(crate) fn start_presence(

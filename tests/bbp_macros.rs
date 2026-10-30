@@ -6042,6 +6042,111 @@ fn assert_native_matches_legacy(source: &str, expected: &str) {
     assert_eq!(native, legacy, "{source}");
 }
 
+#[test]
+fn native_mutable_deftype_closure_in_atom_matches_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defprotocol Cache (cached [x]) (put-cache [x v]))
+           (deftype Box [v ^:unsynchronized-mutable saved]
+             Cache
+             (cached [_] (if (nil? saved) (set! saved (vec v)) nil) saved)
+             (put-cache [_ x] (set! saved x))
+             Object (toString [_] (str "box:" (pr-str saved))))
+           (defmacro probe []
+             (let [b (Box. '(1 2) nil) listeners (atom []) h (hash b)
+                   f (fn [] (cached b))]
+               (swap! listeners conj f)
+               (let [a ((first @listeners)) again (f)]
+                 (put-cache b [3])
+                 (list 'quote [a (identical? a again) (f) (.-saved b)
+                               (= b b) (= b (Box. '(1 2) [3])) (= h (hash b))
+                               (str b) (pr-str b) (instance? Box b)]))))
+           (js/console.log (pr-str (probe)))"#,
+        "[[1 2] true [3] [3] true false true \"box:[3]\" \"#object[cljs.user.Box box:[3]]\" true]\n",
+    );
+}
+
+#[test]
+fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
+    let root = temp_dir::TempDir::new("mutable-deftype-sharing");
+    for (file, source) in [
+        (
+            "state.cljs",
+            r#"(ns state)
+          (defprotocol Cell (read-cell [x]) (write-cell [x v]))
+          (deftype Box [^:volatile-mutable value]
+            Cell (read-cell [_] value) (write-cell [_ v] (set! value v)))
+          (def saved (let [b (Box. 0)] (fn [v] (let [old (read-cell b)] (write-cell b v) [old (read-cell b)]))))
+          (def listeners (atom [(let [b (Box. 10)] (fn [v] (let [old (read-cell b)] (write-cell b v) [old (read-cell b)])))]))
+          (defmacro probe [v] (list 'quote [(saved v) ((first @listeners) (+ v 10))]))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [state :refer [probe]])) (def value (probe 1))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [a] [state :refer [probe]])) (def value (probe 2))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (js/console.log (pr-str [a/value b/value]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |pants, threads, seed| {
+        let mut host = MacroHost::new();
+        if pants {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(threads).unwrap(),
+                stats: Some(&mut stats),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: pants.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("Pants {pants}, {threads} threads, seed {seed}: {e}"));
+        (emit_js(&program), stats.native_helpers)
+    };
+    let (reference, _) = build(false, 1, 0);
+    assert_eq!(
+        program_output(&reference),
+        "[[[0 1] [10 11]] [[1 2] [11 12]]]\n"
+    );
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for threads in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert!(
+            reference == build(false, threads, 0).0,
+            "QuickJS reference: {threads} threads"
+        );
+        for seed in 1..=seeds {
+            let (actual, helpers) = build(true, threads, seed);
+            assert!(
+                reference == actual,
+                "{threads} threads, seed {seed}: {}",
+                program_output(&actual)
+            );
+            assert!(helpers.published > 0, "{helpers:?}");
+        }
+    }
+}
+
 /// Compare the complete emission, including source positions and names, under
 /// both macro backends. A namespace exercises the task-local bridge at 1/4 jobs.
 fn assert_backend_emission(source: &str) {

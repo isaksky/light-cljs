@@ -511,6 +511,7 @@ pub(crate) struct TypeInfo {
     /// holds compiler data, so comparing it runs no user code. `symbol` of
     /// such an instance whose key is a symbol is that symbol.
     pub(crate) key: Option<usize>,
+    pub(crate) mutable: bool,
 }
 
 /// A struct instance: its type, its field values in the type's order, and a
@@ -521,12 +522,19 @@ pub(crate) struct StructBody {
     pub(crate) ty: Value,
     pub(crate) info: Arc<TypeInfo>,
     pub(crate) fields: PVector,
+    pub(crate) mutable: Option<Arc<super::mutable_fields::MutableFields>>,
     /// The extension map itself: metadata copies and field updates retain
     /// its identity, even when duplicate keys make distinct copies unequal.
     pub(crate) ext: Option<Value>,
 }
 
 impl StructBody {
+    pub(crate) fn field(&self, index: usize) -> Option<Value> {
+        match &self.mutable {
+            Some(cell) => cell.get(index),
+            None => self.fields.get(index),
+        }
+    }
     pub(crate) fn ext_map(&self, heap: &Heap) -> Option<FormMap> {
         self.ext
             .as_ref()
@@ -795,6 +803,9 @@ impl Trace for FormObject {
             FormBody::Struct(s) => {
                 s.ty.trace(visit);
                 s.fields.trace(visit);
+                if let Some(cell) = &s.mutable {
+                    cell.trace(visit);
+                }
                 if let Some(ext) = &s.ext {
                     ext.trace(visit);
                 }
@@ -885,9 +896,17 @@ fn wrong(heap: &Heap, expected: &'static str, v: &Value) -> CollectionError {
 /// Allocate a form. `parts` are the values it was derived from, for the
 /// known-shareable bit (`Heap::alloc_persistent`).
 fn alloc(heap: &Heap, object: FormObject, parts: &[Value]) -> Result<Value, CollectionError> {
-    heap.alloc_persistent(HeapObject::Form(Arc::new(object)), Some(parts))
-        .map(Value::Object)
-        .ok_or(CollectionError::OutOfMemory)
+    // Mutable fields need the publication walk to promote their cell, even
+    // when all constructor operands already have known-shareable bits.
+    let mutable = matches!(object.body(), FormBody::Struct(s) if s.mutable.is_some());
+    let object = HeapObject::Form(Arc::new(object));
+    (if mutable {
+        heap.alloc(object)
+    } else {
+        heap.alloc_persistent(object, Some(parts))
+    })
+    .map(Value::Object)
+    .ok_or(CollectionError::OutOfMemory)
 }
 
 /// The trie hash of a value hash: a bijective spread (splitmix64), so
@@ -1924,6 +1943,17 @@ pub(crate) fn new_type(
     record: &Value,
     members: &Value,
 ) -> Result<Value, CollectionError> {
+    new_type_with_mutability(heap, name, fields, record, members, false)
+}
+
+pub(crate) fn new_type_with_mutability(
+    heap: &Heap,
+    name: &Value,
+    fields: &Value,
+    record: &Value,
+    members: &Value,
+    mutable: bool,
+) -> Result<Value, CollectionError> {
     let Value::String(name) = name else {
         return Err(wrong(heap, "string type name", name));
     };
@@ -1967,6 +1997,7 @@ pub(crate) fn new_type(
         members: members.into_boxed_slice(),
         record: matches!(record, Value::Bool(true)),
         key,
+        mutable,
     };
     alloc(
         heap,
@@ -1997,7 +2028,7 @@ pub(crate) fn struct_own_property(f: &FormObject, name: &JsString) -> Option<Val
         .members
         .iter()
         .rposition(|member| member.code_units() == name.code_units())
-        .map(|i| s.fields.get(i).unwrap_or(Value::Undefined))
+        .map(|i| s.field(i).unwrap_or(Value::Undefined))
 }
 
 /// The JavaScript own keys of the struct `f`, in a legacy constructor's
@@ -2065,10 +2096,24 @@ pub(crate) fn new_struct(
     let parts: Vec<Value> = std::iter::once(ty.clone())
         .chain(values.iter().take(n + 2).cloned())
         .collect();
+    let fields = PVector::try_from_values(heap, &fields)?;
+    let mutable = if info.mutable {
+        Some(Arc::new(super::mutable_fields::MutableFields::new(
+            heap,
+            fields.clone(),
+        )?))
+    } else {
+        None
+    };
     let body = StructBody {
         ty: ty.clone(),
         info,
-        fields: PVector::try_from_values(heap, &fields)?,
+        fields: if mutable.is_some() {
+            PVector::default()
+        } else {
+            fields
+        },
+        mutable,
         ext,
     };
     alloc(heap, FormObject::new(FormBody::Struct(body), meta), &parts)
@@ -2098,8 +2143,38 @@ pub(crate) fn struct_field(heap: &Heap, s: &Value, name: &Value) -> Result<Value
         .fields
         .iter()
         .position(|field| field.code_units() == name.code_units())
-        .and_then(|i| body.fields.get(i))
+        .and_then(|i| body.field(i))
         .ok_or(CollectionError::MissingKey)
+}
+
+/// 0: immutable/non-struct; 1: unpublished mutable fields; 2: shared fields.
+pub(crate) fn struct_state(heap: &Heap, value: &Value) -> u8 {
+    struct_body(heap, value)
+        .and_then(|(_, s)| s.mutable)
+        .map_or(0, |cell| if cell.is_shared() { 2 } else { 1 })
+}
+
+pub(crate) fn struct_set(
+    heap: &Heap,
+    value: &Value,
+    name: &Value,
+    field: Value,
+) -> Result<Value, crate::vm::dispatch::Fault> {
+    let (_, body) = struct_body(heap, value).ok_or_else(|| wrong(heap, "mutable struct", value))?;
+    let cell = body
+        .mutable
+        .ok_or_else(|| wrong(heap, "mutable struct", value))?;
+    let Value::String(name) = name else {
+        return Err(wrong(heap, "string field name", name).into());
+    };
+    let index = body
+        .info
+        .fields
+        .iter()
+        .position(|s| s == name)
+        .ok_or(CollectionError::MissingKey)?;
+    cell.set(heap, index, field.clone())?;
+    Ok(field)
 }
 
 /// Whether `v` is a record (occurrences are not transparent here).
@@ -2184,6 +2259,7 @@ fn record_like(
     let body = StructBody {
         ty: s.ty.clone(),
         info: s.info.clone(),
+        mutable: None,
         fields,
         ext,
     };
@@ -2305,6 +2381,7 @@ pub(crate) fn record_from_map(
     let body = StructBody {
         ty: ty.clone(),
         info,
+        mutable: None,
         fields: PVector::try_from_values(heap, &fields)?,
         ext: (count(heap, &ext)? > 0).then_some(ext),
     };

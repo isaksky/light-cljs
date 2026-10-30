@@ -819,6 +819,7 @@ const native = (() => {
   };
   __rt.cljCoreResolver((op, x, throughLazy, name) => {
     if (op === 'jsMember') return jsMember(x, name);
+    if (op === 'structSet') return setMutableMember;
     if(op==='cljWithExportedMeta')op='cljWithMeta';
     const kind = __rt.formKind(x);
     if (kind === 'struct' && isVar(x) && varMethods[op] !== undefined) return varMethods[op];
@@ -1014,7 +1015,25 @@ const native = (() => {
     if (multi.is(value)) return name === 'call' ? rawMultiCall : name === 'apply' ? rawApplies.get('struct') : inherited(name);
     // A Var's `_meta` is its materialized metadata, as the legacy getter's.
     if (isVar(value)) return name === '_meta' ? varMeta(value) : rawVarMembers.get(name) ?? inherited(name);
+    if (__rt.structState(value) !== 0) {
+      const info = decl.structInfo(value), index = info.fieldMembers.lastIndexOf(name);
+      if (index >= 0) {
+        mutableLane(value);
+        return __rt.structField(value, info.fields[index]);
+      }
+    }
     return structMember(value, name);
+  };
+  const mutableLane = x => {
+    if (__rt.structState(x) !== 2) return;
+    const cell = __rt.effect(65532, 0);
+    if (cell !== 0) __rt.need(cell, 5);
+  };
+  const setMutableMember = (x, name, value) => {
+    const info = decl.structInfo(x), index = info.fieldMembers.lastIndexOf(name);
+    if (index < 0) throw new TypeError('unknown mutable field: ' + name);
+    mutableLane(x);
+    return __rt.structSet(x, info.fields[index], value);
   };
   // Rules 2 and 3 of docs/native-macros.md, "Member precedence: one rule",
   // for a struct or record (the engine answers rule 1, its own properties):

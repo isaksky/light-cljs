@@ -6036,6 +6036,7 @@ pub(crate) fn finish_property_write(
 ) -> Result<(), Fault> {
     match write {
         property::Write::Complete(setter) => write_result(state, setter, base, value),
+        property::Write::MutableStruct => core_protocol::start_set_member(state, base, key, value),
         property::Write::Proxy(target) => start_proxy(
             state,
             super::proxy::Mode::Set {

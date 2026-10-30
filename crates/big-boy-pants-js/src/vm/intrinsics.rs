@@ -549,6 +549,9 @@ fn form_op(
     if op == FormOp::FnApplyReceiver {
         return Ok(super::function::apply_receiver(heap, args[0].clone()));
     }
+    if op == FormOp::StructSet {
+        return form::struct_set(heap, &args[0], &args[1], args[2].clone());
+    }
     match clj_op(heap, op, &args) {
         Ok(Some(result)) => Ok(result),
         Ok(None) => Ok(strict_form_op(heap, host, op, args)?),
@@ -795,6 +798,11 @@ fn strict_form_op(
             let (name, fields, record, members) = (arg(), arg(), arg(), arg());
             form::new_type(heap, &name, &fields, &record, &members)?
         }
+        FormOp::MutableStructType => {
+            let (name, fields, record, members) = (arg(), arg(), arg(), arg());
+            form::new_type_with_mutability(heap, &name, &fields, &record, &members, true)?
+        }
+        FormOp::StructState => Value::Number(f64::from(form::struct_state(heap, &arg()))),
         FormOp::StructField => {
             let (s, name) = (arg(), arg());
             form::struct_field(heap, &s, &name)?
@@ -805,7 +813,8 @@ fn strict_form_op(
             form::record_from_map(heap, &ty, &map)?
         }
         // Dispatched by `form_op` before reaching here.
-        FormOp::CljTruth
+        FormOp::StructSet
+        | FormOp::CljTruth
         | FormOp::FnApplyNull
         | FormOp::FnApplyReceiver
         | FormOp::InitializerSlot

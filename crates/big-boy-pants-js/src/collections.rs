@@ -148,6 +148,7 @@ pub(crate) use builder::{Builder, OwnedBuilders};
 pub use form::{FormKind, FormName};
 pub(crate) use map::PMap;
 pub(crate) use vector::PVector;
+pub(crate) mod mutable_fields;
 
 /// Where a value occurred in source text. Host-defined: `source` names a
 /// source (file, buffer) in the host's own numbering; `line` and `column`

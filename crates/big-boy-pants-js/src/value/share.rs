@@ -477,6 +477,12 @@ enum Children {
     /// A form's elements (`[i]`), or its keys and values (`{key}`), then
     /// its metadata (`.meta`).
     Form(Arc<FormObject>),
+    MutableStruct {
+        form: Arc<FormObject>,
+        fields: PVector,
+        cell: Arc<crate::collections::mutable_fields::MutableFields>,
+        version: u64,
+    },
     /// A lazy sequence: its thunk (`.thunk`) or what it realized
     /// (`.realized`), as one read saw it, then its metadata.
     Lazy {
@@ -512,6 +518,19 @@ impl Children {
                 f(Step::MapValue(k.clone()), v);
             }),
             Children::Occurrence(v) => f(Step::OccurrenceValue, v),
+            Children::MutableStruct { form, fields, .. } => {
+                if let FormBody::Struct(s) = form.body() {
+                    f(Step::NativeEdge(0), &s.ty);
+                }
+                let mut index = 0;
+                fields.for_each(|v| {
+                    f(Step::Index(index), v);
+                    index += 1;
+                });
+                if let Some(meta) = form.meta() {
+                    f(Step::Metadata, meta);
+                }
+            }
             Children::Form(form) => {
                 match form.body() {
                     FormBody::Keyword(_) | FormBody::Symbol(_) => {}
@@ -646,7 +665,19 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
                         meta: form.meta().cloned(),
                     }
                 }
-                None => Children::Form(form.clone()),
+                None => match form.body() {
+                    FormBody::Struct(s) if s.mutable.is_some() => {
+                        let cell = s.mutable.as_ref().unwrap().clone();
+                        let (fields, version) = cell.snapshot();
+                        Children::MutableStruct {
+                            form: form.clone(),
+                            fields,
+                            cell,
+                            version,
+                        }
+                    }
+                    _ => Children::Form(form.clone()),
+                },
             },
             HeapObject::Function(func) => Children::Function {
                 captures: func.captures.clone(),
@@ -695,12 +726,18 @@ fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(),
     // (module docs, "Functions with own properties"). Each function gains a
     // record at most once, so this ends.
     loop {
-        let (proven, lazies) = walk(heap, root, expanded)?;
+        let (proven, lazies, fields) = walk(heap, root, expanded)?;
         // A lazy sequence is marked shared under its lock against the state
         // the walk read; one realized since is read again (light-cljs-479,
         // `crate::collections::lazy`, "Sharing"). Each is realized at most
         // once, so this ends.
         if !lazies.iter().all(|(cell, saw)| cell.mark_shared(*saw)) {
+            continue;
+        }
+        if !fields
+            .iter()
+            .all(|(cell, version)| cell.mark_shared(*version))
+        {
             continue;
         }
         let gained_properties = |o: &HeapObject| match o {
@@ -716,6 +753,7 @@ fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(),
 
 /// The lazy sequence cells a walk expanded, with whether each was realized.
 type LazySeen = Vec<(Arc<crate::collections::lazy::LazyCell>, bool)>;
+type FieldsSeen = Vec<(Arc<crate::collections::mutable_fields::MutableFields>, u64)>;
 
 /// One breadth-first walk of [`check`] from `root`: the persistent objects
 /// it expanded and the lazy cells among them, or the rejection.
@@ -723,8 +761,9 @@ fn walk(
     heap: &Heap,
     root: ObjectId,
     expanded: &mut usize,
-) -> Result<(Vec<ObjectId>, LazySeen), PublishError> {
+) -> Result<(Vec<ObjectId>, LazySeen, FieldsSeen), PublishError> {
     let mut lazies = Vec::new();
+    let mut fields = Vec::new();
     // Each discovered object maps to the step that first reached it.
     let mut parents: HashMap<ObjectId, Option<(ObjectId, Step)>> = HashMap::new();
     parents.insert(root, None);
@@ -750,6 +789,9 @@ fn walk(
                 if let Children::Lazy { cell, realized, .. } = &children {
                     lazies.push((cell.clone(), *realized));
                 }
+                if let Children::MutableStruct { cell, version, .. } = &children {
+                    fields.push((cell.clone(), *version));
+                }
                 children.for_each(heap, |step, child| {
                     if let Value::Object(child) = *child
                         && let Entry::Vacant(slot) = parents.entry(child)
@@ -761,7 +803,7 @@ fn walk(
             }
         }
     }
-    Ok((proven, lazies))
+    Ok((proven, lazies, fields))
 }
 
 /// How [`into_properties`] reaches a child: an array element or a named

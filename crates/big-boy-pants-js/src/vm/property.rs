@@ -1123,6 +1123,9 @@ fn lookup_cursor(
                     }
                     Visit::Other(HeapObject::Form(f)) if let Key::Name(name) = key => {
                         if let Some(value) = form::struct_own_property(f, name) {
+                            if !has && matches!(f.body(), form::FormBody::Struct(s) if s.mutable.is_some()) {
+                                return Ok(Lookup::Found(Read::Deferred(Deferred::Form { target: id, key: key.clone() })));
+                            }
                             Ok(Lookup::Found(Read::Value(if has {
                                 Value::Undefined
                             } else {
@@ -1439,6 +1442,7 @@ fn put(
 /// continuation. No heap borrow survives this result.
 pub(crate) enum Write {
     Complete(Option<Value>),
+    MutableStruct,
     Proxy(ObjectId),
     Typed(crate::object::typed_array::View, f64),
 }
@@ -1460,6 +1464,9 @@ pub(crate) fn prepare_put(
             prepare_put(heap, task, &Value::Object(target), key, value, strict)
         }
         Write::Typed(view, index) => view.set(heap, index, &value).map(|()| None),
+        Write::MutableStruct => Err(Fault::Unsupported(
+            "a mutable struct write requires its runtime resolver".into(),
+        )),
     }
 }
 
@@ -1523,6 +1530,17 @@ fn prepare_write_cached(
         }
         return put_primitive(base, key, strict).map(|()| Write::Complete(None));
     };
+    if let Key::Name(name) = key
+        && heap
+            .read(id, |o| {
+                matches!(o, HeapObject::Form(f)
+            if matches!(f.body(), form::FormBody::Struct(s) if s.mutable.is_some())
+                && form::struct_own_property(f, name).is_some())
+            })
+            .unwrap_or(false)
+    {
+        return Ok(Write::MutableStruct);
+    }
     // Existing names need one key lookup. A new name is interned only when
     // ordinary storage requests it, after exotic and ownership checks.
     let mut interned = cache.map(|(key, _)| key).or_else(|| match key {
