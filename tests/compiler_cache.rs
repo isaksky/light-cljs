@@ -1256,6 +1256,7 @@ fn parallel_resource_and_configuration_reads_match_one_thread() {
     if PANTS_BUILD {
         assert_eq!(cold.stat("pool.worker-isolates"), 0, "{}", cold.stats);
         assert_eq!(cold.stat("pool.engine-workers"), 3, "{}", cold.stats);
+        assert!(cold.stat("pool.engine-participants") > 0, "{}", cold.stats);
     } else {
         assert!(cold.stat("pool.worker-isolates") > 0, "{}", cold.stats);
     }

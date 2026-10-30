@@ -61,6 +61,7 @@ fn exact_boundary_expansion_and_node_limits_name_the_same_unit_at_one_and_four_s
     if crate::macro_free_units::PANTS_BUILD {
         assert_eq!(pooled.stats.deferred_units.worker_isolates, 0);
         assert_eq!(pooled.stats.deferred_units.pool_engine_workers, 3);
+        assert!(pooled.stats.deferred_units.pool_engine_participants > 0);
     } else {
         assert_eq!(pooled.stats.deferred_units.worker_isolates, 3);
     }
@@ -474,6 +475,7 @@ fn a_worker_whose_steady_need_exceeds_its_base_keeps_its_isolate() {
         if crate::macro_free_units::PANTS_BUILD {
             assert_eq!(units.worker_isolates, 0, "{units:?}");
             assert_eq!(units.pool_engine_workers, 1, "{units:?}");
+            assert!(units.pool_engine_participants > 0, "{units:?}");
         } else {
             assert_eq!(units.worker_isolates, 1, "{units:?}");
         }

@@ -68,6 +68,7 @@ fn units_expanding_source_and_core_macros_emit_the_one_slot_program() {
     if crate::macro_free_units::PANTS_BUILD {
         assert_eq!(units.worker_isolates, 0, "{units:?}");
         assert_eq!(units.pool_engine_workers, 3, "{units:?}");
+        assert!(units.pool_engine_participants > 0, "{units:?}");
     } else {
         assert!((1..=3).contains(&units.worker_isolates), "{units:?}");
     }
@@ -181,6 +182,7 @@ fn a_first_pooled_build_compiles_the_bootstrap_before_its_deadline_starts() {
     if crate::macro_free_units::PANTS_BUILD {
         assert_eq!(units.worker_isolates, 0, "{units:?}");
         assert_eq!(units.pool_engine_workers, 3, "{units:?}");
+        assert!(units.pool_engine_participants > 0, "{units:?}");
     } else {
         assert!(units.worker_isolates > 0, "{units:?}");
     }
@@ -437,6 +439,7 @@ fn units_on_workers_keep_the_one_slot_manifest_and_artifacts() {
             if crate::macro_free_units::PANTS_BUILD {
                 assert_eq!(units.worker_isolates, 0, "{units:?}");
                 assert_eq!(units.pool_engine_workers, slots - 1, "{units:?}");
+                assert!(units.pool_engine_participants > 0, "{units:?}");
             } else {
                 assert!(units.worker_isolates > 0, "{units:?}");
             }
@@ -534,6 +537,7 @@ fn a_persistent_worker_never_takes_a_released_macro_generation_for_a_later_one()
         if crate::macro_free_units::PANTS_BUILD {
             assert_eq!(units.worker_isolates, 0, "{units:?}");
             assert_eq!(units.pool_engine_workers, 1, "{units:?}");
+            assert!(units.pool_engine_participants > 0, "{units:?}");
         } else {
             assert_eq!(units.worker_isolates, 1, "{units:?}");
         }
