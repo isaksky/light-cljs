@@ -1431,7 +1431,9 @@ impl Heap {
             .collect();
         let garbage: Vec<Box<HeapObject>> = {
             let mut watches = lock(&self.reclamation);
-            objects.sweep(|id| watches.reclaimed(id))
+            let garbage = objects.sweep(|id| watches.reclaimed(id));
+            watches.publish();
+            garbage
         };
         // No atom operation is in progress (the world is stopped), so every
         // retired atom box is unreachable: release them now rather than at

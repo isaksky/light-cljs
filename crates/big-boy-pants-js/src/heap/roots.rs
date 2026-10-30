@@ -242,6 +242,13 @@ impl ReclamationQueue {
 
 type ReclamationWatch = (Weak<ReclamationEvents>, usize);
 
+// Usually one watch per object: keep it inline, without an allocation.
+#[derive(Debug)]
+struct Watches {
+    first: ReclamationWatch,
+    rest: Vec<ReclamationWatch>,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct ReclamationRegistry {
     // Every watched identity belongs to this heap; keep one reference to it
@@ -251,8 +258,10 @@ pub(super) struct ReclamationRegistry {
     // order, so testing this bit is far cheaper than a hash probe for each
     // reclaimed object that nothing watches.
     slots: Vec<u64>,
-    // Usually one watch per object: keep it in a short list, not a table.
-    objects: std::collections::HashMap<ObjectId, Vec<ReclamationWatch>, super::gc::IdentityBuild>,
+    objects: std::collections::HashMap<ObjectId, Watches, super::gc::IdentityBuild>,
+    // One sweep's notifications, grouped by live queue, so each queue is
+    // upgraded and locked once per collection rather than once per death.
+    sweep: Vec<(Arc<ReclamationEvents>, Vec<(ObjectIdentity, usize)>)>,
 }
 
 impl ReclamationRegistry {
@@ -265,15 +274,27 @@ impl ReclamationRegistry {
             self.slots.resize(slot / 64 + 1, 0);
         }
         self.slots[slot / 64] |= 1 << (slot % 64);
-        let watches = self.objects.entry(identity.object).or_default();
-        let watched = |(events, watched): &ReclamationWatch| {
-            *watched == token && std::ptr::eq(events.as_ptr(), Arc::as_ptr(&queue.0))
-        };
-        if !watches.iter().any(watched) {
-            watches.push((Arc::downgrade(&queue.0), token));
+        let watch = || (Arc::downgrade(&queue.0), token);
+        match self.objects.entry(identity.object) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(Watches {
+                    first: watch(),
+                    rest: Vec::new(),
+                });
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let watches = entry.get_mut();
+                let watched = |(events, watched): &ReclamationWatch| {
+                    *watched == token && std::ptr::eq(events.as_ptr(), Arc::as_ptr(&queue.0))
+                };
+                if !watched(&watches.first) && !watches.rest.iter().any(watched) {
+                    watches.rest.push(watch());
+                }
+            }
         }
     }
 
+    /// Record a swept object's notifications; [`Self::publish`] delivers them.
     pub(super) fn reclaimed(&mut self, object: ObjectId) {
         let (word, bit) = (object.slot() / 64, 1u64 << (object.slot() % 64));
         match self.slots.get_mut(word) {
@@ -282,17 +303,38 @@ impl ReclamationRegistry {
         }
         // A slot's watches all name its current occupant: the bit is cleared
         // when that occupant is swept, before the slot can be reused.
-        let Some(watches) = self.objects.remove(&object) else {
+        let Some(Watches { first, rest }) = self.objects.remove(&object) else {
             return;
         };
-        for (queue, token) in watches {
-            if let Some(queue) = queue.upgrade() {
-                let identity = ObjectIdentity {
-                    heap: self.heap.clone(),
-                    object,
-                };
-                super::lock(&queue).push((identity, token));
-            }
+        for (queue, token) in std::iter::once(first).chain(rest) {
+            // A weak reference keeps its queue's allocation, so a matching
+            // address is the same queue, which the batch keeps alive.
+            let batch = match self
+                .sweep
+                .iter()
+                .position(|(events, _)| std::ptr::eq(queue.as_ptr(), Arc::as_ptr(events)))
+            {
+                Some(batch) => batch,
+                None => {
+                    let Some(events) = queue.upgrade() else {
+                        continue;
+                    };
+                    self.sweep.push((events, Vec::new()));
+                    self.sweep.len() - 1
+                }
+            };
+            let identity = ObjectIdentity {
+                heap: self.heap.clone(),
+                object,
+            };
+            self.sweep[batch].1.push((identity, token));
+        }
+    }
+
+    /// Deliver the sweep's notifications. Called before mutators resume.
+    pub(super) fn publish(&mut self) {
+        for (queue, mut events) in self.sweep.drain(..) {
+            super::lock(&queue).append(&mut events);
         }
     }
 }
