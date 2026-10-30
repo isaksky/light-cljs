@@ -892,6 +892,7 @@ const native = (() => {
     if (op === 'structSet') return setMutableMember;
     if(op==='cljWithExportedMeta')op='cljWithMeta';
     const kind = __rt.formKind(x);
+    if(__rt.cljIsAtom(x)&&op==='cljMeta')return a=>{lane(a);const slot=optionsOf(a);return slot===null?null:__rt.formNth(__rt.atomLoad(slot),0);};
     if (kind === 'struct' && isVar(x) && varMethods[op] !== undefined) return varMethods[op];
     // The engine also offers sorted-map-by maps (and `=` with one, also
     // nested in another comparison) here, whatever their comparator, nil too.
@@ -1516,17 +1517,35 @@ const native = (() => {
   // hold a mutable JavaScript object fails with the engine's NotShareable
   // error, which no handler catches.
   const atomOwners = new WeakMap();
+  // One private SameValueZero registry per shared atom. Runtime bookkeeping
+  // keys never invoke language equality; watch keys remain language values.
+  const auxiliary=(a,key,create)=>{
+    const slot=__rt.atomAux(a);let candidate;
+    for(;;){
+      const current=__rt.atomLoad(slot),found=current===null?undefined:__rt.getOr(current,key,undefined);
+      if(found!==undefined)return found;
+      if(candidate===undefined)candidate=create();
+      const next=__rt.assoc(current===null?__rt.map():current,key,candidate);
+      if(Object.is(__rt.atomCas(slot,current,next),current))return candidate;
+    }
+  };
+  const optionsOf=a=>{const registry=__rt.atomLoad(__rt.atomAux(a));return registry===null?null:__rt.getOr(registry,'atom',null);};
+  const atomOptions=(a,metadata=null,validator=null,watches=null)=>auxiliary(a,'atom',()=>__rt.atomNew(__rt.formVector(metadata,validator,watches)));
   const lane = a => {
     if (!__rt.cljIsAtom(a)) throw new Error('unsupported operation: native macro runtime atom operation on ' + typeof val(a));
     const cell = __rt.effect(65532, atomOwners.get(a) ?? 0);
     if (cell !== 0) __rt.need(cell, 5);
   };
   const atom = (state, ...options) => {
-    if (options.length) throw new Error('unsupported operation: native macro runtime atom options');
     const a = __rt.atomNew(state), owner = __rt.effect(65532, -1);
     if (owner !== 0) atomOwners.set(a, owner);
+    if(options.length){
+      const opts=core.seqToMap(list(options));
+      atomOptions(a,get(opts,__rt.cljKeyword('meta')),get(opts,__rt.cljKeyword('validator')));
+    }
     return a;
   };
+  const Atom=function(state,metadata,validator,watches){const a=atom(state);atomOptions(a,metadata,validator,watches);return a;};
   // Store `v` whatever the atom holds, as the legacy runtimes' reset, and
   // give the state it replaced: an identity compare-and-set that repeats
   // only if another task wrote between the read and the set, never running
@@ -1539,17 +1558,29 @@ const native = (() => {
     }
   };
   const deref = a => { if (__rt.cljIsReduced(a)) return __rt.cljUnreduced(a); if (isVar(a)) return varField(a,'val')(); lane(a); return __rt.atomLoad(a); };
-  const reset = (a, v) => { lane(a); store(a, v); return v; };
+  const notifyWatches=(a,old,next)=>{
+    const slot=optionsOf(a),watches=slot===null?null:__rt.formNth(__rt.atomLoad(slot),2);
+    for(let s=__rt.cljSeq(watches);s!==null;s=__rt.cljNext(s)){
+      const entry=__rt.cljFirst(s);invoke(__rt.cljNth(entry,1),__rt.cljNth(entry,0),a,old,next);
+    }
+    return null;
+  };
+  const resetPair=(a,v)=>{
+    lane(a);const slot=optionsOf(a),validator=slot===null?null:__rt.formNth(__rt.atomLoad(slot),1);
+    if(val(validator)!=null&&!truth(invoke(validator,v)))throw new Error('Validator rejected reference state');
+    const old=store(a,v);notifyWatches(a,old,v);return [old,v];
+  };
+  const reset = (a, v) => resetPair(a,v)[1];
   const swapPair = (a, f, args) => {
     lane(a);
     const next = invoke(f, __rt.atomLoad(a), ...args);
-    return [store(a, next), next];
+    return resetPair(a,next);
   };
   // By `=`, as both pinned cljs.core runtimes compare.
   const compareAndSet = (a, o, n) => {
     lane(a);
     if (!__rt.formEquals(__rt.atomLoad(a), o)) return false;
-    store(a, n);
+    reset(a, n);
     return true;
   };
   // Native multimethods carry only persistent fields and engine atom handles.
@@ -1629,7 +1660,7 @@ const native = (() => {
     // no compilation-wide root. CAS publishes only one state, without user
     // equality, constructor replay or declaration effects.
     const tableState=ref=>{
-      const slot=__rt.atomAux(ref),existing=__rt.atomLoad(slot);
+      const slot=auxiliary(ref,'multifn',()=>__rt.atomNew(null)),existing=__rt.atomLoad(slot);
       if(existing!==null){reconcile(ref,existing);return existing;}
       const initial=deref(ref),candidate=vector([initial,atom(empty()),atom(initial)]);
       const previous=__rt.atomCas(slot,null,candidate);
@@ -2524,7 +2555,19 @@ const native = (() => {
       const pairs=[k('via'),vector(via),k('trace'),null],message=core.exMessage(root),data=core.exData(root),phase=get(core.exData(error),__rt.formKeyword('clojure.error','phase'));
       if(truth(message))pairs.push(k('cause'),message);if(truth(data))pairs.push(k('data'),data);if(truth(phase))pairs.push(k('phase'),phase);return arrayMap(pairs);
     },
-    atom, deref, reset, compareAndSet,
+    atom, Atom, deref, reset, compareAndSet,
+    resetVals:(a,v)=>vector(resetPair(a,v)),
+    resetMeta:(a,m)=>{lane(a);const slot=atomOptions(a);store(slot,__rt.formAssoc(__rt.atomLoad(slot),0,m));return m;},
+    alterMeta:(a,f,...args)=>core.resetMeta(a,invoke(f,__rt.cljMeta(a),...args)),
+    notifyWatches,
+    getValidator:a=>{lane(a);const slot=optionsOf(a);return slot===null?null:__rt.formNth(__rt.atomLoad(slot),1);},
+    setValidator:(a,f)=>{lane(a);if(val(f)!=null&&!truth(invoke(f,deref(a))))throw new Error('Validator rejected reference state');
+      const slot=atomOptions(a);store(slot,__rt.formAssoc(__rt.atomLoad(slot),1,f));return f;},
+    addWatch:(a,key,f)=>{lane(a);const slot=atomOptions(a),old=__rt.atomLoad(slot);
+      store(slot,__rt.formAssoc(old,2,__rt.cljAssoc(__rt.formNth(old,2),key,f)));return a;},
+    removeWatch:(a,key)=>{lane(a);const slot=optionsOf(a);if(slot!==null){const old=__rt.atomLoad(slot);store(slot,__rt.formAssoc(old,2,__rt.cljDissoc(__rt.formNth(old,2),key)));}return a;},
+    addWatchProtocol:(a,k,f)=>core.addWatch(a,k,f),
+    removeWatchProtocol:(a,k)=>{core.removeWatch(a,k);const slot=optionsOf(a);return slot===null?null:__rt.formNth(__rt.atomLoad(slot),2);},
     swap:(a,f,...args)=>swapPair(a,f,args)[1],
     swapVals:(a,f,...args)=>{const [o,n]=swapPair(a,f,args);return __rt.formVector(o,n);},
     resetVals:(a,v)=>{lane(a);return __rt.formVector(store(a,v),v);},

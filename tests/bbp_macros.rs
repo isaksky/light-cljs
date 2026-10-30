@@ -6177,6 +6177,69 @@ fn native_compile_time_exception_uuid_and_array_helpers_match_application_values
 }
 
 #[test]
+fn native_atom_validators_and_watches_keep_reset_order_and_state_on_errors() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [events (atom []) a (atom -1 :validator pos?)]
+               (add-watch a :first (fn [key ref old new] (swap! events conj [key old new])))
+               (reset! a 2)
+               (let [rejected (try (reset! a 0) false (catch js/Error _ true))
+                     pair (swap-vals! a inc)]
+                 (remove-watch a :first)
+                 (set-validator! a nil)
+                 (list 'quote [rejected pair @events (compare-and-set! a 3 0) @a
+                   (nil? (get-validator a))]))))
+           (js/console.log (pr-str (probe)))"#,
+        "[true [2 3] [[:first -1 2] [:first 2 3]] true 0 true]\n",
+    );
+}
+
+#[test]
+fn native_atom_metadata_and_throwing_watch_preserve_committed_state() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [a (atom 1 :meta {:a 1})]
+               (alter-meta! a assoc :b 2)
+               (add-watch a :throw (fn [_ _ _ _] (throw (js/Error. "watch"))))
+               (list 'quote [(meta a) (try (reset! a 2) (catch js/Error e (ex-message e)))
+                 @a (reset-meta! a nil) (meta a)])))
+           (js/console.log (pr-str (probe)))"#,
+        "[{:a 1, :b 2} \"watch\" 2 nil nil]\n",
+    );
+}
+
+#[test]
+fn native_atom_watchers_follow_the_shared_atom_across_tasks() {
+    assert_entry_matches_quickjs(
+        "native-shared-watchers",
+        &[
+            (
+                "state.cljs",
+                r#"(ns state)
+              (def events (atom []))
+              (def value (let [a (atom 1)]
+                (add-watch a :log (fn [_ _ old new] (swap! events conj [old new]))) a))
+              (defmacro step [] (swap! value inc) (list 'quote [@value @events]))"#,
+            ),
+            (
+                "a.cljs",
+                "(ns a (:require [state :refer [step]])) (def answer (step))",
+            ),
+            (
+                "b.cljs",
+                "(ns b (:require [state :refer [step]])) (def answer (step))",
+            ),
+            (
+                "main.cljs",
+                "(ns main (:require [a :as a] [b :as b])) (js/console.log (pr-str a/answer b/answer))",
+            ),
+        ],
+        "[2 [[1 2]]] [3 [[1 2] [2 3]]]\n",
+        &[1, 2, 4],
+    );
+}
+
+#[test]
 fn native_inline_macro_declarations_install_protocol_and_type_products() {
     assert_native_matches_legacy(
         r#"(defn declarations []
