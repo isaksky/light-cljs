@@ -318,8 +318,8 @@ instead, the Pants build gives the same result:
 - **Calls native expansion declines that the definition accepts** (a
   `selector` map of more than eight entries, a `defmulti` with a character
   docstring or more than eight metadata keys, every `simple-benchmark`) run
-  the definition in
-  the Pants build's runtime. The definitions are compiled once per process
+  the definition in the Pants build's runtime. The definitions are compiled
+  once per process
   and emitted as the Pants build emits source macros; each task evaluates
   one the first time it needs it. The V8 build's engine decodes a macro's
   map and set arguments into its own collections (keys equal there merge,
@@ -357,7 +357,10 @@ instead, the Pants build gives the same result:
   limits both fail in about 0.3 s. The V8 build may also stop on its
   `--macro-poll-budget` (an engine budget, like the deadline) expanding the
   `when-let`s of such an expansion with modifiers; with it raised the outputs
-  match.
+  match. A call holding a `#js` literal, an `#inst` or a queue, whose
+  conversion the emulation does not follow, or one the engine may refuse
+  inside a set or a map of more than eight entries, whose order is its
+  hashes', still runs the definition.
 - **A `for` or `doseq` of more than 128 pairs**, whose expansion nests past
   the conversion's 128 levels, fails as the V8 build's engine fails
   converting it back (`depth limit`, or a limit it reaches first), found by
