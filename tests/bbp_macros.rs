@@ -9522,6 +9522,40 @@ fn native_mutable_object_extension_alias_matches_quickjs() {
     }
 }
 
+/// Two pending Object extensions classify the receiver once, before the
+/// requested member read. A failed mutable-type lookup is cached too.
+#[test]
+fn native_object_demand_classifies_mutable_proxy_once() {
+    for (row, receiver, limit) in [
+        ("mutable", "instance", false),
+        ("unmatched", "(js* \"({a: 7})\")", false),
+        ("reject-third", "instance", true),
+    ] {
+        assert_native_matches_legacy(
+            &format!(
+                r#"(deftype M [^:mutable a])
+                   (extend-type M Object (f [_] 1))
+                   (extend-type M Object (g [_] 2))
+                   (defmacro m []
+                     (let [instance (M. 7)
+                           probe (js* "(function(target) {{
+                               const reads = [];
+                               const proxy = new Proxy(target, {{get(t, k, r) {{
+                                 reads.push(k === 'constructor' || k === '__lightNativeType' ? 'type' : k);
+                                 if ({limit} && reads.length > 2) throw new Error('third read');
+                                 return Reflect.get(t, k, r);
+                               }}}});
+                               return {{proxy, reads}};
+                             }})(~{{}})" {receiver})
+                           value (.-a (js* "~{{}}.proxy" probe))]
+                       [:{row} value (js* "~{{}}.reads.join(',')" probe)]))
+                   (js/console.log (pr-str (m)))"#
+            ),
+            &format!("[:{row} 7 \"type,a\"]\n"),
+        );
+    }
+}
+
 /// A record's `__meta`, `__extmap` and `__hash` slots override a field of
 /// the same member name (the legacy constructor assigns them last), with
 /// supplied metadata and extension maps, in reads and descriptors.

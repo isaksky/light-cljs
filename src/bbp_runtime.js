@@ -490,7 +490,7 @@ const decl = (() => {
     // mutable type.
     const value = __rt.formValue(x);
     const native = value == null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
-    let s, structType;
+    let s, structType, mutableSelector;
     const owns = selector => {
       if (s === undefined) {
         s = structOf(x); structType = __rt.structTypeOf(s);
@@ -499,8 +499,13 @@ const decl = (() => {
       if (structType !== null) return selector === '@' + __rt.formName(structType);
       if (!mutableSelectors.has(selector) || s === null || typeof s !== 'object'
           || __rt.formKind(s) !== null || __rt.cljIsAtom(s)) return false;
-      const ty = s.__lightNativeType;
-      return views.get(ty)?.mutable === true && selector === '@' + __rt.formName(ty);
+      if (mutableSelector === undefined) {
+        // Snapshot even a missing tag: getters and Proxy traps run at most
+        // once for this demand, regardless of the number of selectors.
+        const ty = s.__lightNativeType;
+        mutableSelector = views.get(ty)?.mutable === true ? '@' + __rt.formName(ty) : null;
+      }
+      return selector === mutableSelector;
     };
     for (const {b, selector} of objectBundles) {
       if (b.order > frontier) break;
