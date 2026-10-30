@@ -505,6 +505,15 @@ Promise therefore does not publish that private graph.
 Tests: `tests/publication.rs`, `tests/promises.rs`, `tests/builtin_subclasses.rs`,
 `src/task/job_tests.rs::derived_promises_publish_and_settle_across_tasks`.
 
+Compiler functions can carry immutable apply metadata without an own-property
+record: a null receiver convention (`fnApplyNull`) and a lazy apply entry
+(`fnWithApplyTo`, read by `fnApplyToEntry`). The lazy entry is a traced edge and
+must pass the same publication checks as captures. The compiler uses it for
+predicate constructors and their results, passing a fixed prefix and an
+unmaterialized sequence tail; direct JavaScript calls keep their ordinary body.
+`tests/publication.rs` checks cross-task calls after collection and rejection
+of an entry capturing task-owned state.
+
 Native collections are this project's own contract (`src/collections.rs`), with
 persistent radix-trie vectors, HAMT maps and provenance occurrences. Updates
 path-copy and share unchanged values; no-op updates preserve the input identity.

@@ -319,11 +319,22 @@ On the active test thread, a sample of the previously long cache sweep put
 completes below nextest's cutoff; warning-order accounting remains unfinished.
 
 Pants task views count as scheduler workers and report zero worker isolates.
-Existing worker and cache tests check that distinction while retaining every
-V8 worker-isolate assertion. The macro-free tests also assert Pants' additional
+`pool.engine-workers` reports configured capacity; `pool.engine-participants`
+counts distinct slots that actually create an engine view or execute a shared
+continuation. Worker and cache artifact tests require multiple participants,
+and a deterministic two-worker handshake checks that idle configured slots
+do not count. Every V8 worker-isolate assertion remains. The macro-free tests also assert Pants' additional
 proven macro-free function and its independent admission of shared-runtime
 jobs. No execution or artifact assertions, resource limits or test gates were
 relaxed.
+
+Predicate constructors and their results preserve lazy `apply` tails through
+immutable, shareable apply entries. Counted apply inputs observe `ICounted`
+before traversing the arguments. `to-array-2d` observes the outer count and
+traverses both dimensions as sequences, including sparse arrays and lazy rows.
+Saved random helpers reject invalid arities with the reference's errors.
+Library-free macro regressions compare these cases with the QuickJS reference;
+an engine regression checks lazy entry publication and tracing after collection.
 
 At product/test tree `ee6d3a3a` on `14c68c44`, the full Pants suite at 8 test
 threads changes from **2114 run, 1934 passed, 180 failed** to **2126 run,
