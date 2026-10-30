@@ -3474,14 +3474,22 @@ const rootGetter=(name,unit,slot,frontier=Infinity)=>()=>{
   if(unit===null)throw new Error('unavailable definition: '+name);
   __rt.need(unit,2);
   const factory=__rt.need(unit,3);
-  return decl.atDeclarationFrontier(frontier,()=>initializeValue(slot,factory));
+  return inRootInitializer(frontier,()=>initializeValue(slot,factory));
+};
+// A root initializer reads the products visible at `frontier`, and (as before
+// light-cljs-592) sees no products object outside a bundle installation.
+const inRootInitializer=(frontier,f)=>{
+  const products=globalThis.__lightCompilerBundleProducts;
+  if(products===rootTarget)globalThis.__lightCompilerBundleProducts=undefined;
+  try{return decl.atDeclarationFrontier(frontier,f);}
+  finally{globalThis.__lightCompilerBundleProducts=products;}
 };
 const demandSlot=slot=>{
   const unit=__rt.initializerSlotGet(slot,0);
   if(unit===null)throw new Error('unavailable definition: '+__rt.initializerSlotGet(slot,1));
   __rt.need(unit,2);
   const factory=__rt.need(unit,3);
-  return initializeValue(slot,factory);
+  return inRootInitializer(Infinity,()=>initializeValue(slot,factory));
 };
 // A definition's executable :test metadata, from its own unit: the unit's
 // root initializes once, and a failure stays. A lazily adopted catalog
@@ -3577,8 +3585,9 @@ const rootTarget={};
 // A declaration a function evaluates outside any bundle (a defprotocol or
 // deftype in a macro body) writes its products into the roots themselves,
 // as a nested def defines its root (light-cljs-592); a bundle's
-// installation replaces this while it runs. A product already installed
-// takes the write through its setter (`productSetter`).
+// installation replaces this while it runs, and a root initializer has none
+// (`inRootInitializer`). A product already installed takes the write through
+// its setter (`productSetter`).
 globalThis.__lightCompilerBundleProducts=rootTarget;
 globalThis.__lightCompilerRoots=new Proxy(rootTarget, {
   get:(target,name,receiver)=>bindingOverlays.has(name)?bindingOverlays.get(name):(lazyCatalog!==null&&lazyResolve(name),Reflect.get(target,name,receiver)),
