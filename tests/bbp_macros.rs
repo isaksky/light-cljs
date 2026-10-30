@@ -6142,6 +6142,25 @@ fn native_compile_time_code_reader_uses_macro_visibility() {
 }
 
 #[test]
+fn native_compile_time_sequence_utilities_preserve_values_and_completion() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (list 'quote [(vec (distinct [1 2 1 3 2])) (into [] (distinct) [1 2 1 3])
+               (vec (sort > [3 1 2])) (vec (sort-by count ["bbb" "a" "cc"]))
+               (max-key count "aa" "bb") (min-key count "bb" "a")
+               (vec (repeatedly 3 (constantly 7)))
+               (vec (tree-seq vector? seq [1 [2]]))
+               (transduce (halt-when zero?) + [1 2 0 4])
+               (transduce (halt-when zero? (fn [result x] (+ result x))) + [1 2 0 4])
+               (trampoline (fn [] (fn [] 42)))
+               (apply-to + 3 [1 2 3 4])
+               (distinct? :a :b :c) (distinct? :a :b :a)]))
+           (js/console.log (pr-str (probe)))"#,
+        "[[1 2 3] [1 2 3] [3 2 1] [\"a\" \"cc\" \"bbb\"] \"bb\" \"a\" [7 7 7] [[1 [2]] 1 [2] 2] 0 3 42 6 true false]\n",
+    );
+}
+
+#[test]
 fn native_inline_macro_declarations_install_protocol_and_type_products() {
     assert_native_matches_legacy(
         r#"(defn declarations []

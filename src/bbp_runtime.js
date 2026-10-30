@@ -1737,6 +1737,10 @@ const native = (() => {
   // sources (a vector's seq, a range and `chunk-cons` sequences) are read
   // 32 elements at a time, as in ClojureScript; lists one at a time.
   const lazy = f => __rt.lazySeq(f);
+  const fnCompare=(f,x,y)=>{
+    const result=invoke(f,x,y),value=val(result);
+    return typeof value==='number'?value:truth(result)?-1:truth(invoke(f,y,x))?1:0;
+  };
   // Match now, advance the same RegExp only when the tail is demanded.
   // Offsets, empty matches and slicing all use JavaScript UTF-16 units.
   const reSeq = (self, re, text) => {
@@ -1788,6 +1792,16 @@ const native = (() => {
     return result.length === 1 ? result[0] : vector(Array.from(result));
   };
   const seqOf = x => __rt.cljSeq(x);
+  const distinctFrom=(self,coll,seen)=>lazy(()=>{
+    for(let s=seqOf(coll);s!==null;s=__rt.cljNext(s)){
+      const x=__rt.cljFirst(s);
+      if(!__rt.cljContains(seen,x))return __rt.cljCons(x,self(self,__rt.cljRest(s),__rt.cljConj(seen,x)));
+    }
+    return null;
+  });
+  const repeatedlyFrom=(self,f)=>lazy(()=>__rt.cljCons(invoke(f),self(self,f)));
+  const treeFrom=(self,branch,children,node)=>lazy(()=>__rt.cljCons(node,truth(invoke(branch,node))
+    ?globalThis.__lightNativeRuntime.core.mapcat(x=>self(self,branch,children,x),invoke(children,node)):null));
   const nativeSeq = x => {
     const kind = __rt.formKind(val(x));
     return kind === 'list' || kind === 'cons' || kind === 'lazy-seq';
@@ -2379,6 +2393,13 @@ const native = (() => {
       return (kind==='struct'||kind==='record') && !multi.is(f)
         ? decl.applyIFn(val(f),args) : invoke(f,...args);
     },
+    applyTo:(f,n,args)=>{
+      args=seqOf(args);n=val(n);
+      if(!Number.isInteger(n)||n<0||n>20)throw new Error('Only up to 20 arguments supported on functions');
+      const values=[];for(let i=0;i<n;i++,args=__rt.cljRest(args))values.push(__rt.cljFirst(args));
+      return invoke(f,...values);
+    },
+    jsInvoke:(object,method,...args)=>{object=val(object);return object[val(method)](...args);},
     update:(value,key,f,...args)=>{const old=core.get(value,key);return core.assoc(value,key,invoke(f,old,...args));},
     assoc:(m,...xs)=>{for(let i=0;i<xs.length;i+=2)m=__rt.cljAssoc(m,xs[i],xs[i+1]);return m;},
     dissoc:(m,...ks)=>each((m,k)=>__rt.cljDissoc(m,k),m,ks),
@@ -2470,6 +2491,8 @@ const native = (() => {
     isInt:x=>core.isInteger(x),
     keywordIdentical:(x,y)=>val(x)===val(y)||__rt.formKind(val(x))==='keyword'&&__rt.formKind(val(y))==='keyword'&&__rt.formEquals(x,y),
     isInfinite:x=>val(x)===Infinity||val(x)===-Infinity,
+    rand:(...a)=>a.length===0?Math.random():a.length===1?val(a[0])*Math.random():arity(a.length),
+    randInt:n=>Math.floor(Math.random()*val(n)),
     ExceptionInfo,
     exInfo:(...a)=>a.length===2||a.length===3?new ExceptionInfo(a[0],a[1],a.length===2?null:a[2]):arity(a.length),
     exData:x=>val(x) instanceof ExceptionInfo?val(x).data:null,
@@ -2571,6 +2594,37 @@ const native = (() => {
     notEvery:(f,c)=>!core.every(f,c), notAny:(f,c)=>!truth(core.some(f,c)),
     last:c=>{const a=arr(c);return a.length?a[a.length-1]:null;}, butlast:c=>{const a=arr(c);return a.length>1?list(a.slice(0,-1)):null;},
     reverse:c=>list(arr(c).reverse()),
+    sort:(...a)=>{
+      if(a.length!==1&&a.length!==2)return arity(a.length);
+      const coll=a[a.length-1],f=a.length===1?core.compare:a[0];
+      if(seqOf(coll)===null)return __rt.formList();
+      const items=arr(coll).slice();items.sort((x,y)=>fnCompare(f,x,y));
+      return __rt.cljWithMeta(__rt.formSequence(vector(items)),__rt.cljMeta(coll));
+    },
+    sortBy:(...a)=>a.length===2?core.sort((x,y)=>core.compare(invoke(a[0],x),invoke(a[0],y)),a[1])
+      :a.length===3?core.sort((x,y)=>fnCompare(a[1],invoke(a[0],x),invoke(a[0],y)),a[2]):arity(a.length),
+    maxKey:(f,x,...xs)=>xs.reduce((best,value)=>val(invoke(f,best))>val(invoke(f,value))?best:value,x),
+    minKey:(f,x,...xs)=>xs.reduce((best,value)=>val(invoke(f,best))<val(invoke(f,value))?best:value,x),
+    isDistinct:(...xs)=>{if(xs.length===0)return false;if(xs.length===1)return true;let seen=set([]);for(const x of xs){if(__rt.cljContains(seen,x))return false;seen=__rt.cljConj(seen,x);}return true;},
+    distinct:(...a)=>{
+      if(a.length===1)return distinctFrom(distinctFrom,a[0],set([]));
+      if(a.length)return arity(a.length);
+      return rf=>{let seen=set([]);return reducing(rf,(result,x)=>{
+        if(__rt.cljContains(seen,x))return result;
+        seen=__rt.cljConj(seen,x);return invoke(rf,result,x);
+      });};
+    },
+    haltWhen:(...a)=>{
+      if(a.length!==1&&a.length!==2)return arity(a.length);
+      const pred=a[0],retf=a[1],halt=__rt.formKeyword('cljs.core','halt');
+      return rf=>reducing(rf,(result,x)=>truth(invoke(pred,x))
+        ?__rt.cljReduced(arrayMap([halt,truth(retf)?invoke(retf,invoke(rf,result),x):x])):invoke(rf,result,x),
+        result=>core.isMap(result)&&__rt.cljContains(result,halt)?get(result,halt):invoke(rf,result));
+    },
+    repeatedly:(...a)=>a.length===1?repeatedlyFrom(repeatedlyFrom,a[0]):a.length===2?core.take(a[0],repeatedlyFrom(repeatedlyFrom,a[1])):arity(a.length),
+    treeSeq:(branch,children,node)=>treeFrom(treeFrom,branch,children,node),
+    trampoline:(f,...args)=>{let result=args.length?invoke(f,...args):invoke(f);while(core.isFn(result))result=invoke(result);return result;},
+    hashOrderedColl:c=>__rt.formHash(list(arr(c))),
     mapv:(f,...cs)=>vector(arr(core.mapSeq(f,...cs))), filterv:(f,c)=>vector(arr(core.filter(f,c))),
     replace:(...a)=>{
       if (a.length !== 1 && a.length !== 2) return arity(a.length);
