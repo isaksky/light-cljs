@@ -111,7 +111,7 @@ const decl = (() => {
     version++;
     return null;
   };
-  const bundles = [], installing = [];
+  const installing = [];
   // Inactive bundles whose installations can change a member, and how many
   // of them index each protocol: that protocol's tables keep no lookup
   // cache meanwhile (`build`).
@@ -160,7 +160,7 @@ const decl = (() => {
   // The table of `t` at the current frontier, after installing every
   // extension of its protocol registered up to the frontier.
   const build = t => {
-    const pending = extensions.get(t.protocol);
+    const pending = protocolBundles(t.protocol);
     if (pending !== undefined) for (const b of pending) { if (b.order > frontier) break; force(b, true); }
     let map = __rt.map();
     const visible = t.entries.filter(e => (e.overlay > 0 || e.order <= frontier) && (e.bundle == null || e.bundle.active))
@@ -180,8 +180,8 @@ const decl = (() => {
     const ty = __rt.structTypeOf(x);
     if (ty === null || views.has(ty)) return false;
     const name = __rt.formName(ty);
-    if (!(name in globalThis.__lightCompilerRoots)) return false;
-    globalThis.__lightCompilerRoots[name];
+    if (!(name in registry())) return false;
+    registry()[name];
     return true;
   };
   const resolve = (t, x) => {
@@ -478,6 +478,7 @@ const decl = (() => {
         activate(b);
   };
   const demandObject = x => {
+    if (lazyCatalog !== null) catalogProtocol('Object');
     // Once every Object bundle up to the frontier is installed there is
     // nothing to demand, and the receiver is not inspected at all.
     if (!objectBundles.some(({b}) => b.order <= frontier && (b.state !== 2 || !b.active))) return;
@@ -531,26 +532,42 @@ const decl = (() => {
     if (f === undefined) info.memberFunctions.set(member, f = function (...a) { return objectInvoke(info, member, structOf(this), a); });
     return f;
   };
+  // A bundle's declaration order is its position among every bundle the
+  // task registered, a catalog prefix it adopted included (`lazyAdopt`).
+  let bundleCount = 0;
+  const makeBundle = (names, indices, location, unit, order) => ({order, names, unit, location, state: 0, error: null, products: null, active: false,
+    indices: indices.map(([protocol, selector = null]) => [protocol, selector]),
+    multi: indices.length > 0 && indices.every(index => index[0].startsWith('multifn:'))});
+  const productGetter = (b, name) => () => { force(b); return b.products[name]; };
+  // Index `b`'s extensions of `protocol` (every one when it is null).
+  const index = (b, protocol = null) => {
+    for (const [p, selector] of b.indices) {
+      if (protocol !== null && p !== protocol) continue;
+      // Object extensions are installed by demand only (`demandObject`).
+      if (p === 'Object') { objectBundles.push({b, selector}); continue; }
+      let list = extensions.get(p);
+      if (list === undefined) extensions.set(p, list = []);
+      list.push(b);
+    }
+  };
+  // The bundles extending `protocol` in order, an adopted catalog's included.
+  const protocolBundles = protocol => {
+    if (lazyCatalog !== null) catalogProtocol(protocol);
+    return extensions.get(protocol);
+  };
   const register = (names, indices, location, once, unit) => {
-    const b = {order: bundles.length + 1, names, unit, location, state: 0, error: null, products: null, active: false,
-      indices: indices.map(([protocol, selector = null]) => [protocol, selector]),
-      multi: indices.length > 0 && indices.every(index => index[0].startsWith('multifn:'))};
-    bundles.push(b);
+    const b = makeBundle(names, indices, location, unit, ++bundleCount);
     if (once && names.length && names.every(name => globalThis.__lightCompilerRootKept(name))) return null;
     for (const name of names) {
       // A preloaded root (a data property) stays; a product replaces an
       // earlier definition's.
-      const old = Object.getOwnPropertyDescriptor(globalThis.__lightCompilerRoots, name);
+      lazyResolve(name);
+      const old = Object.getOwnPropertyDescriptor(registry(), name);
       if (old !== undefined && 'value' in old) continue;
-      globalThis.__lightInstallCompilerProduct(name, () => { force(b); return b.products[name]; }, b);
+      globalThis.__lightInstallCompilerProduct(name, productGetter(b, name), b);
     }
-    for (const [protocol, selector = null] of indices) {
-      // Object extensions are installed by demand only (`demandObject`).
-      if (protocol === 'Object') { objectBundles.push({b, selector}); continue; }
-      let list = extensions.get(protocol);
-      if (list === undefined) extensions.set(protocol, list = []);
-      list.push(b);
-    }
+    if (lazyCatalog !== null) for (const [protocol] of b.indices) catalogProtocol(protocol);
+    index(b);
     return null;
   };
   const enter = next => { frontiers.push(frontier); frontier = next; return null; };
@@ -558,7 +575,7 @@ const decl = (() => {
   // Multimethod declarations use the same source frontier as protocols.
   // Installing a method must not recursively demand its own bundle.
   const demandMulti = name => {
-    const pending = [...(extensions.get('multifn:' + name) ?? []), ...(extensions.get('multifn:*') ?? [])]
+    const pending = [...(protocolBundles('multifn:' + name) ?? []), ...(protocolBundles('multifn:*') ?? [])]
       .sort((a,b) => a.order-b.order);
     for (const b of pending) if (b.order <= frontier && !installing.includes(b)) force(b);
   };
@@ -588,7 +605,8 @@ const decl = (() => {
     const info = views.get(x.__lightNativeType);
     return info?.mutable && info.record ? info : null;
   };
-  return {extend, method, satisfies, implementsDirectly, predicate, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
+  return {makeBundle, productGetter, index, reserve: n => { const base = bundleCount; bundleCount += n; return base; },
+    extend, method, satisfies, implementsDirectly, predicate, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
     callable, invokeIFn, applyIFn, callMember, borrowedIFn,
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
@@ -2259,7 +2277,8 @@ const native = (() => {
     // `exists?` demands a definition's value, while `resolve` only tests
     // whether its binding was registered (a declaration counts).
     nativeRootExists:(name,binding)=>{
-      const bindings=globalThis.__lightCompilerRoots;
+      lazyResolve(name);
+      const bindings=registry();
       if(bindingOverlays.has(name))return binding||bindingOverlays.get(name)!==undefined;
       if(!(name in bindings))return false;
       if(binding)return true;
@@ -2379,10 +2398,11 @@ const productReaders=new Map();
 // A bundle replaces an unavailable declaration's getter. Remember that it
 // defines the name, retaining the unit record for later ordinary registrations.
 globalThis.__lightInstallCompilerProduct=(name,read,bundle)=>{
+  lazyResolve(name);
   const previous=roots.get(name);
   if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);
   else {const slot=__rt.initializerSlot(null,name);__rt.initializerSlotSet(slot,4,true);roots.set(name,slot);}
-  Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:read});
+  Object.defineProperty(registry(),name,{configurable:true,get:read});
   if(bundle!==undefined)productReaders.set(read,__rt.vector(bundle,name));
 };
 // Each invocation of this runtime belongs to one VM task. Overlay snapshots
@@ -2404,23 +2424,26 @@ globalThis.__lightRestoreCompilerBinding=(name,saved)=>{
 // false. Keep ordinary writes on the existing property path; the engine's
 // Proxy set trap is not needed for compiler-owned bindings.
 globalThis.__lightSetCompilerRoot=(name,value)=>{
+  lazyResolve(name);
   if(bindingOverlays.has(name))bindingOverlays.set(name,value);
-  else globalThis.__lightCompilerRoots[name]=value;
+  else registry()[name]=value;
   return value;
 };
 globalThis.__lightCompilerRootKept=name=>{
+  lazyResolve(name);
   const bound=bindingOverlays.has(name)&&bindingOverlays.get(name)!==undefined;
   if(decl.productOwner(name)!==null)return decl.keptProduct(name)||bound;
   if(roots.has(name)){const root=roots.get(name);return __rt.initializerSlotGet(root,0)!==null||__rt.initializerSlotGet(root,4)===true||bound;}
-  return Object.getOwnPropertyDescriptor(globalThis.__lightCompilerRoots,name)!==undefined||bound;
+  return Object.getOwnPropertyDescriptor(registry(),name)!==undefined||bound;
 };
 globalThis.__lightDefineCompilerRoot=(name,initialize,once)=>{
+  lazyResolve(name);
   if(once&&globalThis.__lightCompilerRootKept(name))return null;
   if(decl.defineProduct(name,initialize))return globalThis.__lightCompilerBundleProducts[name];
   if(initialize===null)return undefined;
   const value=initialize();
   if(bindingOverlays.has(name))bindingOverlays.set(name,value);
-  else {const previous=roots.get(name);if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,writable:true,value});}
+  else {const previous=roots.get(name);if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);Object.defineProperty(registry(),name,{configurable:true,writable:true,value});}
   return value;
 };
 let initializerSerial=0;
@@ -2445,18 +2468,20 @@ globalThis.__lightInitializerFailure=null;
 globalThis.__lightInitializerRequireShared=false;
 globalThis.__lightInitializerSelect=false;
 globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
-  if(!roots.has(name)&&(name in globalThis.__lightCompilerRoots))return null;
+  lazyResolve(name);
+  if(!roots.has(name)&&(name in registry()))return null;
   if(roots.has(name)&&__rt.initializerSlotGet(roots.get(name),0)===unit)return null;
   // A defonce keeps an earlier definition (not a declaration), as the
   // legacy runtimes' registry does.
   if(once&&roots.has(name)&&(__rt.initializerSlotGet(roots.get(name),0)!==null||__rt.initializerSlotGet(roots.get(name),4)===true))return null;
   const slot=__rt.initializerSlot(unit,name);roots.set(name,slot);
-  Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:()=>{
-    if(unit===null)throw new Error('unavailable definition: '+name);
-    __rt.need(unit,2);
-    const factory=__rt.need(unit,3);
-    return initializeValue(slot,factory);
-  }});return null;
+  Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot)});return null;
+};
+const rootGetter=(name,unit,slot)=>()=>{
+  if(unit===null)throw new Error('unavailable definition: '+name);
+  __rt.need(unit,2);
+  const factory=__rt.need(unit,3);
+  return initializeValue(slot,factory);
 };
 const initializeValue=(slot,factory)=>{
     const unit=__rt.initializerSlotGet(slot,0),state=__rt.initializerSlotGet(slot,2);
@@ -2512,19 +2537,196 @@ globalThis.__lightInitializeCompilerValue=(unit,factory)=>initializeValue(__rt.i
 globalThis.__lightRegisterBundle=(names,code,indices=[],location='',once=false,group=false,unit=-1)=>{
   // A bundle without a unit (a test's, or an embedder's registration) keeps
   // preloaded roots and reports demand as unsupported.
-  if(unit<0){for(const name of names)if(!(name in globalThis.__lightCompilerRoots))Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:()=>{throw new Error('unsupported operation: helper not preloaded: '+name);}});return null;}
+  if(unit<0){for(const name of names)if(lazyResolve(name),!(name in registry()))Object.defineProperty(registry(),name,{configurable:true,get:()=>{throw new Error('unsupported operation: helper not preloaded: '+name);}});return null;}
   return decl.register(names,indices,location,once,unit);
 };
 globalThis.__lightEnterCompilerFrontier=next=>decl.enter(next);
 globalThis.__lightLeaveCompilerFrontier=()=>decl.leave();
 const rootTarget={};
 globalThis.__lightCompilerRoots=new Proxy(rootTarget, {
-  get:(target,name,receiver)=>bindingOverlays.has(name)?bindingOverlays.get(name):Reflect.get(target,name,receiver),
-  has:(target,name)=>bindingOverlays.has(name)||Reflect.has(target,name),
+  get:(target,name,receiver)=>bindingOverlays.has(name)?bindingOverlays.get(name):(lazyCatalog!==null&&lazyResolve(name),Reflect.get(target,name,receiver)),
+  has:(target,name)=>bindingOverlays.has(name)||(lazyCatalog!==null&&lazyResolve(name),Reflect.has(target,name)),
 });
 // The compiler's bounded read intrinsic checks this live overlay Map and
 // target on every read. Ordinary interop retains the Proxy and its receiver.
 globalThis.__lightCompilerRootContext=__rt.vector(globalThis.__lightCompilerRoots,rootTarget,bindingOverlays,productReaders);
+// A producer task adopts its parent's catalog snapshot instead of applying
+// it (light-cljs-590): a name gets its catalog registrations when the task
+// first uses it, and a protocol its catalog bundles, each with exactly the
+// state applying every registration at adoption would have given it. That
+// state is a function of the task's state at adoption and the registrations
+// before it: a registration's effect on a name depends only on that name's
+// state and, for a defonce bundle, its other products' states before it.
+// Every internal reader and writer of a name resolves it first
+// (`lazyResolve`), so an unresolved name still has its state at adoption.
+// The Proxy's supported traps (get, has) resolve too; its other operations
+// forward straight to the target, so code that reads the public global
+// `__lightCompilerRoots` gets a fully applied catalog in registration order
+// (`materializeAll`), while compiler code reads the registry through
+// `__lightCompilerRootReceiver` (src/emitter.rs) and `registry()`.
+const rootsProxy=globalThis.__lightCompilerRoots;
+globalThis.__lightCompilerRootReceiver=null;
+// Catalog entries this task applied on first use: the producer counters.
+globalThis.__lightCatalogApplied=0;
+function registry(){return globalThis.__lightCompilerRootReceiver??globalThis.__lightCompilerRoots;}
+let lazyCatalog=null;
+const lazyAdopt=snapshot=>{
+  const entries=__rt.nth(snapshot,0),end=__rt.count(entries);
+  const global=Object.getOwnPropertyDescriptor(globalThis,'__lightCompilerRoots');
+  // Anything unusual applies the catalog as before.
+  if(end===0||bindingOverlays.size!==0||global===undefined||global.value!==rootsProxy||!global.writable
+     ||!global.configurable||!Reflect.isExtensible(rootTarget))return false;
+  const pre=Reflect.ownKeys(rootTarget);
+  if(pre.some(key=>!Reflect.getOwnPropertyDescriptor(rootTarget,key).configurable))return false;
+  const c={entries,end,names:__rt.nth(snapshot,1),protocols:__rt.nth(snapshot,2),
+    // Its bundles' declaration orders follow those registered before it.
+    base:decl.reserve(__rt.nth(snapshot,3)),
+    // Each resolved name's state at adoption, each bundle's whether it is
+    // registered (a defonce bundle may not be), and its task object.
+    resolved:new Map(),effective:new Map(),bundles:new Map(),protocolsDone:new Set(),
+    // Names the catalog created, at the position that created each, and
+    // the target's keys before it: `materializeAll` restores key order.
+    created:new Map(),pre:new Set(pre),global};
+  lazyCatalog=c;
+  globalThis.__lightCompilerRootReceiver=rootsProxy;
+  Object.defineProperty(globalThis,'__lightCompilerRoots',{configurable:true,enumerable:global.enumerable,
+    get:()=>{materializeAll();return globalThis.__lightCompilerRoots;},
+    set:value=>{materializeAll();globalThis.__lightCompilerRoots=value;}});
+  // The compiler's read intrinsic reads a name the target already has
+  // without asking the Proxy: resolve those now.
+  for(const key of pre)if(typeof key==='string')lazyResolve(key);
+  return true;
+};
+// A name's state as the registration functions see it.
+const liveState=name=>{
+  const slot=roots.get(name),d=Reflect.getOwnPropertyDescriptor(rootTarget,name);
+  return {slot:slot!==undefined,unit:slot===undefined?null:__rt.initializerSlotGet(slot,0),
+    defined:slot!==undefined&&__rt.initializerSlotGet(slot,4)===true,
+    own:d!==undefined,data:d!==undefined&&'value' in d,has:d!==undefined||Reflect.has(rootTarget,name),
+    // A new slot, the defined mark on the slot it had, the entry that owns
+    // its property and the one that created it.
+    fresh:false,pre:false,owner:-1,first:-1};
+};
+// Catalog entry `p` applied to a name's state `s`, as `__lightRegisterUnit`
+// and `decl.register` (through `__lightInstallCompilerProduct`) apply it.
+const lazyStep=(c,s,p)=>{
+  globalThis.__lightCatalogApplied++;
+  const e=__rt.nth(c.entries,p);
+  if(__rt.nth(e,0)===0){
+    const unit=__rt.nth(e,2);
+    if(!s.slot&&s.has||s.slot&&s.unit===unit||__rt.nth(e,3)&&s.slot&&(s.unit!==null||s.defined))return s;
+    return {slot:true,unit,defined:false,own:true,data:false,has:true,fresh:true,pre:s.pre,owner:p,first:s.own?s.first:p};
+  }
+  if(!lazyEffective(c,p)||s.own&&s.data)return s;
+  return {slot:true,unit:s.slot?s.unit:null,defined:true,own:true,data:false,has:true,
+    fresh:s.slot?s.fresh:true,pre:s.pre||s.slot&&!s.fresh,owner:p,first:s.own?s.first:p};
+};
+const lazyStateBefore=(c,name,p)=>{
+  let s=c.resolved.get(name)??liveState(name);
+  const at=__rt.getOr(c.names,name,null);
+  if(at!==null)for(let i=0,n=__rt.count(at);i<n;i++){const q=__rt.nth(at,i);if(q>=p)break;s=lazyStep(c,s,q);}
+  return s;
+};
+// Whether bundle `p` registers: a defonce bundle does not when every one
+// of its products is kept (`__lightCompilerRootKept`) before it.
+const lazyEffective=(c,p)=>{
+  let r=c.effective.get(p);
+  if(r===undefined){
+    const e=__rt.nth(c.entries,p),names=__rt.nth(e,1),n=__rt.count(names);
+    r=!__rt.nth(e,4)||n===0;
+    for(let i=0;!r&&i<n;i++){
+      const s=lazyStateBefore(c,__rt.nth(names,i),p);
+      if(!(s.slot?s.unit!==null||s.defined:s.own))r=true;
+    }
+    c.effective.set(p,r);
+  }
+  return r;
+};
+const lazyBundle=(c,p)=>{
+  let b=c.bundles.get(p);
+  if(b===undefined){
+    const e=__rt.nth(c.entries,p),products=__rt.nth(e,1),extensions=__rt.nth(e,2),names=[],indices=[];
+    for(let i=0;i<__rt.count(products);i++)names.push(__rt.nth(products,i));
+    for(let i=0;i<__rt.count(extensions);i++)indices.push([__rt.nth(__rt.nth(extensions,i),0),__rt.nth(__rt.nth(extensions,i),1)]);
+    b=decl.makeBundle(names,indices,__rt.nth(e,3),__rt.nth(e,5),c.base+__rt.nth(e,6)+1);
+    c.bundles.set(p,b);
+  }
+  return b;
+};
+// Install a name's catalog registrations, once, before its first use.
+function lazyResolve(name){
+  const c=lazyCatalog;
+  if(c===null||typeof name!=='string'||c.resolved.has(name))return;
+  const at=__rt.getOr(c.names,name,null);
+  if(at===null)return;
+  const start=liveState(name);
+  c.resolved.set(name,start);
+  let s=start;
+  for(let i=0,n=__rt.count(at);i<n;i++){const q=__rt.nth(at,i);if(q>=c.end)break;s=lazyStep(c,s,q);}
+  if(s.owner<0)return;
+  const previous=roots.get(name);
+  if(s.pre)__rt.initializerSlotSet(previous,4,true);
+  let slot=previous;
+  if(s.fresh){slot=__rt.initializerSlot(s.unit,name);if(s.defined)__rt.initializerSlotSet(slot,4,true);roots.set(name,slot);}
+  if(__rt.nth(__rt.nth(c.entries,s.owner),0)===0)
+    Object.defineProperty(rootTarget,name,{configurable:true,get:rootGetter(name,s.unit,slot)});
+  else {
+    const b=lazyBundle(c,s.owner),read=decl.productGetter(b,name);
+    Object.defineProperty(rootTarget,name,{configurable:true,get:read});
+    productReaders.set(read,__rt.vector(b,name));
+  }
+  if(!start.own){
+    // A bundle creates its products in order.
+    const e=__rt.nth(c.entries,s.first);
+    let at=s.first;
+    if(__rt.nth(e,0)===1){
+      const products=__rt.nth(e,1),n=__rt.count(products);
+      for(let i=0;i<n;i++)if(__rt.nth(products,i)===name){at+=i/(n+1);break;}
+    }
+    c.created.set(name,at);
+  }
+}
+// Index a protocol's catalog bundles, once, before its extensions are read
+// or another bundle extends it.
+function catalogProtocol(protocol){
+  const c=lazyCatalog;
+  if(c===null||c.protocolsDone.has(protocol))return;
+  c.protocolsDone.add(protocol);
+  const at=__rt.getOr(c.protocols,protocol,null);
+  if(at===null)return;
+  for(let i=0,n=__rt.count(at);i<n;i++){
+    const q=__rt.nth(at,i);
+    if(q>=c.end)break;
+    globalThis.__lightCatalogApplied++;
+    if(lazyEffective(c,q))decl.index(lazyBundle(c,q),protocol);
+  }
+}
+// Apply the rest of the adopted catalog and return the public global.
+function materializeAll(){
+  const c=lazyCatalog;
+  if(c===null)return;
+  for(let p=0;p<c.end;p++){
+    const e=__rt.nth(c.entries,p);
+    if(__rt.nth(e,0)===0){lazyResolve(__rt.nth(e,1));continue;}
+    const names=__rt.nth(e,1),extensions=__rt.nth(e,2);
+    for(let i=0;i<__rt.count(names);i++)lazyResolve(__rt.nth(names,i));
+    for(let i=0;i<__rt.count(extensions);i++)catalogProtocol(__rt.nth(__rt.nth(extensions,i),0));
+  }
+  // Names the catalog created follow the keys before it, in the order the
+  // catalog created them, and precede every key added since.
+  const keys=Reflect.ownKeys(rootTarget).filter(key=>!c.pre.has(key)),present=new Set(keys);
+  const order=[...c.created.keys()].filter(key=>present.has(key)).sort((a,b)=>c.created.get(a)-c.created.get(b));
+  for(const key of keys)if(!c.created.has(key))order.push(key);
+  if(order.some((key,i)=>key!==keys[i])){
+    const saved=order.map(key=>[key,Reflect.getOwnPropertyDescriptor(rootTarget,key)]);
+    for(const [key] of saved)Reflect.deleteProperty(rootTarget,key);
+    for(const [key,d] of saved)Reflect.defineProperty(rootTarget,key,d);
+  }
+  lazyCatalog=null;
+  globalThis.__lightCompilerRootReceiver=null;
+  Object.defineProperty(globalThis,'__lightCompilerRoots',{value:rootsProxy,writable:c.global.writable,
+    enumerable:c.global.enumerable,configurable:c.global.configurable});
+}
 const values=new Map();
 globalThis.__lightResult=null;
 globalThis.__lightFailure=null;
@@ -2542,7 +2744,9 @@ for(let serial=1;;serial++){
   try {
     let result=null;
     if(op===4){
-      const catalog=__rt.nth(input,0);
+      // A producer's whole catalog is adopted, a suffix applied.
+      const snapshot=__rt.nth(input,0),catalog=__rt.nth(snapshot,0);
+      if(!(__rt.nth(input,2)&&__rt.nth(input,1)===0&&lazyCatalog===null&&lazyAdopt(snapshot)))
       for(let at=__rt.nth(input,1);at<__rt.count(catalog);at++){
         const entry=__rt.nth(catalog,at);
         if(__rt.nth(entry,0)===0){

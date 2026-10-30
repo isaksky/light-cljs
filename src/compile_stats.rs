@@ -87,13 +87,16 @@ pub struct NativeHelperCounts {
     pub log_edges_copied: usize,
     pub log_edges_recorded: usize,
     /// Catalog installs into a task (each applies the registrations after
-    /// its task's frontier), the registrations they applied and their time,
-    /// counted only while a trace records (`--stats`).
+    /// its task's frontier, or a producer adopts its parent's catalog), the
+    /// registrations they applied, including those producers applied on
+    /// first use of a name or protocol, and the installs' time, counted only
+    /// while a trace records (`--stats`).
     pub catalog_uses: usize,
     pub catalog_entries: usize,
     pub catalog_nanos: usize,
     /// Helper producer tasks set up, the standalone registrations their
-    /// setup replayed, the catalog registrations it applied from the start,
+    /// setup replayed, the catalog registrations they applied (on first use
+    /// of a name or protocol of the catalog they adopted, light-cljs-590),
     /// and the setup's time, counted only while a trace records.
     pub producers: usize,
     pub producer_replayed: usize,

@@ -1,11 +1,18 @@
 //! Shared catalog data, with ordinary task-owned JavaScript registrations.
 //!
-//! Versions are persistent vectors of registration descriptors. They contain
-//! only immutable data, never task objects, initialized values or getters.
-//! Tasks apply descriptors in source order through the same registration
-//! functions as individual registrations; nothing is coalesced or inferred
-//! from a property descriptor. Producers import data rather than compile and
-//! evaluate their parent's registration sources.
+//! A version is a persistent vector `[entries, names, protocols, bundles]`:
+//! the registration descriptors in source order, a map from each name to
+//! the positions of the descriptors that register it, a map from each
+//! protocol to the positions of the bundles that extend it, and how many
+//! bundles `entries` holds (a bundle's descriptor records how many precede
+//! it). They contain only immutable data, never task objects, initialized
+//! values or getters. Tasks apply descriptors in source order through the
+//! same registration functions as individual registrations; nothing is
+//! coalesced or inferred from a property descriptor. Producers import data
+//! rather than compile and evaluate their parent's registration sources, and
+//! apply a name's or a protocol's descriptors only when they first use it
+//! (light-cljs-590; `lazyAdopt` in src/bbp_runtime.js), so setting one up
+//! costs what it reads rather than the whole catalog.
 use super::*;
 use crate::compilation_session::Registration;
 
@@ -20,6 +27,22 @@ pub(super) struct Registry {
 fn text<'s>(s: &Scope<'s>, value: &str) -> Result<Local<'s>, EvalError> {
     s.try_primitive(Primitive::string(value))
         .ok_or_else(|| error("heap byte or string limit exceeded"))
+}
+
+/// `map` with `position` appended to the positions it holds for `key`.
+fn index<'s>(
+    s: &Scope<'s>,
+    map: Local<'s>,
+    key: Local<'s>,
+    position: usize,
+) -> Result<Local<'s>, EvalError> {
+    let positions = match s.get(map, key).map_err(error)? {
+        Some(positions) => positions,
+        None => s.new_vector(&[]).map_err(error)?,
+    };
+    let position = s.primitive(Primitive::Number(position as f64));
+    let positions = s.conj(positions, position).map_err(error)?;
+    s.assoc(map, key, positions).map_err(error)
 }
 
 impl BbpEvaluator {
@@ -74,24 +97,53 @@ impl BbpEvaluator {
                     })?;
                 }
                 let snapshot = self.host_scope(|s| {
-                    let mut entries = match &previous {
-                        Some(previous) => s.local(previous).map_err(error)?,
-                        None => s.new_vector(&[]).map_err(error)?,
+                    let number = |n: usize| s.primitive(Primitive::Number(n as f64));
+                    let (mut entries, mut names, mut protocols, mut bundles) = match &previous {
+                        Some(previous) => {
+                            let previous = s.local(previous).map_err(error)?;
+                            let part = |i| s.nth(previous, i).map_err(error);
+                            let ValueView::Number(bundles) = s.view(part(3)?) else {
+                                return Err(error("invalid native catalog version"));
+                            };
+                            (part(0)?, part(1)?, part(2)?, bundles as usize)
+                        }
+                        None => (
+                            s.new_vector(&[]).map_err(error)?,
+                            s.new_map(&[]).map_err(error)?,
+                            s.new_map(&[]).map_err(error)?,
+                            0,
+                        ),
                     };
-                    for registration in registrations {
+                    let index = |map, key, position| index(s, map, key, position);
+                    for (offset, registration) in registrations.iter().enumerate() {
                         self.control.poll()?;
-                        let number = |n: usize| s.primitive(Primitive::Number(n as f64));
+                        let position = cursor + offset;
                         let boolean = |b| s.primitive(Primitive::Bool(b));
                         let descriptor = match registration {
-                            Registration::Root(name, unit, _, once, _) => s
-                                .new_vector(&[
+                            Registration::Root(name, unit, _, once, _) => {
+                                let name = text(s, name)?;
+                                names = index(names, name, position)?;
+                                s.new_vector(&[
                                     number(0),
-                                    text(s, name)?,
+                                    name,
                                     unit.map_or_else(|| s.primitive(Primitive::Null), number),
                                     boolean(*once),
                                 ])
-                                .map_err(error)?,
+                                .map_err(error)?
+                            }
                             Registration::Bundle(bundle) => {
+                                let mut seen = HashSet::new();
+                                for name in &bundle.products {
+                                    if seen.insert(name.as_str()) {
+                                        names = index(names, text(s, name)?, position)?;
+                                    }
+                                }
+                                let mut seen = HashSet::new();
+                                for (protocol, ..) in &bundle.extensions {
+                                    if seen.insert(protocol.as_str()) {
+                                        protocols = index(protocols, text(s, protocol)?, position)?;
+                                    }
+                                }
                                 let names = bundle
                                     .products
                                     .iter()
@@ -118,38 +170,51 @@ impl BbpEvaluator {
                                     text(s, &bundle.location)?,
                                     boolean(bundle.once),
                                     number(bundle.unit),
+                                    // The bundles before it: its declaration order.
+                                    number({
+                                        bundles += 1;
+                                        bundles - 1
+                                    }),
                                 ])
                                 .map_err(error)?
                             }
                         };
                         entries = s.conj(entries, descriptor).map_err(error)?;
                     }
-                    Ok::<_, EvalError>(s.persist(entries))
+                    let version = s
+                        .new_vector(&[entries, names, protocols, number(bundles)])
+                        .map_err(error)?;
+                    Ok::<_, EvalError>(s.persist(version))
                 })?;
                 self.runtime.publish(&snapshot).map_err(error)?;
                 registry.versions.insert(end, snapshot.downgrade());
                 snapshot
             }
         };
-        self.use_catalog(snapshot, first, end)?;
+        self.use_catalog(snapshot, first, end, false)?;
         self.cx()?.catalog.set(Some(end));
         Ok(())
     }
 
     /// Apply exactly the newly registered suffix. A producer starts at zero
-    /// with a fresh ordinary object and the very same immutable data root.
+    /// with a fresh ordinary object and the very same immutable data root,
+    /// which it adopts (`lazy`) rather than applies: each name and protocol
+    /// gets its registrations when the task first uses it, with the same
+    /// result as applying them all here.
     pub(super) fn use_catalog(
         &self,
         snapshot: Rooted,
         first: usize,
         end: usize,
+        lazy: bool,
     ) -> Result<(), EvalError> {
         let started = crate::compile_trace::any_recording().then(std::time::Instant::now);
         let cx = self.cx()?;
         let payload = self.host_scope(|s| {
             let snapshot = s.local(&snapshot).map_err(error)?;
             let first = s.primitive(Primitive::Number(first as f64));
-            Ok::<_, EvalError>(s.persist(s.new_vector(&[snapshot, first]).map_err(error)?))
+            let lazy = s.primitive(Primitive::Bool(lazy));
+            Ok::<_, EvalError>(s.persist(s.new_vector(&[snapshot, first, lazy]).map_err(error)?))
         })?;
         // request roots its message until the next command boundary and
         // completes the command cell weakly. It cannot retain this snapshot
@@ -159,11 +224,33 @@ impl BbpEvaluator {
         if let Some(started) = started {
             let c = &self.shared.0.counters;
             c.catalog_uses.fetch_add(1, Ordering::Relaxed);
-            c.catalog_entries
-                .fetch_add(end.saturating_sub(first), Ordering::Relaxed);
+            if !lazy {
+                c.catalog_entries
+                    .fetch_add(end.saturating_sub(first), Ordering::Relaxed);
+            }
             c.catalog_nanos
                 .fetch_add(started.elapsed().as_nanos() as usize, Ordering::Relaxed);
         }
         Ok(())
+    }
+
+    /// Charge the catalog entries this producer's task applied on first use
+    /// of a name or protocol (`__lightCatalogApplied`) to the producer and
+    /// catalog counters, once its work is done.
+    pub(super) fn note_catalog_applied(&self) {
+        if !crate::compile_trace::any_recording() {
+            return;
+        }
+        let Ok(cx) = self.cx() else { return };
+        let Ok(Some(applied)) = cx.task.global_value("__lightCatalogApplied") else {
+            return;
+        };
+        if let ValueView::Number(applied) = applied.view() {
+            let c = &self.shared.0.counters;
+            c.producer_catalog_entries
+                .fetch_add(applied as usize, Ordering::Relaxed);
+            c.catalog_entries
+                .fetch_add(applied as usize, Ordering::Relaxed);
+        }
     }
 }

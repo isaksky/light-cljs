@@ -5766,7 +5766,9 @@ fn native_profile_stats_cover_engine_bridge_and_helpers() {
         assert!(value("native.env.entries-rebuilt") > 0.0, "{report}");
         assert!(value("native.env.bytes-rebuilt") > 0.0, "{report}");
     }
-    // Helpers are produced by producer tasks, each set up from the catalog.
+    // Helpers are produced by producer tasks, each set up from the catalog,
+    // which it adopts and applies only as far as it reads it
+    // (light-cljs-590): possibly not at all.
     let setups = value("native.producers.setups");
     assert!(stats.native_helpers.compiled > 0, "{report}");
     assert!(
@@ -5775,7 +5777,86 @@ fn native_profile_stats_cover_engine_bridge_and_helpers() {
     );
     assert!(value("native.catalog.uses") >= setups, "{report}");
     assert!(value("native.catalog.entries") >= value("native.producers.catalog-entries"));
-    assert!(value("native.producers.catalog-entries") > 0.0, "{report}");
+    assert!(value("native.producers.setup-ms") >= 0.0, "{report}");
+}
+
+/// A helper's producer task adopts its parent's catalog instead of applying
+/// it (light-cljs-590): the catalog entries producers apply depend on what
+/// they read, not on how many definitions the program has registered so
+/// far. Four times the unrelated definitions leave them unchanged; applying
+/// the catalog at setup made them grow with it.
+#[test]
+fn producer_catalog_work_does_not_grow_with_the_catalog() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let build = |filler: usize| {
+        let root = temp_dir::TempDir::new("native-producer-catalog");
+        let defs: String = (0..filler)
+            .map(|i| format!("(def unrelated-{i} {i})\n"))
+            .collect();
+        std::fs::write(
+            root.join("tools.cljs"),
+            format!(
+                r#"(ns tools)
+                {defs}
+                (defn label [x] (str "n" x))
+                (defn shout [x] (str (label x) "!"))
+                (defmacro tag [x] (list 'quote [(shout x) (label x)]))"#
+            ),
+        )
+        .unwrap();
+        let calls: String = (0..6).map(|i| format!(" (tag {i})")).collect();
+        std::fs::write(
+            root.join("app.cljs"),
+            format!("(ns app (:require [tools :refer [tag]])) (js/console.log (pr-str [{calls}]))"),
+        )
+        .unwrap();
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut stats = light_cljs::CompileStats::new();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                stats: Some(&mut stats),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let expected: Vec<String> = (0..6).map(|i| format!("[\"n{i}!\" \"n{i}\"]")).collect();
+        assert_eq!(
+            program_output(&emit_js(&program)),
+            format!("[{}]\n", expected.join(" "))
+        );
+        let report = stats.report();
+        let value = |key: &str| -> usize {
+            let prefix = format!("\n{key} ");
+            let at = report
+                .find(&prefix)
+                .unwrap_or_else(|| panic!("{key} missing: {report}"));
+            report[at + prefix.len()..]
+                .lines()
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        (
+            value("native.producers.setups"),
+            value("native.producers.catalog-entries"),
+            report,
+        )
+    };
+    let (setups, applied, report) = build(40);
+    let (more_setups, more_applied, more_report) = build(160);
+    assert!(setups > 0, "{report}");
+    assert_eq!(setups, more_setups, "{report}\n{more_report}");
+    // Each producer applies the few entries of the names it reads, far
+    // fewer than the 40 the smaller catalog holds.
+    assert!(applied < setups * 40, "{report}");
+    assert_eq!(applied, more_applied, "{report}\n{more_report}");
 }
 
 #[test]

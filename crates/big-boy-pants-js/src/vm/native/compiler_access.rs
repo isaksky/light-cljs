@@ -95,11 +95,15 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
             }
             // Accessors may freeze or replace the root while suspended. The
             // original Proxy must check the descriptor after they return.
-            let read = if target != receiver && matches!(read, Some(property::Read::Deferred(_))) {
-                property::read(heap, state.diag.task, &receiver, &key)?
-            } else {
-                read
-            };
+            // A name the target lacks is also read through the Proxy: a task
+            // may install a name's catalog registrations when its Proxy is
+            // first asked for it (light-cljs-590).
+            let read =
+                if target != receiver && matches!(read, None | Some(property::Read::Deferred(_))) {
+                    property::read(heap, state.diag.task, &receiver, &key)?
+                } else {
+                    read
+                };
             read_result(state, read, receiver)?;
         }
         _ => return Ok(false),

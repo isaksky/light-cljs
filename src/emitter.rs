@@ -3519,7 +3519,10 @@ impl<'a> Emitter<'a> {
             self.output.push(']');
         } else if self.demand_roots {
             if self.native_forms {
-                self.output.push_str("(__rt.cljReadRoot(globalThis.__lightCompilerRoots, globalThis.__lightCompilerRootContext, ");
+                // A producer that adopted a catalog without applying it names
+                // its registry here until its code reads the public global
+                // (light-cljs-590, `lazyAdopt` in src/bbp_runtime.js).
+                self.output.push_str("(__rt.cljReadRoot(globalThis.__lightCompilerRootReceiver ?? globalThis.__lightCompilerRoots, globalThis.__lightCompilerRootContext, ");
             } else {
                 self.output
                     .push_str("globalThis[\"__lightCompilerRoots\"][");

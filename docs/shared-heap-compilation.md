@@ -1610,7 +1610,10 @@ of the program. Neither is JavaScript the macros asked for.
    Helpers grow with the program (57, 113 and 226 at 200k, 400k and 800k)
    and so does the list each one applies (about 11k, 22k and 44k entries),
    so this setup takes 9.2 s, 37.5 s and 144 s: 40%, 51% and 66% of the
-   build after fix 1. Filed as light-cljs-590.
+   build after fix 1. Fixed by light-cljs-590 (see "Fix 2" below): a
+   producer now adopts the catalog and applies a definition only when it
+   first uses it. **200k: 20.8 s to 12.6 s (-39%); 800k: 229 s to 73 s
+   (-68%)** on one thread, same output.
 
 These numbers were measured on a busy machine (other workers' builds and
 tests ran throughout, see Method); a quiet re-measurement, with prune CPU
@@ -1619,7 +1622,9 @@ time, is queued as light-cljs-593.
 With fix 1 the Pants build is 2.6x slower than the V8 build at 200k and
 4.6x at 800k. Subtracting cause 2 leaves about 13.5 s, 28.5 s and 79 s:
 1.6x the V8 build at 200k and 800k, growing 5.9x for 4x the code against the
-V8 build's 5.6x on the same machine. The other suspects are small or
+V8 build's 5.6x on the same machine. Fix 2 confirmed this: with both
+fixes the one-thread Pants build is 1.6x the V8 build at 200k and 1.7x at
+800k (below). The other suspects are small or
 linear: a larger macro memory limit changes nothing at 800k, the `&env` cache
 and the prune walk together cost about 2% of the build (the prune walk grows
 faster than the program and is filed as light-cljs-591), and on one thread
@@ -1865,6 +1870,86 @@ alternating 200k builds each, 8.74 s [8.16-8.93] against 8.61 s
 200k Pants build of the final commit took 20.1 s (1-minute load 9.0) with
 the same output, 146,539 task-history entries copied and 7.9 s of helper
 producer setup.
+
+#### Fix 2: producers adopt the catalog (light-cljs-590, October 29, 2026)
+
+*What changed.* A helper's producer task no longer applies its parent's
+catalog when it is set up. It adopts the shared, immutable catalog version
+instead, and a definition (a root or a declaration bundle's product) gets
+its catalog registrations the first time the task uses that name; a
+protocol gets its bundles the first time the task dispatches on it or
+another bundle extends it. Each catalog version now also carries two
+shared indexes, built as registrations are added: name to the positions
+that register it, and protocol to the bundles that extend it
+(src/bbp_evaluator/catalog.rs). The task-side code is `lazyAdopt` and
+`lazyResolve` in src/bbp_runtime.js.
+
+*Why the result is the same.* What applying a registration does to a name
+depends only on that name's state before it (and, for a `defonce` bundle,
+on its other products' states), so a name's state after the whole catalog
+can be computed from its own registrations when it is first used. Every
+reader and writer of a name in the runtime resolves the name first, so an
+unresolved name still has the state it had when the catalog was adopted.
+Bundle declaration order, `defonce` rules, frontiers, overlays and lane
+order are as before: a bundle keeps the order it had among all bundles,
+and a protocol's bundles are listed before any bundle registered later.
+The registry Proxy only supports read traps, so writes to it cannot be
+intercepted; instead the public global `__lightCompilerRoots` is an
+accessor while a catalog is adopted, and code that reads it gets the whole
+catalog applied in registration order (key order included), while compiler
+code reads the registry through `__lightCompilerRootReceiver`. The only
+differences left are for code that reaches into compiler internals: the
+global's own descriptor reads as an accessor until first read, and the
+registry reached through `__lightCompilerRootContext` is not completed.
+`adopted_catalogs_match_applied_catalogs_whatever_is_read_first`
+(src/bbp_evaluator/tests.rs) compares adopted and applied catalogs on 48
+generated catalogs (repeated names, `defonce` roots and bundles, units
+missing, registrations replayed before the catalog, a suffix applied
+later), whatever is read first and in whatever order.
+`producer_catalog_work_does_not_grow_with_the_catalog` (tests/bbp_macros.rs)
+fails before the fix: 4x the unrelated definitions no longer change the
+entries producers apply. The seeded scheduling stress test on the 200k
+project (12 seeds at 1, 2, 4 and 8 threads, `none` and `advanced`) gives
+identical JavaScript, source maps, warnings and helper counts.
+
+*Counters*, one thread (`--stats`, seed-42 projects):
+
+| | 200k before | 200k after | 400k before | 400k after | 800k before | 800k after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| producer setups | 57 | 57 | 113 | 113 | 226 | 226 |
+| catalog entries producers applied | 626,196 | 0 | 2,461,654 | 0 | 9,871,407 | 0 |
+| producer setup (`native.producers.setup-ms`) | 8.2 s | 0.013 s | 33.8-43.7 s | 0.03-0.04 s | 143-156 s | 0.06-0.07 s |
+| bytes the engine allocated | 7.8 GB | 1.25 GB | 28.6 GB | 2.57 GB | 110.1 GB | 5.33 GB |
+| collections | 100 | 42 | 167 | 52 | 313 | 62 |
+
+On these projects producers read no catalog definition at all (a producer
+that does applies only that definition's few entries). Producer setup is 0.1% of the 800k
+build. Allocation now grows 4.3x for 4x the code (13.5x before), and
+collections 1.5x.
+
+*Whole build*, alternating before and after (`pants-before` is master
+`61ace815`, `pants-after` this change; release, thin LTO, built with
+`CARGO_BUILD_JOBS=4`), wall time with the 1-minute load before each run.
+Medians with ranges; at 400k and 800k the median of two runs is their mean.
+Other workers' builds and tests ran throughout, so loads were high, most of
+all at 400k and 800k (one 400k run after the change started at load 30.5);
+user CPU varies less:
+
+| Size, threads | Before | After | Change | User CPU before / after | Loads before / after |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 200k, 1 | 20.8 s [20.3-21.0] | 12.6 s [12.6-12.9] | -39% | 19.5 / 11.4 s | 10.4, 9.2, 8.3 / 9.4, 8.3, 8.4 |
+| 400k, 1 | 75.7 s [61.4-90.0] | 35.8 s [27.9-43.7] | -53% | 62.4 / 29.9 s | 7.4, 8.5 / 8.2, 30.5 |
+| 800k, 1 | 228.6 s [214.3-242.9] | 72.8 s [67.6-78.0] | -68% | 210.7 / 64.4 s | 28.6, 18.2 / 17.8, 13.9 |
+| 200k, 4 | 16.9 s [16.8-17.1] | 9.4 s [9.1-9.7] | -44% | 22.9 / 15.7 s | 8.3, 8.1, 7.5 / 8.2, 7.5, 7.7 |
+
+Peak memory falls a little (200k one thread: 1.25 to 1.18 GB). Every
+build of a size produced the same JavaScript before and after. The V8
+build is unchanged: the change touches only the Pants build's runtime and
+the compile-time code it emits; three alternating 200k builds each took
+7.97 s [7.95-8.13] before and 7.91 s [7.85-8.01] after, same output. One
+800k V8 build after the change took 43.2 s (load 10.6). So the one-thread
+Pants build is now 1.6x the V8 build at 200k and 1.7x at 800k, and grows
+5.8x for 4x the code against the V8 build's 5.5x.
 
 ### Single-thread speed
 

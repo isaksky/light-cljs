@@ -3042,6 +3042,217 @@ fn catalog_mixed_redefinitions_and_inherited_preloads_follow_registration_order(
     }
 }
 
+/// A producer adopts its parent's catalog and registers each name and
+/// protocol on first use (light-cljs-590). Whatever it reads first, and in
+/// whatever order, it must see exactly what a task that applied the whole
+/// catalog at once sees: the same kept flags, descriptors, values and
+/// errors, the same key order once its code reads the public registry, and
+/// the same state after it applies a further catalog suffix itself.
+#[test]
+fn adopted_catalogs_match_applied_catalogs_whatever_is_read_first() {
+    use crate::compilation_session::{BundleRecord, Registration};
+    const NAMES: [&str; 6] = ["a", "b", "c", "10", "d", "e"];
+    // A small deterministic generator: roots and bundles over few names, so
+    // that names are registered again, defonces meet kept and unkept names,
+    // and declarations without units appear.
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut next = |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n) as usize
+    };
+    let service: UnitService = Rc::new(|_, id| {
+        Ok(format!(
+            "rt => {{ const p = globalThis.__lightCompilerBundleProducts; \
+             if (p !== undefined) ['a','b','c','10','d','e'].forEach((n, i) => p[n] = {id} * 10 + i); \
+             return {id}; }}"
+        ))
+    });
+    let mut failures = Vec::new();
+    for case in 0..48 {
+        let mut unit = 0;
+        let mut registrations = |count: usize, next: &mut dyn FnMut(u64) -> usize| {
+            (0..count)
+                .map(|_| {
+                    unit += 1;
+                    let once = next(3) == 0;
+                    if next(3) == 0 {
+                        let mut products = Vec::new();
+                        for _ in 0..1 + next(2) {
+                            let name = NAMES[next(NAMES.len() as u64)].to_string();
+                            if !products.contains(&name) {
+                                products.push(name);
+                            }
+                        }
+                        let extensions = match next(3) {
+                            0 => vec![],
+                            1 => vec![("P".into(), Some("@T".into()), "x".into())],
+                            _ => vec![
+                                ("Object".into(), None, "x".into()),
+                                ("P".into(), None, "y".into()),
+                            ],
+                        };
+                        Registration::Bundle(Arc::new(BundleRecord {
+                            products,
+                            unit,
+                            extensions,
+                            location: "fixture:1".into(),
+                            once,
+                            group: false,
+                        }))
+                    } else {
+                        Registration::Root(
+                            NAMES[next(NAMES.len() as u64)].into(),
+                            (next(4) != 0).then_some(unit),
+                            None,
+                            once,
+                            "fixture:1".into(),
+                        )
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let catalog = registrations(4 + next(8), &mut next);
+        let suffix = registrations(next(4), &mut next);
+        // Registrations outside the catalog, which a producer replays first.
+        let standalone = (0..next(3))
+            .map(|i| (NAMES[next(NAMES.len() as u64)], 1000 + i, next(2) == 0))
+            .collect::<Vec<_>>();
+        let order = (0..NAMES.len())
+            .map(|i| NAMES[(i + case) % NAMES.len()])
+            .collect::<Vec<_>>();
+        let via_intrinsic = next(2) == 0;
+        let global_first = case % 4 == 3;
+
+        let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+        let task = || {
+            let task = Rc::new(shared.evaluator().unwrap());
+            task.clone()
+                .install_compiler_service("__lightCompileUnit", service.clone())
+                .unwrap();
+            for (name, unit, once) in &standalone {
+                task.register_compiler_root(name, Some(*unit), *once, "fixture:2", None)
+                    .unwrap();
+            }
+            task
+        };
+        let parent = task();
+        parent.install_catalog(0, &catalog).unwrap();
+        let child = parent
+            .spawn_producer(
+                &parent.cx().unwrap(),
+                parent.service.borrow().clone(),
+                |_| {},
+            )
+            .unwrap();
+        // The task a producer used to be: the same replay, then every
+        // registration applied at once.
+        let reference = task();
+        reference.install_catalog(0, &catalog).unwrap();
+        let run = |task: &BbpEvaluator, source: &str| -> String {
+            match task.evaluate_unit(source) {
+                Ok(value) => {
+                    let result = task.cx().unwrap().values.borrow()[&value.index]
+                        .string()
+                        .map(|s| s.to_string_lossy())
+                        .unwrap_or_default();
+                    task.release(value).unwrap();
+                    result
+                }
+                Err(error) => format!("error: {error}"),
+            }
+        };
+        let names = order
+            .iter()
+            .map(|n| format!("'{n}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let read = if via_intrinsic {
+            "__rt.cljReadRoot(R, globalThis.__lightCompilerRootContext, n)"
+        } else {
+            "R[n]"
+        };
+        // Compiler code's view: the registry without the public global.
+        let internal = format!(
+            r#"rt => {{
+            const R = globalThis.__lightCompilerRootReceiver ?? globalThis.__lightCompilerRoots;
+            return JSON.stringify([{names}].map(n => {{
+                let value; try {{ value = {read}; }} catch (e) {{ value = 'throws ' + String(e); }}
+                const kept = globalThis.__lightCompilerRootKept(n), has = n in R;
+                const d = Object.getOwnPropertyDescriptor(R, n);
+                return [n, value, kept, has, d === undefined ? null : ['value' in d, d.enumerable, d.configurable]];
+            }}));
+        }}"#
+        );
+        let public = r#"rt => {
+            const o = globalThis.__lightCompilerRoots, keys = Reflect.ownKeys(o);
+            return JSON.stringify([keys, keys.map(n => {
+                const d = Object.getOwnPropertyDescriptor(o, n);
+                let value; try { value = o[n]; } catch (e) { value = 'throws ' + String(e); }
+                return [value, 'value' in d, d.enumerable, d.configurable];
+            }), Object.getOwnPropertyDescriptor(globalThis, '__lightCompilerRoots').writable]);
+        }"#;
+        // The producer adopted the catalog rather than applying it.
+        assert_eq!(
+            run(
+                &child,
+                "rt => String(globalThis.__lightCompilerRootReceiver !== null)"
+            ),
+            "true",
+            "case {case}"
+        );
+        let mut steps = vec![];
+        if global_first {
+            steps.push(("public", public.to_string()));
+        }
+        steps.push(("internal", internal.clone()));
+        if !suffix.is_empty() && case % 2 == 0 {
+            steps.push(("suffix", String::new()));
+            steps.push(("internal after suffix", internal.clone()));
+        }
+        steps.push(("public", public.to_string()));
+        for (label, source) in steps {
+            if label == "suffix" {
+                for task in [&parent, &child, &reference] {
+                    task.install_catalog(catalog.len(), &suffix).unwrap();
+                }
+                continue;
+            }
+            let (expected, actual) = (run(&reference, &source), run(&child, &source));
+            if label == "internal" {
+                // Every name was read: their entries were applied and counted.
+                assert_ne!(
+                    run(&child, "rt => String(globalThis.__lightCatalogApplied)"),
+                    "0",
+                    "case {case}"
+                );
+            }
+            if expected != actual {
+                failures.push(format!(
+                    "case {case} {label}: catalog {:?} suffix {:?} standalone {standalone:?}\n  expected {expected}\n  actual   {actual}",
+                    catalog.iter().map(describe).collect::<Vec<_>>(),
+                    suffix.iter().map(describe).collect::<Vec<_>>(),
+                ));
+                break;
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+    fn describe(registration: &Registration) -> String {
+        match registration {
+            Registration::Root(name, unit, _, once, _) => {
+                format!("root {name} {unit:?} once={once}")
+            }
+            Registration::Bundle(b) => format!(
+                "bundle {:?} {} once={} {:?}",
+                b.products, b.unit, b.once, b.extensions
+            ),
+        }
+    }
+}
+
 #[test]
 fn catalog_producers_share_data_without_evaluating_registration_sources() {
     use crate::compilation_session::Registration;
@@ -3204,9 +3415,10 @@ fn catalog_catchup_reuses_live_prefix_descriptors() {
     shared.0.runtime.collect().unwrap();
     let retained = shared.0.runtime.heap_stats().last_live_bytes;
     let duplicated = shared.0.runtime.scope(|s| {
+        // A version's descriptors are its first element.
         let snapshots = snapshots
             .each_ref()
-            .map(|snapshot| s.local(snapshot).unwrap());
+            .map(|snapshot| s.nth(s.local(snapshot).unwrap(), 0).unwrap());
         for (snapshot, count) in snapshots.iter().zip([1000, 1001, 1003, 1004]) {
             assert_eq!(s.count(*snapshot).unwrap(), count);
         }

@@ -2201,7 +2201,9 @@ impl BbpEvaluator {
                 .unwrap()
                 .bind_producer(key, request.producer(), task);
         })?;
-        let source = callback(&active, id).map_err(error)?;
+        let source = callback(&active, id);
+        active.note_catalog_applied();
+        let source = source.map_err(error)?;
         // Only the factory expression runs here. Its initializer runs in each
         // consumer's task, preserving task-owned mutable values.
         let executable =
@@ -2258,15 +2260,15 @@ impl BbpEvaluator {
         *producer_cx.registrations.borrow_mut() = registrations;
         let replayed = producer_cx.registrations.borrow().len();
         if let Some(snapshot) = cx.catalog_snapshot.borrow().clone() {
-            active.use_catalog(snapshot, 0, cx.catalog.get().unwrap_or(0))?;
+            // Adopted, not applied: the task registers a name or protocol of
+            // the snapshot when it first uses it (light-cljs-590).
+            active.use_catalog(snapshot, 0, cx.catalog.get().unwrap_or(0), true)?;
         }
         producer_cx.catalog.set(cx.catalog.get());
         if let Some(started) = started {
             let c = &self.shared.0.counters;
             c.producers.fetch_add(1, Ordering::Relaxed);
             c.producer_replayed.fetch_add(replayed, Ordering::Relaxed);
-            c.producer_catalog_entries
-                .fetch_add(cx.catalog.get().unwrap_or(0), Ordering::Relaxed);
             c.producer_nanos
                 .fetch_add(started.elapsed().as_nanos() as usize, Ordering::Relaxed);
         }
