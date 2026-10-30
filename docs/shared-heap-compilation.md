@@ -1806,50 +1806,57 @@ and releases their references through reusable slots. It never scans surviving
 imports or walks their Datum trees. A surviving parent keeps its descendants'
 provenance and conversion costs even when their occurrence wrappers die;
 metadata, compiler literal payloads and reader entries omitted from the raw
-map remain part of that original tree.
+map remain part of that original tree. The engine finds those deaths during
+sweep: it tests one watched bit per object slot, in slot order, looks up the
+watch list only for a slot with a pending watch, and delivers each queue's
+notifications once per collection.
 
-The engine finds those deaths without a per-object table probe: sweep tests
-one watched bit per object slot, in slot order, and looks up the watch list
-only for a slot with a pending watch.
+Measured at `0689509c` (light-cljs-590's producer setup included) before and
+`f783b85c` after, with the same seed-42 projects, release configuration and
+2 GiB macro memory limit as above: `cargo build --release --locked
+--no-default-features --features bbp-macros`, then `BINARY release bench
+--no-cache --stats --jobs 1` (**1 thread**). Other workers were active (load
+average 8-26), so times are medians of 3-6 runs at 200k and 2-4 at 800k, with
+before and after runs interleaved; counters are identical between runs.
 
-Measured at `6d669e3d` before and `5ce4522b` after, with the same seed-42
-projects, release configuration and 2 GiB macro memory limit as above:
-`cargo build --release --locked --no-default-features --features bbp-macros`,
-then `BINARY release bench --no-cache --stats --jobs 1` (**1 thread**). Other
-workers were active: load average 6-10 for the 200k pair and the 800k before
-run, 20-24 for the 800k after run, which slowed even phases this change does
-not touch (emission 3.9 s before, 6.6 s after). Use the work counters to
-assess scaling rather than elapsed time.
-
-| Counter | Before, 200k | After, 200k | Before, 800k | After, 800k |
+| | Before, 200k | After, 200k | Before, 800k | After, 800k |
 | --- | ---: | ---: | ---: | ---: |
-| prune passes | 89 | 89 | 265 | 265 |
-| imports examined | 924,007 | 451,627 | 7,794,517 | 2,052,150 |
-| imports removed | 451,627 | 451,627 | 2,052,150 | 2,052,150 |
-| Datum nodes walked | 928,166 | **0** | 11,270,457 | **0** |
-| cached references released | not recorded | 978,008 | not recorded | 4,651,535 |
-| form/cost/object entries removed | 1,426,123 | 1,426,123 | 6,440,045 | 6,440,045 |
-| prune time, ms | 176.2 | 93.6 | 1,899.8 | 501.2 |
-| peak memory, GB | 1.21 | 1.25 | 4.70 | 4.83 |
+| prune passes | 43 | 43 | 63 | 63 |
+| imports examined | 606,772 | 444,598 | 2,682,904 | 1,990,617 |
+| imports removed | 444,598 | 444,598 | 1,990,617 | 1,990,617 |
+| Datum nodes walked | 318,899 | **0** | 1,359,350 | **0** |
+| cached references released | not recorded | 962,466 | not recorded | 4,505,729 |
+| form/cost/object entries removed | 1,403,886 | 1,403,886 | 6,247,530 | 6,247,530 |
+| prune time, ms | 117 | 87 | 645 | 459 |
+| collection pauses in macro calls, ms | 310-327 | 336-342 | 1,785-1,860 | 1,954-1,980 |
+| peak memory, GB | 1.20-1.22 | 1.18-1.21 | 4.53-4.76 | 4.71-4.73 |
+
+Before light-cljs-590 the walk was clearly quadratic: at `6d669e3d` the
+build collected 265 times at 800k, walked 0.93 and 11.27 million nodes at
+200k and 800k (12x for 4x the code), and the prune took 176 and 1,900 ms; this
+change made it 94 and 501 ms, with the same examined and released counts as
+above per removed import. Light-cljs-590 cut the collections to 43 and 63,
+which shrank the walk to 4.3x for 4x the code, so at these sizes the
+remaining gain is smaller.
 
 `native.prune.nodes-walked` retains its original meaning: Datum nodes visited
 to rediscover reachability. It is now zero. The new
 `native.prune.references-released` counts the actual remaining work: imported
-roots and cached child links released, 2.17 and 2.27 per removed import here.
-Only a parent's last reference releases its child links. Every pass now
-examines only what the last collection freed: imports examined equal imports
-removed, and the released references grow with the removed imports (4.5x and
-4.8x for 4x the code), not with the imports that survive.
+roots and cached child links released, 2.16 and 2.26 per removed import here.
+Every pass examines only what the last collection freed: imports examined
+equal imports removed, and the released references grow with the removed
+imports, not with the imports that survive.
 
-The 800k prune time sits at the 0.5 s line only because of the load on the
-after run; at 200k, under the same load for both runs, it halved. A sample
-of the 800k after run puts over a quarter of the remaining prune time in freeing
-the dead imports' Datum trees and source forms, which the walk freed before
-too. The bookkeeping costs peak memory: 3.6% at 200k and 2.7% at 800k for
-the cached child links, the per-entry slots and the watch lists. Garbage
-collection pauses inside macro calls summed to 1.54 s before and 1.67 s
-after at 200k, and 27.7 s and 29.7 s at 800k, within the load difference
-between the runs.
+Part of the work moved rather than vanished. Finding the dead imports now
+happens in the collector's sweep, which adds 20-30 ms of pause at 200k and
+about 150 ms at 800k, against prune savings of 30 and 190 ms; delivering
+each notification individually, as first written, added 45 ms at 200k. On
+one thread the change is roughly neutral at 800k today. What it removes is
+the term that grows with retained imports times collections, and the time
+the build-wide bridge lock is held while pruning falls by about 30%. A
+sample of the after build puts over a quarter of the remaining prune time in
+freeing the dead imports' Datum trees and source forms, which the walk
+freed too. Peak memory differences are within run-to-run variation.
 
 A regression test grows the surviving forest in eight batches while freeing
 one two-node tree per batch: at most four references are examined per pass,
@@ -1862,9 +1869,11 @@ rewrapping and failed imports.
 The complete output directories are byte-identical before and after at both
 sizes; the generated configuration emits one JavaScript bundle without source
 maps. The V8 build's complete 200k output directory is byte-identical before
-and after, and identical to the Pants build's. Executing the output with
-`main('42', '3')` gives `484264` at 200k and `189716` at 800k, matching the
-generated project's independent model (`bb oracle.bb 42 3`).
+and after at `6d669e3d`, unchanged after the rebase onto `0689509c`, and
+identical to the Pants build's.
+Executing the output with `main('42', '3')` gives `484264` at 200k and
+`189716` at 800k, matching the generated project's independent model
+(`bb oracle.bb 42 3`).
 
 *`&env` cache.* Every `&env` import missed (0 hits; 5,225, 10,648 and
 21,036 misses, each replacing the one cached envelope); each rebuilt about
