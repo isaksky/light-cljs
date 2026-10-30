@@ -2027,6 +2027,61 @@ the compile-time code it emits; three alternating 200k builds each took
 Pants build is now 1.6x the V8 build at 200k and 1.7x at 800k, and grows
 5.8x for 4x the code against the V8 build's 5.5x.
 
+#### Fix 3: a macro's result is realized in time linear in its size (light-cljs-622, October 30, 2026)
+
+*What changed.* Before the Pants build exports a macro's result it replaces
+every lazy sequence inside it with a list (`__rt.cljRealizeAll`). Each time
+that walk met a lazy sequence not realized yet, the engine realized it and
+ran the walk again from the top, so a result with many nested syntax-quoted
+lists (each `(seq (concat ...))` is one) was walked again once per list:
+time quadratic in the result's size. The walk now keeps its place while the
+sequence is realized and continues there (crates/big-boy-pants-js
+`collections::clj::RealizeAll`). Sequences are realized in the same order
+and each thunk still runs once; a walk that waits for another thread's
+sequence keeps its place too, its storage counted in the memory budget. In
+the rare case that the walk also had to ask the task runtime to compare a
+`sorted-map-by` map, it starts over as before.
+`realizing_nested_lazy_sequences_is_linear_in_their_number`
+(crates/big-boy-pants-js/src/vm/native/realize.rs) counts the walk's steps:
+401, 801 and 1,601 for 50, 100 and 200 nested sequences, against 15,351,
+60,701 and 241,401 before.
+
+*The `doseq` definition*, `(doseq [x0 xs ... xN-1 xs] (f x0))` through the
+bootstrap definition on the Pants build (debug build, the ignored
+`doseq_definition_timing` test in src/compiler_bootstrap.rs; same expansion
+before and after, compared by digest):
+
+| Bindings | Expansion nodes | Before | After |
+| ---: | ---: | ---: | ---: |
+| 4 | 1,446 | 0.44 s | 0.043 s |
+| 5 | 2,982 | 1.81 s | 0.095 s |
+| 6 | 6,054 | 7.55 s | 0.196 s |
+| 7 | 12,198 | 32.0 s | 0.40 s |
+| 9 | 49,062 | 581 s | 1.60 s |
+
+Time now about doubles per binding, as the expansion does, instead of
+quadrupling (load average 11-13 during these runs).
+
+*Whole build*, one thread, clean build, alternating before (master
+`14c68c44`) and after (this change), release builds as in fix 2 with
+`CARGO_BUILD_JOBS=4`, wall time with the 1-minute load before each run:
+
+| Size | Before | After | User CPU before / after | Peak memory before / after | Loads before / after |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 200k | 17.15 s [15.86-17.18] | 15.89 s [15.42-15.93] | 14.78 / 14.19 s | 1.23 / 1.22 GB | 17.0, 18.5, 18.7 / 18.9, 18.6, 18.4 |
+| 800k | 78.1 s [72.5-83.8] | 71.2 s [70.8-71.6] | 70.0 / 65.2 s | 4.79 / 4.87 GB | 17.9, 11.4 / 18.5, 12.3 |
+
+Medians with ranges (at 800k the mean of two runs). The machine was busy
+(other workers' builds and tests, loads 11-19), so the differences, about
+-7% at 200k and -9% at 800k, are at the edge of the noise; peak memory is
+the same within it. Every build of a size produced the same JavaScript, and
+for `42 3` the 200k output prints the oracle's `484264` and every 800k
+output `189716`. The generated projects' macros return small forms, so whole-build
+time barely moves; the fix matters for large source
+macro results and for the core macro calls the Pants build still runs
+through their definitions. The V8 build is unchanged: it does not contain
+the engine.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
