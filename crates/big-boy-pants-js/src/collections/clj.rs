@@ -242,7 +242,8 @@ fn collection_items(heap: &Heap, op: &'static str, v: &Value) -> Result<Option<V
             | FormBody::Symbol(_)
             | FormBody::Struct(_)
             | FormBody::Type(_)
-            | FormBody::Reduced(_) => return Err(unsupported(op, &shape)),
+            | FormBody::Reduced(_)
+            | FormBody::Delay(_) => return Err(unsupported(op, &shape)),
         },
         Shape::Other(_) => return Err(unsupported(op, &shape)),
     }))
@@ -463,6 +464,28 @@ pub(crate) fn is_reduced(heap: &Heap, v: &Value) -> bool {
     form::kind(heap, &form::unwrap(heap, v.clone())) == Some(FormKind::Reduced)
 }
 
+/// `force`: a delay's value, realizing it first (a request the VM performs
+/// before executing the operation again, as for a lazy sequence), or any
+/// other operand itself, occurrences included (light-cljs-613).
+pub(crate) fn force(heap: &Heap, v: &Value) -> Result<Value> {
+    let unwrapped = form::unwrap(heap, v.clone());
+    let Some(f) = form::form_object(heap, &unwrapped) else {
+        return Ok(v.clone());
+    };
+    let FormBody::Delay(cell) = f.body() else {
+        return Ok(v.clone());
+    };
+    match cell.realized() {
+        Some(value) => {
+            // Reading a settled realization counts its attributed effects
+            // for this reader as well, as a lazy sequence's does.
+            crate::collections::lazy::note_consumed(cell);
+            Ok(value.clone())
+        }
+        None => Err(CljError::Realize(unwrapped)),
+    }
+}
+
 /// Unwrap exactly one early-termination marker, preserving other operands
 /// (including occurrences) by identity.
 pub(crate) fn unreduced(heap: &Heap, v: &Value) -> Value {
@@ -502,6 +525,7 @@ pub(crate) fn count(heap: &Heap, v: &Value) -> Result<Value> {
             | FormBody::Type(_)
             | FormBody::Reduced(_)
             | FormBody::Lazy(_)
+            | FormBody::Delay(_)
             | FormBody::Cons(_) => return Err(unsupported("count", &shape)),
         },
         Shape::Other(_) => return Err(unsupported("count", &shape)),
@@ -600,7 +624,8 @@ pub(crate) fn first(heap: &Heap, v: &Value) -> Result<Value> {
             | FormBody::Symbol(_)
             | FormBody::Type(_)
             | FormBody::Lazy(_)
-            | FormBody::Reduced(_) => {
+            | FormBody::Reduced(_)
+            | FormBody::Delay(_) => {
                 return Err(unsupported("first", &shape));
             }
         },
@@ -1318,6 +1343,7 @@ pub(crate) fn dispatch_key(heap: &Heap, v: &Value) -> Option<Value> {
                         "sequence"
                     })),
                     FormBody::Reduced(_) => Value::String(JsString::from("reduced")),
+                    FormBody::Delay(_) => Value::String(JsString::from("delay")),
                     FormBody::CompilerLiteral { .. } => return None,
                 });
             }
@@ -1441,7 +1467,7 @@ pub(crate) fn lazy_seq(heap: &Heap, thunk: &Value) -> Result<Value> {
     Ok(form::new_lazy(heap, thunk.clone())?)
 }
 
-/// `realized?` of a lazy sequence.
+/// `realized?` of a lazy sequence or a delay.
 pub(crate) fn realized(heap: &Heap, v: &Value) -> Result<Value> {
     let shape = shape(heap, v);
     match &shape {
@@ -1455,7 +1481,7 @@ pub(crate) fn realized(heap: &Heap, v: &Value) -> Result<Value> {
         {
             Ok(Value::Bool(true))
         }
-        Shape::Form(_, f) => match f.lazy_cell() {
+        Shape::Form(_, f) => match f.once_cell() {
             Some(cell) => Ok(Value::Bool(cell.realized().is_some())),
             None => Err(unsupported("realized?", &shape)),
         },

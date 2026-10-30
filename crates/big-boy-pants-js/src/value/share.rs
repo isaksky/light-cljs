@@ -585,7 +585,7 @@ impl Children {
                         }
                     }
                     // Read through `Children::Lazy`.
-                    FormBody::Lazy(_) => {}
+                    FormBody::Lazy(_) | FormBody::Delay(_) => {}
                     FormBody::Cons(c) => {
                         for (index, v) in c.elements().iter().enumerate() {
                             f(Step::Index(index), v);
@@ -665,9 +665,9 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
             HeapObject::Vector(vec) => Children::Vector(vec.clone()),
             HeapObject::Map(map) => Children::Map(map.clone()),
             HeapObject::Occurrence(occ) => Children::Occurrence(occ.value.clone()),
-            // A lazy sequence: what it holds now, read once under its lock
-            // (light-cljs-479).
-            HeapObject::Form(form) => match form.lazy_cell() {
+            // A lazy sequence or a delay (light-cljs-613): what it holds now,
+            // read once under its lock (light-cljs-479).
+            HeapObject::Form(form) => match form.once_cell() {
                 Some(cell) => {
                     let (realized, edge, record) = cell.publication_edge();
                     Children::Lazy {

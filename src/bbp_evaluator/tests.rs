@@ -4941,6 +4941,33 @@ fn flatten_retains_leaf_occurrences_and_metadata_across_collection() {
 
 #[test]
 fn pooled_lazy_reader_inherits_lane_and_wakes_after_cold_helper() {
+    assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
+        "__rt.lazySeq",
+        "rt.core.flatten(__rt.formVector(tree))",
+        "rt => pair => __rt.cljFirst(__rt.formNth(pair, 1))",
+    );
+}
+
+/// A shared delay (light-cljs-613) is the same once-cell: a task that
+/// forces it while another runs its body parks, lends its earlier lane to
+/// that run, and wakes when it settles; the body runs once.
+#[test]
+fn pooled_delay_reader_inherits_lane_and_wakes_after_cold_helper() {
+    assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
+        "__rt.delay",
+        "tree",
+        "rt => pair => __rt.cljFirst(rt.core.deref(__rt.formNth(pair, 1)))",
+    );
+}
+
+/// The shared value is `[seen wrap]`, where `wrap` holds `tree`, a cell
+/// made by `make` whose thunk counts its runs in the atom `seen` and parks
+/// on a cold helper; `read` reads the helper's 7 through it.
+fn assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
+    make: &str,
+    wrap: &str,
+    read: &str,
+) {
     use crate::effect_lanes::{Lanes, identity};
     use std::{cell::Cell, sync::mpsc, time::Duration};
 
@@ -4955,18 +4982,18 @@ fn pooled_lazy_reader_inherits_lane_and_wakes_after_cold_helper() {
     shared.set_lanes(lanes.clone());
     let owner = shared.evaluator().unwrap();
     let value = owner
-        .evaluate_unit(
-            "rt => {
+        .evaluate_unit(&format!(
+            "rt => {{
         const seen = rt.core.atom(0);
-        const tree = __rt.lazySeq(() => {
+        const tree = {make}(() => {{
             const helper = globalThis.__lightCompilerRoots['fixture/helper'];
             globalThis.__lightNativeRuntime.core.swap(seen, x => x + 1);
             __rt.effect(65534, 0);
             return __rt.formList(helper());
-        });
-        return __rt.formVector(seen, rt.core.flatten(__rt.formVector(tree)));
-    }",
-        )
+        }});
+        return __rt.formVector(seen, {wrap});
+    }}"
+        ))
         .unwrap();
     let value = owner.cx().unwrap().values.borrow()[&value.index].clone();
     shared.0.runtime.publish(&value).unwrap();
@@ -5018,9 +5045,7 @@ fn pooled_lazy_reader_inherits_lane_and_wakes_after_cold_helper() {
             }
             let argument = evaluator.id().unwrap();
             evaluator.request(1, argument, value.clone()).unwrap();
-            let function = evaluator
-                .evaluate_unit("rt => pair => __rt.cljFirst(__rt.formNth(pair, 1))")
-                .unwrap();
+            let function = evaluator.evaluate_unit(read).unwrap();
             let _root = lanes.enter_root();
             let _unit = lanes.enter_unit(unit);
             let result = evaluator.call(function, &[argument]).unwrap();

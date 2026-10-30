@@ -197,6 +197,9 @@ pub(crate) struct LazyCell {
     /// A lazy `concat`: the thunk is the list of its collections, realized
     /// in Rust (`crate::collections::clj::concat_step`), not called.
     concat: bool,
+    /// A `delay` (light-cljs-613): the thunk's value is kept as it is, not
+    /// made a sequence, and no sequence operation reads through the cell.
+    delay: bool,
     /// A lock-free copy of `LazyState::shared` for the realizer's early
     /// check; `settle` decides under the lock.
     shared: AtomicBool,
@@ -233,20 +236,26 @@ pub(crate) enum Unsettled {
 
 impl LazyCell {
     pub(crate) fn new(thunk: Value) -> LazyCell {
-        LazyCell::of(thunk, false)
+        LazyCell::of(thunk, false, false)
     }
 
     /// The cell of a lazy `concat` of the collections in the list `colls`.
     pub(crate) fn concat(colls: Value) -> LazyCell {
-        LazyCell::of(colls, true)
+        LazyCell::of(colls, true, false)
     }
 
-    fn of(thunk: Value, concat: bool) -> LazyCell {
+    /// The cell of a `delay` whose body is `thunk` (light-cljs-613).
+    pub(crate) fn delay(thunk: Value) -> LazyCell {
+        LazyCell::of(thunk, false, true)
+    }
+
+    fn of(thunk: Value, concat: bool, delay: bool) -> LazyCell {
         // Relaxed: uniqueness only.
         static NEXT: AtomicU64 = AtomicU64::new(1);
         LazyCell {
             serial: NEXT.fetch_add(1, Ordering::Relaxed),
             concat,
+            delay,
             shared: AtomicBool::new(false),
             attributed: AtomicBool::new(false),
             realized: OnceLock::new(),
@@ -265,6 +274,11 @@ impl LazyCell {
     /// Whether this is a lazy `concat`, realized in Rust.
     pub(crate) fn is_concat(&self) -> bool {
         self.concat
+    }
+
+    /// Whether this is a `delay`'s cell, whose value is not a sequence.
+    pub(crate) fn is_delay(&self) -> bool {
+        self.delay
     }
 
     /// The process-unique serial naming this cell's wait key.

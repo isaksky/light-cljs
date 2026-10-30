@@ -71,7 +71,7 @@ impl Realize {
         answers: form::SortedAnswers,
         walk: Option<Box<clj::RealizeAll>>,
     ) -> Option<Realize> {
-        let cell = form::form_object(heap, &lazy)?.lazy_cell()?.clone();
+        let cell = form::form_object(heap, &lazy)?.once_cell()?.clone();
         Some(Realize {
             instr,
             operands,
@@ -190,9 +190,11 @@ impl Realize {
                     return Err(Fault::TypeError(message.to_string_lossy()));
                 }
                 Claim::Reentered => {
-                    return Err(Fault::RangeError(
-                        "lazy sequence realization reentered its own thunk".to_string(),
-                    ));
+                    return Err(Fault::RangeError(if self.cell.is_delay() {
+                        "delay realization reentered its own body".to_string()
+                    } else {
+                        "lazy sequence realization reentered its own thunk".to_string()
+                    }));
                 }
             }
         }
@@ -205,14 +207,21 @@ impl Realize {
             let Some(attempt) = self.attempt else {
                 return Err(Fault::Internal("lazy realization result without a claim"));
             };
-            let record = form::form_object(heap, &value)
-                .is_some_and(|f| f.record().is_some())
-                .then(|| value.clone());
-            let value = match clj::realized_seq(heap, &value) {
-                Ok(value) => value,
-                Err(e) => {
-                    let fault: Fault = e.into();
-                    return Err(self.fail(fault));
+            // A delay keeps what its body returned (light-cljs-613); a lazy
+            // sequence stores it as a sequence.
+            let delay = self.cell.is_delay();
+            let record = (!delay
+                && form::form_object(heap, &value).is_some_and(|f| f.record().is_some()))
+            .then(|| value.clone());
+            let value = if delay {
+                value
+            } else {
+                match clj::realized_seq(heap, &value) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        let fault: Fault = e.into();
+                        return Err(self.fail(fault));
+                    }
                 }
             };
             // A value the cell cannot hold fails this attempt for every reader
@@ -225,8 +234,9 @@ impl Realize {
                         None => Ok(()),
                     });
                     if let Err(e) = check {
+                        let what = if delay { "delay" } else { "lazy sequence" };
                         return Err(self.fail(Fault::TypeError(format!(
-                            "a shared lazy sequence realized a value it cannot share: {e}"
+                            "a shared {what} realized a value it cannot share: {e}"
                         ))));
                     }
                     checked = true;

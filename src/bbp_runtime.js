@@ -1577,6 +1577,12 @@ const native = (() => {
     const kind=__rt.formKind(x);
     if(__rt.cljIsAtom(x)){write(writer,'#object[cljs.core.Atom {:val ');printWriter(core.deref(x),writer,options);return write(writer,'}]');}
     if(kind==='reduced')return write(writer,'#object[Reduced [object Object]]');
+    // A delay shows its value once realized; printing never realizes it.
+    if(kind==='delay'){
+      const ready=__rt.cljRealized(x);
+      write(writer,'#object[cljs.core.Delay {:status '+(ready?':ready':':pending')+', :val ');
+      printWriter(ready?__rt.cljForce(x):null,writer,options);return write(writer,'}]');
+    }
     if(kind==='keyword'||kind==='symbol')return write(writer,namedText(x));
     if(kind==='type')return write(writer,__rt.formName(x));
     if(kind==='compiler-literal'){
@@ -1816,7 +1822,7 @@ const native = (() => {
       if (Object.is(__rt.atomCas(a, current, v), current)) return current;
     }
   };
-  const deref = a => { if (__rt.cljIsReduced(a)) return __rt.cljUnreduced(a); if (isVar(a)) return varField(a,'val')(); lane(a); return __rt.atomLoad(a); };
+  const deref = a => { if (__rt.cljIsReduced(a)) return __rt.cljUnreduced(a); if (__rt.formKind(val(a)) === 'delay') return __rt.cljForce(a); if (isVar(a)) return varField(a,'val')(); lane(a); return __rt.atomLoad(a); };
   const notifyWatches=(a,old,next)=>{
     lane(a);
     const slot=optionsOf(a),watches=slot===null?null:__rt.formNth(__rt.atomLoad(slot),2);
@@ -3087,13 +3093,13 @@ const native = (() => {
         if(tag==='instant')return String(new Date(val(payload)));
         if(tag==='uuid')return val(payload).toLowerCase();
       }
-      if(kind==='reduced'||__rt.cljIsAtom(x))return '[object Object]';
+      if(kind==='reduced'||kind==='delay'||__rt.cljIsAtom(x))return '[object Object]';
       if(kind==='symbol'||kind==='keyword'){const ns=__rt.formNamespace(x);return (kind==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);}
       if(kind==='type')return __rt.formName(x);
       if(kind==='struct'&&isVar(x))return varText(x);
       if(kind==='struct'||kind==='record')return structString(x);
       if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const {buffer,writer}=stringWriter();printWriterImpl(x,writer,null,true);flushWriter(writer);return buffer.text;}finally{core.printReadably=saved;}}return String(x);}).join('');},
-    identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>c===multi.MultiFn?multi.is(x):__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
+    identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>c===multi.MultiFn?multi.is(x):c===core.Delay?__rt.formKind(val(x))==='delay':__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
     add:(...xs)=>xs.length===0?0:xs.slice(1).reduce((a,b)=>val(a)+val(b),xs[0]), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
     divide:(...xs)=>xs.length===0?NaN:xs.length===1?1/val(xs[0]):xs.slice(1).reduce((a,b)=>a/val(b),val(xs[0])),
     int:x=>val(x)|0, long:x=>fix(val(x)), byte:x=>x, short:x=>x, float:x=>x, double:x=>x,char:x=>char(val(x)),
@@ -3189,6 +3195,10 @@ const native = (() => {
     // An explicit `(LazySeq. meta fn s hash)`: a realized one (no `fn`) holds `s`.
     LazySeq:function(m,f,s){const x=f==null?__rt.lazySeq(()=>s):__rt.lazySeq(f);return m==null?x:__rt.cljWithMeta(x,m);},
     realized:x=>__rt.cljRealized(x),
+    // Delays (light-cljs-613): the engine's once-realized cells, as lazy
+    // sequences are. An explicit `(Delay. nil v)` is realized to `v`.
+    Delay:function(f,v){if(val(f)==null){const d=__rt.delay(()=>v);__rt.cljForce(d);return d;}return __rt.delay(f);},
+    force:x=>__rt.cljForce(x), isDelay:x=>__rt.formKind(val(x))==='delay',
     mapSeq:(...a)=>a.length===0?lazy(()=>null):a.length===1?mapTransform(a[0]):a.length===2?mapOne(mapOne,a[0],a[1]):mapMany(mapMany,a[0],list(a.slice(1))),
     mapIndexed:(...args)=>{
       if(args.length===2)return mapIndexedFrom(mapIndexedFrom,args[0],args[1],0);
@@ -3516,6 +3526,7 @@ const native = (() => {
         case 'queue': return has('ICloneable IPrintWithWriter ICollection IEmptyableCollection IStack IIterable IHash IEquiv ISeqable ISeq INext ICounted ISequential IMeta IWithMeta', name);
         case 'atom': return has('IPrintWithWriter IHash IEquiv IMeta IDeref IAtom IWatchable', name);
         case 'reduced': return has('IPrintWithWriter IHash IEquiv IDeref', name);
+        case 'delay': return has('IPending IPrintWithWriter IHash IEquiv IDeref', name);
         case 'multifn': return has('INamed IMultiFn IPrintWithWriter IHash IEquiv IFn', name);
         case 'var': return has('Fn IPrintWithWriter IHash IEquiv IFn IMeta IWithMeta IDeref', name);
         case 'record': return has('IRecord ICloneable IPrintWithWriter IKVReduce IMap ICollection IIterable IHash IEquiv ISeqable ICounted ILookup IAssociative IMeta IWithMeta', name);

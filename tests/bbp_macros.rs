@@ -8351,6 +8351,170 @@ fn protocol_values_publish_and_match_quickjs_at_all_threads() {
     }
 }
 
+/// `delay` values in macro code (light-cljs-613): the body runs once, on
+/// the first `deref` or `force`; an exception propagates and is not
+/// cached, so the next `deref` runs the body again; `realized?`, `delay?`,
+/// `instance?`, printing, `str`, `=` and `hash` give the QuickJS
+/// reference's answers.
+const DELAY_SEMANTICS: &str = r#"(defmacro m [] @(delay 1))
+  (defmacro probe []
+    (let [n (atom 0)
+          d (delay (swap! n inc) [:v @n])
+          before [(realized? d) (delay? d) (delay? 1) (delay? (atom 1)) (delay? (reduced 1))
+                  (instance? Delay d) (instance? Delay 1) (pr-str d) (str d) @n]
+          a @d b (force d) c (deref d)
+          after [(realized? d) (pr-str d) (pr-str [d]) @n (force 5) (force nil) (= d d)
+                 (= d (delay [:v 1])) (identical? d d) (= (hash d) (hash d)) (= a b c) (identical? a b)]
+          k (atom 0)
+          x (delay (swap! k inc) (when (< @k 2) (throw (ex-info "boom" {:k @k}))) @k)
+          r1 (try @x (catch :default e [(ex-message e) (ex-data e)]))
+          failed [(realized? x) (pr-str x) @k]
+          r2 (force x)
+          nd (delay nil)
+          explicit (Delay. nil 7)
+          nested (delay (delay 2))]
+      (list 'quote [before a after r1 failed r2 @x @k (realized? x) @nd (realized? nd) (pr-str nd)
+                    (pr-str (delay [1 2])) (realized? explicit) @explicit @@nested
+                    (with-out-str (print (doto (delay "s") deref)))])))
+  (js/console.log (m))
+  (js/console.log (pr-str (probe)))"#;
+
+#[test]
+fn native_delay_values_match_quickjs() {
+    assert_native_matches_legacy(DELAY_SEMANTICS, DELAY_SEMANTICS_OUTPUT);
+}
+
+/// Each core protocol against a pending, a realized and a nil delay:
+/// `IPending`, `IPrintWithWriter`, `IHash`, `IEquiv` and `IDeref`, as in
+/// the QuickJS reference's table (light-cljs-592's predicates).
+const DELAY_PROTOCOLS: &str = "(defmacro probe [] \
+    (let [ps CORE_PROTOCOLS s satisfies? i implements? \
+          row (fn [x] (apply str (map (fn [p] (let [a (s p x) b (i p x)] (if a (if b \"s\" \"+\") (if b \"i\" \".\")))) ps)))] \
+      (mapv row [(delay 1) (doto (delay 1) deref) (delay nil)]))) \
+  (js/console.log (apply str (interpose \"\\n\" (probe))))";
+
+#[test]
+fn native_delay_protocols_match_quickjs() {
+    assert_native_matches_legacy(
+        &DELAY_PROTOCOLS.replace("CORE_PROTOCOLS", CORE_PROTOCOL_VALUES),
+        DELAY_PROTOCOLS_OUTPUT,
+    );
+}
+
+/// Delays published in a helper's definitions and in an atom that another
+/// namespace's macros read, at 1, 2, 4 and 8 threads under seeded
+/// scheduling (light-cljs-613): every body runs once in the whole build,
+/// whichever task forces it first, and a task forcing it meanwhile waits
+/// for that run. The bodies' effects, logged in a shared atom, keep the
+/// QuickJS reference's source order. A body that throws throws in every
+/// task.
+#[test]
+fn delays_publish_and_run_once_at_all_threads() {
+    let root = temp_dir::TempDir::new("delay-publication");
+    for (file, source) in [
+        (
+            "state.cljs",
+            r#"(ns state)
+          (def runs (atom []))
+          (def shared (delay (swap! runs conj :shared) {:value 42 :items (mapv inc [1 2 3])}))
+          (def chained (delay (swap! runs conj :chained) (+ 1 (:value @shared))))
+          (def boxes (atom {}))
+          (defn box [k]
+            (or (get @boxes k)
+                (let [d (delay (swap! runs conj k) [k (count @runs)])]
+                  (swap! boxes assoc k d)
+                  d)))
+          (def failing (delay (throw (ex-info "never" {:shared true}))))
+          (defmacro probe [tag]
+            (let [d (box (if (= tag :b) :b :one))
+                  f (try @failing (catch :default e (ex-message e)))]
+              (list 'quote [tag (:value @shared) (:items @shared) @chained @d (force d) (realized? d) f
+                            (delay? d) (pr-str (box :one)) @runs])))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [state :refer [probe]])) (def value (probe :a))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [state :refer [probe]])) (def value (probe :b))",
+        ),
+        (
+            "c.cljs",
+            "(ns c (:require [state :refer [probe]])) (def value (probe :c))",
+        ),
+        (
+            "d.cljs",
+            "(ns d (:require [a] [state :refer [probe]])) (def value (probe :d))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b] [c] [d])) \
+             (js/console.log (pr-str [a/value b/value c/value d/value]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |pants, threads, seed| {
+        let mut host = MacroHost::new();
+        if pants {
+            host.use_native_macros();
+        }
+        host.evaluator_options.timeout = std::time::Duration::from_secs(600);
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(threads).unwrap(),
+                stats: Some(&mut stats),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: pants.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("Pants {pants}, {threads} threads, seed {seed}: {e}"));
+        (program_output(&emit_js(&program)), stats.native_helpers)
+    };
+    let (reference, _) = build(false, 1, 0);
+    assert_eq!(reference, DELAY_PUBLICATION_OUTPUT);
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for threads in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(
+            reference,
+            build(false, threads, 0).0,
+            "QuickJS reference: {threads} threads"
+        );
+        for seed in 1..=seeds {
+            let (actual, helpers) = build(true, threads, seed);
+            assert_eq!(reference, actual, "{threads} threads, seed {seed}");
+            assert!(helpers.published > 0, "{helpers:?}");
+            assert_eq!(helpers.per_task, 0, "{helpers:?}");
+        }
+    }
+}
+
+/// What the QuickJS reference prints for the three delay tests above.
+const DELAY_SEMANTICS_OUTPUT: &str = r##"1
+[[false true false false false true false "#object[cljs.core.Delay {:status :pending, :val nil}]" "[object Object]" 0] [:v 1] [true "#object[cljs.core.Delay {:status :ready, :val [:v 1]}]" "[#object[cljs.core.Delay {:status :ready, :val [:v 1]}]]" 1 5 nil true false true true true true] ["boom" {:k 1}] [false "#object[cljs.core.Delay {:status :pending, :val nil}]" 1] 2 2 2 true nil true "#object[cljs.core.Delay {:status :ready, :val nil}]" "#object[cljs.core.Delay {:status :pending, :val nil}]" true 7 2 "#object[cljs.core.Delay {:status :ready, :val s}]"]
+"##;
+const DELAY_PROTOCOLS_OUTPUT: &str = ".................s........s............ss...........s.....
+.................s........s............ss...........s.....
+.................s........s............ss...........s.....
+";
+const DELAY_PUBLICATION_OUTPUT: &str = r##"[[:a 42 [2 3 4] 43 [:one 3] [:one 3] true "never" true "#object[cljs.core.Delay {:status :ready, :val [:one 3]}]" [:shared :chained :one]] [:b 42 [2 3 4] 43 [:b 4] [:b 4] true "never" true "#object[cljs.core.Delay {:status :ready, :val [:one 3]}]" [:shared :chained :one :b]] [:c 42 [2 3 4] 43 [:one 3] [:one 3] true "never" true "#object[cljs.core.Delay {:status :ready, :val [:one 3]}]" [:shared :chained :one :b]] [:d 42 [2 3 4] 43 [:one 3] [:one 3] true "never" true "#object[cljs.core.Delay {:status :ready, :val [:one 3]}]" [:shared :chained :one :b]]]
+"##;
+
 /// Compare the complete emission, including source positions and names, under
 /// both macro backends. A namespace exercises the task-local bridge at 1/4 jobs.
 fn assert_backend_emission(source: &str) {

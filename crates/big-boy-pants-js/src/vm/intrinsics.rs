@@ -202,6 +202,12 @@
 //! sequence (or parks the task while another task does) and then executes the
 //! instruction again with the same operands.
 //!
+//! `__rt.delay(thunk)` makes a `delay` (light-cljs-613; `formKind`
+//! `"delay"`): the same once-realized cell, whose value is kept as the thunk
+//! returned it rather than made a sequence. `cljForce(v)` is its value,
+//! realized through the same `Realize` frame on first use, or `v` itself
+//! when it is not a delay; `cljRealized(d)` answers for a delay too.
+//!
 //! `cljReduced(v)`, `cljIsReduced(v)` and `cljUnreduced(v)` (light-cljs-507)
 //! construct/test/unwrap an immutable native early-termination marker. Its
 //! payload is traced and publication-checked, and its allocation uses the
@@ -591,6 +597,8 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
         FormOp::WithReferenceType => Some(form::reference_type_op(heap, 1, args)?),
         FormOp::ReferencePayload => Some(form::reference_type_op(heap, 2, args)?),
         FormOp::CljDrop => Some(form::reference_type_op(heap, 3, args)?),
+        FormOp::Delay => Some(form::new_delay(heap, a(0))?),
+        FormOp::CljForce => Some(clj::force(heap, &a(0))?),
         FormOp::CljIsZero => Some(Value::Bool(clj::is_zero(heap, &a(0)))),
         FormOp::CljIsFalse => Some(Value::Bool(clj::is_false(heap, &a(0)))),
         FormOp::CljReduced => Some(form::new_reduced(heap, a(0))?),
@@ -907,7 +915,9 @@ fn strict_form_op(
         | FormOp::ReferenceType
         | FormOp::WithReferenceType
         | FormOp::CljDrop
-        | FormOp::ReferencePayload => Value::Undefined,
+        | FormOp::ReferencePayload
+        | FormOp::Delay
+        | FormOp::CljForce => Value::Undefined,
     })
 }
 

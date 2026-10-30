@@ -270,6 +270,8 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::WithReferenceType),
     form_op(FormOp::CljDrop),
     form_op(FormOp::ReferencePayload),
+    form_op(FormOp::Delay),
+    form_op(FormOp::CljForce),
     form_op(FormOp::StructField),
     form_op(FormOp::StructTypeOf),
     form_op(FormOp::RecordFromMap),

@@ -352,6 +352,9 @@ pub enum FormKind {
     Cons,
     /// An immutable early-termination marker, with identity equality.
     Reduced,
+    /// A `delay` (light-cljs-613): a once-realized cell like a lazy
+    /// sequence's, whose value is kept as it is; identity equality.
+    Delay,
     /// Explicit immutable compiler descriptor; never an arbitrary host object.
     CompilerLiteral,
 }
@@ -381,6 +384,7 @@ impl FormKind {
         static CONS: FixedText = FixedText::new("cons");
         static LITERAL: FixedText = FixedText::new("compiler-literal");
         static REDUCED: FixedText = FixedText::new("reduced");
+        static DELAY: FixedText = FixedText::new("delay");
         match self {
             FormKind::Keyword => &KEYWORD,
             FormKind::Symbol => &SYMBOL,
@@ -393,6 +397,7 @@ impl FormKind {
             FormKind::Lazy => &LAZY,
             FormKind::Cons => &CONS,
             FormKind::Reduced => &REDUCED,
+            FormKind::Delay => &DELAY,
             FormKind::CompilerLiteral => &LITERAL,
         }
     }
@@ -489,6 +494,9 @@ pub(crate) enum FormBody {
     Cons(ConsBody),
     /// `reduced`: opaque to sequence operations; its value is traced.
     Reduced(Value),
+    /// A `delay` (light-cljs-613): opaque to sequence operations, realized
+    /// by `cljForce` through the same once-cell a lazy sequence has.
+    Delay(Arc<LazyCell>),
     CompilerLiteral {
         tag: JsString,
         payload: Value,
@@ -813,6 +821,7 @@ impl FormObject {
             FormBody::Lazy(_) => FormKind::Lazy,
             FormBody::Cons(_) => FormKind::Cons,
             FormBody::Reduced(_) => FormKind::Reduced,
+            FormBody::Delay(_) => FormKind::Delay,
             FormBody::CompilerLiteral { .. } => FormKind::CompilerLiteral,
         }
     }
@@ -829,6 +838,14 @@ impl FormObject {
     pub(crate) fn lazy_cell(&self) -> Option<&Arc<LazyCell>> {
         match &self.body {
             FormBody::Lazy(cell) => Some(cell),
+            _ => None,
+        }
+    }
+
+    /// A lazy form's or a delay's once-realized cell (light-cljs-613).
+    pub(crate) fn once_cell(&self) -> Option<&Arc<LazyCell>> {
+        match &self.body {
+            FormBody::Lazy(cell) | FormBody::Delay(cell) => Some(cell),
             _ => None,
         }
     }
@@ -890,7 +907,7 @@ impl FormObject {
             FormBody::Set(set) => set.for_each(|k, _| f(k)),
             // A deftype's hash is its identity's; a record's reads its
             // field values and extension entries.
-            FormBody::Type(_) | FormBody::Reduced(_) => {}
+            FormBody::Type(_) | FormBody::Reduced(_) | FormBody::Delay(_) => {}
             FormBody::CompilerLiteral { tag, payload, .. } => {
                 if tag == "queue" {
                     f(payload);
@@ -930,7 +947,7 @@ impl Trace for FormObject {
                     ext.trace(visit);
                 }
             }
-            FormBody::Lazy(cell) => cell.trace(visit),
+            FormBody::Lazy(cell) | FormBody::Delay(cell) => cell.trace(visit),
             FormBody::Cons(c) => c.trace(visit),
             FormBody::Reduced(value) => value.trace(visit),
             FormBody::CompilerLiteral {
@@ -1740,6 +1757,7 @@ pub(crate) fn object_reference_type(f: &FormObject) -> Option<&'static str> {
         FormBody::Struct(s) if s.info.record => "record",
         FormBody::Struct(_) | FormBody::Type(_) => return None,
         FormBody::Reduced(_) => "reduced",
+        FormBody::Delay(_) => "delay",
         FormBody::CompilerLiteral { tag, .. } if tag == "queue" => "queue",
         FormBody::CompilerLiteral { .. } => return None,
         FormBody::Lazy(_) => "lazy-seq",
@@ -2816,6 +2834,15 @@ pub(crate) fn new_lazy(heap: &Heap, thunk: Value) -> Result<Value, CollectionErr
         .ok_or(CollectionError::OutOfMemory)
 }
 
+/// A new `delay` whose body is the function `thunk` (light-cljs-613). Like
+/// a lazy sequence, never known shareable at allocation.
+pub(crate) fn new_delay(heap: &Heap, thunk: Value) -> Result<Value, CollectionError> {
+    let object = FormObject::new(FormBody::Delay(Arc::new(LazyCell::delay(thunk))), None);
+    heap.alloc(HeapObject::Form(Arc::new(object)))
+        .map(Value::Object)
+        .ok_or(CollectionError::OutOfMemory)
+}
+
 /// A new lazy `concat` of the collections in the list `colls`, realized in
 /// Rust one collection at a time (light-cljs-479).
 pub(crate) fn new_lazy_concat(heap: &Heap, colls: Value) -> Result<Value, CollectionError> {
@@ -3404,7 +3431,7 @@ pub(crate) fn with_meta(heap: &Heap, v: &Value, meta: &Value) -> Result<Value, C
         Some(f)
             if !matches!(
                 f.kind(),
-                FormKind::Keyword | FormKind::Type | FormKind::Reduced
+                FormKind::Keyword | FormKind::Type | FormKind::Reduced | FormKind::Delay
             ) && (f.kind() != FormKind::Struct || f.record().is_some()) =>
         {
             f
@@ -4197,6 +4224,7 @@ fn shallow_hash(heap: &Heap, v: &Value, f: &FormObject) -> i32 {
         FormBody::Struct(_)
         | FormBody::Type(_)
         | FormBody::Reduced(_)
+        | FormBody::Delay(_)
         | FormBody::CompilerLiteral { .. } => 0,
     }
 }
@@ -4214,6 +4242,7 @@ fn identity_hash(f: &FormObject, id: ObjectId) -> Option<i32> {
         FormBody::Struct(_)
         | FormBody::Type(_)
         | FormBody::Reduced(_)
+        | FormBody::Delay(_)
         | FormBody::CompilerLiteral { .. } => {
             Some(*f.hash.get_or_init(|| scalar_hash(&Value::Object(id))))
         }

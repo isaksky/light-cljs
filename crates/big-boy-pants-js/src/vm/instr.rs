@@ -1609,11 +1609,15 @@ pub enum FormOp {
     FnWithApplyTo = 113,
     /// value → immutable apply entry, or null.
     FnApplyToEntry = 114,
+    /// thunk → a `delay` whose body is `thunk` (`delay`, light-cljs-613).
+    Delay = 115,
+    /// v → a delay's value, realizing it once, or v itself (`cljForce`).
+    CljForce = 116,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 115] = [
+    pub const ALL: [FormOp; 117] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1729,6 +1733,8 @@ impl FormOp {
         FormOp::ReferencePayload,
         FormOp::FnWithApplyTo,
         FormOp::FnApplyToEntry,
+        FormOp::Delay,
+        FormOp::CljForce,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1802,7 +1808,9 @@ impl FormOp {
             | FormOp::CljSymbol
             | FormOp::StructState
             | FormOp::ReferenceType
-            | FormOp::ReferencePayload => 1,
+            | FormOp::ReferencePayload
+            | FormOp::Delay
+            | FormOp::CljForce => 1,
             FormOp::Keyword
             | FormOp::FnWithApplyTo
             | FormOp::InitializerSlot
@@ -1942,6 +1950,8 @@ impl FormOp {
             FormOp::WithReferenceType => "formWithReferenceType",
             FormOp::CljDrop => "cljDrop",
             FormOp::ReferencePayload => "formReferencePayload",
+            FormOp::Delay => "delay",
+            FormOp::CljForce => "cljForce",
             FormOp::StructField => "structField",
             FormOp::StructTypeOf => "structTypeOf",
             FormOp::RecordFromMap => "recordFromMap",
