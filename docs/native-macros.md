@@ -303,7 +303,9 @@ instead, the Pants build gives the same result:
   the V8 build's, including where a source spells a name like `start2`.
 - **Calls the definition rejects** fail with the V8 build's diagnostic: the
   conversion limit for a call deeper than 128 levels or larger than the node
-  limit, each definition's own error (checked in the definition's order, so
+  limit, what the engine's snapshot of the call (the call converted back,
+  which charges each step of a list as well as each node) refuses, each
+  definition's own error (checked in the definition's order, so
   `for` and `doseq` report their last invalid keyword), `if-not`'s arity
   error, and what the engine's conversion of the expansion refuses (a missing
   argument, the depth or the node limit) at the path of the first node it
@@ -316,7 +318,7 @@ instead, the Pants build gives the same result:
 - **Calls native expansion declines that the definition accepts** (a
   `selector` map of more than eight entries, a `defmulti` with a character
   docstring or more than eight metadata keys, every `simple-benchmark`, a
-  `for` or `doseq` past the native expander's bounds) run the definition in
+  `for` or `doseq` of more than 128 pairs) run the definition in
   the Pants build's runtime. The definitions are compiled once per process
   and emitted as the Pants build emits source macros; each task evaluates
   one the first time it needs it. The V8 build's engine decodes a macro's
@@ -333,16 +335,40 @@ instead, the Pants build gives the same result:
   their units, so a program's `cljs.user/macro-...` definitions are
   untouched, and a call the definition rejects is checked every time, not
   only before the definition is first loaded.
+- **A `doseq` past the native expander's name budget** (more than 1024
+  generated names, from nine nested bindings on; the expansion doubles at
+  each binding) expands natively without the budget where the V8 build's
+  engine converts its expansion back under the node limit, and otherwise
+  fails with the V8 build's diagnostic (light-cljs-620). The engine's
+  conversion is emulated on the expansion's shape, which is built once per
+  pair with placeholder names, so that the two steps the definition builds
+  at each binding are one shared subtree: it charges each node, each step
+  of a list and each lazy sequence the engine realizes reading a list the
+  definition built with syntax quote (`(seq (concat (list a) b ...))`, which
+  follows from how the list splices the body and the `recur` forms), and the
+  call's own data as decoded, and reports the first charge past the limit
+  as the engine does (`sequence limit`, `lazy realization failure`, `node
+  limit` or `depth limit`, at the same path). A unit test compares the
+  emulation with the definition across the node limits from the call's size
+  to the expansion's, for the ways a list splices, and nine bindings give
+  the V8 build's output and diagnostics byte for byte, inside a namespace and
+  outside. Nine bindings with `--macro-nodes 10000000` take 2.5 s on the
+  Pants build against 4.7 s on the V8 build (debug builds); at the default
+  limits both fail in about 0.3 s. The V8 build may also stop on its
+  `--macro-poll-budget` (an engine budget, like the deadline) expanding the
+  `when-let`s of such an expansion with modifiers; with it raised the outputs
+  match.
 
 The V8 build is unchanged but for `(for [] x)`, which now expands natively
 there too, to the form its definition gives (both then fail analysis with
-"unsupported binding form"). A `doseq` past the native expander's name budget
-is one the V8 build rejects too, at its default node limit (its expansion's
-conversion runs out, or the expansion exceeds the generated-node limit); on
-the Pants build its definition runs (the runtime now has the `core.nnext` it
-needs) but is far too slow there to reach that limit. With a raised
-`--macro-nodes`, the V8 build can expand such a `doseq` where the Pants build
-cannot yet (light-cljs-620).
+"unsupported binding form").
+
+The definition of a wide `doseq` was too slow on the Pants build because the
+runtime realizes a macro's result (`cljRealizeAll`, which the bridge applies
+to every call result) by restarting from the top each time it meets a lazy
+sequence not yet realized, and every syntax-quoted list's tail is one: the
+time grows with the square of the expansion's size (four times per binding
+as the expansion doubles; seven bindings 32 s). light-cljs-622 tracks it.
 
 ## Supported boundary
 
