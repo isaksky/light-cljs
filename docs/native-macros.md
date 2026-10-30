@@ -224,6 +224,16 @@ exposes two existing feature-specific unused variables and the unchanged
 passes. The engine-free strict check has that same test lint and passes when
 only that category is allowed. Compiler formatting passes.
 
+Both Pants+QuickJS and V8+Pants run the `bbp_macros` suite: each has 247
+passes and one failure among 248 tests (one skipped). The failure was invalid
+regression input exporting an undefined array hole as a macro form. The test
+now asserts the printed array and the undefined slot before export; focused
+rechecks pass with both reference engines. After rebasing onto `c2faa089`,
+22 focused Pants regressions pass, and all 12 affected V8/compiler checks
+pass. Product code is unchanged by that rebase; the full-suite results above
+are reused. Final V8 strict Clippy, Pants and engine-free diagnostic isolation,
+and formatting checks pass with the same limitations above.
+
 ## Core macros on the Pants build (light-cljs-611)
 
 The Pants build expands core macro calls in Rust
