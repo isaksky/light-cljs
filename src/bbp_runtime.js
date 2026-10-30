@@ -26,12 +26,41 @@ const canonicalMember = (key, make) => {
 // then is the type read again under TYPE_KEY, which no compiler-munged member
 // name can equal, so internal classification never takes a user's field.
 const TYPE_KEY = '@lightNativeType';
+/* MEMBER_MUNGING */
 const typeTag = x => {
   const ty = x.__lightNativeType;
   return ty === undefined || __rt.formKind(ty) === 'type' ? ty : x[TYPE_KEY];
 };
 const decl = (() => {
   const tables = new Map(), extensions = new Map(), views = new Map(), frontiers = [];
+  const instances=new WeakMap();
+  const ownMethod=(x,name,n)=>instances.get(x)?.get(name)?.get(n);
+  const extendInstance=(target,specs,returnTarget=false)=>{
+    if(target!=null&&(typeof target==='object'||typeof target==='function')){
+      const methods=new Map(Array.from(instances.get(target)??[],([name,arities])=>[name,new Map(arities)]));
+      instances.set(target,methods);
+      for(const [name,n,fn] of specs){
+        let arities=methods.get(name);if(arities===undefined)methods.set(name,arities=new Map());
+        arities.set(n,n===0?true:(x,...args)=>fn.call(x,x,...args));
+      }
+      for(const [name,arities] of methods)if(name.startsWith('Object/'))
+        Object.defineProperty(target,mungeMember(name.slice(7)),{configurable:true,writable:true,value:function(...args){
+          const fn=arities.size===1?arities.values().next().value:arities.get(args.length+1);
+          if(fn===undefined)throw new Error('Invalid arity: '+args.length);
+          return fn(this,...args);
+        }});
+      if(methods.has('IFn/-invoke')){
+        Object.defineProperty(target,'call',{configurable:true,writable:true,value:function(_, ...args){
+          const arities=instances.get(this).get('IFn/-invoke');
+          const fn=arities.size===1?arities.values().next().value:arities.get(args.length+1);
+          if(fn===undefined)throw new Error('Invalid arity: '+args.length);
+          return fn(this,...args);
+        }});
+        Object.defineProperty(target,'apply',{configurable:true,writable:true,value:function(_,args){return this.call(null,...Array.from(args));}});
+      }
+    }
+    return returnTarget?target:specs.length?specs[specs.length-1][1]===0?true:specs[specs.length-1][2]:null;
+  };
   // Native lookup can resolve installed structs without repeating JavaScript
   // declaration probes. This map belongs to the task, just like views/tables.
   let declared = __rt.map();
@@ -42,7 +71,7 @@ const decl = (() => {
   let order = 0, frontier = Infinity, version = 0;
   const table = (key, name, arity) => {
     let t = tables.get(key);
-    if (t === undefined) tables.set(key, t = {name, marker: arity===0, protocol: protocolOf(name, arity), entries: [], map: null, snapshot: null, directSnapshot: null, version: -1, frontier: NaN});
+    if (t === undefined) tables.set(key, t = {name, arity, marker: arity===0, protocol: protocolOf(name, arity), entries: [], map: null, snapshot: null, directSnapshot: null, version: -1, frontier: NaN});
     return t;
   };
   const protocolOf = (name, arity) => arity === 0 ? name : name.slice(0, name.lastIndexOf('/'));
@@ -195,6 +224,9 @@ const decl = (() => {
     return true;
   };
   const resolve = (t, x) => {
+    // Tables carry their fixed arity independently of installed type entries.
+    const instance=ownMethod(__rt.formValue(x),t.name,t.arity);
+    if(instance!==undefined)return instance;
     const cached = __rt.cljProtocolLookup(t.snapshot, version, frontier, x);
     if (cached !== undefined) return cached;
     // Demand an unknown type before building the protocol's pending bundles:
@@ -282,6 +314,7 @@ const decl = (() => {
     return value !== null && typeof value === 'object' ? typeTag(value) ?? null : null;
   };
   const implementsDirectly = (key, x) => {
+    if(ownMethod(__rt.formValue(x),key,0)!==undefined)return true;
     const t = methodTable(key, 0);
     resolve(t, x);
     const direct = directKey(x);
@@ -302,6 +335,8 @@ const decl = (() => {
   // Owned core implementations precede object/default extensions. Explicit
   // extensions of the receiver's native type still replace that implementation.
   const coreLookup = (t, x, builtin, directOnly = false) => {
+    const own=ownMethod(__rt.formValue(x),t.name,t.arity);
+    if(own!==undefined)return own;
     if (directOnly && !builtin && !implementsDirectly(t.protocol, x)) return null;
     let m;
     if (builtin) {
@@ -623,7 +658,7 @@ const decl = (() => {
     return info?.mutable && info.record ? info : null;
   };
   return {makeBundle, productGetter, index, reserve: n => { const base = bundleCount; bundleCount += n; return base; },
-    extend, method, satisfies, implementsDirectly, predicate, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
+    extend, extendInstance, inheritInstance:(x,parent)=>instances.set(x,instances.get(parent)), method, satisfies, implementsDirectly, predicate, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
     callable, invokeIFn, applyIFn, callMember, borrowedIFn,
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
@@ -733,6 +768,24 @@ const native = (() => {
   const constantSet = a => ordered(__rt.formLiteralSet(vector(a)));
   const constantMap = a => ordered(__rt.formLiteralMap(vector(a)));
   const arity = n => { throw new Error('Invalid arity: ' + n); };
+  const reifySites=new Map(),reifyMetadata=new WeakMap();
+  const reify=(site,fields,values,methods,metadata=null)=>{
+    let prototype=reifySites.get(site);
+    if(prototype===undefined){
+      prototype={};
+      decl.extendInstance(prototype,[
+        ['IMeta',0,null],['IWithMeta',0,null],
+        ['IMeta/-meta',1,x=>reifyMetadata.get(x)??null],
+        ['IWithMeta/-with-meta',2,(x,m)=>{const result=Object.create(Object.getPrototypeOf(x));
+          for(const key of Object.keys(x))Object.defineProperty(result,key,{value:x[key],writable:true,enumerable:true,configurable:true});
+          decl.inheritInstance(result,x);reifyMetadata.set(result,m);return result;}],...methods()],true);
+      reifySites.set(site,prototype);
+    }
+    const result=Object.create(prototype);
+    decl.inheritInstance(result,prototype);
+    fields.forEach((field,i)=>Object.defineProperty(result,mungeMember(field),{value:values[i],writable:true,enumerable:true,configurable:true}));
+    reifyMetadata.set(result,metadata);return result;
+  };
   const gensym = (...args) => {
     if (args.length > 1) return arity(args.length);
     const base = core.str(args.length === 0 ? 'G__' : args[0]);
@@ -1172,6 +1225,15 @@ const native = (() => {
     return entry?entry.call(receiver,...args):value.call(receiver,...args);
   };
   const unsupported = name => function(){throw new Error('unsupported operation: native macro runtime '+name);};
+  const ExceptionInfo=function(message,data,cause){
+    const error=new Error(val(message)),target=this==null?globalThis:Object(this);
+    target.message=message;target.data=data;target.cause=cause;
+    for(const key of ['name','description','number','fileName','lineNumber','columnNumber','stack'])target[key]=error[key];
+    return target;
+  };
+  Object.setPrototypeOf(ExceptionInfo.prototype,Error.prototype);
+  ExceptionInfo.prototype.toString=function(){return '#error {:message '+globalThis.__lightNativeRuntime.core.prStr(this.message)
+    +(truth(this.data)?', :data '+globalThis.__lightNativeRuntime.core.prStr(this.data):'')+(truth(this.cause)?', :cause '+globalThis.__lightNativeRuntime.core.prStr(this.cause):'')+'}';};
   // Printing walks native seqs incrementally. In particular, a bounded print
   // must not realize the whole lazy input. All strings remain exact UTF-16.
   const namedText = x => {
@@ -1185,7 +1247,7 @@ const native = (() => {
     const buffer={text:'',append(text){this.text+=text;return this;}};
     return {buffer,writer:new StringBufferWriter(buffer)};
   };
-  function StringBufferWriter(sb){this.sb=sb;writers.add(this);}
+  function StringBufferWriter(sb){const writer=Object.create(StringBufferWriter.prototype);writer.sb=sb;writers.add(writer);return writer;}
   const write = (writer,text) => {
     if(writers.has(writer))return writer.sb.append(val(text));
     const method=decl.writer(writer);
@@ -1323,8 +1385,22 @@ const native = (() => {
     }
     if(x instanceof Namespace)return write(writer,'#object[Namespace '+String(x)+']');
     if(x instanceof RegExp)return write(writer,'#"'+x.source+'"');
-    // Host objects with a printer protocol work above. Other unimplemented
-    // kinds fail explicitly rather than silently stringifying native data.
+    if(x instanceof ExceptionInfo)return write(writer,x.toString());
+    if(x instanceof Error)return write(writer,'#object['+(x.constructor?.name||'Object')+' '+String(x)+']');
+    if(x instanceof Date)return write(writer,'#inst "'+x.toISOString().replace(/Z$/,'-00:00')+'"');
+    if(arraySeqs.has(x))return printSequential(writer,printWriter,'(',' ',')',options,x);
+    if(Array.isArray(x))return printSequential(writer,printWriter,'#js [',' ',']',options,x);
+    if(typeof x==='function')return write(writer,'#object['+(x.name||'Function')+(truth(core.printFnBodies)?' "'+String(x)+'"':'')+']');
+    if(typeof x==='object'&&Object.getPrototypeOf(x)===null)return write(writer,'#object[Object]');
+    if(typeof x==='object'&&x.constructor===Object){
+      write(writer,'#js ');
+      return printSequential(writer,(entry,w,o)=>{
+        const key=val(__rt.cljNth(entry,0));
+        printWriter(/^[A-Za-z_*+?!\-'][\w*+?!\-']*$/.test(key)?__rt.cljKeyword(key):key,w,o);
+        write(w,' ');return printWriter(__rt.cljNth(entry,1),w,o);
+      },'{',', ','}',options,vector(Object.keys(x).map(k=>__rt.formVector(k,x[k]))));
+    }
+    if(kind===null)return write(writer,'#object['+(x.constructor?.cljs$lang$ctorStr?.replaceAll('/','.')||x.constructor?.name||'Object')+' '+String(x)+']');
     throw new Error('unsupported operation: native macro runtime pr-str of '+(kind??typeof x));
   };
   const printValues = (values,options) => {
@@ -2394,7 +2470,21 @@ const native = (() => {
     isInt:x=>core.isInteger(x),
     keywordIdentical:(x,y)=>val(x)===val(y)||__rt.formKind(val(x))==='keyword'&&__rt.formKind(val(y))==='keyword'&&__rt.formEquals(x,y),
     isInfinite:x=>val(x)===Infinity||val(x)===-Infinity,
-    exInfo:(m,d)=>new Error(val(m)),
+    ExceptionInfo,
+    exInfo:(...a)=>a.length===2||a.length===3?new ExceptionInfo(a[0],a[1],a.length===2?null:a[2]):arity(a.length),
+    exData:x=>val(x) instanceof ExceptionInfo?val(x).data:null,
+    exMessage:x=>val(x) instanceof Error?val(x).message:null,
+    exCause:x=>val(x) instanceof ExceptionInfo?val(x).cause:null,
+    throwableToMap:error=>{
+      const k=n=>__rt.cljKeyword(n),via=[];let root=null;
+      for(let current=error;truth(current);current=core.exCause(current)){
+        root=current;const value=val(current),pairs=[k('type'),value instanceof ExceptionInfo?__rt.cljSymbol('cljs.core/ExceptionInfo'):value instanceof Error?__rt.formSymbol('js',value.name):null];
+        const message=core.exMessage(current),data=core.exData(current);
+        if(truth(message))pairs.push(k('message'),message);if(truth(data))pairs.push(k('data'),data);via.push(arrayMap(pairs));
+      }
+      const pairs=[k('via'),vector(via),k('trace'),null],message=core.exMessage(root),data=core.exData(root),phase=get(core.exData(error),__rt.formKeyword('clojure.error','phase'));
+      if(truth(message))pairs.push(k('cause'),message);if(truth(data))pairs.push(k('data'),data);if(truth(phase))pairs.push(k('phase'),phase);return arrayMap(pairs);
+    },
     atom, deref, reset, compareAndSet,
     swap:(a,f,...args)=>swapPair(a,f,args)[1],
     swapVals:(a,f,...args)=>{const [o,n]=swapPair(a,f,args);return __rt.formVector(o,n);},
@@ -2607,6 +2697,17 @@ const native = (() => {
     return index;
   };
   const rt={core,
+    jsObject:pairs=>{
+      const result={};
+      for(let i=0;i<pairs.length;i+=2){
+        const key=val(pairs[i]);
+        if(key==='__proto__'){
+          const prototype=val(pairs[i+1]);
+          if(prototype===null||typeof prototype==='object'||typeof prototype==='function')Object.setPrototypeOf(result,prototype);
+        }else Object.defineProperty(result,key,{value:pairs[i+1],writable:true,enumerable:true,configurable:true});
+      }
+      return result;
+    },
     // Inspect data properties without running an unsupported entry's getter.
     // Units keep that getter's access at the original expression site.
     nativeCoreBinding:name=>Object.getOwnPropertyDescriptor(core,name),
@@ -2616,7 +2717,7 @@ const native = (() => {
     protocolMethod:(key,name,arities,viaMetadata)=>decl.method(key,name,arities,viaMetadata===true),
     protocolPredicate:(protocol,key,x,direct)=>direct?decl.implementsDirectly(key,x):decl.satisfies(key,x),
     extendType:(target,specs)=>decl.extend(target,specs),
-    extendInstance:unsupported('extendInstance'),
+    extendInstance:decl.extendInstance, reify,
     nativeType:(fields,specs,record,name,view,mutable,ty,fieldMembers)=>decl.type(fields,specs,view,mutable,ty,fieldMembers),
     keyword:(ns,n)=>__rt.formKeyword(ns,n),symbol:(ns,n)=>__rt.formSymbol(ns,n),get,
     vector:(...xs)=>vector(xs),vectorFromArray:vector,listFromArray:list,mapFromArray:literalMap,arrayMapFromArray:arrayMap,constantMapFromArray:constantMap,
@@ -2742,7 +2843,10 @@ globalThis.__lightRegisterUnit=(name,unit,once=false,location='',test=null)=>{
   // a Var reflects (`__lightCompilerVarMetadata`).
   rootTests.set(name,test);
   if(unit!==null)unitSlots.set(unit,slot);
-  Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot)});return null;
+  Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot),set:value=>{
+    __rt.initializerSlotSet(slot,4,true);
+    Object.defineProperty(rootTarget,name,{configurable:true,writable:true,value});
+  }});return null;
 };
 const rootGetter=(name,unit,slot)=>()=>{
   if(unit===null)throw new Error('unavailable definition: '+name);
@@ -2869,6 +2973,10 @@ globalThis.__lightCompilerRootContext=__rt.vector(globalThis.__lightCompilerRoot
 // (`materializeAll`), while compiler code reads the registry through
 // `__lightCompilerRootReceiver` (src/emitter.rs) and `registry()`.
 const rootsProxy=globalThis.__lightCompilerRoots;
+// Declarations executed directly by a macro have no enclosing declaration
+// bundle. Their products are ordinary roots, just as a def executed by that
+// macro is. A bundle temporarily supplies its private product table instead.
+globalThis.__lightCompilerBundleProducts=rootTarget;
 globalThis.__lightCompilerRootReceiver=null;
 // Catalog entries this task applied on first use: the producer counters.
 globalThis.__lightCatalogApplied=0;

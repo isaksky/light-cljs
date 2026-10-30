@@ -2329,14 +2329,13 @@ fn native_printing_matches_quickjs_for_every_native_value_kind() {
 }
 
 #[test]
-fn native_printer_rejects_unimplemented_host_values_explicitly() {
+fn native_printer_supports_host_values() {
     use light_cljs::evaluator::MacroEvaluator;
     let evaluator = light_cljs::bbp_evaluator::BbpEvaluator::new(Default::default()).unwrap();
     let result=evaluator.evaluate_unit(r#"rt=>{
-        for(const [value,kind] of [[{},'object'],[[1,2],'object'],[()=>1,'function']]){
-            let message;
-            try{rt.core.prStr(value);}catch(e){message=e.message;}
-            if(message!=='unsupported operation: native macro runtime pr-str of '+kind)throw new Error('printer boundary: '+message);
+        for(const [value,expected] of [[{},'#js {}'],[[1,2],'#js [1 2]'],[function named(){},'#object[named]']]){
+            const actual=rt.core.prStr(value);
+            if(actual!==expected)throw new Error('printer: '+actual);
         }
         return null;
     }"#).unwrap();
@@ -6139,6 +6138,35 @@ fn native_compile_time_code_reader_uses_macro_visibility() {
                (read-string "::key")]))
            (js/console.log (pr-str (probe)))"#,
         "[(quote a) (cljs.core/sequence (cljs.core/seq (cljs.core/concat (cljs.core/list (quote cljs.core/inc)) (cljs.core/list (quote cljs.user/local))))) :cljs.user/key :bound/key :cljs.user/key]\n",
+    );
+}
+
+#[test]
+fn native_inline_macro_declarations_install_protocol_and_type_products() {
+    assert_native_matches_legacy(
+        r#"(defn declarations []
+             (defprotocol InlineProtocol (inline-value [x]))
+             (deftype InlineType [value] InlineProtocol (inline-value [_] value))
+             (inline-value (InlineType. 42)))
+           (defmacro probe [] (declarations))
+           (js/console.log (probe))"#,
+        "42\n",
+    );
+}
+
+#[test]
+fn native_reify_keeps_captures_metadata_and_instance_protocol_methods() {
+    assert_native_matches_legacy(
+        r#"(defprotocol Probe (probe-value [x]))
+           (defmacro probe []
+             (let [captured-value 42
+                   x (reify Probe (probe-value [_] captured-value)
+                       IWriter (-write [_ text] nil) (-flush [_] nil))
+                   y (with-meta x {:tag :copy})]
+               (list 'quote [(probe-value x) (probe-value y) (meta x) (meta y)
+                 (satisfies? Probe y) (nil? (-write y "x"))])))
+           (js/console.log (pr-str (probe)))"#,
+        "[42 42 nil {:tag :copy} true true]\n",
     );
 }
 

@@ -1395,6 +1395,16 @@ impl BbpRuntime {
             );
         let source = include_str!("bbp_runtime.js")
             .replace("/* NATIVE_READER */", &reader)
+            .replace("/* MEMBER_MUNGING */", &{
+                ["memberMunging", "mungeMember"]
+                    .into_iter()
+                    .map(|name| {
+                        let unit = manifest.unit(manifest.unit_named(name).unwrap());
+                        &manifest.source()[unit.body_range.clone()]
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
             .replace("/* CORE_KEYS */", &keys);
         let executable = big_boy_pants_js::frontend::compile_function(&format!(
             "function nativeMacroTask(commandKind, beginKind, finishKind, readerTagsCell, rawMembersCell, stringKind) {{ {source} }}"
