@@ -1429,7 +1429,10 @@ impl Heap {
                 ClearedWeakSlot { root, token }
             })
             .collect();
-        let garbage: Vec<Box<HeapObject>> = objects.sweep();
+        let garbage: Vec<Box<HeapObject>> = {
+            let mut watches = lock(&self.reclamation);
+            objects.sweep(|id| watches.reclaimed(id))
+        };
         // No atom operation is in progress (the world is stopped), so every
         // retired atom box is unreachable: release them now rather than at
         // the atom's next write (`crate::atom`, reclamation).

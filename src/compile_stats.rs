@@ -110,10 +110,11 @@ pub struct NativeHelperCounts {
 pub struct NativeBridgeCounters {
     /// Prune walks: one on the first import after each collection.
     pub prune_passes: usize,
-    /// Memoized imports the walks examined, and those they dropped.
+    /// Imports examined following reclamation notifications, and those dropped.
     pub prune_imports_visited: usize,
     pub prune_imports_removed: usize,
-    /// Datum nodes the walks traversed to find what retained imports reach.
+    /// Datum references released by dead imports, including child edges when
+    /// their last parent/import dies. Surviving trees are not traversed.
     pub prune_nodes_walked: usize,
     /// Form, cost and native-object entries the walks dropped.
     pub prune_entries_removed: usize,

@@ -30,9 +30,59 @@ use big_boy_pants_js::frontend::compile_function;
 use big_boy_pants_js::{
     Budget, CasOutcome, CellStatus, CollectionObserver, CollectionReport, Completion, DependencyId,
     DependencyKey, Executable, Executor, HandleError, Host, HostCall, MutatorState, Placement,
-    Primitive, Provenance, ResultKind, Rooted, RunOutcome, Runtime, Task, TaskId, ValueView,
-    WeakHandle, WorkerId,
+    Primitive, Provenance, ReclamationQueue, ResultKind, Rooted, RunOutcome, Runtime, Task, TaskId,
+    ValueView, WeakHandle, WorkerId,
 };
+
+#[test]
+fn reclamation_queue_reports_only_watched_deaths_with_exact_identity() {
+    let rt = Runtime::new();
+    let queue = ReclamationQueue::default();
+    let other_queue = ReclamationQueue::default();
+    let (root, identity) = rt.scope(|s| {
+        let object = s.new_object();
+        for token in [7, 7, 9] {
+            s.watch_reclamation(object, &queue, token);
+        }
+        s.watch_reclamation(object, &other_queue, 11);
+        s.watch_reclamation(s.primitive(Primitive::Null), &queue, 100);
+        (s.persist(object), s.object_identity(object).unwrap())
+    });
+    rt.collect().unwrap();
+    assert!(queue.take().is_empty());
+    assert!(other_queue.take().is_empty());
+    drop(root);
+    rt.collect().unwrap();
+    let mut events = queue.take();
+    events.sort_by_key(|(_, token)| *token);
+    assert_eq!(events, vec![(identity.clone(), 7), (identity.clone(), 9)]);
+    assert_eq!(other_queue.take(), vec![(identity.clone(), 11)]);
+    assert!(queue.take().is_empty());
+
+    // A reused slot is a new identity. Queues can also observe more than
+    // one runtime without conflating equal slot/generation numbers.
+    let other_rt = Runtime::new();
+    let mut identities = Vec::new();
+    for runtime in [&rt, &other_rt] {
+        runtime.scope(|s| {
+            let object = s.new_object();
+            s.watch_reclamation(object, &queue, 7);
+            identities.push(s.object_identity(object).unwrap());
+            let discarded_queue = ReclamationQueue::default();
+            s.watch_reclamation(object, &discarded_queue, 200);
+        });
+    }
+    rt.collect().unwrap();
+    other_rt.collect().unwrap();
+    let events = queue.take();
+    assert_eq!(events.len(), 2);
+    for identity in identities {
+        assert!(events.contains(&(identity, 7)));
+    }
+    assert!(!events.contains(&(identity, 7)));
+    rt.collect().unwrap();
+    assert!(queue.take().is_empty());
+}
 
 #[test]
 fn array_buffer_reclaimed_when_unreachable() {

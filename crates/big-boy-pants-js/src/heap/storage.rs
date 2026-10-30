@@ -601,7 +601,10 @@ impl ObjectTable {
     /// copy per pause), so the pause copies one pointer per object and the
     /// caller frees each box with its contents after the pause.
     #[expect(clippy::vec_box, reason = "the boxes are the slots' own; see above")]
-    pub(super) fn sweep(&mut self) -> Vec<Box<HeapObject>> {
+    pub(super) fn sweep(
+        &mut self,
+        mut reclaimed_object: impl FnMut(ObjectId),
+    ) -> Vec<Box<HeapObject>> {
         let mut garbage = Vec::new();
         for (segment_index, segment) in self.segments.iter().enumerate() {
             let mut reclaimed = 0;
@@ -634,6 +637,10 @@ impl ObjectTable {
                 };
                 slot.state.store(next, Ordering::Release);
                 drop(word);
+                reclaimed_object(ObjectId {
+                    index: (segment_index * SEGMENT_SIZE + offset) as u32,
+                    generation,
+                });
             }
             segment.live.fetch_sub(reclaimed, Ordering::Relaxed);
         }

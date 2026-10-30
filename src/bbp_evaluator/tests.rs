@@ -2141,6 +2141,225 @@ fn replayed_registration_blocks_run_in_order_and_full_blocks_compile_once() {
 mod temp_dir;
 
 #[test]
+fn weak_bridge_pruning_only_walks_changes_among_growing_retained_trees() {
+    let _recording = crate::compile_trace::record();
+    let rt = Runtime::new();
+    let mut bridge = Bridge::default();
+    let mut roots = Vec::new();
+    for batch in 0..8 {
+        rt.scope(|s| {
+            for i in 0..64 {
+                let data = Datum::new(D::Collection {
+                    kind: C::Vector,
+                    children: vec![Datum::new(D::Integer(batch * 64 + i))].into(),
+                });
+                let value = bridge.import(s, &data, 128, &mut 1000).unwrap();
+                roots.push(s.persist(value));
+            }
+            // Exactly one two-node import dies in every collection.
+            let garbage = Datum::new(D::Collection {
+                kind: C::Vector,
+                children: vec![Datum::new(D::Nil)].into(),
+            });
+            bridge.import(s, &garbage, 128, &mut 1000).unwrap();
+        });
+        rt.collect().unwrap();
+        let before = bridge.counters;
+        rt.scope(|_| bridge.prune(rt.heap_stats().collections));
+        assert_eq!(bridge.imports.len(), roots.len() * 2);
+        assert_eq!(
+            bridge.counters.prune_imports_removed - before.prune_imports_removed,
+            2
+        );
+        assert!(
+            bridge.counters.prune_nodes_walked - before.prune_nodes_walked <= 4,
+            "pruning must only walk the dead tree, with {} retained trees",
+            roots.len()
+        );
+        rt.collect().unwrap();
+        let before = bridge.counters;
+        rt.scope(|_| bridge.prune(rt.heap_stats().collections));
+        assert_eq!(
+            bridge.counters.prune_nodes_walked,
+            before.prune_nodes_walked
+        );
+        assert_eq!(
+            bridge.counters.prune_imports_visited,
+            before.prune_imports_visited
+        );
+    }
+    drop(roots);
+    rt.collect().unwrap();
+    rt.scope(|_| bridge.prune(rt.heap_stats().collections));
+    assert!(bridge.imports.is_empty());
+    assert!(bridge.costs.is_empty());
+    assert!(bridge.native_objects.is_empty());
+}
+
+#[test]
+fn weak_bridge_incremental_pruning_matches_full_reachability() {
+    fn check(rt: &Runtime, bridge: &mut Bridge) {
+        rt.collect().unwrap();
+        rt.scope(|_| {
+            let live: HashSet<_> = bridge
+                .imports
+                .iter()
+                .filter_map(|(&key, imported)| {
+                    (imported.occurrence.is_live()
+                        || imported.native.as_ref().is_some_and(WeakHandle::is_live))
+                    .then_some(key)
+                })
+                .collect();
+            // The previous algorithm, independent of incremental references.
+            let mut reachable = HashSet::new();
+            let mut pending: Vec<_> = live
+                .iter()
+                .map(|key| bridge.imports[key].data.clone())
+                .collect();
+            while let Some(data) = pending.pop() {
+                if !reachable.insert(data.identity()) {
+                    continue;
+                }
+                if let D::Collection { children, .. } = data.kind() {
+                    pending.extend(children.iter().cloned());
+                }
+                pending.extend(data.compiler_literal_data());
+                pending.extend(data.metadata());
+            }
+            let expected_forms: HashSet<_> = bridge
+                .forms
+                .keys()
+                .copied()
+                .filter(|key| reachable.contains(key))
+                .collect();
+            let expected_costs: HashMap<_, _> = bridge
+                .costs
+                .iter()
+                .filter(|(key, _)| reachable.contains(key))
+                .map(|(&key, &cost)| (key, cost))
+                .collect();
+            let expected_objects: HashSet<_> = bridge
+                .native_objects
+                .iter()
+                .filter(|(_, (key, weak))| live.contains(key) && weak.is_live())
+                .map(|(identity, _)| identity.clone())
+                .collect();
+            bridge.prune(rt.heap_stats().collections);
+            assert_eq!(bridge.imports.keys().copied().collect::<HashSet<_>>(), live);
+            assert_eq!(
+                bridge.forms.keys().copied().collect::<HashSet<_>>(),
+                expected_forms
+            );
+            assert_eq!(bridge.costs, expected_costs);
+            assert_eq!(
+                bridge
+                    .native_objects
+                    .keys()
+                    .cloned()
+                    .collect::<HashSet<_>>(),
+                expected_objects
+            );
+            assert_eq!(
+                bridge.retained.keys().copied().collect::<HashSet<_>>(),
+                reachable
+            );
+        });
+    }
+    let rt = Runtime::new();
+    let mut bridge = Bridge::default();
+    let shared = Datum::new(D::Collection {
+        kind: C::Vector,
+        children: vec![Datum::new(D::Integer(9_007_199_254_740_993))].into(),
+    });
+    let metadata = Datum::new(D::Collection {
+        kind: C::Map,
+        // The second equal key replaces the raw value, but the original
+        // reader tree must still be restored when exporting this metadata.
+        children: vec![
+            Datum::new(D::Integer(1)),
+            shared.clone(),
+            Datum::new(D::Double(1.0)),
+            Datum::new(D::Nil),
+        ]
+        .into(),
+    });
+    let literal = Datum::new(D::CompilerLiteral {
+        kind: L::JsArray,
+        payload: shared.clone(),
+    })
+    .with_metadata(metadata.clone());
+    let parents: Vec<_> = (0..3)
+        .map(|_| {
+            Datum::new(D::Collection {
+                kind: C::Vector,
+                children: vec![literal.clone(), shared.clone(), shared.clone()].into(),
+            })
+        })
+        .collect();
+    let mut roots = rt.scope(|s| {
+        parents
+            .iter()
+            .map(|data| {
+                let form = Form::from_data(
+                    data.clone(),
+                    crate::compiler_data::Source::new("shared.cljs", "[x]")
+                        .span(0..3)
+                        .unwrap(),
+                    crate::compiler_data::Origin::Source,
+                );
+                bridge.remember(&form, 128, &mut 1000).unwrap();
+                let value = bridge.import(s, data, 128, &mut 1000).unwrap();
+                s.persist(value)
+            })
+            .collect::<Vec<_>>()
+    });
+    check(&rt, &mut bridge);
+    drop(roots.pop());
+    check(&rt, &mut bridge);
+    let raw_metadata = rt.scope(|s| {
+        let literal = s
+            .form_items(s.form_value(s.local(&roots[0]).unwrap()))
+            .unwrap()[0];
+        s.persist(s.form_meta(s.form_value(literal)).unwrap())
+    });
+    drop(roots);
+    check(&rt, &mut bridge);
+    for _ in 0..3 {
+        rt.scope(|s| {
+            let wrapped = bridge.import(s, &metadata, 128, &mut 1000).unwrap();
+            assert!(s.same_object(s.form_value(wrapped), s.local(&raw_metadata).unwrap()));
+            assert_eq!(
+                bridge
+                    .export(s, wrapped, 128, &mut 1000)
+                    .unwrap()
+                    .identity(),
+                metadata.identity()
+            );
+        });
+        check(&rt, &mut bridge);
+    }
+    // Remembered provenance from an unsuccessful import is also removed.
+    let failed = Form::from_data(
+        Datum::new(D::Collection {
+            kind: C::Vector,
+            children: vec![Datum::new(D::Nil)].into(),
+        }),
+        crate::compiler_data::Source::new("failed.cljs", "[x]")
+            .span(0..3)
+            .unwrap(),
+        crate::compiler_data::Origin::Source,
+    );
+    rt.scope(|s| {
+        bridge.remember(&failed, 128, &mut 1000).unwrap();
+        assert!(bridge.import(s, &failed.data(), 128, &mut 1).is_err());
+    });
+    check(&rt, &mut bridge);
+    drop(raw_metadata);
+    check(&rt, &mut bridge);
+    assert!(bridge.retained.is_empty());
+}
+
+#[test]
 fn weak_bridge_entries_preserve_live_occurrences_and_raw_metadata() {
     let rt = Runtime::new();
     let mut host = MacroHost::new();
@@ -3808,9 +4027,8 @@ fn compiler_literal_payloads_keep_identity_provenance_and_cached_limits_after_gc
         );
         assert_eq!(exported.metadata().unwrap().identity(), metadata.identity());
         for cached in [true, false] {
-            if !cached {
-                bridge.imports.clear();
-            }
+            let mut uncached = Bridge::default();
+            let bridge = if cached { &mut bridge } else { &mut uncached };
             assert!(bridge.import(s, &data, 64, &mut 3).is_err());
             assert!(bridge.import(s, &data, 2, &mut 100).is_err());
         }

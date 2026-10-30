@@ -16,8 +16,8 @@ use crate::{
 };
 use big_boy_pants_js::{
     Budget, Completion, DependencyId, DependencyKey, Executable, FormKind, JsString, Local,
-    ObjectIdentity, Primitive, ProducerRequest, Provenance, ResultKind, Rooted, RunOutcome,
-    Runtime, Scope, Task, ValueView, WeakHandle,
+    ObjectIdentity, Primitive, ProducerRequest, Provenance, ReclamationQueue, ResultKind, Rooted,
+    RunOutcome, Runtime, Scope, Task, ValueView, WeakHandle,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -161,6 +161,13 @@ struct Imported {
     // A metadata map can escape without its occurrence. Reimport it with
     // the same native identity while that raw object remains observable.
     native: Option<WeakHandle>,
+    identities: Vec<ObjectIdentity>,
+}
+
+struct RetainedDatum {
+    data: Datum,
+    // One reference per imported root and per edge from a retained Datum.
+    references: usize,
 }
 #[derive(Clone, Copy)]
 struct ReaderExportPath<'a> {
@@ -182,6 +189,11 @@ struct Bridge {
     // Native metadata is a raw immutable map, so it can emerge without its
     // occurrence wrapper. Map that exact object back without traversing it.
     native_objects: HashMap<ObjectIdentity, (usize, WeakHandle)>,
+    reclaimed: ReclamationQueue,
+    retained: HashMap<usize, RetainedDatum>,
+    // remember() can precede a failed import. Check only newly remembered
+    // entries that have not yet become reachable, rather than all forms.
+    unretained: HashSet<usize>,
     gensym_counter: u64,
     // Keys include the native service's 'a' request tag. Retain accounted
     // engine strings: generated spellings cannot grow uncharged host buffers.
@@ -207,43 +219,101 @@ impl Bridge {
         let counted = crate::compile_trace::any_recording();
         let started = counted.then(std::time::Instant::now);
         let sizes = |b: &Self| b.forms.len() + b.costs.len() + b.native_objects.len();
-        let (visited, before) = (self.imports.len(), sizes(self));
+        let before = sizes(self);
         self.collected = collected;
-        self.imports.retain(|_, imported| {
-            imported.occurrence.is_live()
+        let (mut visited, mut removed, mut walked) = (0, 0, 0);
+        for (identity, key) in self.reclaimed.take() {
+            self.native_objects.remove(&identity);
+            let Some(imported) = self.imports.get(&key) else {
+                continue;
+            };
+            visited += 1;
+            if imported.occurrence.is_live()
                 || imported.native.as_ref().is_some_and(WeakHandle::is_live)
-        });
-        // Exporting a surviving parent restores its full original Datum.
-        // Keep every descendant's provenance and conversion costs even if
-        // its occurrence wrapper has died (raw metadata can outlive it).
-        let mut reachable = HashSet::new();
-        let mut pending: Vec<_> = self.imports.values().map(|i| i.data.clone()).collect();
-        let mut walked = 0usize;
-        while let Some(data) = pending.pop() {
-            walked += 1;
-            if !reachable.insert(data.identity()) {
+            {
                 continue;
             }
-            if let D::Collection { children, .. } = data.kind() {
-                pending.extend(children.iter().cloned());
+            let imported = self.imports.remove(&key).unwrap();
+            for identity in imported.identities {
+                if self
+                    .native_objects
+                    .get(&identity)
+                    .is_some_and(|(k, _)| *k == key)
+                {
+                    self.native_objects.remove(&identity);
+                }
             }
-            pending.extend(data.compiler_literal_data());
-            pending.extend(data.metadata());
+            removed += 1;
+            walked += self.release_datum(key);
         }
-        self.forms.retain(|key, _| reachable.contains(key));
-        self.costs.retain(|key, _| reachable.contains(key));
-        self.native_objects
-            .retain(|_, (key, value)| self.imports.contains_key(key) && value.is_live());
+        for key in self.unretained.drain() {
+            if !self.retained.contains_key(&key) {
+                self.forms.remove(&key);
+                self.costs.remove(&key);
+            }
+        }
         if let Some(started) = started {
-            let removed = before - sizes(self);
+            let entries_removed = before - sizes(self);
             let c = &mut self.counters;
             c.prune_passes += 1;
             c.prune_imports_visited += visited;
-            c.prune_imports_removed += visited - self.imports.len();
+            c.prune_imports_removed += removed;
             c.prune_nodes_walked += walked;
-            c.prune_entries_removed += removed;
+            c.prune_entries_removed += entries_removed;
             c.prune_nanos += started.elapsed().as_nanos();
         }
+    }
+
+    fn datum_children(data: &Datum) -> impl Iterator<Item = Datum> + '_ {
+        let children = match data.kind() {
+            D::Collection { children, .. } => children.as_ref(),
+            D::CompilerLiteral { payload, .. } => std::slice::from_ref(payload),
+            _ => &[],
+        };
+        children.iter().cloned().chain(data.metadata())
+    }
+
+    fn retain_datum(&mut self, data: &Datum) {
+        let mut pending = vec![data.clone()];
+        while let Some(data) = pending.pop() {
+            self.unretained.remove(&data.identity());
+            if let Some(retained) = self.retained.get_mut(&data.identity()) {
+                retained.references += 1;
+                continue;
+            }
+            pending.extend(Self::datum_children(&data));
+            self.retained.insert(
+                data.identity(),
+                RetainedDatum {
+                    data,
+                    references: 1,
+                },
+            );
+        }
+    }
+
+    fn release_datum(&mut self, key: usize) -> usize {
+        let mut pending = vec![key];
+        let mut walked = 0;
+        while let Some(key) = pending.pop() {
+            walked += 1;
+            let retained = self
+                .retained
+                .get_mut(&key)
+                .expect("retained import or parent");
+            retained.references -= 1;
+            if retained.references != 0 {
+                continue;
+            }
+            // A surviving parent restores its entire original tree, including
+            // descendants whose occurrence wrappers no longer exist. Release
+            // child edges only when the last parent/import reference dies.
+            let retained = self.retained.remove(&key).unwrap();
+            pending.extend(Self::datum_children(&retained.data).map(|d| d.identity()));
+            self.forms.remove(&key);
+            self.costs.remove(&key);
+        }
+        walked
     }
     fn cached<'s>(&mut self, s: &Scope<'s>, data: &Datum) -> Result<Option<Local<'s>>, EvalError> {
         let Some(imported) = self.imports.get(&data.identity()) else {
@@ -461,11 +531,26 @@ impl Bridge {
             )
             .map_err(error)?;
         let occurrence = s.downgrade(value);
-        self.native_objects.insert(
-            s.object_identity(value)
-                .expect("an occurrence is an object"),
-            (d.identity(), occurrence.clone()),
-        );
+        let identity = s
+            .object_identity(value)
+            .expect("an occurrence is an object");
+        self.native_objects
+            .insert(identity.clone(), (d.identity(), occurrence.clone()));
+        let mut identities = if let Some(previous) = self.imports.remove(&d.identity()) {
+            previous.identities
+        } else {
+            self.retain_datum(d);
+            Vec::new()
+        };
+        s.watch_reclamation(value, &self.reclaimed, d.identity());
+        identities.push(identity);
+        let raw = s.form_value(value);
+        if let Some(identity) = s.object_identity(raw) {
+            s.watch_reclamation(raw, &self.reclaimed, d.identity());
+            if !identities.contains(&identity) {
+                identities.push(identity);
+            }
+        }
         self.imports.insert(
             d.identity(),
             Imported {
@@ -473,6 +558,7 @@ impl Bridge {
                 data: d.clone(),
                 occurrence,
                 native,
+                identities,
             },
         );
         let mut cost = (1usize, 1usize);
@@ -828,7 +914,11 @@ impl Bridge {
         if let Some(f) = form.metadata() {
             self.remember(&f, depth - 1, remaining)?;
         }
-        self.forms.insert(form.data().identity(), form.clone());
+        let key = form.data().identity();
+        self.forms.insert(key, form.clone());
+        if !self.retained.contains_key(&key) {
+            self.unretained.insert(key);
+        }
         Ok(())
     }
 

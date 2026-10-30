@@ -807,6 +807,15 @@ rejection, not an integration claim. Future work is tracked in Pellets only.
 
 ## Root inventory
 
+Host identity tables can use `Scope::watch_reclamation` and a
+`ReclamationQueue` to consume only watched object deaths after a collection.
+Watches and queued identities retain no objects, perform no callbacks, and
+include the heap and allocation generation. Sweep publishes the notifications
+before mutators resume; the host can drain them under scoped access without
+scanning surviving weak handles. `reclamation_queue_reports_only_watched_deaths_with_exact_identity`
+in `tests/gc_roots.rs` covers duplicate registrations, multiple queues/heaps,
+slot reuse, and discarded queues.
+
 Every place a heap value can be held so that the collector must keep it
 (design.md §11, "The collector must see"), the `RootCategory` it is
 reached through, and its retention test (the value survives forced

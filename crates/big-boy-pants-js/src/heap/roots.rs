@@ -75,7 +75,7 @@ use std::cell::Cell;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 use super::gc::{Access, MutatorToken, Trace};
 use super::{Heap, HeapObject, ObjectId};
@@ -220,6 +220,52 @@ impl Hash for ObjectIdentity {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.heap.as_ptr().hash(state);
         self.object.hash(state);
+    }
+}
+
+type ReclamationEvents = Mutex<Vec<(ObjectIdentity, usize)>>;
+
+/// Non-rooting notifications for host-side identity tables. A watched object
+/// enqueues its identity and the caller's token when swept, before mutators
+/// resume. Taking notifications never invokes JavaScript or a callback.
+/// Registrations and notifications are host bookkeeping, like weak handles.
+#[derive(Default)]
+pub struct ReclamationQueue(Arc<ReclamationEvents>);
+
+impl ReclamationQueue {
+    /// Consume the deaths since the previous call. Surviving objects do not
+    /// need to be examined. Identities include the heap and slot generation.
+    pub fn take(&self) -> Vec<(ObjectIdentity, usize)> {
+        std::mem::take(&mut *super::lock(&self.0))
+    }
+}
+
+type ReclamationWatch = (ObjectIdentity, Weak<ReclamationEvents>);
+
+#[derive(Debug, Default)]
+pub(super) struct ReclamationRegistry {
+    objects: std::collections::HashMap<
+        ObjectId,
+        std::collections::HashMap<(usize, usize), ReclamationWatch>,
+    >,
+}
+
+impl ReclamationRegistry {
+    fn watch(&mut self, identity: ObjectIdentity, queue: &ReclamationQueue, token: usize) {
+        self.objects.entry(identity.object).or_default().insert(
+            (Arc::as_ptr(&queue.0) as usize, token),
+            (identity, Arc::downgrade(&queue.0)),
+        );
+    }
+
+    pub(super) fn reclaimed(&mut self, object: ObjectId) {
+        if let Some(watches) = self.objects.remove(&object) {
+            for ((_, token), (identity, queue)) in watches {
+                if let Some(queue) = queue.upgrade() {
+                    super::lock(&queue).push((identity, token));
+                }
+            }
+        }
     }
 }
 
@@ -565,6 +611,16 @@ impl<'s> Scope<'s> {
         WeakHandle {
             heap: Arc::clone(self.heap),
             value: self.local_value(local),
+        }
+    }
+
+    /// Watch an object's reclamation without retaining it. Repeated watches
+    /// of the same object, queue and token produce one notification. Primitive
+    /// values do not produce notifications. The scope excludes collection
+    /// until registration is complete; no death can be missed in between.
+    pub fn watch_reclamation(&self, local: Local<'s>, queue: &ReclamationQueue, token: usize) {
+        if let Some(identity) = self.object_identity(local) {
+            super::lock(&self.heap.reclamation).watch(identity, queue, token);
         }
     }
 

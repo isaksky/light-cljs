@@ -119,8 +119,8 @@ pub use error::{CallSite, Diagnostic, SourceLocation, VmError, VmErrorKind};
 pub use exec::{Executor, ExecutorConfig, Placement, WorkerId};
 pub use heap::{
     CollectError, CollectStats, CollectionObserver, CollectionReport, HandleError, HeapPolicy,
-    HeapStats, HeapUsage, Local, MutatorState, ObjectCounts, ObjectIdentity, Rooted, Scope,
-    ThreadRegistration, WeakHandle,
+    HeapStats, HeapUsage, Local, MutatorState, ObjectCounts, ObjectIdentity, ReclamationQueue,
+    Rooted, Scope, ThreadRegistration, WeakHandle,
 };
 pub use host::{Host, HostCall};
 pub use ids::{DependencyId, DependencyKey, ProducerId, ResultKind, TaskId, WakeHandle, WorldId};

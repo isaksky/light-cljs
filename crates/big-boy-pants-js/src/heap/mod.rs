@@ -94,7 +94,7 @@ pub use gc::{
     ThreadRegistration,
 };
 use gc::{GcState, RootSource, SourceRegistry, Trace};
-pub use roots::{HandleError, Local, ObjectIdentity, Rooted, Scope, WeakHandle};
+pub use roots::{HandleError, Local, ObjectIdentity, ReclamationQueue, Rooted, Scope, WeakHandle};
 use roots::{RootTable, ScopeTable};
 pub use stats::{HeapUsage, ObjectCounts};
 
@@ -587,6 +587,10 @@ pub(crate) struct Heap {
     /// Collection observers ([`gc::CollectionObserver`]). A leaf lock: never
     /// held with another heap lock or while an observer runs.
     observers: Mutex<Vec<Weak<dyn gc::CollectionObserver>>>,
+    /// Non-rooting host watches, registered under scoped heap access. Sweep
+    /// takes this lock then a notification queue's lock; neither can call
+    /// back into the heap or the host. Only reclaimed identities are visited.
+    reclamation: Mutex<roots::ReclamationRegistry>,
     /// The realm's intrinsic objects (`crate::realm`), built on first use;
     /// their identities are roots of category `Intrinsic`. Its build lock
     /// is a leaf taken only before the realm exists.
