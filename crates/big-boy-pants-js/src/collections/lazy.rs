@@ -197,6 +197,10 @@ pub(crate) struct LazyCell {
     /// A lock-free copy of `LazyState::shared` for the realizer's early
     /// check; `settle` decides under the lock.
     shared: AtomicBool,
+    /// Set once an embedder attributed effects to a realization of this
+    /// cell ([`Realizing::attribute`]): reads of its realized value are
+    /// then noted for the reading task ([`note_consumed`]).
+    attributed: AtomicBool,
     realized: OnceLock<Value>,
     state: Mutex<LazyState>,
 }
@@ -241,6 +245,7 @@ impl LazyCell {
             serial: NEXT.fetch_add(1, Ordering::Relaxed),
             concat,
             shared: AtomicBool::new(false),
+            attributed: AtomicBool::new(false),
             realized: OnceLock::new(),
             state: Mutex::new(LazyState {
                 thunk,
@@ -285,6 +290,14 @@ impl LazyCell {
     /// be shareable. A hint; [`LazyCell::settle`] decides under its lock.
     pub(crate) fn is_shared(&self) -> bool {
         self.shared.load(Ordering::Acquire)
+    }
+
+    /// Whether an embedder attributed effects to a realization of this
+    /// cell. Relaxed suffices: the realizing task sets the flag before it
+    /// settles the cell, and a reader checks it after the realized value's
+    /// acquire.
+    pub(crate) fn is_attributed(&self) -> bool {
+        self.attributed.load(Ordering::Relaxed)
     }
 
     /// The realized value, read without a lock.
@@ -483,27 +496,44 @@ impl LazyCell {
     }
 }
 
-/// The lazy cells each task of the runtime is realizing, by serial,
-/// outermost first: what an embedder reads to attribute a task's effects to
-/// the realization a reader on another task may wait for
-/// ([`crate::Runtime::realizing`]). A leaf metadata lock with no heap edges.
+/// The lazy cells each task of the runtime is realizing, outermost first:
+/// what an embedder reads to attribute a task's effects to the realization
+/// a reader on another task may wait for ([`crate::Runtime::realizing`]),
+/// or may read once it has settled ([`crate::Runtime::attribute_realizing`]).
+/// A leaf metadata lock; the realizing frames keep its cells alive.
 #[derive(Debug, Default)]
-pub(crate) struct Realizing(Mutex<HashMap<TaskId, Vec<u64>>>);
+pub(crate) struct Realizing(Mutex<HashMap<TaskId, Vec<Arc<LazyCell>>>>);
 
 impl Realizing {
-    /// Note that `task` starts realizing the cell `serial`; the
-    /// realization ends when the returned guard is dropped.
-    pub(crate) fn begin(self: &Arc<Self>, task: TaskId, serial: u64) -> Realization {
-        lock(&self.0).entry(task).or_default().push(serial);
+    /// Note that `task` starts realizing `cell`; the realization ends when
+    /// the returned guard is dropped.
+    pub(crate) fn begin(self: &Arc<Self>, task: TaskId, cell: &Arc<LazyCell>) -> Realization {
+        lock(&self.0).entry(task).or_default().push(cell.clone());
         Realization {
             registry: self.clone(),
             task,
-            serial,
+            serial: cell.serial,
         }
     }
 
     pub(crate) fn of(&self, task: TaskId) -> Vec<u64> {
-        lock(&self.0).get(&task).cloned().unwrap_or_default()
+        let tasks = lock(&self.0);
+        (tasks.get(&task).into_iter().flatten())
+            .map(|cell| cell.serial)
+            .collect()
+    }
+
+    /// As [`Self::of`], and mark those cells attributed: from then on a
+    /// task that reads one of their realized values notes it
+    /// ([`note_consumed`]).
+    pub(crate) fn attribute(&self, task: TaskId) -> Vec<u64> {
+        let tasks = lock(&self.0);
+        (tasks.get(&task).into_iter().flatten())
+            .map(|cell| {
+                cell.attributed.store(true, Ordering::Relaxed);
+                cell.serial
+            })
+            .collect()
     }
 }
 
@@ -518,11 +548,11 @@ pub(crate) struct Realization {
 impl Drop for Realization {
     fn drop(&mut self) {
         let mut tasks = lock(&self.registry.0);
-        if let Some(serials) = tasks.get_mut(&self.task) {
-            if let Some(at) = serials.iter().rposition(|s| *s == self.serial) {
-                serials.remove(at);
+        if let Some(cells) = tasks.get_mut(&self.task) {
+            if let Some(at) = cells.iter().rposition(|c| c.serial == self.serial) {
+                cells.remove(at);
             }
-            if serials.is_empty() {
+            if cells.is_empty() {
                 tasks.remove(&self.task);
             }
         }
@@ -585,6 +615,45 @@ impl LazyWaits {
 thread_local! {
     static REQUEST: RefCell<Option<Value>> = const { RefCell::new(None) };
     static CYCLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The task whose run this thread executes now or executed last, and
+    /// the serials of the attributed cells whose realized values it read
+    /// ([`note_consumed`]).
+    static CONSUMED: RefCell<Option<(TaskId, Vec<u64>)>> = const { RefCell::new(None) };
+}
+
+/// Note the attributed cells that `task`'s run on this thread reads
+/// ([`note_consumed`]). What another task's run left untaken is dropped.
+pub(crate) fn begin_consumption(task: TaskId) {
+    CONSUMED.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.as_ref().is_none_or(|(owner, _)| *owner != task) {
+            *c = Some((task, Vec::new()));
+        }
+    });
+}
+
+/// Note that the running task read the realized value of `cell`, if an
+/// embedder attributed effects to its realization: the embedder counts
+/// those effects for this reader too ([`take_consumed`]).
+pub(crate) fn note_consumed(cell: &LazyCell) {
+    if !cell.is_attributed() {
+        return;
+    }
+    CONSUMED.with(|c| {
+        if let Some((_, serials)) = &mut *c.borrow_mut()
+            && !serials.contains(&cell.serial)
+        {
+            serials.push(cell.serial);
+        }
+    });
+}
+
+/// Take what [`note_consumed`] noted for `task`'s run on this thread.
+pub(crate) fn take_consumed(task: TaskId) -> Vec<u64> {
+    CONSUMED.with(|c| match &mut *c.borrow_mut() {
+        Some((owner, serials)) if *owner == task => std::mem::take(serials),
+        _ => Vec::new(),
+    })
 }
 
 /// Record that the running operation met a realized sequence that contains

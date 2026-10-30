@@ -51,6 +51,11 @@ pub struct Perturbation {
     /// shared helper first and an earlier one then demands it
     /// (light-cljs-480). Rescue threads are off meanwhile.
     pub lane_hold: Vec<String>,
+    /// A worker holds the pooled unit of each pair's first Var until the
+    /// unit of its second has been analyzed (or ten seconds pass), so that
+    /// what the second realized has settled before the first starts
+    /// (light-cljs-601). Rescue threads are off meanwhile.
+    pub hold_until: Vec<(String, String)>,
     /// Every job this pool started (the parse queue gets a log of its own),
     /// in start order: the deque index of the worker
     /// that ran it (0 on the inline path) and its key. A test prints it as

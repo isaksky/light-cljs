@@ -2924,20 +2924,25 @@ impl NativeStep {
         if previous != current {
             self.counters.migrations.fetch_add(1, Ordering::Relaxed);
         }
-        self.task
-            .run_with(
-                Budget::instructions(10_000),
-                &mut NativeHost(
-                    &self.per_task,
-                    &self.counters,
-                    self.lanes.as_deref(),
-                    &self.gensyms,
-                    &self.bridge,
-                    &self.namespaces,
-                    Some(&self.runtime),
-                ),
-            )
-            .map_err(|e| e.to_string())
+        let outcome = self.task.run_with(
+            Budget::instructions(10_000),
+            &mut NativeHost(
+                &self.per_task,
+                &self.counters,
+                self.lanes.as_deref(),
+                &self.gensyms,
+                &self.bridge,
+                &self.namespaces,
+                Some(&self.runtime),
+            ),
+        );
+        // The settled realizations the step read count at the task's place
+        // before a later activity reads the registry (light-cljs-601).
+        if let Some(lanes) = &self.lanes {
+            let consumed = self.runtime.take_lazy_consumed(self.task.id());
+            lanes.floor_consumed(crate::effect_lanes::identity(self.task.id()), &consumed);
+        }
+        outcome.map_err(|e| e.to_string())
     }
 }
 /// A waiting analyzer must regain exclusive ownership before unwinding its
@@ -3078,6 +3083,11 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
             let task = crate::effect_lanes::identity(call.task);
             let log = &self.5;
             let no_floors = HashMap::new();
+            // The settled realizations this run read count at its place
+            // before anything it does next (light-cljs-601).
+            if let (Some(lanes), Some(runtime)) = (self.2, self.6) {
+                lanes.floor_consumed(task, &runtime.take_lazy_consumed(call.task));
+            }
             return match op as u8 {
                 b'r' => {
                     let mut tag = self
@@ -3085,9 +3095,9 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                         .map(|lanes| lanes.namespace_tag(task))
                         .unwrap_or_default();
                     // The shared lazy cells it realizes: work an earlier
-                    // reader may wait for.
+                    // reader may wait for, or read once it has settled.
                     if let Some(runtime) = self.6 {
-                        let realizing = runtime.realizing(call.task);
+                        let realizing = runtime.attribute_realizing(call.task);
                         tag.owners
                             .extend(realizing.into_iter().map(crate::effect_lanes::Target::Lazy));
                     }

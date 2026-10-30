@@ -11673,10 +11673,74 @@ const NAMESPACE_FRONTIER_LENT: &[(&str, &str)] = &[
     ),
 ];
 
+/// A shared lazy realization that has settled before an earlier unit reads
+/// it (light-cljs-601): `app/g`, held ahead of `app/h`, realizes
+/// `m/shared-lazy` and creates `made.lent`, and `app/h` then reads the
+/// settled value without waiting. With one slot `app/h` realizes it, so
+/// `made.lent` counts at `app/h`: `app/h` itself, after its read, and
+/// `app/k`, between them, find it.
+const NAMESPACE_FRONTIER_SETTLED: &[(&str, &str)] = &[
+    (
+        "m.cljs",
+        r#"(ns m)
+(def shared-lazy (lazy-seq (create-ns 'made.lent) (list 1)))
+(defmacro pre [] (some? shared-lazy))
+(defmacro force-it [] (list 'quote (vec shared-lazy)))
+(defmacro force-has [] (list 'quote [(vec shared-lazy) (boolean (find-ns 'made.lent))]))
+(defmacro has [s] (boolean (find-ns s)))"#,
+    ),
+    (
+        "app.cljs",
+        r#"(ns app (:require [m :refer [pre force-it force-has has]]))
+(def a (pre))
+(def h (force-has))
+(def k (has made.lent))
+(def g (force-it))"#,
+    ),
+    (
+        "main.cljs",
+        "(ns main (:require [app])) (js/console.log (pr-str [app/a app/h app/k app/g]))",
+    ),
+];
+
+#[test]
+fn native_namespace_frontier_counts_completed_lazy_realizations() {
+    let root = temp_dir::TempDir::new("native-namespace-frontier-settled");
+    for (file, source) in NAMESPACE_FRONTIER_SETTLED {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let variants: &[(usize, u64, &str)] = &[
+        (1, 1, ""),
+        (2, 1, ""),
+        (4, 2, ""),
+        (8, 3, ""),
+        (4, 14, "settled"),
+        (8, 15, "settled"),
+        (8, 16, "settled"),
+        (8, 17, "settled"),
+        (8, 18, "settled"),
+    ];
+    for &(jobs, seed, mode) in variants {
+        let build = |native| frontier_program(root.path(), native, jobs, seed, mode, "app/h");
+        let native = build(true).0;
+        assert_eq!(
+            program_output(&native),
+            "[true [[1] true] true [1]]\n",
+            "jobs {jobs} {mode}"
+        );
+        #[cfg(feature = "quickjs")]
+        assert!(
+            native == build(false).0,
+            "QuickJS reference, jobs {jobs} {mode}"
+        );
+    }
+}
+
 /// Build `files`' namespace `main` natively (or with the QuickJS reference)
 /// at `jobs` threads, natively under `seed`'s scheduling with one-job
-/// batches, fixed workers, delayed starts or `held` units: its program and
-/// how many lanes opened at a position an earlier waiter lent.
+/// batches, fixed workers, delayed starts or `held` units (`settled`: held
+/// until `app/g` has been analyzed): its program and how many lanes opened
+/// at a position an earlier waiter lent.
 fn frontier_program(
     root: &std::path::Path,
     native: bool,
@@ -11706,6 +11770,16 @@ fn frontier_program(
                 fixed: mode == "fixed",
                 start_delay: (mode == "delayed").then(|| std::time::Duration::from_millis(20)),
                 lane_hold: (mode == "held").then(|| held.into()).into_iter().collect(),
+                // `held` starts once `app/g` has been analyzed, so that what
+                // it realized has settled; `app/g` starts once `app/a` has
+                // been, so that it does not wait for its lane.
+                hold_until: match mode {
+                    "settled" => vec![
+                        (held.into(), "app/g".into()),
+                        ("app/g".into(), "app/a".into()),
+                    ],
+                    _ => Vec::new(),
+                },
                 limits: Some(light_cljs::scheduler::Limits {
                     batch_jobs: 1,
                     ..Default::default()

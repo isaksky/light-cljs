@@ -1401,6 +1401,7 @@ impl RunGuard<'_> {
     /// instructions; a bounded budget bounds how long a request waits.
     pub fn run_with(mut self, budget: Budget, host: &mut dyn Host) -> RunOutcome {
         let task = self.task;
+        crate::collections::lazy::begin_consumption(task.id);
         // Run start is an observation point; a run continuing a cleanup
         // that yielded just goes on with it.
         if task.exec.snapshot().cancelled && !self.cleaning_up() && !self.begin_cleanup() {

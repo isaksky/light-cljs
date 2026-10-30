@@ -351,6 +351,24 @@ impl Runtime {
         self.0.heap.realizing.of(task)
     }
 
+    /// As [`Self::realizing`], for an effect the embedder attributes to
+    /// those realizations: from then on, a task that reads one of their
+    /// settled values without waiting for it is noted
+    /// ([`Self::take_lazy_consumed`]), so that the embedder can count the
+    /// effect for that reader as for one that waited.
+    pub fn attribute_realizing(&self, task: crate::TaskId) -> Vec<u64> {
+        self.0.heap.realizing.attribute(task)
+    }
+
+    /// The serials of the cells [`Self::attribute_realizing`] returned
+    /// whose realized values `task`'s current or latest run on this thread
+    /// read, each once, since the last call. Call it on that thread, in a
+    /// host effect of the run or after the run returns, before the thread
+    /// runs another task: a run of another task drops what is left.
+    pub fn take_lazy_consumed(&self, task: crate::TaskId) -> Vec<u64> {
+        crate::collections::lazy::take_consumed(task)
+    }
+
     /// The task realizing the lazy attempt that readers of `key` currently
     /// wait on. An embedder can lend a reader's scheduling priority to that
     /// task. This snapshot does not claim ownership or keep the attempt alive;

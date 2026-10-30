@@ -4425,10 +4425,18 @@ fn execute_pool_job(
     }
     let started = std::time::Instant::now();
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
-    if let Some(perturbation) = shared.perturbation.get()
-        && perturbation.lane_hold.contains(&shared.unit_name(id))
-    {
-        shared.lanes.wait_parked(std::time::Duration::from_secs(10));
+    if let Some(perturbation) = shared.perturbation.get() {
+        let name = shared.unit_name(id);
+        let limit = std::time::Duration::from_secs(10);
+        if perturbation.lane_hold.contains(&name) {
+            shared.lanes.wait_parked(limit);
+        }
+        for (_, until) in (perturbation.hold_until.iter()).filter(|(held, _)| *held == name) {
+            let unit = (shared.lock().units.iter()).position(|u| &u.name == until);
+            if let Some(unit) = unit {
+                shared.lanes.wait_finished(unit, limit);
+            }
+        }
     }
     // The job is an activity of its own at its lane, even helped inside
     // another's wait.
@@ -4462,14 +4470,16 @@ fn execute_pool_job(
     }
 }
 
-/// Whether the build's test perturbation holds units back for a lane
-/// ([`crate::scheduler::Perturbation::lane_hold`]); enabled in debug builds or
-/// by the opt-in `scheduling-stress` feature.
+/// Whether the build's test perturbation holds units back for a lane or
+/// another unit ([`crate::scheduler::Perturbation::lane_hold`],
+/// [`crate::scheduler::Perturbation::hold_until`]); enabled in debug builds
+/// or by the opt-in `scheduling-stress` feature.
 #[cfg(feature = "bbp-macros")]
 fn lane_hold(shared: &SharedCatalog) -> bool {
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     {
-        (shared.perturbation.get()).is_some_and(|p| !p.lane_hold.is_empty())
+        (shared.perturbation.get())
+            .is_some_and(|p| !p.lane_hold.is_empty() || !p.hold_until.is_empty())
     }
     #[cfg(not(any(debug_assertions, feature = "scheduling-stress")))]
     {

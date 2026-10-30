@@ -1523,7 +1523,13 @@ chain, and the shared lazy cells its task is realizing (the engine's
 unit's analysis, an initializer's or helper's production, a lazy
 realization), the creations of that work count at the waiter's position for
 good, after what the waiter created before it waited: with one thread, that
-work runs inside the waiter. A read waits for its lane, as an access to
+work runs inside the waiter. An earlier activity that reads a lazy realization
+another task has already finished, without waiting, counts the same: with one
+thread it would have realized the cell itself (light-cljs-601). The engine
+notes such reads for the cells whose realizations a creation was attributed to
+(`Runtime::attribute_realizing`, `Runtime::take_lazy_consumed`); the reader's
+place becomes the realization's floor before its next registry access and
+after each of its steps. A read waits for its lane, as an access to
 another activity's atom does, at the position its lane opens at (an earlier
 waiter may lend it one), and sees the creations that count up to there, in
 one-thread order. Every thread count therefore gives the one-thread answer.
@@ -1538,7 +1544,9 @@ guarantee. A macro that reads the inventory declares `(b/depend-on! :namespaces)
 compares these views with the QuickJS reference at 1, 2, 4 and 8 threads,
 under seeded scheduling, fixed workers, delayed starts and held units,
 including a namespace a shared lazy realization creates before an earlier unit
-waits for that realization.
+waits for that realization;
+`native_namespace_frontier_counts_completed_lazy_realizations` holds the
+earlier unit until the later one has finished the realization.
 
 Ordinary source helpers are compiled on demand. A macro parks at a dependency
 read while the compiler analyzes the helper using separate task state on the

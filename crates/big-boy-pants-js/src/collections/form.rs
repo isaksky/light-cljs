@@ -2448,7 +2448,12 @@ fn realized_head_with(
             cell.realized().cloned()
         };
         match value {
-            Some(r) => v = r,
+            Some(r) => {
+                // Reading a settled realization counts its attributed
+                // effects for this reader as well (`lazy::note_consumed`).
+                lazy::note_consumed(cell);
+                v = r;
+            }
             None => return Err(SeqError::Pending(u)),
         }
     }

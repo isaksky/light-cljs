@@ -273,8 +273,8 @@ impl BbpEvaluator {
             .map(|lanes| lanes.namespace_tag_here())
             .unwrap_or_default();
         // The shared lazy cells its task realizes: work an earlier reader
-        // may wait for ([`super::namespaces`]).
-        let realizing = self.runtime.realizing(cx.task.id());
+        // may wait for, or read once it has settled ([`super::namespaces`]).
+        let realizing = self.runtime.attribute_realizing(cx.task.id());
         tag.owners
             .extend(realizing.into_iter().map(crate::effect_lanes::Target::Lazy));
         let from = {

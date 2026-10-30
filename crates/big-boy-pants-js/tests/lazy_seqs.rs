@@ -519,3 +519,53 @@ fn undrained_lazy_wakeups_do_not_keep_dropped_readers() {
     drop(b);
     assert!(rt.take_lazy_wakeups().is_empty());
 }
+
+/// Attributes the realizations its task is running at each effect, as an
+/// embedder that counts the effect for them does.
+struct Attributing(Runtime, Arc<std::sync::Mutex<Vec<u64>>>);
+
+impl Host for Attributing {
+    fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+        let serials = self.0.attribute_realizing(call.task);
+        self.1.lock().unwrap().extend(serials);
+        Ok(Primitive::Null)
+    }
+}
+
+#[test]
+fn readers_of_a_settled_attributed_realization_are_noted() {
+    let rt = Runtime::new();
+    let attributed = shared_lazy(&rt, false);
+    let plain = shared_lazy(&rt, false);
+    let serials = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut host = Attributing(rt.clone(), serials.clone());
+    // The realizer's effect inside the thunk attributes the realization.
+    let a = reader(&rt, &attributed);
+    let outcome = a.run_with(Budget::UNLIMITED, &mut host).unwrap();
+    assert_eq!(complete(outcome), ValueView::Number(6.0));
+    let serials = serials.lock().unwrap().clone();
+    assert_eq!(serials.len(), 1);
+    // A later reader reads the settled value without waiting: noted once,
+    // and taken once.
+    let b = reader(&rt, &attributed);
+    let outcome = b.run_with(Budget::UNLIMITED, &mut host).unwrap();
+    assert_eq!(complete(outcome), ValueView::Number(6.0));
+    assert_eq!(rt.take_lazy_consumed(b.id()), serials);
+    assert!(rt.take_lazy_consumed(b.id()).is_empty());
+    // Another task's run drops what an earlier one left untaken, and a
+    // realization nobody attributed is not noted.
+    let c = reader(&rt, &attributed);
+    complete(c.run_with(Budget::UNLIMITED, &mut host).unwrap());
+    let d = reader(&rt, &plain);
+    complete(
+        d.run_with(Budget::UNLIMITED, &mut Thunks::default())
+            .unwrap(),
+    );
+    let e = reader(&rt, &plain);
+    complete(
+        e.run_with(Budget::UNLIMITED, &mut Thunks::default())
+            .unwrap(),
+    );
+    assert!(rt.take_lazy_consumed(c.id()).is_empty());
+    assert!(rt.take_lazy_consumed(e.id()).is_empty());
+}

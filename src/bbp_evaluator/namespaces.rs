@@ -9,10 +9,12 @@
 //! its activity's place in the effect lanes ([`NamespaceTag`]), without
 //! waiting, so macro calls stay parallel. When an earlier activity later
 //! waits for the work that made a creation (a unit's analysis, a cell's
-//! production, a shared lazy realization), the creation counts at that
-//! earlier position, after what the waiter created before it waited, as
-//! with one slot, where the work runs inside the waiter
-//! ([`crate::effect_lanes::Lanes::namespace_floors`]). A reader waits for
+//! production, a shared lazy realization), or reads a lazy realization that
+//! has already settled, the creation counts at that earlier position, after
+//! what the waiter created before it waited, as with one slot, where the
+//! work runs inside the waiter
+//! ([`crate::effect_lanes::Lanes::namespace_floors`],
+//! [`crate::effect_lanes::Lanes::floor_consumed`]). A reader waits for
 //! its lane first and then sees what counts before it ([`NamespaceView`]),
 //! so every thread count gives the one-slot answer.
 //!

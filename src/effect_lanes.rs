@@ -801,6 +801,29 @@ impl Lanes {
         guard.refresh();
         Some(guard)
     }
+    /// `task`'s current activity read the settled values of the shared lazy
+    /// cells `serials`: with one slot, the earliest such reader realizes a
+    /// cell, so each realization gets the activity's effective position as
+    /// its namespace floor, as for a reader that waited for it
+    /// ([`Self::wait_for_task`]; light-cljs-601).
+    pub(crate) fn floor_consumed(&self, task: u64, serials: &[u64]) {
+        if serials.is_empty() || !self.enabled() {
+            return;
+        }
+        let effective = self.namespace_view(task).effective;
+        if effective == Position::MAX {
+            return;
+        }
+        let mut s = self.lock();
+        for &serial in serials {
+            let floor = (s.floors)
+                .entry(Target::Lazy(serial))
+                .or_insert((Position::MAX, 0));
+            if effective < floor.0 {
+                *floor = (effective, next_order());
+            }
+        }
+    }
     /// Run `f` with the namespace floors: for each unit, cell and lazy
     /// realization an earlier activity waited for, the lowest such
     /// position and its order ([`NamespaceTag`]).
@@ -842,6 +865,20 @@ impl Lanes {
         let since = Instant::now();
         let mut s = self.lock();
         while !s.parked_in_cell && since.elapsed() < limit {
+            s = self
+                .opened
+                .wait_timeout(s, Duration::from_millis(20))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+    /// Block until `unit` has finished, or `limit` passes (the test-only
+    /// [`crate::scheduler::Perturbation::hold_until`]).
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    pub(crate) fn wait_finished(&self, unit: usize, limit: Duration) {
+        let since = Instant::now();
+        let mut s = self.lock();
+        while !s.finished.contains(&unit) && since.elapsed() < limit {
             s = self
                 .opened
                 .wait_timeout(s, Duration::from_millis(20))
@@ -1032,6 +1069,30 @@ mod tests {
         lanes.namespace_floors(|floors| {
             assert_eq!(floors.get(&Target::Lazy(5)).map(|f| f.0), Some(1));
             assert_eq!(floors.len(), 1, "not the realizer's whole activity");
+        });
+    }
+
+    #[test]
+    fn a_reader_of_a_settled_realization_floors_it_at_its_place() {
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        lanes.schedule([0, 1, 2], false);
+        let _unit = lanes.enter_unit(1);
+        let task = synced(&lanes, 7);
+        lanes.floor_consumed(task, &[5]);
+        // A later reader does not move it back.
+        let other = lanes.clone();
+        std::thread::spawn(move || {
+            let _root = other.enter_root();
+            let _unit = other.enter_unit(2);
+            other.floor_consumed(synced(&other, 8), &[5, 6]);
+        })
+        .join()
+        .unwrap();
+        lanes.namespace_floors(|floors| {
+            assert_eq!(floors.get(&Target::Lazy(5)).map(|f| f.0), Some(1));
+            assert_eq!(floors.get(&Target::Lazy(6)).map(|f| f.0), Some(2));
+            assert_eq!(floors.len(), 2);
         });
     }
 

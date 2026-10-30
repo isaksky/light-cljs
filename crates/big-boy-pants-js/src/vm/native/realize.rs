@@ -133,7 +133,7 @@ impl Realize {
                 Claim::Realized => return Ok(self.resume()),
                 Claim::Run { thunk, attempt } => {
                     self.attempt = Some(attempt);
-                    self.realizing = Some(heap.realizing.begin(task, self.cell.serial()));
+                    self.realizing = Some(heap.realizing.begin(task, &self.cell));
                     self.waited = None;
                     if !self.cell.is_concat() {
                         return Ok(Action::Call {
