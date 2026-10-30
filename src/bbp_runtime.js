@@ -3395,9 +3395,6 @@ const rootSetter=name=>value=>{
   Object.defineProperty(registry(),name,{configurable:true,writable:true,value});
 };
 const productReaders=new Map();
-// A declaration product written outside its bundle (a defprotocol or deftype
-// a macro body runs again) replaces the definition, as a nested def does.
-const productSetter=name=>value=>{defineRootValue(name,value);};
 // The product getters the engine's root read may bypass once their bundle is
 // ready: not those of a name declared again, whose getter picks the
 // definition an initializer sees (`decl.atDeclarationFrontier`).
@@ -3414,7 +3411,7 @@ globalThis.__lightInstallCompilerProduct=(name,read,bundle)=>{
   const previous=roots.get(name);
   if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);
   else {const slot=__rt.initializerSlot(null,name);__rt.initializerSlotSet(slot,4,true);roots.set(name,slot);}
-  Object.defineProperty(registry(),name,{configurable:true,get:read,set:productSetter(name)});
+  Object.defineProperty(registry(),name,{configurable:true,get:read});
   if(bundle!==undefined){
     const entry=__rt.vector(bundle,name);productReaders.set(read,entry);
     if(!bundle.previous?.has(name))fastProductReaders.set(read,entry);
@@ -3504,22 +3501,14 @@ const rootGetter=(name,unit,slot,frontier=Infinity)=>()=>{
   if(unit===null)throw new Error('unavailable definition: '+name);
   __rt.need(unit,2);
   const factory=__rt.need(unit,3);
-  return inRootInitializer(frontier,()=>initializeValue(slot,factory));
-};
-// A root initializer reads the products visible at `frontier`, and (as before
-// light-cljs-592) sees no products object outside a bundle installation.
-const inRootInitializer=(frontier,f)=>{
-  const products=globalThis.__lightCompilerBundleProducts;
-  if(products===rootTarget)globalThis.__lightCompilerBundleProducts=undefined;
-  try{return decl.atDeclarationFrontier(frontier,f);}
-  finally{globalThis.__lightCompilerBundleProducts=products;}
+  return decl.atDeclarationFrontier(frontier,()=>initializeValue(slot,factory));
 };
 const demandSlot=slot=>{
   const unit=__rt.initializerSlotGet(slot,0);
   if(unit===null)throw new Error('unavailable definition: '+__rt.initializerSlotGet(slot,1));
   __rt.need(unit,2);
   const factory=__rt.need(unit,3);
-  return inRootInitializer(Infinity,()=>initializeValue(slot,factory));
+  return initializeValue(slot,factory);
 };
 // A definition's executable :test metadata, from its own unit: the unit's
 // root initializes once, and a failure stays. A lazily adopted catalog
@@ -3612,13 +3601,6 @@ globalThis.__lightRegisterBundle=(names,code,indices=[],location='',once=false,g
 globalThis.__lightEnterCompilerFrontier=next=>decl.enter(next);
 globalThis.__lightLeaveCompilerFrontier=()=>decl.leave();
 const rootTarget={};
-// A declaration a function evaluates outside any bundle (a defprotocol or
-// deftype in a macro body) writes its products into the roots themselves,
-// as a nested def defines its root (light-cljs-592); a bundle's
-// installation replaces this while it runs, and a root initializer has none
-// (`inRootInitializer`). A product already installed takes the write through
-// its setter (`productSetter`).
-globalThis.__lightCompilerBundleProducts=rootTarget;
 globalThis.__lightCompilerRoots=new Proxy(rootTarget, {
   get:(target,name,receiver)=>bindingOverlays.has(name)?bindingOverlays.get(name):(lazyCatalog!==null&&lazyResolve(name),Reflect.get(target,name,receiver)),
   has:(target,name)=>bindingOverlays.has(name)||(lazyCatalog!==null&&lazyResolve(name),Reflect.has(target,name)),
@@ -3780,7 +3762,7 @@ function lazyResolve(name){
     Object.defineProperty(rootTarget,name,{configurable:true,get:rootGetter(name,s.unit,slot,catalogFrontier(c,s.owner))});
   }else{
     const b=lazyBundle(c,s.owner),read=decl.productGetter(b,name);
-    Object.defineProperty(rootTarget,name,{configurable:true,get:read,set:productSetter(name)});
+    Object.defineProperty(rootTarget,name,{configurable:true,get:read});
     const entry=__rt.vector(b,name);productReaders.set(read,entry);
     if(catalogPrevious(b,name)===undefined)fastProductReaders.set(read,entry);
   }
