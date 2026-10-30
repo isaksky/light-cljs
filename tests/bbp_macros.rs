@@ -9522,6 +9522,34 @@ fn native_mutable_object_extension_alias_matches_quickjs() {
     }
 }
 
+/// An Object demand on an unrelated matching receiver installs the whole
+/// bundle, including its mutable type's method. A mismatching JavaScript
+/// type leaves the bundle pending; `default` matches every receiver.
+#[test]
+fn native_object_extension_selector_demand_matches_quickjs() {
+    for (selector, mismatch, demand) in [
+        ("string", "(.-length (js/Array.of 0))", "(.-length \"xy\")"),
+        ("array", "(.-length \"xy\")", "(.-length (js/Array.of 0))"),
+        ("object", "(.-length \"xy\")", "(.-a (js* \"({a: 0})\"))"),
+        ("default", "nil", "(.-length \"xy\")"),
+    ] {
+        assert_native_matches_legacy(
+            &format!(
+                r#"(deftype M [^:mutable a] Object (f [_] 1))
+                   (extend-protocol Object M (f [_] 2) {selector} (f [_] 3))
+                   (defmacro m []
+                     (let [instance (M. 0)]
+                       [:{selector}
+                        (js* "~{{}}.f()" instance)
+                        (do {mismatch} (js* "~{{}}.f()" instance))
+                        (do {demand} (js* "~{{}}.f()" instance))]))
+                   (js/console.log (pr-str (m)))"#
+            ),
+            &format!("[:{selector} 1 1 2]\n"),
+        );
+    }
+}
+
 /// Two pending Object extensions classify the receiver once, before the
 /// requested member read. A failed mutable-type lookup is cached too.
 #[test]
