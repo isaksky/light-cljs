@@ -122,6 +122,9 @@ fn original_gap_sources_execute_through_actual_macro_hosts() {
         }
     }
     assert!(!input.is_empty());
-    assert_eq!(input.lines().count() * 8, count);
+    // Two lifecycles times two phases, observed by Node and, in builds that
+    // embed it, QuickJS.
+    let engines = if cfg!(feature = "quickjs") { 2 } else { 1 };
+    assert_eq!(input.lines().count() * 4 * engines, count);
     output.flush().unwrap();
 }
