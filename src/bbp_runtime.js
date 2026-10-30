@@ -2187,6 +2187,22 @@ const native = (() => {
     invoke, truth, get, identity:x=>x, macroReaderFunction,
     printReadably:true, printLength:null, printLevel:null, printNamespaceMaps:false,
     printMeta:false, printDup:false, printFnBodies:false, printNewline:true, flushOnNewline:true,
+    printFn:null, printErrFn:null,
+    setPrintFn:(...a)=>a.length===1?core.printFn=a[0]:arity(a.length),
+    setPrintErrFn:(...a)=>a.length===1?core.printErrFn=a[0]:arity(a.length),
+    stringPrint:(...a)=>{
+      if(a.length!==1)return arity(a.length);
+      if(core.printFn==null)throw new Error('No *print-fn* fn set for evaluation environment');
+      invoke(core.printFn,a[0]);return null;
+    },
+    enableConsolePrint:(...a)=>{if(a.length)return arity(a.length);core.printNewline=false;
+      core.printFn=(...xs)=>globalThis.console.log(...xs);core.printErrFn=(...xs)=>globalThis.console.error(...xs);return null;},
+    newline:(...a)=>{if(a.length>1)return arity(a.length);core.stringPrint('\n');return truth(printOption(a[0],'flush-on-newline','flushOnNewline'))?core.flush():null;},
+    flush:(...a)=>a.length?arity(a.length):null,
+    printCore:(...xs)=>{const saved=core.printReadably;core.printReadably=false;try{return core.stringPrint(prStr(...xs));}finally{core.printReadably=saved;}},
+    pr:(...xs)=>core.stringPrint(prStr(...xs)),
+    println:(...xs)=>{core.printCore(...xs);return truth(core.printNewline)?core.newline():null;},
+    prn:(...xs)=>{core.pr(...xs);return truth(core.printNewline)?core.newline():null;},
     prStr, printStr, prnStr:(...xs)=>prStr(...xs)+'\n', printlnStr:(...xs)=>printStr(...xs)+'\n',
     prStrWithOpts:(...a)=>a.length===2?printValues(a[0],a[1]):arity(a.length),
     prnStrWithOpts:(...a)=>a.length===2?printValues(a[0],a[1])+'\n':arity(a.length),
@@ -2216,6 +2232,10 @@ const native = (() => {
     nsName:(...a)=>a.length!==1?arity(a.length):__rt.formKind(val(a[0]))==='symbol'?__rt.formName(val(a[0])):val(a[0]).name,
     sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
     array:(...a)=>a,
+    alength:a=>val(a).length,
+    primSeq:(...a)=>a.length===1||a.length===2?arraySeq(val(a[0]),a.length===1?0:val(a[1])):arity(a.length),
+    arraySeq:(a,i=0)=>val(a)==null?null:arraySeq(val(a),val(i)),
+    IndexedSeq:function(a,i,m){return copyArraySeq(val(a),val(i),m);},
     list:(...a)=>list(a), vector:(...a)=>vector(a), hashMap:(...a)=>map(a), hashSet:(...a)=>set(a), set:x=>set(arr(x)), vec:x=>vector(arr(x)),
     arrayMap:(...a)=>{ if (a.length % 2) throw new Error('No value supplied for key'); return arrayMap(a); },
     sortedMap:(...a)=>__rt.formSortedMap(vector(a)),
@@ -2276,6 +2296,21 @@ const native = (() => {
     },
     disj:(s,...xs)=>each((s,x)=>__rt.cljDisj(s,x),s,xs),
     contains:(c,k)=>__rt.cljContains(c,k),
+    empty:x=>{
+      const kind=__rt.formKind(val(x)),builtin=['vector','list','cons','lazy-seq','map','set','record'].includes(kind)||arraySeqs.has(x);
+      const method=decl.coreMethod('IEmptyableCollection/-empty',1,x,builtin);
+      if(method!==null)return method(x);
+      let result=null;
+      if(kind==='vector')result=__rt.formVector();
+      else if(kind==='map'||kind==='set'){result=x;for(const entry of arr(x))result=kind==='map'?__rt.cljDissoc(result,__rt.cljNth(entry,0)):__rt.cljDisj(result,entry);}
+      else if(['list','cons','lazy-seq'].includes(kind)||arraySeqs.has(x))result=__rt.formList();
+      return result===null?null:__rt.cljWithMeta(result,__rt.cljMeta(x));
+    },
+    find:(x,k)=>{const method=decl.coreMethod('IFind/-find',2,x,['map','record','vector'].includes(__rt.formKind(val(x))));
+      if(method!==null)return method(x,k);
+      if(!(['map','record','vector'].includes(__rt.formKind(val(x)))||decl.satisfies('IAssociative',x))||!__rt.cljContains(x,k))return null;
+      if(__rt.formKind(val(x))==='map')for(const entry of arr(x))if(__rt.formEquals(__rt.cljNth(entry,0),k))return entry;
+      return __rt.formVector(k,get(x,k));},
     keys:m=>{if(__rt.formKind(val(m))==='record'){const s=__rt.cljSeq(m);return s===null?null:__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,0))));}
       const k=__rt.formValue(m)==null?null:__rt.formKeys(__rt.formValue(m));return k===null||__rt.formCount(k)===0?null:__rt.formSequence(k);},
     vals:m=>{const s=__rt.cljSeq(m);return s===null?null:__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,1))));},
@@ -2324,12 +2359,17 @@ const native = (() => {
     add:(...xs)=>xs.reduce((a,b)=>a+val(b),0), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
     divide:(...xs)=>xs.length===0?NaN:xs.length===1?1/val(xs[0]):xs.slice(1).reduce((a,b)=>a/val(b),val(xs[0])),
     int:x=>val(x)|0, long:x=>fix(val(x)), byte:x=>x, short:x=>x, float:x=>x, double:x=>x,
+    uncheckedInt:x=>fix(val(x)),
     quot:(n,d)=>quot(val(n),val(d)), rem:(n,d)=>{n=val(n);d=val(d);return n-d*quot(n,d);},
     mod:(n,d)=>{n=val(n);d=val(d);return ((n%d)+d)%d;},
     numericEqual:(...xs)=>xs.length!==0&&core.equal(...xs),
     isArray:x=>{x=val(x);return __rt.formKind(x)==='compiler-literal'?__rt.formName(x)==='js-array':Array.isArray(x);},
     isObject:x=>{x=val(x);const kind=__rt.formKind(x);return kind==='compiler-literal'?literalIsObject(x):kind===null&&!__rt.cljIsAtom(x)&&x!=null&&x.constructor===Object;},
     isNumber:x=>typeof val(x)==='number', isFloat:x=>typeof val(x)==='number', isDouble:x=>typeof val(x)==='number',
+    isBoolean:x=>typeof val(x)==='boolean',
+    isInteger:x=>typeof val(x)==='number'&&!Number.isNaN(val(x))&&val(x)!==Infinity&&parseFloat(val(x))===parseInt(val(x),10),
+    isInt:x=>core.isInteger(x),
+    keywordIdentical:(x,y)=>val(x)===val(y)||__rt.formKind(val(x))==='keyword'&&__rt.formKind(val(y))==='keyword'&&__rt.formEquals(x,y),
     isInfinite:x=>val(x)===Infinity||val(x)===-Infinity,
     exInfo:(m,d)=>new Error(val(m)),
     atom, deref, reset, compareAndSet,

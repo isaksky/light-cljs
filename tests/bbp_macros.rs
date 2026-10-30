@@ -6116,6 +6116,36 @@ fn assert_native_matches_legacy(source: &str, expected: &str) {
 }
 
 #[test]
+fn native_compile_time_print_output_bindings_restore_after_errors() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [out (with-out-str (print "a" :b) (println [1]) (prn "x"))
+                   before *print-fn*]
+               (try (binding [*print-fn* (fn [_] (throw (js/Error. "sink")))] (print 1))
+                 (catch :default _ nil))
+               (list 'quote [out (identical? before *print-fn*) (nil? (flush))])))
+           (js/console.log (pr-str (probe)))"#,
+        "[\"a :b[1]\\n\\\"x\\\"\\n\" true true]\n",
+    );
+}
+
+#[test]
+fn native_compile_time_empty_primitive_sequences_and_scalar_predicates() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [a (array 1 2 3) s (prim-seq a 1)]
+               (aset a 2 9)
+               (list 'quote [(vec s) (alength a) (meta (empty (with-meta [1] {:m 1})))
+                 (empty '(1)) (empty {:a 1}) (empty #{1}) (empty nil)
+                 (find {:a 2} :a) (find [3] 0) (find [3] 2)
+                 (boolean? false) (integer? 2) (integer? 2.5) (int? 9007199254740992)
+                 (unchecked-int 4294967297) (keyword-identical? :a :a)])))
+           (js/console.log (pr-str (probe)))"#,
+        "[[2 9] 3 {:m 1} () {} #{} nil [:a 2] [0 3] nil true true false true 4294967297 true]\n",
+    );
+}
+
+#[test]
 fn native_mutable_deftype_closure_in_atom_matches_quickjs() {
     let source = r#"(defprotocol Cache (cached [x]) (put-cache [x v]))
            (deftype Box [v ^:unsynchronized-mutable saved]
