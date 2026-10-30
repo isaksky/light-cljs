@@ -4486,6 +4486,71 @@ fn stale_lazy_wakeups_do_not_resume_a_task_parked_on_a_new_dependency() {
     );
 }
 
+#[test]
+fn a_settled_cell_does_not_resume_a_consumer_before_its_wake() {
+    assert_settled_cell_waits_for_wake(false);
+}
+
+#[test]
+fn a_settled_cell_does_not_resume_a_pooled_consumer_before_its_wake() {
+    assert_settled_cell_waits_for_wake(true);
+}
+
+fn assert_settled_cell_waits_for_wake(pooled: bool) {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let cx = evaluator.cx().unwrap();
+    // Model the publication-before-wake window, forced by the engine's
+    // CompleteAfterDrain test: a cell is terminal while its task is still
+    // waiting. Use a separate completed cell so engine test hooks need not
+    // be exposed to embedders; leave this task at its command boundary.
+    let key = DependencyKey::new(shared.0.runtime.world(), DependencyId::new(7), HELPER);
+    let producer = shared.0.runtime.claim(key).unwrap();
+    let value = shared.0.runtime.root(Primitive::Null);
+    let wakeups = shared
+        .0
+        .runtime
+        .complete(key, producer.producer(), Completion::Ready(&value))
+        .unwrap();
+    assert!(wakeups.deliveries().is_empty());
+    let _requests = cx.task.take_producer_requests();
+    assert_eq!(cx.task.status(), big_boy_pants_js::TaskStatus::Waiting);
+    let waited = Rc::new(Cell::new(false));
+    let observed = waited.clone();
+    let task = cx.task.clone();
+    let runtime = shared.clone();
+    evaluator.install_wait_service(Rc::new(move || {
+        assert!(!observed.replace(true), "the wake is delivered once");
+        if pooled {
+            assert!(runtime.0.parked.lock().unwrap().contains_key(&task.id()));
+        }
+        // Cancellation supplies the delayed wake without executing a
+        // command or manufacturing a compiler dependency result.
+        let _cancel = task.cancel();
+        runtime.wake_tasks([task.clone()]);
+        Ok(false)
+    }));
+    let result = if pooled {
+        evaluator.park_until_woken(
+            &cx,
+            key,
+            Arc::new(|step, reply| reply.send(step.run()).unwrap()),
+            None,
+        )
+    } else {
+        evaluator.demand(&cx, key)
+    };
+    assert!(waited.get(), "pooled {pooled}: resumed before the wake");
+    if pooled {
+        assert!(matches!(result.unwrap(), Some(RunOutcome::Cancelled)));
+        assert_eq!(shared.helper_counts().woken, 1);
+    } else {
+        assert!(result.unwrap().is_none());
+        assert!(matches!(cx.task.run().unwrap(), RunOutcome::Cancelled));
+    }
+    assert!(shared.0.parked.lock().unwrap().is_empty());
+}
+
 /// A global regex stays a host RegExp (light-cljs-563); exporting it counts
 /// its payload as one more node, one level down, like a `regex` form.
 #[test]

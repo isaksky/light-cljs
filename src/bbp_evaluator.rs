@@ -2173,10 +2173,9 @@ impl BbpEvaluator {
             return self.park_until_woken(cx, key, submit, lane_wait.as_ref());
         }
         let mut generation = shared.generation.lock().unwrap();
-        while matches!(
-            self.runtime.cell_status(key),
-            big_boy_pants_js::CellStatus::Pending { .. }
-        ) {
+        // A completion publishes its cell before delivering the task's wake.
+        // Only that wake makes this saved continuation runnable.
+        while cx.task.status() == big_boy_pants_js::TaskStatus::Waiting {
             self.control.poll()?;
             if cx.task.cancel_requested() {
                 return Err(error("macro task cancelled"));
@@ -2191,11 +2190,8 @@ impl BbpEvaluator {
                 if helped {
                     continue;
                 }
-                // Publication could have arrived while this thread helped.
-                if !matches!(
-                    self.runtime.cell_status(key),
-                    big_boy_pants_js::CellStatus::Pending { .. }
-                ) {
+                // The wake could have arrived while this thread helped.
+                if cx.task.status() != big_boy_pants_js::TaskStatus::Waiting {
                     break;
                 }
             }
@@ -2209,8 +2205,8 @@ impl BbpEvaluator {
     }
     /// Park this task until a completion of `key` wakes it, then return the
     /// outcome of the step that woke it, which `submit` queued on the pool
-    /// for any worker, this one included while it helps. If `key` completed
-    /// before the task was parked, nothing was queued and this returns
+    /// for any worker, this one included while it helps. If `key`'s wake
+    /// arrived before pool registration, nothing was queued and this returns
     /// `None`: the caller runs the step.
     /// While a task waits for `key`: refresh the position what produces it
     /// inherits, and for a lane cell, have a starved earliest unit analyzed
@@ -2260,14 +2256,15 @@ impl BbpEvaluator {
             },
         );
         let _unpark = Unpark(shared, id);
-        let pending = |key| {
-            matches!(
-                self.runtime.cell_status(key),
-                big_boy_pants_js::CellStatus::Pending { .. }
-            )
+        // A wake delivered before pool registration found nothing to queue.
+        // Cell settlement alone is insufficient: it precedes wake delivery.
+        // Check readiness under the registration lock, just like wake_tasks,
+        // so either the owner reclaims this step or the wake queues it.
+        let reclaimed = {
+            let mut parked = shared.parked.lock().unwrap();
+            cx.task.status() == big_boy_pants_js::TaskStatus::Ready && parked.remove(&id).is_some()
         };
-        // A completion before the task was parked found nothing to queue.
-        if !pending(key) && shared.parked.lock().unwrap().remove(&id).is_some() {
+        if reclaimed {
             handoff.finish();
             return Ok(None);
         }

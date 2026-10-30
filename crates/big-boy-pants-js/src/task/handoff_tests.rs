@@ -200,6 +200,39 @@ fn completion_between_park_read_and_park_cas_is_not_lost() {
     );
 }
 
+/// A cell's terminal outcome becomes observable before wake delivery. An
+/// embedder must wait for task readiness before resuming a saved continuation.
+#[test]
+fn a_settled_cell_precedes_its_consumers_wake() {
+    let rt = Runtime::new();
+    let task = consumer(&rt);
+    let mut guard = task.try_begin_run().unwrap();
+    let Need::Waiting {
+        produce: Some(req), ..
+    } = guard.need(DEF, KIND).unwrap()
+    else {
+        panic!("the first need claims");
+    };
+    assert!(matches!(guard.park(), RunOutcome::Waiting(_)));
+    let (observed, consumer) = (rt.clone(), task.clone());
+    hooks(&task).once(HookPoint::CompleteAfterDrain, move || {
+        assert!(matches!(
+            observed.cell_status(key(&observed)),
+            CellStatus::Ready(_)
+        ));
+        assert_eq!(consumer.status(), TaskStatus::Waiting);
+        assert_eq!(consumer.try_begin_run().err(), Some(RunError::Waiting));
+    });
+    let runnable = complete(&rt, &req, 5.0).into_runnable();
+    assert_eq!(runnable.len(), 1);
+    assert_eq!(runnable[0].id(), task.id());
+    assert_eq!(task.status(), TaskStatus::Ready);
+    assert_eq!(
+        number(task.try_begin_run().unwrap().need(DEF, KIND).unwrap()),
+        5.0
+    );
+}
+
 /// Window 4: completion after the park. The parked task cannot be run; the
 /// completion's wake makes it runnable and returns it to enqueue, once.
 #[test]
