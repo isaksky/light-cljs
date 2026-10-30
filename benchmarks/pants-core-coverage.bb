@@ -588,7 +588,14 @@
             "core macro's bootstrap definition (src/compiler_core_macros.cljs); `unsupported`: the Pants "
             "build fails or answers differently (reason given); `unverified`: both throw, with different "
             "messages, so the probe does not tell; `n/a`: the reference fails too, or the macro is a "
-            "namespace form or compiler-internal and cannot run inside a macro body.")
+            "namespace form or compiler-internal and cannot run inside a macro body. Most `n/a` items are "
+            "internal vars light-cljs offers at compile time on no build.")
+       ""
+       (str "The Pants build is to run the real compiled cljs.core instead of extending the hand port in "
+            "src/bbp_runtime.js (user decision, 2026-10-30). This table is the conformance check and progress "
+            "measure for that change; its gaps are not meant to be ported one at a time. The script builds "
+            "both CLIs with `cargo build` (it replaces target/debug/light-cljs, so do not run it beside another "
+            "build of the same worktree) and takes about three minutes after that.")
        ""
        "Check that nothing regressed (exits 1 if an item or matrix cell recorded below as supported is not;"
        "it builds both CLIs into target/core-coverage first, `--no-build` reuses them):"
