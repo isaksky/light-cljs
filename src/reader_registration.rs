@@ -24,8 +24,9 @@
 //!
 //! Native form engines use no JavaScript reader tables. They skip registration
 //! before planning or emitting source, so these unused tables cannot grow past
-//! the engine's dynamic compilation limit in large projects. They get only
-//! the namespace names, as data (`MacroEvaluator::register_namespaces`).
+//! the engine's dynamic compilation limit in large projects. They record only
+//! the namespace names, where a registration would create them
+//! (`MacroEvaluator::register_namespaces`).
 
 use crate::analyzer::{GlobalBinding, GlobalId, Program, RuntimeReaderNamespace};
 use crate::arena::Arena;

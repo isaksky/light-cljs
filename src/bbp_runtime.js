@@ -1308,32 +1308,41 @@ const native = (() => {
   function Namespace(obj,name){if(!(this instanceof Namespace))return new Namespace(obj,name);this.obj=obj;this.name=name;}
   Namespace.prototype.toString=function(){const value=val(this.name),kind=__rt.formKind(value);return kind==='symbol'||kind==='keyword'?namedText(value):String(value);};
   Namespace.prototype.getName=function(){return this.name;};
-  // The compiler's namespace inventory, vectors of names in program order
-  // (`BbpEvaluator::send_namespaces`), enters the registry before anything
-  // reads or changes it, so it costs a task nothing until then.
-  const inventory=[];
-  const registry=()=>{
-    while(inventory.length){
-      const names=inventory.shift();
-      for(let i=0,n=__rt.count(names);i<n;i++){
-        const key=__rt.nth(names,i);
-        if(!namespaces.has(key))namespaces.set(key,new Namespace(null,__rt.formSymbol(null,key)));
-      }
+  // The registry is the compilation's (host effect 65529, `src/bbp_evaluator/
+  // namespaces.rs`, light-cljs-589): a creation, including each macro call's
+  // namespace, is recorded at the task's place in the effect lanes without
+  // waiting; a reader waits for its lane, then sees what the activities
+  // before it created, and its own, in one-slot order. `namespaces` keeps
+  // this task's Namespace object of each name, so one name is one object.
+  const localNs=(key,name)=>{
+    let ns=namespaces.get(key);
+    if(ns===undefined){ns=new Namespace(null,name??__rt.formSymbol(null,key));namespaces.set(key,ns);}
+    return ns;
+  };
+  const registryLane=()=>{const cell=__rt.effect(65532,0);if(cell!==0)__rt.need(cell,5);};
+  const registryNames=()=>{
+    registryLane();
+    const text=__rt.effect(65529,'v'),names=[];
+    for(let at=0;at<text.length;){
+      const colon=text.indexOf(':',at),end=colon+1+Number(text.slice(at,colon));
+      names.push(text.slice(colon+1,end));at=end;
     }
-    return namespaces;
+    return names;
   };
   const createNs = (...a) => {
     if(a.length!==1&&a.length!==2)return arity(a.length);
     const name=a[0];if(__rt.formKind(val(name))!=='symbol')throw new TypeError('create-ns requires a symbol');
-    const key=namedText(name),obj=a.length===2?val(a[1]):null,registered=registry();
-    if(!registered.has(key))registered.set(key,new Namespace(obj,name));else if(obj!=null)registered.get(key).obj=obj;
-    return registered.get(key);
+    const key=namedText(name),obj=a.length===2?val(a[1]):null;
+    __rt.effect(65529,'r'+key);
+    const ns=localNs(key,name);if(obj!=null)ns.obj=obj;
+    return ns;
   };
   const findNs = (...a) => {
     if(a.length!==1)return arity(a.length);
     const name=val(a[0]);if(name==null)return null;if(name instanceof Namespace)return name;
     if(__rt.formKind(name)!=='symbol')throw new TypeError('find-ns requires a symbol or Namespace');
-    return registry().get(namedText(name))??null;
+    const key=namedText(name);registryLane();
+    return __rt.effect(65529,'f'+key)?localNs(key):null;
   };
   const macroReaderFunction = fn => Object.assign(function(...args){
     const env=get(args[1],__rt.cljKeyword('ns')),name=get(env,__rt.cljKeyword('name'));
@@ -2141,8 +2150,7 @@ const native = (() => {
       return value;
     },
     createNs, findNs, Namespace,
-    allNs:(...a)=>a.length?arity(a.length):list([...registry().values()]),
-    registerNamespaces:names=>{inventory.push(names);return null;},
+    allNs:(...a)=>a.length?arity(a.length):list(registryNames().map(key=>localNs(key))),
     theNs:name=>{const ns=findNs(name);if(ns===null)throw new Error('No namespace: '+core.str(name));return ns;},
     nsName:(...a)=>a.length!==1?arity(a.length):__rt.formKind(val(a[0]))==='symbol'?__rt.formName(val(a[0])):val(a[0]).name,
     sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
@@ -2414,9 +2422,10 @@ const native = (() => {
       let m=ordered(__rt.formMap());for(let i=0;i<ks.length;i++)m=__rt.cljAssoc(m,ks[i],vs[i]);return m;
     }}, EmptyList:{},
   };
-  currentNamespace=createNs(__rt.cljSymbol('cljs.user'));
-  // As the legacy runtimes: `cljs.core` follows `cljs.user`.
-  createNs(__rt.cljSymbol('cljs.core'));
+  // As the legacy runtimes: `cljs.core` follows `cljs.user`, both before
+  // anything (the registry starts with them).
+  currentNamespace=localNs('cljs.user',__rt.cljSymbol('cljs.user'));
+  localNs('cljs.core',__rt.cljSymbol('cljs.core'));
   Object.defineProperty(core,'currentNs',{
     get:()=>{
       const frame=namespaceFrames[namespaceFrames.length-1];
@@ -2487,7 +2496,7 @@ const native = (() => {
       namespaceContext:()=>{
         if(!(currentNamespace instanceof Namespace))return __rt.formVector(0,currentNamespace);
         const name=currentNamespace.name,kind=__rt.formKind(val(name));
-        const interned=kind==='symbol'&&registry().get(namedText(name))===currentNamespace;
+        const interned=kind==='symbol'&&namespaces.get(namedText(name))===currentNamespace;
         const context=__rt.formVector(interned?1:2,name);
         if(!interned)explicitNamespaces.set(context,currentNamespace);
         return context;
@@ -2931,8 +2940,6 @@ for(let serial=1;;serial++){
       }
     }
     else if(op===3){if(held&&heldId===id){held=false;heldValue=null;}else values.delete(id);}
-    // The program's namespaces, in its order (`BbpEvaluator::send_namespaces`).
-    else if(op===5)native.core.registerNamespaces(input);
     else {
       if(held){values.set(heldId,heldValue);held=false;heldValue=null;}
       if(op===0) result=(0,eval)(input);

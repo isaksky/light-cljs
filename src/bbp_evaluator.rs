@@ -30,6 +30,7 @@ use std::{
 };
 
 mod catalog;
+mod namespaces;
 
 fn error(e: impl std::fmt::Display) -> EvalError {
     EvalError(format!("big-boy-pants-js: {e}"))
@@ -946,6 +947,9 @@ struct SharedRuntime {
     /// The compilation's effect lanes, which order shared atom accesses
     /// (light-cljs-480); none outside a compilation's catalog.
     lanes: std::sync::OnceLock<Arc<crate::effect_lanes::Lanes>>,
+    /// The namespaces its tasks created and the compiler registered, which
+    /// `all-ns` and `find-ns` read (light-cljs-589).
+    namespaces: Arc<Mutex<namespaces::NamespaceLog>>,
     #[cfg(test)]
     on_wait: Mutex<Option<WaitHook>>,
     #[cfg(test)]
@@ -1055,6 +1059,11 @@ const GENSYM_PREFIX: ResultKind = ResultKind::new(6);
 /// Immutable namespace snapshots: a name symbol or an explicitly bound value.
 const NAMESPACE: ResultKind = ResultKind::new(7);
 const NAMESPACE_EFFECT: u16 = 65530;
+/// The compilation's namespace registry ([`namespaces`]): `r` and a name
+/// records its creation by the task's activity, `f` and a name asks whether
+/// the task sees it, `v` gives the names it sees, each as its length, `:`
+/// and its text. A reader asks its lane first.
+const NAMESPACES_EFFECT: u16 = 65529;
 
 /// The runtime-wide collection and admission policy for `options`.
 ///
@@ -1258,6 +1267,7 @@ impl BbpRuntime {
             idle: Mutex::new(Vec::new()),
             parked: Mutex::new(HashMap::new()),
             lanes: std::sync::OnceLock::new(),
+            namespaces: Arc::default(),
             #[cfg(test)]
             on_wait: Mutex::new(None),
             #[cfg(test)]
@@ -1537,9 +1547,12 @@ pub(crate) struct TaskContext {
     /// The catalog frontier this task populated from shared immutable data
     /// ([`MacroEvaluator::catalog_cursor`]).
     catalog: Cell<Option<usize>>,
-    /// The namespace table whose names its runtime has, the last one
-    /// given ([`BbpEvaluator::send_namespaces`]).
-    namespaces: RefCell<crate::arena::Arena<String>>,
+    /// The last namespace table it registered and where: a table that
+    /// extends it at the same anchor, no earlier, records only its tail.
+    namespaces: RefCell<(
+        crate::effect_lanes::NamespaceTag,
+        crate::arena::Arena<String>,
+    )>,
     /// Whether a worker view prepared it (its settings and service stubs
     /// evaluated), which a view that borrows it then does not repeat.
     prepared: Cell<bool>,
@@ -1656,7 +1669,7 @@ impl BbpEvaluator {
             native_runtime: Cell::new(None),
             gensym_scope: Cell::new(0),
             catalog: Cell::new(None),
-            namespaces: RefCell::new(crate::arena::Arena::new()),
+            namespaces: RefCell::default(),
             prepared: Cell::new(false),
             lent: RefCell::new(LentState::default()),
             logged: Cell::new(0),
@@ -1818,7 +1831,8 @@ impl BbpEvaluator {
                         &self.shared.0.counters,
                         None,
                         &crate::generated_names::NativeGensyms::capture(),
-                        &self.bridge
+                        &self.bridge,
+                        &self.shared.0.namespaces,
                     )
                 ),
                 Ok(RunOutcome::Yielded)
@@ -1836,6 +1850,7 @@ impl BbpEvaluator {
             admitted: Arc::new(Mutex::new(true)),
             gensyms: crate::generated_names::NativeGensyms::capture(),
             bridge: self.bridge.clone(),
+            namespaces: self.shared.0.namespaces.clone(),
         }
     }
     fn run_inner(&self, cx: &TaskContext) -> Result<(), EvalError> {
@@ -2269,9 +2284,6 @@ impl BbpEvaluator {
             active.use_catalog(snapshot, 0, cx.catalog.get().unwrap_or(0), true)?;
         }
         producer_cx.catalog.set(cx.catalog.get());
-        // The namespaces its parent has, which its helper's code sees.
-        let namespaces = cx.namespaces.borrow().clone();
-        active.send_namespaces(&namespaces)?;
         if let Some(started) = started {
             let c = &self.shared.0.counters;
             c.producers.fetch_add(1, Ordering::Relaxed);
@@ -2615,8 +2627,7 @@ impl BbpEvaluator {
             1 => "adopt",
             2 => "call",
             3 => "release",
-            4 => "useCatalog",
-            _ => "registerNamespaces",
+            _ => "useCatalog",
         };
         crate::compile_trace::engine_exit(traced, service);
         result
@@ -2725,6 +2736,7 @@ pub(crate) struct NativeStep {
     admitted: Arc<Mutex<bool>>,
     gensyms: crate::generated_names::NativeGensyms,
     bridge: Arc<Mutex<Bridge>>,
+    namespaces: Arc<Mutex<namespaces::NamespaceLog>>,
 }
 impl NativeStep {
     pub(crate) fn handoff(&self) -> NativeHandoff {
@@ -2760,6 +2772,7 @@ impl NativeStep {
                     self.lanes.as_deref(),
                     &self.gensyms,
                     &self.bridge,
+                    &self.namespaces,
                 ),
             )
             .map_err(|e| e.to_string())
@@ -2791,6 +2804,7 @@ struct NativeHost<'a>(
     Option<&'a crate::effect_lanes::Lanes>,
     &'a crate::generated_names::NativeGensyms,
     &'a Mutex<Bridge>,
+    &'a Mutex<namespaces::NamespaceLog>,
 );
 impl big_boy_pants_js::Host for NativeHost<'_> {
     fn current_time_millis(&mut self) -> Result<f64, String> {
@@ -2888,6 +2902,47 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                     self.4.lock().unwrap().generated_names.insert(request),
                 )),
                 _ => Err("unknown native gensym request".into()),
+            };
+        }
+        if call.op == NAMESPACES_EFFECT {
+            let Primitive::String(request) = call.arg else {
+                return Err("invalid namespace registry request".into());
+            };
+            let units = request.code_units();
+            let Some((&op, name)) = units.split_first() else {
+                return Err("empty namespace registry request".into());
+            };
+            let name = String::from_utf16_lossy(name);
+            let task = crate::effect_lanes::identity(call.task);
+            let log = &self.5;
+            return match op as u8 {
+                b'r' => {
+                    let tag = self.2.map(|lanes| lanes.namespace_tag(task));
+                    log.lock().unwrap().record(&name, tag.unwrap_or_default());
+                    Ok(Primitive::Null)
+                }
+                b'f' | b'v' => {
+                    let view = self
+                        .2
+                        .map_or(crate::effect_lanes::NamespaceView::ALL, |lanes| {
+                            lanes.namespace_view(task)
+                        });
+                    let log = log.lock().unwrap();
+                    if op as u8 == b'f' {
+                        return Ok(Primitive::Bool(log.has(&name, &view)));
+                    }
+                    let mut text = String::new();
+                    for name in log.names(&view) {
+                        text.push_str(&name.encode_utf16().count().to_string());
+                        text.push(':');
+                        text.push_str(name);
+                    }
+                    let units: Vec<u16> = text.encode_utf16().collect();
+                    big_boy_pants_js::JsString::from_code_units(units)
+                        .map(Primitive::String)
+                        .ok_or_else(|| "namespace registry too large".into())
+                }
+                _ => Err("unknown namespace registry request".into()),
             };
         }
         if call.op == LANE_EFFECT {
@@ -3021,7 +3076,7 @@ impl MacroEvaluator for BbpEvaluator {
         &self,
         namespaces: &crate::arena::Arena<String>,
     ) -> Result<(), EvalError> {
-        self.send_namespaces(namespaces)
+        self.record_namespaces(namespaces)
     }
     fn catalog_cursor(&self) -> Option<usize> {
         self.context.borrow().as_ref()?.catalog.get()

@@ -66,11 +66,82 @@ pub(crate) fn identity(value: impl Hash) -> u64 {
 const STARVED: Duration = Duration::from_millis(30);
 
 /// A task's current activity, which its host effects read on any thread.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Top {
     token: u64,
     root_token: u64,
     position: Option<Position>,
+    /// The activity whose namespace records it makes ([`NamespaceTag`]).
+    anchor: u64,
+    /// What its activity chain owns, which waiters lend their positions.
+    targets: Vec<Target>,
+}
+
+/// Where an activity's namespace creation goes in the compilation's
+/// namespace registry (light-cljs-589): its position, 0 outside any, and
+/// its *anchor*, the activity that owns it: a pass, or the unit (or
+/// initializer, helper) a pool job, rescue or dispatch started.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NamespaceTag {
+    pub position: Position,
+    pub anchor: u64,
+}
+
+/// What a reader of the namespace registry sees, once its lane is open:
+/// what activities before its effective position (`effective`, lowered by
+/// an earlier activity waiting for it) created, and what its own anchor
+/// created up to its own position, as with one slot, where it runs inside
+/// that earlier activity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NamespaceView {
+    pub effective: Position,
+    pub own: Position,
+    pub anchor: u64,
+}
+
+impl NamespaceView {
+    /// Everything recorded: outside any activity, or without lanes.
+    pub(crate) const ALL: Self = Self {
+        effective: Position::MAX,
+        own: Position::MAX,
+        anchor: 0,
+    };
+    /// Whether this reader sees a creation recorded at `tag`.
+    pub(crate) fn sees(&self, tag: NamespaceTag) -> bool {
+        tag.position <= self.effective || (tag.anchor == self.anchor && tag.position <= self.own)
+    }
+}
+
+/// This thread's innermost activity of `lanes`, if any.
+fn current(lanes: usize) -> Option<Top> {
+    STACK.with(|stack| {
+        let stack = stack.borrow();
+        let mut entries = stack.iter().rev().filter(|e| e.lanes == lanes).peekable();
+        let top = *entries.peek()?;
+        let mut targets = Vec::new();
+        let mut anchor = top.token;
+        let mut root = top;
+        for entry in entries {
+            root = entry;
+            targets.extend(entry.target);
+            targets.push(Target::Activity(entry.token));
+            if entry.root {
+                // A pass is its own anchor; a pool job's is what it runs.
+                if entry.position.is_some() || std::ptr::eq(entry, top) {
+                    anchor = entry.token;
+                }
+                break;
+            }
+            anchor = entry.token;
+        }
+        Some(Top {
+            token: top.token,
+            root_token: root.token,
+            position: top.position,
+            anchor,
+            targets,
+        })
+    })
 }
 
 /// A caller's activity before entering the initializer it demands. Retain
@@ -473,26 +544,7 @@ impl Lanes {
         if !self.enabled() {
             return;
         }
-        let key = self.key();
-        let top = STACK.with(|stack| {
-            let stack = stack.borrow();
-            let mut entries = stack.iter().rev().filter(|e| e.lanes == key);
-            let top = entries.next()?;
-            let mut root = top;
-            if !root.root {
-                for entry in entries {
-                    root = entry;
-                    if root.root {
-                        break;
-                    }
-                }
-            }
-            Some(Top {
-                token: top.token,
-                root_token: root.token,
-                position: top.position,
-            })
-        });
+        let top = current(self.key());
         let mut s = self.lock();
         match top {
             Some(top) => {
@@ -501,6 +553,49 @@ impl Lanes {
             None => {
                 s.tops.remove(&task);
             }
+        }
+    }
+    /// Where namespace creation by this thread's current activity goes.
+    pub(crate) fn namespace_tag_here(&self) -> NamespaceTag {
+        if !self.enabled() {
+            return NamespaceTag::default();
+        }
+        current(self.key()).map_or_else(NamespaceTag::default, |top| NamespaceTag {
+            position: top.position.unwrap_or(0),
+            anchor: top.anchor,
+        })
+    }
+    /// Where namespace creation by `task`'s current activity goes.
+    pub(crate) fn namespace_tag(&self, task: u64) -> NamespaceTag {
+        if !self.enabled() {
+            return NamespaceTag::default();
+        }
+        self.lock()
+            .tops
+            .get(&task)
+            .map_or_else(NamespaceTag::default, |top| NamespaceTag {
+                position: top.position.unwrap_or(0),
+                anchor: top.anchor,
+            })
+    }
+    /// What `task`'s current activity sees of the namespace registry, once
+    /// its lane is open ([`Self::check`]): at the position its lane opened
+    /// at, which an earlier activity waiting for it may have lowered.
+    pub(crate) fn namespace_view(&self, task: u64) -> NamespaceView {
+        if !self.enabled() {
+            return NamespaceView::ALL;
+        }
+        let s = self.lock();
+        let Some(top) = s.tops.get(&task) else {
+            return NamespaceView::ALL;
+        };
+        let Some(own) = top.position else {
+            return NamespaceView::ALL;
+        };
+        NamespaceView {
+            effective: min(Some(own), s.inherited(&top.targets)).unwrap_or(own),
+            own,
+            anchor: top.anchor,
         }
     }
     /// The caller's source position, before an initializer inherits a waiter.
@@ -549,16 +644,16 @@ impl Lanes {
             return 0;
         }
         let mut s = self.lock();
-        let Some(top) = s.tops.get(&task).copied() else {
+        let Some((token, position)) = s.tops.get(&task).map(|top| (top.token, top.position)) else {
             return 0;
         };
-        if owner != 0 && owner == top.token {
+        if owner != 0 && owner == token {
             return 0;
         }
-        if s.entered.insert(top.token) {
+        if s.entered.insert(token) {
             self.entered.fetch_add(1, Ordering::Relaxed);
         }
-        if s.open(top.position) {
+        if s.open(position) {
             return 0;
         }
         s.next_cell += 1;
@@ -566,7 +661,7 @@ impl Lanes {
         s.parked.insert(
             cell,
             Parked {
-                position: top.position,
+                position,
                 targets: Vec::new(),
                 since: Instant::now(),
                 complete: None,

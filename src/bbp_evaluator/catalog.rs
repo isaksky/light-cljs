@@ -257,37 +257,38 @@ impl BbpEvaluator {
         }
     }
 
-    /// Give this task the namespaces of `namespaces` it does not have, in
-    /// program order, as data: each becomes a Namespace of its runtime
-    /// (`createNs`), which `all-ns`, `find-ns` and `the-ns` see. A table that
-    /// is not an extension of the last one given sends every name again;
-    /// creating a namespace twice keeps the first.
-    pub(super) fn send_namespaces(
+    /// Record that this task's current activity registered the namespaces
+    /// of `namespaces`, a program's in its order, as a legacy engine's reader
+    /// registration creates them ([`super::namespaces`]). A table that
+    /// extends the last one this task registered, at the same anchor and no
+    /// earlier position, records only its new names.
+    pub(super) fn record_namespaces(
         &self,
         namespaces: &crate::arena::Arena<String>,
     ) -> Result<(), EvalError> {
         let cx = self.cx()?;
+        let tag = self
+            .shared
+            .lanes()
+            .map(|lanes| lanes.namespace_tag_here())
+            .unwrap_or_default();
         let from = {
-            let registered = cx.namespaces.borrow();
+            let (last, registered) = &*cx.namespaces.borrow();
             let shared = registered.len().min(namespaces.len());
-            if namespaces.changed_entries(&registered, shared).is_empty() {
-                registered.len()
+            let extends = namespaces.changed_entries(registered, shared).is_empty();
+            if extends && last.anchor == tag.anchor && last.position <= tag.position {
+                shared
             } else {
                 0
             }
         };
-        if from >= namespaces.len() {
-            return Ok(());
+        if from < namespaces.len() {
+            let mut log = self.shared.0.namespaces.lock().unwrap();
+            for name in namespaces.tail_from(from) {
+                log.record(name, tag);
+            }
         }
-        let payload = self.host_scope(|s| {
-            let names = namespaces
-                .tail_from(from)
-                .map(|name| text(s, name))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok::<_, EvalError>(s.persist(s.new_vector(&names).map_err(error)?))
-        })?;
-        self.request(5, self.id()?, payload)?;
-        *cx.namespaces.borrow_mut() = namespaces.clone();
+        *cx.namespaces.borrow_mut() = (tag, namespaces.clone());
         Ok(())
     }
 }
