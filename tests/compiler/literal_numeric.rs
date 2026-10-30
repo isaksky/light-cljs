@@ -209,7 +209,7 @@ fn literal_numeric_sources_execute_in_fresh_and_reused_macro_hosts() {
     output.flush().unwrap();
 }
 
-use crate::canonical_json::canonical;
+use crate::canonical_json::{canonical, node};
 
 #[test]
 fn canonical_numeric_literal_constants_and_same_host_diagnostic_recovery() {
@@ -455,6 +455,11 @@ fn canonical_numeric_literal_constants_and_same_host_diagnostic_recovery() {
             let runtime = rquickjs::Runtime::new().unwrap();
             #[cfg(feature = "quickjs")]
             let context = rquickjs::Context::full(&runtime).unwrap();
+            assert_eq!(
+                canonical(&node(&script)),
+                canonical(expected),
+                "Node: {id}, macro={phase}"
+            );
             #[cfg(feature = "quickjs")]
             let raw = context.with(|ctx| {
                 ctx.eval::<String, _>(script.as_bytes())
@@ -552,6 +557,7 @@ fn canonical_numeric_literal_constants_and_same_host_diagnostic_recovery() {
             let runtime = rquickjs::Runtime::new().unwrap();
             #[cfg(feature = "quickjs")]
             let context = rquickjs::Context::full(&runtime).unwrap();
+            assert_eq!(node(&format!("String({js})")), "42");
             #[cfg(feature = "quickjs")]
             assert_eq!(
                 context.with(|ctx| ctx.eval::<i32, _>(js.as_bytes()).unwrap()),

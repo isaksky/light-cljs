@@ -4,7 +4,6 @@
 //! build, which embeds none, so the Node half of a comparison still runs there.
 
 /// What Node prints running `program` from its standard input; the run must succeed.
-#[allow(dead_code)]
 pub fn node_stdout(program: &str) -> String {
     use std::io::Write;
     let mut child =
@@ -73,8 +72,7 @@ fn decode(cell: &str) -> String {
 /// What Node prints for the JavaScript string expression `expression`. It goes
 /// through standard input: an expression embedding a fixture catalog is larger
 /// than the operating system lets one command-line argument be.
-#[cfg(not(feature = "quickjs"))]
-fn node(expression: &str) -> String {
+pub fn node(expression: &str) -> String {
     node_stdout(&format!("process.stdout.write({expression})"))
 }
 

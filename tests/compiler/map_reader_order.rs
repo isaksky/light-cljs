@@ -26,7 +26,7 @@ fn reader_identity_checks_do_not_retain_executable_names() {
     }
 }
 
-use crate::canonical_json::canonical;
+use crate::canonical_json::{canonical, node};
 
 #[test]
 fn independent_map_sources_preserve_thresholds_groups_metadata_and_recovery() {
@@ -70,6 +70,11 @@ fn independent_map_sources_preserve_thresholds_groups_metadata_and_recovery() {
                 "(() => {{const observerRuntime={observer_runtime};const value={captured};return ({})(globalThis.lightRuntime)('{id}',()=>value);}})()",
                 include_str!("../support/sci_execution_observation.js")
             );
+            assert_eq!(
+                canonical(&node(&script)),
+                canonical(expected),
+                "Node: {id}, macro={phase}"
+            );
             #[cfg(feature = "quickjs")]
             let raw = context.with(|ctx| {
                 ctx.eval::<String, _>(script.as_bytes())
@@ -112,6 +117,7 @@ fn independent_map_sources_preserve_thresholds_groups_metadata_and_recovery() {
                 &mut host,
             )
             .unwrap();
+            assert_eq!(node(&format!("String({js})")), "42");
             #[cfg(feature = "quickjs")]
             assert_eq!(
                 context.with(|ctx| ctx.eval::<i32, _>(js.as_bytes()).unwrap()),

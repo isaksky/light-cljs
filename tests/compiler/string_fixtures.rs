@@ -401,6 +401,8 @@ fn verbatim_pinned_upstream_string_api_and_capitalization_property_execute() {
             include_str!("../fixtures/compiler-upstream-string-tests.cljs")
         ))
         .unwrap();
+    let observation = node(&format!("console.log(JSON.stringify({js}));"));
+    assert_eq!(observation.trim(), "[true,95,true,1000]");
     // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
@@ -409,16 +411,13 @@ fn verbatim_pinned_upstream_string_api_and_capitalization_property_execute() {
             ..Default::default()
         })
         .unwrap();
-        let observation = e
-            .string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
-            .unwrap();
-        assert_eq!(observation, "[true,95,true,1000]");
         assert_eq!(
-            node(&format!("console.log(JSON.stringify({js}));")).trim(),
-            observation
+            e.string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
+                .unwrap(),
+            observation.trim()
         );
-        println!("Upstream API/property observations: {observation}");
     }
+    println!("Upstream API/property observations: {}", observation.trim());
 }
 
 #[test]
