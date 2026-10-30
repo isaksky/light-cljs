@@ -12,6 +12,8 @@ static CALL: FixedText = FixedText::new("call");
 static STATE: FixedText = FixedText::new("state");
 static PRODUCTS: FixedText = FixedText::new("products");
 static GROUP: FixedText = FixedText::new("group");
+static ORDER: FixedText = FixedText::new("order");
+static FRONTIER: FixedText = FixedText::new("frontier");
 static MULTIFN: FixedText = FixedText::new("cljs.core/MultiFn");
 
 pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool, Fault> {
@@ -49,7 +51,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
             // original Proxy, its target and its live task-owned overlay Map.
             // Replacing the public registry takes the ordinary property path.
             let proxy = collections::nth(heap, context.clone(), 0)?;
-            let (target, readers, missing) = if receiver == proxy {
+            let (target, readers, missing, frontier) = if receiver == proxy {
                 let target = collections::nth(heap, context.clone(), 1)?;
                 let overlays = collections::nth(heap, context.clone(), 2)?;
                 if map_get(heap, state.diag.task, &overlays, &name)?.is_some() {
@@ -60,12 +62,31 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
                     read_result(heap, state, read, receiver)?;
                     return Ok(true);
                 }
-                let missing = (collections::count(heap, context.clone())? > 4)
+                let count = collections::count(heap, context.clone())?;
+                let missing = (count > 4)
                     .then(|| collections::nth(heap, context.clone(), 4))
                     .transpose()?;
-                (target, Some(collections::nth(heap, context, 3)?), missing)
+                // The declaration frontier of the running initializer: a
+                // bundle declared after it is read through its getter, which
+                // selects the definition visible there (`declarationSlot`).
+                let frontier = match (count > 5)
+                    .then(|| collections::nth(heap, context.clone(), 5))
+                    .transpose()?
+                {
+                    Some(cell) => match data(heap, state.diag.task, &cell, &FRONTIER)? {
+                        Some(Value::Number(n)) => n,
+                        _ => f64::INFINITY,
+                    },
+                    None => f64::INFINITY,
+                };
+                (
+                    target,
+                    Some(collections::nth(heap, context, 3)?),
+                    missing,
+                    frontier,
+                )
             } else {
-                (receiver.clone(), None, None)
+                (receiver.clone(), None, None, f64::INFINITY)
             };
             let read = property::read(heap, state.diag.task, &target, &key)?;
             if let (
@@ -78,6 +99,11 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
                 // for a conditional product, or expose the executing owner.
                 // Their installed getter owns those decisions.
                 && data(heap, state.diag.task, &bundle, &GROUP)? != Some(Value::Bool(true))
+                && (frontier == f64::INFINITY
+                    || matches!(
+                        data(heap, state.diag.task, &bundle, &ORDER)?,
+                        Some(Value::Number(order)) if order <= frontier
+                    ))
                 && matches!(
                     data(heap, state.diag.task, &bundle, &STATE)?,
                     Some(Value::Number(2.0))

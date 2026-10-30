@@ -3800,6 +3800,265 @@ fn adopted_catalogs_match_applied_catalogs_whatever_is_read_first() {
     }
 }
 
+/// One registration of the catalog fixtures below: a root `x` or `f` with
+/// a unit (or none), a defonce, or a bundle defining `x`.
+#[derive(Clone, Copy)]
+enum Entry {
+    Root(&'static str, Option<usize>, bool),
+    Bundle(usize, bool),
+}
+
+/// The catalog fixtures' unit code: roots return their value, `f` reads
+/// `x` through the engine's root read, bundles define their `x`.
+fn catalog_fixture_service(code: &'static [(usize, &'static str)]) -> UnitService {
+    Rc::new(move |_, id| {
+        let body = code
+            .iter()
+            .find(|(unit, _)| *unit as u64 == id)
+            .map(|(_, body)| *body)
+            .unwrap_or("null");
+        Ok(format!(
+            "rt => {{ const p = globalThis.__lightCompilerBundleProducts; \
+             const R = globalThis.__lightCompilerRootReceiver ?? globalThis.__lightCompilerRoots; \
+             const read = n => {{ try {{ return __rt.cljReadRoot(R, globalThis.__lightCompilerRootContext, n); }} \
+             catch (e) {{ return String(e.message).includes('unavailable definition') ? 'unavailable' : 'error ' + e.message; }} }}; \
+             return {body}; }}"
+        ))
+    })
+}
+
+/// Reads `name` and `exists?` of it in a producer that adopted `entries` as
+/// a catalog and in a task that applied them, and returns both answers.
+fn adopted_and_applied_reads(
+    entries: &[Entry],
+    code: &'static [(usize, &'static str)],
+    name: &str,
+) -> (String, String) {
+    use crate::compilation_session::{BundleRecord, Registration};
+    let catalog = entries
+        .iter()
+        .map(|entry| match *entry {
+            Entry::Root(name, unit, once) => {
+                Registration::Root(name.into(), unit, None, once, "fixture:1".into())
+            }
+            Entry::Bundle(unit, group) => Registration::Bundle(Arc::new(BundleRecord {
+                products: vec!["x".into()],
+                unit,
+                extensions: vec![],
+                location: "fixture:2".into(),
+                once: false,
+                group,
+            })),
+        })
+        .collect::<Vec<_>>();
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let service = catalog_fixture_service(code);
+    let task = || {
+        let task = Rc::new(shared.evaluator().unwrap());
+        task.clone()
+            .install_compiler_service("__lightCompileUnit", service.clone())
+            .unwrap();
+        task
+    };
+    let parent = task();
+    parent.install_catalog(0, &catalog).unwrap();
+    let child = parent
+        .spawn_producer(
+            &parent.cx().unwrap(),
+            parent.service.borrow().clone(),
+            |_| {},
+        )
+        .unwrap();
+    let applied = task();
+    applied.install_catalog(0, &catalog).unwrap();
+    let probe = format!(
+        r#"rt => {{
+          const R = globalThis.__lightCompilerRootReceiver ?? globalThis.__lightCompilerRoots;
+          let value; try {{ value = __rt.cljReadRoot(R, globalThis.__lightCompilerRootContext, '{name}'); }}
+          catch (e) {{ value = String(e.message).includes('unavailable definition') ? 'unavailable' : 'error ' + e.message; }}
+          let exists; try {{ exists = globalThis.__lightNativeRuntime.core.nativeRootExists('{name}', false); }}
+          catch (e) {{ exists = 'error ' + e.message; }}
+          return JSON.stringify([value, exists]);
+        }}"#
+    );
+    let run = |task: &BbpEvaluator| {
+        let value = task.evaluate_unit(&probe).unwrap();
+        let result = task.cx().unwrap().values.borrow()[&value.index]
+            .string()
+            .map(|s| s.to_string_lossy())
+            .unwrap_or_default();
+        task.release(value).unwrap();
+        result
+    };
+    // The producer adopted the catalog rather than applying it.
+    assert_eq!(numeric_global(&child, "__lightCatalogApplied"), 0.0);
+    (run(&child), run(&applied))
+}
+
+/// The adopted catalog's lazy step and getter rebuild give each definition
+/// kind the value the applied catalog and the QuickJS reference give it
+/// (docs/native-macros.md, "How a name resolves"). Lazy-step rows read `x`
+/// itself; rebuild rows read `f`, a root before a later bundle defining
+/// `x`, whose initializer sees the definition `x` had before that bundle.
+#[test]
+fn adopted_catalog_name_resolution_matches_applied_catalog() {
+    use Entry::{Bundle, Root};
+    const CODE: &[(usize, &str)] = &[
+        (1, "1"),
+        (2, "2"),
+        (3, "(p.x = 3, null)"),
+        (4, "null"),
+        (5, "read('x')"),
+        (6, "(p.x = 99, null)"),
+        (7, "(p.x = undefined, null)"),
+        (8, "undefined"),
+    ];
+    let rows: &[(&str, &[Entry], &str, &str)] = &[
+        (
+            "ordinary def, lazy step",
+            &[Root("x", Some(1), false)],
+            "x",
+            "[1,true]",
+        ),
+        (
+            "ordinary def, rebuild",
+            &[
+                Root("x", Some(1), false),
+                Root("f", Some(5), false),
+                Bundle(6, false),
+            ],
+            "f",
+            "[1,true]",
+        ),
+        (
+            "defonce, lazy step",
+            &[
+                Bundle(3, true),
+                Root("x", Some(2), true),
+                Root("y", Some(1), false),
+            ],
+            "x",
+            "[3,true]",
+        ),
+        (
+            "defonce, rebuild",
+            &[
+                Bundle(3, true),
+                Root("x", Some(2), true),
+                Root("f", Some(5), false),
+                Bundle(6, false),
+            ],
+            "f",
+            "[3,true]",
+        ),
+        (
+            "definition group, lazy step",
+            &[Root("x", Some(1), false), Bundle(4, true)],
+            "x",
+            "[1,true]",
+        ),
+        (
+            "definition group, rebuild",
+            &[
+                Root("x", Some(1), false),
+                Bundle(4, true),
+                Root("f", Some(5), false),
+                Bundle(6, false),
+            ],
+            "f",
+            "[1,true]",
+        ),
+        (
+            "declaration bundle, lazy step",
+            &[Bundle(7, false)],
+            "x",
+            "[null,false]",
+        ),
+        (
+            "declaration bundle, rebuild",
+            &[
+                Root("x", Some(1), false),
+                Bundle(3, false),
+                Root("f", Some(5), false),
+                Bundle(6, false),
+            ],
+            "f",
+            "[3,true]",
+        ),
+        (
+            "redeclaration, lazy step",
+            &[Root("x", Some(1), false), Root("x", Some(8), false)],
+            "x",
+            "[null,false]",
+        ),
+        (
+            "redeclaration, rebuild",
+            &[
+                Root("x", Some(1), false),
+                Root("x", Some(2), false),
+                Root("f", Some(5), false),
+                Bundle(6, false),
+            ],
+            "f",
+            "[2,true]",
+        ),
+        (
+            "declaration without a unit, lazy step",
+            &[
+                Root("x", None, false),
+                Root("y", Some(1), false),
+                Root("x", Some(2), false),
+                Root("x", None, false),
+            ],
+            "x",
+            "[2,true]",
+        ),
+        (
+            "declaration without a unit, rebuild",
+            &[
+                Root("x", None, false),
+                Root("f", Some(5), false),
+                Bundle(6, false),
+            ],
+            "f",
+            "[\"unavailable\",true]",
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, entries, name, expected) in rows {
+        let (adopted, applied) = adopted_and_applied_reads(entries, CODE, name);
+        if adopted != *expected || applied != *expected {
+            failures.push(format!(
+                "{label}: adopted {adopted}, applied {applied}, expected {expected}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A defonce over a definition group's name, read through the catalog
+/// rebuild of a later bundle's previous definition, keeps the group's
+/// product in an adopted catalog as in an applied one (review B3).
+#[test]
+fn adopted_catalog_defonce_before_later_bundle_keeps_previous_group() {
+    use Entry::{Bundle, Root};
+    const CODE: &[(usize, &str)] = &[
+        (2, "2"),
+        (3, "(p.x = 1, null)"),
+        (5, "read('x')"),
+        (6, "(p.x = 99, null)"),
+    ];
+    let entries = [
+        Bundle(3, true),
+        Root("x", Some(2), true),
+        Root("f", Some(5), false),
+        Bundle(6, false),
+    ];
+    let (adopted, applied) = adopted_and_applied_reads(&entries, CODE, "f");
+    assert_eq!(applied, "[1,true]");
+    assert_eq!(adopted, applied);
+}
+
 #[test]
 fn adopted_catalog_defonce_history_is_linear() {
     use crate::compilation_session::{BundleRecord, Registration};

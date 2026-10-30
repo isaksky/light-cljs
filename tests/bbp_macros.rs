@@ -8033,6 +8033,192 @@ fn native_repeat_realized_and_native_drop_match_quickjs() {
     );
 }
 
+/// How a compile-time name resolves (docs/native-macros.md, "How a name
+/// resolves"): one row per definition kind and reader. Each row prints what
+/// a macro reads and is compared with the QuickJS reference.
+const NAME_RESOLUTION_ROWS: &[(&str, &str, &str)] = &[
+    (
+        "ordinary def, getter",
+        r#"(def x 1) (def y (inc x)) (defmacro probe [] [x y])"#,
+        "[1 2]",
+    ),
+    (
+        "ordinary def, existence",
+        r#"(def x js/undefined) (def y nil) (defmacro probe [] [(exists? x) (exists? y)])"#,
+        "[false true]",
+    ),
+    (
+        "ordinary def, assignment",
+        r#"(def log (atom [])) (def x (do (swap! log conj :init) 1))
+           (defmacro probe [] (set! x 2) [@log x])"#,
+        "[[:init] 2]",
+    ),
+    (
+        "defonce, getter",
+        r#"(let [] (def a 1)) (defonce a 2) (when false (def b 1)) (defonce b 2)
+           (def c 1) (defonce c 2) (defmacro probe [] [a b c])"#,
+        "[1 2 1]",
+    ),
+    (
+        "defonce, existence",
+        r#"(let [] (def a js/undefined)) (defonce a 2) (when false (def b 1)) (defonce b nil)
+           (defmacro probe [] [(exists? a) (exists? b)])"#,
+        "[false true]",
+    ),
+    (
+        "defonce, assignment",
+        r#"(let [] (def a 1)) (defonce a 2) (defmacro probe [] (set! a 3) a)"#,
+        "3",
+    ),
+    (
+        "definition group, getter",
+        r#"(def x 1) (def y x) (let [] (def x 2)) (def u 1) (when false (def u 2))
+           (defmacro probe [] [y x u])"#,
+        "[2 2 1]",
+    ),
+    (
+        "definition group, existence",
+        r#"(when false (def u 1)) (def v 1) (when false (def v 2))
+           (defmacro probe [] [(exists? u) (exists? v)])"#,
+        "[false true]",
+    ),
+    (
+        "definition group, assignment",
+        r#"(declare x) (let [] (set! x 2) (def x 1)) (let [] (def y 1) (set! y 2))
+           (defmacro probe [] [(try x :read (catch :default _ :failed)) y])"#,
+        "[:failed 2]",
+    ),
+    (
+        "declaration bundle, getter",
+        r#"(def T 1) (def before T) (deftype T [a]) (defmacro probe [] [before (.-a (T. 2))])"#,
+        "[1 2]",
+    ),
+    (
+        "declaration bundle, existence",
+        r#"(def P js/undefined) (def before (exists? P)) (defprotocol P (p [this]))
+           (defmacro probe [] [before (exists? P)])"#,
+        "[false true]",
+    ),
+    (
+        "declaration bundle, assignment",
+        r#"(def log (atom [])) (defmulti m (fn [x] (swap! log conj :dispatch) x))
+           (defmacro probe [] (set! m 5) [m @log])"#,
+        "[5 []]",
+    ),
+    (
+        "redeclaration, getter",
+        r#"(def x 1) (def y x) (def x 2) (deftype T [a]) (def t T) (deftype T [b])
+           (defmacro probe [] [y x (identical? t T) (.-a (t. 1))])"#,
+        "[2 2 false 1]",
+    ),
+    (
+        "redeclaration, existence",
+        r#"(def x 1) (def e (exists? x)) (def x js/undefined) (defmacro probe [] [e (exists? x)])"#,
+        "[false false]",
+    ),
+    (
+        "redeclaration, assignment",
+        r#"(def log (atom [])) (def x (swap! log conj 1)) (def x (swap! log conj 2))
+           (defmacro probe [] (set! x 0) [@log x])"#,
+        "[[2] 0]",
+    ),
+    (
+        "declaration without a unit, getter",
+        r#"(declare x) (declare P) (def before (try P :read (catch :default _ :unavailable)))
+           (defprotocol P (p [x]))
+           (defmacro probe [] [(try x :read (catch :default _ :unavailable)) before])"#,
+        "[:unavailable :unavailable]",
+    ),
+    (
+        "declaration without a unit, existence",
+        r#"(declare x) (defmacro probe [] [(exists? x)])"#,
+        "[false]",
+    ),
+    (
+        "declaration without a unit, assignment",
+        r#"(declare x) (defmacro probe [] (try (set! x 1) :assigned (catch :default _ :unavailable)))"#,
+        ":unavailable",
+    ),
+];
+
+fn assert_name_resolution_rows(selected: &[&str]) {
+    for (label, source, expected) in NAME_RESOLUTION_ROWS {
+        if !selected.is_empty() && !selected.contains(label) {
+            continue;
+        }
+        let source = format!("{source}\n(js/console.log (pr-str (probe)))");
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        let native = emit_js(&program);
+        assert_eq!(program_output(&native), format!("{expected}\n"), "{label}");
+        let legacy =
+            light_cljs::compile(&source).unwrap_or_else(|error| panic!("{label}: {error}"));
+        assert_eq!(native, legacy, "{label}");
+    }
+}
+
+#[test]
+fn native_name_resolution_table_matches_quickjs() {
+    assert_name_resolution_rows(&[]);
+}
+
+/// A definition group is never filtered by an initializer's frontier: an
+/// earlier root reading the name sees the group's product (review B1).
+#[test]
+fn native_definition_groups_remain_visible_to_earlier_root_initializers() {
+    assert_name_resolution_rows(&["definition group, getter"]);
+}
+
+/// `exists?` in an initializer selects the definition its frontier sees,
+/// not a later declaration's product (review B2).
+#[test]
+fn native_exists_uses_initializer_declaration_frontiers() {
+    assert_name_resolution_rows(&["declaration bundle, existence"]);
+}
+
+/// `set!` demands the definition first: a forward assignment inside its
+/// own group is a cycle, an already defined product is replaced (review B4).
+#[test]
+fn native_definition_group_assignments_demand_existing_products() {
+    assert_name_resolution_rows(&[
+        "definition group, assignment",
+        "ordinary def, assignment",
+        "declaration without a unit, assignment",
+    ]);
+}
+
+/// `update-in` and `sequence` do not call the public `assoc`, `update-in`
+/// or `seq?`, which a program may rebind (review B5).
+#[test]
+fn native_helpers_ignore_public_core_rebindings() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             [(binding [assoc (fn [& _] :wrong)] (update-in {:a 1} [:a] inc))
+              (let [u update-in] (binding [update-in (fn [& _] :wrong)] (u {:a {:b 1}} [:a :b] inc)))
+              (binding [seq? (fn [_] (throw (js/Error. "rebound")))] (vec (sequence [1])))])
+           (js/console.log (pr-str (probe)))"#,
+        "[{:a 2} {:a {:b 2}} [1]]\n",
+    );
+}
+
+/// A transformed sequence rejects a source that is not seqable when it is
+/// built, before the transform runs (review B6).
+#[test]
+fn native_transformed_sequences_reject_invalid_sources_at_construction() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [n (atom 0) xf (fn [rf] (swap! n inc) rf)]
+               [(try (sequence xf 42) :accepted (catch :default _ :rejected))
+                (try (sequence xf :k) :accepted (catch :default _ :rejected))
+                @n (vec (sequence (map inc) [1 2])) (vec (sequence (map inc) nil))
+                (vec (sequence (map +) [1 2] (list 3 4))) (vec (sequence xf "ab")) @n]))
+           (js/console.log (pr-str (probe)))"#,
+        "[:rejected :rejected 0 [2 3] [] [4 6] [\"a\" \"b\"] 1]\n",
+    );
+}
+
 /// A defprotocol a macro expands to, and one in a macro's body, which
 /// defines the protocol when the macro runs (light-cljs-592).
 #[test]

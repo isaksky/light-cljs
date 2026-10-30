@@ -434,6 +434,39 @@ for byte (`workload.main.js` SHA-256 `1a75bc87…`). It prints `530807` and
 `484264`, matching the Babashka reference. Formatting, strict V8 Clippy and the
 documented Clippy limitations are unchanged.
 
+### How a name resolves (light-cljs-619, round 3)
+
+The Pants runtime resolves a compile-time name as the QuickJS reference's
+registry does (src/compiler_roots.js: `declarationSlot`, `forceSlot`,
+`rootExists`, the root Proxy's `set`). A root initializer runs at its
+**frontier**: the bundles registered before its definition. Outside an
+initializer every bundle is visible. "Before" and "after" below are source
+order.
+
+| Definition | Getter (read) | Existence probe (`exists?`) | Assignment (`set!`) | Lazy step (adopted catalog) | Catalog rebuild |
+| --- | --- | --- | --- | --- | --- |
+| Ordinary `def` | Runs its initializer once, at its own frontier | Its value is not `undefined` | Initializes it first, then stores | A new root unless the unit is the same | Its initializer, at the catalog frontier before it |
+| `defonce` | The definition it kept. Over a definition group: the group's product or prior generation when available, else its own initializer | As the getter's value | As an ordinary `def` | Kept over a real definition other than a group | As the applied catalog: the group generation it may keep, and its location |
+| Definition group (nested `def`s) | Never filtered by frontier. Forces the group: its product, else the prior generation, else unavailable at the group. Inside its own execution: an earlier product, else the prior generation, else a cycle | Its product's value. Else the prior generation's. Else false | Demands the product first (a forward assignment is a cycle), then stores the group's product | Takes the name, even over a data property | The prior generation, read when the group lacks the product |
+| Protocol or type declaration (a bundle) | Its product at frontiers that include it. Earlier frontiers read the definition the name had before it | The same choice; the earlier definition's existence | Forces the bundle, then stores a data property | Takes the name unless it is a data property | The definition before the bundle: the getter at adoption, a bundle's product, or a root's initializer |
+| Redeclaration | An ordinary `def` again replaces the root: every reader, earlier frontiers included, gets the newest. A bundle again: each frontier sees the newest bundle before it | As the getter | Initializes the newest definition only | As the first registration | Chains through each earlier definition |
+| Declaration without a unit (`declare`) | Unavailable (`location: unavailable definition: x`). Ignored when the name has a definition. As the definition before a bundle: unavailable at earlier frontiers | False | Unavailable | Keeps the existing root | Unavailable |
+
+In the Pants runtime the bundle's getter makes the frontier choice
+(`earlierOf`). The engine's ready-product read takes the shortcut only for a
+bundle at or before the current frontier, which it reads from the root
+context's sixth element. Before this round, a declaration alone did not count
+as a previous definition, a group was filtered by frontier, `exists?` read a
+later product directly, `set!` stored without demanding the definition, and
+the catalog rebuild dropped a `defonce`'s kept generation.
+`native_name_resolution_table_matches_quickjs` (tests/bbp_macros.rs) has one
+row per getter, existence and assignment cell. Each row is compared with the
+QuickJS reference.
+`adopted_catalog_name_resolution_matches_applied_catalog`
+(src/bbp_evaluator/tests.rs) has one row per lazy-step and catalog-rebuild
+cell. Each row checks the adopted catalog against the applied one and against
+the reference's value.
+
 ## Core macros on the Pants build (light-cljs-611)
 
 The Pants build expands core macro calls in Rust

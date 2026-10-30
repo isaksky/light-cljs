@@ -750,12 +750,15 @@ const decl = (() => {
   // A root's initializer reads the declaration products visible at its
   // source site, as the legacy roots' `declarationSlot` does: a product of a
   // bundle declared after the root reads the name's previous definition
-  // (light-cljs-592). Outside initializers every bundle is visible.
-  let declarationFrontier = Infinity;
+  // (light-cljs-592). Outside initializers every bundle is visible. The
+  // engine's ready-product read compares a bundle's order with this cell
+  // (the root context's sixth element), so a later bundle's product takes
+  // its getter. docs/native-macros.md, "How a name resolves", is the table.
+  const frontierCell = {frontier: Infinity};
   const atDeclarationFrontier = (next, f) => {
-    const saved = declarationFrontier;
-    declarationFrontier = next;
-    try { return f(); } finally { declarationFrontier = saved; }
+    const saved = frontierCell.frontier;
+    frontierCell.frontier = next;
+    try { return f(); } finally { frontierCell.frontier = saved; }
   };
   // `b.previous`: a definition group's prior root generations, which a
   // conditional product falls back to (`captureRoot`). `b.earlier`: the
@@ -787,12 +790,28 @@ const decl = (() => {
     }
     return undefined;
   };
+  // The getter of the definition an initializer at the current frontier
+  // sees instead of `b`'s product, or undefined: as `declarationSlot`, a
+  // definition group is never filtered, and a declaration alone before `b`
+  // is that definition (its getter reports it unavailable).
+  const earlierOf = (b, name) => {
+    if (b.group || b.order <= frontierCell.frontier) return undefined;
+    // An adopted catalog's bundle finds it once (`catalogPrevious`).
+    if (b.catalog !== undefined && !(b.earlier ??= new Map()).has(name)) b.earlier.set(name, catalogPrevious(b, name));
+    return b.earlier?.get(name);
+  };
   const productGetter = (b, name) => () => {
-    if (b.order > declarationFrontier) {
-      const earlier = b.earlier?.get(name) ?? (b.catalog === undefined ? undefined : catalogPrevious(b, name));
-      if (earlier !== undefined) return earlier();
-    }
+    const earlier = earlierOf(b, name);
+    if (earlier !== undefined) return earlier();
     const own=productOwner(name);return readProduct(own?.group?own:b,name);
+  };
+  // `exists?` of `b`'s product, as the reference's `rootExists` of the slot
+  // `declarationSlot` selects: an earlier definition's existence, a group's
+  // product or prior generation, else the product's value.
+  const productExists = (b, name) => {
+    const earlier = earlierOf(b, name);
+    if (earlier !== undefined) return getterExists(name, earlier);
+    return productAvailable(b, name) && readProduct(b, name) !== undefined;
   };
   // Index `b`'s extensions of `protocol` (every one when it is null).
   const index = (b, protocol = null) => {
@@ -820,9 +839,9 @@ const decl = (() => {
       lazyResolve(name);
       const old = Object.getOwnPropertyDescriptor(registry(), name);
       if (!group && old !== undefined && 'value' in old) continue;
-      // A declaration alone (`defprotocol`'s, before its bundle) is no
-      // previous definition: it keeps the fast product read.
-      if (old?.get !== undefined && !declarationOnly(name)) (b.earlier ??= new Map()).set(name, old.get);
+      // A declaration alone (`defprotocol`'s, before its bundle) is the
+      // previous definition too: before `b`, reading the name is unavailable.
+      if (old?.get !== undefined) (b.earlier ??= new Map()).set(name, old.get);
       globalThis.__lightInstallCompilerProduct(name, productGetter(b, name), b);
     }
     if (lazyCatalog !== null) for (const [protocol] of b.indices) catalogProtocol(protocol);
@@ -866,8 +885,8 @@ const decl = (() => {
     const info = views.get(typeTag(x));
     return info?.mutable && info.record ? info : null;
   };
-  return {makeBundle, productGetter, index, reserve: n => { const base = bundleCount; bundleCount += n; return base; },
-    bundles: () => bundleCount, atDeclarationFrontier,
+  return {makeBundle, productGetter, productExists, index, reserve: n => { const base = bundleCount; bundleCount += n; return base; },
+    bundles: () => bundleCount, atDeclarationFrontier, frontierCell,
     extend, extendInstance, inheritInstance:(x,parent)=>instances.set(x,instances.get(parent)),
     instanceMethods:instances,
     method, satisfies, implementsDirectly, predicate, masked, mask, extended, hostType, demand, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
@@ -2082,6 +2101,24 @@ const native = (() => {
     const kind=__rt.formKind(value),method=decl.coreMethod('IIterable/-iterator',1,x,kind!==null);
     return method===null?seqIter(x):method(x);
   };
+  // A transformed sequence's source, as the reference's `sequenceIterator`:
+  // an IIterable's iterator, nil, a string or array, else a seqable value's
+  // SeqIter. Anything else fails before the transform runs.
+  const sequenceIterator=x=>{
+    const value=val(x);
+    if(value==null||Array.isArray(value)||typeof value==='string')return iter(x);
+    const kind=__rt.formKind(value),method=decl.coreMethod('IIterable/-iterator',1,x,kind!==null);
+    if(method!==null)return method(x);
+    const builtin=nativeSeq(x)||kind==='vector'||kind==='map'||kind==='record'||kind==='set';
+    if(builtin||decl.seq(x,false)!==null||typeof value==='object'&&value[Symbol.iterator]!=null)return seqIter(x);
+    throw new Error('Cannot create iterator from '+String(value));
+  };
+  // `update-in` on the intrinsic operations, so a program's rebinding of the
+  // public `assoc`, `get` or `update-in` leaves it unchanged.
+  const updatePath=(value,path,f,args)=>{
+    const s=seqOf(path),key=__rt.cljFirst(s),more=__rt.cljNext(s);
+    return __rt.cljAssoc(value,key,more===null?invoke(f,get(value,key),...args):updatePath(get(value,key),more,f,args));
+  };
   // Each transformed traversal owns its reducer and buffered output. Probe
   // every input before advancing any of them, and complete exactly once,
   // including when a reducer stops before an input is exhausted.
@@ -2857,9 +2894,10 @@ const native = (() => {
     theNs:name=>{const ns=findNs(name);if(ns===null)throw new Error('No namespace: '+core.str(name));return ns;},
     nsName:(...a)=>a.length!==1?arity(a.length):__rt.formKind(val(a[0]))==='symbol'?__rt.formName(val(a[0])):val(a[0]).name,
     sequence:(...args)=>{
-      if(args.length===1)return nativeSeq(args[0])||core.isSeq(args[0])?args[0]:seqOf(args[0])??__rt.formList();
+      if(args.length===1)return nativeSeq(args[0])||__rt.cljIsSeq(args[0])?args[0]:seqOf(args[0])??__rt.formList();
       if(args.length<2)return arity(args.length);
-      return chunkIteratorSequence(chunkIteratorSequence,transformedIterator(args[0],args.slice(1).map(iter)));
+      // Every source's iterator exists before the transform runs.
+      return chunkIteratorSequence(chunkIteratorSequence,transformedIterator(args[0],args.slice(1).map(sequenceIterator)));
     },
     iteration:(step,...options)=>{
       const opts=core.seqToMap(list(options)),option=(name,fallback)=>get(opts,__rt.cljKeyword(name),fallback);
@@ -2960,10 +2998,7 @@ const native = (() => {
     },
     jsInvoke:(object,method,...args)=>{object=val(object);return object[val(method)](...args);},
     update:(value,key,f,...args)=>{const old=core.get(value,key);return core.assoc(value,key,invoke(f,old,...args));},
-    updateIn:(value,path,f,...args)=>{
-      const s=seqOf(path),key=__rt.cljFirst(s),more=__rt.cljNext(s);
-      return core.assoc(value,key,more===null?invoke(f,get(value,key),...args):core.updateIn(get(value,key),more,f,...args));
-    },
+    updateIn:(value,path,f,...args)=>updatePath(value,path,f,args),
     assoc:(m,...xs)=>{for(let i=0;i<xs.length;i+=2)m=__rt.cljAssoc(m,xs[i],xs[i+1]);return m;},
     assocIn:(value,path,item)=>{
       const s=seqOf(path),key=__rt.cljFirst(s),more=__rt.cljNext(s);
@@ -3300,11 +3335,14 @@ const native = (() => {
       if(bindingOverlays.has(name))return binding||bindingOverlays.get(name)!==undefined;
       if(!(name in bindings))return false;
       if(binding)return true;
-      const own=decl.productOwner(name),descriptor=Object.getOwnPropertyDescriptor(bindings,name),product=productReaders.get(descriptor?.get);
+      // As the reference's `rootExists` of the slot `declarationSlot`
+      // selects at the current frontier (docs/native-macros.md, "How a
+      // name resolves"): an executing group's own product first.
+      const own=decl.productOwner(name),descriptor=Object.getOwnPropertyDescriptor(bindings,name);
       if(own?.group)return decl.productAvailable(own,name)&&decl.readProduct(own,name)!==undefined;
-      if(product!==undefined){const b=__rt.nth(product,0);return decl.productAvailable(b,name)&&decl.readProduct(b,name)!==undefined;}
-      if(roots.has(name)&&__rt.initializerSlotGet(roots.get(name),0)===null)return false;
-      return bindings[name]!==undefined;
+      if(descriptor===undefined)return bindings[name]!==undefined;
+      if('value' in descriptor)return descriptor.value!==undefined;
+      return getterExists(name,descriptor.get);
     },
     juxt:(...fs)=>{
       const functions=fs.length===0?__rt.formVector(undefined,undefined,undefined):vector(fs);
@@ -3719,16 +3757,30 @@ const native = (() => {
 })();
 globalThis.__lightNativeRuntime=native;
 const roots=new Map();
-const rootSetter=name=>value=>{
+// Store a root's value without reading it: an executing group's own product,
+// else the root's data property. A declaration a macro runs directly writes
+// its products this way (`directProducts`), as the reference's product table.
+const storeRoot=(name,value)=>{
   if(decl.storeProduct(name,value))return;
   const slot=roots.get(name);if(slot!==undefined)__rt.initializerSlotSet(slot,4,true);
   Object.defineProperty(registry(),name,{configurable:true,writable:true,value});
 };
+// `set!` of a root, as the reference's root Proxy: demand the definition the
+// name has first (an unavailable one fails, a pending initializer runs, a
+// forward read inside its executing group is a cycle), then store.
+const assignRoot=(name,value)=>{
+  const target=registry();
+  if(name in target)target[name];
+  storeRoot(name,value);
+};
+// Each product getter's bundle and name. The engine's root read bypasses a
+// getter here once its bundle is ready and declared at or before the current
+// declaration frontier (`decl.frontierCell`); otherwise the getter selects
+// the definition an initializer sees (`decl.atDeclarationFrontier`).
 const productReaders=new Map();
-// The product getters the engine's root read may bypass once their bundle is
-// ready: not those of a name declared again, whose getter picks the
-// definition an initializer sees (`decl.atDeclarationFrontier`).
-const fastProductReaders=new Map();
+// Root getters of declarations without a unit: reading one is unavailable,
+// and `exists?` of one is false without calling it.
+const declarationGetters=new WeakSet();
 // Of each root, the unit of its definition's executable :test metadata;
 // of each unit, its root's slot.
 const rootTests=new Map(), unitSlots=new Map();
@@ -3743,6 +3795,14 @@ function rootAvailable(root){
   if(root===null)return false;
   const product=productReaders.get(root.descriptor.get);
   return product===undefined?'value' in root.descriptor||root.unit!==null:decl.productAvailable(__rt.nth(product,0),__rt.nth(product,1));
+}
+// `exists?` through a definition's getter: a product's by its bundle at the
+// current frontier, a declaration alone is absent, any other by its value.
+function getterExists(name,get){
+  const product=productReaders.get(get);
+  if(product!==undefined)return decl.productExists(__rt.nth(product,0),__rt.nth(product,1));
+  if(declarationGetters.has(get))return false;
+  return get()!==undefined;
 }
 function readRoot(root){
   if('value' in root.descriptor)return root.descriptor.value;
@@ -3759,10 +3819,7 @@ globalThis.__lightInstallCompilerProduct=(name,read,bundle)=>{
   if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);
   else {const slot=__rt.initializerSlot(null,name);__rt.initializerSlotSet(slot,4,true);roots.set(name,slot);}
   Object.defineProperty(registry(),name,{configurable:true,get:read});
-  if(bundle!==undefined){
-    const entry=__rt.vector(bundle,name);productReaders.set(read,entry);
-    if(!bundle.earlier?.has(name))fastProductReaders.set(read,entry);
-  }
+  if(bundle!==undefined)productReaders.set(read,__rt.vector(bundle,name));
 };
 // Each invocation of this runtime belongs to one VM task. Overlay snapshots
 // stay in its saved frames across need/producer waits and context lending;
@@ -3785,7 +3842,7 @@ globalThis.__lightRestoreCompilerBinding=(name,saved)=>{
 globalThis.__lightSetCompilerRoot=(name,value)=>{
   lazyResolve(name);
   if(bindingOverlays.has(name))bindingOverlays.set(name,value);
-  else rootSetter(name)(value);
+  else assignRoot(name,value);
   return value;
 };
 globalThis.__lightCompilerRootKept=name=>{
@@ -3852,16 +3909,17 @@ globalThis.__lightRegisterUnit=(name,unit,once=false,location='',test=null)=>{
   if(unit!==null)unitSlots.set(unit,slot);
   Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot,decl.bundles(),previous,location)});return null;
 };
-// Whether `name`'s root is a declaration alone: no unit, never defined.
-function declarationOnly(name){
-  const slot=roots.get(name);
-  return slot!==undefined&&__rt.initializerSlotGet(slot,0)===null&&__rt.initializerSlotGet(slot,4)!==true;
-}
 // `frontier`: the bundles registered before the root, whose products its
 // initializer reads (`decl.atDeclarationFrontier`). `previous`: a
 // conditional group's prior generation, which a defonce keeps.
-const rootGetter=(name,unit,slot,frontier=Infinity,previous=null,location='')=>()=>{
-  if(unit===null)throw new Error((location?location+': ':'')+'unavailable definition: '+name);
+const rootGetter=(name,unit,slot,frontier=Infinity,previous=null,location='')=>{
+  if(unit===null){
+    const unavailable=()=>{throw new Error((location?location+': ':'')+'unavailable definition: '+name);};
+    declarationGetters.add(unavailable);return unavailable;
+  }
+  return ()=>rootValue(name,unit,slot,frontier,previous);
+};
+const rootValue=(name,unit,slot,frontier,previous)=>{
   if(previous!==null&&rootAvailable(previous))return readRoot(previous);
   __rt.need(unit,2);
   const factory=__rt.need(unit,3);
@@ -3971,12 +4029,12 @@ globalThis.__lightCompilerRoots=new Proxy(rootTarget, {
 });
 // The compiler's bounded read intrinsic checks this live overlay Map and
 // target on every read. Ordinary interop retains the Proxy and its receiver.
-globalThis.__lightCompilerRootContext=__rt.vector(globalThis.__lightCompilerRoots,rootTarget,bindingOverlays,fastProductReaders,
+globalThis.__lightCompilerRootContext=__rt.vector(globalThis.__lightCompilerRoots,rootTarget,bindingOverlays,productReaders,
   new Proxy(rootTarget,{get:(target,name)=>{
     lazyResolve(name);
     if(!Reflect.has(target,name))throw new Error('unavailable definition: '+name);
     return Reflect.get(rootsProxy,name);
-  }}));
+  }}),decl.frontierCell);
 // A producer task adopts its parent's catalog snapshot instead of applying
 // it (light-cljs-590): a name gets its catalog registrations when the task
 // first uses it, and a protocol its catalog bundles, each with exactly the
@@ -4003,7 +4061,7 @@ globalThis.__lightCompilerProductTarget=name=>{
     // view observes catalog registration order before performing the write.
     if(lazyCatalog!==null)materializeAll();
     if(Object.getOwnPropertyDescriptor(directProducts,name)===undefined)
-      Object.defineProperty(directProducts,name,{get:()=>registry()[name],set:rootSetter(name)});
+      Object.defineProperty(directProducts,name,{get:()=>registry()[name],set:value=>storeRoot(name,value)});
     return directProducts;
 };
 globalThis.__lightCompilerRootReceiver=null;
@@ -4114,14 +4172,24 @@ const lazyBundle=(c,p)=>{
 function lazyPrevious(c,name,p){
   const state=lazyStateBefore(c,name,p);
   if(state.owner<0)return state.descriptor===undefined?null:{descriptor:state.descriptor,unit:state.root===undefined?null:__rt.initializerSlotGet(state.root,0)};
-  const entry=__rt.nth(c.entries,state.owner);
-  if(__rt.nth(entry,0)===0){
-    const unit=__rt.nth(entry,2),slot=__rt.initializerSlot(unit,name);
-    return {descriptor:{get:rootGetter(name,unit,slot,catalogFrontier(c,state.owner),__rt.nth(entry,3)?lazyPrevious(c,name,state.owner):null,__rt.nth(entry,5))},unit};
+  const read=catalogGetter(c,name,state);
+  return {descriptor:{get:read},unit:__rt.nth(__rt.nth(c.entries,state.owner),0)===0?state.unit:-1};
+}
+// The getter of `name`'s definition in state `s` of catalog `c`, which entry
+// `s.owner` registered, as the applied catalog installs it: a bundle's
+// product, or a root's initializer at its declaration frontier with its
+// location and, for a defonce, the generation it may keep. A root without a
+// unit is a declaration alone, which is unavailable.
+function catalogGetter(c,name,s){
+  const q=s.owner,e=__rt.nth(c.entries,q);
+  if(__rt.nth(e,0)===1){
+    const bundle=lazyBundle(c,q),read=decl.productGetter(bundle,name);
+    productReaders.set(read,__rt.vector(bundle,name));
+    return read;
   }
-  const bundle=lazyBundle(c,state.owner);
-  const read=decl.productGetter(bundle,name);productReaders.set(read,__rt.vector(bundle,name));
-  return {descriptor:{get:read},unit:-1};
+  let slot=null;
+  if(s.unit!==null){slot=unitSlots.get(s.unit);if(slot===undefined){slot=__rt.initializerSlot(s.unit,name);unitSlots.set(s.unit,slot);}}
+  return rootGetter(name,s.unit,slot,catalogFrontier(c,q),__rt.nth(e,3)?lazyPrevious(c,name,q):null,__rt.nth(e,5));
 }
 // Install a name's catalog registrations, once, before its first use.
 function lazyResolve(name){
@@ -4146,8 +4214,7 @@ function lazyResolve(name){
   }else{
     const b=lazyBundle(c,s.owner),read=decl.productGetter(b,name);
     Object.defineProperty(rootTarget,name,{configurable:true,get:read});
-    const entry=__rt.vector(b,name);productReaders.set(read,entry);
-    if(catalogPrevious(b,name)===undefined)fastProductReaders.set(read,entry);
+    productReaders.set(read,__rt.vector(b,name));
   }
   if(!start.own){
     // A bundle creates its products in order.
@@ -4169,18 +4236,15 @@ const catalogFrontier=(c,p)=>{
 // The getter of `name`'s definition before the catalog bundle `b`'s, when
 // an earlier entry of the catalog defines it: the entry that owns the name
 // just before `b` (`lazyStateBefore`, where a declaration keeps an earlier
-// definition): a bundle's product, or an ordinary root's initializer at
-// its own declaration frontier; not a declaration alone (`declarationOnly`).
+// definition): `catalogGetter`, where a declaration alone is unavailable.
 const catalogPrevious=(b,name)=>{
   const c=b.catalog;
   if(__rt.getOr(c.names,name,null)===null)return undefined;
-  const s=lazyStateBefore(c,name,b.entry),q=s.owner;
-  if(q<0)return undefined;
-  if(__rt.nth(__rt.nth(c.entries,q),0)===1)return decl.productGetter(lazyBundle(c,q),name);
-  if(s.unit===null)return undefined;
-  let slot=unitSlots.get(s.unit);
-  if(slot===undefined){slot=__rt.initializerSlot(s.unit,name);unitSlots.set(s.unit,slot);}
-  return rootGetter(name,s.unit,slot,catalogFrontier(c,q));
+  const s=lazyStateBefore(c,name,b.entry);
+  // Before the catalog: the getter the name had at adoption, as the applied
+  // catalog's bundle records the getter it replaces.
+  if(s.owner<0)return s.descriptor?.get;
+  return catalogGetter(c,name,s);
 };
 // Index a protocol's catalog bundles, once, before its extensions are read
 // or another bundle extends it.

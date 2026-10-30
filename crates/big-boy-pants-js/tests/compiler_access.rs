@@ -190,3 +190,29 @@ fn definition_groups_and_missing_compiler_roots_keep_their_private_readers() {
         2,
     );
 }
+
+/// A ready product declared after the current declaration frontier (the
+/// root context's sixth element) is read through its getter, which selects
+/// the definition an initializer there sees; at or before it, directly.
+#[test]
+fn ready_product_reads_respect_the_declaration_frontier() {
+    run(
+        r#"function f() {
+      const target={}, overlays=new Map(), readers=new Map(), cell={frontier:Infinity};
+      const proxy=new Proxy(target,{get:(t,k,r)=>Reflect.get(t,k,r)});
+      const missing=new Proxy(target,{get(t,k){throw new Error('unavailable definition: '+k);}});
+      const context=__rt.vector(proxy,target,overlays,readers,missing,cell);
+      const bundle={state:2,order:3,products:{x:7}};let calls=0;
+      const getter=()=>{calls++;return cell.frontier<bundle.order?'earlier':bundle.products.x;};
+      readers.set(getter,__rt.vector(bundle,'x'));
+      Object.defineProperty(target,'x',{configurable:true,get:getter});
+      if(__rt.cljReadRoot(proxy,context,'x')!==7||calls!==0)throw new Error('outside initializers');
+      cell.frontier=3;
+      if(__rt.cljReadRoot(proxy,context,'x')!==7||calls!==0)throw new Error('at the frontier');
+      cell.frontier=2;
+      if(__rt.cljReadRoot(proxy,context,'x')!=='earlier'||calls!==1)throw new Error('before the frontier');
+      return true;
+    }"#,
+        0,
+    );
+}
