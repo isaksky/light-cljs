@@ -486,6 +486,14 @@ check. The four 4 MiB heap checks pass. The 200k V8 release output is
 unchanged byte for byte and prints `530807` and `484264`. Formatting, strict
 V8 Clippy and the documented Clippy limitations are unchanged.
 
+After the round-3 review fixes, at `5c263804` (on `4543138b`), the V8 build
+passes 2153 of 2154 tests, with only the known playground workspace failure.
+The Pants build passes 2024 tests, and its 142 failures have the same names as
+before. Pants+QuickJS passes all 695 and V8+Pants all 739 library and
+`bbp_macros` tests. The engine passes all 2225 tests and seven doctests. Pants
+and engine Clippy keep only the documented diagnostics. The V8 build includes
+none of the changed files, so its 200k output is the one checked above.
+
 ## Core macros on the Pants build (light-cljs-611)
 
 The Pants build expands core macro calls in Rust
