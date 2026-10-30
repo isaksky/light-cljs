@@ -6044,8 +6044,7 @@ fn assert_native_matches_legacy(source: &str, expected: &str) {
 
 #[test]
 fn native_mutable_deftype_closure_in_atom_matches_quickjs() {
-    assert_native_matches_legacy(
-        r#"(defprotocol Cache (cached [x]) (put-cache [x v]))
+    let source = r#"(defprotocol Cache (cached [x]) (put-cache [x v]))
            (deftype Box [v ^:unsynchronized-mutable saved]
              Cache
              (cached [_] (if (nil? saved) (set! saved (vec v)) nil) saved)
@@ -6060,8 +6059,62 @@ fn native_mutable_deftype_closure_in_atom_matches_quickjs() {
                  (list 'quote [a (identical? a again) (f) (.-saved b)
                                (= b b) (= b (Box. '(1 2) [3])) (= h (hash b))
                                (str b) (pr-str b) (instance? Box b)]))))
-           (js/console.log (pr-str (probe)))"#,
-        "[[1 2] true [3] [3] true false true \"box:[3]\" \"#object[cljs.user.Box box:[3]]\" true]\n",
+           (js/console.log (pr-str (probe)))"#;
+    for annotation in ["mutable", "unsynchronized-mutable", "volatile-mutable"] {
+        assert_native_matches_legacy(
+            &source.replace("unsynchronized-mutable", annotation),
+            "[[1 2] true [3] [3] true false true \"box:[3]\" \"#object[cljs.user.Box box:[3]]\" true]\n",
+        );
+    }
+}
+
+#[test]
+fn native_mutable_deftype_publishes_current_fields_and_user_protocols() {
+    assert_native_matches_legacy(
+        r#"
+      (deftype Box [input ^:mutable cached]
+        ISeqable (-seq [_] (if (nil? cached) (set! cached (seq input)) nil) cached)
+        IEquiv (-equiv [this other] (= (seq this) (seq other)))
+        IHash (-hash [_] 123))
+      (defmacro probe []
+        (let [b (Box. [1 2] (js/Array. 9))]
+          (set! (.-cached b) nil)
+          (let [f (fn [] (seq b)) a (atom [f]) x ((first @a))]
+            (list 'quote [(vec x) (identical? x (f)) (= b (Box. [1 2] nil))
+                          (hash b) (instance? Box b)]))))
+      (js/console.log (pr-str (probe)))"#,
+        "[[1 2] true true 123 true]\n",
+    );
+}
+
+#[test]
+fn native_mutable_deftype_shared_stores_reject_host_objects_catchably() {
+    let source = r#"(deftype Box [^:mutable value])
+      (defmacro probe []
+        (let [b (Box. [1]) f (fn [] (.-value b)) a (atom [f])
+              rejected (try (set! (.-value b) (js/Array. 7)) :accepted
+                         (catch :default e (if (instance? js/TypeError e) :TypeError :other)))
+              unchanged ((first @a))]
+          (set! (.-value b) [2])
+          (list 'quote [rejected unchanged (f)])))
+      (js/console.log (pr-str (probe)))"#;
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    assert_eq!(program_output(&emit_js(&program)), "[:TypeError [1] [2]]\n");
+}
+
+#[test]
+fn native_mutable_deftype_member_store_preserves_operand_order() {
+    assert_native_matches_legacy(
+        r#"(deftype Box [^:mutable value])
+      (defmacro probe []
+        (let [b (Box. nil) a (atom [(fn [] (.-value b))]) seen (js/Array.)
+              assigned (set! (.-value (do (.push seen "receiver") b))
+                             (do (.push seen "value") [1 2]))]
+          (list 'quote [assigned (vec seen) ((first @a))])))
+      (js/console.log (pr-str (probe)))"#,
+        "[[1 2] [\"receiver\" \"value\"] [1 2]]\n",
     );
 }
 
@@ -6143,6 +6196,7 @@ fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
                 program_output(&actual)
             );
             assert!(helpers.published > 0, "{helpers:?}");
+            assert_eq!(helpers.per_task, 0, "{helpers:?}");
         }
     }
 }

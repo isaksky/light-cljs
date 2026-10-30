@@ -244,7 +244,7 @@
 //! # Structs (light-cljs-478)
 //!
 //! A *struct type* (`FormKind::Type`, `formKind` `"type"`) is the identity of
-//! a ClojureScript `deftype` or `defrecord` without mutable fields: its
+//! a ClojureScript `deftype` or `defrecord`: its
 //! qualified name, its field names, whether it is a record and the
 //! JavaScript member name of each field (`null`: the field names), made by
 //! `__rt.structType(name, fieldNames, record, memberNames)`; each call is a
@@ -262,6 +262,14 @@
 //! persistent: publishable when their fields and extension entries are,
 //! traced through their type, fields and entries (publication path steps
 //! `[i]` for fields, `{key}` for entries).
+//! A non-record type made with `mutableStructType` instead holds versioned
+//! field storage (`super::mutable_fields`). Publication checks one snapshot
+//! and promotes that cell; subsequent stores validate their new values.
+//! Its closed shape has writable, non-configurable fields until privately
+//! frozen. Published descriptor changes and freezing reject catchably;
+//! compiler field/member reads and writes use a task-local resolver for
+//! source-order effects, while leaf `structField`/`structSet` perform no
+//! scheduling themselves. Identity equality and hashing do not read fields.
 //!
 //! A record follows the light-cljs runtime's record methods: an
 //! unqualified keyword naming a field looks the field up, other keys the
@@ -331,7 +339,7 @@ pub enum FormKind {
     Vector,
     Map,
     Set,
-    /// An instance of a `deftype` or `defrecord` without mutable fields
+    /// An instance of a `deftype` or `defrecord`
     /// (light-cljs-478; "Structs" in the module docs).
     Struct,
     /// A struct type: the identity of a `deftype` or `defrecord`.
@@ -1954,6 +1962,9 @@ pub(crate) fn new_type_with_mutability(
     members: &Value,
     mutable: bool,
 ) -> Result<Value, CollectionError> {
+    if mutable && matches!(record, Value::Bool(true)) {
+        return Err(CollectionError::Unsupported("mutable record field storage"));
+    }
     let Value::String(name) = name else {
         return Err(wrong(heap, "string type name", name));
     };
@@ -2031,6 +2042,22 @@ pub(crate) fn struct_own_property(f: &FormObject, name: &JsString) -> Option<Val
         .map(|i| s.field(i).unwrap_or(Value::Undefined))
 }
 
+pub(crate) fn mutable_field(
+    f: &FormObject,
+    name: &JsString,
+) -> Option<(Arc<super::mutable_fields::MutableFields>, usize)> {
+    let FormBody::Struct(s) = f.body() else {
+        return None;
+    };
+    let cell = s.mutable.as_ref()?;
+    let index = s.info.members.iter().rposition(|member| member == name)?;
+    Some((cell.clone(), index))
+}
+
+pub(crate) fn struct_own_writable(f: &FormObject, name: &JsString) -> bool {
+    mutable_field(f, name).is_some_and(|(cell, index)| cell.writable(index))
+}
+
 /// The JavaScript own keys of the struct `f`, in a legacy constructor's
 /// assignment order: each distinct member name at its first field's
 /// position, then a record's three slots.
@@ -2074,6 +2101,15 @@ pub(crate) fn new_struct(
     let n = info.fields.len();
     let mut fields = values[..values.len().min(n)].to_vec();
     fields.resize(n, Value::Undefined);
+    if info.mutable {
+        // Constructor assignments with colliding munged member names keep
+        // only the last value. Do not retain an overwritten host object.
+        for (i, member) in info.members.iter().enumerate() {
+            if info.members.iter().rposition(|m| m == member) != Some(i) {
+                fields[i] = Value::Undefined;
+            }
+        }
+    }
     // A record constructor's further arguments are its metadata and
     // extension map (`(R. a b meta ext)`), each a form map or nil.
     let mut meta = None;
@@ -2143,7 +2179,17 @@ pub(crate) fn struct_field(heap: &Heap, s: &Value, name: &Value) -> Result<Value
         .fields
         .iter()
         .position(|field| field.code_units() == name.code_units())
-        .and_then(|i| body.field(i))
+        .and_then(|i| {
+            if body.mutable.is_some() {
+                body.info
+                    .members
+                    .iter()
+                    .rposition(|m| m == &body.info.members[i])
+                    .and_then(|i| body.field(i))
+            } else {
+                body.field(i)
+            }
+        })
         .ok_or(CollectionError::MissingKey)
 }
 
@@ -2173,6 +2219,12 @@ pub(crate) fn struct_set(
         .iter()
         .position(|s| s == name)
         .ok_or(CollectionError::MissingKey)?;
+    let index = body
+        .info
+        .members
+        .iter()
+        .rposition(|m| m == &body.info.members[index])
+        .expect("field has a member");
     cell.set(heap, index, field.clone())?;
     Ok(field)
 }

@@ -90,7 +90,7 @@ The Pants build shares the identity and current fields of an ordinary
 published as a helper retains that same instance. Its fields are shared
 state, rather than a copy or a cache private to each task. Protocol calls,
 field `set!`, identity equality/hash and printing use that instance in every
-task. Shared field reads and writes enter the same source-order effect
+task. Compiled field and direct member reads/writes enter the same source-order effect
 lanes as compile-time atoms, preserving the result at 1/2/4/8 threads.
 This does not make a read followed by a write an atomic transaction.
 
@@ -104,6 +104,14 @@ fails with the existing publication diagnostic, just as storing that host
 object directly in an atom does. Ordinary JavaScript objects, arrays,
 Maps and Sets remain task-owned. Raw `deftype*` bodies and mutable records
 keep their existing task-owned representation.
+
+As with other Pants build structs, the instance has a closed property shape.
+Its declared members are enumerable, writable data properties, with
+non-configurable names. A private instance supports descriptor value changes
+and freezing; a published instance rejects descriptor changes and freezing
+with a catchable `TypeError`, so shared writes always pass through the
+ordered field setter. A private frozen instance stays frozen after publication.
+Colliding munged field names retain only the constructor's last assignment.
 
 The field cell is traced through its current contents, shares the aggregate
 memory budget and runs no user code under its lock. Publishing a cell cannot

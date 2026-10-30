@@ -17,6 +17,7 @@ use crate::vm::dispatch::Fault;
 #[derive(Debug)]
 struct State {
     fields: PVector,
+    writable: Box<[bool]>,
     version: u64,
     shared: bool,
 }
@@ -30,10 +31,13 @@ pub(crate) struct MutableFields {
 impl MutableFields {
     pub(crate) fn new(heap: &Heap, fields: PVector) -> Result<Self, CollectionError> {
         let reservation = heap
-            .reserve_bytes(std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>())
+            .reserve_bytes(
+                std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>() + fields.len(),
+            )
             .ok_or(CollectionError::HeapLimit)?;
         Ok(Self {
             state: Mutex::new(State {
+                writable: vec![true; fields.len()].into_boxed_slice(),
                 fields,
                 version: 0,
                 shared: false,
@@ -71,9 +75,92 @@ impl MutableFields {
             .get(index)
     }
 
+    pub(crate) fn writable(&self, index: usize) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .writable[index]
+    }
+
+    pub(crate) fn is_frozen(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .writable
+            .iter()
+            .all(|v| !v)
+    }
+
+    pub(crate) fn freeze(&self) -> Result<(), Fault> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.shared && state.writable.iter().any(|v| *v) {
+            return Err(Fault::TypeError(
+                "cannot freeze published mutable fields".into(),
+            ));
+        }
+        state.version = state
+            .version
+            .checked_add(1)
+            .ok_or(CollectionError::HeapLimit)?;
+        state.writable.fill(false);
+        Ok(())
+    }
+
+    /// Descriptor changes are private operations. Shared writes must use
+    /// the runtime's field setter, which enters the compiler's effect lane.
+    pub(crate) fn define(
+        &self,
+        heap: &Heap,
+        index: usize,
+        desc: &crate::object::PropertyDescriptor,
+    ) -> Result<(), Fault> {
+        loop {
+            let (fields, version) = self.snapshot();
+            let current = crate::object::Property {
+                value: fields.get(index).ok_or(CollectionError::MissingKey)?,
+                flags: crate::object::PropertyFlags {
+                    writable: self.writable(index),
+                    enumerable: true,
+                    configurable: false,
+                },
+                accessor: None,
+            };
+            let next = crate::object::validate_and_apply(Some(&current), desc)
+                .map_err(|_| Fault::TypeError("cannot redefine mutable field attributes".into()))?;
+            let changed = !crate::atom::same_value(&current.value, &next.value)
+                || current.flags.writable != next.flags.writable;
+            if !changed {
+                return Ok(());
+            }
+            let updated = fields.try_set(heap, index, next.value)?;
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.version != version {
+                continue;
+            }
+            if state.shared {
+                return Err(Fault::TypeError(
+                    "cannot redefine published mutable fields".into(),
+                ));
+            }
+            let version = state
+                .version
+                .checked_add(1)
+                .ok_or(CollectionError::HeapLimit)?;
+            state.fields = updated;
+            state.writable[index] = next.flags.writable;
+            state.version = version;
+            return Ok(());
+        }
+    }
+
     pub(crate) fn set(&self, heap: &Heap, index: usize, value: Value) -> Result<(), Fault> {
         let mut checked = false;
         loop {
+            if !self.writable(index) {
+                return Err(Fault::TypeError(
+                    "cannot assign to a frozen mutable field".into(),
+                ));
+            }
             let (fields, version) = self.snapshot();
             if self.is_shared() && !checked {
                 share::check(heap, &value).map_err(|e| Fault::TypeError(e.to_string()))?;
@@ -86,11 +173,17 @@ impl MutableFields {
             if state.version != version || (state.shared && !checked) {
                 continue;
             }
-            state.fields = updated;
-            state.version = state
+            if !state.writable[index] {
+                return Err(Fault::TypeError(
+                    "cannot assign to a frozen mutable field".into(),
+                ));
+            }
+            let version = state
                 .version
                 .checked_add(1)
                 .ok_or(CollectionError::HeapLimit)?;
+            state.fields = updated;
+            state.version = version;
             return Ok(());
         }
     }
@@ -99,5 +192,31 @@ impl MutableFields {
 impl Trace for MutableFields {
     fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
         self.snapshot().0.trace(visit);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::heap::Scope;
+    use std::sync::Arc;
+
+    #[test]
+    fn publication_retries_when_an_unchecked_store_changes_its_snapshot() {
+        let heap = Arc::new(Heap::default());
+        let _scope = Scope::new(&heap);
+        let cell = MutableFields::new(
+            &heap,
+            PVector::try_from_values(&heap, &[Value::Null]).unwrap(),
+        )
+        .unwrap();
+        let (_, version) = cell.snapshot();
+        assert!(cell.set(&heap, 0, Value::Number(1.0)).is_ok());
+        assert!(!cell.mark_shared(version));
+        assert!(!cell.is_shared());
+        assert!(cell.mark_shared(cell.snapshot().1));
+        assert!(cell.is_shared());
+        assert!(cell.set(&heap, 0, Value::Number(2.0)).is_ok());
+        assert_eq!(cell.get(0), Some(Value::Number(2.0)));
     }
 }

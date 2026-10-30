@@ -178,7 +178,12 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
         // A native form is a frozen object: a struct's fields are
         // non-writable and non-configurable (`crate::vm::property`,
         // `STRUCT_FIELD`) and nothing can be added.
-        HeapObject::Form(_) => Ok(true),
+        HeapObject::Form(f) => Ok(match (level, f.body()) {
+            (Level::Frozen, crate::collections::form::FormBody::Struct(s)) => {
+                s.mutable.as_ref().is_none_or(|cell| cell.is_frozen())
+            }
+            _ => true,
+        }),
         // No properties and not extensible.
         _ => Ok(true),
     })
@@ -349,7 +354,15 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
             ))
         }
         // Already frozen: a native form, or no properties and not extensible.
-        HeapObject::Form(_) => Ok(()),
+        HeapObject::Form(f) => {
+            if level == Level::Frozen
+                && let crate::collections::form::FormBody::Struct(s) = f.body()
+                && let Some(cell) = &s.mutable
+            {
+                cell.freeze()?;
+            }
+            Ok(())
+        }
         _ => Ok(()),
     })
     .unwrap_or(Err(Fault::Internal("integrity argument was reclaimed")))

@@ -356,8 +356,8 @@ const decl = (() => {
     info.members.set(member, [name]);
     if (info.mutable) info.view.prototype[member] = function (...a) { return objectInvoke(info, member, this, a); };
   };
-  // A type: a native struct type, or with a mutable field the constructor
-  // of task-owned JavaScript instances (`view`, unused for a struct type:
+  // A type: a native struct type, or for raw bodies and mutable records the
+  // constructor of task-owned JavaScript instances (`view`, unused for a struct type:
   // a struct is its own JavaScript object, see `jsMember`).
   const type = (fields, specs, view, mutable, ty, fieldMembers) => {
     const record = __rt.formKind(__rt.structNew(ty)) === 'record';
@@ -2505,6 +2505,7 @@ const native = (() => {
     // Units keep that getter's access at the original expression site.
     nativeCoreBinding:name=>Object.getOwnPropertyDescriptor(core,name),
     nativeInterop:interop,intrinsicRegExp,nativeRegExp,nativeRegExpCall,nativeRegExpMember:function(_,...a){return nativeRegExpCall(intrinsicRegExp)(...a);},nativeConstruct:(C,...a)=>nativeRegExp(C)(...a),declarationReceiver:x=>{decl.demandObject(x);return x;},
+    nativeSetProperty:(x,k,v)=>x[k]=__rt.structState(x)!==0?v:interop(v),
     protocol:name=>Object.freeze({name}),
     protocolMethod:(key,name,arities,viaMetadata)=>decl.method(key,name,arities,viaMetadata===true),
     protocolPredicate:(protocol,key,x,direct)=>direct?decl.implementsDirectly(key,x):decl.satisfies(key,x),

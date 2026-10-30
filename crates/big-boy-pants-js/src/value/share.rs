@@ -185,6 +185,14 @@
 //! task's argument). Runtime handoffs added by later pellets (dependency
 //! results, atom contents, closure captures) call [`check`] directly.
 //! `Runtime::spawn` itself does not check its arguments; see its docs.
+//!
+//! Mutable deftype fields are the other promotion boundary: the walk checks
+//! one versioned snapshot, then marks its cell shared under the cell lock.
+//! A version changed by an unchecked store forces another walk. After that
+//! promotion every store validates its value outside the lock and rechecks
+//! the shared flag before installing it (`collections::mutable_fields`).
+//! The form header is never known-shareable at allocation, even for primitive
+//! fields: only this walk can promote its mutable cell.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1262,7 +1270,7 @@ mod tests {
             assert!(!known(&heap, &holder));
 
             // The walk reads `f` without a record ...
-            let (proven, _) = walk(&heap, id(&holder), &mut 0).unwrap();
+            let (proven, _, _) = walk(&heap, id(&holder), &mut 0).unwrap();
             assert_eq!(proven.len(), if bound { 4 } else { 2 });
             // ... then its owner attaches one ...
             let record = plain(&heap);
@@ -1378,7 +1386,7 @@ mod tests {
             let g = function();
             let holder = coll::new_vector(&heap, std::slice::from_ref(&g)).unwrap();
             let record = id(&plain(&heap));
-            let (proven, _) = walk(&heap, id(&holder), &mut 0).unwrap();
+            let (proven, _, _) = walk(&heap, id(&holder), &mut 0).unwrap();
             let (inside_tx, inside_rx) = mpsc::channel();
             let (go_tx, go_rx) = mpsc::channel::<()>();
             let attached = std::thread::scope(|s| {

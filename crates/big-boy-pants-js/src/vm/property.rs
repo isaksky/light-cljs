@@ -1259,6 +1259,7 @@ pub(super) fn read_conversion(
 
 /// What the receiver's part of a write did.
 enum Stored {
+    MutableStruct,
     Exotic(Exotic),
     Done,
     Setter(Value),
@@ -1399,6 +1400,9 @@ fn store(
         }
         // A frozen object: a field is read-only, anything else cannot be
         // added (strict mode throws, sloppy mode ignores).
+        HeapObject::Form(f) if matches!(key, Key::Name(name) if form::struct_own_writable(f, name)) => {
+            Ok(Stored::MutableStruct)
+        }
         HeapObject::Form(f) => Ok(Stored::Rejected(match key {
             Key::Name(name) if form::struct_own_property(f, name).is_some() => read_only(key),
             _ => not_extensible(key),
@@ -1530,17 +1534,6 @@ fn prepare_write_cached(
         }
         return put_primitive(base, key, strict).map(|()| Write::Complete(None));
     };
-    if let Key::Name(name) = key
-        && heap
-            .read(id, |o| {
-                matches!(o, HeapObject::Form(f)
-            if matches!(f.body(), form::FormBody::Struct(s) if s.mutable.is_some())
-                && form::struct_own_property(f, name).is_some())
-            })
-            .unwrap_or(false)
-    {
-        return Ok(Write::MutableStruct);
-    }
     // Existing names need one key lookup. A new name is interned only when
     // ordinary storage requests it, after exotic and ownership checks.
     let mut interned = cache.map(|(key, _)| key).or_else(|| match key {
@@ -1589,6 +1582,7 @@ fn prepare_write_cached(
             })
             .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
         match outcome {
+            Stored::MutableStruct => return Ok(Write::MutableStruct),
             Stored::Exotic(Exotic::Proxy) => {
                 return Ok(Write::Proxy(id));
             }
@@ -1980,7 +1974,11 @@ fn check_inherited(
                     // An occurrence continues at the object it wraps.
                     Visit::Other(HeapObject::Form(f)) => match key {
                         Key::Name(name) if form::struct_own_property(f, name).is_some() => {
-                            Err(read_only(key))
+                            if form::struct_own_writable(f, name) {
+                                Ok(Walk::Next(None))
+                            } else {
+                                Err(read_only(key))
+                            }
                         }
                         _ => Ok(Walk::ObjectPrototype),
                     },
@@ -2181,6 +2179,16 @@ pub(crate) fn define_own_property(
             view.set(heap, index, value)?;
         }
         return Ok(());
+    }
+    if let Key::Name(name) = key
+        && let Some((cell, index)) = heap
+            .read(target, |o| match o {
+                HeapObject::Form(f) => form::mutable_field(f, name),
+                _ => None,
+            })
+            .flatten()
+    {
+        return cell.define(heap, index, desc);
     }
     let target = match is_function(heap, target) {
         true => function::define_target(heap, task, target, key)?,
@@ -2462,7 +2470,10 @@ fn own_property(
                 Visit::Other(HeapObject::Form(f)) if let Key::Name(name) = key => {
                     form::struct_own_property(f, name).map(|value| Property {
                         value: if with_value { value } else { Value::Undefined },
-                        flags: STRUCT_FIELD,
+                        flags: PropertyFlags {
+                            writable: form::struct_own_writable(f, name),
+                            ..STRUCT_FIELD
+                        },
                         accessor: None,
                     })
                 }

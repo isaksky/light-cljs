@@ -7150,10 +7150,9 @@ impl<'a> Emitter<'a> {
         self.output.push(']');
     }
 
-    /// Whether the type `layout` describes keeps task-owned JavaScript
-    /// instances (light-cljs-478): one with a `^:mutable`,
-    /// `^:unsynchronized-mutable` or `^:volatile-mutable` field, or a raw
-    /// `deftype*` type, whose body may install prototype members.
+    /// Whether methods use JavaScript field access: mutable fields enter
+    /// the task runtime's resolver and effect lanes. Raw `deftype*` bodies
+    /// and mutable records retain ordinary JavaScript instances.
     fn mutable_type(record: bool, layout: &crate::analyzer::TypeLayout) -> bool {
         if layout.body.is_some() {
             return !record;
@@ -7161,7 +7160,7 @@ impl<'a> Emitter<'a> {
         layout.mutable
     }
 
-    /// Whether the method `target`'s type is a native struct type: not
+    /// Whether the method `target` reads fields directly: not
     /// [`Emitter::mutable_type`]. A field read with no type method target
     /// reads a struct unless a field of `target` is mutable. A record's
     /// `^:mutable __hash` does not count: a native record caches its hash
@@ -7216,8 +7215,9 @@ impl<'a> Emitter<'a> {
 
     /// A `deftype` or `defrecord` in a native compile-time unit
     /// (light-cljs-478; docs/native-macros.md, "Protocols and types"): the
-    /// runtime's `nativeType` makes the type, a native struct type unless a
-    /// field is mutable, and installs its methods in the protocol tables.
+    /// runtime's `nativeType` makes the type and installs its methods in
+    /// the protocol tables. Mutable deftypes use versioned field cells;
+    /// raw bodies and mutable records retain task-owned host instances.
     /// The factories of a struct type construct with `__rt.structNew` and
     /// `__rt.recordFromMap`.
     fn native_def_type(
@@ -8948,6 +8948,22 @@ impl<'a> Emitter<'a> {
                 if self.native_forms && self.compiler_binding(*target) {
                     self.output.push_str("globalThis.__lightSetCompilerRoot(");
                     self.binding_name(*target);
+                    self.output.push_str(", ");
+                    self.value(*value);
+                    self.output.push(')');
+                    return;
+                }
+                if self.native_forms
+                    && let ExprKind::Property { receiver, property } =
+                        &self.program.exprs[target.0].kind
+                {
+                    self.rt(RuntimeName::export("nativeSetProperty"));
+                    self.output.push('(');
+                    self.rt(RuntimeName::export("declarationReceiver"));
+                    self.output.push('(');
+                    self.interop_receiver(*receiver, property);
+                    self.output.push_str("), ");
+                    self.string_units(&property.encode_utf16().collect::<Vec<_>>());
                     self.output.push_str(", ");
                     self.value(*value);
                     self.output.push(')');

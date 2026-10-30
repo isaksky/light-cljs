@@ -144,6 +144,9 @@
 //!
 //! | `structType(name, fields, record, members)` | `form_op` | a new struct type (light-cljs-478; [`crate::collections::form`], "Structs"); `members` the fields' JavaScript member names, or `null` for the field names | `WrongType` |
 //! | `structNew(type, v1, …)` | `new_struct n` | a struct of `type` with these field values (missing: `undefined`) | `WrongType` |
+//! | `mutableStructType(name, fields, record, members)` | `form_op` | a non-record type with versioned mutable fields, promoted by publication | `WrongType`, `Unsupported` (records) |
+//! | `structState(v)` | `form_op` | 0 for ordinary values, 1 for private mutable fields, 2 for published fields | – |
+//! | `structSet(v, name, value)` | `form_op` | store a field by its source name; a published cell validates `value`; the compiler orders stores in its resolver | catchable `TypeError` (unshareable value or frozen field) |
 //! | `structField(s, name)` | `form_op` | the field named `name` | `WrongType`, `MissingKey` |
 //! | `structTypeOf(v)` | `form_op` | a struct's type, or `null` | – |
 //! | `recordFromMap(type, m)` | `form_op` | `map->R`: fields from `m`'s field keywords, the rest as extension entries | `WrongType` |

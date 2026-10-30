@@ -41,6 +41,87 @@ fn failure(rt: &Runtime, src: &str) -> VmError {
 }
 
 #[test]
+fn mutable_struct_publication_traces_current_fields_and_collects_cycles() {
+    let rt = Runtime::new();
+    let made = call(
+        &rt,
+        r#"function make() {
+      const T=__rt.mutableStructType('test/Box',__rt.formVector('value'),false,null);
+      const old={}, b=__rt.structNew(T,old);
+      if(__rt.structState(b)!==1)throw new Error('premature promotion');
+      return __rt.formVector(b,old);
+    }"#,
+        &[],
+    );
+    let (b, weak_b, weak_old) = rt.scope(|s| {
+        let made = s.local(&made).unwrap();
+        let b = s.form_nth(made, 0).unwrap();
+        (
+            s.persist(b),
+            s.downgrade(b),
+            s.downgrade(s.form_nth(made, 1).unwrap()),
+        )
+    });
+    let PublishError::NotShareable { path, .. } = rt.publish(&b).unwrap_err() else {
+        panic!("published a host object");
+    };
+    assert_eq!(path.to_string(), "value[0]");
+    call(
+        &rt,
+        "function replace(b) { return __rt.structSet(b,'value',__rt.formVector(1)); }",
+        &[&b],
+    );
+    rt.publish(&b).unwrap();
+    drop(made);
+    rt.collect().unwrap();
+    assert!(!weak_old.is_live(), "a replaced private field was retained");
+    let checked = call(
+        &rt,
+        r#"function check(b) {
+      if(__rt.structState(b)!==2)throw new Error('missing promotion');
+      const before=__rt.structField(b,'value'); let rejected=false;
+      try{__rt.structSet(b,'value',{});}catch(e){rejected=e instanceof TypeError;}
+      if(!rejected||__rt.structField(b,'value')!==before)throw new Error('rejected store changed field');
+      __rt.structSet(b,'value',b);
+      return __rt.structField(b,'value')===b;
+    }"#,
+        &[&b],
+    );
+    assert_eq!(checked.view(), ValueView::Bool(true));
+    rt.collect().unwrap();
+    assert!(weak_b.is_live());
+    drop(b);
+    rt.collect().unwrap();
+    assert!(
+        !weak_b.is_live(),
+        "an unreachable mutable cycle was retained"
+    );
+}
+
+#[test]
+fn mutable_struct_properties_remain_writable_until_private_freeze() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function check() {
+      const T=__rt.mutableStructType('test/Box',__rt.formVector('value'),false,null);
+      const b=__rt.structNew(T,1);
+      const d=Object.getOwnPropertyDescriptor(b,'value');
+      if(!d.writable||!d.enumerable||d.configurable||Object.isFrozen(b)||Object.isExtensible(b))throw new Error('attributes');
+      Object.defineProperty(b,'value',{value:2});
+      const child=Object.create(b); child.value=3;
+      if(child.value!==3||__rt.structField(b,'value')!==2)throw new Error('inherited write');
+      Object.freeze(b);
+      if(!Object.isFrozen(b)||Object.getOwnPropertyDescriptor(b,'value').writable)throw new Error('freeze');
+      let rejected=false; try{__rt.structSet(b,'value',4);}catch(e){rejected=e instanceof TypeError;}
+      return rejected&&__rt.structField(b,'value')===2;
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
 fn printer_traversal_uses_legacy_hash_paths_and_preserves_key_identity() {
     let rt = Runtime::new();
     let result = call(
