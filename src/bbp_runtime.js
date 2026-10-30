@@ -672,7 +672,9 @@ const decl = (() => {
     return info?.mutable && info.record ? info : null;
   };
   return {makeBundle, productGetter, index, reserve: n => { const base = bundleCount; bundleCount += n; return base; },
-    extend, extendInstance, inheritInstance:(x,parent)=>instances.set(x,instances.get(parent)), method, satisfies, implementsDirectly, predicate, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
+    extend, extendInstance, inheritInstance:(x,parent)=>instances.set(x,instances.get(parent)),
+    instanceCallable:x=>instances.get(__rt.formValue(x))?.has('IFn/-invoke')===true,
+    method, satisfies, implementsDirectly, predicate, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
     callable, invokeIFn, applyIFn, callMember, borrowedIFn,
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
@@ -2556,7 +2558,7 @@ const native = (() => {
       if(isVar(f))return core.applyVar(f,args);
       const kind=__rt.formKind(val(f));
       return (kind==='struct'||kind==='record') && !multi.is(f)
-        ? decl.applyIFn(val(f),args) : applyArgs(f,args);
+        ? decl.applyIFn(val(f),args) : decl.instanceCallable(f)?applyArgs(f,args):invoke(f,...args);
     },
     applyTo:(f,n,args)=>{
       args=seqOf(args);n=val(n);

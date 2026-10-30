@@ -555,6 +555,9 @@ fn form_op(
     if op == FormOp::StructSet {
         return form::struct_set(heap, &args[0], &args[1], args[2].clone());
     }
+    if op == FormOp::Empty {
+        return form::empty(heap, &args[0]).map_err(Fault::from);
+    }
     match clj_op(heap, op, &args) {
         Ok(Some(result)) => Ok(result),
         Ok(None) => Ok(strict_form_op(heap, host, op, args)?),
@@ -705,7 +708,6 @@ fn strict_form_op(
         FormOp::ArrayMap => form::array_map_from_sequence(heap, &arg())?,
         FormOp::Sequence => form::sequence_view(heap, &arg())?,
         FormOp::SortedMap => form::sorted_map_from_sequence(heap, &arg())?,
-        FormOp::Empty => form::empty(heap, &arg())?,
         FormOp::SortedMapBy => form::sorted_map_by(heap, &arg())?,
         FormOp::SortedComparator => form::sorted_comparator(heap, &arg()),
         FormOp::IsSortedBy => Value::Bool(
@@ -881,7 +883,8 @@ fn strict_form_op(
         | FormOp::CljChunkCons
         | FormOp::CljRealizeAll
         | FormOp::CljRangeCons
-        | FormOp::CljSymbolNs => Value::Undefined,
+        | FormOp::CljSymbolNs
+        | FormOp::Empty => Value::Undefined,
     })
 }
 
