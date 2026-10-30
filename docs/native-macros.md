@@ -5565,3 +5565,63 @@ suite (all targets) 2,218. Formatting and strict V8-build Clippy pass;
 engine Clippy shows only the nine baseline diagnostics; Pants plus QuickJS
 Clippy passes allowing the three engine baseline categories, and
 Pants-only Clippy shows only master's three test diagnostics.
+
+## Delays: verification (light-cljs-613, 2026-10-30)
+
+The contract is in "Delays (light-cljs-613)" above. Each library-free test
+fails before the change: with master's runtime and engine,
+`native_delay_values_match_quickjs` and `native_delay_protocols_match_quickjs`
+stop at `unsupported operation: native macro runtime core.Delay` (the
+reduction `(defmacro m [] @(delay 1))` is the first line of the first), and
+so does `delays_publish_and_run_once_at_all_threads`, which builds four
+namespaces whose macros force delays a helper defines and one saves in an
+atom (each body logging its run in a shared atom, one body throwing) and
+compares them with the QuickJS reference at 1, 2, 4 and 8 threads under
+seeded scheduling, with every helper published and none per task. The
+evaluator's `pooled_delay_reader_inherits_lane_and_wakes_after_cold_helper`
+(the lazy-sequence lane test, made to take either cell) parks a reader on a
+delay whose body waits for a cold helper and checks the lane loan, the wake
+and one body run; the engine's `tests/delays.rs` holds two tasks at
+barriers to show that a racing reader parks and the body runs once, and
+covers failures, reentry, identity, publication paths and collection.
+
+Penpot, from Pants and V8 release builds of this branch rebased on master
+`a62b4371`, with the five read-only roots, every budget above and
+`--source-map --source-map-include-sources`, at load average 3-6:
+`app.render` builds at 1 thread (7.65 s wall, 7.27 s user, 503,906,304
+bytes peak memory) and 4 threads (6.10 s, 9.29 s user, 616,693,760 bytes);
+the V8 build takes 2.29 s (2.56 s user, 510,181,376 bytes) and 1.47 s
+(3.60 s user, 707,985,408 bytes). All four 12,681,008-byte outputs are
+byte-identical, SHA-256 `d67471d1…38caff056`, and so are their source maps
+(each written as `out.js.map` beside `out.js`), `3c4f4cba…b1c7`. `app.main`
+passes the instaparse grammar macro and stops, at 1 and 4 threads, at:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/plugins/shape.cljs:368:10: macro expansion: while expanding app.util.object/add-properties!: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/plugins/shape.cljs:368:10: macro app.util.object/add-properties!: big-boy-pants-js: heap byte limit exceeded; definition /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/util/object.cljc:151:1 (bytes 13758..81188)
+```
+
+after 31.80 s wall, 30.93 s user and 638,795,776 bytes peak memory at 1
+thread, and 28.92 s, 38.66 s user and 843,186,176 bytes at 4 threads: the
+accounted heap reaches the 4 GB budget while the process holds under 1 GB.
+With `--macro-memory-limit 16000000000` the build (on `31bd3d85`) fails
+earlier instead, at the instaparse macro with the same error.
+light-cljs-632 owns both. The V8 build builds `app.main` (14.96 s, 17.10 s
+user, 1,147,568,128 bytes, at load average 13); there is no Pants-build
+main output to compare.
+
+V8 build: no V8-build input changed (the engine and `src/bbp_runtime.js` are
+Pants-only). Its release build of the regenerated 200k project
+(`release bench --no-cache`) writes SHA-256 `1a75bc87b26f3121…`, as before,
+and the program prints `484264`.
+
+On macOS arm64 with Homebrew Rust/Cargo 1.99.1, Node 24.22.1, the read-only
+ClojureScript pin `a5e94c98` and `LIGHT_CLJS_STRESS_SEEDS=4`, on `a62b4371`:
+Pants-only `bbp_macros` 272 (one existing ignored case), Pants plus QuickJS
+reference and V8 plus Pants 274 each; the Pants build's full suite (`-j 8`)
+runs 2,142 tests, 1,966 pass and 176 fail, every one in light-cljs-619's
+list; V8-build nextest 2,153 of 2,154, failing only the worktree
+`playground_crate_checks_for_wasm32` diagnostic; the engine's suite (all
+targets) 2,229 and its doctests. Formatting and strict V8-build Clippy pass;
+engine Clippy shows only the nine baseline diagnostics; Pants plus QuickJS
+Clippy passes allowing the three engine baseline categories, and Pants-only
+Clippy shows only master's three test diagnostics.
