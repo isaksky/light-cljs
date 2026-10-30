@@ -974,7 +974,8 @@ const native = (() => {
   };
   const rawApplies = new Map([...families,'struct'].map(k=>[k,canonicalMember(k+'-apply',()=>rawApplyMember(false))]));
   const rawIFnApply = canonicalMember('ifn-apply',()=>rawApplyMember(true));
-  // A Var's `call`, `apply` and `toString`, as the legacy Var prototype's.
+  // A Var's `call`, `apply`, `isMacro` and `toString`, as the legacy Var
+  // prototype's.
   const rawVarMembers = new Map([
     ['call', canonicalMember('var-call',()=>function(_, ...args) {
       return globalThis.__lightNativeRuntime.core.invokeVar(this,args);
@@ -982,6 +983,11 @@ const native = (() => {
     ['apply', canonicalMember('var-apply',()=>function(_, args) {
       // Past 20 arguments the root's apply, as the legacy Var's apply.
       return globalThis.__lightNativeRuntime.core.applyVar(this,globalThis.__lightNativeRuntime.core.nativeApplyArgs(args));
+    })],
+    // The root's macro flag, read through the thunk, so the read demands
+    // the root as the legacy Var's does (light-cljs-603).
+    ['isMacro', canonicalMember('var-is-macro',()=>function() {
+      return globalThis.__lightNativeRuntime.core.varIsMacro(this);
     })],
     ['toString', canonicalMember('var-string',()=>function() {
       return globalThis.__lightNativeRuntime.core.str(this);
@@ -2079,6 +2085,7 @@ const native = (() => {
     MultiFn:multi.MultiFn, MultiFnFactory:(...a)=>new multi.MultiFn(...a),
     isFn:x=>typeof val(x)==='function'||__rt.formKind(val(x))==='type'||isVar(x)||decl.satisfies('Fn',x),
     isVar, compilerMacroVar,
+    varIsMacro:v=>val(varField(v,'val')()).cljs$lang$macro,
     invokeVar:(v,args)=>invoke(varField(v,'val')(),...args),
     // The legacy Var's apply: up to 20 arguments it calls the value its
     // thunk reads (through that value's `call`, as a direct call does);
@@ -2225,7 +2232,7 @@ const native = (() => {
     isSequential:x=>__rt.cljIsSequential(x), isVector:x=>__rt.cljIsVector(x),
     isMap:x=>{const k=__rt.formKind(val(x));return k==='map'||k==='record';}, isSeq:x=>__rt.cljIsSeq(x),
     isSet:x=>__rt.formKind(val(x))==='set',
-    isNil:x=>val(x)==null, isSome:x=>val(x)!=null, isFalse:x=>__rt.cljIsFalse(x), isTrue:x=>val(x)===true, isString:x=>typeof val(x)==='string', not:x=>!truth(x), boolean:truth,
+    isNil:x=>val(x)==null, isUndefined:x=>x===undefined, isSome:x=>val(x)!=null, isFalse:x=>__rt.cljIsFalse(x), isTrue:x=>val(x)===true, isString:x=>typeof val(x)==='string', not:x=>!truth(x), boolean:truth,
     reduced:x=>__rt.cljReduced(x), isReduced:x=>__rt.cljIsReduced(x), unreduced:x=>__rt.cljUnreduced(x),
     ensureReduced:x=>__rt.cljIsReduced(x)?x:__rt.cljReduced(x),
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),

@@ -11456,6 +11456,48 @@ fn native_var_symbol_conversion_and_raw_apply_match_quickjs() {
     );
 }
 
+/// A Var's raw `isMacro` member reads its root's `cljs$lang$macro`, as the
+/// legacy Var prototype's: directly, through a saved Var, of a root that
+/// carries the flag, and of a declared Var whose root its later definition gives (the
+/// read demands it). Every Var answers the one member (light-cljs-603).
+const VAR_IS_MACRO: &[(&str, &str)] = &[
+    (
+        "doc.cljs",
+        r#"(ns doc)
+(declare later)
+(defn f [] 1)
+(deftype Flagged [cljs$lang$macro])
+(def mac (Flagged. :yes))
+(defn later [] 3)"#,
+    ),
+    (
+        "reflect.cljs",
+        r#"(ns reflect (:require [doc]))
+(def saved #'doc/f)
+(def saved-mac #'doc/mac)
+(defmacro ism []
+  (list 'quote
+    [(undefined? (.isMacro #'doc/f)) (undefined? (.isMacro saved))
+     (.isMacro #'doc/mac) (.isMacro saved-mac) (undefined? (.isMacro #'doc/later))
+     (fn? (.-isMacro saved)) (identical? (.-isMacro #'doc/f) (.-isMacro saved-mac))
+     (undefined? nil)]))"#,
+    ),
+    (
+        "main.cljs",
+        "(ns main (:require [reflect :refer [ism]])) (js/console.log (pr-str (ism)))",
+    ),
+];
+
+#[test]
+fn native_var_is_macro_member_matches_quickjs() {
+    assert_entry_matches_quickjs(
+        "native-var-is-macro",
+        VAR_IS_MACRO,
+        "[true true :yes :yes true true true false]\n",
+        &[1, 2, 4, 8],
+    );
+}
+
 /// Namespace names are exact UTF-16 code units: a lone surrogate names its
 /// own namespace, distinct from the next surrogate and from U+FFFD, and a
 /// name with a supplementary character keeps it (light-cljs-589 review
