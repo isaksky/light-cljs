@@ -6161,6 +6161,22 @@ fn native_compile_time_sequence_utilities_preserve_values_and_completion() {
 }
 
 #[test]
+fn native_compile_time_exception_uuid_and_array_helpers_match_application_values() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [cause (js/Error. "root") error (ex-info "outer" {:x 1} cause)]
+               (list 'quote [(ex-message error) (ex-data error) (ex-message (ex-cause error))
+                 (:cause (Throwable->map error))
+                 (str (parse-uuid "A987FBC9-4BED-3078-CF07-9141BA07C9F3"))
+                 (uuid? (uuid "abc")) (parse-uuid "bad")
+                 (vec (int-array 3 '(7 8))) (vec (object-array [1 2]))
+                 @(Reduced. 4) (vec (Cons. nil 1 '(2) nil))])))
+           (js/console.log (pr-str (probe)))"#,
+        "[\"outer\" {:x 1} \"root\" \"root\" \"a987fbc9-4bed-3078-cf07-9141ba07c9f3\" true nil [7 8 nil] [1 2] 4 [1 2]]\n",
+    );
+}
+
+#[test]
 fn native_inline_macro_declarations_install_protocol_and_type_products() {
     assert_native_matches_legacy(
         r#"(defn declarations []

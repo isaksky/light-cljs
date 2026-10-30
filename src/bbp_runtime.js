@@ -1818,6 +1818,15 @@ const native = (() => {
     return cursor;
   };
   const arraySeq = (array, index) => index < array.length ? copyArraySeq(array,index,null) : null;
+  const typedArray=(...a)=>{
+    if(a.length===1)return typeof val(a[0])==='number'?typedArray(a[0],null):arr(a[0]).slice();
+    if(a.length!==2)return arity(a.length);
+    const size=val(a[0]),init=a[1],result=new Array(size);
+    if(__rt.cljIsSeq(init)){
+      let s=seqOf(init);for(let i=0;s!==null&&i<size;i++,s=__rt.cljNext(s))result[i]=__rt.cljFirst(s);
+    }else for(let i=0;i<size;i++)result[i]=init;
+    return result;
+  };
   const countedKinds = __rt.map('list',true,'empty-list',true,'sequence',true,'vector',true,'map-entry',true,'map',true,'set',true);
   const equalArraySeq = (a,b) => {
     // Mutable records are host objects: when the right operand is a cursor,
@@ -2345,6 +2354,7 @@ const native = (() => {
     nsName:(...a)=>a.length!==1?arity(a.length):__rt.formKind(val(a[0]))==='symbol'?__rt.formName(val(a[0])):val(a[0]).name,
     sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
     array:(...a)=>a,
+    intArray:typedArray,longArray:typedArray,doubleArray:typedArray,objectArray:typedArray,
     alength:a=>val(a).length,
     primSeq:(...a)=>a.length===1||a.length===2?arraySeq(val(a[0]),a.length===1?0:val(a[1])):arity(a.length),
     arraySeq:(a,i=0)=>val(a)==null?null:arraySeq(val(a),val(i)),
@@ -2444,6 +2454,8 @@ const native = (() => {
     isSet:x=>__rt.formKind(val(x))==='set',
     isNil:x=>val(x)==null, isUndefined:x=>x===undefined, isSome:x=>val(x)!=null, isFalse:x=>__rt.cljIsFalse(x), isTrue:x=>val(x)===true, isString:x=>typeof val(x)==='string', not:x=>!truth(x), boolean:truth,
     reduced:x=>__rt.cljReduced(x), isReduced:x=>__rt.cljIsReduced(x), unreduced:x=>__rt.cljUnreduced(x),
+    Reduced:function(x){return __rt.cljReduced(x);},
+    Cons:function(metadata,head,tail){return __rt.cljWithMeta(__rt.cljCons(head,tail),metadata);},
     ensureReduced:x=>__rt.cljIsReduced(x)?x:__rt.cljReduced(x),
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
     imul:(a,b)=>multiplyInt(val(a),val(b)),
@@ -2491,6 +2503,10 @@ const native = (() => {
     isInt:x=>core.isInteger(x),
     keywordIdentical:(x,y)=>val(x)===val(y)||__rt.formKind(val(x))==='keyword'&&__rt.formKind(val(y))==='keyword'&&__rt.formEquals(x,y),
     isInfinite:x=>val(x)===Infinity||val(x)===-Infinity,
+    uuid:x=>{x=val(x);if(typeof x!=='string')throw new Error('UUID expects a string');return __rt.formCompilerLiteral('uuid',x.toLowerCase());},
+    isUuid:x=>__rt.formKind(val(x))==='compiler-literal'&&__rt.formName(val(x))==='uuid',
+    parseUuid:x=>{x=val(x);if(typeof x!=='string')throw new Error('Expected string, got: '+(x==null?'nil':Array.isArray(x)?'array':typeof x));
+      return x.length===36&&/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(x)?core.uuid(x):null;},
     rand:(...a)=>a.length===0?Math.random():a.length===1?val(a[0])*Math.random():arity(a.length),
     randInt:n=>Math.floor(Math.random()*val(n)),
     ExceptionInfo,

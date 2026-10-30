@@ -1387,12 +1387,22 @@ impl BbpRuntime {
         let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
         let reader = native_reader_source(manifest);
         let core_names = manifest.unit(manifest.unit_named("readerCoreNames").unwrap());
+        // This pinned vocabulary is immutable. Materializing a JS Set in
+        // every task spends the small shared heap budget before macros run.
+        // Keep the canonical spellings in one string; code reads only ask
+        // whether a source name belongs to that vocabulary.
+        let (_, core_names) = manifest.source()[core_names.body_range.clone()]
+            .split_once("new Set(")
+            .expect("canonical reader core names");
+        let (core_names, _) = core_names
+            .split_once(".split(\" \"))")
+            .expect("canonical reader core name spellings");
+        let core_names = format!(
+            "const readerCoreNames={{has: name => (\" \" + {core_names} + \" \").includes(\" \" + name + \" \")}};"
+        );
         let reader = include_str!("bbp_reader.js")
             .replace("/* READER */", &reader)
-            .replace(
-                "/* CORE_NAMES */",
-                &manifest.source()[core_names.body_range.clone()],
-            );
+            .replace("/* CORE_NAMES */", &core_names);
         let source = include_str!("bbp_runtime.js")
             .replace("/* NATIVE_READER */", &reader)
             .replace("/* MEMBER_MUNGING */", &{
