@@ -1620,10 +1620,18 @@ persistence remain out of scope.
      On the Pants build, `core-write` names the core function the build
      may write: the build then looks nothing up, since cached macro code
      may call that function directly, and publishes nothing, since an
-     identical rebuild would not look it up either (light-cljs-571). Only a write the
-     program spells (`set!`, `binding`, `with-redefs` or a `js*` hole on the
-     function, also inside `#(...)`), or a mutation operator used as a
-     value, counts; dynamic Vars never do.
+     identical rebuild would not look it up either (light-cljs-571). The
+     build finds writes by spelling, in every source before analysis: a
+     `set!`, `binding`, `with-redefs` or `js*` hole whose place names the
+     function, in a list or `#(...)`, under metadata, quote or a property
+     access (`.-x`, `.`, `..`, `aget`). When the spelling cannot show that a
+     place names no core function (an unquoted place or binding vector, a
+     `set!` without both operands as in `(-> f (set! g))`, a binding form
+     that is not a vector, a tagged literal other than `#js`, `#inst`,
+     `#uuid` or `#queue`), or a mutation operator is used as a value, every
+     core function counts as written. A computed receiver, `(set! (.-x (f))
+     v)`, does not count, as in the analyzer's index of resolved writes.
+     Dynamic Vars never count.
    - **Policy.** As `cache_policy::evaluate`, in one forward pass: every
      edge points to an earlier namespace. `^:light-cljs/no-cache` covers
      only its namespace, whose consumers still hit while its key is the

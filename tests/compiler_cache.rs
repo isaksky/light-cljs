@@ -304,11 +304,15 @@ fn core_function_writes_name_their_miss() {
     assert_eq!(warm.js, oracle.js);
 }
 
-/// A real core write inside an anonymous function literal, `#(...)`, or a
-/// `fn` is found by the Pants build's scan like one in a list: once a
-/// consumer adds one, the cached provider whose helper calls the written
-/// function is analyzed again rather than installed, and expansion sees the
-/// write. Covers `set!`, `binding`, `with-redefs` and a `js*` hole.
+/// A real core write the Pants build's scan must find before any lookup,
+/// whatever form hides it: once a consumer adds one, the cached provider
+/// whose helper calls the written function is analyzed again rather than
+/// installed, and expansion sees the write. Each row is one shape: `set!`,
+/// `binding`, `with-redefs` and a `js*` hole inside `#(...)` or a `fn`;
+/// metadata on a binding vector or a place; multi-arity, named and `letfn`
+/// functions; `#(...)` nested in a `fn`; syntax-quoted places and binding
+/// vectors in a macro; reader conditionals around or inside a binding
+/// vector; a threaded `set!`; and a `..` property place.
 #[cfg(all(
     feature = "bbp-macros",
     not(feature = "v8-macros"),
@@ -316,50 +320,149 @@ fn core_function_writes_name_their_miss() {
 ))]
 #[test]
 fn anonymous_core_writes_reject_cached_providers() {
-    for (redefine, expected) in [
-        (
+    // One edited consumer: its file, the forms before its macro, the
+    // macro's body and what the macro returns, when the row pins it.
+    struct CoreWriteRow {
+        file: &'static str,
+        defs: &'static str,
+        redefine: &'static str,
+        expected: Option<&'static str>,
+    }
+    const fn row(redefine: &'static str, expected: &'static str) -> CoreWriteRow {
+        CoreWriteRow {
+            file: "main.cljs",
+            defs: "",
+            redefine,
+            expected: Some(expected),
+        }
+    }
+    for CoreWriteRow {
+        file,
+        defs,
+        redefine,
+        expected,
+    } in [
+        row(
             "(let [before (util/probe)] (#(set! cljs.core/even? (fn [_] false))) [before (util/probe)])",
             "[true false]",
         ),
-        (
+        row(
             "(#(with-redefs [cljs.core/even? (fn [_] false)] (util/probe)))",
             "false",
         ),
-        (
+        row(
             "((fn [] (binding [cljs.core/even? (fn [_] false)] (util/probe))))",
             "false",
         ),
-        (
+        row(
             "(let [before (util/probe)] (#(js* \"(~{} = function (_) { return false; })\" cljs.core/even?)) [before (util/probe)])",
             "[true false]",
         ),
+        // Metadata on the binding vector, in `#(...)` and in a list.
+        row(
+            "(#(with-redefs ^:scan [cljs.core/even? (fn [_] false)] (util/probe)))",
+            "false",
+        ),
+        row(
+            "(binding ^{:scan true} [cljs.core/even? (fn [_] false)] (util/probe))",
+            "false",
+        ),
+        // Metadata on the place.
+        row(
+            "(#(with-redefs [^:scan cljs.core/even? (fn [_] false)] (util/probe)))",
+            "false",
+        ),
+        row(
+            "((fn ([] (with-redefs [cljs.core/even? (fn [_] false)] (util/probe))) ([x] x)))",
+            "false",
+        ),
+        row(
+            "((fn named [] (binding [cljs.core/even? (fn [_] false)] (util/probe))))",
+            "false",
+        ),
+        row(
+            "(letfn [(f [] (with-redefs [cljs.core/even? (fn [_] false)] (util/probe)))] (f))",
+            "false",
+        ),
+        row(
+            "((fn [] (#(set! cljs.core/even? %) (fn [_] false)) (util/probe)))",
+            "false",
+        ),
+        // A threaded `set!` whose place is the threaded value.
+        row(
+            "(let [before (util/probe)] (-> cljs.core/even? (set! (fn [_] false))) [before (util/probe)])",
+            "[true false]",
+        ),
+        // Syntax-quoted binding vector and place in a macro the helper uses.
+        CoreWriteRow {
+            file: "main.cljs",
+            defs: "(defmacro redef [bindings & body] `(with-redefs ~bindings ~@body)) \
+                   (defn redef-probe [] (redef [cljs.core/even? (fn [_] false)] (util/probe)))",
+            redefine: "(redef-probe)",
+            expected: Some("false"),
+        },
+        CoreWriteRow {
+            file: "main.cljs",
+            defs: "(defmacro setter [place value] `(set! ~place ~value)) \
+                   (defn redef-probe [] (let [before (util/probe)] (setter cljs.core/even? (fn [_] false)) [before (util/probe)]))",
+            redefine: "(redef-probe)",
+            expected: Some("[true false]"),
+        },
+        // Reader conditionals around and inside the binding vector. The
+        // reader selects the branch before the scan runs; these rows keep
+        // that so.
+        CoreWriteRow {
+            file: "main.cljc",
+            defs: "",
+            redefine: "(with-redefs #?(:cljs [cljs.core/even? (fn [_] false)] :clj []) (util/probe))",
+            expected: Some("false"),
+        },
+        CoreWriteRow {
+            file: "main.cljc",
+            defs: "",
+            redefine: "(with-redefs [#?@(:cljs [cljs.core/even? (fn [_] false)])] (util/probe))",
+            expected: Some("false"),
+        },
+        // A property place reached through `..`.
+        CoreWriteRow {
+            file: "main.cljs",
+            defs: "",
+            redefine: "(let [before (util/sum)] (#(set! (.. cljs.core/+ -call) (fn [_ a b] 42))) [before (util/sum)])",
+            expected: None,
+        },
     ] {
         let project = Project::new(&[
-            ("util.cljs", "(ns util) (defn probe [] (even? 2))"),
+            (
+                "util.cljs",
+                "(ns util) (defn probe [] (even? 2)) (defn sum [] (+ 1 2))",
+            ),
             (
                 "macros.cljs",
-                "(ns macros (:require [util])) (defmacro check [] (util/probe))",
+                "(ns macros (:require [util])) (defmacro check [] [(util/probe) (util/sum)])",
             ),
             (
                 "main.cljs",
-                "(ns main (:require [macros :refer [check]])) (js/console.log (check))",
+                "(ns main (:require [macros :refer [check]])) (js/console.log (pr-str (check)))",
             ),
         ]);
         project.cached("main", &[]);
         let warm = project.cached("main", &[]);
         assert_eq!(warm.stat("cache.hits"), 3, "{}", warm.stats);
-        assert_eq!(warm.run(), "true\n");
+        assert_eq!(warm.run(), "[true 3]\n");
 
+        fs::remove_file(project.dir.join("src/main.cljs")).unwrap();
         project.write(
-            "main.cljs",
+            file,
             &format!(
-                "(ns main (:require [util] [macros :refer [check]])) \
+                "(ns main (:require [util] [macros :refer [check]])) {defs} \
                  (defmacro redefined [] {redefine}) \
-                 (js/console.log (check) (pr-str (redefined)))"
+                 (js/console.log (pr-str (check)) (pr-str (redefined)))"
             ),
         );
         let oracle = project.uncached("main");
-        assert_eq!(oracle.run(), format!("true {expected}\n"), "{redefine}");
+        if let Some(expected) = expected {
+            assert_eq!(oracle.run(), format!("[true 3] {expected}\n"), "{redefine}");
+        }
         let edited = project.cached("main", &[]);
         assert_eq!(edited.stat("cache.hits"), 0, "{redefine}: {}", edited.stats);
         assert_eq!(
@@ -376,6 +479,51 @@ fn anonymous_core_writes_reject_cached_providers() {
         );
         assert_eq!(edited.js, oracle.js, "{redefine}");
     }
+}
+
+/// Places the Pants build's scan can read and that name no core function
+/// mark no core write, so a rebuild with nothing changed still hits every
+/// namespace: metadata on a binding vector, multi-arity, named and `letfn`
+/// functions, a syntax-quoted binding vector whose places are literal, a
+/// computed property receiver and literal `js*` holes.
+#[cfg(all(
+    feature = "bbp-macros",
+    not(feature = "v8-macros"),
+    not(feature = "quickjs")
+))]
+#[test]
+fn non_core_places_keep_cached_artifacts() {
+    let project = Project::new(&[
+        (
+            "util.cljs",
+            "(ns util) (def ^:dynamic *scale* 1) (defn scaled [x] (* x *scale*)) \
+             (defmacro with-scale [n & body] `(binding [util/*scale* ~n] ~@body))",
+        ),
+        (
+            "macros.cljs",
+            "(ns macros (:require [util])) \
+             (defmacro scaled-all [& xs] (mapv #(with-redefs ^:scan [util/*scale* 10] (util/scaled %)) xs)) \
+             (defmacro arities [] ((fn ([] (binding [util/*scale* 2] (util/scaled 1))) ([x] x)))) \
+             (defmacro named [] ((fn scale [] (binding [util/*scale* 3] (util/scaled 1))))) \
+             (defmacro letfns [] (letfn [(f [] (binding [util/*scale* 4] (util/scaled 1)))] (f)))",
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [macros :refer [scaled-all arities named letfns]] [util :refer [with-scale]])) \
+             (def state #js {:n 0}) \
+             (set! (.-n (identity state)) (js* \"~{} + ~{}\" 1 #js [2])) \
+             (js/console.log (pr-str (scaled-all 1 2)) (arities) (named) (letfns) \
+               (with-scale 5 (util/scaled 1)) (.-n state))",
+        ),
+    ]);
+    let oracle = project.uncached("main");
+    assert_eq!(oracle.run(), "[10 20] 2 3 4 5 12\n");
+    let populated = project.cached("main", &[]);
+    assert_eq!(populated.stat("cache.published"), 3, "{}", populated.stats);
+    let warm = project.cached("main", &[]);
+    assert_eq!(warm.stat("cache.hits"), 3, "{}", warm.stats);
+    assert!(warm.rows().is_empty(), "{:?}", warm.rows());
+    assert_eq!(warm.js, oracle.js);
 }
 
 /// Computed mutation symbols leave no lexical core-write hint. Installing the

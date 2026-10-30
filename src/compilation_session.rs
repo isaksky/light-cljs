@@ -769,36 +769,48 @@ impl SharedCatalog {
             );
             return;
         }
-        let mut target = |mut id: NodeId| {
+        // The core functions a mutated place names, or `false` when its
+        // spelling cannot show that it names none: an unquoted place, a
+        // reader conditional or an unknown tagged literal. Property and
+        // index places name their receiver. A computed receiver, `(set!
+        // (.-x (f)) v)`, is not a core write, as in the analyzer's index of
+        // resolved writes ([`Self::index_native_core_target`]); literals and
+        // fresh collections never are.
+        let mut found = Vec::<&'static str>::new();
+        let mut target = |mut id: NodeId| -> bool {
             loop {
-                if let NodeKind::Collection {
-                    kind: CollectionKind::List,
-                    children,
-                } = &syntax.nodes[id.0].kind
-                    && children.len() > 1
-                    && (spelling(children[0]).starts_with(".-")
-                        || matches!(spelling(children[0]), "." | "aget" | "cljs.core/aget"))
-                {
-                    id = children[1];
-                    continue;
-                }
-                match syntax.nodes[id.0].kind {
+                match &syntax.nodes[id.0].kind {
+                    NodeKind::Collection {
+                        kind: CollectionKind::List,
+                        children,
+                    } if children.len() > 1
+                        && (spelling(children[0]).starts_with(".-")
+                            || matches!(
+                                spelling(children[0]),
+                                "." | ".." | "aget" | "cljs.core/aget"
+                            )) =>
+                    {
+                        id = children[1]
+                    }
+                    NodeKind::Metadata { target, .. } => id = *target,
                     NodeKind::Prefix {
                         kind: PrefixKind::Unquote | PrefixKind::UnquoteSplicing,
                         ..
-                    } => {
-                        replaced.extend(
-                            crate::CoreFnId::ALL
-                                .into_iter()
-                                .map(crate::CoreFnId::runtime_name),
-                        );
-                        return;
-                    }
-                    NodeKind::Metadata { target, .. } | NodeKind::Prefix { form: target, .. } => {
-                        id = target
-                    }
+                    } => return false,
+                    NodeKind::Prefix { form, .. } => id = *form,
                     _ => break,
                 }
+            }
+            match &syntax.nodes[id.0].kind {
+                NodeKind::Symbol => {}
+                NodeKind::Tagged { tag, .. } => {
+                    return matches!(spelling(*tag), "js" | "inst" | "uuid" | "queue");
+                }
+                NodeKind::Conditional { .. }
+                | NodeKind::Discard { .. }
+                | NodeKind::Prefix { .. }
+                | NodeKind::Metadata { .. } => return false,
+                _ => return true,
             }
             let name = spelling(id);
             let name = name
@@ -808,38 +820,61 @@ impl SharedCatalog {
             let name = name.strip_prefix("cljs.core.").unwrap_or(name);
             let name = name.split_once('.').map_or(name, |(binding, _)| binding);
             if let Some(core) = crate::CoreFnId::resolve(name) {
-                replaced.insert(core.runtime_name());
+                found.push(core.runtime_name());
             }
             if let Some(names) = renamed.get(name) {
-                replaced.extend(names.iter().copied());
+                found.extend(names.iter().copied());
+            }
+            true
+        };
+        // A binding vector, under any metadata, whose places sit at even
+        // positions: a splicing reader conditional could move them.
+        let places = |mut id: NodeId| -> Option<&[NodeId]> {
+            loop {
+                match &syntax.nodes[id.0].kind {
+                    NodeKind::Metadata { target, .. } => id = *target,
+                    NodeKind::Collection {
+                        kind: CollectionKind::Vector,
+                        children,
+                    } if !children.iter().any(|child| {
+                        matches!(
+                            syntax.nodes[child.0].kind,
+                            NodeKind::Conditional { splicing: true, .. }
+                        )
+                    }) =>
+                    {
+                        return Some(children);
+                    }
+                    _ => return None,
+                }
             }
         };
-        for node in &syntax.nodes {
-            let Some(children) = call(node) else {
-                continue;
-            };
-            let Some((&head, args)) = children.split_first() else {
-                continue;
+        let sure = syntax.nodes.iter().all(|node| {
+            let Some((&head, args)) = call(node).and_then(<[NodeId]>::split_first) else {
+                return true;
             };
             let head = spelling(head);
             let head = head.rsplit('/').next().unwrap_or(head);
             match (head, args) {
-                ("set!", [place, ..]) => target(*place),
-                ("binding" | "with-redefs", [bindings, ..]) => {
-                    if let NodeKind::Collection {
-                        kind: CollectionKind::Vector,
-                        children,
-                    } = &syntax.nodes[bindings.0].kind
-                    {
-                        for &place in children.iter().step_by(2) {
-                            target(place);
-                        }
-                    }
-                }
+                ("set!", [place, _, ..]) => target(*place),
+                // A threaded `(-> place (set! value))` hides its place.
+                ("set!", _) => false,
+                ("binding" | "with-redefs", [bindings, ..]) => places(*bindings)
+                    .is_some_and(|places| places.iter().step_by(2).all(|&place| target(place))),
+                ("binding" | "with-redefs", []) => false,
                 // Raw JavaScript can assign any core value passed as a hole.
-                ("js*", [_, holes @ ..]) => holes.iter().copied().for_each(&mut target),
-                _ => (),
+                ("js*", [_, holes @ ..]) => holes.iter().all(|&hole| target(hole)),
+                _ => true,
             }
+        });
+        if sure {
+            replaced.extend(found);
+        } else {
+            replaced.extend(
+                crate::CoreFnId::ALL
+                    .into_iter()
+                    .map(crate::CoreFnId::runtime_name),
+            );
         }
     }
     #[cfg(feature = "bbp-macros")]
