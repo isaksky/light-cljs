@@ -6130,6 +6130,19 @@ fn native_compile_time_print_output_bindings_restore_after_errors() {
 }
 
 #[test]
+fn native_compile_time_code_reader_uses_macro_visibility() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (list 'quote [(read-string "'a") (read-string "`(inc local)")
+               (read-string "::key")
+               (binding [*ns* (create-ns 'bound)] (read-string "::key"))
+               (read-string "::key")]))
+           (js/console.log (pr-str (probe)))"#,
+        "[(quote a) (cljs.core/sequence (cljs.core/seq (cljs.core/concat (cljs.core/list (quote cljs.core/inc)) (cljs.core/list (quote cljs.user/local))))) :cljs.user/key :bound/key :cljs.user/key]\n",
+    );
+}
+
+#[test]
 fn native_compile_time_empty_primitive_sequences_and_scalar_predicates() {
     assert_native_matches_legacy(
         r#"(defmacro probe []

@@ -1394,8 +1394,31 @@ const native = (() => {
   const macroReaderFunction = fn => Object.assign(function(...args){
     const env=get(args[1],__rt.cljKeyword('ns')),name=get(env,__rt.cljKeyword('name'));
     if(val(name)==null)return Reflect.apply(fn,null,args);
-    const saved=core.currentNs;core.currentNs=createNs(name);
-    try{return Reflect.apply(fn,null,args);}finally{core.currentNs=saved;}
+    const saved=core.currentNs,ns=createNs(name),previous=ns.readerContext;
+    const context=previous??{aliases:new Map(),refers:new Map(),excludes:new Set(),bindings:new Set()};
+    const aliases=new Map(),refers=new Map(),excludes=new Set(),bindings=new Set();
+    const text=x=>val(x), nth=(x,n)=>__rt.cljNth(x,n), key=n=>__rt.cljKeyword(n);
+    for(const pair of arr(get(env,key('requires'))))aliases.set(core.str(nth(pair,0)),core.str(nth(pair,1)));
+    const view=get(args[1],__rt.formKeyword('light-cljs','reader-context'));
+    let declared=context.declared,visible=context.visible??0;
+    if(val(view)!=null){
+      for(const entry of arr(get(view,key('refers'))))refers.set(text(nth(entry,0)),[text(nth(entry,1)),text(nth(entry,2))]);
+      for(const name of arr(get(view,key('excludes'))))excludes.add(text(name));
+      for(const name of arr(get(view,key('bindings'))))bindings.add(text(name));
+      const added=get(view,key('declared'));
+      if(val(added)!=null){
+        const generation=val(get(added,key('generation')));
+        if(ns.readerDeclared?.generation!==generation)ns.readerDeclared={generation,index:new Map()};
+        let position=val(get(added,key('from')));
+        for(const name of arr(get(added,key('names'))))ns.readerDeclared.index.set(text(name),position++);
+        declared=ns.readerDeclared.index;visible=val(get(view,key('visible')));
+      }
+    }
+    const overlay=(base,own)=>own.size===0?base:{has:key=>own.has(key)||base.has(key),get:key=>own.has(key)?own.get(key):base.get(key)};
+    ns.readerContext={aliases:overlay(context.aliases,aliases),refers:overlay(context.refers,refers),
+      excludes:overlay(context.excludes,excludes),bindings:overlay(context.bindings,bindings),declared,visible};
+    core.currentNs=ns;
+    try{return Reflect.apply(fn,null,args);}finally{ns.readerContext=previous;core.currentNs=saved;}
   },fn);
   // A comparison of adjacent operands, true for one; as the legacy runtimes.
   const chain = (xs, test) => { if (xs.length === 0) arity(0); for (let i = 1; i < xs.length; i++) if (!test(val(xs[i - 1]), val(xs[i]))) return false; return true; };
@@ -1704,7 +1727,7 @@ const native = (() => {
     arraySeqs.set(cursor, {array, index, meta});
     return cursor;
   };
-  const arraySeq = (array, index) => index >= array.length ? null : copyArraySeq(array,index,null);
+  const arraySeq = (array, index) => index < array.length ? copyArraySeq(array,index,null) : null;
   const countedKinds = __rt.map('list',true,'empty-list',true,'sequence',true,'vector',true,'map-entry',true,'map',true,'set',true);
   const equalArraySeq = (a,b) => {
     // Mutable records are host objects: when the right operand is a cursor,
@@ -2526,7 +2549,13 @@ const native = (() => {
         return invoke(f,...a);
       };
     },
-    registerReaderNamespace:name=>createNs(__rt.cljSymbol(val(name))), addReaderDefinitions:()=>null,
+    registerReaderNamespace:(name,context={},added=false)=>{
+      const ns=createNs(__rt.cljSymbol(val(name)));
+      if(added&&ns.readerContext){for(const b of context.bindings)ns.readerContext.bindings.add(b);return ns;}
+      ns.readerContext={aliases:new Map(context.aliases??[]),refers:new Map((context.refers??[]).map(([local,ns,name])=>[local,[ns,name]])),
+        excludes:new Set(context.excludes??[]),bindings:new Set(context.bindings??[])};
+      return ns;
+    }, addReaderDefinitions:()=>null,
     PersistentVector:{EMPTY:__rt.formVector()}, PersistentArrayMap:{EMPTY:arrayMap([])}, List:{EMPTY:__rt.formList()},
     PersistentHashSet:{EMPTY:ordered(__rt.formSet())},
     Keyword:{}, Symbol:{}, PersistentHashMap:{EMPTY:ordered(__rt.formMap()), fromArrays:(ks,vs)=>{

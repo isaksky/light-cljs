@@ -65,7 +65,7 @@
     'uuid',unsupported('reader UUID literal'),'queue',unsupported('reader queue literal'),'js',readerJsTag);
   const previousTags=__rt.atomCas(readerTagsCell,null,candidateTags);
   const sharedTags=previousTags===null?candidateTags:previousTags;
-  const readerCoreNames=new Set();
+  /* CORE_NAMES */
   /* READER */
   const reader=createReader({keyword:core.keyword,symbol:core.symbol,vectorFromArray:vector,
     listFromArray:list,mapFromArray:readerMap,setFromArray:readerSet,inspect,jsLiterals:readerJsLiterals,
@@ -80,9 +80,9 @@
       ['js',__rt.formGet(sharedTags,'js',null)]
     ]),
     readBuiltin:tag=>unsupported('reader '+(tag==='uuid'?'UUID':tag==='js'?'JS':tag)+' literal')()});
-  // Code-profile read-string also needs the compiler's namespace resolution
-  // view. Leave that existing unsupported boundary explicit.
-  for(const name of ['ednReadString','ednRead','readerReadString','readerRead',
+  // Code reads use the namespace and source visibility installed by the
+  // macro reader wrapper, including nested bindings and lexical shadows.
+  for(const name of ['readString','read','readLine','ednReadString','ednRead','readerReadString','readerRead',
     'readerStringReader','readerInputProvider','readerReadLine','readerParseTimestampFields',
     'readerParseTimestamp','readerInitialTagTable','readerRegisterTagParser','readerDeregisterTagParser',
     'readerRegisterDefaultTagParser','readerDeregisterDefaultTagParser','readerWithInput',

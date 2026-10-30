@@ -1386,7 +1386,13 @@ impl BbpRuntime {
         // this unit is included, not the legacy runtime or an evaluator fallback.
         let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
         let reader = native_reader_source(manifest);
-        let reader = include_str!("bbp_reader.js").replace("/* READER */", &reader);
+        let core_names = manifest.unit(manifest.unit_named("readerCoreNames").unwrap());
+        let reader = include_str!("bbp_reader.js")
+            .replace("/* READER */", &reader)
+            .replace(
+                "/* CORE_NAMES */",
+                &manifest.source()[core_names.body_range.clone()],
+            );
         let source = include_str!("bbp_runtime.js")
             .replace("/* NATIVE_READER */", &reader)
             .replace("/* CORE_KEYS */", &keys);
