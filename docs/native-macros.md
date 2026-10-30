@@ -362,7 +362,10 @@ instead, the Pants build gives the same result:
   keeping the first key and the last value. A regular expression of the
   call that does not compile fails it as the engine's `RegExp` constructor
   does while it decodes the call, before any limit, with the V8 build's
-  wording. A call holding a `#js` literal, an `#inst` or a queue, whose
+  wording (some reasons depend on where the pattern stops: `^*` has nothing
+  to repeat, a quantified lookbehind an invalid quantifier; 107 patterns
+  give the same text on both builds). The pattern is checked as its UTF-16
+  code units, so a lone surrogate a macro put in it stays one. A call holding a `#js` literal, an `#inst` or a queue, whose
   conversion the emulation does not follow, or one the engine may refuse
   inside a set or a map of more than eight entries, whose order is its
   hashes', or with keys it may find equal that this cannot tell (two

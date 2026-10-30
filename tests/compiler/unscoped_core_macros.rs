@@ -127,6 +127,32 @@ fn declined_doseq_rejects_invalid_regex_before_conversion_limits() {
         ("(?i)(?", "Invalid regular expression: /(?/i: Invalid group"),
         (")", "Invalid regular expression: /)/: Unmatched ')'"),
         ("(?x)a", "Invalid flags supplied to RegExp constructor 'x'"),
+        // Reasons that depend on where the pattern stops.
+        ("^*", "Invalid regular expression: /^*/: Nothing to repeat"),
+        (
+            "(?<=a)*",
+            "Invalid regular expression: /(?<=a)*/: Invalid quantifier",
+        ),
+        (
+            "(?u)a{",
+            "Invalid regular expression: /a{/u: Incomplete quantifier",
+        ),
+        (
+            "(?u)^{",
+            "Invalid regular expression: /^{/u: Lone quantifier brackets",
+        ),
+        (
+            "(?i-i:a)",
+            "Invalid regular expression: /(?i-i:a)/: Repeated flag in flag group",
+        ),
+        (
+            "a(?i)b",
+            "Invalid regular expression: /a(?i)b/: Invalid group",
+        ),
+        (
+            "(?u)[\\p{Foo}]",
+            "Invalid regular expression: /[\\p{Foo}]/u: Invalid property name in character class",
+        ),
     ] {
         let source = format!("(doseq [{bindings}] #\"{regex}\")");
         for raised in [false, true] {
@@ -149,6 +175,56 @@ fn declined_doseq_rejects_invalid_regex_before_conversion_limits() {
             assert!(found, "{source} raised {raised}: {failure}");
         }
     }
+}
+
+/// Regular expressions are checked as their UTF-16 code units: a range
+/// from a lone surrogate that a macro built (`\uD800`, which no UTF-8 text
+/// holds) to `\uE000` compiles, and astral characters are their two units
+/// each, as the engine reads them without the u flag and as one character
+/// with it.
+#[test]
+fn declined_doseq_preserves_surrogate_regex_ranges() {
+    let bindings = "[a [0] b [0] c [0] d [0] e [0] f [0] g [0] h [0] i [2 3]]";
+    let source = format!(
+        r#"(defmacro wide [] (list 'doseq '{bindings} (list 'js/console.log (list '.test (js/RegExp. "^[\uD800-\uE000]$") "\uDBFF") (list '.test #"(?u)^[😀-😂]$" "😁") 'i)))
+        (wide)"#
+    );
+    // The QuickJS reference's own decoding refuses the lone surrogate's
+    // range ("invalid class range").
+    if cfg!(all(light_quickjs, not(light_v8))) {
+        return;
+    }
+    let mut host = MacroHost::new();
+    host.limits.generated_nodes = 10_000_000;
+    host.limits.expansions = 100_000;
+    let js = compile_with_macros(&source, &mut host).unwrap_or_else(|error| panic!("{error}"));
+    let root = crate::temp_dir::TempDir::new("surrogate-regex");
+    let file = root.join("main.js");
+    std::fs::write(&file, &js).unwrap();
+    let ran = std::process::Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+        .arg(&file)
+        .output()
+        .expect("compiler integration requires Node");
+    assert!(
+        ran.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "true true 2\ntrue true 3\n"
+    );
+    // Without the u flag an astral range is out of order between its units.
+    let source = format!("(doseq {bindings} #\"[😀-😂]\")");
+    let error = analyze_with_macros(&source, &parse(&source).unwrap(), &mut MacroHost::new())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        without_stack(&error).contains(
+            "macro cljs.core/doseq: SyntaxError: Invalid regular expression: /[😀-😂]/: Range out of order in character class"
+        ),
+        "{error}"
+    );
 }
 
 /// The engine's snapshot of a call charges a map's keys it finds equal

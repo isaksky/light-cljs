@@ -763,18 +763,98 @@ fn build_in(
     }
     Ok(bootstrap)
 }
-/// The V8 build's `RegExp` constructor's error for `pattern` with `flags`,
-/// which the Pants build's parser refuses with `message`: V8's wording of
-/// the reasons it shares, and the flags after the pattern.
+/// The V8 build's `RegExp` constructor's error for `pattern` (UTF-16 code
+/// units) with `flags`, which the Pants build's parser refuses with
+/// `error`: V8's wording of the reasons the two share, which for some
+/// depends on where in the pattern the parser stopped, and the flags after
+/// the pattern.
 #[cfg(feature = "bbp-macros")]
-fn v8_regex_error(pattern: &str, flags: &str, message: &str) -> String {
+fn v8_regex_error(
+    pattern: &[u16],
+    flags: &str,
+    error: &big_boy_pants_js::regexp::parse::SyntaxError,
+) -> String {
+    let message = error.message.as_str();
     if matches!(
         message,
         "unknown regular expression flag" | "duplicate regular expression flag"
     ) {
         return format!("SyntaxError: Invalid flags supplied to RegExp constructor '{flags}'");
     }
+    let at = error.offset.min(pattern.len());
+    let before = &pattern[..at];
+    let unit = |c: u8| u16::from(c);
+    let ends = |text: &str| before.ends_with(&text.encode_utf16().collect::<Vec<_>>());
+    // Where an atom may start: at the start, after `(` or `|`, an assertion
+    // that takes no quantifier, or a group's prefix, a capture's name
+    // included.
+    let atom_start = before
+        .last()
+        .is_none_or(|&last| [b'(', b'|', b'^', b'$'].iter().any(|&c| last == unit(c)))
+        || before.split_last().is_some_and(|(&last, rest)| {
+            // `\b` or `\B`, not an escaped backslash and `b`.
+            (last == unit(b'b') || last == unit(b'B'))
+                && rest.iter().rev().take_while(|&&u| u == unit(b'\\')).count() % 2 == 1
+        })
+        || ["(?:", "(?=", "(?!", "(?<=", "(?<!"]
+            .iter()
+            .any(|prefix| ends(prefix))
+        || before.last() == Some(&unit(b'>'))
+            && before
+                .iter()
+                .rposition(|&u| u == unit(b'<'))
+                .is_some_and(|open| {
+                    before[..open].ends_with(&[unit(b'('), unit(b'?')])
+                        && !before[open..].contains(&unit(b')'))
+                });
+    // Whether the parser stopped inside a character class.
+    let in_class = {
+        let (mut class, mut index) = (false, 0);
+        while index < at {
+            match pattern[index] {
+                u if u == unit(b'\\') => index += 1,
+                u if u == unit(b'[') => class = true,
+                u if u == unit(b']') => class = false,
+                _ => {}
+            }
+            index += 1;
+        }
+        class
+    };
+    // A group of modifiers `(?ims-ims:`, from the `(` the parser stopped at.
+    let modifiers = || {
+        let group = &pattern[at..];
+        let mut seen = Vec::new();
+        let mut index = 2;
+        let mut repeated = false;
+        while let Some(&u) = group.get(index) {
+            if u == unit(b'-') {
+            } else if [b'i', b'm', b's'].iter().any(|&flag| u == unit(flag)) {
+                repeated |= seen.contains(&u);
+                seen.push(u);
+            } else {
+                break;
+            }
+            index += 1;
+        }
+        match group.get(index) {
+            Some(&u) if u == unit(b':') && repeated => "Repeated flag in flag group",
+            Some(&u) if u == unit(b':') => "Invalid flag group",
+            _ => "Invalid group",
+        }
+    };
     let reason = match message {
+        // `^*`, `$+`, `\b?`; a quantified lookaround.
+        "assertion cannot be quantified" if before.last() == Some(&unit(b')')) => {
+            "Invalid quantifier".to_owned()
+        }
+        "assertion cannot be quantified" => "Nothing to repeat".to_owned(),
+        // A `{` that does not end a quantifier with the u flag: alone, or
+        // after an atom; or a lone `}` or `]`.
+        "invalid quantifier" if !atom_start => "Incomplete quantifier".to_owned(),
+        "invalid quantifier" | "unexpected syntax character" => {
+            "Lone quantifier brackets".to_owned()
+        }
         "unmatched closing parenthesis" => "Unmatched ')'".to_owned(),
         "quantifier range out of order" => "numbers out of order in {} quantifier".to_owned(),
         "class range out of order" => "Range out of order in character class".to_owned(),
@@ -782,7 +862,7 @@ fn v8_regex_error(pattern: &str, flags: &str, message: &str) -> String {
         "invalid group name" => "Invalid capture group name".to_owned(),
         "invalid group prefix" => "Invalid group".to_owned(),
         "duplicate group modifier" => "Repeated flag in flag group".to_owned(),
-        "invalid group modifiers" => "Invalid flag group".to_owned(),
+        "invalid group modifiers" => modifiers().to_owned(),
         "invalid named backreference" => "Invalid named reference".to_owned(),
         "unknown named backreference" => "Invalid named capture referenced".to_owned(),
         "invalid identity escape in u mode"
@@ -791,12 +871,15 @@ fn v8_regex_error(pattern: &str, flags: &str, message: &str) -> String {
         "invalid control escape" => "Invalid Unicode escape".to_owned(),
         "unknown Unicode property"
         | "unknown or unsupported Unicode property"
+        | "invalid Unicode property escape"
+            if in_class =>
+        {
+            "Invalid property name in character class".to_owned()
+        }
+        "unknown Unicode property"
+        | "unknown or unsupported Unicode property"
         | "invalid Unicode property escape" => "Invalid property name".to_owned(),
         "class escape cannot be a range endpoint" => "Invalid character class".to_owned(),
-        // A lone `{`, `}` or `]` with the u flag.
-        "invalid quantifier" | "unexpected syntax character" => {
-            "Lone quantifier brackets".to_owned()
-        }
         // `nothing to repeat`, `unterminated group` and the like.
         _ => {
             let mut chars = message.chars();
@@ -806,12 +889,15 @@ fn v8_regex_error(pattern: &str, flags: &str, message: &str) -> String {
                 .unwrap_or_default()
         }
     };
+    let pattern = String::from_utf16_lossy(pattern);
     format!("SyntaxError: Invalid regular expression: /{pattern}/{flags}: {reason}")
 }
 /// The error of the first regular expression literal in `data` (in the
 /// order the V8 build's engine decodes it: children, then metadata) whose
 /// pattern does not compile, as that engine's `RegExp` constructor reports
-/// it (`rePattern`: a leading `(?flags)` group gives the flags), or `None`.
+/// it, or `None`. As `rePattern` does, a leading `(?flags)` group gives the
+/// flags; the pattern is validated as its UTF-16 code units, lone
+/// surrogates included.
 #[cfg(feature = "bbp-macros")]
 pub(crate) fn invalid_regex(data: &Datum) -> Option<String> {
     use crate::compiler_data::{CompilerLiteralKind, DatumKind};
@@ -823,19 +909,21 @@ pub(crate) fn invalid_regex(data: &Datum) -> Option<String> {
             let DatumKind::String(text) = payload.kind() else {
                 return None;
             };
-            // `rePattern`: a leading `(?flags)` group gives the flags.
-            let text = String::from_utf16_lossy(text);
             let (flags, pattern) = text
-                .strip_prefix("(?")
-                .and_then(|rest| rest.split_once(')'))
-                .filter(|(flags, _)| flags.bytes().all(|b| b"dgimsuxy".contains(&b)))
-                .unwrap_or(("", &text));
-            let js = |s: &str| {
-                big_boy_pants_js::JsString::from_code_units(s.encode_utf16().collect::<Vec<_>>())
-            };
+                .strip_prefix(&[u16::from(b'('), u16::from(b'?')][..])
+                .and_then(|rest| {
+                    let close = rest.iter().position(|&u| u == u16::from(b')'))?;
+                    let flags = &rest[..close];
+                    flags
+                        .iter()
+                        .all(|&u| u8::try_from(u).is_ok_and(|b| b"dgimsuxy".contains(&b)))
+                        .then(|| (flags, &rest[close + 1..]))
+                })
+                .unwrap_or((&[][..], &text[..]));
+            let js = |units: &[u16]| big_boy_pants_js::JsString::from_code_units(units.to_vec());
             big_boy_pants_js::regexp::parse::validate_syntax(&js(pattern)?, &js(flags)?)
                 .err()
-                .map(|error| v8_regex_error(pattern, flags, &error.message))
+                .map(|error| v8_regex_error(pattern, &String::from_utf16_lossy(flags), &error))
         }
         DatumKind::CompilerLiteral { payload, .. } => invalid_regex(payload),
         DatumKind::Collection { children, .. } => children.iter().find_map(invalid_regex),

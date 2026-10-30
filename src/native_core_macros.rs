@@ -2379,7 +2379,7 @@ impl Conversion<'_> {
 /// strings as strings, symbols by name.
 #[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
 fn engine_entries(children: &[Datum], map: bool) -> Option<Vec<(&Datum, Option<&Datum>)>> {
-    #[derive(PartialEq)]
+    #[derive(PartialEq, Eq, Hash)]
     enum Key {
         Primitive(Primitive),
         Symbol(Name),
@@ -2394,17 +2394,22 @@ fn engine_entries(children: &[Datum], map: bool) -> Option<Vec<(&Datum, Option<&
         _ => Key::Other,
     };
     let nan = Key::Primitive(Primitive::Number(f64::NAN.to_bits()));
-    let mut keys: Vec<Key> = Vec::new();
+    // Each key's entry, by the key.
+    let mut keys: std::collections::HashMap<Key, usize> = std::collections::HashMap::new();
     let mut entries: Vec<(&Datum, Option<&Datum>)> = Vec::new();
     for pair in children.chunks(if map { 2 } else { 1 }) {
         let k = key(&pair[0]);
-        if (k == Key::Other || k == nan) && keys.contains(&k) {
-            return None;
-        }
-        match keys.iter().position(|seen| *seen == k) {
-            Some(index) => entries[index].1 = pair.get(1),
-            None => {
-                keys.push(k);
+        match keys.entry(k) {
+            std::collections::hash_map::Entry::Occupied(seen)
+                if *seen.key() == Key::Other || *seen.key() == nan =>
+            {
+                return None;
+            }
+            std::collections::hash_map::Entry::Occupied(seen) => {
+                entries[*seen.get()].1 = pair.get(1);
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(entries.len());
                 entries.push((&pair[0], pair.get(1)));
             }
         }
@@ -3629,6 +3634,30 @@ mod tests {
             "(doseq (x xs) x)",
             "(doseq)",
         ]);
+    }
+
+    /// The keys a map decodes into are indexed, so a map of many keys
+    /// takes time in proportion to them: 100,000 keys compared with each
+    /// other one by one would take billions of comparisons.
+    #[cfg(any(feature = "bbp-macros", light_v8))]
+    #[test]
+    fn engine_entries_large_primitive_maps_scale_linearly() {
+        let keys = 100_000;
+        let mut children: Vec<Datum> = (0..keys)
+            .flat_map(|key| [C.integer(key), C.integer(0)])
+            .collect();
+        // Equal to `0`: one entry, the first key with the last value.
+        children.extend([C.double(-0.0), C.integer(1)]);
+        let start = std::time::Instant::now();
+        let entries = engine_entries(&children, true).unwrap();
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(entries.len(), keys as usize);
+        assert!(entries[0].0.value_eq(&C.integer(0)));
+        assert!(entries[0].1.unwrap().value_eq(&C.integer(1)));
     }
 
     /// What the emulated conversion of a `doseq` or `for` expansion refuses
