@@ -58,7 +58,12 @@ fn exact_boundary_expansion_and_node_limits_name_the_same_unit_at_one_and_four_s
     assert!(unlimited.output.is_ok(), "{:?}", unlimited.output);
     let pooled = build_with(&sources, "app.l", 4, false, limited(100_000, 1_000_000));
     assert_eq!(pooled.stats.deferred_units.pooled, 16);
-    assert_eq!(pooled.stats.deferred_units.worker_isolates, 3);
+    if crate::macro_free_units::PANTS_BUILD {
+        assert_eq!(pooled.stats.deferred_units.worker_isolates, 0);
+        assert_eq!(pooled.stats.deferred_units.pool_engine_workers, 3);
+    } else {
+        assert_eq!(pooled.stats.deferred_units.worker_isolates, 3);
+    }
     let calls = unlimited.stats.macro_calls;
     let nodes = unlimited.stats.peak_macro_nodes;
     let mut failures = 0;
@@ -466,7 +471,12 @@ fn a_worker_whose_steady_need_exceeds_its_base_keeps_its_isolate() {
         assert_eq!(built.output, serial.output);
         let units = &built.stats.deferred_units;
         assert!(units.pooled >= 2, "{units:?}");
-        assert_eq!(units.worker_isolates, 1, "{units:?}");
+        if crate::macro_free_units::PANTS_BUILD {
+            assert_eq!(units.worker_isolates, 0, "{units:?}");
+            assert_eq!(units.pool_engine_workers, 1, "{units:?}");
+        } else {
+            assert_eq!(units.worker_isolates, 1, "{units:?}");
+        }
     }
 }
 

@@ -11,7 +11,7 @@ use light_cljs::scheduler::Slots;
 use light_cljs::{CompileStats, MacroHost, emit_js};
 use std::{fs, process::Command};
 
-const PANTS_BUILD: bool = cfg!(all(
+pub(crate) const PANTS_BUILD: bool = cfg!(all(
     feature = "bbp-macros",
     not(any(light_v8, light_quickjs))
 ));

@@ -14,6 +14,11 @@ use std::process::{Command, Output};
 mod temp_dir;
 use temp_dir::TempDir;
 
+const PANTS_BUILD: bool = cfg!(all(
+    feature = "bbp-macros",
+    not(any(light_v8, light_quickjs))
+));
+
 struct Project {
     dir: TempDir,
 }
@@ -967,7 +972,14 @@ fn a_cold_parallel_build_expands_units_on_workers_and_publishes_the_one_job_arti
             parallel.stat("deferred-units.macro-free"),
         );
         assert!(pooled > macro_free, "{}", parallel.stats);
-        isolates = isolates.max(parallel.stat("pool.worker-isolates"));
+        if PANTS_BUILD {
+            assert_eq!(parallel.stat("pool.worker-isolates"), 0);
+        }
+        isolates = isolates.max(parallel.stat(if PANTS_BUILD {
+            "pool.engine-workers"
+        } else {
+            "pool.worker-isolates"
+        }));
         let warm = build(&cache, "4");
         assert_eq!(warm.stat("cache.hits"), 4, "{}", warm.stats);
         assert_eq!(warm.js, oracle.js);
@@ -1241,7 +1253,12 @@ fn parallel_resource_and_configuration_reads_match_one_thread() {
     ];
     let cold = project.cached("main", &options);
     assert_eq!(cold.js, oracle.js);
-    assert!(cold.stat("pool.worker-isolates") > 0, "{}", cold.stats);
+    if PANTS_BUILD {
+        assert_eq!(cold.stat("pool.worker-isolates"), 0, "{}", cold.stats);
+        assert_eq!(cold.stat("pool.engine-workers"), 3, "{}", cold.stats);
+    } else {
+        assert!(cold.stat("pool.worker-isolates") > 0, "{}", cold.stats);
+    }
     let warm = project.cached("main", &options);
     assert_eq!(warm.stat("cache.hits"), 4, "{}", warm.stats);
     assert_eq!(warm.js, oracle.js);
