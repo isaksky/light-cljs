@@ -2192,7 +2192,7 @@ fn weak_bridge_pruning_only_walks_changes_among_growing_retained_trees() {
     rt.collect().unwrap();
     rt.scope(|_| bridge.prune(rt.heap_stats().collections));
     assert!(bridge.imports.is_empty());
-    assert!(bridge.costs.is_empty());
+    assert_eq!(bridge.cost_entries, 0);
     assert!(bridge.native_objects.is_empty());
 }
 
@@ -2233,10 +2233,10 @@ fn weak_bridge_incremental_pruning_matches_full_reachability() {
                 .filter(|key| reachable.contains(key))
                 .collect();
             let expected_costs: HashMap<_, _> = bridge
-                .costs
+                .retained
                 .iter()
                 .filter(|(key, _)| reachable.contains(key))
-                .map(|(&key, &cost)| (key, cost))
+                .filter_map(|(&key, state)| state.cost.map(|cost| (key, cost)))
                 .collect();
             let expected_objects: HashSet<_> = bridge
                 .native_objects
@@ -2250,7 +2250,13 @@ fn weak_bridge_incremental_pruning_matches_full_reachability() {
                 bridge.forms.keys().copied().collect::<HashSet<_>>(),
                 expected_forms
             );
-            assert_eq!(bridge.costs, expected_costs);
+            let costs: HashMap<_, _> = bridge
+                .retained
+                .iter()
+                .filter_map(|(&key, state)| state.cost.map(|cost| (key, cost)))
+                .collect();
+            assert_eq!(costs, expected_costs);
+            assert_eq!(bridge.cost_entries, costs.len());
             assert_eq!(
                 bridge
                     .native_objects
@@ -2420,7 +2426,7 @@ fn weak_bridge_entries_preserve_live_occurrences_and_raw_metadata() {
     assert!(bridge.imports.is_empty());
     assert!(bridge.native_objects.is_empty());
     assert!(bridge.forms.is_empty());
-    assert!(bridge.costs.is_empty());
+    assert_eq!(bridge.cost_entries, 0);
     // Reusing the compiler Datum after collection imports a fresh object
     // with its original provenance; stale allocation slots cannot alias it.
     rt.scope(|s| {
@@ -2505,7 +2511,7 @@ fn weak_bridge_pruning_preserves_positional_descendant_provenance() {
     rt.collect().unwrap();
     rt.scope(|_| bridge.prune(rt.heap_stats().collections));
     assert!(bridge.forms.is_empty());
-    assert!(bridge.costs.is_empty());
+    assert_eq!(bridge.cost_entries, 0);
 }
 
 #[test]
@@ -4038,7 +4044,7 @@ fn compiler_literal_payloads_keep_identity_provenance_and_cached_limits_after_gc
     bridge.prune(rt.heap_stats().collections);
     assert!(bridge.imports.is_empty());
     assert!(bridge.forms.is_empty());
-    assert!(bridge.costs.is_empty());
+    assert_eq!(bridge.cost_entries, 0);
 }
 
 #[test]

@@ -22,6 +22,7 @@ use big_boy_pants_js::{
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap, HashSet},
+    hash::{BuildHasherDefault, Hasher},
     rc::Rc,
     sync::{
         Arc, Condvar, Mutex,
@@ -164,10 +165,36 @@ struct Imported {
     identities: Vec<ObjectIdentity>,
 }
 
+// These tables contain allocator/heap identities, never user-controlled
+// strings or language equality keys. Avoid SipHash on every released edge.
+#[derive(Default)]
+struct BridgeIdentityHasher(u64);
+impl Hasher for BridgeIdentityHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u64(u64::from(byte));
+        }
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+    fn write_u32(&mut self, n: u32) {
+        self.write_u64(u64::from(n));
+    }
+}
+type IdentityMap<K, V> = HashMap<K, V, BuildHasherDefault<BridgeIdentityHasher>>;
+
 struct RetainedDatum {
     data: Datum,
     // One reference per imported root and per edge from a retained Datum.
     references: usize,
+    cost: Option<(usize, usize)>,
 }
 #[derive(Clone, Copy)]
 struct ReaderExportPath<'a> {
@@ -179,18 +206,18 @@ struct ReaderExportPath<'a> {
 struct Bridge {
     control: Option<ExecutionControl>,
     // Retaining the Datum prevents allocator address reuse from aliasing a key.
-    imports: HashMap<usize, Imported>,
+    imports: IdentityMap<usize, Imported>,
     forms: HashMap<usize, Form>,
     stats: BridgeStats,
     next_token: u32,
     collected: u64,
     environment: Option<(Datum, Rooted)>,
-    costs: HashMap<usize, (usize, usize)>,
+    cost_entries: usize,
     // Native metadata is a raw immutable map, so it can emerge without its
     // occurrence wrapper. Map that exact object back without traversing it.
-    native_objects: HashMap<ObjectIdentity, (usize, WeakHandle)>,
+    native_objects: IdentityMap<ObjectIdentity, (usize, WeakHandle)>,
     reclaimed: ReclamationQueue,
-    retained: HashMap<usize, RetainedDatum>,
+    retained: IdentityMap<usize, RetainedDatum>,
     // remember() can precede a failed import. Check only newly remembered
     // entries that have not yet become reachable, rather than all forms.
     unretained: HashSet<usize>,
@@ -218,15 +245,19 @@ impl Bridge {
         }
         let counted = crate::compile_trace::any_recording();
         let started = counted.then(std::time::Instant::now);
-        let sizes = |b: &Self| b.forms.len() + b.costs.len() + b.native_objects.len();
+        let sizes = |b: &Self| b.forms.len() + b.cost_entries + b.native_objects.len();
         let before = sizes(self);
         self.collected = collected;
         let (mut visited, mut removed, mut walked) = (0, 0, 0);
         for (identity, key) in self.reclaimed.take() {
-            self.native_objects.remove(&identity);
-            let Some(imported) = self.imports.get(&key) else {
+            let Some(imported) = self.imports.get_mut(&key) else {
                 continue;
             };
+            let Some(index) = imported.identities.iter().position(|id| *id == identity) else {
+                continue;
+            };
+            imported.identities.swap_remove(index);
+            self.native_objects.remove(&identity);
             visited += 1;
             if imported.occurrence.is_live()
                 || imported.native.as_ref().is_some_and(WeakHandle::is_live)
@@ -249,7 +280,6 @@ impl Bridge {
         for key in self.unretained.drain() {
             if !self.retained.contains_key(&key) {
                 self.forms.remove(&key);
-                self.costs.remove(&key);
             }
         }
         if let Some(started) = started {
@@ -277,18 +307,19 @@ impl Bridge {
         let mut pending = vec![data.clone()];
         while let Some(data) = pending.pop() {
             self.unretained.remove(&data.identity());
-            if let Some(retained) = self.retained.get_mut(&data.identity()) {
-                retained.references += 1;
-                continue;
+            match self.retained.entry(data.identity()) {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().references += 1;
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    pending.extend(Self::datum_children(&data));
+                    entry.insert(RetainedDatum {
+                        data,
+                        references: 1,
+                        cost: None,
+                    });
+                }
             }
-            pending.extend(Self::datum_children(&data));
-            self.retained.insert(
-                data.identity(),
-                RetainedDatum {
-                    data,
-                    references: 1,
-                },
-            );
         }
     }
 
@@ -297,21 +328,21 @@ impl Bridge {
         let mut walked = 0;
         while let Some(key) = pending.pop() {
             walked += 1;
-            let retained = self
-                .retained
-                .get_mut(&key)
-                .expect("retained import or parent");
-            retained.references -= 1;
-            if retained.references != 0 {
+            let std::collections::hash_map::Entry::Occupied(mut entry) = self.retained.entry(key)
+            else {
+                unreachable!("retained import or parent");
+            };
+            entry.get_mut().references -= 1;
+            if entry.get().references != 0 {
                 continue;
             }
             // A surviving parent restores its entire original tree, including
             // descendants whose occurrence wrappers no longer exist. Release
             // child edges only when the last parent/import reference dies.
-            let retained = self.retained.remove(&key).unwrap();
+            let retained = entry.remove();
+            self.cost_entries -= usize::from(retained.cost.is_some());
             pending.extend(Self::datum_children(&retained.data).map(|d| d.identity()));
             self.forms.remove(&key);
-            self.costs.remove(&key);
         }
         walked
     }
@@ -396,7 +427,7 @@ impl Bridge {
         self.control.as_ref().map_or(Ok(()), ExecutionControl::poll)
     }
     fn charge(&self, data: &Datum, depth: usize, remaining: &mut usize) -> Result<(), EvalError> {
-        let (nodes, height) = self.costs[&data.identity()];
+        let (nodes, height) = self.retained[&data.identity()].cost.expect("imported cost");
         if depth < height || *remaining < nodes {
             return Err(error("form conversion limit exceeded"));
         }
@@ -506,12 +537,10 @@ impl Bridge {
         d: &Datum,
         value: Local<'s>,
     ) -> Result<Local<'s>, EvalError> {
-        let native = s.object_identity(value).map(|identity| {
-            let weak = s.downgrade(value);
-            self.native_objects
-                .insert(identity, (d.identity(), weak.clone()));
-            weak
-        });
+        let raw = value;
+        let native = s
+            .object_identity(raw)
+            .map(|identity| (identity, s.downgrade(raw)));
         let token = self.next_token;
         self.next_token = token
             .checked_add(1)
@@ -531,6 +560,12 @@ impl Bridge {
             )
             .map_err(error)?;
         let occurrence = s.downgrade(value);
+        // Publish the raw-object entry only after occurrence allocation
+        // succeeds, so failed imports cannot leave an unwatched entry.
+        if let Some((identity, weak)) = &native {
+            self.native_objects
+                .insert(identity.clone(), (d.identity(), weak.clone()));
+        }
         let identity = s
             .object_identity(value)
             .expect("an occurrence is an object");
@@ -544,7 +579,6 @@ impl Bridge {
         };
         s.watch_reclamation(value, &self.reclaimed, d.identity());
         identities.push(identity);
-        let raw = s.form_value(value);
         if let Some(identity) = s.object_identity(raw) {
             s.watch_reclamation(raw, &self.reclaimed, d.identity());
             if !identities.contains(&identity) {
@@ -557,7 +591,7 @@ impl Bridge {
                 _live: crate::compile_stats::Live::new(&crate::compile_stats::LIVE_BRIDGE_PAYLOADS),
                 data: d.clone(),
                 occurrence,
-                native,
+                native: native.map(|(_, weak)| weak),
                 identities,
             },
         );
@@ -570,11 +604,19 @@ impl Bridge {
         for child in children.iter().cloned().chain(d.metadata()) {
             // An unchanged environment slot can have a freshly constructed
             // scalar keyword key whose native key was already present.
-            let (nodes, height) = self.costs.get(&child.identity()).copied().unwrap_or((1, 1));
+            let (nodes, height) = self
+                .retained
+                .get(&child.identity())
+                .and_then(|state| state.cost)
+                .unwrap_or((1, 1));
             cost.0 = cost.0.saturating_add(nodes);
             cost.1 = cost.1.max(height.saturating_add(1));
         }
-        self.costs.insert(d.identity(), cost);
+        let state = self
+            .retained
+            .get_mut(&d.identity())
+            .expect("retained import");
+        self.cost_entries += usize::from(state.cost.replace(cost).is_none());
         self.stats.imported += 1;
         Ok(value)
     }

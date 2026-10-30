@@ -246,7 +246,8 @@ type ReclamationWatch = (ObjectIdentity, Weak<ReclamationEvents>);
 pub(super) struct ReclamationRegistry {
     objects: std::collections::HashMap<
         ObjectId,
-        std::collections::HashMap<(usize, usize), ReclamationWatch>,
+        std::collections::HashMap<(usize, usize), ReclamationWatch, super::gc::IdentityBuild>,
+        super::gc::IdentityBuild,
     >,
 }
 
