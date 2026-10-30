@@ -80,6 +80,78 @@ records; namespace compilation's `--stats` prints `macro.bridge.N.*` lines. The
 cache identity distinguishes this backend and its native-form ABI, hashes the
 engine source, and includes preloaded helper source.
 
+## The Pants build's full test suite (light-cljs-608, 2026-10-30)
+
+Every test binary compiles on the Pants build, and its full suite is a
+required check beside the V8 build's:
+
+```sh
+cargo nextest run --locked --no-default-features --features bbp-macros --no-fail-fast
+```
+
+Tests that need an engine the Pants build leaves out are compiled out with
+`#[cfg(...)]` and a one-line `//` reason above each gate; `rg -B1
+'cfg\(feature = "quickjs"\)|cfg\(any\(' tests src` lists them. The gates, by
+reason:
+
+- **QuickJS as a second engine beside Node.** Many compiler tests run each
+  program in QuickJS and in Node. On the Pants build only the QuickJS half is
+  compiled out (`// The Pants build embeds no QuickJS ...` blocks), so Node
+  still runs every program the Pants build compiles. This keeps most of
+  tests/compiler, tests/support/phase_oracle.rs and their macro coverage.
+- **Results canonicalized or compared through QuickJS** (whole tests and
+  their helpers): Node's output is checked against QuickJS's, or both are
+  canonicalized by a QuickJS context. compiler/case_*, literal_*,
+  hash_map_*, map_value_equiv, map_reader_order, runtime_map_*,
+  runtime_set_traversal, positional_constructors, record_*, iterator_name,
+  key_shapes, constant_hashes, constant_lookups, keyword_calls, cljc_prefixes,
+  public_print_helpers, ifn_public_context, declare_values, string_fixtures,
+  host_hooks, data_libraries (1), the sci_* source-context and probe suites,
+  and bootstrap (`Runs the program only in QuickJS`).
+- **The QuickJS evaluator is the subject**: tests/evaluation's evaluator,
+  evaluator_migration and dev_session modules, macros' javascript_form_bridge,
+  and the limits, cancellation, callbacks, input providers and heap retention
+  tests in edn, eduction_contracts, sequence_contracts, transducer_contracts,
+  regex, printing_completion and data_libraries; cache_contract's cancellation
+  test takes its execution control from a QuickJS evaluator. The level
+  benchmark harness (benchmark_variants) times QuickJS beside Node, and the
+  `evaluator` example embeds QuickJS (`required-features`).
+- **Interactive sessions** (`EvalSession`, `--eval`, `--repl`) run in QuickJS:
+  tests/evaluation's eval_sessions module and most of eval_cli, eval_nsstar,
+  eval_examples and evaluator_conformance's historical cases, two cli tests,
+  and session tests in 18 compiler modules.
+- **`--watch`, the dev server, the connected REPL and nREPL** compile in a
+  QuickJS session, so on the Pants build every build they start fails with
+  "this light-cljs build embeds no QuickJS". 87 tests in dev_watch,
+  dev_server, dev_repl and dev_nrepl are gated; light-cljs-476 (maybe later)
+  is the Pants-build design for watch and REPL.
+- **Bootstrap definitions as the reference** (`any(light_quickjs,
+  light_v8)`): eight native_core_macros tests compare the native expansion with
+  the core macro's bootstrap definition, which only QuickJS or V8 runs.
+- **Per-worker engine isolates** (`any(feature = "quickjs", feature =
+  "v8-macros")`): worker_isolates, two blocker_affinity tests, two
+  schedule_stress tests that retire an isolate, the cli isolate check, and
+  parallel_diagnostics' stack-limit test, which expects a QuickJS or V8 error
+  class. The Pants build shares one runtime across threads instead.
+
+At 175edf8a (macOS aarch64, Rust 1.99.1, 8 test threads) the suite ran 2001
+tests: 1638 passed and 363 failed, with 78 skipped. Before the gates the test
+binaries did not compile; with only the compile fixes, 529 of 2167 failed.
+The 363 remaining failures are Pants-build gaps, each tracked by a pellet with
+its exact signatures and test lists:
+
+- light-cljs-611 (178): core macro calls that native expansion leaves to the
+  bootstrap definition, which the Pants build lacks (`bootstrap macro NAME`):
+  single-source analysis outside a generated-names scope (`analyze`,
+  `--compile FILE`), calls too large to convert, and refused shapes.
+- light-cljs-612 (185): compile-time runtime functions macros call (`native
+  macro runtime core.NAME`), protocol definitions in the macro phase,
+  compiler services (`ownValue`, `cancelDemand`, `cancelTarget`), and
+  accounting, cache and stats expectations.
+
+Until those close, compare a run's failures with those two lists: any other
+failure is a regression.
+
 ## Supported boundary
 
 ### Sharing mutable deftypes (light-cljs-564)
