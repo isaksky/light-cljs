@@ -4111,8 +4111,10 @@ fn unsupported_operations_are_explicit_and_do_not_fall_back() {
     );
     for (source, expected) in [
         (
+            // A protocol value is a function, as the reference's
+            // `function(){}` (light-cljs-592); the V8 build reports the same.
             "(defprotocol Sample (value [this])) (defmacro demand [] Sample) (demand)",
-            "Unsupported macro result arbitrary object (including promise) at $",
+            "Unsupported macro result function at $",
         ),
         (
             "(defmacro lazy-result [] (take 3 (cycle [1 2]))) (lazy-result)",
