@@ -1761,6 +1761,39 @@ fn native_gensym_reservations_count_against_the_shared_heap_limit() {
     );
 }
 
+/// The protocol predicates' tables and mask positions are vocabularies the
+/// task keeps once built. They must stay small in the shared heap: a table
+/// keeping the parts of a `split` keeps that split's whole reservation
+/// (light-cljs-592).
+#[test]
+fn native_protocol_tables_stay_small_in_the_shared_heap() {
+    let options = EvaluatorOptions {
+        memory_limit: 4 << 20,
+        ..Default::default()
+    };
+    let shared = BbpRuntime::new(&options).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    shared.0.runtime.collect().unwrap();
+    let before = shared.0.runtime.heap_stats().last_live_bytes;
+    let value = evaluator
+        .evaluate_unit(
+            "rt => { const c = rt.core, xs = [c.vector(1), c.list(), c.keyword(null, 'k'), c.hashMap(), 's', null];
+             let n = 0;
+             for (const p of [c.IWithMeta, c.IPending, c.ISeq, c.ICounted, c.IHash, c.IDrop])
+               for (const x of xs) n += (c.satisfies(p, x) ? 1 : 0) + (c.implements(p, x) ? 1 : 0);
+             return n; }",
+        )
+        .unwrap();
+    assert!(matches!(
+        evaluator.cx().unwrap().values.borrow()[&value.index].view(),
+        ValueView::Number(n) if n > 0.0
+    ));
+    evaluator.release(value).unwrap();
+    shared.0.runtime.collect().unwrap();
+    let grown = shared.0.runtime.heap_stats().last_live_bytes - before;
+    assert!(grown < 96 << 10, "protocol tables keep {grown} bytes");
+}
+
 #[test]
 fn identity_numeric_conversions_keep_imported_scalar_occurrences() {
     let evaluator = BbpEvaluator::new(Default::default()).unwrap();

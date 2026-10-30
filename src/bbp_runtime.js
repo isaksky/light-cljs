@@ -81,17 +81,74 @@ const decl = (() => {
   // Native lookup can resolve installed structs without repeating JavaScript
   // declaration probes. This map belongs to the task, just like views/tables.
   let declared = __rt.map();
-  // All six collection predicates use partition zero. A declared mask in
-  // that partition blocks host/default fallback for a missing core marker,
-  // as protocolMasks/satisfies in the shared runtime do.
-  const partition0 = new Set('IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref IDerefWithTimeout IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable ISequential IList IRecord IReversible ISorted IPrintWithWriter IWriter'.split(' '));
-  // The second partition does the same for its protocols. Both come from the
-  // legacy runtime's fixed mask ABI (`protocolMaskNames`): a protocol's
-  // partition property and bit, a repeated name taking its last position.
-  // Built on first use, as nearly every task needs neither.
-  let maskTable = null;
-  const mask = name => (maskTable ??= new Map([...partition0, ...'IPrintWithWriter IPending IWatchable IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IMultiFn IChunkedSeq IChunkedNext IComparable INamed ICloneable IAtom IReset ISwap IIterable IDrop'.split(' ')].map((n, i) =>
-    [n, ['cljs$lang$protocol_mask$partition' + (i >> 5) + '$', 1 << (i % 32)]]))).get(name);
+  // The legacy runtime's fixed mask ABI (`protocolMaskNames`): a protocol's
+  // position, 32 to a partition (a repeated name has its last), gives its
+  // partition property and bit. A declared mask in a partition blocks
+  // host/default fallback for a missing core marker of that partition, as
+  // protocolMasks/satisfies in the shared runtime do; all six collection
+  // predicates use partition zero. A switch, not a Set or Map: as code it
+  // costs a task no heap, where a table's entries would stay reserved for
+  // the task's life (light-cljs-592).
+  const maskPosition = name => {
+    switch (name) {
+      case 'IFn': return 0;
+      case 'ICounted': return 1;
+      case 'IEmptyableCollection': return 2;
+      case 'ICollection': return 3;
+      case 'IIndexed': return 4;
+      case 'ASeq': return 5;
+      case 'ISeq': return 6;
+      case 'INext': return 7;
+      case 'ILookup': return 8;
+      case 'IAssociative': return 9;
+      case 'IMap': return 10;
+      case 'IMapEntry': return 11;
+      case 'ISet': return 12;
+      case 'IStack': return 13;
+      case 'IVector': return 14;
+      case 'IDeref': return 15;
+      case 'IDerefWithTimeout': return 16;
+      case 'IMeta': return 17;
+      case 'IWithMeta': return 18;
+      case 'IReduce': return 19;
+      case 'IKVReduce': return 20;
+      case 'IEquiv': return 21;
+      case 'IHash': return 22;
+      case 'ISeqable': return 23;
+      case 'ISequential': return 24;
+      case 'IList': return 25;
+      case 'IRecord': return 26;
+      case 'IReversible': return 27;
+      case 'ISorted': return 28;
+      case 'IWriter': return 30;
+      case 'IPrintWithWriter': return 31;
+      case 'IPending': return 32;
+      case 'IWatchable': return 33;
+      case 'IEditableCollection': return 34;
+      case 'ITransientCollection': return 35;
+      case 'ITransientAssociative': return 36;
+      case 'ITransientMap': return 37;
+      case 'ITransientVector': return 38;
+      case 'ITransientSet': return 39;
+      case 'IMultiFn': return 40;
+      case 'IChunkedSeq': return 41;
+      case 'IChunkedNext': return 42;
+      case 'IComparable': return 43;
+      case 'INamed': return 44;
+      case 'ICloneable': return 45;
+      case 'IAtom': return 46;
+      case 'IReset': return 47;
+      case 'ISwap': return 48;
+      case 'IIterable': return 49;
+      case 'IDrop': return 50;
+      default: return -1;
+    }
+  };
+  const partition0 = {has: name => { const i = maskPosition(name); return i >= 0 && i < 32; }};
+  const mask = name => {
+    const i = maskPosition(name);
+    return i < 0 ? undefined : [i < 32 ? 'cljs$lang$protocol_mask$partition0$' : 'cljs$lang$protocol_mask$partition1$', 1 << (i % 32)];
+  };
   const inPartition1 = name => mask(name)?.[0] === 'cljs$lang$protocol_mask$partition1$';
   let order = 0, frontier = Infinity, version = 0;
   const table = (key, name, arity) => {
@@ -3109,7 +3166,8 @@ const native = (() => {
     const value = name => {
       const owner = isCore(name) ? null : decl.productOwner(name);
       const unit = owner === null ? null : owner.unit;
-      const key = 'protocol:' + name + (unit === null ? '' : '\u0000' + unit);
+      // Joined, not concatenated: the key is kept (`has`).
+      const key = (unit === null ? ['protocol:', name] : ['protocol:', name, '\u0000', unit]).join('');
       let p = isCore(name) || unit !== null ? local.get(key) : undefined;
       if (p !== undefined) return p;
       let candidate;
@@ -3135,64 +3193,108 @@ const native = (() => {
     const nameOf = p => { const entry = entryOf(p); return entry === undefined ? undefined : __rt.nth(entry, 0); };
     // A program protocol's name is qualified (`ns/P`), a core one's is not.
     const isCore = name => name.indexOf('/') < 0;
-    // The core protocols, read through `core` (`known`), built on first use.
-    let coreNames = null;
-    const known = name => (coreNames ??= new Set('Inst IUUID ASeq IDerefWithTimeout INamed IMultiFn IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IEncodeJS IEncodeClojure IChunk IChunkedNext IDrop IPending Fn IList IMapEntry IFind ISorted IChunkedSeq IRecord ICloneable IPrintWithWriter IWriter IReduce IKVReduce IVector IMap ICollection IEmptyableCollection ISet IStack IReversible IComparable IIterable IHash IEquiv IFn ISeqable ISeq INext ICounted IIndexed ILookup ISequential IAssociative IMeta IWithMeta IDeref IAtom IReset ISwap IVolatile IWatchable'.split(' '))).has(name);
+    // Whether the space-separated `words` has the word `name`. A fixed
+    // vocabulary stays a string literal searched with this, never a Set or
+    // Map of its words: the parts of a `split` share the split's whole heap
+    // reservation, a concatenation reserves a multiple of its length, and a
+    // table entry 2 KiB, all of which a kept table would hold for the
+    // task's life (light-cljs-592).
+    const has = (words, name) => {
+      for (let at = words.indexOf(name); at >= 0; at = words.indexOf(name, at + 1))
+        if ((at === 0 || words.charCodeAt(at - 1) === 32) && (at + name.length === words.length || words.charCodeAt(at + name.length) === 32)) return true;
+      return false;
+    };
+    // The core protocols, read through `core` (`known`).
+    const coreNames = 'Inst IUUID ASeq IDerefWithTimeout INamed IMultiFn IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IEncodeJS IEncodeClojure IChunk IChunkedNext IDrop IPending Fn IList IMapEntry IFind ISorted IChunkedSeq IRecord ICloneable IPrintWithWriter IWriter IReduce IKVReduce IVector IMap ICollection IEmptyableCollection ISet IStack IReversible IComparable IIterable IHash IEquiv IFn ISeqable ISeq INext ICounted IIndexed ILookup ISequential IAssociative IMeta IWithMeta IDeref IAtom IReset ISwap IVolatile IWatchable';
+    const known = name => has(coreNames, name);
     // The core protocols each runtime-owned value implements natively, by
     // its QuickJS-reference type (`builtinCoreImplementation`): the form's
     // `formReferenceType`, which the operation that made a sequence sets
     // where its body alone does not tell (light-cljs-592).
-    // Built on first use: most tasks never ask.
-    let tables = null;
-    const built = () => tables ??= build();
-    const build = () => {
-      const native = new Map();
-      const kinds = (tags, names) => { for (const tag of tags.split(' ')) native.set(tag, new Set(names.split(' '))); };
-      const seqBase = 'IPrintWithWriter IReduce ICollection IEmptyableCollection ISeqable ISeq INext ISequential IMeta IWithMeta';
-      const map = 'IEditableCollection IFind ICloneable IPrintWithWriter IReduce IKVReduce IMap ICollection IEmptyableCollection IIterable IHash IEquiv IFn ISeqable ICounted ILookup IAssociative IMeta IWithMeta';
-      kinds('keyword', 'INamed IPrintWithWriter IComparable IHash IEquiv IFn');
-      kinds('symbol', 'INamed IPrintWithWriter IComparable IHash IEquiv IFn IMeta IWithMeta');
-      kinds('vector', 'IEditableCollection IDrop IFind ICloneable IPrintWithWriter IReduce IKVReduce IVector ICollection IEmptyableCollection IStack IReversible IComparable IIterable IHash IEquiv IFn ISeqable ICounted IIndexed ILookup ISequential IAssociative IMeta IWithMeta');
-      kinds('map-entry', 'IDrop IMapEntry IFind IPrintWithWriter IReduce IVector ICollection IEmptyableCollection IStack IReversible IComparable IIterable IHash IEquiv IFn ISeqable ICounted IIndexed ILookup ISequential IAssociative IMeta IWithMeta');
-      kinds('hash-map', map);
-      kinds('array-map', 'IDrop ' + map);
-      kinds('sorted-map', 'IFind ISorted ICloneable IPrintWithWriter IReduce IKVReduce IMap ICollection IEmptyableCollection IReversible IIterable IHash IEquiv IFn ISeqable ICounted ILookup IAssociative IMeta IWithMeta');
-      kinds('set', 'IEditableCollection ICloneable IPrintWithWriter ICollection IEmptyableCollection ISet IIterable IHash IEquiv IFn ISeqable ICounted ILookup IMeta IWithMeta');
-      kinds('empty-list', 'IList ICloneable IStack IIterable IHash IEquiv ICounted ' + seqBase);
-      kinds('list', 'ASeq IList ICloneable IStack IIterable IHash IEquiv ICounted ' + seqBase);
-      kinds('cons', 'ASeq IList ICloneable IStack IIterable IHash IEquiv ' + seqBase);
-      kinds('lazy-seq', 'IPending IIterable IHash IEquiv ' + seqBase);
-      kinds('array-seq indexed-seq', 'ASeq IDrop ICloneable IReversible IIterable IHash IEquiv ICounted IIndexed ' + seqBase);
-      kinds('chunked-seq', 'ASeq IChunkedNext IDrop IChunkedSeq IIterable IHash IEquiv ICounted ' + seqBase);
-      kinds('chunked-cons', 'ASeq IChunkedNext IChunkedSeq IPrintWithWriter ICollection IEmptyableCollection IHash IEquiv ISeqable ISeq INext ISequential IMeta IWithMeta');
-      kinds('integer-range', 'IChunkedNext IDrop IChunkedSeq ICloneable IIterable IHash IEquiv ICounted IIndexed ' + seqBase);
-      kinds('range', 'IChunkedNext IChunkedSeq ICloneable IIterable IHash IEquiv ' + seqBase);
-      kinds('array-map-seq', 'IDrop IIterable IHash IEquiv ICounted ' + seqBase);
-      kinds('node-seq', 'ASeq IIterable IHash IEquiv ' + seqBase);
-      kinds('sorted-map-seq', 'IIterable IHash IEquiv ICounted ' + seqBase);
-      kinds('set-seq', 'IIterable IHash IEquiv ' + seqBase);
-      kinds('key-seq', 'IStack IIterable IHash IEquiv ' + seqBase);
-      kinds('reverse-seq', 'ICloneable IIterable IHash IEquiv ' + seqBase);
-      kinds('repeat', 'IDrop IPending IHash IEquiv ' + seqBase);
-      kinds('iterate', 'IPending ' + seqBase);
-      kinds('queue-seq', 'IPrintWithWriter ICollection IEmptyableCollection ISeqable ISeq INext ISequential IMeta IWithMeta IIterable IHash IEquiv');
-      // Chunks and chunk buffers, which the reference does not own: they
-      // also take its defaults and extensions to `object` (`unowned`).
-      kinds('array-chunk', 'IChunk IReduce ICounted IIndexed');
-      kinds('range-chunk', 'IChunk ISeq ICounted IIndexed');
-      kinds('chunk-buffer', 'ICounted');
-      kinds('queue', 'ICloneable IPrintWithWriter ICollection IEmptyableCollection IStack IIterable IHash IEquiv ISeqable ISeq INext ICounted ISequential IMeta IWithMeta');
-      kinds('atom', 'IPrintWithWriter IHash IEquiv IMeta IDeref IAtom IWatchable');
-      kinds('reduced', 'IPrintWithWriter IHash IEquiv IDeref');
-      kinds('multifn', 'INamed IMultiFn IPrintWithWriter IHash IEquiv IFn');
-      kinds('var', 'Fn IPrintWithWriter IHash IEquiv IFn IMeta IWithMeta IDeref');
-      // A record's own protocols (the legacy runtime owns records as maps).
-      kinds('record', 'IRecord ICloneable IPrintWithWriter IKVReduce IMap ICollection IIterable IHash IEquiv ISeqable ICounted ILookup IAssociative IMeta IWithMeta');
-      // The legacy protocol objects' own types (`IMeta.function = true`, ...).
-      const defaults = new Map([['IMeta','function'],['Fn','function'],['ICounted','null'],['IHash','_'],['IEquiv','_']]);
-      const munging = {'-':'_',':':'_COLON_','+':'_PLUS_','>':'_GT_','<':'_LT_','=':'_EQ_','~':'_TILDE_','!':'_BANG_','@':'_CIRCA_','#':'_SHARP_',"'":'_SINGLEQUOTE_','"':'_DOUBLEQUOTE_','%':'_PERCENT_','^':'_CARET_','&':'_AMPERSAND_','*':'_STAR_','|':'_BAR_','{':'_LBRACE_','}':'_RBRACE_','[':'_LBRACK_',']':'_RBRACK_','/':'$','\\':'_BSLASH_','?':'_QMARK_'};
-      const unowned = new Set(['array-chunk', 'range-chunk', 'chunk-buffer']);
-      return {native, unowned, defaults, munging, markers: new Map()};
+    // Tables as code (switches over literals): a task builds and keeps
+    // nothing for them (`has`).
+    const seqBase = 'IPrintWithWriter IReduce ICollection IEmptyableCollection ISeqable ISeq INext ISequential IMeta IWithMeta';
+    const mapBase = 'IEditableCollection IFind ICloneable IPrintWithWriter IReduce IKVReduce IMap ICollection IEmptyableCollection IIterable IHash IEquiv IFn ISeqable ICounted ILookup IAssociative IMeta IWithMeta';
+    const nativeProtocols = (tag, name) => {
+      switch (tag) {
+        case 'keyword': return has('INamed IPrintWithWriter IComparable IHash IEquiv IFn', name);
+        case 'symbol': return has('INamed IPrintWithWriter IComparable IHash IEquiv IFn IMeta IWithMeta', name);
+        case 'vector': return has('IEditableCollection IDrop IFind ICloneable IPrintWithWriter IReduce IKVReduce IVector ICollection IEmptyableCollection IStack IReversible IComparable IIterable IHash IEquiv IFn ISeqable ICounted IIndexed ILookup ISequential IAssociative IMeta IWithMeta', name);
+        case 'map-entry': return has('IDrop IMapEntry IFind IPrintWithWriter IReduce IVector ICollection IEmptyableCollection IStack IReversible IComparable IIterable IHash IEquiv IFn ISeqable ICounted IIndexed ILookup ISequential IAssociative IMeta IWithMeta', name);
+        case 'hash-map': return has(mapBase, name);
+        case 'array-map': return has('IDrop', name) || has(mapBase, name);
+        case 'sorted-map': return has('IFind ISorted ICloneable IPrintWithWriter IReduce IKVReduce IMap ICollection IEmptyableCollection IReversible IIterable IHash IEquiv IFn ISeqable ICounted ILookup IAssociative IMeta IWithMeta', name);
+        case 'set': return has('IEditableCollection ICloneable IPrintWithWriter ICollection IEmptyableCollection ISet IIterable IHash IEquiv IFn ISeqable ICounted ILookup IMeta IWithMeta', name);
+        case 'empty-list': return has('IList ICloneable IStack IIterable IHash IEquiv ICounted', name) || has(seqBase, name);
+        case 'list': return has('ASeq IList ICloneable IStack IIterable IHash IEquiv ICounted', name) || has(seqBase, name);
+        case 'cons': return has('ASeq IList ICloneable IStack IIterable IHash IEquiv', name) || has(seqBase, name);
+        case 'lazy-seq': return has('IPending IIterable IHash IEquiv', name) || has(seqBase, name);
+        case 'array-seq': case 'indexed-seq': return has('ASeq IDrop ICloneable IReversible IIterable IHash IEquiv ICounted IIndexed', name) || has(seqBase, name);
+        case 'chunked-seq': return has('ASeq IChunkedNext IDrop IChunkedSeq IIterable IHash IEquiv ICounted', name) || has(seqBase, name);
+        case 'chunked-cons': return has('ASeq IChunkedNext IChunkedSeq IPrintWithWriter ICollection IEmptyableCollection IHash IEquiv ISeqable ISeq INext ISequential IMeta IWithMeta', name);
+        case 'integer-range': return has('IChunkedNext IDrop IChunkedSeq ICloneable IIterable IHash IEquiv ICounted IIndexed', name) || has(seqBase, name);
+        case 'range': return has('IChunkedNext IChunkedSeq ICloneable IIterable IHash IEquiv', name) || has(seqBase, name);
+        case 'array-map-seq': return has('IDrop IIterable IHash IEquiv ICounted', name) || has(seqBase, name);
+        case 'node-seq': return has('ASeq IIterable IHash IEquiv', name) || has(seqBase, name);
+        case 'sorted-map-seq': return has('IIterable IHash IEquiv ICounted', name) || has(seqBase, name);
+        case 'set-seq': return has('IIterable IHash IEquiv', name) || has(seqBase, name);
+        case 'key-seq': return has('IStack IIterable IHash IEquiv', name) || has(seqBase, name);
+        case 'reverse-seq': return has('ICloneable IIterable IHash IEquiv', name) || has(seqBase, name);
+        case 'repeat': return has('IDrop IPending IHash IEquiv', name) || has(seqBase, name);
+        case 'iterate': return has('IPending', name) || has(seqBase, name);
+        case 'queue-seq': return has('IPrintWithWriter ICollection IEmptyableCollection ISeqable ISeq INext ISequential IMeta IWithMeta IIterable IHash IEquiv', name);
+        case 'array-chunk': return has('IChunk IReduce ICounted IIndexed', name);
+        case 'range-chunk': return has('IChunk ISeq ICounted IIndexed', name);
+        case 'chunk-buffer': return has('ICounted', name);
+        case 'queue': return has('ICloneable IPrintWithWriter ICollection IEmptyableCollection IStack IIterable IHash IEquiv ISeqable ISeq INext ICounted ISequential IMeta IWithMeta', name);
+        case 'atom': return has('IPrintWithWriter IHash IEquiv IMeta IDeref IAtom IWatchable', name);
+        case 'reduced': return has('IPrintWithWriter IHash IEquiv IDeref', name);
+        case 'multifn': return has('INamed IMultiFn IPrintWithWriter IHash IEquiv IFn', name);
+        case 'var': return has('Fn IPrintWithWriter IHash IEquiv IFn IMeta IWithMeta IDeref', name);
+        case 'record': return has('IRecord ICloneable IPrintWithWriter IKVReduce IMap ICollection IIterable IHash IEquiv ISeqable ICounted ILookup IAssociative IMeta IWithMeta', name);
+        default: return false;
+      }
+    };
+    // Chunks and chunk buffers, which the reference does not own: they also
+    // take its defaults and extensions to `object`.
+    const unowned = tag => tag === 'array-chunk' || tag === 'range-chunk' || tag === 'chunk-buffer';
+    // The legacy protocol objects' own types (`IMeta.function = true`, ...).
+    const defaultType = name => {
+      switch (name) {
+        case 'IMeta': case 'Fn': return 'function';
+        case 'ICounted': return 'null';
+        case 'IHash': case 'IEquiv': return '_';
+        default: return undefined;
+      }
+    };
+    const mungeCharacter = c => {
+      switch (c) {
+        case '-': return '_';
+        case ':': return '_COLON_';
+        case '+': return '_PLUS_';
+        case '>': return '_GT_';
+        case '<': return '_LT_';
+        case '=': return '_EQ_';
+        case '~': return '_TILDE_';
+        case '!': return '_BANG_';
+        case '@': return '_CIRCA_';
+        case '#': return '_SHARP_';
+        case "'": return '_SINGLEQUOTE_';
+        case '"': return '_DOUBLEQUOTE_';
+        case '%': return '_PERCENT_';
+        case '^': return '_CARET_';
+        case '&': return '_AMPERSAND_';
+        case '*': return '_STAR_';
+        case '|': return '_BAR_';
+        case '{': return '_LBRACE_';
+        case '}': return '_RBRACE_';
+        case '[': return '_LBRACK_';
+        case ']': return '_RBRACK_';
+        case '/': return '$';
+        case '\\': return '_BSLASH_';
+        case '?': return '_QMARK_';
+        default: return c;
+      }
     };
     const unsupportedKind = what => { throw new Error('unsupported operation: native macro runtime satisfies? of ' + what); };
     // The QuickJS-reference type of a value the runtime owns, or null: a
@@ -3221,17 +3323,11 @@ const native = (() => {
     // protocol's properties of: getters and Proxy traps run as they do there.
     const host = (v, tag) => tag === null && v !== null && (typeof v === 'object' || typeof v === 'function')
       && __rt.formKind(v) === null && !__rt.cljIsAtom(v);
-    const munge = s => Array.from(s, c => built().munging[c] ?? c).join('');
+    const munge = s => Array.from(s, mungeCharacter).join('');
     // The legacy marker property of a protocol (`protocolSlot(key, 0)`).
     const marker = key => {
-      const markers = built().markers;
-      let m = markers.get(key);
-      if (m === undefined) {
-        const slash = key.indexOf('/');
-        m = munge(slash < 0 ? 'cljs.core' : key.slice(0, slash)).replaceAll('.', '$') + '$' + munge(slash < 0 ? key : key.slice(slash + 1)) + '$';
-        markers.set(key, m);
-      }
-      return m;
+      const slash = key.indexOf('/');
+      return [munge(slash < 0 ? 'cljs.core' : key.slice(0, slash)).replaceAll('.', '$'), '$', munge(slash < 0 ? key : key.slice(slash + 1)), '$'].join('');
     };
     // `implements?` of a core protocol: its mask bit or marker, then the
     // value's native implementation (`coreProtocolImplementation`).
@@ -3241,7 +3337,7 @@ const native = (() => {
       decl.demand(name, x);
       if (object) v[marker(name)];
       if (decl.implementsDirectly(name, x)) return true;
-      if (tag !== null) return built().native.get(tag)?.has(name) === true;
+      if (tag !== null) return nativeProtocols(tag, name);
       // An instant or UUID literal is the legacy Date or UUID.
       const literal = __rt.formKind(v) === 'compiler-literal' ? __rt.formName(v) : null;
       if (literal === 'instant') return name === 'Inst' || name === 'IComparable';
@@ -3263,10 +3359,10 @@ const native = (() => {
       decl.demand(name, x);
       const tag = kindOf(x);
       if (implementsCore(name, x, tag)) return true;
-      if (tag !== null && !built().unowned.has(tag)) return false;
+      if (tag !== null && !unowned(tag)) return false;
       const v = val(x), mask = decl.mask(name);
       if (mask !== undefined && (host(v, tag) ? v[mask[0]] : decl.masked(name, x))) return false;
-      const d = built().defaults.get(name);
+      const d = defaultType(name);
       if (d !== undefined && (d === '_' || d === decl.hostType(x))) return true;
       return decl.extended(name, x);
     };
@@ -3298,7 +3394,7 @@ const native = (() => {
       if (implementsProgram(key, x)) return true;
       if (direct) return false;
       const name = nameOf(p) ?? key;
-      const d = isCore(name) ? built().defaults.get(name) : undefined;
+      const d = isCore(name) ? defaultType(name) : undefined;
       if (d !== undefined && (d === '_' || d === decl.hostType(x))) return true;
       return isCore(name) || nameOf(p) === undefined ? decl.extended(name, x) : decl.extended(name, x, p);
     };
