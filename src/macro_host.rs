@@ -846,12 +846,16 @@ pub(crate) struct ReaderRegistration {
 struct DataReaderSources {
     units: HashMap<Name, String>,
     default_unit: Option<String>,
+    #[cfg(feature = "bbp-macros")]
+    native_units: HashMap<Name, String>,
+    #[cfg(feature = "bbp-macros")]
+    native_default_unit: Option<String>,
 }
 /// The data-reader heap of one binding and the functions evaluated in it.
 #[derive(Default)]
 struct DataReaderEngine {
     default_function: Option<crate::evaluator::ValueId>,
-    evaluator: Option<std::rc::Rc<crate::evaluator::Evaluator>>,
+    evaluator: Option<std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>>,
     functions: HashMap<Name, crate::evaluator::ValueId>,
     /// The evaluator's `takeEncodePeak` ([`take_encode_peak`]).
     encode_peak: std::cell::Cell<Option<crate::evaluator::ValueId>>,
@@ -1302,9 +1306,8 @@ impl MacroHost {
     /// the namespace whose form is being read.
     fn install_reader_build_services(
         &self,
-        evaluator: &crate::evaluator::Evaluator,
+        evaluator: &dyn crate::compiler_evaluator::CompilerEvaluator,
     ) -> Result<(), crate::evaluator::EvalError> {
-        use crate::compiler_evaluator::CompilerEvaluator;
         let (build, log) = (
             self.engine.build.clone(),
             self.engine.dependency_log.clone(),
@@ -1315,12 +1318,29 @@ impl MacroHost {
                 crate::build_services::serve_request(&build, &log, request, |_| None, Vec::new())
             }),
         )?;
-        let done = evaluator.evaluate_js(&format!(
-            "(globalThis.lightCljsBuild = ({})(globalThis.__lightBuildService, {}), null)",
-            crate::build_services::BUILD_OBJECT,
-            crate::build_services::READER_CALLER
-        ))?;
-        crate::evaluator::MacroEvaluator::release(evaluator, done)
+        evaluator.install_build_object(crate::build_services::READER_CALLER)
+    }
+    fn new_data_reader_evaluator(
+        &self,
+    ) -> Result<
+        std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
+        crate::evaluator::EvalError,
+    > {
+        #[cfg(feature = "bbp-macros")]
+        if self.native_macro_backend() {
+            // Share the build's budget, with a private reader task and no
+            // macro/helper registrations, just as the other reader heap does.
+            let evaluator = match self.session_handle() {
+                Some(session) => session
+                    .shared()
+                    .native_runtime(&self.evaluator_options)?
+                    .evaluator()?,
+                None => crate::bbp_evaluator::BbpEvaluator::new(self.evaluator_options.clone())?,
+            };
+            self.prepare_compiler_evaluator(&evaluator)?;
+            return Ok(std::rc::Rc::new(evaluator));
+        }
+        Ok(std::rc::Rc::new(self.new_evaluator()?))
     }
     /// Register an explicit compiler-emitted function over immutable reader data.
     /// It executes in canonical JavaScript; only finite form-domain results cross
@@ -1336,9 +1356,13 @@ impl MacroHost {
         let syntax = crate::parse(function_source).map_err(|e| e.to_string())?;
         let program = crate::analyze(function_source, &syntax).map_err(|e| e.to_string())?;
         let unit = crate::emitter::emit_js_unit(&program);
-        std::sync::Arc::make_mut(&mut self.tables.data_readers)
-            .units
-            .insert(tag.clone(), unit);
+        let sources = std::sync::Arc::make_mut(&mut self.tables.data_readers);
+        #[cfg(feature = "bbp-macros")]
+        sources.native_units.insert(
+            tag.clone(),
+            crate::emitter::emit_native_macro_unit(&program, true, &[]),
+        );
+        sources.units.insert(tag.clone(), unit);
         let mut readers = self.engine.data_readers.borrow_mut();
         if let Some(id) = readers.functions.remove(&tag)
             && let Some(evaluator) = &readers.evaluator
@@ -1355,8 +1379,13 @@ impl MacroHost {
     ) -> Result<(), String> {
         let syntax = crate::parse(function_source).map_err(|e| e.to_string())?;
         let program = crate::analyze(function_source, &syntax).map_err(|e| e.to_string())?;
-        std::sync::Arc::make_mut(&mut self.tables.data_readers).default_unit =
-            Some(crate::emitter::emit_js_unit(&program));
+        let sources = std::sync::Arc::make_mut(&mut self.tables.data_readers);
+        sources.default_unit = Some(crate::emitter::emit_js_unit(&program));
+        #[cfg(feature = "bbp-macros")]
+        {
+            sources.native_default_unit =
+                Some(crate::emitter::emit_native_macro_unit(&program, true, &[]));
+        }
         let mut readers = self.engine.data_readers.borrow_mut();
         if let Some(id) = readers.default_function.take()
             && let Some(evaluator) = &readers.evaluator
@@ -1435,14 +1464,27 @@ impl MacroHost {
                     } else {
                         sources.units.get(tag).cloned()
                     };
+                    let definition_unit = unit.clone();
+                    #[cfg(feature = "bbp-macros")]
+                    let unit = if self.native_macro_backend() {
+                        if fallback {
+                            sources.native_default_unit.clone()
+                        } else {
+                            sources.native_units.get(tag).cloned()
+                        }
+                    } else {
+                        unit
+                    };
                     let Some(unit) = unit else {
                         return Ok(None);
                     };
                     if readers.evaluator.is_none() {
-                        let evaluator = self.new_evaluator().map_err(|e| e.to_string())?;
-                        self.install_reader_build_services(&evaluator)
+                        let evaluator = self
+                            .new_data_reader_evaluator()
                             .map_err(|e| e.to_string())?;
-                        readers.evaluator = Some(std::rc::Rc::new(evaluator));
+                        self.install_reader_build_services(&*evaluator)
+                            .map_err(|e| e.to_string())?;
+                        readers.evaluator = Some(evaluator);
                     }
                     let evaluator = readers.evaluator.as_ref().unwrap().clone();
                     let cached = if fallback {
@@ -1461,7 +1503,12 @@ impl MacroHost {
                             (false, (Some(namespace), name)) => format!("#{namespace}/{name}"),
                             (false, (None, name)) => format!("#{name}"),
                         };
-                        let _scope = crate::generated_names::enter_reader_definition(&key, &unit);
+                        // Definition gensyms use the canonical emission's identity
+                        // in both builds, independent of the executable adapter.
+                        let _scope = crate::generated_names::enter_reader_definition(
+                            &key,
+                            definition_unit.as_deref().expect("registered reader unit"),
+                        );
                         crate::generated_names::sync_reader_gensym_scope(&*evaluator)
                             .map_err(|e| e.to_string())?;
                         let function = evaluator.evaluate_unit(&unit).map_err(|e| e.to_string())?;

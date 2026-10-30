@@ -1991,3 +1991,42 @@ the bootstrap macros live as long as their engine, and a worker's
   "As built (light-cljs-380)"). "RSS flat" in the row means the physical
   footprint and the live counts; `ps` RSS on macOS settles after about 30
   warm Penpot builds, at a level the allocator chooses.
+
+## Pants build cache-suite compatibility
+
+On master `1b4195c0`, with Homebrew Rust/Cargo 1.99.1 on macOS arm64,
+`CARGO_BUILD_JOBS=4 cargo nextest run --locked --no-default-features --features
+bbp-macros --test compiler_cache --test cache_matrix -j 3 --no-fail-fast`
+reproduces eight failures (21 passed, eight failed, one ignored child entry).
+The first failure of each test is:
+
+| Test | First error | Classification |
+| --- | --- | --- |
+| `compiler_cache::persistent_inputs_invalidate_their_readers` | `light.build/resource is only available at compile time` from `inputs/inline` | Pants build gap: build object absent |
+| `compiler_cache::cached_optional_resource_absence_becoming_directory` | Printed `failed` instead of `absent` | Same gap, caught by the fixture's guard |
+| `cache_matrix::resource_change` | `light.build/resource is only available at compile time` from `inputs/inline` | Same gap |
+| `cache_matrix::input_read_through_a_helper_or_a_custom_reader` | Printed ` #0, #0` instead of `rows #1,rows #1` | Same gap: the helper's `exists?` guard skipped its read |
+| `cache_matrix::custom_reader_gensyms_across_processes` | Its `child` fails with `this light-cljs build embeds no QuickJS` at `app/a.cljs:1:19` | Pants build gap: explicit compiler readers required QuickJS |
+| `cache_matrix::timestamp_macro` | `RangeError: no host clock supplied (use Task::run_with)` | Pants build gap: clock not connected |
+| `cache_matrix::repeated_builds_and_teardown` | `LiveCounts { artifacts: 0, engines: 0, engine_handles: 0, bridge_payloads: 0 }` while the macro engine is alive | Harness observability gap: Pants runtime and bridge retention were not counted |
+| `cache_matrix::resolution_and_views` | `unsupported operation: native macro runtime Var reflection` from `reflect/doc-of` at `user.cljs:1:59` | Larger Pants build gap, tracked by **light-cljs-589** |
+
+None of these fixtures assumes behavior exclusive to the V8 build. The Pants
+build now installs the shared build object and serves string requests after
+parking its VM task, on the thread that owns the compiler callback. Initializer
+IDs accompany requests, so helper reads and their cached reuse carry the same
+external-input dependencies. Responses are charged to the shared heap and old
+mailboxes do not retain resource contents. Explicit named and fallback compiler
+readers execute native-form units, with definition identity and gensym counters
+kept consistent with the V8 build's reader heap. The real clock is supplied to
+Pants tasks, and runtime/provenance lifetimes enter the existing live counters.
+No expected values or assertions in the cache suites changed.
+
+`compiler_cache` passes all 19 tests (including the new four-thread resource test); `cache_matrix` passes 10 of its 11 parent
+tests, including its custom-reader child builds. The unchanged
+`resolution_and_views` still stops at Var reflection. Light-cljs-589 carries
+that exact source and failure, plus the namespace inventory case later in the
+same test. It must pass the complete test, including metadata-only edits and
+`all-ns`, without skipping rows. The resource and configuration contract suites
+are also reused directly by `bbp_macros`, so they run on the Pants build without
+requiring the compiler integration binary's QuickJS test dependencies.

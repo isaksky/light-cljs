@@ -28,6 +28,76 @@ fn numeric_global(evaluator: &BbpEvaluator, name: &str) -> f64 {
 }
 
 #[test]
+fn string_services_resume_on_the_callers_thread_without_replaying_effects() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let caller = std::thread::current().id();
+    let calls = Rc::new(Cell::new(0));
+    let observed = calls.clone();
+    let runtime = shared.0.runtime.clone();
+    evaluator
+        .install_string_service(
+            "echo",
+            Rc::new(move |request| {
+                assert_eq!(std::thread::current().id(), caller);
+                // A callback runs after the VM has parked, outside a host leaf.
+                runtime.scope(|scope| {
+                    scope.primitive(Primitive::Null);
+                });
+                observed.set(observed.get() + 1);
+                format!("{request}\0😀")
+            }),
+        )
+        .unwrap();
+    evaluator.install_native_runner(Rc::new(|step| {
+        std::thread::spawn(move || step.run()).join().unwrap()
+    }));
+    evaluator.cx().unwrap().resumable.set(true);
+    let value = evaluator.evaluate_unit(
+        "rt => { globalThis.effects = 0; let answer; for(let i=0;i<3;i++){ effects++; answer=echo('request'+i); effects++; } return answer; }"
+    ).unwrap();
+    assert_eq!(calls.get(), 3);
+    assert_eq!(numeric_global(&evaluator, "effects"), 6.0);
+    assert_eq!(
+        evaluator.cx().unwrap().values.borrow()[&value.index]
+            .string()
+            .unwrap()
+            .to_string_lossy(),
+        "request2\0😀"
+    );
+    evaluator.release(value).unwrap();
+
+    // A producer inherits callbacks as well as the JavaScript registrations.
+    let producer = evaluator
+        .spawn_producer(&evaluator.cx().unwrap(), None, |_| {})
+        .unwrap();
+    let value = producer.evaluate_unit("rt => echo('child')").unwrap();
+    assert_eq!(calls.get(), 4);
+    producer.release(value).unwrap();
+}
+
+#[test]
+fn string_service_mailboxes_do_not_retain_past_resource_contents() {
+    let evaluator = BbpEvaluator::new(EvaluatorOptions {
+        memory_limit: 8 << 20,
+        ..Default::default()
+    })
+    .unwrap();
+    evaluator
+        .install_string_service("resource", Rc::new(|_| "x".repeat(256 << 10)))
+        .unwrap();
+    let value = evaluator.evaluate_unit(
+        "rt => { let size=0; for(let i=0;i<64;i++)size+=resource('path').length; globalThis.size=size; return null; }"
+    ).unwrap();
+    assert_eq!(
+        numeric_global(&evaluator, "size"),
+        (64 * (256 << 10)) as f64
+    );
+    assert!(evaluator.cx().unwrap().string_answer.borrow().is_none());
+    evaluator.release(value).unwrap();
+}
+
+#[test]
 fn initializer_namespace_retains_bindings_and_breaks_ancestry_ties_by_source_unit() {
     for _ in 0..32 {
         let mut bridge = Bridge::default();

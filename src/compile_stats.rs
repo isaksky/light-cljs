@@ -374,8 +374,8 @@ pub struct LiveCounts {
     /// [`crate::namespace_artifact::NamespaceArtifact`]s captured, decoded
     /// or cloned and not yet dropped.
     pub artifacts: usize,
-    /// JavaScript engines, V8 isolates and QuickJS runtimes, made for macros,
-    /// deferred units or a session and not yet dropped.
+    /// JavaScript engines (a shared Pants runtime, V8 isolate or QuickJS runtime)
+    /// made for macros, deferred units or a session and not yet dropped.
     pub engines: usize,
     /// Persistent handles Rust holds into an engine's heap: V8 `Global`s (a
     /// context, its services, cached namespace functions, the bridge's

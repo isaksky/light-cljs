@@ -1197,6 +1197,50 @@ const INPUTS: &[(&str, &str)] = &[
     ),
 ];
 
+#[test]
+fn parallel_resource_and_configuration_reads_match_one_thread() {
+    let project = Project::new(&[
+        (
+            "macros.cljs",
+            "(ns macros (:require [light.build :as b])) (defmacro input [] (str (b/resource \"./data.txt\") (b/config :app/flavor)))",
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [app])) (js/console.log (app/value0))",
+        ),
+    ]);
+    project.write("data.txt", "one");
+    let definitions: String = (0..16)
+        .map(|i| format!("(defn value{i} [] (input)) "))
+        .collect();
+    project.write(
+        "app.cljs",
+        &format!("(ns app (:require [macros :refer [input]])) {definitions}"),
+    );
+    let config = ["--config", "app/flavor=:dev"];
+    let oracle = Project::finish(project.command("main", &config, false).output().unwrap());
+    assert_eq!(oracle.run(), "one:dev\n");
+    let options = ["--jobs", "4", "--config", "app/flavor=:dev"];
+    let cold = project.cached("main", &options);
+    assert_eq!(cold.js, oracle.js);
+    assert!(cold.stat("pool.worker-isolates") > 0, "{}", cold.stats);
+    let warm = project.cached("main", &options);
+    assert_eq!(warm.stat("cache.hits"), 4, "{}", warm.stats);
+    assert_eq!(warm.js, oracle.js);
+    project.write("data.txt", "two");
+    let edited = project.cached("main", &options);
+    assert_eq!(edited.run(), "two:dev\n");
+    assert!(
+        edited
+            .rows()
+            .contains(&"app miss inputs: external input changed"),
+        "{}",
+        edited.stats
+    );
+    let oracle = Project::finish(project.command("main", &config, false).output().unwrap());
+    assert_eq!(edited.js, oracle.js);
+}
+
 /// Resources, an optional resource appearing and the `--config` map reach
 /// the namespaces that read them in a later process, through the records
 /// the lookup rebuilds from stored manifests.

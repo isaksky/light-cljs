@@ -5,9 +5,9 @@
 //! the dependency manifest, when one is recorded, gets the exact text
 //! returned, absence and every location tried ([`crate::dependency_manifest`]).
 //!
-//! Both compile-time engines run the same JavaScript object, `lightCljsBuild`
-//! ([`BUILD_OBJECT`]), over one string service, so V8 and QuickJS behave
-//! identically. A request is `CALLER \0 UNITS \0 OPERATION \0 FIRST \0
+//! All compile-time engines run the same JavaScript object, `lightCljsBuild`
+//! ([`BUILD_OBJECT`]), over one string service. The Pants build, V8 build
+//! and QuickJS reference share the request contract: `CALLER \0 UNITS \0 OPERATION \0 FIRST \0
 //! SECOND`, and an answer is `v` and a text, `n` for nil, or `e` and an error
 //! message, which the object throws.
 

@@ -606,7 +606,10 @@ const decl = (() => {
     next:(x,builtin)=>resolveCore('INext/-next',1,x,builtin,true)};
 })();
 const native = (() => {
-  let gensymScope = 0, gensymPrefix = '';
+  let gensymScope = 0, gensymPrefix = '', gensymNative = true;
+  // Explicit data readers count independently of macro expansion, as in the
+  // separate reader heap of the V8 build. This state follows the reader task.
+  const readerGensymScopes = new Map();
   const val = x => __rt.formValue(x);
   // Compiled interop (`(.-m x)`, `(.m x a)`, host calls, `instance?`): a
   // native form is the same object in JavaScript, so nothing is converted;
@@ -706,7 +709,12 @@ const native = (() => {
       scope=__rt.effect(65531,'s'+initializer+':'+scope);
     }
     let name;
-    if (scope !== 0) name = base + (scope===gensymScope?gensymPrefix:__rt.need(scope,6)) + __rt.effect(65531, 'g' + scope);
+    if (!gensymNative) {
+      const count=(readerGensymScopes.get(scope)??0)+1;
+      readerGensymScopes.set(scope,count);
+      name=base+(scope===0?'':gensymPrefix)+count;
+    }
+    else if (scope !== 0) name = base + (scope===gensymScope?gensymPrefix:__rt.need(scope,6)) + __rt.effect(65531, 'g' + scope);
     else do { name = base + __rt.effect(65531, 'n'); } while (!__rt.effect(65531, 'a' + name));
     // The compiler's captured log decides whether recording is enabled.
     // A nested helper producer has a fresh task and no task-local log flag.
@@ -2000,6 +2008,15 @@ const native = (() => {
     writeAll:(w,...xs)=>{for(const x of xs)write(w,x);return null;},
     prSequentialWriter:(...a)=>a.length===7?printSequential(...a):arity(a.length),
     prSeqWriter:(...a)=>{if(a.length!==3)return arity(a.length);const [xs,w,o]=a;printWriter(__rt.cljFirst(xs),w,o);for(let s=__rt.cljNext(xs);s!==null;s=__rt.cljNext(s)){write(w,' ');printWriter(__rt.cljFirst(s),w,o);}return null;},
+    getIn:(...a)=>{
+      if(a.length!==2&&a.length!==3)return arity(a.length);
+      let value=a[0];const missing={};
+      for(let path=__rt.cljSeq(a[1]);path!==null;path=__rt.cljNext(path)){
+        value=a.length===3?get(value,__rt.cljFirst(path),missing):get(value,__rt.cljFirst(path));
+        if(value===missing)return a[2];
+      }
+      return value;
+    },
     createNs, findNs, Namespace,
     theNs:name=>{const ns=findNs(name);if(ns===null)throw new Error('No namespace: '+core.str(name));return ns;},
     nsName:(...a)=>a.length!==1?arity(a.length):__rt.formKind(val(a[0]))==='symbol'?__rt.formName(val(a[0])):val(a[0]).name,
@@ -2332,7 +2349,10 @@ const native = (() => {
       jsArray:items=>__rt.formCompilerLiteral('js-array',vector(items)),
       jsObject:pairs=>__rt.formCompilerLiteral('js-object',constantMap(literalObjectPairs(pairs))),
       withMeta:(value,meta)=>__rt.cljWithExportedMeta(value,meta),
-      gensymScope:(serial,prefix)=>{gensymScope=serial;gensymPrefix=prefix;return null;},takeEncodePeak:()=>0,
+      gensymScope:(serial,prefix,retired='',native=true)=>{
+        if(retired)for(const ended of retired.split(','))readerGensymScopes.delete(+ended);
+        gensymScope=serial;gensymPrefix=prefix;gensymNative=native;return null;
+      },takeEncodePeak:()=>0,
       namespaceContext:()=>{
         if(!(currentNamespace instanceof Namespace))return __rt.formVector(0,currentNamespace);
         const name=currentNamespace.name,kind=__rt.formKind(val(name));
@@ -2403,6 +2423,19 @@ globalThis.__lightDefineCompilerRoot=(name,initialize,once)=>{
 };
 let initializerSerial=0;
 const initializerStack=[];
+// Helper compilation uses a separate task. Initializers on this task remain
+// the innermost code; the catalog supplies the analysis ancestry in Rust.
+globalThis.__lightBuildCaller=()=>(initializerStack.length?'i':'e')+'\u0000'+initializerStack.join(',');
+let stringServiceSerial=0;
+globalThis.__lightStringServiceName=null;
+globalThis.__lightStringServiceRequest=null;
+globalThis.__lightCallStringService=(name,request)=>{
+  if(typeof request!=='string')throw new TypeError('compiler service expected a string');
+  globalThis.__lightStringServiceName=name;
+  globalThis.__lightStringServiceRequest=request;
+  try{return __rt.nth(__rt.need(++stringServiceSerial,stringKind),0);}
+  finally{globalThis.__lightStringServiceName=null;globalThis.__lightStringServiceRequest=null;}
+};
 globalThis.__lightInitializerUnit=null;
 globalThis.__lightInitializerParent=null;
 globalThis.__lightInitializerResult=null;

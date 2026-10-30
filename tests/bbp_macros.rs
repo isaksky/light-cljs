@@ -1,6 +1,13 @@
 #![cfg(feature = "bbp-macros")]
 use light_cljs::{MacroHost, analyze_with_macros, emit_js, parse};
 
+// The same resource/configuration contract runs with the V8 build in the
+// compiler binary and with the Pants build here, without requiring QuickJS.
+#[path = "compiler/build_config.rs"]
+mod build_config;
+#[path = "compiler/build_resources.rs"]
+mod build_resources;
+
 const SEQ_FIXTURES: &[(&str, &str)] = &[
     (
         "(defmacro call-form [x] (seq x)) (js/console.log (call-form [+ 1 2]))",
@@ -39,8 +46,59 @@ fn program_output(js: &str) -> String {
 }
 
 #[test]
+fn explicit_compiler_readers_keep_definition_and_read_gensyms_apart_from_macros() {
+    use light_cljs::compiler_data::Name;
+    let root = temp_dir::TempDir::new("native-compiler-readers");
+    std::fs::write(root.join("main.cljs"),
+        "(ns main) (defmacro named [] (list 'quote (gensym \"m\"))) (js/console.log (pr-str [(named) #app/tag 1 #unknown 2 (named) #app/tag 3]))"
+    ).unwrap();
+    let build = |native| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        host.register_compiler_data_reader(Name::new(Some("app"), "tag"),
+            "(let [definition (gensym \"d\")] (fn [value] (list 'quote [definition (gensym \"r\") value])))"
+        ).unwrap();
+        host.register_compiler_default_data_reader(
+            "(fn [tag value] (list 'quote [(str tag) (gensym \"f\") value]))",
+        )
+        .unwrap();
+        let program = light_cljs::compiler::analyze_namespace_entry(
+            "main",
+            &[root.path().clone()],
+            &mut host,
+            light_cljs::analyzer::AnalysisOptions::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        emit_js(&program)
+    };
+    let pants = build(true);
+    let output = program_output(&pants);
+    assert!(output.contains("unknown"), "{output}");
+    #[cfg(feature = "quickjs")]
+    {
+        let reference = build(false);
+        assert_eq!(output, program_output(&reference));
+        assert_eq!(pants, reference);
+    }
+}
+
+#[test]
 fn native_core_services_match_quickjs() {
     for (body, expected) in [
+        (
+            r#"[(get-in {:a {:b nil}} [:a :b] :missing)
+                (get-in {:a {:b false}} [:a :b] :missing)
+                (get-in {:a {}} [:a :b] :missing)
+                (get-in {:a [10 20]} [:a 1])
+                (get-in {:a 1} []) (get-in nil nil :missing)
+                (get-in {} [:a :b])
+                (let [g get-in] [(g {:a 2} [:a]) (apply g [{} [:a] :absent])])
+                (try (get-in {}) (catch :default e (.-message e)))]"#,
+            "[nil false :missing 20 {:a 1} nil nil [2 :absent] \"Invalid arity: 1\"]",
+        ),
         (
             r#"[(mapv vec (partition-all 2 [0 1 2 3 4]))
                 (mapv vec (partition-all 3 1 '(0 1 2 3)))

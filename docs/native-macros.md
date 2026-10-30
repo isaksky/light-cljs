@@ -35,8 +35,15 @@ legacy engine, call `MacroHost::use_native_macros()` to select it explicitly.
 When it is the only compiled engine it serves clean compilations automatically.
 The production default remains V8 with QuickJS for interactive macro sessions.
 QuickJS-only builds now use `--no-default-features --features quickjs`; plain
-`--no-default-features` embeds no engine. Interactive sessions and compiler data
-readers do not use this backend.
+`--no-default-features` embeds no engine. Interactive sessions still use QuickJS.
+Explicit compiler data readers use the selected compilation engine: native
+forms on the Pants build, and QuickJS on the V8 build and QuickJS reference.
+The Pants build shares `light.build`'s resource, configuration and dependency
+services with those builds. Requests suspend the task before invoking its
+compiler callback, preserving the caller and initializer ancestry when VM
+steps move between worker threads. Reader definition gensyms retain the
+canonical emitted unit's identity; reader calls count apart from macro calls.
+See [the cache-suite compatibility results](compiler-cache.md#pants-build-cache-suite-compatibility).
 
 A compilation retains one shared runtime and aggregate execution control. Each
 task has private function handles and mutable JavaScript state. Native forms and

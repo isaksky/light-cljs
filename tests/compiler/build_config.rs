@@ -3,13 +3,21 @@
 //! the whole configuration that every namespace depends on, and the coarse
 //! broad views, each recorded in the dependency manifest of every namespace
 //! whose compilation used it (docs/compiler.md, "Compile-time services:
-//! light.build"). The default build runs these macros in V8 and the
-//! QuickJS-only build in QuickJS; both run this suite.
+//! light.build"). This suite runs on the V8 build, QuickJS reference and,
+//! through `bbp_macros`, the Pants build.
 use crate::temp_dir::TempDir;
 use light_cljs::compiler::analyze_namespace_entry_with_dependencies;
 use light_cljs::dependency_manifest::{BroadView, DependencyManifest, ExternalInput, NamespaceId};
 use light_cljs::{BuildConfiguration, MacroHost, analyzer::AnalysisOptions};
 use std::{fs, process::Command};
+
+fn host() -> MacroHost {
+    #[allow(unused_mut)]
+    let mut host = MacroHost::new();
+    #[cfg(feature = "bbp-macros")]
+    host.use_native_macros();
+    host
+}
 
 struct Root(TempDir);
 
@@ -27,7 +35,7 @@ impl Root {
         entry: &str,
         configuration: &BuildConfiguration,
     ) -> Result<(String, DependencyManifest), String> {
-        let mut host = MacroHost::new();
+        let mut host = host();
         host.set_build_configuration(configuration.clone());
         let (program, _, manifest) = analyze_namespace_entry_with_dependencies(
             entry,
@@ -373,7 +381,7 @@ fn a_custom_data_reader_reads_configuration_and_declares_views() {
 (str #app/flavored "x" "," (table-macro))"#,
     );
     root.write("app/plain.cljs", "(ns app.plain) (def v 1)");
-    let mut host = MacroHost::new();
+    let mut host = host();
     host.register_compiler_data_reader(
         light_cljs::compiler_data::Name::new(Some("app"), "flavored"),
         r#"(fn [text]

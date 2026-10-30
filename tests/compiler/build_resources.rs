@@ -1,8 +1,8 @@
 //! `light.build`: compile-time resource reads and declared dependencies,
 //! from macros, helpers and data readers, each recorded in the dependency
 //! manifest of every namespace whose compilation used it (docs/compiler.md,
-//! "Compile-time services: light.build"). The default build runs these
-//! macros in V8 and the QuickJS-only build in QuickJS; both run this suite.
+//! "Compile-time services: light.build"). This suite runs on the V8 build,
+//! QuickJS reference and, through `bbp_macros`, the Pants build.
 use crate::temp_dir::TempDir;
 use light_cljs::cache_policy::{self, Bypass, CacheSettings};
 use light_cljs::compiler::{
@@ -18,6 +18,14 @@ use light_cljs::source_provider::{
 };
 use light_cljs::{MacroHost, analyzer::AnalysisOptions};
 use std::{fs, path::PathBuf, process::Command, rc::Rc};
+
+fn host() -> MacroHost {
+    #[allow(unused_mut)]
+    let mut host = MacroHost::new();
+    #[cfg(feature = "bbp-macros")]
+    host.use_native_macros();
+    host
+}
 
 struct Roots(Vec<TempDir>);
 
@@ -52,12 +60,12 @@ impl Roots {
         Ok((light_cljs::emit_js(&program), manifest))
     }
     fn build(&self, entry: &str) -> Result<(String, DependencyManifest), String> {
-        let (js, manifest) = self.build_with(entry, &mut MacroHost::new())?;
+        let (js, manifest) = self.build_with(entry, &mut host())?;
         // Recording a manifest leaves the output as it is without one.
         let plain = light_cljs::compiler::analyze_namespace_entry(
             entry,
             &self.paths(),
-            &mut MacroHost::new(),
+            &mut host(),
             AnalysisOptions::default(),
             &mut Vec::new(),
         )
@@ -437,7 +445,7 @@ fn a_custom_data_reader_reads_for_the_namespace_whose_form_it_reads() {
     roots.write(0, "app/plain.cljs", "(ns app.plain) (def v 1)");
     roots.write(0, "app/data.txt", "local");
     roots.write(0, "shared/x.txt", "shared");
-    let mut host = MacroHost::new();
+    let mut host = host();
     host.register_compiler_data_reader(
         Name::new(Some("app"), "inline"),
         "(fn [path] (.resource js/lightCljsBuild path))",
@@ -608,7 +616,7 @@ fn a_provider_without_stable_identities_makes_its_readers_non_cacheable() {
     let (program, _) = analyze_namespace_entry_recorded_with_provider(
         "app.core",
         &Memory,
-        &mut MacroHost::new(),
+        &mut host(),
         AnalysisOptions::default(),
         &mut Vec::new(),
         EntryRecorders {
@@ -645,7 +653,7 @@ fn build_from(entry: &str, provider: &dyn SourceProvider) -> (String, Dependency
     let (program, _) = analyze_namespace_entry_recorded_with_provider(
         entry,
         provider,
-        &mut MacroHost::new(),
+        &mut host(),
         AnalysisOptions::default(),
         &mut Vec::new(),
         EntryRecorders {

@@ -3375,12 +3375,15 @@ fn prepare_engine(
     binding: &EngineBinding,
 ) -> Result<(), String> {
     if evaluator.native_forms() {
-        return install_catalog_services(
+        install_catalog_services(
             evaluator,
             view,
             binding.build.clone(),
             binding.dependency_log.clone(),
-        );
+        )?;
+        return evaluator
+            .install_build_object("globalThis.__lightBuildCaller")
+            .map_err(|e| e.to_string());
     }
     install_catalog_services(
         evaluator,
@@ -3422,13 +3425,9 @@ fn prepare_engine(
             .map_err(|e| e.to_string())?;
         evaluator.release(value).map_err(|e| e.to_string())?;
     }
-    let value = evaluator
-        .evaluate_js(&format!(
-            "(globalThis.lightCljsBuild = ({})(globalThis.__lightBuildService, globalThis.__lightBuildCaller), null)",
-            crate::build_services::BUILD_OBJECT
-        ))
+    evaluator
+        .install_build_object("globalThis.__lightBuildCaller")
         .map_err(|e| e.to_string())?;
-    evaluator.release(value).map_err(|e| e.to_string())?;
     // Capture the canonical runtime without a second runtime or native adapter.
     let value = evaluator
         .evaluate_unit("rt => { globalThis.__lightRuntimeForCompiler = rt; return null; }")

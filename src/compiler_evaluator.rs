@@ -24,6 +24,14 @@ pub(crate) type NativeSubmit = std::sync::Arc<
 #[cfg(feature = "bbp-macros")]
 pub(crate) type NativeSubmitter = Rc<dyn Fn() -> Option<NativeSubmit>>;
 pub(crate) trait CompilerEvaluator: MacroEvaluator {
+    /// A data reader exports finite data without a macro call's provenance.
+    fn export_data(
+        &self,
+        _id: ValueId,
+        _limits: crate::form_bridge::ConversionLimits,
+    ) -> Result<crate::compiler_data::Datum, EvalError> {
+        Err(EvalError("this engine does not export reader data".into()))
+    }
     /// Useful compiler work while a native task waits. The callback must
     /// construct independent nested analyzer state, never reuse the caller.
     fn install_wait_service(&self, _callback: WaitService) {}
@@ -42,6 +50,14 @@ pub(crate) trait CompilerEvaluator: MacroEvaluator {
     ) -> Result<(), EvalError>;
     /// Install the global function `name`, which takes one string.
     fn install_string_service(&self, name: &str, callback: StringService) -> Result<(), EvalError>;
+    /// Install the shared build object with this heap's caller description.
+    fn install_build_object(&self, caller: &str) -> Result<(), EvalError> {
+        let value = self.evaluate_js(&format!(
+            "(globalThis.lightCljsBuild = ({})(globalThis.__lightBuildService, {caller}), null)",
+            crate::build_services::BUILD_OBJECT
+        ))?;
+        self.release(value)
+    }
     #[cfg(all(test, light_v8))]
     fn number(&self, id: ValueId) -> Result<f64, EvalError>;
     /// The memory the engine took from its build's shared budget beyond
@@ -79,6 +95,13 @@ impl CompilerEvaluator for Evaluator {
 }
 #[cfg(light_quickjs)]
 impl CompilerEvaluator for Evaluator {
+    fn export_data(
+        &self,
+        id: ValueId,
+        limits: crate::form_bridge::ConversionLimits,
+    ) -> Result<crate::compiler_data::Datum, EvalError> {
+        Evaluator::export_data(self, id, limits)
+    }
     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
         Evaluator::evaluate_js(self, expression)
     }

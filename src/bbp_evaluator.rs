@@ -154,6 +154,7 @@ fn scalar_origins(call: &Form) -> HashMap<ScalarKey, ScalarOrigin> {
 }
 
 struct Imported {
+    _live: crate::compile_stats::Live,
     data: Datum,
     occurrence: WeakHandle,
     // A metadata map can escape without its occurrence. Reimport it with
@@ -461,6 +462,7 @@ impl Bridge {
         self.imports.insert(
             d.identity(),
             Imported {
+                _live: crate::compile_stats::Live::new(&crate::compile_stats::LIVE_BRIDGE_PAYLOADS),
                 data: d.clone(),
                 occurrence,
                 native,
@@ -549,7 +551,6 @@ impl Bridge {
         self.environment = Some((data.clone(), s.persist(value)));
         Ok(value)
     }
-    #[cfg(test)]
     fn export<'s>(
         &mut self,
         s: &Scope<'s>,
@@ -798,6 +799,7 @@ impl Bridge {
 #[derive(Clone)]
 pub struct BbpRuntime(Arc<SharedRuntime>);
 struct SharedRuntime {
+    _live: crate::compile_stats::Live,
     /// The aggregate budget this runtime was built for ([`heap_policy`]).
     memory_limit: usize,
     counters: Arc<NativeCounters>,
@@ -1113,7 +1115,7 @@ impl BbpRuntime {
             .replace("/* NATIVE_READER */", &reader)
             .replace("/* CORE_KEYS */", &keys);
         let executable = big_boy_pants_js::frontend::compile_function(&format!(
-            "function nativeMacroTask(commandKind, beginKind, finishKind, readerTagsCell, rawMembersCell) {{ {source} }}"
+            "function nativeMacroTask(commandKind, beginKind, finishKind, readerTagsCell, rawMembersCell, stringKind) {{ {source} }}"
         ))
         .map_err(error)?;
         let control = ExecutionControl::new(options)?;
@@ -1124,6 +1126,7 @@ impl BbpRuntime {
             .new_atom(&runtime.root(Primitive::Null))
             .map_err(error)?;
         Ok(Self(Arc::new(SharedRuntime {
+            _live: crate::compile_stats::Live::new(&crate::compile_stats::LIVE_ENGINES),
             memory_limit: options.memory_limit,
             counters: Arc::new(NativeCounters::default()),
             runtime,
@@ -1386,6 +1389,8 @@ pub(crate) struct TaskContext {
     command_kind: ResultKind,
     begin_kind: ResultKind,
     finish_kind: ResultKind,
+    string_kind: ResultKind,
+    string_answer: RefCell<Option<Rooted>>,
     initializers: RefCell<HashMap<DependencyKey, ProducerRequest>>,
     /// The lane entry of each initializer it runs, which inherits the
     /// position of what waits for it ([`crate::effect_lanes`]).
@@ -1444,6 +1449,7 @@ pub struct BbpEvaluator {
     control: ExecutionControl,
     service_depth: usize,
     service: RefCell<Option<UnitService>>,
+    string_services: RefCell<HashMap<String, StringService>>,
     help: RefCell<Option<WaitService>>,
     runner: RefCell<Option<NativeRunner>>,
     submitter: RefCell<Option<NativeSubmitter>>,
@@ -1469,6 +1475,7 @@ impl BbpEvaluator {
             shared,
             service_depth,
             service: RefCell::new(None),
+            string_services: RefCell::new(HashMap::new()),
             help: RefCell::new(None),
             runner: RefCell::new(None),
             submitter: RefCell::new(None),
@@ -1484,12 +1491,13 @@ impl BbpEvaluator {
             .0
             .next_command
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |kind| {
-                kind.checked_add(3)
+                kind.checked_add(4)
             })
             .map_err(|_| error("native task identity exhausted"))?;
         let argument = runtime.root(Primitive::Number(kind as f64));
         let begin = runtime.root(Primitive::Number((kind + 1) as f64));
         let finish = runtime.root(Primitive::Number((kind + 2) as f64));
+        let string = runtime.root(Primitive::Number((kind + 3) as f64));
         let task = runtime
             .spawn(
                 &self.shared.0.executable,
@@ -1499,6 +1507,7 @@ impl BbpEvaluator {
                     &finish,
                     &self.shared.0.reader_tags,
                     &self.shared.0.raw_members,
+                    &string,
                 ],
             )
             .map_err(error)?;
@@ -1507,6 +1516,8 @@ impl BbpEvaluator {
             command_kind: ResultKind::new(kind),
             begin_kind: ResultKind::new(kind + 1),
             finish_kind: ResultKind::new(kind + 2),
+            string_kind: ResultKind::new(kind + 3),
+            string_answer: RefCell::new(None),
             initializers: RefCell::new(HashMap::new()),
             initializer_waits: RefCell::new(HashMap::new()),
             initializer_lanes: RefCell::new(HashMap::new()),
@@ -1773,7 +1784,10 @@ impl BbpEvaluator {
                 }
             }
             match outcome {
-                RunOutcome::Waiting(key) if key.kind() == cx.command_kind => return Ok(()),
+                RunOutcome::Waiting(key) if key.kind() == cx.command_kind => {
+                    cx.string_answer.borrow_mut().take();
+                    return Ok(());
+                }
                 RunOutcome::Waiting(key) => woken = self.demand(cx, key)?,
                 RunOutcome::Yielded => {}
                 RunOutcome::Failed(e) => return Err(error(e)),
@@ -1832,6 +1846,12 @@ impl BbpEvaluator {
                 Err(error) => self.failure_root(&error.to_string()),
             };
             let completion = match result {
+                Ok(_) if request.key().kind() == cx.string_kind => {
+                    // Keep only the current response through its consuming VM
+                    // step. Older mailbox results must not retain resources.
+                    *cx.string_answer.borrow_mut() = Some(value.clone());
+                    Completion::WeakReady(&value)
+                }
                 Ok(_) => Completion::Ready(&value),
                 Err(_) => Completion::Failed(&value),
             };
@@ -1987,6 +2007,44 @@ impl BbpEvaluator {
     }
     fn produce(&self, cx: &TaskContext, request: &ProducerRequest) -> Result<Rooted, EvalError> {
         let key = request.key();
+        if key.kind() == cx.string_kind {
+            // The VM has parked before this thread-local callback runs. A
+            // pooled step carries no Rc, analyzer borrow or resource provider.
+            let text = |name| {
+                cx.task
+                    .global_value(name)
+                    .map_err(error)?
+                    .and_then(|value| value.string().map(|s| s.to_string_lossy()))
+                    .ok_or_else(|| error("invalid string service request"))
+            };
+            let name = text("__lightStringServiceName")?;
+            let request = text("__lightStringServiceRequest")?;
+            let callback = self
+                .string_services
+                .borrow()
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| error("string service is not installed"))?;
+            let answer = callback(&request);
+            cx.string_answer.borrow_mut().take();
+            let import = || {
+                self.runtime.scope(|scope| {
+                    let text = scope.try_primitive(Primitive::string(&answer))?;
+                    // A weak completion of a primitive string still owns its
+                    // backing Arc. Put it in a GC-managed message instead.
+                    let message = scope.new_vector(&[text]).ok()?;
+                    Some(scope.persist(message))
+                })
+            };
+            return import()
+                .or_else(|| {
+                    // Retry allocation after collecting, retaining the exact
+                    // answer rather than replaying the resource read.
+                    let _ = self.runtime.request_collection();
+                    import()
+                })
+                .ok_or_else(|| error("heap byte limit exceeded"));
+        }
         if key.kind() == cx.begin_kind || key.kind() == cx.finish_kind {
             return self.initialize(cx, key.kind() == cx.begin_kind);
         }
@@ -2065,6 +2123,7 @@ impl BbpEvaluator {
         let producer_cx = active.cx()?;
         bind(producer_cx.task.id());
         *active.service.borrow_mut() = service;
+        *active.string_services.borrow_mut() = self.string_services.borrow().clone();
         *active.help.borrow_mut() = self.help.borrow().clone();
         *active.runner.borrow_mut() = self.runner.borrow().clone();
         *active.submitter.borrow_mut() = self.submitter.borrow().clone();
@@ -2603,6 +2662,12 @@ struct NativeHost<'a>(
     &'a Mutex<Bridge>,
 );
 impl big_boy_pants_js::Host for NativeHost<'_> {
+    fn current_time_millis(&mut self) -> Result<f64, String> {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
+            .map_err(|error| error.to_string())
+    }
     fn effect(&mut self, call: big_boy_pants_js::HostCall) -> Result<Primitive, String> {
         if call.op == NAMESPACE_EFFECT {
             let Primitive::Number(unit) = call.arg else {
@@ -2732,11 +2797,11 @@ impl MacroEvaluator for BbpEvaluator {
         &self,
         serial: u64,
         prefix: &str,
-        _retired: &str,
-        _native: bool,
+        retired: &str,
+        native: bool,
     ) -> Result<(), EvalError> {
         self.cx()?.gensym_scope.set(serial);
-        if serial != 0 {
+        if serial != 0 && native {
             let key = DependencyKey::new(
                 self.runtime.world(),
                 DependencyId::new(serial),
@@ -2757,8 +2822,9 @@ impl MacroEvaluator for BbpEvaluator {
             }
         }
         debug_assert!(prefix.bytes().all(|b| b.is_ascii_digit() || b == b'_'));
+        debug_assert!(retired.bytes().all(|b| b.is_ascii_digit() || b == b','));
         let value = self.evaluate_unit(&format!(
-            "rt => rt.compilerForms.gensymScope({serial}, \"{prefix}\")"
+            "rt => rt.compilerForms.gensymScope({serial}, \"{prefix}\", \"{retired}\", {native})"
         ))?;
         self.release(value)
     }
@@ -2966,6 +3032,20 @@ impl MacroEvaluator for BbpEvaluator {
     }
 }
 impl CompilerEvaluator for BbpEvaluator {
+    fn export_data(&self, id: ValueId, limits: ConversionLimits) -> Result<Datum, EvalError> {
+        self.check(id)?;
+        let value = self.cx()?.values.borrow()[&id.index].clone();
+        self.host_scope(|s| {
+            self.with_bridge(|bridge| {
+                bridge.export(
+                    s,
+                    s.local(&value).map_err(error)?,
+                    limits.depth,
+                    &mut limits.nodes.clone(),
+                )
+            })
+        })
+    }
     fn install_wait_service(&self, callback: WaitService) {
         *self.help.borrow_mut() = Some(callback);
     }
@@ -2993,12 +3073,22 @@ impl CompilerEvaluator for BbpEvaluator {
         // Preserve explicit rejection of direct legacy JS service calls.
         self.unsupported_service(name)
     }
-    fn install_string_service(
-        &self,
-        name: &str,
-        _callback: StringService,
-    ) -> Result<(), EvalError> {
-        self.unsupported_service(name)
+    fn install_string_service(&self, name: &str, callback: StringService) -> Result<(), EvalError> {
+        if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Err(error("invalid service name"));
+        }
+        self.string_services
+            .borrow_mut()
+            .insert(name.to_owned(), callback);
+        self.install_registration(format!(
+            "rt => {{ globalThis.{name} = request => globalThis.__lightCallStringService('{name}', request); return null; }}"
+        ))
+    }
+    fn install_build_object(&self, caller: &str) -> Result<(), EvalError> {
+        self.install_registration(format!(
+            "rt => {{ globalThis.lightCljsBuild = ({})(globalThis.__lightBuildService, {caller}); return null; }}",
+            crate::build_services::BUILD_OBJECT
+        ))
     }
     fn value_roots(&self) -> Result<usize, EvalError> {
         // The task's own runtime handle is not a value its callers hold.
@@ -3078,7 +3168,10 @@ impl BbpEvaluator {
         let source = format!(
             "rt => {{ globalThis.{name} = () => {{ throw new Error('unsupported operation: native compiler service {name}'); }}; return null; }}"
         );
-        // A borrowed context has its services' stubs from the view that
+        self.install_registration(source)
+    }
+    fn install_registration(&self, source: String) -> Result<(), EvalError> {
+        // A borrowed context has its services from the view that
         // prepared it ([`TaskContext::prepared`]).
         let cx = self.cx()?;
         if cx.prepared.get() && cx.registrations.borrow().contains(&source) {
