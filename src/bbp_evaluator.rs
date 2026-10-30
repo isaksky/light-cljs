@@ -1453,6 +1453,16 @@ impl BbpRuntime {
                 .collect::<Vec<_>>()
                 .join("\n")
             })
+            .replace("/* SCALAR_HELPERS */", &{
+                ["stringHash", "rotateLeft", "mixK1", "mixH1", "fmix", "mixCollectionHash", "parsingString", "parseLong", "parseDouble", "parseBoolean", "jsSet", "aset", "aclone", "checkedIndex", "checkedAget", "checkedAset", "checkedAgetStrict", "checkedAsetStrict"]
+                    .into_iter()
+                    .map(|name| {
+                        let unit = manifest.unit(manifest.unit_named(name).unwrap());
+                        manifest.source()[unit.body_range.clone()].replace("coreCells.", "globalThis.__lightNativeRuntime.core.")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
             .replace("/* CORE_KEYS */", &keys);
         big_boy_pants_js::frontend::compile_function(&format!(
             "function nativeMacroTask(commandKind, beginKind, finishKind, readerTagsCell, rawMembersCell, stringKind) {{ {source} }}"

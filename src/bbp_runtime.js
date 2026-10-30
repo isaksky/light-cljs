@@ -27,6 +27,7 @@ const canonicalMember = (key, make) => {
 // name can equal, so internal classification never takes a user's field.
 const TYPE_KEY = '@lightNativeType';
 /* MEMBER_MUNGING */
+/* SCALAR_HELPERS */
 const typeTag = x => {
   const ty = x.__lightNativeType;
   return ty === undefined || __rt.formKind(ty) === 'type' ? ty : x[TYPE_KEY];
@@ -2686,7 +2687,7 @@ const native = (() => {
     addMethod:(m,k,f)=>multi.change(m,'add',k,f),removeMethod:(m,k)=>multi.change(m,'remove',k),removeAllMethods:m=>multi.change(m,'reset'),
     preferMethod:multi.prefer,getMethod:multi.getMethod,methods:m=>multi.tables(m).methods,prefers:m=>multi.tables(m).prefs,
     dispatchFn:m=>multi.field(m,'dispatch_fn'),defaultDispatchVal:m=>multi.field(m,'default_dispatch_val'),
-    assertions:true,
+    assertions:true, uncheckedArrays:false,
     gensym, rePattern, reSeq:(re,text)=>reSeq(reSeq,re,text),
     reFind:(re,text)=>reMatch(re,text,false), reMatches:(re,text)=>reMatch(re,text,true),
     isRegex:x=>val(x) instanceof RegExp,
@@ -2732,6 +2733,20 @@ const native = (() => {
       }
       return value;
     },
+    selectKeys:(value,keys)=>{
+      let result=arrayMap([]);const missing={};
+      for(let s=seqOf(keys);s!==null;s=__rt.cljNext(s)){
+        const key=__rt.cljFirst(s),item=get(value,key,missing);
+        if(item!==missing)result=__rt.cljAssoc(result,key,item);
+      }
+      return __rt.cljWithMeta(result,__rt.cljMeta(value));
+    },
+    updateVals:(value,f)=>{
+      const kind=__rt.formKind(val(value));
+      const initial=kind==='map'&&__rt.cljIsEditable(value)?value:arrayMap([]);
+      return __rt.cljWithMeta(reduceKv((result,key,item)=>__rt.cljAssoc(result,key,invoke(f,item)),initial,value),__rt.cljMeta(value));
+    },
+    updateKeys:(value,f)=>__rt.cljWithMeta(reduceKv((result,key,item)=>__rt.cljAssoc(result,invoke(f,key),item),arrayMap([]),value),__rt.cljMeta(value)),
     createNs, findNs, Namespace,
     allNs:(...a)=>a.length?arity(a.length):list(registryNames().map(key=>localNs(key))),
     theNs:name=>{const ns=findNs(name);if(ns===null)throw new Error('No namespace: '+core.str(name));return ns;},
@@ -2749,6 +2764,10 @@ const native = (() => {
     iter,seqIter,SeqIter,es6Iterator,es6IteratorSeq:iteratorSeq,
     SeqIterFactory:(...a)=>a.length===2?new SeqIter(...a):arity(a.length),
     toArray:x=>arr(x).slice(),
+    toArray2d:x=>arr(x).map(row=>arr(row).slice()),
+    aclone:x=>aclone(val(x)),aset:(...args)=>aset(...args.map(val)),
+    checkedAget:(...args)=>checkedAget(...args.map(val)),checkedAset:(...args)=>checkedAset(...args.map(val)),
+    checkedAgetStrict:(...args)=>checkedAgetStrict(...args.map(val)),checkedAsetStrict:(...args)=>checkedAsetStrict(...args.map(val)),
     intoArray:(...a)=>a.length===1||a.length===2?arr(a[a.length-1]).slice():arity(a.length),
     jsIn:(key,object)=>val(key) in val(object),
     jsKeys:object=>{const keys=[];for(const key in val(object))keys.push(key);return keys;},
@@ -2886,7 +2905,7 @@ const native = (() => {
     name:x=>{if(typeof val(x)==='string')return x;if(__rt.formKind(val(x))==='compiler-literal'||isVar(x))throw new Error("Doesn't support name on this type");if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support name: '+__rt.formName(val(x)));return __rt.formName(val(x));},
     namespace:x=>{if(__rt.formKind(val(x))==='compiler-literal'||isVar(x))throw new Error("Doesn't support namespace on this type");if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support namespace: '+__rt.formName(val(x)));return __rt.formNamespace(val(x));},
     subs:(...a)=>a.length===2?val(a[0]).substring(val(a[1])):a.length===3?val(a[0]).substring(val(a[1]),val(a[2])):arity(a.length),
-    inc:x=>val(x)+1, dec:x=>val(x)-1, multiply:(...xs)=>xs.reduce((a,b)=>a*val(b),1),
+    inc:x=>val(x)+1, dec:x=>val(x)-1, abs:x=>Math.abs(val(x)), multiply:(...xs)=>xs.reduce((a,b)=>a*val(b),1),
     less:(...xs)=>chain(xs,(a,b)=>a<b), greater:(...xs)=>chain(xs,(a,b)=>a>b), lessEqual:(...xs)=>chain(xs,(a,b)=>a<=b), greaterEqual:(...xs)=>chain(xs,(a,b)=>a>=b),
     str:function str(...xs){return xs.map(x=>{x=val(x);if(x==null)return '';const kind=__rt.formKind(x);
       if(kind==='compiler-literal'){
@@ -2919,6 +2938,7 @@ const native = (() => {
     isObject:x=>{x=val(x);const kind=__rt.formKind(x);return kind==='compiler-literal'?literalIsObject(x):kind===null&&!__rt.cljIsAtom(x)&&x!=null&&x.constructor===Object;},
     isNumber:x=>typeof val(x)==='number', isFloat:x=>typeof val(x)==='number', isDouble:x=>typeof val(x)==='number',
     isBoolean:x=>typeof val(x)==='boolean',
+    isChar:x=>typeof val(x)==='string'&&val(x).length===1,
     isInteger,isInt:x=>isInteger(x),
     isPositiveInt:x=>isInteger(x)&&val(x)>0,
     isNegativeInt:x=>isInteger(x)&&val(x)<0,
@@ -2937,6 +2957,8 @@ const native = (() => {
     randomUuid:(...a)=>a.length?arity(a.length):core.uuid('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,ch=>{const n=Math.floor(Math.random()*16);return (ch==='x'?n:n&3|8).toString(16);})),
     rand:(...a)=>a.length===0?Math.random():a.length===1?val(a[0])*Math.random():arity(a.length),
     randInt:n=>Math.floor(Math.random()*val(n)),
+    randNth:coll=>__rt.cljNth(coll,core.randInt(__rt.cljCount(coll))),
+    parseLong:x=>parseLong(val(x)),parseDouble:x=>parseDouble(val(x)),parseBoolean:x=>parseBoolean(val(x)),
     ExceptionInfo,
     exInfo:(...a)=>a.length===2||a.length===3?new ExceptionInfo(a[0],a[1],a.length===2?null:a[2]):arity(a.length),
     exData:x=>val(x) instanceof ExceptionInfo?val(x).data:null,
@@ -3082,6 +3104,19 @@ const native = (() => {
     treeSeq:(branch,children,node)=>treeFrom(treeFrom,branch,children,node),
     trampoline:(f,...args)=>{let result=args.length?invoke(f,...args):invoke(f);while(core.isFn(result))result=invoke(result);return result;},
     hashOrderedColl:c=>__rt.formHash(list(arr(c))),
+    hashUnorderedColl:c=>{
+      let result=0,n=0;
+      for(let s=seqOf(c);s!==null;s=__rt.cljNext(s),n++)result=(result+__rt.formHash(__rt.cljFirst(s)))|0;
+      return mixCollectionHash(result,n);
+    },
+    hashDouble:x=>{
+      // The engine has typed arrays; reinterpret the same little-endian
+      // Float64 bytes that the V8 runtime reads as two big-endian words.
+      const floats=new Float64Array(1);floats[0]=val(x);
+      const bytes=new Uint8Array(floats.buffer);
+      return (bytes[0]<<24)^(bytes[1]<<16)^(bytes[2]<<8)^bytes[3]
+        ^(bytes[4]<<24)^(bytes[5]<<16)^(bytes[6]<<8)^bytes[7];
+    },stringHash:x=>stringHash(val(x)),
     mapv:(f,...cs)=>vector(arr(core.mapSeq(f,...cs))), filterv:(f,c)=>vector(arr(core.filter(f,c))),
     replace:(...a)=>{
       if (a.length !== 1 && a.length !== 2) return arity(a.length);

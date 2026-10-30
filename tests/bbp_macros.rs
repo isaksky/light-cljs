@@ -6168,6 +6168,59 @@ fn native_compile_time_sequence_utilities_preserve_values_and_completion() {
 }
 
 #[test]
+fn native_map_selection_and_updates_keep_metadata_and_missing_values() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [m (with-meta {:a nil :b false :c 3} {:source true})
+                   selected (select-keys m [:b :missing :a])
+                   values (update-vals m vector)
+                   keys (update-keys m name)]
+               (list 'quote [selected (meta selected) values (meta values) keys (meta keys)
+                 (select-keys nil [:a]) (update-vals nil inc) (update-keys nil name)])))
+           (js/console.log (pr-str (probe)))"#,
+        "[{:b false, :a nil} {:source true} {:a [nil], :b [false], :c [3]} {:source true} {\"a\" nil, \"b\" false, \"c\" 3} {:source true} {} {} {}]\n",
+    );
+}
+
+#[test]
+fn native_public_hash_helpers_preserve_numeric_and_unordered_contracts() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (list 'quote [(abs -7) (abs -0.0) (hash-string nil) (hash-string "abc")
+               (= 63551 (hash-double 1.5))
+               (= (hash-unordered-coll [1 2 3]) (hash-unordered-coll [3 1 2]))
+               (= (hash-unordered-coll []) (hash #{}))
+               (not= (hash-unordered-coll [1 1]) (hash-unordered-coll [1]))
+               (char? "a") (char? "😀") (char? nil)
+               (mapv parse-long ["+100" "077" "1.2" "9007199254740992"])
+               (mapv parse-double [".5" "-1.25e2" " 2F " "0x1"])
+               (mapv parse-boolean ["true" "false" "TRUE"])]))
+           (js/console.log (pr-str (probe)))"#,
+        "[7 0 0 96354 true true true true true false false [100 77 nil nil] [0.5 -125 2 nil] [true false nil]]\n",
+    );
+}
+
+#[test]
+fn native_array_helpers_preserve_nested_writes_holes_and_checked_failures() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [a (array (array 1 2)) out (atom [])
+                   written (aset a 0 1 9)
+                   clone (aclone (aget a 0))]
+               (binding [*print-err-fn* (fn [_] (swap! out conj :warning))]
+                 (checked-aget a 4)
+                 (checked-aset clone 3 7))
+               (list 'quote [written (mapv vec a) (mapv #(if (nil? %) nil %) clone) @out
+                 (undefined? (aget clone 2)) (nil? (js/Object.getOwnPropertyDescriptor clone "2"))
+                 (try (checked-aget' clone 4) :bad (catch :default _ :bounds))
+                 (try (checked-aset' clone -1 8) :bad (catch :default _ :bounds))
+                 (mapv vec (to-array-2d [[1 2] nil '(3)]))])))
+           (js/console.log (pr-str (probe)))"#,
+        "[9 [[1 9]] [1 9 nil 7] [:warning :warning] true true :bounds :bounds [[1 2] [] [3]]]\n",
+    );
+}
+
+#[test]
 fn native_sequence_transforms_complete_once_and_keep_independent_traversals() {
     assert_native_matches_legacy(
         r#"(defmacro probe []
