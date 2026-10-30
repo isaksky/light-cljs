@@ -58,6 +58,10 @@ const MACROS: &[(&str, &str)] = &[
     ("unchecked-max", "unchecked-max"),
     ("unchecked-min", "unchecked-min"),
 ];
+/// The names a compile-time runtime's `gensym` returned, one per prefix
+/// ([`MacroHost::unscoped_gensyms`]).
+#[cfg(feature = "bbp-macros")]
+type Names = Result<Vec<String>, String>;
 #[derive(Clone)]
 pub(crate) struct Bootstrap {
     pub(crate) evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
@@ -666,7 +670,7 @@ impl MacroHost {
         &mut self,
         name: &str,
         engine: Option<&'e dyn crate::evaluator::MacroEvaluator>,
-    ) -> Result<impl FnMut(&Datum, &[&str]) -> Result<Vec<String>, String> + use<'e>, String> {
+    ) -> Result<impl FnMut(&Datum, &[&str]) -> Names + use<'e>, String> {
         self.ensure_bootstrap(name)?;
         let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
         if engine.is_none()

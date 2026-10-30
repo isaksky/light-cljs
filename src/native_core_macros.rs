@@ -2263,6 +2263,11 @@ pub(crate) fn rejection(name: &str, call: &Datum, namespace: &str, nodes: usize)
         .map(|refusal| format!("Error: Unsupported macro result {refusal}"))
 }
 
+/// How a build without the Pants build's runtime would name what it
+/// allocates outside every scope, which it never does.
+#[cfg(not(feature = "bbp-macros"))]
+type UnscopedGensyms = fn(&Datum, &[&str]) -> Result<Vec<String>, String>;
+
 impl crate::MacroHost {
     /// Expand the call `form` of the core macro `name`, spelled as `site`
     /// gives it at its span, natively ([`expand`]), charged as the engine
@@ -2315,8 +2320,9 @@ impl crate::MacroHost {
         } else {
             Some(self.unscoped_gensyms(name, engine)?)
         };
+        // Other engines expand no call outside every scope here.
         #[cfg(not(feature = "bbp-macros"))]
-        let mut unscoped: Option<fn(&Datum, &[&str]) -> Result<Vec<String>, String>> = None;
+        let mut unscoped: Option<UnscopedGensyms> = None;
         let mut decoded = false;
         let expanded = {
             let mut gensym = |prefixes: &[&str]| match &mut unscoped {

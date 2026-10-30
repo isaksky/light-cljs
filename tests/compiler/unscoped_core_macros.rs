@@ -104,6 +104,7 @@ fn rejected_core_macro_calls_report_the_definitions_errors() {
         let error = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
             .unwrap_err()
             .to_string();
+        let error = without_stack(&error);
         assert!(
             error.contains(&format!("macro cljs.core/{expected}")),
             "{source}\nexpected {expected:?}\nin {error}"
@@ -129,8 +130,24 @@ fn rejected_core_macro_calls_report_the_definitions_errors() {
     let error = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
         .unwrap_err()
         .to_string();
+    // The QuickJS reference names its conversion between the two.
     assert!(
-        error.contains("macro cljs.core/when: compiler input conversion limit; definition compiler_core_macros.cljs:29:1"),
+        error.contains("macro cljs.core/when: ")
+            && error.contains(
+                "compiler input conversion limit; definition compiler_core_macros.cljs:29:1"
+            ),
         "{error}"
     );
+}
+
+/// `error` without the stack the QuickJS reference adds to an engine error
+/// (`    at call (...)` lines before `; definition`), which the V8 and Pants
+/// builds do not give.
+fn without_stack(error: &str) -> String {
+    error
+        .split('\n')
+        .filter(|line| !line.starts_with("    at "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("\n; definition", "; definition")
 }
