@@ -590,6 +590,15 @@ type ClaimHook = Arc<dyn Fn(usize) + Send + Sync>;
 const DEPTH_LIMIT: &str = "compiler macro expansion depth limit exceeded in deferred units";
 /// Why a wait for a pooled unit after a failed one ends ([`SharedCatalog::claim`]).
 const SKIPPED_AFTER_FAILURE: &str = "an earlier unit in unit order failed";
+#[cfg(all(test, feature = "bbp-macros"))]
+thread_local! {
+    // Count work, including repeated visits, rather than distinct nodes.
+    static NATIVE_CORE_SCAN_VISITS: Cell<usize> = const { Cell::new(0) };
+}
+#[cfg(all(test, feature = "bbp-macros"))]
+fn native_core_scan_visit() {
+    NATIVE_CORE_SCAN_VISITS.with(|visits| visits.set(visits.get() + 1));
+}
 impl SharedCatalog {
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn native_counts(&self) -> crate::compile_stats::NativeHelperCounts {
@@ -745,7 +754,10 @@ impl SharedCatalog {
                     NodeKind::Argument { index, .. } => (&[], [*index, None]),
                     _ => (&[], [None, None]),
                 };
-                many.iter().copied().chain(few.into_iter().flatten())
+                let children = many.iter().copied().chain(few.into_iter().flatten());
+                #[cfg(test)]
+                let children = children.inspect(|_| native_core_scan_visit());
+                children
             }
             // Selection can make discards share descendants. Classify each
             // subtree independently of whether dead marking has visited it.
@@ -758,6 +770,8 @@ impl SharedCatalog {
             ) -> bool {
                 let mut pending = vec![(root, false)];
                 while let Some((id, ready)) = pending.pop() {
+                    #[cfg(test)]
+                    native_core_scan_visit();
                     if ready {
                         memo[id.0] = Some(
                             matches!(
@@ -777,6 +791,8 @@ impl SharedCatalog {
             // Mark the union of discarded subtrees in one shared traversal.
             fn subtree(syntax: &crate::SyntaxTree, mut pending: Vec<NodeId>, visited: &mut [bool]) {
                 while let Some(id) = pending.pop() {
+                    #[cfg(test)]
+                    native_core_scan_visit();
                     if std::mem::replace(&mut visited[id.0], true) {
                         continue;
                     }
@@ -785,6 +801,8 @@ impl SharedCatalog {
             }
             let mut inactive = Vec::new();
             for node in &syntax.nodes {
+                #[cfg(test)]
+                native_core_scan_visit();
                 if let NodeKind::Conditional { branches, .. } = &node.kind
                     && let NodeKind::Collection { children, .. } = &syntax.nodes[branches.0].kind
                 {
@@ -798,6 +816,8 @@ impl SharedCatalog {
             let mut splice = vec![None; syntax.nodes.len()];
             let mut discarded = Vec::new();
             for node in &syntax.nodes {
+                #[cfg(test)]
+                native_core_scan_visit();
                 if let NodeKind::Discard { form } = &node.kind
                     && !contains_splice(syntax, *form, &mut splice)
                 {
@@ -822,6 +842,8 @@ impl SharedCatalog {
             let mut pending: Vec<(NodeId, bool)> =
                 syntax.roots.iter().map(|&root| (root, false)).collect();
             while let Some((id, under_quote)) = pending.pop() {
+                #[cfg(test)]
+                native_core_scan_visit();
                 if std::mem::replace(&mut seen[id.0], true) {
                     continue;
                 }
@@ -5233,6 +5255,72 @@ mod worker_tests {
             units.insert(name, unit);
         }
         (session, units, host.environment())
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn nested_inactive_syntax_is_scanned_linearly() {
+        // Stay within the parser's 128-level limit, including reader prefixes.
+        for (shape, max_depth) in [
+            ("conditional", 48),
+            ("discard", 48),
+            ("discarded-splice", 24),
+            ("shared-discard", 16),
+        ] {
+            for depth in [4, 8, 16, 24, 32, 48]
+                .into_iter()
+                .filter(|&d| d <= max_depth)
+            {
+                let mut source = "(set! cljs.core/even? (fn [_] false))".to_owned();
+                for _ in 0..depth {
+                    source = match shape {
+                        "conditional" => format!("#?(:clj {source} :cljs nil)"),
+                        "discard" => format!("[#_ {source} 0]"),
+                        "discarded-splice" => {
+                            format!("[#_ #?@(:clj [{source}] :cljs [nil 0]) 0]")
+                        }
+                        "shared-discard" => {
+                            format!("[#_ '#_ #?@(:cljs [nil {source}]) :after 0]")
+                        }
+                        _ => unreachable!(),
+                    };
+                }
+                let mut parser = crate::Parser::new(&source).retaining_discards();
+                let mut roots = Vec::new();
+                while let Some(root) = parser.read_form().unwrap() {
+                    roots.push(root);
+                }
+                let mut discards = parser.discarded().to_vec();
+                let mut syntax = crate::SyntaxTree {
+                    nodes: parser.into_nodes(),
+                    roots,
+                };
+                // Exercise the original tree and the DAG left by selection.
+                for selected in [false, true] {
+                    if selected {
+                        crate::compiler_reader::select_cljs(&source, &mut syntax, &mut discards)
+                            .unwrap();
+                    }
+                    let shared = SharedCatalog::default();
+                    shared.select_native();
+                    NATIVE_CORE_SCAN_VISITS.with(|visits| visits.set(0));
+                    shared.index_native_core_writes(&source, &syntax);
+                    let visits = NATIVE_CORE_SCAN_VISITS.with(Cell::get);
+                    let nodes = syntax.nodes.len();
+                    assert!(visits >= nodes, "counter must observe the arena scan");
+                    assert!(
+                        visits <= 16 * nodes,
+                        "{shape}, depth {depth}, selected={selected}: {visits} visits for {nodes} nodes"
+                    );
+                    if selected || shape != "shared-discard" {
+                        assert!(
+                            shared.native_replaced_core().is_empty(),
+                            "{shape}, depth {depth}, selected={selected}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[cfg(feature = "bbp-macros")]
