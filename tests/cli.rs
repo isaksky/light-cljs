@@ -2289,7 +2289,11 @@ fn jobs_stats_report_the_unit_pool_scheduler() {
     assert!(units >= 24.0, "{stderr}");
     assert!(stat("pool.claims") >= 1.0, "{stderr}");
     let taken = stat("pool.claimed") + stat("pool.stolen") + stat("pool.jobs.local");
-    assert!(taken + helped >= jobs, "{stderr}");
+    if cfg!(any(feature = "quickjs", feature = "v8-macros")) {
+        assert!(taken >= jobs, "{stderr}");
+    } else {
+        assert!(taken + helped >= jobs, "{stderr}");
+    }
     assert!(stat("pool.peak-admitted") >= 1.0, "{stderr}");
     let (wait, longest) = (
         stat("time.pool.queue-wait-ms"),

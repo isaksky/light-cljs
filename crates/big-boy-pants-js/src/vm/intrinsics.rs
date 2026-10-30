@@ -705,6 +705,7 @@ fn strict_form_op(
         FormOp::ArrayMap => form::array_map_from_sequence(heap, &arg())?,
         FormOp::Sequence => form::sequence_view(heap, &arg())?,
         FormOp::SortedMap => form::sorted_map_from_sequence(heap, &arg())?,
+        FormOp::Empty => form::empty(heap, &arg())?,
         FormOp::SortedMapBy => form::sorted_map_by(heap, &arg())?,
         FormOp::SortedComparator => form::sorted_comparator(heap, &arg()),
         FormOp::IsSortedBy => Value::Bool(

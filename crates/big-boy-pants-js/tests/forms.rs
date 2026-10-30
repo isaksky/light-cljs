@@ -41,6 +41,35 @@ fn failure(rt: &Runtime, src: &str) -> VmError {
 }
 
 #[test]
+fn empty_forms_preserve_storage_comparator_and_metadata() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function f() {
+      const meta=__rt.formMap('tag',true), cmp=()=>{throw new Error('compared');};
+      const custom=__rt.formSortedInsert(__rt.formSortedMapBy(cmp),0,1,'v');
+      const maps=[__rt.formMap(1,'v'), __rt.formArrayMap(__rt.formVector(1,'v')),
+        __rt.formSortedMap(__rt.formVector(1,'v')), custom];
+      for(const m of maps) {
+        const e=__rt.formEmpty(__rt.formWithMeta(m,meta));
+        if(__rt.formCount(e)!==0||__rt.formMeta(e)!==meta)throw new Error('contents or metadata');
+        if(__rt.formIsArrayMap(m)!==__rt.formIsArrayMap(e)
+          ||__rt.cljIsEditable(m)!==__rt.cljIsEditable(e))throw new Error('storage');
+        if(__rt.formIsSortedBy(e)!==__rt.formIsSortedBy(m)
+          ||__rt.formSortedComparator(e)!==__rt.formSortedComparator(m))throw new Error('comparator');
+      }
+      for(const s of [__rt.formSet(1,2),__rt.formLiteralSet(__rt.formVector(1,2))]) {
+        const e=__rt.formEmpty(__rt.formWithMeta(s,meta));
+        if(__rt.formKind(e)!=='set'||__rt.formCount(e)!==0||__rt.formMeta(e)!==meta)throw new Error('set');
+      }
+      return true;
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
 fn mutable_struct_publication_traces_current_fields_and_collects_cycles() {
     let rt = Runtime::new();
     let made = call(

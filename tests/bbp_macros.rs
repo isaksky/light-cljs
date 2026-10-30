@@ -6276,13 +6276,142 @@ fn native_atom_validators_and_watches_keep_reset_order_and_state_on_errors() {
                (add-watch a :first (fn [key ref old new] (swap! events conj [key old new])))
                (reset! a 2)
                (let [rejected (try (reset! a 0) false (catch js/Error _ true))
+                     reset-rejected (try (reset-vals! a 0) false (catch js/Error _ true))
+                     reset-pair (reset-vals! a 4)
                      pair (swap-vals! a inc)]
                  (remove-watch a :first)
                  (set-validator! a nil)
-                 (list 'quote [rejected pair @events (compare-and-set! a 3 0) @a
-                   (nil? (get-validator a))]))))
+                 (let [events-before @events cas (compare-and-set! a 5 0)]
+                   (add-watch a :throw (fn [_ _ _ _] (throw (js/Error. "watch"))))
+                   (list 'quote [rejected reset-rejected reset-pair pair events-before cas
+                     (try (reset-vals! a 6) (catch js/Error e (ex-message e))) @a
+                     (nil? (get-validator a))])))))
            (js/console.log (pr-str (probe)))"#,
-        "[true [2 3] [[:first -1 2] [:first 2 3]] true 0 true]\n",
+        "[true true [2 4] [4 5] [[:first -1 2] [:first 2 4] [:first 4 5]] true \"watch\" 6 true]\n",
+    );
+}
+
+#[test]
+fn native_reify_lookup_uses_instance_methods() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [x (reify ILookup
+                       (-lookup [_ k] [:two k])
+                       (-lookup [_ k nf] [:three k nf]))]
+               (list 'quote [(get x :k) (get x :k :missing)
+                 (:k x) (:k x :missing)])))
+           (js/console.log (pr-str (probe)))"#,
+        "[[:two :k] [:three :k :missing] [:two :k] [:three :k :missing]]\n",
+    );
+}
+
+#[test]
+fn native_find_preserves_comparator_equal_stored_keys() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [calls (atom 0)
+                   m (sorted-map-by (fn [_ _] (swap! calls inc) 0) :stored 42)
+                   entry (find m :query)
+                   searches @calls]
+               (list 'quote [entry searches (find {:stored 42} :query)
+                 (find [7 8] 1)])))
+           (js/console.log (pr-str (probe)))"#,
+        "[[:stored 42] 1 nil [1 8]]\n",
+    );
+}
+
+#[test]
+fn native_empty_sorted_maps_do_not_call_the_comparator() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [calls (atom 0)
+                   cmp (fn [a b] (swap! calls inc) (compare b a))
+                   m (with-meta (sorted-map-by cmp 1 :v) {:tag :map})
+                   e (empty m)
+                   untouched (empty (sorted-map-by
+                     (fn [_ _] (throw (js/Error. "compared"))) 1 :v))
+                   before @calls]
+               (list 'quote [e untouched before (meta e)
+                 (vec (keys (assoc e 1 :a 2 :b)))
+                 (meta (empty (with-meta (sorted-map 1 :a) {:sorted true})))
+                 (empty {:a 1}) (empty #{1 2})])))
+           (js/console.log (pr-str (probe)))"#,
+        "[{} {} 0 {:tag :map} [2 1] {:sorted true} {} #{}]\n",
+    );
+}
+
+#[test]
+fn native_instance_methods_preserve_mixed_variadic_dispatch() {
+    let setup = r#"(defmacro probe []
+             (let [x (reify IFn
+                       (-invoke [_] :zero)
+                       (-invoke [_ x & xs] [x (vec xs)])
+                       Object
+                       (method [_] :object-zero)
+                       (method [_ x & xs] [x (vec xs)]))
+                   y (js-obj)]
+               (specify! y IFn
+                 (-invoke ([_] :specified) ([_ x & xs] [x (vec xs)]))
+                 Object
+                 (method ([_] :specified-object) ([_ x & xs] [x (vec xs)])))"#;
+    for (expression, expected) in [
+        ("(x)", ":zero\n"),
+        ("(x 1)", "[1 []]\n"),
+        ("(x 1 2 3)", "[1 [2 3]]\n"),
+        ("(apply x [4 5])", "[4 [5]]\n"),
+        ("(count (second (apply x (range 22))))", "20\n"),
+        ("(.method x)", ":object-zero\n"),
+        ("(.method x 6 7)", "[6 [7]]\n"),
+        ("(y)", ":specified\n"),
+        ("(y 8)", "[8 []]\n"),
+        ("(apply y [9 10])", "[9 [10]]\n"),
+        ("(count (second (apply y (range 22))))", "20\n"),
+        ("(.method y)", ":specified-object\n"),
+        ("(.method y 11 12)", "[11 [12]]\n"),
+    ] {
+        assert_native_matches_legacy(
+            &format!("{setup} (list 'quote {expression}))) (js/console.log (pr-str (probe)))"),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn native_integer_predicates_work_as_shared_atom_validators() {
+    assert_entry_matches_quickjs(
+        "integer-validators",
+        &[
+            (
+                "state.cljs",
+                r#"(ns state)
+              (def a (atom 1 :validator int?))
+              (def b (atom 1 :validator pos-int?))
+              (def c (atom -1 :validator neg-int?))
+              (def d (atom 0 :validator nat-int?))
+              (defmacro probe []
+                (set-validator! a int?) (set-validator! b pos-int?)
+                (set-validator! c neg-int?) (set-validator! d nat-int?)
+                (list 'quote [(reset! a 2) (reset! b 3) (reset! c -2) (reset! d 4)
+                  (try (reset! a 1.5) false (catch js/Error _ true))
+                  (try (reset! b 0) false (catch js/Error _ true))
+                  (try (reset! c 0) false (catch js/Error _ true))
+                  (try (reset! d -1) false (catch js/Error _ true))]))"#,
+            ),
+            (
+                "a.cljs",
+                "(ns a (:require [state :refer [probe]])) (def answer (probe))",
+            ),
+            (
+                "b.cljs",
+                "(ns b (:require [state :refer [probe]])) (def answer (probe))",
+            ),
+            (
+                "main.cljs",
+                "(ns main (:require [a :as a] [b :as b])) (js/console.log (pr-str a/answer b/answer))",
+            ),
+        ],
+        "[2 3 -2 4 true true true true] [2 3 -2 4 true true true true]\n",
+        &[1, 2, 4],
     );
 }
 

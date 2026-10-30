@@ -1336,6 +1336,23 @@ fn request_sorted(left: Value, right: Value, in_set: bool) {
     });
 }
 
+/// Empty map/set storage without looking at keys or invoking a comparator.
+/// Keep traversal, comparator and metadata just as a persistent update does.
+pub(crate) fn empty(heap: &Heap, value: &Value) -> Result<Value, CollectionError> {
+    let value = unwrap(heap, value.clone());
+    let object = form_object(heap, &value).ok_or_else(|| wrong(heap, "form map or set", &value))?;
+    let storage = |map: &FormMap| match map {
+        FormMap::Hashed(_) => FormMap::Hashed(PMap::default()),
+        FormMap::Positional(_) => FormMap::Positional(PVector::default()),
+    };
+    let body = match object.body() {
+        FormBody::Map(map) => FormBody::Map(storage(map)),
+        FormBody::Set(set) => FormBody::Set(storage(set)),
+        _ => return Err(wrong(heap, "form map or set", &value)),
+    };
+    alloc(heap, object.updated(body), &[value])
+}
+
 /// An empty `sorted-map-by` map ordered by `comparator`. The comparator is
 /// not called here; the runtime reports a non-callable one when it first
 /// compares two keys, as the legacy runtime does.

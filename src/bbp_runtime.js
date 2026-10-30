@@ -34,29 +34,42 @@ const typeTag = x => {
 const decl = (() => {
   const tables = new Map(), extensions = new Map(), views = new Map(), frontiers = [];
   const instances=new WeakMap();
-  const ownMethod=(x,name,n)=>instances.get(x)?.get(name)?.get(n);
+  const ownMethod=(x,name,n)=>{
+    const arities=instances.get(x)?.get(name);
+    return (arities?.get(n)??arities?.get(-1))?.call;
+  };
   const extendInstance=(target,specs,returnTarget=false)=>{
     if(target!=null&&(typeof target==='object'||typeof target==='function')){
       const methods=new Map(Array.from(instances.get(target)??[],([name,arities])=>[name,new Map(arities)]));
       instances.set(target,methods);
-      for(const [name,n,fn] of specs){
+      for(const [name,n,fn,,variadic] of specs){
         let arities=methods.get(name);if(arities===undefined)methods.set(name,arities=new Map());
-        arities.set(n,n===0?true:(x,...args)=>fn.call(x,x,...args));
+        arities.set(variadic!=null?-1:n,{fn,variadic,call:n===0?true:(x,...args)=>fn.call(x,x,...args)});
       }
       for(const [name,arities] of methods)if(name.startsWith('Object/'))
         Object.defineProperty(target,mungeMember(name.slice(7)),{configurable:true,writable:true,value:function(...args){
-          const fn=arities.size===1?arities.values().next().value:arities.get(args.length+1);
-          if(fn===undefined)throw new Error('Invalid arity: '+args.length);
-          return fn(this,...args);
+          const fixed=arities.get(args.length+1),rest=arities.get(-1);
+          const entry=rest?fixed??rest:arities.size===1?arities.values().next().value:fixed;
+          if(entry===undefined)throw new Error('Invalid arity: '+args.length);
+          // The canonical mixed Object dispatcher uses the variadic method
+          // itself as its receiver when no fixed overload matches.
+          const receiver=rest&&arities.size>1&&fixed===undefined?entry.fn:this;
+          return entry.call(receiver,...args);
         }});
       if(methods.has('IFn/-invoke')){
         Object.defineProperty(target,'call',{configurable:true,writable:true,value:function(_, ...args){
           const arities=instances.get(this).get('IFn/-invoke');
-          const fn=arities.size===1?arities.values().next().value:arities.get(args.length+1);
-          if(fn===undefined)throw new Error('Invalid arity: '+args.length);
-          return fn(this,...args);
+          const fixed=arities.get(args.length+1),rest=arities.get(-1);
+          const entry=fixed??rest
+            ??(arities.size===1?arities.values().next().value:undefined);
+          if(entry===undefined)throw new Error('Invalid arity: '+args.length);
+          const receiver=rest&&arities.size>1&&fixed===undefined?entry.fn:this;
+          return entry.call(receiver,...args);
         }});
-        Object.defineProperty(target,'apply',{configurable:true,writable:true,value:function(_,args){return this.call(null,...Array.from(args));}});
+        Object.defineProperty(target,'apply',{configurable:true,writable:true,value:function(_,args){
+          const values=Array.from(args);
+          return this.call(null,...values.slice(0,20),...(values.length>20?[values.slice(20)]:[]));
+        }});
       }
     }
     return returnTarget?target:specs.length?specs[specs.length-1][1]===0?true:specs[specs.length-1][2]:null;
@@ -682,6 +695,11 @@ const native = (() => {
   // separate reader heap of the V8 build. This state follows the reader task.
   const readerGensymScopes = new Map();
   const val = x => __rt.formValue(x);
+  // Published atom validators must capture only immutable helpers.
+  const isInteger = x => {
+    x=val(x);
+    return typeof x==='number'&&!Number.isNaN(x)&&x!==Infinity&&parseFloat(x)===parseInt(x,10);
+  };
   // Compiled interop (`(.-m x)`, `(.m x a)`, host calls, `instance?`): a
   // native form is the same object in JavaScript, so nothing is converted;
   // only occurrence provenance wrappers come off. Raw JavaScript reads a
@@ -1162,6 +1180,16 @@ const native = (() => {
       return __rt.formEquals(__rt.formSortedEntry(m, i, 1), v) ? m : __rt.formSortedReplace(m, i, v);
     };
     const lookup = (m, k, d) => { const i = index(m, k); return i < 0 ? d : __rt.formSortedEntry(m, i, 1); };
+    const entry = (m, k) => {
+      const f = __rt.formSortedComparator(m);
+      let lo = 0, hi = __rt.formCount(m);
+      while (lo < hi) {
+        const i = (lo + hi) >>> 1, stored = key(m, i), compared = order(f, stored, k);
+        if (compared === 0) return __rt.formVector(stored, __rt.formSortedEntry(m, i, 1));
+        if (compared < 0) lo = i + 1; else hi = i;
+      }
+      return null;
+    };
     // Legacy mapConj: nil leaves the map, a pair is one entry, and any other
     // value is a sequence of vector entries (a map, a record, a list, a lazy
     // sequence), each added in order. Other vectors keep the leaf's report.
@@ -1206,7 +1234,7 @@ const native = (() => {
       for (let i = 0; i < kvs.length; i += 2) m = assoc(m, kvs[i], i + 1 < kvs.length ? kvs[i + 1] : null);
       return m;
     };
-    return {create, methods};
+    return {create, methods, entry};
   })();
   // memoize calls its callback through Clojure apply, whose fixed function
   // receiver is the function itself. Native variadic dispatchers preserve
@@ -2528,7 +2556,7 @@ const native = (() => {
       if(isVar(f))return core.applyVar(f,args);
       const kind=__rt.formKind(val(f));
       return (kind==='struct'||kind==='record') && !multi.is(f)
-        ? decl.applyIFn(val(f),args) : invoke(f,...args);
+        ? decl.applyIFn(val(f),args) : applyArgs(f,args);
     },
     applyTo:(f,n,args)=>{
       args=seqOf(args);n=val(n);
@@ -2567,12 +2595,14 @@ const native = (() => {
       if(method!==null)return method(x);
       let result=null;
       if(kind==='vector')result=__rt.formVector();
-      else if(kind==='map'||kind==='set'){result=x;for(const entry of arr(x))result=kind==='map'?__rt.cljDissoc(result,__rt.cljNth(entry,0)):__rt.cljDisj(result,entry);}
+      else if(kind==='map'||kind==='set')result=__rt.formIsSortedBy(val(x))
+        ?__rt.formSortedMapBy(__rt.formSortedComparator(val(x))):__rt.formEmpty(val(x));
       else if(['list','cons','lazy-seq'].includes(kind)||arraySeqs.has(x))result=__rt.formList();
       return result===null?null:__rt.cljWithMeta(result,__rt.cljMeta(x));
     },
     find:(x,k)=>{const method=decl.coreMethod('IFind/-find',2,x,['map','record','vector'].includes(__rt.formKind(val(x))));
       if(method!==null)return method(x,k);
+      if(__rt.formKind(val(x))==='map'&&__rt.formIsSortedBy(val(x)))return sortedBy.entry(val(x),k);
       if(!(['map','record','vector'].includes(__rt.formKind(val(x)))||decl.satisfies('IAssociative',x))||!__rt.cljContains(x,k))return null;
       if(__rt.formKind(val(x))==='map')for(const entry of arr(x))if(__rt.formEquals(__rt.cljNth(entry,0),k))return entry;
       return __rt.formVector(k,get(x,k));},
@@ -2638,11 +2668,10 @@ const native = (() => {
     isObject:x=>{x=val(x);const kind=__rt.formKind(x);return kind==='compiler-literal'?literalIsObject(x):kind===null&&!__rt.cljIsAtom(x)&&x!=null&&x.constructor===Object;},
     isNumber:x=>typeof val(x)==='number', isFloat:x=>typeof val(x)==='number', isDouble:x=>typeof val(x)==='number',
     isBoolean:x=>typeof val(x)==='boolean',
-    isInteger:x=>typeof val(x)==='number'&&!Number.isNaN(val(x))&&val(x)!==Infinity&&parseFloat(val(x))===parseInt(val(x),10),
-    isInt:x=>core.isInteger(x),
-    isPositiveInt:x=>core.isInt(x)&&val(x)>0,
-    isNegativeInt:x=>core.isInt(x)&&val(x)<0,
-    isNaturalInt:x=>core.isInt(x)&&!(val(x)<0),
+    isInteger,isInt:isInteger,
+    isPositiveInt:x=>isInteger(x)&&val(x)>0,
+    isNegativeInt:x=>isInteger(x)&&val(x)<0,
+    isNaturalInt:x=>isInteger(x)&&!(val(x)<0),
     munge:value=>{
       let result=mungeStr(core.str(value));
       result=result==='..'?'_DOT__DOT_':reservedNames.has(result)?result+'$':result;
@@ -2687,7 +2716,6 @@ const native = (() => {
     removeWatchProtocol:(a,k)=>{core.removeWatch(a,k);const slot=optionsOf(a);return slot===null?null:__rt.formNth(__rt.atomLoad(slot),2);},
     swap:(a,f,...args)=>swapPair(a,f,args)[1],
     swapVals:(a,f,...args)=>{const [o,n]=swapPair(a,f,args);return __rt.formVector(o,n);},
-    resetVals:(a,v)=>{lane(a);return __rt.formVector(store(a,v),v);},
     // The wrapper captures only its shared atom. Resolve
     // operations in the calling task's runtime, as with published MultiFns.
     memoize:f=>{
@@ -2993,7 +3021,7 @@ globalThis.__lightNativeRuntime=native;
 const roots=new Map();
 const rootSetter=name=>value=>{
   const slot=roots.get(name);if(slot!==undefined)__rt.initializerSlotSet(slot,4,true);
-  Object.defineProperty(rootTarget,name,{configurable:true,writable:true,value});
+  Object.defineProperty(registry(),name,{configurable:true,writable:true,value});
 };
 const productReaders=new Map();
 // Of each root, the unit of its definition's executable :test metadata;
@@ -3224,7 +3252,7 @@ globalThis.__lightCompilerProductTarget=name=>{
     // view observes catalog registration order before performing the write.
     if(lazyCatalog!==null)materializeAll();
     if(Object.getOwnPropertyDescriptor(directProducts,name)===undefined)
-      Object.defineProperty(directProducts,name,{get:()=>rootTarget[name],set:rootSetter(name)});
+      Object.defineProperty(directProducts,name,{get:()=>registry()[name],set:rootSetter(name)});
     return directProducts;
 };
 globalThis.__lightCompilerRootReceiver=null;

@@ -1591,11 +1591,13 @@ pub enum FormOp {
     StructSet = 106,
     /// value → 0 (ordinary), 1 (private fields), 2 (shared fields).
     StructState = 107,
+    /// map/set → empty collection with the same storage, order and metadata.
+    Empty = 108,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 108] = [
+    pub const ALL: [FormOp; 109] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1704,6 +1706,7 @@ impl FormOp {
         FormOp::MutableStructType,
         FormOp::StructSet,
         FormOp::StructState,
+        FormOp::Empty,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1715,6 +1718,7 @@ impl FormOp {
     pub const fn arity(self) -> usize {
         match self {
             FormOp::Kind
+            | FormOp::Empty
             | FormOp::FnApplyNull
             | FormOp::FnApplyReceiver
             | FormOp::CljCallable
@@ -1848,6 +1852,7 @@ impl FormOp {
             FormOp::Compare => "formCompare",
             FormOp::IsSortedBy => "formIsSortedBy",
             FormOp::IsArrayMap => "formIsArrayMap",
+            FormOp::Empty => "formEmpty",
             FormOp::Regex => "formRegex",
             FormOp::CljCoreResolver => "cljCoreResolver",
             FormOp::CljGet2 => "cljGet2",

@@ -28,6 +28,64 @@ fn numeric_global(evaluator: &BbpEvaluator, name: &str) -> f64 {
 }
 
 #[test]
+fn compiler_service_reentry_into_a_pending_initializer_reports_a_cycle() {
+    let evaluator = Rc::new(BbpEvaluator::new(EvaluatorOptions::default()).unwrap());
+    evaluator
+        .clone()
+        .install_compiler_service(
+            "__lightCompileUnit",
+            Rc::new(|_, _| Ok("rt => globalThis.reenter(0)".into())),
+        )
+        .unwrap();
+    evaluator
+        .clone()
+        .install_compiler_service(
+            "reenter",
+            Rc::new(|active, _| {
+                active
+                    .evaluate_unit("rt => globalThis.__lightCompilerRoots['test/x']")
+                    .map_err(|error| error.to_string())?;
+                Ok(String::new())
+            }),
+        )
+        .unwrap();
+    evaluator
+        .register_compiler_root("test/x", Some(7), false, "cycle.cljs:1", None)
+        .unwrap();
+    let error = evaluator
+        .evaluate_unit("rt => globalThis.__lightCompilerRoots['test/x']")
+        .unwrap_err();
+    assert!(error.0.contains("wait cycle"), "{error}");
+    assert!(!error.0.contains("deadline"), "{error}");
+}
+
+#[test]
+fn compiler_root_writes_follow_replaced_registry() {
+    let evaluator = BbpEvaluator::new(Default::default()).unwrap();
+    let source = r#"rt => {
+        globalThis.__lightCompilerRoots = {'test/x': 1};
+        globalThis.__lightSetCompilerRoot('test/x', 2);
+        const explicit = globalThis.__lightCompilerRoots['test/x'];
+        const products = globalThis.__lightCompilerProductTarget('test/x');
+        const before = products['test/x'];
+        products['test/x'] = 3;
+        const first = globalThis.__lightCompilerRoots['test/x'];
+        globalThis.__lightCompilerRoots = {'test/x': 4};
+        const replaced = products['test/x'];
+        products['test/x'] = 5;
+        return JSON.stringify([explicit, before, first, replaced,
+          products['test/x'], globalThis.__lightCompilerRoots['test/x']]);
+    }"#;
+    let result = evaluator.evaluate_unit(source).unwrap();
+    let actual = evaluator.cx().unwrap().values.borrow()[&result.index]
+        .string()
+        .unwrap()
+        .to_string_lossy();
+    evaluator.release(result).unwrap();
+    assert_eq!(actual, "[2,2,3,4,5,5]");
+}
+
+#[test]
 fn compiler_services_run_once_in_a_separate_task_on_the_same_runtime() {
     let evaluator = Rc::new(BbpEvaluator::new(Default::default()).unwrap());
     let caller_heap = evaluator.heap();

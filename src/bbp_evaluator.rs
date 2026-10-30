@@ -2109,7 +2109,7 @@ impl BbpEvaluator {
                 cx.logged.set(cx.logged.get() + edges.len());
                 let mut recorded = 0;
                 for key in &edges {
-                    if [BINDING, HELPER, INITIALIZER].contains(&key.kind()) {
+                    if [BINDING, HELPER, INITIALIZER, cx.string_kind].contains(&key.kind()) {
                         graph.record_use(cx.task.id(), *key);
                         recorded += 1;
                     }
@@ -2122,7 +2122,7 @@ impl BbpEvaluator {
                 }
                 graph.withdraw(cx.task.id());
                 if let RunOutcome::Waiting(key) = outcome
-                    && [HELPER, INITIALIZER].contains(&key.kind())
+                    && [HELPER, INITIALIZER, cx.string_kind].contains(&key.kind())
                 {
                     graph
                         .wait(
@@ -2365,16 +2365,22 @@ impl BbpEvaluator {
                     .ok_or_else(|| error("invalid string service request"))
             };
             let name = text("__lightStringServiceName")?;
-            let request = text("__lightStringServiceRequest")?;
+            let argument = text("__lightStringServiceRequest")?;
             let unit_service = self.unit_services.borrow().get(&name).cloned();
             let answer = if let Some(callback) = unit_service {
                 if self.service_depth >= 16 {
                     return Err(error("compiler service nesting limit exceeded"));
                 }
-                let id = request.parse().map_err(error)?;
+                let id = argument.parse().map_err(error)?;
                 // The caller's VM is parked. A callback may compile or run
                 // code using another task on the same shared runtime.
-                let active = self.spawn_producer(cx, self.service.borrow().clone(), |_| {})?;
+                let active = self.spawn_producer(cx, self.service.borrow().clone(), |task| {
+                    self.shared.0.graph.lock().unwrap().bind_producer(
+                        key,
+                        request.producer(),
+                        task,
+                    );
+                })?;
                 let answer = callback(&active, id).map_err(error)?;
                 active.note_catalog_applied();
                 self.control.poll()?;
@@ -2386,7 +2392,7 @@ impl BbpEvaluator {
                     .get(&name)
                     .cloned()
                     .ok_or_else(|| error("string service is not installed"))?;
-                callback(&request)
+                callback(&argument)
             };
             cx.string_answer.borrow_mut().take();
             let import = || {
@@ -2687,12 +2693,20 @@ impl BbpEvaluator {
             }
             return Ok(self.runtime.root(Primitive::Bool(candidate)));
         }
-        let producer = cx
-            .initializers
-            .borrow()
-            .get(&key)
-            .ok_or_else(|| error("initializer completed without its producer claim"))?
-            .producer();
+        let producer = match cx.initializers.borrow().get(&key) {
+            Some(request) => request.producer(),
+            None => {
+                // A nested producer failure already settled this initializer
+                // and released its claim. Preserve that diagnostic when the
+                // caller's saved VM frames finish unwinding the initializer.
+                if let big_boy_pants_js::CellStatus::Failed(failure) = self.runtime.cell_status(key)
+                    && let Some(message) = failure.string()
+                {
+                    return Err(error(message.to_string_lossy()));
+                }
+                return Err(error("initializer completed without its producer claim"));
+            }
+        };
         let failed = cx
             .task
             .global_value("__lightInitializerFailure")

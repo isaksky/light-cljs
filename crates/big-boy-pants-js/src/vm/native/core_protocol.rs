@@ -343,6 +343,8 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
                 | FormOp::CljCount
                 | FormOp::CljList
                 | FormOp::CljPeek
+                | FormOp::CljGet
+                | FormOp::CljGet2
         );
     // `=` offers a sorted-map-by right operand to the resolver unless a
     // struct's -equiv on the left takes precedence. Operand order is kept.
