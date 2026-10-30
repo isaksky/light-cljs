@@ -1574,6 +1574,10 @@ their source. These tables serve the legacy runtime's reader; native macros
 receive forms and reader context through the native bridge. The skipped source
 therefore cannot hit the eval limit as a project's namespace count grows.
 Macro cache identity and legacy reader registration behavior are unchanged.
+Compiler data readers keep a private namespace inventory, initially
+`cljs.user` and `cljs.core`, alongside their private form bridge. Their
+creations and registrations stay apart from macros and compilation namespace
+declarations, and their reads use no compilation namespace floors.
 The namespace registry that `all-ns`, `find-ns` and `the-ns` read is the
 compilation's (light-cljs-589, `src/bbp_evaluator/namespaces.rs`). It holds
 what the QuickJS reference's registry holds at the same point with one

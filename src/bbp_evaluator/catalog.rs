@@ -268,8 +268,7 @@ impl BbpEvaluator {
     ) -> Result<(), EvalError> {
         let cx = self.cx()?;
         let mut tag = self
-            .shared
-            .lanes()
+            .namespace_lanes()
             .map(|lanes| lanes.namespace_tag_here())
             .unwrap_or_default();
         // The shared lazy cells its task realizes: work an earlier reader
@@ -288,7 +287,7 @@ impl BbpEvaluator {
             }
         };
         if from < namespaces.len() {
-            let mut log = self.shared.0.namespaces.lock().unwrap();
+            let mut log = self.namespace_log().lock().unwrap();
             for name in namespaces.tail_from(from) {
                 log.record(&name.encode_utf16().collect::<Vec<_>>(), &tag);
             }

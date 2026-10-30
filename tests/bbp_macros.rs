@@ -117,6 +117,79 @@ fn native_reader_unscoped_gensyms_skip_input_symbols() {
 }
 
 #[test]
+fn native_compiler_reader_namespace_registry_is_private() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    use light_cljs::compiler_data::{Name, Source};
+    let root = temp_dir::TempDir::new("reader-namespace-registry");
+    std::fs::write(
+        root.join("main.cljs"),
+        r#"
+(ns main)
+(defmacro probe []
+  (create-ns 'macro.only)
+  (list 'quote [(boolean (find-ns 'reader.only))
+               (boolean (find-ns 'macro.only)) (boolean (find-ns 'main))]))
+(js/console.log (pr-str [#probe nil (probe) #probe nil]))
+"#,
+    )
+    .unwrap();
+    let build = |native, threads| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        host.register_compiler_data_reader(
+            Name::new(None, "probe"),
+            r#"
+(fn [_]
+  (create-ns 'reader.only)
+  (list 'quote [(boolean (find-ns 'reader.only))
+               (boolean (find-ns 'macro.only)) (boolean (find-ns 'main))]))
+"#,
+        )
+        .unwrap();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "main",
+            &[root.path().clone()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(threads).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let after = host
+            .read_compiler_form(&Source::new("after.cljs", "#probe nil"))
+            .unwrap()
+            .unwrap();
+        let expected = host
+            .read_compiler_form(&Source::new("expected.cljs", "(quote [true false false])"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            format!("{:?}", after.data()),
+            format!("{:?}", expected.data()),
+            "{threads} threads, Pants {native}"
+        );
+        emit_js(&program)
+    };
+    for threads in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        let reference = build(false, threads);
+        let pants = build(true, threads);
+        assert_eq!(
+            program_output(&pants),
+            "[[true false false] [false true true] [true false false]]\n",
+            "{threads} threads"
+        );
+        #[cfg(feature = "quickjs")]
+        assert_eq!(pants, reference, "{threads} threads");
+    }
+}
+
+#[test]
 fn native_compiler_readers_reject_undefined_results() {
     use light_cljs::compiler_data::{Name, Source};
     for body in [

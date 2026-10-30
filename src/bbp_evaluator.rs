@@ -1462,13 +1462,15 @@ impl BbpRuntime {
         BbpEvaluator::in_runtime(self.clone(), 0)
     }
     /// Readers share executable code and the aggregate budget, while their
-    /// imported forms and generated spellings stay apart from macro tasks.
+    /// imported forms, generated spellings and namespace inventory stay
+    /// apart from macro tasks. Readers have no compilation namespace floor.
     pub(crate) fn data_reader_evaluator(&self) -> Result<BbpEvaluator, EvalError> {
         let mut evaluator = BbpEvaluator::shell(self.clone(), 0);
         evaluator.bridge = Arc::new(Mutex::new(Bridge {
             control: Some(self.0.control.clone()),
             ..Default::default()
         }));
+        evaluator.private_namespaces = Some(Arc::default());
         evaluator.boot()?;
         Ok(evaluator)
     }
@@ -1748,6 +1750,8 @@ pub struct BbpEvaluator {
     runner: RefCell<Option<NativeRunner>>,
     submitter: RefCell<Option<NativeSubmitter>>,
     bridge: Arc<Mutex<Bridge>>,
+    /// Compiler readers keep their inventory apart from compilation tasks.
+    private_namespaces: Option<Arc<Mutex<namespaces::NamespaceLog>>>,
     stats: Cell<BridgeStats>,
     context: RefCell<Option<Rc<TaskContext>>>,
 }
@@ -1766,6 +1770,7 @@ impl BbpEvaluator {
             runtime: shared.0.runtime.clone(),
             control: shared.0.control.clone(),
             bridge: shared.0.bridge.clone(),
+            private_namespaces: None,
             shared,
             service_depth,
             service: RefCell::new(None),
@@ -1775,6 +1780,18 @@ impl BbpEvaluator {
             submitter: RefCell::new(None),
             stats: Cell::new(BridgeStats::default()),
             context: RefCell::new(None),
+        }
+    }
+    fn namespace_log(&self) -> &Arc<Mutex<namespaces::NamespaceLog>> {
+        self.private_namespaces
+            .as_ref()
+            .unwrap_or(&self.shared.0.namespaces)
+    }
+    fn namespace_lanes(&self) -> Option<&Arc<crate::effect_lanes::Lanes>> {
+        if self.private_namespaces.is_some() {
+            None
+        } else {
+            self.shared.lanes()
         }
     }
     /// Give this evaluator a fresh task and run it to its first boundary.
@@ -1990,7 +2007,7 @@ impl BbpEvaluator {
                         None,
                         &crate::generated_names::NativeGensyms::capture(),
                         &self.bridge,
-                        &self.shared.0.namespaces,
+                        self.namespace_log(),
                         Some(&self.runtime),
                     )
                 ),
@@ -2004,12 +2021,12 @@ impl BbpEvaluator {
             task: cx.task.clone(),
             per_task: cx.per_task.clone(),
             counters: self.shared.0.counters.clone(),
-            lanes: self.shared.lanes().cloned(),
+            lanes: self.namespace_lanes().cloned(),
             last_thread: cx.last_thread.clone(),
             admitted: Arc::new(Mutex::new(true)),
             gensyms: crate::generated_names::NativeGensyms::capture(),
             bridge: self.bridge.clone(),
-            namespaces: self.shared.0.namespaces.clone(),
+            namespaces: self.namespace_log().clone(),
             runtime: self.runtime.clone(),
         }
     }
