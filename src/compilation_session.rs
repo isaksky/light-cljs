@@ -561,6 +561,7 @@ struct PoolCounters {
     /// Its workers with a compile-time engine, and the units the ones
     /// without analyzed (light-cljs-437).
     engine_workers: std::sync::atomic::AtomicUsize,
+    engine_participants: Mutex<std::collections::HashSet<usize>>,
     engine_less_units: std::sync::atomic::AtomicUsize,
     pool_ns: std::sync::atomic::AtomicU64,
     /// What the pool's scheduler did, once it has stopped.
@@ -569,6 +570,12 @@ struct PoolCounters {
     catalog_contended: std::sync::atomic::AtomicU64,
 }
 impl PoolCounters {
+    fn note_engine_participant(&self, slot: usize) {
+        self.engine_participants
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(slot);
+    }
     fn add(counter: &std::sync::atomic::AtomicU64, since: std::time::Instant) {
         let elapsed = u64::try_from(since.elapsed().as_nanos()).unwrap_or(u64::MAX);
         counter.fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
@@ -2357,6 +2364,11 @@ impl CompilationSession {
         counts.worker_initializations = pool.initializations.load(Relaxed);
         counts.pool_workers = pool.workers.load(Relaxed);
         counts.pool_engine_workers = pool.engine_workers.load(Relaxed);
+        counts.pool_engine_participants = pool
+            .engine_participants
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
         counts.engine_less_units = pool.engine_less_units.load(Relaxed);
         counts.pool_time = std::time::Duration::from_nanos(pool.pool_ns.load(Relaxed));
         counts.pool = *pool
@@ -4305,6 +4317,7 @@ fn execute_pool_job(
         UnitJob::Analyze(id, _, macro_free) => (id, macro_free),
         #[cfg(feature = "bbp-macros")]
         UnitJob::Native(step, reply) => {
+            shared.counters.note_engine_participant(worker.slot());
             #[cfg(test)]
             {
                 let hook = shared.on_native_run.lock().unwrap().clone();
@@ -4349,6 +4362,9 @@ fn execute_pool_job(
             }
         },
     };
+    if engines != PoolEngines::None {
+        shared.counters.note_engine_participant(worker.slot());
+    }
     let engines = slot.engines;
     let control = view
         .host
@@ -5408,6 +5424,78 @@ mod worker_tests {
         let (later, _) = session.analyze(units["cljs.user/later"], None).unwrap();
         let prepared = crate::emitter::DeferredUnit::prepare_native(&later, &replaced);
         assert!(!prepared.code().contains("nativeCore$isEven"));
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_engine_participation_counts_executing_slots_not_configured_capacity() {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let (session, units, environment) = registered_with_host(
+            "(defmacro marker [x] x) (defn left [] (marker 1)) (defn right [] (marker 2))",
+            host,
+        );
+        let shared = session.shared();
+        shared.select_native();
+        shared
+            .counters
+            .engine_workers
+            .store(3, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(session.unit_counts().pool_engine_participants, 0);
+        let left = units["cljs.user/left"];
+        let right = units["cljs.user/right"];
+        let started = Arc::new((Mutex::new(0), Condvar::new()));
+        let peers = started.clone();
+        *shared.on_claim.lock().unwrap() = Some(Arc::new(move |id| {
+            if id == left || id == right {
+                let mut count = peers.0.lock().unwrap();
+                *count += 1;
+                peers.1.notify_all();
+                while *count < 2 {
+                    let (next, timeout) = peers
+                        .1
+                        .wait_timeout(count, std::time::Duration::from_secs(10))
+                        .unwrap();
+                    count = next;
+                    assert!(
+                        !timeout.timed_out(),
+                        "two engine workers must enter analysis"
+                    );
+                }
+            }
+        }));
+        let mut config = crate::scheduler::Config::new(crate::scheduler::Slots::new(4).unwrap(), 1);
+        config.stack_size = Some(8 << 20);
+        config.limits.batch_jobs = 1;
+        crate::scheduler::run(
+            &config,
+            |_| WorkerSlot {
+                view: None,
+                plain: None,
+                engines: PoolEngines::Persistent,
+                _trace: None,
+            },
+            |slot, job, worker| execute_pool_job(slot, job, worker, shared, &environment),
+            |pool| {
+                pool.submit_batch(shared.unit_jobs(vec![left, right], false));
+                while matches!(
+                    pool.next_outcome().unwrap(),
+                    crate::scheduler::Next::Outcome(())
+                ) {}
+            },
+        )
+        .unwrap();
+        assert_eq!(*started.0.lock().unwrap(), 2);
+        for id in [left, right] {
+            assert!(matches!(
+                shared.lock().units[id].state,
+                AnalysisState::Analyzed(..)
+            ));
+        }
+        let counts = session.unit_counts();
+        assert_eq!(counts.pool_engine_workers, 3);
+        assert_eq!(counts.pool_engine_participants, 2, "{counts:?}");
+        assert_eq!(counts.worker_isolates, 0);
     }
 
     #[cfg(feature = "bbp-macros")]

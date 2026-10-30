@@ -976,7 +976,7 @@ fn a_cold_parallel_build_expands_units_on_workers_and_publishes_the_one_job_arti
             assert_eq!(parallel.stat("pool.worker-isolates"), 0);
         }
         isolates = isolates.max(parallel.stat(if PANTS_BUILD {
-            "pool.engine-workers"
+            "pool.engine-participants"
         } else {
             "pool.worker-isolates"
         }));

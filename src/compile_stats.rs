@@ -232,6 +232,9 @@ pub struct DeferredUnitCounts {
     /// Of the pool's worker threads, those with a compile-time engine, and
     /// the units the others analyzed, macro-free ones (light-cljs-437).
     pub pool_engine_workers: usize,
+    /// Distinct pool slots that actually made an engine view or ran a
+    /// shared-runtime continuation, rather than configured engine capacity.
+    pub pool_engine_participants: usize,
     pub engine_less_units: usize,
     pub pool_time: std::time::Duration,
     pub pool: crate::scheduler::PoolCounts,
@@ -808,6 +811,7 @@ impl CompileStats {
             let pool = &units.pool;
             line("pool.workers", &units.pool_workers);
             line("pool.engine-workers", &units.pool_engine_workers);
+            line("pool.engine-participants", &units.pool_engine_participants);
             line("pool.engine-less-units", &units.engine_less_units);
             line("time.pool-ms", &ms(units.pool_time));
             // The share of the workers' time spent analyzing units.

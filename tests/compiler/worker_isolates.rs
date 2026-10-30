@@ -420,7 +420,7 @@ fn units_on_workers_keep_the_one_slot_manifest_and_artifacts() {
         for _ in 0..3 {
             let pooled = recorded(&sources, "app.main", slots);
             isolates = isolates.max(if crate::macro_free_units::PANTS_BUILD {
-                pooled.stats.deferred_units.pool_engine_workers
+                pooled.stats.deferred_units.pool_engine_participants
             } else {
                 pooled.stats.deferred_units.worker_isolates
             });
