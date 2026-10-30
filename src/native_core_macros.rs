@@ -2014,6 +2014,8 @@ mod tests {
         }
     }
 
+    // Compares with the core macro's bootstrap definition, which only QuickJS or V8 runs.
+    #[cfg(any(light_quickjs, light_v8))]
     #[test]
     fn logical_macros_expand_as_their_definitions() {
         compare_all(&[
@@ -2031,6 +2033,8 @@ mod tests {
         ]);
     }
 
+    // Compares with the core macro's bootstrap definition, which only QuickJS or V8 runs.
+    #[cfg(any(light_quickjs, light_v8))]
     #[test]
     fn conditionals_expand_as_their_definitions() {
         compare_all(&[
@@ -2057,6 +2061,8 @@ mod tests {
         ]);
     }
 
+    // Compares with the core macro's bootstrap definition, which only QuickJS or V8 runs.
+    #[cfg(any(light_quickjs, light_v8))]
     #[test]
     fn condp_expands_as_its_definition() {
         compare_all(&[
@@ -2072,6 +2078,8 @@ mod tests {
         ]);
     }
 
+    // Compares with the core macro's bootstrap definition, which only QuickJS or V8 runs.
+    #[cfg(any(light_quickjs, light_v8))]
     #[test]
     fn threading_macros_expand_as_their_definitions() {
         compare_all(&[
@@ -2172,6 +2180,8 @@ mod tests {
         ]);
     }
 
+    // Compares with the core macro's bootstrap definition, which only QuickJS or V8 runs.
+    #[cfg(any(light_quickjs, light_v8))]
     #[test]
     fn case_expands_as_its_definition() {
         compare_all(&[
@@ -2188,6 +2198,8 @@ mod tests {
         ]);
     }
 
+    // Compares with the core macro's bootstrap definition, which only QuickJS or V8 runs.
+    #[cfg(any(light_quickjs, light_v8))]
     #[test]
     fn conditional_bindings_expand_as_their_definitions() {
         compare_all(&[
@@ -2274,6 +2286,8 @@ mod tests {
         }
     }
 
+    // Compares with the core macro's bootstrap definition, which only QuickJS or V8 runs.
+    #[cfg(any(light_quickjs, light_v8))]
     #[test]
     fn multimethod_macros_expand_as_their_definitions() {
         compare_all(&[
@@ -2568,6 +2582,8 @@ mod tests {
         ]);
     }
 
+    // Compares with the core macro's bootstrap definition, which only QuickJS or V8 runs.
+    #[cfg(any(light_quickjs, light_v8))]
     #[test]
     fn vswap_expands_as_its_definition() {
         compare_all(&[

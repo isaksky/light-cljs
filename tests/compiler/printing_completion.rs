@@ -259,6 +259,8 @@ fn utf16_strings_preserve_code_units_in_printing_and_captured_output() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn configured_host_output_and_error_sinks_remain_independent_after_failure() {
     use light_cljs::{EvalOptions, EvalSession};

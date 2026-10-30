@@ -338,6 +338,8 @@ fn the_memory_limit_is_one_budget_across_the_isolates() {
     }
 }
 
+// Expects the stack-limit error class of a QuickJS or V8 isolate.
+#[cfg(any(feature = "quickjs", feature = "v8-macros"))]
 #[test]
 fn deep_recursion_in_a_macro_on_a_pool_thread_meets_the_engine_stack_limit() {
     // V8's stack limit is set from the thread an engine entry starts on:

@@ -18,6 +18,8 @@ fn printed(session: &mut EvalSession, source: &str) -> String {
     result
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn clocks_random_sources_and_taps_are_explicit_session_capabilities() {
     let mut session = EvalSession::new(EvalOptions {
@@ -212,6 +214,8 @@ fn provider(requests: Rc<RefCell<Vec<FileLoadRequest>>>) -> FileProvider {
     })
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn load_file_uses_one_compiler_and_heap_with_macros_namespaces_and_require() {
     let requests = Rc::new(RefCell::new(Vec::new()));
@@ -250,6 +254,8 @@ fn load_file_uses_one_compiler_and_heap_with_macros_namespaces_and_require() {
     assert_eq!(requests.borrow()[1].requesting_namespace, "tools");
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn file_diagnostics_history_recovery_and_capability_denial_are_stable() {
     let requests = Rc::new(RefCell::new(Vec::new()));

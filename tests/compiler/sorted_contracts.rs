@@ -149,6 +149,8 @@ fn sorted_contract_executes_in_application_and_macro_phases() {
         "(defmacro sorted-contract [] {CONTRACT}) (sorted-contract)"
     ));
 }
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn sorted_callbacks_survive_reused_sessions_and_custom_protocol_dispatch() {
     let mut session = EvalSession::new(Default::default()).unwrap();

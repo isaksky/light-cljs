@@ -68,6 +68,8 @@ fn atom_equiv_contracts_execute_in_both_phases() {
     }
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn failed_atom_equiv_leaves_fresh_and_reused_hosts_usable() {
     const SETUP: &str = r#"(def v (atom 1))

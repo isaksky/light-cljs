@@ -68,6 +68,8 @@ fn sequence_and_name_equiv_contracts_execute_in_both_phases() {
     }
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn failed_sequence_equiv_leaves_reused_application_and_macro_hosts_usable() {
     let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();

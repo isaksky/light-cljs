@@ -195,6 +195,8 @@ fn macro_method_replacements_follow_declaration_frontiers() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn sessions_and_dynamic_hierarchy_roots_invalidate_independently() {
     let mut first = EvalSession::new(EvalOptions::default()).unwrap();

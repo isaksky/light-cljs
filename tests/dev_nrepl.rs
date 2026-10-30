@@ -6,6 +6,13 @@
 //! client speaking bencode over TCP (tests/support/nrepl_client.mjs), as an
 //! editor does.
 
+// The Pants build compiles out the tests that need QuickJS, which leaves
+// some of their helpers and imports unused there.
+#![cfg_attr(
+    not(feature = "quickjs"),
+    allow(unused_imports, unused_variables, unused_mut, unused_macros, dead_code)
+)]
+
 #[path = "support/temp_dir.rs"]
 #[allow(dead_code)]
 mod temp_dir;
@@ -420,6 +427,8 @@ fn info(response: &Json) -> Vec<String> {
     lines
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// Every operation, through an editor's protocol: `describe` lists them;
 /// `clone` opens sessions that evaluate in a Node runtime with `eval` (with
 /// `ns`, errors and warnings) and `load-file`; `completions` and `lookup`
@@ -783,6 +792,8 @@ fn interrupt_watch(watch: &mut Watch) -> std::process::ExitStatus {
     watch.process.0.wait().unwrap()
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A signal leaves `.nrepl-port` alone when another server has written its
 /// port there since.
 #[cfg(unix)]
@@ -795,6 +806,8 @@ fn a_signal_leaves_another_servers_port_file() {
     assert_eq!(fs::read_to_string(&port_file).unwrap(), "1");
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A shared session runs evaluations in the order the server received them,
 /// whichever connection sent them: an update queued on one connection
 /// behind a blocked evaluation runs before one another connection sends
@@ -846,6 +859,8 @@ fn shared_session_requests_preserve_cross_connection_arrival_order() {
     assert_eq!(first.value(&session, "@order"), "[:a :b]");
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// Closing a shared session ends its running evaluation as interrupted and
 /// answers each evaluation still queued on it, on the connection that sent
 /// it, with an error and `done`, without running it.
@@ -1038,6 +1053,8 @@ fn runtime_of(build: &Path, url: &str) -> (Process, u32, String, Receiver<String
     (process, pid, id, lines)
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// The Phase 3 exit criterion (docs/build-configuration.md, "Phase 3" and
 /// "Several builds in one process"), on a temporary copy of the multi
 /// fixture: `light-cljs watch app worker` serves the page and its worker
@@ -1249,6 +1266,8 @@ fn http_address(project: &Path) -> String {
     format!("127.0.0.1:{}", port.trim())
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A session cloned from one bound to the worker is bound to the worker
 /// too, in its namespace and with its runtime choice; a session that ran in
 /// both builds, when it closes, leaves the history of each build's runtime,
@@ -1304,6 +1323,8 @@ fn switched_sessions_clone_and_close_across_builds() {
     assert_eq!(client.value(&clone, "(jobs/run 2)"), "42");
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A build whose restart failed answers no form, but its sessions still
 /// switch to another build, and a session opened after the failure too.
 #[test]

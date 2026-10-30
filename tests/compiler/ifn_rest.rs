@@ -68,6 +68,8 @@ fn callable_rest_sequences_receivers_effects_and_lazy_values_match_references() 
     }
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn invalid_rest_forms_and_failed_invocations_leave_reused_sessions_usable() {
     let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();

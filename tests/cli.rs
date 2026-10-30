@@ -711,6 +711,8 @@ fn size_report_prints_the_retention_table_on_stderr_without_changing_output() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 /// `--elide-asserts` omits assertions while compiling, as upstream's
 /// `:elide-asserts` does: at every level, for text and namespace compiles and
 /// for `--eval`, an `assert` compiles to the same bytes as `nil` in its place
@@ -838,6 +840,8 @@ fn elide_asserts_omits_assertions_at_every_level() {
     }
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 /// `--elide-asserts` is also the `*assert*` that source macros read while
 /// expanding, under each of its names, as upstream's `:elide-asserts` binds
 /// `clojure.core/*assert*` while compiling: for text and namespace compiles
@@ -2135,6 +2139,8 @@ fn jobs_counts_work_slots_without_changing_output() {
     }
 }
 
+// Counts per-worker engine isolates; the Pants build shares one runtime.
+#[cfg(any(feature = "quickjs", feature = "v8-macros"))]
 /// With `--jobs N`, units are analyzed in persistent worker isolates, and
 /// the program is the one a fresh isolate per unit gives, the correctness
 /// reference (docs/compiler-concurrency.md, "As built (light-cljs-339)").

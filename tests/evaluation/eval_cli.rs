@@ -57,6 +57,8 @@ impl Directory {
     }
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn eval_text_stdin_empty_and_unicode_need_only_the_embedded_binary() {
     ok(
@@ -76,6 +78,8 @@ fn eval_text_stdin_empty_and_unicode_need_only_the_embedded_binary() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn script_output_and_final_result_are_distinct() {
     let output = run(
@@ -103,6 +107,8 @@ fn script_output_and_final_result_are_distinct() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn file_execution_handles_utf8_paths_file_binding_and_runtime_stdin() {
     let dir = Directory::new();
@@ -128,6 +134,8 @@ fn file_execution_handles_utf8_paths_file_binding_and_runtime_stdin() {
     ok(run(&["--eval"], "(read-line)"), "nil\n");
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn isolated_copy_loads_only_explicit_cljs_and_cljc_roots() {
     let dir = Directory::new();
@@ -171,6 +179,8 @@ fn isolated_copy_loads_only_explicit_cljs_and_cljc_roots() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn script_failures_keep_output_and_never_print_a_success_result() {
     for (source, expected) in [
@@ -195,6 +205,8 @@ fn script_failures_keep_output_and_never_print_a_success_result() {
     assert_eq!(output.stdout, b"before\n");
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn runtime_and_rendering_limits_fail_without_partial_results() {
     for (args, expected) in [
@@ -252,6 +264,8 @@ fn runtime_and_rendering_limits_fail_without_partial_results() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("render"));
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn repl_retains_history_definitions_namespace_and_current_reader_context() {
     ok(
@@ -267,6 +281,8 @@ fn repl_retains_history_definitions_namespace_and_current_reader_context() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn repl_multiline_uses_parser_rules_and_preserves_single_execution() {
     ok(
@@ -281,6 +297,8 @@ fn repl_multiline_uses_parser_rules_and_preserves_single_execution() {
     ok(run(&["--repl"], "42"), "42\n");
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn repl_continues_after_reader_analysis_execution_and_print_errors() {
     let output = run(
@@ -303,6 +321,8 @@ fn repl_continues_after_reader_analysis_execution_and_print_errors() {
     assert!(error.contains("render"));
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn repl_shares_the_language_input_cursor_and_recovers_runtime_reads() {
     ok(
@@ -322,6 +342,8 @@ fn repl_shares_the_language_input_cursor_and_recovers_runtime_reads() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn repl_eof_reports_incomplete_input_once_and_errors_do_not_shift_history() {
     let output = run(&["--repl"], "41\n[1\n");
@@ -376,6 +398,8 @@ fn evaluation_options_are_validated_and_help_lists_both_families() {
     }
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn invalid_utf8_repl_input_is_a_fatal_host_read_error() {
     let mut child = command()
@@ -401,6 +425,8 @@ fn invalid_utf8_repl_input_is_a_fatal_host_read_error() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn repl_compacts_consumed_lines_and_preserves_original_locations() {
     ok(
@@ -418,6 +444,8 @@ fn repl_compacts_consumed_lines_and_preserves_original_locations() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("<stdin>.cljc:21:1"));
     assert!(String::from_utf8_lossy(&output.stdout).ends_with(":after\n"));
 }
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn number_js_macros_and_clj_migration_are_explicit() {
     ok(run(&["--eval", "--text", "(/ 1 2)"], ""), "0.5\n");
@@ -446,6 +474,8 @@ fn number_js_macros_and_clj_migration_are_explicit() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("rename/adapt"));
 }
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn imported_macro_helpers_run_script_initializers_once() {
     let dir = Directory::new();
@@ -512,6 +542,8 @@ fn definition_metadata_uses_text_file_and_incremental_repl_locations() {
     assert!(text.contains("[\"<stdin>.cljc\" 5 1]"), "{text}");
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn original_raw_nsstar_source_executes_with_explicit_roots() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -538,6 +570,8 @@ fn original_raw_nsstar_source_executes_with_explicit_roots() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 /// `time` prints its line through the session's `*print-fn*`, stdout, before
 /// the result under `--eval` and `--repl` (light-cljs-260). A program clock
 /// for `system-time` makes the line exact; the engine's own clock gives its
@@ -581,6 +615,8 @@ fn time_prints_elapsed_milliseconds_under_eval_and_repl() {
     }
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 /// `^:async` functions under `--eval` and `--repl` (light-cljs-261). A call's
 /// value is a Promise. The session runs promise jobs after each top-level
 /// form (light-cljs-295), so its reactions and the rest of the body after an
@@ -658,6 +694,8 @@ fn async_functions_return_promises_under_eval_and_repl() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 /// A promise left rejected with no handler attached once a form's jobs ran
 /// out is a warning on stderr after the form's result under `--repl`, which
 /// goes on, as in Node's REPL, and the script's error under `--eval`, as in
@@ -715,6 +753,8 @@ fn unhandled_rejections_warn_in_the_repl_and_fail_a_script() {
     ok(run(&["--eval", "--text", handled], ""), ":handled\n");
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 /// `--warnings` turns warning mode on for `--eval` and `--repl`: a use of a
 /// Var defined later compiles and runs as upstream's would, and its warning
 /// goes to stderr as `--compile --warnings` prints it, located, before the
@@ -759,6 +799,8 @@ fn warnings_flag_turns_warning_mode_on_and_prints_warnings() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 /// The files of examples/dev load through `require` in `--repl`, with every
 /// clause of their `ns` forms, and reload: a `require :reload` of
 /// `app.view` and a `[app.state :reload true]` keep the `defonce` state.
@@ -783,6 +825,8 @@ fn examples_dev_loads_and_reloads_through_require_in_the_repl() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 /// `--engine` chooses the engine the forms run in, V8 by default where the
 /// build has it. Both keep the interactive contract: definitions and history
 /// persist, values print the same, language errors leave the session usable

@@ -65,6 +65,8 @@ fn ns_name_result_types_execute_in_both_engines_and_macro_phase() {
     light_cljs::compile_with_macros("(def unavailable (js/unavailable)) (defmacro inspect [] (let [n (:ns (meta #'unavailable))] (assert (symbol? n)) (assert (= \"cljs.user\" (ns-name n))) true)) (inspect)", &mut MacroHost::new()).unwrap();
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn metadata_names_preserve_qualification_and_session_isolation() {
     let mut session = EvalSession::new(EvalOptions::default()).unwrap();

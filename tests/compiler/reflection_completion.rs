@@ -172,6 +172,8 @@ fn namespace_view_contains_core_binding_kinds_without_engine_roots() {
     );
     assert_eq!(view.declaration_frontier, 0);
 }
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn namespace_refers_use_actual_public_var_identity() {
     use light_cljs::{

@@ -8,7 +8,7 @@
 // leaves some of their imports, helpers and inputs unused there.
 #![cfg_attr(
     not(feature = "quickjs"),
-    allow(unused_imports, unused_variables, unused_mut, dead_code)
+    allow(unused_imports, unused_variables, unused_mut, unused_macros, dead_code)
 )]
 
 // `row_tests!` declares one test per fixture row, row range or share of the rows.

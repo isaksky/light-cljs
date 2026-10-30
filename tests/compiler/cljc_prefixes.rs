@@ -149,6 +149,8 @@ fn located_active_and_missing_target_errors_recover_in_hosts_and_sessions() {
             .is_err()
     );
 }
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn selected_targets_keep_metadata_quote_ownership_and_source_locations() {
     let mut session = EvalSession::new(EvalOptions::default()).unwrap();
@@ -171,6 +173,8 @@ fn selected_targets_keep_metadata_quote_ownership_and_source_locations() {
     assert_eq!(selected[0].span().source().name(), "ownership.cljc");
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn nested_discarded_readers_keep_canonical_effect_order() {
     use light_cljs::compiler_data::Name;

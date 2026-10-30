@@ -114,6 +114,8 @@ fn iterator_helper_phase_isolation_diagnostics_and_repetition() {
     }
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn iterator_helpers_preserve_session_owned_progress() {
     use light_cljs::{EvalOptions, EvalSession};

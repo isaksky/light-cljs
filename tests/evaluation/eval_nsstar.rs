@@ -32,6 +32,8 @@ fn original(session: &mut EvalSession) {
         "[:clojure.string/name \"1-2\"]"
     );
 }
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn unchanged_complete_nsstar_source_executes_in_fresh_and_reused_sessions() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compiler-nsstar");
@@ -46,6 +48,8 @@ fn unchanged_complete_nsstar_source_executes_in_fresh_and_reused_sessions() {
     original(&mut reused);
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn malformed_nsstar_is_located_and_failed_imports_do_not_publish_aliases() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compiler-nsstar");
@@ -126,6 +130,8 @@ fn malformed_nsstar_is_located_and_failed_imports_do_not_publish_aliases() {
     assert!(reused.eval_string("only/value").is_err());
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner() {
     let root = TempDir::new("eval-nsstar");

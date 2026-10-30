@@ -227,6 +227,8 @@ fn keyword_case_switches_on_the_spelling_without_printing_at_advanced() {
     ));
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn literal_keyword_identity_holds_across_repl_inputs_and_redefinition() {
     // Each REPL input is its own unit over the session runtime, which interns

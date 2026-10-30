@@ -57,6 +57,8 @@ fn reserved_metadata_and_macro_definitions_keep_source_sites_in_both_engines() {
         "[\"cljs.user\" 2]",
     );
 }
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn incremental_files_errors_and_fresh_sessions_preserve_source_identity() {
     let mut session = EvalSession::new(EvalOptions::default()).unwrap();

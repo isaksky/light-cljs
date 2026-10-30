@@ -87,6 +87,8 @@ fn complete_non_lite_object_equiv_body_executes_in_both_phases() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn failed_equiv_calls_leave_reused_application_and_macro_hosts_usable() {
     let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();

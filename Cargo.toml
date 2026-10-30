@@ -69,6 +69,11 @@ harness = false
 name = "evaluator"
 harness = false
 
+# The evaluator example embeds QuickJS, which the Pants build leaves out.
+[[example]]
+name = "evaluator"
+required-features = ["quickjs"]
+
 # Dependencies (chiefly the QuickJS C engine behind the macro host and evaluator)
 # build once, so optimizing them costs nothing in the edit loop and makes
 # QuickJS-heavy tests 2-3x faster. This crate itself stays unoptimized: at

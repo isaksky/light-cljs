@@ -5,6 +5,13 @@
 //! build and starts it, then the build's own client.js reads the server's
 //! event stream with `fetch` and applies its loads with the hook protocol.
 
+// The Pants build compiles out the tests that need QuickJS, which leaves
+// some of their helpers and imports unused there.
+#![cfg_attr(
+    not(feature = "quickjs"),
+    allow(unused_imports, unused_variables, unused_mut, unused_macros, dead_code)
+)]
+
 #[path = "support/temp_dir.rs"]
 #[allow(dead_code)]
 mod temp_dir;
@@ -338,6 +345,8 @@ fn request(address: &str, text: &str) -> Response {
     }
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A runtime running the build made before any change receives the build
 /// when it connects, which it already runs, then the unit of a saved change
 /// to `app.view`, which it loads between the hooks: the next render runs the
@@ -381,6 +390,8 @@ fn a_connected_runtime_loads_a_saved_change() {
     );
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A step that fails pushes its error, located, and no load; a step with a
 /// warning pushes the warning and its load; and a runtime that connects
 /// after a failed step receives the error after the build.
@@ -457,6 +468,8 @@ fn a_compile_error_is_pushed_without_a_load() {
     );
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A runtime that connects after a step receives the build as it is now: a
 /// runtime running the build made before the step loads the changed unit
 /// (between the hooks), and one running the rewritten build loads nothing.
@@ -488,6 +501,8 @@ fn a_late_runtime_catches_up() {
     );
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// When the server goes away, the client connects again with backoff, and
 /// catches up with the build of the server it reaches: here a new watch on
 /// the same port, started after a change to the sources.
@@ -517,6 +532,8 @@ fn a_runtime_reconnects_and_catches_up() {
     );
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// `GET` serves the build directory's files and the source roots' (at the
 /// paths the source maps name them by) with content types and ETags, the
 /// built-in page at `/` until the directory has an `index.html`, and
@@ -642,6 +659,8 @@ fn example_build(dir: &Path) -> PathBuf {
     out
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// An `invoke` runs a REPL form's unit in the runtime, in the application's
 /// state, and the runtime posts the value printed with the print options
 /// sent, or the error it threw, to `/reply` with the request ID; a reply
@@ -820,6 +839,8 @@ fn a_replay_runs_again_a_unit_that_threw() {
     );
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A failed step that loaded a new namespace before its error pushes the
 /// error alone, and a runtime that connects after it catches up with the
 /// build of the last step that succeeded; the next step that succeeds loads
@@ -880,6 +901,8 @@ fn a_failed_step_is_not_replayed() {
     );
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// The build's own warnings reach a runtime that connects before any step,
 /// located as a step's are.
 #[test]
@@ -914,6 +937,8 @@ fn startup_warnings_reach_a_runtime() {
     assert_eq!(record_line, record("start\nlater clicks: [1]\n"));
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// The connected client runs the hooks around a load: the before-load ones
 /// in reverse definition order, waiting for an async one's continuation
 /// before the next, a throwing one logged and skipped; then the units; then
@@ -978,6 +1003,8 @@ start
     );
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A saved change to the macro namespace `app.macros` loads its unit and
 /// the unit of `app.view`, which requires it, recompiled with the new
 /// expansion.
@@ -1022,6 +1049,8 @@ fn loud_example(src: &Path) {
     .unwrap();
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A saved change to `app.state` reloads `app.state` alone; with
 /// `--reload-dependents`, also `app.view` and `app.main`, which depend on
 /// it, in that order, unchanged. A runtime that missed the step catches up
@@ -1076,6 +1105,8 @@ fn reload_dependents_reload_downstream_namespaces_in_order() {
     }
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A namespace marked `^:dev/once` is never loaded again: a step that
 /// recompiles it rewrites its unit and loads nothing, a load of a change it
 /// depends on leaves it out, even with `--reload-dependents`, which then
@@ -1160,6 +1191,8 @@ fn a_once_namespace_is_never_reloaded() {
     );
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A namespace marked `^:dev/always` is compiled again with its compilation
 /// consumer `app.main` by every step, and loaded with every load and with
 /// every replay that loads anything.
@@ -1225,6 +1258,8 @@ fn an_always_namespace_loads_with_every_load() {
     );
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A step finds the hooks again in the program it compiled: a definition
 /// that lost its `^:dev/before-load` is no hook, and a new
 /// `^:dev/after-load-async` one is, in the load the step pushes and in the
@@ -1268,6 +1303,8 @@ fn a_step_finds_the_hooks_again() {
     );
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// The reload fixtures (tests/support/reload_fixtures.rs) through `--watch
 /// --serve`: a runtime running the first build of a row's sources loads the
 /// step its edit makes, which names the namespaces the row reloads, and
@@ -1318,6 +1355,8 @@ fn reload_fixtures_print_their_output_through_the_server() {
     });
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A step that rewrites a `^:dev/once` namespace still compiles and loads
 /// the `^:dev/always` namespaces with their compilation consumers, and with
 /// `--reload-dependents` the namespaces downstream of them, as every step
@@ -1371,6 +1410,8 @@ fn a_once_edit_loads_the_always_namespaces_and_their_dependents() {
     );
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// Hooks run by namespace in load order, then by definition, also after
 /// steps that compiled a later namespace first and an earlier one after
 /// it: the before-load functions of `app.main` run before those of
@@ -2188,6 +2229,8 @@ fn watch_id_takes_the_next_port_unless_strict_or_given_by_serve() {
     }
 }
 
+// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
+#[cfg(feature = "quickjs")]
 /// A flag-only `--watch --serve` never reads `light-cljs.edn`, even one
 /// that fails to validate, and writes no `http.port`: from such a
 /// directory it serves as it does from one without the file.

@@ -752,6 +752,8 @@ fn execute_dispositions(part: usize) {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+// Executes the historical cases in an interactive session, which runs in QuickJS.
+#[cfg(feature = "quickjs")]
 row_tests!(execute_dispositions;
     historical_sci_cases_execute_their_dispositions_0(0),
     historical_sci_cases_execute_their_dispositions_1(1),

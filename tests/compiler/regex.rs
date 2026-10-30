@@ -104,6 +104,8 @@ fn regex_macro_results_preserve_flags_tags_and_diagnose_host_values() {
         "true",
     );
 }
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn regex_failures_reuse_sessions_and_reset_clears_state_and_bounds() {
     let mut session = EvalSession::new(EvalOptions {

@@ -183,6 +183,8 @@ fn parser_acceptance_does_not_hide_contextual_reader_errors_or_numeric_duplicate
     }
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn cljc_selection_metadata_and_inactive_forms_have_distinct_phase_evidence() {
     use light_cljs::compiler_data::Name;
@@ -612,6 +614,8 @@ fn runtime_reader_leaves_special_forms_a_namespace_binds_unqualified() {
     );
 }
 
+// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 fn runtime_reader_macro_and_reused_session_contexts_are_explicit() {
     use light_cljs::{EvalOptions, EvalSession};
