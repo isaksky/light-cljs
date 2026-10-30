@@ -1622,7 +1622,9 @@ pub(crate) struct RealizeAll {
     /// The walk's operand: it continues only for the same one.
     root: Value,
     work: Vec<Work>,
-    /// The `children` the `Exit` steps in `work` hold, for the charge.
+    /// The capacity of the `children` the `Exit` steps in `work` hold (a
+    /// sequence's elements are read into a growing vector, which can keep
+    /// up to as much again spare), for the charge.
     pending_children: usize,
     results: Vec<Value>,
     memo: HashMap<ObjectId, Value>,
@@ -1688,17 +1690,23 @@ impl RealizeAll {
         }
     }
 
-    /// Charge the walk's storage to the heap's byte budget before it is
-    /// kept, growing the charge geometrically; `false` (keep nothing) when
-    /// the budget refuses it.
-    fn charge(&mut self, heap: &Heap) -> bool {
+    /// The bytes the walk's storage holds: its box, the vectors'
+    /// capacities (not lengths) and the hash tables' allocations.
+    fn storage_bytes(&self) -> usize {
         use std::mem::size_of;
-        let entry = size_of::<ObjectId>() + 1;
-        let needed = self.work.capacity() * size_of::<Work>()
+        size_of::<RealizeAll>()
+            + self.work.capacity() * size_of::<Work>()
             + self.pending_children * size_of::<Value>()
             + self.results.capacity() * size_of::<Value>()
-            + self.memo.capacity() * (entry + size_of::<Value>())
-            + self.active.capacity() * entry;
+            + table_bytes(self.memo.capacity(), size_of::<(ObjectId, Value)>())
+            + table_bytes(self.active.capacity(), size_of::<ObjectId>())
+    }
+
+    /// Charge the walk's storage ([`RealizeAll::storage_bytes`]) to the
+    /// heap's byte budget before it is kept, growing the charge
+    /// geometrically; `false` (keep nothing) when the budget refuses it.
+    fn charge(&mut self, heap: &Heap) -> bool {
+        let needed = self.storage_bytes();
         if needed <= self.charged {
             return true;
         }
@@ -1727,6 +1735,24 @@ impl RealizeAll {
         }
         WALK.with(|w| *w.borrow_mut() = Some(Box::new(self)));
     }
+}
+
+/// An upper bound on the bytes a std `HashMap`/`HashSet` of `capacity`
+/// (as `capacity()` reports it) allocates for entries of `entry` bytes. Its
+/// table has a power of two of buckets, of which it fills 7/8 (all but one
+/// under eight), and keeps a control byte per bucket plus a group's width
+/// (at most 16) more, after padding to at most 16 bytes.
+fn table_bytes(capacity: usize, entry: usize) -> usize {
+    if capacity == 0 {
+        return 0;
+    }
+    let buckets = if capacity < 8 {
+        capacity + 1
+    } else {
+        (capacity * 8).div_ceil(7)
+    }
+    .next_power_of_two();
+    buckets * (entry + 1) + 32
 }
 
 thread_local! {
@@ -1844,7 +1870,7 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                 let enter_meta = meta.clone().map(Work::Enter);
                 let enter_children: Vec<Work> =
                     children.iter().rev().cloned().map(Work::Enter).collect();
-                walk.pending_children += children.len();
+                walk.pending_children += children.capacity();
                 walk.work.push(Work::Exit {
                     id,
                     original: v,
@@ -1862,7 +1888,7 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                 children,
                 meta,
             } => {
-                walk.pending_children -= children.len();
+                walk.pending_children -= children.capacity();
                 let new_meta = match meta {
                     Some(_) => walk.results.pop(),
                     None => None,

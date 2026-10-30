@@ -995,3 +995,80 @@ fn persistent_versions_are_charged_for_their_path_copies() {
     rt.collect().unwrap();
     assert_eq!(rt.heap_stats().managed_bytes, settled);
 }
+
+/// Counts host effects (a thunk announcing that it runs).
+#[derive(Default)]
+struct Effects(usize);
+
+impl Host for Effects {
+    fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+        self.0 += 1;
+        Ok(Primitive::Number(0.0))
+    }
+}
+
+/// A `cljRealizeAll` walk kept while its task realizes a lazy sequence
+/// holds no more storage than it charges to the byte budget
+/// (light-cljs-627): the spare capacity of the elements it read from a
+/// long sequence, and the whole of its memo's hash table (buckets beyond
+/// its capacity and control bytes), not just their lengths. The task is
+/// held inside the thunk of the pending sequence, its walk kept; what it
+/// allocated meanwhile is measured against what it charged.
+#[test]
+fn realize_all_retained_storage_is_fully_charged() {
+    const SLACK: i64 = 32 * 1024;
+    let pending = "__rt.lazySeq(() => { __rt.effect(1, 0); return __rt.formList(1); })";
+    for (shape, body, count) in [
+        (
+            "a 65,537-element sequence whose first element is pending",
+            "let xs = null; for (let i = 0; i < 65536; i++) xs = __rt.cljCons(i, xs); \
+             return __rt.cljCons(pending, xs);",
+            65_537.0,
+        ),
+        (
+            "50,000 distinct vectors before a pending sequence",
+            "let v = __rt.formVector(); \
+             for (let i = 0; i < 50000; i++) v = __rt.formConj(v, __rt.formVector(i)); \
+             return __rt.formConj(v, pending);",
+            50_001.0,
+        ),
+    ] {
+        let rt = byte_limited(1 << 30).unwrap();
+        let make = compile_function(&format!(
+            "function make() {{ const pending = {pending}; {body} }}"
+        ))
+        .unwrap();
+        let RunOutcome::Complete(root) = rt.spawn(&make, &[]).unwrap().run().unwrap() else {
+            panic!("{shape}: building it failed");
+        };
+        rt.publish(&root).unwrap();
+        let realize =
+            compile_function("function f(x) { return __rt.formCount(__rt.cljRealizeAll(x)); }")
+                .unwrap();
+        let task = rt.spawn(&realize, &[&root]).unwrap();
+        rt.collect().unwrap();
+        let (live, managed) = (live::bytes(), rt.heap_stats().managed_bytes);
+        let mut host = Effects::default();
+        while host.0 == 0 {
+            let outcome = task.run_with(Budget::instructions(1), &mut host).unwrap();
+            assert!(
+                matches!(outcome, RunOutcome::Yielded),
+                "{shape}: {outcome:?}"
+            );
+        }
+        let held = live::bytes() - live;
+        let charged = rt.heap_stats().managed_bytes as i64 - managed as i64;
+        // The task's own frames and the thunk's call hold a few KiB the
+        // walk does not; a charge of the walk's lengths alone (before
+        // light-cljs-627) left about 1 MiB and 200 KiB uncharged.
+        assert!(
+            held <= charged + SLACK,
+            "{shape}: {held} bytes held, {charged} charged"
+        );
+        let outcome = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        let RunOutcome::Complete(n) = &outcome else {
+            panic!("{shape}: {outcome:?}");
+        };
+        assert_eq!(n.view(), ValueView::Number(count), "{shape}");
+    }
+}
