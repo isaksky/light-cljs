@@ -805,7 +805,7 @@ const decl = (() => {
   };
   const productGetter = (b, name) => () => {
     const earlier = earlierOf(b, name);
-    if (earlier !== undefined) return earlier();
+    if (earlier !== undefined) return Reflect.apply(earlier, registry(), []);
     const own=productOwner(name);return readProduct(own?.group?own:b,name);
   };
   // `exists?` of `b`'s product, as the reference's `rootExists` of the slot
@@ -2102,23 +2102,32 @@ const native = (() => {
     remove(){return new Error('Unsupported operation');}
   };
   const seqIter=x=>new SeqIter(iteratorInit,x);
-  const iter=x=>{
+  // Arrays, strings and nil iterate natively unless a program extends their
+  // IIterable, which the reference's `sequenceIterator` consults first.
+  const iterableMethod=x=>{
     const value=val(x);
+    return decl.coreMethod('IIterable/-iterator',1,x,value!=null&&__rt.formKind(value)!==null);
+  };
+  const hostIter=value=>{
     if(value==null)return {hasNext:()=>false,next:()=>new Error('No such element'),remove:()=>new Error('Unsupported operation')};
     if(Array.isArray(value)||typeof value==='string'){
       let index=0;return {hasNext:()=>index<value.length,next:()=>typeof value==='string'?value.charAt(index++):value[index++],remove:()=>new Error('Unsupported operation')};
     }
-    const kind=__rt.formKind(value),method=decl.coreMethod('IIterable/-iterator',1,x,kind!==null);
-    return method===null?seqIter(x):method(x);
+    return null;
+  };
+  const iter=x=>{
+    const method=iterableMethod(x);
+    return method!==null?method(x):hostIter(val(x))??seqIter(x);
   };
   // A transformed sequence's source, as the reference's `sequenceIterator`:
   // an IIterable's iterator, nil, a string or array, else a seqable value's
   // SeqIter. Anything else fails before the transform runs.
   const sequenceIterator=x=>{
-    const value=val(x);
-    if(value==null||Array.isArray(value)||typeof value==='string')return iter(x);
-    const kind=__rt.formKind(value),method=decl.coreMethod('IIterable/-iterator',1,x,kind!==null);
+    const method=iterableMethod(x);
     if(method!==null)return method(x);
+    const value=val(x),host=hostIter(value);
+    if(host!==null)return host;
+    const kind=__rt.formKind(value);
     const builtin=nativeSeq(x)||kind==='vector'||kind==='map'||kind==='record'||kind==='set';
     // Membership as `seq` admits it, a native array cursor included; an
     // ISeqable type need not have its -seq yet (it is looked up when traversed).
@@ -2967,9 +2976,11 @@ const native = (() => {
     },
     keyword:(...a)=>a.length===1?__rt.cljKeyword(a[0]):a.length===2?__rt.cljKeywordNs(a[0],a[1]):arity(a.length),
     symbol:(...a)=>a.length===1?__rt.cljSymbol(a[0]):a.length===2?__rt.cljSymbolNs(a[0],a[1]):arity(a.length),
-    ffirst:x=>core.first(core.first(x)),
-    fnext:x=>core.first(core.next(x)),
-    nfirst:x=>core.next(core.first(x)),
+    // On the intrinsic operations, as the reference's lexical calls: a
+    // program's rebinding of the public `first` or `next` leaves them.
+    ffirst:x=>__rt.cljFirst(__rt.cljFirst(x)),
+    fnext:x=>__rt.cljFirst(__rt.cljNext(x)),
+    nfirst:x=>__rt.cljNext(__rt.cljFirst(x)),
     first:x=>__rt.cljFirst(x), second:x=>__rt.cljFirst(__rt.cljNext(x)),
     nth:(x,n,...d)=>d.length?__rt.cljNthOr(x,n,d[0]):__rt.cljNth(x,n),
     count:x=>__rt.cljCount(x),
@@ -3832,7 +3843,7 @@ function getterExists(name,get){
 function readRoot(root){
   if('value' in root.descriptor)return root.descriptor.value;
   const product=productReaders.get(root.descriptor.get);
-  return product===undefined?root.descriptor.get():decl.readProduct(__rt.nth(product,0),__rt.nth(product,1));
+  return product===undefined?Reflect.apply(root.descriptor.get,registry(),[]):decl.readProduct(__rt.nth(product,0),__rt.nth(product,1));
 }
 // Private task-owned slots: unit/name/state/value/defined are fields 0..4.
 // Full JS values stay traced; public roots and saved getters remain ordinary.

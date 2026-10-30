@@ -8235,6 +8235,26 @@ fn native_transformed_sequences_preserve_seqability_and_deferred_methods() {
     );
 }
 
+/// A transformed sequence's source is its IIterable iterator first, as the
+/// reference's `sequenceIterator`: a program's extension of arrays, strings
+/// or nil replaces their built-in iteration.
+#[test]
+fn native_transformed_sequences_honor_host_iterable_extensions() {
+    assert_native_matches_legacy(
+        r#"(extend-type array IIterable (-iterator [_] (iter [40])))
+           (extend-type string IIterable (-iterator [_] (iter ["s"])))
+           (extend-type nil IIterable (-iterator [_] (iter [:nil])))
+           (defmacro probe []
+             [(vec (sequence (map inc) (array 1)))
+              (vec (sequence (map identity) "ab"))
+              (vec (sequence (map identity) nil))
+              (vec (sequence (map vector) (array 1 2) "ab" nil))
+              [(.next (iter (array 1))) (.next (iter "ab")) (.next (iter nil))]])
+           (js/console.log (pr-str (probe)))"#,
+        "[[41] [\"s\"] [:nil] [[40 \"s\" :nil]] [40 \"s\" :nil]]\n",
+    );
+}
+
 /// A defprotocol a macro expands to, and one in a macro's body, which
 /// defines the protocol when the macro runs (light-cljs-592).
 #[test]
@@ -16256,9 +16276,10 @@ fn compiler_literal_sequential_classification_does_not_realize_values() {
 fn compiler_literal_first_entry_helper_matches_quickjs() {
     assert_native_matches_legacy(
         r#"(defmacro m [x] (let [f ffirst log (atom []) s (lazy-seq (swap! log conj :outer) (list (lazy-seq (swap! log conj :inner) (list :value))))]
-             (list 'quote [(ffirst x) (f nil) (f []) (f "ab") (f s) (f s) @log])))
+             (list 'quote [(ffirst x) (f nil) (f []) (f "ab") (f s) (f s) @log
+                           (binding [first (constantly :wrong)] [(ffirst x) (f x) (apply f [x])])])))
            (js/console.log (pr-str (m [[1 2] [3 4]])))"#,
-        "[1 nil nil \"a\" :value :value [:outer :inner]]\n",
+        "[1 nil nil \"a\" :value :value [:outer :inner] [1 1 1]]\n",
     );
 }
 
@@ -16288,12 +16309,17 @@ fn fnext_and_nfirst_match_quickjs_at_all_threads() {
         chunk-value (first-next chunked)
         chunk-tail (vec (take 3 (next-first [chunked])))
         before (count @chunks)
-        boundary (first-next (drop 31 chunked))]
+        boundary (first-next (drop 31 chunked))
+        ;; As the reference's lexical calls, the helpers ignore a
+        ;; program's rebinding of the public first and next.
+        rebound (binding [first (constantly :wrong) next (constantly :wrong)]
+                  [(first-next [1 2]) (next-first [[1 2]])])]
     (list 'quote
       [(mapv first-next [nil '() [] '(1) [1 2 3] "ab"])
        (mapv next-first [nil '() [] '(nil) '((1)) '((1 2 3) (4)) ["ab"]])
        [next-value first-value repeated @seen]
-       [chunk-value chunk-tail before boundary (count @chunks)]])))"#
+       [chunk-value chunk-tail before boundary (count @chunks)]
+       rebound])))"#
             .replace("FNEXT", fnext_call)
             .replace("NFIRST", nfirst_call);
         assert_entry_matches_quickjs(
@@ -16306,7 +16332,8 @@ fn fnext_and_nfirst_match_quickjs_at_all_threads() {
                 ),
             ],
             "[[nil nil nil nil 2 \"b\"] [nil nil nil nil nil (2 3) (\"b\")] \
-             [:b :next [:b :next] [:outer :inner :inner-next :outer-next]] [1 [1 2 3] 32 32 40]]\n",
+             [:b :next [:b :next] [:outer :inner :inner-next :outer-next]] [1 [1 2 3] 32 32 40] \
+             [2 (2)]]\n",
             &[1, 2, 4, 8],
         );
     }

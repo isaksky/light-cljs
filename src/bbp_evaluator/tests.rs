@@ -4185,6 +4185,117 @@ fn compiler_root_exists_preserves_saved_accessor_receivers() {
     assert_eq!(result, "[true,true,1,2,1]");
 }
 
+/// A conditional definition group that leaves its name undefined falls back
+/// to the name's previous generation. Reading a saved accessor there calls it
+/// with the root registry as its receiver, as an ordinary property read and
+/// the existence probe above do.
+#[test]
+fn compiler_root_group_fallback_preserves_saved_accessor_receivers() {
+    use crate::compilation_session::BundleRecord;
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let task = Rc::new(shared.evaluator().unwrap());
+    task.clone()
+        .install_compiler_service(
+            "__lightCompileUnit",
+            Rc::new(|_, unit| {
+                Ok(match unit {
+                    2 => "rt => null",
+                    _ => panic!("unexpected unit {unit}"),
+                }
+                .into())
+            }),
+        )
+        .unwrap();
+    task.register_compiler_root("x", Some(1), false, "fixture:1", None)
+        .unwrap();
+    let value = task
+        .evaluate_unit(
+            r#"rt => {
+              const R = globalThis.__lightCompilerRoots;
+              Object.defineProperty(R, 'x', {configurable: true, get() { return this === R ? 7 : undefined; }});
+              return null;
+            }"#,
+        )
+        .unwrap();
+    task.release(value).unwrap();
+    let group = BundleRecord {
+        products: vec!["x".into()],
+        unit: 2,
+        extensions: vec![],
+        location: "fixture:2".into(),
+        once: false,
+        group: true,
+    };
+    task.register_compiler_bundle(&group.source(), group.unit)
+        .unwrap();
+    let value = task
+        .evaluate_unit(
+            "rt => { const R = globalThis.__lightCompilerRoots; return JSON.stringify([R.x, globalThis.__lightNativeRuntime.core.nativeRootExists('x', false)]); }",
+        )
+        .unwrap();
+    let result = task.cx().unwrap().values.borrow()[&value.index]
+        .string()
+        .unwrap()
+        .to_string_lossy();
+    task.release(value).unwrap();
+    assert_eq!(result, "[7,true]");
+}
+
+/// An initializer declared before a later bundle reads the accessor that
+/// bundle saved, with the root registry as its receiver.
+#[test]
+fn compiler_root_earlier_reads_preserve_saved_accessor_receivers() {
+    use crate::compilation_session::BundleRecord;
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let task = Rc::new(shared.evaluator().unwrap());
+    task.clone()
+        .install_compiler_service(
+            "__lightCompileUnit",
+            Rc::new(|_, unit| {
+                Ok(match unit {
+                    1 => "rt => globalThis.__lightCompilerRoots.x",
+                    2 => "rt => { globalThis.__lightCompilerBundleProducts.x = 2; return null; }",
+                    _ => panic!("unexpected unit {unit}"),
+                }
+                .into())
+            }),
+        )
+        .unwrap();
+    let value = task
+        .evaluate_unit(
+            r#"rt => {
+              const R = globalThis.__lightCompilerRoots;
+              Object.defineProperty(R, 'x', {configurable: true, get() { return this === R ? 1 : undefined; }});
+              return null;
+            }"#,
+        )
+        .unwrap();
+    task.release(value).unwrap();
+    task.register_compiler_root("f", Some(1), false, "fixture:1", None)
+        .unwrap();
+    let replacement = BundleRecord {
+        products: vec!["x".into()],
+        unit: 2,
+        extensions: vec![],
+        location: "fixture:2".into(),
+        once: false,
+        group: false,
+    };
+    task.register_compiler_bundle(&replacement.source(), replacement.unit)
+        .unwrap();
+    let value = task
+        .evaluate_unit(
+            "rt => { const R = globalThis.__lightCompilerRoots; return JSON.stringify([R.f, R.x]); }",
+        )
+        .unwrap();
+    let result = task.cx().unwrap().values.borrow()[&value.index]
+        .string()
+        .unwrap()
+        .to_string_lossy();
+    task.release(value).unwrap();
+    assert_eq!(result, "[1,2]");
+}
+
 /// A declaration alone that an adopted catalog rebuilds as a later bundle's
 /// previous definition reports its own location, as the applied catalog
 /// does (review round 3, M4).
