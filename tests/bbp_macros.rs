@@ -11375,6 +11375,99 @@ fn native_var_identity_apply_and_metadata_match_quickjs() {
     );
 }
 
+/// A Var converts back to its symbol (`symbol` directly, saved, through
+/// `apply`, of a declared Var and of Vars saved in another unit's
+/// definition), `.-sym` reads it, and `name`, `namespace` and `keyword` of
+/// a Var behave as the legacy runtime's. Its raw JavaScript `apply` calls
+/// the root's `call` up to 20 arguments and the root's `apply` past them,
+/// as `apply` does (light-cljs-589 review round 2).
+const VAR_CONVERSION: &[(&str, &str)] = &[
+    (
+        "doc.cljs",
+        r#"(ns doc)
+(def value 1)
+(declare later)
+(deftype F [call apply])
+(def f (F. (fn [_ & xs] [:call (count xs)]) (fn [_ xs] [:apply (count xs)])))"#,
+    ),
+    (
+        "reflect.cljs",
+        r#"(ns reflect (:require [doc]))
+(def saved #'doc/value)
+(def saved-f #'doc/f)
+(defn try* [f] (try (f) (catch :default e [:error (.-message e)])))
+(defmacro conv []
+  (let [sym symbol]
+    (list 'quote
+      [(symbol #'doc/value) (symbol saved) (sym #'doc/later) (apply symbol [saved])
+       (.-sym saved) (= (symbol saved) 'doc/value)
+       (try* #(name #'doc/value)) (try* #(namespace #'doc/value))
+       (try* #(keyword #'doc/value))])))
+(defmacro apl []
+  (list 'quote
+    (vec (for [n [20 21 25]]
+           [n (.apply #'doc/f nil (apply array (range n))) (.apply saved-f nil (apply array (range n)))
+            (try* #(apply #'doc/f (range n)))]))))"#,
+    ),
+    (
+        "main.cljs",
+        r#"(ns main (:require [reflect :refer [conv apl]]))
+(js/console.log (pr-str (conv)))
+(js/console.log (pr-str (apl)))"#,
+    ),
+];
+
+#[test]
+fn native_var_symbol_conversion_and_raw_apply_match_quickjs() {
+    assert_entry_matches_quickjs(
+        "native-var-conversion",
+        VAR_CONVERSION,
+        "[doc/value doc/value doc/later doc/value doc/value true \
+         [:error \"Doesn't support name on this type\"] \
+         [:error \"Doesn't support namespace on this type\"] nil]\n\
+         [[20 [:call 20] [:call 20] [:call 20]] [21 [:apply 21] [:apply 21] [:apply 21]] \
+         [25 [:apply 25] [:apply 25] [:apply 25]]]\n",
+        &[1, 2, 4, 8],
+    );
+}
+
+/// Namespace names are exact UTF-16 code units: a lone surrogate names its
+/// own namespace, distinct from the next surrogate and from U+FFFD, and a
+/// name with a supplementary character keeps it (light-cljs-589 review
+/// round 2).
+const UTF16_NAMESPACES: &[(&str, &str)] = &[
+    (
+        "names.cljs",
+        r#"(ns names)
+(defmacro surrogates []
+  (let [a (symbol (js/String.fromCharCode 55296))
+        b (symbol (js/String.fromCharCode 55297))
+        c (symbol (js/String.fromCharCode 65533))
+        d (symbol "😀x")
+        made (create-ns a)]
+    (create-ns d)
+    (list 'quote
+      [(boolean (find-ns a)) (find-ns b) (find-ns c) (boolean (find-ns d))
+       (identical? made (find-ns a)) (= (str (ns-name (find-ns a))) (str a))
+       (mapv #(count (str (ns-name %))) (all-ns))
+       (mapv #(.charCodeAt (str (ns-name %)) 0) (all-ns))])))"#,
+    ),
+    (
+        "main.cljs",
+        "(ns main (:require [names :refer [surrogates]])) (js/console.log (pr-str (surrogates)))",
+    ),
+];
+
+#[test]
+fn native_namespace_registry_preserves_utf16_names() {
+    assert_entry_matches_quickjs(
+        "native-utf16-namespaces",
+        UTF16_NAMESPACES,
+        "[true nil nil true true true [9 9 5 4 1 3] [99 99 110 109 55296 55357]]\n",
+        &[1, 2, 4, 8],
+    );
+}
+
 /// What `all-ns` and `find-ns` see (light-cljs-589 review): as the QuickJS
 /// reference, the namespaces a macro's or a helper's registration names
 /// and those created so far, each macro call's own included, in one-slot
@@ -11445,6 +11538,37 @@ const NAMESPACE_FRONTIER: &[(&str, &str)] = &[
 /// `made.three`, which `app/g` created before its demand. (A reader whose
 /// own activity an earlier one waits for sees what runs for that waiter:
 /// `effect_lanes` `a_registry_reader_lent_a_position_sees_what_runs_for_its_waiter`.)
+/// A namespace a shared lazy realization creates (light-cljs-589 review
+/// round 2): `app/a` makes `m/shared-lazy` without realizing it. Held,
+/// `app/h` starts only once `app/g` has begun realizing it, created
+/// `made.lent` and parked inside `m/cold-val`'s initializer for its lane.
+/// `app/h` then waits for that realization, which with one slot runs inside
+/// `app/h`: `made.lent` counts at `app/h`, so that `app/k`, between them,
+/// finds it.
+const NAMESPACE_FRONTIER_LAZY: &[(&str, &str)] = &[
+    (
+        "m.cljs",
+        r#"(ns m)
+(def cold-val (mapv ns-name (all-ns)))
+(def shared-lazy (lazy-seq (create-ns 'made.lent) (list cold-val)))
+(defmacro pre [] (some? shared-lazy))
+(defmacro force-it [] (list 'quote (vec shared-lazy)))
+(defmacro has [s] (boolean (find-ns s)))"#,
+    ),
+    (
+        "app.cljs",
+        r#"(ns app (:require [m :refer [pre force-it has]]))
+(def a (pre))
+(def h (force-it))
+(def k (has made.lent))
+(def g (force-it))"#,
+    ),
+    (
+        "main.cljs",
+        "(ns main (:require [app])) (js/console.log (pr-str [app/a app/h app/k app/g]))",
+    ),
+];
+
 const NAMESPACE_FRONTIER_LENT: &[(&str, &str)] = &[
     (
         "m.cljs",
@@ -11527,7 +11651,8 @@ fn native_namespace_registration_frontier_matches_reference() {
         String,
         &'static [(usize, u64, &'static str)],
     );
-    let cases: [Case; 2] = [
+    let realized = "[[cljs.user cljs.core m app made.lent]]";
+    let cases: [Case; 3] = [
         (
             "native-namespace-frontier",
             NAMESPACE_FRONTIER,
@@ -11550,6 +11675,20 @@ fn native_namespace_registration_frontier_matches_reference() {
             NAMESPACE_FRONTIER_LENT,
             format!("[{lent} {lent}]\n"),
             &[(1, 1, ""), (8, 6, "held"), (8, 7, "held"), (8, 8, "held")],
+        ),
+        (
+            "native-namespace-frontier-lazy",
+            NAMESPACE_FRONTIER_LAZY,
+            format!("[true {realized} true {realized}]\n"),
+            &[
+                (1, 1, ""),
+                (2, 1, ""),
+                (4, 2, ""),
+                (8, 3, ""),
+                (8, 9, "held"),
+                (8, 10, "held"),
+                (8, 11, "held"),
+            ],
         ),
     ];
     for (name, files, expected, variants) in cases {

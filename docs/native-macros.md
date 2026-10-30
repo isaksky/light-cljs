@@ -1404,8 +1404,12 @@ true` and throws when dereferenced. `deref`, invocation, `apply`, `.call`,
 `.apply`, `meta`, `with-meta`/`vary-meta`, `=`, `hash`, `str`, `pr-str`,
 `var?`, `fn?`, `ifn?` and `test` follow the legacy Var: dereferencing or
 calling reads the root then, and the printed form is `#'ns/name`. `apply` of
-a Var calls its root through the root's `call` for up to 20 arguments, as the
-legacy Var's adapters do. A Var's metadata with its `:test` is materialized
+a Var, and its raw `.apply`, call its root through the root's `call` for up to
+20 arguments and apply the root past 20, as the legacy Var's adapters do.
+`symbol` of a Var (the engine's conversion of a keyed struct, so also where
+the compiler emits it directly) and `.-sym` give its symbol, without reading
+the root; `name` and `namespace` of a Var throw and `keyword` of one is nil,
+as in the legacy runtime (`native_var_symbol_conversion_and_raw_apply_match_quickjs`). A Var's metadata with its `:test` is materialized
 once per task: `meta` and `._meta` give that one map. A Var made in one task
 is recognized in another by its type's name, as a MultiFn is. The engine
 type is *keyed* by `sym` (`__rt.structType`'s third argument is the field
@@ -1507,12 +1511,18 @@ namespace analyzed earlier is listed only once a registration or a creation
 names it: one without macros that no macro call or declaration since has named
 is absent, as in the reference. Creation never waits: it is recorded with the
 creating activity's place in the effect lanes (docs/compiler-concurrency.md,
-"Effect lanes"), its position and activity chain. A read waits for its lane,
-as an access to another activity's atom does, and then sees the creations
-before its position, in one-thread order, and, when an earlier activity
-waiting for part of its chain lent it that position, what that part created,
-which with one thread runs inside the waiter. Every thread count therefore
-gives the one-thread answer. A task keeps one Namespace object per name, so a
+"Effect lanes"): its position, the units and dependency cells of its activity
+chain, and the shared lazy cells its task is realizing (the engine's
+`Runtime::realizing`). When an earlier activity waits for one of those (a
+unit's analysis, an initializer's or helper's production, a lazy
+realization), the creations of that work count at the waiter's position for
+good, after what the waiter created before it waited: with one thread, that
+work runs inside the waiter. A read waits for its lane, as an access to
+another activity's atom does, at the position its lane opens at (an earlier
+waiter may lend it one), and sees the creations that count up to there, in
+one-thread order. Every thread count therefore gives the one-thread answer.
+Names are exact UTF-16 code units: lone surrogates stay distinct
+(`native_namespace_registry_preserves_utf16_names`). A task keeps one Namespace object per name, so a
 namespace is `identical?` to itself within a task; a namespace's object (and
 the metadata of its name symbol, and its `obj`) belongs to the task that made
 it, and another task that sees the name makes its own; like a mutable
@@ -1520,7 +1530,9 @@ JavaScript object held in a Var, it is per task, outside the one-thread
 guarantee. A macro that reads the inventory declares `(b/depend-on! :namespaces)` for the cache.
 `tests/bbp_macros.rs` `native_namespace_registration_frontier_matches_reference`
 compares these views with the QuickJS reference at 1, 2, 4 and 8 threads,
-under seeded scheduling, fixed workers, delayed starts and a held unit.
+under seeded scheduling, fixed workers, delayed starts and held units,
+including a namespace a shared lazy realization creates before an earlier unit
+waits for that realization.
 
 Ordinary source helpers are compiled on demand. A macro parks at a dependency
 read while the compiler analyzes the helper using separate task state on the

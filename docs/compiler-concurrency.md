@@ -3201,8 +3201,9 @@ state and determinism"; this is what was delivered.
   bundle registration order with the frontier the compiler selects per
   expansion, so it does not depend on tasks. The namespace registry that
   `all-ns` and `find-ns` read is the compilation's: creations are recorded
-  at their activity's place without waiting, and a read waits for its lane
-  and sees the creations before it in `--jobs 1` order (light-cljs-589,
+  at their activity's place without waiting, count at an earlier waiter's
+  place once it waits for the work that made them, and a read waits for its
+  lane and sees the creations before it in `--jobs 1` order (light-cljs-589,
   docs/native-macros.md). Extensions that macro code runs outside a bundle,
   mutable JavaScript objects held in Vars and a Namespace object's `obj`
   and name metadata are per task, outside the guarantee, as host effects
