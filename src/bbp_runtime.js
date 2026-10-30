@@ -1379,6 +1379,7 @@ const native = (() => {
   // A comparison of adjacent operands, true for one; as the legacy runtimes.
   const chain = (xs, test) => { if (xs.length === 0) arity(0); for (let i = 1; i < xs.length; i++) if (!test(val(xs[i - 1]), val(xs[i]))) return false; return true; };
   const fix = x => x >= 0 ? Math.floor(x) : Math.ceil(x);
+  const multiplyInt = Math.imul;
   const quot = (n,d) => fix((n-n%d)/d);
   const each = (op, x, xs) => { for (const y of xs) x = op(x, y); return x; };
   // Compile-time atoms are engine atoms (light-cljs-480): one shared atom
@@ -2262,6 +2263,7 @@ const native = (() => {
     reduced:x=>__rt.cljReduced(x), isReduced:x=>__rt.cljIsReduced(x), unreduced:x=>__rt.cljUnreduced(x),
     ensureReduced:x=>__rt.cljIsReduced(x)?x:__rt.cljReduced(x),
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
+    imul:(a,b)=>multiplyInt(val(a),val(b)),
     notEqual:(...xs)=>!core.equal(...xs),
     name:x=>{if(typeof val(x)==='string')return x;if(__rt.formKind(val(x))==='compiler-literal'||isVar(x))throw new Error("Doesn't support name on this type");if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support name: '+__rt.formName(val(x)));return __rt.formName(val(x));},
     namespace:x=>{if(__rt.formKind(val(x))==='compiler-literal'||isVar(x))throw new Error("Doesn't support namespace on this type");if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support namespace: '+__rt.formName(val(x)));return __rt.formNamespace(val(x));},

@@ -6119,6 +6119,21 @@ fn native_mutable_deftype_member_store_preserves_operand_order() {
 }
 
 #[test]
+fn native_integer_multiplication_matches_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+      (let [f imul seen (js/Array.)
+            a (js* "({valueOf(){~{}.push('left'); return 7;}})" seen)
+            b (js* "({valueOf(){~{}.push('right'); return 6;}})" seen)
+            n (f a b)]
+        (list 'quote [(imul 4294967295 5) (imul 2147483647 2) (imul 65536 65536)
+                      (imul -1 -1) (f "7" 6) (f nil 9) (f) (f 4) (f 3 7 99) n (vec seen)])))
+      (js/console.log (pr-str (probe)))"#,
+        "[-5 -2 0 1 42 0 0 0 21 42 [\"left\" \"right\"]]\n",
+    );
+}
+
+#[test]
 fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
     let root = temp_dir::TempDir::new("mutable-deftype-sharing");
     for (file, source) in [
@@ -6130,7 +6145,8 @@ fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
             Cell (read-cell [_] value) (write-cell [_ v] (set! value v)))
           (def saved (let [b (Box. 0)] (fn [v] (let [old (read-cell b)] (write-cell b v) [old (read-cell b)]))))
           (def listeners (atom [(let [b (Box. 10)] (fn [v] (let [old (read-cell b)] (write-cell b v) [old (read-cell b)])))]))
-          (defmacro probe [v] (list 'quote [(saved v) ((first @listeners) (+ v 10))]))"#,
+          (def multiply imul)
+          (defmacro probe [v] (list 'quote [(saved v) ((first @listeners) (+ v 10)) (multiply v 5)]))"#,
         ),
         (
             "a.cljs",
@@ -6176,7 +6192,7 @@ fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
     let (reference, _) = build(false, 1, 0);
     assert_eq!(
         program_output(&reference),
-        "[[[0 1] [10 11]] [[1 2] [11 12]]]\n"
+        "[[[0 1] [10 11] 5] [[1 2] [11 12] 10]]\n"
     );
     let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
         .ok()
