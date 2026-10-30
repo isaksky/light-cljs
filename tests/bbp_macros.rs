@@ -14812,7 +14812,10 @@ fn native_object_operation_table_matches_quickjs() {
         let expected = match divergences.get(row) {
             Some(pinned) => {
                 seen += 1;
-                assert_ne!(*pinned, reference, "{row} no longer diverges");
+                // Without a legacy engine `compile` is the Pants build itself.
+                if cfg!(feature = "quickjs") {
+                    assert_ne!(*pinned, reference, "{row} no longer diverges");
+                }
                 format!("{row}: {pinned}")
             }
             None => legacy.to_string(),

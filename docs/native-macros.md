@@ -4683,3 +4683,16 @@ only the existing worktree `playground_crate_checks_for_wasm32` diagnostic.
 Formatting and strict V8-build Clippy pass, combined Clippy passes allowing
 the three baseline categories, and strict engine Clippy keeps the nine
 baseline diagnostics.
+
+Review round 1 (every field access path) at `0c4e7bf3` on master `6d669e3d`,
+same toolchain and seeds: the combined build passes the library's 370 tests
+and `bbp_macros`' 198, the Pants-only `bbp_macros` 196 (with the object table
+corrected for a build without the QuickJS reference;
+`native_member_precedence_table_matches_quickjs` again hit the wall-clock
+deadline under load and passes alone); engine 2,210 tests and the seven
+doctests; V8-build nextest 2,134 of 2,135 (the same worktree diagnostic);
+formatting and Clippy as above. Penpot `app.render` from the Pants build at 1
+and 4 threads still matches the V8 build byte for byte (the same SHA-256s),
+and `app.main` stops at the same `core.satisfies` error. Three alternating
+200k pairs keep all six outputs identical (median 7.78 s on master
+`e8761f9b`, 7.93 s on the branch, load average 8-13).
