@@ -455,7 +455,11 @@ order.
 In the Pants runtime the bundle's getter makes the frontier choice
 (`earlierOf`). The engine's ready-product read takes the shortcut only for a
 bundle at or before the current frontier, which it reads from the root
-context's sixth element. Before this round, a declaration alone did not count
+context's sixth element. It never takes the shortcut while a definition group
+executes, whose own products come first. `exists?` uses the frontier choice
+only for compiler products and declarations; any other property is read as
+the registry reads it. A transformed sequence admits every source `seq`
+admits, and looks up an ISeqable type's `-seq` only when traversed. Before this round, a declaration alone did not count
 as a previous definition, a group was filtered by frontier, `exists?` read a
 later product directly, `set!` stored without demanding the definition, and
 the catalog rebuild dropped a `defonce`'s kept generation.

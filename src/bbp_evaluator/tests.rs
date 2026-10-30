@@ -3801,11 +3801,13 @@ fn adopted_catalogs_match_applied_catalogs_whatever_is_read_first() {
 }
 
 /// One registration of the catalog fixtures below: a root `x` or `f` with
-/// a unit (or none), a defonce, or a bundle defining `x`.
+/// a unit (or none), a defonce, a bundle defining `x`, or a definition
+/// group defining the names given.
 #[derive(Clone, Copy)]
 enum Entry {
     Root(&'static str, Option<usize>, bool),
     Bundle(usize, bool),
+    Group(usize, &'static [&'static str]),
 }
 
 /// The catalog fixtures' unit code: roots return their value, `f` reads
@@ -3822,6 +3824,8 @@ fn catalog_fixture_service(code: &'static [(usize, &'static str)]) -> UnitServic
              const R = globalThis.__lightCompilerRootReceiver ?? globalThis.__lightCompilerRoots; \
              const read = n => {{ try {{ return __rt.cljReadRoot(R, globalThis.__lightCompilerRootContext, n); }} \
              catch (e) {{ return String(e.message).includes('unavailable definition') ? 'unavailable' : 'error ' + e.message; }} }}; \
+             const message = n => {{ try {{ return __rt.cljReadRoot(R, globalThis.__lightCompilerRootContext, n); }} \
+             catch (e) {{ return String(e.message); }} }}; \
              return {body}; }}"
         ))
     })
@@ -3829,6 +3833,8 @@ fn catalog_fixture_service(code: &'static [(usize, &'static str)]) -> UnitServic
 
 /// Reads `name` and `exists?` of it in a producer that adopted `entries` as
 /// a catalog and in a task that applied them, and returns both answers.
+/// `name` may list names, read in order, separated by commas: the answers
+/// are the last one's.
 fn adopted_and_applied_reads(
     entries: &[Entry],
     code: &'static [(usize, &'static str)],
@@ -3848,6 +3854,14 @@ fn adopted_and_applied_reads(
                 location: "fixture:2".into(),
                 once: false,
                 group,
+            })),
+            Entry::Group(unit, products) => Registration::Bundle(Arc::new(BundleRecord {
+                products: products.iter().map(|name| name.to_string()).collect(),
+                unit,
+                extensions: vec![],
+                location: "fixture:2".into(),
+                once: false,
+                group: true,
             })),
         })
         .collect::<Vec<_>>();
@@ -3874,9 +3888,11 @@ fn adopted_and_applied_reads(
     let probe = format!(
         r#"rt => {{
           const R = globalThis.__lightCompilerRootReceiver ?? globalThis.__lightCompilerRoots;
-          let value; try {{ value = __rt.cljReadRoot(R, globalThis.__lightCompilerRootContext, '{name}'); }}
+          const names = '{name}'.split(','), last = names.pop();
+          for (const n of names) __rt.cljReadRoot(R, globalThis.__lightCompilerRootContext, n);
+          let value; try {{ value = __rt.cljReadRoot(R, globalThis.__lightCompilerRootContext, last); }}
           catch (e) {{ value = String(e.message).includes('unavailable definition') ? 'unavailable' : 'error ' + e.message; }}
-          let exists; try {{ exists = globalThis.__lightNativeRuntime.core.nativeRootExists('{name}', false); }}
+          let exists; try {{ exists = globalThis.__lightNativeRuntime.core.nativeRootExists(last, false); }}
           catch (e) {{ exists = 'error ' + e.message; }}
           return JSON.stringify([value, exists]);
         }}"#
@@ -4056,6 +4072,73 @@ fn adopted_catalog_defonce_before_later_bundle_keeps_previous_group() {
     ];
     let (adopted, applied) = adopted_and_applied_reads(&entries, CODE, "f");
     assert_eq!(applied, "[1,true]");
+    assert_eq!(adopted, applied);
+}
+
+/// While a definition group executes, a read of one of its names gets the
+/// group's own product, even when a later declaration's bundle of that name
+/// is ready and its getter is installed (review round 3, B1).
+#[test]
+fn native_ready_products_preserve_executing_group_ownership() {
+    use Entry::{Bundle, Group};
+    const CODE: &[(usize, &str)] = &[
+        (10, "(p.x = 2, p.y = read('x'), null)"),
+        (11, "(p.x = 3, null)"),
+    ];
+    let (adopted, applied) =
+        adopted_and_applied_reads(&[Group(10, &["x", "y"]), Bundle(11, false)], CODE, "x,y");
+    assert_eq!(applied, "[2,true]");
+    assert_eq!(adopted, applied);
+}
+
+/// `exists?` of a name whose property is no compiler product or declaration
+/// reads the registry as any property read does: the getter's receiver is
+/// the registry, a setter-only property is absent, and the root Proxy's
+/// invariant check still applies (review round 3, B3).
+#[test]
+fn compiler_root_exists_preserves_accessor_semantics() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let task = shared.evaluator().unwrap();
+    let value = task
+        .evaluate_unit(
+            r#"rt => {
+          const R = globalThis.__lightCompilerRoots;
+          const exists = n => globalThis.__lightNativeRuntime.core.nativeRootExists(n, false);
+          Object.defineProperty(R, 'recv', {configurable: true, get() { return this === R ? 1 : undefined; }});
+          Object.defineProperty(R, 'setonly', {configurable: true, set(v) {}});
+          Object.defineProperty(R, 'fixed', {configurable: true, get() {
+            Object.defineProperty(R, 'fixed', {value: 1, writable: false, configurable: false});
+            return 2;
+          }});
+          let invariant;
+          try { exists('fixed'); invariant = 'no error'; }
+          catch (e) { invariant = e instanceof TypeError ? 'TypeError' : 'other ' + e.message; }
+          return JSON.stringify([exists('recv'), exists('setonly'), invariant]);
+        }"#,
+        )
+        .unwrap();
+    let result = task.cx().unwrap().values.borrow()[&value.index]
+        .string()
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default();
+    task.release(value).unwrap();
+    assert_eq!(result, r#"[true,false,"TypeError"]"#);
+}
+
+/// A declaration alone that an adopted catalog rebuilds as a later bundle's
+/// previous definition reports its own location, as the applied catalog
+/// does (review round 3, M4).
+#[test]
+fn adopted_catalog_rebuilt_declarations_preserve_locations() {
+    use Entry::{Bundle, Root};
+    const CODE: &[(usize, &str)] = &[(12, "message('x')"), (6, "(p.x = 99, null)")];
+    let entries = [
+        Root("x", None, false),
+        Root("f", Some(12), false),
+        Bundle(6, false),
+    ];
+    let (adopted, applied) = adopted_and_applied_reads(&entries, CODE, "f");
+    assert_eq!(applied, r#"["fixture:1: unavailable definition: x",true]"#);
     assert_eq!(adopted, applied);
 }
 

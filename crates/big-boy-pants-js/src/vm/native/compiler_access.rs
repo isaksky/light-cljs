@@ -69,10 +69,19 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
                 // The declaration frontier of the running initializer: a
                 // bundle declared after it is read through its getter, which
                 // selects the definition visible there (`declarationSlot`).
+                // While a definition group executes, its own products take
+                // precedence over any installed bundle (`productOwner`), so
+                // every product read takes its getter.
                 let frontier = match (count > 5)
                     .then(|| collections::nth(heap, context.clone(), 5))
                     .transpose()?
                 {
+                    Some(cell)
+                        if data(heap, state.diag.task, &cell, &GROUP)?
+                            == Some(Value::Bool(true)) =>
+                    {
+                        f64::NEG_INFINITY
+                    }
                     Some(cell) => match data(heap, state.diag.task, &cell, &FRONTIER)? {
                         Some(Value::Number(n)) => n,
                         _ => f64::INFINITY,

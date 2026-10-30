@@ -277,6 +277,9 @@ const decl = (() => {
       __rt.need(b.unit, 2);
       const factory = __rt.need(b.unit, 3);
       installing.push(b);
+      // The engine's ready-product read defers to the getters while a
+      // definition group executes (`productOwner`).
+      const savedGroup = frontierCell.group; frontierCell.group = b.group;
       try {
         if (b.group) {
           const products=globalThis.__lightInitializeCompilerValue(b.unit,()=>{
@@ -287,7 +290,7 @@ const decl = (() => {
           const absent={};b.products={};for(const name of b.names){const value=__rt.getOr(products,name,absent);if(value!==absent)b.products[name]=value;}
         } else if (b.multi) globalThis.__lightInitializeCompilerValue(b.unit, () => { factory(globalThis.__lightNativeRuntime); return null; });
         else factory(globalThis.__lightNativeRuntime);
-      } finally { installing.pop(); }
+      } finally { installing.pop(); frontierCell.group = savedGroup; }
       b.state = 2;
     } catch (e) {
       b.products={};b.state = 3; b.error = e;
@@ -754,7 +757,7 @@ const decl = (() => {
   // engine's ready-product read compares a bundle's order with this cell
   // (the root context's sixth element), so a later bundle's product takes
   // its getter. docs/native-macros.md, "How a name resolves", is the table.
-  const frontierCell = {frontier: Infinity};
+  const frontierCell = {frontier: Infinity, group: false};
   const atDeclarationFrontier = (next, f) => {
     const saved = frontierCell.frontier;
     frontierCell.frontier = next;
@@ -2110,7 +2113,10 @@ const native = (() => {
     const kind=__rt.formKind(value),method=decl.coreMethod('IIterable/-iterator',1,x,kind!==null);
     if(method!==null)return method(x);
     const builtin=nativeSeq(x)||kind==='vector'||kind==='map'||kind==='record'||kind==='set';
-    if(builtin||decl.seq(x,false)!==null||typeof value==='object'&&value[Symbol.iterator]!=null)return seqIter(x);
+    // Membership as `seq` admits it, a native array cursor included; an
+    // ISeqable type need not have its -seq yet (it is looked up when traversed).
+    if(builtin||arraySeqs.has(x)||protocols.satisfies(protocols.value('ISeqable'),x)
+       ||typeof value==='object'&&value[Symbol.iterator]!=null)return seqIter(x);
     throw new Error('Cannot create iterator from '+String(value));
   };
   // `update-in` on the intrinsic operations, so a program's rebinding of the
@@ -3340,9 +3346,11 @@ const native = (() => {
       // name resolves"): an executing group's own product first.
       const own=decl.productOwner(name),descriptor=Object.getOwnPropertyDescriptor(bindings,name);
       if(own?.group)return decl.productAvailable(own,name)&&decl.readProduct(own,name)!==undefined;
-      if(descriptor===undefined)return bindings[name]!==undefined;
-      if('value' in descriptor)return descriptor.value!==undefined;
-      return getterExists(name,descriptor.get);
+      // A compiler product or declaration getter takes the frontier's
+      // choice; any other property keeps the registry's ordinary read.
+      const get=descriptor?.get;
+      if(get!==undefined&&(productReaders.has(get)||declarationGetters.has(get)))return getterExists(name,get);
+      return bindings[name]!==undefined;
     },
     juxt:(...fs)=>{
       const functions=fs.length===0?__rt.formVector(undefined,undefined,undefined):vector(fs);
@@ -3802,7 +3810,9 @@ function getterExists(name,get){
   const product=productReaders.get(get);
   if(product!==undefined)return decl.productExists(__rt.nth(product,0),__rt.nth(product,1));
   if(declarationGetters.has(get))return false;
-  return get()!==undefined;
+  // A saved accessor of an earlier definition, read with the registry as
+  // its receiver, as the registry read it.
+  return get!==undefined&&Reflect.apply(get,registry(),[])!==undefined;
 }
 function readRoot(root){
   if('value' in root.descriptor)return root.descriptor.value;

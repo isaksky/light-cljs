@@ -8219,6 +8219,22 @@ fn native_transformed_sequences_reject_invalid_sources_at_construction() {
     );
 }
 
+/// A transformed sequence accepts every source `seq` admits, native array
+/// cursors included, and a type declaring ISeqable whose -seq the transform
+/// installs before traversal (review round 3, B2).
+#[test]
+fn native_transformed_sequences_preserve_seqability_and_deferred_methods() {
+    assert_native_matches_legacy(
+        r#"(deftype S [] ISeqable)
+           (defmacro probe []
+             [(vec (sequence (map inc) (array-seq #js [1 2])))
+              (vec (sequence (map inc) (prim-seq #js [3 4])))
+              (vec (sequence (fn [rf] (extend-type S ISeqable (-seq [_] (list 1 2))) rf) (S.)))])
+           (js/console.log (pr-str (probe)))"#,
+        "[[2 3] [4 5] [1 2]]\n",
+    );
+}
+
 /// A defprotocol a macro expands to, and one in a macro's body, which
 /// defines the protocol when the macro runs (light-cljs-592).
 #[test]
