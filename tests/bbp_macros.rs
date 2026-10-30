@@ -6407,6 +6407,24 @@ fn native_instance_ifn_apply_keeps_captures_and_direct_receivers() {
 }
 
 #[test]
+fn native_instance_ifn_apply_recur_keeps_captures() {
+    // The .call adapter resets captured receivers during recur; direct invoke
+    // slots used by apply must retain them, even with mixed variadic arities.
+    assert_native_matches_legacy(
+        r#"(defmacro probe [bias]
+              (let [f (reify IFn
+                        (-invoke [_ n] (if (pos? n) (recur (dec n)) bias))
+                        (-invoke [_ n & xs] [bias n (vec xs)]))]
+                (list 'quote [(f 0) (apply f [0]) (.call f nil 0)
+                              (try (f 2) (catch :default _ :receiver-reset))
+                              (apply f [2]) (apply f 2 [])
+                              (try (.call f nil 2) (catch :default _ :receiver-reset))])))
+            (js/console.log (pr-str (probe 9)))"#,
+        "[9 9 9 :receiver-reset 9 9 :receiver-reset]\n",
+    );
+}
+
+#[test]
 fn native_integer_predicates_work_as_shared_atom_validators() {
     assert_entry_matches_quickjs(
         "integer-validators",
