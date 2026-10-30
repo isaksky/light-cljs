@@ -5289,23 +5289,32 @@ product read: `stats_file_traces_prepared_and_bundle_root_reads`, which the
 earlier rounds of this branch failed with an extra read of the protocol's
 unit, passes again.
 
-Penpot, from Pants and V8 release builds of this branch on master
-`14c68c44`, with the five read-only roots, every budget above and
+Penpot, from Pants and V8 release builds of this branch rebased on master
+`bf0004cd`, with the five read-only roots, every budget above and
 `--source-map --source-map-include-sources`: `app.render` builds at 1
-thread (8.75 s wall, 8.16 s user, 499,384,320 bytes peak memory) and 4
-threads (7.28 s, 11.13 s user, 586,350,592 bytes); the V8 build takes
-2.35 s and 1.52 s. The four outputs are byte-identical but for the
+thread (8.97 s wall, 8.23 s user, 501,858,304 bytes peak memory) and 4
+threads (7.49 s, 11.89 s user, 610,041,856 bytes); the V8 build takes
+2.48 s and 1.73 s. The four outputs are byte-identical but for the
 `sourceMappingURL` comment naming each map, and so are the maps but for
 their `file` field. `app.main` still stops at `core.Delay`
-(light-cljs-613) at 1 thread (56.52 s, 727,400,448 bytes) and 4 threads
-(59.34 s, 982,024,192 bytes).
+(light-cljs-613) at 1 thread (53.04 s, 724,582,400 bytes) and 4 threads
+(50.11 s, 959,135,744 bytes).
 
-On macOS arm64 with Homebrew Rust/Cargo 1.99.1 and Node 24.22.1: the Pants
-build's full suite (`-j 8`) runs 2,131 tests, 1,954 pass and 177 fail or
-time out, every one in light-cljs-619's list; Pants-only `bbp_macros` 268,
-Pants plus QuickJS reference and V8 plus Pants `bbp_macros` 270 each;
-V8-build nextest 2,147 of 2,148, failing only the worktree
-`playground_crate_checks_for_wasm32` diagnostic. Formatting and strict
-V8-build Clippy pass; Pants plus QuickJS Clippy passes allowing the three
-engine baseline categories, and Pants-only Clippy shows only master's three
-test diagnostics.
+After that rebase the engine's
+`missing_core_protocol_resolves_once_when_record_comparison_realizes_fields`,
+which compares records on a 64 KiB thread, overflowed its stack in debug
+builds: the engine's `form_op`, live under every strict form operation, had
+grown 80 bytes for this branch's four form operations. They are answered
+from `clj_op` instead, whose frame is gone by then, and `form_op`'s frame is
+master's again.
+
+On macOS arm64 with Homebrew Rust/Cargo 1.99.1 and Node 24.22.1, on
+`bf0004cd`: the Pants build's full suite (`-j 8`) runs 2,137 tests, 1,961
+pass and 176 fail, every one in light-cljs-619's list; Pants-only
+`bbp_macros` 268, Pants plus QuickJS reference and V8 plus Pants
+`bbp_macros` 270 each; V8-build nextest 2,153 of 2,154, failing only the
+worktree `playground_crate_checks_for_wasm32` diagnostic; the engine's
+suite (all targets) 2,218. Formatting and strict V8-build Clippy pass;
+engine Clippy shows only the nine baseline diagnostics; Pants plus QuickJS
+Clippy passes allowing the three engine baseline categories, and
+Pants-only Clippy shows only master's three test diagnostics.
