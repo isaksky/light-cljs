@@ -507,7 +507,10 @@ fn native_definitions() -> Result<&'static NativeDefinitions, String> {
     }
     let _names = crate::generated_names::enter_namespace(crate::generated_names::BOOTSTRAP_SCOPE);
     let _unlogged = crate::generated_names::unlogged();
+    // As the Pants build compiles them, also beside another engine: the
+    // core macros only it expands natively (`hash-map`) stay native.
     let mut host = MacroHost::new();
+    host.use_native_macros();
     host.tables.bootstrap_seed = true;
     let compile = |source: &str, host: &mut MacroHost| {
         compile_with(source, host, |program| {
@@ -1739,6 +1742,46 @@ mod tests {
                 .data()
                 .value_eq(&expected.data())
         );
+    }
+
+    /// The Pants build runs `doseq`'s bootstrap definition where native
+    /// expansion declines a call, and the definition steps through its
+    /// bindings two at a time with `nnext` (light-cljs-611): a call it
+    /// expands gives the native expansion's data, in fresh scopes of
+    /// generated names alike (light-cljs-621).
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_doseq_definition_steps_bindings() {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        assert!(host.native_macro_backend());
+        let environment = DataBuilder.map(&[]).unwrap();
+        for source in [
+            "(doseq [x xs y ys] (f x y))",
+            "(doseq [x xs :let [a 1] y ys :when a] (f x) (g y))",
+        ] {
+            let call = host
+                .read_compiler_form(&Source::new("doseq.cljs", source))
+                .unwrap()
+                .unwrap();
+            let definition = {
+                let _names = crate::generated_names::enter_namespace(7);
+                host.expand_core_javascript("doseq", &call, &environment, None)
+                    .unwrap_or_else(|error| panic!("{source}: {error}"))
+            };
+            let native = {
+                let _names = crate::generated_names::enter_namespace(7);
+                host.expand_core_native("doseq", &call, "user", ("doseq", &(0..1)), None)
+                    .unwrap()
+                    .unwrap()
+            };
+            assert!(
+                definition.data().value_eq(&native.data()),
+                "{source}: definition {:?}\nnative {:?}",
+                definition.data(),
+                native.data()
+            );
+        }
     }
 
     #[cfg(feature = "bbp-macros")]
