@@ -784,27 +784,38 @@ fn v8_regex_error(
     let at = error.offset.min(pattern.len());
     let before = &pattern[..at];
     let unit = |c: u8| u16::from(c);
-    let ends = |text: &str| before.ends_with(&text.encode_utf16().collect::<Vec<_>>());
+    let escaped = |index: usize| {
+        before[..index]
+            .iter()
+            .rev()
+            .take_while(|&&u| u == unit(b'\\'))
+            .count()
+            % 2
+            == 1
+    };
+    let ends = |text: &str| {
+        let suffix = text.encode_utf16().collect::<Vec<_>>();
+        before.ends_with(&suffix) && !escaped(at - suffix.len())
+    };
     // Where an atom may start: at the start, after `(` or `|`, an assertion
     // that takes no quantifier, or a group's prefix, a capture's name
-    // included.
-    let atom_start = before
-        .last()
-        .is_none_or(|&last| [b'(', b'|', b'^', b'$'].iter().any(|&c| last == unit(c)))
-        || before.split_last().is_some_and(|(&last, rest)| {
-            // `\b` or `\B`, not an escaped backslash and `b`.
-            (last == unit(b'b') || last == unit(b'B'))
-                && rest.iter().rev().take_while(|&&u| u == unit(b'\\')).count() % 2 == 1
-        })
-        || ["(?:", "(?=", "(?!", "(?<=", "(?<!"]
-            .iter()
-            .any(|prefix| ends(prefix))
+    // included. Escaped syntax characters are completed atoms, including
+    // an escaped `(` followed by text that resembles a group prefix.
+    let atom_start = before.last().is_none_or(|&last| {
+        [b'(', b'|', b'^', b'$'].iter().any(|&c| last == unit(c)) && !escaped(at - 1)
+    }) || before.split_last().is_some_and(|(&last, _)| {
+        // `\b` or `\B`, not an escaped backslash and `b`.
+        (last == unit(b'b') || last == unit(b'B')) && escaped(at - 1)
+    }) || ["(?:", "(?=", "(?!", "(?<=", "(?<!"]
+        .iter()
+        .any(|prefix| ends(prefix))
         || before.last() == Some(&unit(b'>'))
             && before
                 .iter()
                 .rposition(|&u| u == unit(b'<'))
                 .is_some_and(|open| {
                     before[..open].ends_with(&[unit(b'('), unit(b'?')])
+                        && !escaped(open - 2)
                         && !before[open..].contains(&unit(b')'))
                 });
     // After a completed quantifier (`a*`, `a*?`, `a{1}`, ...), a malformed

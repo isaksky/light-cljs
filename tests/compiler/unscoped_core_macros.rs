@@ -190,7 +190,51 @@ fn declined_doseq_rejects_invalid_regex_before_conversion_limits() {
             "(?u)[\\p{Foo}]",
             "Invalid regular expression: /[\\p{Foo}]/u: Invalid property name in character class",
         ),
-    ] {
+    ]
+    .into_iter()
+    .map(|(regex, error)| (regex.to_owned(), error.to_owned()))
+    .chain(
+        [
+            r"\^",
+            r"\$",
+            r"\(",
+            r"\)",
+            r"\|",
+            r"\d",
+            r"\.",
+            r"\u{5e}",
+            r"\\\^",
+            r"\(?:",
+            r"\(?=",
+            r"\(?!",
+            r"\(?<=",
+            r"\(?<!",
+            r"\(?<name>",
+            r"\\b",
+            r"\\B",
+        ]
+        .into_iter()
+        .map(|atom| {
+            // Escaped syntax characters and group-like suffixes are atoms.
+            (
+                format!("(?u){atom}{{"),
+                format!("Invalid regular expression: /{atom}{{/u: Incomplete quantifier"),
+            )
+        }),
+    )
+    .chain(
+        [
+            r"\\^", r"\\$", r"\\(", r"\\|", r"\b", r"\B", "(?:", "(?<name>",
+        ]
+        .into_iter()
+        .map(|prefix| {
+            // Even escape parity leaves assertions and group starts.
+            (
+                format!("(?u){prefix}{{"),
+                format!("Invalid regular expression: /{prefix}{{/u: Lone quantifier brackets"),
+            )
+        }),
+    ) {
         let source = format!("(doseq [{bindings}] #\"{regex}\")");
         for raised in [false, true] {
             let mut host = MacroHost::new();
