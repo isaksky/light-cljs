@@ -244,6 +244,50 @@ Node prints `530807` with default arguments and `484264` with arguments
 not release compiler timings. A sample of the long Pants debug build points
 to the unchanged `program_fragment::Remap::shares_prefix` path.
 
+#### Review fixes and verification
+
+`reset-vals!` retains validator checks and watch notifications, including a
+watch throwing after the new state commits. Instance lookup and mixed
+variadic methods use their installed implementations. Sorted-map `find`
+returns the stored map entry with one comparator search, and `empty`
+preserves collection storage, comparator and metadata without comparing keys.
+Compiler root writes and direct declaration products follow the current
+registry. Compiler-service callbacks participate in dependency-cycle detection.
+Integer predicates can be shared as atom validators across tasks; `int?` and
+`integer?` retain distinct function identities.
+
+The V8 build keeps its original scheduler accounting assertion. The 4 MiB
+gensym heap limit and 64 KiB resumption stack check remain unchanged. The
+Pants runtime keeps canonical reserved-name membership in a compact immutable
+vocabulary to leave room for macro allocations. Macro regressions compare
+their output with the QuickJS reference or the V8 build.
+
+After rebasing onto `53eb2118` (611's checked core macro definitions), the
+review checks at `fcd935c8` give:
+
+| Build | Coverage | Result |
+| --- | --- | --- |
+| V8 build | Full suite, 2148 tests | 2147 pass; the known playground workspace check fails |
+| Pants build | Full suite, 2113 tests | 1933 pass, 179 fail, one cache-accounting sweep times out |
+| Pants+QuickJS | Library and `bbp_macros`, 646 tests | All pass |
+| V8+Pants | Library and `bbp_macros`, 689 tests | All pass |
+
+All 180 non-passing Pants test names are in 619's recorded inventory of
+341 names; no new failures or gates were added. The engine's 2216 tests
+pass, including the unchanged 64 KiB resumption check. Those engine results
+remain valid after the rebase, which changes no engine source or dependency.
+The runs use macOS aarch64, Rust 1.99.1, Node 26.12.1,
+`CARGO_BUILD_JOBS=4`, eight test threads for compiler checks and three for
+engine checks. Feature combinations run sequentially so every CLI test uses
+the matching compiler binary. Mixed-feature coverage uses
+`--lib --test bbp_macros`; both full suites use `--no-fail-fast`.
+
+All seven engine doc tests and both formatting checks pass. Strict V8
+Clippy passes. Pants and engine strict Clippy retain the documented engine
+diagnostics; the engine-free configuration retains the existing test
+enumeration lint. Diagnostic isolation passes with only the previously
+documented engine and feature-specific test categories allowed.
+
 ## Core macros on the Pants build (light-cljs-611)
 
 The Pants build expands core macro calls in Rust
