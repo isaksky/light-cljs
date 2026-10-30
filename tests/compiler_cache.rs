@@ -708,6 +708,10 @@ fn inactive_cljc_writes_keep_cached_artifacts() {
             "(js/console.log #?(:clj set! :default 1) [#?@(:clj [(map binding [])])])",
         ),
         (
+            "main.cljc",
+            "(def xs [#_ '#_ #?@(:cljs [nil (set! cljs.core/even? (fn [_] false))]) :after 0]) (js/console.log (pr-str xs))",
+        ),
+        (
             "main.cljs",
             "#_(set! cljs.core/even? (fn [_] false)) (js/console.log 1)",
         ),

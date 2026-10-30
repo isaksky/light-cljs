@@ -727,37 +727,61 @@ impl SharedCatalog {
         // namespace preparation replaced with nil, whose renames this scan
         // must still read.
         let live: Vec<NodeId> = {
-            // The unvisited nodes under `roots`, now visited: each node is
-            // walked once, however inactive branches and discards nest.
-            fn subtree(
+            fn children(
                 syntax: &crate::SyntaxTree,
-                mut pending: Vec<NodeId>,
-                visited: &mut [bool],
-            ) -> Vec<NodeId> {
-                let mut nodes = Vec::new();
+                id: NodeId,
+            ) -> impl Iterator<Item = NodeId> + '_ {
+                let (many, few): (&[NodeId], _) = match &syntax.nodes[id.0].kind {
+                    NodeKind::Collection { children, .. } => (children, [None, None]),
+                    NodeKind::Prefix { form, .. } | NodeKind::Discard { form } => {
+                        (&[], [Some(*form), None])
+                    }
+                    NodeKind::Tagged { tag, form } => (&[], [Some(*tag), Some(*form)]),
+                    NodeKind::Metadata { metadata, target } => {
+                        (&[], [Some(*metadata), Some(*target)])
+                    }
+                    NodeKind::NamespacedMap { map, .. } => (&[], [Some(*map), None]),
+                    NodeKind::Conditional { branches, .. } => (&[], [Some(*branches), None]),
+                    NodeKind::Argument { index, .. } => (&[], [*index, None]),
+                    _ => (&[], [None, None]),
+                };
+                many.iter().copied().chain(few.into_iter().flatten())
+            }
+            // Selection can make discards share descendants. Classify each
+            // subtree independently of whether dead marking has visited it.
+            // Memoized postorder keeps nested discards linear, including
+            // references to later arena nodes introduced by selection.
+            fn contains_splice(
+                syntax: &crate::SyntaxTree,
+                root: NodeId,
+                memo: &mut [Option<bool>],
+            ) -> bool {
+                let mut pending = vec![(root, false)];
+                while let Some((id, ready)) = pending.pop() {
+                    if ready {
+                        memo[id.0] = Some(
+                            matches!(
+                                syntax.nodes[id.0].kind,
+                                NodeKind::Conditional { splicing: true, .. }
+                            ) || children(syntax, id).any(|child| memo[child.0].unwrap_or(true)),
+                        );
+                    } else if memo[id.0].is_none() {
+                        // An unexpected cycle remains conservatively live.
+                        memo[id.0] = Some(true);
+                        pending.push((id, true));
+                        pending.extend(children(syntax, id).map(|child| (child, false)));
+                    }
+                }
+                memo[root.0].unwrap_or(true)
+            }
+            // Mark the union of discarded subtrees in one shared traversal.
+            fn subtree(syntax: &crate::SyntaxTree, mut pending: Vec<NodeId>, visited: &mut [bool]) {
                 while let Some(id) = pending.pop() {
                     if std::mem::replace(&mut visited[id.0], true) {
                         continue;
                     }
-                    nodes.push(id);
-                    match &syntax.nodes[id.0].kind {
-                        NodeKind::Collection { children, .. } => pending.extend(children),
-                        NodeKind::Prefix { form, .. } | NodeKind::Discard { form } => {
-                            pending.push(*form);
-                        }
-                        NodeKind::Tagged { tag, form } => pending.extend([*tag, *form]),
-                        NodeKind::Metadata { metadata, target } => {
-                            pending.extend([*metadata, *target]);
-                        }
-                        NodeKind::NamespacedMap { map, .. } => pending.push(*map),
-                        NodeKind::Conditional { branches, .. } => pending.push(*branches),
-                        NodeKind::Argument {
-                            index: Some(index), ..
-                        } => pending.push(*index),
-                        _ => {}
-                    }
+                    pending.extend(children(syntax, id));
                 }
-                nodes
             }
             let mut inactive = Vec::new();
             for node in &syntax.nodes {
@@ -771,22 +795,16 @@ impl SharedCatalog {
             }
             let mut dead = vec![false; syntax.nodes.len()];
             subtree(syntax, inactive, &mut dead);
-            let mut walked = vec![false; syntax.nodes.len()];
+            let mut splice = vec![None; syntax.nodes.len()];
+            let mut discarded = Vec::new();
             for node in &syntax.nodes {
-                if let NodeKind::Discard { form } = &node.kind {
-                    let nodes = subtree(syntax, vec![*form], &mut walked);
-                    if !nodes.iter().any(|id| {
-                        matches!(
-                            syntax.nodes[id.0].kind,
-                            NodeKind::Conditional { splicing: true, .. }
-                        )
-                    }) {
-                        for id in nodes {
-                            dead[id.0] = true;
-                        }
-                    }
+                if let NodeKind::Discard { form } = &node.kind
+                    && !contains_splice(syntax, *form, &mut splice)
+                {
+                    discarded.push(*form);
                 }
             }
+            subtree(syntax, discarded, &mut dead);
             (0..syntax.nodes.len())
                 .filter(|&index| !dead[index])
                 .map(NodeId)
