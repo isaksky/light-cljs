@@ -32,7 +32,10 @@
 //! within a task and never carries state to another. Each task entry is
 //! charged to the byte budget and released, with its charge, when the task
 //! terminates (completes, fails, is cancelled or is dropped); a denied write
-//! fails with the heap limit and keeps the previous value.
+//! fails with the heap limit and keeps the previous value. The heap's
+//! registration of an entry, charged too, is also removed by the first
+//! collection after the cell dies, so a task that keeps running does not
+//! accumulate them.
 //!
 //! The first use compiles the program, one task at a time: concurrent first
 //! users wait for it and share it. A syntax error is kept; a heap-limit
@@ -66,6 +69,14 @@ pub(crate) struct RegexCell {
 
 /// The bytes a task entry is charged: its key, value and table overhead.
 const ENTRY_BYTES: usize = 2 * std::mem::size_of::<(TaskId, (f64, ByteReservation))>();
+
+/// The bytes the heap's registration of a task entry is charged: its slot,
+/// with growth overhead, and the cell allocation its `Weak` keeps after
+/// the cell dies, until a collection prunes it or the task terminates.
+pub(crate) const REGISTRATION_BYTES: usize =
+    2 * std::mem::size_of::<(std::sync::Weak<RegexCell>, ByteReservation)>()
+        + std::mem::size_of::<RegexCell>()
+        + 2 * std::mem::size_of::<usize>();
 
 /// The flag letters a `(?flags)` payload prefix may spell, as the runtimes'
 /// `re-pattern` reads them.
@@ -196,7 +207,10 @@ impl RegexCell {
             return Ok(());
         }
         // Only `task` adds its own entry, so it is still absent below.
-        let Some(charge) = heap.reserve_bytes(ENTRY_BYTES) else {
+        let (Some(charge), Some(registration)) = (
+            heap.reserve_bytes(ENTRY_BYTES),
+            heap.reserve_bytes(REGISTRATION_BYTES),
+        ) else {
             heap.byte_budget().note_denial();
             return Err(Fault::HeapLimit);
         };
@@ -204,7 +218,7 @@ impl RegexCell {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(task, (n, charge));
-        heap.note_regex_task_state(task, Arc::downgrade(self));
+        heap.note_regex_task_state(task, Arc::downgrade(self), registration);
         Ok(())
     }
 
@@ -271,6 +285,34 @@ mod tests {
             .expect("bounded");
         assert!(heap.byte_budget().used() > before);
         assert!(matches!(cell.last_index(TaskId::from_raw(denied)), Value::Number(n) if n == 0.0));
+    }
+
+    /// A task's registration stays charged after its cell dies, for the
+    /// allocation its `Weak` keeps, until pruning removes it
+    /// (light-cljs-584).
+    #[test]
+    fn dead_cell_registrations_stay_charged_until_pruned() {
+        let heap = Heap::with_byte_limit(1 << 20);
+        let task = TaskId::from_raw(1);
+        let start = heap.byte_budget().used();
+        let cell = Arc::new(RegexCell::from_payload(&heap, &JsString::from("(?g)o")).unwrap());
+        let with_cell = heap.byte_budget().used();
+        assert!(
+            cell.set_last_index(&heap, task, &Value::Number(1.0))
+                .is_ok()
+        );
+        assert_eq!(
+            heap.byte_budget().used(),
+            with_cell + ENTRY_BYTES + REGISTRATION_BYTES
+        );
+        heap.prune_regex_task_state();
+        assert_eq!(heap.regex_task_registrations(), 1, "a live cell stays");
+        drop(cell);
+        assert_eq!(heap.byte_budget().used(), start + REGISTRATION_BYTES);
+        assert_eq!(heap.regex_task_registrations(), 1);
+        heap.prune_regex_task_state();
+        assert_eq!(heap.regex_task_registrations(), 0);
+        assert_eq!(heap.byte_budget().used(), start);
     }
 
     #[test]

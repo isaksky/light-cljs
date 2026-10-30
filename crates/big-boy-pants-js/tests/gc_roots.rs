@@ -2608,3 +2608,50 @@ fn quoted_regex_task_state_is_released_on_task_termination() {
         "task-local regex state accumulated: {writing} bytes over the baseline {baseline}"
     );
 }
+
+/// A task that keeps running while the quoted global regexes it used die
+/// does not keep their `lastIndex` registrations (light-cljs-584): a
+/// collection prunes them with their charges, so the registry and the
+/// accounted bytes stay bounded across rounds.
+#[test]
+fn quoted_regex_dead_cells_are_pruned_while_task_is_alive() {
+    let rt = Runtime::with_heap_policy(
+        big_boy_pants_js::VmLimits::default(),
+        big_boy_pants_js::HeapPolicy {
+            hard_limit_bytes: Some(64 << 20),
+            ..Default::default()
+        },
+    );
+    let code = compile(
+        "function f() { while (true) { __rt.formCompilerLiteral('regex', '(?g)a').exec('aa'); } }",
+    );
+    let task = rt.spawn(&code, &[]).unwrap();
+    let mut settled = None;
+    for round in 0..40 {
+        let outcome = task
+            .run_with(Budget::instructions(20_000), &mut NoEffects)
+            .unwrap();
+        assert!(matches!(outcome, RunOutcome::Yielded), "{outcome:?}");
+        // Every round leaves registrations of regexes now dead.
+        assert!(rt.regex_task_registrations() > 10, "round {round}");
+        rt.collect().unwrap();
+        // Only a regex the suspended frame may still hold stays registered.
+        assert!(
+            rt.regex_task_registrations() <= 1,
+            "round {round}: {} registrations retained",
+            rt.regex_task_registrations()
+        );
+        let bytes = rt.heap_stats().managed_bytes;
+        // The first rounds warm the runtime (programs, caches).
+        if round == 5 {
+            settled = Some(bytes);
+        } else if let Some(settled) = settled {
+            assert!(
+                bytes <= settled + 1000,
+                "round {round}: {bytes} accounted bytes after settling at {settled}"
+            );
+        }
+    }
+    drop(task);
+    assert_eq!(rt.regex_task_registrations(), 0);
+}

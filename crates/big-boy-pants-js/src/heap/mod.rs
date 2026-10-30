@@ -596,9 +596,10 @@ pub(crate) struct Heap {
     pub(crate) symbols: crate::value::symbol::SymbolRegistry,
     /// The quoted global or sticky regex cells each task holds a
     /// `lastIndex` entry in (`crate::regexp::shared`), released when the
-    /// task terminates; a leaf metadata lock with no heap edges.
-    regex_task_cells:
-        Mutex<std::collections::HashMap<TaskId, Vec<Weak<crate::regexp::shared::RegexCell>>>>,
+    /// task terminates and pruned when the cell dies; a leaf metadata lock
+    /// with no heap edges. Each registration is charged for its slot and
+    /// for the cell allocation its `Weak` keeps until it is removed.
+    regex_task_cells: Mutex<std::collections::HashMap<TaskId, Vec<RegexTaskRegistration>>>,
 }
 
 /// Lock a metadata mutex, recovering from poisoning. The protected data is
@@ -608,25 +609,57 @@ fn lock<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// One task's `lastIndex` entry in a quoted global or sticky regex cell
+/// (`Heap::regex_task_cells`), with the charge for the registration.
+type RegexTaskRegistration = (
+    Weak<crate::regexp::shared::RegexCell>,
+    budget::ByteReservation,
+);
+
 impl Heap {
     /// Record that `task` holds a `lastIndex` entry in `cell`
-    /// (`crate::regexp::shared`).
+    /// (`crate::regexp::shared`); `charge` covers the registration
+    /// (`crate::regexp::shared::REGISTRATION_BYTES`) until it is removed.
     pub(crate) fn note_regex_task_state(
         &self,
         task: TaskId,
         cell: Weak<crate::regexp::shared::RegexCell>,
+        charge: budget::ByteReservation,
     ) {
         lock(&self.regex_task_cells)
             .entry(task)
             .or_default()
-            .push(cell);
+            .push((cell, charge));
+    }
+
+    /// Remove the registrations of collected regex cells, with their
+    /// charges, so a task that keeps running does not accumulate them; the
+    /// collector calls this after it has dropped its garbage.
+    pub(crate) fn prune_regex_task_state(&self) {
+        let mut tasks = lock(&self.regex_task_cells);
+        tasks.retain(|_, cells| {
+            cells.retain(|(cell, _)| cell.strong_count() > 0);
+            if cells.len() < cells.capacity() / 4 {
+                cells.shrink_to_fit();
+            }
+            !cells.is_empty()
+        });
+        if tasks.len() < tasks.capacity() / 4 {
+            tasks.shrink_to_fit();
+        }
+    }
+
+    /// Collector test hook: the regex `lastIndex` registrations of every
+    /// task (`crate::regexp::shared`).
+    pub(crate) fn regex_task_registrations(&self) -> usize {
+        lock(&self.regex_task_cells).values().map(Vec::len).sum()
     }
 
     /// Release every regex `lastIndex` entry of `task`, which has
     /// terminated, with its byte charge (`crate::regexp::shared`).
     pub(crate) fn release_regex_task_state(&self, task: TaskId) {
         let cells = lock(&self.regex_task_cells).remove(&task);
-        for cell in cells.into_iter().flatten() {
+        for (cell, _charge) in cells.into_iter().flatten() {
             if let Some(cell) = cell.upgrade() {
                 cell.release_task(task);
             }

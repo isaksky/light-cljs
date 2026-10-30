@@ -1487,6 +1487,9 @@ impl Heap {
         // Reclaimed payloads and possibly-last source references are dropped
         // with no heap lock held, so their destructors cannot deadlock.
         drop((garbage, retired, retired_symbols, sources));
+        // Collected regex cells leave the registrations of tasks still
+        // running (`crate::regexp::shared`).
+        self.prune_regex_task_state();
         self.byte_budget.collection_finished(byte_volume);
         self.notify_observers(&report);
         stats

@@ -4341,8 +4341,9 @@ starting at 0, and holds numbers only (another value is the same unsupported
 `TypeError`), so it matches statefully within a task, as the QuickJS
 reference's freshly imported RegExp does, and never carries state to another
 task. Each such task entry is charged to the byte budget and released, with
-its charge, when the task completes, fails, is cancelled or is dropped. A
-host regex a macro returns exports with its payload counted against the
+its charge, when the task completes, fails, is cancelled or is dropped;
+the entries of such a regex that dies while the task runs are released by
+the next collection. A host regex a macro returns exports with its payload counted against the
 conversion limits like a `regex` form's.
 
 `lastIndex` stays a writable, non-enumerable, non-configurable own data

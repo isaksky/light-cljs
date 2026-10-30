@@ -362,6 +362,14 @@ impl Runtime {
         self.0.heap.stats()
     }
 
+    /// Collector test hook: the `lastIndex` entries that tasks hold in
+    /// quoted global or sticky regex values, as the heap registers them for
+    /// release. This diagnostic is never exposed to JavaScript.
+    #[doc(hidden)]
+    pub fn regex_task_registrations(&self) -> usize {
+        self.0.heap.regex_task_registrations()
+    }
+
     /// Whether a [`HeapPolicy::hard_limit_bytes`](crate::HeapPolicy::hard_limit_bytes)
     /// denial happened and no collection since has left an eighth of the
     /// limit free. Every run slice then begins with a collection; an embedder
