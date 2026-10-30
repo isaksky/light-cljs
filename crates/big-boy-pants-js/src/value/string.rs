@@ -3117,6 +3117,117 @@ mod byte_budget_tests {
         assert_eq!(heap.byte_budget().used(), baseline);
     }
 
+    #[test]
+    fn concurrent_accounted_rope_handles_release_credit_once() {
+        use std::sync::Barrier;
+        use std::sync::atomic::Ordering;
+
+        const UNITS: usize = 1000;
+        for read in [false, true] {
+            let heap = crate::heap::Heap::with_byte_limit(1 << 20);
+            let baseline = heap.byte_budget().used();
+            let leaf = JsString::copy_units(&heap, &[120; UNITS]).unwrap();
+            let prefix = leaf.concat_accounted(&heap, &leaf).ok().unwrap();
+            let prefix_body = Arc::clone(&prefix.0);
+            // Link the parent before any reader can populate the cache.
+            let parent = prefix.concat_accounted(&heap, &leaf).ok().unwrap();
+            let leaf_charge = 2 * UNITS + BODY_BYTES;
+            let prefix_credit = 2 * prefix.len() + BODY_BYTES;
+            let parent_credit = 2 * parent.len() + BODY_BYTES;
+            let admitted = baseline + leaf_charge + 2 * BODY_BYTES + prefix_credit + parent_credit;
+            assert_eq!(heap.byte_budget().used(), admitted);
+            // Readers must use the existing credit, with no spare quota.
+            heap.byte_budget().set_limit(admitted);
+
+            let Storage::Rope(rope) = &prefix_body.storage else {
+                panic!("prefix must be a rope");
+            };
+            let barrier = Barrier::new(5);
+            let (during, results) = std::thread::scope(|threads| {
+                let workers: Vec<_> = (0..4)
+                    .map(|i| {
+                        let handle = prefix.clone();
+                        let barrier = &barrier;
+                        threads.spawn(move || {
+                            barrier.wait();
+                            if i < 2 {
+                                // Drop alongside the other workers' reads.
+                                drop(handle);
+                                barrier.wait();
+                                barrier.wait();
+                                None
+                            } else {
+                                let result = read.then(|| {
+                                    let before = JsString::copied_code_units();
+                                    let units = handle.code_units();
+                                    (
+                                        units.as_ptr() as usize,
+                                        JsString::copied_code_units() - before,
+                                        units == [120; 2 * UNITS],
+                                    )
+                                });
+                                // Keep the last two handles until the main
+                                // thread has inspected the retained charge.
+                                barrier.wait();
+                                barrier.wait();
+                                drop(handle);
+                                result
+                            }
+                        })
+                    })
+                    .collect();
+                drop(prefix);
+                barrier.wait();
+                barrier.wait();
+                let during = (
+                    heap.byte_budget().used(),
+                    rope.handles.load(Ordering::Relaxed),
+                );
+                barrier.wait();
+                // Assert only after releasing/joining every barrier waiter,
+                // so a failed accounting assertion cannot strand a worker.
+                let results: Vec<_> = workers
+                    .into_iter()
+                    .filter_map(|worker| worker.join().unwrap())
+                    .collect();
+                (during, results)
+            });
+            assert_eq!(during, (admitted, 2));
+            assert_eq!(rope.handles.load(Ordering::Relaxed), 0);
+            assert!(rope.flat_credit.lock().unwrap().is_none());
+            assert_eq!(prefix_body.flat.get().is_some(), read);
+            if read {
+                assert_eq!(results.len(), 2);
+                assert!(results.iter().all(|result| result.2));
+                assert_eq!(results[0].0, results[1].0, "one shared flat cache");
+                assert_eq!(
+                    results.iter().map(|result| result.1).sum::<u64>(),
+                    (2 * UNITS) as u64
+                );
+            } else {
+                assert!(results.is_empty());
+            }
+            let retained = if read {
+                admitted
+            } else {
+                admitted - prefix_credit
+            };
+            assert_eq!(heap.byte_budget().used(), retained);
+            assert_eq!(parent.code_units(), &[120; 3 * UNITS]);
+            assert_eq!(heap.byte_budget().used(), retained);
+            assert_eq!(prefix_body.flat.get().is_some(), read);
+
+            // The parent's flat copy alone keeps exactly its own credit.
+            let flat = parent.0.flat.get().unwrap().clone();
+            drop(parent);
+            drop(prefix_body);
+            drop(leaf);
+            assert_eq!(heap.byte_budget().used(), baseline + parent_credit);
+            drop(flat);
+            assert_eq!(heap.byte_budget().used(), baseline);
+        }
+    }
+
     /// A large shared first piece and short later pieces: the output's
     /// flattened copy is admitted with the extension, not after it.
     fn accumulate(heap: &crate::heap::Heap, first: &JsString) -> JsString {
