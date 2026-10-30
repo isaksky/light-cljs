@@ -2167,6 +2167,10 @@ fn weak_bridge_pruning_only_walks_changes_among_growing_retained_trees() {
         let before = bridge.counters;
         rt.scope(|_| bridge.prune(rt.heap_stats().collections));
         assert_eq!(bridge.imports.len(), roots.len() * 2);
+        assert!(
+            bridge.retained_nodes.len() <= roots.len() * 2 + 2,
+            "dead slots must be reused"
+        );
         assert_eq!(
             bridge.counters.prune_imports_removed - before.prune_imports_removed,
             2
@@ -2245,7 +2249,7 @@ fn weak_bridge_incremental_pruning_matches_full_reachability() {
                 .retained
                 .iter()
                 .filter(|(key, _)| reachable.contains(key))
-                .filter_map(|(&key, state)| state.cost.map(|cost| (key, cost)))
+                .filter_map(|(&key, _)| bridge.cost(key).map(|cost| (key, cost)))
                 .collect();
             let expected_objects: HashSet<_> = bridge
                 .native_objects
@@ -2262,7 +2266,7 @@ fn weak_bridge_incremental_pruning_matches_full_reachability() {
             let costs: HashMap<_, _> = bridge
                 .retained
                 .iter()
-                .filter_map(|(&key, state)| state.cost.map(|cost| (key, cost)))
+                .filter_map(|(&key, _)| bridge.cost(key).map(|cost| (key, cost)))
                 .collect();
             assert_eq!(costs, expected_costs);
             assert_eq!(bridge.cost_entries, costs.len());

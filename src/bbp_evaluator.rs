@@ -158,6 +158,7 @@ fn scalar_origins(call: &Form) -> HashMap<ScalarKey, ScalarOrigin> {
 struct Imported {
     _live: crate::compile_stats::Live,
     data: Datum,
+    retained: usize,
     occurrence: WeakHandle,
     // A metadata map can escape without its occurrence. Reimport it with
     // the same native identity while that raw object remains observable.
@@ -170,7 +171,9 @@ struct Imported {
 struct BridgeIdentityHasher(u64);
 impl Hasher for BridgeIdentityHasher {
     fn finish(&self) -> u64 {
-        self.0
+        // Allocator addresses are aligned; mix their high bits into the low
+        // bucket bits as well as the hash table's high-bit control tags.
+        self.0 ^ (self.0 >> 32)
     }
     fn write(&mut self, bytes: &[u8]) {
         for &byte in bytes {
@@ -190,6 +193,7 @@ impl Hasher for BridgeIdentityHasher {
 type IdentityMap<K, V> = HashMap<K, V, BuildHasherDefault<BridgeIdentityHasher>>;
 
 struct RetainedDatum {
+    key: usize,
     children: Vec<usize>,
     // One reference per imported root and per edge from a retained Datum.
     references: usize,
@@ -206,7 +210,7 @@ struct Bridge {
     control: Option<ExecutionControl>,
     // Retaining the Datum prevents allocator address reuse from aliasing a key.
     imports: IdentityMap<usize, Imported>,
-    forms: HashMap<usize, Form>,
+    forms: IdentityMap<usize, Form>,
     stats: BridgeStats,
     next_token: u32,
     collected: u64,
@@ -218,7 +222,9 @@ struct Bridge {
     reclaimed: ReclamationQueue,
     // Each identity stays allocated through a surviving Imported Datum tree.
     // When a root dies, hold that Datum until its child links are released.
-    retained: IdentityMap<usize, RetainedDatum>,
+    retained: IdentityMap<usize, usize>,
+    retained_nodes: Vec<Option<RetainedDatum>>,
+    free_retained: Vec<usize>,
     // remember() can precede a failed import. Check only newly remembered
     // entries that have not yet become reachable, rather than all forms.
     unretained: HashSet<usize>,
@@ -253,21 +259,22 @@ impl Bridge {
         let mut dead = Vec::new();
         for (identity, key) in self.reclaimed.take() {
             self.native_objects.remove(&identity);
-            let Some(imported) = self.imports.get(&key) else {
+            let std::collections::hash_map::Entry::Occupied(entry) = self.imports.entry(key) else {
                 continue;
             };
+            let imported = entry.get();
             visited += 1;
             if imported.occurrence.is_live()
                 || imported.native.as_ref().is_some_and(WeakHandle::is_live)
             {
                 continue;
             }
-            dead.push(self.imports.remove(&key).unwrap());
+            dead.push(entry.remove());
         }
         // Batch released roots in one worklist. Keep their Datum allocations
         // alive until all their links have been processed, including shared
         // descendants whose last import was removed earlier in this pass.
-        let released = self.release_datums(dead.iter().map(|i| i.data.identity()).collect());
+        let released = self.release_datums(dead.iter().map(|i| i.retained).collect());
         let removed = dead.len();
         drop(dead);
         for key in self.unretained.drain() {
@@ -296,54 +303,80 @@ impl Bridge {
         children.iter().cloned().chain(data.metadata())
     }
 
-    fn retain_datum(&mut self, data: &Datum) {
-        let mut pending = vec![data.clone()];
-        while let Some(data) = pending.pop() {
-            self.unretained.remove(&data.identity());
-            match self.retained.entry(data.identity()) {
-                std::collections::hash_map::Entry::Occupied(mut entry) => {
-                    entry.get_mut().references += 1;
-                }
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    // Cache the original reader edges once, including map
-                    // entries omitted from the raw native representation.
-                    // Pruning then touches only identity links, no Datum trees.
-                    let children = Self::datum_children(&data)
-                        .map(|child| {
-                            let key = child.identity();
-                            pending.push(child);
-                            key
-                        })
-                        .collect();
-                    entry.insert(RetainedDatum {
-                        children,
-                        references: 1,
-                        cost: None,
-                    });
-                }
+    fn retain_reference(&mut self, key: usize) -> (usize, bool) {
+        self.unretained.remove(&key);
+        match self.retained.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                let index = *entry.get();
+                self.retained_nodes[index].as_mut().unwrap().references += 1;
+                (index, false)
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let index = self.free_retained.pop().unwrap_or_else(|| {
+                    self.retained_nodes.push(None);
+                    self.retained_nodes.len() - 1
+                });
+                self.retained_nodes[index] = Some(RetainedDatum {
+                    key,
+                    children: Vec::new(),
+                    references: 1,
+                    cost: None,
+                });
+                entry.insert(index);
+                (index, true)
             }
         }
     }
 
+    fn retain_datum(&mut self, data: &Datum) -> usize {
+        let (root, fresh) = self.retain_reference(data.identity());
+        let mut pending = Vec::new();
+        if fresh {
+            pending.push((data.clone(), root));
+        }
+        while let Some((data, index)) = pending.pop() {
+            // Cache reader edges once, including entries omitted from raw
+            // maps. Slots are reused only after their last reference dies;
+            // neither a live import nor a live parent can refer to a free slot.
+            let children = Self::datum_children(&data)
+                .map(|child| {
+                    let (index, fresh) = self.retain_reference(child.identity());
+                    if fresh {
+                        pending.push((child, index));
+                    }
+                    index
+                })
+                .collect();
+            self.retained_nodes[index].as_mut().unwrap().children = children;
+        }
+        root
+    }
+
+    fn cost(&self, key: usize) -> Option<(usize, usize)> {
+        let index = *self.retained.get(&key)?;
+        self.retained_nodes[index].as_ref()?.cost
+    }
+
     fn release_datums(&mut self, mut pending: Vec<usize>) -> usize {
         let mut walked = 0;
-        while let Some(key) = pending.pop() {
+        while let Some(index) = pending.pop() {
             walked += 1;
-            let std::collections::hash_map::Entry::Occupied(mut entry) = self.retained.entry(key)
-            else {
-                unreachable!("retained import or parent");
-            };
-            entry.get_mut().references -= 1;
-            if entry.get().references != 0 {
+            let retained = self.retained_nodes[index]
+                .as_mut()
+                .expect("retained import or parent");
+            retained.references -= 1;
+            if retained.references != 0 {
                 continue;
             }
             // A surviving parent restores its entire original tree, including
             // descendants whose occurrence wrappers no longer exist. Release
             // child edges only when the last parent/import reference dies.
-            let retained = entry.remove();
+            let retained = self.retained_nodes[index].take().unwrap();
+            self.retained.remove(&retained.key);
+            self.free_retained.push(index);
             self.cost_entries -= usize::from(retained.cost.is_some());
             pending.extend(retained.children);
-            self.forms.remove(&key);
+            self.forms.remove(&retained.key);
         }
         walked
     }
@@ -428,7 +461,7 @@ impl Bridge {
         self.control.as_ref().map_or(Ok(()), ExecutionControl::poll)
     }
     fn charge(&self, data: &Datum, depth: usize, remaining: &mut usize) -> Result<(), EvalError> {
-        let (nodes, height) = self.retained[&data.identity()].cost.expect("imported cost");
+        let (nodes, height) = self.cost(data.identity()).expect("imported cost");
         if depth < height || *remaining < nodes {
             return Err(error("form conversion limit exceeded"));
         }
@@ -572,9 +605,10 @@ impl Bridge {
             .expect("an occurrence is an object");
         self.native_objects
             .insert(identity, (d.identity(), occurrence.clone()));
-        if !self.imports.contains_key(&d.identity()) {
-            self.retain_datum(d);
-        }
+        let retained = match self.imports.get(&d.identity()) {
+            Some(imported) => imported.retained,
+            None => self.retain_datum(d),
+        };
         s.watch_reclamation(value, &self.reclaimed, d.identity());
         if native.is_some() {
             s.watch_reclamation(raw, &self.reclaimed, d.identity());
@@ -584,6 +618,7 @@ impl Bridge {
             Imported {
                 _live: crate::compile_stats::Live::new(&crate::compile_stats::LIVE_BRIDGE_PAYLOADS),
                 data: d.clone(),
+                retained,
                 occurrence,
                 native: native.map(|(_, weak)| weak),
             },
@@ -597,17 +632,12 @@ impl Bridge {
         for child in children.iter().cloned().chain(d.metadata()) {
             // An unchanged environment slot can have a freshly constructed
             // scalar keyword key whose native key was already present.
-            let (nodes, height) = self
-                .retained
-                .get(&child.identity())
-                .and_then(|state| state.cost)
-                .unwrap_or((1, 1));
+            let (nodes, height) = self.cost(child.identity()).unwrap_or((1, 1));
             cost.0 = cost.0.saturating_add(nodes);
             cost.1 = cost.1.max(height.saturating_add(1));
         }
-        let state = self
-            .retained
-            .get_mut(&d.identity())
+        let state = self.retained_nodes[retained]
+            .as_mut()
             .expect("retained import");
         self.cost_entries += usize::from(state.cost.replace(cost).is_none());
         self.stats.imported += 1;

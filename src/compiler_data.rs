@@ -820,16 +820,16 @@ impl Form {
             &originals,
         )
     }
-    pub(crate) fn from_bridge_expansion(
+    pub(crate) fn from_bridge_expansion<S: std::hash::BuildHasher>(
         data: Datum,
         original: &Form,
         expansion: ExpansionOrigin,
-        originals: &std::collections::HashMap<usize, Form>,
+        originals: &std::collections::HashMap<usize, Form, S>,
     ) -> Self {
-        fn add(
+        fn add<S: std::hash::BuildHasher>(
             data: Datum,
             original: &Form,
-            originals: &std::collections::HashMap<usize, Form>,
+            originals: &std::collections::HashMap<usize, Form, S>,
             name: &Name,
             nodes: &mut Vec<FormNode>,
             values: &mut Vec<Datum>,
