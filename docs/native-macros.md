@@ -467,6 +467,21 @@ QuickJS reference.
 cell. Each row checks the adopted catalog against the applied one and against
 the reference's value.
 
+Verification at `6fa84281` (on `4543138b`), with the same configuration as above:
+
+| Build | Coverage | Result |
+| --- | --- | --- |
+| V8 build | Full suite | 2153 passed, one known playground workspace failure; 109 skipped |
+| Pants build | Full suite | 2020 passed, 142 failed, the same names as before; 106 skipped |
+| Pants+QuickJS | Library and `bbp_macros` | All 691 pass; three skipped |
+| V8+Pants | Library and `bbp_macros` | All 735 pass; four skipped |
+
+The engine's all-targets suite passes all **2225** tests, and seven doctests
+pass. That includes the 64 KiB stack checks and the new frontier fast-path
+check. The four 4 MiB heap checks pass. The 200k V8 release output is
+unchanged byte for byte and prints `530807` and `484264`. Formatting, strict
+V8 Clippy and the documented Clippy limitations are unchanged.
+
 ## Core macros on the Pants build (light-cljs-611)
 
 The Pants build expands core macro calls in Rust
