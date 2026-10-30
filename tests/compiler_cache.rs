@@ -314,8 +314,10 @@ fn core_function_writes_name_their_miss() {
 /// vectors in a macro; reader conditionals around or inside a binding
 /// vector; a threaded `set!`; a `..` property place; `aset` and
 /// `unchecked-set` on a core function, also as a step of `->` or `doto`; a
-/// three-operand `set!` in `->`; and a quoted `aset` a macro builds a write
-/// with.
+/// three-operand `set!` in `->`; a quoted `aset` a macro builds a write
+/// with; top-level `refer-clojure` renames; a discarded splice whose tail
+/// the reader keeps; and a macro expanding to a core function's name as a
+/// later `->` step, a place and a receiver.
 #[cfg(all(
     feature = "bbp-macros",
     not(feature = "v8-macros"),
@@ -479,6 +481,39 @@ fn anonymous_core_writes_reject_cached_providers() {
             redefine: "(redef-probe)",
             expected: Some("[3 42]"),
         },
+        // A discarded splice whose tail the reader keeps.
+        CoreWriteRow {
+            file: "main.cljc",
+            defs: "",
+            redefine: "[#_ #?@(:cljs [nil (with-redefs [cljs.core/even? (fn [_] false)] (util/probe))]) 0]",
+            expected: Some("[false 0]"),
+        },
+        // A place or receiver a macro expands to a core function's name:
+        // a later step of `->`, a place and a receiver of `set!` and `aset`.
+        CoreWriteRow {
+            file: "main.cljs",
+            defs: "(defmacro core-place [_] 'cljs.core/even?)",
+            redefine: "(let [before (util/probe)] (-> nil core-place (set! (fn [_] false))) [before (util/probe)])",
+            expected: Some("[true false]"),
+        },
+        CoreWriteRow {
+            file: "main.cljs",
+            defs: "(defmacro core-place [_] 'cljs.core/even?)",
+            redefine: "(let [before (util/probe)] (set! (core-place nil) (fn [_] false)) [before (util/probe)])",
+            expected: Some("[true false]"),
+        },
+        CoreWriteRow {
+            file: "main.cljs",
+            defs: "(defmacro core-place [_] 'cljs.core/+)",
+            redefine: "(let [before (util/sum)] (set! (.-call (core-place nil)) (fn [_ a b] 42)) [before (util/sum)])",
+            expected: Some("[3 42]"),
+        },
+        CoreWriteRow {
+            file: "main.cljs",
+            defs: "(defmacro core-place [_] 'cljs.core/+)",
+            redefine: "(let [before (util/sum)] (aset (core-place nil) \"call\" (fn [_ a b] 42)) [before (util/sum)])",
+            expected: Some("[3 42]"),
+        },
     ] {
         let project = Project::new(&[
             (
@@ -534,9 +569,9 @@ fn anonymous_core_writes_reject_cached_providers() {
 /// mark no core write, so a rebuild with nothing changed still hits every
 /// namespace: metadata on a binding vector, multi-arity, named and `letfn`
 /// functions, a syntax-quoted binding vector whose places are literal, a
-/// computed property receiver, literal `js*` holes, and `aset` and
-/// `unchecked-set` on a local, in `doto` and `->`, through `apply` and on a
-/// computed receiver.
+/// property receiver a method call computes, literal `js*` holes, and `aset`
+/// and `unchecked-set` on a local, in `doto` (also of `(js-obj)`) and `->`,
+/// through `apply` and on a receiver a method call computes.
 #[cfg(all(
     feature = "bbp-macros",
     not(feature = "v8-macros"),
@@ -562,16 +597,16 @@ fn non_core_places_keep_cached_artifacts() {
             "main.cljs",
             "(ns main (:require [macros :refer [scaled-all arities named letfns]] [util :refer [with-scale]])) \
              (def state #js {:n 0}) \
-             (set! (.-n (identity state)) (js* \"~{} + ~{}\" 1 #js [2])) \
+             (set! (.-n (.valueOf state)) (js* \"~{} + ~{}\" 1 #js [2])) \
              (def arr #js [0 0 0 0 0 0]) \
              (aset arr 0 1) (doto arr (aset 1 2)) (-> arr (aset 2 3)) (apply aset arr [3 4]) \
-             (aset (identity arr) 4 5) (#(unchecked-set arr 5 %) 6) \
+             (aset (.valueOf arr) 4 5) (#(unchecked-set arr 5 %) 6) (def o (doto (js-obj) (aset \"a\" 7))) \
              (js/console.log (pr-str (scaled-all 1 2)) (arities) (named) (letfns) \
-               (with-scale 5 (util/scaled 1)) (.-n state) (pr-str (vec arr)))",
+               (with-scale 5 (util/scaled 1)) (.-n state) (pr-str (vec arr)) (.-a o))",
         ),
     ]);
     let oracle = project.uncached("main");
-    assert_eq!(oracle.run(), "[10 20] 2 3 4 5 12 [1 2 3 4 5 6]\n");
+    assert_eq!(oracle.run(), "[10 20] 2 3 4 5 12 [1 2 3 4 5 6] 7\n");
     let populated = project.cached("main", &[]);
     assert_eq!(populated.stat("cache.published"), 3, "{}", populated.stats);
     let warm = project.cached("main", &[]);
@@ -580,9 +615,10 @@ fn non_core_places_keep_cached_artifacts() {
     assert_eq!(warm.js, oracle.js);
 }
 
-/// A write through a computed receiver, `(set! (.-call (identity +)) f)` or
-/// `(aset (identity +) "call" f)`, is not a core write on the Pants build:
-/// the analyzer's index of resolved writes does not count it either, so
+/// A write through a receiver a method call computes, `(set! (.-call
+/// (.valueOf +)) f)` or `(aset (.valueOf +) "call" f)`, which no macro can
+/// make, is not a core write on the Pants build: the analyzer's index of
+/// resolved writes does not count it either, so
 /// with or without the cache the build prepares the same macro code and
 /// prints the same output, and the cached providers keep their hits
 /// (light-cljs-586).
@@ -614,9 +650,9 @@ fn computed_core_receivers_match_the_uncached_build() {
             .replace(
                 "{defs}",
                 "(defmacro by-property [] (let [before (util/sum)] \
-                   (set! (.-call (identity cljs.core/+)) (fn [_ a b] 42)) [before (util/sum)])) \
+                   (set! (.-call (.valueOf cljs.core/+)) (fn [_ a b] 42)) [before (util/sum)])) \
                  (defmacro by-index [] (let [before (util/sum)] \
-                   (aset (identity cljs.core/+) \"call\" (fn [_ a b] 43)) [before (util/sum)]))",
+                   (aset (.valueOf cljs.core/+) \"call\" (fn [_ a b] 43)) [before (util/sum)]))",
             )
             .replace("{calls}", "(pr-str (by-property)) (pr-str (by-index))"),
     );

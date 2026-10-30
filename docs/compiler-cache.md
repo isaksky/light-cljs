@@ -1623,31 +1623,35 @@ persistence remain out of scope.
      identical rebuild would not look it up either (light-cljs-571). The
      build finds writes by spelling, in every source before analysis, in
      the forms the reader reads: the branch of a reader conditional it
-     selects (`:cljs`, else `:default`), never another branch or a `#_`
-     form (light-cljs-587); renames in top-level namespace directives,
-     `(refer-clojure :rename ...)`, count. A write is a `set!`,
-     `binding`, `with-redefs` or `js*` hole whose place names the
+     selects (`:cljs`, else `:default`), never another branch, nor a `#_`
+     form unless it holds a splicing reader conditional, whose tail the
+     reader may keep (light-cljs-587); renames in top-level namespace
+     directives, `(refer-clojure :rename ...)`, count. A write is a
+     `set!`, `binding`, `with-redefs` or `js*` hole whose place names the
      function, or an `aset` or `unchecked-set` whose receiver does, in a
      list or `#(...)`, under metadata, quote or a property access (`.-x`,
-     `.`, `..`, `aget`). A
-     `set!`, `aset` or `unchecked-set` that is a step of `->` or `doto`
-     also reads the thread's first operand as its place, since `(-> f
-     (aset "k" v))` is `(aset f "k" v)`. When the spelling cannot show that
-     a place names no core function (an unquoted place or binding vector,
-     one of those three without its place operand outside `->` and `doto`,
-     a binding form that is not a vector, a tagged literal other than
-     `#js`, `#inst`, `#uuid` or `#queue`), or a mutation operator is used as
-     a value (`set!`, `binding` or `with-redefs` anywhere, `aset` or
-     `unchecked-set` under a quote, where a macro may build a write with it
-     as in `(list 'aset o k v)`), every core function counts as written.
+     `.`, `..`, `aget`). A `set!`, `aset` or `unchecked-set` that is the
+     first step of `->` also reads the thread's first operand as its place,
+     since `(-> f (aset "k" v))` is `(aset f "k" v)`, and one in `doto` reads
+     a plain first operand so. When the spelling cannot show that a place
+     names no core function, every core function counts as written: an
+     unquoted place or binding vector; a call as a place or receiver, which
+     a macro could expand to a core function's name, unless no macro can
+     make it (a JavaScript or method call, `new`, a constructor); one of
+     those three mutation operators as a later step of `->`, or without its
+     place operand outside `->` and `doto`; a binding form that is not a
+     vector; a tagged literal other than `#js`, `#inst`, `#uuid` or
+     `#queue`; and a mutation operator used as a value (`set!`, `binding`
+     or `with-redefs` anywhere, `aset` or `unchecked-set` under a quote,
+     where a macro may build a write with it as in `(list 'aset o k v)`).
      Two writes do not count, as in the analyzer's index of resolved
-     writes: a computed receiver, `(set! (.-x (f)) v)` or `(aset (f) k v)`,
-     which leaves unchanged which core functions macro code calls
-     directly, in a build with the cache or one without, so both prepare
-     the same code and emit the same output; and `aset` called as a
-     function value, `(apply aset o [k v])`, which the Pants build's macro
-     runtime does not provide yet (light-cljs-586). Dynamic Vars never
-     count. The V8 build runs no such scan.
+     writes: one through a receiver such a call computes, `(set! (.-x (.m
+     o)) v)` or `(aset (js/f) k v)`, which leaves unchanged which core
+     functions macro code calls directly, in a build with the cache or one
+     without, so both prepare the same code and emit the same output; and
+     `aset` called as a function value, `(apply aset o [k v])`, which the
+     Pants build's macro runtime does not provide yet (light-cljs-586).
+     Dynamic Vars never count. The V8 build runs no such scan.
    - **Policy.** As `cache_policy::evaluate`, in one forward pass: every
      edge points to an earlier namespace. `^:light-cljs/no-cache` covers
      only its namespace, whose consumers still hit while its key is the

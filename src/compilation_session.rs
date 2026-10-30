@@ -719,13 +719,39 @@ impl SharedCatalog {
         // The forms the reader reads: every node of the arena but those in
         // a branch of a reader conditional that `select_cljs` does not
         // select, or in a discarded `#_` form; neither ever runs
-        // (light-cljs-587). The arena keeps both after selection, and also
-        // keeps the clauses of top-level namespace directives, `(refer-clojure
-        // :rename ...)`, that namespace preparation replaced with nil, whose
-        // renames this scan must still read.
+        // (light-cljs-587). A discarded form holding a splicing reader
+        // conditional stays, since the reader may keep the splice's tail:
+        // `[#_ #?@(:cljs [a b]) c]` reads as `[b c]`. The arena keeps all of
+        // them after selection, and also keeps the clauses of top-level
+        // namespace directives, `(refer-clojure :rename ...)`, that
+        // namespace preparation replaced with nil, whose renames this scan
+        // must still read.
         let live: Vec<NodeId> = {
+            fn subtree(syntax: &crate::SyntaxTree, root: NodeId) -> Vec<NodeId> {
+                let mut nodes = Vec::new();
+                let mut pending = vec![root];
+                while let Some(id) = pending.pop() {
+                    nodes.push(id);
+                    match &syntax.nodes[id.0].kind {
+                        NodeKind::Collection { children, .. } => pending.extend(children),
+                        NodeKind::Prefix { form, .. } | NodeKind::Discard { form } => {
+                            pending.push(*form);
+                        }
+                        NodeKind::Tagged { tag, form } => pending.extend([*tag, *form]),
+                        NodeKind::Metadata { metadata, target } => {
+                            pending.extend([*metadata, *target]);
+                        }
+                        NodeKind::NamespacedMap { map, .. } => pending.push(*map),
+                        NodeKind::Conditional { branches, .. } => pending.push(*branches),
+                        NodeKind::Argument {
+                            index: Some(index), ..
+                        } => pending.push(*index),
+                        _ => {}
+                    }
+                }
+                nodes
+            }
             let mut dead = vec![false; syntax.nodes.len()];
-            let mut pending = Vec::new();
             for node in &syntax.nodes {
                 match &node.kind {
                     NodeKind::Conditional { branches, .. } => {
@@ -734,31 +760,26 @@ impl SharedCatalog {
                         if let NodeKind::Collection { children, .. } =
                             &syntax.nodes[branches.0].kind
                         {
-                            pending.extend(children.iter().filter(|&&c| Some(c) != selected));
+                            for &branch in children.iter().filter(|&&c| Some(c) != selected) {
+                                for id in subtree(syntax, branch) {
+                                    dead[id.0] = true;
+                                }
+                            }
                         }
                     }
-                    NodeKind::Discard { form } => pending.push(*form),
-                    _ => {}
-                }
-            }
-            while let Some(id) = pending.pop() {
-                if std::mem::replace(&mut dead[id.0], true) {
-                    continue;
-                }
-                match &syntax.nodes[id.0].kind {
-                    NodeKind::Collection { children, .. } => pending.extend(children),
-                    NodeKind::Prefix { form, .. } | NodeKind::Discard { form } => {
-                        pending.push(*form);
+                    NodeKind::Discard { form } => {
+                        let nodes = subtree(syntax, *form);
+                        if !nodes.iter().any(|id| {
+                            matches!(
+                                syntax.nodes[id.0].kind,
+                                NodeKind::Conditional { splicing: true, .. }
+                            )
+                        }) {
+                            for id in nodes {
+                                dead[id.0] = true;
+                            }
+                        }
                     }
-                    NodeKind::Tagged { tag, form } => pending.extend([*tag, *form]),
-                    NodeKind::Metadata { metadata, target } => {
-                        pending.extend([*metadata, *target]);
-                    }
-                    NodeKind::NamespacedMap { map, .. } => pending.push(*map),
-                    NodeKind::Conditional { branches, .. } => pending.push(*branches),
-                    NodeKind::Argument {
-                        index: Some(index), ..
-                    } => pending.push(*index),
                     _ => {}
                 }
             }
@@ -880,12 +901,14 @@ impl SharedCatalog {
         // The core functions a mutated place names, or `false` when its
         // spelling cannot show that it names none: an unquoted place, a
         // reader conditional or an unknown tagged literal. Property and
-        // index places name their receiver. A computed receiver, `(set!
-        // (.-x (f)) v)` or `(aset (f) k v)`, is not a core write, as in the
-        // analyzer's index of resolved writes
+        // index places name their receiver. A receiver computed by a call
+        // no macro can make (a JavaScript or method call, `new` or a
+        // constructor, as in `(set! (.-x (.m o)) v)` or `(aset (js/f) k v)`)
+        // is not a core write, as in the analyzer's index of resolved writes
         // ([`Self::index_native_core_target`]): a build with the cache and
         // one without prepare the same macro code around it
-        // (light-cljs-586). Literals and fresh collections never are.
+        // (light-cljs-586). Any other call could be a macro that expands to
+        // a core function's name. Literals and fresh collections never are.
         let mut found = Vec::<&'static str>::new();
         let mut target = |mut id: NodeId| -> bool {
             loop {
@@ -913,6 +936,19 @@ impl SharedCatalog {
             }
             match &syntax.nodes[id.0].kind {
                 NodeKind::Symbol => {}
+                NodeKind::Collection {
+                    kind: CollectionKind::List,
+                    children,
+                } => {
+                    return children.first().is_none_or(|&head| {
+                        let head = spelling(head);
+                        !matches!(syntax.nodes[children[0].0].kind, NodeKind::Symbol)
+                            || head.starts_with("js/")
+                            || head.starts_with('.')
+                            || head == "new"
+                            || head.len() > 1 && head.ends_with('.')
+                    });
+                }
                 NodeKind::Tagged { tag, .. } => {
                     return matches!(spelling(*tag), "js" | "inst" | "uuid" | "queue");
                 }
@@ -959,16 +995,33 @@ impl SharedCatalog {
                 }
             }
         };
-        // A step of `->` or `doto` receives the thread's first operand
-        // first: `(-> f (aset "k" v))` is `(aset f "k" v)`. A `doto` binds
-        // it to a local, which the analyzer's index does not follow, but
-        // reading it as a place costs ordinary code nothing.
-        let threaded = |id: NodeId| -> Option<NodeId> {
-            let (parent, position) = operand_of[id.0]?;
-            let thread = call(&syntax.nodes[parent.0])?;
-            let head = spelling(thread[0]);
-            (position >= 2 && matches!(head.rsplit('/').next(), Some("->" | "doto")))
-                .then(|| thread[1])
+        // What a step of `->` or `doto` receives first: `(-> f (aset "k"
+        // v))` is `(aset f "k" v)`.
+        enum Thread {
+            /// Not a step of either.
+            None,
+            /// The first step of `->`: the thread's first operand.
+            Place(NodeId),
+            /// A step of `doto`: a local bound to the thread's first
+            /// operand, which the analyzer's index does not follow.
+            Local(NodeId),
+            /// A later step of `->`: whatever the steps before it expand
+            /// to, which a macro may make a core function's name.
+            Unknown,
+        }
+        let threaded = |id: NodeId| -> Thread {
+            let Some((parent, position)) = operand_of[id.0] else {
+                return Thread::None;
+            };
+            let Some(thread) = call(&syntax.nodes[parent.0]) else {
+                return Thread::None;
+            };
+            match (spelling(thread[0]).rsplit('/').next(), position) {
+                (Some("->"), 2) => Thread::Place(thread[1]),
+                (Some("->"), 3..) => Thread::Unknown,
+                (Some("doto"), 2..) => Thread::Local(thread[1]),
+                _ => Thread::None,
+            }
         };
         let sure = nodes().all(|(id, node)| {
             let Some((&head, args)) = call(node).and_then(<[NodeId]>::split_first) else {
@@ -978,16 +1031,26 @@ impl SharedCatalog {
             let head = head.rsplit('/').next().unwrap_or(head);
             match (head, args) {
                 // `set!` names its place first, `aset` and `unchecked-set`
-                // their receiver; without that operand, as in `(-> place
-                // (set! value))`, the place is the threaded value, and any
-                // other enclosing form hides it.
+                // their receiver. A step of `->` or `doto` also receives the
+                // threaded value first; without that operand, as in `(->
+                // place (set! value))`, any other enclosing form hides it.
+                // A `doto`'s plain first operand is read as a place too,
+                // which costs ordinary code nothing.
                 ("set!" | "aset" | "unchecked-set", _) => {
                     let operands = if head == "set!" { 2 } else { 3 };
-                    let threaded = threaded(id);
-                    if args.len() < operands {
-                        threaded.is_some_and(&mut target)
+                    let thread = threaded(id);
+                    let own = if args.len() < operands {
+                        !matches!(thread, Thread::None)
                     } else {
-                        target(args[0]) && threaded.is_none_or(&mut target)
+                        target(args[0])
+                    };
+                    own && match thread {
+                        Thread::None => true,
+                        Thread::Place(place) => target(place),
+                        Thread::Local(place) => {
+                            call(&syntax.nodes[place.0]).is_some() || target(place)
+                        }
+                        Thread::Unknown => false,
                     }
                 }
                 ("binding" | "with-redefs", [bindings, ..]) => places(*bindings)
