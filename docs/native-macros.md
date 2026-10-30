@@ -5781,3 +5781,19 @@ so its suite and output are unchanged. Formatting passes; engine Clippy shows
 only the nine baseline diagnostics; Pants plus QuickJS Clippy passes allowing
 the three engine baseline categories, and Pants-only Clippy shows only the
 three existing test diagnostics.
+
+Rebased on master `23dddbaf` (light-cljs-613 landed, and light-cljs-633's
+`fnext` and `nfirst`), the Pants build's `app.main` at 1 thread, with the
+same roots and budgets and at load average 8-12, passes `fnext` and stops
+in the same instaparse macro after 96.82 s wall, 94.49 s user and
+1,007,435,776 bytes peak memory, at:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro expansion: while expanding precompile-cljs-grammar: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro instaparse.abnf/precompile-cljs-grammar: big-boy-pants-js: Error: unsupported operation: native macro runtime core.MapEntry; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:104:1 (bytes 5039..5064)
+```
+
+On `23dddbaf`: the engine's suite (all targets) 2,240 and its doctests pass;
+`bbp_macros` Pants plus QuickJS reference 301, Pants-only 298 of 299 and V8
+plus Pants 300 of 301 (one ignored case each), the one failure in both
+being `native_member_precedence_table_matches_quickjs` at the macro session
+deadline at load average 18-26, which passes alone in both.
