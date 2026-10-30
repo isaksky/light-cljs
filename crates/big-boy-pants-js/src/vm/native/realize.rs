@@ -127,19 +127,45 @@ impl Realize {
         input: Input,
     ) -> Result<Action, Fault> {
         if let Some(exception) = self.failed.take() {
-            // A delay whose body forced it again and returned there is
-            // realized to that value, as ClojureScript's inner run sets it,
-            // although the outer run throws.
-            if self.attempt.is_some()
-                && self.cell.is_delay()
-                && let Some(value) = self.cell.provisional()
-            {
-                let _ = self.realized(heap, value);
-            }
             self.realizing = None;
             if let Some(attempt) = self.attempt.take() {
                 let failure = failure(heap, task, &exception.value);
-                let _ = self.cell.settle(attempt, Some(Err(failure)), false);
+                // A delay whose body forced it again and returned there is
+                // realized to that value, as ClojureScript's inner run sets
+                // it, although the outer run throws; the readers parked on
+                // this attempt observe its failure (light-cljs-613 review).
+                // A value a shared delay cannot hold is not kept.
+                let kept = self
+                    .cell
+                    .is_delay()
+                    .then(|| self.cell.provisional())
+                    .flatten();
+                match kept {
+                    Some(kept) => {
+                        let mut checked = false;
+                        loop {
+                            if self.cell.is_shared() && !checked {
+                                if share::check(heap, &kept).is_err() {
+                                    let _ = self.cell.settle(attempt, Some(Err(failure)), false);
+                                    break;
+                                }
+                                checked = true;
+                            }
+                            match self.cell.settle_failed_keeping(
+                                attempt,
+                                failure.clone(),
+                                kept.clone(),
+                                checked,
+                            ) {
+                                Ok(()) => break,
+                                Err(_) => checked = false,
+                            }
+                        }
+                    }
+                    None => {
+                        let _ = self.cell.settle(attempt, Some(Err(failure)), false);
+                    }
+                }
             }
             return Err(Fault::Rethrow(exception));
         }

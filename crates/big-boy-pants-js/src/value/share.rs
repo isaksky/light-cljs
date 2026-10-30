@@ -680,13 +680,13 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
             // read once under its lock (light-cljs-479).
             HeapObject::Form(form) => match form.once_cell() {
                 Some(cell) => {
-                    let (realized, edge, record) = cell.publication_edge();
+                    let (realized, edge, record, seed) = cell.publication_edges();
                     Children::Lazy {
                         cell: cell.clone(),
                         realized,
                         edge,
                         record,
-                        seed: cell.publication_seed(),
+                        seed,
                         meta: form.meta().cloned(),
                     }
                 }

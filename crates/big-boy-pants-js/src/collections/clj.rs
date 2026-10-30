@@ -499,8 +499,16 @@ pub(crate) fn delay_state(heap: &Heap, v: &Value) -> Result<Value> {
     let FormBody::Delay(cell) = f.body() else {
         return Err(unsupported("delay state", &shape));
     };
-    let (ready, value) = cell.delay_state(crate::collections::lazy::running_task());
-    Ok(form::new_vector(heap, &[Value::Bool(ready), value])?)
+    let state = cell.delay_state(crate::collections::lazy::running_task());
+    if state.settled {
+        // Reading the settled realization counts its attributed effects for
+        // this reader, as forcing it does (light-cljs-613 review).
+        crate::collections::lazy::note_consumed(cell);
+    }
+    Ok(form::new_vector(
+        heap,
+        &[Value::Bool(state.ready), state.value],
+    )?)
 }
 
 /// Unwrap exactly one early-termination marker, preserving other operands

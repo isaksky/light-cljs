@@ -2670,8 +2670,11 @@ does, so a guarded reentry terminates: the inner run's value is what that
 task's `deref`, `realized?` and printing see until the outer run ends, the
 outer run's value is the one kept, and an outer run that throws after an
 inner run returned leaves the delay realized to the inner value. Other
-tasks wait for the outer run. An unguarded reentry recurses until the
-call depth limit, a catchable error.
+tasks wait for the outer run: if it throws, those waiting observe its
+exception, as for any run that throws, and later readers read the kept
+inner value. An unguarded reentry recurses until the call depth limit, a
+catchable error. Printing a realized delay counts as reading its value
+for namespace visibility, as forcing it does.
 
 A delay is the engine's once-realized cell, the one a lazy sequence has
 ("Lazy sequences" above), whose value is kept as the body returned it. The

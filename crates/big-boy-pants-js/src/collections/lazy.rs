@@ -132,8 +132,16 @@
 //! run ends, and the outer run's value is the one installed, as the
 //! reference's last assignment is; if the outer run throws after an inner
 //! run returned, the inner value is installed, as the reference's inner run
-//! left it set. Other tasks still wait for the outer run. An unguarded
+//! left it set, in the same critical section that records the failure for
+//! the readers parked on the outer run, who observe it as for any failed
+//! attempt ([`LazyCell::settle_failed_keeping`]); a later reader reads the
+//! kept value. Other tasks still wait for the outer run. An unguarded
 //! reentry recurses until the native call depth limit, a catchable error.
+//!
+//! The printer's state ([`LazyCell::delay_state`]) is read in one critical
+//! section after a lock-free miss, so it is a state the cell had (pending
+//! with its pending value, or settled), and reading a settled value notes
+//! its consumption ([`note_consumed`]) as forcing it does.
 //!
 //! # Thread-local requests
 //!
@@ -273,6 +281,26 @@ pub(crate) enum Claim {
     },
 }
 
+/// A delay's state as its printer reads it ([`LazyCell::delay_state`]).
+#[derive(Debug)]
+pub(crate) struct DelayState {
+    /// Whether the reference prints it `:ready`.
+    pub(crate) ready: bool,
+    /// Its value: realized, provisional or pending.
+    pub(crate) value: Value,
+    /// Whether `value` is the settled realization (which a reader of it
+    /// notes as consumed, [`note_consumed`]).
+    pub(crate) settled: bool,
+}
+
+impl DelayState {
+    /// Whether the reading task sees a value: settled, or its own
+    /// reentering run's.
+    pub(crate) fn value_ready(&self) -> bool {
+        self.settled || self.ready
+    }
+}
+
 /// Why [`LazyCell::settle`] did not install a value.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Unsettled {
@@ -340,14 +368,38 @@ impl LazyCell {
     /// running its body: whether it prints as ready, and its value (the
     /// realized value; the value a run of `task`'s own, reentering, has
     /// returned while `task` realizes it; or the pending value).
-    pub(crate) fn delay_state(&self, task: Option<TaskId>) -> (bool, Value) {
+    pub(crate) fn delay_state(&self, task: Option<TaskId>) -> DelayState {
+        let settled = |v: &Value| DelayState {
+            ready: !self.prints_pending,
+            value: v.clone(),
+            settled: true,
+        };
         if let Some(v) = self.realized.get() {
-            return (!self.prints_pending, v.clone());
+            return settled(v);
         }
+        #[cfg(test)]
+        tests::DELAY_STATE_MISSED.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() {
+                hook();
+            }
+        });
         let state = lock(&self.state);
+        // Again under the lock: a settlement since the read above installed
+        // the value and cleared the pending one (light-cljs-613 review).
+        if let Some(v) = self.realized.get() {
+            return settled(v);
+        }
         match (&state.provisional, state.realizer) {
-            (Some(v), Some((t, _))) if Some(t) == task => (true, v.clone()),
-            _ => (false, state.seed.clone()),
+            (Some(v), Some((t, _))) if Some(t) == task => DelayState {
+                ready: true,
+                value: v.clone(),
+                settled: false,
+            },
+            _ => DelayState {
+                ready: false,
+                value: state.seed.clone(),
+                settled: false,
+            },
         }
     }
 
@@ -355,7 +407,7 @@ impl LazyCell {
     /// realizing it and a reentering run has returned (as ClojureScript's
     /// inner run sets the value).
     pub(crate) fn realized_for(&self, task: Option<TaskId>) -> bool {
-        self.realized.get().is_some() || (self.delay && self.delay_state(task).0)
+        self.realized.get().is_some() || (self.delay && self.delay_state(task).value_ready())
     }
 
     /// Record `value`, returned by a reentering run of `task`, which is
@@ -544,17 +596,49 @@ impl LazyCell {
         checked: bool,
         record: Option<Value>,
     ) -> Result<(), Unsettled> {
+        self.settle_keeping(attempt, outcome, checked, record, None)
+    }
+
+    /// End a delay's attempt `attempt` that threw `failure` after a
+    /// reentering run of its body returned `kept` (light-cljs-613): in one
+    /// critical section, the delay is realized to `kept`, as ClojureScript's
+    /// inner run left it, and the readers parked on the attempt observe
+    /// `failure`, as for any failed attempt; a later reader reads `kept`.
+    /// `checked` as for [`LazyCell::settle`].
+    pub(crate) fn settle_failed_keeping(
+        &self,
+        attempt: u64,
+        failure: LazyFailure,
+        kept: Value,
+        checked: bool,
+    ) -> Result<(), Unsettled> {
+        self.settle_keeping(attempt, Some(Err(failure)), checked, None, Some(kept))
+    }
+
+    fn settle_keeping(
+        &self,
+        attempt: u64,
+        outcome: Option<Result<Value, LazyFailure>>,
+        checked: bool,
+        record: Option<Value>,
+        kept: Option<Value>,
+    ) -> Result<(), Unsettled> {
         let (waiters, waits) = {
             let mut state = lock(&self.state);
             if state.realizer.map(|(_, a)| a) != Some(attempt) {
                 return Ok(());
             }
-            if state.shared && !checked && matches!(outcome, Some(Ok(_))) {
+            if state.shared && !checked && (matches!(outcome, Some(Ok(_))) || kept.is_some()) {
                 return Err(Unsettled::NeedsCheck);
             }
             state.realizer = None;
             state.provisional = None;
             let waiters = std::mem::take(&mut state.waiters);
+            if let Some(kept) = kept {
+                let _ = self.realized.set(kept);
+                state.thunk = Value::Undefined;
+                state.seed = Value::Undefined;
+            }
             match outcome {
                 Some(Ok(value)) => {
                     // Under the lock: a reader's recheck cannot miss it.
@@ -609,27 +693,28 @@ impl Trace for LazyCell {
 }
 
 impl LazyCell {
-    /// The value the publication walk descends into, read under the lock:
-    /// whether it is realized, the structural value or thunk, and any
-    /// original record retained for protocol dispatch.
-    pub(crate) fn publication_edge(&self) -> (bool, Value, Option<Value>) {
+    /// The values the publication walk descends into, read under the lock:
+    /// whether it is realized, the structural value or thunk, any original
+    /// record retained for protocol dispatch, and an unrealized delay's
+    /// pending value, which other tasks print and so must be shareable too
+    /// (`None` once realized or when it has none; light-cljs-613). One read,
+    /// so the walk never pairs a thunk with a state settled since.
+    pub(crate) fn publication_edges(&self) -> (bool, Value, Option<Value>, Option<Value>) {
         let state = lock(&self.state);
         match self.realized.get() {
             Some(v) => (
                 true,
                 v.clone(),
                 (state.thunk != Value::Undefined).then(|| state.thunk.clone()),
+                None,
             ),
-            None => (false, state.thunk.clone(), None),
+            None => (
+                false,
+                state.thunk.clone(),
+                None,
+                (state.seed != Value::Undefined).then(|| state.seed.clone()),
+            ),
         }
-    }
-
-    /// An unrealized delay's pending value, which other tasks print and so
-    /// must be shareable too; `None` once realized or when it has none.
-    pub(crate) fn publication_seed(&self) -> Option<Value> {
-        let state = lock(&self.state);
-        (self.realized.get().is_none() && state.seed != Value::Undefined)
-            .then(|| state.seed.clone())
     }
 }
 
@@ -961,6 +1046,38 @@ impl Visited {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Run once by [`LazyCell::delay_state`] after its lock-free read
+        /// found the delay unrealized and before it takes the lock.
+        pub(super) static DELAY_STATE_MISSED: RefCell<Option<Box<dyn FnOnce()>>> =
+            const { RefCell::new(None) };
+    }
+
+    /// A delay settled between `delay_state`'s lock-free miss and its lock
+    /// reads as settled, never as pending with the pending value the
+    /// settlement cleared (light-cljs-613 review).
+    #[test]
+    fn delay_state_racing_settlement_is_consistent() {
+        let cell = Arc::new(LazyCell::delay(
+            Value::Bool(true),
+            Value::String(JsString::from("seed")),
+        ));
+        let attempt = run(&cell);
+        let settling = cell.clone();
+        DELAY_STATE_MISSED.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                assert_eq!(
+                    settling.settle(attempt, Some(Ok(Value::Number(42.0))), false),
+                    Ok(())
+                );
+            }));
+        });
+        let state = cell.delay_state(None);
+        assert!(DELAY_STATE_MISSED.with(|hook| hook.borrow().is_none()));
+        assert!(state.ready && state.settled, "{state:?}");
+        assert_eq!(state.value, Value::Number(42.0));
+    }
 
     fn run(cell: &LazyCell) -> u64 {
         match cell.claim(TaskId::from_raw(1), None) {

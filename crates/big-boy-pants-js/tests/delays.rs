@@ -315,3 +315,255 @@ fn an_explicit_delay_keeps_its_pending_value() {
     let error = rt.publish(&seeded).unwrap_err().to_string();
     assert!(error.contains("value.seed[0]"), "{error}");
 }
+
+/// Counts each effect op's calls (`__rt.effect(op, …)` returns the op's
+/// count so far), holding the first op-2 call at two barriers when `hold`
+/// is set: "inside" and "may continue".
+#[derive(Clone, Default)]
+struct Steps {
+    ops: Arc<std::sync::Mutex<Vec<u16>>>,
+    hold: Option<(Arc<Barrier>, Arc<Barrier>)>,
+}
+
+impl Steps {
+    fn count(&self, op: u16) -> usize {
+        self.ops
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|o| **o == op)
+            .count()
+    }
+}
+
+impl Host for Steps {
+    fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+        let before = {
+            let mut ops = self.ops.lock().unwrap();
+            let before = ops.iter().filter(|o| **o == call.op).count();
+            ops.push(call.op);
+            before
+        };
+        if call.op == 2
+            && before == 0
+            && let Some((inside, release)) = &self.hold
+        {
+            inside.wait();
+            release.wait();
+        }
+        Ok(Primitive::Number(before as f64))
+    }
+}
+
+/// A shared delay whose body's first run forces the delay again (the
+/// inner run returns `[2]`), then pauses (effect 2) and throws `outer`: a
+/// reader that parked on that attempt while it paused observes `outer`,
+/// as every reader of a failed attempt does, and a later reader reads the
+/// inner run's `[2]`, which the delay keeps, without a third run
+/// (light-cljs-613 review).
+#[test]
+fn reentrant_outer_failure_reaches_parked_readers() {
+    let rt = Runtime::new();
+    let make = compile_function(
+        "function make() {
+           const box = __rt.atomNew(null);
+           const d = __rt.delay(() => {
+             if (__rt.effect(1, 0) === 0) {
+               __rt.cljForce(__rt.atomLoad(box));
+               __rt.effect(2, 0);
+               throw 'outer';
+             }
+             return __rt.formVector(2);
+           }, null);
+           __rt.atomCas(box, null, d);
+           return d;
+         }",
+    )
+    .unwrap();
+    let RunOutcome::Complete(delay) = rt.spawn(&make, &[]).unwrap().run().unwrap() else {
+        panic!("maker failed");
+    };
+    rt.publish(&delay).unwrap();
+    let read = compile_function(
+        "function read(d) {
+           try { return 'value ' + __rt.formNth(__rt.cljForce(d), 0); }
+           catch (e) { return 'caught ' + e; }
+         }",
+    )
+    .unwrap();
+    let (inside, release) = (Arc::new(Barrier::new(2)), Arc::new(Barrier::new(2)));
+    let host = Steps {
+        ops: Arc::default(),
+        hold: Some((inside.clone(), release.clone())),
+    };
+    let a = rt.spawn(&read, &[&delay]).unwrap();
+    let b = rt.spawn(&read, &[&delay]).unwrap();
+    let realizer = {
+        let mut host = host.clone();
+        thread::spawn(move || a.run_with(Budget::UNLIMITED, &mut host).unwrap())
+    };
+    // A has run the body twice (the inner run returned) and pauses.
+    inside.wait();
+    let mut b_host = host.clone();
+    let key = {
+        let b = b.clone();
+        thread::spawn(move || match b.run_with(Budget::UNLIMITED, &mut b_host) {
+            Ok(RunOutcome::Waiting(key)) => key,
+            other => panic!("expected a realization wait, got {other:?}"),
+        })
+        .join()
+        .unwrap()
+    };
+    assert_eq!(key.kind(), LAZY_REALIZATION);
+    release.wait();
+    assert_eq!(text(realizer.join().unwrap()), "caught outer");
+    assert_eq!(rt.take_lazy_wakeups().len(), 1);
+    assert_eq!(text(b.run().unwrap()), "caught outer");
+    let c = rt.spawn(&read, &[&delay]).unwrap();
+    assert_eq!(
+        text(c.run_with(Budget::UNLIMITED, &mut host.clone()).unwrap()),
+        "value 2"
+    );
+    assert_eq!(host.count(1), 2, "body runs");
+}
+
+/// Attributes each realization whose body calls `__rt.effect` to it.
+struct Attributing(Runtime, Arc<std::sync::Mutex<Vec<u64>>>);
+
+impl Host for Attributing {
+    fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+        let serials = self.0.attribute_realizing(call.task);
+        self.1.lock().unwrap().extend(serials);
+        Ok(Primitive::Null)
+    }
+}
+
+/// Reading a settled delay's printer state counts its realization's
+/// attributed effects for the reader, as forcing it does; `realized?` does
+/// not read the value and counts nothing (light-cljs-613 review).
+#[test]
+fn printing_a_settled_attributed_delay_records_consumption() {
+    let rt = Runtime::new();
+    let make = compile_function(
+        "function make() { return __rt.delay(() => { __rt.effect(1, 0); return 6; }, null); }",
+    )
+    .unwrap();
+    let RunOutcome::Complete(delay) = rt.spawn(&make, &[]).unwrap().run().unwrap() else {
+        panic!("maker failed");
+    };
+    rt.publish(&delay).unwrap();
+    let serials = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut host = Attributing(rt.clone(), serials.clone());
+    let force = compile_function("function force(d) { return __rt.cljForce(d); }").unwrap();
+    let a = rt.spawn(&force, &[&delay]).unwrap();
+    assert!(matches!(
+        a.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    let serials = serials.lock().unwrap().clone();
+    assert_eq!(serials.len(), 1);
+    let print =
+        compile_function("function print(d) { return __rt.formNth(__rt.cljDelayState(d), 1); }")
+            .unwrap();
+    let b = rt.spawn(&print, &[&delay]).unwrap();
+    assert!(matches!(
+        b.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    assert_eq!(rt.take_lazy_consumed(b.id()), serials);
+    let realized =
+        compile_function("function realized(d) { return __rt.cljRealized(d); }").unwrap();
+    let c = rt.spawn(&realized, &[&delay]).unwrap();
+    assert!(matches!(
+        c.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    assert!(rt.take_lazy_consumed(c.id()).is_empty());
+}
+
+/// A pending value held only by its delay survives collection, before
+/// and after a failed run (light-cljs-613 review).
+#[test]
+fn pending_delay_seed_survives_collection() {
+    let rt = Runtime::new();
+    let delay = eval(
+        &rt,
+        "return __rt.delay(() => { throw 'no'; },
+           __rt.formVector(__rt.formVector(__rt.formKeyword(null, 'seed'), 'pending')));",
+    );
+    let read = compile_function(
+        "function read(d) {
+           const v = __rt.formNth(__rt.cljDelayState(d), 1);
+           return __rt.formName(__rt.formNth(__rt.formNth(v, 0), 0)) + ' ' + __rt.formNth(__rt.formNth(v, 0), 1);
+         }",
+    )
+    .unwrap();
+    rt.collect().unwrap();
+    rt.collect().unwrap();
+    assert_eq!(
+        text(rt.spawn(&read, &[&delay]).unwrap().run().unwrap()),
+        "seed pending"
+    );
+    let force = compile_function(
+        "function force(d) { try { __rt.cljForce(d); return 'read'; } catch (e) { return 'caught ' + e; } }",
+    )
+    .unwrap();
+    assert_eq!(
+        text(rt.spawn(&force, &[&delay]).unwrap().run().unwrap()),
+        "caught no"
+    );
+    rt.collect().unwrap();
+    rt.collect().unwrap();
+    assert_eq!(
+        text(rt.spawn(&read, &[&delay]).unwrap().run().unwrap()),
+        "seed pending"
+    );
+}
+
+/// The value a reentering run returned, held only as the realizing task's
+/// provisional answer, survives collection while that task is suspended
+/// inside the outer run, and the outer run then reads it through the delay
+/// (light-cljs-613 review).
+#[test]
+fn provisional_delay_value_survives_collection() {
+    let rt = Runtime::new();
+    let test = compile_function(
+        "function test() {
+           let d;
+           d = __rt.delay(() => {
+             if (__rt.effect(1, 0) > 0)
+               return __rt.formVector(__rt.formVector(__rt.formKeyword(null, 'inner'), 'kept'));
+             __rt.cljForce(d);
+             __rt.effect(2, 0);
+             let n = 0;
+             for (let i = 0; i < 200; i++) n += 1;
+             const inner = __rt.cljForce(d);
+             return __rt.formName(__rt.formNth(__rt.formNth(inner, 0), 0)) + ' '
+               + __rt.formNth(__rt.formNth(inner, 0), 1) + ' ' + n;
+           }, null);
+           return __rt.cljForce(d);
+         }",
+    )
+    .unwrap();
+    let host = Steps::default();
+    let task = rt.spawn(&test, &[]).unwrap();
+    // Run until the outer run has passed the inner one, then suspend it
+    // inside the body.
+    let mut steps = 0;
+    while host.count(2) == 0 {
+        assert!(matches!(
+            task.run_with(Budget::instructions(1), &mut host.clone())
+                .unwrap(),
+            RunOutcome::Yielded
+        ));
+        steps += 1;
+        assert!(steps < 10_000);
+    }
+    rt.collect().unwrap();
+    rt.collect().unwrap();
+    assert_eq!(
+        text(task.run_with(Budget::UNLIMITED, &mut host.clone()).unwrap()),
+        "inner kept 200"
+    );
+    assert_eq!(host.count(1), 2, "body runs");
+}
