@@ -99,6 +99,34 @@ fn mutable_struct_publication_traces_current_fields_and_collects_cycles() {
 }
 
 #[test]
+fn mutable_struct_colliding_members_have_consistent_integrity() {
+    let rt = Runtime::new();
+    let b = call(
+        &rt,
+        r#"function make() {
+      const T=__rt.mutableStructType('test/Pair',__rt.formVector('a-b','a_b'),false,__rt.formVector('a_b','a_b'));
+      const b=__rt.structNew(T,1,2);
+      if(__rt.structField(b,'a_b')!==2||Object.isFrozen(b))throw new Error('fresh');
+      Object.defineProperty(b,'a_b',{writable:false});
+      if(!Object.isFrozen(b))throw new Error('only visible field is read-only, but not frozen');
+      return b;
+    }"#,
+        &[],
+    );
+    let b = rt.scope(|s| s.persist(s.local(&b).unwrap()));
+    rt.publish(&b).unwrap();
+    let checked = call(
+        &rt,
+        r#"function check(b) {
+      Object.freeze(b);
+      return Object.isFrozen(b) && __rt.structField(b,'a_b') === 2;
+    }"#,
+        &[&b],
+    );
+    assert_eq!(checked.view(), ValueView::Bool(true));
+}
+
+#[test]
 fn mutable_struct_properties_remain_writable_until_private_freeze() {
     let rt = Runtime::new();
     let result = call(

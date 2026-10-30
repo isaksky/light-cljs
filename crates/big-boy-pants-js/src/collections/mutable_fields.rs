@@ -29,7 +29,14 @@ pub(crate) struct MutableFields {
 }
 
 impl MutableFields {
-    pub(crate) fn new(heap: &Heap, fields: PVector) -> Result<Self, CollectionError> {
+    /// `live[i]` is false for a slot a later field with the same member
+    /// name overwrote: no property reads it, so it is never writable and
+    /// integrity checks see only the visible fields.
+    pub(crate) fn new(
+        heap: &Heap,
+        fields: PVector,
+        live: &[bool],
+    ) -> Result<Self, CollectionError> {
         let reservation = heap
             .reserve_bytes(
                 std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>() + fields.len(),
@@ -37,7 +44,9 @@ impl MutableFields {
             .ok_or(CollectionError::HeapLimit)?;
         Ok(Self {
             state: Mutex::new(State {
-                writable: vec![true; fields.len()].into_boxed_slice(),
+                writable: (0..fields.len())
+                    .map(|i| live.get(i).copied().unwrap_or(true))
+                    .collect(),
                 fields,
                 version: 0,
                 shared: false,
@@ -208,6 +217,7 @@ mod tests {
         let cell = MutableFields::new(
             &heap,
             PVector::try_from_values(&heap, &[Value::Null]).unwrap(),
+            &[true],
         )
         .unwrap();
         let (_, version) = cell.snapshot();

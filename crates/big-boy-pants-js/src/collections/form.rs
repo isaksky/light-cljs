@@ -2101,12 +2101,18 @@ pub(crate) fn new_struct(
     let n = info.fields.len();
     let mut fields = values[..values.len().min(n)].to_vec();
     fields.resize(n, Value::Undefined);
+    // Constructor assignments with colliding munged member names keep
+    // only the last value. Do not retain an overwritten host object.
+    let live: Vec<bool> = info
+        .members
+        .iter()
+        .enumerate()
+        .map(|(i, member)| info.members.iter().rposition(|m| m == member) == Some(i))
+        .collect();
     if info.mutable {
-        // Constructor assignments with colliding munged member names keep
-        // only the last value. Do not retain an overwritten host object.
-        for (i, member) in info.members.iter().enumerate() {
-            if info.members.iter().rposition(|m| m == member) != Some(i) {
-                fields[i] = Value::Undefined;
+        for (field, live) in fields.iter_mut().zip(&live) {
+            if !live {
+                *field = Value::Undefined;
             }
         }
     }
@@ -2137,6 +2143,7 @@ pub(crate) fn new_struct(
         Some(Arc::new(super::mutable_fields::MutableFields::new(
             heap,
             fields.clone(),
+            &live,
         )?))
     } else {
         None

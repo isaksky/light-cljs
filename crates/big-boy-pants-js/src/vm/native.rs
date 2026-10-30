@@ -1714,7 +1714,11 @@ pub(crate) fn start_builtin(
                 | Builtin::ObjectIsFrozen
         )
         && let Some(Value::Object(target)) = args.first()
-        && super::proxy::inspect(heap, state.diag.task, *target)?.is_some()
+        && (super::proxy::inspect(heap, state.diag.task, *target)?.is_some()
+            // A published mutable deftype's field descriptor reads its value
+            // in source order (`proxy::Operations`, `Stage::FieldValue`).
+            || which == Builtin::ObjectGetOwnPropertyDescriptor
+                && crate::collections::form::struct_state(heap, &Value::Object(*target)) == 2)
     {
         use super::proxy::Mode;
         let mode = match which {

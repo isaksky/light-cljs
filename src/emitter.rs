@@ -342,6 +342,28 @@ mod deferred_storage_tests {
         }
     }
 
+    /// A member store demands its receiver's declarations only in a unit with
+    /// demand roots, as a member read does, and evaluates its receiver and
+    /// value once, in that order.
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_member_store_demands_only_in_deferred_units() {
+        use crate::evaluator::{EvaluatorOptions, MacroEvaluator};
+
+        let source = r#"(let [seen (array) o (js-obj)]
+          (set! (.-x (do (js* "~{}.push('receiver')" seen) o)) (do (js* "~{}.push('value')" seen) 1))
+          (js* "(() => { if (~{}.join() !== 'receiver,value' || ~{}.x !== 1) throw new Error('store'); })()" seen o))"#;
+        let program = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+        let plain = emit_native_macro_unit(&program, false, &[]);
+        let deferred = emit_native_macro_unit(&program, true, &[]);
+        let demands = |unit: &str| unit.matches("declarationReceiver").count();
+        assert_eq!(demands(&plain), 0, "{plain}");
+        assert_eq!(demands(&deferred), 1, "{deferred}");
+        let native = crate::bbp_evaluator::BbpEvaluator::new(EvaluatorOptions::default()).unwrap();
+        let result = native.evaluate_unit(&plain).unwrap();
+        native.release(result).unwrap();
+    }
+
     #[cfg(feature = "bbp-macros")]
     #[test]
     fn native_preparation_reads_only_the_unit_and_its_definition_time_metadata() {
@@ -8957,18 +8979,25 @@ impl<'a> Emitter<'a> {
                     && let ExprKind::Property { receiver, property } =
                         &self.program.exprs[target.0].kind
                 {
-                    // The receiver is demanded exactly as a member read's
+                    // The assignment itself stays in this (sloppy) unit, so a
+                    // rejected host store follows the caller's mode; the
+                    // runtime only prepares the value for its receiver. The
+                    // receiver is demanded exactly as a member read's
                     // (`ExprKind::Property`): only in a unit with demand roots.
-                    self.rt(RuntimeName::export("nativeSetProperty"));
-                    self.output.push('(');
+                    self.output.push_str(
+                        "((__lightStoreReceiver, __lightStoreValue) => __lightStoreReceiver",
+                    );
+                    self.member(property);
+                    self.output.push_str(" = ");
+                    self.rt(RuntimeName::export("nativeStoreValue"));
+                    self.output
+                        .push_str("(__lightStoreReceiver, __lightStoreValue))(");
                     if self.demand_roots {
                         self.rt(RuntimeName::export("declarationReceiver"));
                     }
                     self.output.push('(');
                     self.interop_receiver(*receiver, property);
                     self.output.push_str("), ");
-                    self.string_units(&property.encode_utf16().collect::<Vec<_>>());
-                    self.output.push_str(", ");
                     self.value(*value);
                     self.output.push(')');
                     return;

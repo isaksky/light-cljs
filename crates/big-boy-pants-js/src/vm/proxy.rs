@@ -223,6 +223,9 @@ enum Stage {
     Forward,
     TrapResult,
     GetResult,
+    /// A published mutable deftype field's ordered value, for its
+    /// descriptor (`op.reported`).
+    FieldValue,
     /// A forwarded HasProperty answered by the resumable In path (a native
     /// form's runtime member).
     HasResult,
@@ -496,12 +499,23 @@ impl Operations {
                         Kind::Get => return Err(Fault::Internal("Get lost its Proxy")),
                         Kind::Has => return Err(Fault::Internal("HasProperty lost its Proxy")),
                         Kind::Extensible => Output::Boolean(extensible(heap, task, op.object)?),
-                        Kind::Descriptor => Output::Descriptor(property::get_own_property(
-                            heap,
-                            task,
-                            op.object,
-                            op.key.as_ref().unwrap(),
-                        )?),
+                        Kind::Descriptor => {
+                            let key = op.key.as_ref().unwrap();
+                            let own = property::get_own_property(heap, task, op.object, key)?;
+                            // A published mutable field's value is read in
+                            // source order, through its member read.
+                            if own.is_some()
+                                && property::mutable_field(heap, op.object, key)
+                                    .is_some_and(|(_, shared)| shared)
+                            {
+                                let form = Value::Object(op.object);
+                                let key = key.clone();
+                                op.reported = own;
+                                op.phase = Stage::FieldValue;
+                                return Ok(Progress::Action(Action::FormMember { form, key }));
+                            }
+                            Output::Descriptor(own)
+                        }
                         Kind::Keys => {
                             if self.json_keys {
                                 super::json::check_key_snapshot(heap, task, op.object)?;
@@ -807,6 +821,14 @@ impl Operations {
                 return self.finish(Output::Descriptor(out));
             }
             Stage::GetResult => return self.finish(Output::Value(result(input)?)),
+            Stage::FieldValue => {
+                let mut own = op
+                    .reported
+                    .take()
+                    .ok_or(Fault::Internal("mutable field descriptor missing"))?;
+                own.value = result(input)?;
+                return self.finish(Output::Descriptor(Some(own)));
+            }
             Stage::HasResult => {
                 return self.finish(Output::Boolean(matches!(result(input)?, Value::Bool(true))));
             }
@@ -967,6 +989,9 @@ pub(crate) struct State {
     started: bool,
     setter: bool,
     coercing: Option<(ObjectId, PropertyDescriptor)>,
+    /// A forwarded store took a mutable deftype field's ordered setter;
+    /// its completion delivers the assigned value.
+    stored: bool,
 }
 impl State {
     fn select(&mut self, heap: &Heap, value: Value) -> Result<(), Fault> {
@@ -1003,6 +1028,7 @@ impl State {
             started: false,
             setter: false,
             coercing: None,
+            stored: false,
         }
     }
     pub(crate) fn step(
@@ -1011,6 +1037,13 @@ impl State {
         task: TaskId,
         input: Input,
     ) -> Result<Action, Fault> {
+        if std::mem::take(&mut self.stored) {
+            let Mode::Set { value, .. } = &self.mode else {
+                unreachable!()
+            };
+            result(input)?;
+            return Ok(Action::Return(value.clone()));
+        }
         if let Some((target, mut desc)) = self.coercing.take() {
             let Mode::Set { key, value, .. } = &self.mode else {
                 unreachable!()
@@ -1125,6 +1158,18 @@ impl State {
                             {
                                 self.coercing = Some((resolved, desc));
                                 return Ok(Action::ToNumber(value.clone()));
+                            }
+                            if own.is_some()
+                                && property::mutable_field(heap, resolved, key)
+                                    .is_some_and(|(writable, _)| writable)
+                            {
+                                self.stored = true;
+                                return Ok(Action::SetProperty {
+                                    this: Value::Object(resolved),
+                                    key: key.clone(),
+                                    value: value.clone(),
+                                    strict: *strict,
+                                });
                             }
                             match property::define_own_property(heap, task, *target, key, &desc) {
                                 Err(Fault::TypeError(message))

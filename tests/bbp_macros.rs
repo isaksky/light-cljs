@@ -14622,3 +14622,340 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
         }
     }
 }
+
+/// One row per JavaScript object operation on a field of a plain deftype, an
+/// unpublished mutable deftype and a published one (a closure over it stored
+/// in a compile-time atom), in sloppy and strict code
+/// (docs/native-macros.md, "Sharing mutable deftypes").
+const OBJECT_OPERATIONS: &str = r#"[
+  ['get', o => o.value],
+  ['set', o => { o.value = 5; return o.value; }],
+  ['add', o => { o.extra = 1; return o.extra; }],
+  ['has', o => 'value' in o],
+  ['delete', o => [delete o.value, 'value' in o]],
+  ['define', o => { Object.defineProperty(o, 'value', {value: 6}); return o.value; }],
+  ['define-readonly', o => { Object.defineProperty(o, 'value', {writable: false}); o.value = 7; return o.value; }],
+  ['descriptor', o => Object.getOwnPropertyDescriptor(o, 'value')],
+  ['descriptors', o => Object.getOwnPropertyDescriptors(o).value],
+  ['keys', o => Object.keys(o)],
+  ['names', o => Object.getOwnPropertyNames(o)],
+  ['freeze', o => { Object.freeze(o); return [Object.isFrozen(o), Object.isSealed(o)]; }],
+  ['seal', o => { Object.seal(o); return [Object.isSealed(o), Object.isFrozen(o)]; }],
+  ['prevent', o => { Object.preventExtensions(o); return Object.isExtensible(o); }],
+  ['frozen', o => [Object.isFrozen(o), Object.isSealed(o), Object.isExtensible(o)]],
+  ['reflect-get', o => Reflect.get(o, 'value')],
+  ['reflect-set', o => [Reflect.set(o, 'value', 8), o.value]],
+  ['reflect-set-receiver', o => { const r = {}; return [Reflect.set(o, 'value', 8, r), r.value, o.value]; }],
+  ['reflect-has', o => Reflect.has(o, 'value')],
+  ['reflect-delete', o => [Reflect.deleteProperty(o, 'value'), o.value]],
+  ['reflect-define', o => [Reflect.defineProperty(o, 'value', {value: 9}), o.value]],
+  ['reflect-descriptor', o => Reflect.getOwnPropertyDescriptor(o, 'value')],
+  ['reflect-keys', o => Reflect.ownKeys(o)],
+  ['proxy-get', o => new Proxy(o, {}).value],
+  ['proxy-set', o => { const p = new Proxy(o, {}); p.value = 10; return [p.value, o.value]; }],
+  ['proxy-has', o => 'value' in new Proxy(o, {})],
+  ['proxy-descriptor', o => Object.getOwnPropertyDescriptor(new Proxy(o, {}), 'value')],
+  ['proxy-define', o => { Object.defineProperty(new Proxy(o, {}), 'value', {value: 11}); return o.value; }],
+  ['child-get', o => Object.create(o).value],
+  ['child-set', o => { const c = Object.create(o); c.value = 12; return [c.value, o.value, Object.keys(c)]; }],
+  ['assign-into', o => { Object.assign(o, {value: 13}); return o.value; }],
+  ['assign-from', o => Object.assign({}, o).value],
+  ['spread', o => ({...o}).value],
+  ['entries', o => Object.entries(o)],
+  ['values', o => [Object.values(o).length === Object.keys(o).length, Object.values(o)[0]]],
+  ['json', o => [Object.keys(JSON.parse(JSON.stringify(o))), JSON.parse(JSON.stringify(o)).value]],
+  ['for-in', o => { const ks = []; for (const k in o) ks.push(k); return ks; }],
+]"#;
+
+fn object_operation_table_source() -> String {
+    format!(
+        r#"(deftype P [value])
+      (deftype M [^:mutable value])
+      (def sink (atom nil))
+      (defn make [kind]
+        (if (= kind 0) (P. 1)
+          (if (= kind 1) (M. 1)
+            (let [m (M. 1)] (reset! sink (fn [] m)) m))))
+      (defmacro object-operations []
+        (js* "(function (make) {{
+          // The QuickJS reference's instances also own protocol bit masks,
+          // a representation detail of its runtime the table leaves out.
+          const mask = k => String(k).startsWith('cljs$lang$protocol_mask');
+          const show = v => Array.isArray(v)
+            ? '[' + v.filter(x => !mask(Array.isArray(x) ? x[0] : x)).map(show).join(',') + ']'
+            : typeof v === 'object' && v !== null
+            ? '{{' + Object.keys(v).map(k => k + ':' + show(v[k])).join(',') + '}}' : String(v);
+          const sets = [['sloppy', (function () {{ return {ops}; }})()],
+                        ['strict', (function () {{ 'use strict'; return {ops}; }})()]];
+          const rows = [];
+          for (const [kind, name] of [[0, 'plain'], [1, 'private'], [2, 'published']])
+            for (const [mode, ops] of sets)
+              for (const [op, f] of ops) {{
+                let r;
+                try {{ r = show(f(make(kind))); }} catch (e) {{ r = 'throws ' + e.constructor.name; }}
+                rows.push(name + ' ' + mode + ' ' + op + ': ' + r);
+              }}
+          return rows.join('\\n');
+        }})(~{{}})" make))
+      (js/console.log (object-operations))"#,
+        ops = OBJECT_OPERATIONS
+    )
+}
+
+/// Where the Pants build's table row differs from the QuickJS reference's,
+/// by design, and what the Pants build gives instead. Every other row must
+/// match, and every row here must still differ.
+const OBJECT_OPERATION_DIVERGENCES: &str = "\
+# A plain deftype is a frozen native struct (light-cljs-478).
+plain sloppy set: 1
+plain sloppy add: undefined
+plain sloppy delete: [false,true]
+plain sloppy define: throws TypeError
+plain sloppy descriptor: {value:1,writable:false,enumerable:true,configurable:false}
+plain sloppy descriptors: {value:1,writable:false,enumerable:true,configurable:false}
+plain sloppy seal: [true,true]
+plain sloppy frozen: [true,true,false]
+plain sloppy reflect-set: [false,1]
+plain sloppy reflect-set-receiver: [false,undefined,1]
+plain sloppy reflect-delete: [false,1]
+plain sloppy reflect-define: [false,1]
+plain sloppy reflect-descriptor: {value:1,writable:false,enumerable:true,configurable:false}
+plain sloppy proxy-set: [1,1]
+plain sloppy proxy-descriptor: {value:1,writable:false,enumerable:true,configurable:false}
+plain sloppy proxy-define: throws TypeError
+plain sloppy child-set: [1,1,[]]
+plain sloppy assign-into: throws TypeError
+plain strict set: throws TypeError
+plain strict add: throws TypeError
+plain strict delete: throws TypeError
+plain strict define: throws TypeError
+plain strict descriptor: {value:1,writable:false,enumerable:true,configurable:false}
+plain strict descriptors: {value:1,writable:false,enumerable:true,configurable:false}
+plain strict seal: [true,true]
+plain strict frozen: [true,true,false]
+plain strict reflect-set: [false,1]
+plain strict reflect-set-receiver: [false,undefined,1]
+plain strict reflect-delete: [false,1]
+plain strict reflect-define: [false,1]
+plain strict reflect-descriptor: {value:1,writable:false,enumerable:true,configurable:false}
+plain strict proxy-set: throws TypeError
+plain strict proxy-descriptor: {value:1,writable:false,enumerable:true,configurable:false}
+plain strict proxy-define: throws TypeError
+plain strict child-set: throws TypeError
+plain strict assign-into: throws TypeError
+# A mutable deftype has a closed shape: non-configurable fields, no added
+# properties (docs/native-macros.md, \"Sharing mutable deftypes\").
+private sloppy add: undefined
+private sloppy delete: [false,true]
+private sloppy descriptor: {value:1,writable:true,enumerable:true,configurable:false}
+private sloppy descriptors: {value:1,writable:true,enumerable:true,configurable:false}
+private sloppy frozen: [false,true,false]
+private sloppy reflect-delete: [false,1]
+private sloppy reflect-descriptor: {value:1,writable:true,enumerable:true,configurable:false}
+private sloppy proxy-descriptor: {value:1,writable:true,enumerable:true,configurable:false}
+private strict add: throws TypeError
+private strict delete: throws TypeError
+private strict descriptor: {value:1,writable:true,enumerable:true,configurable:false}
+private strict descriptors: {value:1,writable:true,enumerable:true,configurable:false}
+private strict frozen: [false,true,false]
+private strict reflect-delete: [false,1]
+private strict reflect-descriptor: {value:1,writable:true,enumerable:true,configurable:false}
+private strict proxy-descriptor: {value:1,writable:true,enumerable:true,configurable:false}
+published sloppy add: undefined
+published sloppy delete: [false,true]
+published sloppy descriptor: {value:1,writable:true,enumerable:true,configurable:false}
+published sloppy descriptors: {value:1,writable:true,enumerable:true,configurable:false}
+published sloppy frozen: [false,true,false]
+published sloppy reflect-delete: [false,1]
+published sloppy reflect-descriptor: {value:1,writable:true,enumerable:true,configurable:false}
+published sloppy proxy-descriptor: {value:1,writable:true,enumerable:true,configurable:false}
+published strict add: throws TypeError
+published strict delete: throws TypeError
+published strict descriptor: {value:1,writable:true,enumerable:true,configurable:false}
+published strict descriptors: {value:1,writable:true,enumerable:true,configurable:false}
+published strict frozen: [false,true,false]
+published strict reflect-delete: [false,1]
+published strict reflect-descriptor: {value:1,writable:true,enumerable:true,configurable:false}
+published strict proxy-descriptor: {value:1,writable:true,enumerable:true,configurable:false}
+# A published instance rejects attribute changes and freezing; stores go
+# through the ordered field setter instead.
+published sloppy define: throws TypeError
+published sloppy define-readonly: throws TypeError
+published sloppy freeze: throws TypeError
+published sloppy reflect-define: [false,1]
+published sloppy proxy-define: throws TypeError
+published strict define: throws TypeError
+published strict freeze: throws TypeError
+published strict reflect-define: [false,1]
+published strict proxy-define: throws TypeError
+";
+
+#[test]
+fn native_object_operation_table_matches_quickjs() {
+    let source = object_operation_table_source();
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let native = program_output(&emit_js(&program));
+    let legacy = program_output(&light_cljs::compile(&source).unwrap());
+    let divergences: std::collections::HashMap<&str, &str> = OBJECT_OPERATION_DIVERGENCES
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| line.split_once(": ").unwrap())
+        .collect();
+    let (native, legacy): (Vec<_>, Vec<_>) = (native.lines().collect(), legacy.lines().collect());
+    assert_eq!(native.len(), legacy.len(), "{native:#?}");
+    let mut seen = 0;
+    for (native, legacy) in native.iter().zip(&legacy) {
+        let (row, reference) = legacy.split_once(": ").unwrap();
+        let expected = match divergences.get(row) {
+            Some(pinned) => {
+                seen += 1;
+                assert_ne!(*pinned, reference, "{row} no longer diverges");
+                format!("{row}: {pinned}")
+            }
+            None => legacy.to_string(),
+        };
+        assert_eq!(*native, expected, "QuickJS reference: {legacy}");
+    }
+    assert_eq!(seen, divergences.len());
+}
+
+#[test]
+fn native_member_store_preserves_sloppy_assignment_semantics() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+      (let [o (js* "Object.freeze({x: 1})")
+            r (js* "Object.defineProperty({}, 'y', {value: 1, writable: false})")]
+        (list 'quote [(set! (.-x o) 2) (.-x o) (set! (.-y r) 3) (.-y r)])))
+      (js/console.log (pr-str (probe)))"#,
+        "[2 1 3 1]\n",
+    );
+}
+
+#[test]
+fn native_mutable_object_methods_keep_inherited_receiver_matches_quickjs() {
+    assert_native_matches_legacy(
+        r#"(deftype Box [^:mutable value]
+        Object
+        (store [this v] (set! value v) this)
+        (me [this] this))
+      (defmacro probe []
+        (let [b (Box. 1) child (js/Object.create b) returned (.store child 2)]
+          (list 'quote [(identical? returned child) (.-value child) (.-value b)
+                        (identical? (.me child) child)
+                        (js* "Object.keys(~{}).join()" child)])))
+      (js/console.log (pr-str (probe)))"#,
+        "[true 2 1 true \"value\"]\n",
+    );
+}
+
+#[test]
+fn native_mutable_tag_named_field_matches_quickjs() {
+    assert_native_matches_legacy(
+        r#"(deftype Box [^:mutable __lightNativeType]
+        Object
+        (tag [_] __lightNativeType)
+        (retag [_ v] (set! __lightNativeType v)))
+      (defmacro probe []
+        (let [b (Box. 7)
+              before [(.-__lightNativeType b) (.tag b)
+                      (.-value (js/Object.getOwnPropertyDescriptor b "__lightNativeType"))]]
+          (.retag b 8)
+          (list 'quote [before (.-__lightNativeType b) (.tag b)
+                        (.-value (js/Object.getOwnPropertyDescriptor b "__lightNativeType"))])))
+      (js/console.log (pr-str (probe)))"#,
+        "[[7 7 7] 8 8 8]\n",
+    );
+}
+
+/// Every reflective read and indirect store of a published mutable field
+/// runs in source order: namespace `nI` reads the value `nI-1` stored, through
+/// a different path each time, at seeded 1/2/4/8 threads.
+#[test]
+fn native_mutable_published_field_reflection_follows_source_order() {
+    const STEPS: usize = 12;
+    let root = temp_dir::TempDir::new("mutable-field-reflection");
+    std::fs::write(
+        root.join("state.cljs"),
+        r#"(ns state)
+      (deftype M [^:mutable value])
+      (def box (let [b (M. 1)] (fn [] b)))
+      (defmacro step [i]
+        (js* "(function (i, b) {
+          const reads = [o => Object.getOwnPropertyDescriptor(o, 'value').value,
+            o => Reflect.getOwnPropertyDescriptor(o, 'value').value,
+            o => Object.getOwnPropertyDescriptors(o).value.value,
+            o => Object.getOwnPropertyDescriptor(new Proxy(o, {}), 'value').value,
+            o => Reflect.get(o, 'value'), o => new Proxy(o, {}).value,
+            o => Object.entries(o)[0][1], o => Object.values(o)[0], o => ({...o}).value,
+            o => Object.assign({}, o).value, o => JSON.parse(JSON.stringify(o)).value,
+            o => Object.create(o).value];
+          const writes = [(o, v) => { o.value = v; }, (o, v) => { Reflect.set(o, 'value', v); },
+            (o, v) => { new Proxy(o, {}).value = v; }, (o, v) => { Object.assign(o, {value: v}); }];
+          const r = reads[i % reads.length](b);
+          writes[i % writes.length](b, r + 1);
+          return r;
+        })(~{}, ~{})" (+ 0 i) (box)))"#,
+    )
+    .unwrap();
+    for i in 0..STEPS {
+        std::fs::write(
+            root.join(format!("n{i}.cljs")),
+            format!("(ns n{i} (:require [state :refer [step]])) (def value (step {i}))"),
+        )
+        .unwrap();
+    }
+    let requires: String = (0..STEPS).map(|i| format!(" [n{i}]")).collect();
+    let values: String = (0..STEPS).map(|i| format!(" n{i}/value")).collect();
+    std::fs::write(
+        root.join("app.cljs"),
+        format!("(ns app (:require{requires})) (js/console.log (pr-str [{values}]))"),
+    )
+    .unwrap();
+    let build = |pants, threads, seed| {
+        let mut host = MacroHost::new();
+        if pants {
+            host.use_native_macros();
+        }
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(threads).unwrap(),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: pants.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("Pants {pants}, {threads} threads, seed {seed}: {e}"));
+        emit_js(&program)
+    };
+    let reference = build(false, 1, 0);
+    let expected: String = (1..=STEPS)
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(program_output(&reference), format!("[{expected}]\n"));
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for threads in [1, 2, 4, 8] {
+        for seed in 1..=seeds {
+            let actual = build(true, threads, seed);
+            assert!(
+                reference == actual,
+                "{threads} threads, seed {seed}: {}",
+                program_output(&actual)
+            );
+        }
+    }
+}

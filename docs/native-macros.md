@@ -109,9 +109,35 @@ As with other Pants build structs, the instance has a closed property shape.
 Its declared members are enumerable, writable data properties, with
 non-configurable names. A private instance supports descriptor value changes
 and freezing; a published instance rejects descriptor changes and freezing
-with a catchable `TypeError`, so shared writes always pass through the
-ordered field setter. A private frozen instance stays frozen after publication.
-Colliding munged field names retain only the constructor's last assignment.
+(`Object.defineProperty` throws a `TypeError`, `Reflect.defineProperty`
+returns false), so shared writes always pass through the ordered field
+setter. A private frozen instance stays frozen after publication. Colliding
+munged field names retain only the constructor's last assignment; the
+overwritten slot is not a property and takes no part in `Object.isFrozen` or
+`Object.freeze`.
+
+Every path to a field takes the ordered setter or read, not only compiled
+`set!` and member reads: a field store through `Reflect.set` or a transparent
+`Proxy` (OrdinarySet's value store on the receiver), and a published field's
+value in `Object.getOwnPropertyDescriptor`, `Reflect.getOwnPropertyDescriptor`,
+`Object.getOwnPropertyDescriptors` and a Proxy's forwarded descriptor read.
+A compiled member store keeps its assignment in the (sloppy) macro unit, so a
+store into a frozen or read-only host property is ignored as in the QuickJS
+reference; only the value's interop preparation depends on the receiver. Its
+receiver is demanded for Object extensions exactly where a member read's is.
+An Object method keeps its actual receiver: called on an object inheriting
+from an instance (`Object.create`), its `set!` gives that object its own
+property, as the legacy prototype method does. A declared field named
+`__lightNativeType` shadows the runtime's type tag.
+
+`native_object_operation_table_matches_quickjs` runs every object operation
+(get, set, add, has, delete, define, descriptors, keys, freeze/seal and their
+predicates, the `Reflect` functions, Proxy get/set/has/descriptor/define,
+inheriting objects, `Object.assign`, spread, entries/values, JSON, for-in) on a
+plain deftype, a private and a published mutable deftype, in sloppy and strict
+code, against the QuickJS reference. Its only accepted differences are listed
+in the test: a plain deftype is a frozen struct, a mutable deftype has the
+closed shape above, and a published one rejects attribute changes.
 
 The field cell is traced through its current contents, shares the aggregate
 memory budget and runs no user code under its lock. Publishing a cell cannot

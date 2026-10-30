@@ -2163,6 +2163,35 @@ pub(crate) fn typed_array_descriptor(
     Ok(Some((view, index)))
 }
 
+/// Whether `key` names a writable mutable deftype field of `target`
+/// (`crate::collections::mutable_fields`), and whether its cell is
+/// published. A store to such a field, however reached (`Reflect.set`, a
+/// transparent Proxy), goes through the runtime's ordered field setter
+/// ([`Write::MutableStruct`]), and a published field's value is read
+/// through its ordered member read, never copied here.
+pub(crate) fn mutable_field(heap: &Heap, target: ObjectId, key: &Key) -> Option<(bool, bool)> {
+    let Key::Name(name) = key else {
+        return None;
+    };
+    heap.read(target, |o| match o {
+        HeapObject::Form(f) => form::mutable_field(f, name)
+            .map(|(cell, index)| (cell.writable(index), cell.is_shared())),
+        _ => None,
+    })
+    .flatten()
+}
+
+/// Whether a descriptor only replaces a value: the shape OrdinarySet
+/// defines on a receiver that already owns a writable data property.
+pub(crate) fn value_only(desc: &PropertyDescriptor) -> bool {
+    desc.value.is_some()
+        && desc.get.is_none()
+        && desc.set.is_none()
+        && desc.writable.is_none()
+        && desc.enumerable.is_none()
+        && desc.configurable.is_none()
+}
+
 pub(crate) fn define_own_property(
     heap: &Heap,
     task: TaskId,

@@ -458,6 +458,20 @@ impl State {
             view.set(heap, index, self.desc.value.as_ref().unwrap())?;
             return boolean(true);
         }
+        // OrdinarySet's value store on a mutable deftype field takes the
+        // ordered field setter, as a direct assignment does.
+        if self.which == Builtin::ReflectSet
+            && property::value_only(&self.desc)
+            && property::mutable_field(heap, id, &key).is_some_and(|(writable, _)| writable)
+        {
+            self.stage = Stage::Setter;
+            return Ok(Action::SetProperty {
+                this: self.receiver.clone(),
+                key,
+                value: self.desc.value.clone().unwrap(),
+                strict: true,
+            });
+        }
         boolean(ordinary(property::define_own_property(
             heap, task, id, &key, &self.desc,
         ))?)

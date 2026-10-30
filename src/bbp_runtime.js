@@ -533,7 +533,9 @@ const decl = (() => {
   // receiver) as the method's receiver.
   const memberFunction = (info, member) => {
     let f = info.memberFunctions.get(member);
-    if (f === undefined) info.memberFunctions.set(member, f = function (...a) { return objectInvoke(info, member, structOf(this), a); });
+    // A mutable-field type keeps the call's receiver, as its legacy
+    // prototype member does: an inheriting object's stores stay its own.
+    if (f === undefined) info.memberFunctions.set(member, f = function (...a) { return objectInvoke(info, member, info.mutableFields ? this : structOf(this), a); });
     return f;
   };
   // A bundle's declaration order is its position among every bundle the
@@ -1020,14 +1022,15 @@ const native = (() => {
     // A Var's `_meta` is its materialized metadata, as the legacy getter's.
     if (isVar(value)) return name === '_meta' ? varMeta(value) : rawVarMembers.get(name) ?? inherited(name);
     if (__rt.structState(value) !== 0) {
-      // A transparent Proxy must classify like the task-owned representation
-      // did. Direct structs use engine type identity without reading this tag.
-      if (name === '__lightNativeType') return __rt.structTypeOf(value);
       const info = decl.structInfo(value), index = info.fieldMembers.lastIndexOf(name);
       if (index >= 0) {
         mutableLane(value);
         return __rt.structField(value, info.fields[index]);
       }
+      // A transparent Proxy must classify like the task-owned representation
+      // did; a declared field of that name shadows the tag. Direct structs
+      // use engine type identity without reading it.
+      if (name === '__lightNativeType') return __rt.structTypeOf(value);
     }
     return structMember(value, name);
   };
@@ -2526,7 +2529,7 @@ const native = (() => {
     // Units keep that getter's access at the original expression site.
     nativeCoreBinding:name=>Object.getOwnPropertyDescriptor(core,name),
     nativeInterop:interop,intrinsicRegExp,nativeRegExp,nativeRegExpCall,nativeRegExpMember:function(_,...a){return nativeRegExpCall(intrinsicRegExp)(...a);},nativeConstruct:(C,...a)=>nativeRegExp(C)(...a),declarationReceiver:x=>{decl.demandObject(x);return x;},
-    nativeSetProperty:(x,k,v)=>x[k]=__rt.structState(x)!==0?v:interop(v),
+    nativeStoreValue:(x,v)=>__rt.structState(x)!==0?v:interop(v),
     protocol:name=>Object.freeze({name}),
     protocolMethod:(key,name,arities,viaMetadata)=>decl.method(key,name,arities,viaMetadata===true),
     protocolPredicate:(protocol,key,x,direct)=>direct?decl.implementsDirectly(key,x):decl.satisfies(key,x),
