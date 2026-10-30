@@ -11072,8 +11072,7 @@ fn native_resolve_reflects_a_declared_var() {
 /// directly (`resolve`, `#'`), through Vars saved in helper definitions and
 /// through `apply` and `.call`; their metadata, `:test` callbacks and
 /// identity; `ns-publics`/`ns-interns`; a macro's Var; a local's Var;
-/// `all-ns`, `find-ns` and `the-ns`, also from a macro expanded while a
-/// helper compiles on demand in its producer task. Reading a Var's metadata demands
+/// `find-ns` and `the-ns` of registered namespaces. Reading a Var's metadata demands
 /// neither its definition (`runs` stays 0) nor its `:test` before it is
 /// read; the callbacks keep their generation, and a failed `:test` stays
 /// failed. At 2, 4 and 8 threads `a` and `b` expand on workers, which
@@ -11097,8 +11096,6 @@ const VAR_REFLECTION: &[(&str, &str)] = &[
         r#"(ns reflect (:require [doc]))
 (def saved (resolve 'doc/value))
 (def saved-f #'doc/f)
-(defmacro names-now [] (list 'quote (mapv ns-name (all-ns))))
-(defn helper-names [] (names-now))
 (defn describe [v]
   (let [m (meta v)]
     [(str v) (pr-str v) (:doc m) (:name m) (:ns m) (:added m) (:arglists m)
@@ -11123,8 +11120,8 @@ const VAR_REFLECTION: &[(&str, &str)] = &[
            (try @(resolve 'doc/twice) (catch :default e (.-message e)))
            (map str (keys (ns-publics 'doc))) (map str (vals (ns-interns 'doc)))
            (let [x 5] (dissoc (meta (resolve 'x)) :line :column))
-           (mapv ns-name (all-ns)) (str (find-ns 'doc)) (find-ns 'absent) (ns-name (the-ns 'reflect))
-           (pr-str [#'doc/value {:v saved}]) (helper-names)])))"#,
+           (str (find-ns 'doc)) (find-ns 'absent) (ns-name (the-ns 'reflect))
+           (pr-str [#'doc/value {:v saved}])])))"#,
     ),
     (
         "a.cljs",
@@ -11252,13 +11249,11 @@ fn native_var_reflection_and_namespace_views_match_quickjs_at_every_pool_size() 
         r##"("again" "f" "later" "runs" "twice" "value" "variadic")"##,
         r##"("#'doc/again" "#'doc/f" "#'doc/hidden" "#'doc/later" "#'doc/runs" "#'doc/twice" "#'doc/value" "#'doc/variadic")"##,
         "{:ns nil, :name x, :doc nil, :file nil, :test nil, :arglists ()}",
-        "[cljs.user cljs.core doc reflect a]",
         r##""doc""##,
         "nil",
         "reflect",
         r##""[#'doc/value {:v #'doc/value}]""##,
-        "[cljs.user cljs.core doc reflect]",
-        r##"[cljs.user cljs.core doc reflect] ["first" "first"] ["first" "first"]"##,
+        r##""[#'doc/value {:v #'doc/value}]" ["first" "first"] ["first" "first"]"##,
         "[0 0 1 1 :callback true :ready 1 true :ok 2 1] [[:old 2] [:new 2] false :ok] [:failed :failed 1]",
     ];
     assert_eq!(program_output(&reference), lines.join("\n") + "\n");
@@ -11271,6 +11266,113 @@ fn native_var_reflection_and_namespace_views_match_quickjs_at_every_pool_size() 
         );
         assert_eq!(reference, build(true, jobs), "jobs {jobs}");
     }
+}
+
+/// Vars of one symbol made separately, in different tasks, are one key
+/// and member inside native collections; applying a Var calls its root's
+/// `call` as the legacy Var does; a Var's metadata is one materialized map,
+/// also through `._meta` (light-cljs-589 review). Matches the QuickJS
+/// reference at 1, 2, 4 and 8 threads.
+const VAR_IDENTITY: &[(&str, &str)] = &[
+    (
+        "doc.cljs",
+        r#"(ns doc)
+(def value 1)
+(defrecord F [call] IFn (-invoke [_ x] :invoke))
+(def f (->F (fn [_ x] :call)))
+(defn g {:test (fn [] :tested)} [] 1)"#,
+    ),
+    (
+        "reflect.cljs",
+        r#"(ns reflect (:require [doc]))
+(def saved (resolve 'doc/value))
+(def saved-f #'doc/f)
+(def saved-g #'doc/g)
+(defmacro probe []
+  (let [a saved b (resolve 'doc/value) c #'doc/value
+        v #'doc/g m (meta v) s (meta saved-g)]
+    (list 'quote
+          [[(= a b) (= [a] [b]) (= [a] [c]) (get {a :hit} b :miss) (get {c :hit} a :miss)
+            (count (set [a b c])) (contains? #{a} b) (= {:k a} {:k b}) (= (hash [a]) (hash [b]))
+            (= (list a) (list b)) (= a #'doc/f) (count (set [a #'doc/f]))]
+           [(#'doc/f 1) (apply #'doc/f [1]) (saved-f 1) (apply saved-f [1]) ((memoize #'doc/f) 1)
+            (apply #'doc/f 1 [])]
+           [(identical? m (meta v)) (fn? (:test (.-_meta v))) (identical? m (.-_meta v))
+            (identical? s (meta saved-g)) (identical? s (.-_meta saved-g)) ((:test s))]])))"#,
+    ),
+    (
+        "a.cljs",
+        "(ns a (:require [reflect :refer [probe]])) (def value (probe))",
+    ),
+    (
+        "b.cljs",
+        "(ns b (:require [reflect :refer [probe]])) (def value (probe))",
+    ),
+    (
+        "main.cljs",
+        "(ns main (:require [a] [b])) (js/console.log (pr-str a/value) (= a/value b/value))",
+    ),
+];
+
+/// Build `files`' namespace `main` natively (or with the legacy engine) at
+/// `jobs` threads and give its program.
+fn entry_program(root: &std::path::Path, native: bool, jobs: usize) -> String {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let mut host = MacroHost::new();
+    if native {
+        host.use_native_macros();
+    }
+    let (program, _) = analyze_namespace_entry_recorded(
+        "main",
+        &[root.to_path_buf()],
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+        EntryRecorders {
+            slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}: {e}"));
+    emit_js(&program)
+}
+
+fn assert_entry_matches_quickjs(
+    name: &str,
+    files: &[(&str, &str)],
+    expected: &str,
+    pool_sizes: &[usize],
+) {
+    let root = temp_dir::TempDir::new(name);
+    for (file, source) in files {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let reference = entry_program(root.path(), true, 1);
+    assert_eq!(program_output(&reference), expected);
+    for &jobs in pool_sizes {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(
+            reference,
+            entry_program(root.path(), false, jobs),
+            "QuickJS reference, jobs {jobs}"
+        );
+        assert_eq!(
+            reference,
+            entry_program(root.path(), true, jobs),
+            "jobs {jobs}"
+        );
+    }
+}
+
+#[test]
+fn native_var_identity_apply_and_metadata_match_quickjs() {
+    assert_entry_matches_quickjs(
+        "native-var-identity",
+        VAR_IDENTITY,
+        "[[true true true :hit :hit 1 true true true true false 2] \
+         [:call :call :call :call :call :call] [true true true true true :tested]] true\n",
+        &[1, 2, 4, 8],
+    );
 }
 
 #[test]

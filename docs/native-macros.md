@@ -1403,12 +1403,16 @@ a failure there stays failed. A macro's Var (`compilerMacroVar`) has `:macro
 true` and throws when dereferenced. `deref`, invocation, `apply`, `.call`,
 `.apply`, `meta`, `with-meta`/`vary-meta`, `=`, `hash`, `str`, `pr-str`,
 `var?`, `fn?`, `ifn?` and `test` follow the legacy Var: dereferencing or
-calling reads the root then, `=` and `hash` are the symbol's, and the printed
-form is `#'ns/name`. A Var made in one task is recognized in another by its
-type's name, as a MultiFn is. As for every struct, native persistent
-collections compare and hash a Var by identity (see "Protocols and types"), so
-two Vars of one symbol are different map keys and set members, where the
-legacy runtime calls the Var's `IEquiv`/`IHash` (light-cljs-594). `tests/bbp_macros.rs`
+calling reads the root then, and the printed form is `#'ns/name`. `apply` of
+a Var calls its root through the root's `call` for up to 20 arguments, as the
+legacy Var's adapters do. A Var's metadata with its `:test` is materialized
+once per task: `meta` and `._meta` give that one map. A Var made in one task
+is recognized in another by its type's name, as a MultiFn is. The engine
+type is *keyed* by `sym` (`__rt.structType`'s third argument is the field
+index): Vars of one symbol are equal and hash alike also as map keys, set
+members and collection elements, whichever task made them, while other
+structs keep identity (see "Protocols and types"). `tests/bbp_macros.rs`
+(`native_var_identity_apply_and_metadata_match_quickjs` too)
 (`native_var_reflection_and_namespace_views_match_quickjs_at_every_pool_size`)
 checks the reflections and the namespace views below against the QuickJS
 reference at 1, 2, 4 and 8 threads, and the verbatim `DEFONCE_PENDING` fixture

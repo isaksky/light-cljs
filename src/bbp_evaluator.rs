@@ -2657,7 +2657,8 @@ impl BbpEvaluator {
         if let Some(message) = failed.string() {
             return Err(error(message.to_string_lossy()));
         }
-        if op != 3 && op != 4 {
+        // Only evaluate, adopt and call give a value a caller holds.
+        if matches!(op, 0..=2) {
             let value = cx
                 .task
                 .global_value("__lightResult")

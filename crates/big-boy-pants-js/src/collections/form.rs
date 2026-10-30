@@ -504,6 +504,12 @@ pub(crate) struct TypeInfo {
     /// Each field's JavaScript member name (`my_field`), one per field.
     pub(crate) members: Box<[JsString]>,
     pub(crate) record: bool,
+    /// For a type whose instances are a value of one field (the runtime's
+    /// Var is its symbol), that field's index: such instances are equal
+    /// when their types have the same name and that field's values are
+    /// equal, and hash as that value, also inside collections. The field
+    /// holds compiler data, so comparing it runs no user code.
+    pub(crate) key: Option<usize>,
 }
 
 /// A struct instance: its type, its field values in the type's order, and a
@@ -762,7 +768,11 @@ impl FormObject {
                 }
             }
             FormBody::Struct(s) => {
-                if s.info.record {
+                if let Some(key) = s.info.key {
+                    if let Some(value) = s.fields.get(key) {
+                        f(&value);
+                    }
+                } else if s.info.record {
                     s.fields.for_each(&mut f);
                     if let Some(ext) = &s.ext {
                         f(ext);
@@ -1902,9 +1912,10 @@ pub(crate) fn compiler_literal(
 
 /// A new struct type named `name` (a string) with the field names of the
 /// form vector or list `fields` (strings), a record when `record` is true,
-/// and the fields' JavaScript member names `members` (strings, one per
-/// field; `null`/`undefined` for the field names). Each call makes a new
-/// identity.
+/// a type keyed by field `record` when it is that field's index (a number,
+/// [`TypeInfo::key`]), and the fields' JavaScript member names `members`
+/// (strings, one per field; `null`/`undefined` for the field names). Each
+/// call makes a new identity.
 pub(crate) fn new_type(
     heap: &Heap,
     name: &Value,
@@ -1942,11 +1953,19 @@ pub(crate) fn new_type(
             out
         }
     };
+    let key = match record {
+        Value::Number(n) if n.fract() == 0.0 && *n >= 0.0 && (*n as usize) < names.len() => {
+            Some(*n as usize)
+        }
+        Value::Number(_) => return Err(wrong(heap, "a field index", record)),
+        _ => None,
+    };
     let info = TypeInfo {
         name,
         fields: names.into_boxed_slice(),
         members: members.into_boxed_slice(),
         record: matches!(record, Value::Bool(true)),
+        key,
     };
     alloc(
         heap,
@@ -3262,6 +3281,17 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
             // Records of the same type with equal fields and extension
             // entries; a deftype only to itself (decided above).
             (FormBody::Struct(p), FormBody::Struct(q)) => {
+                // Keyed structs: the same type name (each task makes its
+                // own type) and equal key values.
+                if let (Some(i), Some(j)) = (p.info.key, q.info.key) {
+                    if i != j || p.info.name != q.info.name {
+                        return Outcome::Decided(false);
+                    }
+                    let (Some(a), Some(b)) = (p.fields.get(i), q.fields.get(j)) else {
+                        return Outcome::Decided(false);
+                    };
+                    return Outcome::Expand((ia, ib), vec![Step::Pair(a, b)]);
+                }
                 if !(p.info.record && q.info.record && p.ty.same_object(&q.ty)) {
                     return Outcome::Decided(false);
                 }
@@ -3626,6 +3656,13 @@ fn shallow_hash(heap: &Heap, v: &Value, f: &FormObject) -> i32 {
             set.for_each(|k, _| sum = sum.wrapping_add(child_hash(heap, k)));
             mix_collection_hash(sum, set.len())
         }
+        // A keyed struct hashes as its key field's value (a Var as its
+        // symbol, the runtime's `IHash`).
+        FormBody::Struct(s) if s.info.key.is_some() => s
+            .info
+            .key
+            .and_then(|key| s.fields.get(key))
+            .map_or(0, |value| child_hash(heap, &value)),
         // A record: each entry's key hash xor its value hash, summed, xor
         // the `stringHash` of the type's name (the runtime's record
         // `IHash`). Field keys are unqualified keywords of the field names.
@@ -3672,7 +3709,7 @@ fn shallow_hash(heap: &Heap, v: &Value, f: &FormObject) -> i32 {
 /// a private hash of the object's identity, as for other heap objects.
 fn identity_hash(f: &FormObject, id: ObjectId) -> Option<i32> {
     match &f.body {
-        FormBody::Struct(s) if s.info.record => None,
+        FormBody::Struct(s) if s.info.record || s.info.key.is_some() => None,
         FormBody::CompilerLiteral { tag, .. }
             if tag == "uuid" || tag == "instant" || tag == "queue" =>
         {

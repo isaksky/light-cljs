@@ -745,17 +745,28 @@ const native = (() => {
   const get = function(m,k,n) { return arguments.length === 2 ? __rt.cljGet2(m,k) : __rt.cljGet(m,k,n); };
   // Vars (light-cljs-589; docs/native-macros.md, "Vars"): an immutable
   // struct with the legacy Var's slots. `val` is the thunk that reads the
-  // binding, `sym` its symbol and `_meta` its metadata; `__deferred`, of a
-  // definition's Var only, gives the executable :test metadata when the
-  // metadata is read, so taking a Var never demands its definition. A Var
-  // is its symbol: equality and hashing never call the thunk. Like a
-  // MultiFn, a Var another task made is recognized by its type's name.
-  const varType = __rt.structType('cljs.core/Var',__rt.formVector('val','sym','_meta','__deferred'),false,null);
+  // binding, `sym` its symbol and `__metadata` its metadata; `__deferred`,
+  // of a definition's Var only, gives the executable :test metadata when
+  // the metadata is first read, so taking a Var never demands its
+  // definition. The type is keyed by `sym` (field 1): a Var is its symbol,
+  // for `=` and `hash` and inside collections, and the thunk never runs
+  // for them. Like a MultiFn, a Var another task made is recognized by its
+  // type's name.
+  const varType = __rt.structType('cljs.core/Var',__rt.formVector('val','sym','__metadata','__deferred'),1,null);
   const isVar = x => { const t = __rt.structTypeOf(val(x)); return t !== null && __rt.formName(t) === 'cljs.core/Var'; };
   const varField = (v, k) => __rt.structField(val(v), k);
+  // A Var's metadata with its deferred :test, made once in each task, as
+  // the legacy Var materializes it once: every read, `meta` or `._meta`,
+  // gives the same map. The :test may be a value only this task holds.
+  const varMetadata = new WeakMap();
   const varMeta = v => {
-    const m = varField(v,'_meta'), deferred = varField(v,'__deferred');
-    return deferred === null ? m : __rt.cljAssoc(m, __rt.cljKeyword('test'), deferred());
+    const m = varField(v,'__metadata'), deferred = varField(v,'__deferred');
+    if (deferred === null) return m;
+    const key = val(v);
+    if (varMetadata.has(key)) return varMetadata.get(key);
+    const materialized = __rt.cljAssoc(m, __rt.cljKeyword('test'), deferred());
+    varMetadata.set(key, materialized);
+    return materialized;
   };
   const symText = s => { s = val(s); const ns = __rt.formNamespace(s); return (ns === null ? '' : ns + '/') + __rt.formName(s); };
   const varText = v => "#'" + symText(varField(v,'sym'));
@@ -994,7 +1005,8 @@ const native = (() => {
     if (kind !== 'struct' && kind !== 'record')
       return name === 'call' ? rawCalls.get(kind) : name === 'apply' ? rawApplies.get(kind) : undefined;
     if (multi.is(value)) return name === 'call' ? rawMultiCall : name === 'apply' ? rawApplies.get('struct') : inherited(name);
-    if (isVar(value)) return rawVarMembers.get(name) ?? inherited(name);
+    // A Var's `_meta` is its materialized metadata, as the legacy getter's.
+    if (isVar(value)) return name === '_meta' ? varMeta(value) : rawVarMembers.get(name) ?? inherited(name);
     return structMember(value, name);
   };
   // Rules 2 and 3 of docs/native-macros.md, "Member precedence: one rule",
@@ -1099,8 +1111,7 @@ const native = (() => {
   // applyTo's null receiver in immutable engine metadata, so they can publish
   // without a mutable JavaScript arity property record.
   const applyArgs = (f,args) => {
-    // A Var applies the value its thunk reads.
-    while(isVar(f))f=varField(f,'val')();
+    if(isVar(f))return globalThis.__lightNativeRuntime.core.applyVar(f,args);
     const value=val(f),kind=__rt.formKind(value);
     if(kind!==null)return (kind==='struct'||kind==='record')
       && __rt.formName(__rt.structTypeOf(value))!=='cljs.core/MultiFn' ? decl.applyIFn(value,args) : invoke(f,...args);
@@ -2059,6 +2070,10 @@ const native = (() => {
     isFn:x=>typeof val(x)==='function'||__rt.formKind(val(x))==='type'||isVar(x)||decl.satisfies('Fn',x),
     isVar, compilerMacroVar,
     invokeVar:(v,args)=>invoke(varField(v,'val')(),...args),
+    // The legacy Var's apply: up to 20 arguments it calls the value its
+    // thunk reads (through that value's `call`, as a direct call does);
+    // past 20 it applies the value.
+    applyVar:(v,args)=>{const f=varField(v,'val')();return args.length<=20?invoke(f,...args):applyArgs(f,args);},
     test:v=>{
       const fn=isVar(v)?get(__rt.cljMeta(v),__rt.cljKeyword('test')):val(v)==null?null:val(v).cljs$lang$test;
       if(truth(fn)){invoke(fn);return __rt.cljKeyword('ok');}
@@ -2169,8 +2184,7 @@ const native = (() => {
     listStar:(...xs)=>list([...xs.slice(0,-1),...arr(xs[xs.length-1])]),
     apply:(f,...xs)=>{
       const args=[...xs.slice(0,-1),...arr(xs[xs.length-1])];
-      // A Var applies the value its thunk reads, once the arguments are read.
-      while(isVar(f))f=varField(f,'val')();
+      if(isVar(f))return core.applyVar(f,args);
       const kind=__rt.formKind(val(f));
       return (kind==='struct'||kind==='record') && !multi.is(f)
         ? decl.applyIFn(val(f),args) : invoke(f,...args);

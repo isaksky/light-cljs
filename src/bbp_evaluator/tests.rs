@@ -4279,3 +4279,21 @@ fn reader_literal_payloads_reject_undefined_at_the_container_path() {
         evaluator.release(value).unwrap();
     }
 }
+
+/// Namespace inventories are commands without a result: no update, extended
+/// or divergent, leaves a value handle behind (light-cljs-589).
+#[test]
+fn namespace_registration_does_not_retain_value_handles() {
+    let evaluator = BbpEvaluator::new(Default::default()).unwrap();
+    let roots = evaluator.value_roots().unwrap();
+    let mut namespaces = crate::arena::Arena::new();
+    for i in 0..16 {
+        namespaces.push(format!("ns{i}"));
+        evaluator.register_namespaces(&namespaces).unwrap();
+    }
+    let mut divergent = crate::arena::Arena::new();
+    divergent.push("other".to_string());
+    evaluator.register_namespaces(&divergent).unwrap();
+    evaluator.collect_garbage();
+    assert_eq!(evaluator.value_roots().unwrap(), roots);
+}
