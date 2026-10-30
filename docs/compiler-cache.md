@@ -2036,24 +2036,29 @@ requiring the compiler integration binary's QuickJS test dependencies.
 Verified on macOS arm64 with Homebrew Rust/Cargo 1.99.1, Node 26.12.1,
 `CARGO_BUILD_JOBS=4`, and ClojureScript source pin `a5e94c98`:
 
-- `cargo nextest run --locked --no-default-features --features bbp-macros,quickjs --lib --test bbp_macros -j 3 --no-fail-fast`, with `LIGHT_CLJS_STRESS_SEEDS=12`: **574 passed**, two existing ignored tests. This ran on `cbcddd5c` before rebasing onto `e8761f9b`; that rebase changes only Object selector classification and adds two tests. All six affected Object/reader/mailbox tests pass on the rebased source.
-- The rebased Pants cache/resource checks pass **55 of 56**, with only `cache_matrix::resolution_and_views` failing as tracked by light-cljs-589. The new parallel-resource fixture also passes separately after giving both builds a 256 MiB macro budget, enough for four V8 isolates; its worker-use, output and invalidation assertions are unchanged.
-- Full V8 build nextest (`LIGHT_CLJS_V8_CACHE=require`, eight test processes): **2,135 of 2,136** cases pass after the exact new fixture rerun above. The unaffected full-run results are reused after that test-budget-only correction. The remaining `playground_crate_checks_for_wasm32` failure is the existing nested-worktree Cargo workspace-discovery error, independently reproduced on untouched source.
+- `cargo nextest run --locked --no-default-features --features bbp-macros,quickjs --lib --test bbp_macros -j 3 --no-fail-fast`, with `LIGHT_CLJS_STRESS_SEEDS=12`: **574 passed**, two existing ignored tests, on pre-rebase source `cbcddd5c`. After the Object selector and profiling/dependency-log rebases onto `61ace815`, all **396** affected combined library/resource/reader/Object/profiling checks pass on `b64d915d`, as do the **12** dependency-handoff engine tests. Unaffected full-run results are reused.
+- The final Pants cache suites pass **29 of 30**, with only `cache_matrix::resolution_and_views` failing as tracked by light-cljs-589. The new parallel-resource fixture gives both builds a 256 MiB macro budget, enough for four V8 isolates; its worker-use, output and invalidation assertions are unchanged.
+- Full V8 build nextest (`LIGHT_CLJS_V8_CACHE=require`, eight test processes): **2,135 of 2,136** cases pass after the exact new fixture rerun. After the final rebase, the library/CLI/cache subset passes **392 of 393** with the same `playground_crate_checks_for_wasm32` failure: the existing nested-worktree Cargo workspace-discovery error, independently reproduced on untouched source. Unaffected full-run results are reused after the test-budget correction and Pants execution/profiling changes; V8 output/reporting is covered by the final subset and release comparison.
 - Formatting, JavaScript syntax checking and strict V8 all-target Clippy pass. Strict combined Clippy retains eight existing engine-library diagnostics; all-target lint passes allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` after `-D warnings`. Pants library/binary lint passes with those same diagnostic categories isolated. Engine-free library/binary strict lint passes; all-target engine-free lint still cannot compile the existing evaluator-dependent benches/examples and ungated QuickJS integration tests, reproduced on master. The Pants-only compiler integration binary likewise fails to compile unchanged QuickJS-dependent tests. Its library run retains 23 failures whose names and normalized errors match the `1b4195c0` baseline (26 failures there, three fixed by this change); the combined run above passes all library tests.
 
-Fresh V8 release executables of master `e8761f9b` and production source
-`c5489be6` compile the same fixture generated with
+Fresh V8 release executables of master `61ace815` and production source
+`b64d915d` compile the same fixture generated with
 `bb benchmarks/generated-project/generate.bb target/g200k --seed 42 --lines 200k`
 (199,129 nonblank lines, 450 worker namespaces). After one warm-up per executable,
-five alternating master/branch pairs run `release bench --no-cache --jobs 1`:
+five alternating master/branch pairs run `release bench --no-cache --jobs 1`.
+Peer load changes sharply during that series: master ranges from 8.67 to
+20.53 s and this change from 8.60 to 16.56 s (medians 9.89 and 10.51 s).
+Five further pairs, alternating which executable starts each pair, give:
 
 | V8 build | Median clean build, one thread | Range | Peak memory range |
 | --- | ---: | ---: | ---: |
-| Master | 9.05 s | 8.71–10.28 s | 1,040,384,000–1,127,940,096 bytes |
-| This change | 8.80 s | 8.56–8.90 s | 1,066,418,176–1,124,810,752 bytes |
+| Master | 8.07 s | 7.95–8.20 s | 1,065,025,536–1,112,686,592 bytes |
+| This change | 8.13 s | 8.06–8.21 s | 1,050,836,992–1,115,406,336 bytes |
 
-Peer load averages were about 13–14. The overlapping ranges and median ratio
-0.972 show no observed V8 slowdown. Every measured and warm-up output is
+Load averages fall from about 35 to 12 over these measurements. The final
+median ratio is 1.007, with overlapping ranges; V8 build time is unchanged
+within this run's variation. Median CPU time is 8.76 s on master and 8.84 s
+with this change. Every measured and warm-up output is
 byte-identical: the 3,456,905-byte JavaScript has SHA-256
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`, and
 the 12,049-byte chunk manifest has SHA-256
