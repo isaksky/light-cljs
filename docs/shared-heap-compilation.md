@@ -1720,10 +1720,10 @@ stack), the largest terms below `analyze_source`:
 
 | Function | Before, 200k | Before, 800k | After, 200k | After, 800k |
 | --- | ---: | ---: | ---: | ---: |
-| `BbpEvaluator::run` (src/bbp_evaluator.rs:1652), the task command loop | 73.0% | 87.3% | 56.5% | 75.5% |
+| `BbpEvaluator::run` (src/bbp_evaluator.rs:1669), the task command loop | 73.0% | 87.3% | 56.5% | 75.5% |
 | `MacroHost::expand_javascript` (src/macro_host.rs:1031), macro expansion | 44.8% | 54.3% | 47.9% | 72.0% |
-| `CompilationSession::analyze_in` (src/compilation_session.rs:2608), deferred units | 44.7% | 46.8% | 26.7% | 13.5% |
-| `Task::dependency_log` (crates/big-boy-pants-js/src/task.rs:797), called after every step at src/bbp_evaluator.rs:1664 before the fix | 29.4% | 40.6% | - | - |
+| `CompilationSession::analyze_in` (src/compilation_session.rs:2648), deferred units | 44.7% | 46.8% | 26.7% | 13.5% |
+| `Task::dependency_log` (crates/big-boy-pants-js/src/task.rs:806), called after every step at src/bbp_evaluator.rs:1664 of `b1ed620d` before the fix | 29.4% | 40.6% | - | - |
 | `BbpEvaluator::use_catalog` (src/bbp_evaluator/catalog.rs:141), applying the catalog | 29.1% | 36.9% | 39.2% | 67.1% |
 | `execute_budgeted` (crates/big-boy-pants-js/src/vm/dispatch.rs:3847), the interpreter | 25.7% | 26.1% | 43.5% | 57.0% |
 | `Heap::mark_and_sweep` (crates/big-boy-pants-js/src/heap/gc.rs:1337) | 6.1% | 6.9% | 10.4% | 16.5% |
@@ -1732,7 +1732,7 @@ The history copy is `_platform_memmove` under `Task::dependency_log`
 (28.9% self time at 200k); the graph hand-off is the hashing in
 `BbpEvaluator::run`'s own loop (9.2% self time). After the fix, catalog
 application is the largest term, called from `spawn_producer`
-(src/bbp_evaluator.rs:2065).
+(src/bbp_evaluator.rs:2082).
 
 #### 3. What grows faster than the program
 
@@ -1843,8 +1843,8 @@ thread and linear.
 #### Causality check
 
 Fix 1 is the intervention: `Task::dependency_edges_since`
-(crates/big-boy-pants-js/src/task.rs:809) returns only the entries after a
-count the task context keeps (src/bbp_evaluator.rs:1730). The graph keeps
+(crates/big-boy-pants-js/src/task.rs:818) returns only the entries after a
+count the task context keeps (src/bbp_evaluator.rs:1747). The graph keeps
 every use it was given, so it records the same uses in the same order.
 Measured on the complete build, alternating before and after:
 
