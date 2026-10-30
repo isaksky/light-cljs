@@ -2539,9 +2539,17 @@ const native = (() => {
     jsInvoke:(object,method,...args)=>{object=val(object);return object[val(method)](...args);},
     update:(value,key,f,...args)=>{const old=core.get(value,key);return core.assoc(value,key,invoke(f,old,...args));},
     assoc:(m,...xs)=>{for(let i=0;i<xs.length;i+=2)m=__rt.cljAssoc(m,xs[i],xs[i+1]);return m;},
+    assocIn:(value,path,item)=>{
+      const s=seqOf(path),key=__rt.cljFirst(s),more=__rt.cljNext(s);
+      return core.assoc(value,key,more===null?item:core.assocIn(core.get(value,key),more,item));
+    },
     dissoc:(m,...ks)=>each((m,k)=>__rt.cljDissoc(m,k),m,ks),
     conj:(...a)=>a.length===0?__rt.formVector():each((m,x)=>__rt.cljConj(m,x),a[0],a.slice(1)),
     merge:(...xs)=>xs.some(truth)?xs.reduce((left,right)=>val(right)==null?left:__rt.cljConj(truth(left)?left:arrayMap([]),right)):null,
+    mergeWith:(f,...xs)=>xs.some(truth)?reduce((left,right)=>reduce((result,entry)=>{
+      const key=entryPart(entry,false),item=entryPart(entry,true);
+      return core.assoc(result,key,truth(core.contains(result,key))?invoke(f,core.get(result,key),item):item);
+    },truth(left)?left:arrayMap([]),seqOf(right)),xs):null,
     zipmap:(keys,values)=>{
       let result=arrayMap([]), ks=__rt.cljSeq(keys), vs=__rt.cljSeq(values);
       while(ks!==null&&vs!==null){
@@ -2632,6 +2640,14 @@ const native = (() => {
     isBoolean:x=>typeof val(x)==='boolean',
     isInteger:x=>typeof val(x)==='number'&&!Number.isNaN(val(x))&&val(x)!==Infinity&&parseFloat(val(x))===parseInt(val(x),10),
     isInt:x=>core.isInteger(x),
+    isPositiveInt:x=>core.isInt(x)&&val(x)>0,
+    isNegativeInt:x=>core.isInt(x)&&val(x)<0,
+    isNaturalInt:x=>core.isInt(x)&&!(val(x)<0),
+    munge:value=>{
+      let result=mungeStr(core.str(value));
+      result=result==='..'?'_DOT__DOT_':reservedNames.has(result)?result+'$':result;
+      return __rt.formKind(val(value))==='symbol'?core.symbol(result):result;
+    },
     keywordIdentical:(x,y)=>val(x)===val(y)||__rt.formKind(val(x))==='keyword'&&__rt.formKind(val(y))==='keyword'&&__rt.formEquals(x,y),
     isInfinite:x=>val(x)===Infinity||val(x)===-Infinity,
     uuid:x=>{x=val(x);if(typeof x!=='string')throw new Error('UUID expects a string');return __rt.formCompilerLiteral('uuid',x.toLowerCase());},

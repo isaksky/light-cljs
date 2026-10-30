@@ -6375,6 +6375,24 @@ fn native_compile_time_empty_primitive_sequences_and_scalar_predicates() {
 }
 
 #[test]
+fn native_name_munging_nested_association_and_merge_with_match_core() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [calls (atom [])
+                   combine (fn [a b] (swap! calls conj [a b]) [a b])]
+               (list 'quote [(munge "class") (munge "..") (munge 'a/b)
+                 (munge "a😀-b/c") (assoc-in nil [:a :b] 42)
+                 (assoc-in {} [] 1)
+                 (merge-with combine nil {:a nil} {:a 2 :b 3}) @calls
+                 (merge-with + nil nil)
+                 (mapv (fn [x] [(pos-int? x) (neg-int? x) (nat-int? x)])
+                   [-1 0 1 1.5 nil])])))
+           (js/console.log (pr-str (probe)))"#,
+        "[\"class$\" \"_DOT__DOT_\" a_SLASH_b \"a😀_b_SLASH_c\" {:a {:b 42}} {nil 1} {:a [nil 2], :b 3} [[nil 2]] nil [[false true false] [false false true] [true false true] [false false false] [false false false]]]\n",
+    );
+}
+
+#[test]
 fn native_mutable_deftype_closure_in_atom_matches_quickjs() {
     let source = r#"(defprotocol Cache (cached [x]) (put-cache [x v]))
            (deftype Box [v ^:unsynchronized-mutable saved]
