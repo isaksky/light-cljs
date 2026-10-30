@@ -1629,8 +1629,9 @@ features, `LIGHT_CLJS_V8_CACHE=require`), built with `CARGO_BUILD_JOBS=4`:
 `pants-a` at `28fc6eb0` (the counters, before the fix), `pants-b` at
 `bc10c1aa` (the fix), `pants-c` at `4a5c924a` (adds the catalog and producer
 counters; same code paths as `pants-b`), `v8-a` at `28fc6eb0` and `v8-base`
-at master `b1ed620d`. The V8 build does not compile the Pants build's
-evaluator or engine, so `v8-a` is also the V8 build of the final commit.
+at master `99d68bf3` (the compiler sources of `b1ed620d`). The V8 build does
+not compile the Pants build's evaluator or engine, so `v8-a` is also the V8
+build of the final commit.
 Projects from `generate.bb --seed 42 --lines 200k|400k|800k` (199,129,
 397,920 and 795,693 nonblank lines; 450, 903 and 1,808 worker namespaces),
 each built with `/usr/bin/time -l BINARY release bench --no-cache --stats
