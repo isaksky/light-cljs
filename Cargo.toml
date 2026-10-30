@@ -64,6 +64,8 @@ harness = false
 [[bench]]
 name = "compiler"
 harness = false
+# Its level and callee benchmarks time QuickJS beside Node.
+required-features = ["quickjs"]
 
 [[bench]]
 name = "evaluator"

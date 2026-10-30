@@ -150,7 +150,12 @@ its exact signatures and test lists:
   accounting, cache and stats expectations.
 
 Until those close, compare a run's failures with those two lists: any other
-failure is a regression.
+failure is a regression. One of 612's, `cli::playground_crate_checks_for_wasm32`,
+fails in the V8 build too when the checkout is nested inside another Cargo
+workspace, as agent worktrees under `.claude/worktrees` are; it is not a
+Pants-build gap. The V8 build runs the same tests as before these gates
+(2138 run, 109 skipped at 175edf8a). The `compiler` bench, which times QuickJS
+beside Node, requires the `quickjs` feature.
 
 ## Supported boundary
 
