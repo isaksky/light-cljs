@@ -5219,27 +5219,27 @@ types redeclared in one namespace, read from two),
 `native_reference_typed_sequences_export_like_quickjs` (the exported
 metadata of `repeat` and of chunked `map`/`filter`/`concat` seqs).
 
-Penpot, from a Pants release build of `7ee5ff44` and the V8 release build
-(no V8-build input changed), with the five read-only roots, every budget
+Penpot, from a Pants release build rebased on master `53eb2118` and the V8
+release build (no V8-build input changed), with the five read-only roots, every budget
 above and `--source-map --source-map-include-sources`: `app.render` builds at
-1 thread (8.41 s wall, 7.67 s user, 493,502,464 bytes peak memory) and 4
-threads (6.84 s, 10.53 s user, 597,442,560 bytes); both outputs and their
+1 thread (8.55 s wall, 7.75 s user, 496,615,424 bytes peak memory) and 4
+threads (6.97 s, 10.51 s user, 606,961,664 bytes); both outputs and their
 source maps are byte-identical to the V8 build's (SHA-256 `d67471d1…`,
 `a4b1c163…`). `app.main` still stops at `core.Delay` (light-cljs-613) at 1
-thread (47.94 s, 743,571,456 bytes) and 4 threads (42.69 s, 966,918,144
+thread (48.54 s, 716,750,848 bytes) and 4 threads (48.56 s, 948,092,928
 bytes). Three alternating 200k pairs (master `62dcd6f0` and branch V8 release
 builds): every output keeps SHA-256 prefix `1a75bc87b26f3121` and prints
 `484264`, medians 7.79 s and 7.89 s.
 
 On macOS arm64 with Homebrew Rust/Cargo 1.99.1, Node 24.22.1, the read-only
 ClojureScript pin `a5e94c98` and `LIGHT_CLJS_STRESS_SEEDS=4`, rebased on
-master `c2faa089`: the Pants build's full suite runs 2,102 tests, 1,702 pass
-and 400 fail, every failure in the 611/612 lists of the baseline (three
-fewer than before this round); Pants-only `bbp_macros` 244, Pants plus
+master `53eb2118`: the Pants build's full suite runs 2,110 tests, 1,869 pass
+and 241 fail (master: 2,096, 1,851 and 245), every failure in the 611/612
+lists of the earlier baseline; Pants-only `bbp_macros` 244, Pants plus
 QuickJS reference library 389 and `bbp_macros` 246, V8 plus Pants
 `bbp_macros` 246; V8-build nextest 2,139 of 2,140, failing only the
-worktree `playground_crate_checks_for_wasm32` diagnostic (run before the
-last two commits, which change no V8-build input). Engine library 613 and
+worktree `playground_crate_checks_for_wasm32` diagnostic (run on
+`c2faa089` before the rebase; this pellet changes no V8-build input). Engine library 613 and
 the `forms`, `lazy_seqs`, `light_cljs` and `collection_intrinsics` binaries
 pass. Formatting and strict V8-build Clippy pass; engine Clippy shows only
 the nine baseline diagnostics; Pants plus QuickJS Clippy passes allowing the
