@@ -521,9 +521,14 @@ fn input_read_through_a_helper_or_a_custom_reader() {
 
 impl Project {
     /// A build of `entry` by a child process of this binary with the custom
-    /// readers `#app/inline` and `#app/uniq` registered, with the cache
-    /// when `cached`.
+    /// readers `#app/inline`, `#app/uniq` and `#app/core-target` registered,
+    /// with the cache when `cached`.
     fn child(&self, entry: &str, cached: bool) -> Build {
+        self.child_with(entry, cached, &[])
+    }
+
+    /// [`Self::child`] with the extra environment `env`.
+    fn child_with(&self, entry: &str, cached: bool, env: &[(&str, &str)]) -> Build {
         let out = self.dir.join("child.js");
         let report = self.dir.join("child.stats");
         let mut command = Command::new(std::env::current_exe().unwrap());
@@ -532,7 +537,8 @@ impl Project {
             .env(CHILD, entry)
             .env("ROOTS", self.dir.join("src"))
             .env("OUT", &out)
-            .env("REPORT", &report);
+            .env("REPORT", &report)
+            .envs(env.iter().copied());
         if cached {
             command.env("CACHE", self.cache());
         }
@@ -551,9 +557,10 @@ impl Project {
 }
 
 /// What a child process does when `LIGHT_CACHE_MATRIX_CHILD` names an
-/// entry: compile it from `ROOTS` with the readers `#app/inline` and
-/// `#app/uniq`, through the cache in `CACHE` when set, writing the script
-/// to `OUT` and the `--stats` report to `REPORT`.
+/// entry: compile it from `ROOTS` with the readers `#app/inline`,
+/// `#app/uniq` and `#app/core-target`, through the cache in `CACHE` when
+/// set, on the Pants build's macro backend when `NATIVE` is set, writing
+/// the script to `OUT` and the `--stats` report to `REPORT`.
 #[test]
 #[ignore = "a child process of the other tests"]
 fn child() {
@@ -571,6 +578,12 @@ fn child() {
         .unwrap();
     host.register_compiler_data_reader(Name::new(Some("app"), "uniq"), UNIQ_READER)
         .unwrap();
+    host.register_compiler_data_reader(Name::new(Some("app"), "core-target"), CORE_TARGET_READER)
+        .unwrap();
+    #[cfg(feature = "bbp-macros")]
+    if std::env::var_os("NATIVE").is_some() {
+        host.use_native_macros();
+    }
     let mut stats = CompileStats::default();
     let program = match std::env::var_os("CACHE") {
         Some(dir) => {
@@ -986,6 +999,51 @@ fn custom_reader_gensyms_across_processes() {
     assert!(mixed.ends_with("] false\n"), "{mixed}");
     // `app.a`, a hit, keeps its symbol.
     assert_eq!(mixed.split(' ').next(), printed.split(' ').next());
+}
+
+/// A custom reader that names a core function.
+const CORE_TARGET_READER: &str = "(fn [_] 'cljs.core/even?)";
+
+/// A custom reader's result as a mutation place, on the Pants build's macro
+/// backend (custom readers need QuickJS): the build's core-write scan cannot
+/// tell what `#app/core-target nil` reads as, so once a consumer rebinds it,
+/// the cached provider whose helper calls `even?` is analyzed again rather
+/// than installed, nothing is published, and the output is the cache-off
+/// build's (light-cljs-588).
+#[cfg(all(feature = "bbp-macros", feature = "quickjs"))]
+#[test]
+fn tagged_core_write_places_reject_cached_providers() {
+    let project = Project::new(&[
+        ("util.cljs", "(ns util) (defn probe [] (even? 2))"),
+        (
+            "macros.cljs",
+            "(ns macros (:require [util])) (defmacro check [] (util/probe))",
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [util] [macros :refer [check]])) (js/console.log (check))",
+        ),
+    ]);
+    let native = [("NATIVE", "1")];
+    project.child_with("main", true, &native);
+    let warm = project.child_with("main", true, &native);
+    warm.assert_all_hits(3);
+    assert_eq!(warm.run(), "true\n");
+
+    project.write(
+        "main.cljs",
+        "(ns main (:require [util] [macros :refer [check]])) \
+         (defmacro redefined [] (with-redefs [#app/core-target nil (fn [_] false)] (util/probe))) \
+         (js/console.log (check) (redefined))",
+    );
+    let oracle = project.child_with("main", false, &native);
+    assert_eq!(oracle.run(), "true false\n");
+    let edited = project.child_with("main", true, &native);
+    assert_eq!(edited.stat("cache.hits"), 0, "{}", edited.stats);
+    assert_eq!(edited.stat("cache.miss.core-write"), 3, "{}", edited.stats);
+    assert_eq!(edited.stat("cache.published"), 0, "{}", edited.stats);
+    assert_eq!(edited.js, oracle.js);
+    assert_eq!(edited.run(), "true false\n");
 }
 
 // -- Lowered limits -----------------------------------------------------------
