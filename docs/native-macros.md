@@ -5637,3 +5637,36 @@ targets) 2,229 and its doctests. Formatting and strict V8-build Clippy pass;
 engine Clippy shows only the nine baseline diagnostics; Pants plus QuickJS
 Clippy passes allowing the three engine baseline categories, and Pants-only
 Clippy shows only master's three test diagnostics.
+
+### Review fixes: reentry, explicit delays and owned predicates (light-cljs-613, 2026-10-30)
+
+The review asked for the reference's reentry (a body that forces its own
+delay calls the body again), a false body realized, an explicit delay's
+pending value kept, and delays owned in the collection predicates; the
+contract above now says so. Each fix has a QuickJS-reference test in
+`tests/bbp_macros.rs` that fails before it:
+`native_delay_guarded_reentry_matches_quickjs` (the execution fixture's
+`[12 12 2 true]`, the inner run's state seen from the outer, an outer
+throw after an inner return, a three-deep reentry; before, `RangeError:
+delay realization reentered its own body`),
+`native_delay_constructor_values_match_quickjs` (before, `TypeError:
+boolean is not a function` for `(Delay. false 7)` and `:val nil` for a
+pending value), `native_delay_protocol_extensions_match_quickjs` (`seq?`
+of a delay was true under a `default` `ISeq` extension) and
+`delay_reentry_and_constructors_publish_at_all_threads` (a published
+reentering delay and explicit delays forced from four namespaces at 1, 2,
+4 and 8 threads; before, the `RangeError`). The engine's `tests/delays.rs`
+covers the same at the intrinsic level, and publication of a pending value
+under `.seed`.
+
+On `4543138b` with `LIGHT_CLJS_STRESS_SEEDS=4`: Pants-only `bbp_macros`
+276, Pants plus QuickJS reference and V8 plus Pants 278 each (one existing
+ignored case in each); the engine's suite (all targets) 2,230; engine and
+Pants plus QuickJS Clippy pass allowing the three engine baseline
+categories; formatting passes. Penpot `app.render` from a Pants release
+build builds at 1 thread (8.82 s wall, 8.24 s user, 506,413,056 bytes peak
+memory) and 4 threads (7.40 s, 12.09 s user, 619,020,288 bytes), at load
+average 9-11, with JavaScript and source map byte-identical to the V8
+build's (`d67471d1…`, `3c4f4cba…`); `app.main` stops where it did, in
+`app.util.object/add-properties!` (light-cljs-632), after 35.56 s at 1
+thread. No V8-build input changed.
