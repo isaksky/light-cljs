@@ -329,6 +329,13 @@ impl CompileCache {
         }
     }
 
+    /// The next namespace is analyzed without a lookup, which `kind` and
+    /// `description` report as its miss.
+    pub(crate) fn not_looked_up(&mut self, kind: &'static str, description: String) {
+        self.pending = None;
+        self.miss(kind, description);
+    }
+
     /// The artifact [`Self::lookup`] returned was installed.
     pub(crate) fn installed(&mut self, macros: &MacroHost) {
         let Some(Pending::Hit { key, artifact }) = self.pending.take() else {

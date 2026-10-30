@@ -1617,6 +1617,12 @@ persistence remain out of scope.
      The miss reason is the newest candidate's first failure: a key
      component (`source`, `dependencies`, ...) or `no-artifact`, `index`,
      `unreadable`, `undecodable` or `refused` (installation refused it).
+     On the Pants build, `core-write` names the core function the build
+     may write: the build then looks nothing up, since cached macro code
+     may call that function directly (light-cljs-571). Only a write the
+     program spells (`set!`, `binding`, `with-redefs` or a `js*` hole on the
+     function, also inside `#(...)`), or a mutation operator used as a
+     value, counts; dynamic Vars never do.
    - **Policy.** As `cache_policy::evaluate`, in one forward pass: every
      edge points to an earlier namespace. `^:light-cljs/no-cache` covers
      only its namespace, whose consumers still hit while its key is the

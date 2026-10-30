@@ -391,7 +391,8 @@ pub struct CacheCounts {
     pub hits: usize,
     /// `(namespace, kind, description)`, the kind being the first key
     /// component that differed (`source`, `dependencies`, ...) or
-    /// `no-artifact`, `index`, `unreadable`, `undecodable` or `refused`.
+    /// `no-artifact`, `index`, `unreadable`, `undecodable`, `refused` or, on
+    /// the Pants build, `core-write`.
     pub misses: Vec<(String, &'static str, String)>,
     /// `(namespace, reason, path)`, the path naming the namespace a
     /// propagated reason came from and those it came through.

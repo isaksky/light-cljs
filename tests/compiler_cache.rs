@@ -219,6 +219,84 @@ fn dynamic_core_bindings_reuse_cached_artifacts() {
     assert_eq!(edited.js, oracle.js);
 }
 
+/// `set!` and `binding` at the head of an anonymous function literal are
+/// calls like any other, not first-class uses of the operator, so on the
+/// Pants build they must not mark every core function written and turn off
+/// every lookup (light-cljs-571: the 200k generated project's rebuild with
+/// nothing changed hit nothing).
+#[test]
+fn mutations_in_anonymous_functions_reuse_cached_artifacts() {
+    let project = Project::new(&[
+        (
+            "util.cljs",
+            "(ns util) (def ^:dynamic *scale* 1) (defn helper [x] (str \"h\" x)) (defn scaled [x] (* x *scale*))",
+        ),
+        (
+            "macros.cljs",
+            "(ns macros (:require [util])) (defmacro shout [x] (util/helper x)) (defmacro scaled-all [& xs] (mapv #(binding [util/*scale* 10] (util/scaled %)) xs))",
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [macros :refer [shout scaled-all]] [util])) (def state #js {:n 0}) (def bump #(set! (.-n state) (+ (.-n state) %))) (bump 5) (js/console.log (shout 1) (pr-str (scaled-all 1 2)) (.-n state) (pr-str (map #(binding [util/*scale* 3] (util/scaled %)) [1 2])))",
+        ),
+    ]);
+    let oracle = project.uncached("main");
+    assert_eq!(oracle.run(), "h1 [10 20] 5 (3 6)\n");
+    let populated = project.cached("main", &[]);
+    assert_eq!(populated.js, oracle.js);
+    assert_eq!(populated.stat("cache.published"), 3, "{}", populated.stats);
+    let warm = project.cached("main", &[]);
+    assert_eq!(warm.stat("cache.hits"), 3, "{}", warm.stats);
+    assert_eq!(warm.stat("cache.misses"), 0, "{}", warm.stats);
+    assert_eq!(warm.stat("cache.published"), 0, "{}", warm.stats);
+    assert_eq!(warm.stat("macro-calls"), 0, "{}", warm.stats);
+    assert!(warm.rows().is_empty(), "{:?}", warm.rows());
+    assert_eq!(warm.js, oracle.js);
+
+    // A rebuild after a one-file edit misses only the edited namespace and
+    // runs its macros against the installed provider.
+    project.write(
+        "main.cljs",
+        "(ns main (:require [macros :refer [shout scaled-all]] [util])) (def state #js {:n 0}) (def bump #(set! (.-n state) (+ (.-n state) %))) (bump 7) (js/console.log (shout 2) (pr-str (scaled-all 3)) (.-n state) (pr-str (map #(binding [util/*scale* 3] (util/scaled %)) [1 2])))",
+    );
+    let edited = project.cached("main", &[]);
+    assert_eq!(edited.stat("cache.hits"), 2, "{}", edited.stats);
+    assert_eq!(edited.rows(), ["main miss source: source changed"]);
+    assert_eq!(edited.run(), "h2 [30] 7 (3 6)\n");
+    assert_eq!(edited.js, project.uncached("main").js);
+}
+
+/// On the Pants build, a program that may write a core function's value
+/// installs no artifact, since cached macro code may call that function
+/// directly, and each miss says so instead of "no artifact was published".
+#[cfg(all(
+    feature = "bbp-macros",
+    not(feature = "v8-macros"),
+    not(feature = "quickjs")
+))]
+#[test]
+fn core_function_writes_name_their_miss() {
+    let project = Project::new(&[
+        ("util.cljs", "(ns util) (defn helper [x] (str \"h\" x))"),
+        (
+            "main.cljs",
+            "(ns main (:require [util])) (set! cljs.core/inc (fn [_] 42)) (js/console.log (util/helper (inc 1)))",
+        ),
+    ]);
+    let oracle = project.uncached("main");
+    assert_eq!(oracle.run(), "h42\n");
+    project.cached("main", &[]);
+    let warm = project.cached("main", &[]);
+    assert_eq!(warm.stat("cache.hits"), 0, "{}", warm.stats);
+    assert_eq!(warm.stat("cache.miss.core-write"), 2, "{}", warm.stats);
+    let reason = "miss core-write: the build may write the core function inc, which cached macro code may call directly";
+    assert_eq!(
+        warm.rows(),
+        [format!("util {reason}"), format!("main {reason}")]
+    );
+    assert_eq!(warm.js, oracle.js);
+}
+
 /// Computed mutation symbols leave no lexical core-write hint. Installing the
 /// writer must restore its resolved writes before preparing later factories,
 /// including property/index targets and writes in the artifact's deferred bodies.

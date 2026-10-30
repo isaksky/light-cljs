@@ -2992,14 +2992,25 @@ fn analyze_entry(
             // when this compilation writes a cacheable core function, rather
             // than installing code specialized for that earlier context.
             #[cfg(feature = "bbp-macros")]
-            let native_core_writes = macros.native_macro_backend()
-                && macros
-                    .session_handle()
-                    .is_some_and(|session| session.shared().has_native_core_function_writes());
+            let core_write = macros
+                .native_macro_backend()
+                .then(|| macros.session_handle())
+                .flatten()
+                .and_then(|session| session.shared().native_core_function_write());
             #[cfg(not(feature = "bbp-macros"))]
-            let native_core_writes = false;
+            let core_write: Option<&str> = None;
+            let native_core_writes = core_write.is_some();
             let cached = match (cache.as_deref_mut(), &loader.record) {
-                (Some(cache), Some(record)) if !native_core_writes => {
+                (Some(cache), Some(_)) if let Some(core) = core_write => {
+                    cache.not_looked_up(
+                        "core-write",
+                        format!(
+                            "the build may write the core function {core}, which cached macro code may call directly"
+                        ),
+                    );
+                    None
+                }
+                (Some(cache), Some(record)) => {
                     let cancelled = || macros.halted(control).is_some();
                     cache
                         .lookup(record, &file.source, sources, &cancelled)

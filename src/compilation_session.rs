@@ -638,7 +638,9 @@ impl SharedCatalog {
             .collect()
     }
     #[cfg(feature = "bbp-macros")]
-    pub(crate) fn has_native_core_function_writes(&self) -> bool {
+    /// The first core function, in [`crate::CoreFnId::ALL`] order, whose
+    /// value this compilation may write, by its runtime name.
+    pub(crate) fn native_core_function_write(&self) -> Option<&'static str> {
         let replaced = self
             .native_replaced_core
             .lock()
@@ -646,10 +648,13 @@ impl SharedCatalog {
         // Match native emission's cache eligibility. Dynamic Vars have value
         // type `any` and are always read at their use sites, so rebinding them
         // cannot invalidate a prepared factory's cached core functions.
-        crate::CoreFnId::ALL.into_iter().any(|core| {
-            replaced.contains(core.runtime_name())
-                && core.operation().value == crate::core_operations::Type::FN
-        })
+        crate::CoreFnId::ALL
+            .into_iter()
+            .find(|core| {
+                replaced.contains(core.runtime_name())
+                    && core.operation().value == crate::core_operations::Type::FN
+            })
+            .map(crate::CoreFnId::runtime_name)
     }
 
     /// Keep resolved writes after their owning IR is released. This augments
@@ -693,6 +698,18 @@ impl SharedCatalog {
             return;
         }
         let spelling = |id: NodeId| &source[syntax.nodes[id.0].span.clone()];
+        // A list and an anonymous function literal, `#(set! ...)`, both call
+        // their head; any other collection holding a mutator symbol uses it
+        // as a value.
+        fn call(node: &crate::parser::Node) -> Option<&[NodeId]> {
+            match &node.kind {
+                NodeKind::Collection {
+                    kind: CollectionKind::List | CollectionKind::AnonymousFn,
+                    children,
+                } => Some(children),
+                _ => None,
+            }
+        }
         let mutator = |name: &str| {
             matches!(
                 name.rsplit('/').next(),
@@ -734,18 +751,10 @@ impl SharedCatalog {
             .nodes
             .iter()
             .filter_map(|node| {
-                if let NodeKind::Collection {
-                    kind: CollectionKind::List,
-                    children,
-                } = &node.kind
-                {
-                    children
-                        .first()
-                        .filter(|&&head| mutator(spelling(head)))
-                        .map(|head| head.0)
-                } else {
-                    None
-                }
+                call(node)?
+                    .first()
+                    .filter(|&&head| mutator(spelling(head)))
+                    .map(|head| head.0)
             })
             .collect();
         if syntax.nodes.iter().enumerate().any(|(index, node)| {
@@ -806,11 +815,7 @@ impl SharedCatalog {
             }
         };
         for node in &syntax.nodes {
-            let NodeKind::Collection {
-                kind: CollectionKind::List,
-                children,
-            } = &node.kind
-            else {
+            let Some(children) = call(node) else {
                 continue;
             };
             let Some((&head, args)) = children.split_first() else {
