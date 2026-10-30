@@ -119,6 +119,7 @@ fn declined_doseq_expands_with_raised_node_limit() {
 #[test]
 fn declined_doseq_rejects_invalid_regex_before_conversion_limits() {
     let bindings = "a [0] b [0] c [0] d [0] e [0] f [0] g [0] h [0] i [0]";
+    let mut failures = Vec::new();
     for (regex, error) in [
         (
             "[",
@@ -140,6 +141,34 @@ fn declined_doseq_rejects_invalid_regex_before_conversion_limits() {
         (
             "(?u)^{",
             "Invalid regular expression: /^{/u: Lone quantifier brackets",
+        ),
+        (
+            "(?u)a*{",
+            "Invalid regular expression: /a*{/u: Lone quantifier brackets",
+        ),
+        (
+            "(?u)a*?{",
+            "Invalid regular expression: /a*?{/u: Lone quantifier brackets",
+        ),
+        (
+            "(?u)a{1}{",
+            "Invalid regular expression: /a{1}{/u: Lone quantifier brackets",
+        ),
+        (
+            "(?u)a{1}?{",
+            "Invalid regular expression: /a{1}?{/u: Lone quantifier brackets",
+        ),
+        (
+            "(?u)a\\*{",
+            "Invalid regular expression: /a\\*{/u: Incomplete quantifier",
+        ),
+        (
+            "(?u)[*+?]{",
+            "Invalid regular expression: /[*+?]{/u: Incomplete quantifier",
+        ),
+        (
+            "(?u)\\u{31}{",
+            "Invalid regular expression: /\\u{31}{/u: Incomplete quantifier",
         ),
         (
             "(?i-i:a)",
@@ -172,9 +201,12 @@ fn declined_doseq_rejects_invalid_regex_before_conversion_limits() {
             } else {
                 without_stack(&failure).contains(&expected)
             };
-            assert!(found, "{source} raised {raised}: {failure}");
+            if !found {
+                failures.push(format!("{source} raised {raised}: {failure}"));
+            }
         }
     }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// Regular expressions are checked as their UTF-16 code units: a range

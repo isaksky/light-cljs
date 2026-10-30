@@ -807,6 +807,22 @@ fn v8_regex_error(
                     before[..open].ends_with(&[unit(b'('), unit(b'?')])
                         && !before[open..].contains(&unit(b')'))
                 });
+    // After a completed quantifier (`a*`, `a*?`, `a{1}`, ...), a malformed
+    // `{` starts a new term. Probe the prefix with another quantifier so the
+    // parser distinguishes these from escaped characters (`\*`), classes,
+    // and braced escapes (`\u{31}`) that still take a quantifier. Only this
+    // error path needs a second parse.
+    let quantified_term = || {
+        let mut probe = before.to_vec();
+        probe.push(unit(b'*'));
+        big_boy_pants_js::JsString::from_code_units(probe).is_some_and(|probe| {
+            big_boy_pants_js::regexp::parse::validate_syntax(
+                &probe,
+                &big_boy_pants_js::JsString::from(flags),
+            )
+            .is_err_and(|error| error.offset == at && error.message == "nothing to repeat")
+        })
+    };
     // Whether the parser stopped inside a character class.
     let in_class = {
         let (mut class, mut index) = (false, 0);
@@ -849,9 +865,11 @@ fn v8_regex_error(
             "Invalid quantifier".to_owned()
         }
         "assertion cannot be quantified" => "Nothing to repeat".to_owned(),
-        // A `{` that does not end a quantifier with the u flag: alone, or
-        // after an atom; or a lone `}` or `]`.
-        "invalid quantifier" if !atom_start => "Incomplete quantifier".to_owned(),
+        // A `{` that does not end a quantifier with the u flag: after an
+        // atom, or at the start of a new term; or a lone `}` or `]`.
+        "invalid quantifier" if !atom_start && !quantified_term() => {
+            "Incomplete quantifier".to_owned()
+        }
         "invalid quantifier" | "unexpected syntax character" => {
             "Lone quantifier brackets".to_owned()
         }
