@@ -70,20 +70,12 @@ fn decode(cell: &str) -> String {
     String::from_utf8(out).unwrap()
 }
 
-/// What Node prints for the JavaScript string expression `expression`.
+/// What Node prints for the JavaScript string expression `expression`. It goes
+/// through standard input: an expression embedding a fixture catalog is larger
+/// than the operating system lets one command-line argument be.
 #[cfg(not(feature = "quickjs"))]
 fn node(expression: &str) -> String {
-    let output =
-        std::process::Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-            .args(["-e", &format!("process.stdout.write({expression})")])
-            .output()
-            .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
+    node_stdout(&format!("process.stdout.write({expression})"))
 }
 
 /// The canonical text of the JSON text `value`.
@@ -99,4 +91,19 @@ pub fn canonical(value: &str) -> String {
     {
         node(&script)
     }
+}
+
+/// One command-line argument may hold 128 KiB on Linux, and all of them 1 MiB
+/// on macOS; fixture catalogs (over 300 KB) and this 2 MiB value exceed those.
+#[test]
+fn expressions_larger_than_a_command_line_argument_evaluate() {
+    let text = "x".repeat(2 << 20);
+    assert_eq!(
+        canonical(&format!("{{\"b\":1,\"a\":{text:?}}}")),
+        format!("{{\"a\":{text:?},\"b\":1}}")
+    );
+    assert_eq!(
+        rows(&format!("[[{text:?}, \"y\"]]")),
+        vec![vec![text, "y".to_string()]]
+    );
 }
