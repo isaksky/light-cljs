@@ -1857,7 +1857,10 @@ The history-copy share of the samples drops from 41% to 2%, and task-history
 entries copied from 10.7 billion to 146,653 at 200k. Output is identical at
 every size. The V8 build is unchanged: `v8-base` against `v8-a`, six
 alternating 200k builds each, 8.74 s [8.16-8.93] against 8.61 s
-[7.94-8.90], identical output.
+[7.94-8.90], identical output. After rebasing onto master `1b4195c0`, one
+200k Pants build of the final commit took 20.1 s (1-minute load 9.0) with
+the same output, 146,539 task-history entries copied and 7.9 s of helper
+producer setup.
 
 ### Single-thread speed
 
