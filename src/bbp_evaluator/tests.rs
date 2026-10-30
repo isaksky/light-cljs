@@ -1528,6 +1528,7 @@ fn abandoned_handoff_invalidates_its_queued_step_before_task_cleanup() {
         admitted: Arc::new(Mutex::new(true)),
         gensyms: crate::generated_names::NativeGensyms::capture(),
         bridge: evaluator.bridge.clone(),
+        namespaces: evaluator.shared.0.namespaces.clone(),
     };
     let before = shared.helper_counts().steps;
     drop(step.handoff());

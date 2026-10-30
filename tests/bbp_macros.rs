@@ -11375,6 +11375,200 @@ fn native_var_identity_apply_and_metadata_match_quickjs() {
     );
 }
 
+/// What `all-ns` and `find-ns` see (light-cljs-589 review): as the QuickJS
+/// reference, the namespaces a macro's or a helper's registration names
+/// and those created so far, each macro call's own included, in one-slot
+/// order. `gap`, analyzed between `q1` and `q2` without a macro of its own,
+/// is not among them; `create-ns` in a macro, a top-level macro call before
+/// a unit, a helper and an initializer that read the registry, and units
+/// that read what an earlier namespace's units created. `m/loaded`'s
+/// initializer runs at its first demander's place, `q1/h`.
+const NAMESPACE_FRONTIER: &[(&str, &str)] = &[
+    (
+        "m.cljs",
+        r#"(ns m)
+(defmacro mk [s] (create-ns s) nil)
+(defmacro names [] (list 'quote (mapv ns-name (all-ns))))
+(defmacro has [s] (boolean (find-ns s)))
+(defn helper-names [] (mapv ns-name (all-ns)))
+(defmacro via-helper [] (list 'quote (helper-names)))
+(defmacro same [s] (identical? (create-ns s) (find-ns s)))
+(def loaded (mapv ns-name (all-ns)))
+(defmacro loaded-names [] (list 'quote loaded))"#,
+    ),
+    (
+        "q1.cljs",
+        r#"(ns q1 (:require [m :refer [mk names has loaded-names]]))
+(def a (names))
+(mk made.one)
+(def b (names))
+(def c (has made.two))
+(def d (do (mk made.three) (names)))
+(def h (loaded-names))"#,
+    ),
+    ("gap.cljs", "(ns gap) (def x 1)"),
+    (
+        "q2.cljs",
+        r#"(ns q2 (:require [m :refer [mk names has via-helper same loaded-names]]))
+(def g (loaded-names))
+(def a (names))
+(def b (has made.one))
+(mk made.two)
+(def c (via-helper))
+(def d (has q3))
+(def e (same made.four))
+(def f (names))"#,
+    ),
+    (
+        "q3.cljs",
+        r#"(ns q3 (:require [m :refer [mk names has]]))
+(def v1 (names))
+(def v2 (has made.two))
+(def v3 (has made.four))
+(def v4 (has gap))
+(def v5 (do (mk made.five) (has made.five)))
+(def v6 (names))"#,
+    ),
+    (
+        "main.cljs",
+        r#"(ns main (:require [q1] [gap] [q2] [q3]))
+(js/console.log (pr-str [q1/a q1/b q1/c q1/d q1/h]))
+(js/console.log (pr-str [q2/a q2/b q2/c q2/d q2/e q2/f q2/g]))
+(js/console.log (pr-str [q3/v1 q3/v2 q3/v3 q3/v4 q3/v5 q3/v6]))"#,
+    ),
+];
+
+/// The registry under a held unit: `app/h` starts only once `app/g` has
+/// parked inside `m/loaded`'s initializer for its lane. `app/h` then
+/// demands the initializer, which runs for its earliest caller, so that it
+/// sees neither `made.two`, which `app/k` after `app/h` created, nor
+/// `made.three`, which `app/g` created before its demand. (A reader whose
+/// own activity an earlier one waits for sees what runs for that waiter:
+/// `effect_lanes` `a_registry_reader_lent_a_position_sees_what_runs_for_its_waiter`.)
+const NAMESPACE_FRONTIER_LENT: &[(&str, &str)] = &[
+    (
+        "m.cljs",
+        r#"(ns m)
+(defmacro mk [s] (create-ns s) nil)
+(def loaded (mapv ns-name (all-ns)))
+(defmacro loaded-names [] (list 'quote loaded))"#,
+    ),
+    (
+        "app.cljs",
+        r#"(ns app (:require [m :refer [mk loaded-names]]))
+(mk made.one)
+(def h (loaded-names))
+(def k (do (mk made.two) 1))
+(def g (do (mk made.three) (loaded-names)))"#,
+    ),
+    (
+        "main.cljs",
+        "(ns main (:require [app])) (js/console.log (pr-str [app/h app/g]))",
+    ),
+];
+
+/// Build `files`' namespace `main` natively (or with the QuickJS reference)
+/// at `jobs` threads, natively under `seed`'s scheduling with one-job
+/// batches, fixed workers, delayed starts or `held` units: its program and
+/// how many lanes opened at a position an earlier waiter lent.
+fn frontier_program(
+    root: &std::path::Path,
+    native: bool,
+    jobs: usize,
+    seed: u64,
+    mode: &str,
+    held: &str,
+) -> (String, u64) {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let mut stats = light_cljs::CompileStats::default();
+    let mut host = MacroHost::new();
+    if native {
+        host.use_native_macros();
+    }
+    let (program, _) = analyze_namespace_entry_recorded(
+        "main",
+        &[root.to_path_buf()],
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+        EntryRecorders {
+            stats: Some(&mut stats),
+            slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            perturbation: native.then(|| light_cljs::scheduler::Perturbation {
+                seed,
+                fixed: mode == "fixed",
+                start_delay: (mode == "delayed").then(|| std::time::Duration::from_millis(20)),
+                lane_hold: (mode == "held").then(|| held.into()).into_iter().collect(),
+                limits: Some(light_cljs::scheduler::Limits {
+                    batch_jobs: 1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|e| panic!("jobs {jobs} {mode}, native {native}: {e}"));
+    (emit_js(&program), stats.lanes.inherited)
+}
+
+#[test]
+fn native_namespace_registration_frontier_matches_reference() {
+    let q1 = "cljs.user cljs.core m q1 made.one";
+    let q2 = format!("{q1} made.three q2 made.two");
+    let q3 = format!("{q2} made.four q3");
+    let lent = "[cljs.user cljs.core m app made.one]";
+    let cases: [(&str, &[(&str, &str)], String, &[(usize, u64, &str)]); 2] = [
+        (
+            "native-namespace-frontier",
+            NAMESPACE_FRONTIER,
+            format!(
+                "[[{q1}] [{q1}] false [{q1} made.three] [{q1} made.three]]\n\
+                 [[{q2}] true [{q2}] false true [{q2} made.four] [{q1} made.three]]\n\
+                 [[{q3}] true true false true [{q3} made.five]]\n"
+            ),
+            &[
+                (1, 1, ""),
+                (2, 1, ""),
+                (4, 2, ""),
+                (8, 3, ""),
+                (4, 4, "fixed"),
+                (8, 5, "delayed"),
+            ],
+        ),
+        (
+            "native-namespace-frontier-lent",
+            NAMESPACE_FRONTIER_LENT,
+            format!("[{lent} {lent}]\n"),
+            &[(1, 1, ""), (8, 6, "held"), (8, 7, "held"), (8, 8, "held")],
+        ),
+    ];
+    for (name, files, expected, variants) in cases {
+        let root = temp_dir::TempDir::new(name);
+        for (file, source) in files {
+            std::fs::write(root.join(file), source).unwrap();
+        }
+        for &(jobs, seed, mode) in variants {
+            let build = |native| frontier_program(root.path(), native, jobs, seed, mode, "app/h");
+            let (native, inherited) = build(true);
+            assert_eq!(
+                program_output(&native),
+                expected,
+                "{name}, jobs {jobs} {mode}"
+            );
+            if mode == "held" {
+                assert!(inherited >= 1, "{name}, jobs {jobs}: no lent lane");
+            }
+            #[cfg(feature = "quickjs")]
+            assert!(
+                native == build(false).0,
+                "{name}: QuickJS reference, jobs {jobs} {mode}"
+            );
+        }
+    }
+}
+
 #[test]
 fn native_helpers_use_zero_in_the_verbatim_mutual_recursion_fixture() {
     // MUTUAL_RECURSION from tests/compiler/macros.rs, followed by an

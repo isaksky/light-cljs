@@ -71,44 +71,41 @@ struct Top {
     token: u64,
     root_token: u64,
     position: Option<Position>,
-    /// The activity whose namespace records it makes ([`NamespaceTag`]).
-    anchor: u64,
-    /// What its activity chain owns, which waiters lend their positions.
-    targets: Vec<Target>,
+    /// Its activity chain, innermost first, down to the topmost root:
+    /// each entry's token and what it owns, which waiters lend their
+    /// positions.
+    chain: Vec<(u64, Option<Target>)>,
 }
 
 /// Where an activity's namespace creation goes in the compilation's
 /// namespace registry (light-cljs-589): its position, 0 outside any, and
-/// its *anchor*, the activity that owns it: a pass, or the unit (or
-/// initializer, helper) a pool job, rescue or dispatch started.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// its activity chain's tokens, innermost first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct NamespaceTag {
     pub position: Position,
-    pub anchor: u64,
+    pub chain: Vec<u64>,
 }
 
 /// What a reader of the namespace registry sees, once its lane is open:
-/// what activities before its effective position (`effective`, lowered by
-/// an earlier activity waiting for it) created, and what its own anchor
-/// created up to its own position, as with one slot, where it runs inside
-/// that earlier activity.
+/// what activities before its effective position created, and, when an
+/// earlier activity waiting for part of its chain lent it that position
+/// (`lent`, the token of that part), what that part created, which with
+/// one slot runs inside the earlier activity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NamespaceView {
     pub effective: Position,
-    pub own: Position,
-    pub anchor: u64,
+    pub lent: Option<u64>,
 }
 
 impl NamespaceView {
     /// Everything recorded: outside any activity, or without lanes.
     pub(crate) const ALL: Self = Self {
         effective: Position::MAX,
-        own: Position::MAX,
-        anchor: 0,
+        lent: None,
     };
     /// Whether this reader sees a creation recorded at `tag`.
-    pub(crate) fn sees(&self, tag: NamespaceTag) -> bool {
-        tag.position <= self.effective || (tag.anchor == self.anchor && tag.position <= self.own)
+    pub(crate) fn sees(&self, tag: &NamespaceTag) -> bool {
+        tag.position <= self.effective || self.lent.is_some_and(|lent| tag.chain.contains(&lent))
     }
 }
 
@@ -118,28 +115,20 @@ fn current(lanes: usize) -> Option<Top> {
         let stack = stack.borrow();
         let mut entries = stack.iter().rev().filter(|e| e.lanes == lanes).peekable();
         let top = *entries.peek()?;
-        let mut targets = Vec::new();
-        let mut anchor = top.token;
+        let mut chain = Vec::new();
         let mut root = top;
         for entry in entries {
             root = entry;
-            targets.extend(entry.target);
-            targets.push(Target::Activity(entry.token));
+            chain.push((entry.token, entry.target));
             if entry.root {
-                // A pass is its own anchor; a pool job's is what it runs.
-                if entry.position.is_some() || std::ptr::eq(entry, top) {
-                    anchor = entry.token;
-                }
                 break;
             }
-            anchor = entry.token;
         }
         Some(Top {
             token: top.token,
             root_token: root.token,
             position: top.position,
-            anchor,
-            targets,
+            chain,
         })
     })
 }
@@ -235,6 +224,13 @@ impl State {
             return true;
         }
         frontier >= position
+    }
+}
+
+fn namespace_tag(top: &Top) -> NamespaceTag {
+    NamespaceTag {
+        position: top.position.unwrap_or(0),
+        chain: top.chain.iter().map(|&(token, _)| token).collect(),
     }
 }
 
@@ -560,27 +556,19 @@ impl Lanes {
         if !self.enabled() {
             return NamespaceTag::default();
         }
-        current(self.key()).map_or_else(NamespaceTag::default, |top| NamespaceTag {
-            position: top.position.unwrap_or(0),
-            anchor: top.anchor,
-        })
+        current(self.key()).map_or_else(NamespaceTag::default, |top| namespace_tag(&top))
     }
     /// Where namespace creation by `task`'s current activity goes.
     pub(crate) fn namespace_tag(&self, task: u64) -> NamespaceTag {
         if !self.enabled() {
             return NamespaceTag::default();
         }
-        self.lock()
-            .tops
-            .get(&task)
-            .map_or_else(NamespaceTag::default, |top| NamespaceTag {
-                position: top.position.unwrap_or(0),
-                anchor: top.anchor,
-            })
+        (self.lock().tops.get(&task)).map_or_else(NamespaceTag::default, namespace_tag)
     }
     /// What `task`'s current activity sees of the namespace registry, once
     /// its lane is open ([`Self::check`]): at the position its lane opened
-    /// at, which an earlier activity waiting for it may have lowered.
+    /// at, which an earlier activity waiting for part of its chain may have
+    /// lent it, the outermost such part when several lend that position.
     pub(crate) fn namespace_view(&self, task: u64) -> NamespaceView {
         if !self.enabled() {
             return NamespaceView::ALL;
@@ -592,11 +580,24 @@ impl Lanes {
         let Some(own) = top.position else {
             return NamespaceView::ALL;
         };
-        NamespaceView {
-            effective: min(Some(own), s.inherited(&top.targets)).unwrap_or(own),
-            own,
-            anchor: top.anchor,
+        let mut view = NamespaceView {
+            effective: own,
+            lent: None,
+        };
+        for &(token, target) in &top.chain {
+            let mut owned = vec![Target::Activity(token)];
+            owned.extend(target);
+            if let Some(lent) = s.inherited(&owned)
+                && lent < own
+                && lent <= view.effective
+            {
+                view = NamespaceView {
+                    effective: lent,
+                    lent: Some(token),
+                };
+            }
         }
+        view
     }
     /// The caller's source position, before an initializer inherits a waiter.
     pub(crate) fn caller_position(&self, task: u64) -> Option<Position> {
@@ -932,6 +933,43 @@ mod tests {
         .join()
         .unwrap();
         assert_eq!(lanes.counts().inherited, 1);
+    }
+
+    #[test]
+    fn a_registry_reader_lent_a_position_sees_what_runs_for_its_waiter() {
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        lanes.schedule([0, 1, 2], false);
+        // Unit 2 produces a helper that reads the namespace registry.
+        let _unit = lanes.enter_unit(2);
+        let unit = lanes.namespace_tag_here();
+        let _helper = lanes.enter_cell(99);
+        let task = synced(&lanes, 7);
+        let helper = lanes.namespace_tag(task);
+        assert_eq!(helper, lanes.namespace_tag_here());
+        let alone = lanes.namespace_view(task);
+        assert_eq!((alone.effective, alone.lent), (2, None));
+        // Unit 1 waits for the helper, on another thread.
+        let other = lanes.clone();
+        let (waiting, waiter) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            let _root = other.enter_root();
+            let _unit = other.enter_unit(1);
+            let wait = other.wait_for(Target::Cell(99));
+            waiting.send(other.namespace_tag_here()).unwrap();
+            released.recv().unwrap();
+            drop(wait);
+        });
+        let waiter = waiter.recv().unwrap();
+        let lent = lanes.namespace_view(task);
+        assert_eq!((lent.effective, lent.lent), (1, Some(helper.chain[0])));
+        // It sees what unit 1 created and what the helper created, not
+        // what unit 2 created before it began the helper.
+        assert!(lent.sees(&waiter) && lent.sees(&helper) && !lent.sees(&unit));
+        release.send(()).unwrap();
+        thread.join().unwrap();
+        assert_eq!(lanes.namespace_view(task), alone);
     }
 
     #[test]

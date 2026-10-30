@@ -1548,7 +1548,7 @@ pub(crate) struct TaskContext {
     /// ([`MacroEvaluator::catalog_cursor`]).
     catalog: Cell<Option<usize>>,
     /// The last namespace table it registered and where: a table that
-    /// extends it at the same anchor, no earlier, records only its tail.
+    /// extends it in the same activity, no earlier, records only its tail.
     namespaces: RefCell<(
         crate::effect_lanes::NamespaceTag,
         crate::arena::Arena<String>,
@@ -2918,7 +2918,7 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
             return match op as u8 {
                 b'r' => {
                     let tag = self.2.map(|lanes| lanes.namespace_tag(task));
-                    log.lock().unwrap().record(&name, tag.unwrap_or_default());
+                    log.lock().unwrap().record(&name, &tag.unwrap_or_default());
                     Ok(Primitive::Null)
                 }
                 b'f' | b'v' => {
