@@ -661,25 +661,38 @@ impl Bridge {
                     .copied()
                     .enumerate()
                     .map(|(i, x)| {
-                        let path = reader.map(|reader| {
-                            if reader.literal == Some(L::JsObject) {
-                                if i % 2 == 0 {
-                                    format!("{}.key", reader.path)
+                        let path = reader
+                            .map(|reader| -> Result<_, EvalError> {
+                                Ok(if reader.literal == Some(L::JsObject) {
+                                    if i % 2 == 0 {
+                                        format!("{}.key", reader.path)
+                                    } else {
+                                        let value = s.form_value(values[i - 1]);
+                                        let key = if let Some(key) = s.string(value) {
+                                            key
+                                        } else {
+                                            let name = s.form_name(value).map_err(error)?;
+                                            if s.form_kind(value) != Some(FormKind::Keyword)
+                                                || name.namespace.is_some()
+                                            {
+                                                return Err(error("Invalid JS object literal key"));
+                                            }
+                                            name.name
+                                        };
+                                        format!("{}.{}", reader.path, key.to_string_lossy())
+                                    }
+                                } else if k == FormKind::Map {
+                                    format!(
+                                        "{}.{}[{}]",
+                                        reader.path,
+                                        if i % 2 == 0 { "key" } else { "value" },
+                                        i / 2
+                                    )
                                 } else {
-                                    let key = s.string(s.form_value(values[i - 1])).unwrap();
-                                    format!("{}.{}", reader.path, key.to_string_lossy())
-                                }
-                            } else if k == FormKind::Map {
-                                format!(
-                                    "{}.{}[{}]",
-                                    reader.path,
-                                    if i % 2 == 0 { "key" } else { "value" },
-                                    i / 2
-                                )
-                            } else {
-                                format!("{}[{i}]", reader.path)
-                            }
-                        });
+                                    format!("{}[{i}]", reader.path)
+                                })
+                            })
+                            .transpose()?;
                         self.export_with_origins(
                             s,
                             x,

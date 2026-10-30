@@ -3952,6 +3952,32 @@ fn host_date_exports_obey_conversion_limits_and_intrinsic_branding() {
 #[test]
 fn reader_literal_payloads_reject_undefined_at_the_container_path() {
     let evaluator = BbpEvaluator::new(Default::default()).unwrap();
+    // The embedder may supply a valid unqualified keyword object key, too.
+    let id = evaluator.id().unwrap();
+    let literal = evaluator
+        .host_scope(|s| {
+            let text = s.primitive(Primitive::string("bad"));
+            let key = s
+                .new_keyword(None, s.string(text).unwrap())
+                .map_err(error)?;
+            let undefined = s.primitive(Primitive::Undefined);
+            let payload = s.new_form_map(&[(key, undefined)]).map_err(error)?;
+            let tag = s.primitive(Primitive::string("js-object"));
+            let literal = s
+                .new_compiler_literal(s.string(tag).unwrap(), payload)
+                .map_err(error)?;
+            Ok::<_, EvalError>(s.persist(literal))
+        })
+        .unwrap();
+    evaluator.request(1, id, literal).unwrap();
+    let failure = evaluator
+        .export_data(id, ConversionLimits::default())
+        .unwrap_err();
+    assert_eq!(
+        failure.0,
+        "Error: Unsupported macro result undefined at $.bad"
+    );
+    evaluator.release(id).unwrap();
     for (body, path) in [
         ("rt.compilerForms.jsArray([undefined])", "$[0]"),
         ("rt.compilerForms.jsObject(['bad', undefined])", "$.bad"),

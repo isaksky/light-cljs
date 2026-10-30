@@ -107,6 +107,7 @@ fn native_compiler_readers_reject_undefined_results() {
         "js/undefined",
         "[1 js/undefined]",
         "(list 1 js/undefined)",
+        "(map (fn [_] js/undefined) [1])",
         "#{js/undefined}",
         "{js/undefined 1}",
         "{:bad js/undefined}",

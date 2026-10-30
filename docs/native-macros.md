@@ -43,6 +43,10 @@ services with those builds. Requests suspend the task before invoking its
 compiler callback, preserving the caller and initializer ancestry when VM
 steps move between worker threads. Reader definition gensyms retain the
 canonical emitted unit's identity; reader calls count apart from macro calls.
+Outside a namespace scope, reader gensyms skip imported symbols and earlier
+generated spellings. Reader results reject JavaScript `undefined`, including
+inside collections, literal payloads and metadata, at the original tag span;
+`null` remains valid nil data.
 See [the cache-suite compatibility results](compiler-cache.md#pants-build-cache-suite-compatibility).
 
 A compilation retains one shared runtime and aggregate execution control. Each
