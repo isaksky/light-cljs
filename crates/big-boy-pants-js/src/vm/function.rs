@@ -282,6 +282,23 @@ pub(crate) fn apply_to_entry(heap: &Heap, value: &Value) -> Value {
     }
 }
 
+/// Keep calling-convention operands out of the general form-operation
+/// frame, which is also used when a task resumes on a 64 KiB stack.
+pub(crate) fn compiler_apply(
+    heap: &Heap,
+    op: super::instr::FormOp,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    use super::instr::FormOp;
+    match op {
+        FormOp::FnApplyNull => apply_null(heap, args[0].clone()),
+        FormOp::FnApplyReceiver => Ok(apply_receiver(heap, args[0].clone())),
+        FormOp::FnWithApplyTo => with_apply_to(heap, args[0].clone(), args[1].clone()),
+        FormOp::FnApplyToEntry => Ok(apply_to_entry(heap, &args[0])),
+        _ => Err(Fault::Internal("not a compiler apply operation")),
+    }
+}
+
 impl Trace for FunctionObject {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.code.trace(visit);
