@@ -10,8 +10,8 @@ use std::thread;
 
 use big_boy_pants_js::frontend::compile_function;
 use big_boy_pants_js::{
-    Budget, CellStatus, Host, HostCall, LAZY_REALIZATION, Primitive, RunOutcome, Runtime, Task,
-    ValueView,
+    Budget, CellStatus, HeapPolicy, Host, HostCall, LAZY_REALIZATION, Primitive, RunOutcome,
+    Runtime, Task, ValueView,
 };
 
 /// Counts thunk runs (`__rt.effect(1, …)`), optionally holding the first
@@ -398,6 +398,139 @@ fn a_realize_all_parked_mid_walk_keeps_its_walk_across_collection() {
     assert_eq!(rt.take_lazy_wakeups().len(), 1);
     rt.collect().unwrap();
     assert_eq!(complete(b.run().unwrap()), ValueView::Bool(true));
+    assert_eq!(host.runs.load(Ordering::SeqCst), 1);
+}
+
+/// A byte-limited runtime, which charges a kept `cljRealizeAll` walk.
+fn byte_limited() -> Runtime {
+    Runtime::with_heap_policy(
+        Default::default(),
+        HeapPolicy {
+            hard_limit_bytes: Some(256 << 20),
+            ..Default::default()
+        },
+    )
+}
+
+/// A task that realizes all of a vector of 2,000 task-owned lazy sequences
+/// and then `shared`, inside a `try` with a `finally` block when
+/// `finally`: its walk builds 2,000 lists before it meets `shared`.
+fn realize_all_task(rt: &Runtime, shared: &big_boy_pants_js::Rooted, finally: bool) -> Task {
+    let (open, close) = if finally {
+        ("try {", "} finally { v = null; }")
+    } else {
+        ("{", "}")
+    };
+    let walk = compile_function(&format!(
+        "function walk(shared) {{
+           let v = __rt.formVector();
+           for (let i = 0; i < 2000; i++) v = __rt.formConj(v, __rt.lazySeq(() => __rt.formList(i, i)));
+           v = __rt.formConj(v, shared);
+           {open} return __rt.formCount(__rt.cljRealizeAll(v)); {close}
+         }}"
+    ))
+    .unwrap();
+    rt.spawn(&walk, &[shared]).unwrap()
+}
+
+/// The managed bytes and objects of `rt` after a collection.
+fn settled(rt: &Runtime) -> (usize, usize) {
+    rt.collect().unwrap();
+    let stats = rt.heap_stats();
+    (stats.managed_bytes, stats.objects)
+}
+
+/// A cancelled `cljRealizeAll` leaves nothing of its kept walk behind
+/// (light-cljs-628): the lists it built and its byte charge are released
+/// by the cancellation's cleanup, while the task's handle is still held,
+/// and the task it shares a sequence with goes on. Once as the realizer of
+/// the shared sequence, held inside its thunk (the cancellation runs a
+/// `finally` block first, unwinding through the realization), and once as
+/// a reader parked on another task's realization of it.
+#[test]
+fn retained_realize_all_walk_is_released_on_cancellation() {
+    let rt = byte_limited();
+    // Grow the object table to the walk's size first, so a settled heap
+    // holds as many bytes before the walk as after it.
+    let warm = eval(&rt, "return null;");
+    let task = realize_all_task(&rt, &warm, false);
+    assert_eq!(complete(task.run().unwrap()), ValueView::Number(2001.0));
+    drop(task);
+    // Kept by the measurement: the walk's charge and lists, over 100 KiB.
+    let kept = |parked: (usize, usize), base: (usize, usize)| {
+        assert!(parked.0 > base.0 + (100 << 10), "{parked:?} over {base:?}");
+        assert!(parked.1 > base.1 + 2000, "{parked:?} over {base:?}");
+    };
+    // Released: the heap settles where it was before the walk.
+    let released = |after: (usize, usize), base: (usize, usize)| assert_eq!(after, base);
+
+    // The walk's task realizes the shared sequence and is cancelled inside
+    // its thunk; a reader parked on it then realizes it itself.
+    let host = Thunks::default();
+    let shared = shared_lazy(&rt, false);
+    let (walk, parked) = (realize_all_task(&rt, &shared, true), reader(&rt, &shared));
+    let base = settled(&rt);
+    let mut steps = 0;
+    while host.runs.load(Ordering::SeqCst) == 0 {
+        let outcome = walk
+            .run_with(Budget::instructions(1), &mut host.clone())
+            .unwrap();
+        assert!(matches!(outcome, RunOutcome::Yielded), "{outcome:?}");
+        steps += 1;
+        assert!(steps < 100_000);
+    }
+    let RunOutcome::Waiting(_) = parked
+        .run_with(Budget::UNLIMITED, &mut host.clone())
+        .unwrap()
+    else {
+        panic!("the reader did not park");
+    };
+    kept(settled(&rt), base);
+    let _ = walk.cancel();
+    assert!(matches!(walk.run().unwrap(), RunOutcome::Cancelled));
+    released(settled(&rt), base);
+    assert_eq!(rt.take_lazy_wakeups().len(), 1);
+    assert_eq!(
+        complete(
+            parked
+                .run_with(Budget::UNLIMITED, &mut host.clone())
+                .unwrap()
+        ),
+        ValueView::Number(6.0)
+    );
+    assert_eq!(host.runs.load(Ordering::SeqCst), 2);
+    drop((walk, parked, shared));
+
+    // The walk's task parks on another task's realization of the shared
+    // sequence and is cancelled there; the realizer finishes.
+    let host = Thunks::default();
+    let shared = shared_lazy(&rt, false);
+    let (realizer, walk) = (reader(&rt, &shared), realize_all_task(&rt, &shared, false));
+    let base = settled(&rt);
+    while host.runs.load(Ordering::SeqCst) == 0 {
+        let outcome = realizer
+            .run_with(Budget::instructions(1), &mut host.clone())
+            .unwrap();
+        assert!(matches!(outcome, RunOutcome::Yielded), "{outcome:?}");
+    }
+    let RunOutcome::Waiting(key) = walk.run_with(Budget::UNLIMITED, &mut host.clone()).unwrap()
+    else {
+        panic!("the walk did not park");
+    };
+    assert_eq!(key.kind(), LAZY_REALIZATION);
+    kept(settled(&rt), base);
+    let _ = walk.cancel();
+    assert!(matches!(walk.run().unwrap(), RunOutcome::Cancelled));
+    released(settled(&rt), base);
+    assert_eq!(
+        complete(
+            realizer
+                .run_with(Budget::UNLIMITED, &mut host.clone())
+                .unwrap()
+        ),
+        ValueView::Number(6.0)
+    );
+    assert!(rt.take_lazy_wakeups().is_empty());
     assert_eq!(host.runs.load(Ordering::SeqCst), 1);
 }
 
