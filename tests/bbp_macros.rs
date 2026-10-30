@@ -5798,9 +5798,13 @@ fn producer_catalog_work_does_not_grow_with_the_catalog() {
             format!(
                 r#"(ns tools)
                 {defs}
+                (defn suffix [] "!")
+                (defmacro bang [] (suffix))
                 (defn label [x] (str "n" x))
-                (defn shout [x] (str (label x) "!"))
-                (defmacro tag [x] (list 'quote [(shout x) (label x)]))"#
+                (defn shout [x] (str (label x) (bang)))
+                (defmacro tag [x] (list 'quote [(shout x) (label x)]))
+                ;; Demand shout before this namespace drains its deferred units.
+                (tag 0)"#
             ),
         )
         .unwrap();
@@ -5852,6 +5856,10 @@ fn producer_catalog_work_does_not_grow_with_the_catalog() {
     let (setups, applied, report) = build(40);
     let (more_setups, more_applied, more_report) = build(160);
     assert!(setups > 0, "{report}");
+    // Compiling the demanded shout helper expands bang in its producer;
+    // bang reads suffix from the adopted catalog. This also checks that
+    // produce charges that deferred work through note_catalog_applied.
+    assert!(applied > 0, "{report}");
     assert_eq!(setups, more_setups, "{report}\n{more_report}");
     // Each producer applies the few entries of the names it reads, far
     // fewer than the 40 the smaller catalog holds.
