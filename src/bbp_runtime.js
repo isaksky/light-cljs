@@ -2655,9 +2655,10 @@ const native = (() => {
   // function metadata keeps both entries publishable across compiler tasks.
   const callableThree=(fixed,variadic)=>{
     const direct=(...args)=>args.length<=3?fixed(args):variadic(args[0],args[1],args[2],list(args.slice(3)));
-    return __rt.fnWithApplyTo(direct,args=>{
-      let n=0;
-      for(let s=seqOf(args);n<4&&s!==null;n++,s=__rt.cljNext(s)){}
+    return __rt.fnWithApplyTo(direct,(prefix,tail)=>{
+      const n=prefix.length+globalThis.__lightNativeRuntime.core.boundedCount(4-prefix.length,tail);
+      let args=tail;
+      for(let i=prefix.length-1;i>=0;i--)args=__rt.cljCons(prefix[i],args);
       let s=seqOf(args);
       if(n<=3){
         const values=[];
@@ -2685,9 +2686,12 @@ const native = (() => {
     };
     const tail=args=>{
       if(small){
-        for(let xs=seqOf(args);xs!==null;xs=__rt.cljNext(xs))for(let ps=seqOf(predicates);ps!==null;ps=__rt.cljNext(ps)){
-          const result=invoke(__rt.cljFirst(ps),__rt.cljFirst(xs));
-          if(truth(result)===existential)return existential?result:false;
+        for(let xs=seqOf(args);xs!==null;xs=__rt.cljNext(xs)){
+          const value=__rt.cljFirst(xs);
+          for(let ps=seqOf(predicates);ps!==null;ps=__rt.cljNext(ps)){
+            const result=invoke(__rt.cljFirst(ps),value);
+            if(truth(result)===existential)return existential?result:false;
+          }
         }
       }else{
         for(let ps=seqOf(predicates);ps!==null;ps=__rt.cljNext(ps)){
@@ -2916,6 +2920,12 @@ const native = (() => {
     first:x=>__rt.cljFirst(x), second:x=>__rt.cljFirst(__rt.cljNext(x)),
     nth:(x,n,...d)=>d.length?__rt.cljNthOr(x,n,d[0]):__rt.cljNth(x,n),
     count:x=>__rt.cljCount(x),
+    boundedCount:(n,x)=>{
+      if(x==null||arraySeqs.has(x)||__rt.cljDispatch(countedKinds,x)||decl.predicate('ICounted',x))return __rt.cljCount(x);
+      let count=0;
+      for(let s=seqOf(x);val(n)>0&&s!==null;n=val(n)-1,s=__rt.cljNext(s))count++;
+      return count;
+    },
     seq, isEmpty:x=>__rt.cljSeq(x)===null,
     rest:x=>__rt.cljRest(x), next:x=>__rt.cljNext(x), peek:x=>__rt.cljPeek(x), peekProtocol,
     // The doseq definition steps its bindings in pairs (light-cljs-611).
@@ -2933,10 +2943,8 @@ const native = (() => {
     apply:(f,...xs)=>{
       const entry=__rt.fnApplyToEntry(val(f));
       if(entry!==null){
-        let args=xs[xs.length-1];
-        if(xs.length>=5)args=seqOf(args);
-        for(let i=xs.length-2;i>=0;i--)args=__rt.cljCons(xs[i],args);
-        return entry(args);
+        const prefix=xs.slice(0,-1),tail=xs[xs.length-1];
+        return entry(prefix,prefix.length>=4?seqOf(tail):tail);
       }
       const args=[...xs.slice(0,-1),...arr(xs[xs.length-1])];
       if(isVar(f))return core.applyVar(f,args);
@@ -3076,7 +3084,7 @@ const native = (() => {
       return x.length===36&&/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(x)?core.uuid(x):null;},
     randomUuid:(...a)=>a.length?arity(a.length):core.uuid('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,ch=>{const n=Math.floor(Math.random()*16);return (ch==='x'?n:n&3|8).toString(16);})),
     rand:(...a)=>a.length===0?Math.random():a.length===1?val(a[0])*Math.random():arity(a.length),
-    randInt,
+    randInt:(...a)=>a.length===1?randInt(a[0]):arity(a.length),
     shuffle:(...a)=>{if(a.length!==1)return arity(a.length);const items=arr(a[0]).slice();for(let i=items.length-1;i>0;i--){const j=randInt(i+1);[items[i],items[j]]=[items[j],items[i]];}return vector(items);},
     randNth:(...a)=>a.length===1?__rt.cljNth(a[0],randInt(__rt.cljCount(a[0]))):arity(a.length),
     parseLong:x=>parseLong(val(x)),parseDouble:x=>parseDouble(val(x)),parseBoolean:x=>parseBoolean(val(x)),

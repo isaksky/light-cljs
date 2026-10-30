@@ -6351,15 +6351,32 @@ fn native_predicate_combinations_preserve_lazy_apply_tails() {
 fn native_random_helpers_reject_invalid_arities() {
     assert_native_matches_legacy(
         r#"(defmacro probe []
-             (let [s shuffle r rand-nth
+             (let [s shuffle r rand-nth i rand-int
                    message (fn [f] (try (f) :bad (catch :default e (.-message e))))]
                (list 'quote [(message #(s)) (message #(s [1] [2]))
                  (message #(r)) (message #(r [1] [2]))
                  (message #(apply s [])) (message #(apply s [[1] [2]]))
                  (message #(apply r [])) (message #(apply r [[1] [2]]))
+                 (message #(i)) (message #(i 1 2))
+                 (message #(apply i [])) (message #(apply i [1 2]))
                  (s [1]) (r [1]) (apply s [[1]]) (apply r [[1]])])))
            (js/console.log (pr-str (probe)))"#,
-        "[\"Invalid arity: 0\" \"Invalid arity: 2\" \"Invalid arity: 0\" \"Invalid arity: 2\" \"Invalid arity: 0\" \"Invalid arity: 2\" \"Invalid arity: 0\" \"Invalid arity: 2\" [1] 1 [1] 1]\n",
+        "[\"Invalid arity: 0\" \"Invalid arity: 2\" \"Invalid arity: 0\" \"Invalid arity: 2\" \"Invalid arity: 0\" \"Invalid arity: 2\" \"Invalid arity: 0\" \"Invalid arity: 2\" \"Invalid arity: 0\" \"Invalid arity: 2\" \"Invalid arity: 0\" \"Invalid arity: 2\" [1] 1 [1] 1]\n",
+    );
+}
+
+#[test]
+fn native_predicate_apply_observes_count_before_traversal() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [events (atom [])
+                   input (reify ICounted (-count [_] (swap! events conj :count) 1)
+                           ISeqable (-seq [_] (swap! events conj :seq)
+                             (cons 1 (lazy-seq (throw (js/Error. "unused counted tail"))))))
+                   result (apply (some-fn (constantly :found)) input)]
+               (list 'quote [result @events])))
+           (js/console.log (pr-str (probe)))"#,
+        "[:found [:count :seq]]\n",
     );
 }
 
