@@ -7557,6 +7557,7 @@ impl Analyzer<'_> {
                     &datum,
                     self.namespace,
                     self.macro_host.limits.generated_nodes,
+                    self.macro_host.native_macro_backend(),
                 )
                 .is_some_and(|expanded| {
                     self.macro_free_datum(&expanded, 1, true)
@@ -7662,6 +7663,7 @@ impl Analyzer<'_> {
                                 datum,
                                 self.namespace,
                                 self.macro_host.limits.generated_nodes,
+                                self.macro_host.native_macro_backend(),
                             )
                             .is_some_and(|expanded| {
                                 self.macro_free_datum(&expanded, depth + 1, true)

@@ -225,6 +225,7 @@ mod transducers;
 mod transients;
 mod type_inference;
 mod types;
+mod unscoped_core_macros;
 mod utilities_bodies;
 mod utilities_completion;
 mod utility_macros;

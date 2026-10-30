@@ -400,8 +400,9 @@ pub(crate) fn expand(
             _ => None,
         },
         "hash-map" => Some(hash_map(args)),
+        // Its definition, of one fixed arity, ignores further arguments.
         "selector" => match args {
-            [map] => selector(map, gensym)?,
+            [map, ..] => selector(map, gensym)?,
             _ => None,
         },
         "simple-benchmark" => match args {
@@ -982,7 +983,8 @@ fn simple_benchmark(
 
 /// What the engine's `pr-str` prints for `datum`, as UTF-16, for the forms
 /// whose printing does not depend on the engine's number formatting or
-/// hashes: nil, booleans, integers it holds exactly, strings, symbols,
+/// hashes: nil, booleans, integers it holds exactly, numbers it prints
+/// without an exponent, strings and characters (strings there), symbols,
 /// keywords, lists, vectors and maps of at most [`ARRAY_MAP_ENTRIES`]
 /// entries; `None` for any other.
 fn printed(datum: &Datum) -> Option<Vec<u16>> {
@@ -1001,9 +1003,21 @@ fn printed(datum: &Datum) -> Option<Vec<u16>> {
             DatumKind::Integer(value) if value.unsigned_abs() <= 1 << 53 => {
                 ascii(&value.to_string(), out)
             }
-            DatumKind::String(text) => {
+            // JavaScript's number printing, in the range where it uses
+            // neither an exponent nor more digits than Rust's shortest.
+            DatumKind::Double(value) if *value == 0.0 => ascii("0", out),
+            DatumKind::Double(value) if (1e-6..1e21).contains(&value.abs()) => {
+                ascii(&value.to_string(), out)
+            }
+            // The engine's characters are strings of one unit.
+            DatumKind::String(_) | DatumKind::Character(_) => {
+                let units = match datum.kind() {
+                    DatumKind::Character(unit) => vec![*unit],
+                    DatumKind::String(text) => text.to_vec(),
+                    _ => unreachable!(),
+                };
                 out.push(b'"' as u16);
-                for &unit in text.iter() {
+                for unit in units {
                     match char::from_u32(u32::from(unit)) {
                         Some('"') => ascii("\\\"", out),
                         Some('\\') => ascii("\\\\", out),
@@ -1548,15 +1562,16 @@ fn sequence_for(
 ) -> Result<Option<Datum>, String> {
     let pairs = children(bindings);
     // More bindings than conversion levels expand past them in any case.
-    if !is_vector(bindings)
-        || pairs.is_empty()
-        || !pairs.len().is_multiple_of(2)
-        || pairs.len() / 2 > DEPTH
-    {
+    if !is_vector(bindings) || !pairs.len().is_multiple_of(2) || pairs.len() / 2 > DEPTH {
         return Ok(None);
     }
-    // Each binding and its modifiers; a modifier first pops no group.
+    // Each binding and its modifiers; a modifier first pops no group. With
+    // no binding, the definition destructures one of nil from nothing.
+    let nil = C.nil();
     let mut groups: Vec<Group<'_>> = Vec::new();
+    if pairs.is_empty() {
+        groups.push((&nil, &nil, Vec::new()));
+    }
     for pair in pairs.as_chunks::<2>().0 {
         if matches!(pair[0].kind(), DatumKind::Keyword(_)) {
             let (Some(group), Some(name)) = (groups.last_mut(), modifier(&pair[0])) else {
@@ -1723,7 +1738,10 @@ fn sequence_for(
     Ok(Some(list(vec![
         core("let"),
         vector(vec![symbol(FOR_ITERATOR), expansion]),
-        list(vec![symbol(FOR_ITERATOR), pairs[1].clone()]),
+        list(vec![
+            symbol(FOR_ITERATOR),
+            pairs.get(1).cloned().unwrap_or_else(|| C.nil()),
+        ]),
     ])))
 }
 
@@ -1996,6 +2014,7 @@ pub(crate) fn native_expansion(
     call: &Datum,
     namespace: &str,
     nodes: usize,
+    native_backend: bool,
 ) -> Option<Datum> {
     if !crate::generated_names::scoped() || within(call, DEPTH).is_none_or(|count| count > nodes) {
         return None;
@@ -2007,8 +2026,234 @@ pub(crate) fn native_expansion(
             .collect())
     };
     let expanded = expand(name, call, namespace, &mut stand_ins).ok()??;
-    within(&expanded, DEPTH)?;
+    within(&expanded, expansion_room(native_backend))?;
     Some(expanded)
+}
+
+/// The levels an expansion may nest in. The engine converts one back down
+/// to [`DEPTH`] levels below its root ([`rejection`] reports deeper ones as
+/// it does); an engine that would expand the call keeps a level of margin
+/// below that, the Pants build, which has none to leave a call to, none.
+fn expansion_room(native_backend: bool) -> usize {
+    if native_backend { DEPTH + 1 } else { DEPTH }
+}
+
+/// What stands for an argument the call of a core macro leaves out, which
+/// its definition receives as `undefined`: a symbol no source spells.
+#[cfg(feature = "bbp-macros")]
+const MISSING: &str = "\u{0}undefined";
+
+/// Why the definition of the core macro `name` fails on the call `call`,
+/// which [`expand`] declines, as the engine running it reports that, or
+/// `None` where this module cannot tell (light-cljs-611). The Pants build,
+/// which runs no definition, reports it instead
+/// ([`crate::MacroHost::expand_core_javascript`]), as the V8 build's engine
+/// does: the engine's conversion of a call deeper than [`DEPTH`] or larger
+/// than `nodes`; a definition's own error, an arity error of `if-not`, the
+/// one of its two arities, or the `pop` of `for` on an empty vector; and
+/// what the engine's conversion of the expansion refuses, a missing
+/// argument (`undefined`), the depth or the node limit, at the path of the
+/// first node it refuses, found in the expansion built with [`MISSING`]
+/// for each missing argument.
+#[cfg(feature = "bbp-macros")]
+pub(crate) fn rejection(name: &str, call: &Datum, namespace: &str, nodes: usize) -> Option<String> {
+    if within(call, DEPTH).is_none_or(|count| count > nodes) {
+        return Some("compiler input conversion limit".into());
+    }
+    let args = children(call).get(1..)?;
+    let error = |message: &str| Some(format!("Error: {message}"));
+    let is_map = |datum: &Datum| {
+        matches!(
+            datum.kind(),
+            DatumKind::Collection {
+                kind: CollectionKind::Map,
+                ..
+            }
+        )
+    };
+    let even_bindings = |what: &str| {
+        let valid = args
+            .first()
+            .is_some_and(|b| is_vector(b) && children(b).len().is_multiple_of(2));
+        (!valid).then(|| {
+            format!(
+                "Error: Assert failed: {what} requires an even binding vector\n(and (vector? seq-exprs) (even? (count seq-exprs)))"
+            )
+        })
+    };
+    // The definitions' own checks, in the order they make them.
+    let checked = match name {
+        "js-fn?" if args.len() != 1 => error("js-fn? requires one argument"),
+        "js-comment" if !matches!(args.first().map(Datum::kind), Some(DatumKind::String(_))) => {
+            error("js-comment requires a string")
+        }
+        "if-not" if !matches!(args.len(), 2 | 3) => {
+            error(&format!("Invalid arity: {}", args.len() + 2))
+        }
+        "if-let" | "if-some" | "when-let" | "when-some" | "when-first" => match args.first() {
+            Some(bindings) if is_vector(bindings) && children(bindings).len() == 2 => None,
+            Some(bindings) if is_vector(bindings) => {
+                error("conditional binding requires exactly two forms")
+            }
+            _ => error("conditional binding requires a vector"),
+        },
+        "cond" if args.len() % 2 == 1 => error("cond requires an even number of forms"),
+        "dotimes" => match args.first() {
+            Some(bindings) if is_vector(bindings) && children(bindings).len() == 2 => None,
+            Some(bindings) if is_vector(bindings) => {
+                error("dotimes requires exactly two binding forms")
+            }
+            _ => error("iteration bindings must be a vector"),
+        },
+        "cond->" | "cond->>" if args.len() % 2 == 0 => {
+            error("conditional threading requires test/step pairs")
+        }
+        "selector" => match args.first() {
+            Some(map) if is_map(map) => {
+                let entries = map.entries().ok()?;
+                let present = ["select", "excess", "missing", "all"].iter().any(|d| {
+                    entries.iter().any(|(key, value)| {
+                        is_keyword(key, d)
+                            && !matches!(value.kind(), DatumKind::Nil | DatumKind::Boolean(false))
+                    })
+                });
+                (!present).then(|| {
+                    "Error: form must contain at least one of :select :excess :missing :all"
+                        .to_owned()
+                })
+            }
+            _ => error("expected a map"),
+        },
+        "simple-benchmark" if args.len() > 3 && args.len() % 2 == 0 => {
+            let key = String::from_utf16(&printed(args.last()?)?).ok()?;
+            error(&format!("No value supplied for key: {key}"))
+        }
+        "defmulti" => {
+            let mut rest = args.get(1..).unwrap_or_default();
+            if matches!(rest.first().map(Datum::kind), Some(DatumKind::String(_))) {
+                rest = &rest[1..];
+            }
+            if rest.first().is_some_and(is_map) {
+                rest = &rest[1..];
+            }
+            let options = rest.get(1..).unwrap_or_default();
+            if !matches!(args.first().map(Datum::kind), Some(DatumKind::Symbol(_))) {
+                error("defmulti requires a symbol name")
+            } else if rest.is_empty() {
+                error("defmulti requires a dispatch function")
+            } else if options.len() % 2 == 1 {
+                error("defmulti requires keyword/value option pairs")
+            } else if options
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .any(|[key, _]| !is_keyword(key, "default") && !is_keyword(key, "hierarchy"))
+            {
+                error("Unsupported defmulti option")
+            } else {
+                None
+            }
+        }
+        // Both build the innermost binding first and a binding's modifiers
+        // last first, so the last invalid keyword is the one they reject.
+        "for" | "doseq" => even_bindings(name).or_else(|| {
+            let pairs = children(&args[0]).as_chunks::<2>().0;
+            let keyword = |key: &Datum| matches!(key.kind(), DatumKind::Keyword(_));
+            if name == "for" && pairs.first().is_some_and(|[key, _]| keyword(key)) {
+                return error("Can't pop empty vector");
+            }
+            let [key, _] = pairs
+                .iter()
+                .rfind(|[key, _]| keyword(key) && modifier(key).is_none())?;
+            let key = String::from_utf16(&printed(key)?).ok()?;
+            error(&if name == "for" {
+                format!("Invalid 'for' keyword {key}")
+            } else {
+                format!("Invalid 'doseq' keyword{key}")
+            })
+        }),
+        _ => None,
+    };
+    if checked.is_some() {
+        return checked;
+    }
+    // The positional parameters each definition binds before its rest.
+    let positional = match name {
+        "when" | "when-not" | "->" | "->>" | "cond->" | "cond->>" | "some->" | "some->>"
+        | "case" | "while" | "dotimes" | "doto" | "memfn" | "js-comment" | "locking" | "time"
+        | "with-in-str" | "when-let" | "when-some" | "when-first" | "doseq" | "defmulti" => 1,
+        "if-let" | "if-some" | "as->" | "vswap!" | ".." | "defmethod" | "condp" | "for" => 2,
+        "unchecked-max" | "unchecked-min" if args.is_empty() => 2,
+        "simple-benchmark" => 3,
+        "amap" => 4,
+        "areduce" => 5,
+        _ => 0,
+    };
+    let mut padded = children(call).to_vec();
+    padded.resize(padded.len().max(positional + 1), symbol(MISSING));
+    let padded = list(padded);
+    let mut stand_ins = |prefixes: &[&str]| -> Result<Vec<Datum>, String> {
+        Ok(prefixes
+            .iter()
+            .map(|prefix| symbol(&crate::generated_names::stand_in(prefix)))
+            .collect())
+    };
+    let expanded = expand(name, &padded, namespace, &mut stand_ins).ok()??;
+    // The engine's conversion of the expansion, in its order: each node
+    // before its children, keys before values, metadata last.
+    fn refused(
+        datum: &Datum,
+        path: &mut String,
+        depth: usize,
+        count: &mut usize,
+        nodes: usize,
+    ) -> Option<Option<String>> {
+        *count += 1;
+        if *count > nodes {
+            return Some(Some(format!("node limit at {path}")));
+        }
+        if depth > DEPTH {
+            return Some(Some(format!("depth limit at {path}")));
+        }
+        match datum.kind() {
+            DatumKind::Symbol(name) if *name == Name::new(None, MISSING) => {
+                return Some(Some(format!("undefined at {path}")));
+            }
+            DatumKind::Collection { kind, children } => {
+                for (index, child) in children.iter().enumerate() {
+                    let length = path.len();
+                    match kind {
+                        CollectionKind::Map => {
+                            let part = if index % 2 == 0 { "key" } else { "value" };
+                            path.push_str(&format!(".{part}[{}]", index / 2));
+                        }
+                        CollectionKind::List | CollectionKind::Vector => {
+                            path.push_str(&format!("[{index}]"))
+                        }
+                        // A set's order is the engine's hashes'.
+                        _ => return None,
+                    }
+                    let found = refused(child, path, depth + 1, count, nodes)?;
+                    path.truncate(length);
+                    if found.is_some() {
+                        return Some(found);
+                    }
+                }
+            }
+            DatumKind::CompilerLiteral { .. } => return None,
+            _ => {}
+        }
+        if let Some(metadata) = datum.metadata() {
+            let length = path.len();
+            path.push_str(".meta");
+            let found = refused(&metadata, path, depth + 1, count, nodes)?;
+            path.truncate(length);
+            return Some(found);
+        }
+        Some(None)
+    }
+    refused(&expanded, &mut "$".to_owned(), 0, &mut 0, nodes)?
+        .map(|refusal| format!("Error: Unsupported macro result {refusal}"))
 }
 
 impl crate::MacroHost {
@@ -2101,7 +2346,7 @@ impl crate::MacroHost {
         };
         // Its names are allocated: the engine allocates others before it
         // fails to convert the expansion back.
-        if within(&expanded, DEPTH).is_none() {
+        if within(&expanded, expansion_room(self.native_macro_backend())).is_none() {
             return Ok(None);
         }
         let mut arguments = Arguments::new(&children(&call)[1..]);
@@ -2227,7 +2472,13 @@ mod tests {
         let expanded = {
             let _names = crate::generated_names::enter_namespace(7);
             let before = host.engine.expansions.get();
-            let shape = native_expansion(&name, &call.data(), "user", host.limits.generated_nodes);
+            let shape = native_expansion(
+                &name,
+                &call.data(),
+                "user",
+                host.limits.generated_nodes,
+                host.native_macro_backend(),
+            );
             let expanded = host
                 .expand_core_native(&name, &call, "user", (&name, &(0..source.len())), None)
                 .unwrap();
@@ -2247,6 +2498,18 @@ mod tests {
             );
             expanded
         };
+        // The Pants build runs no definition to compare with: it reports
+        // what the definition would ([`rejection`]), so a call native
+        // expansion declines there must be one the definition rejects.
+        #[cfg(not(any(light_quickjs, light_v8)))]
+        match (&expanded, &script) {
+            (Some(_), Err(_)) => return,
+            (None, Err(error)) if !left => assert!(
+                !error.contains("does not expand this call"),
+                "{source}: {error}"
+            ),
+            _ => {}
+        }
         match (expanded, script) {
             (Some(native), Ok(script)) => {
                 if let Some(difference) = difference(&native, &script, "") {
@@ -2750,7 +3013,13 @@ mod tests {
                 "doseq"
             };
             let _names = crate::generated_names::enter_namespace(7);
-            let shape = native_expansion(name, &call.data(), "user", host.limits.generated_nodes);
+            let shape = native_expansion(
+                name,
+                &call.data(),
+                "user",
+                host.limits.generated_nodes,
+                host.native_macro_backend(),
+            );
             let expanded = host
                 .expand_core_native(name, &call, "user", (name, &(0..1)), None)
                 .unwrap()
@@ -2825,7 +3094,7 @@ mod tests {
             "(for [[a b] (f) :when a y (g a) :let [z 0] :when (h z)] [a b y z])",
             "(for [x [0 1 true nil] :tag x] x)",
             "(for [x xs :when true] true)",
-            "~(for [] x)",
+            "(for [] x)",
             "(for [x] x)",
             "(for [:let [a 1] x xs] x)",
             "(for [x xs :bad 1] x)",

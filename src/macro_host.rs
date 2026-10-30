@@ -267,6 +267,39 @@ fn forbid_definition() {
         forbid_engine_entry("a nested definition");
     }
 }
+/// The diagnostic for the expansion `origin` that failed with `error`: the
+/// call's location, the macro, the error, and where the macro and the
+/// helpers it called are defined.
+pub(crate) fn expansion_failure(
+    origin: &crate::compiler_data::ExpansionOrigin,
+    error: impl std::fmt::Display,
+) -> String {
+    let location = crate::compiler_data::DiagnosticLocation::from_span(&origin.call);
+    let mut message = format!(
+        "{}:{}:{}: macro {}/{}: {}",
+        location.source,
+        location.line,
+        location.column,
+        String::from_utf16_lossy(origin.macro_name.namespace().unwrap_or(&[])),
+        String::from_utf16_lossy(origin.macro_name.name()),
+        error
+    );
+    if let Some(definition) = &origin.definition {
+        let d = crate::compiler_data::DiagnosticLocation::from_span(definition);
+        message.push_str(&format!(
+            "; definition {}:{}:{}",
+            d.source, d.line, d.column
+        ));
+    }
+    for helper in &origin.helpers {
+        message.push_str(&format!(
+            "; helper {}/{}",
+            String::from_utf16_lossy(helper.namespace().unwrap_or(&[])),
+            String::from_utf16_lossy(helper.name())
+        ));
+    }
+    message
+}
 /// Record a native expansion if this thread analyzes a macro-free unit.
 pub(crate) fn record_native_expansion(expansion: impl FnOnce() -> NativeExpansion) {
     MACRO_FREE_UNIT.with(|unit| {
@@ -1158,33 +1191,7 @@ impl MacroHost {
                 None => self.note_unmeasured(),
             }
         }
-        let expanded = expanded.map_err(|e| {
-            let location = crate::compiler_data::DiagnosticLocation::from_span(&origin.call);
-            let mut message = format!(
-                "{}:{}:{}: macro {}/{}: {}",
-                location.source,
-                location.line,
-                location.column,
-                String::from_utf16_lossy(origin.macro_name.namespace().unwrap_or(&[])),
-                String::from_utf16_lossy(origin.macro_name.name()),
-                e
-            );
-            if let Some(definition) = &origin.definition {
-                let d = crate::compiler_data::DiagnosticLocation::from_span(definition);
-                message.push_str(&format!(
-                    "; definition {}:{}:{}",
-                    d.source, d.line, d.column
-                ));
-            }
-            for helper in &origin.helpers {
-                message.push_str(&format!(
-                    "; helper {}/{}",
-                    String::from_utf16_lossy(helper.namespace().unwrap_or(&[])),
-                    String::from_utf16_lossy(helper.name())
-                ));
-            }
-            message
-        })?;
+        let expanded = expanded.map_err(|e| expansion_failure(&origin, e))?;
         record_script_expansion(expanded.nodes().len(), || origin.call.bytes());
         self.engine.generated_nodes.set(
             self.engine

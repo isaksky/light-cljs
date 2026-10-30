@@ -686,6 +686,45 @@ impl MacroHost {
                 .map_err(|e| e.to_string())
         })
     }
+    /// The Pants build's diagnostic for the call `call` of the core macro
+    /// `name` that native expansion declines: the one the V8 build's engine
+    /// gives running its definition
+    /// ([`crate::native_core_macros::rejection`]), or, where that cannot
+    /// be told, that the Pants build does not expand the call.
+    #[cfg(feature = "bbp-macros")]
+    fn reject_core_call(&self, name: &str, call: &Form) -> String {
+        let declared = if matches!(name, "for" | "doseq") {
+            format!("sequence-{name}")
+        } else {
+            match MACROS.iter().find(|p| p.0 == name) {
+                Some((_, declared)) => format!("macro-{declared}"),
+                None => return format!("core macro {name} is not a compiler declaration"),
+            }
+        };
+        let names: &[&str] = if matches!(name, "for" | "doseq") {
+            &["for"]
+        } else {
+            &[]
+        };
+        let origin = ExpansionOrigin {
+            macro_name: Name::new(Some("cljs.core"), name),
+            call: call.span(),
+            definition: definitions(names)
+                .ok()
+                .and_then(|mut definitions| definitions.remove(&declared)),
+            helpers: vec![],
+        };
+        let message = crate::native_core_macros::rejection(
+            name,
+            &call.data(),
+            "cljs.user",
+            self.limits.generated_nodes,
+        )
+        .unwrap_or_else(|| {
+            format!("big-boy-pants-js: unsupported operation: the Pants build does not expand this call of {name}")
+        });
+        crate::macro_host::expansion_failure(&origin, message)
+    }
     pub(crate) fn expand_core_javascript(
         &mut self,
         name: &str,
@@ -724,6 +763,12 @@ impl MacroHost {
             && let Some(session) = self.session_handle()
         {
             session.attach(&bootstrap, self)?;
+        }
+        // The Pants build runs no definition: a call native expansion
+        // declines fails as its definition fails in the V8 build's engine.
+        #[cfg(feature = "bbp-macros")]
+        if bootstrap.evaluator.native_forms() && !bootstrap.functions.contains_key(name) {
+            return Err(self.reject_core_call(name, call));
         }
         let declaration = bootstrap
             .functions
@@ -1792,6 +1837,9 @@ mod tests {
         assert_eq!(evaluator.number(value).unwrap(), 42.0);
     }
 
+    // The core macro's definition converts the environment, which only
+    // QuickJS or V8 runs; the Pants build expands `doto` without it.
+    #[cfg(any(light_quickjs, light_v8))]
     #[test]
     fn unused_core_environment_keeps_literal_conversion_failures() {
         let mut host = MacroHost::new();
