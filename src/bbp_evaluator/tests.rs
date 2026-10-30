@@ -28,6 +28,40 @@ fn numeric_global(evaluator: &BbpEvaluator, name: &str) -> f64 {
 }
 
 #[test]
+fn fresh_runtimes_share_executable_code_and_keep_separate_heap_state() {
+    let first = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let second = BbpRuntime::new(&EvaluatorOptions {
+        memory_limit: 32 * 1024 * 1024,
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(Executable::same_code(
+        &first.0.executable,
+        &second.0.executable
+    ));
+    assert!(
+        second
+            .0
+            .runtime
+            .scope(|scope| scope.local(&first.0.raw_members).is_err())
+    );
+    let a = first.evaluator().unwrap();
+    let b = second.evaluator().unwrap();
+    let value = a
+        .evaluate_unit("rt => { globalThis.freshRuntimeValue = 42; return null; }")
+        .unwrap();
+    a.release(value).unwrap();
+    let value = b.evaluate_unit("rt => { if (globalThis.freshRuntimeValue !== undefined) throw Error('shared globals'); return 7; }").unwrap();
+    assert!(matches!(
+        b.export_data(value, ConversionLimits::default())
+            .unwrap()
+            .kind(),
+        D::Double(7.0)
+    ));
+    b.release(value).unwrap();
+}
+
+#[test]
 fn compiler_service_reentry_into_a_pending_initializer_reports_a_cycle() {
     let evaluator = Rc::new(BbpEvaluator::new(EvaluatorOptions::default()).unwrap());
     evaluator

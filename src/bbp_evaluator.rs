@@ -1393,6 +1393,12 @@ impl BbpRuntime {
             )),
             e => error(e),
         })?;
+        // Executable code contains no heap values or task state. Compile
+        // this fixed runtime once per process; every compilation still
+        // creates its own heap, limits, globals and dependency registry.
+        static CODE: std::sync::OnceLock<Result<Executable, EvalError>> =
+            std::sync::OnceLock::new();
+        let executable = CODE.get_or_init(|| {
         let keys = crate::CoreFnId::ALL
             .iter()
             .map(|k| format!("{:?}", k.runtime_key()))
@@ -1448,10 +1454,11 @@ impl BbpRuntime {
                 .join("\n")
             })
             .replace("/* CORE_KEYS */", &keys);
-        let executable = big_boy_pants_js::frontend::compile_function(&format!(
+        big_boy_pants_js::frontend::compile_function(&format!(
             "function nativeMacroTask(commandKind, beginKind, finishKind, readerTagsCell, rawMembersCell, stringKind) {{ {source} }}"
         ))
-        .map_err(error)?;
+        .map_err(error)
+        }).clone()?;
         let control = ExecutionControl::new(options)?;
         let reader_tags = runtime
             .new_atom(&runtime.root(Primitive::Null))
