@@ -612,22 +612,31 @@ impl LazyWaits {
 
 // ---- Realization requests ----
 
+struct Consumption {
+    owner: (u64, TaskId),
+    serials: Vec<u64>,
+}
+
 thread_local! {
     static REQUEST: RefCell<Option<Value>> = const { RefCell::new(None) };
     static CYCLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// The task whose run this thread executes now or executed last, and
-    /// the serials of the attributed cells whose realized values it read
-    /// ([`note_consumed`]).
-    static CONSUMED: RefCell<Option<(TaskId, Vec<u64>)>> = const { RefCell::new(None) };
+    /// The runtime and task whose run this thread executes now or executed
+    /// last, and the serials of the attributed cells whose realized values
+    /// it read ([`note_consumed`]). Task IDs are runtime-local.
+    static CONSUMED: RefCell<Option<Consumption>> = const { RefCell::new(None) };
 }
 
 /// Note the attributed cells that `task`'s run on this thread reads
 /// ([`note_consumed`]). What another task's run left untaken is dropped.
-pub(crate) fn begin_consumption(task: TaskId) {
+pub(crate) fn begin_consumption(runtime: u64, task: TaskId) {
+    let owner = (runtime, task);
     CONSUMED.with(|c| {
         let mut c = c.borrow_mut();
-        if c.as_ref().is_none_or(|(owner, _)| *owner != task) {
-            *c = Some((task, Vec::new()));
+        if c.as_ref().is_none_or(|previous| previous.owner != owner) {
+            *c = Some(Consumption {
+                owner,
+                serials: Vec::new(),
+            });
         }
     });
 }
@@ -640,18 +649,20 @@ pub(crate) fn note_consumed(cell: &LazyCell) {
         return;
     }
     CONSUMED.with(|c| {
-        if let Some((_, serials)) = &mut *c.borrow_mut()
-            && !serials.contains(&cell.serial)
+        if let Some(consumed) = &mut *c.borrow_mut()
+            && !consumed.serials.contains(&cell.serial)
         {
-            serials.push(cell.serial);
+            consumed.serials.push(cell.serial);
         }
     });
 }
 
 /// Take what [`note_consumed`] noted for `task`'s run on this thread.
-pub(crate) fn take_consumed(task: TaskId) -> Vec<u64> {
+pub(crate) fn take_consumed(runtime: u64, task: TaskId) -> Vec<u64> {
     CONSUMED.with(|c| match &mut *c.borrow_mut() {
-        Some((owner, serials)) if *owner == task => std::mem::take(serials),
+        Some(consumed) if consumed.owner == (runtime, task) => {
+            std::mem::take(&mut consumed.serials)
+        }
         _ => Vec::new(),
     })
 }

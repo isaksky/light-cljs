@@ -533,6 +533,49 @@ impl Host for Attributing {
 }
 
 #[test]
+fn consumption_logs_are_isolated_between_runtimes() {
+    let a = Runtime::new();
+    let b = Runtime::new();
+    let attributed = shared_lazy(&a, false);
+    let plain = shared_lazy(&b, false);
+    let serials = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut host = Attributing(a.clone(), serials.clone());
+    complete(
+        reader(&a, &attributed)
+            .run_with(Budget::UNLIMITED, &mut host)
+            .unwrap(),
+    );
+    complete(
+        reader(&b, &plain)
+            .run_with(Budget::UNLIMITED, &mut Thunks::default())
+            .unwrap(),
+    );
+    let serials = serials.lock().unwrap().clone();
+    assert_eq!(serials.len(), 1);
+    for take_before_run in [true, false] {
+        let a_reader = reader(&a, &attributed);
+        let b_reader = reader(&b, &plain);
+        assert_eq!(a_reader.id(), b_reader.id());
+        complete(a_reader.run_with(Budget::UNLIMITED, &mut host).unwrap());
+        if take_before_run {
+            // A foreign runtime cannot take this task's entries even when
+            // its task has the same numeric identity, or clear them.
+            assert!(b.take_lazy_consumed(b_reader.id()).is_empty());
+            assert_eq!(a.take_lazy_consumed(a_reader.id()), serials);
+        }
+        complete(
+            b_reader
+                .run_with(Budget::UNLIMITED, &mut Thunks::default())
+                .unwrap(),
+        );
+        // Starting the foreign task drops A's untaken entries instead of
+        // keeping them as if this were another run of the same task.
+        assert!(b.take_lazy_consumed(b_reader.id()).is_empty());
+        assert!(a.take_lazy_consumed(a_reader.id()).is_empty());
+    }
+}
+
+#[test]
 fn readers_of_a_settled_attributed_realization_are_noted() {
     let rt = Runtime::new();
     let attributed = shared_lazy(&rt, false);

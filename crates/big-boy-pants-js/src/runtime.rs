@@ -364,9 +364,10 @@ impl Runtime {
     /// whose realized values `task`'s current or latest run on this thread
     /// read, each once, since the last call. Call it on that thread, in a
     /// host effect of the run or after the run returns, before the thread
-    /// runs another task: a run of another task drops what is left.
+    /// runs another task: a run of another task, including one in another
+    /// runtime, drops what is left.
     pub fn take_lazy_consumed(&self, task: crate::TaskId) -> Vec<u64> {
-        crate::collections::lazy::take_consumed(task)
+        crate::collections::lazy::take_consumed(self.runtime_id(), task)
     }
 
     /// The task realizing the lazy attempt that readers of `key` currently
