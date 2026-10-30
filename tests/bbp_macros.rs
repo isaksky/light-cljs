@@ -1348,6 +1348,24 @@ fn partition_all_helpers_publish_and_resume_with_buffered_values() {
 /// below does: the bridge wraps every imported payload in an occurrence.
 /// Imported vectors (with metadata) and lists ride along in the same call.
 fn imported_stack_pops(host: &mut MacroHost, native: bool) -> String {
+    let code = r#"(fn [form env queues stacks]
+      (let [p pop pp -pop
+            error (fn [f x] (try (f x) (catch :default e (.-message e))))]
+        (pr-str
+          [(mapv (fn [q] (let [r (p q) m (with-meta q {:q true})]
+                           [(peek q) (peek r) (seq r) (= r (pp q))
+                            (pr-str r) (pr-str (pop (pop r))) (meta (pop m)) (= q (pop r))]))
+                 queues)
+           (mapv (fn [x] (let [r (error p x)]
+                           [(pr-str r) (meta r) (vector? r) (list? r) (error peek x) (error pp x)]))
+                 stacks)])))"#;
+    imported_queue_probe(host, native, code)
+}
+
+/// The macro function `code`, `(fn [form env queues stacks] ...)` returning
+/// a string, expanded over imported queue descriptors (`[1 2 3]`, `[4]` and
+/// empty) and the receivers `imported_stack_pops` lists.
+fn imported_queue_probe(host: &mut MacroHost, native: bool, code: &str) -> String {
     use light_cljs::{
         CollectionKind,
         bbp_evaluator::BbpEvaluator,
@@ -1421,17 +1439,6 @@ fn imported_stack_pops(host: &mut MacroHost, native: bool) -> String {
         source.span(0..text.len()).unwrap(),
         Origin::Source,
     );
-    let code = r#"(fn [form env queues stacks]
-      (let [p pop pp -pop
-            error (fn [f x] (try (f x) (catch :default e (.-message e))))]
-        (pr-str
-          [(mapv (fn [q] (let [r (p q) m (with-meta q {:q true})]
-                           [(peek q) (peek r) (seq r) (= r (pp q))
-                            (pr-str r) (pr-str (pop (pop r))) (meta (pop m)) (= q (pop r))]))
-                 queues)
-           (mapv (fn [x] (let [r (error p x)]
-                           [(pr-str r) (meta r) (vector? r) (list? r) (error peek x) (error pp x)]))
-                 stacks)])))"#;
     let program = analyze_with_macros(code, &parse(code).unwrap(), host).unwrap();
     let evaluator: Box<dyn MacroEvaluator> = if native {
         Box::new(BbpEvaluator::new(host.evaluator_options.clone()).unwrap())
@@ -7042,6 +7049,38 @@ fn native_compiler_literal_protocols_match_quickjs() {
 [[false false] [false false] [false false] [true false] [false false] [true false] [true false] [true false] [false false] [false false]] \
 [[false false] [false false] [false false] [false false] [true false] [true false] [true false] [true false] [false false] [false false]] \
 [[false false] [false false] [false false] [false false] [true false] [true false] [true false] [true false] [false false] [false false]]]\n",
+    );
+}
+
+/// A queue's seq is the reference's `PersistentQueueSeq`, also after `rest`
+/// and `next`. The source reader lowers `#queue` to an `into` form, so the
+/// core protocols are checked over imported queue descriptors
+/// (`imported_queue_probe`), with rows as in the predicate matrix: `s`
+/// satisfies and implements, `+` satisfies only, `.` neither.
+#[test]
+fn native_imported_queue_seq_protocols_match_quickjs() {
+    let code = format!(
+        r#"(fn [form env queues stacks]
+      (let [ps {CORE_PROTOCOL_VALUES} s satisfies? i implements?
+            row (fn [x] (apply str (map (fn [p] (let [a (s p x) b (i p x)] (if a (if b "s" "+") (if b "i" ".")))) ps)))]
+        (pr-str (mapv (fn [q] (let [sq (seq q)] [(row sq) (row (rest sq)) (row (next sq))])) queues))))"#
+    );
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let native = imported_queue_probe(&mut host, true, &code);
+    #[cfg(feature = "quickjs")]
+    assert_eq!(
+        native,
+        imported_queue_probe(&mut MacroHost::new(), false, &code)
+    );
+    assert_eq!(
+        native,
+        [
+            "[[\"..........................s.....ss....sss.sss...s.ss......\" \"..........................s.....ss....sss.sss...s.ss......\" \"..........................s.....ss....sss.sss...s.ss......\"]",
+            "[\"..........................s.....ss....sss.sss...s.ss......\" \"...................s.....ss.s...ss.s..sss.ssss..s.ss......\" \".......................................++....+............\"]",
+            "[\".......................................++....+............\" \"...................s.....ss.s...ss.s..sss.ssss..s.ss......\" \".......................................++....+............\"]]",
+        ]
+        .join(" ")
     );
 }
 
