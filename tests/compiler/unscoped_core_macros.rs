@@ -77,6 +77,42 @@ fn valid_declined_core_calls_expand_like_v8() {
     assert_eq!(execute(&js), expected);
 }
 
+/// A `doseq` of nine bindings, past the native expander's name budget,
+/// expands as the V8 build's engine expands it where the limits leave room
+/// for its expansion, and fails as the engine's conversion of that
+/// expansion fails at the default node limit (light-cljs-620).
+#[test]
+fn declined_doseq_expands_with_raised_node_limit() {
+    let source =
+        "(doseq [a [0 1] b [0] c [0] d [0] e [0] f [0] g [0] h [0] i [2 3]] (js/console.log a i))";
+    let mut host = MacroHost::new();
+    host.limits.generated_nodes = 10_000_000;
+    host.limits.expansions = 100_000;
+    let js = compile_with_macros(source, &mut host).unwrap_or_else(|error| panic!("{error}"));
+    // Too long for a command line.
+    let root = crate::temp_dir::TempDir::new("declined-doseq");
+    let file = root.join("main.js");
+    std::fs::write(&file, &js).unwrap();
+    let ran = std::process::Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+        .arg(&file)
+        .output()
+        .expect("compiler integration requires Node");
+    assert!(
+        ran.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "0 2\n0 3\n1 2\n1 3\n");
+    let error = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
+        .unwrap_err()
+        .to_string();
+    let path = "$[2][3][2][3][2][2][2][2][2][3][2][3][2][2][3][2][3][2][2][2][2][2][3][2][3][2][2][2][2][2][2][3]";
+    let expected = format!(
+        "macro cljs.core/doseq: Error: Unsupported macro result lazy realization failure at {path}; definition compiler_sequence_macros.cljs:63:1"
+    );
+    assert!(without_stack(&error).contains(&expected), "{error}");
+}
+
 /// `simple-benchmark` prints its bindings and expression as the engine
 /// decodes them (keys equal there merge, larger maps and sets take their
 /// hashes' order, negative zero stays `-0.0`) and as the compile-time

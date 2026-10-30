@@ -570,7 +570,7 @@ pub(crate) fn expand(
             _ => None,
         },
         "doseq" => match args.split_first() {
-            Some((bindings, body)) => sequence_doseq(bindings, body, gensym)?,
+            Some((bindings, body)) => sequence_doseq(bindings, body, gensym, true)?,
             None => None,
         },
         "vswap!" => match args {
@@ -1529,13 +1529,36 @@ const DOSEQ_CHUNK: &str = "c__0_6__auto__";
 
 /// The names an expansion allocates in order: a first pass with `dry`
 /// records their prefixes, so that one `gensym` call allocates them, and a
-/// second pass takes them.
+/// second pass takes them. A pass that builds only a `doseq` expansion's
+/// [`Shape`] allocates none: each name is its prefix.
 struct Names {
     dry: Option<Vec<&'static str>>,
     allocated: std::vec::IntoIter<Datum>,
+    shape: Option<Shape>,
 }
+/// What [`doseq_shape`] keeps while it builds: the steps it built, by the
+/// pairs left and the `recur` form they end in (none, a binding's or its
+/// chunk loop's), which the names no longer tell apart, so that each is
+/// built once and shared; and how the definition splices the lists that
+/// splice ([`Piece`]), by their identity.
+#[derive(Default)]
+struct Shape {
+    steps: std::collections::HashMap<(usize, u8), (bool, Datum)>,
+    pieces: Pieces,
+}
+/// The lists of an expansion that splice, by identity, with their pieces.
+type Pieces = std::collections::HashMap<usize, Vec<Piece>>;
 impl Names {
+    /// Note that the definition builds `list` from `pieces`.
+    fn splice(&mut self, list: &Datum, pieces: Vec<Piece>) {
+        if let Some(shape) = &mut self.shape {
+            shape.pieces.insert(list.identity(), pieces);
+        }
+    }
     fn next(&mut self, prefix: &'static str) -> Datum {
+        if self.shape.is_some() {
+            return symbol(prefix);
+        }
         match &mut self.dry {
             Some(prefixes) => {
                 prefixes.push(prefix);
@@ -1755,29 +1778,35 @@ fn sequence_for(
 /// them, doubling at each nested binding.
 const DOSEQ_NAMES: usize = 1024;
 
-/// `sequence-doseq`.
+/// The binding pairs of a `doseq` call whose native expansion this module
+/// builds, or `None` where it leaves the call to the engine: bindings that
+/// are not a vector of pairs or name a keyword the definition rejects, or
+/// more pairs than conversion levels, as its construction recurses once a
+/// pair, as the definition's does.
+fn doseq_pairs(bindings: &Datum) -> Option<&[Datum]> {
+    let exprs = children(bindings);
+    let valid = is_vector(bindings)
+        && exprs.len().is_multiple_of(2)
+        && !exprs
+            .iter()
+            .step_by(2)
+            .any(|k| matches!(k.kind(), DatumKind::Keyword(_)) && modifier(k).is_none());
+    (valid && exprs.len() / 2 <= DEPTH).then_some(exprs)
+}
+
+/// `sequence-doseq`. Where `bounded`, an expansion of more names than
+/// [`DOSEQ_NAMES`], which doubles at each nested binding, is left to the
+/// engine; the Pants build expands one past that once [`wide_doseq`] found
+/// that the V8 build's engine converts it back ([`expand_wide_doseq`]).
 fn sequence_doseq(
     bindings: &Datum,
     body: &[Datum],
     gensym: Gensym<'_>,
+    bounded: bool,
 ) -> Result<Option<Datum>, String> {
-    let exprs = children(bindings);
-    if !is_vector(bindings) || !exprs.len().is_multiple_of(2) {
+    let Some(exprs) = doseq_pairs(bindings) else {
         return Ok(None);
-    }
-    if exprs
-        .iter()
-        .step_by(2)
-        .any(|k| matches!(k.kind(), DatumKind::Keyword(_)) && modifier(k).is_none())
-    {
-        return Ok(None);
-    }
-    // Its construction recurses once a pair and doubles at each binding,
-    // as the definition's does: more pairs than conversion levels, or more
-    // names than [`DOSEQ_NAMES`], are left to the engine.
-    if exprs.len() / 2 > DEPTH {
-        return Ok(None);
-    }
+    };
     let mut allocated = 0usize;
     for k in exprs.iter().step_by(2).rev() {
         allocated = if matches!(k.kind(), DatumKind::Keyword(_)) {
@@ -1786,153 +1815,15 @@ fn sequence_doseq(
             allocated.saturating_mul(2).saturating_add(4)
         };
     }
-    if allocated > DOSEQ_NAMES {
+    if bounded && allocated > DOSEQ_NAMES {
         return Ok(None);
-    }
-    /// `step`: whether the form needs its caller's `recur`, and the form.
-    fn step(
-        names: &mut Names,
-        recform: Option<Datum>,
-        exprs: &[Datum],
-        body: &[Datum],
-    ) -> (bool, Datum) {
-        let Some((k, rest)) = exprs.split_first() else {
-            let mut done = vec![symbol("do")];
-            done.extend(body.iter().cloned());
-            done.push(C.nil());
-            return (true, list(done));
-        };
-        let v = &rest[0];
-        let seq = names.next("seq__");
-        let keyword = matches!(k.kind(), DatumKind::Keyword(_));
-        let recform = if keyword {
-            recform
-        } else {
-            Some(list(vec![
-                symbol("recur"),
-                list(vec![core("next"), seq.clone()]),
-                C.nil(),
-                number(0.0),
-                number(0.0),
-            ]))
-        };
-        let (needrec, subform) = step(names, recform.clone(), &rest[1..], body);
-        let recform_datum = || recform.clone().unwrap_or_else(|| C.nil());
-        let again = |form: Vec<Datum>, recform: &Datum| {
-            let mut form = form;
-            if needrec {
-                form.push(recform.clone());
-            }
-            list(form)
-        };
-        match modifier(k) {
-            Some("let") => (needrec, list(vec![core("let"), v.clone(), subform])),
-            Some("while") => (
-                false,
-                again(vec![core("when"), v.clone(), subform], &recform_datum()),
-            ),
-            Some(_) => (
-                false,
-                list(vec![
-                    symbol("if"),
-                    v.clone(),
-                    again(vec![symbol("do"), subform], &recform_datum()),
-                    recform_datum(),
-                ]),
-            ),
-            None => {
-                let tag = C
-                    .map(&[(C.keyword(Name::new(None, "tag")), symbol("not-native"))])
-                    .expect("a map");
-                let chunk = names.next("chunk__");
-                let chunk = chunk.with_metadata(tag);
-                let count = names.next("count__");
-                let i = names.next("i__");
-                let recform_chunk = list(vec![
-                    symbol("recur"),
-                    seq.clone(),
-                    chunk.clone(),
-                    count.clone(),
-                    list(vec![core("inc"), i.clone()]),
-                ]);
-                let (_, subform_chunk) = step(names, Some(recform_chunk.clone()), &rest[1..], body);
-                let clojure = |name| C.symbol(Name::new(Some("clojure.core"), name));
-                let recform = recform_datum();
-                (
-                    true,
-                    list(vec![
-                        core("loop"),
-                        vector(vec![
-                            seq.clone(),
-                            list(vec![core("seq"), v.clone()]),
-                            chunk.clone(),
-                            C.nil(),
-                            count.clone(),
-                            number(0.0),
-                            i.clone(),
-                            number(0.0),
-                        ]),
-                        list(vec![
-                            symbol("if"),
-                            list(vec![
-                                core("boolean"),
-                                list(vec![core("<"), i.clone(), count.clone()]),
-                            ]),
-                            again(
-                                vec![
-                                    core("let"),
-                                    vector(vec![
-                                        k.clone(),
-                                        list(vec![core("-nth"), chunk.clone(), i.clone()]),
-                                    ]),
-                                    subform_chunk,
-                                ],
-                                &recform_chunk,
-                            ),
-                            list(vec![
-                                core("when-let"),
-                                vector(vec![seq.clone(), list(vec![core("seq"), seq.clone()])]),
-                                list(vec![
-                                    symbol("if"),
-                                    list(vec![clojure("chunked-seq?"), seq.clone()]),
-                                    list(vec![
-                                        core("let"),
-                                        vector(vec![
-                                            symbol(DOSEQ_CHUNK),
-                                            list(vec![clojure("chunk-first"), seq.clone()]),
-                                        ]),
-                                        list(vec![
-                                            symbol("recur"),
-                                            list(vec![clojure("chunk-rest"), seq.clone()]),
-                                            symbol(DOSEQ_CHUNK),
-                                            list(vec![core("count"), symbol(DOSEQ_CHUNK)]),
-                                            number(0.0),
-                                        ]),
-                                    ]),
-                                    again(
-                                        vec![
-                                            core("let"),
-                                            vector(vec![
-                                                k.clone(),
-                                                list(vec![core("first"), seq.clone()]),
-                                            ]),
-                                            subform,
-                                        ],
-                                        &recform,
-                                    ),
-                                ]),
-                            ]),
-                        ]),
-                    ]),
-                )
-            }
-        }
     }
     let mut dry = Names {
         dry: Some(Vec::new()),
         allocated: Vec::new().into_iter(),
+        shape: None,
     };
-    step(&mut dry, None, exprs, body);
+    doseq_step(&mut dry, None, 0, exprs, body);
     let prefixes = dry.dry.unwrap();
     let allocated = if prefixes.is_empty() {
         Vec::new()
@@ -1942,8 +1833,222 @@ fn sequence_doseq(
     let mut names = Names {
         dry: None,
         allocated: allocated.into_iter(),
+        shape: None,
     };
-    Ok(Some(step(&mut names, None, exprs, body).1))
+    Ok(Some(doseq_step(&mut names, None, 0, exprs, body).1))
+}
+
+/// The shape of the expansion of a `doseq` with the binding `bindings` and
+/// body `body` (`None` where [`doseq_pairs`] declines it), which the
+/// emulation of the engine's conversion walks ([`wide_doseq`]): its forms
+/// with each name its prefix, so that the two steps the definition builds
+/// at each binding, which differ only in names, are one shared subtree and
+/// the shape takes room in its pairs rather than in its expansion's size;
+/// and the pieces of its lists that splice.
+#[cfg(any(test, feature = "bbp-macros"))]
+fn doseq_shape(bindings: &Datum, body: &[Datum]) -> Option<(Datum, Pieces)> {
+    let exprs = doseq_pairs(bindings)?;
+    let mut names = Names {
+        dry: None,
+        allocated: Vec::new().into_iter(),
+        shape: Some(Shape::default()),
+    };
+    let (_, form) = doseq_step(&mut names, None, 0, exprs, body);
+    Some((form, names.shape.unwrap().pieces))
+}
+
+/// The definition's `step` on the pairs `exprs`, whose `recur` form is
+/// `recform`, of the kind `ends` (none, a binding's or its chunk loop's,
+/// which a [`Shape`] tells apart): whether the form needs its caller's
+/// `recur`, and the form.
+fn doseq_step(
+    names: &mut Names,
+    recform: Option<Datum>,
+    ends: u8,
+    exprs: &[Datum],
+    body: &[Datum],
+) -> (bool, Datum) {
+    if let Some(built) = names
+        .shape
+        .as_ref()
+        .and_then(|shape| shape.steps.get(&(exprs.len(), ends)))
+    {
+        return built.clone();
+    }
+    let step = doseq_step_built(names, recform, ends, exprs, body);
+    if let Some(shape) = &mut names.shape {
+        shape.steps.insert((exprs.len(), ends), step.clone());
+    }
+    step
+}
+
+/// `(form... ~@(when needrec [recform]))`, the lists of [`doseq_step`] that
+/// end with the `recur` form where their step needs it.
+fn doseq_again(names: &mut Names, needrec: bool, form: Vec<Datum>, recform: &Datum) -> Datum {
+    let mut pieces = vec![Piece::One; form.len()];
+    pieces.push(if needrec {
+        Piece::Vector(1)
+    } else {
+        Piece::Empty
+    });
+    let mut form = form;
+    if needrec {
+        form.push(recform.clone());
+    }
+    let form = list(form);
+    names.splice(&form, pieces);
+    form
+}
+
+/// [`doseq_step`], building the step.
+fn doseq_step_built(
+    names: &mut Names,
+    recform: Option<Datum>,
+    ends: u8,
+    exprs: &[Datum],
+    body: &[Datum],
+) -> (bool, Datum) {
+    let Some((k, rest)) = exprs.split_first() else {
+        let mut done = vec![symbol("do")];
+        done.extend(body.iter().cloned());
+        done.push(C.nil());
+        let done = list(done);
+        names.splice(&done, vec![Piece::One, Piece::Rest(body.len()), Piece::One]);
+        return (true, done);
+    };
+    let v = &rest[0];
+    let seq = names.next("seq__");
+    let keyword = matches!(k.kind(), DatumKind::Keyword(_));
+    let (recform, ends) = if keyword {
+        (recform, ends)
+    } else {
+        let recform = list(vec![
+            symbol("recur"),
+            list(vec![core("next"), seq.clone()]),
+            C.nil(),
+            number(0.0),
+            number(0.0),
+        ]);
+        (Some(recform), 1)
+    };
+    let (needrec, subform) = doseq_step(names, recform.clone(), ends, &rest[1..], body);
+    let recform_datum = || recform.clone().unwrap_or_else(|| C.nil());
+    match modifier(k) {
+        Some("let") => (needrec, list(vec![core("let"), v.clone(), subform])),
+        Some("while") => (
+            false,
+            doseq_again(
+                names,
+                needrec,
+                vec![core("when"), v.clone(), subform],
+                &recform_datum(),
+            ),
+        ),
+        Some(_) => (
+            false,
+            list(vec![
+                symbol("if"),
+                v.clone(),
+                doseq_again(
+                    names,
+                    needrec,
+                    vec![symbol("do"), subform],
+                    &recform_datum(),
+                ),
+                recform_datum(),
+            ]),
+        ),
+        None => {
+            let tag = C
+                .map(&[(C.keyword(Name::new(None, "tag")), symbol("not-native"))])
+                .expect("a map");
+            let chunk = names.next("chunk__");
+            let chunk = chunk.with_metadata(tag);
+            let count = names.next("count__");
+            let i = names.next("i__");
+            let recform_chunk = list(vec![
+                symbol("recur"),
+                seq.clone(),
+                chunk.clone(),
+                count.clone(),
+                list(vec![core("inc"), i.clone()]),
+            ]);
+            let (_, subform_chunk) =
+                doseq_step(names, Some(recform_chunk.clone()), 2, &rest[1..], body);
+            let clojure = |name| C.symbol(Name::new(Some("clojure.core"), name));
+            let recform = recform_datum();
+            let chunk_body = doseq_again(
+                names,
+                needrec,
+                vec![
+                    core("let"),
+                    vector(vec![
+                        k.clone(),
+                        list(vec![core("-nth"), chunk.clone(), i.clone()]),
+                    ]),
+                    subform_chunk,
+                ],
+                &recform_chunk,
+            );
+            let seq_body = doseq_again(
+                names,
+                needrec,
+                vec![
+                    core("let"),
+                    vector(vec![k.clone(), list(vec![core("first"), seq.clone()])]),
+                    subform,
+                ],
+                &recform,
+            );
+            (
+                true,
+                list(vec![
+                    core("loop"),
+                    vector(vec![
+                        seq.clone(),
+                        list(vec![core("seq"), v.clone()]),
+                        chunk.clone(),
+                        C.nil(),
+                        count.clone(),
+                        number(0.0),
+                        i.clone(),
+                        number(0.0),
+                    ]),
+                    list(vec![
+                        symbol("if"),
+                        list(vec![
+                            core("boolean"),
+                            list(vec![core("<"), i.clone(), count.clone()]),
+                        ]),
+                        chunk_body,
+                        list(vec![
+                            core("when-let"),
+                            vector(vec![seq.clone(), list(vec![core("seq"), seq.clone()])]),
+                            list(vec![
+                                symbol("if"),
+                                list(vec![clojure("chunked-seq?"), seq.clone()]),
+                                list(vec![
+                                    core("let"),
+                                    vector(vec![
+                                        symbol(DOSEQ_CHUNK),
+                                        list(vec![clojure("chunk-first"), seq.clone()]),
+                                    ]),
+                                    list(vec![
+                                        symbol("recur"),
+                                        list(vec![clojure("chunk-rest"), seq.clone()]),
+                                        symbol(DOSEQ_CHUNK),
+                                        list(vec![core("count"), symbol(DOSEQ_CHUNK)]),
+                                        number(0.0),
+                                    ]),
+                                ]),
+                                seq_body,
+                            ]),
+                        ]),
+                    ]),
+                ]),
+            )
+        }
+    }
 }
 
 /// The levels a form, its metadata a level below it, may nest in the
@@ -1989,6 +2094,311 @@ fn within(datum: &Datum, room: usize) -> Option<usize> {
     Some(nodes)
 }
 
+/// Where a syntax-quoted list of a definition takes its items from, as
+/// the engine builds it: `(seq (concat (list a) b ...))`, so that its
+/// lazy sequences, which the engine's conversion back realizes and
+/// charges, follow from its pieces ([`quoted_steps`]).
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(any(test, feature = "bbp-macros")), allow(dead_code))]
+enum Piece {
+    /// `~x`, or a form: one item.
+    One,
+    /// `~@x` of `nil`.
+    Empty,
+    /// `~@body`: the macro's rest argument, of so many items.
+    Rest(usize),
+    /// `~@[x ...]`: a vector of so many items.
+    Vector(usize),
+}
+
+/// What the engine's conversion charges, beyond its nodes, to read a
+/// syntax-quoted list of `pieces` (js_runtime.js, `encode`): each item
+/// takes a step of the sequence, then the lazy sequences that reaching it
+/// realizes; the end takes a step and the lazy sequences after the last
+/// item. These are the lazy sequences for each item, and those at the end.
+///
+/// `concat` of one piece is the piece, and of two the lazy sequence
+/// `concatTwo` builds, whose `seq` the list is: its first item is read,
+/// the first of the second piece behind one lazy sequence, and the second
+/// piece's rest as that piece. Of more, `concatMany` over `concatTwo` of
+/// the first two: after the first item, each item of a piece is behind one
+/// lazy sequence (none for the rest of a vector's chunk), and the first of
+/// a piece after the second behind one more for each piece it passed into
+/// on its way; the end is behind one, and one for each piece after the
+/// last item.
+#[cfg(any(test, feature = "bbp-macros"))]
+fn quoted_steps(pieces: &[Piece]) -> (Vec<u32>, u32) {
+    let length = |piece: &Piece| match *piece {
+        Piece::One => 1,
+        Piece::Empty => 0,
+        Piece::Rest(n) | Piece::Vector(n) => n,
+    };
+    let mut lazies = Vec::new();
+    if pieces.len() <= 2 {
+        // Only templates of single items splice two pieces or fewer.
+        debug_assert!(pieces.iter().all(|piece| matches!(piece, Piece::One)));
+        lazies.extend((0..pieces.len() as u32).map(|index| index.min(1)));
+        return (lazies, 0);
+    }
+    let mut entered = 0;
+    for (index, piece) in pieces.iter().enumerate() {
+        if index >= 2 {
+            entered += 1;
+        }
+        for item in 0..length(piece) {
+            lazies.push(if lazies.is_empty() {
+                0
+            } else if item == 0 {
+                1 + entered
+            } else {
+                u32::from(!matches!(piece, Piece::Vector(_)))
+            });
+            entered = 0;
+        }
+    }
+    if lazies.is_empty() {
+        // `(sequence nil)`: the empty list.
+        return (lazies, 0);
+    }
+    (lazies, 1 + entered)
+}
+
+/// How the engine holds the lists of a form it converts back, which
+/// decides what reading them charges beyond their nodes.
+#[cfg(any(test, feature = "bbp-macros"))]
+#[derive(Clone, Copy)]
+enum Lists<'a> {
+    /// Uncounted: what the conversion charges for the nodes alone.
+    Nodes,
+    /// Decoded from compiler data, as a call is: each item takes a step,
+    /// and the end one more.
+    Decoded,
+    /// An expansion of a definition that builds every list of its own with
+    /// syntax quote: the call's data (`arguments`, by identity) as
+    /// decoded, and its own lists as [`quoted_steps`] says, of `pieces`
+    /// where they splice and of single items elsewhere.
+    Quoted {
+        arguments: &'a std::collections::HashSet<usize>,
+        pieces: &'a Pieces,
+    },
+}
+
+/// Why an emulated conversion stops.
+#[cfg(any(test, feature = "bbp-macros"))]
+#[derive(Debug, PartialEq)]
+enum Stop {
+    /// What the engine's conversion refuses, and where, as it reports it.
+    Refused(String),
+    /// Where the engine's order is its hashes' (a set, or a map of more
+    /// than eight entries, or keys it may merge), or a form it converts
+    /// in ways this does not follow: what it refuses cannot be told.
+    Unknown,
+}
+
+/// The engine's conversion of a form back to compiler data under the node
+/// limit (js_runtime.js `compilerFormBridge`, `encode`), emulated: it
+/// visits each node before its children (a map's keys before their
+/// values) and its metadata last, charging every node and every step of a
+/// sequence ([`Lists`]) to `remaining`, and refuses the first charge past
+/// it (`node limit`, `sequence limit` or, for a lazy sequence,
+/// `lazy realization failure`, at the path of the node or the list), a
+/// node deeper than [`DEPTH`] (`depth limit`), and a missing argument
+/// (`undefined`, [`MISSING`]).
+#[cfg(any(test, feature = "bbp-macros"))]
+struct Conversion<'a> {
+    remaining: usize,
+    lists: Lists<'a>,
+}
+#[cfg(any(test, feature = "bbp-macros"))]
+impl Conversion<'_> {
+    /// What converting `datum` refuses under the node limit `nodes`, if
+    /// anything.
+    fn run(datum: &Datum, nodes: usize, lists: Lists<'_>) -> Result<(), Stop> {
+        let mut conversion = Conversion {
+            remaining: nodes,
+            lists,
+        };
+        conversion.visit(datum, &mut "$".to_owned(), 0)
+    }
+    fn charge(&mut self, what: &str, path: &str) -> Result<(), Stop> {
+        match self.remaining.checked_sub(1) {
+            Some(remaining) => {
+                self.remaining = remaining;
+                Ok(())
+            }
+            None => Err(Stop::Refused(format!("{what} at {path}"))),
+        }
+    }
+    /// Visit `datum`, a child of the node at `path` and `depth`, at the
+    /// path that `part` extends it with.
+    fn child(
+        &mut self,
+        path: &mut String,
+        depth: usize,
+        part: std::fmt::Arguments<'_>,
+        datum: &Datum,
+    ) -> Result<(), Stop> {
+        let length = path.len();
+        std::fmt::Write::write_fmt(path, part).expect("a string");
+        let visited = self.visit(datum, path, depth + 1);
+        path.truncate(length);
+        visited
+    }
+    fn visit(&mut self, datum: &Datum, path: &mut String, depth: usize) -> Result<(), Stop> {
+        self.charge("node limit", path)?;
+        if depth > DEPTH {
+            return Err(Stop::Refused(format!("depth limit at {path}")));
+        }
+        match datum.kind() {
+            DatumKind::Symbol(name) if *name == Name::new(None, MISSING) => {
+                return Err(Stop::Refused(format!("undefined at {path}")));
+            }
+            DatumKind::Collection { kind, children } => match kind {
+                CollectionKind::List | CollectionKind::AnonymousFn => {
+                    let steps = match self.lists {
+                        Lists::Nodes => None,
+                        Lists::Decoded => Some((vec![0; children.len()], 0)),
+                        Lists::Quoted { arguments, pieces } => {
+                            Some(if arguments.contains(&datum.identity()) {
+                                (vec![0; children.len()], 0)
+                            } else if let Some(pieces) = pieces.get(&datum.identity()) {
+                                quoted_steps(pieces)
+                            } else {
+                                quoted_steps(&vec![Piece::One; children.len()])
+                            })
+                        }
+                    };
+                    for (index, item) in children.iter().enumerate() {
+                        if let Some((lazies, _)) = &steps {
+                            self.charge("sequence limit", path)?;
+                            for _ in 0..lazies[index] {
+                                self.charge("lazy realization failure", path)?;
+                            }
+                        }
+                        self.child(path, depth, format_args!("[{index}]"), item)?;
+                    }
+                    if let Some((_, end)) = steps {
+                        self.charge("sequence limit", path)?;
+                        for _ in 0..end {
+                            self.charge("lazy realization failure", path)?;
+                        }
+                    }
+                }
+                CollectionKind::Vector => {
+                    for (index, item) in children.iter().enumerate() {
+                        self.child(path, depth, format_args!("[{index}]"), item)?;
+                    }
+                }
+                // An array map of up to eight keys keeps their order.
+                CollectionKind::Map
+                    if children.len() <= 16 && distinct(children.iter().step_by(2)) =>
+                {
+                    for (index, item) in children.iter().enumerate() {
+                        let part = if index % 2 == 0 { "key" } else { "value" };
+                        self.child(path, depth, format_args!(".{part}[{}]", index / 2), item)?;
+                    }
+                }
+                CollectionKind::Map | CollectionKind::Set => {
+                    let keys =
+                        children
+                            .iter()
+                            .step_by(if *kind == CollectionKind::Map { 2 } else { 1 });
+                    if !distinct(keys) {
+                        return Err(Stop::Unknown);
+                    }
+                    // In the engine's order only the whole is known.
+                    let mut whole = Conversion {
+                        remaining: self.remaining,
+                        lists: self.lists,
+                    };
+                    for item in children.iter() {
+                        whole
+                            .visit(item, path, depth + 1)
+                            .map_err(|_| Stop::Unknown)?;
+                    }
+                    self.remaining = whole.remaining;
+                }
+            },
+            DatumKind::CompilerLiteral { kind, payload } => {
+                use crate::compiler_data::CompilerLiteralKind as K;
+                match kind {
+                    K::BigInteger => {}
+                    K::Regex | K::Uuid => {
+                        self.child(path, depth, format_args!(".payload"), payload)?
+                    }
+                    _ => return Err(Stop::Unknown),
+                }
+            }
+            _ => {}
+        }
+        if let Some(metadata) = datum.metadata() {
+            self.child(path, depth, format_args!(".meta"), &metadata)?;
+        }
+        Ok(())
+    }
+}
+
+/// Whether the engine keeps `keys` apart: primitive values and symbols
+/// that differ there (a collection it may find equal to another).
+#[cfg(any(test, feature = "bbp-macros"))]
+fn distinct<'a>(keys: impl Iterator<Item = &'a Datum>) -> bool {
+    let mut primitives = std::collections::HashSet::new();
+    let mut symbols = std::collections::HashSet::new();
+    keys.into_iter()
+        .all(|key| match (primitive(key), key.kind()) {
+            (Some(value), _) => primitives.insert(value),
+            (None, DatumKind::Symbol(name)) => symbols.insert(name.clone()),
+            _ => false,
+        })
+}
+
+/// What the V8 build's engine makes of the `doseq` call `call`, which
+/// [`expand`] declines for the names its expansion would allocate (or
+/// would expand, below that), under the node limit `nodes`: it converts
+/// the call, takes a snapshot of it (the call converted back, as decoded),
+/// runs the definition and converts the expansion back. `Ok(())` where it
+/// converts the expansion; the Pants build then expands the call natively
+/// past the name budget ([`expand_wide_doseq`]), byte for byte as the V8
+/// build does (light-cljs-620).
+#[cfg(any(test, feature = "bbp-macros"))]
+fn wide_doseq(call: &Datum, nodes: usize) -> Result<(), Stop> {
+    let args = children(call).get(1..).unwrap_or_default();
+    let Some((shape, pieces)) = args
+        .split_first()
+        .and_then(|(bindings, body)| doseq_shape(bindings, body))
+    else {
+        return Err(Stop::Unknown);
+    };
+    Conversion::run(call, nodes, Lists::Decoded)?;
+    let mut arguments = Arguments::new(args).identities;
+    arguments.insert(call.identity());
+    Conversion::run(
+        &shape,
+        nodes,
+        Lists::Quoted {
+            arguments: &arguments,
+            pieces: &pieces,
+        },
+    )
+}
+
+/// On the Pants build, the expansion of the `doseq` call `call` that
+/// [`expand`] declines for the names it would allocate where
+/// [`wide_doseq`] finds that the V8 build's engine converts it back under
+/// the node limit `nodes`, with no budget of names; `None` otherwise.
+#[cfg(feature = "bbp-macros")]
+fn expand_wide_doseq(
+    call: &Datum,
+    nodes: usize,
+    gensym: Gensym<'_>,
+) -> Result<Option<Datum>, String> {
+    if wide_doseq(call, nodes).is_err() {
+        return Ok(None);
+    }
+    let args = &children(call)[1..];
+    sequence_doseq(&args[0], &args[1..], gensym, false)
+}
+
 /// The names the compile-time runtime's `gensym` gives, one for each of
 /// `prefixes` in order, in this thread's innermost scope of generated
 /// names, allocated from the scope's count without a runtime
@@ -2031,7 +2441,16 @@ pub(crate) fn native_expansion(
             .map(|prefix| symbol(&crate::generated_names::stand_in(prefix)))
             .collect())
     };
-    let expanded = expand(name, call, namespace, &mut stand_ins).ok()??;
+    let expanded = expand(name, call, namespace, &mut stand_ins).ok()?;
+    // As [`crate::MacroHost::expand_core_native`] expands it.
+    #[cfg(feature = "bbp-macros")]
+    let expanded = match expanded {
+        None if native_backend && name == "doseq" => {
+            expand_wide_doseq(call, nodes, &mut stand_ins).ok()?
+        }
+        expanded => expanded,
+    };
+    let expanded = expanded?;
     within(&expanded, expansion_room(native_backend))?;
     Some(expanded)
 }
@@ -2046,7 +2465,7 @@ fn expansion_room(native_backend: bool) -> usize {
 
 /// What stands for an argument the call of a core macro leaves out, which
 /// its definition receives as `undefined`: a symbol no source spells.
-#[cfg(feature = "bbp-macros")]
+#[cfg(any(test, feature = "bbp-macros"))]
 const MISSING: &str = "\u{0}undefined";
 
 /// Why the definition of the core macro `name` fails on the call `call`,
@@ -2055,16 +2474,25 @@ const MISSING: &str = "\u{0}undefined";
 /// which runs no definition, reports it instead
 /// ([`crate::MacroHost::expand_core_javascript`]), as the V8 build's engine
 /// does: the engine's conversion of a call deeper than [`DEPTH`] or larger
-/// than `nodes`; a definition's own error, an arity error of `if-not`, the
+/// than `nodes`, and what its snapshot of the call refuses ([`Conversion`]);
+/// a definition's own error, an arity error of `if-not`, the
 /// one of its two arities, or the `pop` of `for` on an empty vector; and
 /// what the engine's conversion of the expansion refuses, a missing
 /// argument (`undefined`), the depth or the node limit, at the path of the
 /// first node it refuses, found in the expansion built with [`MISSING`]
-/// for each missing argument.
+/// for each missing argument, or, for a `doseq` past the native name
+/// budget, also a step of a sequence ([`wide_doseq`]).
 #[cfg(feature = "bbp-macros")]
 pub(crate) fn rejection(name: &str, call: &Datum, namespace: &str, nodes: usize) -> Option<String> {
     if within(call, DEPTH).is_none_or(|count| count > nodes) {
         return Some("compiler input conversion limit".into());
+    }
+    let refused = |stop| match stop {
+        Err(Stop::Refused(refusal)) => Some(format!("Error: Unsupported macro result {refusal}")),
+        _ => None,
+    };
+    if let Some(refusal) = refused(Conversion::run(call, nodes, Lists::Decoded)) {
+        return Some(refusal);
     }
     let args = children(call).get(1..)?;
     let error = |message: &str| Some(format!("Error: {message}"));
@@ -2187,6 +2615,10 @@ pub(crate) fn rejection(name: &str, call: &Datum, namespace: &str, nodes: usize)
     if checked.is_some() {
         return checked;
     }
+    // A `doseq` that native expansion declines for its names.
+    if name == "doseq" {
+        return refused(wide_doseq(call, nodes));
+    }
     // The positional parameters each definition binds before its rest.
     let positional = match name {
         "when" | "when-not" | "->" | "->>" | "cond->" | "cond->>" | "some->" | "some->>"
@@ -2209,61 +2641,8 @@ pub(crate) fn rejection(name: &str, call: &Datum, namespace: &str, nodes: usize)
             .collect())
     };
     let expanded = expand(name, &padded, namespace, &mut stand_ins).ok()??;
-    // The engine's conversion of the expansion, in its order: each node
-    // before its children, keys before values, metadata last.
-    fn refused(
-        datum: &Datum,
-        path: &mut String,
-        depth: usize,
-        count: &mut usize,
-        nodes: usize,
-    ) -> Option<Option<String>> {
-        *count += 1;
-        if *count > nodes {
-            return Some(Some(format!("node limit at {path}")));
-        }
-        if depth > DEPTH {
-            return Some(Some(format!("depth limit at {path}")));
-        }
-        match datum.kind() {
-            DatumKind::Symbol(name) if *name == Name::new(None, MISSING) => {
-                return Some(Some(format!("undefined at {path}")));
-            }
-            DatumKind::Collection { kind, children } => {
-                for (index, child) in children.iter().enumerate() {
-                    let length = path.len();
-                    match kind {
-                        CollectionKind::Map => {
-                            let part = if index % 2 == 0 { "key" } else { "value" };
-                            path.push_str(&format!(".{part}[{}]", index / 2));
-                        }
-                        CollectionKind::List | CollectionKind::Vector => {
-                            path.push_str(&format!("[{index}]"))
-                        }
-                        // A set's order is the engine's hashes'.
-                        _ => return None,
-                    }
-                    let found = refused(child, path, depth + 1, count, nodes)?;
-                    path.truncate(length);
-                    if found.is_some() {
-                        return Some(found);
-                    }
-                }
-            }
-            DatumKind::CompilerLiteral { .. } => return None,
-            _ => {}
-        }
-        if let Some(metadata) = datum.metadata() {
-            let length = path.len();
-            path.push_str(".meta");
-            let found = refused(&metadata, path, depth + 1, count, nodes)?;
-            path.truncate(length);
-            return Some(found);
-        }
-        Some(None)
-    }
-    refused(&expanded, &mut "$".to_owned(), 0, &mut 0, nodes)?
-        .map(|refusal| format!("Error: Unsupported macro result {refusal}"))
+    // The engine's conversion of the expansion, in its order.
+    refused(Conversion::run(&expanded, nodes, Lists::Nodes))
 }
 
 /// How a build without the Pants build's runtime would name what it
@@ -2338,7 +2717,17 @@ impl crate::MacroHost {
                 }
                 None => scope_gensyms(prefixes),
             };
-            expand(name, &call, namespace, &mut gensym)?
+            let expanded = expand(name, &call, namespace, &mut gensym)?;
+            // Past the name budget the V8 build's engine expands a `doseq`
+            // its conversion takes back; the Pants build expands it here.
+            #[cfg(feature = "bbp-macros")]
+            let expanded = match expanded {
+                None if name == "doseq" && self.native_macro_backend() => {
+                    expand_wide_doseq(&call, self.limits.generated_nodes, &mut gensym)?
+                }
+                expanded => expanded,
+            };
+            expanded
         };
         #[cfg(feature = "bbp-macros")]
         let expanded = if expanded.is_none() && name == "defmulti" && self.native_macro_backend() {
@@ -3026,7 +3415,7 @@ mod tests {
     #[test]
     fn wide_and_nested_doseq_and_for_are_left_to_the_engine() {
         let mut host = MacroHost::new();
-        let mut native = |source: &str| {
+        let native = |host: &mut MacroHost, source: &str| {
             let call = host
                 .read_compiler_form(&Source::new("native.cljs", source))
                 .unwrap()
@@ -3052,12 +3441,20 @@ mod tests {
             expanded
         };
         let modifiers = ":let [] ".repeat(20_000);
-        assert!(!native(&format!("(doseq [x xs {modifiers}] x)")));
-        assert!(!native(&format!("(for [x xs {modifiers}] x)")));
+        assert!(!native(&mut host, &format!("(doseq [x xs {modifiers}] x)")));
+        assert!(!native(&mut host, &format!("(for [x xs {modifiers}] x)")));
         let bindings = |n| (0..n).map(|i| format!("x{i} xs ")).collect::<String>();
-        assert!(native(&format!("(doseq [{}] x)", bindings(7))));
-        assert!(!native(&format!("(doseq [{}] x)", bindings(9))));
-        assert!(!native(&format!("(for [{}] x)", bindings(200))));
+        assert!(native(&mut host, &format!("(doseq [{}] x)", bindings(7))));
+        // Past the name budget the engine's conversion of the expansion
+        // refuses it at the default node limit; where it converts, the
+        // Pants build expands it as the V8 build's engine does
+        // (light-cljs-620).
+        let wide = format!("(doseq [{}] x)", bindings(9));
+        assert!(!native(&mut host, &wide));
+        host.limits.generated_nodes = 10_000_000;
+        let pants = host.native_macro_backend();
+        assert_eq!(native(&mut host, &wide), pants);
+        assert!(!native(&mut host, &format!("(for [{}] x)", bindings(200))));
     }
 
     #[test]
@@ -3139,6 +3536,77 @@ mod tests {
             "(doseq (x xs) x)",
             "(doseq)",
         ]);
+    }
+
+    /// What the emulated conversion of a `doseq` expansion refuses is what
+    /// the engine running its definition refuses, at every node limit from
+    /// the call's own size up to one the expansion fits in
+    /// (light-cljs-620): each node, step of a sequence and lazy sequence
+    /// it realizes, for lists that splice the body, an empty body and the
+    /// `recur` forms of modifiers, and the call's data as it decodes it.
+    #[cfg(any(light_quickjs, light_v8))]
+    #[test]
+    fn doseq_conversion_refusals_follow_the_engine() {
+        let environment = {
+            let key = |name| C.keyword(Name::new(None, name));
+            let namespace = C
+                .map(&[(key("name"), C.symbol(Name::new(None, "user")))])
+                .unwrap();
+            C.map(&[(key("ns"), namespace)]).unwrap()
+        };
+        let mut host = MacroHost::new();
+        for (source, stride) in [
+            ("(doseq [x xs] (f x))", 5),
+            ("(doseq [x xs])", 5),
+            ("(doseq [x xs] a (b) [c] d)", 5),
+            ("(doseq [:when a x xs] (f x))", 5),
+            ("(doseq [:let [a 1] :while a] b)", 1),
+            ("(doseq [x xs :let [a 1] :when a :while b] (f x))", 13),
+            (
+                "(doseq [{:keys [a] :or {a 1}} m ^long y (g #\"r\" 9223372036854775808N)] ^{:m [1]} (f a y) #(h %))",
+                17,
+            ),
+            ("(doseq [x xs y ys :when (p x y)] (f x) (g y))", 23),
+        ] {
+            let call = host
+                .read_compiler_form(&Source::new("native.cljs", source))
+                .unwrap()
+                .unwrap();
+            let data = call.data();
+            let mut limit = within(&data, DEPTH).unwrap();
+            let mut checked = 0;
+            loop {
+                host.limits.generated_nodes = limit;
+                host.engine.generated_nodes.set(0);
+                host.engine.expansions.set(0);
+                let engine = {
+                    let _names = crate::generated_names::enter_namespace(7);
+                    host.expand_core_javascript("doseq", &call, &environment, None)
+                };
+                let emulated = wide_doseq(&data, limit);
+                checked += 1;
+                match engine {
+                    Ok(_) => {
+                        assert_eq!(emulated, Ok(()), "{source} at {limit}");
+                        break;
+                    }
+                    Err(error) => {
+                        let refusal = error
+                            .split("Error: Unsupported macro result ")
+                            .nth(1)
+                            .and_then(|rest| rest.split(';').next())
+                            .unwrap_or_else(|| panic!("{source} at {limit}: {error}"));
+                        assert_eq!(
+                            emulated,
+                            Err(Stop::Refused(refusal.to_owned())),
+                            "{source} at {limit}"
+                        );
+                    }
+                }
+                limit += stride;
+            }
+            assert!(checked > 20, "{source}: {checked}");
+        }
     }
 
     // Compares with the core macro's bootstrap definition, which only QuickJS or V8 runs.
