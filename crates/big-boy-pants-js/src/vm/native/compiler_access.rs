@@ -31,7 +31,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
                     &callee,
                     &property::Key::Name(CALL.get()),
                 )?;
-                read_result(state, read, callee)?;
+                read_result(heap, state, read, callee)?;
             }
         }
         FormOp::CljReadRoot => {
@@ -56,7 +56,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
                     // Its get invariant rejects a different value for a fixed
                     // target property or an accessor without a getter.
                     let read = property::read(heap, state.diag.task, &receiver, &key)?;
-                    read_result(state, read, receiver)?;
+                    read_result(heap, state, read, receiver)?;
                     return Ok(true);
                 }
                 (target, Some(collections::nth(heap, context, 3)?))
@@ -89,7 +89,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
                 let read =
                     property::read(heap, state.diag.task, &products, &property::Key::Name(name))?;
                 if !matches!(read, Some(property::Read::Deferred(_))) {
-                    read_result(state, read, products)?;
+                    read_result(heap, state, read, products)?;
                     return Ok(true);
                 }
             }
@@ -104,7 +104,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
                 } else {
                     read
                 };
-            read_result(state, read, receiver)?;
+            read_result(heap, state, read, receiver)?;
         }
         _ => return Ok(false),
     }

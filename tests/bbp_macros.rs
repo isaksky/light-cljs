@@ -14857,19 +14857,30 @@ fn native_mutable_object_methods_keep_inherited_receiver_matches_quickjs() {
 #[test]
 fn native_mutable_tag_named_field_matches_quickjs() {
     assert_native_matches_legacy(
-        r#"(deftype Box [^:mutable __lightNativeType]
+        r#"(defprotocol P (p [_]))
+      (deftype Box [^:mutable __lightNativeType]
+        P
+        (p [_] 42)
         Object
         (tag [_] __lightNativeType)
         (retag [_ v] (set! __lightNativeType v)))
+      (def sink (atom nil))
+      (defn through-proxy [b]
+        (let [x (js* "new Proxy(~{}, {})" b)]
+          [(.-__lightNativeType x) (satisfies? P x) (p x) (.tag x)]))
       (defmacro probe []
         (let [b (Box. 7)
               before [(.-__lightNativeType b) (.tag b)
-                      (.-value (js/Object.getOwnPropertyDescriptor b "__lightNativeType"))]]
+                      (.-value (js/Object.getOwnPropertyDescriptor b "__lightNativeType"))]
+              private (through-proxy b)
+              shared (Box. 9)]
           (.retag b 8)
+          (reset! sink (fn [] shared))
           (list 'quote [before (.-__lightNativeType b) (.tag b)
-                        (.-value (js/Object.getOwnPropertyDescriptor b "__lightNativeType"))])))
+                        (.-value (js/Object.getOwnPropertyDescriptor b "__lightNativeType"))
+                        private (through-proxy shared)])))
       (js/console.log (pr-str (probe)))"#,
-        "[[7 7 7] 8 8 8]\n",
+        "[[7 7 7] 8 8 8 [7 true 42 7] [9 true 42 9]]\n",
     );
 }
 

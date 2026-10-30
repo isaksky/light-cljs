@@ -20,6 +20,16 @@ const canonicalMember = (key, make) => {
     if (Object.is(__rt.atomCas(rawMembersCell,current,next),current)) return candidate;
   }
 };
+// The type tag of a mutable type's host instance, or of a transparent Proxy
+// of one or of a mutable-field struct, read once as `__lightNativeType`. A
+// struct may declare a field of that name, which its Proxy then answers; only
+// then is the type read again under TYPE_KEY, which no compiler-munged member
+// name can equal, so internal classification never takes a user's field.
+const TYPE_KEY = '@lightNativeType';
+const typeTag = x => {
+  const ty = x.__lightNativeType;
+  return ty === undefined || __rt.formKind(ty) === 'type' ? ty : x[TYPE_KEY];
+};
 const decl = (() => {
   const tables = new Map(), extensions = new Map(), views = new Map(), frontiers = [];
   // Native lookup can resolve installed structs without repeating JavaScript
@@ -206,7 +216,7 @@ const decl = (() => {
       // case it can select; a host array (a Proxy of one too, which the
       // engine gives no key) takes the array entry, as legacy `Array.isArray`
       // does. No other host property is read.
-      const ty = struct ?? (__rt.cljIsAtom(x) || !t.mutable ? undefined : x.__lightNativeType);
+      const ty = struct ?? (__rt.cljIsAtom(x) || !t.mutable ? undefined : typeTag(x));
       if (ty !== undefined && struct === null) demandFor(t.protocol, x, ty);
       if (ty !== undefined) m = __rt.getOr(t.map, ty, undefined);
       if (m === undefined && struct === null && Array.isArray(__rt.formValue(x))) m = __rt.getOr(t.map, 'array', undefined);
@@ -269,7 +279,7 @@ const decl = (() => {
     const value = __rt.formValue(x), kind = __rt.formKind(value);
     if (kind !== null) return formKey(value, kind);
     if (value instanceof Promise) return 'js/Promise';
-    return value !== null && typeof value === 'object' ? value.__lightNativeType ?? null : null;
+    return value !== null && typeof value === 'object' ? typeTag(value) ?? null : null;
   };
   const implementsDirectly = (key, x) => {
     const t = methodTable(key, 0);
@@ -375,6 +385,7 @@ const decl = (() => {
     if (mutable) {
       view.__lightNativeType = ty;
       view.prototype.__lightNativeType = ty;
+      view.prototype[TYPE_KEY] = ty;
     }
     if (mutable || mutableFields) {
       mutableTypes.add(ty);
@@ -506,7 +517,7 @@ const decl = (() => {
       if (mutableSelector === undefined) {
         // Snapshot even a missing tag: getters and Proxy traps run at most
         // once for this demand, regardless of the number of selectors.
-        const ty = s.__lightNativeType;
+        const ty = typeTag(s);
         const info = views.get(ty);
         mutableSelector = info !== undefined && (info.mutable || info.mutableFields) ? '@' + __rt.formName(ty) : null;
       }
@@ -608,7 +619,7 @@ const decl = (() => {
   };
   const mutableRecord = x => {
     if (x === null || typeof x !== 'object' || __rt.formKind(x) !== null) return null;
-    const info = views.get(x.__lightNativeType);
+    const info = views.get(typeTag(x));
     return info?.mutable && info.record ? info : null;
   };
   return {makeBundle, productGetter, index, reserve: n => { const base = bundleCount; bundleCount += n; return base; },
@@ -1030,7 +1041,7 @@ const native = (() => {
       // A transparent Proxy must classify like the task-owned representation
       // did; a declared field of that name shadows the tag. Direct structs
       // use engine type identity without reading it.
-      if (name === '__lightNativeType') return __rt.structTypeOf(value);
+      if (name === '__lightNativeType' || name === TYPE_KEY) return __rt.structTypeOf(value);
     }
     return structMember(value, name);
   };
@@ -1307,7 +1318,7 @@ const native = (() => {
     if(kind==='struct'&&isVar(x))return write(writer,varText(x));
     if(kind==='struct')return write(writer,'#object['+(multi.is(x)?'MultiFn':__rt.formName(__rt.structTypeOf(x)).replaceAll('/','.'))+' '+structString(x)+']');
     if(kind===null&&(typeof x==='object'||typeof x==='function')){
-      const ty=x.__lightNativeType;
+      const ty=typeTag(x);
       if(__rt.formKind(ty)==='type')return write(writer,typeof x==='function'?__rt.formName(ty):'#object['+__rt.formName(ty).replaceAll('/','.')+' '+String(x)+']');
     }
     if(x instanceof Namespace)return write(writer,'#object[Namespace '+String(x)+']');

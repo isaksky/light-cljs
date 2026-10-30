@@ -43,11 +43,12 @@ pub(super) struct State {
 /// resolver may suspend (declaring a cold type, demanding a helper) without
 /// replaying the read. Without a resolver a form has no members.
 pub(crate) fn start_member(
+    heap: &Heap,
     state: &mut VmState,
     form: Value,
     key: &crate::vm::property::Key,
 ) -> Result<(), Fault> {
-    start_named(state, form, key, false)
+    start_named(heap, state, form, key, false)
 }
 
 /// A field write uses the task runtime for effect ordering before its leaf
@@ -83,19 +84,30 @@ pub(crate) fn start_set_member(
 /// Whether the task's resolver supplies the member `key` of `form`
 /// (`property::Presence::Form`): the member is resolved, not called.
 pub(crate) fn start_presence(
+    heap: &Heap,
     state: &mut VmState,
     form: Value,
     key: &crate::vm::property::Key,
 ) -> Result<(), Fault> {
-    start_named(state, form, key, true)
+    start_named(heap, state, form, key, true)
 }
 
 fn start_named(
+    heap: &Heap,
     state: &mut VmState,
     form: Value,
     key: &crate::vm::property::Key,
     presence: bool,
 ) -> Result<(), Fault> {
+    // Without a resolver (an embedder, engine tests), a mutable deftype
+    // field is read from its cell: there are no effect lanes to order it.
+    if state.core_resolver.is_none()
+        && let Value::Object(id) = &form
+        && let Some(value) = crate::vm::property::mutable_field_value(heap, *id, key)
+    {
+        state.push(if presence { Value::Bool(true) } else { value });
+        return Ok(());
+    }
     let (Some(resolver), crate::vm::property::Key::Name(name)) = (state.core_resolver.clone(), key)
     else {
         state.push(if presence {

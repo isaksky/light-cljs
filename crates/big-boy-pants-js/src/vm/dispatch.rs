@@ -1152,7 +1152,7 @@ fn property_step(
             let base = state.pop()?;
             let receiver = state.pop()?;
             let read = property::read(heap, state.diag.task, &base, &key)?;
-            native::read_result(state, read, receiver)?;
+            native::read_result(heap, state, read, receiver)?;
         }
         Instr::PutSuperElem | Instr::PutSuperElemStrict => {
             let strict = code.strict || matches!(instr, Instr::PutSuperElemStrict);
@@ -1227,7 +1227,7 @@ fn property_step(
                 named_property(code, i)?,
                 &code.property_caches[state.top().pc - 1],
             )?;
-            super::native::read_result(state, read, base)?;
+            super::native::read_result(heap, state, read, base)?;
         }
         Instr::PutField(i)
         | Instr::PutFieldStrict(i)
@@ -1252,7 +1252,7 @@ fn property_step(
                     strict,
                     &code.property_caches[state.top().pc - 1],
                 )?;
-                native::finish_property_write(state, object, &named.key, v, strict, write)?;
+                native::finish_property_write(heap, state, object, &named.key, v, strict, write)?;
             } else if matches!(instr, Instr::DefineGetter(_) | Instr::DefineSetter(_)) {
                 property::define_accessor(
                     heap,
@@ -1273,7 +1273,7 @@ fn property_step(
             let base = state.pop()?;
             let key = property::element_key(&base, &key, false)?;
             let read = property::read(heap, state.diag.task, &base, &key)?;
-            super::native::read_result(state, read, base)?;
+            super::native::read_result(heap, state, read, base)?;
         }
         Instr::PutElem | Instr::PutElemStrict => {
             // ToPropertyKey runs here, after the right-hand side; the value
@@ -1544,7 +1544,7 @@ fn private_step(
             let key = state.pop()?;
             let base = state.pop()?;
             let read = super::private::read(heap, task, &base, &key)?;
-            native::read_result(state, Some(read), base)?;
+            native::read_result(heap, state, Some(read), base)?;
         }
         Instr::PrivateIn => {
             let base = state.pop()?;
@@ -1674,7 +1674,7 @@ fn property_read_step(
             named_property(code, i)?,
             &code.property_caches[state.top().pc - 1],
         )?;
-        native::read_result(state, read, base)?;
+        native::read_result(heap, state, read, base)?;
         return Ok(Flow::Next);
     }
     let key = match instr {
@@ -1690,7 +1690,7 @@ fn property_read_step(
     };
     let base = state.pop()?;
     let read = property::read(heap, state.diag.task, &base, &key)?;
-    native::read_result(state, read, base)?;
+    native::read_result(heap, state, read, base)?;
     Ok(Flow::Next)
 }
 
@@ -3266,7 +3266,7 @@ fn global_read_step(
             if found.is_none() && !matches!(instr, Instr::GetGlobalOrUndefined(_)) {
                 return Err(Fault::Throw(ThrowKind::Unresolvable));
             }
-            native::read_result(state, found, global)?;
+            native::read_result(heap, state, found, global)?;
         }
         _ => return Err(Fault::Internal("non-read on global read path")),
     }

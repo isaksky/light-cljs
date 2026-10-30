@@ -2181,6 +2181,41 @@ pub(crate) fn mutable_field(heap: &Heap, target: ObjectId, key: &Key) -> Option<
     .flatten()
 }
 
+/// The current value of the mutable deftype field `key` of `target`.
+pub(crate) fn mutable_field_value(heap: &Heap, target: ObjectId, key: &Key) -> Option<Value> {
+    let Key::Name(name) = key else {
+        return None;
+    };
+    heap.read(target, |o| match o {
+        HeapObject::Form(f) => {
+            form::mutable_field(f, name).and_then(|(cell, index)| cell.get(index))
+        }
+        _ => None,
+    })
+    .flatten()
+}
+
+/// Store `value` in the mutable deftype field `key` of `target`, unordered:
+/// for a task without the compiler's resolver.
+pub(crate) fn store_mutable_field(
+    heap: &Heap,
+    target: ObjectId,
+    key: &Key,
+    value: Value,
+) -> Result<(), Fault> {
+    let Key::Name(name) = key else {
+        return Err(Fault::Internal("mutable field store without a name"));
+    };
+    let (cell, index) = heap
+        .read(target, |o| match o {
+            HeapObject::Form(f) => form::mutable_field(f, name),
+            _ => None,
+        })
+        .flatten()
+        .ok_or(Fault::Internal("mutable field store target"))?;
+    cell.set(heap, index, value)
+}
+
 /// Whether a descriptor only replaces a value: the shape OrdinarySet
 /// defines on a receiver that already owns a writable data property.
 pub(crate) fn value_only(desc: &PropertyDescriptor) -> bool {

@@ -3838,7 +3838,7 @@ fn apply_action(
                 })?;
             }
             set_awaiting(state, Awaiting::CallResult)?;
-            start_form_member(state, form, &key)?;
+            start_form_member(heap, state, form, &key)?;
             Ok(Flow::Next)
         }
         Action::SetProperty {
@@ -4182,6 +4182,7 @@ pub(super) fn to_length(value: &Value) -> Result<u64, Fault> {
 }
 
 pub(crate) fn read_result(
+    heap: &Heap,
     state: &mut VmState,
     read: Option<property::Read>,
     this: Value,
@@ -4215,7 +4216,7 @@ pub(crate) fn read_result(
             );
         }
         property::Read::Deferred(property::Deferred::Form { target, key }) => {
-            return start_form_member(state, Value::Object(target), &key);
+            return start_form_member(heap, state, Value::Object(target), &key);
         }
     }
     Ok(())
@@ -4280,7 +4281,7 @@ pub(crate) fn start_in(state: &mut VmState, heap: &Heap) -> Result<(), Fault> {
         }
         // A form's runtime member: present when the resolver supplies it.
         property::Presence::Form { target, key } => {
-            core_protocol::start_presence(state, Value::Object(target), &key)?;
+            core_protocol::start_presence(heap, state, Value::Object(target), &key)?;
         }
     }
     Ok(())
@@ -6027,10 +6028,11 @@ pub(crate) fn write_property(
     strict: bool,
 ) -> Result<(), Fault> {
     let write = property::prepare_write(heap, state.diag.task, &base, key, value.clone(), strict)?;
-    finish_property_write(state, base, key, value, strict, write)
+    finish_property_write(heap, state, base, key, value, strict, write)
 }
 
 pub(crate) fn finish_property_write(
+    heap: &Heap,
     state: &mut VmState,
     base: Value,
     key: &property::Key,
@@ -6040,6 +6042,14 @@ pub(crate) fn finish_property_write(
 ) -> Result<(), Fault> {
     match write {
         property::Write::Complete(setter) => write_result(state, setter, base, value),
+        // Without a resolver the field cell is stored directly (a published
+        // cell still checks the value); with one, the runtime orders it.
+        property::Write::MutableStruct if state.core_resolver.is_none() => {
+            if let Value::Object(id) = &base {
+                property::store_mutable_field(heap, *id, key, value.clone())?;
+            }
+            write_result(state, None, base, value)
+        }
         property::Write::MutableStruct => core_protocol::start_set_member(state, base, key, value),
         property::Write::Proxy(target) => start_proxy(
             state,

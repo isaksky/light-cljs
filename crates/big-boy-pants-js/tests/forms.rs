@@ -98,6 +98,46 @@ fn mutable_struct_publication_traces_current_fields_and_collects_cycles() {
     );
 }
 
+/// Without the compiler's resolver (an embedder), every field access reads
+/// and stores the cell directly, including the reflective paths.
+#[test]
+fn mutable_struct_reflection_without_resolver() {
+    let rt = Runtime::new();
+    let b = call(
+        &rt,
+        r#"function make() {
+      const T=__rt.mutableStructType('test/Box',__rt.formVector('value'),false,null);
+      const b=__rt.structNew(T,1), seen=[];
+      seen.push(b.value, 'value' in b);
+      b.value=2; seen.push(b.value);
+      seen.push(Reflect.set(b,'value',3), b.value);
+      new Proxy(b,{}).value=4; seen.push(new Proxy(b,{}).value);
+      if(seen.join()!=='1,true,2,true,3,4')throw new Error('private: '+seen.join());
+      return b;
+    }"#,
+        &[],
+    );
+    let b = rt.scope(|s| s.persist(s.local(&b).unwrap()));
+    rt.publish(&b).unwrap();
+    let checked = call(
+        &rt,
+        r#"function check(b) {
+      const seen=[Object.getOwnPropertyDescriptor(b,'value').value,
+        Reflect.getOwnPropertyDescriptor(b,'value').value,
+        Object.getOwnPropertyDescriptors(b).value.value,
+        Object.getOwnPropertyDescriptor(new Proxy(b,{}),'value').value];
+      seen.push(Reflect.set(b,'value',5), b.value);
+      new Proxy(b,{}).value=6; seen.push(b.value);
+      let rejected=false; try{Reflect.set(b,'value',{});}catch(e){rejected=e instanceof TypeError;}
+      seen.push(rejected, b.value);
+      if(seen.join()!=='4,4,4,4,true,5,6,true,6')throw new Error('published: '+seen.join());
+      return true;
+    }"#,
+        &[&b],
+    );
+    assert_eq!(checked.view(), ValueView::Bool(true));
+}
+
 #[test]
 fn mutable_struct_colliding_members_have_consistent_integrity() {
     let rt = Runtime::new();

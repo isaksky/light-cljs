@@ -128,7 +128,13 @@ receiver is demanded for Object extensions exactly where a member read's is.
 An Object method keeps its actual receiver: called on an object inheriting
 from an instance (`Object.create`), its `set!` gives that object its own
 property, as the legacy prototype method does. A declared field named
-`__lightNativeType` shadows the runtime's type tag.
+`__lightNativeType` shadows the runtime's type tag for reads and reflection;
+protocol dispatch, `satisfies?` and Object demands through a Proxy then
+classify by a second key no compiler-munged field name can equal.
+
+Without the compiler's resolver (an embedder or the engine's own tests),
+every one of these paths reads or stores the field cell directly: there are
+no effect lanes to order, and a published cell still checks stored values.
 
 `native_object_operation_table_matches_quickjs` runs every object operation
 (get, set, add, has, delete, define, descriptors, keys, freeze/seal and their
