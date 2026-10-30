@@ -1519,15 +1519,15 @@ is absent, as in the reference. Creation never waits: it is recorded with the
 creating activity's place in the effect lanes (docs/compiler-concurrency.md,
 "Effect lanes"): its position, the units and dependency cells of its activity
 chain, and the shared lazy cells its task is realizing (the engine's
-`Runtime::realizing`). When an earlier activity waits for one of those (a
+`Runtime::attribute_realizing`). When an earlier activity waits for one of those (a
 unit's analysis, an initializer's or helper's production, a lazy
 realization), the creations of that work count at the waiter's position for
 good, after what the waiter created before it waited: with one thread, that
 work runs inside the waiter. An earlier activity that reads a lazy realization
 another task has already finished, without waiting, counts the same: with one
 thread it would have realized the cell itself (light-cljs-601). The engine
-notes such reads for the cells whose realizations a creation was attributed to
-(`Runtime::attribute_realizing`, `Runtime::take_lazy_consumed`); the reader's
+notes such reads of the cells it marked when the creation was attributed to
+them (`Runtime::take_lazy_consumed`); the reader's
 place becomes the realization's floor before its next registry access and
 after each of its steps. A read waits for its lane, as an access to
 another activity's atom does, at the position its lane opens at (an earlier
