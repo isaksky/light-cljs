@@ -3566,8 +3566,11 @@ impl<'a> Emitter<'a> {
     // Ordinary value references (including method bodies) still use demand roots.
     fn product(&mut self, id: GlobalId) {
         if self.demand_roots {
-            self.output
-                .push_str("globalThis.__lightCompilerBundleProducts[");
+            self.output.push_str(if self.native_forms {
+                "globalThis.__lightCompilerProductTarget()["
+            } else {
+                "globalThis.__lightCompilerBundleProducts["
+            });
             let binding = &self.program.globals[id.0];
             self.string_units(
                 &format!("{}/{}", binding.namespace, binding.name)
