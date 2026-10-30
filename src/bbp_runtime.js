@@ -2651,30 +2651,63 @@ const native = (() => {
     const transformed = invoke(xf, rf);
     return prepareInvoke(transformed)(reduce(transformed, init, coll));
   };
-  const predicateCombination=(existential,ps)=>{
-    const predicates=vector(ps.length?ps:[undefined,undefined,undefined]),n=__rt.formCount(predicates),small=n<=3;
-    return (...args)=>{
-      if(args.length===0)return existential?null:true;
-      const invoke=(p,x)=>globalThis.__lightNativeRuntime.core.invoke(p,x);
-      let result=null;
-      for(let i=0;i<n;i++)for(let j=0;j<Math.min(3,args.length);j++){
-        result=invoke(__rt.formNth(predicates,i),args[j]);
-        if(truth(result)===existential)return existential?result:false;
+  // A fixed/variadic split whose apply entry accepts a sequence. Immutable
+  // function metadata keeps both entries publishable across compiler tasks.
+  const callableThree=(fixed,variadic)=>{
+    const direct=(...args)=>args.length<=3?fixed(args):variadic(args[0],args[1],args[2],list(args.slice(3)));
+    return __rt.fnWithApplyTo(direct,args=>{
+      let n=0;
+      for(let s=seqOf(args);n<4&&s!==null;n++,s=__rt.cljNext(s)){}
+      let s=seqOf(args);
+      if(n<=3){
+        const values=[];
+        for(let i=0;i<n;i++,s=__rt.cljRest(s))values.push(__rt.cljFirst(s));
+        return fixed(values);
       }
-      if(args.length<=3)return existential?(small?result:null):true;
+      const x=__rt.cljFirst(s);s=__rt.cljRest(s);
+      const y=__rt.cljFirst(s);s=__rt.cljRest(s);
+      const z=__rt.cljFirst(s);s=__rt.cljRest(s);
+      return variadic(x,y,z,s);
+    });
+  };
+  const predicateCombination=(existential,predicates,small)=>{
+    const fixed=args=>{
+      if(args.length===0)return existential?null:true;
+      let result=null;
+      for(let ps=seqOf(predicates);ps!==null;ps=__rt.cljNext(ps)){
+        const p=__rt.cljFirst(ps);
+        for(const x of args){
+          result=invoke(p,x);
+          if(truth(result)===existential)return existential?result:false;
+        }
+      }
+      return existential?(small?result:null):true;
+    };
+    const tail=args=>{
       if(small){
-        for(let j=3;j<args.length;j++)for(let i=0;i<n;i++){
-          result=invoke(__rt.formNth(predicates,i),args[j]);
+        for(let xs=seqOf(args);xs!==null;xs=__rt.cljNext(xs))for(let ps=seqOf(predicates);ps!==null;ps=__rt.cljNext(ps)){
+          const result=invoke(__rt.cljFirst(ps),__rt.cljFirst(xs));
           if(truth(result)===existential)return existential?result:false;
         }
       }else{
-        for(let i=0;i<n;i++)for(let j=3;j<args.length;j++){
-          result=invoke(__rt.formNth(predicates,i),args[j]);
-          if(truth(result)===existential)return existential?result:false;
+        for(let ps=seqOf(predicates);ps!==null;ps=__rt.cljNext(ps)){
+          const p=__rt.cljFirst(ps);
+          for(let xs=seqOf(args);xs!==null;xs=__rt.cljNext(xs)){
+            const result=invoke(p,__rt.cljFirst(xs));
+            if(truth(result)===existential)return existential?result:false;
+          }
         }
       }
       return existential?null:true;
     };
+    return callableThree(fixed,(x,y,z,args)=>{
+      const result=fixed([x,y,z]);
+      return truth(result)===existential?result:tail(args);
+    });
+  };
+  const predicateConstructor=existential=>{
+    const variadic=(p,q,r,ps)=>predicateCombination(existential,__rt.cljCons(p,__rt.cljCons(q,__rt.cljCons(r,ps))),false);
+    return callableThree(ps=>ps.length?predicateCombination(existential,list(ps),true):variadic(undefined,undefined,undefined,null),variadic);
   };
   const iterationType=canonicalMember('iteration-type',()=>__rt.structType('cljs.core/Iteration',__rt.formVector('step','somef','vf','kf','initk'),false,null));
   const iterationSeq=(self,step,somef,vf,kf,result)=>{
@@ -2832,7 +2865,15 @@ const native = (() => {
     iter,seqIter,SeqIter,es6Iterator,es6IteratorSeq:iteratorSeq,
     SeqIterFactory:(...a)=>a.length===2?new SeqIter(...a):arity(a.length),
     toArray:x=>arr(x).slice(),
-    toArray2d:x=>arr(x).map(row=>arr(row).slice()),
+    toArray2d:x=>{
+      const result=new Array(__rt.cljCount(x));let i=0;
+      for(let s=seqOf(x);s!==null;s=__rt.cljNext(s)){
+        const row=[];
+        for(let r=seqOf(__rt.cljFirst(s));r!==null;r=__rt.cljNext(r))row.push(__rt.cljFirst(r));
+        result[i++]=row;
+      }
+      return result;
+    },
     aclone:x=>aclone(val(x)),aset:(...args)=>aset(...args.map(val)),jsDelete:(object,key)=>jsDelete(val(object),val(key)),
     checkedAget:(...args)=>checkedAget(...args.map(val)),checkedAset:(...args)=>checkedAset(...args.map(val)),
     checkedAgetStrict:(...args)=>checkedAgetStrict(...args.map(val)),checkedAsetStrict:(...args)=>checkedAsetStrict(...args.map(val)),
@@ -2890,6 +2931,13 @@ const native = (() => {
       return r;
     },
     apply:(f,...xs)=>{
+      const entry=__rt.fnApplyToEntry(val(f));
+      if(entry!==null){
+        let args=xs[xs.length-1];
+        if(xs.length>=5)args=seqOf(args);
+        for(let i=xs.length-2;i>=0;i--)args=__rt.cljCons(xs[i],args);
+        return entry(args);
+      }
       const args=[...xs.slice(0,-1),...arr(xs[xs.length-1])];
       if(isVar(f))return core.applyVar(f,args);
       const kind=__rt.formKind(val(f));
@@ -3029,8 +3077,8 @@ const native = (() => {
     randomUuid:(...a)=>a.length?arity(a.length):core.uuid('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,ch=>{const n=Math.floor(Math.random()*16);return (ch==='x'?n:n&3|8).toString(16);})),
     rand:(...a)=>a.length===0?Math.random():a.length===1?val(a[0])*Math.random():arity(a.length),
     randInt,
-    shuffle:coll=>{const items=arr(coll).slice();for(let i=items.length-1;i>0;i--){const j=randInt(i+1);[items[i],items[j]]=[items[j],items[i]];}return vector(items);},
-    randNth:coll=>__rt.cljNth(coll,randInt(__rt.cljCount(coll))),
+    shuffle:(...a)=>{if(a.length!==1)return arity(a.length);const items=arr(a[0]).slice();for(let i=items.length-1;i>0;i--){const j=randInt(i+1);[items[i],items[j]]=[items[j],items[i]];}return vector(items);},
+    randNth:(...a)=>a.length===1?__rt.cljNth(a[0],randInt(__rt.cljCount(a[0]))):arity(a.length),
     parseLong:x=>parseLong(val(x)),parseDouble:x=>parseDouble(val(x)),parseBoolean:x=>parseBoolean(val(x)),
     ExceptionInfo,
     exInfo:(...a)=>a.length===2||a.length===3?new ExceptionInfo(a[0],a[1],a.length===2?null:a[2]):arity(a.length),
@@ -3144,7 +3192,7 @@ const native = (() => {
     every:(f,c)=>{for(let s=seqOf(c);s!==null;s=__rt.cljNext(s))if(!truth(invoke(f,__rt.cljFirst(s))))return false;return true;},
     some:(f,c)=>{for(let s=seqOf(c);s!==null;s=__rt.cljNext(s)){const v=invoke(f,__rt.cljFirst(s));if(truth(v))return v;}return null;},
     notEvery:(f,c)=>!core.every(f,c), notAny:(f,c)=>!truth(core.some(f,c)),
-    everyPred:(...ps)=>predicateCombination(false,ps),someFn:(...ps)=>predicateCombination(true,ps),
+    everyPred:predicateConstructor(false),someFn:predicateConstructor(true),
     groupBy:(f,coll)=>reduce((result,x)=>{const key=invoke(f,x);return __rt.cljAssoc(result,key,__rt.cljConj(get(result,key,__rt.formVector()),x));},arrayMap([]),coll),
     frequencies:coll=>reduce((result,x)=>__rt.cljAssoc(result,x,get(result,x,0)+1),arrayMap([]),coll),
     last:c=>{const a=arr(c);return a.length?a[a.length-1]:null;}, butlast:c=>{const a=arr(c);return a.length>1?__rt.cljSeq(vector(a.slice(0,-1))):null;},

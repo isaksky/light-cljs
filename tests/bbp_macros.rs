@@ -6323,6 +6323,47 @@ fn native_predicate_combinations_preserve_order_and_short_circuit_values() {
 }
 
 #[test]
+fn native_predicate_combinations_preserve_lazy_apply_tails() {
+    assert_native_matches_legacy(
+        r#"(def saved-predicate (some-fn #(if (= % 6) :saved nil)))
+           (defmacro probe []
+             (let [source (fn source [i]
+                            (lazy-seq
+                              (if (> i 12) (throw (js/Error. "forced unused tail")) nil)
+                              (cons i (source (inc i)))))
+                   sf (apply some-fn (map (fn [_] (constantly 7)) (source 0)))
+                   ep (apply every-pred (map (fn [_] (constantly false)) (source 0)))]
+               (list 'quote [(apply (some-fn #(if (= % 6) :found nil)) (source 0))
+                 (apply (every-pred #(< % 6)) (source 0)) (sf 1) (ep 1)
+                 (apply (some-fn #(if (= % 6) :found nil)) 0 1 2 3 (source 4))
+                 (apply (every-pred #(< % 6)) 0 1 2 3 (source 4))
+                 (apply (some-fn (constantly false)) [1 2 3])
+                 (apply (some-fn (constantly false)) [1 2 3 4])
+                 (apply (apply some-fn [(constantly nil) (constantly nil)
+                   (constantly nil) #(if (= % 6) :found nil)]) (range 10))
+                 (apply saved-predicate (source 0))])))
+           (js/console.log (pr-str (probe)))"#,
+        "[:found false 7 false :found false false nil :found :saved]\n",
+    );
+}
+
+#[test]
+fn native_random_helpers_reject_invalid_arities() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [s shuffle r rand-nth
+                   message (fn [f] (try (f) :bad (catch :default e (.-message e))))]
+               (list 'quote [(message #(s)) (message #(s [1] [2]))
+                 (message #(r)) (message #(r [1] [2]))
+                 (message #(apply s [])) (message #(apply s [[1] [2]]))
+                 (message #(apply r [])) (message #(apply r [[1] [2]]))
+                 (s [1]) (r [1]) (apply s [[1]]) (apply r [[1]])])))
+           (js/console.log (pr-str (probe)))"#,
+        "[\"Invalid arity: 0\" \"Invalid arity: 2\" \"Invalid arity: 0\" \"Invalid arity: 2\" \"Invalid arity: 0\" \"Invalid arity: 2\" \"Invalid arity: 0\" \"Invalid arity: 2\" [1] 1 [1] 1]\n",
+    );
+}
+
+#[test]
 fn native_public_hash_helpers_preserve_numeric_and_unordered_contracts() {
     assert_native_matches_legacy(
         r#"(defmacro probe []
@@ -6346,7 +6387,14 @@ fn native_array_helpers_preserve_nested_writes_holes_and_checked_failures() {
         r#"(defmacro probe []
              (let [a (array (array 1 2)) out (atom [])
                    written (aset a 0 1 9)
-                   clone (aclone (aget a 0))]
+                   clone (aclone (aget a 0))
+                   sparse (to-array-2d (js/Array. 1))
+                   row (aget (to-array-2d (array (js/Array. 1))) 0)
+                   events (atom [])
+                   custom (reify ICounted (-count [_] (swap! events conj :count) 1)
+                            ISeqable (-seq [_] (swap! events conj :seq) (seq [[4]])))
+                   custom-result (to-array-2d custom)
+                   lazy-result (to-array-2d (lazy-seq (swap! events conj :lazy) (list '(5))))]
                (binding [*print-err-fn* (fn [_] (swap! out conj :warning))]
                  (checked-aget a 4)
                  (checked-aset clone 3 7))
@@ -6354,9 +6402,12 @@ fn native_array_helpers_preserve_nested_writes_holes_and_checked_failures() {
                  (undefined? (aget clone 2)) (nil? (js/Object.getOwnPropertyDescriptor clone "2"))
                  (try (checked-aget' clone 4) :bad (catch :default _ :bounds))
                  (try (checked-aset' clone -1 8) :bad (catch :default _ :bounds))
-                 (mapv vec (to-array-2d [[1 2] nil '(3)]))])))
+                 (mapv vec (to-array-2d [[1 2] nil '(3)]))
+                 (array? (aget sparse 0)) (alength (aget sparse 0))
+                 (undefined? (aget row 0)) (some? (js/Object.getOwnPropertyDescriptor row "0"))
+                 (mapv vec custom-result) (mapv vec lazy-result) @events])))
            (js/console.log (pr-str (probe)))"#,
-        "[9 [[1 9]] [1 9 nil 7] [:warning :warning] true true :bounds :bounds [[1 2] [] [3]]]\n",
+        "[9 [[1 9]] [1 9 nil 7] [:warning :warning] true true :bounds :bounds [[1 2] [] [3]] true 0 true true [[4]] [[5]] [:count :seq :lazy]]\n",
     );
 }
 

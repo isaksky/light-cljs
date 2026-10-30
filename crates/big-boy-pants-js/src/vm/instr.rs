@@ -1605,11 +1605,15 @@ pub enum FormOp {
     /// repeat → its remaining count, `Infinity`, or null
     /// (`formReferencePayload`).
     ReferencePayload = 112,
+    /// function entry → copy with an immutable sequence-accepting apply entry.
+    FnWithApplyTo = 113,
+    /// value → immutable apply entry, or null.
+    FnApplyToEntry = 114,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 113] = [
+    pub const ALL: [FormOp; 115] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1723,6 +1727,8 @@ impl FormOp {
         FormOp::WithReferenceType,
         FormOp::CljDrop,
         FormOp::ReferencePayload,
+        FormOp::FnWithApplyTo,
+        FormOp::FnApplyToEntry,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1737,6 +1743,7 @@ impl FormOp {
             | FormOp::Empty
             | FormOp::FnApplyNull
             | FormOp::FnApplyReceiver
+            | FormOp::FnApplyToEntry
             | FormOp::CljCallable
             | FormOp::Sequence
             | FormOp::CljPeek
@@ -1797,6 +1804,7 @@ impl FormOp {
             | FormOp::ReferenceType
             | FormOp::ReferencePayload => 1,
             FormOp::Keyword
+            | FormOp::FnWithApplyTo
             | FormOp::InitializerSlot
             | FormOp::InitializerSlotGet
             | FormOp::CljCallMember
@@ -1854,6 +1862,8 @@ impl FormOp {
         match self {
             FormOp::FnApplyNull => "fnApplyNull",
             FormOp::FnApplyReceiver => "fnApplyReceiver",
+            FormOp::FnWithApplyTo => "fnWithApplyTo",
+            FormOp::FnApplyToEntry => "fnApplyToEntry",
             FormOp::InitializerSlot => "initializerSlot",
             FormOp::InitializerSlotGet => "initializerSlotGet",
             FormOp::InitializerSlotSet => "initializerSlotSet",

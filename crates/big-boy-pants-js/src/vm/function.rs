@@ -193,6 +193,9 @@ pub(crate) struct FunctionObject {
     /// Compiler calling convention: Clojure variadic dispatchers apply with
     /// a null receiver. Immutable from allocation, without JS own properties.
     pub(crate) apply_null_receiver: bool,
+    /// Immutable compiler entry accepting an argument sequence without
+    /// materializing its tail. Traced and publication-checked like captures.
+    pub(crate) apply_to: Option<Value>,
     pub(crate) reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
@@ -208,6 +211,7 @@ impl FunctionObject {
             home_object: None,
             computed_name: None,
             apply_null_receiver: false,
+            apply_to: None,
             reservation: None,
         }
     }
@@ -247,10 +251,44 @@ pub(crate) fn apply_receiver(heap: &Heap, value: Value) -> Value {
     value
 }
 
+/// Copy a function with an immutable lazy apply entry, without own properties.
+pub(crate) fn with_apply_to(heap: &Heap, value: Value, entry: Value) -> Result<Value, Fault> {
+    let Value::Object(id) = value else {
+        return Err(Fault::TypeError("expected a function".into()));
+    };
+    let mut function = heap
+        .read(id, |object| match object {
+            HeapObject::Function(f) => Some(f.clone()),
+            _ => None,
+        })
+        .flatten()
+        .ok_or_else(|| Fault::TypeError("expected a function".into()))?;
+    function.apply_to = Some(entry);
+    heap.alloc(HeapObject::Function(function))
+        .map(Value::Object)
+        .ok_or(Fault::HeapLimit)
+}
+
+pub(crate) fn apply_to_entry(heap: &Heap, value: &Value) -> Value {
+    if let Value::Object(id) = value {
+        heap.read(*id, |object| match object {
+            HeapObject::Function(f) => f.apply_to.clone(),
+            _ => None,
+        })
+        .flatten()
+        .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    }
+}
+
 impl Trace for FunctionObject {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.code.trace(visit);
         self.captures.trace(visit);
+        if let Some(entry) = &self.apply_to {
+            entry.trace(visit);
+        }
         if let Some(home) = self.home_object {
             visit(home.into());
         }

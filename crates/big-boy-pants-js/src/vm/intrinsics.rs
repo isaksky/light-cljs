@@ -560,6 +560,12 @@ fn form_op(
     if op == FormOp::FnApplyReceiver {
         return Ok(super::function::apply_receiver(heap, args[0].clone()));
     }
+    if op == FormOp::FnWithApplyTo {
+        return super::function::with_apply_to(heap, args[0].clone(), args[1].clone());
+    }
+    if op == FormOp::FnApplyToEntry {
+        return Ok(super::function::apply_to_entry(heap, &args[0]));
+    }
     if op == FormOp::StructSet {
         return form::struct_set(heap, &args[0], &args[1], args[2].clone());
     }
@@ -837,6 +843,8 @@ fn strict_form_op(
         | FormOp::CljTruth
         | FormOp::FnApplyNull
         | FormOp::FnApplyReceiver
+        | FormOp::FnWithApplyTo
+        | FormOp::FnApplyToEntry
         | FormOp::InitializerSlot
         | FormOp::InitializerSlotGet
         | FormOp::InitializerSlotSet

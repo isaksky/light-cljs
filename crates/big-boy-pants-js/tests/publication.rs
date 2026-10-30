@@ -755,6 +755,47 @@ fn compiler_apply_receiver_metadata_publishes_without_changing_direct_calls() {
 }
 
 #[test]
+fn compiler_lazy_apply_entries_are_traced_and_publication_checked() {
+    let rt = Runtime::new();
+    let source = compile_script(
+        "lazy-apply-entry",
+        "const payload = __rt.vector(42);
+         __rt.fnWithApplyTo(value => value + 1, args => __rt.vector(payload, args))",
+    )
+    .unwrap();
+    let task = rt.spawn(&source, &[]).unwrap();
+    let function = complete(task.run().unwrap());
+    rt.publish(&function).unwrap();
+    drop(task);
+    rt.collect().unwrap();
+    let call = compile_function(
+        "function check(f) {
+            const entry = __rt.fnApplyToEntry(f);
+            const result = entry(__rt.vector(7));
+            return f(6) === 7 && __rt.nth(__rt.nth(result, 0), 0) === 42
+                && __rt.nth(__rt.nth(result, 1), 0) === 7
+                && __rt.fnApplyToEntry(function(){}) === null
+                && __rt.fnApplyToEntry(null) === null;
+        }",
+    )
+    .unwrap();
+    let task = rt.spawn(&call, &[&function]).unwrap();
+    let result = thread::scope(|t| t.spawn(|| complete(task.run().unwrap())).join().unwrap());
+    assert_eq!(result.view(), ValueView::Bool(true));
+
+    let source = compile_script(
+        "owned-apply-entry",
+        "const state = {}; __rt.fnWithApplyTo(x => x, args => state)",
+    )
+    .unwrap();
+    let task = rt.spawn(&source, &[]).unwrap();
+    let function = complete(task.run().unwrap());
+    let (_, found, owner) = not_shareable(rt.publish(&function).unwrap_err());
+    assert_eq!(found, "object");
+    assert_eq!(owner, Some(task.id()));
+}
+
+#[test]
 fn function_own_properties_follow_publication_rule() {
     let rt = Runtime::new();
     let run = |src: &str| {

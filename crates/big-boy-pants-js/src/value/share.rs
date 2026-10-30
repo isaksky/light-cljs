@@ -506,6 +506,7 @@ enum Children {
     /// (`ExecutableSpec::constants`), so they add no edges.
     Function {
         captures: std::sync::Arc<[Value]>,
+        apply_to: Option<Value>,
         properties: Option<ObjectId>,
         home_object: Option<ObjectId>,
     },
@@ -627,11 +628,15 @@ impl Children {
             }
             Children::Function {
                 captures,
+                apply_to,
                 properties,
                 home_object,
             } => {
                 for (n, v) in captures.iter().enumerate() {
                     f(Step::Capture(n), v);
+                }
+                if let Some(entry) = apply_to {
+                    f(Step::NativeEdge(0), entry);
                 }
                 if let Some(record) = properties {
                     f(Step::FunctionProperties, &Value::Object(*record));
@@ -689,10 +694,12 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
             },
             HeapObject::Function(func) => Children::Function {
                 captures: func.captures.clone(),
+                apply_to: func.apply_to.clone(),
                 properties: func.properties,
                 home_object: func.home_object,
             },
             HeapObject::BoundFunction(func) => Children::Function {
+                apply_to: None,
                 captures: std::iter::once(func.target.clone())
                     .chain(std::iter::once(func.this.clone()))
                     .chain(func.args.iter().cloned())
