@@ -2564,7 +2564,9 @@ fn for_await_abrupt_exit_releases_iterator() {
 /// A quoted global regex literal keeps a task-local `lastIndex`
 /// (light-cljs-563); each entry and its byte charge are released when the
 /// task terminates, so a rooted regex used by many short tasks does not
-/// accumulate state.
+/// accumulate state. The completed task handles stay alive through the
+/// measurement: dropping one would release its entries on its own
+/// (light-cljs-585).
 #[test]
 fn quoted_regex_task_state_is_released_on_task_termination() {
     // A byte limit makes the runtime account reservations.
@@ -2586,12 +2588,18 @@ fn quoted_regex_task_state_is_released_on_task_termination() {
     let growth = |regex: &Rooted| {
         let step = compile("function f(r) { r.exec('aa'); return r.lastIndex; }");
         let run = |n: usize| {
-            for _ in 0..n {
-                let task = rt.spawn(&step, &[regex]).unwrap();
-                run_to_end(&task);
-            }
+            let tasks: Vec<Task> = (0..n)
+                .map(|_| {
+                    let task = rt.spawn(&step, &[regex]).unwrap();
+                    run_to_end(&task);
+                    task
+                })
+                .collect();
             rt.collect().unwrap();
-            rt.heap_stats().managed_bytes
+            let bytes = rt.heap_stats().managed_bytes;
+            assert_eq!(rt.regex_task_registrations(), 0);
+            drop(tasks);
+            bytes
         };
         let first = run(1);
         run(200).saturating_sub(first)
@@ -2654,4 +2662,100 @@ fn quoted_regex_dead_cells_are_pruned_while_task_is_alive() {
     }
     drop(task);
     assert_eq!(rt.regex_task_registrations(), 0);
+}
+
+/// Completion, failure and cancellation each release a task's quoted regex
+/// `lastIndex` entries and their charges while the caller still holds the
+/// task handle; dropping an unfinished task releases them through the
+/// handle's own cleanup (light-cljs-585).
+#[test]
+fn quoted_regex_terminal_cleanup_releases_state_with_retained_handles() {
+    let rt = Runtime::with_heap_policy(
+        big_boy_pants_js::VmLimits::default(),
+        big_boy_pants_js::HeapPolicy {
+            hard_limit_bytes: Some(64 << 20),
+            ..Default::default()
+        },
+    );
+    // Rooted global regexes; each case's task writes every one's
+    // `lastIndex`, so a leaked entry set is many charges, not one.
+    const REGEXES: usize = 50;
+    let regexes = {
+        let code = compile(&format!(
+            "function f() {{ const r = () => __rt.formCompilerLiteral('regex', '(?g)a'); \
+             return __rt.vector({}); }}",
+            vec!["r()"; REGEXES].join(", ")
+        ));
+        run_to_end(&rt.spawn(&code, &[]).unwrap())
+    };
+    let spawn = |body: &str| {
+        let code = compile(&format!(
+            "function f(rs) {{ for (let i = 0; i < {REGEXES}; i++) __rt.nth(rs, i).exec('aa'); {body} }}"
+        ));
+        rt.spawn(&code, &[&regexes]).unwrap()
+    };
+    // The first pass warms the runtime (programs, caches, the Error
+    // intrinsics); the second also checks the accounted bytes.
+    for pass in 0..2u64 {
+        let held = |what: &str| {
+            assert_eq!(rt.regex_task_registrations(), REGEXES, "{what}: held");
+            rt.collect().unwrap();
+            rt.heap_stats().managed_bytes
+        };
+        let released = |what: &str, settled: usize| {
+            assert_eq!(rt.regex_task_registrations(), 0, "{what}: released");
+            rt.collect().unwrap();
+            let bytes = rt.heap_stats().managed_bytes;
+            if pass > 0 {
+                assert!(
+                    bytes + 1000 < settled,
+                    "{what}: {bytes} accounted bytes, {settled} while held"
+                );
+            }
+        };
+        let need = |n: u64| format!("__rt.need({}, 1);", 10 * pass + n);
+        let waiting = |task: &Task, n: u64| {
+            let outcome = task.run().unwrap();
+            assert!(
+                matches!(outcome, RunOutcome::Waiting(k) if k == key(&rt, 10 * pass + n)),
+                "{outcome:?}"
+            );
+        };
+        let mut retained = Vec::new();
+
+        let task = spawn(&format!("{} return __rt.nth(rs, 0).lastIndex;", need(1)));
+        waiting(&task, 1);
+        let settled = held("completion");
+        complete_requests(&rt, &task);
+        assert_eq!(run_to_end(&task).view(), ValueView::Number(1.0));
+        released("completion", settled);
+        retained.push(task);
+
+        let task = spawn(&format!("{} throw new Error('fails');", need(2)));
+        waiting(&task, 2);
+        let settled = held("failure");
+        complete_requests(&rt, &task);
+        assert!(matches!(task.run().unwrap(), RunOutcome::Failed(_)));
+        released("failure", settled);
+        retained.push(task);
+
+        let task = spawn(&format!("{} return 0;", need(3)));
+        waiting(&task, 3);
+        let settled = held("cancellation");
+        let big_boy_pants_js::Cancel::Runnable(runnable) = task.cancel() else {
+            panic!("a parked task becomes runnable to observe its cancellation")
+        };
+        assert!(matches!(runnable.run().unwrap(), RunOutcome::Cancelled));
+        drop(runnable);
+        released("cancellation", settled);
+        retained.push(task);
+
+        // An unfinished task, dropped while it waits: `Task`'s own cleanup.
+        let task = spawn(&format!("{} return 0;", need(4)));
+        waiting(&task, 4);
+        let settled = held("drop");
+        drop(task);
+        released("drop", settled);
+        drop(retained);
+    }
 }
