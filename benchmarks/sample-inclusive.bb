@@ -9,7 +9,7 @@
 ;; --thread picks the Nth thread section (0, the main thread, by default);
 ;; --match keeps only functions whose demangled name contains TEXT;
 ;; --under counts only samples with a function whose name contains TEXT on
-;; their stack, below it (its subtree).
+;; their stack, below it (its subtree), in every count, buckets included.
 ;; --buckets instead splits the thread's samples into disjoint buckets: each
 ;; sample goes to the bucket of the innermost function on its stack whose
 ;; demangled name contains that bucket's TEXT (the first such bucket listed),
@@ -51,8 +51,9 @@
     (let [close (fn [stack open depth]
                   (loop [stack stack open open]
                     (if (and (seq stack) (>= (:depth (peek stack)) depth))
-                      (let [{:keys [name n children bucket]} (peek stack)]
-                        (add self (if buckets bucket name) (- n children))
+                      (let [{:keys [name n children bucket inside]} (peek stack)]
+                        (when inside
+                          (add self (if buckets bucket name) (- n children)))
                         (recur (pop stack) (update open name dec)))
                       [stack open])))]
       (if-let [[depth n name] (first nodes)]

@@ -1612,6 +1612,10 @@ of the program. Neither is JavaScript the macros asked for.
    so this setup takes 9.2 s, 37.5 s and 144 s: 40%, 51% and 66% of the
    build after fix 1. Filed as light-cljs-590.
 
+These numbers were measured on a busy machine (other workers' builds and
+tests ran throughout, see Method); a quiet re-measurement, with prune CPU
+time, is queued as light-cljs-593.
+
 With fix 1 the Pants build is 2.6x slower than the V8 build at 200k and
 4.6x at 800k. Subtracting cause 2 leaves about 13.5 s, 28.5 s and 79 s:
 1.6x the V8 build at 200k and 800k, growing 5.9x for 4x the code against the

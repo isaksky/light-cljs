@@ -5366,6 +5366,121 @@ fn reduced_project_namespaces_expand_variadic_macros() {
     }
 }
 
+/// The `--stats` profile of a one-thread Pants build (light-cljs-575):
+/// engine time in the trace and the counters of the task log, the prune
+/// walk, the `&env` cache, catalog installs and helper producer setup are
+/// present and consistent with each other on a small project whose macros
+/// demand helpers, read `&env` and allocate enough to collect.
+#[test]
+fn native_profile_stats_cover_engine_bridge_and_helpers() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-profile-stats");
+    std::fs::write(
+        root.join("tools.cljs"),
+        r#"(ns tools)
+        (defn label [x] (str "n" x))
+        (defn churn [] (reduce + (map (fn [i] (count (vec (range 40)))) (range 120))))
+        (defmacro tag [x]
+          (churn)
+          (list 'quote [(label x) (:name (:ns &env))]))"#,
+    )
+    .unwrap();
+    let calls: String = (0..12).map(|i| format!(" (tag {i})")).collect();
+    std::fs::write(
+        root.join("app.cljs"),
+        format!("(ns app (:require [tools :refer [tag]])) (js/console.log (pr-str [{calls}]))"),
+    )
+    .unwrap();
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    // A small budget makes the macros' garbage trigger collections, and so
+    // prune walks on the imports after them.
+    host.evaluator_options.memory_limit = 16 << 20;
+    let mut stats = light_cljs::CompileStats::new();
+    let (program, _) = analyze_namespace_entry_recorded(
+        "app",
+        &[root.path().to_path_buf()],
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+        EntryRecorders {
+            stats: Some(&mut stats),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let expected: Vec<String> = (0..12).map(|i| format!("[\"n{i}\" app]")).collect();
+    assert_eq!(
+        program_output(&emit_js(&program)),
+        format!("[{}]\n", expected.join(" "))
+    );
+    let report = stats.report();
+    let value = |key: &str| -> f64 {
+        let prefix = format!("\n{key} ");
+        let at = report
+            .find(&prefix)
+            .unwrap_or_else(|| panic!("{key} missing: {report}"));
+        report[at + prefix.len()..]
+            .lines()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    // Engine time is charged to the stages the Pants build runs JavaScript in.
+    assert!(value("trace.top-level.engine-ms") > 0.0, "{report}");
+    assert!(value("trace.engine.entries") > 0.0, "{report}");
+    assert!(
+        value("trace.engine-ms") <= value("trace.wall-ms"),
+        "{report}"
+    );
+    // The task log: each step reads only what it has not read, so no more
+    // entries are copied than were ever recorded, a few per step at most.
+    let reads = value("native.log.reads");
+    let copied = value("native.log.edges-copied");
+    assert!(
+        reads > 0.0 && reads == value("native.tasks.steps"),
+        "{report}"
+    );
+    assert!(copied > 0.0 && copied <= 4.0 * reads, "{report}");
+    // The prune walk ran after collections and examined what it pruned.
+    let passes = value("native.prune.passes");
+    assert!(value("macro.gc.collections") > 0.0, "{report}");
+    assert!(
+        passes > 0.0 && passes <= value("macro.gc.collections"),
+        "{report}"
+    );
+    assert!(value("native.prune.imports-visited") >= value("native.prune.imports-removed"));
+    assert!(
+        value("native.prune.nodes-walked")
+            >= value("native.prune.imports-visited") - value("native.prune.imports-removed")
+    );
+    // Every source macro call imports a real `&env`: one full import, then
+    // a hit or a rebuild per call, each rebuild replacing the envelope.
+    let (hits, misses, full) = (
+        value("native.env.hits"),
+        value("native.env.misses"),
+        value("native.env.full"),
+    );
+    assert_eq!(full, 1.0, "{report}");
+    assert!(hits + misses + full >= 12.0, "{report}");
+    assert!(value("native.env.evictions") <= misses, "{report}");
+    if misses > 0.0 {
+        assert!(value("native.env.entries-rebuilt") > 0.0, "{report}");
+        assert!(value("native.env.bytes-rebuilt") > 0.0, "{report}");
+    }
+    // Helpers are produced by producer tasks, each set up from the catalog.
+    let setups = value("native.producers.setups");
+    assert!(stats.native_helpers.compiled > 0, "{report}");
+    assert!(
+        setups > 0.0 && setups <= stats.native_helpers.compiled as f64,
+        "{report}"
+    );
+    assert!(value("native.catalog.uses") >= setups, "{report}");
+    assert!(value("native.catalog.entries") >= value("native.producers.catalog-entries"));
+    assert!(value("native.producers.catalog-entries") > 0.0, "{report}");
+}
+
 #[test]
 fn namespace_stats_report_bridge_work_for_each_native_call() {
     let root = temp_dir::TempDir::new("native-macro-stats");
