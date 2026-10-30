@@ -6377,6 +6377,36 @@ fn native_instance_methods_preserve_mixed_variadic_dispatch() {
 }
 
 #[test]
+fn native_instance_ifn_apply_keeps_captures_and_direct_receivers() {
+    assert_native_matches_legacy(
+        r#"(deftype CallableType [bias] IFn
+              (-invoke [_] [:fixed bias])
+              (-invoke [this x & xs] [(fn? this) bias x (vec xs)]))
+            (defrecord CallableRecord [bias] IFn
+              (-invoke [_] [:fixed bias])
+              (-invoke [this x & xs] [(fn? this) bias x (vec xs)]))
+            (defmacro probe [bias]
+              (let [f (reify IFn
+                        (-invoke [_] [:fixed bias])
+                        (-invoke [this x & xs] [(fn? this) bias x (vec xs)]))
+                    specified (js-obj)]
+                (specify! specified IFn
+                  (-invoke ([_] [:fixed bias])
+                           ([this x & xs] [(fn? this) bias x (vec xs)])))
+                (list 'quote
+                  (mapv (fn [callable]
+                          [(apply callable []) (apply callable [4 5 6])
+                           (apply callable 4 [5 6])])
+                        [f (CallableType. bias) (->CallableRecord bias) specified]))))
+            (js/console.log (pr-str (probe 9)))"#,
+        "[[[:fixed 9] [false 9 4 [5 6]] [false 9 4 [5 6]]] \
+          [[:fixed 9] [false 9 4 [5 6]] [false 9 4 [5 6]]] \
+          [[:fixed 9] [false 9 4 [5 6]] [false 9 4 [5 6]]] \
+          [[:fixed 9] [false 9 4 [5 6]] [false 9 4 [5 6]]]]\n",
+    );
+}
+
+#[test]
 fn native_integer_predicates_work_as_shared_atom_validators() {
     assert_entry_matches_quickjs(
         "integer-validators",

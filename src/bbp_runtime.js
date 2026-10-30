@@ -50,11 +50,17 @@ const decl = (() => {
     if(target!=null&&(typeof target==='object'||typeof target==='function')){
       const methods=new Map(Array.from(instances.get(target)??[],([name,arities])=>[name,new Map(arities)]));
       instances.set(target,methods);
-      for(const [name,n,fn,,variadic] of specs){
+      for(const [name,n,fn,invoke=fn,variadic] of specs){
         let arities=methods.get(name);if(arities===undefined)methods.set(name,arities=new Map());
         const entry=n===0?true:(x,...args)=>fn.call(x,x,...args);
         if(variadic!=null)entry.variadicMethod=fn;
         arities.set(variadic!=null?-1:n,entry);
+        // Clojure apply selects the direct invoke slot at its declared arity;
+        // unlike mixed .call dispatch, it keeps the instance receiver.
+        if(name==='IFn/-invoke')Object.defineProperty(target,'cljs$core$IFn$_invoke$arity$'+(n-1),{
+          configurable:true,writable:true,enumerable:true,
+          value:function(...args){return invoke.call(this,this,...args);}
+        });
       }
       for(const [name,arities] of methods)if(name.startsWith('Object/'))
         Object.defineProperty(target,mungeMember(name.slice(7)),{configurable:true,writable:true,value:function(...args){
