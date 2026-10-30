@@ -5705,3 +5705,79 @@ threads; the V8 build 2.30 s and 1.52 s. All four outputs and their source
 maps are byte-identical (`d67471d1…`, `3c4f4cba…`). `app.main` still stops
 in `app.util.object/add-properties!` (light-cljs-632), after 35.01 s at 1
 thread.
+
+## Rope charges and the macro memory limit (light-cljs-632, 2026-10-30)
+
+Penpot `app.main` stopped in `app.util.object/add-properties!` with `heap
+byte limit exceeded` while the process held about 600 MB. The accounted
+bytes were real charges, not a wrap or truncation of the limit: the engine
+received `--macro-memory-limit 16000000000` unchanged, and a collection just
+before the denial still left 3.999 GB (with the 4 GB limit) or 15.999 GB
+(with 16 GB) charged. The denials came from string concatenation (`+`).
+Every accounted rope was charged 32 bytes per unit of its whole length for
+its possible flattened copy, for as long as it lived. An append chain
+(`s = s + piece`) keeps every earlier rope alive through the last one, so
+it was charged quadratically in its length while holding linear memory.
+
+A limit above 4 GiB did not fail earlier in the build: it failed later.
+With 16 GB, `add-properties!` peaked at about 8 GB charged and passed, and
+the build stopped at the next string-building macro in compilation order,
+instaparse's `precompile-cljs-grammar` (`abnf.cljc:129:21`), which needed
+more than 16 GB charged (59.11 s into the build in light-cljs-613's runs,
+against 40.45 s for the 4 GB stop). Collections ran at the same points in
+both builds until `add-properties!`.
+
+The engine now charges a rope its node and, as a credit, one flattened copy
+at two bytes per unit while a string value of the rope remains. The copy
+takes the credit when it is made, and the release of the rope's last string
+value returns the credit, since a rope that only later ropes refer to can
+never be flattened by itself (`crates/big-boy-pants-js/docs/architecture.md`,
+"Byte accounting"). A retained append chain is charged its ropes, its
+pieces and one copy. The library-free
+`a_macro_appending_to_a_long_string_fits_the_default_memory_limit` (5,000
+appends of 32 units in a macro, which needed about 13 GB of the default 64
+MiB before) and the engine's `a_retained_append_chain_is_charged_linearly`
+and `a_linked_rope_keeps_its_flat_credit_until_its_last_handle_drops` fail
+with the old charge. `app.render` on the Pants build is as fast as before
+(three alternating one-thread runs each: 8.67-8.99 s with the change,
+8.67-8.91 s without).
+
+Penpot, from release builds of this change on `c1eb6c79` (light-cljs-613's
+branch), with the five read-only roots, every budget above and
+`--source-map --source-map-include-sources`, at load average 7-11 with peer
+builds running:
+
+| Build | Entry | Threads | Wall | User CPU | Peak memory | Result |
+|---|---|---|---|---|---|---|
+| Pants | app.render | 1 | 8.68 s | 8.12 s | 488,243,200 | builds |
+| Pants | app.render | 4 | 7.09 s | 11.47 s | 617,594,880 | builds |
+| V8 | app.render | 1 | 2.48 s | 2.83 s | 517,537,792 | builds |
+| V8 | app.render | 4 | 1.66 s | 4.04 s | 741,703,680 | builds |
+| Pants | app.main | 1 | 87.43 s | 86.10 s | 985,890,816 | stops (below) |
+| Pants | app.main | 4 | 98.02 s | 112.22 s | 1,202,176,000 | stops (below) |
+| V8 | app.main | 1 | 13.31 s | 15.48 s | 1,136,885,760 | builds |
+| V8 | app.main | 4 | 8.21 s | 19.12 s | 1,421,475,840 | builds |
+
+All four `app.render` outputs are byte-identical, SHA-256 `d67471d1…38caff056`
+as before, and so are their source maps (written from output directories at
+the same depth). `app.main` passes `add-properties!` and stops at 1 and 4
+threads, with the 4 GB limit and with 16 GB (72.37 s, 999,620,608 bytes at
+1 thread), at a missing core function, light-cljs-633:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro expansion: while expanding precompile-cljs-grammar: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro instaparse.abnf/precompile-cljs-grammar: big-boy-pants-js: Error: unsupported operation: native macro runtime core.fnext; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:104:1 (bytes 5039..5064)
+```
+
+On macOS arm64 with Homebrew Rust/Cargo 1.99.1, Node 24.22.1, the read-only
+ClojureScript pin `a5e94c98` and `LIGHT_CLJS_STRESS_SEEDS=4`, on `c1eb6c79`:
+Pants-only `bbp_macros` 273 (one existing ignored case), Pants plus QuickJS
+reference and V8 plus Pants 275 each; the Pants build's full suite (`-j 8`)
+runs 2,143 tests, 1,966 pass, 176 fail and one times out, every one in
+light-cljs-619's list (the timeout,
+`limits_crossed_between_bodies_and_a_later_top_level_pass_fail_alike_in_every_cache_mode`,
+passes alone in 585.6 s); the engine's suite (all targets) 2,231 and its
+doctests. The V8 build compiles neither the engine nor `tests/bbp_macros.rs`,
+so its suite and output are unchanged. Formatting passes; engine Clippy shows
+only the nine baseline diagnostics; Pants plus QuickJS Clippy passes allowing
+the three engine baseline categories, and Pants-only Clippy shows only the
+three existing test diagnostics.
