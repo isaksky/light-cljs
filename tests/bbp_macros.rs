@@ -11736,6 +11736,66 @@ fn native_namespace_frontier_counts_completed_lazy_realizations() {
     }
 }
 
+/// The same with the later unit still running (light-cljs-601): held,
+/// `app/h` starts only once `app/g` has finished realizing `m/shared-lazy`
+/// (creating `made.lent`) and then parked inside `m/cold-val`'s
+/// initializer for its lane. `app/h` reads the completed sequence without
+/// waiting; with one slot it realizes it, so `app/k`, between them, finds
+/// `made.lent`.
+const NAMESPACE_FRONTIER_COMPLETED: &[(&str, &str)] = &[
+    (
+        "m.cljs",
+        r#"(ns m)
+(def cold-val (mapv ns-name (all-ns)))
+(def shared-lazy (lazy-seq (create-ns 'made.lent) (list 1)))
+(defmacro pre [] (some? shared-lazy))
+(defmacro force-it [] (list 'quote (vec shared-lazy)))
+(defmacro force-then-cold [] (list 'quote [(vec shared-lazy) cold-val]))
+(defmacro has [s] (boolean (find-ns s)))"#,
+    ),
+    (
+        "app.cljs",
+        r#"(ns app (:require [m :refer [pre force-it force-then-cold has]]))
+(def a (pre))
+(def h (force-it))
+(def k (has made.lent))
+(def g (force-then-cold))"#,
+    ),
+    (
+        "main.cljs",
+        "(ns main (:require [app])) (js/console.log (pr-str [app/a app/h app/k app/g]))",
+    ),
+];
+
+#[test]
+fn native_namespace_completed_lazy_frontier_matches_reference() {
+    let root = temp_dir::TempDir::new("native-namespace-frontier-completed");
+    for (file, source) in NAMESPACE_FRONTIER_COMPLETED {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let variants: &[(usize, u64, &str)] = &[
+        (1, 1, ""),
+        (2, 1, ""),
+        (4, 2, ""),
+        (8, 3, ""),
+        (8, 19, "held"),
+        (8, 20, "held"),
+        (8, 21, "held"),
+        (8, 22, "held"),
+    ];
+    let expected = "[true [1] true [[1] [cljs.user cljs.core m app made.lent]]]\n";
+    for &(jobs, seed, mode) in variants {
+        let build = |native| frontier_program(root.path(), native, jobs, seed, mode, "app/h");
+        let native = build(true).0;
+        assert_eq!(program_output(&native), expected, "jobs {jobs} {mode}");
+        #[cfg(feature = "quickjs")]
+        assert!(
+            native == build(false).0,
+            "QuickJS reference, jobs {jobs} {mode}"
+        );
+    }
+}
+
 /// Build `files`' namespace `main` natively (or with the QuickJS reference)
 /// at `jobs` threads, natively under `seed`'s scheduling with one-job
 /// batches, fixed workers, delayed starts or `held` units (`settled`: held

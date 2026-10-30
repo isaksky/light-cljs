@@ -1546,7 +1546,9 @@ under seeded scheduling, fixed workers, delayed starts and held units,
 including a namespace a shared lazy realization creates before an earlier unit
 waits for that realization;
 `native_namespace_frontier_counts_completed_lazy_realizations` holds the
-earlier unit until the later one has finished the realization.
+earlier unit until the later one has finished the realization, and
+`native_namespace_completed_lazy_frontier_matches_reference` until the later
+one, having finished it, parks inside an initializer for its lane.
 
 Ordinary source helpers are compiled on demand. A macro parks at a dependency
 read while the compiler analyzes the helper using separate task state on the
