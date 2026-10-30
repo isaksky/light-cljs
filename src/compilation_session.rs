@@ -716,11 +716,47 @@ impl SharedCatalog {
                 Some("set!" | "binding" | "with-redefs")
             )
         };
+        // The forms the reader reads: those the roots reach, through only
+        // the branch of a reader conditional that `select_cljs` selects, in
+        // a tree it has not selected yet. A discarded `#_` form is in no
+        // parent's children, and the arena keeps inactive branches after
+        // selection; neither ever runs (light-cljs-587). Quoted and
+        // syntax-quoted forms are read like any other.
+        let live = {
+            let mut seen = vec![false; syntax.nodes.len()];
+            let mut live = Vec::new();
+            let mut pending = syntax.roots.clone();
+            while let Some(id) = pending.pop() {
+                if std::mem::replace(&mut seen[id.0], true) {
+                    continue;
+                }
+                live.push(id);
+                match &syntax.nodes[id.0].kind {
+                    NodeKind::Collection { children, .. } => pending.extend(children),
+                    NodeKind::Prefix { form, .. } | NodeKind::Tagged { form, .. } => {
+                        pending.push(*form);
+                    }
+                    NodeKind::Metadata { metadata, target } => {
+                        pending.extend([*metadata, *target]);
+                    }
+                    NodeKind::NamespacedMap { map, .. } => pending.push(*map),
+                    NodeKind::Conditional { branches, .. } => pending.extend(
+                        crate::compiler_reader::selected_branch(source, syntax, *branches),
+                    ),
+                    NodeKind::Argument {
+                        index: Some(index), ..
+                    } => pending.push(*index),
+                    _ => {}
+                }
+            }
+            live
+        };
+        let nodes = || live.iter().map(|&id| (id, &syntax.nodes[id.0]));
         // Qualified aliases and bare renamed refers can name a core target.
         // Reading symbol pairs conservatively also accepts ordinary data maps;
         // a false positive merely keeps another core read dynamic.
         let mut renamed = HashMap::<&str, Vec<&'static str>>::new();
-        for node in &syntax.nodes {
+        for (_, node) in nodes() {
             if let NodeKind::Collection {
                 kind: CollectionKind::Map,
                 children,
@@ -747,20 +783,18 @@ impl SharedCatalog {
         // A first-class mutation operator can assemble a helper's write with
         // a computed target. Its eventual IR does not exist when earlier
         // macro factories are emitted, so no core binding is proven stable.
-        let mutation_heads: std::collections::HashSet<usize> = syntax
-            .nodes
-            .iter()
-            .filter_map(|node| {
+        let mutation_heads: std::collections::HashSet<usize> = nodes()
+            .filter_map(|(_, node)| {
                 call(node)?
                     .first()
                     .filter(|&&head| mutator(spelling(head)))
                     .map(|head| head.0)
             })
             .collect();
-        if syntax.nodes.iter().enumerate().any(|(index, node)| {
+        if nodes().any(|(id, node)| {
             matches!(node.kind, NodeKind::Symbol)
-                && mutator(spelling(NodeId(index)))
-                && !mutation_heads.contains(&index)
+                && mutator(spelling(id))
+                && !mutation_heads.contains(&id.0)
         }) {
             replaced.extend(
                 crate::CoreFnId::ALL
@@ -849,7 +883,7 @@ impl SharedCatalog {
                 }
             }
         };
-        let sure = syntax.nodes.iter().all(|node| {
+        let sure = nodes().all(|(_, node)| {
             let Some((&head, args)) = call(node).and_then(<[NodeId]>::split_first) else {
                 return true;
             };

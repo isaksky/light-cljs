@@ -526,6 +526,61 @@ fn non_core_places_keep_cached_artifacts() {
     assert_eq!(warm.js, oracle.js);
 }
 
+/// Forms the reader never reads mark no core write on the Pants build, so a
+/// rebuild with nothing changed still hits every namespace: a `:clj` branch
+/// of a reader conditional, whole or spliced, with an unquoted binding
+/// vector, a core `set!` or a mutation operator used as a value, and a
+/// discarded `#_` form (light-cljs-587).
+#[cfg(all(
+    feature = "bbp-macros",
+    not(feature = "v8-macros"),
+    not(feature = "quickjs")
+))]
+#[test]
+fn inactive_cljc_writes_keep_cached_artifacts() {
+    for (file, forms) in [
+        (
+            "main.cljc",
+            "#?(:clj (defmacro b [bs & body] `(binding ~bs ~@body))) (js/console.log 1)",
+        ),
+        (
+            "main.cljc",
+            "#?(:clj (set! cljs.core/even? (fn [_] false)) :cljs (def x 1)) (js/console.log x)",
+        ),
+        (
+            "main.cljc",
+            "(js/console.log #?(:clj set! :default 1) [#?@(:clj [(map binding [])])])",
+        ),
+        (
+            "main.cljs",
+            "#_(set! cljs.core/even? (fn [_] false)) (js/console.log 1)",
+        ),
+    ] {
+        let main = format!("(ns main (:require [macros])) {forms} (js/console.log (macros/check))");
+        let project = Project::new(&[
+            ("util.cljs", "(ns util) (defn probe [] (even? 2))"),
+            (
+                "macros.cljs",
+                "(ns macros (:require [util])) (defmacro check [] (util/probe))",
+            ),
+            (file, &main),
+        ]);
+        let oracle = project.uncached("main");
+        assert_eq!(oracle.run().lines().last(), Some("true"), "{main}");
+        let populated = project.cached("main", &[]);
+        assert_eq!(
+            populated.stat("cache.published"),
+            3,
+            "{main}: {}",
+            populated.stats
+        );
+        let warm = project.cached("main", &[]);
+        assert_eq!(warm.stat("cache.hits"), 3, "{main}: {}", warm.stats);
+        assert!(warm.rows().is_empty(), "{main}: {:?}", warm.rows());
+        assert_eq!(warm.js, oracle.js, "{main}");
+    }
+}
+
 /// Computed mutation symbols leave no lexical core-write hint. Installing the
 /// writer must restore its resolved writes before preparing later factories,
 /// including property/index targets and writes in the artifact's deferred bodies.

@@ -1621,7 +1621,10 @@ persistence remain out of scope.
      may write: the build then looks nothing up, since cached macro code
      may call that function directly, and publishes nothing, since an
      identical rebuild would not look it up either (light-cljs-571). The
-     build finds writes by spelling, in every source before analysis: a
+     build finds writes by spelling, in every source before analysis, in
+     the forms the reader reads: the branch of a reader conditional it
+     selects (`:cljs`, else `:default`), never another branch or a `#_`
+     form (light-cljs-587). A write is a
      `set!`, `binding`, `with-redefs` or `js*` hole whose place names the
      function, in a list or `#(...)`, under metadata, quote or a property
      access (`.-x`, `.`, `..`, `aget`). When the spelling cannot show that a

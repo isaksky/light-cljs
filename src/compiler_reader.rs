@@ -1,6 +1,24 @@
 //! Select CLJC branches structurally, retaining original node locations.
 use crate::{AnalysisError, AnalysisErrorKind, CollectionKind, NodeId, NodeKind, SyntaxTree};
 
+/// Whether a reader conditional's branch with this feature keyword is the
+/// one [`select_cljs`] reads, when no earlier branch was.
+pub(crate) fn selects(feature: &str) -> bool {
+    matches!(feature, ":cljs" | ":default")
+}
+
+/// The form of the branch [`select_cljs`] reads from the reader
+/// conditional whose branch list is `branches`, if any.
+#[cfg(feature = "bbp-macros")]
+pub(crate) fn selected_branch(source: &str, tree: &SyntaxTree, branches: NodeId) -> Option<NodeId> {
+    let NodeKind::Collection { children, .. } = &tree.nodes[branches.0].kind else {
+        return None;
+    };
+    (children.as_chunks::<2>().0.iter())
+        .find(|pair| selects(&source[tree.nodes[pair[0].0].span.clone()]))
+        .map(|pair| pair[1])
+}
+
 pub(crate) fn select_cljs(
     source: &str,
     tree: &mut SyntaxTree,
@@ -105,7 +123,7 @@ pub(crate) fn select_cljs(
                     let mut selected = None;
                     for pair in children.as_chunks::<2>().0.iter() {
                         let feature = &self.source[self.tree.nodes[pair[0].0].span.clone()];
-                        if selected.is_none() && matches!(feature, ":cljs" | ":default") {
+                        if selected.is_none() && selects(feature) {
                             selected = Some(pair[1]);
                         } else {
                             // A branch's leading discards are read under the
