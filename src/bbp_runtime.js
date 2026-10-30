@@ -2264,6 +2264,7 @@ const native = (() => {
     ensureReduced:x=>__rt.cljIsReduced(x)?x:__rt.cljReduced(x),
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
     imul:(a,b)=>multiplyInt(val(a),val(b)),
+    rotateLeft:(x,d)=>(val(x)<<val(d))|(val(x)>>>(32-val(d))),
     notEqual:(...xs)=>!core.equal(...xs),
     name:x=>{if(typeof val(x)==='string')return x;if(__rt.formKind(val(x))==='compiler-literal'||isVar(x))throw new Error("Doesn't support name on this type");if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support name: '+__rt.formName(val(x)));return __rt.formName(val(x));},
     namespace:x=>{if(__rt.formKind(val(x))==='compiler-literal'||isVar(x))throw new Error("Doesn't support namespace on this type");if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support namespace: '+__rt.formName(val(x)));return __rt.formNamespace(val(x));},

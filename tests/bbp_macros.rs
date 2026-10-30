@@ -6134,6 +6134,21 @@ fn native_integer_multiplication_matches_quickjs() {
 }
 
 #[test]
+fn native_integer_rotation_matches_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+      (let [f int-rotate-left seen (js/Array.)
+            x (js* "({valueOf(){~{}.push('value'); return 1;}})" seen)
+            d (js* "({valueOf(){~{}.push('distance'); return 2;}})" seen)
+            n (f x d)]
+        (list 'quote [(int-rotate-left 305419896 8) (f 2147483648 1) (f 1 -1)
+                      (f -1 19) (f 5 32) (f 5 33) (f "1" "2") n (vec seen)])))
+      (js/console.log (pr-str (probe)))"#,
+        "[878082066 1 -2147483648 -1 5 10 4 4 [\"value\" \"distance\" \"distance\" \"value\"]]\n",
+    );
+}
+
+#[test]
 fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
     let root = temp_dir::TempDir::new("mutable-deftype-sharing");
     for (file, source) in [
@@ -6149,7 +6164,8 @@ fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
             (write-cell b v) [old (read-cell b) before (hash b) (= b (Box. v)) (= b (Box. (inc v)))]))))
           (def listeners (atom [(let [b (Box. 10)] (fn [v] (let [old (read-cell b)] (write-cell b v) [old (read-cell b)])))]))
           (def multiply imul)
-          (defmacro probe [v] (list 'quote [(saved v) ((first @listeners) (+ v 10)) (multiply v 5)]))"#,
+          (def rotate int-rotate-left)
+          (defmacro probe [v] (list 'quote [(saved v) ((first @listeners) (+ v 10)) (multiply v 5) (rotate v 3)]))"#,
         ),
         (
             "a.cljs",
@@ -6195,7 +6211,7 @@ fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
     let (reference, _) = build(false, 1, 0);
     assert_eq!(
         program_output(&reference),
-        "[[[0 1 0 1 true false] [10 11] 5] [[1 2 1 2 true false] [11 12] 10]]\n"
+        "[[[0 1 0 1 true false] [10 11] 5 8] [[1 2 1 2 true false] [11 12] 10 16]]\n"
     );
     let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
         .ok()
