@@ -279,7 +279,9 @@ impl Bridge {
         let released = self.release_datums(dead.iter().map(|i| i.retained).collect());
         let removed = dead.len();
         drop(dead);
-        for key in self.unretained.drain() {
+        // Hash-table iteration visits capacity. Reset the candidate table
+        // each pass so a later failed import cannot scan an old large table.
+        for key in std::mem::take(&mut self.unretained) {
             if !self.retained.contains_key(&key) {
                 self.forms.remove(&key);
             }
