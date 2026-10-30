@@ -3801,6 +3801,20 @@ impl<'s> Scope<'s> {
         }
     }
 
+    /// A host Date's intrinsic time value, including NaN for an invalid Date;
+    /// `None` for other values. Reads only internal slots, never JavaScript.
+    pub fn date_time_value(&self, value: Local<'s>) -> Option<f64> {
+        let Value::Object(id) = self.local_value(value) else {
+            return None;
+        };
+        self.heap()
+            .read(id, |object| match object {
+                HeapObject::Plain(object) => object.date_value(),
+                _ => None,
+            })
+            .flatten()
+    }
+
     /// The descriptor tag and payload, without invoking JavaScript or user hooks.
     pub fn form_compiler_literal(
         &self,

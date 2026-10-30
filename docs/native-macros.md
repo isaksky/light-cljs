@@ -317,8 +317,11 @@ Descriptors remain opaque compiler values, rather than an implementation of all
 JavaScript container, Date, UUID and queue operations. Regex core matching obtains
 a task-owned RegExp view. Unquoted regex expressions and `re-pattern` results
 are regex descriptors too (light-cljs-563, below). Unquoted instant expressions
-retain their existing JavaScript evaluation; raw RegExp/Date result export
-remains unsupported.
+retain their existing JavaScript evaluation. Host RegExp results export their
+intrinsic pattern and flags; finite Date results export their intrinsic epoch
+value as an instant. These conversions read internal slots without user getters
+and charge the literal payload to the form conversion limits. Invalid Dates
+are rejected.
 JS containers and regexes retain identity equality and hashing. UUIDs compare
 their lowercase contents, instants their clipped epoch values, and queues their
 elements, with the same hashes as equal sequential collections. Canonical scalar

@@ -46,6 +46,198 @@ fn program_output(js: &str) -> String {
 }
 
 #[test]
+fn native_reader_unscoped_gensyms_skip_input_symbols() {
+    use light_cljs::compiler_data::{Name, Source};
+    let read = |native| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        host.register_compiler_data_reader(Name::new(None, "tag"), "(fn [x] [x (gensym \"r\")])")
+            .unwrap();
+        host.register_compiler_data_reader(Name::new(None, "prefix"), "(fn [_] (gensym \"r1\"))")
+            .unwrap();
+        ["#tag r1", "#tag r3", "#tag ns/r5", "#prefix nil", "#tag r1"]
+            .into_iter()
+            .chain(std::iter::repeat_n("#tag nil", 9))
+            .map(|text| {
+                let form = host
+                    .read_compiler_form(&Source::new("reader.cljs", text))
+                    .unwrap()
+                    .unwrap();
+                format!("{:?}", form.data())
+            })
+            .collect::<Vec<_>>()
+    };
+    let pants = read(true);
+    // r16 was generated with a different prefix. The shared reader counter
+    // reaches it later and must skip that spelling as well as imported names.
+    let expected = [
+        "[r1 r2]",
+        "[r3 r4]",
+        "[ns/r5 r5]",
+        "r16",
+        "[r1 r7]",
+        "[nil r8]",
+        "[nil r9]",
+        "[nil r10]",
+        "[nil r11]",
+        "[nil r12]",
+        "[nil r13]",
+        "[nil r14]",
+        "[nil r15]",
+        "[nil r17]",
+    ];
+    let mut host = MacroHost::new();
+    for (actual, expected) in pants.iter().zip(expected) {
+        let expected = host
+            .read_compiler_form(&Source::new("expected.cljs", expected))
+            .unwrap()
+            .unwrap();
+        assert_eq!(*actual, format!("{:?}", expected.data()));
+    }
+    #[cfg(feature = "quickjs")]
+    assert_eq!(pants, read(false));
+}
+
+#[test]
+fn native_compiler_readers_reject_undefined_results() {
+    use light_cljs::compiler_data::{Name, Source};
+    for body in [
+        "js/undefined",
+        "[1 js/undefined]",
+        "(list 1 js/undefined)",
+        "#{js/undefined}",
+        "{js/undefined 1}",
+        "{:bad js/undefined}",
+        "(with-meta [] {:bad js/undefined})",
+        "(with-meta [] {js/undefined 1})",
+    ] {
+        let read = |native| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            host.register_compiler_data_reader(Name::new(None, "bad"), &format!("(fn [_] {body})"))
+                .unwrap();
+            let source = Source::new("reader.cljs", "  #bad 0");
+            let error = host.read_compiler_form(&source).unwrap_err();
+            assert_eq!(error.span.bytes(), 2..8, "{body}: {error}");
+            assert!(
+                error
+                    .message
+                    .contains("Unsupported macro result undefined at $"),
+                "{body}: {error}"
+            );
+            error.message.lines().next().unwrap().to_owned()
+        };
+        let pants = read(true);
+        #[cfg(feature = "quickjs")]
+        assert_eq!(pants, read(false), "{body}");
+        #[cfg(not(feature = "quickjs"))]
+        let _ = pants;
+    }
+    for native in [true, false] {
+        if !native && !cfg!(feature = "quickjs") {
+            continue;
+        }
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        host.register_compiler_data_reader(Name::new(None, "valid"), "(fn [_] [nil])")
+            .unwrap();
+        let form = host
+            .read_compiler_form(&Source::new("reader.cljs", "#valid 0"))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            form.children()[0].data().kind(),
+            light_cljs::compiler_data::DatumKind::Nil
+        ));
+    }
+}
+
+#[test]
+fn native_compiler_readers_export_dates_like_reference() {
+    use light_cljs::compiler_data::{CompilerLiteralKind, DatumKind, Name, Source};
+    for (body, expected) in [
+        ("(js/Date. 0)", 0.0),
+        ("(js/Date. -1)", -1.0),
+        ("(js/Date. 8640000000000000)", 8640000000000000.0),
+        ("(js/Date. \"2024-01-02T03:04:05.000Z\")", 1704164645000.0),
+        ("#inst \"2024-01-02T03:04:05.000Z\"", 1704164645000.0),
+        (
+            r#"(js* "(()=>{const d=new Date(0); for(const k of ['getTime','valueOf','toISOString']) Object.defineProperty(d,k,{get(){throw new Error('getter called');}}); return d;})()")"#,
+            0.0,
+        ),
+    ] {
+        let read = |native| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            host.register_compiler_data_reader(
+                Name::new(None, "date"),
+                &format!("(fn [_] [{body}])"),
+            )
+            .unwrap();
+            let form = host
+                .read_compiler_form(&Source::new("reader.cljs", "#date 0"))
+                .unwrap_or_else(|error| panic!("{body}: {error}"))
+                .unwrap();
+            let literal = form.children()[0].data();
+            let DatumKind::CompilerLiteral {
+                kind: CompilerLiteralKind::Instant,
+                payload,
+            } = literal.kind()
+            else {
+                panic!("{body}: {literal:?}");
+            };
+            let time = match payload.kind() {
+                DatumKind::Integer(time) => *time as f64,
+                DatumKind::Double(time) => *time,
+                other => panic!("{body}: {other:?}"),
+            };
+            assert_eq!(time, expected, "{body}");
+            time
+        };
+        let pants = read(true);
+        #[cfg(feature = "quickjs")]
+        assert_eq!(pants, read(false), "{body}");
+        #[cfg(not(feature = "quickjs"))]
+        let _ = pants;
+    }
+    for body in ["(js/Date. js/NaN)", "(js/Date. 8640000000000001)"] {
+        let read = |native| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            host.register_compiler_data_reader(
+                Name::new(None, "date"),
+                &format!("(fn [_] [{body}])"),
+            )
+            .unwrap();
+            let error = host
+                .read_compiler_form(&Source::new("reader.cljs", "  #date 0"))
+                .unwrap_err();
+            assert_eq!(error.span.bytes(), 2..9);
+            assert_eq!(
+                error.message.lines().next().unwrap(),
+                "Error: Unsupported macro result invalid instant at $[0]"
+            );
+            error.message.lines().next().unwrap().to_owned()
+        };
+        let pants = read(true);
+        #[cfg(feature = "quickjs")]
+        assert_eq!(pants, read(false));
+        #[cfg(not(feature = "quickjs"))]
+        let _ = pants;
+    }
+}
+
+#[test]
 fn explicit_compiler_readers_keep_definition_and_read_gensyms_apart_from_macros() {
     use light_cljs::compiler_data::Name;
     let root = temp_dir::TempDir::new("native-compiler-readers");

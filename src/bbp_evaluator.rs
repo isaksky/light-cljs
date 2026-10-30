@@ -161,6 +161,12 @@ struct Imported {
     // the same native identity while that raw object remains observable.
     native: Option<WeakHandle>,
 }
+#[derive(Clone, Copy)]
+struct ReaderExportPath<'a> {
+    path: &'a str,
+    // #js payload containers use the host container's diagnostic paths.
+    literal: Option<L>,
+}
 #[derive(Default)]
 struct Bridge {
     control: Option<ExecutionControl>,
@@ -551,6 +557,7 @@ impl Bridge {
         self.environment = Some((data.clone(), s.persist(value)));
         Ok(value)
     }
+    #[cfg(test)]
     fn export<'s>(
         &mut self,
         s: &Scope<'s>,
@@ -558,7 +565,7 @@ impl Bridge {
         depth: usize,
         remaining: &mut usize,
     ) -> Result<Datum, EvalError> {
-        self.export_with_origins(s, v, depth, remaining, &HashMap::new())
+        self.export_with_origins(s, v, depth, remaining, &HashMap::new(), None)
     }
     fn export_with_origins<'s>(
         &mut self,
@@ -567,6 +574,7 @@ impl Bridge {
         depth: usize,
         remaining: &mut usize,
         origins: &HashMap<ScalarKey, ScalarOrigin>,
+        reader: Option<ReaderExportPath<'_>>,
     ) -> Result<Datum, EvalError> {
         self.poll()?;
         if let Some(data) = s
@@ -610,8 +618,24 @@ impl Bridge {
                 .into_iter()
                 .find(|kind| tag == literal_tag(*kind))
                 .ok_or_else(|| error("invalid compiler literal tag"))?;
-                let payload =
-                    self.export_with_origins(s, payload, depth - 1, remaining, origins)?;
+                let path = reader.map(|reader| {
+                    if matches!(kind, L::JsArray | L::JsObject) {
+                        reader.path.to_owned()
+                    } else {
+                        format!("{}.payload", reader.path)
+                    }
+                });
+                let payload = self.export_with_origins(
+                    s,
+                    payload,
+                    depth - 1,
+                    remaining,
+                    origins,
+                    path.as_deref().map(|path| ReaderExportPath {
+                        path,
+                        literal: Some(kind),
+                    }),
+                )?;
                 if kind == L::JsObject {
                     validate_js_object_payload(&payload)?;
                 }
@@ -633,8 +657,41 @@ impl Bridge {
                     s.form_items(v).map_err(error)?
                 };
                 let children = values
-                    .into_iter()
-                    .map(|x| self.export_with_origins(s, x, depth - 1, remaining, origins))
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(i, x)| {
+                        let path = reader.map(|reader| {
+                            if reader.literal == Some(L::JsObject) {
+                                if i % 2 == 0 {
+                                    format!("{}.key", reader.path)
+                                } else {
+                                    let key = s.string(s.form_value(values[i - 1])).unwrap();
+                                    format!("{}.{}", reader.path, key.to_string_lossy())
+                                }
+                            } else if k == FormKind::Map {
+                                format!(
+                                    "{}.{}[{}]",
+                                    reader.path,
+                                    if i % 2 == 0 { "key" } else { "value" },
+                                    i / 2
+                                )
+                            } else {
+                                format!("{}[{i}]", reader.path)
+                            }
+                        });
+                        self.export_with_origins(
+                            s,
+                            x,
+                            depth - 1,
+                            remaining,
+                            origins,
+                            path.as_deref().map(|path| ReaderExportPath {
+                                path,
+                                literal: None,
+                            }),
+                        )
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 D::Collection {
                     kind: match k {
@@ -647,10 +704,40 @@ impl Bridge {
                 }
             }
             None => match s.view(v) {
+                ValueView::Undefined if let Some(reader) = reader => {
+                    return Err(EvalError(format!(
+                        "Error: Unsupported macro result undefined at {}",
+                        reader.path
+                    )));
+                }
                 ValueView::Null | ValueView::Undefined => D::Nil,
                 ValueView::Bool(b) => D::Boolean(b),
                 ValueView::Number(n) => D::Double(n),
                 ValueView::String => D::String(s.string(v).unwrap().code_units().into()),
+                ValueView::Object if let Some(time) = s.date_time_value(v) => {
+                    if !time.is_finite() {
+                        return Err(EvalError(format!(
+                            "Error: Unsupported macro result invalid instant at {}",
+                            reader.map_or("$", |reader| reader.path)
+                        )));
+                    }
+                    let path = reader.map(|reader| format!("{}.payload", reader.path));
+                    let payload = s.primitive(Primitive::Number(time));
+                    D::CompilerLiteral {
+                        kind: L::Instant,
+                        payload: self.export_with_origins(
+                            s,
+                            payload,
+                            depth - 1,
+                            remaining,
+                            origins,
+                            path.as_deref().map(|path| ReaderExportPath {
+                                path,
+                                literal: None,
+                            }),
+                        )?,
+                    }
+                }
                 // A global or sticky regex stays a host RegExp
                 // (light-cljs-563); it exports as the legacy regex literal.
                 ValueView::Object if let Some(text) = s.regexp_export_text(v).map_err(error)? => {
@@ -665,6 +752,10 @@ impl Bridge {
                             depth - 1,
                             remaining,
                             origins,
+                            reader.map(|reader| ReaderExportPath {
+                                path: reader.path,
+                                literal: None,
+                            }),
                         )?,
                     }
                 }
@@ -677,12 +768,17 @@ impl Bridge {
         };
         let mut data = Datum::new(kind);
         if let Some(m) = s.form_meta(v) {
+            let path = reader.map(|reader| format!("{}.meta", reader.path));
             data = data.with_metadata(self.export_with_origins(
                 s,
                 m,
                 depth - 1,
                 remaining,
                 origins,
+                path.as_deref().map(|path| ReaderExportPath {
+                    path,
+                    literal: None,
+                }),
             )?);
         } else if !matches!(data.kind(), D::Keyword(_))
             && let Some(original) = ScalarKey::of(&data).and_then(|key| origins.get(&key))
@@ -3010,6 +3106,7 @@ impl MacroEvaluator for BbpEvaluator {
                     limits.depth,
                     &mut limits.nodes.clone(),
                     &origins,
+                    None,
                 )
             })
         });
@@ -3037,11 +3134,16 @@ impl CompilerEvaluator for BbpEvaluator {
         let value = self.cx()?.values.borrow()[&id.index].clone();
         self.host_scope(|s| {
             self.with_bridge(|bridge| {
-                bridge.export(
+                bridge.export_with_origins(
                     s,
                     s.local(&value).map_err(error)?,
                     limits.depth,
                     &mut limits.nodes.clone(),
+                    &HashMap::new(),
+                    Some(ReaderExportPath {
+                        path: "$",
+                        literal: None,
+                    }),
                 )
             })
         })

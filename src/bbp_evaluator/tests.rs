@@ -3913,3 +3913,61 @@ fn host_regex_exports_obey_conversion_limits() {
         assert!(bridge.export(s, value, 1, &mut 2).is_err(), "depth limit");
     });
 }
+
+#[test]
+fn host_date_exports_obey_conversion_limits_and_intrinsic_branding() {
+    let evaluator = BbpEvaluator::new(Default::default()).unwrap();
+    let value = evaluator.evaluate_unit("rt => new Date(0)").unwrap();
+    let limits = ConversionLimits { nodes: 2, depth: 2 };
+    let datum = evaluator.export_data(value, limits).unwrap();
+    assert!(
+        matches!(datum.kind(), D::CompilerLiteral { kind: L::Instant, payload }
+        if matches!(payload.kind(), D::Double(0.0)))
+    );
+    assert!(
+        evaluator
+            .export_data(value, ConversionLimits { nodes: 1, ..limits })
+            .is_err()
+    );
+    assert!(
+        evaluator
+            .export_data(value, ConversionLimits { depth: 1, ..limits })
+            .is_err()
+    );
+    evaluator.release(value).unwrap();
+    for expression in [
+        "Object.create(Date.prototype)",
+        "new Proxy(new Date(0), {get(){throw new Error('getter called')}})",
+        "({get getTime(){throw new Error('getter called')}})",
+    ] {
+        let value = evaluator
+            .evaluate_unit(&format!("rt => {expression}"))
+            .unwrap();
+        let error = evaluator.export_data(value, limits).unwrap_err();
+        assert!(error.0.contains("non-form value"), "{expression}: {error}");
+        evaluator.release(value).unwrap();
+    }
+}
+
+#[test]
+fn reader_literal_payloads_reject_undefined_at_the_container_path() {
+    let evaluator = BbpEvaluator::new(Default::default()).unwrap();
+    for (body, path) in [
+        ("rt.compilerForms.jsArray([undefined])", "$[0]"),
+        ("rt.compilerForms.jsObject(['bad', undefined])", "$.bad"),
+        (
+            "rt.compilerForms.withMeta(rt.compilerForms.jsArray([]), rt.mapFromArray(['bad', undefined]))",
+            "$.meta.value[0]",
+        ),
+    ] {
+        let value = evaluator.evaluate_unit(&format!("rt => {body}")).unwrap();
+        let error = evaluator
+            .export_data(value, ConversionLimits::default())
+            .unwrap_err();
+        assert_eq!(
+            error.0,
+            format!("Error: Unsupported macro result undefined at {path}")
+        );
+        evaluator.release(value).unwrap();
+    }
+}

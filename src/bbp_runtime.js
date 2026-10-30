@@ -710,9 +710,11 @@ const native = (() => {
     }
     let name;
     if (!gensymNative) {
-      const count=(readerGensymScopes.get(scope)??0)+1;
-      readerGensymScopes.set(scope,count);
-      name=base+(scope===0?'':gensymPrefix)+count;
+      do {
+        const count=(readerGensymScopes.get(scope)??0)+1;
+        readerGensymScopes.set(scope,count);
+        name=base+(scope===0?'':gensymPrefix)+count;
+      } while (scope===0&&!__rt.effect(65531,'a'+name));
     }
     else if (scope !== 0) name = base + (scope===gensymScope?gensymPrefix:__rt.need(scope,6)) + __rt.effect(65531, 'g' + scope);
     else do { name = base + __rt.effect(65531, 'n'); } while (!__rt.effect(65531, 'a' + name));
