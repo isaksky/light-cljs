@@ -408,6 +408,32 @@ at one thread. All three application files match byte for byte, with the same
 `484264` for `42 3`, matching the Babashka reference. The Pants output is checked
 again after the realization-accounting and regex-diagnostic rebase.
 
+Rebased onto `4543138b`, after light-cljs-592's protocol values. Suites ran
+at `82354240` on `a62b4371`. The later `4543138b` changes only regex error
+diagnostics, whose 12 `unscoped_core_macros` tests pass in both builds. A root initializer still reads a product of a later bundle
+through the name's earlier definition (592), and a definition group still
+falls back to its prior root generation (619). A protocol value is now a
+function, as in the reference, so a macro returning one reports
+"Unsupported macro result function at $", as the V8 build does; that test
+row expects it now.
+
+| Build | Coverage | Result |
+| --- | --- | --- |
+| V8 build | Full suite | 2153 passed, one known playground workspace failure; 109 skipped |
+| Pants build | Full suite | 2012 passed, 142 failed, all among the 146 in 625; 106 skipped |
+| Pants+QuickJS | Library and `bbp_macros` | All 683 pass; three skipped |
+| V8+Pants | Library and `bbp_macros` | All 727 pass; four skipped |
+
+Four of 625's names now pass. The engine's all-targets suite passes all
+**2224** tests, including the 64 KiB stack checks, and seven doctests. The
+four 4 MiB heap checks pass in the Pants build. The V8 build's results
+are from `31bd3d85`; the later base changes only the engine, which the V8 build
+does not include. The V8 release compiler builds the seed-42 200k fixture
+without cache at one thread. Its output matches the earlier V8 output byte
+for byte (`workload.main.js` SHA-256 `1a75bc87…`). It prints `530807` and
+`484264`, matching the Babashka reference. Formatting, strict V8 Clippy and the
+documented Clippy limitations are unchanged.
+
 ## Core macros on the Pants build (light-cljs-611)
 
 The Pants build expands core macro calls in Rust
