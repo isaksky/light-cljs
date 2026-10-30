@@ -2992,7 +2992,7 @@ globalThis.__lightInstallCompilerProduct=(name,read,bundle)=>{
   const previous=roots.get(name);
   if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);
   else {const slot=__rt.initializerSlot(null,name);__rt.initializerSlotSet(slot,4,true);roots.set(name,slot);}
-  Object.defineProperty(registry(),name,{configurable:true,get:read,set:rootSetter(name)});
+  Object.defineProperty(registry(),name,{configurable:true,get:read});
   if(bundle!==undefined)productReaders.set(read,__rt.vector(bundle,name));
 };
 // Each invocation of this runtime belongs to one VM task. Overlay snapshots
@@ -3016,7 +3016,7 @@ globalThis.__lightRestoreCompilerBinding=(name,saved)=>{
 globalThis.__lightSetCompilerRoot=(name,value)=>{
   lazyResolve(name);
   if(bindingOverlays.has(name))bindingOverlays.set(name,value);
-  else registry()[name]=value;
+  else rootSetter(name)(value);
   return value;
 };
 globalThis.__lightCompilerRootKept=name=>{
@@ -3069,7 +3069,7 @@ globalThis.__lightRegisterUnit=(name,unit,once=false,location='',test=null)=>{
   // a Var reflects (`__lightCompilerVarMetadata`).
   rootTests.set(name,test);
   if(unit!==null)unitSlots.set(unit,slot);
-  Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot),set:rootSetter(name)});return null;
+  Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot)});return null;
 };
 const rootGetter=(name,unit,slot)=>()=>{
   if(unit===null)throw new Error('unavailable definition: '+name);
@@ -3200,13 +3200,16 @@ const rootsProxy=globalThis.__lightCompilerRoots;
 // Declarations executed directly by a macro have no enclosing declaration
 // bundle. Their products are ordinary roots, just as a def executed by that
 // macro is. A bundle temporarily supplies its private product table instead.
-globalThis.__lightCompilerProductTarget=()=>{
+const directProducts={};
+globalThis.__lightCompilerProductTarget=name=>{
     const products=globalThis.__lightCompilerBundleProducts;
     if(products!==undefined)return products;
     // Direct declarations can overwrite any root, so their ordinary object
     // view observes catalog registration order before performing the write.
     if(lazyCatalog!==null)materializeAll();
-    return rootTarget;
+    if(Object.getOwnPropertyDescriptor(directProducts,name)===undefined)
+      Object.defineProperty(directProducts,name,{get:()=>rootTarget[name],set:rootSetter(name)});
+    return directProducts;
 };
 globalThis.__lightCompilerRootReceiver=null;
 // Catalog entries this task applied on first use: the producer counters.
@@ -3329,10 +3332,10 @@ function lazyResolve(name){
     // As `__lightRegisterUnit`: the :test unit Var reflection reads.
     rootTests.set(name,__rt.nth(owner,4));
     if(s.unit!==null)unitSlots.set(s.unit,slot);
-    Object.defineProperty(rootTarget,name,{configurable:true,get:rootGetter(name,s.unit,slot),set:rootSetter(name)});
+    Object.defineProperty(rootTarget,name,{configurable:true,get:rootGetter(name,s.unit,slot)});
   }else{
     const b=lazyBundle(c,s.owner),read=decl.productGetter(b,name);
-    Object.defineProperty(rootTarget,name,{configurable:true,get:read,set:rootSetter(name)});
+    Object.defineProperty(rootTarget,name,{configurable:true,get:read});
     productReaders.set(read,__rt.vector(b,name));
   }
   if(!start.own){
