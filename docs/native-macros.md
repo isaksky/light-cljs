@@ -4415,31 +4415,31 @@ concurrent first uses; `gc_roots`'
 
 ### Penpot progression and next boundary
 
-Fresh Pants-build (native-only) release builds after review round 3
-(`5d3d3162`, on master `4ad6fd92`), the five absolute read-only roots, every
-documented budget and `--compile --esm --optimize none --no-cache --stats`,
-on macOS arm64 with Homebrew Rust/Cargo 1.99.1 and Node 24.22.1, with a peer
-worker active.
+Fresh Pants-build (native-only) release builds after review round 4,
+rebased on master `99d68bf3` (which carries light-cljs-565–570), the five
+absolute read-only roots, every documented budget and `--compile --esm
+--optimize none --no-cache --stats`, on macOS arm64 with Homebrew Rust/Cargo
+1.99.1 and Node 24.22.1, with peer load (load average 6-12).
 
 `app.main` passes the `:regexp` store and **still does not build natively**.
 At jobs 1 and 4 the exact first different failure is:
 
 ```text
-light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro expansion: while expanding precompile-cljs-grammar: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro instaparse.abnf/precompile-cljs-grammar: big-boy-pants-js: Atom(NotShareable): atom operation: cannot publish: value[0].capture(1) is a task-owned object (owned by task#5), which is not shareable (in anonymous at instruction 9 [atom_cas @ byte 23], task#5, world#0) at source 1131:33
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro expansion: while expanding precompile-cljs-grammar: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro instaparse.abnf/precompile-cljs-grammar: big-boy-pants-js: Atom(NotShareable): atom operation: cannot publish: value[0].capture(1) is a task-owned object (owned by task#7), which is not shareable (in anonymous at instruction 9 [atom_cas @ byte 23], task#7, world#0) at source 1252:33
 ```
 
 (`task#1` at jobs 4.) A closure over an instance of a `deftype` with an
 `^:unsynchronized-mutable` field stored in an atom reproduces it: the parser's
 listener closures capture such instances. That is a mutable-type shareability
 question, not a regex one, filed as light-cljs-564. The failing runs take
-104.48 s wall, 100.57 s user and 715,898,880 bytes peak memory at jobs 1, and
-61.32 s wall, 73.33 s user and 914,915,328 bytes at jobs 4. There is no
+116.39 s wall, 112.10 s user and 722,157,568 bytes peak memory at jobs 1, and
+73.64 s wall, 88.54 s user and 941,342,720 bytes at jobs 4. There is no
 Pants-build main output to compare.
 
-`app.render` builds at jobs 1 (14.96 s wall, 14.35 s user, 430,833,664
-bytes) and 4 (10.05 s, 13.11 s user, 513,458,176 bytes). Both
+`app.render` builds at jobs 1 (18.34 s wall, 15.98 s user, 427,540,480
+bytes) and 4 (10.69 s, 14.21 s user, 505,135,104 bytes). Both
 12,680,976-byte outputs match a fresh V8 release build of this branch
-(2.28 s) byte for byte, SHA-256
+(2.59 s) byte for byte, SHA-256
 `d352af3a2bb2d35f1447f3d4fc6592de609dc30e92c3424f7321afc607a8d9a3`.
 
 ### V8 build check
@@ -4452,28 +4452,24 @@ benchmarks/generated-project/generate.bb target/g200k --seed 42 --lines 200k`
 15450 top-level forms), 450 worker namespaces`; the generator is unchanged
 since `5ed076d3`; round 1 measured a different checkout,
 `research/cljs-200k`, which prints `855170`). Five alternating pairs (master
-first) of V8 release builds of master `0ad2514f` (its later commit changes
-only benchmark documents; built from `git archive` in its own target
-directory) and this branch run `release bench --no-cache`, load average
-5.7-6.2 from a peer: median wall time **7.70 s on master and 7.78 s on the
-branch** (ranges 7.53-7.95 and 7.66-7.85 s, within run variation), peak
-memory 1,064-1,097 and 1,070-1,117 MB. All ten outputs keep SHA-256 prefix
-`1a75bc87b26f3121`, and the program prints `484264` for `42 3`.
+first) of V8 release builds of master `99d68bf3` (built from `git archive` in
+its own target directory) and this branch run `release bench --no-cache` at
+load average 6-12 from peers: median wall time **8.87 s on master and 8.77 s
+on the branch** (ranges 8.69-9.33 and 8.73-8.98 s; the load, not the change,
+sets the level), peak memory 1,074-1,109 and 1,069-1,123 MB. All ten outputs
+keep SHA-256 prefix `1a75bc87b26f3121`, and the program prints `484264` for
+`42 3`.
 
 ### Verification
 
 On macOS arm64 with Homebrew Rust/Cargo 1.99.1, Node 24.22.1 and the read-only
-ClojureScript pin `a5e94c98`, with `LIGHT_CLJS_STRESS_SEEDS=12`, at
-`5d3d3162`: the combined Pants/QuickJS-reference `bbp_macros` passes 178
-tests and Pants-only 176 (one existing ignored stress case each); engine
-all-targets 2,199 tests and the seven doctests. The combined library passes
-367 of 368: `concurrent_initializer_cycle_is_diagnosed_and_wakes_both_consumers`
-(no regex involved) timed out its five-second rendezvous at load average 5-6
-and then passed ten of ten runs alone. Full V8-build nextest
-(`LIGHT_CLJS_V8_CACHE=require`, `-j 8`) at `030a4dc5`, whose V8-build sources
-are final, passes 2,133 of 2,134 tests, failing only the existing worktree
-`playground_crate_checks_for_wasm32` diagnostic. Formatting and strict
-V8-build Clippy pass; combined all-target Clippy passes allowing only
-`deprecated`, `clippy::chunks_exact_to_as_chunks` and
-`clippy::byte_char_slices` after `-D warnings`; strict engine Clippy keeps
+ClojureScript pin `a5e94c98`, with `LIGHT_CLJS_STRESS_SEEDS=12`, on the
+rebased tree: the combined Pants/QuickJS-reference library passes 369 tests
+and `bbp_macros` 182, Pants-only `bbp_macros` 180 (one existing ignored
+stress case each); engine all-targets 2,202 tests and the seven doctests;
+full V8-build nextest (`LIGHT_CLJS_V8_CACHE=require`, `-j 8`) 2,133 of 2,134,
+failing only the existing worktree `playground_crate_checks_for_wasm32`
+diagnostic. Formatting and strict V8-build Clippy pass; combined all-target
+Clippy passes allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks`
+and `clippy::byte_char_slices` after `-D warnings`; strict engine Clippy keeps
 only those nine baseline diagnostics.
