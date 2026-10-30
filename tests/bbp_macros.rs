@@ -9488,6 +9488,40 @@ fn native_raw_call_preserves_object_extension_demand_order() {
     );
 }
 
+/// An `Object` extension of a mutable type through an alias has no selector,
+/// so, as in the QuickJS reference, any `Object` demand installs it: one on
+/// the type's own instance, or one on an unrelated receiver (a string, or a
+/// struct of another type). A `default` `Object` extension installs no
+/// member on an instance in either runtime. Raw reads before and after the
+/// demand observe the installation.
+#[test]
+fn native_mutable_object_extension_alias_matches_quickjs() {
+    let declarations = r#"(deftype MA [^:mutable a] Object (f [_] 1))
+           (def ma-alias MA)
+           (extend-type ma-alias Object (f [_] 2))
+           (deftype MC [^:mutable a] Object (h [_] 1))
+           (extend-type default Object (h [_] 2))
+           (deftype S [x])"#;
+    for (row, demand, expected) in [
+        ("alias-own", "(.f a)", "[:alias-own 1 2 2]"),
+        ("alias-string", "(.-length \"xy\")", "[:alias-string 1 2 2]"),
+        ("alias-struct", "(.-x (S. 2))", "[:alias-struct 1 2 2]"),
+        ("default", "(.h c)", "[:default 1 1 1]"),
+    ] {
+        let read = if row == "default" { "h" } else { "f" };
+        assert_native_matches_legacy(
+            &format!(
+                r#"{declarations}
+           (defmacro m []
+             (let [a (MA. 0) c (MC. 0) o (if (= "{read}" "h") c a)]
+               [:{row} (js* "~{{}}.{read}()" o) {demand} (js* "~{{}}.{read}()" o)]))
+           (js/console.log (pr-str (m)))"#
+            ),
+            &format!("{expected}\n"),
+        );
+    }
+}
+
 /// A record's `__meta`, `__extmap` and `__hash` slots override a field of
 /// the same member name (the legacy constructor assigns them last), with
 /// supplied metadata and extension maps, in reads and descriptors.

@@ -464,7 +464,6 @@ const decl = (() => {
   // protocol whose selector matches `x` as the legacy runtime's does (none,
   // default, the value's JavaScript type, or a type the bundle extends for
   // the protocol that `x` belongs to).
-  const selects = (selector, own) => selector === null || selector === '_' || selector === 'object' || selector === own;
   // It reads no host object's properties: a struct's type and a form's kind
   // come from the engine; a mutable type instance's tag only from a caller
   // that has read it already (`hostKey`), as dispatch does.
@@ -482,21 +481,31 @@ const decl = (() => {
     // Once every Object bundle up to the frontier is installed there is
     // nothing to demand, and the receiver is not inspected at all.
     if (!objectBundles.some(({b}) => b.order <= frontier && (b.state !== 2 || !b.active))) return;
-    const s = structOf(x);
-    let ty = __rt.structTypeOf(s);
-    if (ty === null) {
-      if (s === null || typeof s !== 'object' || __rt.formKind(s) !== null || __rt.cljIsAtom(s)) return;
-      // A mutable type's instance carries its type's tag, read only when an
-      // Object bundle names a mutable type; any other host object, whatever
-      // it holds under that name, demands nothing.
-      if (!objectBundles.some(({selector}) => mutableSelectors.has(selector))) return;
-      ty = s.__lightNativeType;
-      if (!views.get(ty)?.mutable) return;
-    } else declare(s);
-    const own = '@' + __rt.formName(ty);
+    // As the legacy demand does for every receiver, a bundle with no
+    // selector (an alias or other unnamed target), `default` or the
+    // receiver's JavaScript type is installed whatever the receiver is.
+    // Only a `@type` selector needs the receiver's own type, found on first
+    // need: a struct's (or the struct an object inherits from), or a
+    // mutable type instance's tag, read only for a selector naming a
+    // mutable type.
+    const value = __rt.formValue(x);
+    const native = value == null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+    let s, structType;
+    const owns = selector => {
+      if (s === undefined) {
+        s = structOf(x); structType = __rt.structTypeOf(s);
+        if (structType !== null) declare(s);
+      }
+      if (structType !== null) return selector === '@' + __rt.formName(structType);
+      if (!mutableSelectors.has(selector) || s === null || typeof s !== 'object'
+          || __rt.formKind(s) !== null || __rt.cljIsAtom(s)) return false;
+      const ty = s.__lightNativeType;
+      return views.get(ty)?.mutable === true && selector === '@' + __rt.formName(ty);
+    };
     for (const {b, selector} of objectBundles) {
       if (b.order > frontier) break;
-      if (selects(selector, own) && !installing.includes(b)) force(b);
+      if (installing.includes(b)) continue;
+      if (selector === null || selector === '_' || selector === native || owns(selector)) force(b);
     }
   };
   // The struct an object inheriting from one (`Object.create`) stands for.

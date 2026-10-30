@@ -4049,10 +4049,15 @@ the legacy demand reads only `constructor`: a struct's type and a form's
 kind come from the engine, the JavaScript type from `typeof` and
 `Array.isArray`. A mutable type instance's `__lightNativeType` tag is read
 only where it can select something: by dispatch when the protocol's table
-extends a mutable type, and by an `Object` demand when a registered
-`Object` bundle names one, and only while some `Object` bundle is still
-uninstalled. Dispatch on a host array a Proxy wraps (which the engine gives
-no key) takes the `array` entry, as legacy `Array.isArray` does.
+extends a mutable type, and by an `Object` demand only to match a
+pending `Object` bundle whose selector names one. An `Object` demand
+installs a bundle with no selector (an alias target), `default` or the
+receiver's JavaScript type whatever the receiver is, a string included, as
+the QuickJS reference does; only `@type` selectors look at the receiver's
+type, and nothing is inspected once every `Object` bundle is installed
+(`native_mutable_object_extension_alias_matches_quickjs`). Dispatch on a
+host array a Proxy wraps (which the engine gives no key) takes the `array`
+entry, as legacy `Array.isArray` does.
 
 `native_member_precedence_table_matches_quickjs` reaches a bundle every
 way against QuickJS: dispatch on another type of a bundle extending
@@ -4224,3 +4229,17 @@ and 7.45–7.67 s), all ten outputs byte-identical. Penpot `app.render`
 from the Pants build at jobs 1 (14.59 s wall, 420,724,736 bytes maximum
 RSS) and jobs 4 (9.85 s, 504,004,608 bytes) is byte-identical to the V8
 build (2.12 s), SHA-256 `d352af3a…a8d9a3`.
+
+#### Review-fix round 4 (2026-10-29)
+
+Round 3 let an `Object` demand on a host object install only bundles whose
+selector names a mutable type, so an `Object` extension of a mutable type
+through an alias (no selector) was never installed, from the instance or
+from any other receiver. `demandObject` now installs a bundle with no
+selector, `default` or the receiver's JavaScript type for every receiver,
+as the QuickJS reference does, and looks at the receiver's type only for a
+`@type` selector. In `native_mutable_object_extension_alias_matches_quickjs`
+the alias rows demanded from the instance and from a string failed before
+the fix; the row demanded from a struct of another type already passed
+(struct receivers matched unnamed selectors), and a `default` `Object`
+extension installs no instance member in either runtime.
