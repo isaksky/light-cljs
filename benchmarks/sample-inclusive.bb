@@ -3,15 +3,17 @@
 ;; `/usr/bin/sample` call tree. A function is counted once per stack, so
 ;; recursion does not inflate it. Names are demangled with c++filt.
 ;;
-;;   bb benchmarks/sample-inclusive.bb SAMPLE.txt [--thread N] [--top N] [--match TEXT]
+;;   bb benchmarks/sample-inclusive.bb SAMPLE.txt [--thread N] [--top N] [--match TEXT] [--under TEXT]
 ;;                                     [--buckets "NAME=TEXT;NAME=TEXT..."]
 ;;
 ;; --thread picks the Nth thread section (0, the main thread, by default);
-;; --match keeps only functions whose demangled name contains TEXT.
+;; --match keeps only functions whose demangled name contains TEXT;
+;; --under counts only samples with a function whose name contains TEXT on
+;; their stack, below it (its subtree).
 ;; --buckets instead splits the thread's samples into disjoint buckets: each
 ;; sample goes to the bucket of the innermost function on its stack whose
 ;; demangled name contains that bucket's TEXT (the first such bucket listed),
-;; or to "other".
+;; or to "other". "@FILE" reads the bucket list from FILE.
 (require '[clojure.string :as str]
          '[babashka.process :as p])
 
@@ -20,7 +22,8 @@
       thread (parse-long (get opts "--thread" "0"))
       top (parse-long (get opts "--top" "40"))
       needle (get opts "--match")
-      buckets (some->> (get opts "--buckets") (re-seq #"([^=;]+)=([^;]+)") (map rest))
+      under (get opts "--under")
+      buckets (some->> (get opts "--buckets") (#(if (str/starts-with? % "@") (str/trim (slurp (subs % 1))) %)) (re-seq #"([^=;]+)=([^;]+)") (map rest))
       lines (->> (str/split-lines (slurp file))
                  (drop-while #(not= "Call graph:" %))
                  rest
@@ -55,13 +58,15 @@
       (if-let [[depth n name] (first nodes)]
         (let [[stack open] (close stack open depth)
               bucket (or (bucket-of name) (:bucket (peek stack)) "other")
+              inside (or (nil? under) (:inside (peek stack))
+                         (str/includes? (demangled name) under))
               stack (if (seq stack)
                       (update-in stack [(dec (count stack)) :children] + n)
                       stack)]
-          (when-not (pos? (get open name 0))
+          (when (and inside (not (pos? (get open name 0))))
             (add inclusive name n))
           (recur (rest nodes)
-                 (conj stack {:depth depth :name name :n n :children 0 :bucket bucket})
+                 (conj stack {:depth depth :name name :n n :children 0 :bucket bucket :inside inside})
                  (update open name (fnil inc 0))))
         (close stack open -1))))
   (println (format "thread %d: %d samples" thread total))
@@ -70,7 +75,7 @@
         (doseq [[b n] (sort-by val > (into {} self))]
           (println (format "%.1f\t%d\t%s" (* 100.0 (/ n total)) n b))))
     (let [rows (->> raw
-                    (map (fn [r] [(demangled r) (get inclusive r) (get self r 0)]))
+                    (keep (fn [r] (when-let [i (get inclusive r)] [(demangled r) i (get self r 0)])))
                     (filter (fn [[nice]] (or (nil? needle) (str/includes? nice needle))))
                     (sort-by second >)
                     (take top))]

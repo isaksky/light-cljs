@@ -1588,6 +1588,275 @@ active: load is 5.28/3.32/2.99 before/after the chain, then
 5.28/3.32/2.99 → 5.93/3.63/3.11 for 200k. These profiling runs are excluded
 from the timing/RSS tables.
 
+### Where the one-thread Pants build spends its time (light-cljs-575, October 29, 2026)
+
+**Summary.** On one thread the Pants build was 4.6x slower than the V8 build
+at 200k lines and 10.9x slower at 800k, because two pieces of bookkeeping
+cost more the longer the build has run, so their total grows with the square
+of the program. Neither is JavaScript the macros asked for.
+
+1. *Rereading the task's whole history after every step.* After each slice
+   of JavaScript, the build copied the list of everything the running task
+   had ever waited for and handed all of it to the dependency graph again.
+   The main thread's task lives for the whole build and adds an entry per
+   command, so the list reaches 147k entries at 200k; the build copied 10.7
+   billion entries at 200k and 172 billion at 800k. It was 41% of the
+   main thread at 200k and 54% at 800k. Fixed here: the build now hands
+   over only the entries added since the last step. **200k: 39.8 s to
+   22.7 s (-43%); 800k: 529 s to 223 s (-58%)**, same output.
+2. *Setting up each helper producer from scratch.* When a macro first needs
+   a helper function, the build starts a fresh task to produce it, and that
+   task applies every compile-time definition registered so far, one by one.
+   Helpers grow with the program (57, 113 and 226 at 200k, 400k and 800k)
+   and so does the list each one applies (about 11k, 22k and 44k entries),
+   so this setup takes 9.2 s, 37.5 s and 144 s: 40%, 51% and 66% of the
+   build after fix 1. Filed as light-cljs-590.
+
+With fix 1 the Pants build is 2.6x slower than the V8 build at 200k and
+4.6x at 800k. Subtracting cause 2 leaves about 13.5 s, 28.5 s and 79 s:
+1.6x the V8 build at 200k and 800k, growing 5.9x for 4x the code against the
+V8 build's 5.6x on the same machine. The other suspects are small or
+linear: a larger macro memory limit changes nothing at 800k, the `&env` cache
+and the prune walk together cost about 2% of the build (the prune walk grows
+faster than the program and is filed as light-cljs-591), and on one thread
+the main thread almost never waits.
+
+#### Method
+
+Release binaries of this branch (thin LTO, one codegen unit), Pants build
+`--no-default-features --features bbp-macros` and V8 build (default
+features, `LIGHT_CLJS_V8_CACHE=require`), built with `CARGO_BUILD_JOBS=4`:
+`pants-a` at `28fc6eb0` (the counters, before the fix), `pants-b` at
+`bc10c1aa` (the fix), `pants-c` at `4a5c924a` (adds the catalog and producer
+counters; same code paths as `pants-b`), `v8-a` at `28fc6eb0` and `v8-base`
+at master `b1ed620d`. The V8 build does not compile the Pants build's
+evaluator or engine, so `v8-a` is also the V8 build of the final commit.
+Projects from `generate.bb --seed 42 --lines 200k|400k|800k` (199,129,
+397,920 and 795,693 nonblank lines; 450, 903 and 1,808 worker namespaces),
+each built with `/usr/bin/time -l BINARY release bench --no-cache --stats
+--jobs 1` (or `--jobs 2`), at the project's 2 GiB macro memory limit unless
+stated. Same machine as above: Apple M3 Ultra (Virtual), 24 logical CPUs,
+32 GiB, macOS 15.7.3, Rust 1.99.1.
+
+The machine was not quiet: four other workers ran builds and test suites.
+Each timed build waited until the 1-minute load average was below 10, and
+the load before it is recorded; the 1-minute loads were 4.4-10.0 for every
+run in the tables except the 400k Pants build before the fix (13.7). Wall
+times here are therefore higher than the October 29 table above (the V8
+build's 200k median is 8.6 s here against 7.0 s there), and pairs were
+alternated (before, after, before, after) so load affects both sides.
+Counters, sample shares and user CPU do not depend on load the way wall
+time does. Every build of a size produced the same JavaScript (SHA-256 of
+the output files, and `node run-light.mjs 42 3` printed the oracle's
+`484264` on the 200k output).
+
+`--stats` now also reports, at one relaxed atomic load per site when off:
+`trace.top-level.engine-ms` and `trace.unit.engine-ms` for the Pants build
+(task commands and form conversions, the counterpart of the V8 build's
+service calls); `native.log.*` (task-log reads and entries copied);
+`native.prune.*` (passes, imports visited and removed, nodes walked, entries
+removed, time); `native.env.*` (hits, misses, full imports, evictions,
+entries and admitted bytes rebuilt, time); `native.catalog.*` and
+`native.producers.*` (catalog registrations applied, helper producer setups
+and their time). Call trees come from `/usr/bin/sample` of the main thread
+(1 ms interval at 200k and 400k, 5 ms at 800k), summed with
+`bb benchmarks/sample-inclusive.bb SAMPLE --top N` (inclusive time per
+function, each function counted once per stack) or `--buckets` (each
+sample given to the innermost listed function on its stack).
+
+#### 1. Where the time goes at 200k, one thread
+
+Elapsed times from `--stats`, seconds, the median run of each binary
+(phases do not overlap; trace stages are exclusive; "engine" is the part
+spent in JavaScript commands and form conversions):
+
+| | Pants build, before | Pants build, after fix 1 | V8 build |
+| --- | ---: | ---: | ---: |
+| Wall | 39.6 | 22.6 | 8.6 |
+| `time.analysis-ms` (top-level passes) | 18.4 | 13.4 | 2.6 |
+| `time.deferred-units-ms` | 18.4 | 6.4 | 3.3 |
+| prepare application + emission | 2.6 | 2.7 | 2.6 |
+| `trace.top-level` (of which engine) | 18.0 (14.5) | 13.0 (9.7) | 2.2 (0.6) |
+| `trace.unit` (of which engine) | 17.7 (15.2) | 5.6 (3.5) | 2.9 (0.5) |
+| release and drain bookkeeping | 1.5 | 1.4 | 0.7 |
+| form conversions (sum of `macro.bridge.*.ns`) | 0.82 | 0.70 | n/a |
+| helper producer setup (`native.producers.setup-ms`, `pants-c`) | 9.2 | 9.2 | n/a |
+| prune walk / `&env` imports | 0.19 / 0.32 | 0.19 / 0.27 | n/a |
+
+The V8 build spends 1.2 s in its engine; the Pants build spent 29.6 s
+before the fix and 13.2 s after. Everything else (Rust analysis, emission,
+preparation) costs about the same in both builds, except that the Pants
+build compiles JavaScript source itself (below).
+
+The same build split by what the main thread was doing (share of its
+samples; each sample counted under the innermost of these functions on its
+stack):
+
+| Work | Before, 200k | After fix 1, 200k | After, 400k | Before, 800k | After, 800k |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| copying the task's history (`Task::dependency_log`) | 29.4% | - | - | 40.6% | - |
+| handing it to the graph again (`BbpEvaluator::run` loop) | 11.7% | 2.3% | 2.0% | 13.5% | 1.6% |
+| interpreting JavaScript (`execute_budgeted`) | 21.8% | 37.1% | 45.4% | 23.9% | 53.7% |
+| Rust analysis (`light_cljs::analyzer`) | 13.1% | 21.0% | 17.5% | 7.3% | 12.9% |
+| compiling JavaScript source on a helper thread | 9.0% | 14.0% | 10.6% | 3.8% | 7.0% |
+| garbage collection | 6.2% | 10.7% | 13.1% | 7.1% | 16.9% |
+| emitting deferred units' JavaScript | 3.1% | 5.1% | 3.6% | 1.1% | 2.5% |
+| preparing the application | 2.4% | 3.9% | 2.8% | 0.8% | 1.9% |
+| form import and export | 1.8% | 3.3% | 2.7% | 0.9% | 1.5% |
+| prune walk | 0.5% | 0.9% | 0.8% | 0.4% | 0.9% |
+| everything else | 1.0% | 1.7% | 1.3% | 0.5% | 0.9% |
+
+Split by which command the time was under instead, applying the catalog of
+compile-time definitions to a task (`use_catalog`) is 29% before the fix
+(it also paid for history copies), 39% after it at 200k, 52% at 400k and 67%
+at 800k: almost all of it in the helper producers' setup.
+
+#### 2. Main-thread call tree
+
+Inclusive share of the main thread's samples (a function counts once per
+stack), the largest terms below `analyze_source`:
+
+| Function | Before, 200k | Before, 800k | After, 200k | After, 800k |
+| --- | ---: | ---: | ---: | ---: |
+| `BbpEvaluator::run` (src/bbp_evaluator.rs:1652), the task command loop | 73.0% | 87.3% | 56.5% | 75.5% |
+| `MacroHost::expand_javascript` (src/macro_host.rs:1031), macro expansion | 44.8% | 54.3% | 47.9% | 72.0% |
+| `CompilationSession::analyze_in` (src/compilation_session.rs:2608), deferred units | 44.7% | 46.8% | 26.7% | 13.5% |
+| `Task::dependency_log` (crates/big-boy-pants-js/src/task.rs:797), called after every step at src/bbp_evaluator.rs:1664 before the fix | 29.4% | 40.6% | - | - |
+| `BbpEvaluator::use_catalog` (src/bbp_evaluator/catalog.rs:141), applying the catalog | 29.1% | 36.9% | 39.2% | 67.1% |
+| `execute_budgeted` (crates/big-boy-pants-js/src/vm/dispatch.rs:3847), the interpreter | 25.7% | 26.1% | 43.5% | 57.0% |
+| `Heap::mark_and_sweep` (crates/big-boy-pants-js/src/heap/gc.rs:1337) | 6.1% | 6.9% | 10.4% | 16.5% |
+
+The history copy is `_platform_memmove` under `Task::dependency_log`
+(28.9% self time at 200k); the graph hand-off is the hashing in
+`BbpEvaluator::run`'s own loop (9.2% self time). After the fix, catalog
+application is the largest term, called from `spawn_producer`
+(src/bbp_evaluator.rs:2065).
+
+#### 3. What grows faster than the program
+
+Counters from `--stats`, one thread (before the fix from `pants-a`; the
+catalog and producer rows from `pants-c`):
+
+| | 200k | 400k | 800k | 800k / 200k |
+| --- | ---: | ---: | ---: | ---: |
+| deferred units | 13,477 | 26,918 | 53,957 | 4.0x |
+| macro calls | 94,592 | 188,634 | 378,359 | 4.0x |
+| task steps | 160,854 | 350,967 | 812,069 | 5.0x |
+| task-history entries copied, before the fix | 10.7 billion | 43.4 billion | 172.4 billion | **16.1x** |
+| task-history entries copied, after | 146,653 | 295,182 | 588,285 | 4.0x |
+| helper producers set up | 57 | 113 | 226 | 4.0x |
+| catalog entries they applied | 626,196 | 2,461,654 | 9,871,407 | **15.8x** |
+| their setup time | 9.2 s | 37.5 s | 143.9 s | **15.7x** |
+| bytes the engine allocated | 8.4 GB | 29.7 GB | 112.3 GB | **13.4x** |
+| collections | 116 | 188 | 339 | 2.9x |
+| peak managed heap | 0.51 GB | 1.07 GB | 1.71 GB | 3.4x |
+| prune walk: passes | 105 | 169 | 293 | 2.8x |
+| prune walk: nodes walked | 1.04 M | 3.27 M | 12.04 M | **11.6x** |
+| prune walk: time | 0.19 s | 0.56 s | 2.0 s | **10.5x** |
+| `&env` imports (all misses) | 5,225 | 10,648 | 21,036 | 4.0x |
+| `&env` bytes rebuilt | 0.22 GB | 0.48 GB | 1.12 GB | 5.1x |
+| `&env` time | 0.3 s | 0.8 s | 2.2 s | 7x |
+| drain bookkeeping, Pants / V8 | 0.9 / 0.5 s | 2.0 / 1.2 s | 4.8 / 3.1 s | 5.3x / 6.6x |
+
+Operation counts grow with the program; the costs per operation that grow
+with it are the history copy (entries per step: 67k, 124k, 212k), the catalog
+each new producer applies (11k, 22k, 44k entries per producer) and the prune
+walk (nodes per pass: 9.9k, 19.4k, 41.1k). Allocation follows the producer
+setups. Per catalog entry the setup costs about 15 µs at every size, so the
+growth is in how many entries are applied, not in their unit cost. Drain
+bookkeeping grows a little faster than the program in both builds: it is
+shared Rust work, not part of the Pants build's gap.
+
+Wall times, one thread (median of 3 at 200k with range, 1 run at 400k,
+median of 2 at 800k with range; load as noted under Method):
+
+| | 200k | 400k | 800k | 800k / 200k |
+| --- | ---: | ---: | ---: | ---: |
+| Pants build, before | 39.8 s [39.6-41.4] | 138.5 s (load 13.7) | 529.0 s [517.1-541.0] | 13.3x |
+| Pants build, after fix 1 | 22.7 s [22.3-22.9] | 66.0 s | 223.3 s [217.8-228.8] | 9.8x |
+| V8 build | 8.6 s [7.9-8.9] | 20.4 s | 48.4 s (one run) | 5.6x |
+| Slowdown vs V8, before / after | 4.6x / 2.6x | 6.8x / 3.2x | 10.9x / 4.6x | |
+
+#### 4. The prune walk and the `&env` cache
+
+*Prune walk.* After each garbage collection the next form import walks every
+form the bridge still remembers. It ran 105, 169 and 293 times and walked
+1.0, 3.3 and 12.0 million nodes, taking 0.19, 0.56 and 2.0 s: quadratic, as
+hypothesized, because both the passes and the remembered forms grow with
+the program. It is 0.5-0.9% of the main thread at every size, so it is not
+what makes the build slow today, but it grows faster than the program and
+would matter once the larger terms are gone. It holds the build-wide bridge
+lock while it walks. Filed as light-cljs-591.
+
+*`&env` cache.* Every `&env` import missed (0 hits; 5,225, 10,648 and
+21,036 misses, each replacing the one cached envelope); each rebuilt about
+5.5 entries and 42-53 KB. The cost is small: 0.3, 0.8 and 2.2 s (about 1% of
+the build after fix 1). The single slot does not churn between two
+environments on one thread; each macro call simply brings a new one.
+
+#### 5. Why one thread used more CPU than two
+
+At 200k before the fix, one thread used 37.6 s of user CPU (median) and two
+threads 32.1 s: 5.5 s exist only on the one-thread path. The history copy
+explains it: one thread copied 10.7 billion entries, two threads 4.3
+billion, because on one thread the main thread's task runs every deferred
+unit and its history grows longest. After the fix, one thread uses 21.5 s
+and two threads 24.7 s (the second thread's own overhead): the one-thread
+excess is gone. (One two-thread run each, at 1-minute loads 9.9 and 9.5.)
+
+#### 6. Garbage collection at 800k
+
+With an 8 GiB macro memory limit instead of 2 GiB, the 800k Pants build
+(after fix 1) took 213.6 s against 217.8 and 228.8 s, ran 318 collections
+instead of 339, and peaked at 2.28 GB of managed heap instead of 1.71 GB.
+The build is not collecting because it is near the limit: hypothesis 3 is
+ruled out. Collection does grow (10.7%, 13.1% and 16.9% of the main thread
+after the fix) because allocation grows with the producer setups; fixing
+cause 2 should take most of it. The engine's own pause counter
+(`macro.gc.*.pause-total-ns`) reads 0.1-0.7 s where samples put 2.4 s at 200k
+before the fix and 39 s at 800k in collection: it does not cover all of a
+collection's work, so use samples, not that counter, for collection time.
+
+#### 7. Computation against waiting on one thread
+
+On one thread the main thread computes almost all the time. Process CPU
+(user + system) equals wall time within 1-2 s at every size. In the samples,
+the only blocked stacks are joins on a short-lived thread that compiles
+JavaScript source with a larger stack (9% of the main thread before the
+fix, 14% after, at 200k), during which that thread computes; there are no
+lock waits, and the trace reports zero drain and top-level waits. So the
+coordinator's 18 s of `time.analysis-ms` before the fix (13 s after) is
+computation: the serial path itself, not waiting, is what to shorten on one
+thread. Light-cljs-573 does the same separation at more threads.
+
+The other hypotheses: eager per-unit preparation (hypothesis 4) is 3-5% of
+the main thread and grows with the program (`trace.release-ms` 0.6, 1.2 and
+2.6 s); namespace-registration replay (hypothesis 5) replays only 114, 226
+and 452 standalone registrations in total, but the catalog part of the same
+producer setup is cause 2; the one-thread held-unit path (hypothesis 6)
+does not appear in the samples. Compiling JavaScript source on a fresh
+thread per factory or `eval` (about 1,470 threads at 200k) is 9-14% of the main
+thread and linear.
+
+#### Causality check
+
+Fix 1 is the intervention: `Task::dependency_edges_since`
+(crates/big-boy-pants-js/src/task.rs:809) returns only the entries after a
+count the task context keeps (src/bbp_evaluator.rs:1730). The graph keeps
+every use it was given, so it records the same uses in the same order.
+Measured on the complete build, alternating before and after:
+
+| Size | Before | After | Change | User CPU before / after | Loads before each run (1 min) |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 200k | 39.8 s [39.6-41.4] | 22.7 s [22.3-22.9] | -43% | 37.6 / 21.5 s | 9.5, 7.6, 6.6 / 7.6, 6.9, 6.7 |
+| 800k | 529.0 s [517.1-541.0] | 223.3 s [217.8-228.8] | -58% | 484.5 / 214.9 s | 8.3, 6.5 / 10.0, 9.8 |
+
+The history-copy share of the samples drops from 41% to 2%, and task-history
+entries copied from 10.7 billion to 146,653 at 200k. Output is identical at
+every size. The V8 build is unchanged: `v8-base` against `v8-a`, six
+alternating 200k builds each, 8.74 s [8.16-8.93] against 8.61 s
+[7.94-8.90], identical output.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
