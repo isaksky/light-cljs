@@ -240,31 +240,58 @@ impl ReclamationQueue {
     }
 }
 
-type ReclamationWatch = (ObjectIdentity, Weak<ReclamationEvents>);
+type ReclamationWatch = (Weak<ReclamationEvents>, usize);
 
 #[derive(Debug, Default)]
 pub(super) struct ReclamationRegistry {
-    objects: std::collections::HashMap<
-        ObjectId,
-        std::collections::HashMap<(usize, usize), ReclamationWatch, super::gc::IdentityBuild>,
-        super::gc::IdentityBuild,
-    >,
+    // Every watched identity belongs to this heap; keep one reference to it
+    // instead of one per watch.
+    heap: Weak<Heap>,
+    // One bit per object slot with a pending watch. Sweep visits slots in
+    // order, so testing this bit is far cheaper than a hash probe for each
+    // reclaimed object that nothing watches.
+    slots: Vec<u64>,
+    // Usually one watch per object: keep it in a short list, not a table.
+    objects: std::collections::HashMap<ObjectId, Vec<ReclamationWatch>, super::gc::IdentityBuild>,
 }
 
 impl ReclamationRegistry {
     fn watch(&mut self, identity: ObjectIdentity, queue: &ReclamationQueue, token: usize) {
-        self.objects.entry(identity.object).or_default().insert(
-            (Arc::as_ptr(&queue.0) as usize, token),
-            (identity, Arc::downgrade(&queue.0)),
-        );
+        if self.heap.strong_count() == 0 {
+            self.heap = identity.heap;
+        }
+        let slot = identity.object.slot();
+        if self.slots.len() <= slot / 64 {
+            self.slots.resize(slot / 64 + 1, 0);
+        }
+        self.slots[slot / 64] |= 1 << (slot % 64);
+        let watches = self.objects.entry(identity.object).or_default();
+        let watched = |(events, watched): &ReclamationWatch| {
+            *watched == token && std::ptr::eq(events.as_ptr(), Arc::as_ptr(&queue.0))
+        };
+        if !watches.iter().any(watched) {
+            watches.push((Arc::downgrade(&queue.0), token));
+        }
     }
 
     pub(super) fn reclaimed(&mut self, object: ObjectId) {
-        if let Some(watches) = self.objects.remove(&object) {
-            for ((_, token), (identity, queue)) in watches {
-                if let Some(queue) = queue.upgrade() {
-                    super::lock(&queue).push((identity, token));
-                }
+        let (word, bit) = (object.slot() / 64, 1u64 << (object.slot() % 64));
+        match self.slots.get_mut(word) {
+            Some(bits) if *bits & bit != 0 => *bits &= !bit,
+            _ => return,
+        }
+        // A slot's watches all name its current occupant: the bit is cleared
+        // when that occupant is swept, before the slot can be reused.
+        let Some(watches) = self.objects.remove(&object) else {
+            return;
+        };
+        for (queue, token) in watches {
+            if let Some(queue) = queue.upgrade() {
+                let identity = ObjectIdentity {
+                    heap: self.heap.clone(),
+                    object,
+                };
+                super::lock(&queue).push((identity, token));
             }
         }
     }
