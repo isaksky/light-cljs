@@ -2064,3 +2064,59 @@ byte-identical: the 3,456,905-byte JavaScript has SHA-256
 the 12,049-byte chunk manifest has SHA-256
 `02523f07c6e3773d2f689bb59093464f0193c285543b8ed0fbd24bd1653c203f`.
 `node run-light.mjs 42 3` prints `484264`.
+
+### Reader compatibility follow-up
+
+The review fixes restore unscoped reader gensym reservations, reject JavaScript
+`undefined` recursively at the reader export boundary, and export finite Date
+results as instants through their intrinsic time values. Reader reservations
+and import memos remain private to their task, sharing the runtime's executable
+code, aggregate control and memory budget. A previously compiled namespace's
+symbols therefore do not change a reader's unscoped names.
+
+The three regressions in `bbp_macros` fail before their fixes and compare the
+Pants build with the QuickJS reference afterward:
+`native_reader_unscoped_gensyms_skip_input_symbols`,
+`native_compiler_readers_reject_undefined_results`, and
+`native_compiler_readers_export_dates_like_reference`. Coverage includes a
+namespace-warmed runtime, earlier generated spellings, lazy sequences, metadata,
+valid nil, Date constructors and unquoted `#inst`, invalid Dates, throwing
+getters, intrinsic branding and conversion limits. A Date-valued reader's emitted
+application is byte-identical to the QuickJS reference and prints `0` in Node.
+Two evaluator checks also
+cover literal payloads, including unqualified keyword object keys.
+
+Final production code `40cc92c0`, rebased onto `6d669e3d`, was checked with the
+same Mac/toolchain configuration above and `CARGO_BUILD_JOBS=4`:
+
+- The five focused regressions pass in both the Pants-only and combined
+  Pants/QuickJS configurations. The stronger namespace-warmed gensym check also
+  fails before reader-task isolation and passes afterward.
+- After the rebase, combined reader/resource/compiler checks pass **103/103**,
+  library/session/cache checks pass **121/121**, and the selected effect-lane
+  and pool scheduling tests pass **2/2** with one seed. These use three test
+  processes, or one for the scheduling tests.
+- The final Pants cache suites pass **31/32**, including master's added core-write
+  coverage; only `cache_matrix::resolution_and_views` fails, still tracked by
+  **light-cljs-589**. The final V8 cache/reader/namespace subset passes **130/130**,
+  including all **27** V8 cache cases, with eight test processes.
+- The earlier full combined library/`bbp_macros`/compiler run passes **1,810/1,811**;
+  its 12-seed effect-lane test hits nextest's 600-second timeout, then passes
+  alone with the same 12 seeds in **593.99 seconds**. The full V8 run passes
+  **2,135/2,136**, retaining the documented nested-worktree `wasm32` workspace
+  discovery failure. Unchanged full-run results are reused across reader-task
+  isolation and the rebase; the final subsets cover reader isolation, core-write
+  scanning and the equivalent CLJC selector refactor. Engine-package sources
+  have not changed since their full run: all **2,206** tests across 66 binaries
+  and **seven** doc tests pass.
+- Formatting, JavaScript syntax and strict V8 all-target Clippy pass. Strict
+  combined Clippy retains the same eight engine-library diagnostics; engine
+  all-target lint also reports the ninth existing test diagnostic. Both pass
+  allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks` and
+  `clippy::byte_char_slices` after `-D warnings`. Pants library/binary lint passes
+  with those categories isolated. Engine-free library/binary strict lint passes;
+  its all-target check retains the existing evaluator-dependent bench/example
+  compile errors.
+- A fresh final V8 release executable compiles the same 200k fixture with
+  `release bench --no-cache --jobs 1`. `cmp` confirms both output files retain
+  the master baseline bytes and SHA-256 hashes above; Node again prints `484264`.

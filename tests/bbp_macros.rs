@@ -252,6 +252,36 @@ fn native_compiler_readers_export_dates_like_reference() {
         #[cfg(not(feature = "quickjs"))]
         let _ = pants;
     }
+    let root = temp_dir::TempDir::new("reader-date-output");
+    std::fs::write(
+        root.join("main.cljs"),
+        "(ns main) (js/console.log (.getTime #date 0))",
+    )
+    .unwrap();
+    let build = |native| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        host.register_compiler_data_reader(
+            Name::new(None, "date"),
+            "(fn [value] (js/Date. value))",
+        )
+        .unwrap();
+        let program = light_cljs::compiler::analyze_namespace_entry(
+            "main",
+            &[root.path().clone()],
+            &mut host,
+            light_cljs::analyzer::AnalysisOptions::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        emit_js(&program)
+    };
+    let pants = build(true);
+    assert_eq!(program_output(&pants), "0\n");
+    #[cfg(feature = "quickjs")]
+    assert_eq!(pants, build(false));
 }
 
 #[test]
