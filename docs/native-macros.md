@@ -356,7 +356,7 @@ Both programs print `530807` with default arguments and `484264` for `42 3`,
 matching the generated Babashka reference. These are output checks, not
 compiler performance measurements.
 
-The final V8 full suite passes 2147 of 2148 tests, with only the known
+At that tree, the V8 full suite passes 2147 of 2148 tests, with only the known
 `playground_crate_checks_for_wasm32` workspace failure (109 skipped).
 Both mixed builds pass their library and `bbp_macros` suites completely:
 Pants+QuickJS has 659 passes and V8+Pants has 702. The engine's 2217 tests and
@@ -372,6 +372,32 @@ engine Clippy has nine. Allowing only `deprecated`,
 engine check; Pants additionally needs the two existing feature-specific
 unused variables and `execution.rs`'s `unused_enumerate_index` allowance.
 The engine-free check passes allowing only that same enumeration lint.
+
+Review-fix verification at `7be5f2c2`, rebased onto `c92812a9`:
+
+| Build | Coverage | Result |
+| --- | --- | --- |
+| V8 build | Full suite | 2153 passed, one known playground workspace failure; 109 skipped |
+| Pants build | Full suite | 1991 passed, the exact 146 failures in 625; 106 skipped |
+| Pants+QuickJS | Library and `bbp_macros` | All 666 pass; three skipped |
+| V8+Pants | Library and `bbp_macros` | All 710 pass; four skipped |
+
+The full suites use `cargo nextest run --locked --no-fail-fast -j 8`, with
+`--no-default-features --features bbp-macros` for Pants. Mixed builds select
+`--lib --test bbp_macros`, with `--no-default-features --features
+bbp-macros,quickjs` and `--features bbp-macros`, respectively. Builds remain
+serialized with four Cargo build jobs and eight compiler test threads.
+The V8 full result is reused after changes confined to the engine crate and
+Pants-only tests; its compiled paths and inputs are unchanged. All new runtime
+regressions pass against both the QuickJS reference and the V8 build.
+
+The engine's complete all-targets suite passes all **2220** tests, and all
+seven doctests pass, with three test threads. The unchanged 64 KiB record
+comparison regression caught stack growth from the added apply operands;
+dispatching those operations through a separate helper restores the limit.
+Both formatters and strict V8 Clippy pass. Engine, Pants and engine-free strict
+Clippy retain nine, eight and one documented diagnostics, respectively;
+checks allowing only the categories listed above pass on the final content.
 
 ## Core macros on the Pants build (light-cljs-611)
 
