@@ -360,7 +360,8 @@ const decl = (() => {
   // constructor of task-owned JavaScript instances (`view`, unused for a struct type:
   // a struct is its own JavaScript object, see `jsMember`).
   const type = (fields, specs, view, mutable, ty, fieldMembers) => {
-    const record = __rt.formKind(__rt.structNew(ty)) === 'record';
+    const sample = __rt.structNew(ty), record = __rt.formKind(sample) === 'record';
+    const mutableFields = __rt.structState(sample) !== 0;
     const mask0 = record || specs.some(([name, arity]) => arity === 0 && partition0.has(name));
     // Keep one compiler-munged member per declared field: multiple fields
     // may share a member, and property enumeration may reorder names.
@@ -368,12 +369,14 @@ const decl = (() => {
     // do not replace those entries or install JavaScript callable members.
     // `installs` are the later installations into the type (`extend`).
     const ifn = specs.filter(s=>s[0]==='IFn/-invoke').map(s=>[s[1],s[2],s[4]!=null,s[3]??s[2]]);
-    const info = {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), memberFunctions: new Map(), ifn, installs: [], declaring: true, mutable, record, mask0};
+    const info = {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), memberFunctions: new Map(), ifn, installs: [], declaring: true, mutable, mutableFields, record, mask0};
     views.set(ty, info);
     declared = __rt.assoc(declared, ty, true);
     if (mutable) {
       view.__lightNativeType = ty;
       view.prototype.__lightNativeType = ty;
+    }
+    if (mutable || mutableFields) {
       mutableTypes.add(ty);
       mutableSelectors.add('@' + __rt.formName(ty));
     }
@@ -504,7 +507,8 @@ const decl = (() => {
         // Snapshot even a missing tag: getters and Proxy traps run at most
         // once for this demand, regardless of the number of selectors.
         const ty = s.__lightNativeType;
-        mutableSelector = views.get(ty)?.mutable === true ? '@' + __rt.formName(ty) : null;
+        const info = views.get(ty);
+        mutableSelector = info !== undefined && (info.mutable || info.mutableFields) ? '@' + __rt.formName(ty) : null;
       }
       return selector === mutableSelector;
     };
@@ -1016,6 +1020,9 @@ const native = (() => {
     // A Var's `_meta` is its materialized metadata, as the legacy getter's.
     if (isVar(value)) return name === '_meta' ? varMeta(value) : rawVarMembers.get(name) ?? inherited(name);
     if (__rt.structState(value) !== 0) {
+      // A transparent Proxy must classify like the task-owned representation
+      // did. Direct structs use engine type identity without reading this tag.
+      if (name === '__lightNativeType') return __rt.structTypeOf(value);
       const info = decl.structInfo(value), index = info.fieldMembers.lastIndexOf(name);
       if (index >= 0) {
         mutableLane(value);
