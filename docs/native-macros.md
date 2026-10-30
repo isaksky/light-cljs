@@ -4604,3 +4604,56 @@ diagnostic. Formatting and strict V8-build Clippy pass; combined all-target
 Clippy passes allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks`
 and `clippy::byte_char_slices` after `-D warnings`; strict engine Clippy keeps
 only those nine baseline diagnostics.
+
+## Mutable deftype sharing: verification (light-cljs-564, 2026-10-29)
+
+The contract is in "Sharing mutable deftypes (light-cljs-564)" above. The same
+pellet supplies the general `imul`, `int-rotate-left` and bit-operation
+family (`bit-or`, `bit-and`, `bit-xor`, `bit-and-not`, `bit-not`,
+`bit-clear`, `bit-flip`, `bit-set`, `bit-test`, the three shifts and
+`bit-count`) to Pants build macros, the next small gaps of the same Penpot
+macro after the closure store.
+
+Each library-free reduction in `tests/bbp_macros.rs` fails before its fix:
+with master's source, the atom/closure, published-helper, user-protocol,
+rejected-host-store and operand-order reductions stop at the uncatchable
+`Atom(NotShareable)` `value[0].capture(N) is a task-owned object`, and the
+multiplication, rotation and bit-operation reductions at `unsupported
+operation: native macro runtime core.imul` (`core.rotateLeft`,
+`core.bitOr`). The published-helper reduction compares the Pants build with
+the QuickJS reference at 1, 2, 4 and 8 threads under 12 scheduling seeds.
+
+Penpot, from the Pants release build with the five read-only roots and every
+budget above: `app.render` builds at 1 thread (20.64 s wall, 17.51 s user,
+488,013,824 bytes peak memory) and 4 threads (11.49 s, 15.20 s user,
+595,050,496 bytes); both outputs and source maps match the V8 build's (4.23 s)
+byte for byte, SHA-256 `dc03dea8…836d3425` (JavaScript) and
+`996cf5a2…b3db3b07` (map). `app.main` passes the closure store and the integer
+primitives and stops, at 1 and 4 threads, in the same macro at:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro expansion: while expanding precompile-cljs-grammar: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro instaparse.abnf/precompile-cljs-grammar: big-boy-pants-js: Error: unsupported operation: native macro runtime core.satisfies; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:104:1 (bytes 5039..5064)
+```
+
+that is, `satisfies?` on a built-in protocol, light-cljs-592. The failing runs
+take 127.94 s wall, 118.26 s user and 707,969,024 bytes peak memory at 1
+thread, and 71.14 s, 83.26 s user and 934,772,736 bytes at 4 threads.
+
+V8 build: the changes are emitted only for native macro units. Five
+alternating `release bench --no-cache` pairs on the regenerated 200k project
+(master `e8761f9b` first, each built in its own target directory), at load
+average 14-19 from peers: median **8.94 s on master and 8.67 s on the branch**
+(ranges 8.42-9.46 and 8.26-12.26 s, the last one a load spike); all ten
+outputs are identical and the program prints `484264`.
+
+On macOS arm64 with Homebrew Rust/Cargo 1.99.1 and Node 24.22.1, with
+`LIGHT_CLJS_STRESS_SEEDS=12`: the combined Pants/QuickJS-reference build
+passes the library's 369 tests and `bbp_macros`' 192, the Pants-only
+`bbp_macros` 190 (one existing ignored stress case each;
+`native_member_precedence_table_matches_quickjs` hit the wall-clock macro
+deadline once under load and passes alone); engine all-targets 2,208 tests
+and the seven doctests; V8-build nextest (`-j 8`) 2,134 of 2,135, failing
+only the existing worktree `playground_crate_checks_for_wasm32` diagnostic.
+Formatting and strict V8-build Clippy pass, combined Clippy passes allowing
+the three baseline categories, and strict engine Clippy keeps the nine
+baseline diagnostics.
