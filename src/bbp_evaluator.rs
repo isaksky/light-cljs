@@ -185,6 +185,9 @@ struct Bridge {
     caller_gensyms: HashMap<u64, crate::generated_names::NativeGensyms>,
     initializer_namespaces: HashMap<(u64, u64), (u64, bool)>,
     next_namespace: u64,
+    /// The prune walk's and `&env` cache's work, kept only while a trace
+    /// records (`--stats`).
+    counters: crate::compile_stats::NativeBridgeCounters,
 }
 impl Bridge {
     /// Observable native objects keep their full compiler-side Datum tree.
@@ -193,6 +196,10 @@ impl Bridge {
         if self.collected == collected {
             return;
         }
+        let counted = crate::compile_trace::any_recording();
+        let started = counted.then(std::time::Instant::now);
+        let sizes = |b: &Self| b.forms.len() + b.costs.len() + b.native_objects.len();
+        let (visited, before) = (self.imports.len(), sizes(self));
         self.collected = collected;
         self.imports.retain(|_, imported| {
             imported.occurrence.is_live()
@@ -203,7 +210,9 @@ impl Bridge {
         // its occurrence wrapper has died (raw metadata can outlive it).
         let mut reachable = HashSet::new();
         let mut pending: Vec<_> = self.imports.values().map(|i| i.data.clone()).collect();
+        let mut walked = 0usize;
         while let Some(data) = pending.pop() {
+            walked += 1;
             if !reachable.insert(data.identity()) {
                 continue;
             }
@@ -217,6 +226,16 @@ impl Bridge {
         self.costs.retain(|key, _| reachable.contains(key));
         self.native_objects
             .retain(|_, (key, value)| self.imports.contains_key(key) && value.is_live());
+        if let Some(started) = started {
+            let removed = before - sizes(self);
+            let c = &mut self.counters;
+            c.prune_passes += 1;
+            c.prune_imports_visited += visited;
+            c.prune_imports_removed += visited - self.imports.len();
+            c.prune_nodes_walked += walked;
+            c.prune_entries_removed += removed;
+            c.prune_nanos += started.elapsed().as_nanos();
+        }
     }
     fn cached<'s>(&mut self, s: &Scope<'s>, data: &Datum) -> Result<Option<Local<'s>>, EvalError> {
         let Some(imported) = self.imports.get(&data.identity()) else {
@@ -475,19 +494,31 @@ impl Bridge {
         if matches!(data.kind(), D::Nil) {
             return self.import(s, data, limits.depth, &mut limits.nodes.clone());
         }
+        let counted = crate::compile_trace::any_recording();
         if let Some(value) = self.cached(s, data)? {
             self.charge(data, limits.depth, &mut limits.nodes.clone())?;
+            if counted {
+                self.counters.env_hits += 1;
+            }
             return Ok(value);
         }
         let mut remaining = limits.nodes;
         let Some((previous, root)) = self.environment.clone() else {
             let value = self.import(s, data, limits.depth, &mut remaining)?;
             self.environment = Some((data.clone(), s.persist(value)));
+            if counted {
+                self.counters.env_full += 1;
+            }
             return Ok(value);
         };
+        if counted {
+            self.counters.env_misses += 1;
+            self.counters.env_evictions += usize::from(previous.identity() != data.identity());
+        }
         let before = previous.entries().map_err(error)?;
         let after = data.entries().map_err(error)?;
         let mut value = s.form_value(s.local(&root).map_err(error)?);
+        let mut rebuilt = 0;
         // The fixed environment envelope has a handful of keyword slots.
         // Namespace and reader tables are memoized Datum subtrees: their
         // contents are neither walked nor shipped on an unchanged slot.
@@ -495,6 +526,7 @@ impl Bridge {
             if !after.iter().any(|(k, _)| k.value_eq(key)) {
                 let k = self.import(s, key, limits.depth, &mut remaining)?;
                 value = s.form_dissoc(value, k).map_err(error)?;
+                rebuilt += 1;
             }
         }
         for (key, new) in &after {
@@ -507,6 +539,10 @@ impl Bridge {
             let k = self.import(s, key, limits.depth, &mut remaining)?;
             let v = self.import(s, new, limits.depth, &mut remaining)?;
             value = s.form_assoc(value, k, v).map_err(error)?;
+            rebuilt += 1;
+        }
+        if counted {
+            self.counters.env_entries_rebuilt += rebuilt;
         }
         let value = self.retain(s, data, value)?;
         self.charge(data, limits.depth, &mut limits.nodes.clone())?;
@@ -853,6 +889,9 @@ struct NativeCounters {
     lent: AtomicUsize,
     borrowed: AtomicUsize,
     woken: AtomicUsize,
+    log_reads: AtomicUsize,
+    log_edges_copied: AtomicUsize,
+    log_edges_recorded: AtomicUsize,
     #[cfg(test)]
     cleanups: AtomicUsize,
 }
@@ -1223,6 +1262,10 @@ impl BbpRuntime {
             contexts_lent: c.lent.load(Ordering::Relaxed),
             contexts_borrowed: c.borrowed.load(Ordering::Relaxed),
             woken: c.woken.load(Ordering::Relaxed),
+            bridge: self.0.bridge.lock().unwrap().counters,
+            log_reads: c.log_reads.load(Ordering::Relaxed),
+            log_edges_copied: c.log_edges_copied.load(Ordering::Relaxed),
+            log_edges_recorded: c.log_edges_recorded.load(Ordering::Relaxed),
         }
     }
     /// The runtime's one published factory for unit `source`, compiled now
@@ -1678,10 +1721,20 @@ impl BbpEvaluator {
             self.shared.wake_tasks(self.runtime.take_lazy_wakeups());
             {
                 let mut graph = self.shared.0.graph.lock().unwrap();
-                for key in cx.task.dependency_log().edges() {
+                let log = cx.task.dependency_log();
+                let mut recorded = 0;
+                for key in log.edges() {
                     if [BINDING, HELPER, INITIALIZER].contains(&key.kind()) {
                         graph.record_use(cx.task.id(), *key);
+                        recorded += 1;
                     }
+                }
+                if crate::compile_trace::any_recording() {
+                    let c = &self.shared.0.counters;
+                    c.log_reads.fetch_add(1, Ordering::Relaxed);
+                    c.log_edges_copied
+                        .fetch_add(log.edges().len(), Ordering::Relaxed);
+                    c.log_edges_recorded.fetch_add(recorded, Ordering::Relaxed);
                 }
                 graph.withdraw(cx.task.id());
                 if let RunOutcome::Waiting(key) = outcome
@@ -2329,7 +2382,22 @@ impl BbpEvaluator {
             Ok(())
         }
     }
+    /// One command to the task, as engine time of the compile trace: the
+    /// Pants build's counterpart of `v8_evaluator::invoke`. A unit the
+    /// command's JavaScript demands opens its own frame, which pauses it.
     fn request(&self, op: u32, id: ValueId, input: Rooted) -> Result<(), EvalError> {
+        let traced = crate::compile_trace::engine_enter();
+        let result = self.request_untraced(op, id, input);
+        let service = match op {
+            0 => "evaluate",
+            1 => "adopt",
+            2 => "call",
+            _ => "release",
+        };
+        crate::compile_trace::engine_exit(traced, service);
+        result
+    }
+    fn request_untraced(&self, op: u32, id: ValueId, input: Rooted) -> Result<(), EvalError> {
         self.control.check()?;
         let cx = self.cx()?;
         // Built before the boundary is taken: a denied message leaves the
@@ -2393,6 +2461,7 @@ impl BbpEvaluator {
     ) -> Result<ValueId, EvalError> {
         self.control.poll()?;
         let started = std::time::Instant::now();
+        let traced = crate::compile_trace::engine_enter();
         let value = self.host_scope(|s| {
             let collected = self.runtime.heap_stats().collections;
             let v = self.with_bridge(|b| {
@@ -2403,7 +2472,9 @@ impl BbpEvaluator {
                 b.import(s, data, limits.depth, &mut limits.nodes.clone())
             })?;
             Ok::<_, EvalError>(s.persist(v))
-        })?;
+        });
+        crate::compile_trace::engine_exit(traced, "importForm");
+        let value = value?;
         self.note(|s| s.nanos += started.elapsed().as_nanos());
         let id = self.id()?;
         self.request(1, id, value)?;
@@ -2793,14 +2864,26 @@ impl MacroEvaluator for BbpEvaluator {
     ) -> Result<ValueId, EvalError> {
         self.control.poll()?;
         let started = std::time::Instant::now();
+        let traced = crate::compile_trace::engine_enter();
         let value = self.host_scope(|s| {
-            let collected = self.runtime.heap_stats().collections;
+            let heap = self.runtime.heap_stats();
             let v = self.with_bridge(|b| {
-                b.prune(collected);
-                b.environment(s, data, limits)
+                b.prune(heap.collections);
+                let env_started =
+                    crate::compile_trace::any_recording().then(std::time::Instant::now);
+                let value = b.environment(s, data, limits);
+                if let Some(env_started) = env_started {
+                    let admitted = self.runtime.heap_stats().admitted_bytes_total;
+                    b.counters.env_bytes_rebuilt +=
+                        admitted.saturating_sub(heap.admitted_bytes_total);
+                    b.counters.env_nanos += env_started.elapsed().as_nanos();
+                }
+                value
             })?;
             Ok::<_, EvalError>(s.persist(v))
-        })?;
+        });
+        crate::compile_trace::engine_exit(traced, "importEnvironment");
+        let value = value?;
         self.note(|s| s.nanos += started.elapsed().as_nanos());
         let id = self.id()?;
         self.request(1, id, value)?;
@@ -2817,6 +2900,7 @@ impl MacroEvaluator for BbpEvaluator {
         let started = std::time::Instant::now();
         let v = self.cx()?.values.borrow().get(&id.index).unwrap().clone();
         let origins = scalar_origins(call);
+        let traced = crate::compile_trace::engine_enter();
         let data = self.host_scope(|s| {
             self.with_bridge(|b| {
                 b.export_with_origins(
@@ -2827,11 +2911,15 @@ impl MacroEvaluator for BbpEvaluator {
                     &origins,
                 )
             })
-        })?;
-        let result = self.with_bridge(|b| {
-            let result = Form::from_bridge_expansion(data, call, origin, &b.forms);
-            b.compiler_spans(result, &origins)
         });
+        let result = data.map(|data| {
+            self.with_bridge(|b| {
+                let result = Form::from_bridge_expansion(data, call, origin, &b.forms);
+                b.compiler_spans(result, &origins)
+            })
+        });
+        crate::compile_trace::engine_exit(traced, "exportForm");
+        let result = result?;
         self.note(|s| s.nanos += started.elapsed().as_nanos());
         Ok(result)
     }

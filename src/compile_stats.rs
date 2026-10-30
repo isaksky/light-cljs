@@ -77,6 +77,45 @@ pub struct NativeHelperCounts {
     pub contexts_borrowed: usize,
     /// Parked task steps a completion queued on the pool from its wakeups.
     pub woken: usize,
+    /// The bridge's prune walk and `&env` cache, counted only while a
+    /// trace records (`--stats`).
+    pub bridge: NativeBridgeCounters,
+    /// Task steps after which the host read the task's dependency log, the
+    /// edges those reads copied and the edges they handed to the dependency
+    /// graph, counted only while a trace records (`--stats`).
+    pub log_reads: usize,
+    pub log_edges_copied: usize,
+    pub log_edges_recorded: usize,
+}
+
+/// What the Pants build's form bridge did to keep its import memo and its
+/// one `&env` envelope, runtime-wide (`src/bbp_evaluator.rs`, `Bridge`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeBridgeCounters {
+    /// Prune walks: one on the first import after each collection.
+    pub prune_passes: usize,
+    /// Memoized imports the walks examined, and those they dropped.
+    pub prune_imports_visited: usize,
+    pub prune_imports_removed: usize,
+    /// Datum nodes the walks traversed to find what retained imports reach.
+    pub prune_nodes_walked: usize,
+    /// Form, cost and native-object entries the walks dropped.
+    pub prune_entries_removed: usize,
+    pub prune_nanos: u128,
+    /// `&env` imports served by the envelope as it is (the same Datum).
+    pub env_hits: usize,
+    /// `&env` imports that rebuilt the envelope from the previous one, and
+    /// those with no previous envelope (a full import).
+    pub env_misses: usize,
+    pub env_full: usize,
+    /// Rebuilds that replaced a different envelope.
+    pub env_evictions: usize,
+    /// Envelope keys the rebuilds assoc'd or dissoc'd.
+    pub env_entries_rebuilt: usize,
+    /// Bytes the engine admitted during `&env` imports (runtime-wide, so
+    /// exact only on one thread) and the time those imports took.
+    pub env_bytes_rebuilt: usize,
+    pub env_nanos: u128,
 }
 
 /// Aggregate native heap accounting; this is not process RSS.
@@ -660,6 +699,38 @@ impl CompileStats {
             line("native.tasks.lent", &helpers.contexts_lent);
             line("native.tasks.borrowed", &helpers.contexts_borrowed);
             line("native.tasks.woken", &helpers.woken);
+            line("native.log.reads", &helpers.log_reads);
+            line("native.log.edges-copied", &helpers.log_edges_copied);
+            line("native.log.edges-recorded", &helpers.log_edges_recorded);
+            let bridge = &helpers.bridge;
+            line("native.prune.passes", &bridge.prune_passes);
+            line(
+                "native.prune.imports-visited",
+                &bridge.prune_imports_visited,
+            );
+            line(
+                "native.prune.imports-removed",
+                &bridge.prune_imports_removed,
+            );
+            line("native.prune.nodes-walked", &bridge.prune_nodes_walked);
+            line(
+                "native.prune.entries-removed",
+                &bridge.prune_entries_removed,
+            );
+            line(
+                "native.prune.ms",
+                &ms(Duration::from_nanos(bridge.prune_nanos as u64)),
+            );
+            line("native.env.hits", &bridge.env_hits);
+            line("native.env.misses", &bridge.env_misses);
+            line("native.env.full", &bridge.env_full);
+            line("native.env.evictions", &bridge.env_evictions);
+            line("native.env.entries-rebuilt", &bridge.env_entries_rebuilt);
+            line("native.env.bytes-rebuilt", &bridge.env_bytes_rebuilt);
+            line(
+                "native.env.ms",
+                &ms(Duration::from_nanos(bridge.env_nanos as u64)),
+            );
             let lanes = &self.lanes;
             line("native.lanes.entered", &lanes.entered);
             line("native.lanes.waits", &lanes.waits);
