@@ -2619,7 +2619,14 @@ mod doseq_timing {
                 .unwrap();
             let elapsed = start.elapsed();
             let nodes = crate::macro_host::WorkMarks::nodes(&expanded.data());
-            println!("doseq bindings={n} nodes={nodes} time={elapsed:.3?}");
+            // A digest of the expansion, to compare builds' outputs.
+            let digest = {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                format!("{:?}", expanded.data()).hash(&mut hasher);
+                hasher.finish()
+            };
+            println!("doseq bindings={n} nodes={nodes} time={elapsed:.3?} digest={digest:016x}");
         }
     }
 }
