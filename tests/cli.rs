@@ -1487,7 +1487,7 @@ fn stats_reports_peak_rss_parsed_trees_and_queued_unit_ir_at_any_job_count() {
         if jobs == "4" {
             assert!(value("deferred-units.pooled") > 0.0, "{stderr}");
             let isolates = value("pool.worker-isolates");
-            if limit == "67108864" {
+            if limit == "67108864" || !cfg!(any(feature = "quickjs", feature = "v8-macros")) {
                 assert_eq!(isolates, 0.0, "{stderr}");
             } else {
                 assert!(isolates > 0.0, "{stderr}");
@@ -1816,19 +1816,34 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
         // either engine: QuickJS's service calls are timed as V8's are
         // (light-cljs-435).
         let host: Vec<_> = units.iter().map(|row| (row[2], row[11])).collect();
-        assert_eq!(
-            host,
-            [
-                ("app.macros/inner", "0"),
-                ("app.macros/outer", "1"),
-                ("app.macros/bumped", "1"),
-                ("app.macros/native", "0"),
-                ("app.macros/plain", "0"),
-            ],
-            "--jobs {jobs}: {trace}"
-        );
-        assert_eq!(value("trace.units.host"), 2.0);
-        assert_eq!(value("trace.units.without-macro-calls"), 1.0);
+        if cfg!(any(feature = "quickjs", feature = "v8-macros")) {
+            assert_eq!(
+                host,
+                [
+                    ("app.macros/inner", "0"),
+                    ("app.macros/outer", "1"),
+                    ("app.macros/bumped", "1"),
+                    ("app.macros/native", "0"),
+                    ("app.macros/plain", "0"),
+                ],
+                "--jobs {jobs}: {trace}"
+            );
+            assert_eq!(value("trace.units.host"), 2.0);
+            assert_eq!(value("trace.units.without-macro-calls"), 1.0);
+        } else {
+            // Pants also enters the runtime to install catalog views. A
+            // reused task may already have the view, depending on its worker.
+            assert_eq!(unit("app.macros/outer")[11], "1");
+            assert_eq!(unit("app.macros/bumped")[11], "1");
+            assert_eq!(
+                value("trace.units.host"),
+                host.iter().filter(|row| row.1 == "1").count() as f64
+            );
+            assert_eq!(
+                value("trace.units.without-macro-calls"),
+                f64::from(unit("app.macros/plain")[11] == "0")
+            );
+        }
         assert!(value("trace.engine-ms") > 0.0, "{stderr}");
         assert!(value("trace.engine.entries") > 0.0, "{stderr}");
         // The units that run a macro and the top levels that expand
@@ -1945,18 +1960,23 @@ fn stats_file_traces_prepared_and_bundle_root_reads() {
     let row = |unit: &String, kind: &str, demander: &str| {
         vec![unit.clone(), kind.to_owned(), demander.to_owned()]
     };
-    assert_eq!(
-        rows("read"),
-        [
-            row(&protocol, "top-level", main),
-            row(&square, "top-level", main),
-            row(&record, "top-level", main),
+    let mut expected = vec![
+        row(&protocol, "top-level", main),
+        row(&square, "top-level", main),
+        row(&record, "top-level", main),
+    ];
+    // Pants dispatches through installed protocol/type tables without reading
+    // those root values again when the later unit calls the method.
+    if cfg!(any(feature = "quickjs", feature = "v8-macros")) {
+        expected.extend([
             row(&protocol, "unit", &later),
             row(&square, "unit", &later),
             row(&record, "unit", &later),
-        ],
-        "{trace}"
-    );
+        ]);
+    } else {
+        expected.push(row(&square, "unit", &later));
+    }
+    assert_eq!(rows("read"), expected, "{trace}");
 }
 
 /// The schedule models that read these traces pass their own Babashka tests
@@ -2258,11 +2278,18 @@ fn jobs_stats_report_the_unit_pool_scheduler() {
     // Every pooled unit ran as one job, taken by a claim, a steal or from
     // the worker's own deque.
     let jobs = stat("pool.jobs");
-    assert_eq!(jobs, stat("deferred-units.pooled"), "{stderr}");
-    assert!(jobs >= 24.0, "{stderr}");
+    let units = stat("deferred-units.pooled");
+    let helped = stat("pool.jobs.helped");
+    // Pants schedules resumable VM steps as helped jobs beside whole units.
+    if cfg!(any(feature = "quickjs", feature = "v8-macros")) {
+        assert_eq!(jobs, units, "{stderr}");
+    } else {
+        assert!(jobs > units && helped > 0.0, "{stderr}");
+    }
+    assert!(units >= 24.0, "{stderr}");
     assert!(stat("pool.claims") >= 1.0, "{stderr}");
     let taken = stat("pool.claimed") + stat("pool.stolen") + stat("pool.jobs.local");
-    assert!(taken >= jobs, "{stderr}");
+    assert!(taken + helped >= jobs, "{stderr}");
     assert!(stat("pool.peak-admitted") >= 1.0, "{stderr}");
     let (wait, longest) = (
         stat("time.pool.queue-wait-ms"),

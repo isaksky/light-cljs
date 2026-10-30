@@ -301,6 +301,8 @@ fn hogs(sources: &Sources, mb: usize) {
     sources.write("app/h.cljs", &body);
 }
 
+// These engines split and lend a budget between isolates; Pants accounts one shared runtime.
+#[cfg(any(feature = "quickjs", feature = "v8-macros"))]
 #[test]
 fn the_memory_limit_is_one_budget_across_the_isolates() {
     // With 352 MiB and four slots, four isolates share the limit: each
@@ -371,6 +373,8 @@ fn deep_recursion_in_a_macro_on_a_pool_thread_meets_the_engine_stack_limit() {
     assert!(error.contains("call stack"), "{error}");
 }
 
+// Tests isolate headroom lending; Pants accounts one shared runtime.
+#[cfg(any(feature = "quickjs", feature = "v8-macros"))]
 #[test]
 fn headroom_a_worker_took_returns_for_the_main_isolate() {
     // With 256 MiB and two slots, the main isolate and one worker are each
@@ -466,6 +470,8 @@ fn a_worker_whose_steady_need_exceeds_its_base_keeps_its_isolate() {
     }
 }
 
+// Tests the isolate admission budget at each slot count; Pants admits shared-runtime tasks.
+#[cfg(any(feature = "quickjs", feature = "v8-macros"))]
 #[test]
 fn a_build_the_default_memory_limit_fits_at_one_slot_fits_at_every_slot_count() {
     // A unit that needs 40 MiB fits the default 64 MiB at one slot. Split

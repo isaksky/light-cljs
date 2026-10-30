@@ -2362,6 +2362,9 @@ impl BbpEvaluator {
             let request = text("__lightStringServiceRequest")?;
             let unit_service = self.unit_services.borrow().get(&name).cloned();
             let answer = if let Some(callback) = unit_service {
+                if self.service_depth >= 16 {
+                    return Err(error("compiler service nesting limit exceeded"));
+                }
                 let id = request.parse().map_err(error)?;
                 // The caller's VM is parked. A callback may compile or run
                 // code using another task on the same shared runtime.
@@ -2850,12 +2853,14 @@ impl BbpEvaluator {
     fn request_untraced(&self, op: u32, id: ValueId, input: Rooted) -> Result<(), EvalError> {
         self.control.check()?;
         let cx = self.cx()?;
+        let frame = crate::compile_trace::frame();
         // Built before the boundary is taken: a denied message leaves the
         // task waiting at the same boundary for the next request.
         let message = self.host_scope(|s| {
             let op = s.primitive(Primitive::Number(op as f64));
             let id = s.primitive(Primitive::Number(id.index as f64));
-            let message = s.new_vector(&[op, id, s.local(&input).map_err(error)?]);
+            let tracing = s.primitive(Primitive::Bool(frame.is_some()));
+            let message = s.new_vector(&[op, id, s.local(&input).map_err(error)?, tracing]);
             Ok::<_, EvalError>(s.persist(message.map_err(error)?))
         })?;
         let request = cx
@@ -2875,6 +2880,16 @@ impl BbpEvaluator {
             )
             .map_err(error)?;
         self.run()?;
+        if let Some(frame) = frame
+            && let Some(reads) = cx
+                .task
+                .global_value("__lightRootReads")
+                .map_err(error)?
+                .and_then(|value| value.string().map(|text| text.to_string_lossy()))
+            && !reads.is_empty()
+        {
+            crate::compile_trace::root_reads(&format!("{frame}:{reads}"));
+        }
         let failed = cx
             .task
             .global_value("__lightFailure")

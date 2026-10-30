@@ -2248,6 +2248,8 @@ mod tests {
         assert_eq!(fresh.number(value).unwrap(), 42.0);
     }
 
+    // Tests inline JavaScript declaration transactions; Pants executes compiler-owned catalog units.
+    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
     #[test]
     fn declaration_products_are_atomic_and_unfinished_value_reads_cycle() {
         let mut host = MacroHost::new();

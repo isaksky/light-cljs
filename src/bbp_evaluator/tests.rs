@@ -68,6 +68,28 @@ fn compiler_services_run_once_in_a_separate_task_on_the_same_runtime() {
 }
 
 #[test]
+fn recursive_compiler_services_fail_before_exhausting_the_host_stack() {
+    let evaluator = Rc::new(BbpEvaluator::new(Default::default()).unwrap());
+    evaluator
+        .clone()
+        .install_compiler_service(
+            "recursive",
+            Rc::new(|active, _| {
+                active
+                    .evaluate_unit("rt => globalThis.recursive(0)")
+                    .map_err(|error| error.to_string())?;
+                Ok(String::new())
+            }),
+        )
+        .unwrap();
+    let error = evaluator.evaluate_js("recursive(0)").unwrap_err();
+    assert!(
+        error.0.contains("compiler service nesting limit exceeded"),
+        "{error}"
+    );
+}
+
+#[test]
 fn standalone_evaluator_does_not_retain_lazy_consumption() {
     let evaluator = BbpEvaluator::new(Default::default()).unwrap();
     assert!(evaluator.shared.lanes().is_none());

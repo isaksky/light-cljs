@@ -172,6 +172,7 @@ const decl = (() => {
   };
   // `lazy`: forced for a protocol table build, not demanded for a type.
   const force = (b, lazy = false) => {
+    if(globalThis.__lightRootReads!==null)globalThis.__lightRootReads+=b.unit+',';
     if (!lazy) activate(b);
     if (b.state === 2) return;
     if (b.state === 3) throw b.error;
@@ -3007,6 +3008,7 @@ globalThis.__lightCompilerVarMetadata=name=>{
 };
 const initializeValue=(slot,factory)=>{
     const unit=__rt.initializerSlotGet(slot,0),state=__rt.initializerSlotGet(slot,2);
+    if(globalThis.__lightRootReads!==null)globalThis.__lightRootReads+=unit+',';
     if(state===2){__rt.need(unit,4);return __rt.initializerSlotGet(slot,3);}
     if(state===1)throw new Error('root initialization cycle: '+(__rt.initializerSlotGet(slot,1)??unit));
     if(state===3)throw __rt.initializerSlotGet(slot,3);
@@ -3280,6 +3282,7 @@ function materializeAll(){
 const values=new Map();
 globalThis.__lightResult=null;
 globalThis.__lightFailure=null;
+globalThis.__lightRootReads=null;
 // A command's value enters `values` only once the next command arrives:
 // nothing allocates between a macro's return and the park at `need`, so
 // data a macro released after catching a heap byte denial is collected when
@@ -3290,6 +3293,7 @@ let held=false,heldId=0,heldValue=null;
 for(let serial=1;;serial++){
   const command=__rt.need(serial,commandKind);
   const op=__rt.nth(command,0), id=__rt.nth(command,1), input=__rt.nth(command,2);
+  globalThis.__lightRootReads=__rt.nth(command,3)?'':null;
   globalThis.__lightFailure=null;
   try {
     let result=null;
