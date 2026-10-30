@@ -134,8 +134,8 @@ reason:
   parallel_diagnostics' stack-limit test, which expects a QuickJS or V8 error
   class. The Pants build shares one runtime across threads instead.
 
-At 175edf8a (macOS aarch64, Rust 1.99.1, 8 test threads) the suite ran 2001
-tests: 1638 passed and 363 failed, with 78 skipped. Before the gates the test
+Rebased on 62dcd6f0 (macOS aarch64, Rust 1.99.1, 8 test threads), the suite ran
+2019 tests: 1656 passed and 363 failed, with 78 skipped. Before the gates the test
 binaries did not compile; with only the compile fixes, 529 of 2167 failed.
 The 363 remaining failures are Pants-build gaps, each tracked by a pellet with
 its exact signatures and test lists:
@@ -154,7 +154,7 @@ failure is a regression. One of 612's, `cli::playground_crate_checks_for_wasm32`
 fails in the V8 build too when the checkout is nested inside another Cargo
 workspace, as agent worktrees under `.claude/worktrees` are; it is not a
 Pants-build gap. The V8 build runs the same tests as before these gates
-(2138 run, 109 skipped at 175edf8a). The `compiler` bench, which times QuickJS
+(2139 run, 109 skipped on 62dcd6f0; only the playground check above fails). The `compiler` bench, which times QuickJS
 beside Node, requires the `quickjs` feature.
 
 ## Supported boundary
