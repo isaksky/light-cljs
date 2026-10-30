@@ -716,26 +716,72 @@ impl SharedCatalog {
                 Some("set!" | "binding" | "with-redefs")
             )
         };
-        // The forms the reader reads: those the roots reach, through only
-        // the branch of a reader conditional that `select_cljs` selects, in
-        // a tree it has not selected yet. A discarded `#_` form is in no
-        // parent's children, and the arena keeps inactive branches after
-        // selection; neither ever runs (light-cljs-587). Quoted and
-        // syntax-quoted forms are read like any other, but each form notes
-        // whether a quote holds it, and a call's operand the call and its
-        // position there.
+        // The forms the reader reads: every node of the arena but those in
+        // a branch of a reader conditional that `select_cljs` does not
+        // select, or in a discarded `#_` form; neither ever runs
+        // (light-cljs-587). The arena keeps both after selection, and also
+        // keeps the clauses of top-level namespace directives, `(refer-clojure
+        // :rename ...)`, that namespace preparation replaced with nil, whose
+        // renames this scan must still read.
+        let live: Vec<NodeId> = {
+            let mut dead = vec![false; syntax.nodes.len()];
+            let mut pending = Vec::new();
+            for node in &syntax.nodes {
+                match &node.kind {
+                    NodeKind::Conditional { branches, .. } => {
+                        let selected =
+                            crate::compiler_reader::selected_branch(source, syntax, *branches);
+                        if let NodeKind::Collection { children, .. } =
+                            &syntax.nodes[branches.0].kind
+                        {
+                            pending.extend(children.iter().filter(|&&c| Some(c) != selected));
+                        }
+                    }
+                    NodeKind::Discard { form } => pending.push(*form),
+                    _ => {}
+                }
+            }
+            while let Some(id) = pending.pop() {
+                if std::mem::replace(&mut dead[id.0], true) {
+                    continue;
+                }
+                match &syntax.nodes[id.0].kind {
+                    NodeKind::Collection { children, .. } => pending.extend(children),
+                    NodeKind::Prefix { form, .. } | NodeKind::Discard { form } => {
+                        pending.push(*form);
+                    }
+                    NodeKind::Tagged { tag, form } => pending.extend([*tag, *form]),
+                    NodeKind::Metadata { metadata, target } => {
+                        pending.extend([*metadata, *target]);
+                    }
+                    NodeKind::NamespacedMap { map, .. } => pending.push(*map),
+                    NodeKind::Conditional { branches, .. } => pending.push(*branches),
+                    NodeKind::Argument {
+                        index: Some(index), ..
+                    } => pending.push(*index),
+                    _ => {}
+                }
+            }
+            (0..syntax.nodes.len())
+                .filter(|&index| !dead[index])
+                .map(NodeId)
+                .collect()
+        };
+        // The forms the roots reach, through the selected branch of a
+        // reader conditional in a tree `select_cljs` has not selected yet,
+        // note whether a quote holds them, and a call's operands the call
+        // and their position there. Quoted and syntax-quoted forms are
+        // otherwise read like any other.
         let mut quoted = vec![false; syntax.nodes.len()];
         let mut operand_of = vec![None::<(NodeId, usize)>; syntax.nodes.len()];
-        let live = {
+        {
             let mut seen = vec![false; syntax.nodes.len()];
-            let mut live = Vec::new();
             let mut pending: Vec<(NodeId, bool)> =
                 syntax.roots.iter().map(|&root| (root, false)).collect();
             while let Some((id, under_quote)) = pending.pop() {
                 if std::mem::replace(&mut seen[id.0], true) {
                     continue;
                 }
-                live.push(id);
                 quoted[id.0] = under_quote;
                 let node = &syntax.nodes[id.0];
                 match &node.kind {
@@ -773,8 +819,7 @@ impl SharedCatalog {
                     _ => {}
                 }
             }
-            live
-        };
+        }
         let nodes = || live.iter().map(|&id| (id, &syntax.nodes[id.0]));
         // Qualified aliases and bare renamed refers can name a core target.
         // Reading symbol pairs conservatively also accepts ordinary data maps;

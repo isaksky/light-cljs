@@ -1624,10 +1624,12 @@ persistence remain out of scope.
      build finds writes by spelling, in every source before analysis, in
      the forms the reader reads: the branch of a reader conditional it
      selects (`:cljs`, else `:default`), never another branch or a `#_`
-     form (light-cljs-587). A write is a `set!`, `binding`, `with-redefs`
-     or `js*` hole whose place names the function, or an `aset` or
-     `unchecked-set` whose receiver does, in a list or `#(...)`, under
-     metadata, quote or a property access (`.-x`, `.`, `..`, `aget`). A
+     form (light-cljs-587); renames in top-level namespace directives,
+     `(refer-clojure :rename ...)`, count. A write is a `set!`,
+     `binding`, `with-redefs` or `js*` hole whose place names the
+     function, or an `aset` or `unchecked-set` whose receiver does, in a
+     list or `#(...)`, under metadata, quote or a property access (`.-x`,
+     `.`, `..`, `aget`). A
      `set!`, `aset` or `unchecked-set` that is a step of `->` or `doto`
      also reads the thread's first operand as its place, since `(-> f
      (aset "k" v))` is `(aset f "k" v)`. When the spelling cannot show that

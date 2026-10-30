@@ -457,6 +457,20 @@ fn anonymous_core_writes_reject_cached_providers() {
             "(let [before (util/sum)] (doto cljs.core/+ (aset \"call\" (fn [_ a b] 42))) [before (util/sum)])",
             "[3 42]",
         ),
+        // A core function renamed by a top-level namespace directive, which
+        // namespace preparation replaces with nil before the scan.
+        CoreWriteRow {
+            file: "main.cljs",
+            defs: "(refer-clojure :rename '{even? original-even?})",
+            redefine: "(with-redefs [original-even? (fn [_] false)] (util/probe))",
+            expected: Some("false"),
+        },
+        CoreWriteRow {
+            file: "main.cljs",
+            defs: "(do (refer-clojure :rename '{even? original-even?}))",
+            redefine: "(let [before (util/probe)] (set! original-even? (fn [_] false)) [before (util/probe)])",
+            expected: Some("[true false]"),
+        },
         // A quoted `aset` a macro builds a write with.
         CoreWriteRow {
             file: "main.cljs",
