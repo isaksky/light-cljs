@@ -140,15 +140,12 @@ un-gated 93 tests (66 that run, 27 ignored audits) by gating only the session
 or QuickJS parts inside them. The 403 failures were Pants-build gaps, all with
 the signatures of two pellets. light-cljs-611 (196 then, `bootstrap macro
 NAME`) closed them as described in "Core macros on the Pants build" below:
-with it, on d766f81d, the suite ran 2090 tests (four new), 1846 passed and
+with it, on c2faa089, the suite ran 2094 tests, 1850 passed and
 244 failed, none with that signature. Of 611's tests, 46 still fail, each now
 with one of light-cljs-612's signatures: 42 of the 178 it listed (their core
 macros expand; the macro bodies then reach 612's gaps) and iterator_name,
 positional_constructors, hash_map_source and record_map_constructor_metadata
-of the 18 the rework un-gated. One test was gated:
-compiler_bootstrap's `unused_core_environment_keeps_literal_conversion_failures`
-asserts that a core macro's definition converts the macro environment, which
-the Pants build never does.
+of the 18 the rework un-gated.
 
 - light-cljs-612 (185 listed there, 207 then): compile-time runtime functions
   macros call (`native macro runtime core.NAME`), protocol definitions in the
