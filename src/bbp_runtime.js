@@ -2609,6 +2609,31 @@ const native = (() => {
     const transformed = invoke(xf, rf);
     return prepareInvoke(transformed)(reduce(transformed, init, coll));
   };
+  const predicateCombination=(existential,ps)=>{
+    const predicates=vector(ps.length?ps:[undefined,undefined,undefined]),n=__rt.formCount(predicates),small=n<=3;
+    return (...args)=>{
+      if(args.length===0)return existential?null:true;
+      const invoke=(p,x)=>globalThis.__lightNativeRuntime.core.invoke(p,x);
+      let result=null;
+      for(let i=0;i<n;i++)for(let j=0;j<Math.min(3,args.length);j++){
+        result=invoke(__rt.formNth(predicates,i),args[j]);
+        if(truth(result)===existential)return existential?result:false;
+      }
+      if(args.length<=3)return existential?(small?result:null):true;
+      if(small){
+        for(let j=3;j<args.length;j++)for(let i=0;i<n;i++){
+          result=invoke(__rt.formNth(predicates,i),args[j]);
+          if(truth(result)===existential)return existential?result:false;
+        }
+      }else{
+        for(let i=0;i<n;i++)for(let j=3;j<args.length;j++){
+          result=invoke(__rt.formNth(predicates,i),args[j]);
+          if(truth(result)===existential)return existential?result:false;
+        }
+      }
+      return existential?null:true;
+    };
+  };
   const iterationType=canonicalMember('iteration-type',()=>__rt.structType('cljs.core/Iteration',__rt.formVector('step','somef','vf','kf','initk'),false,null));
   const iterationSeq=(self,step,somef,vf,kf,result)=>{
     if(!truth(invoke(somef,result)))return null;
@@ -2836,6 +2861,10 @@ const native = (() => {
     },
     jsInvoke:(object,method,...args)=>{object=val(object);return object[val(method)](...args);},
     update:(value,key,f,...args)=>{const old=core.get(value,key);return core.assoc(value,key,invoke(f,old,...args));},
+    updateIn:(value,path,f,...args)=>{
+      const s=seqOf(path),key=__rt.cljFirst(s),more=__rt.cljNext(s);
+      return core.assoc(value,key,more===null?invoke(f,get(value,key),...args):core.updateIn(get(value,key),more,f,...args));
+    },
     assoc:(m,...xs)=>{for(let i=0;i<xs.length;i+=2)m=__rt.cljAssoc(m,xs[i],xs[i+1]);return m;},
     assocIn:(value,path,item)=>{
       const s=seqOf(path),key=__rt.cljFirst(s),more=__rt.cljNext(s);
@@ -2876,9 +2905,12 @@ const native = (() => {
       if(!(['map','record','vector'].includes(__rt.formKind(val(x)))||decl.satisfies('IAssociative',x))||!__rt.cljContains(x,k))return null;
       if(__rt.formKind(val(x))==='map')for(const entry of arr(x))if(__rt.formEquals(__rt.cljNth(entry,0),k))return entry;
       return __rt.formVector(k,get(x,k));},
-    keys:m=>{if(__rt.formKind(val(m))==='record'){const s=__rt.cljSeq(m);return s===null?null:typed(__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,0)))),'key-seq');}
+    keys:m=>{const kind=__rt.formKind(val(m));
+      if(kind!=='map'&&kind!=='record'&&val(m)!=null){const s=seqOf(m);return s===null?null:mapOne(mapOne,e=>entryPart(e,false),s);}
+      if(kind==='record'){const s=__rt.cljSeq(m);return s===null?null:typed(__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,0)))),'key-seq');}
       const k=__rt.formValue(m)==null?null:__rt.formKeys(__rt.formValue(m));return k===null||__rt.formCount(k)===0?null:typed(__rt.formSequence(k),'key-seq');},
-    vals:m=>{const s=__rt.cljSeq(m);return s===null?null:typed(__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,1)))),'key-seq');},
+    vals:m=>{const kind=__rt.formKind(val(m)),s=seqOf(m);return s===null?null:kind==='map'||kind==='record'
+      ?typed(__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,1)))),'key-seq'):mapOne(mapOne,e=>entryPart(e,true),s);},
     meta:x=>__rt.cljMeta(x), withMeta:(x,m)=>__rt.cljWithExportedMeta(x,m),
     varyMeta:(x,f,...args)=>{const m=invoke(f,__rt.cljMeta(x),...args);return val(x)==null?null:__rt.cljWithExportedMeta(x,m);},
     isKeyword:x=>__rt.formKind(val(x))==='keyword', isSymbol:x=>__rt.formKind(val(x))==='symbol',
@@ -3071,6 +3103,9 @@ const native = (() => {
     every:(f,c)=>{for(let s=seqOf(c);s!==null;s=__rt.cljNext(s))if(!truth(invoke(f,__rt.cljFirst(s))))return false;return true;},
     some:(f,c)=>{for(let s=seqOf(c);s!==null;s=__rt.cljNext(s)){const v=invoke(f,__rt.cljFirst(s));if(truth(v))return v;}return null;},
     notEvery:(f,c)=>!core.every(f,c), notAny:(f,c)=>!truth(core.some(f,c)),
+    everyPred:(...ps)=>predicateCombination(false,ps),someFn:(...ps)=>predicateCombination(true,ps),
+    groupBy:(f,coll)=>reduce((result,x)=>{const key=invoke(f,x);return __rt.cljAssoc(result,key,__rt.cljConj(get(result,key,__rt.formVector()),x));},arrayMap([]),coll),
+    frequencies:coll=>reduce((result,x)=>__rt.cljAssoc(result,x,get(result,x,0)+1),arrayMap([]),coll),
     last:c=>{const a=arr(c);return a.length?a[a.length-1]:null;}, butlast:c=>{const a=arr(c);return a.length>1?__rt.cljSeq(vector(a.slice(0,-1))):null;},
     reverse:c=>list(arr(c).reverse()),
     sort:(...a)=>{

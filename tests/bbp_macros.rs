@@ -6183,6 +6183,39 @@ fn native_map_selection_and_updates_keep_metadata_and_missing_values() {
 }
 
 #[test]
+fn native_nested_updates_and_key_projections_keep_callback_contracts() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (list 'quote [(update-in {:a {:b 1}} [:a :b] + 2 3)
+               (update-in nil [:a :b] (fn [old] (if (nil? old) 7 :bad)))
+               (get (group-by odd? [1 2 3 4]) true)
+               (get (frequencies [:a :b :a]) :a)
+               (try (doall (keys [9])) :bad
+                 (catch :default e (.includes (.-message e) "IMapEntry/-key")))]))
+           (js/console.log (pr-str (probe)))"#,
+        "[{:a {:b 6}} {:a {:b 7}} [1 3] 2 true]\n",
+    );
+}
+
+#[test]
+fn native_predicate_combinations_preserve_order_and_short_circuit_values() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [events (atom [])
+                   p (fn [x] (swap! events conj (str "p" x)) true)
+                   q (fn [x] (swap! events conj (str "q" x)) true)
+                   e (every-pred p q)
+                   result (e 1 2 3 4)
+                   s (some-fn (constantly false))]
+               (list 'quote [result @events (e) (nil? (s)) (false? (s 1))
+                 (nil? (s 1 2 3 4))
+                 ((some-fn (fn [x] (if (= x 2) :found false)) (constantly nil)) 1 2 3)])))
+           (js/console.log (pr-str (probe)))"#,
+        "[true [\"p1\" \"p2\" \"p3\" \"q1\" \"q2\" \"q3\" \"p4\" \"q4\"] true true true true :found]\n",
+    );
+}
+
+#[test]
 fn native_public_hash_helpers_preserve_numeric_and_unordered_contracts() {
     assert_native_matches_legacy(
         r#"(defmacro probe []
