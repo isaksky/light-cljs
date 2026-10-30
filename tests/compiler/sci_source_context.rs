@@ -138,8 +138,9 @@ fn original_source_macro_declarations_execute_phase_and_application_contracts() 
 fn retained_sources_execute_with_original_namespace_and_positions() {
     let input = std::env::var("LIGHT_CLJS_SCI_CONTEXT_INPUT").expect("source TSV");
     let output = std::env::var("LIGHT_CLJS_SCI_CONTEXT_OUTPUT").expect("observation TSV");
-    let mut out = fs::File::create(output).unwrap();
+    let mut out = fs::File::create(&output).unwrap();
     let mut count = 0;
+    let mut executed = 0;
     for line in fs::read_to_string(input).unwrap().lines() {
         let fields: Vec<_> = line.split('\t').collect();
         assert_eq!(fields.len(), 2);
@@ -151,9 +152,10 @@ fn retained_sources_execute_with_original_namespace_and_positions() {
         let source = unhex(fields[1]);
         match script(fields[0], &source) {
             Ok(script) => {
+                // Without QuickJS its column is empty; Node's is still recorded.
                 let (node, quickjs) = execute(&script);
-                #[cfg(feature = "quickjs")]
                 writeln!(out, "{}\texecuted\t{node}\t{quickjs}", fields[0]).unwrap();
+                executed += 1;
             }
             Err(error) => writeln!(
                 out,
@@ -166,4 +168,18 @@ fn retained_sources_execute_with_original_namespace_and_positions() {
         count += 1;
     }
     assert!(count > 0, "zero source executions");
+    drop(out);
+    let rows = fs::read_to_string(&output).unwrap();
+    assert_eq!(rows.lines().count(), count, "one row per source");
+    let observed: Vec<_> = rows
+        .lines()
+        .filter(|row| row.split('\t').nth(1) == Some("executed"))
+        .collect();
+    assert_eq!(observed.len(), executed, "one row per accepted source");
+    assert!(
+        observed
+            .iter()
+            .all(|row| row.split('\t').nth(2).is_some_and(|node| !node.is_empty())),
+        "every accepted source has Node's observation"
+    );
 }
