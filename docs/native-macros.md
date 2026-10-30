@@ -5197,3 +5197,52 @@ failing with master's runtime, which fails 411: the seven new reductions and
 `catalog_objects_match_plain_objects_before_and_after_demand` now pass, and no
 test newly fails. Formatting and strict V8-build Clippy pass; combined Clippy
 passes allowing the three baseline categories. The engine is unchanged.
+
+### Review fixes: reference types and redeclarations (light-cljs-592, 2026-10-30)
+
+The second review round replaced the merged sequence kinds with each value's
+QuickJS-reference type and made program protocols one value per
+declaration (both in "Protocol values and predicates" above). Each fix has a
+library-free reduction in `tests/bbp_macros.rs` that fails before it:
+`native_protocol_value_kind_table_matches_quickjs_at_all_threads` (176 values
+of every kind the Pants build makes against the 58 core protocols, both
+predicates, each value made in one namespace's macros and the forms among
+them read again, published, by another's, at 1, 2, 4 and 8 threads; before
+the fix `iterate`, map seqs, ranges and the vector seqs stopped at
+`unsupported operation ... satisfies? of ...` and `repeat`, `drop`,
+`butlast` and `list*` gave other types' answers),
+`native_protocol_redeclaration_identity_matches_quickjs_at_all_threads`
+(before, both declarations of a protocol or type were one value; protocols and
+types redeclared in one namespace, read from two),
+`native_defprotocol_in_a_macro_body_matches_quickjs` (`cannot set property
+'app/R' of undefined` before) and
+`native_reference_typed_sequences_export_like_quickjs` (the exported
+metadata of `repeat` and of chunked `map`/`filter`/`concat` seqs).
+
+Penpot, from a Pants release build of `7ee5ff44` and the V8 release build
+(no V8-build input changed), with the five read-only roots, every budget
+above and `--source-map --source-map-include-sources`: `app.render` builds at
+1 thread (8.41 s wall, 7.67 s user, 493,502,464 bytes peak memory) and 4
+threads (6.84 s, 10.53 s user, 597,442,560 bytes); both outputs and their
+source maps are byte-identical to the V8 build's (SHA-256 `d67471d1…`,
+`a4b1c163…`). `app.main` still stops at `core.Delay` (light-cljs-613) at 1
+thread (47.94 s, 743,571,456 bytes) and 4 threads (42.69 s, 966,918,144
+bytes). Three alternating 200k pairs (master `62dcd6f0` and branch V8 release
+builds): every output keeps SHA-256 prefix `1a75bc87b26f3121` and prints
+`484264`, medians 7.79 s and 7.89 s.
+
+On macOS arm64 with Homebrew Rust/Cargo 1.99.1, Node 24.22.1, the read-only
+ClojureScript pin `a5e94c98` and `LIGHT_CLJS_STRESS_SEEDS=4`, rebased on
+master `c2faa089`: the Pants build's full suite runs 2,102 tests, 1,702 pass
+and 400 fail, every failure in the 611/612 lists of the baseline (three
+fewer than before this round); Pants-only `bbp_macros` 244, Pants plus
+QuickJS reference library 389 and `bbp_macros` 246, V8 plus Pants
+`bbp_macros` 246; V8-build nextest 2,139 of 2,140, failing only the
+worktree `playground_crate_checks_for_wasm32` diagnostic (run before the
+last two commits, which change no V8-build input). Engine library 613 and
+the `forms`, `lazy_seqs`, `light_cljs` and `collection_intrinsics` binaries
+pass. Formatting and strict V8-build Clippy pass; engine Clippy shows only
+the nine baseline diagnostics; Pants plus QuickJS Clippy passes allowing the
+three baseline categories, and Pants-only Clippy shows only master's three
+test diagnostics (`frozen` and `comparable` unused in `bbp_macros`, an
+`enumerate` in `execution`).
