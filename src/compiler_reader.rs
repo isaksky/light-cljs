@@ -105,6 +105,11 @@ pub(crate) fn select_cljs(
                 result.push(id);
             }
             self.discard_before(end, &mut input, collection)?;
+            // A trailing discard can leave the rest of a splice in the stream
+            // even when the parser retained no following collection child.
+            while let Some(id) = self.next(&mut input, collection)? {
+                result.push(id);
+            }
             Ok(result)
         }
         fn form(
