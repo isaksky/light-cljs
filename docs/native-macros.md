@@ -458,8 +458,12 @@ bundle at or before the current frontier, which it reads from the root
 context's sixth element. It never takes the shortcut while a definition group
 executes, whose own products come first. `exists?` uses the frontier choice
 only for compiler products and declarations; any other property is read as
-the registry reads it. A transformed sequence admits every source `seq`
-admits, and looks up an ISeqable type's `-seq` only when traversed. Before this round, a declaration alone did not count
+the registry reads it. A saved accessor, whether a group's prior generation
+or the definition an earlier frontier reads, is likewise called with the
+registry as its receiver (light-cljs-640). A transformed sequence admits every source `seq`
+admits, and looks up an ISeqable type's `-seq` only when traversed. Its
+source's IIterable implementation comes first, a program's extension of
+arrays, strings or nil included (light-cljs-639). Before this round, a declaration alone did not count
 as a previous definition, a group was filtered by frontier, `exists?` read a
 later product directly, `set!` stored without demanding the definition, and
 the catalog rebuild dropped a `defonce`'s kept generation.
