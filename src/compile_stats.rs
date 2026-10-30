@@ -113,9 +113,12 @@ pub struct NativeBridgeCounters {
     /// Imports examined following reclamation notifications, and those dropped.
     pub prune_imports_visited: usize,
     pub prune_imports_removed: usize,
-    /// Datum references released by dead imports, including child edges when
-    /// their last parent/import dies. Surviving trees are not traversed.
+    /// Datum nodes traversed to rediscover reachability. Cached child links
+    /// eliminate this walk; keep the counter for comparison with older builds.
     pub prune_nodes_walked: usize,
+    /// Imported roots and cached child links released. Children are examined
+    /// only when the last reference to their parent dies.
+    pub prune_references_released: usize,
     /// Form, cost and native-object entries the walks dropped.
     pub prune_entries_removed: usize,
     pub prune_nanos: u128,
@@ -746,6 +749,10 @@ impl CompileStats {
                 &bridge.prune_imports_removed,
             );
             line("native.prune.nodes-walked", &bridge.prune_nodes_walked);
+            line(
+                "native.prune.references-released",
+                &bridge.prune_references_released,
+            );
             line(
                 "native.prune.entries-removed",
                 &bridge.prune_entries_removed,

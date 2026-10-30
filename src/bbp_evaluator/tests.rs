@@ -2176,12 +2176,21 @@ fn weak_bridge_pruning_only_walks_changes_among_growing_retained_trees() {
             "pruning must only walk the dead tree, with {} retained trees",
             roots.len()
         );
+        assert!(bridge.counters.prune_references_released - before.prune_references_released <= 4);
+        assert_eq!(
+            bridge.counters.prune_imports_visited - before.prune_imports_visited,
+            2
+        );
         rt.collect().unwrap();
         let before = bridge.counters;
         rt.scope(|_| bridge.prune(rt.heap_stats().collections));
         assert_eq!(
             bridge.counters.prune_nodes_walked,
             before.prune_nodes_walked
+        );
+        assert_eq!(
+            bridge.counters.prune_references_released,
+            before.prune_references_released
         );
         assert_eq!(
             bridge.counters.prune_imports_visited,

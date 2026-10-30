@@ -5748,7 +5748,11 @@ fn native_profile_stats_cover_engine_bridge_and_helpers() {
         "{report}"
     );
     assert!(value("native.prune.imports-visited") >= value("native.prune.imports-removed"));
-    assert!(value("native.prune.nodes-walked") >= value("native.prune.imports-removed"));
+    assert_eq!(value("native.prune.nodes-walked"), 0.0, "{report}");
+    assert!(
+        value("native.prune.references-released") >= value("native.prune.imports-removed"),
+        "{report}"
+    );
     // Every source macro call imports a real `&env`: one full import, then
     // a hit or a rebuild per call, each rebuild replacing the envelope.
     let (hits, misses, full) = (

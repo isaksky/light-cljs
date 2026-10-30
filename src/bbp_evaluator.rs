@@ -162,7 +162,6 @@ struct Imported {
     // A metadata map can escape without its occurrence. Reimport it with
     // the same native identity while that raw object remains observable.
     native: Option<WeakHandle>,
-    identities: Vec<ObjectIdentity>,
 }
 
 // These tables contain allocator/heap identities, never user-controlled
@@ -191,7 +190,7 @@ impl Hasher for BridgeIdentityHasher {
 type IdentityMap<K, V> = HashMap<K, V, BuildHasherDefault<BridgeIdentityHasher>>;
 
 struct RetainedDatum {
-    data: Datum,
+    children: Vec<usize>,
     // One reference per imported root and per edge from a retained Datum.
     references: usize,
     cost: Option<(usize, usize)>,
@@ -217,6 +216,8 @@ struct Bridge {
     // occurrence wrapper. Map that exact object back without traversing it.
     native_objects: IdentityMap<ObjectIdentity, (usize, WeakHandle)>,
     reclaimed: ReclamationQueue,
+    // Each identity stays allocated through a surviving Imported Datum tree.
+    // When a root dies, hold that Datum until its child links are released.
     retained: IdentityMap<usize, RetainedDatum>,
     // remember() can precede a failed import. Check only newly remembered
     // entries that have not yet become reachable, rather than all forms.
@@ -248,35 +249,27 @@ impl Bridge {
         let sizes = |b: &Self| b.forms.len() + b.cost_entries + b.native_objects.len();
         let before = sizes(self);
         self.collected = collected;
-        let (mut visited, mut removed, mut walked) = (0, 0, 0);
+        let mut visited = 0;
+        let mut dead = Vec::new();
         for (identity, key) in self.reclaimed.take() {
-            let Some(imported) = self.imports.get_mut(&key) else {
-                continue;
-            };
-            let Some(index) = imported.identities.iter().position(|id| *id == identity) else {
-                continue;
-            };
-            imported.identities.swap_remove(index);
             self.native_objects.remove(&identity);
+            let Some(imported) = self.imports.get(&key) else {
+                continue;
+            };
             visited += 1;
             if imported.occurrence.is_live()
                 || imported.native.as_ref().is_some_and(WeakHandle::is_live)
             {
                 continue;
             }
-            let imported = self.imports.remove(&key).unwrap();
-            for identity in imported.identities {
-                if self
-                    .native_objects
-                    .get(&identity)
-                    .is_some_and(|(k, _)| *k == key)
-                {
-                    self.native_objects.remove(&identity);
-                }
-            }
-            removed += 1;
-            walked += self.release_datum(key);
+            dead.push(self.imports.remove(&key).unwrap());
         }
+        // Batch released roots in one worklist. Keep their Datum allocations
+        // alive until all their links have been processed, including shared
+        // descendants whose last import was removed earlier in this pass.
+        let released = self.release_datums(dead.iter().map(|i| i.data.identity()).collect());
+        let removed = dead.len();
+        drop(dead);
         for key in self.unretained.drain() {
             if !self.retained.contains_key(&key) {
                 self.forms.remove(&key);
@@ -288,7 +281,7 @@ impl Bridge {
             c.prune_passes += 1;
             c.prune_imports_visited += visited;
             c.prune_imports_removed += removed;
-            c.prune_nodes_walked += walked;
+            c.prune_references_released += released;
             c.prune_entries_removed += entries_removed;
             c.prune_nanos += started.elapsed().as_nanos();
         }
@@ -312,9 +305,18 @@ impl Bridge {
                     entry.get_mut().references += 1;
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    pending.extend(Self::datum_children(&data));
+                    // Cache the original reader edges once, including map
+                    // entries omitted from the raw native representation.
+                    // Pruning then touches only identity links, no Datum trees.
+                    let children = Self::datum_children(&data)
+                        .map(|child| {
+                            let key = child.identity();
+                            pending.push(child);
+                            key
+                        })
+                        .collect();
                     entry.insert(RetainedDatum {
-                        data,
+                        children,
                         references: 1,
                         cost: None,
                     });
@@ -323,8 +325,7 @@ impl Bridge {
         }
     }
 
-    fn release_datum(&mut self, key: usize) -> usize {
-        let mut pending = vec![key];
+    fn release_datums(&mut self, mut pending: Vec<usize>) -> usize {
         let mut walked = 0;
         while let Some(key) = pending.pop() {
             walked += 1;
@@ -341,7 +342,7 @@ impl Bridge {
             // child edges only when the last parent/import reference dies.
             let retained = entry.remove();
             self.cost_entries -= usize::from(retained.cost.is_some());
-            pending.extend(Self::datum_children(&retained.data).map(|d| d.identity()));
+            pending.extend(retained.children);
             self.forms.remove(&key);
         }
         walked
@@ -570,20 +571,13 @@ impl Bridge {
             .object_identity(value)
             .expect("an occurrence is an object");
         self.native_objects
-            .insert(identity.clone(), (d.identity(), occurrence.clone()));
-        let mut identities = if let Some(previous) = self.imports.remove(&d.identity()) {
-            previous.identities
-        } else {
+            .insert(identity, (d.identity(), occurrence.clone()));
+        if !self.imports.contains_key(&d.identity()) {
             self.retain_datum(d);
-            Vec::new()
-        };
+        }
         s.watch_reclamation(value, &self.reclaimed, d.identity());
-        identities.push(identity);
-        if let Some(identity) = s.object_identity(raw) {
+        if native.is_some() {
             s.watch_reclamation(raw, &self.reclaimed, d.identity());
-            if !identities.contains(&identity) {
-                identities.push(identity);
-            }
         }
         self.imports.insert(
             d.identity(),
@@ -592,7 +586,6 @@ impl Bridge {
                 data: d.clone(),
                 occurrence,
                 native: native.map(|(_, weak)| weak),
-                identities,
             },
         );
         let mut cost = (1usize, 1usize);
