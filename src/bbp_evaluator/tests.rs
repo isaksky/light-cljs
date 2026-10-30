@@ -28,6 +28,35 @@ fn numeric_global(evaluator: &BbpEvaluator, name: &str) -> f64 {
 }
 
 #[test]
+fn standalone_evaluator_does_not_retain_lazy_consumption() {
+    let evaluator = BbpEvaluator::new(Default::default()).unwrap();
+    assert!(evaluator.shared.lanes().is_none());
+    let function = evaluator
+        .evaluate_unit(
+            "rt => () => __rt.cljFirst(__rt.lazySeq(() => {
+                rt.core.createNs(__rt.formSymbol(null, 'made.repeatedly'));
+                return __rt.formList(1);
+            }))",
+        )
+        .unwrap();
+    let task = evaluator.cx().unwrap().task.id();
+    for call in 0..64 {
+        let value = evaluator.call(function, &[]).unwrap();
+        assert_eq!(
+            evaluator.cx().unwrap().values.borrow()[&value.index].view(),
+            ValueView::Number(1.0)
+        );
+        evaluator.release(value).unwrap();
+        evaluator.collect_garbage();
+        assert!(
+            evaluator.runtime.take_lazy_consumed(task).is_empty(),
+            "call {call} retained consumption without effect lanes"
+        );
+    }
+    evaluator.release(function).unwrap();
+}
+
+#[test]
 fn string_services_resume_on_the_callers_thread_without_replaying_effects() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let evaluator = shared.evaluator().unwrap();

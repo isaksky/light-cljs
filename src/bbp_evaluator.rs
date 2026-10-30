@@ -2952,8 +2952,10 @@ impl NativeStep {
         );
         // The settled realizations the step read count at the task's place
         // before a later activity reads the registry (light-cljs-601).
+        // Drain even without lanes: standalone evaluators reuse a task,
+        // and each fresh realization must not accumulate between commands.
+        let consumed = self.runtime.take_lazy_consumed(self.task.id());
         if let Some(lanes) = &self.lanes {
-            let consumed = self.runtime.take_lazy_consumed(self.task.id());
             lanes.floor_consumed(crate::effect_lanes::identity(self.task.id()), &consumed);
         }
         outcome.map_err(|e| e.to_string())
