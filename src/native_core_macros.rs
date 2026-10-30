@@ -1591,7 +1591,20 @@ fn sequence_for(
 ) -> Result<Option<Datum>, String> {
     let pairs = children(bindings);
     // More bindings than conversion levels expand past them in any case.
-    if !is_vector(bindings) || !pairs.len().is_multiple_of(2) || pairs.len() / 2 > DEPTH {
+    if !is_vector(bindings) || pairs.len() / 2 > DEPTH {
+        return Ok(None);
+    }
+    for_expansion(pairs, body, gensym)
+}
+
+/// The expansion of `sequence-for` of the binding pairs `pairs`, or `None`
+/// where the definition rejects them.
+fn for_expansion(
+    pairs: &[Datum],
+    body: &Datum,
+    gensym: Gensym<'_>,
+) -> Result<Option<Datum>, String> {
+    if !pairs.len().is_multiple_of(2) {
         return Ok(None);
     }
     // Each binding and its modifiers; a modifier first pops no group. With
@@ -1778,11 +1791,9 @@ fn sequence_for(
 /// them, doubling at each nested binding.
 const DOSEQ_NAMES: usize = 1024;
 
-/// The binding pairs of a `doseq` call whose native expansion this module
-/// builds, or `None` where it leaves the call to the engine: bindings that
-/// are not a vector of pairs or name a keyword the definition rejects, or
-/// more pairs than conversion levels, as its construction recurses once a
-/// pair, as the definition's does.
+/// The binding pairs of a `doseq` call the definition accepts, or `None`
+/// for bindings that are not a vector of pairs or name a keyword it
+/// rejects.
 fn doseq_pairs(bindings: &Datum) -> Option<&[Datum]> {
     let exprs = children(bindings);
     let valid = is_vector(bindings)
@@ -1791,12 +1802,24 @@ fn doseq_pairs(bindings: &Datum) -> Option<&[Datum]> {
             .iter()
             .step_by(2)
             .any(|k| matches!(k.kind(), DatumKind::Keyword(_)) && modifier(k).is_none());
-    (valid && exprs.len() / 2 <= DEPTH).then_some(exprs)
+    valid.then_some(exprs)
+}
+
+/// The pairs of a `for` or `doseq` of more pairs than conversion levels
+/// that decide what the engine's conversion of its expansion refuses,
+/// which nests past [`DEPTH`] levels: each pair nests the forms of the
+/// pairs after it a level deeper at least, and the conversion visits a
+/// form's first item and so the forms that nest deepest before the items
+/// that follow them, so that it refuses the expansion of these pairs, down
+/// to a level past [`DEPTH`], where it refuses the whole.
+#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
+fn deep_pairs(pairs: &[Datum]) -> &[Datum] {
+    &pairs[..pairs.len().min(2 * (DEPTH + 2))]
 }
 
 /// `sequence-doseq`. Where `bounded`, an expansion of more names than
 /// [`DOSEQ_NAMES`], which doubles at each nested binding, is left to the
-/// engine; the Pants build expands one past that once [`wide_doseq`] found
+/// engine; the Pants build expands one past that once [`wide_sequence`] found
 /// that the V8 build's engine converts it back ([`expand_wide_doseq`]).
 fn sequence_doseq(
     bindings: &Datum,
@@ -1804,7 +1827,9 @@ fn sequence_doseq(
     gensym: Gensym<'_>,
     bounded: bool,
 ) -> Result<Option<Datum>, String> {
-    let Some(exprs) = doseq_pairs(bindings) else {
+    // Its construction recurses once a pair, as the definition's does:
+    // more pairs than conversion levels are left to the engine.
+    let Some(exprs) = doseq_pairs(bindings).filter(|exprs| exprs.len() / 2 <= DEPTH) else {
         return Ok(None);
     };
     let mut allocated = 0usize;
@@ -1839,15 +1864,16 @@ fn sequence_doseq(
 }
 
 /// The shape of the expansion of a `doseq` with the binding `bindings` and
-/// body `body` (`None` where [`doseq_pairs`] declines it), which the
-/// emulation of the engine's conversion walks ([`wide_doseq`]): its forms
+/// body `body` (`None` where [`doseq_pairs`] declines it, and of its
+/// [`deep_pairs`] only), which the emulation of the engine's conversion
+/// walks ([`wide_sequence`]): its forms
 /// with each name its prefix, so that the two steps the definition builds
 /// at each binding, which differ only in names, are one shared subtree and
 /// the shape takes room in its pairs rather than in its expansion's size;
 /// and the pieces of its lists that splice.
-#[cfg(any(test, feature = "bbp-macros"))]
+#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
 fn doseq_shape(bindings: &Datum, body: &[Datum]) -> Option<(Datum, Pieces)> {
-    let exprs = doseq_pairs(bindings)?;
+    let exprs = deep_pairs(doseq_pairs(bindings)?);
     let mut names = Names {
         dry: None,
         allocated: Vec::new().into_iter(),
@@ -2099,7 +2125,10 @@ fn within(datum: &Datum, room: usize) -> Option<usize> {
 /// lazy sequences, which the engine's conversion back realizes and
 /// charges, follow from its pieces ([`quoted_steps`]).
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(not(any(test, feature = "bbp-macros")), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "bbp-macros", all(test, light_v8))),
+    allow(dead_code)
+)]
 enum Piece {
     /// `~x`, or a form: one item.
     One,
@@ -2126,7 +2155,7 @@ enum Piece {
 /// a piece after the second behind one more for each piece it passed into
 /// on its way; the end is behind one, and one for each piece after the
 /// last item.
-#[cfg(any(test, feature = "bbp-macros"))]
+#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
 fn quoted_steps(pieces: &[Piece]) -> (Vec<u32>, u32) {
     let length = |piece: &Piece| match *piece {
         Piece::One => 1,
@@ -2165,10 +2194,11 @@ fn quoted_steps(pieces: &[Piece]) -> (Vec<u32>, u32) {
 
 /// How the engine holds the lists of a form it converts back, which
 /// decides what reading them charges beyond their nodes.
-#[cfg(any(test, feature = "bbp-macros"))]
+#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
 #[derive(Clone, Copy)]
 enum Lists<'a> {
     /// Uncounted: what the conversion charges for the nodes alone.
+    #[cfg_attr(not(feature = "bbp-macros"), allow(dead_code))]
     Nodes,
     /// Decoded from compiler data, as a call is: each item takes a step,
     /// and the end one more.
@@ -2184,7 +2214,7 @@ enum Lists<'a> {
 }
 
 /// Why an emulated conversion stops.
-#[cfg(any(test, feature = "bbp-macros"))]
+#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
 #[derive(Debug, PartialEq)]
 enum Stop {
     /// What the engine's conversion refuses, and where, as it reports it.
@@ -2204,12 +2234,12 @@ enum Stop {
 /// `lazy realization failure`, at the path of the node or the list), a
 /// node deeper than [`DEPTH`] (`depth limit`), and a missing argument
 /// (`undefined`, [`MISSING`]).
-#[cfg(any(test, feature = "bbp-macros"))]
+#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
 struct Conversion<'a> {
     remaining: usize,
     lists: Lists<'a>,
 }
-#[cfg(any(test, feature = "bbp-macros"))]
+#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
 impl Conversion<'_> {
     /// What converting `datum` refuses under the node limit `nodes`, if
     /// anything.
@@ -2340,7 +2370,7 @@ impl Conversion<'_> {
 
 /// Whether the engine keeps `keys` apart: primitive values and symbols
 /// that differ there (a collection it may find equal to another).
-#[cfg(any(test, feature = "bbp-macros"))]
+#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
 fn distinct<'a>(keys: impl Iterator<Item = &'a Datum>) -> bool {
     let mut primitives = std::collections::HashSet::new();
     let mut symbols = std::collections::HashSet::new();
@@ -2352,39 +2382,60 @@ fn distinct<'a>(keys: impl Iterator<Item = &'a Datum>) -> bool {
         })
 }
 
-/// What the V8 build's engine makes of the `doseq` call `call`, which
+/// What the V8 build's engine makes of the call `call` of `doseq`, which
 /// [`expand`] declines for the names its expansion would allocate (or
-/// would expand, below that), under the node limit `nodes`: it converts
-/// the call, takes a snapshot of it (the call converted back, as decoded),
+/// would expand, below that) or for its pairs, or of `for`, which it
+/// declines for its pairs, under the node limit `nodes`: it converts the
+/// call, takes a snapshot of it (the call converted back, as decoded),
 /// runs the definition and converts the expansion back. `Ok(())` where it
-/// converts the expansion; the Pants build then expands the call natively
-/// past the name budget ([`expand_wide_doseq`]), byte for byte as the V8
-/// build does (light-cljs-620).
-#[cfg(any(test, feature = "bbp-macros"))]
-fn wide_doseq(call: &Datum, nodes: usize) -> Result<(), Stop> {
+/// converts the expansion; the Pants build then expands the `doseq`
+/// natively past the name budget ([`expand_wide_doseq`]), byte for byte as
+/// the V8 build does (light-cljs-620). One of more pairs than conversion
+/// levels never converts ([`deep_pairs`]).
+#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
+fn wide_sequence(name: &str, call: &Datum, nodes: usize) -> Result<(), Stop> {
     let args = children(call).get(1..).unwrap_or_default();
-    let Some((shape, pieces)) = args
-        .split_first()
-        .and_then(|(bindings, body)| doseq_shape(bindings, body))
-    else {
+    let Some((bindings, body)) = args.split_first() else {
+        return Err(Stop::Unknown);
+    };
+    let deep = children(bindings).len() / 2 > DEPTH;
+    let shape = match name {
+        "doseq" => doseq_shape(bindings, body),
+        // `for` has a native expansion of up to that many pairs.
+        "for" if deep && is_vector(bindings) => {
+            let mut prefixes =
+                |prefixes: &[&str]| Ok(prefixes.iter().map(|prefix| symbol(prefix)).collect());
+            let body = body.first().cloned().unwrap_or_else(|| symbol(MISSING));
+            for_expansion(deep_pairs(children(bindings)), &body, &mut prefixes)
+                .ok()
+                .flatten()
+                .map(|form| (form, Pieces::new()))
+        }
+        _ => None,
+    };
+    let Some((shape, pieces)) = shape else {
         return Err(Stop::Unknown);
     };
     Conversion::run(call, nodes, Lists::Decoded)?;
     let mut arguments = Arguments::new(args).identities;
     arguments.insert(call.identity());
-    Conversion::run(
+    let converted = Conversion::run(
         &shape,
         nodes,
         Lists::Quoted {
             arguments: &arguments,
             pieces: &pieces,
         },
-    )
+    );
+    if deep && converted.is_ok() {
+        return Err(Stop::Unknown);
+    }
+    converted
 }
 
 /// On the Pants build, the expansion of the `doseq` call `call` that
 /// [`expand`] declines for the names it would allocate where
-/// [`wide_doseq`] finds that the V8 build's engine converts it back under
+/// [`wide_sequence`] finds that the V8 build's engine converts it back under
 /// the node limit `nodes`, with no budget of names; `None` otherwise.
 #[cfg(feature = "bbp-macros")]
 fn expand_wide_doseq(
@@ -2392,7 +2443,7 @@ fn expand_wide_doseq(
     nodes: usize,
     gensym: Gensym<'_>,
 ) -> Result<Option<Datum>, String> {
-    if wide_doseq(call, nodes).is_err() {
+    if wide_sequence("doseq", call, nodes).is_err() {
         return Ok(None);
     }
     let args = &children(call)[1..];
@@ -2465,7 +2516,7 @@ fn expansion_room(native_backend: bool) -> usize {
 
 /// What stands for an argument the call of a core macro leaves out, which
 /// its definition receives as `undefined`: a symbol no source spells.
-#[cfg(any(test, feature = "bbp-macros"))]
+#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
 const MISSING: &str = "\u{0}undefined";
 
 /// Why the definition of the core macro `name` fails on the call `call`,
@@ -2481,7 +2532,8 @@ const MISSING: &str = "\u{0}undefined";
 /// argument (`undefined`), the depth or the node limit, at the path of the
 /// first node it refuses, found in the expansion built with [`MISSING`]
 /// for each missing argument, or, for a `doseq` past the native name
-/// budget, also a step of a sequence ([`wide_doseq`]).
+/// budget, or a `for` or `doseq` of more pairs than conversion levels,
+/// also a step of a sequence ([`wide_sequence`]).
 #[cfg(feature = "bbp-macros")]
 pub(crate) fn rejection(name: &str, call: &Datum, namespace: &str, nodes: usize) -> Option<String> {
     if within(call, DEPTH).is_none_or(|count| count > nodes) {
@@ -2615,9 +2667,11 @@ pub(crate) fn rejection(name: &str, call: &Datum, namespace: &str, nodes: usize)
     if checked.is_some() {
         return checked;
     }
-    // A `doseq` that native expansion declines for its names.
-    if name == "doseq" {
-        return refused(wide_doseq(call, nodes));
+    // A `doseq` that native expansion declines for its names or pairs, or
+    // a `for` for its pairs.
+    let deep = || children(&args[0]).len() / 2 > DEPTH;
+    if name == "doseq" || name == "for" && deep() {
+        return refused(wide_sequence(name, call, nodes));
     }
     // The positional parameters each definition binds before its rest.
     let positional = match name {
@@ -3538,15 +3592,19 @@ mod tests {
         ]);
     }
 
-    /// What the emulated conversion of a `doseq` expansion refuses is what
-    /// the engine running its definition refuses, at every node limit from
-    /// the call's own size up to one the expansion fits in
-    /// (light-cljs-620): each node, step of a sequence and lazy sequence
-    /// it realizes, for lists that splice the body, an empty body and the
-    /// `recur` forms of modifiers, and the call's data as it decodes it.
-    #[cfg(any(light_quickjs, light_v8))]
+    /// What the emulated conversion of a `doseq` or `for` expansion refuses
+    /// is what the engine running its definition refuses, at node limits
+    /// from the call's own size up to one the expansion fits in, or where
+    /// it refuses the expansion's depth, and at the default limit
+    /// (light-cljs-620): each node, step of a sequence and lazy sequence it
+    /// realizes, for lists that splice the body, an empty body and the
+    /// `recur` forms of modifiers, the call's data as it decodes it, and the
+    /// first levels of an expansion of more pairs than conversion levels.
+    // Against the V8 build's engine; the QuickJS reference gives the same
+    // refusals, about three times slower.
+    #[cfg(light_v8)]
     #[test]
-    fn doseq_conversion_refusals_follow_the_engine() {
+    fn sequence_conversion_refusals_follow_the_engine() {
         let environment = {
             let key = |name| C.keyword(Name::new(None, name));
             let namespace = C
@@ -3554,6 +3612,19 @@ mod tests {
                 .unwrap();
             C.map(&[(key("ns"), namespace)]).unwrap()
         };
+        let bindings = |n| (0..n).map(|i| format!("x{i} xs ")).collect::<String>();
+        let modifiers = |n, modifier| format!("{modifier} ").repeat(n);
+        let deep = [
+            format!("(doseq [x xs {}] x)", modifiers(130, ":let []")),
+            format!(
+                "(doseq [{}{}] (f x0))",
+                bindings(3),
+                modifiers(127, ":when a")
+            ),
+            format!("(for [x xs {}] x)", modifiers(130, ":let []")),
+            format!("(for [{}] x0)", bindings(129)),
+            format!("(for [{}x xs {}])", bindings(2), modifiers(128, ":while a")),
+        ];
         let mut host = MacroHost::new();
         for (source, stride) in [
             ("(doseq [x xs] (f x))", 5),
@@ -3567,44 +3638,51 @@ mod tests {
                 17,
             ),
             ("(doseq [x xs y ys :when (p x y)] (f x) (g y))", 23),
+            (&deep[0], 41),
+            (&deep[1], 31),
+            (&deep[2], 43),
+            (&deep[3], 31),
+            (&deep[4], 29),
         ] {
             let call = host
                 .read_compiler_form(&Source::new("native.cljs", source))
                 .unwrap()
                 .unwrap();
             let data = call.data();
-            let mut limit = within(&data, DEPTH).unwrap();
-            let mut checked = 0;
-            loop {
+            let name = if source.starts_with("(for") {
+                "for"
+            } else {
+                "doseq"
+            };
+            let mut compare = |limit| {
                 host.limits.generated_nodes = limit;
                 host.engine.generated_nodes.set(0);
                 host.engine.expansions.set(0);
                 let engine = {
                     let _names = crate::generated_names::enter_namespace(7);
-                    host.expand_core_javascript("doseq", &call, &environment, None)
+                    host.expand_core_javascript(name, &call, &environment, None)
                 };
-                let emulated = wide_doseq(&data, limit);
+                let emulated = wide_sequence(name, &data, limit);
+                let refusal = engine.err().map(|error| {
+                    error
+                        .split("Error: Unsupported macro result ")
+                        .nth(1)
+                        .and_then(|rest| rest.split([';', '\n']).next())
+                        .unwrap_or_else(|| panic!("{source} at {limit}: {error}"))
+                        .to_owned()
+                });
+                let expected = refusal.clone().map(Stop::Refused).map_or(Ok(()), Err);
+                assert_eq!(emulated, expected, "{source} at {limit}");
+                refusal
+            };
+            let mut limit = within(&data, DEPTH).unwrap();
+            let mut checked = 0;
+            // Until the expansion converts, or its depth is what it refuses.
+            while compare(limit).is_some_and(|refusal| !refusal.starts_with("depth limit")) {
                 checked += 1;
-                match engine {
-                    Ok(_) => {
-                        assert_eq!(emulated, Ok(()), "{source} at {limit}");
-                        break;
-                    }
-                    Err(error) => {
-                        let refusal = error
-                            .split("Error: Unsupported macro result ")
-                            .nth(1)
-                            .and_then(|rest| rest.split(';').next())
-                            .unwrap_or_else(|| panic!("{source} at {limit}: {error}"));
-                        assert_eq!(
-                            emulated,
-                            Err(Stop::Refused(refusal.to_owned())),
-                            "{source} at {limit}"
-                        );
-                    }
-                }
                 limit += stride;
             }
+            compare(MacroHost::new().limits.generated_nodes);
             assert!(checked > 20, "{source}: {checked}");
         }
     }

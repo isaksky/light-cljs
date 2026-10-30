@@ -317,8 +317,8 @@ instead, the Pants build gives the same result:
   the call there.
 - **Calls native expansion declines that the definition accepts** (a
   `selector` map of more than eight entries, a `defmulti` with a character
-  docstring or more than eight metadata keys, every `simple-benchmark`, a
-  `for` or `doseq` of more than 128 pairs) run the definition in
+  docstring or more than eight metadata keys, every `simple-benchmark`) run
+  the definition in
   the Pants build's runtime. The definitions are compiled once per process
   and emitted as the Pants build emits source macros; each task evaluates
   one the first time it needs it. The V8 build's engine decodes a macro's
@@ -358,6 +358,15 @@ instead, the Pants build gives the same result:
   `--macro-poll-budget` (an engine budget, like the deadline) expanding the
   `when-let`s of such an expansion with modifiers; with it raised the outputs
   match.
+- **A `for` or `doseq` of more than 128 pairs**, whose expansion nests past
+  the conversion's 128 levels, fails as the V8 build's engine fails
+  converting it back (`depth limit`, or a limit it reaches first), found by
+  the same emulation on the expansion of its first 130 pairs: each pair
+  nests the forms of those after it a level deeper at least, so the
+  conversion refuses within them. On many hundreds of pairs the V8 build's
+  engine overflows its stack running the definition first (`RangeError:
+  Maximum call stack size exceeded`, about 1000 pairs of `doseq`), an
+  engine limit the Pants build does not reproduce.
 
 The V8 build is unchanged but for `(for [] x)`, which now expands natively
 there too, to the form its definition gives (both then fail analysis with
