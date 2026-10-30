@@ -1637,7 +1637,8 @@ persistence remain out of scope.
      names no core function, every core function counts as written: an
      unquoted place or binding vector; a call as a place or receiver, which
      a macro could expand to a core function's name, unless no macro can
-     make it (a JavaScript or method call, `new`, a constructor); one of
+     make it (a JavaScript or method call, `new`, a constructor) or it fills
+     a `js*` hole, which the analyzer's index never reads; one of
      those three mutation operators as a later step of `->`, or without its
      place operand outside `->` and `doto`; a binding form that is not a
      vector; a tagged literal other than `#js`, `#inst`, `#uuid` or

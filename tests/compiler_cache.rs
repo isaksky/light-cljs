@@ -569,8 +569,9 @@ fn anonymous_core_writes_reject_cached_providers() {
 /// mark no core write, so a rebuild with nothing changed still hits every
 /// namespace: metadata on a binding vector, multi-arity, named and `letfn`
 /// functions, a syntax-quoted binding vector whose places are literal, a
-/// property receiver a method call computes, literal `js*` holes, and `aset`
-/// and `unchecked-set` on a local, in `doto` (also of `(js-obj)`) and `->`,
+/// property receiver a method call computes, literal and call `js*` holes,
+/// and `aset` and `unchecked-set` on a local, in `doto` (also of
+/// `(js-obj)`) and `->`,
 /// through `apply` and on a receiver a method call computes.
 #[cfg(all(
     feature = "bbp-macros",
@@ -600,13 +601,13 @@ fn non_core_places_keep_cached_artifacts() {
              (set! (.-n (.valueOf state)) (js* \"~{} + ~{}\" 1 #js [2])) \
              (def arr #js [0 0 0 0 0 0]) \
              (aset arr 0 1) (doto arr (aset 1 2)) (-> arr (aset 2 3)) (apply aset arr [3 4]) \
-             (aset (.valueOf arr) 4 5) (#(unchecked-set arr 5 %) 6) (def o (doto (js-obj) (aset \"a\" 7))) \
+             (aset (.valueOf arr) 4 5) (#(unchecked-set arr 5 %) 6) (def o (doto (js-obj) (aset \"a\" 7))) (def joined (js* \"~{} + ~{}\" (str 3) 4)) \
              (js/console.log (pr-str (scaled-all 1 2)) (arities) (named) (letfns) \
-               (with-scale 5 (util/scaled 1)) (.-n state) (pr-str (vec arr)) (.-a o))",
+               (with-scale 5 (util/scaled 1)) (.-n state) (pr-str (vec arr)) (.-a o) joined)",
         ),
     ]);
     let oracle = project.uncached("main");
-    assert_eq!(oracle.run(), "[10 20] 2 3 4 5 12 [1 2 3 4 5 6] 7\n");
+    assert_eq!(oracle.run(), "[10 20] 2 3 4 5 12 [1 2 3 4 5 6] 7 34\n");
     let populated = project.cached("main", &[]);
     assert_eq!(populated.stat("cache.published"), 3, "{}", populated.stats);
     let warm = project.cached("main", &[]);

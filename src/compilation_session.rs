@@ -908,9 +908,11 @@ impl SharedCatalog {
         // ([`Self::index_native_core_target`]): a build with the cache and
         // one without prepare the same macro code around it
         // (light-cljs-586). Any other call could be a macro that expands to
-        // a core function's name. Literals and fresh collections never are.
+        // a core function's name, except in a `js*` hole (`hole`), which the
+        // analyzer's index never reads. Literals and fresh collections never
+        // are.
         let mut found = Vec::<&'static str>::new();
-        let mut target = |mut id: NodeId| -> bool {
+        let mut target = |mut id: NodeId, hole: bool| -> bool {
             loop {
                 match &syntax.nodes[id.0].kind {
                     NodeKind::Collection {
@@ -940,14 +942,15 @@ impl SharedCatalog {
                     kind: CollectionKind::List,
                     children,
                 } => {
-                    return children.first().is_none_or(|&head| {
-                        let head = spelling(head);
-                        !matches!(syntax.nodes[children[0].0].kind, NodeKind::Symbol)
-                            || head.starts_with("js/")
-                            || head.starts_with('.')
-                            || head == "new"
-                            || head.len() > 1 && head.ends_with('.')
-                    });
+                    return hole
+                        || children.first().is_none_or(|&head| {
+                            let head = spelling(head);
+                            !matches!(syntax.nodes[children[0].0].kind, NodeKind::Symbol)
+                                || head.starts_with("js/")
+                                || head.starts_with('.')
+                                || head == "new"
+                                || head.len() > 1 && head.ends_with('.')
+                        });
                 }
                 NodeKind::Tagged { tag, .. } => {
                     return matches!(spelling(*tag), "js" | "inst" | "uuid" | "queue");
@@ -1042,22 +1045,27 @@ impl SharedCatalog {
                     let own = if args.len() < operands {
                         !matches!(thread, Thread::None)
                     } else {
-                        target(args[0])
+                        target(args[0], false)
                     };
                     own && match thread {
                         Thread::None => true,
-                        Thread::Place(place) => target(place),
+                        Thread::Place(place) => target(place, false),
                         Thread::Local(place) => {
-                            call(&syntax.nodes[place.0]).is_some() || target(place)
+                            call(&syntax.nodes[place.0]).is_some() || target(place, false)
                         }
                         Thread::Unknown => false,
                     }
                 }
-                ("binding" | "with-redefs", [bindings, ..]) => places(*bindings)
-                    .is_some_and(|places| places.iter().step_by(2).all(|&place| target(place))),
+                ("binding" | "with-redefs", [bindings, ..]) => {
+                    places(*bindings).is_some_and(|places| {
+                        places.iter().step_by(2).all(|&place| target(place, false))
+                    })
+                }
                 ("binding" | "with-redefs", []) => false,
-                // Raw JavaScript can assign any core value passed as a hole.
-                ("js*", [_, holes @ ..]) => holes.iter().all(|&hole| target(hole)),
+                // Raw JavaScript can assign any core value passed as a
+                // hole. The analyzer's index reads no hole, so one a macro
+                // call fills is no write in either build.
+                ("js*", [_, holes @ ..]) => holes.iter().all(|&hole| target(hole, true)),
                 _ => true,
             }
         });
