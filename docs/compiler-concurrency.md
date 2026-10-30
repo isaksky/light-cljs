@@ -3199,10 +3199,14 @@ state and determinism"; this is what was delivered.
   reaches macros through `&env`; the native runtime's reader-namespace
   services keep no state. The protocol-extension journal is the catalog's
   bundle registration order with the frontier the compiler selects per
-  expansion, so it does not depend on tasks. Extensions that macro code
-  runs outside a bundle and mutable JavaScript objects held in Vars are
-  per task, outside the guarantee, as host effects such as `println` are
-  outside lanes.
+  expansion, so it does not depend on tasks. The namespace registry that
+  `all-ns` and `find-ns` read is the compilation's: creations are recorded
+  at their activity's place without waiting, and a read waits for its lane
+  and sees the creations before it in `--jobs 1` order (light-cljs-589,
+  docs/native-macros.md). Extensions that macro code runs outside a bundle,
+  mutable JavaScript objects held in Vars and a Namespace object's `obj`
+  and name metadata are per task, outside the guarantee, as host effects
+  such as `println` are outside lanes.
 - **Stats.** `--stats` prints `native.lanes.entered` (activities that
   touched an atom another activity made), `waits` (accesses that parked),
   `inherited`, `wait-ms` (total), `longest-wait-ms` and `rescued`.

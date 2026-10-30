@@ -1495,16 +1495,33 @@ their source. These tables serve the legacy runtime's reader; native macros
 receive forms and reader context through the native bridge. The skipped source
 therefore cannot hit the eval limit as a project's namespace count grows.
 Macro cache identity and legacy reader registration behavior are unchanged.
-Where a legacy engine registers a program's namespaces, and before every source
-macro expansion, a native task gets the namespace names it lacks as data
-(`MacroEvaluator::register_namespaces`, command 5 of the runtime), and a
-helper's producer task gets its parent's. Each becomes a Namespace of the task's
-runtime, after `cljs.user` and `cljs.core` as in the legacy runtime, so
-`all-ns`, `find-ns` and `the-ns` see every namespace of the expanding program,
-in program order, on whichever task and thread runs the expansion. The legacy
-runtimes see what their engine registered last, which can lag the expanding
-program by the namespaces analyzed since. A macro that reads the inventory
-declares `(b/depend-on! :namespaces)` for the cache.
+The namespace registry that `all-ns`, `find-ns` and `the-ns` read is the
+compilation's (light-cljs-589, `src/bbp_evaluator/namespaces.rs`). It holds
+what the QuickJS reference's registry holds at the same point with one
+thread: `cljs.user` and `cljs.core` first; the namespaces a macro
+declaration's, an installed macro's or a compiled unit's program names, where
+the legacy engine registers them (`MacroEvaluator::register_namespaces`
+records only the names, without reader tables); and the namespaces
+`create-ns` makes, which includes each source macro call's own namespace. So a
+namespace analyzed earlier is listed only once a registration or a creation
+names it: one without macros that no macro call or declaration since has named
+is absent, as in the reference. Creation never waits: it is recorded with the
+creating activity's place in the effect lanes (docs/compiler-concurrency.md,
+"Effect lanes"), its position and activity chain. A read waits for its lane,
+as an access to another activity's atom does, and then sees the creations
+before its position, in one-thread order, and, when an earlier activity
+waiting for part of its chain lent it that position, what that part created,
+which with one thread runs inside the waiter. Every thread count therefore
+gives the one-thread answer. A task keeps one Namespace object per name, so a
+namespace is `identical?` to itself within a task; a namespace's object (and
+the metadata of its name symbol, and its `obj`) belongs to the task that made
+it, and another task that sees the name makes its own; like a mutable
+JavaScript object held in a Var, it is per task, outside the one-thread
+guarantee. A macro that reads the
+inventory declares `(b/depend-on! :namespaces)` for the cache.
+`tests/bbp_macros.rs` `native_namespace_registration_frontier_matches_reference`
+compares these views with the QuickJS reference at 1, 2, 4 and 8 threads,
+under seeded scheduling, fixed workers, delayed starts and a held unit.
 
 Ordinary source helpers are compiled on demand. A macro parks at a dependency
 read while the compiler analyzes the helper using separate task state on the
