@@ -566,21 +566,6 @@ fn form_op(
     if op == FormOp::Empty {
         return form::empty(heap, &args[0]).map_err(Fault::from);
     }
-    if matches!(
-        op,
-        FormOp::ReferenceType
-            | FormOp::WithReferenceType
-            | FormOp::ReferencePayload
-            | FormOp::CljDrop
-    ) {
-        let mode = match op {
-            FormOp::WithReferenceType => 1,
-            FormOp::ReferencePayload => 2,
-            FormOp::CljDrop => 3,
-            _ => 0,
-        };
-        return form::reference_type_op(heap, mode, &args).map_err(Fault::from);
-    }
     match clj_op(heap, op, &args) {
         Ok(Some(result)) => Ok(result),
         Ok(None) => Ok(strict_form_op(heap, host, op, args)?),
@@ -597,6 +582,12 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
     let a = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     Ok(match op {
         FormOp::CljTruth => Some(Value::Bool(clj::truth(heap, &a(0)))),
+        // Here rather than in `form_op`, whose frame is live under every
+        // strict operation (light-cljs-592).
+        FormOp::ReferenceType => Some(form::reference_type_op(heap, 0, args)?),
+        FormOp::WithReferenceType => Some(form::reference_type_op(heap, 1, args)?),
+        FormOp::ReferencePayload => Some(form::reference_type_op(heap, 2, args)?),
+        FormOp::CljDrop => Some(form::reference_type_op(heap, 3, args)?),
         FormOp::CljIsZero => Some(Value::Bool(clj::is_zero(heap, &a(0)))),
         FormOp::CljIsFalse => Some(Value::Bool(clj::is_false(heap, &a(0)))),
         FormOp::CljReduced => Some(form::new_reduced(heap, a(0))?),
