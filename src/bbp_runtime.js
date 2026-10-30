@@ -2948,12 +2948,9 @@ const native = (() => {
       if(!(['map','record','vector'].includes(__rt.formKind(val(x)))||decl.satisfies('IAssociative',x))||!__rt.cljContains(x,k))return null;
       if(__rt.formKind(val(x))==='map')for(const entry of arr(x))if(__rt.formEquals(__rt.cljNth(entry,0),k))return entry;
       return __rt.formVector(k,get(x,k));},
-    keys:m=>{const kind=__rt.formKind(val(m));
-      if(kind!=='map'&&kind!=='record'&&val(m)!=null){const s=seqOf(m);return s===null?null:mapOne(mapOne,e=>entryPart(e,false),s);}
-      if(kind==='record'){const s=__rt.cljSeq(m);return s===null?null:typed(__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,0)))),'key-seq');}
+    keys:m=>{if(__rt.formKind(val(m))==='record'){const s=__rt.cljSeq(m);return s===null?null:typed(__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,0)))),'key-seq');}
       const k=__rt.formValue(m)==null?null:__rt.formKeys(__rt.formValue(m));return k===null||__rt.formCount(k)===0?null:typed(__rt.formSequence(k),'key-seq');},
-    vals:m=>{const kind=__rt.formKind(val(m)),s=seqOf(m);return s===null?null:kind==='map'||kind==='record'
-      ?typed(__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,1)))),'key-seq'):mapOne(mapOne,e=>entryPart(e,true),s);},
+    vals:m=>{const s=__rt.cljSeq(m);return s===null?null:typed(__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,1)))),'key-seq');},
     meta:x=>__rt.cljMeta(x), withMeta:(x,m)=>__rt.cljWithExportedMeta(x,m),
     varyMeta:(x,f,...args)=>{const m=invoke(f,__rt.cljMeta(x),...args);return val(x)==null?null:__rt.cljWithExportedMeta(x,m);},
     isKeyword:x=>__rt.formKind(val(x))==='keyword', isSymbol:x=>__rt.formKind(val(x))==='symbol',
@@ -3097,7 +3094,7 @@ const native = (() => {
     mapIndexed:(...args)=>{
       if(args.length===2)return mapIndexedFrom(mapIndexedFrom,args[0],args[1],0);
       if(args.length!==1)return arity(args.length);
-      const f=args[0];return rf=>{let i=-1;return reducing(rf,(result,x)=>prepareInvoke(rf)(result,invoke(f,++i,x)));};
+      const f=args[0];return rf=>{let i=-1;return reducing(rf,(result,x)=>{const value=invoke(f,++i,x);return invoke(rf,result,value);});};
     },
     keepIndexed:(...a)=>a.length===1?keepTransform(a[0],true):a.length===2?keepIndexedFrom(keepIndexedFrom,a[0],a[1],0):arity(a.length),
     filter:(...a)=>a.length===1?filterTransform(a[0]):a.length===2?select(select,a[0],a[1],0):arity(a.length),

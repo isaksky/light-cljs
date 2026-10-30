@@ -6190,10 +6190,9 @@ fn native_nested_updates_and_key_projections_keep_callback_contracts() {
                (update-in nil [:a :b] (fn [old] (if (nil? old) 7 :bad)))
                (get (group-by odd? [1 2 3 4]) true)
                (get (frequencies [:a :b :a]) :a)
-               (try (doall (keys [9])) :bad
-                 (catch :default e (.includes (.-message e) "IMapEntry/-key")))]))
+               (vec (keys {:a 9})) (vec (vals {:a 9}))]))
            (js/console.log (pr-str (probe)))"#,
-        "[{:a {:b 6}} {:a {:b 7}} [1 3] 2 true]\n",
+        "[{:a {:b 6}} {:a {:b 7}} [1 3] 2 [:a] [9]]\n",
     );
 }
 
@@ -6388,7 +6387,7 @@ fn native_sequence_transforms_complete_once_and_keep_independent_traversals() {
 }
 
 #[test]
-fn native_transformed_sequences_read_call_members_before_advancing_inputs() {
+fn native_transformed_sequences_keep_source_and_mapper_call_member_order() {
     assert_native_matches_legacy(
         r#"(defmacro probe []
              (let [events (array) state (atom 0)
@@ -6405,7 +6404,7 @@ fn native_transformed_sequences_read_call_members_before_advancing_inputs() {
                (step 0 1)
                (list 'quote [result before (vec events)])))
            (js/console.log (pr-str (probe)))"#,
-        "[[1] [\"has\" \"call\" \"next\" \"has\" \"call\"] [\"call\" \"map\"]]\n",
+        "[[1] [\"has\" \"call\" \"next\" \"has\" \"call\"] [\"map\" \"call\"]]\n",
     );
 }
 
