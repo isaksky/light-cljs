@@ -78,6 +78,31 @@ fn completion_before_registration_is_read_on_the_fast_path() {
     assert_eq!((log.edges(), log.waiting()), (&[key(&rt)][..], None));
 }
 
+/// A reader that counts the edges it has read gets only the new ones, in
+/// the order the full log has them; a repeated need adds no edge.
+#[test]
+fn edges_since_returns_only_edges_recorded_after_the_count() {
+    let rt = Runtime::new();
+    let other = DependencyKey::new(rt.world(), DependencyId::new(4), KIND);
+    for key in [key(&rt), other] {
+        let req = rt.claim(key).unwrap();
+        complete(&rt, &req, 1.0);
+    }
+    let task = consumer(&rt);
+    let mut guard = task.try_begin_run().unwrap();
+    guard.need(DEF, KIND).unwrap();
+    assert_eq!(task.dependency_edges_since(0), [key(&rt)]);
+    guard.need(DEF, KIND).unwrap();
+    guard.need(DependencyId::new(4), KIND).unwrap();
+    assert_eq!(task.dependency_edges_since(1), [other]);
+    assert_eq!(task.dependency_edges_since(2), []);
+    assert_eq!(task.dependency_edges_since(5), []);
+    assert_eq!(
+        task.dependency_edges_since(0),
+        task.dependency_log().edges()
+    );
+}
+
 /// Window 2: the completion lands after the need observed `Pending` on the
 /// fast path but before it took the cell lock to subscribe. The recheck
 /// under the lock reads the outcome: the task is not registered, the

@@ -1404,6 +1404,9 @@ pub(crate) struct TaskContext {
     /// The borrowing view's state that names this task's values or
     /// registrations, kept here while the context is idle.
     lent: RefCell<LentState>,
+    /// How many of the task's dependency-log edges the dependency graph
+    /// has been given ([`BbpEvaluator::run_inner`]).
+    logged: Cell<usize>,
 }
 const _: () = {
     const fn send<T: Send>() {}
@@ -1507,6 +1510,7 @@ impl BbpEvaluator {
             catalog: Cell::new(None),
             prepared: Cell::new(false),
             lent: RefCell::new(LentState::default()),
+            logged: Cell::new(0),
         }));
         self.shared
             .0
@@ -1721,9 +1725,15 @@ impl BbpEvaluator {
             self.shared.wake_tasks(self.runtime.take_lazy_wakeups());
             {
                 let mut graph = self.shared.0.graph.lock().unwrap();
-                let log = cx.task.dependency_log();
+                // The log only grows, and the graph keeps every use it was
+                // given: hand it the edges recorded since the last step.
+                // The coordinator's task lives for the whole build, so
+                // rereading its full log made each step cost the build's
+                // length so far (light-cljs-575).
+                let edges = cx.task.dependency_edges_since(cx.logged.get());
+                cx.logged.set(cx.logged.get() + edges.len());
                 let mut recorded = 0;
-                for key in log.edges() {
+                for key in &edges {
                     if [BINDING, HELPER, INITIALIZER].contains(&key.kind()) {
                         graph.record_use(cx.task.id(), *key);
                         recorded += 1;
@@ -1732,8 +1742,7 @@ impl BbpEvaluator {
                 if crate::compile_trace::any_recording() {
                     let c = &self.shared.0.counters;
                     c.log_reads.fetch_add(1, Ordering::Relaxed);
-                    c.log_edges_copied
-                        .fetch_add(log.edges().len(), Ordering::Relaxed);
+                    c.log_edges_copied.fetch_add(edges.len(), Ordering::Relaxed);
                     c.log_edges_recorded.fetch_add(recorded, Ordering::Relaxed);
                 }
                 graph.withdraw(cx.task.id());

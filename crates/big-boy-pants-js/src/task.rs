@@ -811,6 +811,15 @@ impl Task {
             .clone()
     }
 
+    /// The recorded edges after the first `seen`, in first-need order.
+    /// Edges are only ever appended, so a reader that remembers how many it
+    /// has read copies only the new ones, where [`Self::dependency_log`]
+    /// copies the whole log, which grows for as long as the task lives.
+    pub fn dependency_edges_since(&self, seen: usize) -> Vec<DependencyKey> {
+        let log = self.0.log.lock().unwrap_or_else(PoisonError::into_inner);
+        log.edges().get(seen..).unwrap_or_default().to_vec()
+    }
+
     /// Source location of the next instruction this task will execute, for
     /// a ready task running code compiled from JavaScript source. `None` for
     /// hand-assembled code, or while the task is running or finished.
