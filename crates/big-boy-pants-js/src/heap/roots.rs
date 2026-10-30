@@ -223,7 +223,8 @@ impl Hash for ObjectIdentity {
     }
 }
 
-type ReclamationEvents = Mutex<Vec<(ObjectIdentity, usize)>>;
+type Reclaimed = Vec<(ObjectIdentity, usize)>;
+type ReclamationEvents = Mutex<Reclaimed>;
 
 /// Non-rooting notifications for host-side identity tables. A watched object
 /// enqueues its identity and the caller's token when swept, before mutators
@@ -261,7 +262,7 @@ pub(super) struct ReclamationRegistry {
     objects: std::collections::HashMap<ObjectId, Watches, super::gc::IdentityBuild>,
     // One sweep's notifications, grouped by live queue, so each queue is
     // upgraded and locked once per collection rather than once per death.
-    sweep: Vec<(Arc<ReclamationEvents>, Vec<(ObjectIdentity, usize)>)>,
+    sweep: Vec<(Arc<ReclamationEvents>, Reclaimed)>,
 }
 
 impl ReclamationRegistry {
