@@ -6388,6 +6388,28 @@ fn native_sequence_transforms_complete_once_and_keep_independent_traversals() {
 }
 
 #[test]
+fn native_transformed_sequences_read_call_members_before_advancing_inputs() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [events (array) state (atom 0)
+                   source (reify IIterable
+                     (-iterator [_] (reify Object
+                       (hasNext [_] (.push events "has") (< @state 1))
+                       (next [_] (.push events "next") (swap! state inc)))))
+                   xf (fn [rf] (js* "({get call(){~{}.push('call');return function(_, ...args){return ~{}.call(null,...args);};}})" events rf))
+                   result (vec (sequence xf source))
+                   before (vec events)
+                   _ (set! (.-length events) 0)
+                   rf (js* "({get call(){~{}.push('call');return function(_, result, value){return result;};}})" events)
+                   step ((map-indexed (fn [_ x] (.push events "map") x)) rf)]
+               (step 0 1)
+               (list 'quote [result before (vec events)])))
+           (js/console.log (pr-str (probe)))"#,
+        "[[1] [\"has\" \"call\" \"next\" \"has\" \"call\"] [\"call\" \"map\"]]\n",
+    );
+}
+
+#[test]
 fn native_macro_result_errors_identify_the_value_and_container_path() {
     for (expression, category, path) in [
         ("(fn [] 1)", "function", "$"),

@@ -2101,7 +2101,7 @@ const native = (() => {
           buffer=[];offset=0;
           if(completed)return false;
           if(sources.every(source=>source.hasNext())){
-            const result=invoke(xf,null,...sources.map(source=>source.next()));
+            const result=prepareInvoke(xf)(null,...sources.map(source=>source.next()));
             if(!__rt.cljIsReduced(result))continue;
           }
           invoke(xf,null);completed=true;
@@ -3097,7 +3097,7 @@ const native = (() => {
     mapIndexed:(...args)=>{
       if(args.length===2)return mapIndexedFrom(mapIndexedFrom,args[0],args[1],0);
       if(args.length!==1)return arity(args.length);
-      const f=args[0];return rf=>{let i=-1;return reducing(rf,(result,x)=>invoke(rf,result,invoke(f,++i,x)));};
+      const f=args[0];return rf=>{let i=-1;return reducing(rf,(result,x)=>prepareInvoke(rf)(result,invoke(f,++i,x)));};
     },
     keepIndexed:(...a)=>a.length===1?keepTransform(a[0],true):a.length===2?keepIndexedFrom(keepIndexedFrom,a[0],a[1],0):arity(a.length),
     filter:(...a)=>a.length===1?filterTransform(a[0]):a.length===2?select(select,a[0],a[1],0):arity(a.length),
