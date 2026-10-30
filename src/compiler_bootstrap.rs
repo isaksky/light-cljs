@@ -2110,6 +2110,8 @@ mod tests {
     /// A function evaluated through the handle a callback receives, which is
     /// not the bootstrap's evaluator but the same heap, is owned too, and
     /// released only once its last owner is gone (light-cljs-381).
+    // These engines lend callback views of one value-handle heap; Pants callbacks own separate tasks.
+    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
     #[test]
     fn a_function_evaluated_in_a_callback_is_released_after_its_last_owner() {
         let mut host = MacroHost::new();

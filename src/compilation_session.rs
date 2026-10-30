@@ -4889,6 +4889,8 @@ mod environment_bundle_tests {
     /// native, core or unknown type or on any instance, whose type is not
     /// asked for, but not of a source protocol or on a user type
     /// (light-cljs-433).
+    // The V8 build and QuickJS reference journal per-heap extensions; Pants uses shared declaration bundles.
+    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
     #[test]
     fn compile_time_extensions_that_environment_data_could_reach_are_noted() {
         use crate::evaluator::EnvironmentExtensions;
@@ -5800,6 +5802,8 @@ mod worker_tests {
         assert_eq!(c.waiting, 0);
     }
 
+    // These engines install registrations in a callback's caller heap; Pants installs them in its producer task.
+    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
     #[test]
     fn a_worker_engine_installs_the_registrations_and_evaluates_what_the_catalog_prepared() {
         let mut host = MacroHost::new();
@@ -5883,6 +5887,8 @@ mod worker_tests {
         });
     }
 
+    // The Pants build shares initialized roots across tasks rather than initializing once per isolate.
+    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
     #[test]
     fn roots_initialize_once_per_isolate() {
         // `counted`'s initializer counts its runs in its engine's globals.

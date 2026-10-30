@@ -1771,6 +1771,7 @@ pub struct BbpEvaluator {
     control: ExecutionControl,
     service_depth: usize,
     service: RefCell<Option<UnitService>>,
+    unit_services: RefCell<HashMap<String, UnitService>>,
     string_services: RefCell<HashMap<String, StringService>>,
     help: RefCell<Option<WaitService>>,
     runner: RefCell<Option<NativeRunner>>,
@@ -1800,6 +1801,7 @@ impl BbpEvaluator {
             shared,
             service_depth,
             service: RefCell::new(None),
+            unit_services: RefCell::new(HashMap::new()),
             string_services: RefCell::new(HashMap::new()),
             help: RefCell::new(None),
             runner: RefCell::new(None),
@@ -2358,13 +2360,25 @@ impl BbpEvaluator {
             };
             let name = text("__lightStringServiceName")?;
             let request = text("__lightStringServiceRequest")?;
-            let callback = self
-                .string_services
-                .borrow()
-                .get(&name)
-                .cloned()
-                .ok_or_else(|| error("string service is not installed"))?;
-            let answer = callback(&request);
+            let unit_service = self.unit_services.borrow().get(&name).cloned();
+            let answer = if let Some(callback) = unit_service {
+                let id = request.parse().map_err(error)?;
+                // The caller's VM is parked. A callback may compile or run
+                // code using another task on the same shared runtime.
+                let active = self.spawn_producer(cx, self.service.borrow().clone(), |_| {})?;
+                let answer = callback(&active, id).map_err(error)?;
+                active.note_catalog_applied();
+                self.control.poll()?;
+                answer
+            } else {
+                let callback = self
+                    .string_services
+                    .borrow()
+                    .get(&name)
+                    .cloned()
+                    .ok_or_else(|| error("string service is not installed"))?;
+                callback(&request)
+            };
             cx.string_answer.borrow_mut().take();
             let import = || {
                 self.runtime.scope(|scope| {
@@ -2464,6 +2478,7 @@ impl BbpEvaluator {
         let producer_cx = active.cx()?;
         bind(producer_cx.task.id());
         *active.service.borrow_mut() = service;
+        *active.unit_services.borrow_mut() = self.unit_services.borrow().clone();
         *active.string_services.borrow_mut() = self.string_services.borrow().clone();
         *active.help.borrow_mut() = self.help.borrow().clone();
         *active.runner.borrow_mut() = self.runner.borrow().clone();
@@ -3494,12 +3509,19 @@ impl CompilerEvaluator for BbpEvaluator {
         name: &str,
         callback: UnitService,
     ) -> Result<(), EvalError> {
-        if name == "__lightCompileUnit" {
-            *self.service.borrow_mut() = Some(callback);
+        if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Err(error("invalid service name"));
         }
-        // Helper demand calls the Rust service from a parked continuation.
-        // Preserve explicit rejection of direct legacy JS service calls.
-        self.unsupported_service(name)
+        if name == "__lightCompileUnit" {
+            *self.service.borrow_mut() = Some(callback.clone());
+        }
+        self.unit_services
+            .borrow_mut()
+            .insert(name.to_owned(), callback);
+        self.string_services.borrow_mut().remove(name);
+        self.install_registration(format!(
+            "rt => {{ globalThis.{name} = id => {{ if (!Number.isSafeInteger(id) || id < 0) throw new TypeError('compiler service expected a non-negative integer'); return globalThis.__lightCallStringService('{name}', String(id)); }}; return null; }}"
+        ))
     }
     fn install_string_service(&self, name: &str, callback: StringService) -> Result<(), EvalError> {
         if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
@@ -3508,6 +3530,7 @@ impl CompilerEvaluator for BbpEvaluator {
         self.string_services
             .borrow_mut()
             .insert(name.to_owned(), callback);
+        self.unit_services.borrow_mut().remove(name);
         self.install_registration(format!(
             "rt => {{ globalThis.{name} = request => globalThis.__lightCallStringService('{name}', request); return null; }}"
         ))
@@ -3650,15 +3673,6 @@ impl BbpEvaluator {
             .units_shared
             .fetch_add(1, Ordering::Relaxed);
         Ok(result)
-    }
-    fn unsupported_service(&self, name: &str) -> Result<(), EvalError> {
-        if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-            return Err(error("invalid service name"));
-        }
-        let source = format!(
-            "rt => {{ globalThis.{name} = () => {{ throw new Error('unsupported operation: native compiler service {name}'); }}; return null; }}"
-        );
-        self.install_registration(source)
     }
     fn install_registration(&self, source: String) -> Result<(), EvalError> {
         // A borrowed context has its services from the view that

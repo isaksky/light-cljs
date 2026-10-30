@@ -28,6 +28,46 @@ fn numeric_global(evaluator: &BbpEvaluator, name: &str) -> f64 {
 }
 
 #[test]
+fn compiler_services_run_once_in_a_separate_task_on_the_same_runtime() {
+    let evaluator = Rc::new(BbpEvaluator::new(Default::default()).unwrap());
+    let caller_heap = evaluator.heap();
+    let calls = Rc::new(Cell::new(0));
+    let count = calls.clone();
+    evaluator
+        .clone()
+        .install_compiler_service(
+            "unitService",
+            Rc::new(move |active, id| {
+                assert_ne!(active.heap(), caller_heap);
+                count.set(count.get() + 1);
+                let value = active
+                    .evaluate_unit("rt => 42")
+                    .map_err(|error| error.to_string())?;
+                active.release(value).map_err(|error| error.to_string())?;
+                Ok((id + 1).to_string())
+            }),
+        )
+        .unwrap();
+    for argument in ["-1", "0.5", "NaN", "Infinity", "'1'"] {
+        assert!(
+            evaluator
+                .evaluate_js(&format!("unitService({argument})"))
+                .is_err()
+        );
+    }
+    assert_eq!(calls.get(), 0);
+    let before = evaluator.value_roots().unwrap();
+    let result = evaluator.evaluate_js("unitService(41)").unwrap();
+    assert!(matches!(
+        evaluator.export_data(result, ConversionLimits::default()).unwrap().kind(),
+        D::String(value) if value.as_ref() == [52, 50]
+    ));
+    evaluator.release(result).unwrap();
+    assert_eq!(calls.get(), 1);
+    assert_eq!(evaluator.value_roots().unwrap(), before);
+}
+
+#[test]
 fn standalone_evaluator_does_not_retain_lazy_consumption() {
     let evaluator = BbpEvaluator::new(Default::default()).unwrap();
     assert!(evaluator.shared.lanes().is_none());
