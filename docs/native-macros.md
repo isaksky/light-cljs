@@ -4243,3 +4243,18 @@ the alias rows demanded from the instance and from a string failed before
 the fix; the row demanded from a struct of another type already passed
 (struct receivers matched unnamed selectors), and a `default` `Object`
 extension installs no instance member in either runtime.
+
+Verification at `7bce515e` (master `313a51b3`; the rebase onto `fd5c185f`
+adds one documentation file), same toolchain: combined
+`bbp-macros,quickjs` with `LIGHT_CLJS_STRESS_SEEDS=12` passes the
+library's 368 tests and `bbp_macros`' 169, the Pants build's `bbp_macros`
+167 (one ignored each); engine all-targets 2,196 and seven doctests; V8
+build nextest 2,133 (217.6 s; only the worktree
+`playground_crate_checks_for_wasm32` diagnostic fails); Clippy and
+formatting as before. Five alternating 200k pairs against a fresh V8
+release build of master `fd5c185f`, load average about 4–7 from peers:
+median **7.52 s on master and 7.42 s on the branch** (ranges 7.39–7.87
+and 7.33–7.73 s), all ten outputs byte-identical. Penpot `app.render` from
+the Pants build at jobs 1 (14.17 s wall, 408,911,872 bytes maximum RSS)
+and jobs 4 (9.63 s, 515,948,544 bytes) is byte-identical to the V8 build
+(2.13 s), SHA-256 `d352af3a…a8d9a3`.
