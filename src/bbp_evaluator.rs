@@ -1293,6 +1293,17 @@ impl BbpRuntime {
     pub fn evaluator(&self) -> Result<BbpEvaluator, EvalError> {
         BbpEvaluator::in_runtime(self.clone(), 0)
     }
+    /// Readers share executable code and the aggregate budget, while their
+    /// imported forms and generated spellings stay apart from macro tasks.
+    pub(crate) fn data_reader_evaluator(&self) -> Result<BbpEvaluator, EvalError> {
+        let mut evaluator = BbpEvaluator::shell(self.clone(), 0);
+        evaluator.bridge = Arc::new(Mutex::new(Bridge {
+            control: Some(self.0.control.clone()),
+            ..Default::default()
+        }));
+        evaluator.boot()?;
+        Ok(evaluator)
+    }
     /// A pool slot's evaluator: on an idle task context another slot parked,
     /// with the state of the view that parked it, or, if none is idle, on a
     /// fresh one.

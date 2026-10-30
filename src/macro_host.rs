@@ -1334,7 +1334,7 @@ impl MacroHost {
                 Some(session) => session
                     .shared()
                     .native_runtime(&self.evaluator_options)?
-                    .evaluator()?,
+                    .data_reader_evaluator()?,
                 None => crate::bbp_evaluator::BbpEvaluator::new(self.evaluator_options.clone())?,
             };
             self.prepare_compiler_evaluator(&evaluator)?;

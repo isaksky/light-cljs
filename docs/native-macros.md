@@ -43,6 +43,8 @@ services with those builds. Requests suspend the task before invoking its
 compiler callback, preserving the caller and initializer ancestry when VM
 steps move between worker threads. Reader definition gensyms retain the
 canonical emitted unit's identity; reader calls count apart from macro calls.
+Reader tasks keep their own import memo and gensym reservations while sharing
+the runtime's code and aggregate budget.
 Outside a namespace scope, reader gensyms skip imported symbols and earlier
 generated spellings. Reader results reject JavaScript `undefined`, including
 inside collections, literal payloads and metadata, at the original tag span;
@@ -53,7 +55,7 @@ A compilation retains one shared runtime and aggregate execution control. Each
 task has private function handles and mutable JavaScript state. Native forms and
 publishable closures cross rooted dependency boundaries; mutable Maps remain
 task-owned. Commands do not serialize forms, invoke a reader, or replay effects.
-Input nodes are memoized across the runtime's tasks by compiler Datum
+Macro input nodes are memoized across the runtime's macro tasks by compiler Datum
 identity through weak engine handles, with the Datum retained to prevent
 address reuse while its occurrence or raw native object is alive. Each imported node
 has an occurrence token; export checks the exact heap-and-generation object identity and returns

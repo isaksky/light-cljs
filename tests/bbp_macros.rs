@@ -57,6 +57,22 @@ fn native_reader_unscoped_gensyms_skip_input_symbols() {
             .unwrap();
         host.register_compiler_data_reader(Name::new(None, "prefix"), "(fn [_] (gensym \"r1\"))")
             .unwrap();
+        // A reader's unscoped reservations belong to its own task even
+        // when it shares a runtime with a previously compiled namespace.
+        let root = temp_dir::TempDir::new("reader-reservations");
+        std::fs::write(
+            root.join("warm.cljs"),
+            "(ns warm) (defmacro imported [x] x) (imported 'r2)",
+        )
+        .unwrap();
+        light_cljs::compiler::analyze_namespace_entry(
+            "warm",
+            &[root.path().clone()],
+            &mut host,
+            light_cljs::analyzer::AnalysisOptions::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
         ["#tag r1", "#tag r3", "#tag ns/r5", "#prefix nil", "#tag r1"]
             .into_iter()
             .chain(std::iter::repeat_n("#tag nil", 9))
