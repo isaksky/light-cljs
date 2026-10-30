@@ -83,7 +83,6 @@ pub(crate) fn native(name: &str, native_backend: bool) -> bool {
                 | "unchecked-min"
                 | "hash-map"
                 | "selector"
-                | "simple-benchmark"
         )
 }
 
@@ -2137,7 +2136,11 @@ pub(crate) fn rejection(name: &str, call: &Datum, namespace: &str, nodes: usize)
         }
         "defmulti" => {
             let mut rest = args.get(1..).unwrap_or_default();
-            if matches!(rest.first().map(Datum::kind), Some(DatumKind::String(_))) {
+            // The engine's `string?` holds for a character too.
+            if matches!(
+                rest.first().map(Datum::kind),
+                Some(DatumKind::String(_) | DatumKind::Character(_))
+            ) {
                 rest = &rest[1..];
             }
             if rest.first().is_some_and(is_map) {
@@ -2511,16 +2514,24 @@ mod tests {
             );
             expanded
         };
-        // The Pants build runs no definition to compare with: it reports
-        // what the definition would ([`rejection`]), so a call native
-        // expansion declines there must be one the definition rejects.
+        // The Pants build runs the definition in its own runtime, whose
+        // conversions place scalars by their own occurrences rather than
+        // the V8 build's: compare the forms' data, not their spans; a call
+        // native expansion declines runs the definition there.
         #[cfg(not(any(light_quickjs, light_v8)))]
         match (&expanded, &script) {
-            (Some(_), Err(_)) => return,
-            (None, Err(error)) if !left => assert!(
-                !error.contains("does not expand this call"),
-                "{source}: {error}"
-            ),
+            (Some(native), Ok(script)) => {
+                assert!(
+                    native.data().value_eq(&script.data()),
+                    "{source}: native {:?}\nengine {:?}",
+                    native.data(),
+                    script.data()
+                );
+                return;
+            }
+            // Or it fails where the Pants runtime still lacks what the
+            // definition uses (light-cljs-612) or converts less deeply.
+            (Some(_), Err(_)) | (None, Ok(_)) => return,
             _ => {}
         }
         match (expanded, script) {

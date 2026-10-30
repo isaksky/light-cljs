@@ -421,6 +421,14 @@ static UNITS: std::sync::OnceLock<[BootstrapUnit; 2]> = std::sync::OnceLock::new
 #[cfg(feature = "bbp-macros")]
 static NATIVE_JS_OBJ: std::sync::OnceLock<CodeIdentity> = std::sync::OnceLock::new();
 fn compile(source: &str, host: &mut MacroHost) -> Result<BootstrapUnit, String> {
+    compile_with(source, host, crate::emitter::emit_js_unit)
+}
+/// [`compile`], emitting the program with `emit`.
+fn compile_with(
+    source: &str,
+    host: &mut MacroHost,
+    emit: fn(&crate::Program) -> String,
+) -> Result<BootstrapUnit, String> {
     let syntax = crate::parse(source).map_err(|e| e.to_string())?;
     let program = crate::analyze_with_macros(source, &syntax, host).map_err(|e| {
         let loc = crate::LineIndex::new(source).line_column(e.span.start);
@@ -447,7 +455,7 @@ fn compile(source: &str, host: &mut MacroHost) -> Result<BootstrapUnit, String> 
         })
         .collect();
     Ok(BootstrapUnit {
-        source: crate::emitter::emit_js_unit(&program),
+        source: emit(&program),
         environment_reads,
     })
 }
@@ -483,6 +491,129 @@ fn definitions(
         }
     }
     Ok(definitions)
+}
+/// The Pants build's core macro definitions: for each core macro, the code
+/// identity under which a task keeps its function, the source a task
+/// evaluates it from, and whether it reads `&env`. They are compiled once
+/// per process, as the other engines' bootstrap units are, and emitted as
+/// the Pants build emits source macros.
+#[cfg(feature = "bbp-macros")]
+type NativeDefinitions = HashMap<&'static str, (CodeIdentity, std::sync::Arc<str>, bool)>;
+#[cfg(feature = "bbp-macros")]
+fn native_definitions() -> Result<&'static NativeDefinitions, String> {
+    static DEFINITIONS: std::sync::OnceLock<NativeDefinitions> = std::sync::OnceLock::new();
+    if let Some(definitions) = DEFINITIONS.get() {
+        return Ok(definitions);
+    }
+    let _names = crate::generated_names::enter_namespace(crate::generated_names::BOOTSTRAP_SCOPE);
+    let _unlogged = crate::generated_names::unlogged();
+    let mut host = MacroHost::new();
+    host.tables.bootstrap_seed = true;
+    let compile = |source: &str, host: &mut MacroHost| {
+        compile_with(source, host, |program| {
+            crate::emitter::emit_native_macro_unit(program, true, &[])
+        })
+    };
+    let getter = compile("(fn* [m k] (get m k))", &mut host)?;
+    let core = compile(&native_core_source()?, &mut host)?;
+    let sequence = compile(
+        &format!("{SEQUENCES}\n{{\"for\" sequence-for \"doseq\" sequence-doseq}}"),
+        &mut host,
+    )?;
+    let mut definitions = HashMap::new();
+    for (name, unit) in MACROS
+        .iter()
+        .map(|(name, _)| (*name, &core))
+        .chain([("for", &sequence), ("doseq", &sequence)])
+    {
+        let declared = if matches!(name, "for" | "doseq") {
+            format!("sequence-{name}")
+        } else {
+            format!("macro-{}", MACROS.iter().find(|p| p.0 == name).unwrap().1)
+        };
+        let source = format!(
+            "rt => ({})(rt)(({})(rt), {name:?})",
+            getter.source, unit.source
+        );
+        definitions.insert(
+            name,
+            (
+                CodeIdentity::next(),
+                std::sync::Arc::from(source),
+                unit.environment_reads
+                    .get(&declared)
+                    .copied()
+                    .unwrap_or(true),
+            ),
+        );
+    }
+    // Another thread may have set them first, from the same text.
+    let _ = DEFINITIONS.set(definitions);
+    Ok(DEFINITIONS.get().unwrap())
+}
+/// The core macro definitions as the Pants build runs them. The V8 build's
+/// engine decodes a macro's map and set arguments into its own maps and
+/// sets: keys equal there merge, and more than eight entries take the
+/// order of their hashes. The Pants build's runtime receives them as
+/// literal forms in reader order. Where a definition computes from them
+/// (`simple-benchmark` printing them, `selector` and `defmulti` merging
+/// into them) it uses them decoded as the engine does (`macro-decoded`);
+/// what it returns of them unchanged stays as it was.
+#[cfg(feature = "bbp-macros")]
+fn native_core_source() -> Result<String, String> {
+    const DECODED: &str = r#"
+(defn macro-decoded [x]
+  (let [decoded (cond
+                  (map? x) (into {} (map (fn [entry] [(macro-decoded (key entry)) (macro-decoded (val entry))]) x))
+                  (set? x) (into #{} (map macro-decoded x))
+                  (vector? x) (mapv macro-decoded x)
+                  (seq? x) (apply list (map macro-decoded x))
+                  :else x)]
+    (if (and (not (identical? decoded x)) (meta x)) (with-meta decoded (meta x)) decoded)))
+"#;
+    // Where a definition computes from its arguments' maps: what
+    // `simple-benchmark` prints, the map `selector` merges its names into
+    // and the metadata `defmulti` merges.
+    const DECODE: [(&str, &str); 5] = [
+        ("(pr-str bindings)", "(pr-str (macro-decoded bindings))"),
+        ("(pr-str expr)", "(pr-str (macro-decoded expr))"),
+        (
+            "(pr-str (last options))",
+            "(pr-str (macro-decoded (last options)))",
+        ),
+        ("(merge m names)", "(merge (macro-decoded m) names)"),
+        (
+            "(merge (meta name) attributes",
+            "(merge (macro-decoded (meta name)) (macro-decoded attributes)",
+        ),
+    ];
+    let mut core = core_source();
+    for (from, to) in DECODE {
+        if core.matches(from).count() != 1 {
+            return Err(format!("bootstrap definitions no longer spell {from}"));
+        }
+        core = core.replace(from, to);
+    }
+    let start = core
+        .find("(defmacro macro-simple-benchmark")
+        .ok_or("missing bootstrap declaration macro-simple-benchmark")?;
+    Ok(format!("{}{DECODED}{}", &core[..start], &core[start..]))
+}
+/// Where the core macro `name`'s bootstrap definition is.
+#[cfg(feature = "bbp-macros")]
+fn definition_span(name: &str) -> Result<crate::compiler_data::SourceSpan, String> {
+    let (names, declared): (&[&str], _) = if matches!(name, "for" | "doseq") {
+        (&["for"], format!("sequence-{name}"))
+    } else {
+        let declared = MACROS
+            .iter()
+            .find(|p| p.0 == name)
+            .ok_or_else(|| format!("core macro {name} is not a compiler declaration"))?;
+        (&[], format!("macro-{}", declared.1))
+    };
+    definitions(names)?
+        .remove(&declared)
+        .ok_or_else(|| format!("missing bootstrap declaration {declared}"))
 }
 fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> Result<(), String> {
     let definitions = definitions(names)?;
@@ -696,38 +827,99 @@ impl MacroHost {
     /// ([`crate::native_core_macros::rejection`]), or, where that cannot
     /// be told, that the Pants build does not expand the call.
     #[cfg(feature = "bbp-macros")]
-    fn reject_core_call(&self, name: &str, call: &Form) -> String {
-        let declared = if matches!(name, "for" | "doseq") {
-            format!("sequence-{name}")
-        } else {
-            match MACROS.iter().find(|p| p.0 == name) {
-                Some((_, declared)) => format!("macro-{declared}"),
-                None => return format!("core macro {name} is not a compiler declaration"),
-            }
-        };
-        let names: &[&str] = if matches!(name, "for" | "doseq") {
-            &["for"]
-        } else {
-            &[]
-        };
-        let origin = ExpansionOrigin {
-            macro_name: Name::new(Some("cljs.core"), name),
-            call: call.span(),
-            definition: definitions(names)
-                .ok()
-                .and_then(|mut definitions| definitions.remove(&declared)),
-            helpers: vec![],
-        };
+    fn reject_core_call(&self, name: &str, call: &Form) -> Option<String> {
         let message = crate::native_core_macros::rejection(
             name,
             &call.data(),
             "cljs.user",
             self.limits.generated_nodes,
-        )
-        .unwrap_or_else(|| {
-            format!("big-boy-pants-js: unsupported operation: the Pants build does not expand this call of {name}")
-        });
-        crate::macro_host::expansion_failure(&origin, message)
+        )?;
+        let origin = ExpansionOrigin {
+            macro_name: Name::new(Some("cljs.core"), name),
+            call: call.span(),
+            definition: definition_span(name).ok(),
+            helpers: vec![],
+        };
+        Some(crate::macro_host::expansion_failure(&origin, message))
+    }
+    /// Outside every scope of generated names the V8 build's engine runs
+    /// the core macro `name`'s definition, converting the call's
+    /// environment `env` first unless the definition never reads it and it
+    /// can be elided ([`elidable_map_environment`]); a regular expression
+    /// literal there that does not compile fails the call. The Pants build,
+    /// which expands the call natively without the environment, checks the
+    /// same literals with its engine's parser.
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn check_core_environment(
+        &mut self,
+        name: &str,
+        call: &Form,
+        env: &Datum,
+    ) -> Result<(), String> {
+        self.ensure_bootstrap(name)?;
+        let control = self.engine.bootstrap.as_ref().unwrap().evaluator.control();
+        let mut remaining = self.limits.generated_nodes / 2;
+        // Only `defmulti`'s definition reads `&env`.
+        if name != "defmulti"
+            && elidable_map_environment(
+                env,
+                &mut remaining,
+                128,
+                &control,
+                &self.engine.elidable_sizes,
+            )
+        {
+            return Ok(());
+        }
+        fn invalid(data: &Datum) -> Option<String> {
+            use crate::compiler_data::{CompilerLiteralKind, DatumKind};
+            match data.kind() {
+                DatumKind::CompilerLiteral {
+                    kind: CompilerLiteralKind::Regex,
+                    payload,
+                } => {
+                    let DatumKind::String(text) = payload.kind() else {
+                        return None;
+                    };
+                    // `rePattern`: a leading `(?flags)` group gives the flags.
+                    let text = String::from_utf16_lossy(text);
+                    let (flags, pattern) = text
+                        .strip_prefix("(?")
+                        .and_then(|rest| rest.split_once(')'))
+                        .filter(|(flags, _)| flags.bytes().all(|b| b"dgimsuxy".contains(&b)))
+                        .unwrap_or(("", &text));
+                    let js = |s: &str| {
+                        big_boy_pants_js::JsString::from_code_units(
+                            s.encode_utf16().collect::<Vec<_>>(),
+                        )
+                    };
+                    big_boy_pants_js::regexp::parse::validate_syntax(&js(pattern)?, &js(flags)?)
+                        .err()
+                        .map(|error| {
+                            format!(
+                                "SyntaxError: Invalid regular expression: /{pattern}/: {}",
+                                error.message
+                            )
+                        })
+                }
+                DatumKind::CompilerLiteral { payload, .. } => invalid(payload),
+                DatumKind::Collection { children, .. } => children.iter().find_map(invalid),
+                _ => None,
+            }
+            .or_else(|| data.metadata().and_then(|metadata| invalid(&metadata)))
+        }
+        match invalid(env) {
+            None => Ok(()),
+            Some(message) => Err(crate::macro_host::expansion_failure(
+                &ExpansionOrigin {
+                    macro_name: Name::new(Some("cljs.core"), name),
+                    call: call.span(),
+                    definition: definition_span(name).ok(),
+                    helpers: vec![],
+                },
+                message,
+            )),
+        }
     }
     pub(crate) fn expand_core_javascript(
         &mut self,
@@ -762,17 +954,38 @@ impl MacroHost {
                 );
             }
         }
+        // On the Pants build a call native expansion declines that the
+        // definition rejects fails as the V8 build's engine reports it; any
+        // other runs the definition, installed in the runtime on first use.
+        #[cfg(feature = "bbp-macros")]
+        {
+            let bootstrap = self.engine.bootstrap.as_mut().unwrap();
+            if bootstrap.evaluator.native_forms() && !bootstrap.functions.contains_key(name) {
+                if let Some(rejected) = self.reject_core_call(name, call) {
+                    return Err(rejected);
+                }
+                let (identity, source, reads_environment) = native_definitions()?
+                    .get(name)
+                    .ok_or_else(|| format!("core macro {name} is not a compiler declaration"))?;
+                let bootstrap = self.engine.bootstrap.as_mut().unwrap();
+                bootstrap.functions.insert(
+                    name.into(),
+                    CompiledMacro {
+                        function: MacroFunction::NativeDefinition(*identity, source.clone()),
+                        definition: definition_span(name)?,
+                        metadata: None,
+                        generation: 0,
+                        reads_environment: *reads_environment,
+                        environment_keys: None,
+                    },
+                );
+            }
+        }
         let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
         if engine.is_none()
             && let Some(session) = self.session_handle()
         {
             session.attach(&bootstrap, self)?;
-        }
-        // The Pants build runs no definition: a call native expansion
-        // declines fails as its definition fails in the V8 build's engine.
-        #[cfg(feature = "bbp-macros")]
-        if bootstrap.evaluator.native_forms() && !bootstrap.functions.contains_key(name) {
-            return Err(self.reject_core_call(name, call));
         }
         let declaration = bootstrap
             .functions
@@ -878,6 +1091,11 @@ enum MacroFunction {
     /// task, including a producer analyzing while the bootstrap task waits.
     #[cfg(feature = "bbp-macros")]
     NativeJsObj(CodeIdentity),
+    /// A core macro's bootstrap definition on the Pants build, which each
+    /// task evaluates from its source (`rt => ...`) once, under the identity
+    /// ([`native_definitions`]).
+    #[cfg(feature = "bbp-macros")]
+    NativeDefinition(CodeIdentity, std::sync::Arc<str>),
     /// Evaluated in the engine that declared it; a source macro's also with
     /// the code that declared it, which a worker's engine evaluates itself.
     Ready(
@@ -978,6 +1196,8 @@ impl CompiledMacro {
         let installed = match &self.function {
             #[cfg(feature = "bbp-macros")]
             MacroFunction::NativeJsObj(_) => return self.foreign_function(engine, binding),
+            #[cfg(feature = "bbp-macros")]
+            MacroFunction::NativeDefinition(..) => return self.foreign_function(engine, binding),
             MacroFunction::Ready(function, _) => return Ok(function.id),
             MacroFunction::Installed(installed) => installed,
         };
@@ -1016,6 +1236,12 @@ impl CompiledMacro {
                     .source_macro_function(identity.0, "rt => rt.compilerForms.jsObj")
                     .map_err(|e| e.to_string());
             }
+            #[cfg(feature = "bbp-macros")]
+            MacroFunction::NativeDefinition(identity, source) => {
+                return engine
+                    .source_macro_function(identity.0, source)
+                    .map_err(|e| e.to_string());
+            }
             MacroFunction::Ready(_, Some(code)) => code.identity.0,
             // A bootstrap macro, which the worker's own bootstrap holds.
             MacroFunction::Ready(function, None) => return Ok(function.id),
@@ -1042,6 +1268,8 @@ impl CompiledMacro {
             MacroFunction::Ready(_, None) => unreachable!("bootstrap macros returned above"),
             #[cfg(feature = "bbp-macros")]
             MacroFunction::NativeJsObj(_) => unreachable!("native bootstrap returned above"),
+            #[cfg(feature = "bbp-macros")]
+            MacroFunction::NativeDefinition(..) => unreachable!("native bootstrap returned above"),
         };
         crate::reader_registration::register(engine, tables).map_err(|e| e.to_string())?;
         let source = format!("rt => rt.core.macroReaderFunction(({})(rt))", unit);
@@ -1841,23 +2069,30 @@ mod tests {
         assert_eq!(evaluator.number(value).unwrap(), 42.0);
     }
 
-    // The core macro's definition converts the environment, which only
-    // QuickJS or V8 runs; the Pants build expands `doto` without it.
-    #[cfg(any(light_quickjs, light_v8))]
     #[test]
     fn unused_core_environment_keeps_literal_conversion_failures() {
-        let mut host = MacroHost::new();
-        let error = crate::compile_with_macros(
-            r#"(defmacro ignored {:probe #"["} [] nil) (doto 42)"#,
-            &mut host,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("macro cljs.core/doto"), "{error}");
-        assert!(
-            error.contains("RegExp") || error.contains("regular expression"),
-            "{error}"
-        );
+        let check = |mut host: MacroHost| {
+            let error = crate::compile_with_macros(
+                r#"(defmacro ignored {:probe #"["} [] nil) (doto 42)"#,
+                &mut host,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("macro cljs.core/doto"), "{error}");
+            assert!(
+                error.contains("RegExp") || error.contains("regular expression"),
+                "{error}"
+            );
+        };
+        check(MacroHost::new());
+        // The Pants build expands `doto` natively and checks the
+        // environment's literals itself (light-cljs-611).
+        #[cfg(feature = "bbp-macros")]
+        {
+            let mut host = MacroHost::new();
+            host.use_native_macros();
+            check(host);
+        }
     }
 
     /// A function evaluated through the handle a callback receives, which is

@@ -46,6 +46,57 @@ fn unscoped_selector_and_simple_benchmark_expand() {
     );
 }
 
+/// Prints, from a `simple-benchmark` `:print-fn`, its line up to the run
+/// count, which holds the bindings and expression as the definition printed
+/// them.
+const PRINTED: &str = r#"(def p (fn [line] (js/console.log (first (.split line " runs")))))"#;
+
+/// Calls whose shape native expansion leaves to the definition expand as
+/// the V8 build's engine expands them, outside a namespace and in one.
+#[test]
+fn valid_declined_core_calls_expand_like_v8() {
+    let source = format!(
+        r#"{PRINTED}
+        (simple-benchmark [s #{{3 1 2 :x "y"}}] (count s) 1 :print-fn p)
+        (defmulti area \a :shape)
+        (defmethod area :sq [x] 4)
+        (js/console.log (area {{:shape :sq}}) (:doc (meta (var area))))
+        (js/console.log (pr-str ((selector {{:keys [a] :strs [b] :syms [c] :x/keys [d] :y/keys [e] :z/keys [f] :w/keys [g] :or {{a 0}} :select s}}) {{:a 1 "b" 2 :x/d 3}})))"#
+    );
+    let expected = "[s #{3 1 2 :x \"y\"}], (count s), 1\n4 a\n{:a 1, :x/d 3, \"b\" 2}\n";
+    assert_eq!(output(&source), expected);
+    let root = crate::temp_dir::TempDir::new("declined-core-calls");
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(
+        root.join("app/main.cljs"),
+        format!("(ns app.main)\n{source}\n"),
+    )
+    .unwrap();
+    let js = light_cljs::compile_namespace("app.main", &[root.path().clone()])
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(execute(&js), expected);
+}
+
+/// `simple-benchmark` prints its bindings and expression as the engine
+/// decodes them (keys equal there merge, larger maps and sets take their
+/// hashes' order, negative zero stays `-0.0`) and as the compile-time
+/// printer settings a source macro set say.
+#[test]
+fn benchmark_printing_matches_the_engine() {
+    let source = format!(
+        r#"{PRINTED}
+        (simple-benchmark [m {{\a 1 "a" 2}} n {{1 :i 1.0 :d}} z -0.0] -0.0 1 :print-fn p)
+        (simple-benchmark [m {{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9}} s #{{3 1 2 :x "y"}}] m 1 :print-fn p)
+        (defmacro shorten [] (set! *print-length* 1) nil)
+        (shorten)
+        (simple-benchmark [x 1 y 2] [x y] 1 :print-fn p)"#
+    );
+    assert_eq!(
+        output(&source),
+        "[m {\"a\" 2} n {1 :d} z -0.0], -0.0, 1\n[m {:e 5, :g 7, :c 3, :h 8, :b 2, :d 4, :f 6, :i 9, :a 1} s #{3 1 2 :x \"y\"}], m, 1\n[x ...], [x ...], 1\n"
+    );
+}
+
 /// `light-cljs --compile FILE` with core macros and no namespace.
 #[test]
 fn compile_file_expands_core_macros_outside_a_namespace() {

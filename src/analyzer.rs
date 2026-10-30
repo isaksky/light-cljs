@@ -11393,6 +11393,40 @@ impl Analyzer<'_> {
             let form = self
                 .compiler_read_form(call)
                 .map_err(|e| error(e.to_string()))?;
+            // Outside every scope the V8 build converts the environment
+            // first; the Pants build checks what that conversion rejects.
+            #[cfg(feature = "bbp-macros")]
+            if !crate::generated_names::scoped() && self.macro_host.native_macro_backend() {
+                let locals = self
+                    .env
+                    .scopes
+                    .iter()
+                    .flat_map(|s| s.iter())
+                    .map(|id| {
+                        let (kind, argument) =
+                            self.local_kinds.get(id).copied().unwrap_or(("let", None));
+                        (self.program.locals[id.0].name.clone(), id.0, kind, argument)
+                    })
+                    .collect::<Vec<_>>();
+                let location = self
+                    .source_line_column(self.syntax.nodes[call.0].span.start)
+                    .unwrap();
+                let environment = self
+                    .macro_host
+                    .compiler_environment(
+                        self.namespace,
+                        context,
+                        &locals,
+                        self.aliases,
+                        self.requires,
+                        location,
+                    )
+                    .map_err(error)?;
+                let environment = self.array_environment(environment).map_err(error)?;
+                self.macro_host
+                    .check_core_environment(core_name, &form, &environment)
+                    .map_err(error)?;
+            }
             if let Some(expanded) = self
                 .macro_host
                 .expand_core_native(

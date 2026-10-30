@@ -172,10 +172,9 @@ feature.
 
 ## Core macros on the Pants build (light-cljs-611)
 
-The Pants build expands every core macro call in Rust
-(src/native_core_macros.rs); it has no core macro definitions to run. Where
-the V8 build's engine runs a definition instead, the Pants build gives the
-same result:
+The Pants build expands core macro calls in Rust
+(src/native_core_macros.rs). Where the V8 build's engine runs a definition
+instead, the Pants build gives the same result:
 
 - **Outside a scope of generated names** (`analyze`, `light-cljs --compile
   FILE` or `--text` without `ns`, a REPL form), the names a core macro
@@ -192,20 +191,35 @@ same result:
   argument, the depth or the node limit) at the path of the first node it
   refuses. A missing argument is found by building the expansion with a
   stand-in for it. 60 rejected calls give the V8 build's text byte for byte.
-- **`selector` and `simple-benchmark`**, which only their definitions
-  expanded, expand natively. `simple-benchmark` prints its bindings and
-  expression as the engine's `pr-str` does.
+  Before a call outside a scope expands, the environment the V8 build's
+  engine would convert (one it cannot elide, or any for `defmulti`) is
+  checked for regular expression literals that do not compile, which fail
+  the call there.
+- **Calls native expansion declines that the definition accepts** (a
+  `selector` map of more than eight entries, a `defmulti` with a character
+  docstring or more than eight metadata keys, every `simple-benchmark`, a
+  `for` or `doseq` past the native expander's bounds) run the definition in
+  the Pants build's runtime. The definitions are compiled once per process
+  and emitted as the Pants build emits source macros; each task evaluates
+  one the first time it needs it. The V8 build's engine decodes a macro's
+  map and set arguments into its own collections (keys equal there merge,
+  more than eight entries take their hashes' order) while the Pants runtime
+  receives reader-order literal forms, so where a definition computes from
+  them (`simple-benchmark` printing them, `selector` and `defmulti`
+  merging into them) the Pants build's copy decodes them first
+  (`macro-decoded`). `simple-benchmark` thus prints with the runtime's
+  printer, honouring `*print-length*` and the other settings a source macro
+  set, and keeps `-0.0`.
 
 The V8 build is unchanged but for `(for [] x)`, which now expands natively
 there too, to the form its definition gives (both then fail analysis with
-"unsupported binding form"). Three kinds of call are still left: a `for` or
-`doseq` whose expansion the native expander bounds (more than 128 bindings,
-or nested and modified past its name budget), a `defmulti` its definition
-accepts but the native one declines (a character docstring, more than eight
-metadata keys), and a `selector` map or `simple-benchmark`
-form the engine would order by hash or print in its own number format. On
-the Pants build these fail with "the Pants build does not expand this call of
-NAME".
+"unsupported binding form"). A `doseq` past the native expander's name budget
+is one the V8 build rejects too, at its default node limit (its expansion's
+conversion runs out, or the expansion exceeds the generated-node limit); on
+the Pants build its definition needs `core.nnext`, which the runtime lacks
+(light-cljs-612), and is too slow there to reach that limit. With a raised
+`--macro-nodes`, the V8 build can expand such a `doseq` where the Pants build
+cannot yet.
 
 ## Supported boundary
 
