@@ -212,6 +212,9 @@ struct Raw {
     elements: Vec<(u32, bool)>,
     /// An array's or allocated String wrapper's virtual `length`.
     length: bool,
+    /// A shareable regex value's non-enumerable `lastIndex`
+    /// (`crate::regexp::shared`).
+    last_index: bool,
     named: Vec<(PropertyKey, bool)>,
     /// A struct's field member names and record slots: enumerable own
     /// data properties the key table never interned.
@@ -424,6 +427,11 @@ fn collect(heap: &Heap, object: &HeapObject, task: TaskId) -> Result<Raw, Fault>
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => Err(Fault::Internal(
             "a function's keys are read from its property record",
         )),
+        // A shareable regex value's one own property (`crate::regexp::shared`).
+        HeapObject::Form(f) if f.regex_cell().is_some() => Ok(Raw {
+            last_index: true,
+            ..Raw::default()
+        }),
         HeapObject::Form(f) => Ok(Raw {
             virtual_names: crate::collections::form::struct_own_keys(f),
             ..Raw::default()
@@ -471,6 +479,12 @@ fn order(heap: &Heap, raw: Raw, filter: KeyFilter) -> Result<ChargedKeys, Fault>
     if raw.length && wanted(false) {
         names.push(OwnKey {
             key: Key::Name(JsString::from("length")),
+            enumerable: false,
+        });
+    }
+    if raw.last_index && wanted(false) {
+        names.push(OwnKey {
+            key: Key::Name(JsString::from("lastIndex")),
             enumerable: false,
         });
     }

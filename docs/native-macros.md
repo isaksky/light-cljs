@@ -308,8 +308,10 @@ facade fixture compares exact UTF-16 and property ordering with QuickJS at jobs
 
 Descriptors remain opaque compiler values, rather than an implementation of all
 JavaScript container, Date, UUID and queue operations. Regex core matching obtains
-a task-owned RegExp view. Unquoted regex and instant expressions retain their
-existing JavaScript evaluation; raw RegExp/Date result export remains unsupported.
+a task-owned RegExp view. Unquoted regex expressions and `re-pattern` results
+are regex descriptors too (light-cljs-563, below). Unquoted instant expressions
+retain their existing JavaScript evaluation; raw RegExp/Date result export
+remains unsupported.
 JS containers and regexes retain identity equality and hashing. UUIDs compare
 their lowercase contents, instants their clipped epoch values, and queues their
 elements, with the same hashes as equal sequential collections. Canonical scalar
@@ -4258,3 +4260,220 @@ and 7.33–7.73 s), all ten outputs byte-identical. Penpot `app.render` from
 the Pants build at jobs 1 (14.17 s wall, 408,911,872 bytes maximum RSS)
 and jobs 4 (9.63 s, 515,948,544 bytes) is byte-identical to the V8 build
 (2.13 s), SHA-256 `d352af3a…a8d9a3`.
+
+## Shareable regex values (light-cljs-563, 2026-10-29)
+
+instaparse's GLL trampoline stores parse thunks over parser maps whose
+`:regexp` values come from `re-pattern` in a compile-time atom, and anchors
+each with `(js/RegExp. (str "^" (.-source r)) flags)`. Native macro units made
+both task-owned JavaScript `RegExp` objects, so the atom rejected the store with
+an uncatchable `Atom(NotShareable)`.
+
+### One object in both worlds
+
+A native regex value follows light-cljs-558's invariant: it is **one object
+in ClojureScript and JavaScript, and no boundary converts it**. Native
+`re-pattern`, unquoted regex literals, `(js/RegExp. …)`, `(js/RegExp …)`,
+construction through a local alias (`(let [R js/RegExp] (R. …))`, checked when
+it runs by the runtime's `nativeConstruct`) and the constructor called as a
+first-class value (`(R "a")`, `(apply js/RegExp …)`, `(mapv js/RegExp …)`:
+the runtime's `invoke`/`prepareInvoke` and the emitted invoke adapters
+recognize it) return a `regex` compiler-literal form made by the engine's
+`formRegex(source, flags)` intrinsic. Each form evaluates the constructor
+before its operands and promotes only the intrinsic `RegExp`; a global
+`RegExp` an operand replaces does not change the call, and a replaced global
+is called or constructed as it is, as in the QuickJS reference. Raw JavaScript (`js*`, or an explicit
+`(.call js/RegExp …)`) still makes an ordinary task-owned RegExp. The form is
+persistent and shareable, so atoms, published helpers and closures hold it,
+and the engine treats it as a RegExp (`crates/big-boy-pants-js/src/regexp/shared.rs`):
+
+- `crate::regexp::object::data` answers its compiled program (compiled once,
+  lazily for a quoted literal from the bridge), so `exec`, `test`, the flag and
+  `source` getters, `Symbol.split`/`replace`/`match`/`matchAll`/`search`, the
+  RegExp constructor's brand check and `RegExp(r)`'s identity take it as it is.
+- A property read continues at `RegExp.prototype` for every key, symbols
+  included, and `Object.getPrototypeOf` and `instanceof` see that prototype.
+- `Object.prototype.toString` reports `[object RegExp]`.
+- It is not extensible (a host RegExp is), since a shared value cannot take
+  properties; its one own property is `lastIndex`.
+
+`nativeInterop` passes it through (before 558's rejection of other non-struct
+forms), `js*` operands are emitted as written, and `instance?`, `regexp?`,
+printing (`#"source"`), `str` (`/source/flags`), identity equality and hashing
+read the form itself. So `(identical? r (.valueOf r))`, `(identical? r (js*
+"~{}" r))`, a map lookup with what a JavaScript function returns for `r`, and
+an atom holding it all behave as in QuickJS. The payload is the legacy export
+text, `(?flags)source`, so a macro that returns a regex emits the same literal
+as QuickJS and V8; the legacy export cannot spell `v`, so a Unicode-sets regex
+exports without it, as in QuickJS, while the form keeps matching with it. An
+invalid pattern still throws the RegExp `SyntaxError` at construction. A RegExp
+that `js*` code creates (or a Date) is still a mutable host object that an
+atom rejects. Nothing changes in `src/js_runtime.js` or in default (V8)
+emission.
+
+### The `lastIndex` rule
+
+**Only a regex without the `g` and `y` flags is a shared value, and its
+`lastIndex` is always 0.** That is the whole rule; no publication, task or
+initializer changes a regex value.
+
+It needs no per-task state because a RegExp's only state is `lastIndex`, and
+ECMAScript moves it only for global or sticky regexes: `RegExpBuiltinExec`
+reads it and writes it only with `g` or `y`; `search` writes it only when it
+is not 0; `split` and `matchAll` match on a copy; `replace` and `match` reset
+it only for a global regex. So a non-global, non-sticky regex that never
+leaves 0 is exactly what legacy code observes, in every task and at every
+`--jobs`. Writing 0 (the reset idiom) is accepted and changes nothing;
+writing any other value, by assignment or `Object.defineProperty`, is a
+`TypeError` (`unsupported operation: a shared regex value's lastIndex stays
+0`), where a legacy RegExp would keep the value.
+
+A global or sticky regex (`(re-pattern "(?g)o")`, `(js/RegExp. "a" "y")`,
+`#"(?g)a"` unquoted) stays an ordinary task-owned RegExp, as in a legacy
+isolate: matching moves its `lastIndex` within the task, an atom store or a
+published closure over it fails with the usual `Atom(NotShareable)`
+publication error, and a helper whose value holds one is initialized per task,
+so every task sees the `lastIndex` its initializer left, as QuickJS does. A
+macro may return one; it exports as the legacy regex literal. The one
+exception is a quoted `#"(?g)…"` or `(?y)` literal in macro data, a `regex`
+form the bridge makes rather than a task: its `lastIndex` is task-local,
+starting at 0, and holds numbers only (another value is the same unsupported
+`TypeError`), so it matches statefully within a task, as the QuickJS
+reference's freshly imported RegExp does, and never carries state to another
+task. Each such task entry is charged to the byte budget and released, with
+its charge, when the task completes, fails, is cancelled or is dropped. A
+host regex a macro returns exports with its payload counted against the
+conversion limits like a `regex` form's.
+
+`lastIndex` stays a writable, non-enumerable, non-configurable own data
+property for reads, `Object.getOwnPropertyDescriptor`, `Object.defineProperty`
+(enumerable, configurable or accessor descriptors are rejected as on any
+RegExp; making it read-only is a `TypeError`, which a host RegExp allows),
+deletion (rejected) and key listing. An object that inherits from a regex
+value meets `RegExp.prototype`'s getter-only properties on writes and may
+shadow `lastIndex`. The value is not extensible, so it is sealed;
+`Object.isFrozen` is false and `Object.freeze` a `TypeError`. The first use of
+a quoted literal compiles its program once, concurrent first users waiting
+for it; a syntax error is kept, a failure for lack of byte budget is retried
+by the next use. The engine cell is charged to the byte budget.
+
+### Why not per-task `lastIndex`
+
+Review rounds 1 and 2 kept a `lastIndex` per task, starting from the value a
+helper initializer left, "settled" by a walk of each published helper value.
+Every escape path then needed its own settlement (an atom filled as an
+initializer side effect, a lazy sequence realized later), the walk raced
+collection through atom snapshots, and the task that ran an initializer
+inline saw its own writes while other tasks did not, so output could depend
+on scheduling. The rule above removes the state, the walk and the
+`publish_settled` entry point.
+
+### Why not a per-task view
+
+The first round made the descriptor inert and gave each task a RegExp *view*
+of it at interop and `js*` boundaries (a `nativeJsOperand` adapter chosen by
+the text around each `js*` hole). Review found what 558 had found for struct
+views: a view is a different object, so `.valueOf`, `js*` results and
+JavaScript functions returned something that missed map lookups, failed
+`identical?` and could not be stored in an atom; the `js*` adapter broke
+assignment targets (`(~{}) = 1`) and member callees (`~{}()` lost its
+receiver); consuming tasks rebuilt views from source and flags, losing the
+`lastIndex` an initializer left; `(js/RegExp "a")`, a local alias and the `v`
+flag still made task-owned RegExps. The engine-level value removes the views,
+the adapter and the emitter's operand-position heuristic altogether.
+
+`native_regex_values_match_quickjs` compares matching, printing, identity,
+interop and exported regex results with QuickJS;
+`native_regex_interop_preserves_identity`,
+`native_js_templates_preserve_reference_semantics`,
+`native_regex_constructor_forms_publish` and
+`native_unicode_set_regexes_publish` cover the review's cases and each failed
+before the fix (round 2 adds alias, apply and `mapv` calls;
+`native_regex_constructor_calls_keep_macro_argument_identity` failed before
+round 3 unwrapped constructor operands);
+`native_regex_inherited_writes_match_quickjs` (failed before round 2; round 4
+runs it on a shared regex too, which fails without the shared prototype
+write walk), `native_regexp_adapters_preserve_callee_before_arguments`
+(failed before round 4) and
+`native_regex_property_mutations` cover the property contract, the latter
+asserting the intentional differences on native output alone;
+`native_regex_values_drive_string_methods` adds `search`,
+`match`, `matchAll`, `replaceAll`, `split`, the prototype's generic `test` on
+a sticky regex, key listing and the property descriptor. `regex_helpers_and_parse_thunks_publish_at_seeded_pool_sizes`
+publishes eleven regex helpers (a twelfth, a global regex, is initialized per
+task) and pushes parse thunks onto an atom from two namespaces, and `published_regex_state_matches_quickjs` publishes eight
+(a local alias, alias and `apply` calls, a `v` regex, an atom an initializer
+filled as a side effect, a lazy sequence) and initializes three global or
+sticky helpers per task, read from two namespaces; both run at seeded jobs 1/2/4/8 and match QuickJS at each size.
+`atoms_still_reject_host_regexps` keeps the `Atom(NotShareable)` rejection of
+`js*` RegExps, Dates and global or sticky regexes. The engine's
+`regexp::shared` unit tests cover the constant `lastIndex`, the payload
+prefix, compilation after a heap-limit failure and one compilation for
+concurrent first uses; `gc_roots`'
+`quoted_regex_task_state_is_released_on_task_termination` and the evaluator's
+`host_regex_exports_obey_conversion_limits` failed before round 4.
+
+### Penpot progression and next boundary
+
+Fresh Pants-build (native-only) release builds after review round 3
+(`5d3d3162`, on master `4ad6fd92`), the five absolute read-only roots, every
+documented budget and `--compile --esm --optimize none --no-cache --stats`,
+on macOS arm64 with Homebrew Rust/Cargo 1.99.1 and Node 24.22.1, with a peer
+worker active.
+
+`app.main` passes the `:regexp` store and **still does not build natively**.
+At jobs 1 and 4 the exact first different failure is:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro expansion: while expanding precompile-cljs-grammar: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro instaparse.abnf/precompile-cljs-grammar: big-boy-pants-js: Atom(NotShareable): atom operation: cannot publish: value[0].capture(1) is a task-owned object (owned by task#5), which is not shareable (in anonymous at instruction 9 [atom_cas @ byte 23], task#5, world#0) at source 1131:33
+```
+
+(`task#1` at jobs 4.) A closure over an instance of a `deftype` with an
+`^:unsynchronized-mutable` field stored in an atom reproduces it: the parser's
+listener closures capture such instances. That is a mutable-type shareability
+question, not a regex one, filed as light-cljs-564. The failing runs take
+104.48 s wall, 100.57 s user and 715,898,880 bytes peak memory at jobs 1, and
+61.32 s wall, 73.33 s user and 914,915,328 bytes at jobs 4. There is no
+Pants-build main output to compare.
+
+`app.render` builds at jobs 1 (14.96 s wall, 14.35 s user, 430,833,664
+bytes) and 4 (10.05 s, 13.11 s user, 513,458,176 bytes). Both
+12,680,976-byte outputs match a fresh V8 release build of this branch
+(2.28 s) byte for byte, SHA-256
+`d352af3a2bb2d35f1447f3d4fc6592de609dc30e92c3424f7321afc607a8d9a3`.
+
+### V8 build check
+
+The changes are emitted only for native macro units (`native_forms`) and live
+in `src/bbp_runtime.js`, the engine and the native bridge, which the V8 build
+does not run. The fixture is regenerated with `bb
+benchmarks/generated-project/generate.bb target/g200k --seed 42 --lines 200k`
+(it prints `Generated 199129 nonblank lines (213984 physical, 9966430 bytes,
+15450 top-level forms), 450 worker namespaces`; the generator is unchanged
+since `5ed076d3`; round 1 measured a different checkout,
+`research/cljs-200k`, which prints `855170`). Five alternating pairs (master
+first) of V8 release builds of master `0ad2514f` (its later commit changes
+only benchmark documents; built from `git archive` in its own target
+directory) and this branch run `release bench --no-cache`, load average
+5.7-6.2 from a peer: median wall time **7.70 s on master and 7.78 s on the
+branch** (ranges 7.53-7.95 and 7.66-7.85 s, within run variation), peak
+memory 1,064-1,097 and 1,070-1,117 MB. All ten outputs keep SHA-256 prefix
+`1a75bc87b26f3121`, and the program prints `484264` for `42 3`.
+
+### Verification
+
+On macOS arm64 with Homebrew Rust/Cargo 1.99.1, Node 24.22.1 and the read-only
+ClojureScript pin `a5e94c98`, with `LIGHT_CLJS_STRESS_SEEDS=12`, at
+`5d3d3162`: the combined Pants/QuickJS-reference `bbp_macros` passes 178
+tests and Pants-only 176 (one existing ignored stress case each); engine
+all-targets 2,199 tests and the seven doctests. The combined library passes
+367 of 368: `concurrent_initializer_cycle_is_diagnosed_and_wakes_both_consumers`
+(no regex involved) timed out its five-second rendezvous at load average 5-6
+and then passed ten of ten runs alone. Full V8-build nextest
+(`LIGHT_CLJS_V8_CACHE=require`, `-j 8`) at `030a4dc5`, whose V8-build sources
+are final, passes 2,133 of 2,134 tests, failing only the existing worktree
+`playground_crate_checks_for_wasm32` diagnostic. Formatting and strict
+V8-build Clippy pass; combined all-target Clippy passes allowing only
+`deprecated`, `clippy::chunks_exact_to_as_chunks` and
+`clippy::byte_char_slices` after `-D warnings`; strict engine Clippy keeps
+only those nine baseline diagnostics.

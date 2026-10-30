@@ -2939,6 +2939,8 @@ pub(super) fn builtin_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fau
                 HeapObject::Plain(o) if o.is_error() => "Error",
                 HeapObject::Plain(o) if o.date_value().is_some() => "Date",
                 HeapObject::Plain(o) if o.regexp().is_some() => "RegExp",
+                // A shareable regex value (`crate::regexp::shared`).
+                HeapObject::Form(f) if f.regex_cell().is_some() => "RegExp",
                 HeapObject::Plain(o) => match o.primitive_data() {
                     Some(PrimitiveData::Number(_)) => "Number",
                     Some(PrimitiveData::String(_)) => "String",

@@ -170,6 +170,11 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => {
             Err(Fault::Internal("a function reached the integrity read"))
         }
+        // A shareable regex value is not extensible, but its `lastIndex`
+        // stays a writable 0 (`crate::regexp::shared`).
+        HeapObject::Form(f) if f.regex_cell().is_some() => {
+            Ok(matches!(level, Level::NonExtensible))
+        }
         // A native form is a frozen object: a struct's fields are
         // non-writable and non-configurable (`crate::vm::property`,
         // `STRUCT_FIELD`) and nothing can be added.
@@ -337,6 +342,11 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
         }
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => {
             Err(Fault::Internal("a function reached the integrity change"))
+        }
+        HeapObject::Form(f) if f.regex_cell().is_some() && matches!(level, Level::Frozen) => {
+            Err(Fault::TypeError(
+                "unsupported operation: a shared regex value's lastIndex stays writable".into(),
+            ))
         }
         // Already frozen: a native form, or no properties and not extensible.
         HeapObject::Form(_) => Ok(()),

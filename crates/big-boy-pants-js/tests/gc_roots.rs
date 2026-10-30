@@ -2560,3 +2560,51 @@ fn for_await_abrupt_exit_releases_iterator() {
         }
     }
 }
+
+/// A quoted global regex literal keeps a task-local `lastIndex`
+/// (light-cljs-563); each entry and its byte charge are released when the
+/// task terminates, so a rooted regex used by many short tasks does not
+/// accumulate state.
+#[test]
+fn quoted_regex_task_state_is_released_on_task_termination() {
+    // A byte limit makes the runtime account reservations.
+    let rt = Runtime::with_heap_policy(
+        big_boy_pants_js::VmLimits::default(),
+        big_boy_pants_js::HeapPolicy {
+            hard_limit_bytes: Some(64 << 20),
+            ..Default::default()
+        },
+    );
+    let make = |payload: &str| {
+        let code = compile(&format!(
+            "function f() {{ return __rt.formCompilerLiteral('regex', '{payload}'); }}"
+        ));
+        run_to_end(&rt.spawn(&code, &[]).unwrap())
+    };
+    // The same short task over a non-global regex, whose matching keeps no
+    // state, is the baseline.
+    let growth = |regex: &Rooted| {
+        let step = compile("function f(r) { r.exec('aa'); return r.lastIndex; }");
+        let run = |n: usize| {
+            for _ in 0..n {
+                let task = rt.spawn(&step, &[regex]).unwrap();
+                run_to_end(&task);
+            }
+            rt.collect().unwrap();
+            rt.heap_stats().managed_bytes
+        };
+        let first = run(1);
+        run(200).saturating_sub(first)
+    };
+    let plain = make("a");
+    let global = make("(?g)a");
+    // The first runs warm the runtime (programs, caches).
+    growth(&plain);
+    growth(&global);
+    let baseline = growth(&plain);
+    let writing = growth(&global);
+    assert!(
+        writing <= baseline + 1000,
+        "task-local regex state accumulated: {writing} bytes over the baseline {baseline}"
+    );
+}

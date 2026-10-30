@@ -3814,3 +3814,32 @@ fn stale_lazy_wakeups_do_not_resume_a_task_parked_on_a_new_dependency() {
             .is_some()
     );
 }
+
+/// A global regex stays a host RegExp (light-cljs-563); exporting it counts
+/// its payload as one more node, one level down, like a `regex` form.
+#[test]
+fn host_regex_exports_obey_conversion_limits() {
+    let rt = Runtime::new();
+    let code = big_boy_pants_js::frontend::compile_function(
+        "function f() { return new RegExp('a', 'g'); }",
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let RunOutcome::Complete(regex) = task.run_with(Budget::UNLIMITED, &mut RejectHost).unwrap()
+    else {
+        panic!("the task did not complete");
+    };
+    let mut bridge = Bridge::default();
+    rt.scope(|s| {
+        let value = s.local(&regex).unwrap();
+        let mut remaining = 2;
+        let datum = bridge.export(s, value, 2, &mut remaining).unwrap();
+        assert_eq!(remaining, 0);
+        assert!(matches!(
+            datum.kind(),
+            crate::compiler_data::DatumKind::CompilerLiteral { .. }
+        ));
+        assert!(bridge.export(s, value, 2, &mut 1).is_err(), "node limit");
+        assert!(bridge.export(s, value, 1, &mut 2).is_err(), "depth limit");
+    });
+}

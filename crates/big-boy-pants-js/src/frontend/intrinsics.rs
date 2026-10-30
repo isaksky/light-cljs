@@ -312,6 +312,7 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::Compare),
     form_op(FormOp::IsSortedBy),
     form_op(FormOp::IsArrayMap),
+    form_op(FormOp::Regex),
 ];
 
 const fn form_op(op: FormOp) -> Intrinsic {

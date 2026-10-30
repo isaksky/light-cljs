@@ -19,6 +19,7 @@
 //! | ordinary object or array owned by another task | `ForeignObject` failure | `ForeignObject` failure |
 //! | realm intrinsic `Object.prototype`, `Array.prototype`, `Reflect` (`crate::realm`) | as above, from every task | catchable `TypeError`: built-in objects are shared and immutable |
 //! | built-in function (`Object`, `Object.is`, ...; `crate::vm::builtin`) | own property, else the chain from `Function.prototype` (clj-quickjs-102); a standard name `Function.prototype` lacks so far (`toString`, ...) `UnsupportedOperand` | catchable `TypeError`, as above |
+//! | shareable regex value (a `regex` compiler-literal form, `crate::regexp::shared`, light-cljs-563) | own `lastIndex`, always 0 (task-local for a quoted global or sticky literal); any other key, symbols included, continues at `RegExp.prototype` | `lastIndex`: 0 changes nothing, any other value is a `TypeError` (a quoted global or sticky literal keeps the task's number); anything else is not extensible |
 //! | persistent vector, map, occurrence; builder, atom, binding cell; native payload | `undefined` (no JavaScript properties) | catchable `TypeError` |
 //! | function object (`crate::vm::function`, clj-quickjs-125) | code metadata (`length`, `name`) until its property record exists, plus a lazy `prototype`; names `Function.prototype` lacks so far `UnsupportedOperand`; any other name continues at `Function.prototype` (clj-quickjs-102) | the creating task writes its property record (`ForeignObject` for another task); a published function: catchable `TypeError` |
 //! | module namespace owned by the running task (`crate::module::namespace`) | live exporting cells (ReferenceError in TDZ); fixed Symbol.toStringTag; absent names undefined | always rejects (`TypeError` in strict code, ignored in sloppy code); another task cannot access it |
@@ -518,6 +519,13 @@ const STRUCT_FIELD: PropertyFlags = PropertyFlags {
     configurable: false,
 };
 
+/// A RegExp's `lastIndex`, on a shareable regex value as on any RegExp.
+const LAST_INDEX: PropertyFlags = PropertyFlags {
+    writable: true,
+    enumerable: false,
+    configurable: false,
+};
+
 /// The failure of an access to a heap object without an ordinary store.
 fn not_ordinary(object: &HeapObject, key: &Key, access: Access) -> Option<Fault> {
     match access {
@@ -668,6 +676,14 @@ enum Lookup {
     /// A function object: its own properties decide
     /// (`crate::vm::function::read`).
     Function,
+    /// A shareable regex value without the key: continue at
+    /// `RegExp.prototype` (`crate::regexp::shared`).
+    RegExpPrototype,
+}
+
+/// Whether `key` names a RegExp's `lastIndex`.
+fn is_last_index(key: &Key) -> bool {
+    matches!(key, Key::Name(name) if name == "lastIndex")
 }
 
 /// A property read either produces a value or requests a resumable getter
@@ -1091,6 +1107,20 @@ fn lookup_cursor(
                     // and the resumable presence probe (`in`, `Reflect.has`)
                     // defer to it, a leaf presence check sees only the
                     // fields, and symbol and index keys nothing.
+                    // A shareable regex value is a RegExp whose own
+                    // `lastIndex` is 0 (`crate::regexp::shared`);
+                    // every other key, symbols included, is RegExp.prototype's.
+                    Visit::Other(HeapObject::Form(f)) if let Some(cell) = f.regex_cell() => {
+                        Ok(if is_last_index(key) {
+                            Lookup::Found(Read::Value(if has {
+                                Value::Undefined
+                            } else {
+                                cell.last_index(task)
+                            }))
+                        } else {
+                            Lookup::RegExpPrototype
+                        })
+                    }
                     Visit::Other(HeapObject::Form(f)) if let Key::Name(name) = key => {
                         if let Some(value) = form::struct_own_property(f, name) {
                             Ok(Lookup::Found(Read::Value(if has {
@@ -1153,6 +1183,14 @@ fn lookup_cursor(
             Lookup::Next(Some(prototype)) => id = prototype,
             Lookup::Next(None) => return Ok(Found(None)),
             Lookup::NeedsName => interned = Some(key.lookup(heap)),
+            Lookup::RegExpPrototype => {
+                id = crate::realm::intrinsics(heap)
+                    .ok_or(Fault::OutOfMemory("RegExp realm"))?
+                    .regexp_prototype;
+                // Building the realm may have interned the name.
+                realm = heap.realm().get();
+                interned = None;
+            }
             Lookup::Function => match if conversion {
                 // Conversion asks only for valueOf/toString, never for
                 // lazy own metadata such as prototype, length or name.
@@ -1251,6 +1289,7 @@ fn stored(outcome: SetOutcome, key: &Key, prototype: Option<ObjectId>) -> Result
 
 /// The receiver's part of `key = value` on `object` for `task`.
 fn store(
+    heap: &Heap,
     object: &mut HeapObject,
     task: TaskId,
     key: &Key,
@@ -1343,6 +1382,16 @@ fn store(
                     }
                 }
                 Key::Name(_) | Key::Symbol(_) => named(a.object_mut()),
+            }
+        }
+        // A shareable regex value: `lastIndex` stays 0
+        // (`crate::regexp::shared`); nothing can be added.
+        HeapObject::Form(f) if let Some(cell) = f.regex_cell() => {
+            if is_last_index(key) {
+                cell.set_last_index(heap, task, value)?;
+                Ok(Stored::Done)
+            } else {
+                Ok(Stored::Rejected(not_extensible(key)))
             }
         }
         // A frozen object: a field is read-only, anything else cannot be
@@ -1511,6 +1560,7 @@ fn prepare_write_cached(
         let outcome = heap
             .with_object_mut(id, |object| {
                 store(
+                    heap,
                     object,
                     task,
                     key,
@@ -1895,6 +1945,17 @@ fn check_inherited(
                     Visit::Other(HeapObject::Promise(p)) => {
                         p.check_owner(task).map(|()| Walk::Next(p.prototype()))
                     }
+                    // A regex value as a prototype: its `lastIndex` is a
+                    // writable data property, so the receiver may add its
+                    // own; other keys continue at RegExp.prototype
+                    // (`crate::regexp::shared`).
+                    Visit::Other(HeapObject::Form(f)) if f.regex_cell().is_some() => {
+                        Ok(if is_last_index(key) {
+                            Walk::Next(None)
+                        } else {
+                            Walk::RegExpPrototype
+                        })
+                    }
                     // A form as a prototype: a struct's field is frozen, so
                     // a shadowing write is rejected as on any frozen
                     // prototype; other names continue at Object.prototype.
@@ -1933,6 +1994,12 @@ fn check_inherited(
                 Some(prototype) => id = prototype,
                 None => return Ok(Chain::Add),
             },
+            Walk::RegExpPrototype => {
+                id = crate::realm::intrinsics(heap)
+                    .ok_or(Fault::OutOfMemory("RegExp realm"))?
+                    .regexp_prototype;
+                realm = heap.realm().get();
+            }
             Walk::Next(Some(prototype)) => id = prototype,
             Walk::Next(None) => return Ok(Chain::Add),
             // Continue at the store that has the function's own `key`, or
@@ -1976,6 +2043,8 @@ enum Walk {
     Next(Option<ObjectId>),
     /// Continue at `Object.prototype` (a native form's prototype).
     ObjectPrototype,
+    /// Continue at `RegExp.prototype` (a shareable regex value's).
+    RegExpPrototype,
     /// The object is a function (`crate::vm::function`).
     Function,
 }
@@ -2179,6 +2248,28 @@ pub(crate) fn define_own_property(
             }
         }
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => unsupported("a function"),
+        // A shareable regex value's `lastIndex` stays a writable 0
+        // (`crate::regexp::shared`); nothing can be added.
+        HeapObject::Form(f) if let Some(cell) = f.regex_cell() => {
+            if !is_last_index(key) {
+                return Err(not_extensible(key));
+            }
+            let current = Property {
+                value: cell.last_index(task),
+                flags: LAST_INDEX,
+                accessor: None,
+            };
+            match crate::object::validate_and_apply(Some(&current), desc) {
+                Ok(_) if desc.writable == Some(false) => Err(Fault::TypeError(
+                    "unsupported operation: a shared regex value's lastIndex stays writable".into(),
+                )),
+                Ok(_) => match &desc.value {
+                    Some(value) => cell.set_last_index(heap, task, value),
+                    None => Ok(()),
+                },
+                Err(outcome) => defined(outcome, key),
+            }
+        }
         // A frozen object: a field accepts only a compatible descriptor
         // (ValidateAndApplyPropertyDescriptor), nothing can be added.
         HeapObject::Form(f) => match key {
@@ -2336,6 +2427,18 @@ fn own_property(
                 },
                 Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                     return Ok(Own::Function);
+                }
+                // A shareable regex value's own `lastIndex`, always 0.
+                Visit::Other(HeapObject::Form(f)) if let Some(cell) = f.regex_cell() => {
+                    is_last_index(key).then(|| Property {
+                        value: if with_value {
+                            cell.last_index(task)
+                        } else {
+                            Value::Undefined
+                        },
+                        flags: LAST_INDEX,
+                        accessor: None,
+                    })
                 }
                 // A struct's fields are its own frozen data properties.
                 Visit::Other(HeapObject::Form(f)) if let Key::Name(name) = key => {
@@ -2559,7 +2662,12 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
             check_write(&a.object, task)?;
             Ok(named(&mut a.object))
         }
-        // A struct's fields are non-configurable.
+        // A RegExp's `lastIndex` and a struct's fields are non-configurable.
+        HeapObject::Form(f) if f.regex_cell().is_some() => Ok(if is_last_index(key) {
+            DeleteOutcome::NonConfigurable
+        } else {
+            DeleteOutcome::Absent
+        }),
         HeapObject::Form(f) => Ok(match key {
             Key::Name(name) if form::struct_own_property(f, name).is_some() => {
                 DeleteOutcome::NonConfigurable

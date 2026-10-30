@@ -614,6 +614,23 @@ impl Bridge {
                 ValueView::Bool(b) => D::Boolean(b),
                 ValueView::Number(n) => D::Double(n),
                 ValueView::String => D::String(s.string(v).unwrap().code_units().into()),
+                // A global or sticky regex stays a host RegExp
+                // (light-cljs-563); it exports as the legacy regex literal.
+                ValueView::Object if let Some(text) = s.regexp_export_text(v).map_err(error)? => {
+                    // The payload is one more node, one level down, as for a
+                    // `regex` form.
+                    let payload = s.primitive(Primitive::String(text));
+                    D::CompilerLiteral {
+                        kind: L::Regex,
+                        payload: self.export_with_origins(
+                            s,
+                            payload,
+                            depth - 1,
+                            remaining,
+                            origins,
+                        )?,
+                    }
+                }
                 _ => {
                     return Err(error(
                         "unsupported operation: macro returned a non-form value",

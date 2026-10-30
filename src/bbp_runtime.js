@@ -612,6 +612,7 @@ const native = (() => {
   // that pass through unchanged.
   const interop = (x, member) => {
     const value = val(x), kind = __rt.formKind(value);
+    if (kind === 'compiler-literal' && __rt.formName(value) === 'regex') return value;
     if (kind !== null && kind !== 'struct' && kind !== 'record' && member !== 'call' && member !== 'apply')
       throw new Error('unsupported operation: JavaScript interop with native ' + kind + ' form');
     return value;
@@ -819,6 +820,10 @@ const native = (() => {
   // callable's getter and receiver have the same order as `rf.call(null, ...)`.
   const prepareInvoke = f => {
     const value = val(f), kind = __rt.formKind(value);
+    // The RegExp constructor as a value makes shareable regexes
+    // (light-cljs-563), through the task global for the reason below.
+    if (value === globalThis.__lightNativeRuntime.intrinsicRegExp)
+      return globalThis.__lightNativeRuntime.nativeRegExpCall(value);
     // Resolve through the task global rather than capturing `multi` before
     // its initialization: that forward capture would box ordinary lazy
     // callbacks in a task-owned binding cell and prevent their publication.
@@ -833,6 +838,7 @@ const native = (() => {
   };
   const invoke = (f,...args) => {
     const value=val(f),kind=__rt.formKind(value);
+    if(value===globalThis.__lightNativeRuntime.intrinsicRegExp)return globalThis.__lightNativeRuntime.nativeRegExpCall(value)(...args);
     if(kind==='struct'&&__rt.formName(__rt.structTypeOf(value))==='cljs.core/MultiFn')
       return globalThis.__lightNativeRuntime.core.invokeMulti(value,args);
     if(kind==='struct'||kind==='record')return globalThis.__lightNativeRuntime.core.invokeStruct(value,args);
@@ -1105,7 +1111,7 @@ const native = (() => {
     if(kind==='type')return write(writer,__rt.formName(x));
     if(kind==='compiler-literal'){
       const tag=__rt.formName(x),payload=__rt.formLiteralPayload(x);
-      if(tag==='regex')return write(writer,'#\"'+regexValue(x).source+'\"');
+      if(tag==='regex')return write(writer,'#\"'+x.source+'\"');
       if(tag==='js-array')return printSequential(writer,printWriter,'#js [',' ',']',options,payload);
       if(tag==='js-object'){
         if(!literalIsObject(x))return write(writer,'#object[Object '+literalObjectString(x)+']');
@@ -1450,7 +1456,7 @@ const native = (() => {
   const reSeq = (self, re, text) => {
     text = val(text);
     if (typeof text !== 'string') throw new TypeError('regex matching requires a string');
-    re=regexValue(re);
+    re=val(re);
     const match = re.exec(text);
     if (match === null) return null;
     const value = match.length === 1 ? match[0] : vector(Array.from(match));
@@ -1459,25 +1465,37 @@ const native = (() => {
       return offset <= text.length ? self(self, re, text.slice(offset)) : null;
     }));
   };
-  const literalViews=new WeakMap();
-  const regexValue = value => {
-    const x=val(value);
-    if(__rt.formKind(x)!=='compiler-literal'||__rt.formName(x)!=='regex')return x;
-    let re=literalViews.get(x);
-    if(re===undefined){re=rePattern(__rt.formLiteralPayload(x));literalViews.set(x,re);}
-    return re;
-  };
+  // Regex values (light-cljs-563) are shareable forms that JavaScript uses
+  // as RegExps (`__rt.formRegex`, the engine's `crate::regexp::shared`): one
+  // object in both worlds, so atoms and published helpers hold them and no
+  // boundary converts them. Their `lastIndex` stays 0, so a global or
+  // sticky regex, whose matching moves it, stays an ordinary task-owned
+  // RegExp.
+  const shareRegExp = re => re.global || re.sticky ? re : __rt.formRegex(re.source, re.flags);
   const rePattern = pattern => {
-    pattern = regexValue(pattern);
-    if (pattern instanceof RegExp) return pattern;
-    if (typeof pattern !== 'string') throw new TypeError('regex pattern requires a string');
-    const prefix = /^\(\?([dgimsuxy]*)\)/.exec(pattern);
-    return new RegExp(prefix ? pattern.slice(prefix[0].length) : pattern, prefix ? prefix[1] : '');
+    const x = val(pattern);
+    if (x instanceof RegExp) return x;
+    if (typeof x !== 'string') throw new TypeError('regex pattern requires a string');
+    const prefix = /^\(\?([dgimsuxy]*)\)/.exec(x);
+    return shareRegExp(new RegExp(prefix ? x.slice(prefix[0].length) : x, prefix ? prefix[1] : ''));
+  };
+  // `(js/RegExp. …)` and `(js/RegExp …)` take the constructor as it was
+  // evaluated, before the operands: the intrinsic RegExp makes shareable
+  // regexes, keeping `RegExp(r)`'s identity for a regex `r`; any other value
+  // (a replaced global) is constructed or called as it is. Operands lose
+  // occurrence wrappers first, so `RegExp(r)` returns `r`.
+  const intrinsicRegExp = RegExp;
+  const nativeRegExp = C => (...a) => C !== intrinsicRegExp ? new C(...a) : shareRegExp(new C(...a.map(val)));
+  const nativeRegExpCall = C => (...a) => {
+    if (C !== intrinsicRegExp) return C(...a);
+    a = a.map(val);
+    const re = C(...a);
+    return a.length > 0 && re === a[0] ? re : shareRegExp(re);
   };
   const reMatch = (re, text, full) => {
     text = val(text);
     if (typeof text !== 'string') throw new TypeError('regex matching requires a string');
-    const result = regexValue(re).exec(text);
+    const result = val(re).exec(text);
     if (result === null || (full && result[0] !== text)) return null;
     return result.length === 1 ? result[0] : vector(Array.from(result));
   };
@@ -1957,7 +1975,7 @@ const native = (() => {
     assertions:true,
     gensym, rePattern, reSeq:(re,text)=>reSeq(reSeq,re,text),
     reFind:(re,text)=>reMatch(re,text,false), reMatches:(re,text)=>reMatch(re,text,true),
-    isRegex:x=>regexValue(x) instanceof RegExp,
+    isRegex:x=>val(x) instanceof RegExp,
     invoke, truth, get, identity:x=>x, macroReaderFunction,
     printReadably:true, printLength:null, printLevel:null, printNamespaceMaps:false,
     printMeta:false, printDup:false, printFnBodies:false, printNewline:true, flushOnNewline:true,
@@ -2062,7 +2080,7 @@ const native = (() => {
         const tag=__rt.formName(x),payload=__rt.formLiteralPayload(x);
         if(tag==='js-array')return arr(payload).map(v=>val(v)==null?'':str(v)).join(',');
         if(tag==='js-object')return literalObjectString(x);
-        if(tag==='regex')return String(regexValue(x));
+        if(tag==='regex')return String(x);
         if(tag==='instant')return String(new Date(val(payload)));
         if(tag==='uuid')return val(payload).toLowerCase();
       }
@@ -2288,7 +2306,7 @@ const native = (() => {
     // Inspect data properties without running an unsupported entry's getter.
     // Units keep that getter's access at the original expression site.
     nativeCoreBinding:name=>Object.getOwnPropertyDescriptor(core,name),
-    nativeInterop:interop,declarationReceiver:x=>{decl.demandObject(x);return x;},
+    nativeInterop:interop,intrinsicRegExp,nativeRegExp,nativeRegExpCall,nativeRegExpMember:function(_,...a){return nativeRegExpCall(intrinsicRegExp)(...a);},nativeConstruct:(C,...a)=>nativeRegExp(C)(...a),declarationReceiver:x=>{decl.demandObject(x);return x;},
     protocol:name=>Object.freeze({name}),
     protocolMethod:(key,name,arities,viaMetadata)=>decl.method(key,name,arities,viaMetadata===true),
     protocolPredicate:(protocol,key,x,direct)=>direct?decl.implementsDirectly(key,x):decl.satisfies(key,x),

@@ -11555,6 +11555,567 @@ fn compiler_literal_string_slices_and_runtime_literals_match_quickjs() {
     );
 }
 
+/// `re-pattern` values and unquoted regex literals are shareable regex
+/// values (light-cljs-563): an atom holds them and closures over them, such
+/// as parse thunks over `:regexp` parser maps, while matching, printing,
+/// identity, `instance?` and JavaScript interop (`.-source`, flags, `.test`,
+/// `.exec`, a global regex's `lastIndex`) keep the legacy results.
+#[test]
+fn native_regex_values_match_quickjs() {
+    assert_native_matches_legacy(
+        r##"(defmacro m []
+              (let [r (re-pattern "(?i)a(b)?/") p re-pattern g (re-pattern "(?g)o") l #"(?m)^x$"
+                    stack (atom [])
+                    thunk (let [q (re-pattern "x+")] (fn [s] (re-find q s)))
+                    held (atom r)
+                    h (js/RegExp. (str "^" (.-source r)) "i")
+                    fix (fn [m] (mapv (fn [x] (if (nil? x) :missing x)) m))]
+                (swap! stack conj thunk {:regexp r :parsers [{:regexp l}]} h)
+                (reset! held l)
+                (list 'quote
+                  [(regexp? r) (regexp? l) (re-find r "xAb/") (fix (re-matches r "a/")) (mapv fix (re-seq r "a/ab/AB/"))
+                   (str r) (pr-str r) (str l) (pr-str [l (atom l)]) (identical? r (re-pattern r)) (identical? r (p r))
+                   (identical? l (p l)) (= r r) (= r (re-pattern "(?i)a(b)?/")) (= (hash r) (hash r))
+                   (get {r 1} r) (contains? #{r} (re-pattern "a"))
+                   (.-source r) (.-flags r) (.-ignoreCase r) (.-multiline l) (.test r "A/") (.test l "y\nx")
+                   (aget (.exec r "zab/") 1) (.-index (.exec r "zab/"))
+                   (.-lastIndex g) (aget (.exec g "foo") 0) (.-lastIndex g) (.-index (.exec g "foo")) (.-lastIndex g)
+                   (.exec g "foo") (.-lastIndex g) (re-find g "foo") (.-lastIndex @held)
+                   (.replace "aXa" (re-pattern "a") "b") (.replace "aXa" (re-pattern "(?g)a") "b")
+                   (.-source (re-pattern "/")) (.-source (re-pattern "")) (str (re-pattern "/"))
+                   (instance? js/RegExp r) (instance? js/RegExp l) (object? r) (fn? r) (coll? r) (string? r)
+                   (map? r) (regexp? h) (instance? js/RegExp h) (.-source h) (.-flags h) (.test (last @stack) "AB/")
+                   (.-source (js/RegExp. r)) (.-flags (js/RegExp. g "y"))
+                   (let [re (js/RegExp. (.-source l) (str "g" (.-flags l))) m (.exec re "x")] [(.-index m) (.-lastIndex re)])
+                   ((first @stack) "axxb") (re-find (:regexp (second @stack)) "AB/")
+                   (re-find (:regexp (first (:parsers (second @stack)))) "x")
+                   (try (re-pattern "(") (catch :default e (instance? js/SyntaxError e)))
+                   (try (re-pattern 42) (catch :default e (.-message e)))
+                   (js* "~{}.source" r) (js* "~{}.length" "abc") (js* "~{}.flags" l)])))
+            (defmacro e [] [(re-pattern "(?i)a/b") (re-pattern "") (re-pattern "(?gm)^a") (re-pattern #"q")])
+            (js/console.log (pr-str (m)))
+            (js/console.log (pr-str (e)) (.-flags (nth (e) 2)))"##,
+        concat!(
+            r##"[true true ["Ab/" "b"] ["a/" :missing] [["a/" :missing] ["ab/" "b"] ["AB/" "B"]] "/a(b)?\\//i" "#\"a(b)?\\/\"" "/^x$/m" "[#\"^x$\" #object[cljs.core.Atom {:val #\"^x$\"}]]" "##,
+            r##"true true true true false true 1 false "a(b)?\\/" "i" true true true true "b" 1 0 "o" 2 2 3 nil 0 "o" 0 "bXa" "bXb" "##,
+            r##""\\/" "(?:)" "/\\//" true true false false false false false true true "^a(b)?\\/" "i" true "a(b)?\\/" "y" [0 1] "xx" ["AB/" "B"] "x" true "regex pattern requires a string" "a(b)?\\/" 3 "m"]"##,
+            "\n[#\"a\\/b\" #\"(?:)\" #\"^a\" #\"q\"] gm\n",
+        ),
+    );
+}
+
+/// A RegExp that `js*` code makes is a mutable host object, as is a Date,
+/// and so is a global or sticky regex, whose matching moves `lastIndex`:
+/// an atom still rejects them, directly, in a collection or captured by a
+/// closure, while it holds other `re-pattern` and `js/RegExp.` values.
+#[test]
+fn atoms_still_reject_host_regexps() {
+    for body in [
+        "(atom (js* \"/a/\"))",
+        "(atom (re-pattern \"(?g)a\"))",
+        "(atom (let [R js/RegExp] (R \"a\" \"y\")))",
+        "(reset! (atom nil) (let [r (js/RegExp. \"a\" \"g\")] (fn [s] (.test r s))))",
+        "(swap! (atom [(re-pattern \"a\")]) conj (js* \"/a/g\"))",
+        "(reset! (atom nil) (let [r (js* \"new RegExp('a')\")] (fn [s] (.test r s))))",
+        "(atom (js/Date. 0))",
+    ] {
+        let source = format!("(defmacro probe [] {body} nil) (probe)");
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let error = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Atom(NotShareable)"), "{body}: {error}");
+    }
+}
+
+/// Helpers whose values are `re-pattern` results, regex literals, closures
+/// over them and an atom of such closures publish once (a global regex is
+/// initialized per task), and two namespaces' expansions push parse thunks
+/// over `:regexp` parser maps onto an atom, at seeded jobs 1/2/4/8
+/// (light-cljs-563).
+#[test]
+fn regex_helpers_and_parse_thunks_publish_at_seeded_pool_sizes() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-regex-helpers");
+    for (file, source) in [
+        (
+            "parts.cljs",
+            r#"(ns parts (:require [clojure.string :as str]))
+            (def ^:dynamic *seen* nil)
+            (defn note [x] (when *seen* (swap! *seen* conj x)))
+            (def word (do (note :word-ready) (re-pattern "(?i)[a-z]+")))
+            (def digits (do (note :digits-ready) (let [r (re-pattern "\\d+")] (fn [s] (re-find r s)))))
+            (def line #"(?m)^x")
+            (def global (re-pattern "(?g)o"))
+            (def anchored (js/RegExp. (str "^" (.-source word)) "i"))
+            (def thunks (do (note :thunks-ready) (atom [(let [r (re-pattern "z+")] (fn [s] (re-find r s)))])))
+            (defn parser [re] {:regexp re :parsers [{:regexp word}]})
+            (def splitter (do (note :splitter-ready) (fn [s] (vec (js* "~{}.split(~{})" s word)))))
+            (defmacro probe [tag]
+              (binding [*seen* (atom [])]
+                (let [entry (.-lastIndex global)
+                      tramp {:stack (atom [])}
+                      push (fn [item] (swap! (:stack tramp) conj item))
+                      p (parser (re-pattern "b+"))]
+                  (push (fn [] (re-find (:regexp p) "abbc")))
+                  (push (fn [] (digits "x42")))
+                  (push (let [w (:regexp (first (:parsers p)))] (fn [] (vec (re-seq w "Hi there")))))
+                  (push (first @thunks))
+                  (push (fn [s] (re-find anchored s)))
+                  (let [found (aget (.exec global "foo") 0) after (.-lastIndex global)]
+                    (set! (.-lastIndex global) 0)
+                    (list 'quote [tag entry found after (mapv (fn [f] (f "azzb")) @(:stack tramp))
+                                  (.test line "y\nx") (.-source word) (.-flags word) (pr-str [line (:regexp p)])
+                                  (regexp? (:regexp p)) (splitter "ab12cd") (str/split "a-b-c" (re-pattern "-"))
+                                  (str/replace "a-b" #"-" "_") (str/replace "aB" (:regexp p) "-") @*seen*])))))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [parts :refer [probe]])) (def value (probe :a))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [parts :refer [probe]])) (def value (probe :b))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (js/console.log (pr-str [a/value b/value]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs, seed| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                stats: Some(&mut stats),
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
+        if native {
+            let helpers = &stats.native_helpers;
+            assert_eq!(
+                helpers.published, 11,
+                "jobs {jobs}, seed {seed}: {helpers:?}"
+            );
+            // `global` holds a global regex, initialized per task.
+            assert!(
+                helpers.per_task >= 1,
+                "jobs {jobs}, seed {seed}: {helpers:?}"
+            );
+            assert!(helpers.waits >= 12, "jobs {jobs}, seed {seed}: {helpers:?}");
+        }
+        emit_js(&program)
+    };
+    let reference = build(true, 1, 0);
+    // Helpers initialize once, inside a's expansion; b reads them warm.
+    let value = |tag, log| {
+        format!(
+            r##"[{tag} 0 "o" 2 ["bb" "42" ["Hi" "there"] "zz" "azzb"] true "[a-z]+" "i" "[#\"^x\" #\"b+\"]" true ["" "12" ""] ["a" "b" "c"] "a_b" "aB" [{log}]]"##
+        )
+    };
+    assert_eq!(
+        program_output(&reference),
+        format!(
+            "[{} {}]\n",
+            value(
+                ":a",
+                ":word-ready :thunks-ready :digits-ready :splitter-ready"
+            ),
+            value(":b", "")
+        )
+    );
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(reference, build(false, jobs, 0), "legacy, jobs {jobs}");
+        for seed in 1..=seeds {
+            assert_eq!(
+                reference,
+                build(true, jobs, seed),
+                "jobs {jobs}, seed {seed}"
+            );
+        }
+    }
+}
+
+/// A regex value is one object in ClojureScript and JavaScript
+/// (light-cljs-563): what interop, `js*` or a JavaScript function returns
+/// for it is the same value, so identity, map and set keys and atom
+/// storage see the regex itself.
+#[test]
+fn native_regex_interop_preserves_identity() {
+    assert_native_matches_legacy(
+        r##"(defmacro m []
+              (let [r (re-pattern "a") l #"b" h (js/RegExp. "c" "g") v (.valueOf r) j (js* "~{}" r)
+                    pass (fn [x] (js* "(function (y) { return y; })(~{})" x)) held (atom nil)]
+                (reset! held v)
+                (list 'quote
+                  [(identical? r v) (identical? r j) (identical? l (.valueOf l)) (identical? h (.valueOf h))
+                   (get {r :hit} v) (get {r :hit} j) (= r v) (contains? #{r} (pass r)) (identical? r @held)
+                   (regexp? @(atom j)) (js* "~{} === ~{}" r v) (identical? h (pass h)) (pass l)
+                   (instance? js/RegExp v) (identical? r (.call (.-valueOf r) r)) (.call (.-valueOf r) r)])))
+            (js/console.log (pr-str (m)))"##,
+        "[true true true true :hit :hit true true true true true true #\"b\" true true #\"a\"]\n",
+    );
+}
+
+/// `js*` operands are emitted as written in native units too: an
+/// assignment target stays assignable, a member callee keeps its receiver
+/// and a regex operand after a keyword is the regex (light-cljs-563).
+#[test]
+fn native_js_templates_preserve_reference_semantics() {
+    assert_native_matches_legacy(
+        r##"(defmacro m []
+              (let [r (re-pattern "a/b")]
+                (list 'quote
+                  [((fn [x] (js* "(~{}) = 1" x) x) 0)
+                   (js* "~{}()" (.-getTime (js/Date. 0)))
+                   (js* "(function () { return ~{}.source; })()" r)
+                   (js* "typeof ~{}" r)
+                   (js* "~{}.split(~{}).length" "xa/by" r)])))
+            (js/console.log (pr-str (m)))"##,
+        "[1 0 \"a\\\\/b\" \"object\" 2]\n",
+    );
+}
+
+/// String methods, `Object.prototype.toString` and the RegExp prototype's
+/// generic methods take a regex value as the RegExp it is (light-cljs-563).
+/// Unlike a host RegExp it is not extensible (docs/native-macros.md), which
+/// this comparison leaves out.
+#[test]
+fn native_regex_values_drive_string_methods() {
+    assert_native_matches_legacy(
+        r##"(defmacro m []
+              (let [g (re-pattern "(?g)o") s (re-pattern "b") y (js/RegExp. "a" "y")]
+                (list 'quote
+                  [(.search "abc" s) (vec (.match "foo" g)) (mapv first (js/Array.from (.matchAll "foo" g)))
+                   (.-lastIndex g) (.replaceAll "foo" g "0") (vec (.split "abcbd" s)) (js/Object.prototype.toString.call g)
+                   (.call (.-test js/RegExp.prototype) y "aa") (.-lastIndex y) (.call (.-test js/RegExp.prototype) y "aa")
+                   (.-lastIndex y) (js/Object.isFrozen g) (vec (js/Object.keys g))
+                   (vec (js/Object.getOwnPropertyNames g)) (.-writable (js/Object.getOwnPropertyDescriptor g "lastIndex"))
+                   (identical? (js/Object.getPrototypeOf g) js/RegExp.prototype)])))
+            (js/console.log (pr-str (m)))"##,
+        "[1 [\"o\" \"o\"] [\"o\" \"o\"] 0 \"f00\" [\"a\" \"c\" \"d\"] \"[object RegExp]\" true 1 true 2 false [] [\"lastIndex\"] true true]\n",
+    );
+}
+
+/// `(js/RegExp …)` called as a function and constructing through a local
+/// alias make shareable regex values, as `(js/RegExp. …)` does, and the call
+/// keeps `RegExp(r)`'s identity where the constructor copies
+/// (light-cljs-563).
+#[test]
+fn native_regex_constructor_forms_publish() {
+    assert_native_matches_legacy(
+        r##"(defmacro m []
+              (let [R js/RegExp r (re-pattern "d")
+                    a (atom (js/RegExp "a")) b (atom (R. "b" "s")) c (atom (js/RegExp "c" "i"))
+                    same (js/RegExp r) copy (js/RegExp. r) flagged (js/RegExp r "m")
+                    thunks (atom [(fn [s] (.test same s)) (fn [s] (.test flagged s))])
+                    called (atom (R "e")) wide (atom (R "f" "i")) empty (atom (R))
+                    applied (atom (apply js/RegExp ["h" "m"])) mapped (atom (mapv js/RegExp ["j" "k"]))
+                    aliased-same (R r)]
+                (list 'quote
+                  [(.-source @a) (.-flags @b) (.-flags @c) (identical? r same) (identical? r copy)
+                   (regexp? copy) (.-flags flagged) (identical? r flagged) (.test @a "xa") (.test @b "b")
+                   (mapv (fn [f] (f "d")) @thunks) (.-source @called) (.-flags @wide) (.-source @empty)
+                   (.-flags @applied) (mapv (fn [x] (.-source x)) @mapped) (identical? r aliased-same)])))
+            (js/console.log (pr-str (m)))"##,
+        "[\"a\" \"s\" \"i\" true false true \"m\" false true true [true true] \"e\" \"i\" \"(?:)\" \"m\" [\"j\" \"k\"] true]\n",
+    );
+}
+
+/// An object inheriting from a regex value meets RegExp.prototype's
+/// getter-only properties on writes, as with a host RegExp, and may shadow
+/// its `lastIndex` (light-cljs-563).
+#[test]
+fn native_regex_inherited_writes_match_quickjs() {
+    // A shared regex value and a global regex, an ordinary RegExp.
+    for pattern in ["a", "(?g)a"] {
+        assert_native_matches_legacy(
+            &format!(
+                r##"(defmacro m []
+              (let [r (re-pattern "{pattern}")]
+                (list 'quote
+                  [(js* "(function (r) {{ 'use strict'; const c = Object.create(r); try {{ c.source = 'b'; return 'set'; }} catch (e) {{ return e instanceof TypeError; }} }})(~{{}})" r)
+                   (js* "(function (r) {{ 'use strict'; const c = Object.create(r); try {{ c.flags = 'x'; return 'set'; }} catch (e) {{ return e instanceof TypeError; }} }})(~{{}})" r)
+                   (js* "Reflect.set(Object.create(~{{}}), 'global', false)" r)
+                   (js* "(function (r) {{ const c = Object.create(r); return Reflect.set(c, 'source', 'b') || Object.getOwnPropertyNames(c).length > 0; }})(~{{}})" r)
+                   (js* "(function (r) {{ 'use strict'; const c = Object.create(r); c.lastIndex = 5; return [c.lastIndex, Object.getOwnPropertyNames(c).join(), r.lastIndex].join(); }})(~{{}})" r)
+                   (js* "(function (r) {{ const c = Object.create(r); c.extra = 1; return c.extra + (r instanceof RegExp ? 1 : 0); }})(~{{}})" r)])))
+            (js/console.log (pr-str (m)))"##
+            ),
+            "[true true false false \"5,lastIndex,0\" 2]\n",
+        );
+    }
+}
+
+/// `(js/RegExp …)`, `(js/RegExp. …)`, an alias, `apply` and `mapv` evaluate
+/// the constructor before their operands, so an operand that replaces the
+/// global `RegExp` does not change the call, and a replaced global is called
+/// as it is (light-cljs-563).
+#[test]
+fn native_regexp_adapters_preserve_callee_before_arguments() {
+    assert_native_matches_legacy(
+        r##"(defmacro m []
+              (let [orig js/RegExp
+                    R js/RegExp
+                    swap (fn [] (set! js/RegExp (fn [& _] "changed")) "a")
+                    restore (fn [] (set! js/RegExp orig))
+                    src (fn [x] (if (regexp? x) (.-source x) x))]
+                (list 'quote
+                  [(src (try (R (swap)) (finally (restore))))
+                   (src (try (js/RegExp (swap)) (finally (restore))))
+                   (src (try (R. (swap)) (finally (restore))))
+                   (src (try (js/RegExp. (swap)) (finally (restore))))
+                   (src (try (apply js/RegExp [(swap)]) (finally (restore))))
+                   (src (try (first (mapv js/RegExp [(swap)])) (finally (restore))))
+                   (src (try (set! js/RegExp (fn [& _] "changed")) (js/RegExp "a") (finally (restore))))
+                   (src (try (set! js/RegExp (fn [& _] "changed")) (R "a") (finally (restore))))
+                   (regexp? (js/RegExp "b"))])))
+            (js/console.log (pr-str (m)))"##,
+        "[\"a\" \"a\" \"a\" \"a\" \"a\" \"a\" \"changed\" \"a\" true]\n",
+    );
+}
+
+/// The regex property contract (light-cljs-563): `lastIndex` redefinitions
+/// that keep it a writable non-configurable data property apply per task,
+/// and the descriptor changes, deletions and accessors a RegExp rejects are
+/// rejected, as in QuickJS. The value is not extensible (so it is sealed)
+/// and cannot be made read-only or frozen, which a host RegExp allows; those
+/// differences are asserted on the native output alone.
+#[test]
+fn native_regex_property_mutations() {
+    let probe = |cases: &[&str]| {
+        format!(
+            r##"(defmacro m []
+              (let [r (re-pattern "a")]
+                (list 'quote (vec (js* "(function (r) {{ 'use strict'; const t = f => {{ try {{ return String(f()); }} catch (e) {{ return e.constructor.name; }} }}; return [{}]; }})(~{{}})" r)))))
+            (js/console.log (pr-str (m)))"##,
+            cases
+                .iter()
+                .map(|case| format!("t(() => {{ {case} }})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    assert_native_matches_legacy(
+        &probe(&[
+            "Object.defineProperty(r, 'lastIndex', {value: 0}); return r.lastIndex",
+            "Object.defineProperty(r, 'lastIndex', {value: 0, writable: true, enumerable: false, configurable: false}); return r.lastIndex",
+            "Object.defineProperty(r, 'lastIndex', {enumerable: true})",
+            "Object.defineProperty(r, 'lastIndex', {configurable: true})",
+            "return Reflect.defineProperty(r, 'lastIndex', {get() { return 1; }})",
+            "return delete r.lastIndex",
+            "return Reflect.deleteProperty(r, 'lastIndex')",
+            "return Reflect.deleteProperty(r, 'absent')",
+            "r.lastIndex = 0; return [r.lastIndex, r.exec('bba').index, r.lastIndex, 'bba'.search(r), r.lastIndex].join()",
+            "const d = Object.getOwnPropertyDescriptor(r, 'lastIndex'); return [d.value, d.writable, d.enumerable, d.configurable].join()",
+            "return Object.isFrozen(r)",
+        ]),
+        "[\"0\" \"0\" \"TypeError\" \"TypeError\" \"false\" \"TypeError\" \"false\" \"true\" \"0,2,0,2,0\" \"0,true,false,false\" \"false\"]\n",
+    );
+    // The documented differences: a shared regex keeps `lastIndex` 0 and
+    // takes no properties; a host RegExp would accept each of these.
+    let source = probe(&[
+        "r.lastIndex = 2; return r.lastIndex",
+        "Object.defineProperty(r, 'lastIndex', {value: 3})",
+        "return Reflect.set(r, 'lastIndex', 1)",
+        "return Reflect.set(r, 'extra', 1)",
+        "return Object.isExtensible(r)",
+        "Object.defineProperty(r, 'lastIndex', {writable: false})",
+        "Object.freeze(r)",
+        "Object.preventExtensions(r); return Object.isFrozen(r)",
+        "return Object.isSealed(r)",
+        "return r.lastIndex",
+    ]);
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        program_output(&emit_js(&program)),
+        "[\"TypeError\" \"TypeError\" \"false\" \"false\" \"false\" \"TypeError\" \"TypeError\" \"false\" \"true\" \"0\"]\n"
+    );
+}
+
+/// The RegExp constructor called through a local alias, `apply` or `mapv`
+/// returns a regex macro argument itself, as `RegExp(r)` does, although the
+/// argument arrives wrapped with its source position (light-cljs-563).
+#[test]
+fn native_regex_constructor_calls_keep_macro_argument_identity() {
+    assert_native_matches_legacy(
+        r##"(defmacro m [r]
+              (let [R js/RegExp]
+                (list 'quote
+                  [(identical? r (R r)) (identical? r (js/RegExp r)) (identical? r (apply js/RegExp [r]))
+                   (identical? r (first (mapv js/RegExp [r]))) (get {r :hit} (R r))
+                   (get {r :hit} (apply js/RegExp [r])) (identical? r (R. r))])))
+            (js/console.log (pr-str (m #"a")))"##,
+        "[true true true true :hit :hit false]\n",
+    );
+}
+
+/// A Unicode-sets (`v`) regex is a shareable value with its flag: an atom
+/// holds it and a closure over it, and it matches as in QuickJS
+/// (light-cljs-563).
+#[test]
+fn native_unicode_set_regexes_publish() {
+    assert_native_matches_legacy(
+        r##"(defmacro m []
+              (let [u (js/RegExp. "[\\p{L}--[a-z]]" "v") held (atom u) thunk (atom (fn [s] (re-find u s)))]
+                (list 'quote
+                  [(.-flags @held) (.-unicodeSets u) (.-unicode u) (.test u "A") (.test u "a") (@thunk "abCd")
+                   (.-source u) (pr-str u) (str u) (identical? u @held)])))
+            (js/console.log (pr-str (m)))"##,
+        "[\"v\" true false true false \"C\" \"[\\\\p{L}--[a-z]]\" \"#\\\"[\\\\p{L}--[a-z]]\\\"\" \"/[\\\\p{L}--[a-z]]/v\" true]\n",
+    );
+}
+
+/// Regex helpers across tasks (light-cljs-563): shareable regexes publish
+/// from a local constructor alias, alias and `apply` calls, the `v` flag, an
+/// atom an initializer filled as a side effect and a lazy sequence; a global
+/// or sticky regex, and a closure over one, stays task-owned, so its helper
+/// is initialized per task and every task sees the `lastIndex` its
+/// initializer left, as in QuickJS. Two namespaces expand in distinct tasks,
+/// at seeded jobs 1/2/4/8, and QuickJS gives the same program.
+#[test]
+fn published_regex_state_matches_quickjs() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-regex-state");
+    for (file, source) in [
+        (
+            "parts.cljs",
+            r#"(ns parts)
+            (def stateful (let [r (re-pattern "(?g)o")] (set! (.-lastIndex r) 2) r))
+            (def called (js/RegExp "c" "y"))
+            (def aliased (let [R js/RegExp] (R. "q" "i")))
+            (def sets (js/RegExp. "[\\p{L}--[a-z]]" "v"))
+            (def matcher (let [r stateful] (fn [s] (let [m (.exec r s)] (set! (.-lastIndex r) 2) (when m (.-index m))))))
+            (def boxed (let [r (re-pattern "z") held (atom nil)] (reset! held r) held))
+            (def held (atom nil))
+            (def ready (let [r (re-pattern "y")] (reset! held r) true))
+            (def xs (lazy-seq (list (re-pattern "x"))))
+            (def alias-called (let [R js/RegExp] (R "w" "m")))
+            (def applied (apply js/RegExp ["v" "s"]))
+            (defmacro probe [tag]
+              (let [entry (.-lastIndex stateful)
+                    found (.-index (.exec stateful "foo"))
+                    after (.-lastIndex stateful)]
+                (set! (.-lastIndex stateful) 2)
+                (list 'quote [tag entry found after (matcher "foo") (.-lastIndex stateful)
+                              (.test called "c") (.-lastIndex called) (do (set! (.-lastIndex called) 0) 0)
+                              (.test aliased "Q") (.test sets "A") (.-flags sets) (.-flags called)
+                              (.-source @boxed) (.-lastIndex @boxed) (do ready (.-source @held))
+                              (.-source (first xs)) (.-lastIndex (first xs)) (.-flags alias-called) (.-flags applied)])))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [parts :refer [probe]])) (def value (probe :a))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [parts :refer [probe]])) (def value (probe :b))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (js/console.log (pr-str [a/value b/value]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs, seed| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                stats: Some(&mut stats),
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
+        if native {
+            let helpers = &stats.native_helpers;
+            assert_eq!(
+                helpers.published, 8,
+                "jobs {jobs}, seed {seed}: {helpers:?}"
+            );
+            // `stateful`, `called` and `matcher` hold global or sticky
+            // regexes, initialized per task (how many tasks depends on
+            // scheduling).
+            assert!(
+                helpers.per_task >= 3,
+                "jobs {jobs}, seed {seed}: {helpers:?}"
+            );
+        }
+        emit_js(&program)
+    };
+    let reference = build(true, 1, 0);
+    let value =
+        |tag| format!(r#"[{tag} 2 2 3 2 2 true 1 0 true true "v" "y" "z" 0 "y" "x" 0 "m" "s"]"#);
+    assert_eq!(
+        program_output(&reference),
+        format!("[{} {}]\n", value(":a"), value(":b"))
+    );
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(reference, build(false, jobs, 0), "legacy, jobs {jobs}");
+        for seed in 1..=seeds {
+            assert_eq!(
+                reference,
+                build(true, jobs, seed),
+                "jobs {jobs}, seed {seed}"
+            );
+        }
+    }
+}
+
 #[test]
 fn compiler_literal_sequential_classification_does_not_realize_values() {
     assert_native_matches_legacy(

@@ -550,6 +550,14 @@ impl TaskInner {
     }
 }
 
+/// A task dropped before it terminated also releases its quoted regex
+/// `lastIndex` entries (`crate::regexp::shared`).
+impl Drop for TaskInner {
+    fn drop(&mut self) {
+        self.heap.release_regex_task_state(self.id);
+    }
+}
+
 /// Terminal cleanup of a cancelled task, by the owner of its execution
 /// (module docs, "Consumer cancellation"): leave the cell it waits on, then
 /// release its transient builders and VM state, so nothing it held stays a
@@ -561,6 +569,7 @@ fn cleanup_cancelled(task: &TaskInner, body: &mut TaskBody) {
         crate::vm::native::discard(&mut vm.natives, 0, &task.heap);
         vm.builders.release_all(&task.heap, task.id);
     }
+    task.heap.release_regex_task_state(task.id);
     *body = TaskBody::Finished;
 }
 
@@ -1631,6 +1640,7 @@ impl RunGuard<'_> {
         if let Some(vm) = self.vm() {
             vm.builders.release_all(&task.heap, task.id);
         }
+        task.heap.release_regex_task_state(task.id);
         task.jobs.close();
         *self.body = TaskBody::Finished;
         let RunGuard {

@@ -1,5 +1,8 @@
 //! RegExp internal slots. Programs are immutable and contain no GC edges;
-//! ordinary property storage (including lastIndex) remains task-owned.
+//! ordinary property storage (including lastIndex) remains task-owned. A
+//! shareable regex value (a `regex` compiler-literal form,
+//! `crate::regexp::shared`) answers [`data`] too, with a per-task
+//! `lastIndex`.
 use std::sync::Arc;
 
 use super::{matcher, parse};
@@ -128,20 +131,51 @@ pub(crate) fn data(
     let Value::Object(id) = this else {
         return Ok(None);
     };
-    heap.read(*id, |o| match o {
-        HeapObject::Plain(o) => {
-            if o.regexp().is_some() && o.owner() != Some(task) {
-                Err(Fault::ForeignObject {
-                    owner: o.owner(),
-                    caller: task,
-                })
-            } else {
-                Ok(o.regexp().cloned())
+    enum Slot {
+        Plain(Option<Arc<Compiled>>),
+        Shared(Arc<super::shared::RegexCell>),
+        Occurrence(Value),
+    }
+    let slot = heap
+        .read(*id, |o| match o {
+            HeapObject::Plain(o) => {
+                if o.regexp().is_some() && o.owner() != Some(task) {
+                    Err(Fault::ForeignObject {
+                        owner: o.owner(),
+                        caller: task,
+                    })
+                } else {
+                    Ok(Slot::Plain(o.regexp().cloned()))
+                }
             }
-        }
+            // A shareable regex value (`crate::regexp::shared`), also
+            // through the occurrence that carries its provenance.
+            HeapObject::Form(f) => Ok(f
+                .regex_cell()
+                .map_or(Slot::Plain(None), |cell| Slot::Shared(cell.clone()))),
+            HeapObject::Occurrence(o) => Ok(Slot::Occurrence(o.value.clone())),
+            _ => Ok(Slot::Plain(None)),
+        })
+        .unwrap_or(Err(Fault::Internal("RegExp reclaimed")))?;
+    match slot {
+        Slot::Plain(compiled) => Ok(compiled),
+        Slot::Shared(cell) => cell.compiled(heap).map(Some),
+        Slot::Occurrence(inner) => shared_only(heap, &inner),
+    }
+}
+
+/// The program of a shareable regex form `value` (never a plain RegExp).
+fn shared_only(heap: &Heap, value: &Value) -> Result<Option<Arc<Compiled>>, Fault> {
+    let Value::Object(id) = value else {
+        return Ok(None);
+    };
+    match heap.read(*id, |o| match o {
+        HeapObject::Form(f) => f.regex_cell().cloned(),
+        _ => None,
+    }) {
+        Some(Some(cell)) => cell.compiled(heap).map(Some),
         _ => Ok(None),
-    })
-    .unwrap_or(Err(Fault::Internal("RegExp reclaimed")))
+    }
 }
 
 pub(crate) fn receiver(heap: &Heap, task: TaskId, this: &Value) -> Result<Arc<Compiled>, Fault> {

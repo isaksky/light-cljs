@@ -136,6 +136,7 @@
 //! | `formSet(x1, …, xn)` | `new_form_set n` | new set of the values; of equal members the first is kept (light-cljs-477) | – |
 //! | `formLiteralMap(pairs)` | `form_op LiteralMap` | positional map from alternating operands in a form list/vector; retains equal keys, first-match lookup | wrong type; odd operand count |
 //! | `formCompilerLiteral(tag, payload)` | `form_op CompilerLiteral` | explicit immutable compiler descriptor; payload and metadata traced and checked for publication | invalid tag or payload |
+//! | `formRegex(source, flags)` | `form_op Regex` | a shareable regex value (a `regex` compiler literal whose payload is the legacy export text, `(?flags)source` without `v`) that JavaScript uses as a RegExp with exactly `flags`, its `lastIndex` per task (`crate::regexp::shared`) | non-string operands, invalid pattern or flags |
 //! | `formLiteralPayload(value)` | `form_op LiteralPayload` | descriptor payload, preserving its identity | wrong type |
 //! | `formLiteralSet(items)` | `form_op LiteralSet` | positional set from a form list/vector; retains equal members and source order | wrong type |
 //! | `formArrayMap(pairs)` | `form_op ArrayMap` | insertion-ordered map from alternating operands; equal keys keep the first key and last value | wrong type; odd operand count |
@@ -692,6 +693,7 @@ fn strict_form_op(
             })?
         }
         FormOp::LiteralPayload => form::compiler_literal(heap, &arg())?.1,
+        FormOp::Regex => form::new_regex(heap, &arg(), &arg())?,
         FormOp::LiteralMap => form::literal_from_sequence(heap, &arg(), false)?,
         FormOp::LiteralSet => form::literal_from_sequence(heap, &arg(), true)?,
         FormOp::ArrayMap => form::array_map_from_sequence(heap, &arg())?,

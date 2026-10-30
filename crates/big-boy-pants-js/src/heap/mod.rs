@@ -87,6 +87,8 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 
+use crate::ids::TaskId;
+
 pub use gc::{
     CollectError, CollectStats, CollectionObserver, CollectionReport, MutatorState,
     ThreadRegistration,
@@ -592,6 +594,11 @@ pub(crate) struct Heap {
     /// Runtime-owned immutable symbol leaves; a leaf metadata lock,
     /// independent of GC because neither keys nor symbols have heap edges.
     pub(crate) symbols: crate::value::symbol::SymbolRegistry,
+    /// The quoted global or sticky regex cells each task holds a
+    /// `lastIndex` entry in (`crate::regexp::shared`), released when the
+    /// task terminates; a leaf metadata lock with no heap edges.
+    regex_task_cells:
+        Mutex<std::collections::HashMap<TaskId, Vec<Weak<crate::regexp::shared::RegexCell>>>>,
 }
 
 /// Lock a metadata mutex, recovering from poisoning. The protected data is
@@ -602,6 +609,30 @@ fn lock<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Heap {
+    /// Record that `task` holds a `lastIndex` entry in `cell`
+    /// (`crate::regexp::shared`).
+    pub(crate) fn note_regex_task_state(
+        &self,
+        task: TaskId,
+        cell: Weak<crate::regexp::shared::RegexCell>,
+    ) {
+        lock(&self.regex_task_cells)
+            .entry(task)
+            .or_default()
+            .push(cell);
+    }
+
+    /// Release every regex `lastIndex` entry of `task`, which has
+    /// terminated, with its byte charge (`crate::regexp::shared`).
+    pub(crate) fn release_regex_task_state(&self, task: TaskId) {
+        let cells = lock(&self.regex_task_cells).remove(&task);
+        for cell in cells.into_iter().flatten() {
+            if let Some(cell) = cell.upgrade() {
+                cell.release_task(task);
+            }
+        }
+    }
+
     pub(crate) fn has_byte_limit(&self) -> bool {
         self.byte_budget.is_limited()
     }

@@ -1582,11 +1582,14 @@ pub enum FormOp {
     /// v → whether v is a positional, unsorted map (an array or literal
     /// map), which compares its own values first in `=` (`formIsArrayMap`).
     IsArrayMap = 103,
+    /// source flags → a shareable regex value (`formRegex`, light-cljs-563,
+    /// `crate::regexp::shared`).
+    Regex = 104,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 104] = [
+    pub const ALL: [FormOp; 105] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1691,6 +1694,7 @@ impl FormOp {
         FormOp::Compare,
         FormOp::IsSortedBy,
         FormOp::IsArrayMap,
+        FormOp::Regex,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1766,6 +1770,7 @@ impl FormOp {
             | FormOp::CljCallMember
             | FormOp::CljGet2
             | FormOp::CompilerLiteral
+            | FormOp::Regex
             | FormOp::Symbol
             | FormOp::Nth
             | FormOp::Dissoc
@@ -1831,6 +1836,7 @@ impl FormOp {
             FormOp::Compare => "formCompare",
             FormOp::IsSortedBy => "formIsSortedBy",
             FormOp::IsArrayMap => "formIsArrayMap",
+            FormOp::Regex => "formRegex",
             FormOp::CljCoreResolver => "cljCoreResolver",
             FormOp::CljGet2 => "cljGet2",
             FormOp::Keyword => "formKeyword",

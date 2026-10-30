@@ -38,6 +38,8 @@
 //! regexes and UUIDs a string, and instants a string or Number. Payloads may
 //! retain occurrences; construction validates their underlying form kind.
 //! `formName` reads the tag and `formLiteralPayload` reads the payload.
+//! A regex literal (also `formRegex(source, flags)`) is a RegExp in
+//! JavaScript whose `lastIndex` stays 0 (`crate::regexp::shared`).
 //! JS containers and regexes compare and hash by identity; UUIDs and instants
 //! compare by value, and queues compare and hash as sequential collections.
 //! Descriptors are otherwise opaque to collection
@@ -484,6 +486,9 @@ pub(crate) enum FormBody {
         payload: Value,
         // Comparable value without replacing the original payload occurrence.
         scalar: Option<Value>,
+        /// A regex's RegExp state (`crate::regexp::shared`); `None` for
+        /// every other tag.
+        regex: Option<Arc<crate::regexp::shared::RegexCell>>,
     },
 }
 
@@ -680,6 +685,14 @@ impl FormObject {
             FormBody::Cons(_) => FormKind::Cons,
             FormBody::Reduced(_) => FormKind::Reduced,
             FormBody::CompilerLiteral { .. } => FormKind::CompilerLiteral,
+        }
+    }
+
+    /// A regex compiler literal's RegExp state (`crate::regexp::shared`).
+    pub(crate) fn regex_cell(&self) -> Option<&Arc<crate::regexp::shared::RegexCell>> {
+        match &self.body {
+            FormBody::CompilerLiteral { regex, .. } => regex.as_ref(),
+            _ => None,
         }
     }
 
@@ -1689,6 +1702,90 @@ pub(crate) fn new_compiler_literal(
     })
 }
 
+/// A regex compiler literal (`formRegex(source, flags)`, light-cljs-563)
+/// whose payload is the legacy export text of the RegExp the caller has
+/// already compiled from `source` and `flags`: `(?flags)source`, without the
+/// `v` flag, which that text cannot spell. It matches with exactly `flags`,
+/// which may not be global or sticky (`crate::regexp::shared`).
+pub(crate) fn new_regex(
+    heap: &Heap,
+    source: &Value,
+    flags: &Value,
+) -> Result<Value, CollectionError> {
+    let (Value::String(text), Value::String(letters)) = (source, flags) else {
+        return Err(wrong(heap, "regex source and flags strings", source));
+    };
+    let (source, flags) = (text, letters);
+    let compiled = crate::regexp::object::compile_accounted(heap, source, flags).map_err(|_| {
+        wrong(
+            heap,
+            "valid regex source and flags",
+            &Value::String(source.clone()),
+        )
+    })?;
+    if compiled.flags.global || compiled.flags.sticky {
+        return Err(wrong(
+            heap,
+            "regex flags without g or y",
+            &Value::String(flags.clone()),
+        ));
+    }
+    let payload = Value::String(regex_export_text(heap, &compiled)?);
+    let cell = crate::regexp::shared::RegexCell::new(
+        heap,
+        source
+            .clone()
+            .import(heap)
+            .ok_or(CollectionError::HeapLimit)?,
+        flags
+            .clone()
+            .import(heap)
+            .ok_or(CollectionError::HeapLimit)?,
+        Some(compiled),
+    )
+    .ok_or(CollectionError::HeapLimit)?;
+    regex_form(heap, payload, cell)
+}
+
+/// The legacy export text of a compiled RegExp: `(?flags)source`, with the
+/// escaped source and the flags but `v`, which that text cannot spell.
+fn regex_export_text(
+    heap: &Heap,
+    compiled: &crate::regexp::object::Compiled,
+) -> Result<JsString, CollectionError> {
+    let shown = crate::regexp::object::source(heap, &compiled.source)
+        .map_err(|_| CollectionError::HeapLimit)?;
+    let exported: String = crate::regexp::object::flags(compiled.flags)
+        .to_string()
+        .chars()
+        .filter(|&c| c != 'v')
+        .collect();
+    if exported.is_empty() {
+        return Ok(shown);
+    }
+    JsString::from(format!("(?{exported})").as_str())
+        .concat_accounted(heap, &shown)
+        .map_err(|_| CollectionError::HeapLimit)
+}
+
+/// Allocate a regex form around its RegExp state.
+fn regex_form(
+    heap: &Heap,
+    payload: Value,
+    cell: crate::regexp::shared::RegexCell,
+) -> Result<Value, CollectionError> {
+    let object = FormObject::new(
+        FormBody::CompilerLiteral {
+            tag: JsString::fixed("regex"),
+            payload: payload.clone(),
+            scalar: None,
+            regex: Some(Arc::new(cell)),
+        },
+        None,
+    );
+    alloc(heap, object, std::slice::from_ref(&payload))
+}
+
 /// Resolve the runtime zone only when a textual instant needs local time.
 /// Hostless construction selects and freezes the same UTC default as Date.
 pub(crate) fn new_compiler_literal_with_zone(
@@ -1767,6 +1864,14 @@ pub(crate) fn new_compiler_literal_with_zone(
     } else {
         None
     };
+    if tag == "regex" {
+        let Value::String(text) = unwrap(heap, payload.clone()) else {
+            unreachable!()
+        };
+        let cell = crate::regexp::shared::RegexCell::from_payload(heap, &text)
+            .ok_or(CollectionError::HeapLimit)?;
+        return regex_form(heap, payload.clone(), cell);
+    }
     let tag = tag.clone().import(heap).ok_or(CollectionError::HeapLimit)?;
     alloc(
         heap,
@@ -1775,6 +1880,7 @@ pub(crate) fn new_compiler_literal_with_zone(
                 tag,
                 payload: payload.clone(),
                 scalar,
+                regex: None,
             },
             None,
         ),
@@ -2729,6 +2835,7 @@ pub(crate) fn queue_pop(heap: &Heap, coll: &Value) -> Result<Value, CollectionEr
         tag,
         payload,
         scalar,
+        ..
     } = &f.body
     else {
         return Err(wrong(heap, expected, coll));
@@ -2751,6 +2858,7 @@ pub(crate) fn queue_pop(heap: &Heap, coll: &Value) -> Result<Value, CollectionEr
         tag: tag.clone(),
         payload: rest.clone(),
         scalar: scalar.clone(),
+        regex: None,
     };
     alloc(heap, f.updated(body), &[coll.clone(), rest])
 }
@@ -3670,6 +3778,27 @@ impl<'s> Scope<'s> {
             &Value::String(tag),
             &self.local_value(payload),
         ))
+    }
+
+    /// The legacy export text (`(?flags)source`, without `v`) of a host
+    /// RegExp object, such as a global regex a macro returns
+    /// (light-cljs-563); `None` for any other value. Reads only the RegExp's
+    /// internal slots, never JavaScript.
+    pub fn regexp_export_text(
+        &self,
+        value: Local<'s>,
+    ) -> Result<Option<JsString>, CollectionError> {
+        let Value::Object(id) = self.local_value(value) else {
+            return Ok(None);
+        };
+        let compiled = self.heap().read(id, |o| match o {
+            HeapObject::Plain(o) => o.regexp().cloned(),
+            _ => None,
+        });
+        match compiled.flatten() {
+            Some(compiled) => regex_export_text(self.heap(), &compiled).map(Some),
+            None => Ok(None),
+        }
     }
 
     /// The descriptor tag and payload, without invoking JavaScript or user hooks.

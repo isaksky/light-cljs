@@ -1523,9 +1523,13 @@ const NATIVE_CALL_MEMBER: &str = r#"(function(_, ...args) {
 
 /// Prepare native collection dispatch or read the legacy `.call` method before
 /// evaluating arguments. Retain that method and its receiver across suspension;
-/// the adapter captures no task-owned runtime object.
+/// the adapter captures no task-owned runtime object. The RegExp constructor
+/// as a value makes shareable regexes (light-cljs-563).
 const NATIVE_PREPARE_INVOKE: &str = r#"(f => {
     const value = __rt.formValue(f), kind = __rt.formKind(value);
+    if (value === globalThis.__lightNativeRuntime.intrinsicRegExp) {
+        return globalThis.__lightNativeRuntime.nativeRegExpCall(value);
+    }
     if (kind === 'struct' && __rt.formName(__rt.structTypeOf(value)) === 'cljs.core/MultiFn') {
         return (m => (...a) => globalThis.__lightNativeRuntime.core.invokeMulti(m, a))(value);
     }
@@ -3724,6 +3728,16 @@ impl<'a> Emitter<'a> {
         } else {
             self.value(value);
         }
+    }
+
+    /// Whether `callee` is the host `RegExp` constructor, `js/RegExp`.
+    fn is_regexp_global(&self, callee: ExprId) -> bool {
+        matches!(
+            self.program.exprs[callee.0].kind,
+            ExprKind::JsGlobal(global)
+                if self.program.js_globals[global.0].package().is_none()
+                    && self.program.js_globals[global.0].path == ["RegExp"]
+        )
     }
 
     /// The operands of a host call, or of a member call with the member's
@@ -8072,6 +8086,7 @@ impl<'a> Emitter<'a> {
     /// enclosing frame. This preserves the adapter's evaluation order across
     /// suspension without allocating a closure, a rest array and a spread
     /// array on every call. Wider calls retain the bounded generic adapter.
+    /// The RegExp constructor makes shareable regexes (light-cljs-563).
     fn native_fixed_invoke(&mut self, callee: ExprId, args: &[ExprId]) -> bool {
         if !(1..=2).contains(&args.len()) {
             return false;
@@ -8086,7 +8101,7 @@ impl<'a> Emitter<'a> {
         self.value(callee);
         write!(
             self.output,
-            ", operand{} = __rt.cljCallable(operand{base}), operand{} = operand{} ? null : __rt.cljCallMember(operand{base}, ",
+            ", operand{} = __rt.cljCallable(operand{base}), operand{} = operand{} ? null : __rt.formValue(operand{base}) === globalThis.__lightNativeRuntime.intrinsicRegExp ? globalThis.__lightNativeRuntime.nativeRegExpMember : __rt.cljCallMember(operand{base}, ",
             base + 1,
             base + 2,
             base + 1,
@@ -8191,8 +8206,10 @@ impl<'a> Emitter<'a> {
             }
             // In a native compile-time unit, a constructor that is a struct
             // type (an immutable `deftype` or `defrecord`, light-cljs-478)
-            // makes the engine's native struct; any other is `new`. The
-            // callee and then the arguments are evaluated once, in order.
+            // makes the engine's native struct; `RegExp` (a local alias,
+            // `(let [R js/RegExp] (R. …))`) a shareable regex value
+            // (light-cljs-563); any other is `new`. The callee and then the
+            // arguments are evaluated once, in order.
             ExprKind::Construct { callee, args }
                 if self.native_forms
                     && !matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_)) =>
@@ -8206,8 +8223,12 @@ impl<'a> Emitter<'a> {
                 for index in 0..args.len() {
                     write!(self.output, ", a{index}").unwrap();
                 }
-                self.output.push_str(") : new c(");
-                self.positional_params(args.len());
+                self.output.push_str(") : ");
+                self.rt(RuntimeName::export("nativeConstruct"));
+                self.output.push_str("(c");
+                for index in 0..args.len() {
+                    write!(self.output, ", a{index}").unwrap();
+                }
                 self.output.push_str("))(");
                 let enclosing = self.construct_callee.replace(*callee);
                 self.value(*callee);
@@ -8226,6 +8247,20 @@ impl<'a> Emitter<'a> {
                     self.value(*arg);
                     self.native_multimethod_function = previous;
                 }
+                self.output.push(')');
+            }
+            // `(js/RegExp. …)` in a native compile-time unit makes a
+            // shareable regex value, like `re-pattern` (light-cljs-563), so
+            // atoms and published helpers can hold it.
+            ExprKind::Construct { callee, args }
+                if self.native_forms && self.is_regexp_global(*callee) =>
+            {
+                // The constructor is read before the operands.
+                self.rt(RuntimeName::export("nativeRegExp"));
+                self.output.push('(');
+                self.value(*callee);
+                self.output.push_str(")(");
+                self.interop_arguments(args, None);
                 self.output.push(')');
             }
             ExprKind::Construct { callee, args } => {
@@ -9211,6 +9246,17 @@ impl<'a> Emitter<'a> {
                 }
                 if let Some(membership) = self.membership(id) {
                     self.membership_value(&membership, membership.contains);
+                    return;
+                }
+                if self.native_forms && self.is_regexp_global(*callee) {
+                    // `(js/RegExp …)`: as the constructor above, keeping
+                    // `RegExp(r)`'s identity (light-cljs-563).
+                    self.rt(RuntimeName::export("nativeRegExpCall"));
+                    self.output.push('(');
+                    self.value(*callee);
+                    self.output.push_str(")(");
+                    self.interop_arguments(args, None);
+                    self.output.push(')');
                     return;
                 }
                 if self.native_forms && self.native_call(*callee, args) {

@@ -11,4 +11,5 @@ pub mod case_fold;
 pub(crate) mod object;
 pub mod property;
 mod sets;
+pub(crate) mod shared;
 pub mod string_property;
