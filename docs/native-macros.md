@@ -5273,3 +5273,39 @@ the nine baseline diagnostics; Pants plus QuickJS Clippy passes allowing the
 three baseline categories, and Pants-only Clippy shows only master's three
 test diagnostics (`frozen` and `comparable` unused in `bbp_macros`, an
 `enumerate` in `execution`).
+
+### Review fixes: starting heap, queue seqs and earlier definitions (light-cljs-592, 2026-10-30)
+
+The third round made the protocol tables code (see the verification above:
+a task's starting heap is 3.12 MB, master's 3.52 MB), added
+`native_imported_queue_seq_protocols_match_quickjs` (every core protocol on
+the seq, `rest` and `next` of imported queue descriptors against the
+QuickJS reference; with the queue seq untyped it stops at `satisfies? of
+uncounted-sequence`), and kept a name's earlier definition across the
+declaration `defprotocol` registers before its bundle (the redeclaration
+test's `(def P :before)`; before, `unavailable definition: state/P`). A
+declaration alone is no previous definition, which keeps the engine's fast
+product read: `stats_file_traces_prepared_and_bundle_root_reads`, which the
+earlier rounds of this branch failed with an extra read of the protocol's
+unit, passes again.
+
+Penpot, from Pants and V8 release builds of this branch on master
+`14c68c44`, with the five read-only roots, every budget above and
+`--source-map --source-map-include-sources`: `app.render` builds at 1
+thread (8.75 s wall, 8.16 s user, 499,384,320 bytes peak memory) and 4
+threads (7.28 s, 11.13 s user, 586,350,592 bytes); the V8 build takes
+2.35 s and 1.52 s. The four outputs are byte-identical but for the
+`sourceMappingURL` comment naming each map, and so are the maps but for
+their `file` field. `app.main` still stops at `core.Delay`
+(light-cljs-613) at 1 thread (56.52 s, 727,400,448 bytes) and 4 threads
+(59.34 s, 982,024,192 bytes).
+
+On macOS arm64 with Homebrew Rust/Cargo 1.99.1 and Node 24.22.1: the Pants
+build's full suite (`-j 8`) runs 2,131 tests, 1,954 pass and 177 fail or
+time out, every one in light-cljs-619's list; Pants-only `bbp_macros` 268,
+Pants plus QuickJS reference and V8 plus Pants `bbp_macros` 270 each;
+V8-build nextest 2,147 of 2,148, failing only the worktree
+`playground_crate_checks_for_wasm32` diagnostic. Formatting and strict
+V8-build Clippy pass; Pants plus QuickJS Clippy passes allowing the three
+engine baseline categories, and Pants-only Clippy shows only master's three
+test diagnostics.
