@@ -218,7 +218,9 @@ struct Bridge {
     cost_entries: usize,
     // Native metadata is a raw immutable map, so it can emerge without its
     // occurrence wrapper. Map that exact object back without traversing it.
-    native_objects: IdentityMap<ObjectIdentity, (usize, WeakHandle)>,
+    // Reclamation notifications remove dead identities; liveness handles
+    // already belong to Imported, so the lookup need not duplicate them.
+    native_objects: IdentityMap<ObjectIdentity, usize>,
     reclaimed: ReclamationQueue,
     // Each identity stays allocated through a surviving Imported Datum tree.
     // When a root dies, hold that Datum until its child links are released.
@@ -596,15 +598,14 @@ impl Bridge {
         let occurrence = s.downgrade(value);
         // Publish the raw-object entry only after occurrence allocation
         // succeeds, so failed imports cannot leave an unwatched entry.
-        if let Some((identity, weak)) = &native {
-            self.native_objects
-                .insert(identity.clone(), (d.identity(), weak.clone()));
-        }
+        let native = native.map(|(identity, weak)| {
+            self.native_objects.insert(identity, d.identity());
+            weak
+        });
         let identity = s
             .object_identity(value)
             .expect("an occurrence is an object");
-        self.native_objects
-            .insert(identity, (d.identity(), occurrence.clone()));
+        self.native_objects.insert(identity, d.identity());
         let retained = match self.imports.get(&d.identity()) {
             Some(imported) => imported.retained,
             None => self.retain_datum(d),
@@ -620,7 +621,7 @@ impl Bridge {
                 data: d.clone(),
                 retained,
                 occurrence,
-                native: native.map(|(_, weak)| weak),
+                native,
             },
         );
         let mut cost = (1usize, 1usize);
@@ -732,7 +733,7 @@ impl Bridge {
         if let Some(data) = s
             .object_identity(v)
             .and_then(|key| self.native_objects.get(&key))
-            .and_then(|(key, _)| self.imports.get(key))
+            .and_then(|key| self.imports.get(key))
             .map(|imported| &imported.data)
         {
             self.charge(data, depth, remaining)?;

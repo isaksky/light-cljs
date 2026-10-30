@@ -2213,7 +2213,7 @@ fn weak_bridge_pruning_only_walks_changes_among_growing_retained_trees() {
 fn weak_bridge_incremental_pruning_matches_full_reachability() {
     fn check(rt: &Runtime, bridge: &mut Bridge) {
         rt.collect().unwrap();
-        rt.scope(|_| {
+        rt.scope(|s| {
             let live: HashSet<_> = bridge
                 .imports
                 .iter()
@@ -2251,11 +2251,15 @@ fn weak_bridge_incremental_pruning_matches_full_reachability() {
                 .filter(|(key, _)| reachable.contains(key))
                 .filter_map(|(&key, _)| bridge.cost(key).map(|cost| (key, cost)))
                 .collect();
+            // Rewrapping replaces a dead occurrence. Every observable native
+            // identity therefore belongs to a current occurrence/raw handle.
+            // Query the heap independently of the notification queue.
             let expected_objects: HashSet<_> = bridge
-                .native_objects
-                .iter()
-                .filter(|(_, (key, weak))| live.contains(key) && weak.is_live())
-                .map(|(identity, _)| identity.clone())
+                .imports
+                .values()
+                .flat_map(|i| std::iter::once(&i.occurrence).chain(i.native.iter()))
+                .filter_map(|weak| s.upgrade(weak).ok())
+                .filter_map(|value| s.object_identity(value))
                 .collect();
             bridge.prune(rt.heap_stats().collections);
             assert_eq!(bridge.imports.keys().copied().collect::<HashSet<_>>(), live);
