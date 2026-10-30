@@ -1632,9 +1632,10 @@ persistence remain out of scope.
      list or `#(...)`, under metadata, quote or a property access (`.-x`,
      `.`, `..`, `aget`). A `set!`, `aset` or `unchecked-set` that is the
      first step of `->` also reads the thread's first operand as its place,
-     since `(-> f (aset "k" v))` is `(aset f "k" v)`, and one in `doto` reads
-     a plain first operand so. When the spelling cannot show that a place
-     names no core function, every core function counts as written: an
+     since `(-> f (aset "k" v))` is `(aset f "k" v)`, and so does one in
+     `doto`, unless that operand is `(js-obj)`. When the spelling cannot
+     show that a place names no core function, every core function counts
+     as written: an
      unquoted place or binding vector; a call as a place or receiver, which
      a macro could expand to a core function's name, unless no macro can
      make it (a JavaScript or method call, `new`, a constructor) or it fills

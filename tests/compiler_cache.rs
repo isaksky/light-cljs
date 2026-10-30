@@ -481,6 +481,14 @@ fn anonymous_core_writes_reject_cached_providers() {
             redefine: "(redef-probe)",
             expected: Some("[3 42]"),
         },
+        // A `doto` whose first operand is a property of a core function,
+        // here a source macro of that name that writes it.
+        CoreWriteRow {
+            file: "main.cljs",
+            defs: "(defmacro doto [place step] (list (symbol \"set!\") place (second step)))",
+            redefine: "(let [before (util/sum)] (doto (.-call cljs.core/+) (set! (fn [_ a b] 42))) [before (util/sum)])",
+            expected: Some("[3 42]"),
+        },
         // A discarded splice whose tail the reader keeps.
         CoreWriteRow {
             file: "main.cljc",

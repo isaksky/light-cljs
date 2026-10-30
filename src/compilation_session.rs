@@ -727,10 +727,18 @@ impl SharedCatalog {
         // namespace preparation replaced with nil, whose renames this scan
         // must still read.
         let live: Vec<NodeId> = {
-            fn subtree(syntax: &crate::SyntaxTree, root: NodeId) -> Vec<NodeId> {
+            // The unvisited nodes under `roots`, now visited: each node is
+            // walked once, however inactive branches and discards nest.
+            fn subtree(
+                syntax: &crate::SyntaxTree,
+                mut pending: Vec<NodeId>,
+                visited: &mut [bool],
+            ) -> Vec<NodeId> {
                 let mut nodes = Vec::new();
-                let mut pending = vec![root];
                 while let Some(id) = pending.pop() {
+                    if std::mem::replace(&mut visited[id.0], true) {
+                        continue;
+                    }
                     nodes.push(id);
                     match &syntax.nodes[id.0].kind {
                         NodeKind::Collection { children, .. } => pending.extend(children),
@@ -751,36 +759,32 @@ impl SharedCatalog {
                 }
                 nodes
             }
-            let mut dead = vec![false; syntax.nodes.len()];
+            let mut inactive = Vec::new();
             for node in &syntax.nodes {
-                match &node.kind {
-                    NodeKind::Conditional { branches, .. } => {
-                        let selected =
-                            crate::compiler_reader::selected_branch(source, syntax, *branches);
-                        if let NodeKind::Collection { children, .. } =
-                            &syntax.nodes[branches.0].kind
-                        {
-                            for &branch in children.iter().filter(|&&c| Some(c) != selected) {
-                                for id in subtree(syntax, branch) {
-                                    dead[id.0] = true;
-                                }
-                            }
+                if let NodeKind::Conditional { branches, .. } = &node.kind
+                    && let NodeKind::Collection { children, .. } = &syntax.nodes[branches.0].kind
+                {
+                    let selected =
+                        crate::compiler_reader::selected_branch(source, syntax, *branches);
+                    inactive.extend(children.iter().filter(|&&c| Some(c) != selected));
+                }
+            }
+            let mut dead = vec![false; syntax.nodes.len()];
+            subtree(syntax, inactive, &mut dead);
+            let mut walked = vec![false; syntax.nodes.len()];
+            for node in &syntax.nodes {
+                if let NodeKind::Discard { form } = &node.kind {
+                    let nodes = subtree(syntax, vec![*form], &mut walked);
+                    if !nodes.iter().any(|id| {
+                        matches!(
+                            syntax.nodes[id.0].kind,
+                            NodeKind::Conditional { splicing: true, .. }
+                        )
+                    }) {
+                        for id in nodes {
+                            dead[id.0] = true;
                         }
                     }
-                    NodeKind::Discard { form } => {
-                        let nodes = subtree(syntax, *form);
-                        if !nodes.iter().any(|id| {
-                            matches!(
-                                syntax.nodes[id.0].kind,
-                                NodeKind::Conditional { splicing: true, .. }
-                            )
-                        }) {
-                            for id in nodes {
-                                dead[id.0] = true;
-                            }
-                        }
-                    }
-                    _ => {}
                 }
             }
             (0..syntax.nodes.len())
@@ -1003,11 +1007,9 @@ impl SharedCatalog {
         enum Thread {
             /// Not a step of either.
             None,
-            /// The first step of `->`: the thread's first operand.
+            /// The first step of `->` or any step of `doto`: the thread's
+            /// first operand.
             Place(NodeId),
-            /// A step of `doto`: a local bound to the thread's first
-            /// operand, which the analyzer's index does not follow.
-            Local(NodeId),
             /// A later step of `->`: whatever the steps before it expand
             /// to, which a macro may make a core function's name.
             Unknown,
@@ -1022,7 +1024,7 @@ impl SharedCatalog {
             match (spelling(thread[0]).rsplit('/').next(), position) {
                 (Some("->"), 2) => Thread::Place(thread[1]),
                 (Some("->"), 3..) => Thread::Unknown,
-                (Some("doto"), 2..) => Thread::Local(thread[1]),
+                (Some("doto"), 2..) => Thread::Place(thread[1]),
                 _ => Thread::None,
             }
         };
@@ -1037,8 +1039,7 @@ impl SharedCatalog {
                 // their receiver. A step of `->` or `doto` also receives the
                 // threaded value first; without that operand, as in `(->
                 // place (set! value))`, any other enclosing form hides it.
-                // A `doto`'s plain first operand is read as a place too,
-                // which costs ordinary code nothing.
+                // A fresh JavaScript object, `(js-obj)`, is no core function.
                 ("set!" | "aset" | "unchecked-set", _) => {
                     let operands = if head == "set!" { 2 } else { 3 };
                     let thread = threaded(id);
@@ -1049,9 +1050,14 @@ impl SharedCatalog {
                     };
                     own && match thread {
                         Thread::None => true,
-                        Thread::Place(place) => target(place, false),
-                        Thread::Local(place) => {
-                            call(&syntax.nodes[place.0]).is_some() || target(place, false)
+                        Thread::Place(place) => {
+                            call(&syntax.nodes[place.0]).is_some_and(|operands| {
+                                operands.len() == 1
+                                    && matches!(
+                                        spelling(operands[0]),
+                                        "js-obj" | "cljs.core/js-obj"
+                                    )
+                            }) || target(place, false)
                         }
                         Thread::Unknown => false,
                     }
