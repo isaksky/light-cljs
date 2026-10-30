@@ -1742,7 +1742,11 @@ fn native_gensym_reservations_count_against_the_shared_heap_limit() {
     let result = evaluator.evaluate_unit("rt => { const prefix='x'.repeat(4096); let n=0; try { for(;n<20000;n++) rt.core.gensym(prefix); } catch(e) { return n; } throw new Error('unaccounted gensym names'); }");
     match result {
         Ok(value) => assert!(
-            matches!(evaluator.cx().unwrap().values.borrow()[&value.index].view(), ValueView::Number(n) if n > 0.0 && n < 20000.0)
+            matches!(evaluator.cx().unwrap().values.borrow()[&value.index].view(), ValueView::Number(n) if n > 0.0 && n < 20000.0),
+            "result: {:?}; heap: {:?}; reservations: {}",
+            evaluator.cx().unwrap().values.borrow()[&value.index].view(),
+            shared.0.runtime.heap_stats(),
+            shared.0.bridge.lock().unwrap().generated_names.len(),
         ),
         // A full reservation table may also deny the result table's entry.
         Err(error) => assert!(error.0.contains("heap byte limit exceeded"), "{error}"),

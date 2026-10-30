@@ -1416,7 +1416,17 @@ impl BbpRuntime {
                 .into_iter()
                 .map(|name| {
                     let unit = manifest.unit(manifest.unit_named(name).unwrap());
-                    &manifest.source()[unit.body_range.clone()]
+                    let source = &manifest.source()[unit.body_range.clone()];
+                    if name == "reservedNames" {
+                        // An immutable vocabulary needs membership only. Keep
+                        // the canonical words without allocating a Set in each
+                        // task, as with readerCoreNames above.
+                        let (_, words) = source.split_once("new Set(").unwrap();
+                        let (words, _) = words.split_once(".split(\" \"))").unwrap();
+                        format!("const reservedNames={{has: name => !name.includes(' ') && (' ' + {words} + ' ').includes(' ' + name + ' ')}};")
+                    } else {
+                        source.to_owned()
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join("\n")

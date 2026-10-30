@@ -36,35 +36,33 @@ const decl = (() => {
   const instances=new WeakMap();
   const ownMethod=(x,name,n)=>{
     const arities=instances.get(x)?.get(name);
-    return (arities?.get(n)??arities?.get(-1))?.call;
+    return arities?.get(n)??arities?.get(-1);
   };
   const extendInstance=(target,specs,returnTarget=false)=>{
+    const invokeInstance=(arities,receiver,args)=>{
+      const fixed=arities.get(args.length+1),rest=arities.get(-1);
+      const fn=rest?fixed??rest:arities.size===1?arities.values().next().value:fixed;
+      if(fn===undefined)throw new Error('Invalid arity: '+args.length);
+      // Canonical mixed dispatch uses its variadic method as the receiver
+      // when no fixed overload matches, for both Object and IFn methods.
+      return fn(rest&&arities.size>1&&fixed===undefined?rest.variadicMethod:receiver,...args);
+    };
     if(target!=null&&(typeof target==='object'||typeof target==='function')){
       const methods=new Map(Array.from(instances.get(target)??[],([name,arities])=>[name,new Map(arities)]));
       instances.set(target,methods);
       for(const [name,n,fn,,variadic] of specs){
         let arities=methods.get(name);if(arities===undefined)methods.set(name,arities=new Map());
-        arities.set(variadic!=null?-1:n,{fn,variadic,call:n===0?true:(x,...args)=>fn.call(x,x,...args)});
+        const entry=n===0?true:(x,...args)=>fn.call(x,x,...args);
+        if(variadic!=null)entry.variadicMethod=fn;
+        arities.set(variadic!=null?-1:n,entry);
       }
       for(const [name,arities] of methods)if(name.startsWith('Object/'))
         Object.defineProperty(target,mungeMember(name.slice(7)),{configurable:true,writable:true,value:function(...args){
-          const fixed=arities.get(args.length+1),rest=arities.get(-1);
-          const entry=rest?fixed??rest:arities.size===1?arities.values().next().value:fixed;
-          if(entry===undefined)throw new Error('Invalid arity: '+args.length);
-          // The canonical mixed Object dispatcher uses the variadic method
-          // itself as its receiver when no fixed overload matches.
-          const receiver=rest&&arities.size>1&&fixed===undefined?entry.fn:this;
-          return entry.call(receiver,...args);
+          return invokeInstance(arities,this,args);
         }});
       if(methods.has('IFn/-invoke')){
         Object.defineProperty(target,'call',{configurable:true,writable:true,value:function(_, ...args){
-          const arities=instances.get(this).get('IFn/-invoke');
-          const fixed=arities.get(args.length+1),rest=arities.get(-1);
-          const entry=fixed??rest
-            ??(arities.size===1?arities.values().next().value:undefined);
-          if(entry===undefined)throw new Error('Invalid arity: '+args.length);
-          const receiver=rest&&arities.size>1&&fixed===undefined?entry.fn:this;
-          return entry.call(receiver,...args);
+          return invokeInstance(instances.get(this).get('IFn/-invoke'),this,args);
         }});
         Object.defineProperty(target,'apply',{configurable:true,writable:true,value:function(_,args){
           const values=Array.from(args);
@@ -673,7 +671,7 @@ const decl = (() => {
   };
   return {makeBundle, productGetter, index, reserve: n => { const base = bundleCount; bundleCount += n; return base; },
     extend, extendInstance, inheritInstance:(x,parent)=>instances.set(x,instances.get(parent)),
-    instanceCallable:x=>instances.get(__rt.formValue(x))?.has('IFn/-invoke')===true,
+    instanceMethods:instances,
     method, satisfies, implementsDirectly, predicate, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
     callable, invokeIFn, applyIFn, callMember, borrowedIFn,
     demandMulti, keptProduct, productOwner, defineProduct,
@@ -2558,7 +2556,7 @@ const native = (() => {
       if(isVar(f))return core.applyVar(f,args);
       const kind=__rt.formKind(val(f));
       return (kind==='struct'||kind==='record') && !multi.is(f)
-        ? decl.applyIFn(val(f),args) : decl.instanceCallable(f)?applyArgs(f,args):invoke(f,...args);
+        ? decl.applyIFn(val(f),args) : decl.instanceMethods.get(val(f))?.has('IFn/-invoke')?applyArgs(f,args):invoke(f,...args);
     },
     applyTo:(f,n,args)=>{
       args=seqOf(args);n=val(n);
