@@ -1768,6 +1768,20 @@ thread_local! {
     /// The values the walks on this thread entered, for the tests that
     /// their work is linear.
     static ENTERED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Whether a walk on this thread hashes its operand when it stops at
+    /// a pending sequence, for the test of the hashing-request fallback.
+    static HASH_AT_STOP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make the [`realize_all`] walks on this thread hash their operand when
+/// they stop at a pending sequence (`on`), as a hash met in the same
+/// execution would: it requests the first pending sequence it reads. No
+/// walk does so otherwise, as the keys and members a walk rebuilds a map
+/// or set with were hashed when the original was built, which realized
+/// every sequence they reach (light-cljs-629).
+#[cfg(test)]
+pub(crate) fn hash_at_stop(on: bool) {
+    HASH_AT_STOP.with(|h| h.set(on));
 }
 
 /// The number of values [`realize_all`] walks entered on this thread.
@@ -1829,6 +1843,10 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                             Ok(children) => (Rebuild::Seq(meta), children.unwrap_or_default()),
                             Err(CljError::Realize(lazy)) => {
                                 walk.work.push(Work::Enter(v));
+                                #[cfg(test)]
+                                if HASH_AT_STOP.with(std::cell::Cell::get) {
+                                    let _ = form::hash(heap, &walk.root);
+                                }
                                 walk.suspend(heap);
                                 return Err(CljError::Realize(lazy));
                             }

@@ -454,4 +454,154 @@ mod tests {
         // 15,351, 60,701 and 241,401 values.
         assert_eq!(steps, [401, 801, 1601], "values entered at 50, 100, 200");
     }
+
+    /// Run `body` (a function body over `__rt` returning a string) as a
+    /// task on `rt`: its result and the values `cljRealizeAll` walks
+    /// entered meanwhile.
+    fn run_entered(rt: &Runtime, body: &str) -> (String, usize) {
+        let f = compile_function(&format!("function test() {{ {body} }}")).unwrap();
+        let before = realize_all_entered();
+        let outcome = rt.spawn(&f, &[]).unwrap().run().unwrap();
+        let RunOutcome::Complete(v) = outcome else {
+            panic!("realization failed: {outcome:?}");
+        };
+        let entered = realize_all_entered() - before;
+        (v.string().unwrap().to_string_lossy(), entered)
+    }
+
+    /// The fallbacks that start a walk over instead of keeping it give the
+    /// result one complete walk gives, running each thunk and comparator
+    /// call once, in the same order (light-cljs-629).
+    #[test]
+    fn realize_all_restart_fallbacks_preserve_result_and_effect_order() {
+        // A walk that used an answer to a sorted-map-by comparison starts
+        // over at the next pending sequence: the two maps' keys compare
+        // equal by hash, so rebuilding each map (its value was a lazy
+        // sequence) asks the comparator, once at construction and once in
+        // the realization; the later map's comparison is asked after the
+        // sequences between them are realized.
+        let (report, entered) = run_entered(
+            &Runtime::new(),
+            "const log = [];
+             const sorted = (x) => __rt.formSortedInsert(__rt.formSortedMapBy(null), 0, 0, x);
+             const a = sorted('x'), b = sorted('x'), c = sorted('y'), d = sorted('y');
+             const name = (m) => m === a ? 'a' : m === b ? 'b' : m === c ? 'c' : m === d ? 'd' : '?';
+             __rt.cljCoreResolver((op, x) => op === 'formEquals' && __rt.formIsSortedBy(x)
+               ? (l, r) => { log.push(name(l) + name(r)); return false; } : null);
+             const lazy = (tag, x) => __rt.lazySeq(() => { log.push(tag); return __rt.formList(x); });
+             const v = (m) => __rt.formVector(m);
+             const first = __rt.formMap(v(a), lazy('x', 1), v(b), 2);
+             const second = __rt.formMap(v(c), lazy('y', 3), v(d), 4);
+             log.push('built');
+             const r = __rt.cljRealizeAll(__rt.formVector(first, lazy('p', 5), second));
+             const expected = __rt.formVector(__rt.formMap(v(a), __rt.formList(1), v(b), 2),
+               __rt.formList(5), __rt.formMap(v(c), __rt.formList(3), v(d), 4));
+             log.push('equal');
+             return [__rt.formCount(__rt.formNth(r, 0)), __rt.formEquals(r, expected), log.join(',')].join(';');",
+        );
+        // Building each map asks once (`ba`, `dc`); the realization runs
+        // `x`, asks `ba` rebuilding the first map, stops at `p` and starts
+        // over, then stops at `y` and starts over (giving `ba` its answer
+        // again each time), and asks `dc` rebuilding the second. A walk
+        // kept past the answer it used would give `dc` that answer, ask
+        // again from there and run `ba,dc` twice more. Then `expected`.
+        assert_eq!(
+            report, "2;true;ba,dc,built,x,ba,p,y,dc,ba,dc,equal,ba,dc",
+            "{entered} entered"
+        );
+
+        // A walk whose execution met a pending sequence by hashing starts
+        // over at the next pending sequence: a hash that requests `q`,
+        // which is realized first, then `p` (a walk does not meet one
+        // except through this test's hook).
+        let prefix = 10;
+        crate::collections::clj::hash_at_stop(true);
+        let (report, entered) = run_entered(
+            &Runtime::new(),
+            &format!(
+                "const log = [];
+                 const lazy = (tag, x) => __rt.lazySeq(() => {{ log.push(tag); return __rt.formList(x); }});
+                 let v = __rt.formVector();
+                 for (let i = 0; i < {prefix}; i++) v = __rt.formConj(v, __rt.formVector(i));
+                 const r = __rt.cljRealizeAll(__rt.formConj(__rt.formConj(v, lazy('p', 1)), lazy('q', 2)));
+                 const expected = __rt.formConj(__rt.formConj(v, __rt.formList(1)), __rt.formList(2));
+                 return [__rt.formCount(r), __rt.formEquals(r, expected),
+                         __rt.formNth(r, 0) === __rt.formNth(v, 0), log.join(',')].join(';');"
+            ),
+        );
+        crate::collections::clj::hash_at_stop(false);
+        assert_eq!(report, format!("{};true;true;q,p", prefix + 2));
+        // Three walks: two stop at `p` (pending, then still pending) after
+        // the vector and the prefix's vectors and their elements, and the
+        // last enters the two sequences and their elements too. A walk
+        // kept at `p` would enter the prefix once (2 * prefix + 7).
+        assert_eq!(entered, 3 * (2 * prefix + 2) + 3, "values entered");
+
+        // A walk whose storage the byte budget refuses starts over; at
+        // every limit the realization completes with the same result,
+        // running each thunk once in order, or fails with the heap limit,
+        // and some limit admits the result but not the walk's growth. A
+        // completed realization releases every charge: a second one
+        // completes too and settles the heap where the first did. (Without
+        // automatic collection the object table grows the same each run.)
+        let n = 2000;
+        let body = format!(
+            "const log = [];
+             const lazy = (tag, x) => __rt.lazySeq(() => {{ log.push(tag); return __rt.formList(x); }});
+             let v = __rt.formVector(lazy('p', -1));
+             for (let i = 0; i < {n}; i++) v = __rt.formConj(v, __rt.formVector(i));
+             v = __rt.formConj(v, lazy('q', -2));
+             const r = __rt.cljRealizeAll(v);
+             return [__rt.formCount(r), __rt.formKind(__rt.formNth(r, 0)), __rt.formNth(__rt.formNth(r, 0), 0),
+                     __rt.formNth(r, 1) === __rt.formNth(v, 1), __rt.formNth(__rt.formNth(r, {n} + 1), 0),
+                     log.join(',')].join(';');"
+        );
+        let limited = |bytes| {
+            Runtime::with_heap_policy(
+                Default::default(),
+                crate::HeapPolicy {
+                    allocation_threshold: None,
+                    hard_limit_bytes: Some(bytes),
+                    ..Default::default()
+                },
+            )
+        };
+        let probe = limited(usize::MAX / 2);
+        let realm = probe.heap_stats().managed_bytes;
+        let (expected, linear) = run_entered(&probe, &body);
+        assert_eq!(expected, format!("{};list;-1;true;-2;p,q", n + 2));
+        let peak = probe.heap_stats().peak_managed_bytes;
+        let (mut restarted, mut denied) = (0, 0);
+        for step in 0..=64 {
+            let rt = limited(realm + (peak - realm) * step / 64);
+            let f = compile_function(&format!("function test() {{ {body} }}")).unwrap();
+            let mut settled = Vec::new();
+            for run in 0..2 {
+                let before = realize_all_entered();
+                match rt.spawn(&f, &[]).unwrap().run().unwrap() {
+                    RunOutcome::Complete(v) => {
+                        assert_eq!(v.string().unwrap().to_string_lossy(), expected);
+                        let entered = realize_all_entered() - before;
+                        assert!(entered >= linear, "{entered} entered");
+                        restarted += usize::from(entered > linear);
+                    }
+                    RunOutcome::Failed(e) if run == 0 => {
+                        assert_eq!(e.kind(), crate::VmErrorKind::HeapLimit, "{e:?}");
+                        denied += 1;
+                        break;
+                    }
+                    other => panic!("step {step}, run {run}: {other:?}"),
+                }
+                rt.collect().unwrap();
+                settled.push(rt.heap_stats().managed_bytes);
+            }
+            if let [first, second] = settled[..] {
+                assert_eq!(first, second, "a second realization at step {step}");
+            }
+        }
+        assert!(
+            denied > 0 && restarted > 0,
+            "{denied} denied, {restarted} restarted"
+        );
+    }
 }
