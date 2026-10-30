@@ -2668,7 +2668,7 @@ const native = (() => {
     isObject:x=>{x=val(x);const kind=__rt.formKind(x);return kind==='compiler-literal'?literalIsObject(x):kind===null&&!__rt.cljIsAtom(x)&&x!=null&&x.constructor===Object;},
     isNumber:x=>typeof val(x)==='number', isFloat:x=>typeof val(x)==='number', isDouble:x=>typeof val(x)==='number',
     isBoolean:x=>typeof val(x)==='boolean',
-    isInteger,isInt:isInteger,
+    isInteger,isInt:x=>isInteger(x),
     isPositiveInt:x=>isInteger(x)&&val(x)>0,
     isNegativeInt:x=>isInteger(x)&&val(x)<0,
     isNaturalInt:x=>isInteger(x)&&!(val(x)<0),

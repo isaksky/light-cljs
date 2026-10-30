@@ -6391,7 +6391,8 @@ fn native_integer_predicates_work_as_shared_atom_validators() {
               (defmacro probe []
                 (set-validator! a int?) (set-validator! b pos-int?)
                 (set-validator! c neg-int?) (set-validator! d nat-int?)
-                (list 'quote [(reset! a 2) (reset! b 3) (reset! c -2) (reset! d 4)
+                (list 'quote [(identical? int? integer?)
+                  (reset! a 2) (reset! b 3) (reset! c -2) (reset! d 4)
                   (try (reset! a 1.5) false (catch js/Error _ true))
                   (try (reset! b 0) false (catch js/Error _ true))
                   (try (reset! c 0) false (catch js/Error _ true))
@@ -6410,7 +6411,7 @@ fn native_integer_predicates_work_as_shared_atom_validators() {
                 "(ns main (:require [a :as a] [b :as b])) (js/console.log (pr-str a/answer b/answer))",
             ),
         ],
-        "[2 3 -2 4 true true true true] [2 3 -2 4 true true true true]\n",
+        "[false 2 3 -2 4 true true true true] [false 2 3 -2 4 true true true true]\n",
         &[1, 2, 4],
     );
 }
