@@ -6161,6 +6161,96 @@ fn native_compile_time_sequence_utilities_preserve_values_and_completion() {
 }
 
 #[test]
+fn native_iteration_reduction_stops_before_requesting_a_continuation_key() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [events (atom [])
+                   step (fn [key] (swap! events conj [:step key]) (inc (if (nil? key) 0 key)))
+                   source (iteration step :somef #(< % 5)
+                            :kf (fn [x] (swap! events conj [:key x]) x))
+                   result (reduce (fn [acc x] (if (= x 2) (reduced (conj acc x)) (conj acc x))) [] source)]
+               (list 'quote [result @events (vec (iteration inc :initk 0 :somef #(< % 4)))])))
+           (js/console.log (pr-str (probe)))"#,
+        "[[1 2] [[:step nil] [:key 1] [:step 1]] [1 2 3]]\n",
+    );
+}
+
+#[test]
+fn native_custom_reducers_do_not_require_a_sequence_implementation() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [source (reify IReduce
+                            (-reduce [_ f] (f 1 2))
+                            (-reduce [_ f init] (f init 42)))]
+               (list 'quote [(reduce + source) (reduce + 1 source)
+                 (into [] source) (transduce (map inc) conj [] source)])))
+           (js/console.log (pr-str (probe)))"#,
+        "[3 43 [42] [43]]\n",
+    );
+}
+
+#[test]
+fn native_cat_preserves_flattening_and_early_termination() {
+    for (body, expected) in [
+        ("(into [] cat ['(1 2) [3]])", "[1 2 3]\n"),
+        (
+            "(transduce (comp cat (take 2)) conj [] [[1 2 3] [4]])",
+            "[1 2]\n",
+        ),
+    ] {
+        assert_native_matches_legacy(
+            &format!("(defmacro probe [] (list 'quote {body})) (js/console.log (pr-str (probe)))"),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn native_iteration_views_publish_without_replaying_their_initializer() {
+    assert_entry_matches_quickjs(
+        "native-shared-iteration",
+        &[
+            (
+                "state.cljs",
+                r#"(ns state) (def calls (atom 0))
+              (def source (do (swap! calls inc) (iteration inc :initk 0 :somef #(< % 4))))
+              (defmacro probe [] (list 'quote [(vec source) @calls]))"#,
+            ),
+            (
+                "a.cljs",
+                "(ns a (:require [state :refer [probe]])) (def answer (probe))",
+            ),
+            (
+                "b.cljs",
+                "(ns b (:require [state :refer [probe]])) (def answer (probe))",
+            ),
+            (
+                "main.cljs",
+                "(ns main (:require [a :as a] [b :as b])) (js/console.log (pr-str a/answer b/answer))",
+            ),
+        ],
+        "[[1 2 3] 1] [[1 2 3] 1]\n",
+        &[1, 2, 4],
+    );
+}
+
+#[test]
+fn native_sequence_iterators_and_array_conversions_preserve_advance_rules() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [a (seq-iter [1 2]) b (es6-iterator [3]) c (iter "ab")]
+               (list 'quote [(.hasNext a) (.hasNext a) (.next a) (.next a) (.hasNext a)
+                 (.-value (.next b)) (.-done (.next b))
+                 (.next c) (.next c) (.hasNext c)
+                 (vec (to-array '(4 5))) (vec (into-array nil [6 7]))
+                 (unchecked-add 1 2 3) (unchecked-subtract 8 2 1)
+                 (min 2 -1 4) (max 2 -1 4)])))
+           (js/console.log (pr-str (probe)))"#,
+        "[true true 1 2 false 3 true \"a\" \"b\" false [4 5] [6 7] 6 5 -1 4]\n",
+    );
+}
+
+#[test]
 fn native_compile_time_exception_uuid_and_array_helpers_match_application_values() {
     assert_native_matches_legacy(
         r#"(defmacro probe []

@@ -4877,6 +4877,7 @@ mod environment_bundle_tests {
     }
 
     /// What the compile-time engine noted of extensions its code installed.
+    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
     fn noted(source: &str) -> crate::evaluator::EnvironmentExtensions {
         let mut host = MacroHost::new();
         crate::compile_with_macros(source, &mut host).unwrap();

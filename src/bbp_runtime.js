@@ -1560,6 +1560,7 @@ const native = (() => {
   };
   const deref = a => { if (__rt.cljIsReduced(a)) return __rt.cljUnreduced(a); if (isVar(a)) return varField(a,'val')(); lane(a); return __rt.atomLoad(a); };
   const notifyWatches=(a,old,next)=>{
+    lane(a);
     const slot=optionsOf(a),watches=slot===null?null:__rt.formNth(__rt.atomLoad(slot),2);
     for(let s=__rt.cljSeq(watches);s!==null;s=__rt.cljNext(s)){
       const entry=__rt.cljFirst(s);invoke(__rt.cljNth(entry,1),__rt.cljNth(entry,0),a,old,next);
@@ -1824,6 +1825,43 @@ const native = (() => {
     return result.length === 1 ? result[0] : vector(Array.from(result));
   };
   const seqOf = x => __rt.cljSeq(x);
+  const iteratorInit={},iteratorStart={};
+  const SeqIter=class SeqIter{
+    constructor(current,following){this._seq=current;this._next=following;}
+    hasNext(){
+      if(this._seq===iteratorInit){this._seq=iteratorStart;this._next=seqOf(this._next);}
+      else if(this._seq===this._next)this._next=__rt.cljNext(this._seq);
+      return this._next!=null;
+    }
+    next(){if(!this.hasNext())throw new Error('No such element');this._seq=this._next;return __rt.cljFirst(this._next);}
+    remove(){return new Error('Unsupported operation');}
+  };
+  const seqIter=x=>new SeqIter(iteratorInit,x);
+  const iter=x=>{
+    const value=val(x);
+    if(value==null)return {hasNext:()=>false,next:()=>new Error('No such element'),remove:()=>new Error('Unsupported operation')};
+    if(Array.isArray(value)||typeof value==='string'){
+      let index=0;return {hasNext:()=>index<value.length,next:()=>typeof value==='string'?value.charAt(index++):value[index++],remove:()=>new Error('Unsupported operation')};
+    }
+    const kind=__rt.formKind(value),method=decl.coreMethod('IIterable/-iterator',1,x,kind!==null);
+    return method===null?seqIter(x):method(x);
+  };
+  const es6Iterator=x=>{
+    let current=seqOf(x);
+    return {next(){if(current===null)return {value:null,done:true};const value=__rt.cljFirst(current);current=__rt.cljNext(current);return {value,done:false};}};
+  };
+  const iteratorSeq=iterator=>{
+    const item=val(iterator).next();if(truth(item.done))return null;
+    const value={},head=item.value;let tail=null;
+    const following=()=>{if(tail===null)tail=iteratorSeq(iterator);return tail;};
+    decl.extendInstance(value,[
+      ['ISeq',0,null],['ISeqable',0,null],['IPrintWithWriter',0,null],
+      ['ISeqable/-seq',1,x=>x],['ISeq/-first',1,()=>head],
+      ['ISeq/-rest',1,()=>following()??__rt.formList()],
+      ['IPrintWithWriter/-pr-writer',3,(x,w,o)=>printSequential(w,printWriter,'(',' ',')',o,x)],
+    ],true);
+    return value;
+  };
   const distinctFrom=(self,coll,seen)=>lazy(()=>{
     for(let s=seqOf(coll);s!==null;s=__rt.cljNext(s)){
       const x=__rt.cljFirst(s);
@@ -2164,6 +2202,18 @@ const native = (() => {
     }
     return initialized ? acc : invoke(f);
   };
+  const reduceExtension=(c,n)=>{
+    const value=val(c),kind=__rt.formKind(value);
+    return kind==='struct'||kind==='record'||kind===null&&value!=null&&!Array.isArray(value)&&typeof value!=='string'
+      ?decl.coreMethod('IReduce/-reduce',n,c,false):null;
+  };
+  const reduce=(f,...a)=>{
+    if(a.length===2){const m=reduceExtension(a[1],3);return m===null?reduceSeq(f,a[0],a[1]):m(a[1],f,a[0]);}
+    if(a.length!==1)return arity(a.length+1);
+    const m=reduceExtension(a[0],2);if(m!==null)return m(a[0],f);
+    if(storedReduction(a[0]))return reduceSeq(f,undefined,a[0],false);
+    const s=reduceSeqOf(a[0]);return s==null?invoke(f):reduceSeq(f,firstOf(s),nextOf(s));
+  };
   const entryPart = (x, value) => {
     const builtin = __rt.formKind(val(x)) === 'vector' && !__rt.cljIsEditable(x);
     const method = value ? decl.entryVal(x,builtin) : decl.entryKey(x,builtin);
@@ -2218,6 +2268,16 @@ const native = (() => {
     if (a.length === 1) return complete(a[0]);
     if (a.length === 2) return step(a[0], a[1]);
     return arity(a.length);
+  };
+  const cat=rf=>reducing(rf,(result,input)=>reduce((acc,x)=>{
+    const value=invoke(rf,acc,x);return __rt.cljIsReduced(value)?__rt.cljReduced(value):value;
+  },result,input));
+  const takeTransform=n=>rf=>{
+    let remaining=val(n);
+    return reducing(rf,(result,x)=>{
+      const next=remaining>0?invoke(rf,result,x):result;remaining--;
+      return remaining<=0&&!__rt.cljIsReduced(next)?__rt.cljReduced(next):next;
+    });
   };
   const mapTransform = f => rf => (...a) => a.length < 2 ? invoke(rf, ...a) : prepareInvoke(rf)(a[0], invoke(f, ...a.slice(1)));
   const filterTransform = f => rf => reducing(rf, (result, x) => truth(invoke(f, x)) ? invoke(rf, result, x) : result);
@@ -2278,8 +2338,32 @@ const native = (() => {
     if (a.length !== 3 && a.length !== 4) return arity(a.length);
     const xf = a[0], rf = a[1], init = a.length === 3 ? invoke(rf) : a[2], coll = a[a.length - 1];
     const transformed = invoke(xf, rf);
-    return prepareInvoke(transformed)(reduceSeq(transformed, init, coll));
+    return prepareInvoke(transformed)(reduce(transformed, init, coll));
   };
+  const iterationType=canonicalMember('iteration-type',()=>__rt.structType('cljs.core/Iteration',__rt.formVector('step','somef','vf','kf','initk'),false,null));
+  const iterationSeq=(self,step,somef,vf,kf,result)=>{
+    if(!truth(invoke(somef,result)))return null;
+    const value=invoke(vf,result),key=invoke(kf,result);
+    return __rt.cljCons(value,val(key)==null?null:lazy(()=>self(self,step,somef,vf,kf,invoke(step,key))));
+  };
+  decl.type(['step','somef','vf','kf','initk'],[
+    ['ISeqable',0,null],['IReduce',0,null],
+    ['ISeqable/-seq',1,value=>{
+      const field=n=>__rt.structField(value,n),step=field('step');
+      return iterationSeq(iterationSeq,step,field('somef'),field('vf'),field('kf'),invoke(step,field('initk')));
+    }],
+    ['IReduce/-reduce',3,(value,rf,init)=>{
+      const field=n=>__rt.structField(value,n),step=field('step'),somef=field('somef'),vf=field('vf'),kf=field('kf');
+      let acc=init,result=invoke(step,field('initk'));
+      while(truth(invoke(somef,result))){
+        acc=invoke(rf,acc,invoke(vf,result));
+        if(__rt.cljIsReduced(acc))return __rt.cljUnreduced(acc);
+        const key=invoke(kf,result);if(val(key)==null)return acc;
+        result=invoke(step,key);
+      }
+      return acc;
+    }],
+  ],function(){},false,iterationType,['step','somef','vf','kf','initk']);
   const intoReducer = (...a) => a.length === 1 ? a[0] : a.length === 2 ? __rt.cljConj(a[0], a[1]) : arity(a.length);
   const core = {
     MultiFn:multi.MultiFn, MultiFnFactory:(...a)=>new multi.MultiFn(...a),
@@ -2385,7 +2469,18 @@ const native = (() => {
     theNs:name=>{const ns=findNs(name);if(ns===null)throw new Error('No namespace: '+core.str(name));return ns;},
     nsName:(...a)=>a.length!==1?arity(a.length):__rt.formKind(val(a[0]))==='symbol'?__rt.formName(val(a[0])):val(a[0]).name,
     sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
+    iteration:(step,...options)=>{
+      const opts=core.seqToMap(list(options)),option=(name,fallback)=>get(opts,__rt.cljKeyword(name),fallback);
+      return __rt.structNew(iterationType,step,option('somef',core.isSome),option('vf',core.identity),option('kf',core.identity),option('initk',null));
+    },
     array:(...a)=>a,
+    iter,seqIter,SeqIter,es6Iterator,es6IteratorSeq:iteratorSeq,
+    SeqIterFactory:(...a)=>a.length===2?new SeqIter(...a):arity(a.length),
+    toArray:x=>arr(x).slice(),
+    intoArray:(...a)=>a.length===1||a.length===2?arr(a[a.length-1]).slice():arity(a.length),
+    jsIn:(key,object)=>val(key) in val(object),
+    jsKeys:object=>{const keys=[];for(const key in val(object))keys.push(key);return keys;},
+    jsIterable:object=>val(object)!=null&&val(object)[Symbol.iterator]!=null,
     intArray:typedArray,longArray:typedArray,doubleArray:typedArray,objectArray:typedArray,
     alength:a=>val(a).length,
     primSeq:(...a)=>a.length===1||a.length===2?arraySeq(val(a[0]),a.length===1?0:val(a[1])):arity(a.length),
@@ -2520,10 +2615,14 @@ const native = (() => {
       if(kind==='struct'||kind==='record')return structString(x);
       if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const {buffer,writer}=stringWriter();printWriterImpl(x,writer,null,true);flushWriter(writer);return buffer.text;}finally{core.printReadably=saved;}}return String(x);}).join('');},
     identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>c===multi.MultiFn?multi.is(x):__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
-    add:(...xs)=>xs.reduce((a,b)=>a+val(b),0), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
+    add:(...xs)=>xs.length===0?0:xs.slice(1).reduce((a,b)=>val(a)+val(b),xs[0]), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
     divide:(...xs)=>xs.length===0?NaN:xs.length===1?1/val(xs[0]):xs.slice(1).reduce((a,b)=>a/val(b),val(xs[0])),
     int:x=>val(x)|0, long:x=>fix(val(x)), byte:x=>x, short:x=>x, float:x=>x, double:x=>x,
     uncheckedInt:x=>fix(val(x)),
+    uncheckedLong:x=>fix(val(x)),
+    uncheckedNegate:x=>-val(x),uncheckedNegateInt:x=>-val(x),
+    max:(x,...xs)=>xs.reduce((a,b)=>isNaN(val(a))?a:isNaN(val(b))?b:val(a)>val(b)?a:b,x),
+    min:(x,...xs)=>xs.reduce((a,b)=>isNaN(val(a))?a:isNaN(val(b))?b:val(a)<val(b)?a:b,x),
     quot:(n,d)=>quot(val(n),val(d)), rem:(n,d)=>{n=val(n);d=val(d);return n-d*quot(n,d);},
     mod:(n,d)=>{n=val(n);d=val(d);return ((n%d)+d)%d;},
     numericEqual:(...xs)=>xs.length!==0&&core.equal(...xs),
@@ -2539,6 +2638,7 @@ const native = (() => {
     isUuid:x=>__rt.formKind(val(x))==='compiler-literal'&&__rt.formName(val(x))==='uuid',
     parseUuid:x=>{x=val(x);if(typeof x!=='string')throw new Error('Expected string, got: '+(x==null?'nil':Array.isArray(x)?'array':typeof x));
       return x.length===36&&/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(x)?core.uuid(x):null;},
+    randomUuid:(...a)=>a.length?arity(a.length):core.uuid('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,ch=>{const n=Math.floor(Math.random()*16);return (ch==='x'?n:n&3|8).toString(16);})),
     rand:(...a)=>a.length===0?Math.random():a.length===1?val(a[0])*Math.random():arity(a.length),
     randInt:n=>Math.floor(Math.random()*val(n)),
     ExceptionInfo,
@@ -2610,7 +2710,7 @@ const native = (() => {
     flatten:x=>flattenFrom(flattenFrom,__rt.cljIsSequential(x)?__rt.cljCons(flattenChildren(flattenWalk,x),null):null),
     partitionBy:(...a)=>a.length===1?partitionByTransform(a[0]):a.length===2?partitionByFrom(partitionByFrom,a[0],a[1]):arity(a.length),
     partitionAll:(...a)=>a.length===1?partitionAllTransform(val(a[0])):a.length===2?partitionAllFrom(partitionAllFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionAllFrom(partitionAllFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
-    take:(n,c)=>takeN(takeN,val(n),c), drop:(n,c)=>dropN(val(n),c),
+    take:(...a)=>a.length===1?takeTransform(val(a[0])):a.length===2?takeN(takeN,val(a[0]),a[1]):arity(a.length), drop:(n,c)=>dropN(val(n),c),
     nthrest:(x,n)=>{
       for(n=val(n);n>0;n--){const s=seqOf(x);if(s===null)break;x=restOf(s);}
       return x;
@@ -2631,17 +2731,15 @@ const native = (() => {
     range:(...a)=>a.length===0?rangeFrom(rangeFrom,0,Infinity,1):a.length===1?rangeFrom(rangeFrom,0,val(a[0]),1)
       :a.length<=3?rangeFrom(rangeFrom,val(a[0]),val(a[1]),a.length===3?val(a[2]):1):arity(a.length),
     partition:(...a)=>a.length===2?partitionFrom(partitionFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionFrom(partitionFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
-    reduce:(f,...a)=>{if(a.length===2)return reduceSeq(f,a[0],a[1]);if(a.length!==1)arity(a.length+1);
-      if(storedReduction(a[0]))return reduceSeq(f,undefined,a[0],false);
-      const s=reduceSeqOf(a[0]);return s==null?invoke(f):reduceSeq(f,firstOf(s),nextOf(s));},
+    reduce,
     reduceKv, kvReduceProtocol,
     keyProtocol:x=>entryPart(x,false), valProtocol:x=>entryPart(x,true),
-    transduce,
+    transduce,cat,
     completing:(...a)=>a.length===1||a.length===2?reducing(a[0],(result,x)=>invoke(a[0],result,x),a.length===1?result=>result:result=>invoke(a[1],result)):arity(a.length),
     into:(...a)=>{
       if (a.length === 0) return __rt.formVector();
       if (a.length === 1) return a[0];
-      if (a.length === 2) return reduceSeq(intoReducer, a[0], a[1]);
+      if (a.length === 2) return reduce(intoReducer, a[0], a[1]);
       if (a.length !== 3) return arity(a.length);
       // Legacy editable targets use a step/completion adapter. Other targets
       // receive conj itself, whose initialization and variadic arities a
@@ -2766,6 +2864,16 @@ const native = (() => {
       let m=ordered(__rt.formMap());for(let i=0;i<ks.length;i++)m=__rt.cljAssoc(m,ks[i],vs[i]);return m;
     }}, EmptyList:{},
   };
+  // These public arithmetic wrappers retain the original operation even if
+  // a macro later replaces the corresponding checked core Var.
+  for(const [name,key] of [
+    ['uncheckedAdd','add'],['uncheckedAddInt','add'],['uncheckedSubtract','subtract'],['uncheckedSubtractInt','subtract'],
+    ['uncheckedMultiply','multiply'],['uncheckedMultiplyInt','multiply'],['uncheckedDivideInt','divide'],
+    ['uncheckedInc','inc'],['uncheckedIncInt','inc'],['uncheckedDec','dec'],['uncheckedDecInt','dec'],['uncheckedRemainderInt','mod'],
+  ]){
+    const operation=core[key],wrapper=(...args)=>operation(...args);
+    Object.defineProperty(wrapper,'name',{value:name,configurable:true});core[name]=wrapper;
+  }
   // As the legacy runtimes: `cljs.core` follows `cljs.user`, both before
   // anything (the registry starts with them).
   currentNamespace=localNs('cljs.user',__rt.cljSymbol('cljs.user'));
