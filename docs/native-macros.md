@@ -133,12 +133,11 @@ reason:
   parallel_diagnostics' stack-limit test, which expects a QuickJS or V8 error
   class. The Pants build shares one runtime across threads instead.
 
-On c8fb52e2 plus its core_operations fix, rebased on 3bc3e11b (macOS
-aarch64, Rust 1.99.1, 8 test threads), the suite ran 2085 tests: 1681 passed
-and 404 failed, with 105 skipped. Before the gates the test binaries did not
+Rebased on ad6038e0 (macOS aarch64, Rust 1.99.1, 8 test threads), the
+suite ran 2087 tests: 1684 passed and 403 failed, with 105 skipped. Before the gates the test binaries did not
 compile; with only the compile fixes, 529 of 2167 failed. The review rework
 un-gated 93 tests (66 that run, 27 ignored audits) by gating only the session
-or QuickJS parts inside them. The 404 failures are Pants-build gaps, all with
+or QuickJS parts inside them. The 403 failures are Pants-build gaps, all with
 the signatures of two pellets:
 
 - light-cljs-611 (178 listed there, 196 now): core macro calls that native
