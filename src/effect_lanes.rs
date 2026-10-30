@@ -51,6 +51,16 @@ pub(crate) enum Target {
     Cell(u64),
     /// An active compiler activity, for a task realizing a shared lazy value.
     Activity(u64),
+    /// The realization of a shared lazy cell, by serial: only a namespace
+    /// floor names it ([`Lanes::namespace_floors`]).
+    Lazy(u64),
+}
+
+/// The next number of one order of namespace creations and floors, which
+/// break ties between records at one position ([`NamespaceTag`]).
+pub(crate) fn next_order() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// A stable identity for an engine key or task id, which the compiler sees
@@ -79,34 +89,31 @@ struct Top {
 
 /// Where an activity's namespace creation goes in the compilation's
 /// namespace registry (light-cljs-589): its position, 0 outside any, and
-/// its activity chain's tokens, innermost first.
+/// the work it is part of: the units and dependency cells of its activity
+/// chain and the shared lazy cells its task is realizing. An earlier
+/// activity that waits for one of these lends it its position for good
+/// ([`Lanes::namespace_floors`]): with one slot, that work runs inside the
+/// waiter, creations included.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct NamespaceTag {
     pub position: Position,
-    pub chain: Vec<u64>,
+    pub owners: Vec<Target>,
 }
 
 /// What a reader of the namespace registry sees, once its lane is open:
-/// what activities before its effective position created, and, when an
-/// earlier activity waiting for part of its chain lent it that position
-/// (`lent`, the token of that part), what that part created, which with
-/// one slot runs inside the earlier activity.
+/// the creations whose (floored) position is not after its effective
+/// position, which an earlier activity waiting for its work may have
+/// lowered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NamespaceView {
     pub effective: Position,
-    pub lent: Option<u64>,
 }
 
 impl NamespaceView {
     /// Everything recorded: outside any activity, or without lanes.
     pub(crate) const ALL: Self = Self {
         effective: Position::MAX,
-        lent: None,
     };
-    /// Whether this reader sees a creation recorded at `tag`.
-    pub(crate) fn sees(&self, tag: &NamespaceTag) -> bool {
-        tag.position <= self.effective || self.lent.is_some_and(|lent| tag.chain.contains(&lent))
-    }
 }
 
 /// This thread's innermost activity of `lanes`, if any.
@@ -178,6 +185,10 @@ struct State {
     starved: Option<(usize, Instant)>,
     /// Whether a task parked inside an initializer or a helper's production.
     parked_in_cell: bool,
+    /// The lowest position an activity waited for each unit, cell and lazy
+    /// realization at, with its place in [`next_order`] then: the
+    /// namespace creations of that work count there ([`NamespaceTag`]).
+    floors: HashMap<Target, (Position, u64)>,
     rescued: HashSet<usize>,
 }
 
@@ -230,7 +241,7 @@ impl State {
 fn namespace_tag(top: &Top) -> NamespaceTag {
     NamespaceTag {
         position: top.position.unwrap_or(0),
-        chain: top.chain.iter().map(|&(token, _)| token).collect(),
+        owners: top.chain.iter().filter_map(|&(_, target)| target).collect(),
     }
 }
 
@@ -322,6 +333,8 @@ pub(crate) struct WaitGuard {
     lanes: Option<Arc<Lanes>>,
     id: u64,
     target: Target,
+    /// The lazy realization a reader waits for through its task's root.
+    realization: Option<Target>,
 }
 impl WaitGuard {
     /// Record this thread's current effective position for the wait, so
@@ -334,6 +347,15 @@ impl WaitGuard {
                 let mut s = lanes.lock();
                 let position = min(position, s.inherited(&targets));
                 s.waits.insert(self.id, (self.target, position));
+                if let Some(position) = position {
+                    let floored = [self.target].into_iter().chain(self.realization);
+                    for target in floored.filter(|t| !matches!(t, Target::Activity(_))) {
+                        let floor = s.floors.entry(target).or_insert((Position::MAX, 0));
+                        if position < floor.0 {
+                            *floor = (position, next_order());
+                        }
+                    }
+                }
             }
             lanes.poll();
         }
@@ -568,7 +590,7 @@ impl Lanes {
     /// What `task`'s current activity sees of the namespace registry, once
     /// its lane is open ([`Self::check`]): at the position its lane opened
     /// at, which an earlier activity waiting for part of its chain may have
-    /// lent it, the outermost such part when several lend that position.
+    /// lent it.
     pub(crate) fn namespace_view(&self, task: u64) -> NamespaceView {
         if !self.enabled() {
             return NamespaceView::ALL;
@@ -580,24 +602,13 @@ impl Lanes {
         let Some(own) = top.position else {
             return NamespaceView::ALL;
         };
-        let mut view = NamespaceView {
-            effective: own,
-            lent: None,
-        };
-        for &(token, target) in &top.chain {
-            let mut owned = vec![Target::Activity(token)];
-            owned.extend(target);
-            if let Some(lent) = s.inherited(&owned)
-                && lent < own
-                && lent <= view.effective
-            {
-                view = NamespaceView {
-                    effective: lent,
-                    lent: Some(token),
-                };
-            }
+        let owned: Vec<Target> = (top.chain.iter())
+            .flat_map(|&(token, target)| [Some(Target::Activity(token)), target])
+            .flatten()
+            .collect();
+        NamespaceView {
+            effective: min(Some(own), s.inherited(&owned)).unwrap_or(own),
         }
-        view
     }
     /// The caller's source position, before an initializer inherits a waiter.
     pub(crate) fn caller_position(&self, task: u64) -> Option<Position> {
@@ -744,6 +755,7 @@ impl Lanes {
                 lanes: None,
                 id: 0,
                 target,
+                realization: None,
             };
         }
         let id = {
@@ -755,6 +767,7 @@ impl Lanes {
             lanes: Some(self.clone()),
             id,
             target,
+            realization: None,
         };
         guard.refresh();
         guard
@@ -762,14 +775,40 @@ impl Lanes {
     /// Lend this reader's position to the root activity running `task`.
     /// Initializer entries can come and go while a realization is suspended;
     /// their enclosing root keeps the loan through subsequent helper/effect
-    /// waits, including when it has already parked for its lane.
-    pub(crate) fn wait_for_task(self: &Arc<Self>, task: u64) -> Option<WaitGuard> {
+    /// waits, including when it has already parked for its lane. The
+    /// realization of lazy cell `serial` it waits for gets this reader's
+    /// position as its namespace floor.
+    pub(crate) fn wait_for_task(self: &Arc<Self>, task: u64, serial: u64) -> Option<WaitGuard> {
         let target = self
             .lock()
             .tops
             .get(&task)
-            .map(|top| Target::Activity(top.root_token));
-        target.map(|target| self.wait_for(target))
+            .map(|top| Target::Activity(top.root_token))?;
+        if !self.enabled() {
+            return Some(self.wait_for(target));
+        }
+        let id = {
+            let mut s = self.lock();
+            s.next_wait += 1;
+            s.next_wait
+        };
+        let guard = WaitGuard {
+            lanes: Some(self.clone()),
+            id,
+            target,
+            realization: Some(Target::Lazy(serial)),
+        };
+        guard.refresh();
+        Some(guard)
+    }
+    /// Run `f` with the namespace floors: for each unit, cell and lazy
+    /// realization an earlier activity waited for, the lowest such
+    /// position and its order ([`NamespaceTag`]).
+    pub(crate) fn namespace_floors<R>(
+        &self,
+        f: impl FnOnce(&HashMap<Target, (Position, u64)>) -> R,
+    ) -> R {
+        f(&self.lock().floors)
     }
     /// Block this thread until the lane at `position` opens: a blocker's
     /// consumer, which waits before it runs anything.
@@ -936,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn a_registry_reader_lent_a_position_sees_what_runs_for_its_waiter() {
+    fn a_registry_reader_lent_a_position_reads_there_and_its_work_counts_there() {
         let lanes = Arc::new(Lanes::default());
         lanes.enable();
         lanes.schedule([0, 1, 2], false);
@@ -947,8 +986,10 @@ mod tests {
         let task = synced(&lanes, 7);
         let helper = lanes.namespace_tag(task);
         assert_eq!(helper, lanes.namespace_tag_here());
+        assert_eq!(helper.owners, [Target::Cell(99), Target::Unit(2)]);
         let alone = lanes.namespace_view(task);
-        assert_eq!((alone.effective, alone.lent), (2, None));
+        assert_eq!(alone.effective, 2);
+        lanes.namespace_floors(|floors| assert!(floors.is_empty()));
         // Unit 1 waits for the helper, on another thread.
         let other = lanes.clone();
         let (waiting, waiter) = mpsc::channel();
@@ -957,19 +998,41 @@ mod tests {
             let _root = other.enter_root();
             let _unit = other.enter_unit(1);
             let wait = other.wait_for(Target::Cell(99));
-            waiting.send(other.namespace_tag_here()).unwrap();
+            waiting.send(()).unwrap();
             released.recv().unwrap();
             drop(wait);
         });
-        let waiter = waiter.recv().unwrap();
-        let lent = lanes.namespace_view(task);
-        assert_eq!((lent.effective, lent.lent), (1, Some(helper.chain[0])));
-        // It sees what unit 1 created and what the helper created, not
-        // what unit 2 created before it began the helper.
-        assert!(lent.sees(&waiter) && lent.sees(&helper) && !lent.sees(&unit));
+        waiter.recv().unwrap();
+        assert_eq!(lanes.namespace_view(task).effective, 1);
         release.send(()).unwrap();
         thread.join().unwrap();
+        // The helper's work counts at unit 1 for good; unit 2's own does not.
         assert_eq!(lanes.namespace_view(task), alone);
+        lanes.namespace_floors(|floors| {
+            assert_eq!(floors.get(&Target::Cell(99)).map(|f| f.0), Some(1));
+            assert!(!unit.owners.iter().any(|o| floors.contains_key(o)));
+        });
+    }
+
+    #[test]
+    fn a_lazy_reader_floors_the_realization_it_waits_for() {
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        lanes.schedule([0, 1, 2], false);
+        let _unit = lanes.enter_unit(2);
+        let task = synced(&lanes, 7);
+        let other = lanes.clone();
+        std::thread::spawn(move || {
+            let _root = other.enter_root();
+            let _unit = other.enter_unit(1);
+            drop(other.wait_for_task(task, 5).expect("active realizer"));
+        })
+        .join()
+        .unwrap();
+        lanes.namespace_floors(|floors| {
+            assert_eq!(floors.get(&Target::Lazy(5)).map(|f| f.0), Some(1));
+            assert_eq!(floors.len(), 1, "not the realizer's whole activity");
+        });
     }
 
     #[test]
@@ -989,7 +1052,7 @@ mod tests {
         std::thread::spawn(move || {
             let _root = other.enter_root();
             let _unit = other.enter_unit(1);
-            let waiting = other.wait_for_task(task).expect("active realizer");
+            let waiting = other.wait_for_task(task, 1).expect("active realizer");
             assert!(wait.try_recv().is_err(), "unit 0 is still running");
             other.finish(0, false);
             wait.try_recv()

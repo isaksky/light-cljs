@@ -342,6 +342,15 @@ impl Runtime {
         self.0.deps.lazy.take_woken()
     }
 
+    /// The serials of the shared lazy cells `task` is realizing now,
+    /// outermost first; a cell's serial is its realization key's
+    /// dependency ([`Self::lazy_realizer`]). An embedder attributes the
+    /// task's effects to these realizations, which a reader on another task
+    /// may wait for.
+    pub fn realizing(&self, task: crate::TaskId) -> Vec<u64> {
+        self.0.heap.realizing.of(task)
+    }
+
     /// The task realizing the lazy attempt that readers of `key` currently
     /// wait on. An embedder can lend a reader's scheduling priority to that
     /// task. This snapshot does not claim ownership or keep the attempt alive;

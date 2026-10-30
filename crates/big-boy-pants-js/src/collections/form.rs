@@ -508,7 +508,8 @@ pub(crate) struct TypeInfo {
     /// Var is its symbol), that field's index: such instances are equal
     /// when their types have the same name and that field's values are
     /// equal, and hash as that value, also inside collections. The field
-    /// holds compiler data, so comparing it runs no user code.
+    /// holds compiler data, so comparing it runs no user code. `symbol` of
+    /// such an instance whose key is a symbol is that symbol.
     pub(crate) key: Option<usize>,
 }
 

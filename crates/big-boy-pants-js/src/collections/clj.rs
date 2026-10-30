@@ -902,6 +902,16 @@ pub(crate) fn keyword_ns(heap: &Heap, ns: &Value, name: &Value) -> Result<Value>
 /// spelling split at its first `/` (none, or a leading one: no
 /// namespace). Anything else fails as "no conversion to symbol".
 pub(crate) fn symbol(heap: &Heap, x: &Value) -> Result<Value> {
+    // A keyed struct whose key is a symbol (the runtime's Var) converts to
+    // that symbol, as the legacy `symbol` gives a Var's.
+    if let Some(f) = form::form_object(heap, &form::unwrap(heap, x.clone()))
+        && let FormBody::Struct(s) = f.body()
+        && let Some(key) = s.info.key
+        && let Some(value) = s.fields.get(key)
+        && form::kind(heap, &value) == Some(FormKind::Symbol)
+    {
+        return Ok(value);
+    }
     let s = match name_part(heap, x) {
         NamePart::Named(FormKind::Symbol, _) => return Ok(x.clone()),
         // A keyword converts through its spelling, as a string does: `:/x`

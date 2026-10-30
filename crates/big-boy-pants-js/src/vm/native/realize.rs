@@ -42,6 +42,9 @@ pub(crate) struct Realize {
     cell: Arc<LazyCell>,
     /// The attempt this task claimed and has not settled.
     attempt: Option<u64>,
+    /// While it has one, the runtime's note that this task realizes the
+    /// cell ([`Heap::realizing`]).
+    realizing: Option<crate::collections::lazy::Realization>,
     /// The attempt this task parked on, and the task.
     waited: Option<u64>,
     task: Option<TaskId>,
@@ -68,6 +71,7 @@ impl Realize {
             lazy,
             cell,
             attempt: None,
+            realizing: None,
             waited: None,
             task: None,
             failed: None,
@@ -105,6 +109,7 @@ impl Realize {
         input: Input,
     ) -> Result<Action, Fault> {
         if let Some(exception) = self.failed.take() {
+            self.realizing = None;
             if let Some(attempt) = self.attempt.take() {
                 let failure = failure(heap, task, &exception.value);
                 let _ = self.cell.settle(attempt, Some(Err(failure)), false);
@@ -128,6 +133,7 @@ impl Realize {
                 Claim::Realized => return Ok(self.resume()),
                 Claim::Run { thunk, attempt } => {
                     self.attempt = Some(attempt);
+                    self.realizing = Some(heap.realizing.begin(task, self.cell.serial()));
                     self.waited = None;
                     if !self.cell.is_concat() {
                         return Ok(Action::Call {
@@ -226,6 +232,7 @@ impl Realize {
                 }
             }
             self.attempt = None;
+            self.realizing = None;
             // An operation that reads the whole sequence would meet the
             // next unrealized cell of this chain at once: realize it now
             // instead of reading the realized prefix again for each cell.
@@ -277,6 +284,7 @@ impl Realize {
     /// the readers parked on it observe the failure rather than run the
     /// thunk again.
     fn fail(&mut self, fault: Fault) -> Fault {
+        self.realizing = None;
         if let Some(attempt) = self.attempt.take() {
             let failure = match &fault {
                 Fault::TypeError(m) => LazyFailure::Type(JsString::from(m.as_str())),
@@ -293,6 +301,7 @@ impl Realize {
     /// Give up an unsettled claim: the cell's waiters wake and one of them
     /// claims it again.
     fn abandon(&mut self) {
+        self.realizing = None;
         if let Some(attempt) = self.attempt.take() {
             let _ = self.cell.settle(attempt, None, false);
         }

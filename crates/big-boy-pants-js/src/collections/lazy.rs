@@ -483,6 +483,52 @@ impl LazyCell {
     }
 }
 
+/// The lazy cells each task of the runtime is realizing, by serial,
+/// outermost first: what an embedder reads to attribute a task's effects to
+/// the realization a reader on another task may wait for
+/// ([`crate::Runtime::realizing`]). A leaf metadata lock with no heap edges.
+#[derive(Debug, Default)]
+pub(crate) struct Realizing(Mutex<HashMap<TaskId, Vec<u64>>>);
+
+impl Realizing {
+    /// Note that `task` starts realizing the cell `serial`; the
+    /// realization ends when the returned guard is dropped.
+    pub(crate) fn begin(self: &Arc<Self>, task: TaskId, serial: u64) -> Realization {
+        lock(&self.0).entry(task).or_default().push(serial);
+        Realization {
+            registry: self.clone(),
+            task,
+            serial,
+        }
+    }
+
+    pub(crate) fn of(&self, task: TaskId) -> Vec<u64> {
+        lock(&self.0).get(&task).cloned().unwrap_or_default()
+    }
+}
+
+/// A realization in [`Realizing`], until dropped.
+#[derive(Debug)]
+pub(crate) struct Realization {
+    registry: Arc<Realizing>,
+    task: TaskId,
+    serial: u64,
+}
+
+impl Drop for Realization {
+    fn drop(&mut self) {
+        let mut tasks = lock(&self.registry.0);
+        if let Some(serials) = tasks.get_mut(&self.task) {
+            if let Some(at) = serials.iter().rposition(|s| *s == self.serial) {
+                serials.remove(at);
+            }
+            if serials.is_empty() {
+                tasks.remove(&self.task);
+            }
+        }
+    }
+}
+
 /// The runtime's pending lazy waits and the readers their settlements woke.
 /// Woken readers are held weakly: one nobody else holds would never run.
 #[derive(Debug, Default)]

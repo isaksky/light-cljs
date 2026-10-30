@@ -267,16 +267,21 @@ impl BbpEvaluator {
         namespaces: &crate::arena::Arena<String>,
     ) -> Result<(), EvalError> {
         let cx = self.cx()?;
-        let tag = self
+        let mut tag = self
             .shared
             .lanes()
             .map(|lanes| lanes.namespace_tag_here())
             .unwrap_or_default();
+        // The shared lazy cells its task realizes: work an earlier reader
+        // may wait for ([`super::namespaces`]).
+        let realizing = self.runtime.realizing(cx.task.id());
+        tag.owners
+            .extend(realizing.into_iter().map(crate::effect_lanes::Target::Lazy));
         let from = {
             let (last, registered) = &*cx.namespaces.borrow();
             let shared = registered.len().min(namespaces.len());
             let extends = namespaces.changed_entries(registered, shared).is_empty();
-            if extends && last.chain == tag.chain && last.position <= tag.position {
+            if extends && last.owners == tag.owners && last.position <= tag.position {
                 shared
             } else {
                 0
@@ -285,7 +290,7 @@ impl BbpEvaluator {
         if from < namespaces.len() {
             let mut log = self.shared.0.namespaces.lock().unwrap();
             for name in namespaces.tail_from(from) {
-                log.record(name, &tag);
+                log.record(&name.encode_utf16().collect::<Vec<_>>(), &tag);
             }
         }
         *cx.namespaces.borrow_mut() = (tag, namespaces.clone());

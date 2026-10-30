@@ -600,6 +600,9 @@ pub(crate) struct Heap {
     /// with no heap edges. Each registration is charged for its slot and
     /// for the cell allocation its `Weak` keeps until it is removed.
     regex_task_cells: Mutex<std::collections::HashMap<TaskId, Vec<RegexTaskRegistration>>>,
+    /// The shared lazy cells each task is realizing
+    /// ([`crate::collections::lazy::Realizing`]).
+    pub(crate) realizing: Arc<crate::collections::lazy::Realizing>,
 }
 
 /// Lock a metadata mutex, recovering from poisoning. The protected data is

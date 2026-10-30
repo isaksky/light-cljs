@@ -1833,6 +1833,7 @@ impl BbpEvaluator {
                         &crate::generated_names::NativeGensyms::capture(),
                         &self.bridge,
                         &self.shared.0.namespaces,
+                        Some(&self.runtime),
                     )
                 ),
                 Ok(RunOutcome::Yielded)
@@ -1851,6 +1852,7 @@ impl BbpEvaluator {
             gensyms: crate::generated_names::NativeGensyms::capture(),
             bridge: self.bridge.clone(),
             namespaces: self.shared.0.namespaces.clone(),
+            runtime: self.runtime.clone(),
         }
     }
     fn run_inner(&self, cx: &TaskContext) -> Result<(), EvalError> {
@@ -1955,9 +1957,9 @@ impl BbpEvaluator {
                     crate::effect_lanes::identity(key),
                 )))
             } else {
-                self.runtime
-                    .lazy_realizer(key)
-                    .and_then(|task| lanes.wait_for_task(crate::effect_lanes::identity(task)))
+                self.runtime.lazy_realizer(key).and_then(|task| {
+                    lanes.wait_for_task(crate::effect_lanes::identity(task), key.dependency().get())
+                })
             }
         });
         #[cfg(test)]
@@ -2737,6 +2739,7 @@ pub(crate) struct NativeStep {
     gensyms: crate::generated_names::NativeGensyms,
     bridge: Arc<Mutex<Bridge>>,
     namespaces: Arc<Mutex<namespaces::NamespaceLog>>,
+    runtime: Runtime,
 }
 impl NativeStep {
     pub(crate) fn handoff(&self) -> NativeHandoff {
@@ -2773,6 +2776,7 @@ impl NativeStep {
                     &self.gensyms,
                     &self.bridge,
                     &self.namespaces,
+                    Some(&self.runtime),
                 ),
             )
             .map_err(|e| e.to_string())
@@ -2805,6 +2809,7 @@ struct NativeHost<'a>(
     &'a crate::generated_names::NativeGensyms,
     &'a Mutex<Bridge>,
     &'a Mutex<namespaces::NamespaceLog>,
+    Option<&'a Runtime>,
 );
 impl big_boy_pants_js::Host for NativeHost<'_> {
     fn current_time_millis(&mut self) -> Result<f64, String> {
@@ -2912,13 +2917,23 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
             let Some((&op, name)) = units.split_first() else {
                 return Err("empty namespace registry request".into());
             };
-            let name = String::from_utf16_lossy(name);
             let task = crate::effect_lanes::identity(call.task);
             let log = &self.5;
+            let no_floors = HashMap::new();
             return match op as u8 {
                 b'r' => {
-                    let tag = self.2.map(|lanes| lanes.namespace_tag(task));
-                    log.lock().unwrap().record(&name, &tag.unwrap_or_default());
+                    let mut tag = self
+                        .2
+                        .map(|lanes| lanes.namespace_tag(task))
+                        .unwrap_or_default();
+                    // The shared lazy cells it realizes: work an earlier
+                    // reader may wait for.
+                    if let Some(runtime) = self.6 {
+                        let realizing = runtime.realizing(call.task);
+                        tag.owners
+                            .extend(realizing.into_iter().map(crate::effect_lanes::Target::Lazy));
+                    }
+                    log.lock().unwrap().record(name, &tag);
                     Ok(Primitive::Null)
                 }
                 b'f' | b'v' => {
@@ -2928,19 +2943,24 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                             lanes.namespace_view(task)
                         });
                     let log = log.lock().unwrap();
-                    if op as u8 == b'f' {
-                        return Ok(Primitive::Bool(log.has(&name, &view)));
+                    let read = |floors: &HashMap<_, _>| {
+                        if op as u8 == b'f' {
+                            return Ok(Primitive::Bool(log.has(name, &view, floors)));
+                        }
+                        let mut text: Vec<u16> = Vec::new();
+                        for name in log.names(&view, floors) {
+                            text.extend(name.len().to_string().encode_utf16());
+                            text.push(u16::from(b':'));
+                            text.extend_from_slice(name);
+                        }
+                        big_boy_pants_js::JsString::from_code_units(text)
+                            .map(Primitive::String)
+                            .ok_or_else(|| "namespace registry too large".to_string())
+                    };
+                    match self.2 {
+                        Some(lanes) => lanes.namespace_floors(read),
+                        None => read(&no_floors),
                     }
-                    let mut text = String::new();
-                    for name in log.names(&view) {
-                        text.push_str(&name.encode_utf16().count().to_string());
-                        text.push(':');
-                        text.push_str(name);
-                    }
-                    let units: Vec<u16> = text.encode_utf16().collect();
-                    big_boy_pants_js::JsString::from_code_units(units)
-                        .map(Primitive::String)
-                        .ok_or_else(|| "namespace registry too large".into())
                 }
                 _ => Err("unknown namespace registry request".into()),
             };

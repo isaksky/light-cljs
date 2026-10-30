@@ -980,7 +980,8 @@ const native = (() => {
       return globalThis.__lightNativeRuntime.core.invokeVar(this,args);
     })],
     ['apply', canonicalMember('var-apply',()=>function(_, args) {
-      return globalThis.__lightNativeRuntime.core.invokeVar(this,globalThis.__lightNativeRuntime.core.nativeApplyArgs(args));
+      // Past 20 arguments the root's apply, as the legacy Var's apply.
+      return globalThis.__lightNativeRuntime.core.applyVar(this,globalThis.__lightNativeRuntime.core.nativeApplyArgs(args));
     })],
     ['toString', canonicalMember('var-string',()=>function() {
       return globalThis.__lightNativeRuntime.core.str(this);
@@ -2229,8 +2230,8 @@ const native = (() => {
     ensureReduced:x=>__rt.cljIsReduced(x)?x:__rt.cljReduced(x),
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
     notEqual:(...xs)=>!core.equal(...xs),
-    name:x=>{if(typeof val(x)==='string')return x;if(__rt.formKind(val(x))==='compiler-literal')throw new Error("Doesn't support name on this type");if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support name: '+__rt.formName(val(x)));return __rt.formName(val(x));},
-    namespace:x=>{if(__rt.formKind(val(x))==='compiler-literal')throw new Error("Doesn't support namespace on this type");if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support namespace: '+__rt.formName(val(x)));return __rt.formNamespace(val(x));},
+    name:x=>{if(typeof val(x)==='string')return x;if(__rt.formKind(val(x))==='compiler-literal'||isVar(x))throw new Error("Doesn't support name on this type");if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support name: '+__rt.formName(val(x)));return __rt.formName(val(x));},
+    namespace:x=>{if(__rt.formKind(val(x))==='compiler-literal'||isVar(x))throw new Error("Doesn't support namespace on this type");if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support namespace: '+__rt.formName(val(x)));return __rt.formNamespace(val(x));},
     subs:(...a)=>a.length===2?val(a[0]).substring(val(a[1])):a.length===3?val(a[0]).substring(val(a[1]),val(a[2])):arity(a.length),
     inc:x=>val(x)+1, dec:x=>val(x)-1, multiply:(...xs)=>xs.reduce((a,b)=>a*val(b),1),
     less:(...xs)=>chain(xs,(a,b)=>a<b), greater:(...xs)=>chain(xs,(a,b)=>a>b), lessEqual:(...xs)=>chain(xs,(a,b)=>a<=b), greaterEqual:(...xs)=>chain(xs,(a,b)=>a>=b),
