@@ -86,14 +86,14 @@ fn edges_since_returns_only_edges_recorded_after_the_count() {
     let other = DependencyKey::new(rt.world(), DependencyId::new(4), KIND);
     for key in [key(&rt), other] {
         let req = rt.claim(key).unwrap();
-        complete(&rt, &req, 1.0);
+        assert!(complete(&rt, &req, 1.0).deliveries().is_empty());
     }
     let task = consumer(&rt);
     let mut guard = task.try_begin_run().unwrap();
-    guard.need(DEF, KIND).unwrap();
+    assert_eq!(number(guard.need(DEF, KIND).unwrap()), 1.0);
     assert_eq!(task.dependency_edges_since(0), [key(&rt)]);
-    guard.need(DEF, KIND).unwrap();
-    guard.need(DependencyId::new(4), KIND).unwrap();
+    assert_eq!(number(guard.need(DEF, KIND).unwrap()), 1.0);
+    assert_eq!(number(guard.need(DependencyId::new(4), KIND).unwrap()), 1.0);
     assert_eq!(task.dependency_edges_since(1), [other]);
     assert_eq!(task.dependency_edges_since(2), []);
     assert_eq!(task.dependency_edges_since(5), []);
