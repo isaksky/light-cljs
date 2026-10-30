@@ -1396,7 +1396,7 @@ fn sorted_index(index: &Value, bound: usize) -> Result<usize, CollectionError> {
     Ok(index)
 }
 
-/// The key (`part` 0) or value (`part` 1) of a sorted-by map's entry `index`.
+/// The key (part 0), value (part 1), or map entry (part 2) at `index`.
 pub(crate) fn sorted_entry(
     heap: &Heap,
     map: &Value,
@@ -1405,12 +1405,16 @@ pub(crate) fn sorted_entry(
 ) -> Result<Value, CollectionError> {
     let (_, pairs) = sorted_by_pairs(heap, map)?;
     let i = sorted_index(index, pairs.len() / 2)?;
-    let part = match part {
-        Value::Number(n) if *n == 0.0 => 0,
-        Value::Number(n) if *n == 1.0 => 1,
-        other => return Err(wrong(heap, "entry part 0 or 1", other)),
-    };
-    Ok(pairs.get(i * 2 + part).unwrap())
+    match part {
+        Value::Number(n) if *n == 0.0 => Ok(pairs.get(i * 2).unwrap()),
+        Value::Number(n) if *n == 1.0 => Ok(pairs.get(i * 2 + 1).unwrap()),
+        Value::Number(n) if *n == 2.0 => new_map_entry(
+            heap,
+            &pairs.get(i * 2).unwrap(),
+            &pairs.get(i * 2 + 1).unwrap(),
+        ),
+        other => Err(wrong(heap, "entry part 0, 1 or 2", other)),
+    }
 }
 
 /// A new entry inserted at position `index` (`<= count`), keeping the

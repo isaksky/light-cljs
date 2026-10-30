@@ -6313,10 +6313,10 @@ fn native_find_preserves_comparator_equal_stored_keys() {
                    m (sorted-map-by (fn [_ _] (swap! calls inc) 0) :stored 42)
                    entry (find m :query)
                    searches @calls]
-               (list 'quote [entry searches (find {:stored 42} :query)
+               (list 'quote [entry searches (map-entry? entry) (find {:stored 42} :query)
                  (find [7 8] 1)])))
            (js/console.log (pr-str (probe)))"#,
-        "[[:stored 42] 1 nil [1 8]]\n",
+        "[[:stored 42] 1 true nil [1 8]]\n",
     );
 }
 

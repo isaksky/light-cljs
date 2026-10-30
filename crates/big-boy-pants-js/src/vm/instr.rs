@@ -1566,7 +1566,7 @@ pub enum FormOp {
     SortedMapBy = 95,
     /// v → its sorted-map-by comparator, or null (`formSortedComparator`).
     SortedComparator = 96,
-    /// map index part → entry key (part 0) or value (part 1) (`formSortedEntry`).
+    /// map index part → key (0), value (1), or map entry (2) (`formSortedEntry`).
     SortedEntry = 97,
     /// map index key value → map with the entry inserted at index (`formSortedInsert`).
     SortedInsert = 98,

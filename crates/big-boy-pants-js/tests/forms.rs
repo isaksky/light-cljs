@@ -497,6 +497,8 @@ fn sorted_by_maps_retain_their_comparator_across_edits_publication_and_gc() {
         const replaced=__rt.formSortedReplace(m,2,'ONE'), removed=__rt.formSortedRemove(m,1);
         for(const x of [m,replaced,removed])
           if(__rt.formSortedComparator(x)!==cmp||__rt.formMeta(x)!==meta||__rt.cljIsEditable(x))throw new Error('retained');
+        const entry=__rt.formSortedEntry(m,0,2);
+        if(!__rt.cljIsMapEntry(entry)||__rt.formNth(entry,0)!==3||__rt.formNth(entry,1)!==value)throw new Error('map entry');
         if(__rt.formSortedEntry(m,0,0)!==3||__rt.formSortedEntry(m,0,1)!==value||__rt.formSortedEntry(replaced,2,1)!=='ONE'
           ||__rt.formSortedEntry(replaced,2,0)!==1||__rt.formCount(removed)!==2||__rt.formSortedEntry(removed,1,0)!==1)throw new Error('entries');
         const first=__rt.cljFirst(__rt.cljSeq(m));

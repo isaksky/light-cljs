@@ -1185,7 +1185,7 @@ const native = (() => {
       let lo = 0, hi = __rt.formCount(m);
       while (lo < hi) {
         const i = (lo + hi) >>> 1, stored = key(m, i), compared = order(f, stored, k);
-        if (compared === 0) return __rt.formVector(stored, __rt.formSortedEntry(m, i, 1));
+        if (compared === 0) return __rt.formSortedEntry(m, i, 2);
         if (compared < 0) lo = i + 1; else hi = i;
       }
       return null;
