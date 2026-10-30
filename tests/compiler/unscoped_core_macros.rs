@@ -151,6 +151,43 @@ fn declined_doseq_rejects_invalid_regex_before_conversion_limits() {
     }
 }
 
+/// The engine's snapshot of a call charges a map's keys it finds equal
+/// (`0` and `-0.0`) as one entry, and the Pants build's emulation of it
+/// refuses the call where the engine does (light-cljs-620).
+#[test]
+fn snapshots_of_calls_merge_keys_the_engine_finds_equal() {
+    let source = "(if-not 1 2 3 4 {-0.0 1 0 2})";
+    // From a limit of 16 the V8 build also converts the environment, which
+    // it then refuses.
+    for (limit, expected) in [
+        (10, "compiler input conversion limit"),
+        (11, "Error: Unsupported macro result sequence limit at $"),
+        (12, "Error: Unsupported macro result node limit at $[5]"),
+        (
+            13,
+            "Error: Unsupported macro result node limit at $[5].key[0]",
+        ),
+        (
+            14,
+            "Error: Unsupported macro result node limit at $[5].value[0]",
+        ),
+        (15, "Error: Unsupported macro result sequence limit at $"),
+    ] {
+        let mut host = MacroHost::new();
+        host.limits.generated_nodes = limit;
+        let error = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
+            .unwrap_err()
+            .to_string();
+        // The QuickJS reference names its conversion between the two.
+        let error = without_stack(&error);
+        assert!(
+            error.contains("macro cljs.core/if-not: ")
+                && error.contains(&format!("{expected}; definition")),
+            "{limit}: {error}"
+        );
+    }
+}
+
 /// `simple-benchmark` prints its bindings and expression as the engine
 /// decodes them (keys equal there merge, larger maps and sets take their
 /// hashes' order, negative zero stays `-0.0`) and as the compile-time

@@ -357,10 +357,18 @@ instead, the Pants build gives the same result:
   limits both fail in about 0.3 s. The V8 build may also stop on its
   `--macro-poll-budget` (an engine budget, like the deadline) expanding the
   `when-let`s of such an expansion with modifiers; with it raised the outputs
-  match. A call holding a `#js` literal, an `#inst` or a queue, whose
+  match. Map and set keys the engine finds equal (`0` and `-0.0`, `1` and
+  `1.0`, `\a` and `"a"`) are charged as the one entry it decodes them into,
+  keeping the first key and the last value. A regular expression of the
+  call that does not compile fails it as the engine's `RegExp` constructor
+  does while it decodes the call, before any limit, with the V8 build's
+  wording. A call holding a `#js` literal, an `#inst` or a queue, whose
   conversion the emulation does not follow, or one the engine may refuse
   inside a set or a map of more than eight entries, whose order is its
-  hashes', still runs the definition.
+  hashes', or with keys it may find equal that this cannot tell (two
+  collections, two `NaN`s), still runs the definition, which is slow there
+  for the reason below; re-measure these after light-cljs-622 rather than
+  emulating more of the conversion.
 - **A `for` or `doseq` of more than 128 pairs**, whose expansion nests past
   the conversion's 128 levels, fails as the V8 build's engine fails
   converting it back (`depth limit`, or a limit it reaches first), found by

@@ -2319,34 +2319,36 @@ impl Conversion<'_> {
                         self.child(path, depth, format_args!("[{index}]"), item)?;
                     }
                 }
-                // An array map of up to eight keys keeps their order.
-                CollectionKind::Map
-                    if children.len() <= 16 && distinct(children.iter().step_by(2)) =>
-                {
-                    for (index, item) in children.iter().enumerate() {
-                        let part = if index % 2 == 0 { "key" } else { "value" };
-                        self.child(path, depth, format_args!(".{part}[{}]", index / 2), item)?;
-                    }
-                }
                 CollectionKind::Map | CollectionKind::Set => {
-                    let keys =
-                        children
-                            .iter()
-                            .step_by(if *kind == CollectionKind::Map { 2 } else { 1 });
-                    if !distinct(keys) {
+                    let map = *kind == CollectionKind::Map;
+                    // The engine decodes keys it finds equal into one entry.
+                    let Some(entries) = engine_entries(children, map) else {
                         return Err(Stop::Unknown);
-                    }
-                    // In the engine's order only the whole is known.
-                    let mut whole = Conversion {
-                        remaining: self.remaining,
-                        lists: self.lists,
                     };
-                    for item in children.iter() {
-                        whole
-                            .visit(item, path, depth + 1)
-                            .map_err(|_| Stop::Unknown)?;
+                    if map && children.len() <= 16 {
+                        // An array map of up to eight keys keeps their order.
+                        for (index, (key, value)) in entries.iter().enumerate() {
+                            self.child(path, depth, format_args!(".key[{index}]"), key)?;
+                            if let Some(value) = value {
+                                self.child(path, depth, format_args!(".value[{index}]"), value)?;
+                            }
+                        }
+                    } else {
+                        // In the engine's order only the whole is known.
+                        let mut whole = Conversion {
+                            remaining: self.remaining,
+                            lists: self.lists,
+                        };
+                        for item in entries
+                            .iter()
+                            .flat_map(|(key, value)| std::iter::once(*key).chain(*value))
+                        {
+                            whole
+                                .visit(item, path, depth + 1)
+                                .map_err(|_| Stop::Unknown)?;
+                        }
+                        self.remaining = whole.remaining;
                     }
-                    self.remaining = whole.remaining;
                 }
             },
             DatumKind::CompilerLiteral { kind, payload } => {
@@ -2368,18 +2370,46 @@ impl Conversion<'_> {
     }
 }
 
-/// Whether the engine keeps `keys` apart: primitive values and symbols
-/// that differ there (a collection it may find equal to another).
+/// The entries the engine decodes a map's `children` (keys and values
+/// in turn, `map`) or a set's into: a key it finds equal to an earlier one
+/// keeps the earlier key and its place and replaces the value. `None`
+/// where it may find keys equal that this cannot tell: two collections, as
+/// it compares them by value, or two `NaN`s. Numbers it compares as
+/// numbers (`1` and `1.0`, `0` and `-0.0` are one key), characters and
+/// strings as strings, symbols by name.
 #[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
-fn distinct<'a>(keys: impl Iterator<Item = &'a Datum>) -> bool {
-    let mut primitives = std::collections::HashSet::new();
-    let mut symbols = std::collections::HashSet::new();
-    keys.into_iter()
-        .all(|key| match (primitive(key), key.kind()) {
-            (Some(value), _) => primitives.insert(value),
-            (None, DatumKind::Symbol(name)) => symbols.insert(name.clone()),
-            _ => false,
-        })
+fn engine_entries(children: &[Datum], map: bool) -> Option<Vec<(&Datum, Option<&Datum>)>> {
+    #[derive(PartialEq)]
+    enum Key {
+        Primitive(Primitive),
+        Symbol(Name),
+        Other,
+    }
+    let key = |datum: &Datum| match (primitive(datum), datum.kind()) {
+        (Some(Primitive::Number(bits)), _) if f64::from_bits(bits) == 0.0 => {
+            Key::Primitive(Primitive::Number(0f64.to_bits()))
+        }
+        (Some(value), _) => Key::Primitive(value),
+        (None, DatumKind::Symbol(name)) => Key::Symbol(name.clone()),
+        _ => Key::Other,
+    };
+    let nan = Key::Primitive(Primitive::Number(f64::NAN.to_bits()));
+    let mut keys: Vec<Key> = Vec::new();
+    let mut entries: Vec<(&Datum, Option<&Datum>)> = Vec::new();
+    for pair in children.chunks(if map { 2 } else { 1 }) {
+        let k = key(&pair[0]);
+        if (k == Key::Other || k == nan) && keys.contains(&k) {
+            return None;
+        }
+        match keys.iter().position(|seen| *seen == k) {
+            Some(index) => entries[index].1 = pair.get(1),
+            None => {
+                keys.push(k);
+                entries.push((&pair[0], pair.get(1)));
+            }
+        }
+    }
+    Some(entries)
 }
 
 /// What the V8 build's engine makes of the call `call` of `doseq`, which
@@ -3647,6 +3677,15 @@ mod tests {
                 17,
             ),
             ("(doseq [x xs y ys :when (p x y)] (f x) (g y))", 23),
+            // Keys the engine finds equal decode into one entry.
+            (
+                "(doseq [x xs] (f {-0.0 1 0 [2 3]} {1 :a 1.0 [x y] \\a 4 \"a\" 5}))",
+                3,
+            ),
+            (
+                "(doseq [x xs] (f #{0 -0.0 [1]} {9 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8}))",
+                3,
+            ),
             (&deep[0], 41),
             (&deep[1], 31),
             (&deep[2], 43),
@@ -3681,7 +3720,12 @@ mod tests {
                         .to_owned()
                 });
                 let expected = refusal.clone().map(Stop::Refused).map_or(Ok(()), Err);
-                assert_eq!(emulated, expected, "{source} at {limit}");
+                // Where the engine refuses inside a set or a hash map, whose
+                // order is its hashes', the emulation cannot tell.
+                let hashed = source.contains("#{") && refusal.is_some();
+                if !(hashed && emulated == Err(Stop::Unknown)) {
+                    assert_eq!(emulated, expected, "{source} at {limit}");
+                }
                 refusal
             };
             let mut limit = within(&data, DEPTH).unwrap();
