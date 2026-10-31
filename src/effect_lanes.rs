@@ -878,6 +878,27 @@ impl Lanes {
         } else {
             s.homes.get(&owner).copied()
         };
+        drop(s);
+        self.check_home(task, home)
+    }
+    /// Before `task` selects the caller that runs the initializer of
+    /// catalog unit `unit`: the lane of the unit's namespace, as for an atom
+    /// homed there ([`Self::check`]). Only an activity whose require
+    /// closure contains the namespace can call the initializer.
+    pub(crate) fn check_initializer(&self, task: u64, unit: u64) -> Result<u64, String> {
+        if !self.enabled() {
+            return Ok(0);
+        }
+        let home = (usize::try_from(unit).ok())
+            .and_then(|unit| self.lock().unit_sources.get(&unit).copied());
+        self.check_home(task, home)
+    }
+    fn check_home(&self, task: u64, home: Option<usize>) -> Result<u64, String> {
+        let mut s = self.lock();
+        let Some(top) = s.tops.get(&task) else {
+            return Ok(0);
+        };
+        let (token, position) = (top.token, top.position);
         if let Some(home) = home {
             let owned: Vec<Target> = (top.chain.iter())
                 .flat_map(|&(token, target)| [Some(Target::Activity(token)), target])
@@ -1231,6 +1252,66 @@ mod tests {
         assert_eq!(lanes.check(task, 0).unwrap(), 0);
         let counts = lanes.counts();
         assert_eq!((counts.entered, counts.waits, counts.inherited), (1, 1, 0));
+    }
+
+    /// Namespaces `lib` (0), `grammar` (1, no requires), `ui.a` and `ui.b`
+    /// (2 and 3, requiring `lib`); units 10, 11 and 12 of the last three,
+    /// scheduled in that order, and unit 5 of `lib`, whose initializer has
+    /// made an atom, by the returned owner token.
+    fn closure_fixture() -> (Arc<Lanes>, u64) {
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        let lib = vec!["lib".to_owned()];
+        lanes.register_namespace(0, "lib", &[]);
+        lanes.register_namespace(1, "grammar", &["cljs.core".to_owned()]);
+        lanes.register_namespace(2, "ui.a", &lib);
+        lanes.register_namespace(3, "ui.b", &lib);
+        for (unit, source) in [(5, 0), (10, 1), (11, 2), (12, 3)] {
+            lanes.note_unit(unit, source);
+        }
+        lanes.schedule([10, 11, 12], false);
+        let owner = {
+            let _root = lanes.enter_root();
+            let _initializer = lanes.enter_initializer(77, 5, 40);
+            let owner = lanes.token(synced(&lanes, 40));
+            assert!(owner < 0, "an initializer's atoms have a home");
+            (-owner) as u64
+        };
+        (lanes, owner)
+    }
+
+    #[test]
+    fn a_lane_skips_earlier_units_whose_closure_cannot_reach_the_atom() {
+        let (lanes, owner) = closure_fixture();
+        // `ui.b` touches `lib`'s atom: `grammar`'s unit 10 is still running
+        // and cannot reach it; `ui.a`'s unit 11 can, and is waited for.
+        let _unit = lanes.enter_unit(12);
+        let task = synced(&lanes, 7);
+        let cell = lanes.check(task, owner).unwrap();
+        assert_ne!(cell, 0, "ui.a requires lib");
+        let (opened, wait) = mpsc::channel();
+        lanes.attach(cell, Box::new(move || opened.send(()).unwrap()));
+        assert!(wait.try_recv().is_err());
+        lanes.finish(11, false);
+        wait.try_recv().expect("grammar's unit does not hold the lane");
+        assert_eq!(lanes.check(task, owner).unwrap(), 0);
+        // An atom with no home still waits for every earlier unit.
+        assert_ne!(lanes.check(task, 0).unwrap(), 0, "grammar is unfinished");
+        assert_eq!(lanes.counts().skipped, 2);
+    }
+
+    #[test]
+    fn a_unit_whose_closure_cannot_reach_a_homed_atom_fails_when_it_touches_it() {
+        let (lanes, owner) = closure_fixture();
+        let _unit = lanes.enter_unit(10);
+        let task = synced(&lanes, 8);
+        let error = lanes.check(task, owner).unwrap_err();
+        assert!(
+            error.contains("grammar reached compile-time state of lib"),
+            "{error}"
+        );
+        // Its own and unhomed atoms are unaffected.
+        assert_eq!(lanes.check(task, 0).unwrap(), 0);
     }
 
     #[test]

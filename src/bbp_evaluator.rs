@@ -1259,6 +1259,9 @@ const NAMESPACE_EFFECT: u16 = 65530;
 /// the task sees it, `v` gives the names it sees, each as its length, `:`
 /// and its text. A reader asks its lane first.
 const NAMESPACES_EFFECT: u16 = 65529;
+/// The effect lane of a shared initializer's caller selection, given its
+/// catalog unit: 0 to go on or a lane cell to park on (light-cljs-672).
+const LANE_INITIALIZER_EFFECT: u16 = 65528;
 
 /// The runtime-wide collection and admission policy for `options`.
 ///
@@ -3391,6 +3394,18 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                 }
                 _ => Err("unknown namespace registry request".into()),
             };
+        }
+        if call.op == LANE_INITIALIZER_EFFECT {
+            let task = crate::effect_lanes::identity(call.task);
+            let unit = match call.arg {
+                Primitive::Number(n) => n as u64,
+                _ => return Err("invalid initializer lane request".into()),
+            };
+            let answer = match self.2 {
+                None => 0,
+                Some(lanes) => lanes.check_initializer(task, unit)?,
+            };
+            return Ok(Primitive::Number(answer as f64));
         }
         if call.op == LANE_EFFECT {
             let task = crate::effect_lanes::identity(call.task);

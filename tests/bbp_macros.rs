@@ -11805,6 +11805,18 @@ const LANE_FIXTURES: &[(&str, bool, Result<&str, &str>)] = &[
     // A unit fails without touching an atom; the units after it must not
     // touch the counter before the earlier unit has read it.
     ("ordfail.main", false, Err("ordfail/a.cljs:3:8")),
+    // `closure.lib`'s log, made by its Var initializer and so homed there,
+    // touched by `early`, `a` and `b`, which require it, around `slow`,
+    // which does not and whose units their lanes skip (light-cljs-672).
+    ("closure.main", false, Ok("[1 42 2 3]\n")),
+    // `outside.m`'s macro reaches `outside.k`'s atom through a table both
+    // require, but `m` does not require `k`: a namespace's macros see only
+    // its require closure, so the touch fails at every slot count.
+    (
+        "outside.main",
+        false,
+        Err("outside.m reached compile-time state of outside.k, which it does not require"),
+    ),
 ];
 
 /// Compile-time atoms keep their `--jobs 1` order at one, two, four and

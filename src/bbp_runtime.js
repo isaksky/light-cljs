@@ -4114,7 +4114,7 @@ const initializeValue=(slot,factory)=>{
       const candidate=__rt.need(serial,beginKind);
       let producer=false;
       if(candidate){
-        const cell=__rt.effect(65532,0);if(cell!==0)__rt.need(cell,5);
+        const cell=__rt.effect(65528,unit);if(cell!==0)__rt.need(cell,5);
         globalThis.__lightInitializerUnit=unit;
         globalThis.__lightInitializerSelect=true;
         try{producer=__rt.need(++initializerSerial,beginKind);}
