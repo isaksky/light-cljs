@@ -4477,6 +4477,9 @@ fn execute_pool_job(
         if perturbation.lane_hold.contains(&name) {
             shared.lanes.wait_parked(limit);
         }
+        if perturbation.lane_hold_any.contains(&name) {
+            shared.lanes.wait_parked_any(limit);
+        }
         for (_, until) in (perturbation.hold_until.iter()).filter(|(held, _)| *held == name) {
             let unit = (shared.lock().units.iter()).position(|u| &u.name == until);
             if let Some(unit) = unit {
@@ -4524,8 +4527,9 @@ fn execute_pool_job(
 fn lane_hold(shared: &SharedCatalog) -> bool {
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     {
-        (shared.perturbation.get())
-            .is_some_and(|p| !p.lane_hold.is_empty() || !p.hold_until.is_empty())
+        (shared.perturbation.get()).is_some_and(|p| {
+            !p.lane_hold.is_empty() || !p.lane_hold_any.is_empty() || !p.hold_until.is_empty()
+        })
     }
     #[cfg(not(any(debug_assertions, feature = "scheduling-stress")))]
     {

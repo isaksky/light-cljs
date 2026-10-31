@@ -185,6 +185,8 @@ struct State {
     starved: Option<(usize, Instant)>,
     /// Whether a task parked inside an initializer or a helper's production.
     parked_in_cell: bool,
+    /// Whether any task parked for its lane.
+    parked_any: bool,
     /// The lowest position an activity waited for each unit, cell and lazy
     /// realization at, with its place in [`next_order`] then: the
     /// namespace creations of that work count there ([`NamespaceTag`]).
@@ -693,6 +695,7 @@ impl Lanes {
                     if targets.iter().any(|t| matches!(t, Target::Cell(_))) {
                         s.parked_in_cell = true;
                     }
+                    s.parked_any = true;
                     let parked = s.parked.get_mut(&cell).expect("parked lane");
                     parked.targets = targets;
                     parked.complete = Some(complete);
@@ -865,6 +868,20 @@ impl Lanes {
         let since = Instant::now();
         let mut s = self.lock();
         while !s.parked_in_cell && since.elapsed() < limit {
+            s = self
+                .opened
+                .wait_timeout(s, Duration::from_millis(20))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+    /// Block until some task has parked for its lane, or `limit` passes
+    /// (the test-only [`crate::scheduler::Perturbation::lane_hold_any`]).
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    pub(crate) fn wait_parked_any(&self, limit: Duration) {
+        let since = Instant::now();
+        let mut s = self.lock();
+        while !s.parked_any && since.elapsed() < limit {
             s = self
                 .opened
                 .wait_timeout(s, Duration::from_millis(20))

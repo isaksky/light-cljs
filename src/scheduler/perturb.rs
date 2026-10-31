@@ -51,6 +51,10 @@ pub struct Perturbation {
     /// shared helper first and an earlier one then demands it
     /// (light-cljs-480). Rescue threads are off meanwhile.
     pub lane_hold: Vec<String>,
+    /// As [`Self::lane_hold`], but until any task of the build has parked
+    /// for its effect lane, wherever it runs (light-cljs-665): a later unit
+    /// then reaches shared state before the held earlier one.
+    pub lane_hold_any: Vec<String>,
     /// A worker holds the pooled unit of each pair's first Var until the
     /// unit of its second has been analyzed (or ten seconds pass), so that
     /// what the second realized has settled before the first starts

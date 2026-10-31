@@ -5222,6 +5222,97 @@ fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slo
     }
 }
 
+/// A published delay or lazy sequence whose thunk reads a dynamic Var is
+/// realized under the bindings of the earliest caller in source order
+/// (light-cljs-665 review): `app/w` warms both cells without forcing them,
+/// `app/a` forces them under `:early` and the later `app/b` under `:late`.
+/// Held, `app/a` starts only once a later unit has parked for its lane, so
+/// `app/b` reaches the cells first; its `binding` waits for its lane before
+/// it installs the overlay, so `app/a` still realizes them. A later caller
+/// that forces such a cell with no binding of its own is not ordered yet
+/// (light-cljs-676).
+#[test]
+fn published_once_cells_keep_source_order_bindings() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-once-cell-bindings");
+    for (file, source) in [
+        (
+            "m.cljs",
+            r#"(ns m)
+            (def ^:dynamic *x* :root)
+            (def d (delay *x*))
+            (def s (lazy-seq (list *x*)))
+            (defmacro warm [] [(realized? d) (realized? s)])
+            (defmacro early [] (binding [*x* :early] (list 'quote [@d (first s)])))
+            (defmacro late [] (binding [*x* :late] (list 'quote [@d (first s)])))"#,
+        ),
+        (
+            "app.cljs",
+            r#"(ns app (:require [m :refer [warm early late]]))
+            (def w (warm))
+            (def a (early))
+            (def b (late))"#,
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [app])) (js/console.log (pr-str [app/w app/a app/b]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native: bool, jobs: usize, held: bool| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "main",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                stats: Some(&mut stats),
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: native.then(|| light_cljs::scheduler::Perturbation {
+                    seed: 666,
+                    lane_hold_any: if held {
+                        vec!["app/a".into()]
+                    } else {
+                        Vec::new()
+                    },
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("jobs {jobs}, held {held}, native {native}: {e}"));
+        (emit_js(&program), stats.lanes)
+    };
+    let (reference, _) = build(true, 1, false);
+    assert_eq!(
+        program_output(&reference),
+        "[[false false] [:early :early] [:early :early]]\n"
+    );
+    #[cfg(feature = "quickjs")]
+    assert_eq!(build(false, 1, false).0, reference, "QuickJS reference");
+    for (jobs, held) in [(2, false), (4, false), (8, false), (4, true), (8, true)] {
+        let (program, lanes) = build(true, jobs, held);
+        assert_eq!(program, reference, "jobs {jobs}, held {held}");
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        if held {
+            assert!(lanes.waits > 0, "jobs {jobs}: the later unit did not wait");
+        }
+        let _ = lanes;
+    }
+}
+
 #[test]
 fn inherited_initializers_use_the_earlier_callers_bindings_under_seeded_scheduling() {
     inherited_initializer_bindings(false);

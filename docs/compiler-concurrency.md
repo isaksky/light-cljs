@@ -3174,6 +3174,19 @@ state and determinism"; this is what was delivered.
   like any other (in the counter fixture, `main`'s top-level call creates
   `counter` when it runs first and still waits for `dep`'s unit). With one
   slot every lane is open when asked.
+- **What takes a lane.** Atom accesses (including a multimethod's tables,
+  which the port keeps in atoms), shared mutable fields, namespace registry
+  reads, `*ns*` reads, a `gensym` inside an initializer, a shared
+  initializer's caller selection and a macro's `binding` (before it
+  installs its overlay: a published lazy sequence or delay realized under
+  the binding would otherwise take a later caller's value;
+  `published_once_cells_keep_source_order_bindings`). A lane waits for
+  every earlier unfinished unit, not only those that can touch the same
+  state: a running macro can reach any loaded Var, so no sound bound on
+  what it touches exists without light-cljs-446's require-closure rule
+  (light-cljs-672). On Penpot `app.main` the binding lane is most of the
+  waits (benchmarks/penpot-investigation.md, "Effect-lane waits on
+  app.main"); light-cljs-676 replaces it with a realization gate.
 - **No deadlock by order.** An earlier activity never waits for a later
   one parked on its lane: a demand lends the later one its position. The
   test `an_earlier_unit_demanding_a_parked_initializer_lends_it_its_lane`

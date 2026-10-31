@@ -2290,7 +2290,11 @@ and saved VM frames retain them across helper waits and task migration. Bound
 `set!` uses a native compiler service rather than an engine Proxy `set` trap.
 Installation joins the existing source-order effect lane before changing an
 overlay: a pending shared root can capture a binding without touching an atom,
-so later callers must not initialize it first. A shared initializer reserves
+so later callers must not initialize it first. It also keeps a published lazy
+sequence or delay that reads the bound Var realized under the earliest
+binding caller's value (`published_once_cells_keep_source_order_bindings`);
+a later caller that forces such a cell without a binding is not yet ordered
+(light-cljs-676). A shared initializer reserves
 its dependency before waiting for the lane, allowing earlier callers to lend
 their position. Once the lane opens, the earliest caller's task executes the
 factory, even if a later task reserved it first. Selection rechecks each
