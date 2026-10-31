@@ -30,6 +30,161 @@ not promoted; [phase113](results/compiler-2026-10-16/penpot-phase113/README.md)
 records the controlled comparison. Further large gains are not established by
 the current profiling evidence.
 
+## Interpreter success-path costs (light-cljs-663, October 31, 2026)
+
+On the same 727 named namespaces reached by both builds, the Pants build's
+elapsed analysis time falls from **57.083 s to 54.494 s (-4.5%)** and its
+slowdown versus V8 from **7.02x to 6.71x**. Whole-process wall medians fall
+from **58.46 s to 55.88 s (-4.4%)**. All three paired wall and user-CPU
+differences improve. Both Pants builds still stop at the same unsupported
+`core.MapEntry` call in `instaparse.abnf/precompile-cljs-grammar`; V8 completes
+`app.main`. This is a modest interpreter improvement, with the large gap to
+V8 still present.
+
+The comparison isolates five generic engine changes on `a193b973` (before)
+versus `e9dfe5e7` (after; source tree
+`d5debc63d6361d63f471a63fea80d5b9c388bc6d`). The port in `src/bbp_runtime.js`
+is unchanged. Profiles guiding the changes attributed 2.1% of the
+`app.render` main thread's samples to destroying fallback `Fault` values,
+and 5.2% of a collection/protocol/lazy macro sample's self time to dropping
+`Value`s. The earlier profile below identifies calls and property reads as
+the other large interpreter costs. The retained changes are:
+
+- Construct constant fallback faults only on failure, including operand,
+  local, property and binding-cell reads. The successful path avoids their
+  out-of-line destructor.
+- Reuse rooted operands when the actual `Function.prototype.call` intrinsic
+  targets an ordinary JavaScript function, avoiding argument-vector copying
+  and forwarding classification. Bound functions and proxies use their
+  existing forwarding paths.
+- Continue ordinary function property reads from the heap snapshot already
+  held, and retain the operation's bound key across function forwarding.
+- Carry builtin classification and a side-effect-free leaf miss into slow
+  call dispatch, avoiding duplicate probes.
+- Release discarded operands inline, invoking the destructor for owning
+  strings, symbols and BigInts. Nonowning variants are listed exhaustively;
+  byte-budget regressions check final-reference refunds and truncation.
+
+Measurements used an exclusive host window, **14:56–15:07 UTC**, after peer
+builds and tests stopped. Every run records `uptime` and a full
+`ps -axo pid,ppid,pcpu,comm` snapshot; all 41 pre-run checks found no other
+compiler, Cargo, rustc or nextest process. Apple M3 Ultra (Virtual), 24 logical
+CPUs, 32 GiB, macOS 15.7.3, Rust 1.99.1; fresh release builds with thin LTO, one codegen unit,
+`CARGO_BUILD_JOBS=2`. The Pants build uses
+`--no-default-features --features bbp-macros`; V8 uses default features and
+`LIGHT_CLJS_V8_CACHE=require`. Each sample is a fresh process, at 1 thread,
+with no compiler cache and all the budgets in the reproduction command
+below. `LIGHT_CLJS_MACRO_CORE` is unset and the Pants commands explicitly
+select `--macro-core port`. Timing binaries contain no instruction counters.
+
+Three rounds use before/after/V8, V8/after/before, before/after/V8 order.
+Values are independent medians [min–max]; peak memory is maximum resident
+set size from `/usr/bin/time -l`, in decimal GB. The recorded 1-minute
+loads are in each variant's round order.
+
+| Build | Wall s | User CPU s | Peak memory GB | 1-minute loads |
+| --- | ---: | ---: | ---: | --- |
+| Pants, before | 58.46 [57.36–58.60] | 57.29 [56.23–57.44] | 1.261 [1.258–1.266] | 2.30, 2.62, 2.34 |
+| Pants, after | 55.88 [55.58–55.93] | 54.72 [54.40–54.78] | 1.263 [1.261–1.268] | 2.55, 2.54, 2.05 |
+| V8 | 13.51 [13.22–13.66] | 15.81 [15.48–15.96] | 1.094 [1.074–1.099] | 2.50, 2.30, 2.20 |
+
+Paired Pants wall differences are -1.78, -2.67 and -2.58 s; user-CPU
+differences are -1.83, -2.66 and -2.57 s. Peak memory is essentially
+unchanged. Whole-process ratios would compare an incomplete Pants build
+with a complete V8 build. Instead, the following comparison sums each
+common namespace's `top-level-us` and its deferred units' `us` in the trace:
+
+| Build | Time on the common 727 namespaces, s | Slowdown versus V8 |
+| --- | ---: | ---: |
+| Pants, before | 57.083 [56.000–57.210] | 7.02x; paired range 6.84–7.36x |
+| Pants, after | 54.494 [54.211–54.547] | 6.71x; paired range 6.63–7.02x |
+| V8 | 8.126 [7.775–8.181] | 1x |
+
+Slowdown is the ratio of medians; its range is the three per-round ratios.
+All nine traces have the same common set. Empty namespace-name rows are
+unreached placeholders and are excluded. The earlier 728 figure below
+counted the empty-name key as a namespace. The grammar namespace alone
+falls from 12.959 [12.775–12.977] s to 12.145 [11.827–12.477] s, against
+V8's 0.772 [0.763–0.797] s: still 15.7x slower.
+
+Before timing, separate counting builds verified identical work. Primitive
+fusion is charged by its original bytecode length; native trampoline steps
+are counted separately. The fixed macro workload combines the `churn`,
+`protocol` and `lazy` workloads from `benchmarks/native-macros-k.bb`, once
+each at n = 20000 and 20001. Counts below are identical before and after:
+
+| Workload | Bytecode instructions | Native steps | Total budgeted steps |
+| --- | ---: | ---: | ---: |
+| Combined macros | 79,901,496 | 1,310,225 | 81,211,721 |
+| app.render | 79,761,258 | 6,688,871 | 86,450,129 |
+| app.main to the MapEntry stop | 1,273,176,630 | 81,434,732 | 1,354,611,362 |
+
+Ten alternating macro pairs give user-CPU medians 2.245 [2.16–2.28] s
+before and 2.130 [2.08–2.21] s after. The median paired reduction is
+0.080 s (3.6% of the before median): nine pairs improve and one ties.
+Three alternating `app.render` pairs give wall medians 7.80 [7.75–7.85] s
+to 7.64 [7.58–7.77] s and user CPU 7.34 [7.29–7.38] s to
+7.19 [7.13–7.29] s. Every pair improves; median paired reductions are
+0.11 s wall and 0.10 s user CPU. These results support retaining the
+combined changes; they do not assign a separate speedup to each cut.
+
+Before, after and V8 also emit byte-identical `app.render` JavaScript and
+source maps, and byte-identical generated-200k JavaScript (`release bench
+--no-cache --jobs 1`, the project's 2 GiB budget). SHA-256 values are
+`72868c0c8c996750e2009792858084c234e5e947389a7c9d89cfeb24da4275b5`
+for render JavaScript,
+`03c59583ab05fe7f6e46b0595ed2de4ee9762b9ba9f2c6bc2b14a71d36843c5b`
+for its map, and
+`0eae894c970bba8033df13777326c8c5b57f3a98f5e68b85f377b3dd433f439a`
+for generated-200k JavaScript. Render's hash uses the same `out.map` name
+for all three correctness checks.
+
+Validation passes 2,283 engine tests across all targets, seven engine
+doctests, and four Pants-build compiler integration tests covering variadic
+and multi-arity forwarding, macro error locations, source-ordered JavaScript
+state, and helper demand without replay. Workspace formatting passes.
+Strict engine Clippy reports the same ten diagnostics as an archived
+`a193b973` baseline: deprecation, constant-chunk, byte-slice and unused
+`Wakeups` warnings. All targets pass diagnostic isolation allowing only
+those four categories after `-D warnings`; no source suppressions were added.
+The full compiler suite was not run for these engine-only changes.
+
+Binary SHA-256 values (the two counting builds add only temporary counters
+in `execute_budgeted` and print their totals at process exit):
+
+| Binary | SHA-256 |
+| --- | --- |
+| Pants before | `ba107d03e14492ff21bea87e87095c888509d09f15d43b4ab00461999b2a17a4` |
+| Pants after | `7423e8eb5adad14b7d88f1e7385dcec1942638321f34347fb9c6dfe8e1a45e4f` |
+| V8 | `4ab121667b66bec0cb4524cf9294f6acdf254e6ec2fdce7fe9037e43eedd7d81` |
+| Counting before | `a27f232f57e4ea450bdc9804baede79391c2fde69b8b51cc945fc71597609fe6` |
+| Counting after | `d6e8ec6a713750fa8f1928b0765ef0d7f14d4ed81046e7ade971d1d40c226403` |
+
+The exact argument vectors, loads, process snapshots, raw stderr, emitted
+files and traces are preserved locally under `w663/target/663-*`; the
+argument list is `663-measure-commands.log`. The Penpot command is:
+
+```sh
+P=/Users/admin/src/light-cljs/research/penpot-light
+env -u LIGHT_CLJS_MACRO_CORE /usr/bin/time -l "$BIN" --compile --esm --entry app.main \
+  --source-root "$P/frontend/src" --source-root "$P/common/src" --source-root "$P/vendor" \
+  --source-root "$P/generated" --source-root "$P/shims" \
+  --optimize none --jobs 1 --no-cache --stats --stats-file "$PREFIX.tsv" \
+  --macro-expansions 100000000 --macro-nodes 4000000000 \
+  --macro-timeout-ms 3600000 --macro-memory-limit 4000000000 \
+  --macro-poll-budget 1000000000000 \
+  --source-map "$TARGET/663-timed.map" --source-map-include-sources \
+  > "$PREFIX.js" 2> "$PREFIX.log"
+```
+
+Add `--macro-core port` to the Pants command. `BIN` selects a fixed binary
+above, `TARGET` is the worktree's absolute target directory, and `PREFIX`
+is a fresh absolute per-sample path. Counting uses the same arguments with
+the counting binaries and omits `/usr/bin/time`. Replace `app.main` with
+`app.render` for render. The combined macro fixture is preserved in
+`target/663-macro/src/k/main.cljs`, SHA-256
+`100b24ce252bca17eabc9276cf061f6716430d3428f131cab233780a8d9ee4fd`.
+
 ## Cutting marking and freeing work (light-cljs-695, October 31, 2026)
 
 The Pants build's garbage collection on Penpot `app.main` at 1 thread is
