@@ -762,7 +762,10 @@ engine keywords, identity hashes (an engine vector and the runtime's list
 of one host function hash alike), a task's first cells (the boot's
 defaults, with no cells needed), runtime-owned sequences crossing into
 the engine's `cons` and lazy realization, fractional vector indexes, the
-bounded fallback diagnostic and the boot's memory.
+bounded fallback diagnostic, the weak post-boot registries (683),
+`ClassBrand`'s per-task flag (684: over a copy of the runtime that exports
+`defineClass` and `TypeBrand`, as the V8 profile's test does) and the boot's
+memory.
 
 State after light-cljs-666's first attempt (2026-10-31): the profile
 boots; 716 of 748 members publish (267 after 647's third attempt, 268

@@ -484,6 +484,64 @@ fn shared_profile_brand_registries_release_discarded_values() {
     drop(kept);
 }
 
+/// `ClassBrand`'s "some class is branded" flag is the task's cell
+/// `classBrands`, read through the real `defineClass`, `ClassBrand` and
+/// `TypeBrand` units (neither `defineClass` nor `TypeBrand` is exported, as
+/// in the V8 profile, so this boots a copy of the runtime that exports them
+/// too, as tests/support/js_runtime.test.js does): false until the task
+/// defines a class, so no prototype is probed before (a proxy's
+/// `getPrototypeOf` is never asked for); true after, when a genuine
+/// instance is recognized as its type and one forged from the prototype,
+/// from an instance's fields or from an instance as a prototype is not; a
+/// task's fresh cells (`sharedTaskCells`) start with the flag false again,
+/// so that task probes no prototype and recognizes no class instance until
+/// it defines a class itself, and its flag is its own (light-cljs-684).
+#[test]
+fn shared_profile_class_brands_are_task_local() {
+    let rt = Runtime::new();
+    const ANCHOR: &str = "return sharedProfileBoot(Object.freeze({setDeclarationDemand, ";
+    assert_eq!(SHARED_RUNTIME.matches(ANCHOR).count(), 1);
+    let exporting = SHARED_RUNTIME.replace(
+        ANCHOR,
+        "return sharedProfileBoot(Object.freeze({defineClass, TypeBrand, setDeclarationDemand, ",
+    );
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{exporting}\n); const core = rt.core; \
+             const cells = globalThis.__lightSharedCells; \
+             let probes = 0; const probe = new Proxy({{}}, {{getPrototypeOf() {{ probes++; return null; }}}}); \
+             const probed = () => {{ try {{ rt.TypeBrand.type(probe); }} catch (e) {{ if (!/getPrototypeOf/.test(e.message)) throw e; probes++; }} return probes; }}; \
+             const initial = cells.classBrands, probesBefore = probed(); \
+             class P {{ #b; constructor(a) {{ this.#b = true; this.a = a; }} static c = x => #b in x; }} \
+             const defined = rt.defineClass(P, 'user/P a', [], true, null) === P && P.c === undefined; \
+             const after = cells.classBrands; \
+             const genuine = new P(1), sub = new (class extends P {{}})(2); \
+             const forged = [Object.create(P.prototype), Object.create(genuine), \
+               Object.defineProperties({{}}, Object.getOwnPropertyDescriptors(genuine)), \
+               Object.defineProperties(Object.create(P.prototype), Object.getOwnPropertyDescriptors(genuine)), P.prototype, {{}}]; \
+             const recognized = rt.TypeBrand.type(genuine) === P && rt.TypeBrand.type(sub) === P; \
+             const forgedTypes = forged.map(value => String(rt.TypeBrand.type(value))).join(','); \
+             const got = String(core.get(genuine, core.keyword(null, 'a'))); \
+             const probesAfter = probed(); \
+             const fresh = core.sharedTaskCells(); const freshFlag = fresh.classBrands; \
+             globalThis.__lightSharedCells = fresh; \
+             const freshRecognized = String(rt.TypeBrand.type(genuine)), probesFresh = probed(); \
+             class Q {{ #b; constructor() {{ this.#b = true; }} static c = x => #b in x; }} \
+             rt.defineClass(Q, 'user/Q', [], true, null); \
+             const freshAfter = fresh.classBrands, freshRecognizedAfter = rt.TypeBrand.type(genuine) === P, probesFreshAfter = probed(); \
+             globalThis.__lightSharedCells = cells; \
+             return [initial, probesBefore, defined, after, recognized, forgedTypes, got, probesAfter, \
+               freshFlag, freshRecognized, probesFresh, freshAfter, freshRecognizedAfter, probesFreshAfter, cells.classBrands].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "false 0 true true true undefined,undefined,undefined,undefined,undefined,undefined 1 1 false undefined 1 true true 2 true"
+    );
+}
+
 /// The method-key memos the boot fills and seals cover every arity a
 /// dispatcher declares: `invokeProtocol` declares arities 1 to 22, so a
 /// receiver implementing `cljs$core$IFn$_invoke$arity$22` is invoked with
