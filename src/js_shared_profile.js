@@ -259,13 +259,25 @@
   //@unit atoms requires: sharedStore
   const atoms = sharedStore(), volatiles = sharedStore();
   //@unit lazyValues requires: sharedView
-  // A lazy payload's `value` is the engine cell's seq (realized or parked
-  // on by `cljSeq`); its `thunk` is null, which the verbatim `seq` units
-  // read as realized.
+  // A lazy payload over the engine's once-cell: `thunk` is null once the
+  // cell is realized (`cljRealized`, which realizes nothing), else a
+  // function that realizes the cell, so the verbatim `deferredValue` and
+  // `realized?` read the cell's state; `value` is the cell's seq (realized
+  // or parked on by `cljSeq`). The writes `deferredValue` makes after a
+  // call are dropped: the cell holds the value. A delay's `value` is read
+  // without running its body (`cljDelayState`): its seed until realized.
+  // The engine caches a form's hash (`constructorHashes`).
   const lazyValues = sharedView("lazyValues", value => __rt.formKind(value) === "lazy-seq",
-      value => ({thunk: null, get value() { return __rt.cljSeq(value); }, set value(_) {}})),
+      value => ({
+        get thunk() { return __rt.cljRealized(value) ? null : () => __rt.cljSeq(value); }, set thunk(_) {},
+        get value() { return __rt.cljSeq(value); }, set value(_) {},
+        get hash() { return undefined; }, set hash(_) {}
+      })),
     delays = sharedView("delays", value => __rt.formKind(value) === "delay",
-      value => ({thunk: null, get value() { return __rt.cljForce(value); }, set value(_) {}}));
+      value => ({
+        get thunk() { return __rt.cljRealized(value) ? null : () => __rt.cljForce(value); }, set thunk(_) {},
+        get value() { const state = __rt.cljDelayState(value); return __rt.formNth(state, 0) ? __rt.formNth(state, 1) : null; }, set value(_) {}
+      }));
   //@unit eductions requires: sharedStore
   const eductions = sharedStore();
   //@unit ifnValues requires: sharedStore
@@ -395,9 +407,20 @@
     const index = entryIndex(entries, key);
     if (index < 0) entries.push({key, value}); else entries[index] = {key: entries[index].key, value};
   }
+  //@unit Delay
+  // An engine delay: realized to `result` at once where `thunk` is nil or
+  // false, as upstream's `(Delay. thunk result)`.
+  function Delay(thunk, result) {
+    return __rt.delay(thunk, result);
+  }
   //@unit LazySeq
+  // An engine lazy seq of `thunk`; one made with no thunk holds the
+  // computed `result`, so its cell is realized to it at once. The engine
+  // caches the hash (`constructorHashes`), so `cachedHash` is not kept.
   function LazySeq(metadata, thunk, result, cachedHash) {
-    const value = __rt.lazySeq(thunk);
+    let value;
+    if (thunk == null) { value = __rt.lazySeq(() => result); __rt.cljSeq(value); }
+    else value = __rt.lazySeq(thunk);
     return metadata !== null ? __rt.cljWithMeta(value, metadata) : value;
   }
   //@unit protocolKeys requires: sharedStore

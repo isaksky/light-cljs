@@ -200,6 +200,39 @@ fn shared_profile_vector_operations() {
     );
 }
 
+/// The lazy and delay views reflect the engine once-cell's state: checking
+/// `realized?` runs no thunk, a successful realization is reported once
+/// made, a throwing thunk leaves the cell pending, and a `LazySeq` made
+/// with no thunk holds its computed result, realized at once.
+#[test]
+fn shared_profile_realization_state() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             let calls = 0; \
+             const pending = new core.LazySeq(null, () => {{ calls++; return core.vector(1, 2); }}, null, null); \
+             const r0 = core.realized(pending), c0 = calls; \
+             const f = core.first(pending), r1 = core.realized(pending), c1 = calls; \
+             const d = new core.Delay(() => {{ calls++; return 42; }}, null); \
+             const dr0 = core.realized(d), dc0 = calls; \
+             const dv = core.deref(d), dr1 = core.realized(d); \
+             const bad = new core.Delay(() => {{ throw new Error('boom'); }}, null); \
+             let threw = false; try {{ core.deref(bad); }} catch (e) {{ threw = e.message === 'boom'; }} \
+             const init = new core.LazySeq(null, null, __rt.formList(1), null); \
+             const seeded = new core.Delay(null, 7); \
+             return [r0, c0, f, r1, c1, dr0, dc0, dv, dr1, threw, core.realized(bad), \
+               core.realized(init), core.first(init), core.prStr(init), core.realized(seeded), core.force(seeded)].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "false 0 1 true 1 false 1 42 true true false true 1 (1) true 7"
+    );
+}
+
 /// The writes the boot makes to the brand stores' private fallbacks, for
 /// the migration list.
 #[test]
