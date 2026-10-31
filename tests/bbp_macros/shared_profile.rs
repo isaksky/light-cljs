@@ -751,21 +751,15 @@ fn shared_profile_newly_shareable_members_publish() {
 /// every getter through its first cells: each answers the task's own
 /// registry, defined on the task's cells, the same object on a second read,
 /// and the defaults still publish afterwards, since no read wrote through
-/// them. One cause stays, light-cljs-648's: the builtin `js` tag parser,
-/// held by the tag tables' boot snapshots, reaches the V8 form bridge
-/// (`jsLiteral`, `readerJsLiterals.array`), so this boots a copy of the
-/// runtime without that one registration, as the hub's publication
-/// (`sharedTaskCells` captures the hub) waits for the same decision.
+/// them. This includes the builtin `js` parser, whose literal builders
+/// now use engine forms and retain no V8 bridge state.
 #[test]
 fn shared_profile_registry_getters_keep_the_profile_published() {
     let rt = Runtime::new();
-    const JS_TAG: &str = "  globalThis.__lightSharedCells.builtinTags.set('js', value => jsLiteral(builtinLocation,value));\n";
-    assert_eq!(SHARED_RUNTIME.matches(JS_TAG).count(), 1);
-    let without_js_tag = SHARED_RUNTIME.replace(JS_TAG, "");
     let booted = run(
         &rt,
         &format!(
-            "const rt = (\n{without_js_tag}\n); const core = rt.core; \
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
              return __rt.formVector(Object.getPrototypeOf(core), core.sharedTaskCells, core.currentNs);"
         ),
     )
@@ -809,7 +803,7 @@ fn shared_profile_registry_getters_keep_the_profile_published() {
         "gensymScopes:Map0 generatedNames:Set0 tapListeners:Set0 tapQueue:Array protocolSlots:Map0 formHashes:WeakMap formEntries:WeakMap varMetadata:WeakMap atomOwners:WeakMap \
          coreDispatchers:Map+ nativeMethods:Map0 protocolValues:Map0 protocolFunctions:Map0 protocolVariables:Map0 \
          protocolGetters:Map0 reifySites:Map0 protocolImplementations:WeakMap typeNames:WeakMap namespaces:Map2 \
-         streams:WeakMap readerMaps:WeakMap tags:Map3 builtinTags:Map3 true"
+         streams:WeakMap readerMaps:WeakMap tags:Map4 builtinTags:Map4 true"
     );
     rt.publish(&defaults)
         .unwrap_or_else(|e| panic!("the task defaults do not publish after the reads: {e}"));
@@ -957,11 +951,12 @@ fn shared_profile_engine_regex_and_lazy_matches_publish() {
         &format!(
             "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
          const re = __rt.formRegex('(a)', ''), built = core.rePattern('(a)'); \
-         const matches = core.reSeq(re, 'aba'); \
+         const matches = core.reSeq(re, 'aba'), applied = core.apply(RegExp, core.vector('a', 'i')); \
          return __rt.formVector(matches, core.sharedTaskCells, \
            [core.isRegex(re), core.isRegex(built), __rt.formKind(built), core.prStr(re), \
             core.prStr(core.reFind(re, 'ba')), core.prStr(core.reMatches(re, 'a')), \
-            core.rePattern(re) === re, __rt.formKind(core.rePattern('(?g)a')) === null].join(' '));"
+            core.rePattern(re) === re, __rt.formKind(core.rePattern('(?g)a')) === null, \
+            __rt.formKind(applied), applied.test('A'), core.apply(RegExp, core.vector(re)) === re].join(' '));"
         ),
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -977,7 +972,7 @@ fn shared_profile_engine_regex_and_lazy_matches_publish() {
     });
     assert_eq!(
         text,
-        "true true compiler-literal #\"(a)\" [\"a\" \"a\"] [\"a\" \"a\"] true true"
+        "true true compiler-literal #\"(a)\" [\"a\" \"a\"] [\"a\" \"a\"] true true compiler-literal true true"
     );
     rt.publish(&matches).unwrap();
     let walk = compile_function(

@@ -1389,3 +1389,52 @@ measured (the engine has no live inventory by kind; candidates: the maps
 the boot builds as engine forms with their intermediate vectors retained
 through `formEntries`, and the per-entry closures of `sharedMapEntries`).
 Open, with the boot's garbage of the fourth attempt.
+
+### Engine-kind views and complete publication (2026-10-31)
+
+The complete shared profile now publishes, including the exported reader
+literal builders. `shared_profile_boots_and_publishes_with_zero_rejected_paths`
+is enabled and passes without excluding a registry. The Pants evaluator
+already owns form import/export and namespace services; the shared profile
+therefore no longer instantiates the V8 evaluator's unused `compilerFormBridge`.
+Its `compilerForms` member holds the engine `jsArray` and `jsObject` builders.
+The V8 runtime and its build inputs are unchanged.
+
+The views now also read the following engine representations through the
+real operation units:
+
+- Keyed Vars: the `cljs.core/Var` type supplies the root getter, symbol and
+  metadata. Identity comparisons, hashing and printing do not demand the
+  root. Deferred `:test` metadata is computed once per task, and `with-meta`
+  returns an engine Var with the same getter and symbol.
+- Atoms: state and the auxiliary `[metadata validator watches]` atom use
+  the evaluator's existing engine storage contract. Macro tasks use effect
+  lane 65532 before access. Validation runs before the state commits, watches
+  run afterward, and a throwing watch leaves the new state committed.
+  A real-core `Atom` constructor now creates an engine atom.
+- Structs and records: the runtime's type and record brands recognize engine
+  types; a record exposes its declared fields and extension entries. Record
+  lookup, updates, removal, sequence and metadata operations keep engine
+  representations, including the map produced by removing a declared field.
+- Multimethods: the `cljs.core/MultiFn` brand is recognized for predicates
+  and naming. Method/preference registries and protocol dispatch installation
+  remain light-cljs-649's frontier-table work.
+- Regexes: the real pattern builder creates an engine regex when it has no
+  global or sticky state. The lazy tail of `re-seq` captures immutable text,
+  regex and offset, not the mutable match array or reassigned parameters.
+
+Engine chunked conses are read as chunks rather than ordinary conses, and
+the real `ChunkedCons` constructor stores the chunk and tail in the engine.
+The direct engine-vector regression observes 32 mapped calls on the first
+element, no more through element 31, and eight more on element 32. A mapped
+sequence publishes after its first chunk is realized and a separate task
+consumes the rest.
+
+At checkpoint `46ed0ba1`, all 33 enabled shared-profile tests pass, as do
+21 runtime-manifest tests (one measurement remains ignored) and all 11 engine
+sealing tests, on macOS arm64 / Rust 1.99.1 with Cargo jobs 2 and nextest jobs 4.
+This is targeted acceptance evidence, not a new whole-suite count. The fifth
+attempt's totals above remain historical; review findings 708–713 are separate
+work, and protocol-table parity remains 649. Runtime-owned public constructor
+fallbacks retain their private payloads; the views do not brand engine values
+by writing private fields onto them.
