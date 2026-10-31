@@ -11809,6 +11809,9 @@ const LANE_FIXTURES: &[(&str, bool, Result<&str, &str>)] = &[
     // touched by `early`, `a` and `b`, which require it, around `slow`,
     // which does not and whose units their lanes skip (light-cljs-672).
     ("closure.main", false, Ok("[1 42 2 3]\n")),
+    // The first MultiFn initializes the universal hierarchy inside its
+    // own initializer. An unrelated namespace still derives through it.
+    ("hierarchy.main", false, Ok("[1 true]\n")),
     // The earlier-loaded extension is hidden from a, explicitly required
     // by b. Its installer reads its own root, so eager foreign execution
     // would fail admission before either dispatch could produce a value.

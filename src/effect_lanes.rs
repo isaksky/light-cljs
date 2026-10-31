@@ -621,12 +621,14 @@ impl Lanes {
                 .and_then(|unit| s.unit_home(unit))
             {
                 s.homes.insert(guard.token, source);
-                s.initializer_tasks
-                    .entry(task)
-                    .or_default()
-                    .push(guard.token);
-                s.initializer_task_of.insert(guard.token, task);
             }
+            // Unknown initializers must shadow an outer known home too:
+            // the global hierarchy's special cell is one such initializer.
+            s.initializer_tasks
+                .entry(task)
+                .or_default()
+                .push(guard.token);
+            s.initializer_task_of.insert(guard.token, task);
         }
         guard
     }
@@ -858,16 +860,20 @@ impl Lanes {
             .0
     }
     /// The token of `task`'s current activity, which owns the atoms it
-    /// makes; 0 outside any. A Var initializer running on this thread owns
-    /// what it makes, and its token comes negated: its atoms have a home
-    /// ([`Self::enter_initializer`]), which every task must see.
+    /// makes; 0 outside any. A Var initializer owns what it makes. Its
+    /// token comes negated only when its home is known; an unknown nested
+    /// initializer keeps its own unhomed token, never the outer one's home.
     pub(crate) fn token(&self, task: u64) -> i64 {
         if !self.enabled() {
             return 0;
         }
         let s = self.lock();
         if let Some(&token) = s.initializer_tasks.get(&task).and_then(|t| t.last()) {
-            return -(token as i64);
+            return if s.homes.contains_key(&token) {
+                -(token as i64)
+            } else {
+                token as i64
+            };
         }
         s.tops.get(&task).map_or(0, |top| top.token as i64)
     }
@@ -1463,6 +1469,27 @@ mod tests {
         assert!(!lanes.sees_unit(7, 5));
         assert!(lanes.sees_unit(7, 10));
         assert_ne!(context, lanes.visibility_context(7));
+    }
+
+    #[test]
+    fn an_unknown_initializer_nested_in_a_known_one_keeps_its_own_unhomed_owner() {
+        let (lanes, _) = closure_fixture();
+        lanes.note_unit(999, usize::MAX);
+        let _unit = lanes.enter_unit(12);
+        let task = synced(&lanes, 7);
+        let _known = lanes.enter_initializer(78, 5, task);
+        let known = lanes.token(task);
+        assert!(known < 0);
+        {
+            let _unknown = lanes.enter_initializer(79, 999, task);
+            let unknown = lanes.token(task);
+            assert!(
+                unknown > 0,
+                "unknown initializer inherited home token {unknown}"
+            );
+            assert_ne!(unknown, -known);
+        }
+        assert_eq!(lanes.token(task), known);
     }
 
     #[test]
