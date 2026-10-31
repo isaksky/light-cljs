@@ -1091,6 +1091,59 @@ fn shared_profile_engine_collection_operations_preserve_metadata() {
     );
 }
 
+/// Public constructors keep caller-owned slots on wrappers; ordinary builders
+/// still return engine forms. The constant helpers use those constructors too.
+#[test]
+fn shared_profile_public_map_and_set_constructors_keep_slots() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); {}",
+            r#"
+            const core = rt.core;
+            const check = (ok, label) => { if (!ok) throw new Error(label); };
+            const child = __rt.formVector(7), metadata = core.hashMap('m', 1);
+            const pairs = ['k', child, 'k', 2];
+            const m = new core.PersistentArrayMap(metadata, 9, pairs, 59);
+            check(__rt.formKind(m) === null && m instanceof core.PersistentArrayMap, 'array map wrapper');
+            check(core.count(m) === 9 && m.cnt === 9 && m.arr === pairs, 'array map slots');
+            check(core.get(m, 'k') === child && core.meta(m) === metadata && core.hash(m) === 59, 'array map values');
+            pairs[1] = 5;
+            check(core.get(m, 'k') === 5 && core.prStr(m) === '{"k" 5, "k" 2}', 'live positional duplicates');
+            const root = core.hashMap('k', child, null, 'old');
+            const h = new core.PersistentHashMap(metadata, 7, root, true, 9, 61);
+            check(__rt.formKind(h) === null && h instanceof core.PersistentHashMap, 'hash map wrapper');
+            check(h.root === root && h.cnt === 7 && h.has_nil_QMARK_ === true && h.nil_val === 9, 'hash map slots');
+            check(core.count(h) === 7 && core.get(h, 'k') === child && core.get(h, null) === 9, 'hash map values');
+            check(core.meta(h) === metadata && core.hash(h) === 61, 'hash map metadata/hash');
+            const s = new core.PersistentHashSet(metadata, root, 67);
+            check(__rt.formKind(s) === null && s instanceof core.PersistentHashSet && s.hash_map === root, 'hash set slots');
+            check(core.count(s) === 2 && core.get(s, 'k') === 'k' && core.contains(s, null), 'hash set values');
+            check(core.meta(s) === metadata && core.hash(s) === 67, 'hash set metadata/hash');
+            for (const value of [m, h, s]) {
+              const copy = core.withMeta(value, null), cloned = core.clone(value);
+              check(copy !== value && core.meta(copy) === null && core.hash(copy) === core.hash(value), 'with-meta');
+              check(core.meta(cloned) === metadata && core.hash(cloned) === core.hash(value), 'clone');
+            }
+            check(core.withMeta(m, null).arr === pairs && core.withMeta(h, null).root === root && core.withMeta(s, null).hash_map === root, 'copy slot identity');
+            const constant = rt.constantMapFromArray(['k', child, 'k', 2]);
+            const constantSet = rt.constantSetFromArray(['k', 'k']);
+            check(core.count(constant) === 2 && core.get(constant, 'k') === child && constant.arr[1] === child, 'constant map');
+            check(core.count(constantSet) === 2 && core.get(constantSet, 'k') === 'k', 'constant set');
+            check(core.get(core.PersistentArrayMap(null, 1, ['k', 1], null), 'k') === 1, 'called array constructor');
+            check(core.count(core.PersistentHashMap(null, 0, null, false, null, null)) === 0, 'called hash constructor');
+            check(core.count(core.PersistentHashSet(null, core.hashMap(), null)) === 0, 'called set constructor');
+            check(__rt.formKind(rt.arrayMapFromArray(['k', child])) === 'map' && __rt.formKind(core.hashMap('k', child)) === 'map', 'ordinary map builders');
+            check(__rt.formKind(core.hashSet('k')) === 'set' && __rt.formKind(rt.setFromArray(['k'])) === 'set', 'ordinary set builders');
+            return 'ok';
+            "#
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(out.string().unwrap().to_string_lossy(), "ok");
+}
+
 /// An engine map is a map to the real units (the maps view, light-cljs-666):
 /// `map?`, `count`, `get`, `contains?`, `find`, `keys`, `vals`, `seq`,
 /// printing, equality and hashing with a runtime-built map of the same

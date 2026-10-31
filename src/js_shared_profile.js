@@ -430,14 +430,24 @@
     for (let i = 0; i < ordered.length; i++) value = __rt.formAssoc(value, ordered[i].key, ordered[i].value);
     return value;
   }
-  //@unit makeMap requires: mapKinds, maps, sharedMapForm, sortedComparators
+  //@unit sharedOwnedMap requires: mapKinds, maps
+  // A public constructor must return an object on which constructorSlots can
+  // retain the caller's slots, metadata and cached hash. Keep its canonical
+  // payload intact (including live array getters and hash tries); only the
+  // constructor units use this allocation boundary during shared assembly.
+  // Sorted maps use the same runtime-owned representation.
+  function sharedOwnedMap(Type, entries, kind) {
+    const value = Object.create(Type.prototype);
+    maps.set(value, Object.freeze(entries));
+    mapKinds.set(value, kind);
+    return value;
+  }
+  //@unit makeMap requires: sharedMapForm, sharedOwnedMap, sortedComparators
   // A map of the `array-map` or `hash-map` kind is an engine map
   // (`sharedMapForm`); a sorted map keeps the V8 profile's object.
   function makeMap(Type, entries, kind, comparator) {
     if (kind !== "sorted-map") return sharedMapForm(entries, kind);
-    const value = Object.create(Type.prototype);
-    maps.set(value, Object.freeze(entries));
-    mapKinds.set(value, kind);
+    const value = sharedOwnedMap(Type, entries, kind);
     sortedComparators.set(value, comparator);
     return value;
   }
@@ -447,7 +457,16 @@
   function mapFromEntries(entries, hash) {
     return hash ? makeMap(PersistentHashMapValue, entries, "hash-map") : makeMap(PersistentArrayMapValue, entries, "array-map");
   }
-  //@unit makeSet requires: kindHooks, setKinds, sets, sortedComparators
+  //@unit sharedOwnedSet requires: setKinds, sets
+  // The set counterpart: preserve the constructor's source-map slot on a
+  // wrapper without changing ordinary builders' engine-form return values.
+  function sharedOwnedSet(Type, entries, kind) {
+    const value = Object.create(Type.prototype);
+    sets.set(value, Object.freeze(entries));
+    setKinds.set(value, kind);
+    return value;
+  }
+  //@unit makeSet requires: kindHooks, sharedOwnedSet, sortedComparators
   // A set of the `array-map` kind is a positional engine set
   // (`formLiteralSet`, in the members' order) and one of the `hash-map`
   // kind an engine hash set (`formSet`); a sorted set keeps the V8
@@ -464,9 +483,7 @@
       for (let i = 0; i < ordered.length; i++) value = __rt.formConj(value, ordered[i].key);
       return value;
     }
-    const value = Object.create(Type.prototype);
-    sets.set(value, Object.freeze(entries));
-    setKinds.set(value, kind);
+    const value = sharedOwnedSet(Type, entries, kind);
     sortedComparators.set(value, comparator);
     return value;
   }

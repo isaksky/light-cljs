@@ -741,7 +741,8 @@ fn sections(source: &str) -> (usize, Vec<Section>) {
 /// headers, with `coreCells.X` and the [`SHARED_TASK_STATE`] bindings
 /// rewritten to the task's cells, and with the compile-time hooks.
 fn shared_runtime(base: &str, profile: &str) -> (String, String) {
-    let scalar_base = shared_scalar_reads(base);
+    let constructor_base = shared_public_constructors(base);
+    let scalar_base = shared_scalar_reads(&constructor_base);
     let base = scalar_base.as_str();
     let (base_prologue, base_sections) = sections(base);
     let (_, profile_sections) = sections(profile);
@@ -849,6 +850,36 @@ fn shared_runtime(base: &str, profile: &str) -> (String, String) {
         }
     }
     (annotated, compiler_hooks(&runtime, true))
+}
+
+/// Public constructors retain their canonical payload-building algorithms,
+/// including live positional arrays and opaque roots. Only their allocation
+/// boundary differs: constructorSlots needs a runtime-owned return value.
+fn shared_public_constructors(base: &str) -> String {
+    let (prologue, units) = sections(base);
+    let mut result = base[..prologue].to_owned();
+    for unit in units {
+        let builder = match unit.name.as_str() {
+            "publicArrayMap" | "PersistentHashMapValue" => Some(("makeMap", "sharedOwnedMap")),
+            "publicHashSet" => Some(("makeSet", "sharedOwnedSet")),
+            _ => None,
+        };
+        let header = &base[unit.header];
+        let body = &base[unit.body];
+        if let Some((from, to)) = builder {
+            let call = format!("{from}(");
+            assert_eq!(body.matches(&call).count(), 1, "constructor {}", unit.name);
+            result.push_str(&replace_identifier(header, from, to));
+            result.push_str(&body.replace(
+                &call,
+                &format!("/*public-constructor*/{to}/*public-constructor*/("),
+            ));
+        } else {
+            result.push_str(header);
+            result.push_str(body);
+        }
+    }
+    result
 }
 
 /// Imported scalar occurrences retain compiler identity until an operation
