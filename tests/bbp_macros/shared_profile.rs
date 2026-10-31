@@ -1358,7 +1358,8 @@ fn shared_profile_engine_sets_are_sets() {
 /// A `#js` literal the profile's reader reads is an engine compiler
 /// literal, as the Pants build's reader builds one (the `compilerForms`
 /// swap, light-cljs-666): the reader entry points then hold nothing of the
-/// V8 form bridge and publish.
+/// V8 form bridge and publish. The public array predicate recognizes these
+/// literals while keeping its ordinary JavaScript array behavior.
 #[test]
 fn shared_profile_reader_js_literals_are_engine_literals() {
     let rt = Runtime::new();
@@ -1369,19 +1370,24 @@ fn shared_profile_reader_js_literals_are_engine_literals() {
              const array = core.readString('#js [1 2]'), object = core.readString('#js {{:a 1 \"b\" 2}}'); \
              const payload = __rt.formLiteralPayload(object); \
              return [__rt.formKind(array), __rt.formName(array), __rt.formKind(__rt.formLiteralPayload(array)), __rt.formCount(__rt.formLiteralPayload(array)), \
-               __rt.formKind(object), __rt.formName(object), __rt.formKind(payload), __rt.formCount(payload), __rt.formGet(payload, 'a', null), __rt.formGet(payload, 'b', null)].join(' ');"
+               __rt.formKind(object), __rt.formName(object), __rt.formKind(payload), __rt.formCount(payload), __rt.formGet(payload, 'a', null), __rt.formGet(payload, 'b', null), \
+               core.isArray(array), core.isArray(core.readString('#js []')), core.isArray(object), \
+               core.isArray([]), core.isArray([1, 2]), core.isArray({{length: 2}}), \
+               core.isArray(core.vector(1, 2)), core.isArray(core.keyword('js-array')), \
+               core.isArray(null), core.isArray(undefined), core.isArray('js-array'), core.isArray(2)].join(' ');"
         ),
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
-        "compiler-literal js-array vector 2 compiler-literal js-object map 2 1 2"
+        "compiler-literal js-array vector 2 compiler-literal js-object map 2 1 2 true true false true true false false false false false false false"
     );
     for member in [
         "readString",
         "read",
         "ednReadString",
         "readerInitialTagTable",
+        "isArray",
     ] {
         let value = run(
             &rt,
@@ -1390,6 +1396,38 @@ fn shared_profile_reader_js_literals_are_engine_literals() {
         .unwrap_or_else(|e| panic!("{e}"));
         rt.publish(&value)
             .unwrap_or_else(|e| panic!("core.{member} does not publish: {e}"));
+    }
+}
+
+/// Imported literal occurrences have the same array classification as the
+/// reader's values, including through nested occurrence wrappers.
+#[test]
+fn shared_profile_array_predicate_reads_occurrences() {
+    let rt = Runtime::new();
+    let values = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             return __rt.formVector(core.isArray, core.readString('#js [1 2]'), \
+               core.readString('#js {{:a 1}}'), core.vector(1, 2));"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let predicate = rt.scope(|s| s.persist(s.form_nth(s.local(&values).unwrap(), 0).unwrap()));
+    let check =
+        compile_function("function check(predicate, value) { return predicate(value); }").unwrap();
+    for (index, expected) in [(1, true), (2, false), (3, false)] {
+        let wrapped = rt.scope(|s| {
+            let value = s.form_nth(s.local(&values).unwrap(), index).unwrap();
+            let wrapped = s.new_occurrence(value, Default::default()).unwrap();
+            s.persist(s.new_occurrence(wrapped, Default::default()).unwrap())
+        });
+        match rt.spawn(&check, &[&predicate, &wrapped]).unwrap().run() {
+            Ok(RunOutcome::Complete(value)) => {
+                assert_eq!(value.view(), big_boy_pants_js::ValueView::Bool(expected));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }
 

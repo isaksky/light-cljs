@@ -1524,6 +1524,13 @@
   // symbol or a Var through its `toString`, as in the V8 profile.
   kindHooks.print = printKind(kindHooks.print, value => keywords.has(value) || symbols.has(value) || vars.has(value),
     (value, writer) => write(writer, keywords.has(value) ? ":" + keywords.get(value).spelling : symbols.has(value) ? symbols.get(value).spelling : sharedNamedString(value) ?? String(value)));
+  //@unit isArray requires: sharedFormOf
+  // Reader-created #js arrays and imported literal occurrences are engine
+  // descriptors; ordinary JavaScript arrays keep the host predicate.
+  const isArray = x => {
+    x = sharedFormOf(x);
+    return __rt.formKind(x) === "compiler-literal" ? __rt.formName(x) === "js-array" : Array.isArray(x);
+  };
   //@unit compilerForms compile-time effect requires: readerJsLiterals,
   //@ vectorFromArray
   // The V8 form bridge's `decode`/`encode` belong to the V8 evaluator;
