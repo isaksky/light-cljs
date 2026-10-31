@@ -715,11 +715,17 @@
   const sortedComparators = sharedStore();
   //@unit mapEntries requires: sharedSet
   const mapEntries = sharedSet();
-  //@unit cells requires: sharedView
+  //@unit cells requires: arrayChunk, sharedFormHashes, sharedVectorItems, sharedView
   const cells = sharedView("cells",
     kind => kind === "cons" || kind === "chunked-cons" || kind === "list",
     (value, kind) => {
       if (kind === "list") return {kind, head: __rt.cljFirst(value), tail: __rt.cljRest(value), count: __rt.cljCount(value)};
+      if (__rt.cljChunkedSeq(value)) {
+        const chunk = __rt.cljChunkFirst(value);
+        return {kind: "chunked-cons", head: __rt.cljFirst(value), tail: __rt.cljRest(value),
+          chunk: arrayChunk(sharedVectorItems(chunk, 0, __rt.formCount(chunk))), more: __rt.cljChunkRest(value),
+          chunkedState: {get hash() { return sharedFormHashes.get(value); }, set hash(hash) { sharedFormHashes.set(value, hash); }}};
+      }
       return {kind: "cons", head: __rt.cljFirst(value), tail: __rt.cljRest(value)};
     });
   //@unit stringBufferWriters requires: sharedSet
@@ -1121,6 +1127,16 @@
   //@unit chunks requires: privateStore, sharedStore
   // Chunk values expose indexed/count/reduce protocols, without being seqs.
   const chunks = privateStore(), chunkBuffers = sharedStore();
+  //@unit ChunkedCons requires: count, nth, sharedSeqForm
+  // Keep the chunk and the lazy tail in engine storage. In particular, a
+  // mapped chunk must not retain the runtime's private ChunkedCell inside
+  // a lazy thunk: that value cannot cross a task boundary.
+  function ChunkedCons(chunk, more, metadata, cachedHash) {
+    let items = __rt.formVector();
+    for (let i = 0, n = count(chunk); i < n; i++) items = __rt.formConj(items, nth(chunk, i));
+    const value = __rt.cljChunkCons(items, sharedSeqForm(more));
+    return metadata == null ? value : __rt.formWithMeta(value, metadata);
+  }
   //@unit rangeChunks requires: sharedStore
   const rangeChunks = sharedStore();
   //@unit exceptionMessages requires: sharedStore

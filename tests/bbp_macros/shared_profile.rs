@@ -1136,6 +1136,52 @@ fn shared_profile_lazy_map_result_publishes_and_maps_in_chunks() {
     assert_eq!(out, "2 4 6");
 }
 
+/// Engine chunked sequences keep their chunk boundary when the real units
+/// read them, and mapping a chunk produces a publishable engine chunk too.
+#[test]
+fn shared_profile_engine_chunks_survive_lazy_mapping_and_publication() {
+    let rt = Runtime::new();
+    let result = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             let input = __rt.formVector(); for (let i = 0; i < 40; i++) input = __rt.formConj(input, i); \
+             const source = __rt.cljSeq(input); \
+             let calls = 0; const mapped = core.mapSeq(x => {{ calls++; return x + 1; }}, source); \
+             core.first(mapped); const first = calls; core.nth(mapped, 31); const last = calls; \
+             core.nth(mapped, 32); const next = calls; \
+             const pure = core.mapSeq(x => x * 2, source); \
+             core.first(pure); \
+             return __rt.formVector(pure, core.sharedTaskCells, \
+               [core.isChunkedSeq(source), core.count(core.chunkFirst(source)), core.first(core.chunkRest(source)), \
+                first, last, next, core.isChunkedSeq(core.seq(pure))].join(' '));"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let (mapped, cells, counts) = rt.scope(|s| {
+        let result = s.local(&result).unwrap();
+        (
+            s.persist(s.form_nth(result, 0).unwrap()),
+            s.persist(s.form_nth(result, 1).unwrap()),
+            s.string(s.form_nth(result, 2).unwrap())
+                .unwrap()
+                .to_string_lossy(),
+        )
+    });
+    assert_eq!(counts, "true 32 32 32 32 40 true");
+    rt.publish(&mapped).unwrap();
+    let walk = compile_function(
+        "function walk(xs, makeCells) { globalThis.__lightSharedCells = makeCells(); \
+         return [__rt.cljNth(xs, 32), __rt.cljCount(xs)].join(' '); }",
+    )
+    .unwrap();
+    let out = match rt.spawn(&walk, &[&mapped, &cells]).unwrap().run().unwrap() {
+        RunOutcome::Complete(value) => value,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(out.string().unwrap().to_string_lossy(), "64 40");
+}
+
 /// The method-key memos the boot fills and seals cover every arity a
 /// dispatcher declares: `invokeProtocol` declares arities 1 to 22, so a
 /// receiver implementing `cljs$core$IFn$_invoke$arity$22` is invoked with
