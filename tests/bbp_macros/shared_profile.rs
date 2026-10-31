@@ -126,7 +126,7 @@ fn walk_report(shareable: usize, causes: &[(String, Vec<String>, String)]) -> St
 /// Acceptance 4 of light-cljs-647: the assembled profile boots in a boot
 /// task and `Runtime::publish` accepts the result with zero rejected paths.
 /// On failure the first rejected path is printed, then the walk of every
-/// member by cause and the top-level bindings a seal cannot take. State on
+/// member by cause and the top-level bindings a seal cannot take.
 /// The complete profile publishes, including its reader literal builders.
 /// The Pants evaluator owns its bridge; this profile does not instantiate
 /// the V8 bridge's mutable decode/encode state.

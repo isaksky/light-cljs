@@ -1422,6 +1422,10 @@ real operation units:
 - Regexes: the real pattern builder creates an engine regex when it has no
   global or sticky state. The lazy tail of `re-seq` captures immutable text,
   regex and offset, not the mutable match array or reassigned parameters.
+  A small callback adapter handles the intrinsic `RegExp` passed to `apply`,
+  `applyTo`, `map` or `mapv`; the canonical operation bodies stay unchanged.
+  Applied constructors and mapped constructors therefore produce engine
+  regexes that atoms and published helpers can retain.
 
 Engine chunked conses are read as chunks rather than ordinary conses, and
 the real `ChunkedCons` constructor stores the chunk and tail in the engine.
@@ -1438,3 +1442,35 @@ attempt's totals above remain historical; review findings 708–713 are separate
 work, and protocol-table parity remains 649. Runtime-owned public constructor
 fallbacks retain their private payloads; the views do not brand engine values
 by writing private fields onto them.
+
+After rebasing onto `3fa2c156`, code checkpoint `3d6d083f` passed the following
+bounded checks on the same toolchain and concurrency limits:
+
+| Build | Selected checks | Result |
+| --- | --- | --- |
+| Pants (`--no-default-features --features bbp-macros`) | Manifest, shared profile, `real_core`, native atoms and Vars, regex constructor publication and cross-task regex state | 68 passed |
+| Pants + QuickJS (`--no-default-features --features bbp-macros,quickjs`) | Manifest and shared profile | 54 passed |
+| V8 + QuickJS (default features) | Manifest | 21 passed, one diagnostic ignored |
+| V8 + Pants + QuickJS (`--features bbp-macros`) | Manifest and shared profile | 54 passed |
+
+The real-mode checks used `LIGHT_CLJS_MACRO_CORE=real`; nextest used `-j 4`.
+All 11 engine sealing tests passed again after the rebase.
+The two `native_core_macros::tests::bootstrap_` tests pass, including `for`
+over imported forms; the engine form-kind regression
+`nested_sorted_by_equality_asks_the_task_resolver_per_comparison` also passes.
+`CARGO_BUILD_JOBS=2 bb benchmarks/real-core-seam.bb` reports 748 of 748
+shared-profile members shareable. The generated V8 runtime in every tested
+feature build has SHA-256
+`e90491c20e978d6eeb062d1023ed46a517d19aa7aab1d699f621dd90603db7e3`;
+`src/js_runtime.js`, `build.rs` and `src/runtime_manifest.rs` are byte-identical
+to retained checkpoint `d4cf4c59`.
+
+`cargo fmt --check` and default `cargo clippy --locked --all-targets -- -D warnings`
+pass. Strict Pants and combined lint stop on eight existing engine library
+diagnostics (`deprecated`, `chunks_exact_to_as_chunks`, `byte_char_slices`).
+Combined compiler all-target lint passes with only those categories allowed.
+Engine all-target lint additionally reports the existing `chunks_exact` use in
+`intl/list_format.rs` and unused `dep::Wakeups` in `task/handoff_tests.rs:533`;
+the latter remains when the three categories are allowed. These are lint
+limitations, not a strict-lint pass. No whole suite was rerun for these targeted
+view and publication changes.
