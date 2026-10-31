@@ -392,3 +392,147 @@ What happens to recent port work:
      is one pellet the user approves when the numbers are in.
    - Confirm that no further hand-port pellets are filed (642 is deferred
      into phase 4; 644 files no category pellets as port work).
+
+## Spike
+
+light-cljs-645, phase 0, on `df7531fa`. Code: `tests/bbp_macros/real_core_spike.rs`
+(part of the `bbp_macros` test binary); counts: `bb benchmarks/real-core-seam.bb`
+(add `--no-walk` to skip the Pants-build tests it runs for the walk).
+
+### What ran
+
+- **The real `map` in a Pants-build macro.** `RuntimeManifest::reached_by_uses`
+  from `mapSeq` (the runtime binding of `map`) keeps 152 of the 1,547 units,
+  56.8 KB. Seven of them are swapped by name for the spike's shared-heap
+  profile: `vectors`, `cells` and `lazyValues` become read-only views over
+  `__rt.formKind` and the engine's `cljFirst`/`cljRest`/`cljCount`/`cljSeq`
+  (a lazy payload's `value` is `__rt.cljSeq(value)`, its `thunk` is `null`),
+  `LazySeq` builds `__rt.lazySeq(thunk)`, `cons` builds `__rt.cljCons`,
+  `emptyList` is `__rt.formList()`, and `kindHooks.seqVector` is
+  `__rt.cljSeq`. The other 145 units, `mapSeq`, `seq`, `first`, `rest`,
+  `next`, `seq.branches`, `lazyBranch`, `LazySeq.seq` among them, are the
+  runtime's own text. A macro namespace defines `map` as a helper whose
+  initializer boots that slice (`js*`), and `(defmacro m [] (vec (map inc
+  [1 2 3])))` expands to `[2 3 4]`: the helper is `mapSeq`, its result an
+  engine `lazy-seq`, and the program is byte-identical to the V8 build's and
+  the QuickJS reference's at 1 and 2 threads, seeded.
+- **Realized once, in one task.** Walking the lazy result twice calls the
+  mapped function three times: the engine's once-cells do the realization the
+  runtime's `deferredValue` did, through the unchanged `seq` units.
+- **Without the swaps** the verbatim units fail on the first engine vector:
+  `seq` finds no brand it knows and no iterator, and its error message cannot
+  stringify the vector.
+- **Not reached: boot once, publish, share between two threads.** Neither the
+  verbatim nor the swapped `mapSeq` publishes (`value.capture(2) is a
+  task-owned binding cell`), so the helper takes the per-task fallback
+  (`native.helpers.per-task` 1, `published` 0) and acceptance 2 of the spike
+  (one published `map`, two macro tasks on two threads, one realization) is
+  blocked on the engine primitives below, not on representations.
+
+### Seam counts
+
+Static, from `src/js_runtime.js` (textual: a unit names a binding outside
+the unit declaring it; the manifest's own analysis is exact):
+
+| Store | Units reading the payload (`get`) | Units writing it (`set`/`reset`) | Units testing the brand only (`has`) |
+| --- | ---: | ---: | ---: |
+| `vectors` | 40 | 2 | 32 |
+| `cells` | 55 | 16 | 8 |
+| `maps` | 21 | 3 | 28 |
+| `sets` | 17 | 2 | 20 |
+| `views` | 24 | 2 | 11 |
+| `lazyValues` | 12 | 1 | 15 |
+
+| Captured state | Units naming it |
+| --- | ---: |
+| `coreCells` | 31 |
+| `kindTables` | 57 |
+| `methodKeys` | 179 |
+| `protocolHooks` | 156 |
+| `kindHooks` | 153 |
+| a module-level `let` (18 bindings in 13 statements) | 44 |
+| a binding reassigned at load time (13: `assoc`, `conj`, `contains`, `count`, `first`, `get`, `lookup`, `next`, ...) | 291 |
+| any of the above | 632 |
+
+Publication walk of a naive boot of the whole `COMPILER_RUNTIME` on the
+engine (it boots: 748 members, every export and every `core` hub member,
+each published on its own; 181 publish). Rejections grouped by cause, the
+member's first edge and the kind at the end of the path, with the first
+path:
+
+| Members | Cause | First path |
+| ---: | --- | --- |
+| 448 | closure capture, binding cell | `rt.setDeclarationDemand`: `value.capture(0)` |
+| 65 | closure capture, array | `core.removeAllMethods`: `value.capture(0)` |
+| 32 | function own properties, object | `core.NodeSeq`: `value.properties.property(prototype)` |
+| 17 | closure capture, object | `core.uncheckedAdd`: `value.capture(0).properties.property(prototype)` |
+| 5 | member is an ordinary object | `rt.compilerForms`: `value` |
+
+The same walk over the 119 top-level bindings of the swapped `map` slice:
+12 publish; 76 fail at a binding cell (first `privateStore`), 10 are
+WeakMaps (`keywords`, `symbols`, `metadataValues`, ...), 10 ordinary objects
+(`vectors`, `cells`, `lazyValues` as the spike wrote them, `protocolHooks`,
+`kindHooks`, the sentinel `noBranch`, `sequencePrototype`), 2 arrays
+(`kindTables`, `methodKeys`), 2 Maps (`nativeMethods`, `coreDispatchers`),
+1 WeakSet, 5 through a captured array or object, and `LazySeq` through its
+prototype.
+
+### Engine primitives the spike needed that do not exist (input to light-cljs-646)
+
+1. **Initialized bindings that are never assigned publish as their value.**
+   The engine keeps a binding in a task-owned cell when a closure captures
+   it before its initialization: a function declaration called before it,
+   or a later `const` (`closures_over_forward_or_reassigned_bindings_do_not_publish`).
+   Every mutually recursive pair of runtime units is such a capture; this is
+   448 of the 567 rejected members. Once the boot task has initialized the
+   binding and no code can assign it, the cell is immutable and can be
+   published as its value.
+2. **Sealing at the end of boot.** The 13 bindings the runtime reassigns
+   while loading (the branch and protocol wrappers, `seq =
+   behindProtocol(seq, ...)`) are written only by load-time code. A seal at
+   the end of the boot task makes their cells immutable (a later write
+   throws) and publishable. The 18 module-level `let`s that functions
+   assign after boot (gensym and identity counters, tap and printing state,
+   the global hierarchy, declaration-journal hooks) cannot be sealed; they
+   move to task globals or engine services, as point 6 of section 1 says.
+3. **Sealed boot-time registries.** The registries are complete after boot
+   and read through captured identity (`methodKeys` by 179 units,
+   `protocolHooks` 156, `kindHooks` 153, `kindTables` 57): object literals
+   (`protocolHooks`, `kindHooks`, the hub and its sentinels), arrays
+   (`kindTables`, `methodKeys`, the multimethod tables), Maps
+   (`nativeMethods`, `coreDispatchers`) and the prototypes of the runtime's
+   own types (49 members fail through `.properties.prototype`). Rewriting
+   every reader to engine vectors and maps, as point 5 of section 1
+   proposes, would edit hundreds of units. An identity-preserving
+   seal, which turns a frozen ordinary object, array or Map whose values
+   all publish into a persistent value and rejects later writes, keeps them
+   verbatim. This is the "freeze on publication" option section 1 rejects,
+   but only for boot-time registries and prototypes, not for values: values
+   stay engine-owned, so its objections (prototype dispatch for values, the
+   bridge, interpreted tries) do not apply.
+4. **Not needed for `map`:** an identity hash, a lazy cell's raw state, or a
+   CAS interning map (section 2's list). Realization through
+   `__rt.cljSeq`, `__rt.lazySeq`, `__rt.cljCons`, `__rt.formList` and
+   `__rt.cljWithMeta` existed.
+
+Profile work, not engine work, found on the way: the brand-store views must
+themselves publish (the spike's object literals do not; primitive 3 or a
+struct covers them), and the spike's `cells` view reports an engine vector's
+chunked seq as a plain `cons`, so the real `map` walks a vector one element
+per step instead of 32. That is observable when the mapped function has
+side effects; a `chunks` view over `__rt.cljChunkFirst`/`cljChunkRest`
+(which exist) restores the runtime's chunked path.
+
+### Go/no-go
+
+**Go for the representation seam, no-go for sharing until 646 lands the
+three primitives above.** The seam the design worried about is bounded: 7
+swapped units ran 145 verbatim ones, and the payload readers per store are
+12 to 55 units, each a view over intrinsics that already exist. What the
+design underestimated is publication of the runtime's closure environment:
+it fails before any representation is reached, at binding cells, for almost
+every function. Without primitives 1 to 3, phase 1's gate (the profile
+boots and publishes with zero rejected paths) is not reachable by profile
+edits, and the real core would run as today's port does, booted once per
+task. With them, 647 (profile assembly) can start from this spike's swap
+list; the swap mechanism and the manifest slicing it needs work now.
