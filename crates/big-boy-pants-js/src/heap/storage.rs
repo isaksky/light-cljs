@@ -1761,7 +1761,7 @@ mod tests {
         assert!(stats.traced >= 1 + 20_000 + 200_000, "{stats:?}");
         assert_eq!(
             heap.next_collection.load(Ordering::Relaxed),
-            stats.traced + stats.live - stats.live / 8,
+            stats.traced + stats.live - stats.live / 16,
             "{stats:?}"
         );
         assert_eq!(heap.stats().traced_edges, stats.traced as u64);

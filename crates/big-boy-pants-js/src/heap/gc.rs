@@ -36,7 +36,8 @@
 //! fixpoint, including chains and cycles, without rescanning all tables.
 //! Conditional marking/clearing costs expected O(live objects + strong
 //! edges + entries/weak slots in reached owners), with O(live objects +
-//! reached entries) temporary storage; the existing sweep scans all slots.
+//! reached entries) temporary storage; sweep enumerates live-but-unmarked
+//! bits per segment without scanning empty or surviving slots.
 //! The mark visits each reached object's slot once: under one access word
 //! it traces the strong edges and runs the discovery pass (and takes a
 //! marked atom's retired boxes).
@@ -262,7 +263,7 @@ impl std::hash::Hasher for IdentityHasher {
 pub(crate) type IdentityBuild = std::hash::BuildHasherDefault<IdentityHasher>;
 
 /// What one collection has marked. Objects carry their mark bit in their
-/// table slot ([`super::storage`]); property keys are marked by dense slot
+/// segment bitmap ([`super::storage`]); property keys are marked by dense slot
 /// in a bitset and symbol identities in a set, so marking costs no hashing
 /// per object.
 #[derive(Default)]
@@ -271,7 +272,7 @@ struct Marks {
     symbols: HashSet<u64, IdentityBuild>,
 }
 
-#[inline]
+#[inline(always)]
 fn enqueue(
     objects: &super::ObjectTable,
     marks: &Marks,
@@ -295,7 +296,7 @@ impl Marks {
     /// Mark a non-object edge; false if it was already marked.
     fn mark_other(&mut self, edge: TraceEdge) -> bool {
         match edge {
-            TraceEdge::Object(_) => unreachable!("objects are marked in their slots"),
+            TraceEdge::Object(_) => unreachable!("objects are marked in segment bitmaps"),
             TraceEdge::Symbol(identity) => self.symbols.insert(identity),
             TraceEdge::PropertyKey(key) => {
                 let slot = key.slot() as usize;
@@ -1404,7 +1405,7 @@ impl Heap {
 
         let mut objects = lock(&self.objects);
         let mut live = 0;
-        // Objects are marked in their slots (no hashing per object); keys
+        // Objects are marked in segment bitmaps (no hashing per object); keys
         // and symbols in `marks`.
         let mut marks = Marks::default();
         // Only reached owners contribute entries. Each waiting entry is
@@ -1979,7 +1980,7 @@ mod tests {
         assert!(stats.traced >= KEYS * TABLES, "{stats:?}");
         assert_eq!(
             heap.next_collection.load(Ordering::Relaxed),
-            stats.traced + stats.live - stats.live / 8,
+            stats.traced + stats.live - stats.live / 16,
             "{stats:?}"
         );
     }
