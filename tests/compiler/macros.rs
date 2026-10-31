@@ -829,13 +829,16 @@ fn recursive_and_growing_expansions_obey_depth_count_size_and_execution_limits()
     );
     h.limits.generated_nodes = 100_000;
     h.limits.expansions = 1024;
+    // The poll budget, a count of engine slices, is the limit under test.
+    // On the Pants build a poll is one 10,000-instruction VM step, so the
+    // default 10 s deadline raced it and won on a loaded machine
+    // (light-cljs-687); a deadline far away keeps the outcome deterministic.
     h.evaluator_options.poll_budget = 10_000;
-    assert!(
-        compile_with_macros("(spin)", &mut h)
-            .unwrap_err()
-            .to_string()
-            .contains("budget")
-    );
+    h.evaluator_options.timeout = std::time::Duration::from_secs(600);
+    let spin = compile_with_macros("(spin)", &mut h)
+        .unwrap_err()
+        .to_string();
+    assert!(spin.contains("budget"), "{spin}");
     h.evaluator_options = Default::default();
     // Per-compilation counters are fresh after failure; no poisoned expansion cache.
     assert_eq!(
