@@ -1,8 +1,8 @@
 //! Stable slot storage and the heap's only unsafe boundary.
 //!
 //! **Slots.** Segments never move or disappear before the heap dies. A slot's
-//! atomic state word holds its generation and flags; its body is a boxed
-//! [`HeapObject`] behind an `UnsafeCell`. Every rule below is stated for one
+//! atomic state word holds its generation and flags; its body is a
+//! [`HeapObject`] inline behind an `UnsafeCell`. Every rule below is stated for one
 //! slot, and every unsafe body access in this module names the rule it uses.
 //!
 //! 1. **Initialization.** A reservation exclusively owns empty slots removed
@@ -49,6 +49,13 @@
 //! 6. **Lifetime.** Mutator tokens borrow the heap and remove their
 //!    thread-local reservations before the last token drops, so neither TLS
 //!    nor a raw object reference can outlive its storage.
+//! 7. **Pending garbage.** Sweep clears `LIVE` and advances the generation,
+//!    but keeps the body in its stable slot until post-pause destruction.
+//!    A reclaimed slot is absent from the free list and all reservations.
+//!    Its one `PendingSegment` owns the right to destroy that body. Only
+//!    after every body in that batch is destroyed are its slots returned
+//!    under the table lock. `Segment::pending` keeps their storage charged
+//!    across overlapping collections. This needs no freeing thread.
 
 use std::cell::{RefCell, UnsafeCell};
 use std::mem::size_of;
@@ -146,7 +153,7 @@ struct Slot {
     marked: AtomicBool,
     /// The access word of a mutable body (module docs, rule 3).
     locked: AtomicBool,
-    object: UnsafeCell<Option<Box<HeapObject>>>,
+    object: UnsafeCell<Option<HeapObject>>,
     // Same initialization/reclamation exclusion as object (rules 1 and 5).
     reservation: UnsafeCell<super::budget::ByteReservation>,
 }
@@ -159,7 +166,7 @@ struct Slot {
 unsafe impl Sync for Slot {}
 
 // The same consistency guarantee as a recovered Mutex: initialization has no
-// unwinding step between installing the box and publishing its state, and an
+// unwinding step between installing the body and publishing its state, and an
 // access word is released on unwind like the object-table lock before it.
 impl std::panic::RefUnwindSafe for Slot {}
 
@@ -214,7 +221,7 @@ impl Slot {
         // SAFETY: per the caller's right, nobody holds a mutable reference;
         // Acquire observed the initializing write, and only sweep, excluded
         // by rule 5, empties a live slot.
-        unsafe { (*self.object.get()).as_deref().unwrap() }
+        unsafe { (*self.object.get()).as_ref().unwrap() }
     }
 
     /// SAFETY: the caller observed this slot live and not frozen while
@@ -223,7 +230,7 @@ impl Slot {
     unsafe fn body_mut(&self) -> &mut HeapObject {
         // SAFETY: the access word excludes every other reference to a
         // mutable body; a body that is not frozen has no lock-free readers.
-        unsafe { (*self.object.get()).as_deref_mut().unwrap() }
+        unsafe { (*self.object.get()).as_mut().unwrap() }
     }
 }
 
@@ -240,6 +247,8 @@ impl Drop for SlotGuard<'_> {
 struct Segment {
     slots: Box<[Slot]>,
     live: AtomicUsize,
+    /// Reclaimed bodies whose collecting thread has not finished freeing.
+    pending: AtomicUsize,
     /// Slot reservations ([`Reservation`]) naming this segment that threads
     /// still hold: they may initialize its slots without the table lock.
     held: AtomicUsize,
@@ -252,6 +261,7 @@ impl Default for Segment {
             // build copies would exhaust the VM's supported 64 KiB stacks.
             slots: (0..SEGMENT_SIZE).map(|_| Slot::default()).collect(),
             live: AtomicUsize::new(0),
+            pending: AtomicUsize::new(0),
             held: AtomicUsize::new(0),
         }
     }
@@ -697,12 +707,9 @@ impl ObjectTable {
         }
     }
 
-    /// Free every unmarked live slot and return the bodies, still boxed: a
-    /// body is not moved out of its box (a `HeapObject` is 304 bytes on
-    /// aarch64, and one collection's garbage can be thousands of them, which
-    /// moved into one growing `Vec` cost a fresh multi-MiB allocation and
-    /// copy per pause), so the pause copies one pointer per object and the
-    /// caller frees each box with its contents after the pause.
+    /// Invalidate every unmarked live slot. Return one bitmap per segment
+    /// so bodies can be destroyed in place after the pause, with no body
+    /// copies, separate body allocations or per-object worklist entries.
     ///
     /// Segments and slots are swept from the highest index down, so the
     /// free list hands out the lowest reclaimed slots first: survivors and
@@ -710,14 +717,26 @@ impl ObjectTable {
     /// fill only between collections, are left empty by the next sweep
     /// more often. A sweep that leaves a segment empty releases its charge
     /// ([`ObjectTable::charges`]).
-    #[expect(clippy::vec_box, reason = "the boxes are the slots' own; see above")]
-    pub(super) fn sweep(
+    pub(super) fn sweep<'h>(
         &mut self,
+        heap: &'h Heap,
         mut reclaimed_object: impl FnMut(ObjectId),
-    ) -> Vec<Box<HeapObject>> {
-        let mut garbage = Vec::new();
+    ) -> Garbage<'h> {
+        let mut garbage = Garbage {
+            segments: Vec::new(),
+            len: 0,
+        };
         for (segment_index, segment) in self.segments.iter().enumerate().rev() {
+            if segment.live.load(Ordering::Relaxed) == 0 {
+                if segment.held.load(Ordering::Relaxed) == 0
+                    && segment.pending.load(Ordering::Relaxed) == 0
+                {
+                    self.charges[segment_index] = None;
+                }
+                continue;
+            }
             let mut reclaimed = 0;
+            let mut bits = [0u64; SEGMENT_SIZE / 64];
             for (offset, slot) in segment.slots.iter().enumerate().rev() {
                 if slot.marked.load(Ordering::Relaxed) {
                     slot.marked.store(false, Ordering::Relaxed);
@@ -728,20 +747,10 @@ impl ObjectTable {
                     continue;
                 }
                 let word = slot.lock();
-                // SAFETY: the caller holds the stopped world and the table
-                // lock, and this holds the access word (rule 5): no
-                // allocator, table reader or body holder can touch this
-                // unreachable body, and no mutator can be reading it.
-                let object = unsafe { (*slot.object.get()).take().unwrap() };
-                garbage.push(object);
-                // SAFETY: the same stopped-world/access-word exclusion as
-                // the body above, which this slot no longer holds.
-                drop(unsafe { std::mem::take(&mut *slot.reservation.get()) });
+                bits[offset / 64] |= 1 << (offset % 64);
                 reclaimed += 1;
                 let generation = state as u32;
                 let next = if let Some(next) = generation.checked_add(1) {
-                    self.free
-                        .push((segment_index * SEGMENT_SIZE + offset) as u32);
                     USED | u64::from(next)
                 } else {
                     USED | RETIRED | u64::from(generation)
@@ -754,10 +763,23 @@ impl ObjectTable {
                 });
             }
             let live = segment.live.fetch_sub(reclaimed, Ordering::Relaxed) - reclaimed;
+            if reclaimed != 0 {
+                segment.pending.fetch_add(reclaimed, Ordering::Relaxed);
+                garbage.len += reclaimed;
+                garbage.segments.push(PendingSegment {
+                    heap,
+                    segment: segment.clone(),
+                    base: (segment_index * SEGMENT_SIZE) as u32,
+                    bits,
+                });
+            }
             // No thread can reserve its slots without the table lock, and
             // none holds a reservation of them: nothing can make the
             // segment live until `reserve` charges it again.
-            if live == 0 && segment.held.load(Ordering::Relaxed) == 0 {
+            if live == 0
+                && segment.held.load(Ordering::Relaxed) == 0
+                && segment.pending.load(Ordering::Relaxed) == 0
+            {
                 self.charges[segment_index] = None;
             }
         }
@@ -810,8 +832,120 @@ impl ObjectTable {
                 + self.segments.capacity() * size_of::<Arc<Segment>>()
                 + self.charges.capacity() * size_of::<Option<super::budget::ByteReservation>>()
                 + self.free.capacity() * size_of::<u32>()
-                + directory.bytes(),
+                + directory.bytes()
+                - self.live() * size_of::<HeapObject>(),
         )
+    }
+}
+
+/// Dropped by the collecting thread after releasing the world and heap
+/// locks. Each bitmap exclusively owns its non-live, non-reservable slots.
+pub(super) struct Garbage<'h> {
+    segments: Vec<PendingSegment<'h>>,
+    len: usize,
+}
+
+impl Garbage<'_> {
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+}
+
+struct PendingSegment<'h> {
+    heap: &'h Heap,
+    segment: Arc<Segment>,
+    base: u32,
+    bits: [u64; SEGMENT_SIZE / 64],
+}
+
+/// Clear the slot even if a payload destructor unwinds. Its byte charge is
+/// returned only after the body has been destroyed, before reuse is allowed.
+struct ClearBody<'a>(&'a Slot);
+
+impl Drop for ClearBody<'_> {
+    fn drop(&mut self) {
+        // SAFETY: the pending batch exclusively owns this non-live slot
+        // (rule 7). drop_in_place has destroyed the old Option; write None
+        // without running its destructor a second time.
+        unsafe {
+            std::ptr::write(self.0.object.get(), None);
+            drop(std::mem::take(&mut *self.0.reservation.get()));
+        }
+    }
+}
+
+struct DropSlots<'a> {
+    segment: &'a Segment,
+    bits: [u64; SEGMENT_SIZE / 64],
+}
+
+impl DropSlots<'_> {
+    fn clear(&mut self) {
+        for word in (0..self.bits.len()).rev() {
+            while self.bits[word] != 0 {
+                let bit = 63 - self.bits[word].leading_zeros() as usize;
+                self.bits[word] &= !(1u64 << bit);
+                let slot = &self.segment.slots[word * 64 + bit];
+                let _clear = ClearBody(slot);
+                // SAFETY: only this pending batch can access the body
+                // (rule 7). The stable segment owns its inline storage;
+                // ClearBody clears it on both normal return and unwind.
+                unsafe {
+                    std::ptr::drop_in_place(slot.object.get());
+                }
+            }
+        }
+    }
+}
+
+impl Drop for DropSlots<'_> {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+struct ReleaseSlots<'a, 'h>(&'a PendingSegment<'h>);
+
+impl Drop for ReleaseSlots<'_, '_> {
+    fn drop(&mut self) {
+        let batch = self.0;
+        let mut objects = lock(&batch.heap.objects);
+        let mut count = 0;
+        for word in (0..batch.bits.len()).rev() {
+            let mut bits = batch.bits[word];
+            while bits != 0 {
+                let bit = 63 - bits.leading_zeros() as usize;
+                bits &= !(1u64 << bit);
+                let offset = word * 64 + bit;
+                let slot = &batch.segment.slots[offset];
+                // DropSlots (including its unwind cleanup) finishes before
+                // this guard: every body and reservation is now empty.
+                if slot.state.load(Ordering::Relaxed) & RETIRED == 0 {
+                    objects.free.push(batch.base + offset as u32);
+                }
+                count += 1;
+            }
+        }
+        let pending = batch.segment.pending.fetch_sub(count, Ordering::Relaxed) - count;
+        if pending == 0
+            && batch.segment.live.load(Ordering::Relaxed) == 0
+            && batch.segment.held.load(Ordering::Relaxed) == 0
+        {
+            objects.charges[batch.base as usize / SEGMENT_SIZE] = None;
+        }
+    }
+}
+
+impl Drop for PendingSegment<'_> {
+    fn drop(&mut self) {
+        // Reverse guard-drop order: destroy any remaining bodies on unwind
+        // before returning their slots and releasing the segment's charge.
+        let _release = ReleaseSlots(self);
+        let mut remaining = DropSlots {
+            segment: &self.segment,
+            bits: self.bits,
+        };
+        remaining.clear();
     }
 }
 
@@ -847,7 +981,7 @@ impl Reservation {
         // empty slots, even under its access word, and the mutator
         // registration (or fallback table lock) excludes GC.
         unsafe {
-            *slot.object.get() = Some(Box::new(object));
+            *slot.object.get() = Some(object);
             *slot.reservation.get() = reservation;
         }
         self.segment.live.fetch_add(1, Ordering::Relaxed);
@@ -975,6 +1109,107 @@ use gc::Trace;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct DropProbe {
+        entered: Option<Arc<std::sync::Barrier>>,
+        resume: Option<Arc<std::sync::Barrier>>,
+        drops: Arc<AtomicUsize>,
+        panic: bool,
+    }
+
+    impl Trace for DropProbe {
+        fn trace(&self, _: &mut dyn FnMut(gc::TraceEdge)) {}
+    }
+
+    impl super::super::NativePayload for DropProbe {
+        fn shareability(&self) -> Shareability {
+            Shareability::TaskOwned
+        }
+    }
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+            if let Some(entered) = &self.entered {
+                entered.wait();
+            }
+            if let Some(resume) = &self.resume {
+                resume.wait();
+            }
+            assert!(!self.panic, "drop probe");
+        }
+    }
+
+    #[test]
+    fn pending_bodies_stay_charged_and_cannot_be_reused_by_another_collection() {
+        let heap = Arc::new(Heap::with_policy(super::super::HeapPolicy {
+            hard_limit_bytes: Some(64 << 20),
+            allocation_threshold: None,
+            ..Default::default()
+        }));
+        let start = heap.byte_budget().used();
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let resume = Arc::new(std::sync::Barrier::new(2));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let old = heap
+            .alloc(HeapObject::Native(Box::new(DropProbe {
+                entered: Some(entered.clone()),
+                resume: Some(resume.clone()),
+                drops: drops.clone(),
+                panic: false,
+            })))
+            .unwrap();
+        std::thread::scope(|threads| {
+            let collecting = threads.spawn(|| heap.collect().unwrap());
+            entered.wait();
+            assert!(!heap.is_live(old));
+            assert_eq!(heap.collect().unwrap().reclaimed, 0);
+            assert!(heap.byte_budget().used() >= start + segment_bytes());
+            assert_eq!(
+                lock(&heap.objects).segments[0]
+                    .pending
+                    .load(Ordering::Relaxed),
+                1
+            );
+            let new = owned(&heap, OWNER);
+            assert_ne!(new.index, old.index);
+            let _new = Rooted::new(&heap, Value::Object(new));
+            resume.wait();
+            assert_eq!(collecting.join().unwrap().reclaimed, 1);
+            assert_eq!(drops.load(Ordering::Relaxed), 1);
+            let reused = owned(&heap, OWNER);
+            assert_eq!(reused.index, old.index);
+            assert_ne!(reused.generation, old.generation);
+        });
+        heap.collect().unwrap();
+        assert_eq!(heap.byte_budget().used(), start);
+    }
+
+    #[test]
+    fn a_panicking_payload_still_clears_the_batch_before_slots_are_reused() {
+        let heap = Heap::default();
+        let drops = Arc::new(AtomicUsize::new(0));
+        for panic in [false, false, true] {
+            heap.alloc(HeapObject::Native(Box::new(DropProbe {
+                entered: None,
+                resume: None,
+                drops: drops.clone(),
+                panic,
+            })))
+            .unwrap();
+        }
+        assert!(std::panic::catch_unwind(|| heap.collect()).is_err());
+        assert_eq!(drops.load(Ordering::Relaxed), 3);
+        let table = lock(&heap.objects);
+        assert_eq!(table.free.len(), 3);
+        assert_eq!(table.segments[0].pending.load(Ordering::Relaxed), 0);
+        drop(table);
+        let new = owned(&heap, OWNER);
+        assert_eq!((new.index, new.generation), (0, 1));
+        assert_eq!(heap.collect().unwrap().reclaimed, 1);
+        assert_eq!(drops.load(Ordering::Relaxed), 3);
+    }
 
     #[test]
     fn directory_covers_all_slot_index_bits_without_dense_allocation() {
@@ -1353,7 +1588,8 @@ mod tests {
             first.index / SEGMENT_SIZE as u32
         );
         assert_ne!(second.index, first.index);
-        assert!(budget.used() > start + segment_bytes());
+        // The inline body was already admitted with the held segment.
+        assert_eq!(budget.used(), start + segment_bytes());
         drop(token);
         assert_eq!(heap.collect().unwrap().reclaimed, 1);
         assert_eq!(budget.used(), start);

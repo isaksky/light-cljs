@@ -5,8 +5,8 @@
 //!   (no per-task or per-worker heaps).
 //! * **Nonmoving, stable identity.** An object is named by an `ObjectId`
 //!   (slot index + generation) that never changes for the object's lifetime,
-//!   and its storage is a separate allocation (`Box<HeapObject>`) that is
-//!   never moved. Slot headers also stay put in fixed-size segments.
+//!   and its body stays inline in its stable slot until reclamation. Slot
+//!   headers also stay put in fixed-size segments.
 //! * **Reclamation.** [`gc`] implements a precise stop-the-world mark/sweep.
 //!   Anything not reachable from a root is reclaimed, including cycles. A
 //!   task's allocations are not tied to the task: finishing a task drops its
@@ -297,15 +297,15 @@ impl HeapObject {
         HeapObject::Plain(OrdinaryObject::new(heap, None))
     }
 
-    /// What allocating an object boxed as `T` (with no boxed internal
-    /// slots) charges: the slot and the box. For tests sizing exact headroom.
+    /// What an object's separate `T` box charges (no boxed internal slots).
+    /// The inline body is charged with its segment, not per object.
     #[cfg(test)]
     pub(crate) const fn charged_with_box<T>() -> usize {
-        std::mem::size_of::<HeapObject>() + std::mem::size_of::<T>()
+        std::mem::size_of::<T>()
     }
 
     /// Fixed metadata this object owns through boxes, beyond the slot's own
-    /// `size_of::<HeapObject>()`: a boxed body and an ordinary object's boxed
+    /// inline body: a boxed body and an ordinary object's boxed
     /// internal slots (`OrdinaryObject::boxed_bytes`). Charged with the slot
     /// at allocation. Data-sized storage inside (properties, elements,
     /// entries, buffers, payload strings) is charged where it grows instead.
@@ -802,14 +802,19 @@ impl Heap {
         if self.byte_budget.denied() {
             return None;
         }
-        // The slot's boxed body and fixed internal slots are charged with it;
+        // The slot's inline body is charged with its segment. Charge only
+        // separate boxes and fixed internal slots here;
         // without a byte limit nothing is measured.
         let bytes = if self.byte_budget.is_limited() {
-            std::mem::size_of::<HeapObject>() + object.boxed_bytes()
+            object.boxed_bytes()
         } else {
             0
         };
-        let Some(reservation) = self.reserve_bytes(bytes) else {
+        let Some(reservation) = (if bytes == 0 {
+            Some(budget::ByteReservation::default())
+        } else {
+            self.reserve_bytes(bytes)
+        }) else {
             self.byte_budget.note_denial();
             return None;
         };

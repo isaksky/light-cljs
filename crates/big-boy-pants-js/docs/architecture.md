@@ -125,11 +125,21 @@ heap, so the thread-local reservation cannot outlive it or alias a later heap
 at the same address. Idle thread registrations alone do not retain reservations.
 
 The slot's atomic word combines generation, liveness, known-shareable,
-concurrent-reference and frozen flags. Initialization writes the boxed body
+concurrent-reference and frozen flags. Initialization writes the inline body
 before a Release store makes the slot live; lookup Acquires that word and
 compares the generation before accessing the body. Persistent allocation checks
 only these atomic headers, including the concurrent-reference flag, without
 reading another object's body. A live slot is never reinitialized.
+
+Object bodies live inside those stable slots (light-cljs-695), avoiding a
+separate allocation and free for each body. Sweep invalidates an unreachable
+slot and advances its generation, then records it in a bitmap for its segment.
+The collecting thread destroys these bodies in place after releasing the
+world and heap locks. Only then does it return their slots to the free list.
+The segment's pending-body count prevents an overlapping collection from
+releasing its byte charge early. No mutator, reservation or second collection
+can access or reuse a pending body. Cleanup guards destroy the rest of a batch
+and return its slots even when a native payload's destructor unwinds.
 
 Existing objects are no longer reached through the object-table lock
 (light-cljs-471). There are two access classes per slot:
@@ -266,10 +276,11 @@ byte limit nothing is measured and reserving costs no atomic.
 Charged, each conservatively (overcharging is allowed, undercharging a
 data-sized payload is not):
 
-- every object slot plus its boxed body and fixed boxed internal slots (Intl
-  records, iterator cursors, error records; `HeapObject::boxed_bytes`), and the
-  object table's segments while they hold a live object or a thread's slot
-  reservation (a sweep that empties a segment releases its charge, and a
+- fixed boxed internal slots (Intl records, iterator cursors, error records;
+  `HeapObject::boxed_bytes`), and the object table's segments, including their
+  inline body capacity, while they hold a live object, pending garbage or a
+  thread's slot reservation (finishing an emptied segment's garbage releases
+  its charge, and a
   reservation charges it again before taking its slots: the segment's slot
   headers stay allocated, but empty slot capacity is not live data);
 - ordinary-object properties (512 bytes per entry, covering capacity, index and

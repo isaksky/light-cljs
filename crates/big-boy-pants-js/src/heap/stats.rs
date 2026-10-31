@@ -4,7 +4,7 @@
 //!
 //! [`HeapUsage`] is a diagnostic, not an allocator measurement. Its byte
 //! fields cover storage owned by the heap's slot directory, stable segments,
-//! segment/free-list vectors (by capacity), and one boxed [`HeapObject`] per live object. They
+//! segment/free-list vectors (by capacity), and inline [`HeapObject`] bodies. They
 //! exclude storage the table points to but does not own inline: persistent
 //! collection trie bodies (immutable `Arc` nodes shared between versions),
 //! atom cells, native payload boxes, function captures, ordinary objects'
@@ -170,10 +170,11 @@ pub struct HeapUsage {
     /// Free slots waiting for reuse.
     pub free_slots: usize,
     /// Bytes reserved by segments, their directory, and the segment/free-list
-    /// vectors. Excludes small thread-local reservation bookkeeping and Arc
-    /// allocation headers.
+    /// vectors, excluding live body bytes reported in `object_bytes`.
+    /// Includes unused inline body capacity; excludes small thread-local
+    /// reservation bookkeeping and Arc allocation headers.
     pub table_bytes: usize,
-    /// Bytes of the live objects' boxed storage: live objects times the size
+    /// Bytes of the live objects' inline storage: live objects times the size
     /// of one heap object. Shallow: excludes the out-of-table bodies listed
     /// in the module docs.
     pub object_bytes: usize,

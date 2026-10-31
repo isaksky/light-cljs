@@ -1465,9 +1465,9 @@ impl Heap {
                 ClearedWeakSlot { root, token }
             })
             .collect();
-        let garbage: Vec<Box<HeapObject>> = {
+        let garbage = {
             let mut watches = lock(&self.reclamation);
-            let garbage = objects.sweep(|id| watches.reclaimed(id));
+            let garbage = objects.sweep(self, |id| watches.reclaimed(id));
             watches.publish();
             garbage
         };
