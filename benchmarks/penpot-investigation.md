@@ -195,10 +195,13 @@ read underneath all of it) survives the switch.
 
 ### 4. Garbage collection after the fix
 
-Of the 631 collections left at 1 thread, the byte trigger accounts for
-about 18 (34 GB admitted, a collection per ~1.9 GB); the rest come from the
-allocation-count trigger, which collects after as many object allocations
-as there are live objects (at least 16,384). Penpot keeps only 65,000-72,000
+The 631 collections left at 1 thread were not counted by trigger. Dividing
+34 GB admitted by ~1.9 GB of byte headroom gives about 18 as a rough upper
+bound on byte-triggered collections under that headroom assumption. Every
+collection, including one from the allocation-count trigger, resets progress
+toward the byte threshold, so the actual byte-triggered count could be lower,
+including zero. The allocation-count trigger collects after as many object
+allocations as there are live objects (at least 16,384). Penpot keeps only 65,000-72,000
 live objects, but most live bytes sit inside persistent values (forms,
 vectors, compiled code) that every collection traces in full, and those
 grow with the build. Per 2,000 macro calls (pause counter, which undercounts
