@@ -477,6 +477,12 @@ fn arguments_object_holds_every_argument() {
         "function f() { return arguments[1]; } f.call(undefined,1,3)===3 && f.apply(undefined,[1,4])===4 && Reflect.apply(f,undefined,[1,5])===5 && f.bind(undefined,1)(6)===6",
         "function F() { return arguments; } const a=new F(1,2); a[1]===2 && a.length===2",
         "__rt.reduce(function(a,x) { return a+x+arguments.length; },0,__rt.vector(1,2))===7",
+        // `arguments` is iterable through `Array.prototype.values` (CreateUnmappedArgumentsObject).
+        "function f() { return [...arguments]; } const a=f(1,2); Array.isArray(a) && a.length===2 && a[0]===1 && a[1]===2",
+        "function g(x,y,z) { return x+y+z; } function f() { return g(...arguments); } f(1,2,3)===6",
+        "function f() { return arguments[Symbol.iterator]===Array.prototype.values; } f()",
+        "function f() { const d=Object.getOwnPropertyDescriptor(arguments,Symbol.iterator); return d.writable && !d.enumerable && d.configurable && Object.keys(arguments).length===1; } f(1)",
+        "function f() { let s=0; for (const x of arguments) s+=x; return s; } f(1,2,3)===6",
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }

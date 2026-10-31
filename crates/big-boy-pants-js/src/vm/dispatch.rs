@@ -2422,9 +2422,26 @@ fn raise_fault(
 /// object's edges reach the stack before any collection can run.
 #[inline(never)]
 fn new_arguments(state: &mut VmState, heap: &Heap) -> Result<Value, Fault> {
-    let prototype = realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
-        .object_prototype;
+    let intrinsics =
+        realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    let prototype = intrinsics.object_prototype;
+    // `arguments[Symbol.iterator]` is `Array.prototype.values` (CreateUnmappedArgumentsObject
+    // step 7), so `f(...arguments)` and `[...arguments]` work.
+    let iterator_key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("iterator"))
+        .ok_or(Fault::OutOfMemory("property key table exhausted"))?;
+    let values_key = heap
+        .keys()
+        .intern(&JsString::from("values"))
+        .ok_or(Fault::OutOfMemory("property key table exhausted"))?;
+    let values = heap
+        .read(intrinsics.array_prototype, |o| match o {
+            HeapObject::Plain(o) => o.get_own(values_key).map(|p| p.value.clone()),
+            _ => None,
+        })
+        .flatten()
+        .ok_or(Fault::Internal("Array.prototype.values missing"))?;
     let args = state
         .top()
         .arguments
@@ -2445,6 +2462,7 @@ fn new_arguments(state: &mut VmState, heap: &Heap) -> Result<Value, Fault> {
     for (i, value) in args.iter().enumerate() {
         object.define(intern(&i.to_string())?, value.clone());
     }
+    object.define_with(iterator_key, values, PropertyFlags::METHOD);
     let id = heap
         .alloc(HeapObject::Plain(object))
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
