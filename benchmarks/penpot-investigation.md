@@ -33,9 +33,9 @@ the current profiling evidence.
 ## Cutting marking and freeing work (light-cljs-695, October 31, 2026)
 
 The Pants build's garbage collection on Penpot `app.main` at 1 thread is
-**7.52%** of the main thread's samples (4,097 of 54,481), down from 11.1%
+**7.49%** of the main thread's samples (5,404 of 72,133), down from 11.1%
 at the starting `5476e21b`. Collections fall from 607 to 389; traced edges
-fall from 37.36 M to 23.57 M. The final profile's peak memory is 1.260 GB.
+fall from 37.36 M to 23.50 M. The final profile's peak memory is 1.272 GB.
 Every Penpot run still stops at `core.MapEntry` in instaparse's grammar
 macro: these measurements cover that same build up to its known failure.
 
@@ -62,10 +62,28 @@ reproduction" below. Peak memory is `/usr/bin/time -l`'s maximum resident
 set size; GB means 1e9 bytes. Samples use `/usr/bin/sample`, 1 ms, starting
 one second into the build, and `sample-inclusive.bb --buckets
 "gc=Heap>::mark_and_sweep;interp=execute_budgeted"` on thread 0. The final
-engine changes are based on `e7a3bf03`; fresh controls use `5d5021bb` at 1
+engine changes are based on `e7a3bf03`, also validated after integrating
+`e2494875` (the macro-core selector, still using its default port). Fresh controls use `5d5021bb` at 1
 thread and `e7a3bf03` at 4 threads. The latter includes the coordinator's
 scheduling changes; none changes the engine's collection policy. Other
 workers remained active, so loads and all three clean timings are reported.
+
+| Penpot `app.main` | Three clean wall times | Median | Peak memory | Collections | Traced edges | Peak managed | 1-min loads |
+| --- | --- | ---: | --- | --- | --- | --- | --- |
+| Control, 1 thread | 61.30, 61.58, 61.48 s | 61.48 s | 1.174-1.179 GB | 607 | 37.24 M | 0.877 GB | 9.48, 11.20, 10.85 |
+| Final, 1 thread | 63.09, 63.43, 60.03 s | 63.09 s | 1.268-1.269 GB | 389 | 23.57 M | 1.072 GB | 11.94, 13.16, 13.82 |
+| Control, 4 threads | 58.80, 60.02, 59.46 s | 59.46 s | 1.330-1.364 GB | 374-397 | 50.34-54.11 M | 0.999-1.028 GB | 8.00, 7.45, 8.93 |
+| Final, 4 threads | 58.89, 57.47, 53.26 s | 57.47 s | 1.439-1.447 GB | 266-280 | 36.53-38.45 M | 1.253-1.268 GB | 14.78, 14.18, 12.48 |
+
+Peak memory is within +10% of the controls' high values at both thread
+counts. The final 1-thread wall median is 2.6% higher at higher loads;
+its CPU median is essentially unchanged (60.52 against 60.28 s). An
+earlier interleaved comparison before batching slot returns had reduced
+the 1-thread wall median from 61.48 to 57.55 s. The 4-thread wall median
+improves 3.3% despite higher loads. These small wall differences cannot be
+cleanly separated from load; both final medians are below 674's recorded
+64.7 and 61.3 s. The counters and sampled collection shares are the
+stronger evidence of the GC work reduction.
 
 Measured and removed: per-segment marked-object counts with epoch marks
 (11.3% GC against 10.9% for code pruning alone, with extra bytes);
@@ -82,6 +100,22 @@ The seed-42 800k project builds at 4 threads with the unchanged 2 GiB
 aggregate memory budget and prints `189716` for `42 3`, matching the
 Babashka reference. Its output retains SHA-256
 `6741d7c256b43ab426bbba86fee00915ca7bb619d62880b168ede37037743994`.
+The final rerun takes 80.45 s (its load was not recorded), with 68 collections, 18.85 M
+traced edges, 1.371 GB peak managed bytes, and 5.121 GB process peak memory.
+The 2 GiB limit is the runtime's aggregate budget; the compiler's other
+memory is outside it, as in 674's measurements.
+
+The engine all-targets suite passes all 2,278 tests, including the 4 MiB
+checks, and all seven doctests pass. Formatting passes. Strict Clippy has
+the same ten diagnostics as a fresh `5d5021bb` control on Rust 1.99.1:
+the nine earlier deprecated/chunk/byte-slice diagnostics plus an existing
+unused `Wakeups` in `task/handoff_tests.rs:533`. Isolation passes with
+only those four categories allowed on the command line; no source
+suppression was added. The builder freeze and specialized-payload tests
+now deny allocation based on the storage actually allocated after inline
+bodies were admitted with their segment. Their denial, intact contents
+and exact-refund assertions remain; no 4 MiB, aggregate-budget or
+namespace-chain bound changed.
 
 ## Pacing collections by traced edges (light-cljs-674, October 31, 2026, on `916c0ecc`)
 
