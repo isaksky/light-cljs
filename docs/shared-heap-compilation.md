@@ -2177,6 +2177,75 @@ build, and more forms and syntax occurrences (49,071 against 40,876), while
 the catalog's shared vectors are the same. Four threads are slower than two
 here; that is a scheduling question (light-cljs-573), not memory.
 
+### Coordinator analysis at drains and at the tail (light-cljs-578, October 31, 2026)
+
+The Pants coordinator now claims unstarted pooled units at a namespace's drain,
+in unit order, and takes the remaining queued units after the last top-level
+pass. A claim and its state transition share the catalog lock with worker
+claims. Each analysis starts its own lane root and uses the coordinator's
+engine. Its poll, expansion and generated-node charges stay with the unit until
+the usual drain point; a pool job that later visits it reuses the result.
+Failures still stop admission after the first failed unit in source order.
+Help sweeps do not nest, and ordinary demands keep the existing analysis-depth
+bound. The engine wait callback also answers workers' forwarded `light.build`
+requests, so a helped unit can wait for a worker that needs those services.
+`pool.coordinator-units` counts the units actually claimed this way. The V8
+build and QuickJS reference retain their worker-only scheduling and do not
+gain that statistics line. The fresh-unit reference mode also keeps its
+previous scheduling.
+
+These measurements use the **current drain lag of six**. Light-cljs-577 has
+not run. They include light-cljs-675's catalog adoption and light-cljs-676's
+realization gate; no binding lane is added. Before is `cf6e6186`, after is
+`6a779e62`. Both are Pants release builds with
+`--no-default-features --features bbp-macros,scheduling-stress`,
+`CARGO_BUILD_JOBS=4`, Rust/Cargo 1.99.1 on macOS aarch64. No scheduling
+perturbation is supplied during timing. The seed-42 generated projects and
+their budgets are the ones above. Each command is a clean build, run from
+the generated project:
+
+```sh
+/usr/bin/time -lp BINARY release bench --no-cache --jobs N --stats
+```
+
+Only one measurement or build ran at a time in this worktree. Other workers
+ran builds and suites throughout. The first measurements were grouped before
+and after, three runs per cell. All three values are retained below; peak
+memory is maximum resident set size in decimal GB. The last column gives the
+1-minute load before each run. Across these runs the before 1/5/15-minute
+loads ranged over 20.33–36.96 / 23.74–28.52 / 25.57–27.35, and the after
+loads over 17.14–24.17 / 20.56–22.73 / 22.80–24.63.
+
+| Size | Threads | Version | Wall, s | User CPU, s | Peak memory, GB | 1-minute loads |
+| --- | ---: | --- | --- | --- | --- | --- |
+| 200k | 2 | Before | 18.89, 15.83, 15.74 | 19.49, 17.62, 17.86 | 1.166, 1.192, 1.186 | 22.02, 23.38, 24.91 |
+| 200k | 2 | After | 11.88, 11.33, 11.66 | 14.74, 14.10, 14.48 | 1.191, 1.232, 1.191 | 21.13, 20.72, 20.46 |
+| 200k | 4 | Before | 13.05, 12.85, 12.91 | 21.47, 21.15, 21.20 | 1.236, 1.232, 1.215 | 26.44, 28.03, 28.66 |
+| 200k | 4 | After | 10.37, 10.32, 10.94 | 19.02, 18.78, 19.93 | 1.240, 1.234, 1.226 | 20.07, 19.90, 19.91 |
+| 200k | 8 | Before | 14.16, 13.67, 11.88 | 26.39, 27.25, 25.52 | 1.285, 1.295, 1.292 | 30.26, 31.38, 29.50 |
+| 200k | 8 | After | 12.41, 12.58, 12.24 | 25.74, 26.50, 26.17 | 1.281, 1.315, 1.315 | 19.78, 19.82, 20.54 |
+| 800k | 2 | Before | 65.87, 71.06, 90.08 | 80.26, 83.91, 96.15 | 4.536, 4.385, 4.828 | 28.40, 21.75, 21.21 |
+| 800k | 2 | After | 65.68, 66.82, 75.07 | 79.88, 80.83, 87.23 | 4.809, 4.711, 4.468 | 21.09, 21.34, 19.99 |
+| 800k | 4 | Before | 102.43, 93.67, 97.16 | 152.68, 142.41, 141.36 | 5.007, 4.840, 5.046 | 36.96, 29.37, 20.33 |
+| 800k | 4 | After | 89.16, 94.08, 84.89 | 134.81, 138.21, 127.83 | 4.154, 4.831, 4.989 | 24.17, 17.14, 20.62 |
+
+The coordinator claimed only 1/1/1 units at 200k with 2 threads, 1/1/1 with
+4 threads and 8/4/8 with 8 threads; at 800k it claimed 0/0/0 with 2 threads
+and 1/2/0 with 4 threads. At the current lag, workers have usually started
+or completed the units by the time the coordinator reaches a drain. The
+grouped wall-time reductions therefore do **not** establish a speedup from
+helping: load fell too, and almost no analysis moved. Four threads remain
+slower than two at 800k (after medians 89.16 against 66.82 s), as in
+light-cljs-675. This change does not resolve that scaling problem.
+
+Every complete output directory was byte-identical across the before and
+after runs and all measured thread counts. JavaScript SHA-256 is
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`
+at 200k and
+`6741d7c256b43ab426bbba86fee00915ca7bb619d62880b168ede37037743994`
+at 800k. Compiled and published helper counts remain 57 and 226 respectively,
+with no per-task helpers. The V8 baseline's 200k output directory matches too.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with

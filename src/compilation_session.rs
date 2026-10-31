@@ -2976,6 +2976,10 @@ impl CompilationSession {
                         .coordinator_units
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
+                // Forced worker order also applies when the coordinator
+                // wins a queued unit, so stress tests retain their gates.
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                wait_for_unit_hold(&self.shared, id);
                 let root = self.shared.lanes.enter_root();
                 let result = self.analyze_claimed_in(id, None, false, Take::Hold, Some(claim));
                 drop(root);
@@ -4608,22 +4612,7 @@ fn execute_pool_job(
     }
     let started = std::time::Instant::now();
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
-    if let Some(perturbation) = shared.perturbation.get() {
-        let name = shared.unit_name(id);
-        let limit = std::time::Duration::from_secs(10);
-        if perturbation.lane_hold.contains(&name) {
-            shared.lanes.wait_parked(limit);
-        }
-        if perturbation.lane_hold_any.contains(&name) {
-            shared.lanes.wait_parked_any(limit);
-        }
-        for (_, until) in (perturbation.hold_until.iter()).filter(|(held, _)| *held == name) {
-            let unit = (shared.lock().units.iter()).position(|u| &u.name == until);
-            if let Some(unit) = unit {
-                shared.lanes.wait_finished(unit, limit);
-            }
-        }
-    }
+    wait_for_unit_hold(shared, id);
     // The job is an activity of its own at its lane, even helped inside
     // another's wait.
     let root = shared.lanes.enter_root();
@@ -4653,6 +4642,27 @@ fn execute_pool_job(
         #[cfg(feature = "bbp-macros")]
         view.park_context();
         slot.view = Some(view);
+    }
+}
+
+/// The forced job order used by scheduling tests, whoever claims the unit.
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+fn wait_for_unit_hold(shared: &SharedCatalog, id: usize) {
+    if let Some(perturbation) = shared.perturbation.get() {
+        let name = shared.unit_name(id);
+        let limit = std::time::Duration::from_secs(10);
+        if perturbation.lane_hold.contains(&name) {
+            shared.lanes.wait_parked(limit);
+        }
+        if perturbation.lane_hold_any.contains(&name) {
+            shared.lanes.wait_parked_any(limit);
+        }
+        for (_, until) in (perturbation.hold_until.iter()).filter(|(held, _)| *held == name) {
+            let unit = (shared.lock().units.iter()).position(|u| &u.name == until);
+            if let Some(unit) = unit {
+                shared.lanes.wait_finished(unit, limit);
+            }
+        }
     }
 }
 
