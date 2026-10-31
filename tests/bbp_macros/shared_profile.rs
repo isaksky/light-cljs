@@ -274,7 +274,11 @@ fn shared_profile_runtime_sequences_cross_native_boundary() {
 /// (`identityHash`) or the engine hashes it inside a form (a vector's
 /// element through `formHash`): an engine vector and a runtime-owned list of
 /// the same function are equal and hash alike, so either finds the other's
-/// entry in a map.
+/// entry in a map. A runtime-owned value the runtime hashes by value (a
+/// symbol, a list of `listFromArray`, a Date) hashes the same inside an
+/// engine sequence (a vector, a nested one, a lazy seq of the real `map`)
+/// as inside a runtime-owned one, both ways through a hash map
+/// (light-cljs-677); a sequence of engine values hashes as the engine does.
 #[test]
 fn shared_profile_equal_sequences_have_equal_host_element_hashes() {
     let rt = Runtime::new();
@@ -284,15 +288,27 @@ fn shared_profile_equal_sequences_have_equal_host_element_hashes() {
             "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
              const f = () => 1, o = {{}}; \
              const v = core.vector(f), l = core.list(f); \
+             const s = core.symbol('a'), d = new Date(5); \
+             const vs = core.vector(s), ls = core.list(s); \
+             const nested = core.vector(core.list(s), core.vector(d)), nestedList = core.list(core.list(s), core.list(d)); \
+             const lazy = core.mapSeq(core.identity, core.vector(s)); \
+             const pure = core.vector(1, 'a', core.keyword(null, 'k'), core.vector(2)); \
              return [core.equal(v, l), core.hash(v) === core.hash(l), core.get(core.hashMap(v, 42), l), \
                core.get(core.hashMap(l, 43), v), core.hash(core.vector(o)) === core.hash(core.list(o)), \
-               core.hash(f) === __rt.identityHash(f), core.hash(core.vector(f)) === core.hash(core.vector(f))].join(' ');"
+               core.hash(f) === __rt.identityHash(f), core.hash(core.vector(f)) === core.hash(core.vector(f)), \
+               core.equal(vs, ls), core.hash(vs) === core.hash(ls), core.get(core.hashMap(vs, 1), ls), core.get(core.hashMap(ls, 2), vs), \
+               core.equal(nested, nestedList), core.hash(nested) === core.hash(nestedList), \
+               core.get(core.hashMap(nested, 3), nestedList), core.get(core.hashMap(nestedList, 4), nested), \
+               core.hash(core.vector(d)) === core.hash(core.list(d)), core.get(core.hashMap(core.vector(d), 5), core.list(new Date(5))), \
+               core.hash(lazy) === core.hash(ls), core.get(core.hashMap(ls, 6), lazy), \
+               core.hash(core.cons(s, null)) === core.hash(ls), \
+               core.hash(pure) === __rt.formHash(pure), core.hash(vs) === core.hash(vs)].join(' ');"
         ),
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
-        "true true 42 43 true true true"
+        "true true 42 43 true true true true true 1 2 true true 3 4 true 5 true 6 true true true"
     );
 }
 

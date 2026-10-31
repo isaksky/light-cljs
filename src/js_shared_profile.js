@@ -45,6 +45,10 @@
     // the boot task fills for the runtime's own keys (`sharedProfileBoot`)
     // and every task fills for the keys it meets.
     get protocolSlots() { return sharedTaskOwn(this, "protocolSlots", new Map()); },
+    // The hashes the runtime computes for engine sequences
+    // (`sharedSequenceHashes`): the task's own cache, as the V8 profile's
+    // `constructorHashes` WeakMap is, keyed by the form.
+    get formHashes() { return sharedTaskOwn(this, "formHashes", new WeakMap()); },
     // The dispatch and declaration registries that `defprotocol`,
     // `extend-type`, `reify` and the declaration journal write after boot:
     // each task's own Map, seeded with the boot's entries
@@ -319,14 +323,45 @@
     });
   //@unit stringBufferWriters requires: sharedSet
   const stringBufferWriters = sharedSet();
-  //@unit constructorHashes requires: sharedStore
-  // The hash cache: an engine form's hash is computed and cached by the
-  // engine (`formHash`), so the cache answers it from there and drops a
-  // hash given for a form; a runtime-built value keeps its own.
+  //@unit sharedSequenceHashes
+  // The hash cache of the engine sequences (vectors, lists, conses, lazy
+  // seqs): the engine hashes a host object inside a form by its identity,
+  // which is the runtime's hash of a function or a plain object
+  // (`identityHashes`) but not of a symbol, a list of `listFromArray`, a
+  // map or a Date, which the runtime hashes by value while equality
+  // compares them by value, so a sequence holding one hashes as the runtime
+  // hashes it, through `hash` of its items (`hashOrderedColl`), and the
+  // result is cached in the task's cells (`formHashes`), as the V8
+  // profile's WeakMap caches it. A sequence of engine values hashes the
+  // same either way. Every other form (a keyword, a map, a set) hashes in
+  // the engine (`formHash`).
+  const sharedSequenceHashes = {
+    kinds: __rt.seal(["vector", "list", "cons", "chunked-cons", "lazy-seq"]),
+    is: kind => sharedSequenceHashes.kinds.includes(kind),
+    cache() { const cells = globalThis.__lightSharedCells; return cells.formHashes; },
+    has: value => sharedSequenceHashes.cache().has(value),
+    get: value => sharedSequenceHashes.cache().get(value),
+    set(value, hash) { sharedSequenceHashes.cache().set(value, hash); }
+  };
+  //@unit constructorHashes requires: sharedSequenceHashes, sharedStore
+  // The hash cache: an engine sequence's hash is the runtime's, cached per
+  // task (`sharedSequenceHashes`); any other engine form's is computed and
+  // cached by the engine (`formHash`), so the cache answers it from there
+  // and drops a hash given for one; a runtime-built value keeps its own.
   const constructorHashes = (store => ({
-    has: value => __rt.formKind(value) !== null || store.has(value),
-    get: value => __rt.formKind(value) !== null ? __rt.formHash(value) : store.get(value),
-    set(value, hash) { if (__rt.formKind(value) === null) store.set(value, hash); return this; }
+    has(value) {
+      const kind = __rt.formKind(value);
+      return kind === null ? store.has(value) : sharedSequenceHashes.is(kind) ? sharedSequenceHashes.has(value) : true;
+    },
+    get(value) {
+      const kind = __rt.formKind(value);
+      return kind === null ? store.get(value) : sharedSequenceHashes.is(kind) ? sharedSequenceHashes.get(value) : __rt.formHash(value);
+    },
+    set(value, hash) {
+      const kind = __rt.formKind(value);
+      if (kind === null) store.set(value, hash); else if (sharedSequenceHashes.is(kind)) sharedSequenceHashes.set(value, hash);
+      return this;
+    }
   }))(sharedStore());
   //@unit publicCollectionSlots requires: sharedStore
   const publicCollectionSlots = sharedStore();
@@ -352,7 +387,7 @@
   const vars = sharedStore();
   //@unit atoms requires: sharedStore
   const atoms = sharedStore(), volatiles = sharedStore();
-  //@unit lazyValues requires: sharedView
+  //@unit lazyValues requires: sharedSequenceHashes, sharedView
   // A lazy payload over the engine's once-cell: `thunk` is null once the
   // cell is realized (`cljRealized`, which realizes nothing), else a
   // function that realizes the cell, so the verbatim `deferredValue` and
@@ -360,12 +395,13 @@
   // or parked on by `cljSeq`). The writes `deferredValue` makes after a
   // call are dropped: the cell holds the value. A delay's `value` is read
   // without running its body (`cljDelayState`): its seed until realized.
-  // The engine caches a form's hash (`constructorHashes`).
+  // A lazy seq's `hash` is the task's cache of the runtime's hash
+  // (`sharedSequenceHashes`), which `hashSequential` fills.
   const lazyValues = sharedView("lazyValues", value => __rt.formKind(value) === "lazy-seq",
       value => ({
         get thunk() { return __rt.cljRealized(value) ? null : () => __rt.cljSeq(value); }, set thunk(_) {},
         get value() { return __rt.cljSeq(value); }, set value(_) {},
-        get hash() { return undefined; }, set hash(_) {}
+        get hash() { return sharedSequenceHashes.get(value); }, set hash(hash) { sharedSequenceHashes.set(value, hash); }
       })),
     delays = sharedView("delays", value => __rt.formKind(value) === "delay",
       value => ({
