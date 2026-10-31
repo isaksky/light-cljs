@@ -948,6 +948,24 @@ fn strict_form_op(
     })
 }
 
+/// `__rt.identityHash(v)`: a 32-bit hash of an object's heap identity
+/// (slot and generation: `crate::heap::ObjectId::to_bits`), the same in
+/// every task for the object's lifetime and never that of another object
+/// allocated in its slot after its collection; 0 for a primitive. Needs no
+/// table, so nothing retains a hashed object or grows with the count
+/// hashed. The runtime's `hash` of a host object reads it where the V8
+/// profile counts in a WeakMap (light-cljs-647/661).
+pub(crate) fn identity_hash(value: &Value) -> i32 {
+    let Value::Object(id) = value else {
+        return 0;
+    };
+    let bits = id.to_bits();
+    // Fold the generation into the slot index: a reused slot hashes anew.
+    let mixed = (bits ^ (bits >> 32)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let hash = (mixed >> 32) as u32 as i32;
+    if hash == 0 { 1 } else { hash }
+}
+
 /// Early VM tests (hand-assembled bytecode). Cross-task use while the owner
 /// is alive needs the owner's builder handle, which no public API can take
 /// out of a suspended task yet, so it is tested here.
@@ -1085,22 +1103,4 @@ mod tests {
         let expected = BuilderError::OwnerFinished { owner: owner.id() };
         assert_eq!(err.kind(), VmErrorKind::Builder(expected));
     }
-}
-
-/// `__rt.identityHash(v)`: a 32-bit hash of an object's heap identity
-/// (slot and generation: `crate::heap::ObjectId::to_bits`), the same in
-/// every task for the object's lifetime and never that of another object
-/// allocated in its slot after its collection; 0 for a primitive. Needs no
-/// table, so nothing retains a hashed object or grows with the count
-/// hashed. The runtime's `hash` of a host object reads it where the V8
-/// profile counts in a WeakMap (light-cljs-647/661).
-pub(crate) fn identity_hash(value: &Value) -> i32 {
-    let Value::Object(id) = value else {
-        return 0;
-    };
-    let bits = id.to_bits();
-    // Fold the generation into the slot index: a reused slot hashes anew.
-    let mixed = (bits ^ (bits >> 32)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    let hash = (mixed >> 32) as u32 as i32;
-    if hash == 0 { 1 } else { hash }
 }

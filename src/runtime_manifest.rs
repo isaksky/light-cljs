@@ -1654,6 +1654,7 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
 
 /// Checks the export section's shape and returns the exported names and the
 /// wrapper the export object is returned through, if any.
+#[allow(clippy::type_complexity)]
 fn parse_exports(
     source: &str,
     range: Range<usize>,
