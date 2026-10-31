@@ -950,8 +950,9 @@ fn strict_form_op(
 
 /// `__rt.identityHash(v)`: a 32-bit hash of an object's heap identity
 /// (slot and generation: `crate::heap::ObjectId::to_bits`), the same in
-/// every task for the object's lifetime and never that of another object
-/// allocated in its slot after its collection; 0 for a primitive. Needs no
+/// every task for the object's lifetime; 0 for a primitive. Full identities
+/// are never reused after collection, including slot reuse; their 32-bit
+/// hashes can collide and are not identity tokens. Needs no
 /// table, so nothing retains a hashed object or grows with the count
 /// hashed. The runtime's `hash` of a host object reads it where the V8
 /// profile counts in a WeakMap (light-cljs-647/661). It is the hash the
@@ -974,6 +975,48 @@ mod tests {
     use crate::host::NoHost;
     use crate::vm::{Assembler, Opcode};
     use crate::{Budget, BuilderError, Primitive, RunOutcome, Runtime, ValueView, VmErrorKind};
+
+    /// Observe the actual recycled slot, rather than hoping a later JS
+    /// allocation reused it. Hashing must neither root the old object nor
+    /// discard the generation. Unequal hashes below are a regression fixture,
+    /// not a promise that every pair of object identities hashes differently.
+    #[test]
+    fn identity_is_not_reused_after_collection() {
+        use super::{FormOp, strict_form_op};
+        use crate::heap::{Heap, HeapObject};
+        use crate::value::Value;
+
+        let heap = Heap::default();
+        let hash = |id| {
+            strict_form_op(
+                &heap,
+                &mut NoHost,
+                FormOp::IdentityHash,
+                vec![Value::Object(id)],
+            )
+            .unwrap()
+        };
+        let old = heap.alloc(HeapObject::host_object(&heap)).unwrap();
+        let old_hash = hash(old);
+        assert_ne!(old_hash, Value::Number(0.0));
+        assert_eq!(hash(old), old_hash);
+
+        assert_eq!(heap.collect().unwrap().reclaimed, 1);
+        assert!(!heap.is_live(old), "hashing must not retain the object");
+        let new = heap.alloc(HeapObject::host_object(&heap)).unwrap();
+        assert_eq!(new.slot(), old.slot(), "exercise actual slot reuse");
+        assert_ne!(
+            new.to_bits(),
+            old.to_bits(),
+            "a new allocation has a new identity"
+        );
+        assert!(!heap.is_live(old), "the old identity must remain stale");
+        assert_ne!(
+            hash(new),
+            old_hash,
+            "this recycled slot's generation must affect its hash"
+        );
+    }
 
     #[test]
     fn static_names_form_kind_results_share_bodies_without_byte_growth() {

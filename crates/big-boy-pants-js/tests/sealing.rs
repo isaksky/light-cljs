@@ -354,62 +354,52 @@ fn shallow_seals_preserve_transitive_publication_checks() {
 /// `__rt.identityHash` is the identity service the shared-heap profile's
 /// `hash` of a host object reads (light-cljs-647/661): a 32-bit integer
 /// from the object's heap identity, the same in every task for the
-/// object's lifetime, distinct between live objects, 0 for a primitive.
+/// object's lifetime, 0 for a primitive. Different identities may have
+/// equal hashes; the two objects in each fixture happen to hash differently.
 #[test]
 fn identity_hash_is_stable_across_tasks() {
     let rt = Runtime::new();
-    let booted = boot(
-        &rt,
-        "const o = () => 1, p = () => 2; \
-         const probe = x => x === 0 ? __rt.identityHash(o) : __rt.identityHash(p); \
+    for object in ["() => 1", "__rt.seal({})", "__rt.seal([])"] {
+        let booted = boot(
+            &rt,
+            &format!(
+                "const o = {object}, p = {object}; \
+         const probe = x => {{ \
+           if (x === 0) {{ __rt.identityHash(p); return __rt.identityHash(o); }} \
+           __rt.identityHash(o); return __rt.identityHash(p); \
+         }}; \
          return __rt.formVector(probe, __rt.identityHash(o), __rt.identityHash(p), \
            __rt.identityHash(1), __rt.identityHash('s'), __rt.identityHash(null), \
-           Number.isInteger(__rt.identityHash(o)) && __rt.identityHash(o) === (__rt.identityHash(o) | 0));",
-    );
-    rt.publish(&booted).unwrap();
-    let (probe, o_hash, p_hash) = rt.scope(|s| {
-        let v = s.local(&booted).unwrap();
-        let number = |i| match s.view(s.form_nth(v, i).unwrap()) {
-            ValueView::Number(n) => n,
-            other => panic!("{other:?}"),
-        };
-        for i in 3..6 {
-            assert_eq!(number(i), 0.0, "a primitive hashes to 0");
-        }
-        assert_eq!(s.view(s.form_nth(v, 6).unwrap()), ValueView::Bool(true));
-        (s.persist(s.form_nth(v, 0).unwrap()), number(1), number(2))
-    });
-    assert_ne!(o_hash, p_hash);
-    assert_eq!(
-        call_on_two_threads(&rt, &probe, 0.0),
-        [ValueView::Number(o_hash), ValueView::Number(o_hash)]
-    );
-    assert_eq!(
-        call_on_two_threads(&rt, &probe, 1.0),
-        [ValueView::Number(p_hash), ValueView::Number(p_hash)]
-    );
-}
-
-/// An object allocated after a hashed object's collection, in its slot or
-/// any other, never gets the collected object's hash: the identity carries
-/// the slot's generation.
-#[test]
-fn identity_is_not_reused_after_collection() {
-    let rt = Runtime::new();
-    let collected = boot(&rt, "return __rt.identityHash({});");
-    let ValueView::Number(hash) = collected.view() else {
-        panic!("{collected:?}");
-    };
-    rt.collect().unwrap();
-    let later = boot(
-        &rt,
-        &format!(
-            "let reused = 0; const keep = []; \
-             for (let i = 0; i < 4000; i++) {{ const o = i % 2 ? {{}} : () => i; keep.push(o); if (__rt.identityHash(o) === {hash}) reused++; }} \
-             return reused;"
-        ),
-    );
-    assert_eq!(later.view(), ValueView::Number(0.0));
+           Number.isInteger(__rt.identityHash(o)) && __rt.identityHash(o) === (__rt.identityHash(o) | 0));"
+            ),
+        );
+        rt.publish(&booted).unwrap();
+        let (probe, o_hash, p_hash) = rt.scope(|s| {
+            let v = s.local(&booted).unwrap();
+            let number = |i| match s.view(s.form_nth(v, i).unwrap()) {
+                ValueView::Number(n) => n,
+                other => panic!("{other:?}"),
+            };
+            for i in 3..6 {
+                assert_eq!(number(i), 0.0, "a primitive hashes to 0");
+            }
+            assert_eq!(s.view(s.form_nth(v, 6).unwrap()), ValueView::Bool(true));
+            (s.persist(s.form_nth(v, 0).unwrap()), number(1), number(2))
+        });
+        assert_ne!(o_hash, p_hash);
+        // Keep the published objects alive through collection, then first hash
+        // them in opposite orders in fresh tasks. Task-local counters cannot
+        // reproduce the boot task's hashes merely by starting at the same value.
+        rt.collect().unwrap();
+        assert_eq!(
+            call_on_two_threads(&rt, &probe, 0.0),
+            [ValueView::Number(o_hash), ValueView::Number(o_hash)]
+        );
+        assert_eq!(
+            call_on_two_threads(&rt, &probe, 1.0),
+            [ValueView::Number(p_hash), ValueView::Number(p_hash)]
+        );
+    }
 }
 
 /// `__rt.sealReachable` is `sealBindings` plus the seal no JavaScript
