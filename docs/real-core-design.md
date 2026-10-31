@@ -1519,3 +1519,14 @@ in the Pants build. At `ce6fb9ba`, through 712, all 73 profile, real-core and
 manifest tests pass with Pants + QuickJS. The one adjacent-text conflict
 retains both the engine-Var printer and the bridge-free `compilerForms` unit;
 the complete-profile publication test remains enabled and passing.
+
+Record updates also retain an imported occurrence when `assoc` or `with-meta`
+leaves its engine value unchanged. The adapter passes that occurrence to the
+existing engine operation instead of stripping it first. NaN extension keys
+remain nonmatching even when the query is their stored occurrence: lookup and
+removal read the scalar query, while NaN association appends positional entries
+and rebuilds the record with its type, metadata and unchanged children. This
+rare association path walks the entries; ordinary record updates retain the
+native operation. The regression first reproduced lost no-op occurrences and
+NaN replacement/removal, then passes with all 24 selected record, publication
+and manifest checks at `843c423c`.
