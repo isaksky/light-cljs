@@ -247,6 +247,10 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
     // sealed where they are built (`SHARED_READER_REWRITES` in build.rs).
     let reader_seals = [
         (
+            "  const builtinLocation = __rt.seal({name: '<tag-parser>', line: 1, column: 1, offset: 0});",
+            "  const builtinLocation = {name: '<tag-parser>', line: 1, column: 1, offset: 0};",
+        ),
+        (
             "  })(__rt.seal({keyword: freshKeyword, ",
             "  })({keyword: freshKeyword, ",
         ),

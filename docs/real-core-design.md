@@ -766,8 +766,12 @@ defaults, with no cells needed), runtime-owned sequences crossing into
 the engine's `cons` and lazy realization, fractional vector indexes, the
 bounded fallback diagnostic, the weak post-boot registries (683),
 `ClassBrand`'s per-task flag (684: over a copy of the runtime that exports
-`defineClass` and `TypeBrand`, as the V8 profile's test does) and the boot's
-memory.
+`defineClass` and `TypeBrand`, as the V8 profile's test does), engine
+symbols, the publication of the members 666 made shareable and their use
+from a task spawned separately with its own first cells, the lazy registry
+getters read from such a task (688) and the boot's memory. `SHARED_EXPORTS`
+names bindings `shared_profile_eval` exports from a copy of the runtime
+(`rt.sharedSnapshots`).
 
 State after light-cljs-666's second attempt (2026-10-31): the profile
 boots; 738 of 748 members publish (716 after 666's first attempt, 267
@@ -806,17 +810,67 @@ seeded with the boot's `cljs.user` and `cljs.core`; and `demungePattern`
 as the pattern's source string, with `demunge` building its global regex
 per call (a regex object is exotic data a seal cannot take, and
 `__rt.formRegex` refuses the `g` flag, whose `lastIndex` would be state).
-The remaining rejections, by cause:
+The third attempt (2026-10-31, with light-cljs-688) added the symbols
+and metadata views, after which 739 of 748 members publish: `symbols` is
+a view over engine symbol forms (`symbol` and the positional
+`SymbolValue` build `__rt.formSymbol`), `metadataValues` reads an engine
+form's metadata from the form (`__rt.formMeta`; `set` on a form throws,
+since a form's metadata is given where the form is built), and
+`with-meta` of a symbol (`collectionWithMeta.symbols`) builds
+`__rt.formWithMeta` when the metadata is an engine map or none. The
+engine's forms carry neither runtime-built metadata (a map of the
+verbatim `maps`, until the maps view) nor an unqualified name holding `/`
+(`(symbol nil "a/b")`; a form's spelling must split back into its pair,
+the engine's `splits_back`), so `sharedSymbol` builds such a symbol as a
+runtime-owned object over the views' fallbacks with the V8 profile's
+prototype, which `symbols`, equality, hashing and printing read alike;
+given engine metadata or none again, it is an engine symbol again. A
+form has no `toString`, so `str`, `displayStr`, the printer and
+`Namespace.prototype.toString` spell an engine keyword or symbol from its
+payload (`sharedNamedString`). The engine's hash of a symbol is the
+runtime's (`core.hash` of either agrees). With the namespaces' names
+engine symbols, `currentNs`, the `Namespace` entries of the
+`protocolImplementations` and `namespaces` snapshots and so every lazy
+registry getter of `sharedTaskDefaults` seal (688, found by 648: a task
+that read any getter was rejected through them), and the builtin tag
+parsers' location object is sealed where it is built
+(`SHARED_READER_REWRITES`). As with keywords, an engine symbol has no
+`SymbolValue` prototype: `type` of one is `Object`, and `(.-name sym)`
+and `(sym map)` are not supported on this profile. The remaining
+rejections, by cause:
 
 | Members | Cause | Example | What removes it |
 | ---: | --- | --- | --- |
-| 8 + 1 | the V8 form bridge (`compilerFormBridge`): its WeakMaps and the `let`s its `decode` assigns, reached from `rt.compilerForms` and, through `readerJsLiterals.array` (`compilerForms.jsArray`, which the `compilerForms` unit installs for `#js` literals read for macros), from every reader entry point (`core.read`, `core.ednReadString`, `core.readerInitialTagTable`, ...) | `rt.compilerForms`, `core.read` | 648 decides what the Pants build boots of the V8 bridge (the engine's forms need no descriptor bridge); until then the profile could leave `readerJsLiterals` plain |
-| 1 | `core.currentNs`: a `Namespace` instance whose `name` is a runtime-built symbol, a private-field brand (`__rt.seal` reports "internal slots") | | the symbols view (acceptance 4: `symbol` over `__rt.formSymbol`, with metadata through the metadata view), after which `namespaces`' boot entries seal too |
+| 8 + 1 | the V8 form bridge (`compilerFormBridge`): its WeakMaps and the `let`s its `decode` assigns, reached from `rt.compilerForms` and, through `readerJsLiterals.array` (`compilerForms.jsArray`, which the `compilerForms` unit installs for `#js` literals read for macros), from every reader entry point (`core.read`, `core.ednReadString`, `core.readerInitialTagTable`, ...), and from the builtin `js` tag parser (`jsLiteral`), which the tag tables' boot snapshots hold, so the task defaults (`Object.getPrototypeOf(core)`), the hub and `core.sharedTaskCells` (which captures the hub) are rejected through it too; `shared_profile_registry_getters_keep_the_profile_published` boots a copy of the runtime without that one registration | `rt.compilerForms`, `core.read` | 648 decides what the Pants build boots of the V8 bridge; the options are below |
+
+What the Pants build boots of the V8 form bridge, for light-cljs-648 (the
+user decides; the options, found while closing the other causes):
+
+1. Leave `readerJsLiterals` plain on this profile: the `compilerForms`
+   unit's `jsArray`/`jsObject` installation is skipped, so a `#js` literal
+   read for a macro is a plain array or object (what the V8 profile reads
+   outside the compiler's descriptor mode), and `rt.compilerForms` stays
+   the one rejected member, used by nothing a macro task reaches. Smallest
+   change; the reader entry points, the tag tables, the defaults, the hub
+   and `sharedTaskCells` publish at once.
+2. Swap the `compilerFormBridge` unit for an engine-forms bridge: `decode`
+   returns the engine form itself (the Pants build's macro arguments are
+   engine forms already), so the unit keeps no WeakMaps and no `let`s, and
+   `compilerForms` publishes as well. Right by construction for this
+   profile, but it duplicates what 648's boot does on the compiler side.
+3. Keep the bridge and make its registries per-task cells
+   (`SHARED_TASK_STATE`), as the dispatch registries are. Keeps the V8
+   profile's descriptor mode alive on this profile, which nothing needs;
+   most code for the least value.
+
+Recommendation: 1 now (a two-line assembly rewrite, no new unit), with 2
+if 648 finds a macro that reads `rt.compilerForms` through the hub.
 
 Left for the next attempt besides the table: the chunks view and the
 `mapSeq` thunk over sealed inputs (acceptance 3), the engine-kind views
-for symbols, metadata, atoms, Vars, multimethods, regex, structs and
-records (acceptance 4), and the boot's memory below.
+for atoms, Vars, multimethods, regex, structs and records (acceptance 4;
+the maps view before symbol metadata can be engine-built throughout), and
+the boot's memory below.
 
 The boot's memory (`shared_profile_boots_with_four_mib_heap`, ignored with
 the numbers): peak 53 MB of managed bytes and 50 MB live after the boot

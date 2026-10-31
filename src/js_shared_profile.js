@@ -295,7 +295,7 @@
       #s;
       static has(value) { return sharedHost(value) && #s in value; }
       static get(value) { if (fallback.has(value)) return value.#s; }
-      static set(value, payload) { new fallback(value).#s = payload; }
+      static set(value, payload) { if (#s in value) value.#s = payload; else new fallback(value).#s = payload; }
       static reset(value, payload) { value.#s = payload; }
     };
     const record = () => {
@@ -359,8 +359,91 @@
   //@unit vectors requires: sharedVectorStore, sharedView
   // A vector is an engine vector form.
   const vectors = sharedView("vectors", value => __rt.formKind(value) === "vector", sharedVectorStore);
-  //@unit symbols requires: sharedStore
-  const symbols = sharedStore();
+  //@unit symbols requires: sharedView
+  // A symbol is an engine symbol form; its payload is read from the form.
+  // The two symbols the engine's forms do not carry (`sharedSymbol`) take
+  // the view's fallback, with the V8 profile's prototype (light-cljs-666).
+  const symbols = sharedView("symbols", value => __rt.formKind(value) === "symbol", value => {
+    const namespace = __rt.formNamespace(value), name = __rt.formName(value);
+    return {namespace, name, spelling: namespace == null ? name : namespace + "/" + name};
+  });
+  //@unit sharedNamedSplits
+  // Whether an engine keyword or symbol can carry the pair: its spelling
+  // splits back into the namespace and name at its first `/` (the engine's
+  // `FormName::splits_back`; `formSymbol` of another pair is an error).
+  const sharedNamedSplits = (namespace, name) => namespace == null ? name === "/" || !name.includes("/") : !namespace.includes("/") && (namespace !== "" || name !== "");
+  //@unit sharedSymbol requires: constructorHashes, metadataValues, sharedNamedSplits, symbols,
+  //@ SymbolValue
+  // A fresh engine symbol, with its metadata when that is an engine map
+  // (`formWithMeta`). The engine's forms carry neither a pair that does not
+  // split back (a `/` inside an unqualified name, as `(symbol nil "a/b")`
+  // asks for) nor runtime-built metadata (a map of the verbatim `maps`,
+  // until the maps view): such a symbol is a runtime-owned object over the
+  // views' fallbacks with the V8 profile's prototype, which `symbols`,
+  // equality, hashing and printing read alike, and its task's own.
+  function sharedSymbol(namespace, name, metadata = null, cachedHash = null) {
+    if (sharedNamedSplits(namespace, name) && (metadata == null || __rt.formKind(metadata) === "map")) {
+      const value = __rt.formSymbol(namespace, name);
+      return metadata == null ? value : __rt.formWithMeta(value, metadata);
+    }
+    const value = Object.create(SymbolValue.prototype);
+    symbols.set(value, Object.freeze({namespace, name, spelling: namespace == null ? name : namespace + "/" + name}));
+    if (cachedHash !== null) constructorHashes.set(value, cachedHash);
+    if (metadata != null) metadataValues.set(value, metadata);
+    return value;
+  }
+  //@unit symbol requires: sharedSymbol
+  function symbol(namespace, name) {
+    return sharedSymbol(namespace, name);
+  }
+  //@unit SymbolValue requires: invalidArity, sharedSymbol
+  // The positional constructor: the engine hashes its symbol, so the cached
+  // hash is kept only by a runtime-owned one.
+  function SymbolValue(namespace, name, spelling, cachedHash, metadata) {
+    if (arguments.length !== 5) return invalidArity(arguments.length);
+    return sharedSymbol(namespace, name, metadata, cachedHash);
+  }
+  //@unit collectionWithMeta.symbols effect: symbol, SymbolValue when: collectionWithMeta
+  //@ requires: collectionWithMeta, sharedSymbol, symbols
+  // `with-meta` of a symbol builds a symbol of the metadata's kind
+  // (`sharedSymbol`): an engine symbol, or a runtime-owned one for
+  // runtime-built metadata; a runtime-owned symbol given engine metadata or
+  // none is an engine symbol again.
+  collectionWithMeta = (operation => (value, metadata) => {
+    const data = __rt.formKind(value) === "symbol" || (symbols.has(value) && (metadata == null || __rt.formKind(metadata) === "map")) ? symbols.get(value) : undefined;
+    return data === undefined ? operation(value, metadata) : sharedSymbol(data.namespace, data.name, metadata);
+  })(collectionWithMeta);
+  //@unit sharedNamedString
+  // An engine keyword's or symbol's string, for `str`, `displayStr` and the
+  // printer: a form has no `toString`, so `String` of one throws.
+  function sharedNamedString(value) {
+    const kind = __rt.formKind(value);
+    if (kind !== "keyword" && kind !== "symbol") return undefined;
+    const namespace = __rt.formNamespace(value), name = __rt.formName(value);
+    return (kind === "keyword" ? ":" : "") + (namespace == null ? name : namespace + "/" + name);
+  }
+  //@unit str requires: kindHooks, maps, recordTypes, sequential, sets, sharedNamedString
+  function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sharedNamedString(value) ?? (sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? kindHooks.strCollection(value) : String(value))).join(""); }
+  //@unit displayStr requires: sharedNamedString
+  const displayStr = value => value == null ? "" : sharedNamedString(value) ?? String(value);
+  //@unit Namespace effect requires: equalPair, hash, installMethods, keyword, makeVar,
+  //@ mapFromArray, mungeStr, str, symbol
+  // The V8 profile's, with `toString` through `str`: the name is an engine
+  // symbol, which `String` cannot take.
+  function Namespace(obj, name) {
+    if (!(this instanceof Namespace)) return new Namespace(obj, name);
+    this.obj = obj; this.name = name;
+    installMethods(this, [["IEquiv/-equiv", 2, (_self, other) => other instanceof Namespace && equalPair(name, other.name)],
+      ["IHash/-hash", 1, () => hash(name)]]);
+  }
+  Namespace.prototype.getName = function () { return this.name; };
+  Namespace.prototype.toString = function () { return str(this.name); };
+  Namespace.prototype.findInternedVar = function (local) {
+    if (this.obj == null) return null;
+    const key = mungeStr(str(local));
+    if (!Object.prototype.hasOwnProperty.call(this.obj, key)) return null;
+    return makeVar(() => this.obj[key], symbol(str(this.name), str(local)), mapFromArray([keyword(null, "ns"), this]), true);
+  };
   //@unit sortedComparators requires: sharedStore
   const sortedComparators = sharedStore();
   //@unit mapEntries requires: sharedSet
@@ -422,7 +505,19 @@
   //@unit canonicalVectorRoots requires: sharedStore
   const canonicalVectorRoots = sharedStore();
   //@unit metadataValues requires: sharedStore
-  const metadataValues = sharedStore();
+  // Metadata is the engine's on an engine form (`formMeta`; a form's is
+  // given where the form is built, `formWithMeta`, so `set` on one throws)
+  // and the fallback's on a runtime-owned value (light-cljs-666).
+  const metadataValues = (store => ({
+    has: value => __rt.formKind(value) !== null ? __rt.formMeta(value) != null : store.has(value),
+    get: value => __rt.formKind(value) !== null ? __rt.formMeta(value) : store.get(value),
+    set(value, metadata) {
+      if (__rt.formKind(value) !== null) throw new TypeError("shared profile: metadataValues.set on an engine form");
+      store.set(value, metadata);
+      return this;
+    },
+    delete: value => __rt.formKind(value) === null && store.delete(value)
+  }))(sharedStore());
   //@unit deferredVarMetadata requires: sharedStore
   const deferredVarMetadata = sharedStore();
   //@unit identityHashes
@@ -700,6 +795,36 @@
     else value = __rt.lazySeq(() => sharedSeqForm(thunk.call(null)));
     return metadata !== null ? __rt.cljWithMeta(value, metadata) : value;
   }
+  //@unit mapSeq requires: apply, arrayChunk, callable, chunkCons, chunkedSeqValue, chunkFirst,
+  //@ chunkItem, chunkRest, chunkStore, cons, count, first, invalidArity, lazySequence,
+  //@ listFromArray, mapManySteps, methodKeys, protocolHooks, rest, seq, transform
+  // The V8 profile's `map`, with the collections it was given sealed: the
+  // lazy result's thunk captures the rest-argument array, which is only
+  // read, so a lazy `map` result publishes and one task's result is walked
+  // by others (light-cljs-666).
+  function mapSeq(fn, ...colls) {
+    if (arguments.length === 0) return lazySequence(() => null);
+    if (arguments.length === 1) return transform(rf => callable(2, {
+      0: () => rf.call(null), 1: result => rf.call(null, result),
+      2: (result, input) => rf.call(null, result, fn.call(null, input))
+    }, (result, input, inputs) => rf.call(null, result, apply(fn, input, inputs))));
+    if (!colls.length) return invalidArity(arguments.length);
+    __rt.seal(colls);
+    // The variadic branch maps a lazy sequence of argument tuples and uses
+    // apply. This preserves bounded rest arguments and host receiver behavior.
+    if (colls.length > 3) return mapSeq(args => apply(fn, args), mapManySteps(listFromArray(colls)));
+    return lazySequence(() => {
+      const sources = [];
+      for (const coll of colls) { const s = seq(coll); sources.push(s); if (colls.length > 3 && s === null) return null; }
+      if (sources.some(value => value === null)) return null;
+      if (sources.length === 1 && (protocolHooks.implements?.(methodKeys[5], sources[0]) ?? chunkedSeqValue(sources[0]))) {
+        const chunk = chunkFirst(sources[0]), store = chunkStore(chunk), size = count(chunk), items = [];
+        for (let i = 0; i < size; i++) items.push(fn.call(null, chunkItem(chunk, store, i)));
+        return chunkCons(arrayChunk(items), mapSeq(fn, chunkRest(sources[0])));
+      }
+      return cons(fn.call(null, ...sources.map(first)), mapSeq(fn, ...sources.map(rest)));
+    });
+  }
   //@unit protocolKeys requires: sharedRegistryStore, sharedStore
   // `protocolImplementations` is a registry on the task's cells.
   const protocolKeys = sharedStore(), protocolImplementations = sharedRegistryStore("protocolImplementations");
@@ -811,10 +936,10 @@
   };
   //@unit makeKeyword.print effect: makeKeyword, makeVar, SymbolValue, symbol when: printWriterImpl
   //@ requires: keywords, kindHooks, printKind, symbols, vars, write
-  // An engine keyword prints from its payload; a runtime-built symbol or
-  // Var through its `toString`, as in the V8 profile.
+  // An engine keyword or symbol prints from its payload; a runtime-built
+  // symbol or a Var through its `toString`, as in the V8 profile.
   kindHooks.print = printKind(kindHooks.print, value => keywords.has(value) || symbols.has(value) || vars.has(value),
-    (value, writer) => write(writer, keywords.has(value) ? ":" + keywords.get(value).spelling : String(value)));
+    (value, writer) => write(writer, keywords.has(value) ? ":" + keywords.get(value).spelling : symbols.has(value) ? symbols.get(value).spelling : String(value)));
   //@unit coreCells effect requires: flush, sharedTaskCells, sharedTaskDefaults
   // The hub's cells as the V8 profile declares them (the `core` hub extends
   // this object), over the per-task defaults. The boot task's cells now

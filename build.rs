@@ -535,10 +535,16 @@ const SHARED_READER_UNIT: &str = "reader";
 
 /// The objects the reader's functions capture that no binding reaches, so
 /// the boot's walk cannot seal them: the IIFE's argument object (the
-/// runtime services it reads as `rt`) and its two frozen sentinels, sealed
+/// runtime services it reads as `rt`), its two frozen sentinels and the
+/// builtin tag parsers' location (captured by the `inst` and `js` parsers,
+/// which the tag tables' boot snapshots hold; light-cljs-688), sealed
 /// where they are built (`__rt.seal` is shallow; the functions the argument
 /// holds are top-level bindings, sealed by the boot).
 const SHARED_READER_REWRITES: &[(&str, &str)] = &[
+    (
+        "  const builtinLocation = {name: '<tag-parser>', line: 1, column: 1, offset: 0};\n",
+        "  const builtinLocation = __rt.seal({name: '<tag-parser>', line: 1, column: 1, offset: 0});\n",
+    ),
     (
         "  })({keyword: freshKeyword, ",
         "  })(__rt.seal({keyword: freshKeyword, ",

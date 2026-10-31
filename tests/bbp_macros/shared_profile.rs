@@ -127,14 +127,13 @@ fn walk_report(shareable: usize, causes: &[(String, Vec<String>, String)]) -> St
 /// task and `Runtime::publish` accepts the result with zero rejected paths.
 /// On failure the first rejected path is printed, then the walk of every
 /// member by cause and the top-level bindings a seal cannot take. State on
-/// 2026-10-31 (after light-cljs-666's second attempt): 738 of 748 members
-/// publish; the remaining causes are the V8 form bridge (`compilerForms`
-/// and, through `readerJsLiterals`, the eight reader entry points; what the
-/// Pants build boots of the bridge is light-cljs-648's) and `currentNs`'s
-/// name, a runtime-built symbol (the symbols view, acceptance 4), listed in
-/// docs/real-core-design.md, "Profile assembly" (light-cljs-666).
+/// 2026-10-31 (after light-cljs-666's third attempt, the symbols view): 739
+/// of 748 members publish; the one remaining cause is the V8 form bridge
+/// (`compilerForms` and, through `readerJsLiterals`, the eight reader entry
+/// points; what the Pants build boots of the bridge is light-cljs-648's,
+/// with the options in docs/real-core-design.md, "Profile assembly").
 #[test]
-#[ignore = "738 of 748 members publish; the V8 form bridge (light-cljs-648) and the symbols view (light-cljs-666) remain, see docs/real-core-design.md"]
+#[ignore = "739 of 748 members publish; the V8 form bridge (light-cljs-648) remains, see docs/real-core-design.md"]
 fn shared_profile_boots_and_publishes_with_zero_rejected_paths() {
     let rt = Runtime::new();
     let booted = boot(&rt);
@@ -615,6 +614,285 @@ fn shared_profile_demunge_builds_its_regex_per_call() {
     );
 }
 
+/// The members light-cljs-666's second attempt made shareable publish on
+/// their own (a regression here is a rejected publication, which the
+/// in-task tests above would miss): `demunge` without its regex object, the
+/// reader's functions over the task's cells, and the namespace registry's.
+/// A task spawned separately, on another thread, with its own first cells,
+/// then calls the published functions: `demunge` answers as in the boot
+/// task, a stream it makes reads line by line, and a namespace it creates
+/// is its own while the boot's `cljs.core` is shared (light-cljs-688).
+#[test]
+fn shared_profile_newly_shareable_members_publish() {
+    const MEMBERS: [&str; 10] = [
+        "demunge",
+        "munge",
+        "readerStringReader",
+        "readerReadLine",
+        "readerRegisterTagParser",
+        "readerRegisterDefaultTagParser",
+        "createNs",
+        "findNs",
+        "allNs",
+        "nsName",
+    ];
+    // Published too, for the other task: `symbol`, `str` and `count`, to
+    // make and print a namespace name and count the registry. `sharedTaskCells`, which the
+    // task needs for its first cells, captures the hub, whose publication
+    // waits for the V8 form bridge's (light-cljs-648; the reader entry
+    // points reach it through `readerJsLiterals`), so it is handed to the
+    // task unpublished, as `Runtime::spawn` allows.
+    const HELPERS: [&str; 4] = ["symbol", "str", "count", "sharedTaskCells"];
+    let rt = Runtime::new();
+    let members = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             return __rt.formVector({});",
+            MEMBERS
+                .iter()
+                .chain(HELPERS.iter())
+                .map(|m| format!("core.{m}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    )
+    .unwrap_or_else(|e| panic!("boot: {e}"));
+    let values = rt.scope(|s| {
+        let members = s.local(&members).unwrap();
+        (0..MEMBERS.len() + HELPERS.len())
+            .map(|i| s.persist(s.form_nth(members, i).unwrap()))
+            .collect::<Vec<_>>()
+    });
+    for (name, value) in MEMBERS.iter().chain(HELPERS[..3].iter()).zip(&values) {
+        rt.publish(value)
+            .unwrap_or_else(|e| panic!("core.{name} does not publish: {e}"));
+    }
+    let call = compile_function(
+        "function call(demunge, munge, stringReader, readLine, registerTag, registerDefault, \
+                       createNs, findNs, allNs, nsName, symbol, str, count, sharedTaskCells) { \
+           globalThis.__lightSharedCells = sharedTaskCells(); \
+           const stream = stringReader('first\\nsecond'); \
+           const made = createNs(symbol(null, 'other.ns')); \
+           const previous = registerTag(symbol('my', 'tag'), v => v); \
+           return [demunge('a_DOT_b_STAR_c'), demunge('ns$name'), str(demunge(symbol(null, 'a_PLUS_b'))), munge('a-b'), \
+             readLine(stream), readLine(stream), String(readLine(stream)), \
+             str(nsName(findNs(symbol(null, 'cljs.core')))), findNs(symbol(null, 'other.ns')) === made, count(allNs()), \
+             String(previous)].join(' '); }",
+    )
+    .unwrap();
+    let args = values.iter().collect::<Vec<_>>();
+    let task = rt.spawn(&call, &args).unwrap();
+    let out = std::thread::scope(|s| {
+        s.spawn(|| match task.run().unwrap() {
+            RunOutcome::Complete(v) => v.string().unwrap().to_string_lossy(),
+            other => panic!("{other:?}"),
+        })
+        .join()
+        .unwrap()
+    });
+    assert_eq!(
+        out,
+        "a-DOT-b*c ns/name a+b a_b first second null cljs.core true 3 null"
+    );
+    // The namespace the other task created is unknown to a task with the
+    // boot's cells.
+    let boot_view = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             return [String(core.findNs(core.symbol(null, 'other.ns'))), core.count(core.allNs())].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(boot_view.string().unwrap().to_string_lossy(), "null 2");
+}
+
+/// The per-task registries of `sharedTaskDefaults` (the lazy getters: the
+/// gensym and tap state, the protocol-slot and hash memos, the dispatch
+/// registries, the brand registries, the namespace registry and the
+/// reader's state) are reached from the published hub, so they publish with
+/// it (light-cljs-648 found every getter rejected through the namespaces'
+/// runtime-built symbols; light-cljs-688). A task spawned separately reads
+/// every getter through its first cells: each answers the task's own
+/// registry, defined on the task's cells, the same object on a second read,
+/// and the defaults still publish afterwards, since no read wrote through
+/// them. One cause stays, light-cljs-648's: the builtin `js` tag parser,
+/// held by the tag tables' boot snapshots, reaches the V8 form bridge
+/// (`jsLiteral`, `readerJsLiterals.array`), so this boots a copy of the
+/// runtime without that one registration, as the hub's publication
+/// (`sharedTaskCells` captures the hub) waits for the same decision.
+#[test]
+fn shared_profile_registry_getters_keep_the_profile_published() {
+    let rt = Runtime::new();
+    const JS_TAG: &str = "  globalThis.__lightSharedCells.builtinTags.set('js', value => jsLiteral(builtinLocation,value));\n";
+    assert_eq!(SHARED_RUNTIME.matches(JS_TAG).count(), 1);
+    let without_js_tag = SHARED_RUNTIME.replace(JS_TAG, "");
+    let booted = run(
+        &rt,
+        &format!(
+            "const rt = (\n{without_js_tag}\n); const core = rt.core; \
+             return __rt.formVector(Object.getPrototypeOf(core), core.sharedTaskCells, core.currentNs);"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("boot: {e}"));
+    let [defaults, make_cells, current_ns] = rt.scope(|s| {
+        let booted = s.local(&booted).unwrap();
+        [0, 1, 2].map(|i| s.persist(s.form_nth(booted, i).unwrap()))
+    });
+    for (name, value) in [
+        ("the task defaults", &defaults),
+        ("core.currentNs", &current_ns),
+    ] {
+        rt.publish(value)
+            .unwrap_or_else(|e| panic!("{name} does not publish: {e}"));
+    }
+    let read = compile_function(
+        "function read(sharedTaskCells, defaults) { \
+           const cells = sharedTaskCells(); \
+           const names = Object.getOwnPropertyNames(defaults).filter(n => Object.getOwnPropertyDescriptor(defaults, n).get !== undefined); \
+           const counted = ['gensymScopes', 'generatedNames', 'tapListeners', 'protocolSlots', 'namespaces', 'tags', 'builtinTags']; \
+           const out = names.map(n => { \
+             const v = cells[n], own = Object.getOwnPropertyDescriptor(cells, n) !== undefined; \
+             const kind = Object.prototype.toString.call(v).slice(8, -1); \
+             const size = v.size === undefined ? '' : counted.includes(n) ? v.size : v.size > 0 ? '+' : '0'; \
+             return n + ':' + kind + size + (own ? '' : '!') + (cells[n] === v ? '' : '?'); }); \
+           const untouched = names.every(n => Object.getOwnPropertyDescriptor(defaults, n).get !== undefined); \
+           return out.join(' ') + ' ' + untouched; }",
+    )
+    .unwrap();
+    let task = rt.spawn(&read, &[&make_cells, &defaults]).unwrap();
+    let out = std::thread::scope(|s| {
+        s.spawn(|| match task.run().unwrap() {
+            RunOutcome::Complete(v) => v.string().unwrap().to_string_lossy(),
+            other => panic!("{other:?}"),
+        })
+        .join()
+        .unwrap()
+    });
+    assert_eq!(
+        out,
+        "gensymScopes:Map0 generatedNames:Set0 tapListeners:Set0 tapQueue:Array protocolSlots:Map0 formHashes:WeakMap \
+         coreDispatchers:Map+ nativeMethods:Map0 protocolValues:Map0 protocolFunctions:Map0 protocolVariables:Map0 \
+         protocolGetters:Map0 reifySites:Map0 protocolImplementations:WeakMap typeNames:WeakMap namespaces:Map2 \
+         streams:WeakMap readerMaps:WeakMap tags:Map3 builtinTags:Map3 true"
+    );
+    rt.publish(&defaults)
+        .unwrap_or_else(|e| panic!("the task defaults do not publish after the reads: {e}"));
+}
+
+/// Symbols are engine symbol forms (light-cljs-666, acceptance 4): one the
+/// engine made and one the runtime's `symbol` makes are recognized by
+/// `symbol?`, named, printed, stringified, equal, hashed and compared alike
+/// through the real units, and the namespace registry's names are engine
+/// symbols, so `currentNs` and the namespaces publish. Metadata is the
+/// engine's on an engine symbol; a symbol given runtime-built metadata (a
+/// map of the verbatim `maps`, until the maps view) is a runtime-owned
+/// symbol that reads alike, and an engine symbol again once its metadata is
+/// engine-built or removed. An unqualified name holding `/`, which no engine
+/// form spells, is a runtime-owned symbol too.
+#[test]
+fn shared_profile_symbols_are_engine_symbols() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const engine = __rt.formSymbol('ns', 'a'), made = core.symbol('ns', 'a'), plain = rt.symbol(null, 'b'); \
+             const m = rt.arrayMapFromArray([core.keyword(null, 'a'), 1]), withM = core.withMeta(made, m), back = core.withMeta(withM, null); \
+             const fm = __rt.formWithMeta(engine, __rt.formMap(__rt.formKeyword(null, 'b'), 2)); \
+             const em = core.withMeta(withM, __rt.formMap(__rt.formKeyword(null, 'c'), 3)); \
+             const slash = core.symbol(null, 'a/b'), pos = new core.Symbol('ns', 'c', 'ns/c', null, null); \
+             const coreNs = core.findNs(core.symbol(null, 'cljs.core')); \
+             return [core.isSymbol(engine), core.isSymbol(made), core.isSymbol('a'), __rt.formKind(made), __rt.formKind(plain), \
+               core.name(engine), core.namespace(made), String(core.namespace(plain)), \
+               core.prStr(engine), core.str(plain), core.str(core.keyword(null, 'k')), core.str(engine, '/', plain), \
+               core.equal(engine, made), core.hash(engine) === core.hash(made), core.compare(engine, core.symbol('ns', 'b')), \
+               core.get(rt.arrayMapFromArray([engine, 1]), made), String(core.meta(engine)), \
+               String(__rt.formKind(withM)), core.isSymbol(withM), core.equal(withM, made), core.hash(withM) === core.hash(made), \
+               core.get(core.meta(withM), core.keyword(null, 'a')), core.prStr(withM), core.str(withM), \
+               __rt.formKind(back), String(core.meta(back)), core.isSymbol(fm), __rt.formKind(core.meta(fm)), \
+               __rt.formKind(em), __rt.formKind(core.meta(em)), core.equal(em, made), \
+               String(__rt.formKind(slash)), core.name(slash), String(core.namespace(slash)), core.prStr(slash), \
+               __rt.formKind(core.symbol('a/b')), core.prStr(core.symbol('a/b')), __rt.formKind(core.symbol(null, '/')), core.prStr(core.symbol(null, '/')), \
+               __rt.formKind(pos), core.prStr(pos), \
+               __rt.formKind(core.nsName(coreNs)), core.prStr(core.nsName(coreNs)), core.str(coreNs), \
+               core.isSpecialSymbol(core.symbol(null, 'if')), __rt.formKind(core.gensym()), core.prStr(core.munge(core.symbol(null, 'a-b'))), \
+               __rt.formKind(core.readString('x/y')), core.prStr(core.readString('x/y'))].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true true false symbol symbol a ns null ns/a b :k ns/a/b true true -1 1 null \
+         null true true true 1 ns/a ns/a symbol null true map symbol map true \
+         null a/b null a/b symbol a/b symbol / symbol ns/c \
+         symbol cljs.core cljs.core true symbol a_b symbol x/y"
+    );
+    let current_ns = run(
+        &rt,
+        &format!("const rt = (\n{SHARED_RUNTIME}\n); return rt.core.currentNs;"),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    rt.publish(&current_ns)
+        .unwrap_or_else(|e| panic!("core.currentNs does not publish: {e}"));
+}
+
+/// A lazy result of the real `map` publishes (its thunk captures the
+/// sealed collections; light-cljs-666, acceptance 3) and a task spawned
+/// separately walks it; and `map` over a 40-element vector calls the mapped
+/// function a chunk at a time: 32 calls for the first element, none more
+/// through the 32nd, the remaining 8 for the 33rd.
+#[test]
+fn shared_profile_lazy_map_result_publishes_and_maps_in_chunks() {
+    let rt = Runtime::new();
+    let booted = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             let calls = 0; const f = x => {{ calls++; return x + 1; }}; \
+             const over = core.mapSeq(x => x * 2, __rt.formList(1, 2, 3)); \
+             let v = core.vector(); for (let i = 0; i < 40; i++) v = core.conj(v, i); \
+             const mapped = core.mapSeq(f, v); \
+             const before = calls; core.first(mapped); const afterFirst = calls; core.nth(mapped, 31); const afterChunk = calls; \
+             core.nth(mapped, 32); const afterNext = calls; core.count(mapped); const all = calls; \
+             return __rt.formVector(over, core.sharedTaskCells, [before, afterFirst, afterChunk, afterNext, all, core.nth(mapped, 39)].join(' '));"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("boot: {e}"));
+    let (over, make_cells, counts) = rt.scope(|s| {
+        let booted = s.local(&booted).unwrap();
+        (
+            s.persist(s.form_nth(booted, 0).unwrap()),
+            s.persist(s.form_nth(booted, 1).unwrap()),
+            s.string(s.form_nth(booted, 2).unwrap())
+                .unwrap()
+                .to_string_lossy(),
+        )
+    });
+    assert_eq!(counts, "0 32 32 40 40 40");
+    rt.publish(&over)
+        .unwrap_or_else(|e| panic!("the lazy map result does not publish: {e}"));
+    let walk = compile_function(
+        "function walk(xs, sharedTaskCells) { \
+           globalThis.__lightSharedCells = sharedTaskCells(); \
+           const out = []; \
+           for (let s = __rt.cljSeq(xs); s != null; s = __rt.cljNext(s)) out.push(__rt.cljFirst(s)); \
+           return out.join(' '); }",
+    )
+    .unwrap();
+    let task = rt.spawn(&walk, &[&over, &make_cells]).unwrap();
+    let out = std::thread::scope(|s| {
+        s.spawn(|| match task.run().unwrap() {
+            RunOutcome::Complete(v) => v.string().unwrap().to_string_lossy(),
+            other => panic!("{other:?}"),
+        })
+        .join()
+        .unwrap()
+    });
+    assert_eq!(out, "2 4 6");
+}
+
 /// The method-key memos the boot fills and seals cover every arity a
 /// dispatcher declares: `invokeProtocol` declares arities 1 to 22, so a
 /// receiver implementing `cljs$core$IFn$_invoke$arity$22` is invoked with
@@ -779,7 +1057,9 @@ fn shared_profile_publication_walk() {
 /// The value of the JavaScript in `SHARED_EVAL` (or in the file named by
 /// `SHARED_EVAL_FILE`, for an expression the shell would mangle), run after
 /// the boot with `rt` and `core` in scope and printed as a string, then its
-/// publication path, for finding what a member holds.
+/// publication path, for finding what a member holds. `SHARED_EXPORTS`
+/// (space separated) names bindings the runtime does not export, exported
+/// from a copy of the runtime for the expression (`rt.sharedSnapshots`).
 #[test]
 #[ignore = "diagnostic: SHARED_EVAL=\"rt.Loadable.prototype\""]
 fn shared_profile_eval() {
@@ -792,15 +1072,27 @@ fn shared_profile_eval() {
                 .map(|path| std::fs::read_to_string(path).expect("SHARED_EVAL_FILE"))
         })
         .unwrap_or_default();
+    const ANCHOR: &str = "return sharedProfileBoot(Object.freeze({setDeclarationDemand, ";
+    let exports = std::env::var("SHARED_EXPORTS").unwrap_or_default();
+    let runtime = SHARED_RUNTIME.replace(
+        ANCHOR,
+        &format!(
+            "return sharedProfileBoot(Object.freeze({{{}setDeclarationDemand, ",
+            exports
+                .split_whitespace()
+                .map(|name| format!("{name}, "))
+                .collect::<String>()
+        ),
+    );
     let value = run(
         &rt,
-        &format!("const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; return ({body});"),
+        &format!("const rt = (\n{runtime}\n); const core = rt.core; return ({body});"),
     )
     .unwrap_or_else(|e| panic!("boot: {e}"));
     let text = run(
         &rt,
         &format!(
-            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; const value = ({body}); \
+            "const rt = (\n{runtime}\n); const core = rt.core; const value = ({body}); \
              return typeof value === 'object' && value !== null ? Object.prototype.toString.call(value) + ' ' + Reflect.ownKeys(value).map(String).join(',') : String(value);"
         ),
     )
