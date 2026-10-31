@@ -5640,6 +5640,183 @@ mod worker_tests {
 
     #[cfg(feature = "bbp-macros")]
     #[test]
+    fn coordinator_help_serves_forwarded_build_requests_while_waiting() {
+        use crate::dependency_manifest::{Candidate, ExternalInput, ObservationLog};
+        use crate::source_provider::{LoadError, ResourceInput, ResourceProvider};
+        use big_boy_pants_js::{DependencyId, ResultKind};
+        use std::time::Duration;
+
+        struct Resource(std::thread::ThreadId);
+        impl ResourceProvider for Resource {
+            fn load_resource(
+                &self,
+                path: &str,
+                _: &mut Vec<Candidate>,
+            ) -> Result<Option<ResourceInput>, LoadError> {
+                assert_eq!(std::thread::current().id(), self.0);
+                assert_eq!(path, "worker.txt");
+                Ok(Some(ResourceInput {
+                    file: path.into(),
+                    identity: Some(path.into()),
+                    text: "worker resource".into(),
+                }))
+            }
+        }
+
+        #[derive(Default)]
+        struct Progress {
+            helper_claimed: bool,
+            coordinator_waiting: bool,
+            coordinator_claims: usize,
+        }
+        let (session, units) = queued_session(
+            "(defmacro read-resource [] (js* \"globalThis.lightCljsBuild.resource('worker.txt')\"))
+             (defn helper [x] (read-resource) x)
+             (defmacro demand [x] (helper x))
+             (defn worker [] (demand 1)) (defn coordinator [] (demand 2))",
+        );
+        let session = Rc::new(session);
+        let [helper, worker, coordinator] =
+            ["helper", "worker", "coordinator"].map(|name| units[&format!("cljs.user/{name}")]);
+        let shared = session.shared();
+        shared.select_native();
+        session.set_recording(crate::macro_host::UnitRecording {
+            observe: true,
+            capture: false,
+        });
+        {
+            let mut c = shared.lock();
+            c.units[helper].source = 1;
+            c.units[worker].source = 1;
+            c.units[coordinator].source = 2;
+        }
+        let environment = session.pool.borrow().as_ref().unwrap().main.clone();
+        let runtime = shared
+            .native_runtime(environment.evaluator_options())
+            .unwrap();
+        let evaluator = Rc::new(runtime.evaluator().unwrap());
+        let host = MacroHost::bind(environment.clone(), Some(evaluator)).unwrap();
+        *host.engine.dependency_log.borrow_mut() = Some(ObservationLog {
+            window: 2,
+            ..Default::default()
+        });
+        let main_thread = std::thread::current().id();
+        let build = crate::build_services::BuildGuard::enter(
+            &host.engine.build,
+            Some(Rc::new(Resource(main_thread))),
+            Default::default(),
+        );
+        build.analyze(1, "worker.ns", None);
+        build.analyze(2, "coordinator.ns", None);
+        for binding in session.unit_bindings.borrow_mut().iter_mut().flatten() {
+            binding.build = host.engine.build.clone();
+            binding.dependency_log = host.engine.dependency_log.clone();
+            binding.catalog = Some(shared.clone());
+            binding.session_ref = Rc::downgrade(&session);
+        }
+        session
+            .attach(host.engine.bootstrap.as_ref().unwrap(), &host)
+            .unwrap();
+
+        let progress = Arc::new((Mutex::new(Progress::default()), Condvar::new()));
+        let state = progress.clone();
+        *shared.on_claim.lock().unwrap() = Some(Arc::new(move |id| {
+            if id == coordinator {
+                assert_eq!(std::thread::current().id(), main_thread);
+                assert_eq!(HELP_DEPTH.get(), 1);
+                state.0.lock().unwrap().coordinator_claims += 1;
+            }
+            if id == helper {
+                assert_ne!(std::thread::current().id(), main_thread);
+                let mut p = state.0.lock().unwrap();
+                p.helper_claimed = true;
+                state.1.notify_all();
+                while !p.coordinator_waiting {
+                    let (next, timeout) = state.1.wait_timeout(p, Duration::from_secs(10)).unwrap();
+                    p = next;
+                    assert!(
+                        !timeout.timed_out(),
+                        "coordinator did not wait for the worker's helper"
+                    );
+                }
+            }
+        }));
+        let state = progress.clone();
+        runtime.on_wait(Arc::new(move |_, key| {
+            if std::thread::current().id() == main_thread
+                && key.kind() == ResultKind::new(3)
+                && key.dependency() == DependencyId::new(helper as u64)
+            {
+                let mut p = state.0.lock().unwrap();
+                assert!(p.helper_claimed);
+                p.coordinator_waiting = true;
+                state.1.notify_all();
+            }
+        }));
+        std::thread::scope(|scope| {
+            let running = scope.spawn(|| {
+                let view = worker_view(shared, PoolEngines::Persistent, &environment).unwrap();
+                view.analyze(worker, None)
+            });
+            let mut p = progress.0.lock().unwrap();
+            while !p.helper_claimed {
+                let (next, timeout) = progress.1.wait_timeout(p, Duration::from_secs(10)).unwrap();
+                p = next;
+                assert!(!timeout.timed_out(), "worker did not claim the helper");
+            }
+            drop(p);
+            session.end_top_level_passes();
+            session.analyze_queued(Some(worker));
+            // Also release a forwarded request if a regression makes the
+            // coordinator hit its engine deadline, so the test can fail cleanly.
+            shared.abandon("test finished coordinator help".into());
+            running.join().unwrap().unwrap();
+        });
+        let p = progress.0.lock().unwrap();
+        assert!(p.coordinator_waiting);
+        assert_eq!(p.coordinator_claims, 1);
+        assert_eq!(session.unit_counts().coordinator_units, 1);
+        let c = shared.lock();
+        for id in [helper, worker, coordinator] {
+            assert!(
+                matches!(c.units[id].state, AnalysisState::Analyzed(..)),
+                "{}",
+                c.units[id].name
+            );
+            assert_eq!(c.units[id].analyses, 1);
+        }
+        let observations = |id: usize| {
+            c.units[id]
+                .charges
+                .as_ref()
+                .unwrap()
+                .observations
+                .as_ref()
+                .unwrap()
+        };
+        let inputs = &observations(worker).inputs;
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].own, 1);
+        assert_eq!(inputs[0].helpers, [1]);
+        assert!(matches!(&inputs[0].input, ExternalInput::Resource(resource)
+            if resource.path == "worker.txt"
+                && resource.found.as_ref().is_some_and(|found|
+                    found.identity.as_deref() == Some("worker.txt")
+                        && found.bytes == "worker resource".len() as u64)));
+        assert!(observations(coordinator).inputs.is_empty());
+        assert!(
+            host.engine
+                .dependency_log
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .inputs
+                .is_empty()
+        );
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
     fn pants_coordinator_helps_its_drain_then_takes_the_tail_once_in_order() {
         let (session, units) = queued_session(
             "(defn running [] 1) (defn first [] (if true 2 0))
