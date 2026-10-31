@@ -867,6 +867,10 @@ user decides; the options, found while closing the other causes):
 
 Recommendation: 1 now (a two-line assembly rewrite, no new unit), with 2
 if 648 finds a macro that reads `rt.compilerForms` through the hub.
+Taken by light-cljs-666 as a `compilerForms` swap that reads a `#js`
+literal as the port's engine compiler literal ("light-cljs-666: imported
+forms, publication and the builders" below); the table's last row is
+closed and every member publishes.
 
 The fourth attempt (2026-10-31, after the review fixes light-cljs-691 to
 693) added the maps view, the first half of it: `maps` recognizes an
@@ -1264,3 +1268,110 @@ For light-cljs-650: `bb benchmarks/pants-core-coverage.bb --real-core`
 runs the Pants CLI with `--macro-core real` and only checks (the doc's table
 records the port), so the inventory can be compared between the modes
 before its `real` column exists.
+
+### light-cljs-666: imported forms, publication and the builders
+
+The fifth attempt (2026-10-31, on master e2494875 with 648's
+`--macro-core` flag) was driven by the real-mode failures rather than by
+the publication walk alone: `LIGHT_CLJS_MACRO_CORE=real cargo nextest run
+--no-default-features --features bbp-macros --test bbp_macros` failed 155
+of 335 on the base (the doc's 154 plus one timeout; `-j 4`, a loaded
+machine), and the counts below are after each commit.
+
+**The view of imported forms** (the largest cause, `cannot convert object
+to primitive value`). The Rust bridge imports every node of a macro's
+arguments as an occurrence (docs/native-macros.md: the identity by which
+an unchanged subtree exports as its original Datum), which the engine
+treats as an object: property reads see through it, `typeof`, `===`,
+arithmetic and `ToPrimitive` do not, and `formCount`, `formNth` and the
+other form operations reject it. The port's lowering copes with
+`__rt.formValue` at every adapter; the real core is the V8 profile's
+JavaScript (`x + 1`, `typeof x === "number"`, `n === count(p)` in
+`partition`) and cannot. Two changes, by what the value is:
+
+- A scalar (nil, a boolean, a number, a string, a character) imports as
+  the plain primitive in `real` mode (`Bridge::plain_scalars`,
+  src/bbp_evaluator.rs): the V8 build's bridge gives the same, and the
+  export already maps a scalar back to the argument's exact Datum by value
+  (`scalar_origins`), so a ratio or an integer the macro returns unchanged
+  still exports exactly. The port keeps every wrapper.
+- A collection, symbol or keyword keeps its occurrence, and the profile's
+  views read through it: `sharedFormKind` answers the kind of the form
+  behind an occurrence and `sharedFormOf` the form, used by `sharedView`
+  (`keywords`, `symbols`, `vectors`, `cells`, `lazyValues`, `delays`),
+  `maps`, `sets`, `metadataValues`, `constructorHashes`,
+  `sharedNamedString`, `preserveMeta`, `sharedSymbol` and `cons`. The
+  occurrence stays where the value is kept (an item, a tail, a value
+  returned as it is), so identity export still finds it.
+
+With that, `for`'s bootstrap definition expands on the real core
+(`bootstrap_for_expands_on_the_real_core`, no longer ignored) and
+`real_core_reads_imported_forms_through_their_occurrences` runs `partition`,
+`str`, `name`, `=`, `inc`, `nth`, `get`, `keys`, `assoc`, `meta`, `pr-str`,
+`into` and `frequencies` over imported arguments with the port's answers.
+
+**Publication.** The reader entry points and every registry getter failed
+to publish through one path: the `compilerForms` unit installs the V8 form
+bridge's `jsArray`/`jsObject` (a WeakMap-branded array or object) into
+`readerJsLiterals`, which the builtin `js` tag parser holds, which the tag
+tables' boot snapshots hold, which the task defaults hold. The profile now
+swaps `compilerForms`: the bridge's `decode`/`encode` stay the evaluator's
+member (not offered in `real` mode), and a `#js` literal the reader reads
+is an engine compiler literal, as the Pants build's reader builds one
+(option 1 of "What the Pants build boots of the V8 form bridge" above, with
+the port's representation rather than a plain array). Result: 726 of 726
+offered members publish (`macro_core_boot_and_task_bytes`), the per-task
+fallback is never taken and `native.core.private-boots` is 0; the fallback
+and its counter can go once 703/704's writable Var slots settle the task's
+cells.
+
+**The builders.** The second half of the maps view and the sets view: a
+map or set the real core builds or updates is an engine form, so macro
+code's intrinsics (`__rt.cljGet` on the result of `frequencies`, `=` of an
+`into #{}` result) and the export read it. `makeMap` builds `formArrayMap`
+for the `array-map` kind and `formMap` for the `hash-map` kind (the two
+kinds the V8 profile keeps apart, promotion at the ninth entry), `makeSet`
+`formLiteralSet` and `formSet`; `mapFromEntries` and the hash map statics
+no longer build hash tries (the engine hashes); a map's kind is read from
+the form (`formIsArrayMap`, which now answers for a positional set too) so
+an update of a hash map is a hash map again (trie order, as the V8
+profile's `PersistentHashMap` keeps it); `mapTraversal`, `setTraversal`
+and `collectionEntryIndex` take a form's entries positionally whatever its
+kind; a map entry is an engine entry (`mapEntry`: the first entry of a
+one-entry map's seq, which `cljIsMapEntry`, `key`, `val` and the `vectors`
+view take), so the seq of a map and `find` cross into macro code; and the
+empty set and maps are engine forms built once at boot. Sorted maps and
+sets, records and queues keep the V8 profile's objects. Two consequences
+recorded in the tests' expected data: a runtime-built map is an engine
+map, so a symbol or vector given one as metadata stays an engine form, and
+`(assoc (hash-map :a 1 :b 2) :c 3)` prints in trie order. The public
+constructors (`PersistentArrayMap.` with its slots) cannot brand an engine
+result (`publicCollectionSlots`), which the real-mode runs below list.
+
+**Counts.** The real-mode `bbp_macros` run (335 tests on the base, 338
+with this pellet's) fails 113 after the first commit (d637fa45: the
+imported-form view, the publication swap and the builders together),
+from 155: 43 tests fixed, one changed (`native_environment_updates_
+changed_slots_without_importing_the_namespace_again` counted a scalar the
+bridge no longer retains; the count now includes plain scalars). The
+remaining failures by first error (`bb` grouping of the run's log):
+
+| Tests | First error | Cause |
+| ---: | --- | --- |
+| 46 | changed answer (`left == right`) | printing and predicates over engine values and port-built values (Vars, multimethods, regexes, delays, records, structs), `with-redefs` of a core function, `satisfies?`/`instance?`; 649's dispatch tables for the protocol ones |
+| 12 | `Unsupported macro result arbitrary object` or `function` | a macro returns a runtime-owned value: sorted maps and sets, queues, deftype instances, a reify, `memoize`'s function |
+| 5 | `cannot convert object to primitive value` | a real function strings a value the views do not take yet: a struct, a port-built Var or regex, a sorted collection |
+| 10 | `is not ISeqable`, `Cannot create iterator`, `count`/`seq`/`assoc`/`realized?` `on object`, `conj on reduced` | structs, records, Vars, reduced values and sorted collections reaching the generic paths; `IStack.-pop`, `IReversible.-rseq`, `IWriter/-write`, `IPrintWithWriter` on engine or port values |
+| 2 | `heap byte limit exceeded` | the two tests that set 16 MiB or less (the boot itself; from 16 on the base: the published hub spares the tasks their private copies) |
+| 9 | the published hub is immutable, or a type is not the port's | `cannot assign to read-only property`, `cannot set property 'call'`, `invalid 'instanceof' right operand`, protocol extension of a hub function; 649 |
+| 3 | `No method in multimethod` | port-built multimethods against the real dispatch; 649 |
+| 2 | `a shared lazy sequence realized a value it cannot share` | `mapSeq`'s thunk over a regex state; a task-owned value in a lazy result |
+| 1 each | `DataView is not defined`; `no conversion to symbol`; `value does not support deref`; a dependency failed downstream; `cannot add property 'key'` (a record update writes an entry object) | the engine's intrinsics; Vars; records |
+
+**Memory.** The real core's live size after boot rose from 20.1 MB to
+29.8 MB with the builders (`macro_core_boot_and_task_bytes`; the peak is
+106 MB in both), which the heap-limit tests feel; the cause is not
+measured (the engine has no live inventory by kind; candidates: the maps
+the boot builds as engine forms with their intermediate vectors retained
+through `formEntries`, and the per-entry closures of `sharedMapEntries`).
+Open, with the boot's garbage of the fourth attempt.

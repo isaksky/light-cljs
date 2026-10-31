@@ -833,6 +833,23 @@
         }, set thunk(_) {},
         get value() { return __rt.formNth(__rt.cljDelayState(value), 1); }, set value(_) {}
       }));
+  //@unit reducedValues requires: sharedStore
+  // A reduced value is the engine's marker (`cljReduced`, which macro
+  // code's lowering builds for `(reduced x)`), read through
+  // `cljIsReduced` and `cljUnreduced`; the store answers a runtime-owned
+  // marker only until `reduced` below builds engine ones (light-cljs-666).
+  const reducedValues = (store => ({
+    has: value => __rt.cljIsReduced(value) || store.has(value),
+    get: value => __rt.cljIsReduced(value) ? __rt.cljUnreduced(value) : store.get(value),
+    set(value, payload) { store.set(value, payload); },
+    reset(value, payload) { store.reset(value, payload); }
+  }))(sharedStore());
+  //@unit reduced
+  // An engine reduced marker, which `reduce` on either side recognizes
+  // and which publishes.
+  function reduced(value) {
+    return __rt.cljReduced(value);
+  }
   //@unit eductions requires: sharedStore
   const eductions = sharedStore();
   //@unit ifnValues requires: sharedStore

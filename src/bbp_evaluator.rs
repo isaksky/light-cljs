@@ -580,6 +580,9 @@ impl Bridge {
                 .map_err(error)?;
         }
         if self.plain_scalars && s.object_identity(value).is_none() {
+            // Converted, though not retained: the count stays the nodes
+            // the bridge converted.
+            self.stats.imported += 1;
             return Ok(value);
         }
         // Every input node is an occurrence, including numbers and strings.

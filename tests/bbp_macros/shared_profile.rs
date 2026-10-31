@@ -1065,7 +1065,12 @@ fn shared_profile_reader_js_literals_are_engine_literals() {
         out.string().unwrap().to_string_lossy(),
         "compiler-literal js-array vector 2 compiler-literal js-object map 2 1 2"
     );
-    for member in ["readString", "read", "ednReadString", "readerInitialTagTable"] {
+    for member in [
+        "readString",
+        "read",
+        "ednReadString",
+        "readerInitialTagTable",
+    ] {
         let value = run(
             &rt,
             &format!("const rt = (\n{SHARED_RUNTIME}\n); return rt.core['{member}'];"),
