@@ -31,6 +31,43 @@ fn named_cache_tracks_prototypes_and_method_replacement() {
 }
 
 #[test]
+fn function_member_reads_follow_current_records_and_prototypes() {
+    check(
+        "function read(f) { return f.x; } function f(a,b) {} let ok=read(f)===undefined && typeof f.call==='function'; f.x=1; ok=ok && read(f)===1 && f.length===2 && f.name==='f'; Object.defineProperty(f,'x',{get(){return this===f ? 2 : -1;},configurable:true}); ok=ok && read(f)===2; delete f.x; f.y=9; ok && read(f)===undefined && f.y===9 && f.prototype.constructor===f",
+    );
+    check(
+        "function read(f) { return f.x; } class C { static get x(){return this===D ? 3 : 1;} } class D extends C {} let ok=read(C)===1 && read(D)===3; Object.defineProperty(D,'x',{value:4,configurable:true}); ok=ok && read(D)===4; delete D.x; ok && read(D)===3 && D.prototype instanceof C",
+    );
+    check(
+        "const key=Symbol('key'); function f() {} f[key]=7; const g=f.bind(null); g.x=8; function read(f){return f.x;} read(g)===8 && f[key]===7 && g.name==='bound f' && g.length===0",
+    );
+}
+
+#[test]
+fn function_member_reads_rebind_after_every_instruction_collection() {
+    let code = compile_function("function run() { function f(a) { return this.x+a; } f.x=4; function read(g){return g.x;} const o={x:3}; return read(f)===4 && f.call(o,2)===5 && f.prototype.constructor===f; }").unwrap();
+    for _ in 0..2 {
+        let runtime = Runtime::new();
+        let task = runtime.spawn(&code, &[]).unwrap();
+        loop {
+            match task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    runtime.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true));
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+}
+
+#[test]
 fn builtin_methods_preserve_lookup_and_observable_slow_paths() {
     check(include_str!("fixtures/js/builtin_cache.js"));
 }

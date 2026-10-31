@@ -682,6 +682,9 @@ enum Lookup {
     /// A function object: its own properties decide
     /// (`crate::vm::function::read`).
     Function,
+    /// An ordinary function without a property record or virtual metadata
+    /// for this key. Resolve the lazy realm outside its heap borrow.
+    FunctionPrototype,
     /// A shareable regex value without the key: continue at
     /// `RegExp.prototype` (`crate::regexp::shared`).
     RegExpPrototype,
@@ -1092,6 +1095,17 @@ fn lookup_cursor(
                             cache.map(|(_, cache)| cache),
                         ),
                     },
+                    Visit::Other(HeapObject::Function(f))
+                        if conversion || function::special(key).is_none() =>
+                    {
+                        // Captured code and computed names are irrelevant to
+                        // an ordinary member. Continue from the snapshot we
+                        // already hold, preserving the original receiver.
+                        Ok(match f.properties {
+                            Some(record) => Lookup::Next(Some(record)),
+                            None => Lookup::FunctionPrototype,
+                        })
+                    }
                     Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                         Ok(Lookup::Function)
                     }
@@ -1200,6 +1214,19 @@ fn lookup_cursor(
                 realm = heap.realm().get();
                 interned = None;
             }
+            Lookup::FunctionPrototype => {
+                id = function::function_prototype(heap)?;
+                realm = heap.realm().get();
+                // Constructing the realm may have interned an absent key.
+                // An executable's bound key remains valid throughout this
+                // operation, which has no collection point.
+                if let Key::Name(name) = key {
+                    interned = Some(match cache {
+                        Some((key, _)) => Some(key),
+                        None => heap.keys().lookup(name),
+                    });
+                }
+            }
             Lookup::Function => match if conversion {
                 // Conversion asks only for valueOf/toString, never for
                 // lazy own metadata such as prototype, length or name.
@@ -1223,7 +1250,10 @@ fn lookup_cursor(
                     // names) to continue at `Object.prototype`.
                     realm = heap.realm().get();
                     if let Key::Name(name) = key {
-                        interned = Some(heap.keys().lookup(name));
+                        interned = Some(match cache {
+                            Some((key, _)) => Some(key),
+                            None => heap.keys().lookup(name),
+                        });
                     }
                 }
             },

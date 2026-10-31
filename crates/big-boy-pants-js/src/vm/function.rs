@@ -707,7 +707,7 @@ fn intern(heap: &Heap, name: &str) -> Result<PropertyKey, Fault> {
 
 /// The name of `key` if it needs the function's own handling: `prototype`
 /// or one of [`FUNCTION_PROTOTYPE_NAMES`].
-fn special(key: &Key) -> Option<&'static str> {
+pub(super) fn special(key: &Key) -> Option<&'static str> {
     use crate::value::string::FixedText;
     static NAMES: [FixedText; 6] = [
         FixedText::new("prototype"),
