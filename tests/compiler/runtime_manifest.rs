@@ -233,7 +233,35 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
         "protocolVariables",
         "protocolGetters",
         "reifySites",
+        "namespaces",
+        // The reader's own state, declared at the top of its function
+        // (`SHARED_READER_STATE` in build.rs).
+        "streams",
+        "readerMaps",
+        "tags",
+        "builtinTags",
+        "defaultTag",
+        "activeDepth",
     ];
+    // The objects the reader's functions capture that no binding reaches,
+    // sealed where they are built (`SHARED_READER_REWRITES` in build.rs).
+    let reader_seals = [
+        (
+            "  })(__rt.seal({keyword: freshKeyword, ",
+            "  })({keyword: freshKeyword, ",
+        ),
+        (
+            "value instanceof Date ? 'instant' : null}));",
+            "value instanceof Date ? 'instant' : null});",
+        ),
+        (
+            "  const absent = __rt.seal({}), discarded = __rt.seal({});",
+            "  const absent = Object.freeze({}), discarded = Object.freeze({});",
+        ),
+    ];
+    for (sealed, _) in reader_seals {
+        assert_eq!(SHARED_RUNTIME.matches(sealed).count(), 1, "{sealed}");
+    }
     let defaults = profile.unit(profile.unit_named("sharedTaskDefaults").unwrap());
     let defaults = &SHARED_PROFILE[defaults.body_range.clone()];
     for name in per_task {
@@ -261,6 +289,9 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
                 &format!("const {name} = sharedWords("),
                 &format!("const {name} = new Set("),
             );
+        }
+        for (sealed, plain) in reader_seals {
+            line = line.replace(sealed, plain);
         }
         line.replace(cells, "coreCells.")
             .replace("globalThis.__lightSharedCells[", "coreCells[")
