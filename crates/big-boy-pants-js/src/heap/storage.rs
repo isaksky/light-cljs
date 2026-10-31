@@ -667,20 +667,25 @@ impl ObjectTable {
         conditional: &mut dyn gc::ConditionalVisitor,
         atoms: &mut Vec<Value>,
     ) -> bool {
-        let Some(slot) = self.slot(id) else {
+        let Some(segment) = self.segments.get(id.index as usize / SEGMENT_SIZE) else {
             return false;
         };
         // One thread marks, with the world stopped: a load and a store, not
         // a read-modify-write per reached edge.
         let offset = id.index as usize % SEGMENT_SIZE;
-        let marked = &self.segments[id.index as usize / SEGMENT_SIZE].marked[offset / 64];
+        let marked = &segment.marked[offset / 64];
         let bit = 1u64 << (offset % 64);
         let bits = marked.load(Ordering::Relaxed);
         if bits & bit != 0 {
+            // Already reached, or a stale identity for a reached occupant:
+            // neither needs another slot read or contributes a first visit.
             return false;
         }
+        let slot = &segment.slots[offset];
+        let Some(state) = slot.current(id) else {
+            return false;
+        };
         marked.store(bits | bit, Ordering::Relaxed);
-        let state = slot.state.load(Ordering::Acquire);
         if state & FROZEN != 0 {
             // SAFETY: live (checked above under the table lock, which
             // excludes sweep) and frozen (rule 2).
@@ -1722,10 +1727,10 @@ mod tests {
     /// A collection's work is its traced edges: 20,000 live vectors of the
     /// same ten leaves trace about ten times as many edges as there are
     /// live objects, and the next automatic collection waits as many
-    /// allocations as were traced, not just as many as are live
-    /// (light-cljs-674).
+    /// allocations as were traced, plus one per live object visit
+    /// (light-cljs-674/695).
     #[test]
-    fn the_next_automatic_collection_waits_as_many_allocations_as_were_traced() {
+    fn the_next_automatic_collection_amortizes_edges_and_first_object_visits() {
         let heap = Arc::new(Heap::default());
         let leaves: Vec<Value> = (0..10)
             .map(|_| Value::Object(owned(&heap, OWNER)))
@@ -1741,7 +1746,7 @@ mod tests {
         assert!(stats.traced >= 1 + 20_000 + 200_000, "{stats:?}");
         assert_eq!(
             heap.next_collection.load(Ordering::Relaxed),
-            stats.traced,
+            stats.traced + stats.live,
             "{stats:?}"
         );
         assert_eq!(heap.stats().traced_edges, stats.traced as u64);

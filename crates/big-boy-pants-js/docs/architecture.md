@@ -141,6 +141,13 @@ releasing its byte charge early. No mutator, reservation or second collection
 can access or reuse a pending body. Cleanup guards destroy the rest of a batch
 and return its slots even when a native payload's destructor unwinds.
 
+Four-word bitmaps record live and marked slots per segment. Allocation sets
+its live bit before publishing the slot's state; the stopped collector uses
+`live & !marked` to enumerate garbage and clears marks a word at a time.
+Empty and wholly reached segments require no slot scan. Accessors still use
+the generation and `LIVE` flag in the slot state, and pending bodies have no
+live bit. The bitmaps never authorize a body reference on their own.
+
 Existing objects are no longer reached through the object-table lock
 (light-cljs-471). There are two access classes per slot:
 
