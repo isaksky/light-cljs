@@ -50,6 +50,31 @@ pub(crate) enum Value {
 }
 
 impl Value {
+    /// Drop `self`, calling the out-of-line destructor only for the
+    /// variants that own a reference count. The interpreter discards an
+    /// operand or overwritten local on most instructions, and most are
+    /// numbers, booleans or object ids, which own nothing.
+    #[inline(always)]
+    pub(crate) fn release(self) {
+        if matches!(self, Value::String(_) | Value::Symbol(_) | Value::BigInt(_)) {
+            drop(self);
+        } else {
+            // Nothing to release: the remaining variants own no storage.
+            std::mem::forget(self);
+        }
+    }
+
+    /// Shorten `values` to `len`, releasing the removed values with
+    /// [`Value::release`].
+    #[inline]
+    pub(crate) fn truncate(values: &mut Vec<Value>, len: usize) {
+        while values.len() > len {
+            if let Some(value) = values.pop() {
+                value.release();
+            }
+        }
+    }
+
     /// JavaScript ToBoolean for the supported value types.
     pub(crate) fn truthy(&self) -> bool {
         match self {

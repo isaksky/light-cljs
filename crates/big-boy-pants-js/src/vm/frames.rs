@@ -761,7 +761,7 @@ impl VmState {
         if len < self.top().floor() {
             return Err(Fault::Internal("operand stack underflow"));
         }
-        self.stack.truncate(len);
+        Value::truncate(&mut self.stack, len);
         Ok(())
     }
 
@@ -899,26 +899,36 @@ impl VmState {
                     return false;
                 }
                 let value = self.stack.pop().expect("checked operand");
-                self.stack[at] = value;
+                std::mem::replace(&mut self.stack[at], value).release();
             }
             Instr::Pop if depth > 0 => {
-                self.stack.pop();
+                if let Some(value) = self.stack.pop() {
+                    value.release();
+                }
             }
             Instr::Dup if depth > 0 => self.push(self.stack[len - 1].clone()),
             Instr::Not if depth > 0 => {
-                self.stack[len - 1] = Value::Bool(!self.stack[len - 1].truthy())
+                let not = Value::Bool(!self.stack[len - 1].truthy());
+                std::mem::replace(&mut self.stack[len - 1], not).release();
             }
             Instr::StrictEq if depth >= 2 => {
                 let equal = self.stack[len - 2].strict_equals(&self.stack[len - 1]);
-                self.stack.pop();
-                self.stack[len - 2] = Value::Bool(equal);
+                if let Some(value) = self.stack.pop() {
+                    value.release();
+                }
+                std::mem::replace(&mut self.stack[len - 2], Value::Bool(equal)).release();
             }
             Instr::Jump(target) => {
                 self.top_mut().pc = target as usize;
                 return true;
             }
             Instr::JumpIfFalse(target) if depth > 0 => {
-                let taken = !self.stack.pop().expect("checked operand").truthy();
+                let taken = {
+                    let value = self.stack.pop().expect("checked operand");
+                    let taken = !value.truthy();
+                    value.release();
+                    taken
+                };
                 self.top_mut().pc = if taken {
                     target as usize
                 } else {
@@ -976,8 +986,10 @@ impl VmState {
                     Instr::Le | Instr::CompareLe => Value::Bool(a <= b),
                     _ => Value::Bool(a >= b),
                 };
-                self.stack.pop();
-                self.stack[len - 2] = value;
+                if let Some(top) = self.stack.pop() {
+                    top.release();
+                }
+                std::mem::replace(&mut self.stack[len - 2], value).release();
             }
             _ => return false,
         }
@@ -1006,7 +1018,7 @@ impl VmState {
             .checked_sub(popped)
             .filter(|&keep| keep >= self.top().floor())
             .ok_or_else(|| Fault::Internal("operand stack underflow"))?;
-        self.stack.truncate(keep);
+        Value::truncate(&mut self.stack, keep);
         self.stack.push(result);
         Ok(())
     }
@@ -1114,7 +1126,7 @@ impl VmState {
             None => Some(result),
             Some(frame) => {
                 self.pending_arguments -= frame.arguments.as_ref().map_or(0, Vec::len);
-                self.stack.truncate(frame.base);
+                Value::truncate(&mut self.stack, frame.base);
                 let result = match result {
                     Value::Object(_) => result,
                     _ if frame.construct => frame.this,
