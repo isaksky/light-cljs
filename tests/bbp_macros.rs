@@ -11817,6 +11817,13 @@ const LANE_FIXTURES: &[(&str, bool, Result<&str, &str>)] = &[
         false,
         Err("outside.m reached compile-time state of outside.k, which it does not require"),
     ),
+    // `find-ns` and `all-ns` from `views.m`'s macro see `views.x`, loaded
+    // first, only from `b`, which requires it.
+    (
+        "views.main",
+        false,
+        Ok("[[false true false] [true true true]]\n"),
+    ),
 ];
 
 /// Compile-time atoms keep their `--jobs 1` order at one, two, four and

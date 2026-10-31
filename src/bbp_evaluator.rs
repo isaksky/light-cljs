@@ -3377,12 +3377,20 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                             lanes.namespace_view(task)
                         });
                     let (log, _held) = lock_log();
+                    // A namespace outside the reader's require closure is
+                    // not there (light-cljs-672); asked before the locks.
+                    let (sees, hidden) = match (self.2, op as u8) {
+                        (Some(lanes), b'f') => (lanes.sees(task, name), Default::default()),
+                        (Some(lanes), _) => (true, lanes.hidden(task)),
+                        (None, _) => (true, Default::default()),
+                    };
                     let read = |floors: &HashMap<_, _>| {
                         if op as u8 == b'f' {
-                            return Ok(Primitive::Bool(log.has(name, &view, floors)));
+                            return Ok(Primitive::Bool(sees && log.has(name, &view, floors)));
                         }
                         let mut text: Vec<u16> = Vec::new();
-                        for name in log.names(&view, floors) {
+                        let names = log.names(&view, floors);
+                        for name in names.into_iter().filter(|n| !hidden.contains(*n)) {
                             text.extend(name.len().to_string().encode_utf16());
                             text.push(u16::from(b':'));
                             text.extend_from_slice(name);

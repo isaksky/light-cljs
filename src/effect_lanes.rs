@@ -897,6 +897,43 @@ impl Lanes {
         drop(s);
         self.check_home(task, home)
     }
+    /// Whether `task`'s current activity sees namespace `name` in the
+    /// registry (`find-ns`, `all-ns`): a namespace of this compilation's
+    /// sources only when its unit's or pass's namespace requires it, as
+    /// the require closure rule says (light-cljs-672); every other name
+    /// (`cljs.core`, `cljs.user`, `create-ns`) always.
+    pub(crate) fn sees(&self, task: u64, name: &[u16]) -> bool {
+        if !self.enabled() {
+            return true;
+        }
+        let s = self.lock();
+        let Some(position) = s.tops.get(&task).and_then(|top| top.position) else {
+            return true;
+        };
+        let Some(&home) = String::from_utf16(name)
+            .ok()
+            .and_then(|name| s.sources.get(&name))
+        else {
+            return true;
+        };
+        s.reaches(s.source_at(position), home)
+    }
+    /// The namespaces `task`'s current activity does not see
+    /// ([`Self::sees`]), as UTF-16 names.
+    pub(crate) fn hidden(&self, task: u64) -> HashSet<Vec<u16>> {
+        if !self.enabled() {
+            return HashSet::new();
+        }
+        let s = self.lock();
+        let Some(position) = s.tops.get(&task).and_then(|top| top.position) else {
+            return HashSet::new();
+        };
+        let source = s.source_at(position);
+        (s.sources.iter())
+            .filter(|&(_, &home)| !s.reaches(source, home))
+            .map(|(name, _)| name.encode_utf16().collect())
+            .collect()
+    }
     /// Before `task` selects the caller that runs the initializer of
     /// catalog unit `unit`: the lane of the unit's namespace, as for an atom
     /// homed there ([`Self::check`]). Only an activity whose require

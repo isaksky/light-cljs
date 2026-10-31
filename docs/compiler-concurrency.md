@@ -3210,9 +3210,11 @@ state and determinism"; this is what was delivered.
   require K. So a namespace outside the closure never touches the state, at
   any thread count, and its units cannot be ordered against it. The check
   is the same at `--jobs 1`, so the error does not depend on N (fixture
-  `outside`, tests/fixtures/native-lanes). What the rule does not restrict
-  yet: `find-ns`, `all-ns` and the registry still answer in load order (the
-  registry's lane waits for every earlier unit, so that stays ordered),
+  `outside`, tests/fixtures/native-lanes). `find-ns`, `all-ns` and
+  `the-ns` see a namespace of the build's sources only from a unit or pass
+  whose namespace requires it (fixture `views`); other names (`cljs.user`,
+  `cljs.core`, `create-ns`) stay as they were, and the registry's lane
+  still waits for every earlier unit. What the rule does not restrict yet:
   reader contexts, and the extension frontier of protocols and multimethods
   (a multimethod's table is read at the load-order frontier; a method
   defined outside the reader's closure that touches its own namespace's
