@@ -514,7 +514,7 @@ pub struct HeapPolicy {
     /// objects until swept. This is an object count, not a byte or RSS cap.
     pub hard_limit_objects: Option<usize>,
     /// Aggregate accounted-byte admission limit (`docs/architecture.md`,
-    /// "Byte accounting"): object slots and their boxed bodies, property and
+    /// "Byte accounting"): object slots and their inline bodies, property and
     /// element storage, strings, BigInts, buffers, native collections and
     /// forms, saved continuations and retained native-operation scratch.
     /// Each is charged conservatively before it is allocated, so a denial

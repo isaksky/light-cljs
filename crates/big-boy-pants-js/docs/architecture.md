@@ -107,7 +107,7 @@ errors, JSON classification and script-only CLI behavior are explicit in
 
 There is one precise nonmoving stop-the-world tracing heap. Private object IDs
 are slot plus generation; reuse increments the generation and an exhausted
-generation retires the slot. Objects are boxed and never relocate. `Rooted` is
+generation retires the slot. Bodies stay in their stable slots until reclaimed. `Rooted` is
 a persistent host root, `Local` belongs to `Runtime::scope`, and `WeakHandle`
 does not retain a value. A Rust local containing a raw VM value is not a root.
 Scopes register their locals in the heap; do not carry a scope across task

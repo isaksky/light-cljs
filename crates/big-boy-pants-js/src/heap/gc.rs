@@ -274,14 +274,18 @@ struct Marks {
 #[inline]
 fn enqueue(
     objects: &super::ObjectTable,
+    marks: &Marks,
     grey: &mut Vec<TraceEdge>,
     traced: &mut usize,
     edge: TraceEdge,
 ) {
     *traced += 1;
-    if let TraceEdge::Object(id) = edge
-        && objects.marked_slot(id)
-    {
+    let marked = match edge {
+        TraceEdge::Object(id) => objects.marked_slot(id),
+        TraceEdge::PropertyKey(key) => marks.key_marked(key),
+        TraceEdge::Symbol(_) => false,
+    };
+    if marked {
         return;
     }
     grey.push(edge);
@@ -1422,7 +1426,7 @@ impl Heap {
                     // object's conditional storage.
                     if !objects.mark(
                         id,
-                        &mut |child| enqueue(&objects, &mut grey, &mut traced, child),
+                        &mut |child| enqueue(&objects, &marks, &mut grey, &mut traced, child),
                         &mut discovery,
                         &mut retired,
                     ) {
@@ -1436,7 +1440,7 @@ impl Heap {
                         for (key, value) in discovery.entries.drain(..) {
                             if marks.contains(&objects, key) {
                                 value.trace(&mut |child| {
-                                    enqueue(&objects, &mut grey, &mut traced, child)
+                                    enqueue(&objects, &marks, &mut grey, &mut traced, child)
                                 });
                             } else {
                                 pending.entry(key).or_default().push(value);
@@ -1453,7 +1457,7 @@ impl Heap {
             if !pending.is_empty()
                 && let Some(values) = pending.remove(&edge)
             {
-                values.trace(&mut |child| enqueue(&objects, &mut grey, &mut traced, child));
+                values.trace(&mut |child| enqueue(&objects, &marks, &mut grey, &mut traced, child));
             }
         }
         drop(code_marking);

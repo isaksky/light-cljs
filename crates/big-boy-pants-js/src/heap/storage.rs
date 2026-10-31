@@ -765,6 +765,7 @@ impl ObjectTable {
         let mut garbage = Garbage {
             segments: Vec::new(),
             len: 0,
+            _collecting_thread: std::marker::PhantomData,
         };
         for (segment_index, segment) in self.segments.iter().enumerate().rev() {
             if segment.live() == 0 {
@@ -884,6 +885,8 @@ impl ObjectTable {
 pub(super) struct Garbage<'h> {
     segments: Vec<PendingSegment<'h>>,
     len: usize,
+    /// Reclamation stays on the collecting thread, including unwinding.
+    _collecting_thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 impl Garbage<'_> {
