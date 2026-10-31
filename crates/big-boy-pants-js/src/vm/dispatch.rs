@@ -680,6 +680,28 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
             return Ok(Flow::FrameChanged);
         }
         Some(Callee::Builtin(which)) => {
+            // The common f.call(receiver, ...args) hop can reuse the rooted
+            // operands. Only an ordinary function qualifies: bound functions
+            // and Proxies retain their forwarding/trap path below.
+            if which == Builtin::FunctionPrototypeCall
+                && let Value::Object(target) = this
+                && let Some(code) = heap
+                    .read(target, |object| match object {
+                        HeapObject::Function(f) => Some(state.code_cache.get(&f.code)),
+                        _ => None,
+                    })
+                    .flatten()
+            {
+                let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+                let forwarded = argc.saturating_sub(1);
+                // [target, call, receiver?, args...] -> [target, args...].
+                state.remove_operand(argc)?;
+                if argc != 0 {
+                    state.remove_operand(forwarded)?;
+                }
+                state.enter(code, target, receiver, forwarded)?;
+                return Ok(Flow::FrameChanged);
+            }
             if let Some(result) =
                 native::try_builtin_leaf(heap, state.diag.task, which, &this, args)?
             {

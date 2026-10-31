@@ -49,6 +49,27 @@ fn eval(src: &str) -> ValueView {
     }
 }
 
+/// Synthetic fixtures: forwarding retains the original receiver, actual
+/// arguments and observable lookup, including targets requiring the slow path.
+#[test]
+fn call_forwarding_reuses_operands_without_changing_call_semantics() {
+    for source in [
+        "function f(a,b) { 'use strict'; return this === 7 && a === 2 && b === 3 && arguments.length === 3 && arguments[2] === 4; } f.call(7,2,3,4)",
+        "function f(a) { 'use strict'; return this === undefined && a === undefined && arguments.length === 0; } f.call()",
+        "function f() { 'use strict'; return this === null && arguments.length === 0; } f.call(null)",
+        "function f(a) { return this.x + a; } const o = {x:4}; f.call(o,3) === 7",
+        "function f(a) { return a+1; } f.call = function(a) { return this === f && a === 4; }; f.call(4)",
+        "function f(a) { return a; } let n=0; Object.defineProperty(f,'call',{get(){n++;return Function.prototype.call;}}); f.call(null,9) === 9 && n === 1",
+        "function f(a,b) { return this.x+a+b; } const g=f.bind({x:10},2); g.call({x:99},3) === 15",
+        "function f(a) { return a; } let n=0; const p=new Proxy(f,{apply(t,r,a){n++;return r.x+a[0];}}); p.call({x:4},3) === 7 && n === 1",
+        "class C {} let caught=false; try { C.call(null); } catch(e) { caught=e instanceof TypeError; } caught",
+        "function f() { throw 42; } let caught=false; try { f.call(null); } catch(e) { caught=e === 42; } caught",
+        "function f(a) { return a+1; } const o={call:Function.prototype.call}; o.call.call(f,null,8) === 9",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn function_constructor() {
