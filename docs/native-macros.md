@@ -2299,7 +2299,12 @@ task's lane before it claims the cell (the engine's realization gate,
 `Runtime::set_realization_gate`), so the earliest caller in source order
 computes either value with its own bindings, as with one thread, also when a
 later caller has no binding at all
-(`published_once_cells_keep_source_order_bindings`). Until light-cljs-676 the
+(`published_once_cells_keep_source_order_bindings`). The cell's claim itself
+reports that the gate is due, under the cell's lock, so a caller that saw
+another task's attempt running and then finds it failed asks the gate rather
+than running the thunk or taking that failure: the earliest caller's retry
+decides the value (`a_gated_reader_of_a_failed_attempt_asks_the_gate_before_it_claims`
+in the engine's tests/delays.rs). Until light-cljs-676 the
 installation itself waited for the lane (728ef1e8), which made every macro
 `binding` wait for every earlier unit: on Penpot `app.main` at 4 threads, 466
 of 496 lane waits and the 20 s longest one; and it did not order a later

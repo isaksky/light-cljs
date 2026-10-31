@@ -37,8 +37,13 @@
 //!   shared cell that nobody has realized or is realizing, it asks a host
 //!   effect and reads the dependency the answer names, so the embedder
 //!   chooses which task runs a published thunk whose result depends on the
-//!   task's own state (light-cljs-665). Readers of a cell another task is
-//!   realizing, and of a realized one, are not gated.
+//!   task's own state (light-cljs-676). The claim itself reports that the
+//!   gate is due ([`Claim::Gate`]), under the cell's lock, so no task runs
+//!   the thunk unadmitted, also when the attempt it saw running fails or is
+//!   abandoned before it claims. Readers of a cell another task is
+//!   realizing, and of a realized one, are not gated; a gated reader of an
+//!   attempt that failed asks the gate instead of taking that failure,
+//!   since the earliest caller decides the outcome.
 //!
 //! # Exceptions
 //!
@@ -279,6 +284,11 @@ pub(crate) enum Claim {
     Failed(LazyFailure),
     /// This task is already realizing the cell.
     Reentered,
+    /// Nobody has realized the shared cell or is realizing it, and the
+    /// caller has not passed the embedder's realization gate
+    /// ([`crate::Runtime::set_realization_gate`]): it asks the gate, then
+    /// claims again. Nothing changed.
+    Gate,
     /// This task is already realizing the delay: as in ClojureScript, it
     /// calls `thunk` again, or reads `provisional`, the value an earlier
     /// such call returned.
@@ -494,16 +504,15 @@ impl LazyCell {
         })
     }
 
-    /// Whether nobody has realized the cell or is realizing it now: a claim
-    /// would run its thunk. A hint; [`LazyCell::claim`] decides.
-    pub(crate) fn is_free(&self) -> bool {
-        self.realized.get().is_none() && lock(&self.state).realizer.is_none()
-    }
-
     /// Claim the cell for `task`, or report why it cannot. `waited` is the
     /// attempt this reader parked on, if it did: a failure of that attempt
-    /// is reported to it even if a later attempt has ended since.
-    pub(crate) fn claim(&self, task: TaskId, waited: Option<u64>) -> Claim {
+    /// is reported to it even if a later attempt has ended since. `gated`:
+    /// the caller has not passed the embedder's realization gate, which a
+    /// shared cell nobody has realized or is realizing requires
+    /// ([`Claim::Gate`]); such a reader of a failed attempt asks the gate
+    /// instead of taking the failure.
+    pub(crate) fn claim(&self, task: TaskId, waited: Option<u64>, gated: bool) -> Claim {
+        let gated = gated && self.is_shared();
         if waited.is_none() && self.realized.get().is_some() {
             return Claim::Realized;
         }
@@ -520,7 +529,9 @@ impl LazyCell {
             if failed.readers.is_empty() {
                 state.failures.remove(i);
             }
-            return Claim::Failed(failure);
+            if !gated {
+                return Claim::Failed(failure);
+            }
         }
         if self.realized.get().is_some() {
             return Claim::Realized;
@@ -532,6 +543,7 @@ impl LazyCell {
             },
             Some((t, _)) if t == task => Claim::Reentered,
             Some((_, attempt)) => Claim::Busy { attempt },
+            None if gated => Claim::Gate,
             None => {
                 state.attempts += 1;
                 let attempt = state.attempts;
@@ -1109,7 +1121,7 @@ mod tests {
     }
 
     fn run(cell: &LazyCell) -> u64 {
-        match cell.claim(TaskId::from_raw(1), None) {
+        match cell.claim(TaskId::from_raw(1), None, false) {
             Claim::Run { attempt, .. } => attempt,
             other => panic!("expected a claim, got {other:?}"),
         }
@@ -1167,27 +1179,30 @@ mod reader_tests {
         );
         let waits = Arc::new(LazyWaits::default());
         let cell = LazyCell::new(Value::Undefined);
-        let Claim::Run { attempt, .. } = cell.claim(a, None) else {
+        let Claim::Run { attempt, .. } = cell.claim(a, None, false) else {
             panic!("no claim");
         };
-        assert!(matches!(cell.claim(b, None), Claim::Busy { .. }));
+        assert!(matches!(cell.claim(b, None, false), Claim::Busy { .. }));
         assert!(cell.subscribe(waiter(2), attempt, &waits));
         // C sees attempt 1 busy, then it fails before C parks.
-        assert!(matches!(cell.claim(c, None), Claim::Busy { .. }));
+        assert!(matches!(cell.claim(c, None, false), Claim::Busy { .. }));
         let failure = LazyFailure::Message(JsString::from("boom"));
         assert_eq!(cell.settle(attempt, Some(Err(failure)), false), Ok(()));
         assert!(!cell.subscribe(waiter(3), attempt, &waits));
         // C runs a new attempt; B still receives attempt 1's failure.
         let Claim::Run {
             attempt: second, ..
-        } = cell.claim(c, Some(attempt))
+        } = cell.claim(c, Some(attempt), false)
         else {
             panic!("C did not claim a new attempt");
         };
-        assert!(matches!(cell.claim(b, Some(attempt)), Claim::Failed(_)));
+        assert!(matches!(
+            cell.claim(b, Some(attempt), false),
+            Claim::Failed(_)
+        ));
         assert_eq!(cell.settle(second, None, false), Ok(()));
         // A withdrawn reader releases the failure kept for it.
-        let Claim::Run { attempt: third, .. } = cell.claim(a, None) else {
+        let Claim::Run { attempt: third, .. } = cell.claim(a, None, false) else {
             panic!("no claim");
         };
         assert!(cell.subscribe(waiter(2), third, &waits));

@@ -227,20 +227,21 @@ impl Realize {
                 return Ok(action);
             }
             // A shared cell's thunk can read the realizing task's own state,
-            // so the embedder chooses the task that runs it: ask before the
-            // claim, unless another task realized it or is realizing it.
-            if !self.admitted
-                && self.cell.is_shared()
-                && self.cell.is_free()
-                && let Some((effect, kind)) = heap.realizing.gate()
-            {
-                self.gating = Gating::Asked(kind);
-                return Ok(Action::Instruction {
-                    instr: Instr::HostEffect(effect),
-                    operands: vec![Value::Number(0.0)],
-                });
-            }
-            match self.cell.claim(task, self.waited) {
+            // so the embedder chooses the task that runs it: the claim asks
+            // for the gate, under the cell's lock, unless another task
+            // realized it or is realizing it.
+            let gate = heap.realizing.gate().filter(|_| !self.admitted);
+            match self.cell.claim(task, self.waited, gate.is_some()) {
+                Claim::Gate => {
+                    let Some((effect, kind)) = gate else {
+                        return Err(Fault::Internal("realization gate without a gate"));
+                    };
+                    self.gating = Gating::Asked(kind);
+                    return Ok(Action::Instruction {
+                        instr: Instr::HostEffect(effect),
+                        operands: vec![Value::Number(0.0)],
+                    });
+                }
                 Claim::Realized => return Ok(self.resume()),
                 Claim::Run { thunk, attempt } => {
                     self.attempt = Some(attempt);

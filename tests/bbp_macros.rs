@@ -5325,7 +5325,10 @@ fn a_macro_binding_does_not_wait_for_earlier_units() {
 /// first and must wait at the engine's realization gate (the hold needs
 /// workers besides the one holding `app/a`, so it runs at 4 and 8 threads).
 /// Without the gate the unbound `app/c` realizes `d2` and `s2` with `:root`
-/// at 2 threads.
+/// at 2 threads. `f` fails while `*fail*` is bound (light-cljs-676 review):
+/// `app/a` forces it failing, catches, and forces it again; a later caller
+/// that waited for the failed attempt must not take its failure or run the
+/// thunk unadmitted, so every caller reads `app/a`'s retried `:early`.
 #[test]
 fn published_once_cells_keep_source_order_bindings() {
     use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
@@ -5339,10 +5342,15 @@ fn published_once_cells_keep_source_order_bindings() {
             (def s (lazy-seq (list *x*)))
             (def d2 (delay *x*))
             (def s2 (lazy-seq (list *x*)))
-            (defmacro warm [] [(realized? d) (realized? s) (realized? d2) (realized? s2)])
-            (defmacro early [] (binding [*x* :early] (list 'quote [@d (first s) @d2 (first s2)])))
-            (defmacro late [] (binding [*x* :late] (list 'quote [@d (first s)])))
-            (defmacro plain [] (list 'quote [@d2 (first s2)]))"#,
+            (def ^:dynamic *fail* false)
+            (def f (delay (if *fail* (throw (js/Error. "boom")) *x*)))
+            (defmacro warm [] [(realized? d) (realized? s) (realized? d2) (realized? s2) (realized? f)])
+            (defmacro early []
+              (binding [*x* :early]
+                (list 'quote [@d (first s) @d2 (first s2)
+                              (try (binding [*fail* true] @f) (catch :default _ :caught)) @f])))
+            (defmacro late [] (binding [*x* :late] (list 'quote [@d (first s) @f])))
+            (defmacro plain [] (list 'quote [@d2 (first s2) @f]))"#,
         ),
         (
             "app.cljs",
@@ -5397,7 +5405,8 @@ fn published_once_cells_keep_source_order_bindings() {
     let (reference, _) = build(true, 1, false);
     assert_eq!(
         program_output(&reference),
-        "[[false false false false] [:early :early :early :early] [:early :early] [:early :early]]\n"
+        "[[false false false false false] [:early :early :early :early :caught :early] \
+         [:early :early :early] [:early :early :early]]\n"
     );
     #[cfg(feature = "quickjs")]
     assert_eq!(build(false, 1, false).0, reference, "QuickJS reference");

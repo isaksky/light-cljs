@@ -570,27 +570,254 @@ fn provisional_delay_value_survives_collection() {
 
 /// Answers the realization gate (`__rt.effect(2, 0)`) with `gate`: 0 lets
 /// the task claim the cell, another number names the dependency it reads
-/// first. Counts body runs (`__rt.effect(1, …)`) and gate questions.
+/// first; `reject` fails the effect instead. Counts body runs
+/// (`__rt.effect(1, …)`), holding the first at two barriers ("inside the
+/// body" and "may return") when `hold` is set, and gate questions.
 #[derive(Clone, Default)]
 struct Gated {
     gate: f64,
+    reject: bool,
     runs: Arc<AtomicUsize>,
     asked: Arc<AtomicUsize>,
+    hold: Option<(Arc<Barrier>, Arc<Barrier>)>,
 }
 
 impl Host for Gated {
     fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
         match call.op {
-            1 => Ok(Primitive::Number(
-                self.runs.fetch_add(1, Ordering::SeqCst) as f64
-            )),
+            1 => {
+                let run = self.runs.fetch_add(1, Ordering::SeqCst);
+                if run == 0
+                    && let Some((inside, release)) = &self.hold
+                {
+                    inside.wait();
+                    release.wait();
+                }
+                Ok(Primitive::Number(run as f64))
+            }
             2 => {
                 self.asked.fetch_add(1, Ordering::SeqCst);
+                if self.reject {
+                    return Err("gate refused".into());
+                }
                 Ok(Primitive::Number(self.gate))
             }
             op => Err(format!("unexpected effect {op}")),
         }
     }
+}
+
+/// A published delay whose body throws `"boom"` on its first run (counted
+/// by `__rt.effect(1, …)`) and returns `[1 2 3]` after.
+fn delay_failing_once(rt: &Runtime) -> Rooted {
+    let make = compile_function(
+        "function make() {
+           return __rt.delay(() => {
+             if (__rt.effect(1, 0) === 0) throw 'boom';
+             return __rt.formVector(1, 2, 3);
+           }, null);
+         }",
+    )
+    .unwrap();
+    let RunOutcome::Complete(delay) = rt.spawn(&make, &[]).unwrap().run().unwrap() else {
+        panic!("maker failed");
+    };
+    rt.publish(&delay).unwrap();
+    delay
+}
+
+/// A run's outcome as text: a reader's answer, or how the run ended.
+fn outcome(result: Result<RunOutcome, big_boy_pants_js::RunError>) -> String {
+    match result {
+        Ok(RunOutcome::Complete(v)) => v.string().unwrap().to_string_lossy(),
+        Ok(RunOutcome::Failed(e)) => format!("failed: {e}"),
+        Ok(RunOutcome::Cancelled) => "cancelled".into(),
+        Ok(RunOutcome::Waiting(key)) => format!("waiting {:?}", key.kind()),
+        other => format!("{other:?}"),
+    }
+}
+
+/// A gated reader that waited for another task's attempt, which then
+/// failed, asks the gate before it claims (light-cljs-676 review): it
+/// neither runs the body unadmitted nor takes that failure. The earlier
+/// task A (admitted) runs the body, which throws; the later task B, gate
+/// closed, finds A's attempt running and waits for it. A catches the
+/// failure; B wakes, finds the cell free and asks the gate, without running
+/// the body. A forces again and realizes the delay; B, once its gate
+/// opens, reads A's value, as with one thread, where B runs after A.
+#[test]
+fn a_gated_reader_of_a_failed_attempt_asks_the_gate_before_it_claims() {
+    let rt = Runtime::new();
+    let gate_kind = ResultKind::new(9);
+    rt.set_realization_gate(2, gate_kind);
+    let delay = delay_failing_once(&rt);
+    let runs = Arc::new(AtomicUsize::new(0));
+    let (inside, release) = (Arc::new(Barrier::new(2)), Arc::new(Barrier::new(2)));
+    let open = Gated {
+        runs: runs.clone(),
+        hold: Some((inside.clone(), release.clone())),
+        ..Default::default()
+    };
+    let closed = Gated {
+        gate: 5.0,
+        runs: runs.clone(),
+        ..Default::default()
+    };
+    let (a, b) = (reader(&rt, &delay), reader(&rt, &delay));
+    let first = {
+        let (a, mut host) = (a.clone(), open.clone());
+        thread::spawn(move || a.run_with(Budget::UNLIMITED, &mut host))
+    };
+    inside.wait();
+    // B finds A's attempt running and waits for it, without the gate.
+    let key = match b.run_with(Budget::UNLIMITED, &mut closed.clone()) {
+        Ok(RunOutcome::Waiting(key)) => key,
+        other => panic!("expected a realization wait, got {other:?}"),
+    };
+    assert_eq!(key.kind(), LAZY_REALIZATION);
+    assert_eq!(closed.asked.load(Ordering::SeqCst), 0);
+    release.wait();
+    assert_eq!(outcome(first.join().unwrap()), "caught boom");
+    let woken = rt.take_lazy_wakeups();
+    assert_eq!(woken.iter().map(Task::id).collect::<Vec<_>>(), [b.id()]);
+    // B asks the gate now: no failure of A's, no run of its own.
+    let gate = match b.run_with(Budget::UNLIMITED, &mut closed.clone()) {
+        Ok(RunOutcome::Waiting(key)) => key,
+        other => panic!("expected a gate wait, got {}", outcome(other)),
+    };
+    assert_eq!(gate.kind(), gate_kind);
+    assert_eq!(closed.asked.load(Ordering::SeqCst), 1);
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    // A forces again (it caught the failure) and realizes the delay.
+    assert_eq!(
+        outcome(reader(&rt, &delay).run_with(Budget::UNLIMITED, &mut open.clone())),
+        "vector 3"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 2);
+    let request = b.take_producer_requests().pop().unwrap();
+    let answer = rt.root(Primitive::Number(0.0));
+    let b = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            Completion::Ready(&answer),
+        )
+        .unwrap()
+        .into_runnable()
+        .pop()
+        .unwrap();
+    assert_eq!(
+        outcome(b.run_with(Budget::UNLIMITED, &mut closed.clone())),
+        "vector 3"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 2, "B ran the body");
+}
+
+/// A gated reader that never gets in (light-cljs-676 review): its host
+/// rejects the gate effect, its gate dependency fails or is cancelled, or
+/// the task is cancelled while it waits at the gate. It ends with that
+/// failure or cancellation, has not run the body, and leaves the cell free:
+/// an admitted reader then realizes it, once.
+#[test]
+fn realization_gate_errors_and_cancellation_leave_the_cell_unclaimed() {
+    let rt = Runtime::new();
+    let gate_kind = ResultKind::new(9);
+    rt.set_realization_gate(2, gate_kind);
+    let delay = shared_delay(&rt, false);
+    let runs = Arc::new(AtomicUsize::new(0));
+    let closed = Gated {
+        gate: 5.0,
+        runs: runs.clone(),
+        ..Default::default()
+    };
+    // The host rejects the gate effect: the run fails with its error.
+    let rejecting = Gated {
+        reject: true,
+        runs: runs.clone(),
+        ..Default::default()
+    };
+    let rejected = outcome(reader(&rt, &delay).run_with(Budget::UNLIMITED, &mut rejecting.clone()));
+    assert!(
+        rejected.starts_with("failed: HostEffect: gate refused"),
+        "{rejected}"
+    );
+    assert_eq!(rejecting.asked.load(Ordering::SeqCst), 1);
+    // Each of the other three parks at the gate first, on a dependency of
+    // its own.
+    let gated = |dependency: f64| {
+        let task = reader(&rt, &delay);
+        let key = match task.run_with(
+            Budget::UNLIMITED,
+            &mut Gated {
+                gate: dependency,
+                ..closed.clone()
+            },
+        ) {
+            Ok(RunOutcome::Waiting(key)) => key,
+            other => panic!("expected a gate wait, got {}", outcome(other)),
+        };
+        assert_eq!(key.kind(), gate_kind);
+        assert_eq!(key.dependency(), DependencyId::new(dependency as u64));
+        task
+    };
+    // Its gate dependency fails: the reader catches that failure.
+    let task = gated(6.0);
+    let request = task.take_producer_requests().pop().unwrap();
+    let denied = rt.root(Primitive::String(big_boy_pants_js::JsString::from(
+        "denied",
+    )));
+    let task = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            Completion::Failed(&denied),
+        )
+        .unwrap()
+        .into_runnable()
+        .pop()
+        .unwrap();
+    let failed = outcome(task.run_with(Budget::UNLIMITED, &mut closed.clone()));
+    assert!(failed.contains("denied"), "{failed}");
+    // Its gate dependency is cancelled.
+    let task = gated(7.0);
+    let request = task.take_producer_requests().pop().unwrap();
+    let task = rt
+        .complete(request.key(), request.producer(), Completion::Cancelled)
+        .unwrap()
+        .into_runnable()
+        .pop()
+        .unwrap();
+    let cancelled_cell = outcome(task.run_with(Budget::UNLIMITED, &mut closed.clone()));
+    assert!(cancelled_cell.contains("was cancelled"), "{cancelled_cell}");
+    // The task is cancelled while it waits.
+    let task = gated(8.0);
+    let _request = task.take_producer_requests().pop().unwrap();
+    let cancelled_task = match task.cancel() {
+        big_boy_pants_js::Cancel::Runnable(task) => {
+            outcome(task.run_with(Budget::UNLIMITED, &mut closed.clone()))
+        }
+        other => panic!("expected a runnable cancelled task, got {other:?}"),
+    };
+    assert_eq!(cancelled_task, "cancelled");
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        0,
+        "a gated reader ran the body"
+    );
+    // The cell is still free: an admitted reader realizes it, once.
+    let open = Gated {
+        runs: runs.clone(),
+        ..Default::default()
+    };
+    assert_eq!(
+        outcome(reader(&rt, &delay).run_with(Budget::UNLIMITED, &mut open.clone())),
+        "vector 3"
+    );
+    assert_eq!(
+        outcome(reader(&rt, &delay).run_with(Budget::UNLIMITED, &mut closed.clone())),
+        "vector 3"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
 
 /// The embedder's realization gate (light-cljs-676): before a task claims
@@ -609,12 +836,11 @@ fn the_realization_gate_holds_a_task_before_it_claims_a_shared_delay() {
     let closed = Gated {
         gate: 5.0,
         runs: runs.clone(),
-        asked: Arc::default(),
+        ..Default::default()
     };
     let open = Gated {
-        gate: 0.0,
         runs: runs.clone(),
-        asked: Arc::default(),
+        ..Default::default()
     };
     // A later task whose gate is closed reads the named dependency first.
     let later = reader(&rt, &delay);
@@ -677,8 +903,7 @@ fn the_realization_gate_holds_a_task_before_it_claims_a_shared_delay() {
     // So is a delay no other task can reach.
     let local = Gated {
         gate: 5.0,
-        runs: Arc::default(),
-        asked: Arc::default(),
+        ..Default::default()
     };
     let own = compile_function(
         "function own() {
