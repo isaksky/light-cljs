@@ -1149,6 +1149,64 @@ pub(crate) struct WorkerRows {
     reads: Vec<Read>,
 }
 
+/// Coordinator help runs on the active recording, so its elapsed work stays
+/// in the stage totals. Its rows, like a worker's, belong at the unit's
+/// canonical charge point rather than where an idle slot found the work.
+pub(crate) struct DeferredRows {
+    units: usize,
+    executions: usize,
+    reads: usize,
+    origin: Demander,
+    depth: u32,
+}
+
+pub(crate) fn defer_unit_rows(depth: usize) -> Option<DeferredRows> {
+    with_recorder(|recorder| {
+        let frame = recorder.frames.last().expect("root frame");
+        DeferredRows {
+            units: recorder.trace.units.len(),
+            executions: recorder.trace.executions.len(),
+            reads: recorder.trace.reads.len(),
+            origin: Demander::of(frame.stage, frame.owner),
+            depth: depth as u32,
+        }
+    })
+}
+
+impl DeferredRows {
+    pub(crate) fn finish(self) -> Option<Box<WorkerRows>> {
+        with_recorder(|recorder| {
+            let mut units = recorder.trace.units.split_off(self.units);
+            let mut executions = recorder.trace.executions.split_off(self.executions);
+            let mut reads = recorder.trace.reads.split_off(self.reads);
+            let place = |demander| match demander == self.origin {
+                true => Demander::Other(Stage::Other),
+                false => demander,
+            };
+            for unit in &mut units {
+                unit.demander = place(unit.demander);
+                unit.depth = unit.depth.saturating_sub(self.depth);
+            }
+            for execution in &mut executions {
+                execution.demander = place(execution.demander);
+            }
+            for read in &mut reads {
+                recorder.read_edges.remove(read);
+                read.demander = place(read.demander);
+            }
+            let empty = units.is_empty() && executions.is_empty() && reads.is_empty();
+            (!empty).then(|| {
+                Box::new(WorkerRows {
+                    units,
+                    executions,
+                    reads,
+                })
+            })
+        })
+        .flatten()
+    }
+}
+
 /// On a pool worker that records ([`record_worker`]), the rows recorded
 /// since it last took them: the unit just analyzed, after the units it
 /// demanded. None on the coordinator, which records its own rows in place.
@@ -1609,6 +1667,57 @@ mod tests {
             trace.namespaces[0].top_level_wait,
             trace.units[1].inclusive()
         );
+    }
+
+    #[test]
+    fn coordinator_help_rows_keep_elapsed_work_but_charge_at_the_drain() {
+        let recording = record();
+        let host = crate::MacroHost::new();
+        let rows = defer_unit_rows(1).unwrap();
+        {
+            let own = crate::MacroHost::new();
+            let _unit = enter_unit(|| unit_info(5, 1), &own);
+            charge(&own, 2, 20);
+            {
+                let inner = crate::MacroHost::new();
+                let _inner = enter_unit(|| unit_info(6, 2), &inner);
+                charge(&inner, 4, 40);
+            }
+            executed(6, false);
+            root_reads(&format!("{}:6", frame().unwrap()));
+        }
+        executed(5, false);
+        root_reads(&format!("{}:5", frame().unwrap()));
+        let rows = rows.finish().unwrap();
+        {
+            let _drain = enter(Stage::Drain, 7, Some(&host));
+            replay(*rows, 0);
+            root_reads(&format!("{}:5", frame().unwrap()));
+        }
+        let trace = recording.finish().unwrap();
+        let units: Vec<_> = trace
+            .units
+            .iter()
+            .map(|u| (u.id, u.demander, u.depth, u.thread))
+            .collect();
+        assert_eq!(
+            units,
+            [(6, Demander::Unit(5), 1, 0), (5, Demander::Drain(7), 0, 0)]
+        );
+        assert_eq!(
+            trace
+                .executions
+                .iter()
+                .map(|e| e.demander)
+                .collect::<Vec<_>>(),
+            [Demander::Unit(5), Demander::Drain(7)]
+        );
+        assert_eq!(
+            trace.reads.len(),
+            2,
+            "replaying retains reads and deduplicates the drain's read"
+        );
+        assert!(trace.stages[Stage::Unit as usize].time > Duration::ZERO);
     }
 
     #[test]

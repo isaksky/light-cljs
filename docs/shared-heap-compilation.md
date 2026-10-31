@@ -2185,6 +2185,11 @@ pass. A claim and its state transition share the catalog lock with worker
 claims. Each analysis starts its own lane root and uses the coordinator's
 engine. Its poll, expansion and generated-node charges stay with the unit until
 the usual drain point; a pool job that later visits it reuses the result.
+Help stops as soon as the awaited unit is ready, so its charges are taken
+before starting another drain. At the tail, a waiting drain can help later
+namespaces too. Helped trace rows are buffered until that canonical charge,
+with the same demander and depth as worker rows; their elapsed work remains
+in the coordinator's stage totals.
 Failures still stop admission after the first failed unit in source order.
 Help sweeps do not nest, and ordinary demands keep the existing analysis-depth
 bound. The engine wait callback also answers workers' forwarded `light.build`
@@ -2193,6 +2198,17 @@ requests, so a helped unit can wait for a worker that needs those services.
 build and QuickJS reference retain their worker-only scheduling and do not
 gain that statistics line. The fresh-unit reference mode also keeps its
 previous scheduling.
+
+One shared runtime does not make task-private helper results publishable.
+Coordinator help can require another private warmup: a diagnostic debug
+build whose helper retains 70 mutable JavaScript arrays of 48,000 doubles
+took 6.11 s at 1 thread and 11.52 s at 2 threads, with one compiled helper,
+zero published helpers and 1 versus 2 private helper results. The shared-state
+test now uses structurally shared immutable chunks on the Pants build and
+requires actual publication; the V8 and QuickJS isolate-headroom inputs,
+budgets and expected output are unchanged. Forced worker-job tests retain
+the positive worker-initialization, lending and borrowing assertions even
+when an application build's coordinator happens to take all its work.
 
 These measurements use the **current drain lag of six**. Light-cljs-577 has
 not run. They include light-cljs-675's catalog adoption and light-cljs-676's

@@ -1701,6 +1701,8 @@ pub(crate) struct CompilationSession {
     /// ([`Self::analyze_drained`] or [`Self::note_drained`]); a failed build's
     /// counts stop there ([`Self::failed_unit_counts`]).
     drained_through: Cell<Option<usize>>,
+    /// No top-level pass remains; a drain may help later namespaces too.
+    tail_ready: Cell<bool>,
 }
 /// What capture needs beyond the catalog, recorded only while it is on.
 #[derive(Default)]
@@ -1802,6 +1804,7 @@ impl Default for CompilationSession {
             gensyms_seen: Default::default(),
             pool: Default::default(),
             drained_through: Default::default(),
+            tail_ready: Default::default(),
         }
     }
 }
@@ -2940,7 +2943,20 @@ impl CompilationSession {
                     if c.abandoned.is_some() {
                         return;
                     }
-                    let source = drain.map(|id| c.units[id].source);
+                    // Once the awaited unit is ready, charge it before
+                    // helping another. In particular a later timeout must
+                    // not invalidate the control used for earlier charges.
+                    if let Some(id) = drain
+                        && !matches!(
+                            c.units[id].state,
+                            AnalysisState::Unstarted | AnalysisState::Analyzing(_)
+                        )
+                    {
+                        return;
+                    }
+                    let source = drain
+                        .filter(|_| !self.tail_ready.get())
+                        .map(|id| c.units[id].source);
                     let next = c
                         .units
                         .iter()
@@ -3026,7 +3042,13 @@ impl CompilationSession {
     /// Start a namespace's top-level pass segment on its lane
     /// ([`crate::effect_lanes::Lanes::begin_pass`]).
     pub(crate) fn begin_pass(&self, forced: bool) -> crate::effect_lanes::PassGuard {
+        self.tail_ready.set(false);
         self.shared.lanes.begin_pass(forced)
+    }
+    /// Remaining drains can use all queued units while they wait, taking
+    /// each ready result's charges before starting the next drain.
+    pub(crate) fn end_top_level_passes(&self) {
+        self.tail_ready.set(true);
     }
     fn analyze_in(
         &self,
@@ -3292,6 +3314,9 @@ fn analyze_unit(
         }
         Claim::Analyze(inputs, depth, name, macro_free) => (inputs, depth, name, macro_free),
     };
+    let deferred_rows = pooled_help
+        .then(|| crate::compile_trace::defer_unit_rows(depth + HELP_DEPTH.get()))
+        .flatten();
     // Its atom effects keep its `--jobs 1` place (light-cljs-480); declared
     // before the guard, so it ends after the unit settles.
     let _lane = shared.lanes.enter_unit(id);
@@ -3463,7 +3488,9 @@ fn analyze_unit(
         // of those it demanded, which the coordinator records where it
         // charges the unit. A unit recorded inside another's recording
         // leaves its rows in that unit's, whose frame it is in.
-        if !nested {
+        if let Some(rows) = deferred_rows {
+            charges.trace = rows.finish();
+        } else if !nested {
             charges.trace = crate::compile_trace::take_worker_rows();
         }
         shared.record_charges(id, charges, time);
@@ -5654,6 +5681,26 @@ mod worker_tests {
 
     #[cfg(feature = "bbp-macros")]
     #[test]
+    fn a_ready_drain_is_charged_before_helping_later_units() {
+        let (session, units) = queued_session("(defn first [] 1) (defn later [] (if))");
+        session.end_top_level_passes();
+        session
+            .analyze_drained(units["cljs.user/first"], true)
+            .unwrap();
+        assert_eq!(session.unit_counts().coordinator_units, 1);
+        assert!(matches!(
+            session.shared.lock().units[units["cljs.user/later"]].state,
+            AnalysisState::Unstarted
+        ));
+        assert!(
+            session
+                .analyze_drained(units["cljs.user/later"], true)
+                .is_err()
+        );
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
     fn pants_coordinator_help_records_the_same_charges_as_a_worker() {
         let source = "(defn f [] (if true (+ 1 2) 0))";
         let (coordinator, units) = queued_session(source);
@@ -5880,7 +5927,9 @@ mod worker_tests {
         let mut host = MacroHost::new();
         host.use_native_macros();
         let (session, units, environment) = registered_with_host(
-            "(defn first [] (if true 1 0)) (defn second [] (+ 1 2))",
+            "(defn helper [x] (list 'inc x))
+             (defmacro marker [x] (helper x))
+             (defn first [] (marker 1)) (defn second [] (marker 2))",
             host,
         );
         let shared = session.shared();
@@ -5902,10 +5951,17 @@ mod worker_tests {
                 for name in ["cljs.user/first", "cljs.user/second"] {
                     let id = units[name];
                     pool.submit_batch(shared.unit_jobs(vec![id], false));
-                    assert!(matches!(
-                        pool.next_outcome().unwrap(),
-                        crate::scheduler::Next::Outcome(())
-                    ));
+                    // Resumable VM steps have outcomes too; consume them
+                    // until the whole unit has settled.
+                    while matches!(
+                        shared.lock().units[id].state,
+                        AnalysisState::Unstarted | AnalysisState::Analyzing(_)
+                    ) {
+                        assert!(matches!(
+                            pool.next_outcome().unwrap(),
+                            crate::scheduler::Next::Outcome(())
+                        ));
+                    }
                     assert!(matches!(
                         shared.lock().units[id].state,
                         AnalysisState::Analyzed(..)
@@ -5924,6 +5980,7 @@ mod worker_tests {
         assert!(counts.contexts_borrowed > 0, "{counts:?}");
         assert_eq!(counts.contexts_lent, 2, "{counts:?}");
         assert_eq!(counts.contexts_borrowed, 1, "{counts:?}");
+        assert!(session.unit_counts().worker_initializations > 0);
     }
 
     #[cfg(feature = "bbp-macros")]

@@ -69,10 +69,14 @@ fn units_expanding_source_and_core_macros_emit_the_one_slot_program() {
         assert_eq!(units.worker_isolates, 0, "{units:?}");
         assert_eq!(units.pool_engine_workers, 3, "{units:?}");
         assert!(units.pool_engine_participants > 0, "{units:?}");
+        // Helpers may now be initialized by coordinator help. Require
+        // actual initialization across the shared runtime; forced worker
+        // initialization is checked in compilation_session::worker_tests.
+        assert!(units.executed > 0, "{units:?}");
     } else {
         assert!((1..=3).contains(&units.worker_isolates), "{units:?}");
+        assert!(units.worker_initializations > 0, "{units:?}");
     }
-    assert!(units.worker_initializations > 0, "{units:?}");
 }
 
 #[test]

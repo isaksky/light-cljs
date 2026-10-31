@@ -445,11 +445,26 @@ fn a_worker_whose_steady_need_exceeds_its_base_keeps_its_isolate() {
     } else {
         48000
     };
+    // Pants shares a persistent steady value and its repeated chunks across
+    // tasks. Its physical footprint follows structural sharing. A mutable JS
+    // array is intentionally rebuilt per task, including the coordinator
+    // when it now helps. The isolate fixtures keep their original input.
+    let (ballast, held) = if crate::macro_free_units::PANTS_BUILD {
+        (
+            format!("(let [chunk (vec (range {length}))] (vec (repeat 70 chunk)))"),
+            "(count ballast)",
+        )
+    } else {
+        (
+            format!(
+                "(let [keep #js []] (dotimes [_ 70] (.push keep (.fill (js/Array. {length}) 1.5))) keep)"
+            ),
+            "(.-length ballast)",
+        )
+    };
     sources.write(
         "app/m.cljs",
-        &format!(
-            "(ns app.m) (def ballast (let [keep #js []] (dotimes [_ 70] (.push keep (.fill (js/Array. {length}) 1.5))) keep)) (defmacro held [] (.-length ballast))"
-        ),
+        &format!("(ns app.m) (def ballast {ballast}) (defmacro held [] {held})"),
     );
     let mut body = String::from("(ns app.h (:require [app.m :refer [held]]))\n");
     for k in 0..12 {
@@ -476,6 +491,7 @@ fn a_worker_whose_steady_need_exceeds_its_base_keeps_its_isolate() {
             assert_eq!(units.worker_isolates, 0, "{units:?}");
             assert_eq!(units.pool_engine_workers, 1, "{units:?}");
             assert!(units.pool_engine_participants > 0, "{units:?}");
+            assert!(built.stats.native_helpers.published > 0);
         } else {
             assert_eq!(units.worker_isolates, 1, "{units:?}");
         }
