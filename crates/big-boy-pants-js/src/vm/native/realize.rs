@@ -64,6 +64,11 @@ pub(crate) struct Realize {
     /// realizing it (`Claim::Reenter`): its value is that task's answer
     /// until the outer run ends, not the delay's.
     reentry: bool,
+    /// The lazy `concat` cells this frame realized through since it last
+    /// installed a value: one met again is a `concat` that contains itself.
+    /// Kept across the gate's questions and waits, which end a step between
+    /// two of them (light-cljs-685 review).
+    concats: Vec<u64>,
     /// Where this frame is in the embedder's realization gate
     /// ([`crate::Runtime::set_realization_gate`]).
     gating: Gating,
@@ -107,6 +112,7 @@ impl Realize {
             task: None,
             failed: None,
             reentry: false,
+            concats: Vec::new(),
             gating: Gating::Idle,
             admitted: false,
         })
@@ -218,9 +224,6 @@ impl Realize {
             self.cell.set_provisional(task, value.clone());
             return Ok(Action::Return(value));
         }
-        // The lazy `concat` cells this step realized through: one met again
-        // is a `concat` that contains itself.
-        let mut concats: Vec<usize> = Vec::new();
         loop {
             if let Some(value) = produced.take()
                 && let Some(action) = self.realized(heap, value)?
@@ -260,10 +263,10 @@ impl Realize {
                     match clj::concat_step(heap, &thunk) {
                         Ok(value) => produced = Some(value),
                         Err(clj::CljError::Realize(inner)) => {
-                            concats.push(Arc::as_ptr(&self.cell) as usize);
+                            self.concats.push(self.cell.serial());
                             let again = form::form_object(heap, &inner)
                                 .and_then(|f| f.lazy_cell().cloned())
-                                .is_some_and(|c| concats.contains(&(Arc::as_ptr(&c) as usize)));
+                                .is_some_and(|c| self.concats.contains(&c.serial()));
                             if again {
                                 return Err(self.fail(Fault::RangeError(
                                     "infinite lazy sequence: a concat contains itself".to_string(),
@@ -369,6 +372,8 @@ impl Realize {
             }
             self.attempt = None;
             self.realizing = None;
+            // Progress: a cycle of `concat`s installs nothing.
+            self.concats.clear();
             // An operation that reads the whole sequence would meet the
             // next unrealized cell of this chain at once: realize it now
             // instead of reading the realized prefix again for each cell.

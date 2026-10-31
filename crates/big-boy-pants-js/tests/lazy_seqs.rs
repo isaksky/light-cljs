@@ -944,3 +944,34 @@ fn realization_gate_is_asked_for_the_collection_a_concat_realizes() {
     );
     assert_eq!(host.ran(), [2.0]);
 }
+
+/// A cycle through two shared `concat` cells fails with a RangeError, as
+/// an unshared one does (`a_concat_that_contains_itself_fails_instead_of_looping`),
+/// although the frame asks the realization gate before each cell it goes
+/// on to (light-cljs-685 review): the cells it realized through stay noted
+/// across the gate's questions. A finite budget bounds the run, so a frame
+/// that forgot them yields instead of hanging.
+#[test]
+fn a_gated_concat_cycle_fails_instead_of_looping() {
+    let rt = gated_runtime();
+    let xs = published(
+        &rt,
+        "const xs = __rt.lazySeq(() =>
+           __rt.cljConcat(__rt.cljConcat(xs, __rt.formList(1)), __rt.formList(2)));
+         return xs;",
+    );
+    let head = compile_function(
+        "function head(xs) {
+           try { __rt.cljFirst(xs); return 'no error'; }
+           catch (e) { return e instanceof RangeError ? 'range error' : 'other ' + e; }
+         }",
+    )
+    .unwrap();
+    let host = ScriptedGate::new(&[]);
+    let task = rt.spawn(&head, &[&xs]).unwrap();
+    let outcome = task
+        .run_with(Budget::instructions(100_000), &mut host.clone())
+        .unwrap();
+    assert_eq!(caught(outcome), "range error");
+    assert!(host.asked.load(Ordering::SeqCst) >= 2);
+}
