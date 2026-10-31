@@ -79,6 +79,20 @@
     // Maps, enumerable for the snapshot.
     get protocolImplementations() { return sharedTaskOwn(this, "protocolImplementations", sharedWeakRegistry("protocolImplementations")); },
     get typeNames() { return sharedTaskOwn(this, "typeNames", sharedWeakRegistry("typeNames")); },
+    // The namespace registry `createNs` writes after boot, seeded with the
+    // boot's `cljs.user` and `cljs.core` (light-cljs-666).
+    get namespaces() { return sharedTaskOwn(this, "namespaces", sharedRegistry("namespaces")); },
+    // The reader's own state (`SHARED_READER_STATE` in build.rs: the
+    // declarations at the top of the `reader` unit's function, rewritten
+    // to the task's cells like the module-level `let`s; light-cljs-666):
+    // the stream and reader-map registries, the tag tables (the builtin
+    // table filled while booting, `tags` registered into after boot; both
+    // seeded from the boot's entries) and the default tag and read depth.
+    get streams() { return sharedTaskOwn(this, "streams", new WeakMap()); },
+    get readerMaps() { return sharedTaskOwn(this, "readerMaps", new WeakMap()); },
+    get tags() { return sharedTaskOwn(this, "tags", sharedRegistry("tags")); },
+    get builtinTags() { return sharedTaskOwn(this, "builtinTags", sharedRegistry("builtinTags")); },
+    defaultTag: null, activeDepth: 0,
   };
   // The registries' boot entries, sealed with the rest at the end of the
   // boot (`sharedProfileBoot`); a task's registry starts as a copy.
@@ -229,7 +243,7 @@
     // The boot's writes to the hub's cells are the hub's defaults; its
     // registries' entries seed every task's copy.
     const booting = globalThis.__lightSharedCells;
-    for (const name of ["coreDispatchers", "nativeMethods", "protocolValues", "protocolFunctions", "protocolVariables", "protocolGetters", "reifySites", "protocolImplementations", "typeNames"]) {
+    for (const name of ["coreDispatchers", "nativeMethods", "protocolValues", "protocolFunctions", "protocolVariables", "protocolGetters", "reifySites", "protocolImplementations", "typeNames", "namespaces", "tags", "builtinTags"]) {
       sharedSnapshots[name] = Array.from(Object.getOwnPropertyDescriptor(booting, name) !== undefined ? booting[name] : [], ([key, value]) => [key, value]);
     }
     // The implementations are Maps of Maps: sealed arrays of their pairs.
@@ -649,6 +663,14 @@
       return false;
     };
   }
+  //@unit demungePattern requires: demungeCharacters
+  // The source of the V8 profile's global `RegExp`, a string: a regex
+  // object is exotic data a seal cannot take, and an engine regex form
+  // takes no `g` flag (its `lastIndex` would be state), so `demunge` builds
+  // the global regex when it is called (light-cljs-666).
+  const demungePattern = Object.keys(demungeCharacters).sort((a, b) => b.length - a.length).join("|") + "|\\$";
+  //@unit demunge requires: demungeCharacters, demungePattern, str, symbolCore, symbols
+  function demunge(value) { let result = str(value); result = result === "_DOT__DOT_" ? ".." : result.replace(/\$$/, "").replace(new RegExp(demungePattern, "g"), key => key === "$" ? "/" : demungeCharacters[key]); return symbols.has(value) ? symbolCore(result) : result; }
   //@unit multiFns requires: sharedSet
   const multiFns = sharedSet();
   //@unit leanTables requires: entryIndex, sharedStore

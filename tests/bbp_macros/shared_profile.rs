@@ -127,12 +127,14 @@ fn walk_report(shareable: usize, causes: &[(String, Vec<String>, String)]) -> St
 /// task and `Runtime::publish` accepts the result with zero rejected paths.
 /// On failure the first rejected path is printed, then the walk of every
 /// member by cause and the top-level bindings a seal cannot take. State on
-/// 2026-10-31 (after light-cljs-666's first attempt): 716 of 748 members
-/// publish; the remaining causes (the reader's nested state, `demungePattern`,
-/// the namespace registry, the bridge's `let`) are in docs/real-core-design.md,
-/// "Profile assembly" (light-cljs-666).
+/// 2026-10-31 (after light-cljs-666's second attempt): 738 of 748 members
+/// publish; the remaining causes are the V8 form bridge (`compilerForms`
+/// and, through `readerJsLiterals`, the eight reader entry points; what the
+/// Pants build boots of the bridge is light-cljs-648's) and `currentNs`'s
+/// name, a runtime-built symbol (the symbols view, acceptance 4), listed in
+/// docs/real-core-design.md, "Profile assembly" (light-cljs-666).
 #[test]
-#[ignore = "716 of 748 members publish; the remaining causes are listed in docs/real-core-design.md (light-cljs-666)"]
+#[ignore = "738 of 748 members publish; the V8 form bridge (light-cljs-648) and the symbols view (light-cljs-666) remain, see docs/real-core-design.md"]
 fn shared_profile_boots_and_publishes_with_zero_rejected_paths() {
     let rt = Runtime::new();
     let booted = boot(&rt);
@@ -479,7 +481,10 @@ fn shared_profile_brand_registries_release_discarded_values() {
     drop(booted);
     rt.collect().unwrap();
     assert_eq!(weak_reified.upgrade().unwrap_err(), HandleError::Reclaimed);
-    assert_eq!(implementations.weak_map_live_entry_count(), Some(before - 1));
+    assert_eq!(
+        implementations.weak_map_live_entry_count(),
+        Some(before - 1)
+    );
     assert_eq!(names.weak_map_live_entry_count(), Some(named));
     drop(kept);
 }
@@ -539,6 +544,74 @@ fn shared_profile_class_brands_are_task_local() {
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
         "false 0 true true true undefined,undefined,undefined,undefined,undefined,undefined 1 1 false undefined 1 true true 2 true"
+    );
+}
+
+/// The reader's own state (the declarations at the top of the `reader`
+/// unit's function: the stream and reader-map registries, the tag tables,
+/// the default tag and the read depth) and the namespace registry live on
+/// the task's cells (`SHARED_READER_STATE` and `namespaces` in build.rs):
+/// a tag parser, a default tag parser, a stream and a namespace registered
+/// by one task's cells are unknown to a task's fresh cells, which still
+/// have the boot's builtin tags and namespaces, and the read depth is back
+/// at zero after a read (light-cljs-666).
+#[test]
+fn shared_profile_reader_state_is_task_local() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const cells = globalThis.__lightSharedCells; \
+             const attempt = f => {{ try {{ return f(); }} catch (e) {{ return e.constructor.name + ': ' + e.message.slice(0, 24); }} }}; \
+             const previous = core.readerRegisterTagParser(core.symbol('my', 'tag'), v => core.vector('tagged', v)); \
+             const tagged = core.prStr(core.readString('#my/tag 1')); \
+             const builtins = core.count(core.readerInitialTagTable()), queue = core.prStr(core.readString('#queue [1 2]')); \
+             const stream = core.readerStringReader('a\\nb'); const line = core.readerReadLine(stream); \
+             core.readerRegisterDefaultTagParser((tag, v) => core.vector('default', tag, v)); \
+             const viaDefault = core.prStr(core.readString('#other/tag 2')); \
+             const ns = core.createNs(core.symbol(null, 'my.ns')); const all = core.count(core.allNs()); \
+             const depth = cells.activeDepth; \
+             const fresh = core.sharedTaskCells(); globalThis.__lightSharedCells = fresh; \
+             const freshQueue = core.prStr(core.readString('#queue [3]')); \
+             const freshTagged = attempt(() => core.prStr(core.readString('#my/tag 1'))); \
+             const freshDefault = fresh.defaultTag === null, freshLine = attempt(() => core.readerReadLine(stream)); \
+             const freshNs = String(core.findNs(core.symbol(null, 'my.ns'))), freshCore = String(core.findNs(core.symbol(null, 'cljs.core'))); \
+             const freshAll = core.count(core.allNs()), freshDepth = fresh.activeDepth; \
+             globalThis.__lightSharedCells = cells; \
+             const still = core.prStr(core.readString('#my/tag 3')), stillNs = core.findNs(core.symbol(null, 'my.ns')) === ns, stillLine = core.readerReadLine(stream); \
+             return [String(previous), tagged, builtins, queue, line, viaDefault, all, depth, freshQueue, freshTagged, freshDefault, freshLine, \
+               freshNs, freshCore, freshAll, freshDepth, still, stillNs, stillLine].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "null [\"tagged\" 1] 4 #queue [1 2] a [\"default\" other/tag 2] 3 0 #queue [3] Error: No reader function for t true TypeError: Expected input stream \
+         null cljs.core 2 0 [\"tagged\" 3] true b"
+    );
+}
+
+/// `demunge` keeps no regex object: `demungePattern` is the pattern's
+/// source and the global regex is built per call (a regex object is exotic
+/// data a seal cannot take; light-cljs-666).
+#[test]
+fn shared_profile_demunge_builds_its_regex_per_call() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             return [core.demunge('a_DOT_b_STAR_c'), core.demunge('ns$name'), core.demunge('x$'), core.demunge('_DOT__DOT_'), \
+               core.prStr(core.demunge(core.symbol(null, 'a_PLUS_b'))), core.demunge('a_SLASH_b'), core.demunge('a_b')].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    // The same answers as the V8 profile's under Node (`_DOT_` is not in the
+    // munge table, so its `_` demunges to `-`).
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "a-DOT-b*c ns/name x .. a+b a/b a-b"
     );
 }
 
@@ -703,14 +776,22 @@ fn shared_profile_publication_walk() {
     }
 }
 
-/// The value of the JavaScript in `SHARED_EVAL`, run after the boot with
-/// `rt` and `core` in scope and printed as a string, then its publication
-/// path, for finding what a member holds.
+/// The value of the JavaScript in `SHARED_EVAL` (or in the file named by
+/// `SHARED_EVAL_FILE`, for an expression the shell would mangle), run after
+/// the boot with `rt` and `core` in scope and printed as a string, then its
+/// publication path, for finding what a member holds.
 #[test]
 #[ignore = "diagnostic: SHARED_EVAL=\"rt.Loadable.prototype\""]
 fn shared_profile_eval() {
     let rt = Runtime::new();
-    let body = std::env::var("SHARED_EVAL").unwrap_or_default();
+    let body = std::env::var("SHARED_EVAL")
+        .ok()
+        .or_else(|| {
+            std::env::var("SHARED_EVAL_FILE")
+                .ok()
+                .map(|path| std::fs::read_to_string(path).expect("SHARED_EVAL_FILE"))
+        })
+        .unwrap_or_default();
     let value = run(
         &rt,
         &format!("const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; return ({body});"),

@@ -648,7 +648,8 @@ The pieces, all in the tree:
   headers, every `coreCells.X` and every per-task binding
   (`SHARED_TASK_STATE` in `build.rs`: the module-level `let`s, the
   per-task registries next to them, the compile-time hooks' own `let`s and
-  the `protocolSlots` memo) rewritten to the task's cells
+  the `protocolSlots` memo; `SHARED_READER_STATE`: the reader's own state,
+  declared at the top of its function) rewritten to the task's cells
   `globalThis.__lightSharedCells`, the two immutable vocabularies built by
   `sharedWords`, and the compile-time hooks of `COMPILER_RUNTIME` inserted
   (rewritten the same way). The V8 profile's embedded runtime is untouched.
@@ -717,7 +718,8 @@ The pieces, all in the tree:
   vocabularies (`reservedNames`, `readerCoreNames`, `specialSymbols`) are
   sealed word arrays. The registries written after boot (`coreDispatchers`,
   `nativeMethods`, `protocolValues`, `protocolFunctions`,
-  `protocolVariables`, `protocolGetters`, `reifySites`) live on the task's
+  `protocolVariables`, `protocolGetters`, `reifySites`, `namespaces`, the
+  reader's `tags` and `builtinTags`) live on the task's
   cells: each task's own Map, seeded with the boot's entries
   (`sharedSnapshots`, sealed with the rest), so a registration after boot is
   the registering task's, as the per-task fallback has it, and a write to a
@@ -767,9 +769,10 @@ bounded fallback diagnostic, the weak post-boot registries (683),
 `defineClass` and `TypeBrand`, as the V8 profile's test does) and the boot's
 memory.
 
-State after light-cljs-666's first attempt (2026-10-31): the profile
-boots; 716 of 748 members publish (267 after 647's third attempt, 268
-after its second, 259 after its first, 193 after 646). The causes 647
+State after light-cljs-666's second attempt (2026-10-31): the profile
+boots; 738 of 748 members publish (716 after 666's first attempt, 267
+after 647's third, 268 after its second, 259 after its first, 193 after
+646). The causes 647
 removed: the default `prototype` objects of the functions made while
 booting (425 members, the reachable seal), the captured Maps (the
 registries above), the frozen empty array the record wrapper of `maps`
@@ -786,16 +789,29 @@ through the kind tables); then `Loadable`'s function and prototype, which
 `cloneablePayload` and the brand stores). A `shared_profile_eval`
 diagnostic (`SHARED_EVAL="<js>"`) evaluates an expression after the boot
 and prints its publication path, which is how the unsealable members were
-listed (`__rt.seal` over every export and `core` member). The remaining
-rejections, by cause:
+listed (`__rt.seal` over every export and `core` member; with
+`SHARED_EVAL_FILE=<path>` the expression comes from a file). The causes
+the second attempt removed (22 members): the reader's own state, the
+declarations at the top of the `reader` unit's function (`streams` and
+`readerMaps` as the task's WeakMaps; `tags` and `builtinTags` as per-task
+registries seeded from the boot's entries; `defaultTag` and `activeDepth`
+as data defaults), rewritten to the task's cells by a second rewrite list
+in `build.rs` (`SHARED_READER_STATE`: the names declared in a scope
+directly under the unit's top level, since `SHARED_TASK_STATE` rewrites
+scope-0 declarations and free names only); the reader IIFE's argument
+object and its two frozen sentinels (`absent`, `discarded`), which the
+reader's functions capture and no binding reaches, sealed where they are
+built (`SHARED_READER_REWRITES`); `namespaces` as a per-task registry
+seeded with the boot's `cljs.user` and `cljs.core`; and `demungePattern`
+as the pattern's source string, with `demunge` building its global regex
+per call (a regex object is exotic data a seal cannot take, and
+`__rt.formRegex` refuses the `g` flag, whose `lastIndex` would be state).
+The remaining rejections, by cause:
 
 | Members | Cause | Example | What removes it |
 | ---: | --- | --- | --- |
-| 11 | the reader's WeakMaps (`streams`, `readerMaps`), declared at the top of the `reader` unit's IIFE (scope 1, which `build.rs`'s `rewrite_task_state` passes over: `SHARED_TASK_STATE` rewrites scope-0 declarations and free names only) | `core.readLine`, `core.compilerInputWindow` | a second rewrite list in `build.rs` for named declarations of the reader's scope 1, rewritten to the task's cells like the module-level `let`s, with lazy WeakMap defaults in `sharedTaskDefaults` (the declaring tokens stay as dead locals) |
-| 8 | the reader's `tags`/`builtinTags` Maps (filled while booting by `readerInitialTagTable`) and `namespaces` | `core.readerRegisterTagParser`, `core.createNs` | the same rewrite, with the tag tables as per-task registries seeded from the boot's entries (`sharedSnapshots`) and the builtin table sealed; namespaces as sealed registries (648) |
-| 6 | `demungePattern`, a top-level `RegExp` (exotic data, which `seal` cannot take; the walk's `TypeError` is silent), and the reader's nested tables (`readerInitialTagTable`'s, the timestamp parser's) | `core.demunge`, `core.readerInitialTagTable`, `core.ednRead` | `demungePattern` as `__rt.formRegex(source, "g")` in the profile, if `String.prototype.replace` takes one; the reader's tables through the rewrite above |
-| 5 | the reader's nested `let`s (`defaultTag`, `activeDepth`) | `core.ednReadString` | the same rewrite, with data defaults (`null`, `0`) in `sharedTaskDefaults` |
-| 1 + 1 | `rt.compilerForms` (the V8 form bridge's `decode` keeps a `let` a nested function assigns), `core.currentNs` (a `Namespace` instance, which `installMethods` brands) | | 648 decides what the Pants build boots of the V8 bridge; namespaces as sealed registries |
+| 8 + 1 | the V8 form bridge (`compilerFormBridge`): its WeakMaps and the `let`s its `decode` assigns, reached from `rt.compilerForms` and, through `readerJsLiterals.array` (`compilerForms.jsArray`, which the `compilerForms` unit installs for `#js` literals read for macros), from every reader entry point (`core.read`, `core.ednReadString`, `core.readerInitialTagTable`, ...) | `rt.compilerForms`, `core.read` | 648 decides what the Pants build boots of the V8 bridge (the engine's forms need no descriptor bridge); until then the profile could leave `readerJsLiterals` plain |
+| 1 | `core.currentNs`: a `Namespace` instance whose `name` is a runtime-built symbol, a private-field brand (`__rt.seal` reports "internal slots") | | the symbols view (acceptance 4: `symbol` over `__rt.formSymbol`, with metadata through the metadata view), after which `namespaces`' boot entries seal too |
 
 Left for the next attempt besides the table: the chunks view and the
 `mapSeq` thunk over sealed inputs (acceptance 3), the engine-kind views

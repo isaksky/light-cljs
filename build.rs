@@ -509,6 +509,48 @@ const SHARED_TASK_STATE: &[&str] = &[
     "protocolVariables",
     "protocolGetters",
     "reifySites",
+    // The namespace registry `createNs` writes after boot: each task's own
+    // Map, seeded with the boot's `cljs.user` and `cljs.core`.
+    "namespaces",
+];
+
+/// The state the `reader` unit keeps at the top of its own function (the
+/// IIFE's scope, scope 1 of the unit's body), which the shared-heap profile
+/// also keeps per task: the stream and reader-map registries (WeakMaps),
+/// the tag tables (Maps, filled while booting and registered into after
+/// boot) and the default-tag and depth `let`s. Rewritten like
+/// [`SHARED_TASK_STATE`] (light-cljs-666); the declaring statements stay as
+/// unread locals.
+const SHARED_READER_STATE: &[&str] = &[
+    "streams",
+    "readerMaps",
+    "tags",
+    "builtinTags",
+    "defaultTag",
+    "activeDepth",
+];
+
+/// The unit whose scope-1 declarations [`SHARED_READER_STATE`] names.
+const SHARED_READER_UNIT: &str = "reader";
+
+/// The objects the reader's functions capture that no binding reaches, so
+/// the boot's walk cannot seal them: the IIFE's argument object (the
+/// runtime services it reads as `rt`) and its two frozen sentinels, sealed
+/// where they are built (`__rt.seal` is shallow; the functions the argument
+/// holds are top-level bindings, sealed by the boot).
+const SHARED_READER_REWRITES: &[(&str, &str)] = &[
+    (
+        "  })({keyword: freshKeyword, ",
+        "  })(__rt.seal({keyword: freshKeyword, ",
+    ),
+    (
+        "value instanceof Date ? 'instant' : null});\n",
+        "value instanceof Date ? 'instant' : null}));\n",
+    ),
+    (
+        "  const absent = Object.freeze({}), discarded = Object.freeze({});\n",
+        "  const absent = __rt.seal({}), discarded = __rt.seal({});\n",
+    ),
 ];
 
 /// Where a unit reads the task's cells: `coreCells.X` in the V8 profile.
@@ -567,8 +609,10 @@ fn replace_identifier(text: &str, name: &str, replacement: &str) -> String {
 /// rewritten to the task's cells, exactly: an identifier token that resolves
 /// to the unit's own top-level declaration of the name (other than the
 /// declaring token itself) or is free (another unit's binding). Locals of
-/// the same name are untouched.
-fn rewrite_task_state(source: &str, body: std::ops::Range<usize>) -> String {
+/// the same name are untouched. In the unit [`SHARED_READER_UNIT`], the
+/// [`SHARED_READER_STATE`] names declared in a scope directly under the top
+/// level (the reader's own function) are rewritten the same way.
+fn rewrite_task_state(unit: &str, source: &str, body: std::ops::Range<usize>) -> String {
     let tokens = js_syntax::lex(source, body.clone()).unwrap_or_else(|error| {
         panic!(
             "shared-heap runtime byte {}: {}",
@@ -577,21 +621,28 @@ fn rewrite_task_state(source: &str, body: std::ops::Range<usize>) -> String {
     });
     let resolution = js_syntax::resolve(source, &tokens)
         .unwrap_or_else(|(offset, message)| panic!("shared-heap runtime byte {offset}: {message}"));
+    let reader = unit == SHARED_READER_UNIT;
     let mut out = String::with_capacity(body.len());
     let mut at = body.start;
     for (position, token) in tokens.iter().enumerate() {
         let text = token.text(source);
-        if !SHARED_TASK_STATE.contains(&text) {
+        let task_state = SHARED_TASK_STATE.contains(&text);
+        let reader_state = reader && SHARED_READER_STATE.contains(&text);
+        if !task_state && !reader_state {
             continue;
         }
         let Some(occurrence) = resolution.occurrences[position] else {
             continue;
         };
         let rewrite = match occurrence.declaration {
-            None => true,
+            None => task_state,
             Some(declaration) => {
                 let declaration = &resolution.declarations[declaration];
-                declaration.scope == 0 && declaration.token != Some(position)
+                declaration.token != Some(position)
+                    && ((task_state && declaration.scope == 0)
+                        || (reader_state
+                            && declaration.scope != 0
+                            && resolution.parents[declaration.scope] == 0))
             }
         };
         if !rewrite {
@@ -770,13 +821,21 @@ fn shared_runtime(base: &str, profile: &str) -> (String, String) {
         if section.name == "//@exports" {
             runtime.push_str(&source[section.body.clone()]);
         } else {
-            let mut body = rewrite_task_state(source, section.body.clone())
+            let mut body = rewrite_task_state(&section.name, source, section.body.clone())
                 .replace("coreCells.", &format!("{SHARED_CELLS}."))
                 .replace("coreCells[", &format!("{SHARED_CELLS}["));
             if SHARED_WORDS.contains(&section.name.as_str()) {
                 let set = format!("const {} = new Set(", section.name);
                 assert_eq!(body.matches(&set).count(), 1, "{set}");
                 body = body.replace(&set, &format!("const {} = sharedWords(", section.name));
+            }
+            if section.name == SHARED_READER_UNIT {
+                // The reader's functions capture objects no binding reaches:
+                // sealed where they are built.
+                for (from, to) in SHARED_READER_REWRITES {
+                    assert_eq!(body.matches(from).count(), 1, "{from}");
+                    body = body.replace(from, to);
+                }
             }
             runtime.push_str(&body);
         }
