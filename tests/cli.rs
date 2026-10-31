@@ -1264,6 +1264,58 @@ fn parse_stats(report: &str) -> (Vec<StatsCounter>, Vec<(String, usize)>) {
     (counters, table)
 }
 
+/// A build that fails still reports its counters up to the failure, then
+/// the failure, so a build that stops can be profiled (light-cljs-635).
+#[test]
+fn stats_report_a_failed_build_up_to_its_failure() {
+    let sources = TempDir::new("cli-stats-failure");
+    std::fs::create_dir(sources.join("app")).unwrap();
+    let write =
+        |name: &str, text: &str| std::fs::write(sources.join("app").join(name), text).unwrap();
+    write(
+        "macros.cljs",
+        "(ns app.macros) (defmacro value [] 41) (defmacro broken [] (throw (js/Error. \"stop here\")))",
+    );
+    write(
+        "dep.cljs",
+        "(ns app.dep (:require [app.macros :refer [value]])) (def answer (value))",
+    );
+    write(
+        "main.cljs",
+        "(ns app.main (:require [app.dep :as d] [app.macros :refer [broken]])) (def x (broken))",
+    );
+    let root = sources.path().to_str().unwrap();
+    let file = sources.join("trace.tsv");
+    let output = light_cljs(&[
+        "--compile",
+        "--entry",
+        "app.main",
+        "--source-root",
+        root,
+        "--stats",
+        "--stats-file",
+        file.to_str().unwrap(),
+    ]);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!output.status.success(), "{stderr}");
+    assert!(output.stdout.is_empty());
+    let failure = stderr.find("\nlight-cljs: ").expect(&stderr);
+    assert!(stderr[failure..].contains("stop here"), "{stderr}");
+    let (counters, _) = parse_stats(&stderr[..failure]);
+    let value = |key: &str| {
+        counters
+            .iter()
+            .find(|(name, _)| name == key)
+            .unwrap_or_else(|| panic!("{key} in {stderr}"))
+            .1
+    };
+    assert!(value("macro-calls") >= 1.0, "{stderr}");
+    assert!(value("time.analysis-ms") > 0.0, "{stderr}");
+    let trace = std::fs::read_to_string(&file).unwrap();
+    assert!(trace.starts_with("light-cljs-trace\t"), "{trace}");
+    assert!(trace.contains("\tapp.dep\t"), "{trace}");
+}
+
 #[test]
 fn stats_reports_phase_times_and_macro_calls_on_stderr_without_changing_output() {
     let sources = TempDir::new("cli-stats");
