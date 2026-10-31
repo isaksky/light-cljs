@@ -41,6 +41,8 @@
     get tapListeners() { return sharedTaskOwn(this, "tapListeners", new Set()); },
     get tapQueue() { return sharedTaskOwn(this, "tapQueue", []); },
     tapDraining: false, tapDelivered: 0, tapPending: 0, tapLimit: 1024,
+    // Whether the task has branded a class's prototype (`ClassBrand`).
+    classBrands: false,
     // The slot-name memo of `protocolSlot`: a pure function's cache, which
     // the boot task fills for the runtime's own keys (`sharedProfileBoot`)
     // and every task fills for the keys it meets.
@@ -63,6 +65,17 @@
     get protocolVariables() { return sharedTaskOwn(this, "protocolVariables", sharedRegistry("protocolVariables")); },
     get protocolGetters() { return sharedTaskOwn(this, "protocolGetters", sharedRegistry("protocolGetters")); },
     get reifySites() { return sharedTaskOwn(this, "reifySites", sharedRegistry("reifySites")); },
+    // Two brand stores (WeakMaps in the V8 profile) whose keys the boot
+    // seals: a private field on a function's record or on a prototype
+    // keeps the engine from sealing it, so these are registries keyed by
+    // identity on the task's cells (`sharedRegistryStore`; light-cljs-666).
+    // `protocolImplementations`, what `installMethods` records per value,
+    // read back only by itself (to merge a later `extend-type`) and by
+    // `collectionWithMeta`; its boot entries are sealed arrays of the method
+    // pairs, which a task's copy reads as the Maps they were. `typeNames`,
+    // the names of the types `defineType` names (`Loadable`'s).
+    get protocolImplementations() { return sharedTaskOwn(this, "protocolImplementations", sharedRegistry("protocolImplementations")); },
+    get typeNames() { return sharedTaskOwn(this, "typeNames", sharedRegistry("typeNames")); },
   };
   // The registries' boot entries, sealed with the rest at the end of the
   // boot (`sharedProfileBoot`); a task's registry starts as a copy.
@@ -152,6 +165,19 @@
       [Symbol.iterator]() { return pairs[Symbol.iterator](); }
     };
   }
+  //@unit sharedRegistryStore
+  // A brand store kept on the task's cells (`sharedTaskDefaults`: a
+  // registry seeded with the boot's entries), with a WeakMap's `has`,
+  // `get`, `set` and `delete`, for the stores whose keys the boot seals.
+  function sharedRegistryStore(name) {
+    const registry = () => { const cells = globalThis.__lightSharedCells; return cells[name]; };
+    return {
+      has: value => registry().has(value),
+      get: value => registry().get(value),
+      set(value, payload) { registry().set(value, payload); return this; },
+      delete: value => registry().delete(value)
+    };
+  }
   //@unit sharedWords
   // An immutable vocabulary (`reservedNames`, `readerCoreNames`), a Set in
   // the V8 profile: membership over the sealed array of its words.
@@ -199,9 +225,12 @@
     // The boot's writes to the hub's cells are the hub's defaults; its
     // registries' entries seed every task's copy.
     const booting = globalThis.__lightSharedCells;
-    for (const name of ["coreDispatchers", "nativeMethods", "protocolValues", "protocolFunctions", "protocolVariables", "protocolGetters", "reifySites"]) {
+    for (const name of ["coreDispatchers", "nativeMethods", "protocolValues", "protocolFunctions", "protocolVariables", "protocolGetters", "reifySites", "protocolImplementations", "typeNames"]) {
       sharedSnapshots[name] = Array.from(Object.getOwnPropertyDescriptor(booting, name) !== undefined ? booting[name] : [], ([key, value]) => [key, value]);
     }
+    // The implementations are Maps of Maps: sealed arrays of their pairs.
+    sharedSnapshots.protocolImplementations = sharedSnapshots.protocolImplementations.map(([value, implementations]) =>
+      [value, Array.from(implementations, ([key, entries]) => [key, Array.from(entries)])]);
     for (const key of Object.keys(booting)) if (Object.getOwnPropertyDescriptor(coreCells, key) !== undefined) coreCells[key] = booting[key];
     const seen = new Set();
     const seal = value => {
@@ -428,8 +457,10 @@
   const ifnValues = sharedStore(), ifnVariadics = sharedStore();
   //@unit metaFunctions requires: sharedStore
   const metaFunctions = sharedStore();
-  //@unit typeNames requires: sharedStore
-  const typeNames = sharedStore();
+  //@unit typeNames requires: sharedRegistryStore
+  // A registry on the task's cells: a brand on a type's function would keep
+  // its record from sealing (`sharedTaskDefaults`).
+  const typeNames = sharedRegistryStore("typeNames");
   //@unit typeFields requires: sharedStore
   const typeFields = sharedStore();
   //@unit recordTypes requires: sharedStore
@@ -568,6 +599,36 @@
     const tail = trie.tail.slice();
     return {cnt: trie.cnt, shift: trie.shift, root: trie.root, tail, owned: new WeakSet([tail])};
   };
+  //@unit callable requires: fnApplyTo, fnRest
+  // The V8 profile's `callable`, with the arity table it captures sealed:
+  // the table is a literal of the calling unit, never written, and held
+  // only by the closure (`concat` and the other combinators built while
+  // booting reached it through 454 of the 748 members; light-cljs-666).
+  // `fn`'s own properties are sealed by the boot's reachable seal.
+  function callable(fixed, methods, variadic) {
+    __rt.seal(methods);
+    const fn = function (...args) {
+      const method = methods[args.length];
+      return method ? method(...args) : variadic(...Array.from({length: fixed}, (_, i) => args[i]), fnRest(args, fixed));
+    };
+    for (const [arity, method] of Object.entries(methods)) fn["cljs$core$IFn$_invoke$arity$" + arity] = method;
+    fn.cljs$lang$maxFixedArity = fixed;
+    fn.cljs$lang$applyTo = args => fnApplyTo(variadic, fixed, args);
+    fn.cljs$core$IFn$_invoke$arity$variadic = variadic;
+    return fn;
+  }
+  //@unit ClassBrand
+  // The V8 profile's `ClassBrand`, whose "some class is branded" flag is the
+  // task's cell `classBrands` instead of a private static of the class,
+  // which would keep the class's record from sealing (light-cljs-666).
+  const ClassBrand = class extends (class { constructor(value) { return value; } }) {
+    #c;
+    constructor(prototype, brand) { super(prototype); this.#c = brand; const cells = globalThis.__lightSharedCells; cells.classBrands = true; }
+    static type(value) {
+      const cells = globalThis.__lightSharedCells;
+      if (cells.classBrands) for (let p = Object.getPrototypeOf(value), n = 64; p !== null && n--; p = Object.getPrototypeOf(p)) if (#c in p) return p.#c(value);
+    }
+  };
   //@unit storesPredicate
   // Shareable once booted: the captured rest array is sealed.
   function storesPredicate(...stores) {
@@ -606,8 +667,9 @@
     else value = __rt.lazySeq(() => sharedSeqForm(thunk.call(null)));
     return metadata !== null ? __rt.cljWithMeta(value, metadata) : value;
   }
-  //@unit protocolKeys requires: sharedStore
-  const protocolKeys = sharedStore(), protocolImplementations = sharedStore();
+  //@unit protocolKeys requires: sharedRegistryStore, sharedStore
+  // `protocolImplementations` is a registry on the task's cells.
+  const protocolKeys = sharedStore(), protocolImplementations = sharedRegistryStore("protocolImplementations");
   //@unit protocolNames requires: sharedStore
   // The protocol registries stay Maps until light-cljs-649 moves them to
   // engine tables (`extend-type` and `defprotocol` fill them after boot).

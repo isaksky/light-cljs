@@ -680,17 +680,32 @@ The pieces, all in the tree:
   profile's bitwise indexing has it. `keywords` is a view over engine
   keywords and `keyword`/`makeKeyword` build `formKeyword` (a run-time
   keyword is fresh, as upstream's). `constructorHashes` answers an engine
-  form's hash from the engine and `identityHashes` reads
-  `__rt.identityHash`, the engine's runtime-wide identity service, which
-  is also the hash the engine folds for a host object inside a form, so
-  `[f]` and `(f)` hash alike. Every other WeakMap and WeakSet brand store
-  (`symbols`, `metadataValues`, `atoms`, `vars`, `typeNames`, `recordTypes`,
-  `multiFns`, `treeRoots`, ... 36 stores) is a `sharedStore`, a
-  private-field class with a WeakMap's API that seals and publishes and
-  never brands an engine value; `coreMethod` and `storesPredicate` seal what
-  they capture; the method-key memos (`slots` for arities 0 to 21, `cell`,
-  `cell.protocol`, `info`) are filled at the end of the boot for the keys of
-  `methodKeys` and the dispatchers' own keys (point 5).
+  sequence's hash (vector, list, cons, lazy seq) from the runtime's own
+  `hashOrderedColl` over its items, cached per task (`formHashes` on the
+  task's cells, as the V8 profile's WeakMap caches it), and any other
+  engine form's from the engine: the engine folds a host object's identity
+  hash, which is the runtime's hash of a function or a plain object but not
+  of a symbol, a list of `listFromArray`, a map or a Date, which the
+  runtime hashes by value and equality compares by value (light-cljs-677);
+  `identityHashes` reads `__rt.identityHash`, the engine's runtime-wide
+  identity service, so `[f]` and `(f)` hash alike. A delay's view reads
+  the value of `cljDelayState` in every state (the seed while pending or
+  after a failed realization) and reports a `false` thunk for a realized
+  delay that prints as pending, as a `(Delay. false x)` does in the V8
+  profile (678). `cons` normalizes a tail that is not a seq through `seq`
+  when it is called, as the V8 profile's does (680), and a `conj` onto a
+  list stays a counted list: the engine's prepend onto an engine list, a
+  `ListValue` with its count onto a runtime-owned one (681). Every other
+  WeakMap and WeakSet brand store (`symbols`, `metadataValues`, `atoms`,
+  `vars`, `recordTypes`, `multiFns`, `treeRoots`, ... 34 stores) is a
+  `sharedStore`, a private-field class with a WeakMap's API that seals and
+  publishes and never brands an engine value; `coreMethod`,
+  `storesPredicate` and `callable` seal what they capture (`callable`'s
+  arity table, held only by its closure, stood between 454 members and
+  publication; 666); the method-key memos (`slots` for every arity a
+  dispatcher declares, 0 to 22 with `invokeProtocol`, `cell`,
+  `cell.protocol`, `info`) are filled at the end of the boot for the keys
+  of `methodKeys` and the dispatchers' own keys (point 5; 679).
 - Registries complete after boot (`protocolMasks`, `coreProtocolNames`,
   `coreProtocolsByName`, `nativeImplementations`) are `sharedMap`s: a Map's
   `get`, `has`, `size` and entry iteration over a sealed entry array. The
@@ -702,9 +717,18 @@ The pieces, all in the tree:
   (`sharedSnapshots`, sealed with the rest), so a registration after boot is
   the registering task's, as the per-task fallback has it, and a write to a
   sealed boot entry throws, until light-cljs-649 moves them to engine
-  tables. The `EMPTY` statics of the kinds the runtime still builds as its
-  own objects (hash sets, array and hash maps, queues) are getters that
-  build the task's own on first read.
+  tables. Two brand stores join them as registries keyed by identity
+  (`sharedRegistryStore`; 666): `protocolImplementations`, what
+  `installMethods` records per value (read back only by itself and by
+  `collectionWithMeta`; its boot entries are sealed arrays of the method
+  pairs), and `typeNames`, because a private field on a prototype or on a
+  type's function (`Loadable`'s, installed while booting) keeps the engine
+  from sealing it, and an unsealed `Loadable` stood behind every path
+  through `kindHooks.isLoadable`. `ClassBrand`'s "some class is branded"
+  flag is the task's cell `classBrands`, not a private static of the
+  class, for the same reason. The `EMPTY` statics of the kinds the runtime
+  still builds as its own objects (hash sets, array and hash maps, queues)
+  are getters that build the task's own on first read.
 - `sharedProfileBoot` fills the memos and the registry snapshots, moves the
   boot's writes to hub cells into the hub, seals, deeply through properties
   and prototypes, what every top-level binding holds (the list is generated
@@ -733,23 +757,40 @@ defaults, with no cells needed), runtime-owned sequences crossing into
 the engine's `cons` and lazy realization, fractional vector indexes, the
 bounded fallback diagnostic and the boot's memory.
 
-State after light-cljs-647's third attempt (2026-10-31): the profile
-boots; 267 of 748 members publish (268 after the second attempt, 259
-after the first, 193 after 646; the third attempt's `cons` and `LazySeq`
-reach `seq` through `sharedSeqForm`, so they join the first cause below).
-The causes the second attempt removed: the default `prototype` objects of
-the functions made while booting (425 members, the reachable seal), the
-captured Maps (the registries above), the frozen empty array the record
-wrapper of `maps` captured (283 members once the prototypes were gone), and
-the `EMPTY` statics. The remaining rejections, by cause:
+State after light-cljs-666's first attempt (2026-10-31): the profile
+boots; 716 of 748 members publish (267 after 647's third attempt, 268
+after its second, 259 after its first, 193 after 646). The causes 647
+removed: the default `prototype` objects of the functions made while
+booting (425 members, the reachable seal), the captured Maps (the
+registries above), the frozen empty array the record wrapper of `maps`
+captured and the `EMPTY` statics. The causes 666 removed, each found with
+`BBP_PUBLISH_TRAIL=1` and `shared_profile_publication_path_of` (the trail
+names the kind and function name of every object on the path): the arity
+table `callable`'s function captures (454 members: `concat` and the other
+combinators built while booting, reached from almost every operation
+through the kind tables); then `Loadable`'s function and prototype, which
+`typeNames` and `protocolImplementations` had branded with private fields
+(an object with private elements does not seal: `__rt.seal` reports
+"internal slots"), behind every path through `kindHooks.isLoadable`
+(407); then `ClassBrand`'s private static flag (the same, through
+`cloneablePayload` and the brand stores). A `shared_profile_eval`
+diagnostic (`SHARED_EVAL="<js>"`) evaluates an expression after the boot
+and prints its publication path, which is how the unsealable members were
+listed (`__rt.seal` over every export and `core` member). The remaining
+rejections, by cause:
 
 | Members | Cause | Example | What removes it |
 | ---: | --- | --- | --- |
-| 407 + 45 + 3 | a hook function (the third traced edge of a sealed hook table) captures a cell whose value is a function named `fn` that captures a task-owned object; reached from almost every operation through `count`, `seq` and the kind tables. Its trail: `object > function anonymous () > binding cell > function anonymous (fn) > object` | `rt.get`, `core.str`, `core.mapcat` | find the hook with `BBP_PUBLISH_TRAIL=1` and `shared_profile_publication_path_of`, then seal or swap what it captures (one unit; the count says it is one object) |
-| 11 | the reader's and compiler input's WeakMaps (`stateOf`: `streams`, `readerMaps`) | `core.readLine`, `core.compilerInputWindow` | per-unit swaps to `sharedStore` in the reader unit |
-| 8 | the reader's `tags`/`builtinTags` Maps and `namespaces` | `core.readerRegisterTagParser`, `core.createNs` | the reader's tag tables to the task's cells with a sealed builtin-tag table; namespaces as sealed registries (648) |
-| 5 | the reader's nested `let`s (`defaultTag`, `activeDepth`) | `core.ednReadString` | the reader's state to the task's cells |
-| 1 + 1 | `rt.compilerForms` (the V8 form bridge's cell), `core.currentNs` (a `Namespace` object) | | 648 decides what the Pants build boots of the V8 bridge; namespaces as sealed registries |
+| 11 | the reader's WeakMaps (`streams`, `readerMaps`), declared at the top of the `reader` unit's IIFE (scope 1, which `build.rs`'s `rewrite_task_state` passes over: `SHARED_TASK_STATE` rewrites scope-0 declarations and free names only) | `core.readLine`, `core.compilerInputWindow` | a second rewrite list in `build.rs` for named declarations of the reader's scope 1, rewritten to the task's cells like the module-level `let`s, with lazy WeakMap defaults in `sharedTaskDefaults` (the declaring tokens stay as dead locals) |
+| 8 | the reader's `tags`/`builtinTags` Maps (filled while booting by `readerInitialTagTable`) and `namespaces` | `core.readerRegisterTagParser`, `core.createNs` | the same rewrite, with the tag tables as per-task registries seeded from the boot's entries (`sharedSnapshots`) and the builtin table sealed; namespaces as sealed registries (648) |
+| 6 | `demungePattern`, a top-level `RegExp` (exotic data, which `seal` cannot take; the walk's `TypeError` is silent), and the reader's nested tables (`readerInitialTagTable`'s, the timestamp parser's) | `core.demunge`, `core.readerInitialTagTable`, `core.ednRead` | `demungePattern` as `__rt.formRegex(source, "g")` in the profile, if `String.prototype.replace` takes one; the reader's tables through the rewrite above |
+| 5 | the reader's nested `let`s (`defaultTag`, `activeDepth`) | `core.ednReadString` | the same rewrite, with data defaults (`null`, `0`) in `sharedTaskDefaults` |
+| 1 + 1 | `rt.compilerForms` (the V8 form bridge's `decode` keeps a `let` a nested function assigns), `core.currentNs` (a `Namespace` instance, which `installMethods` brands) | | 648 decides what the Pants build boots of the V8 bridge; namespaces as sealed registries |
+
+Left for the next attempt besides the table: the chunks view and the
+`mapSeq` thunk over sealed inputs (acceptance 3), the engine-kind views
+for symbols, metadata, atoms, Vars, multimethods, regex, structs and
+records (acceptance 4), and the boot's memory below.
 
 The boot's memory (`shared_profile_boots_with_four_mib_heap`, ignored with
 the numbers): peak 53 MB of managed bytes and 50 MB live after the boot

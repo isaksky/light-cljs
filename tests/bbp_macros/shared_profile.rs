@@ -127,10 +127,12 @@ fn walk_report(shareable: usize, causes: &[(String, Vec<String>, String)]) -> St
 /// task and `Runtime::publish` accepts the result with zero rejected paths.
 /// On failure the first rejected path is printed, then the walk of every
 /// member by cause and the top-level bindings a seal cannot take. State on
-/// 2026-10-31: 267 of 748 members publish; the remaining causes are in
-/// docs/real-core-design.md, "Profile assembly" (light-cljs-666).
+/// 2026-10-31 (after light-cljs-666's first attempt): 716 of 748 members
+/// publish; the remaining causes (the reader's nested state, `demungePattern`,
+/// the namespace registry, the bridge's `let`) are in docs/real-core-design.md,
+/// "Profile assembly" (light-cljs-666).
 #[test]
-#[ignore = "267 of 748 members publish; the remaining causes are listed in docs/real-core-design.md (light-cljs-666)"]
+#[ignore = "716 of 748 members publish; the remaining causes are listed in docs/real-core-design.md (light-cljs-666)"]
 fn shared_profile_boots_and_publishes_with_zero_rejected_paths() {
     let rt = Runtime::new();
     let booted = boot(&rt);
@@ -580,6 +582,37 @@ fn shared_profile_publication_walk() {
     for line in walk_report(shareable, &causes).lines() {
         println!("SEAM shared {line}");
     }
+}
+
+/// The value of the JavaScript in `SHARED_EVAL`, run after the boot with
+/// `rt` and `core` in scope and printed as a string, then its publication
+/// path, for finding what a member holds.
+#[test]
+#[ignore = "diagnostic: SHARED_EVAL=\"rt.Loadable.prototype\""]
+fn shared_profile_eval() {
+    let rt = Runtime::new();
+    let body = std::env::var("SHARED_EVAL").unwrap_or_default();
+    let value = run(
+        &rt,
+        &format!("const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; return ({body});"),
+    )
+    .unwrap_or_else(|e| panic!("boot: {e}"));
+    let text = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; const value = ({body}); \
+             return typeof value === 'object' && value !== null ? Object.prototype.toString.call(value) + ' ' + Reflect.ownKeys(value).map(String).join(',') : String(value);"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("eval: {e}"));
+    println!("EVAL {body}: {}", text.string().unwrap().to_string_lossy());
+    println!(
+        "PATH: {}",
+        match rt.publish(&value) {
+            Ok(()) => "publishes".to_string(),
+            Err(e) => e.to_string(),
+        }
+    );
 }
 
 /// The publication path of the members named in `SHARED_MEMBERS` (space
