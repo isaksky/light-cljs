@@ -889,6 +889,38 @@ fn shared_profile_vars_with_engine_symbol_names_print() {
     );
 }
 
+/// The operations that copy a collection's metadata to their result
+/// (`preserveMeta`: `empty`, `pop`, `conj`, `assoc`) give an engine result
+/// the engine metadata of its input as a form (`formWithMeta`), never by
+/// writing to the form; runtime-built metadata on an engine result takes
+/// the wrapper `with-meta` builds, and a runtime-owned result keeps the
+/// store path (light-cljs-693).
+#[test]
+fn shared_profile_engine_collection_operations_preserve_metadata() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const tag = core.keyword(null, 'tag'), v = __rt.formWithMeta(core.vector(1, 2), __rt.formMap(tag, true)); \
+             const results = [core.empty(v), core.pop(v), core.conj(v, 3), core.assoc(v, 0, 9)]; \
+             const own = core.withMeta(core.vector(1, 2), rt.arrayMapFromArray([tag, 'own'])), ownResults = [core.empty(own), core.pop(own), core.conj(own, 3), core.assoc(own, 0, 9)]; \
+             const s = core.withMeta(core.hashSet(1, 2), __rt.formMap(tag, 'set')), setResults = [core.empty(s), core.conj(s, 3)]; \
+             return [...results.map(r => __rt.formKind(r) + ':' + core.count(r) + ':' + __rt.formGet(core.meta(r), tag, null)), \
+               ...ownResults.map(r => String(__rt.formKind(r)) + ':' + core.count(r) + ':' + core.get(core.meta(r), tag) + ':' + core.prStr(r)), \
+               ...setResults.map(r => core.count(r) + ':' + __rt.formGet(core.meta(r), tag, null)), \
+               core.prStr(core.conj(v, 3)), __rt.formGet(__rt.formMeta(core.conj(v, 3)), tag, null)].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "vector:0:true vector:1:true vector:3:true vector:2:true \
+         null:0:own:[] null:1:own:[1] null:3:own:[1 2 3] null:2:own:[9 2] \
+         0:set 3:set [1 2 3] true"
+    );
+}
+
 /// A lazy result of the real `map` publishes (its thunk captures the
 /// sealed collections; light-cljs-666, acceptance 3) and a task spawned
 /// separately walks it; and `map` over a 40-element vector calls the mapped

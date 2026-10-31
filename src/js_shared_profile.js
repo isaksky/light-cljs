@@ -450,6 +450,23 @@
     if (!Object.prototype.hasOwnProperty.call(this.obj, key)) return null;
     return makeVar(() => this.obj[key], symbol(str(this.name), str(local)), mapFromArray([keyword(null, "ns"), this]), true);
   };
+  //@unit preserveMeta requires: collectionWithMeta, meta, metadataValues
+  // An operation's engine result (a vector, a list) takes its input's
+  // metadata as a form (`formWithMeta`; the form itself when it is the same
+  // map already), since a form's metadata is given where the form is built
+  // and `metadataValues.set` on one throws; runtime-built metadata (a map
+  // of the verbatim `maps`, until the maps view) takes the wrapper
+  // `with-meta` builds over the views' fallbacks. A runtime-owned result
+  // keeps the V8 profile's store path (light-cljs-693).
+  function preserveMeta(original, result) {
+    const metadata = meta(original);
+    if (__rt.formKind(result) !== null) {
+      if (metadata == null) return result;
+      return __rt.formKind(metadata) === "map" ? __rt.formWithMeta(result, metadata) : collectionWithMeta(result, metadata);
+    }
+    if (metadata != null || metadataValues.has(original)) metadataValues.set(result, metadata);
+    return result;
+  }
   //@unit varPrototype requires: ifnApply, ifnPrototype, meta, str, Var, vars
   // The V8 profile's, with `toString` through `str`: a Var's name is an
   // engine symbol, which `String` cannot take (light-cljs-692).
