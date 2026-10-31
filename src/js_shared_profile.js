@@ -83,11 +83,15 @@
   // from the sealed hub throws. The registries the defaults make on first
   // use (their getters) stay lazy. Every task makes its cells before it
   // reads the runtime: the boot task at the end of `sharedProfileBoot`,
-  // every other task through `core.sharedTaskCells` (light-cljs-648).
+  // every other task through `core.sharedTaskCells` (light-cljs-648). The
+  // defaults are read from the hub itself (`Reflect.get`, which the
+  // assembly's rewrite of `coreCells[` to the task's cells leaves alone),
+  // not from the cells of whatever task is calling, which may not exist
+  // yet and whose state (a gensym counter) is its own.
   function sharedTaskCells() {
     const cells = Object.create(coreCells);
     for (const name of sharedTaskDefaults.cellNames) {
-      Object.defineProperty(cells, name, {value: coreCells[name], writable: true, configurable: true, enumerable: true});
+      Object.defineProperty(cells, name, {value: Reflect.get(coreCells, name), writable: true, configurable: true, enumerable: true});
     }
     return cells;
   }

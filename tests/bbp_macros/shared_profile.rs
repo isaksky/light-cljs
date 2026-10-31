@@ -171,6 +171,35 @@ fn shared_profile_task_cells_are_writable() {
     );
 }
 
+/// A task's first cells (`core.sharedTaskCells`, which every task
+/// light-cljs-648 starts calls before it reads the runtime) hold the boot's
+/// defaults, not the calling task's state: a counter the previous cells
+/// advanced starts over, and the factory needs no cells to exist.
+#[test]
+fn shared_profile_task_cells_initialize_without_existing_cells() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const make = core.sharedTaskCells; \
+             core.gensym(); core.gensym(); \
+             const advanced = globalThis.__lightSharedCells.gensymCounter; \
+             const next = make(); \
+             globalThis.__lightSharedCells = undefined; \
+             let first; try {{ first = make(); }} catch (e) {{ return 'threw ' + e.constructor.name; }} \
+             globalThis.__lightSharedCells = first; \
+             return [advanced, next.gensymCounter, first.gensymCounter, first.printReadably, first.tapLimit, \
+               Object.getPrototypeOf(first) === Object.getPrototypeOf(next), core.name(core.gensym())].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "2 0 0 true 1024 true G__1"
+    );
+}
+
 /// The vector storage contract of the engine view: the verbatim operation
 /// units read `cnt` and a small vector's `tail`, and the swapped storage
 /// units answer `nth`, `seq`, `conj`, `assoc`, `pop`, `subvec` and a
