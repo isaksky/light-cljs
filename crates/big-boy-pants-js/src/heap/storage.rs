@@ -655,21 +655,10 @@ impl ObjectTable {
         slot.current(id).map(|_| slot)
     }
 
-    /// Mark a live object, trace its strong edges and run the collector's
-    /// conditional pass over it, in one visit of its slot (stopped world).
-    /// Frozen kinds have no conditional storage (rule 2), so they skip it.
-    /// A marked atom's retired boxes move to `atoms`: no atom operation is
-    /// in progress while the world is stopped (`crate::atom`, reclamation).
-    pub(super) fn mark(
-        &self,
-        id: ObjectId,
-        children: &mut dyn FnMut(gc::TraceEdge),
-        conditional: &mut dyn gc::ConditionalVisitor,
-        atoms: &mut Vec<Value>,
-    ) -> bool {
-        let Some(segment) = self.segments.get(id.index as usize / SEGMENT_SIZE) else {
-            return false;
-        };
+    /// Claim a first visit before enqueueing an object (stopped world).
+    /// The snapshot borrows the table, preventing sweep until it is consumed.
+    pub(super) fn mark(&self, id: ObjectId) -> Option<MarkedObject<'_>> {
+        let segment = self.segments.get(id.index as usize / SEGMENT_SIZE)?;
         // One thread marks, with the world stopped: a load and a store, not
         // a read-modify-write per reached edge.
         let offset = id.index as usize % SEGMENT_SIZE;
@@ -679,22 +668,40 @@ impl ObjectTable {
         if bits & bit != 0 {
             // Already reached, or a stale identity for a reached occupant:
             // neither needs another slot read or contributes a first visit.
-            return false;
+            return None;
         }
         let slot = &segment.slots[offset];
-        let Some(state) = slot.current(id) else {
-            return false;
-        };
+        let state = slot.current(id)?;
         marked.store(bits | bit, Ordering::Relaxed);
-        if state & FROZEN != 0 {
-            // SAFETY: live (checked above under the table lock, which
-            // excludes sweep) and frozen (rule 2).
+        Some(MarkedObject {
+            id,
+            frozen: state & FROZEN != 0,
+            _table: std::marker::PhantomData,
+        })
+    }
+
+    /// Trace an object claimed from this table and its conditional storage. No slot state
+    /// read is needed for a frozen body: mark validated its generation and
+    /// the snapshot's table borrow excludes sweep. A marked atom's retired
+    /// boxes move to `atoms` while all atom operations are stopped.
+    pub(super) fn trace_marked(
+        &self,
+        marked: MarkedObject<'_>,
+        children: &mut dyn FnMut(gc::TraceEdge),
+        conditional: &mut dyn gc::ConditionalVisitor,
+        atoms: &mut Vec<Value>,
+    ) {
+        let slot = &self.segments[marked.id.index as usize / SEGMENT_SIZE].slots
+            [marked.id.index as usize % SEGMENT_SIZE];
+        if marked.frozen {
+            // SAFETY: mark validated the live generation under the table
+            // lock, still held through the snapshot's borrow; frozen (2).
             let body = unsafe { slot.body() };
             body.trace(children);
             if let HeapObject::Atom(cell) = body {
                 atoms.extend(cell.take_retired());
             }
-            return true;
+            return;
         }
         let _word = slot.lock();
         if slot.state.load(Ordering::Acquire) & FROZEN != 0 {
@@ -706,7 +713,6 @@ impl ObjectTable {
             body.trace(children);
             body.trace_conditional(conditional);
         }
-        true
     }
 
     /// Whether a live object has been marked in the collection in progress
@@ -720,18 +726,6 @@ impl ObjectTable {
                 & (1u64 << (offset % 64))
                 != 0
         })
-    }
-
-    /// A marked occupant makes any further edge to this slot redundant.
-    /// This is only an enqueue shortcut: conditional-key liveness still
-    /// requires the generation check in `is_marked`.
-    pub(super) fn marked_slot(&self, id: ObjectId) -> bool {
-        let offset = id.index as usize % SEGMENT_SIZE;
-        self.segments
-            .get(id.index as usize / SEGMENT_SIZE)
-            .is_some_and(|segment| {
-                segment.marked[offset / 64].load(Ordering::Relaxed) & (1u64 << (offset % 64)) != 0
-            })
     }
 
     /// Run the collector's conditional pass over a live object. Frozen kinds
@@ -877,6 +871,20 @@ impl ObjectTable {
                 + directory.bytes()
                 - self.live() * size_of::<HeapObject>(),
         )
+    }
+}
+
+/// A validated, queued object. The frozen flag is monotonic while live;
+/// keeping the table borrowed prevents its generation from being swept.
+pub(super) struct MarkedObject<'t> {
+    id: ObjectId,
+    frozen: bool,
+    _table: std::marker::PhantomData<&'t ObjectTable>,
+}
+
+impl MarkedObject<'_> {
+    pub(super) fn id(&self) -> ObjectId {
+        self.id
     }
 }
 
