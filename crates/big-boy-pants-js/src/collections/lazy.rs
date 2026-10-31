@@ -32,6 +32,13 @@
 //!   claiming task's frames, and wakes are delivered after the lock is
 //!   released.
 //! * **Realized values are read lock-free** (a `OnceLock`).
+//! * **An embedder may gate the first realization of a shared cell**
+//!   ([`crate::Runtime::set_realization_gate`]): before a task claims a
+//!   shared cell that nobody has realized or is realizing, it asks a host
+//!   effect and reads the dependency the answer names, so the embedder
+//!   chooses which task runs a published thunk whose result depends on the
+//!   task's own state (light-cljs-665). Readers of a cell another task is
+//!   realizing, and of a realized one, are not gated.
 //!
 //! # Exceptions
 //!
@@ -487,6 +494,12 @@ impl LazyCell {
         })
     }
 
+    /// Whether nobody has realized the cell or is realizing it now: a claim
+    /// would run its thunk. A hint; [`LazyCell::claim`] decides.
+    pub(crate) fn is_free(&self) -> bool {
+        self.realized.get().is_none() && lock(&self.state).realizer.is_none()
+    }
+
     /// Claim the cell for `task`, or report why it cannot. `waited` is the
     /// attempt this reader parked on, if it did: a failure of that attempt
     /// is reported to it even if a later attempt has ended since.
@@ -722,11 +735,27 @@ impl LazyCell {
 /// what an embedder reads to attribute a task's effects to the realization
 /// a reader on another task may wait for ([`crate::Runtime::realizing`]),
 /// or may read once it has settled ([`crate::Runtime::attribute_realizing`]).
-/// A leaf metadata lock; the realizing frames keep its cells alive.
+/// A leaf metadata lock; the realizing frames keep its cells alive. It also
+/// holds the embedder's realization gate ([`Realizing::gate`]).
 #[derive(Debug, Default)]
-pub(crate) struct Realizing(Mutex<HashMap<TaskId, Vec<Arc<LazyCell>>>>);
+pub(crate) struct Realizing(
+    Mutex<HashMap<TaskId, Vec<Arc<LazyCell>>>>,
+    OnceLock<(u16, ResultKind)>,
+);
 
 impl Realizing {
+    /// The embedder's gate before a task claims a shared cell nobody has
+    /// realized or is realizing ([`crate::Runtime::set_realization_gate`]):
+    /// the host effect to ask, and the result kind of the dependency its
+    /// nonzero answer names.
+    pub(crate) fn gate(&self) -> Option<(u16, ResultKind)> {
+        self.1.get().copied()
+    }
+
+    pub(crate) fn set_gate(&self, effect: u16, kind: ResultKind) {
+        let _ = self.1.set((effect, kind));
+    }
+
     /// Note that `task` starts realizing `cell`; the realization ends when
     /// the returned guard is dropped.
     pub(crate) fn begin(self: &Arc<Self>, task: TaskId, cell: &Arc<LazyCell>) -> Realization {

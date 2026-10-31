@@ -18,7 +18,7 @@ use crate::heap::{
     CollectError, CollectStats, CollectionObserver, HandleError, Heap, HeapStats, HeapUsage,
     Rooted, Scope, ThreadRegistration,
 };
-use crate::ids::{DependencyKey, ProducerId, TaskId, WorldId};
+use crate::ids::{DependencyKey, ProducerId, ResultKind, TaskId, WorldId};
 use crate::task::Task;
 use crate::value::share::{self, PublishError};
 use crate::value::{Primitive, Value};
@@ -378,6 +378,18 @@ impl Runtime {
         (key.kind() == crate::collections::lazy::LAZY_REALIZATION)
             .then(|| self.0.deps.lazy.realizer(key.dependency().get()))
             .flatten()
+    }
+
+    /// Before a task claims a shared lazy sequence or delay that nobody has
+    /// realized or is realizing, it asks host effect `effect` (argument 0):
+    /// 0 lets it claim the cell, and any other answer is a dependency of
+    /// kind `kind` it reads first, suspending while it is pending. The
+    /// embedder so decides which task runs a published thunk, whose result
+    /// can depend on the task's own state (light-cljs-665). Set once; later
+    /// calls are ignored. A task whose host rejects `effect` fails the
+    /// realization with that error.
+    pub fn set_realization_gate(&self, effect: u16, kind: ResultKind) {
+        self.0.heap.realizing.set_gate(effect, kind);
     }
 
     /// The shared heap (crate-internal native operations and tests).

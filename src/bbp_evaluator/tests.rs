@@ -5403,6 +5403,13 @@ fn flatten_retains_leaf_occurrences_and_metadata_across_collection() {
     evaluator.release(function).unwrap();
 }
 
+/// A shared lazy sequence realized at a lent position (light-cljs-601,
+/// restated for the realization gate of light-cljs-676): the later unit 1
+/// parks at the gate before it claims the cell; an earlier activity then
+/// demands unit 1, lending it its position, and the gate opens there. Unit
+/// 1 claims the cell and parks inside the thunk; the earlier reader, unit
+/// 0, finds the cell being realized, waits for it, lends its own position
+/// too, and wakes when it settles; the thunk runs once.
 #[test]
 fn pooled_lazy_reader_inherits_lane_and_wakes_after_cold_helper() {
     assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
@@ -5413,8 +5420,9 @@ fn pooled_lazy_reader_inherits_lane_and_wakes_after_cold_helper() {
 }
 
 /// A shared delay (light-cljs-613) is the same once-cell: a task that
-/// forces it while another runs its body parks, lends its earlier lane to
-/// that run, and wakes when it settles; the body runs once.
+/// forces it while another runs its body at a lent position parks, lends
+/// its earlier lane to that run, and wakes when it settles; the body runs
+/// once.
 #[test]
 fn pooled_delay_reader_inherits_lane_and_wakes_after_cold_helper() {
     assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
@@ -5432,7 +5440,7 @@ fn assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
     wrap: &str,
     read: &str,
 ) {
-    use crate::effect_lanes::{Lanes, identity};
+    use crate::effect_lanes::{Lanes, Target, identity};
     use std::{cell::Cell, sync::mpsc, time::Duration};
 
     let shared = BbpRuntime::new(&EvaluatorOptions {
@@ -5523,8 +5531,28 @@ fn assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
         assert_eq!(unit, 1);
         assert!(
             lanes.counts().waits > 0,
-            "realizer did not park for its lane"
+            "realizer did not park at the realization gate"
         );
+        // An earlier activity demands unit 1, as the coordinator demands a
+        // pooled unit, lending it its position: the gate opens there. The
+        // demand then ends, before the realizer goes on.
+        std::thread::scope(|lender| {
+            lender.spawn(|| {
+                let _root = lanes.enter_root();
+                let _unit = lanes.enter_unit(0);
+                let _wait = lanes.wait_for(Target::Unit(1));
+            });
+        });
+        assert_eq!(
+            lanes.counts().inherited,
+            1,
+            "the gate did not open at the lent position"
+        );
+        // Past the gate, the realizer claims the cell and parks inside its
+        // thunk for its own lane, which no earlier activity lends it now.
+        let (step, reply) = queue.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(step.task_id(), realizer_id);
+        reply.send(step.run()).unwrap();
         let reader = scope.spawn(move || run(0));
         let (reader_id, lazy_owner) = waits.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(lazy_owner, realizer_id);
@@ -5532,8 +5560,10 @@ fn assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
             parks.recv_timeout(Duration::from_secs(5)).unwrap(),
             (0, reader_id)
         );
-        assert!(
-            lanes.counts().inherited > 0,
+        // The realizer's lane in the thunk opened at the reader's position.
+        assert_eq!(
+            lanes.counts().inherited,
+            2,
             "reader did not lend its earlier lane"
         );
         assert!(
@@ -5553,7 +5583,8 @@ fn assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
         reader.join().unwrap();
     });
     assert_eq!(shared.helper_counts().compiled, 1);
-    assert_eq!(shared.helper_counts().woken, 2);
+    // The realizer at the gate and in the thunk, and the reader.
+    assert_eq!(shared.helper_counts().woken, 3);
     assert_eq!(shared.0.counters.cleanups.load(Ordering::Relaxed), 1);
     shared.0.runtime.scope(|s| {
         let pair = s.local(&value).unwrap();

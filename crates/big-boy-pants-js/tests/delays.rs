@@ -12,8 +12,8 @@ use std::thread;
 
 use big_boy_pants_js::frontend::compile_function;
 use big_boy_pants_js::{
-    Budget, CellStatus, Host, HostCall, LAZY_REALIZATION, Primitive, Rooted, RunOutcome, Runtime,
-    Task,
+    Budget, CellStatus, Completion, DependencyId, Host, HostCall, LAZY_REALIZATION, Primitive,
+    ResultKind, Rooted, RunOutcome, Runtime, Task,
 };
 
 /// Counts body runs (`__rt.effect(1, …)`), optionally holding the first one
@@ -566,4 +566,133 @@ fn provisional_delay_value_survives_collection() {
         "inner kept 200"
     );
     assert_eq!(host.count(1), 2, "body runs");
+}
+
+/// Answers the realization gate (`__rt.effect(2, 0)`) with `gate`: 0 lets
+/// the task claim the cell, another number names the dependency it reads
+/// first. Counts body runs (`__rt.effect(1, …)`) and gate questions.
+#[derive(Clone, Default)]
+struct Gated {
+    gate: f64,
+    runs: Arc<AtomicUsize>,
+    asked: Arc<AtomicUsize>,
+}
+
+impl Host for Gated {
+    fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+        match call.op {
+            1 => Ok(Primitive::Number(
+                self.runs.fetch_add(1, Ordering::SeqCst) as f64
+            )),
+            2 => {
+                self.asked.fetch_add(1, Ordering::SeqCst);
+                Ok(Primitive::Number(self.gate))
+            }
+            op => Err(format!("unexpected effect {op}")),
+        }
+    }
+}
+
+/// The embedder's realization gate (light-cljs-676): before a task claims
+/// a shared delay nobody has realized or is realizing, it asks the gate
+/// and reads the dependency a closed gate names, without claiming the
+/// cell. Another task the gate admits realizes it meanwhile; the gated
+/// task then reads the settled value without running the body. Readers of
+/// a realized cell, and of a delay that was never published, are not gated.
+#[test]
+fn the_realization_gate_holds_a_task_before_it_claims_a_shared_delay() {
+    let rt = Runtime::new();
+    let gate_kind = ResultKind::new(9);
+    rt.set_realization_gate(2, gate_kind);
+    let delay = shared_delay(&rt, false);
+    let runs = Arc::new(AtomicUsize::new(0));
+    let closed = Gated {
+        gate: 5.0,
+        runs: runs.clone(),
+        asked: Arc::default(),
+    };
+    let open = Gated {
+        gate: 0.0,
+        runs: runs.clone(),
+        asked: Arc::default(),
+    };
+    // A later task whose gate is closed reads the named dependency first.
+    let later = reader(&rt, &delay);
+    let key = match later.run_with(Budget::UNLIMITED, &mut closed.clone()) {
+        Ok(RunOutcome::Waiting(key)) => key,
+        other => panic!("expected a gate wait, got {other:?}"),
+    };
+    assert_eq!(key.kind(), gate_kind);
+    assert_eq!(key.dependency(), DependencyId::new(5));
+    assert_eq!(closed.asked.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        0,
+        "the gated task ran the body"
+    );
+    // The earlier task, admitted, claims the cell and runs the body.
+    assert_eq!(
+        text(
+            reader(&rt, &delay)
+                .run_with(Budget::UNLIMITED, &mut open.clone())
+                .unwrap()
+        ),
+        "vector 3"
+    );
+    assert_eq!(open.asked.load(Ordering::SeqCst), 1);
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    // The gate opens: the later task reads the settled value.
+    let request = later.take_producer_requests().pop().unwrap();
+    assert_eq!(request.key(), key);
+    let answer = rt.root(Primitive::Number(0.0));
+    let later = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            Completion::Ready(&answer),
+        )
+        .unwrap()
+        .into_runnable()
+        .pop()
+        .unwrap();
+    assert_eq!(
+        text(
+            later
+                .run_with(Budget::UNLIMITED, &mut closed.clone())
+                .unwrap()
+        ),
+        "vector 3"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "the body ran again");
+    // A realized cell is read without asking.
+    assert_eq!(
+        text(
+            reader(&rt, &delay)
+                .run_with(Budget::UNLIMITED, &mut closed.clone())
+                .unwrap()
+        ),
+        "vector 3"
+    );
+    assert_eq!(closed.asked.load(Ordering::SeqCst), 1);
+    // So is a delay no other task can reach.
+    let local = Gated {
+        gate: 5.0,
+        runs: Arc::default(),
+        asked: Arc::default(),
+    };
+    let own = compile_function(
+        "function own() {
+           const d = __rt.delay(() => { __rt.effect(1, 0); return 7; }, null);
+           return __rt.cljForce(d);
+         }",
+    )
+    .unwrap();
+    let outcome = rt
+        .spawn(&own, &[])
+        .unwrap()
+        .run_with(Budget::UNLIMITED, &mut local.clone())
+        .unwrap();
+    assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+    assert_eq!(local.asked.load(Ordering::SeqCst), 0);
+    assert_eq!(local.runs.load(Ordering::SeqCst), 1);
 }

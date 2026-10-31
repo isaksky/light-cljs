@@ -5222,15 +5222,17 @@ fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slo
     }
 }
 
-/// A published delay or lazy sequence whose thunk reads a dynamic Var is
-/// realized under the bindings of the earliest caller in source order
-/// (light-cljs-665 review): `app/w` warms both cells without forcing them,
-/// `app/a` forces them under `:early` and the later `app/b` under `:late`.
-/// Held, `app/a` starts only once a later unit has parked for its lane, so
-/// `app/b` reaches the cells first; its `binding` waits for its lane before
-/// it installs the overlay, so `app/a` still realizes them. A later caller
-/// that forces such a cell with no binding of its own is not ordered yet
-/// (light-cljs-676).
+/// A published delay or lazy sequence is realized by the earliest task in
+/// source order that needs it, with that task's bindings (light-cljs-665,
+/// light-cljs-676): its thunk reads `*x*` from the realizing task's
+/// overlays. `app/w` warms the four cells without forcing them; `app/a`
+/// forces them all under `:early`; the later `app/b` (bound to `:late`)
+/// and `app/c` (unbound) force them too. Held, `app/a` starts only once a
+/// later unit has parked for its lane, so the later ones reach the cells
+/// first and must wait at the engine's realization gate (the hold needs
+/// workers besides the one holding `app/a`, so it runs at 4 and 8 threads).
+/// Without the gate the unbound `app/c` realizes `d2` and `s2` with `:root`
+/// at 2 threads.
 #[test]
 fn published_once_cells_keep_source_order_bindings() {
     use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
@@ -5242,20 +5244,24 @@ fn published_once_cells_keep_source_order_bindings() {
             (def ^:dynamic *x* :root)
             (def d (delay *x*))
             (def s (lazy-seq (list *x*)))
-            (defmacro warm [] [(realized? d) (realized? s)])
-            (defmacro early [] (binding [*x* :early] (list 'quote [@d (first s)])))
-            (defmacro late [] (binding [*x* :late] (list 'quote [@d (first s)])))"#,
+            (def d2 (delay *x*))
+            (def s2 (lazy-seq (list *x*)))
+            (defmacro warm [] [(realized? d) (realized? s) (realized? d2) (realized? s2)])
+            (defmacro early [] (binding [*x* :early] (list 'quote [@d (first s) @d2 (first s2)])))
+            (defmacro late [] (binding [*x* :late] (list 'quote [@d (first s)])))
+            (defmacro plain [] (list 'quote [@d2 (first s2)]))"#,
         ),
         (
             "app.cljs",
-            r#"(ns app (:require [m :refer [warm early late]]))
+            r#"(ns app (:require [m :refer [warm early late plain]]))
             (def w (warm))
             (def a (early))
-            (def b (late))"#,
+            (def b (late))
+            (def c (plain))"#,
         ),
         (
             "main.cljs",
-            "(ns main (:require [app])) (js/console.log (pr-str [app/w app/a app/b]))",
+            "(ns main (:require [app])) (js/console.log (pr-str [app/w app/a app/b app/c]))",
         ),
     ] {
         std::fs::write(root.join(file), source).unwrap();
@@ -5298,7 +5304,7 @@ fn published_once_cells_keep_source_order_bindings() {
     let (reference, _) = build(true, 1, false);
     assert_eq!(
         program_output(&reference),
-        "[[false false] [:early :early] [:early :early]]\n"
+        "[[false false false false] [:early :early :early :early] [:early :early] [:early :early]]\n"
     );
     #[cfg(feature = "quickjs")]
     assert_eq!(build(false, 1, false).0, reference, "QuickJS reference");
@@ -5307,7 +5313,7 @@ fn published_once_cells_keep_source_order_bindings() {
         assert_eq!(program, reference, "jobs {jobs}, held {held}");
         #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if held {
-            assert!(lanes.waits > 0, "jobs {jobs}: the later unit did not wait");
+            assert!(lanes.waits > 0, "jobs {jobs}: no later unit waited");
         }
         let _ = lanes;
     }
@@ -14395,11 +14401,13 @@ const NAMESPACE_FRONTIER: &[(&str, &str)] = &[
 /// `effect_lanes` `a_registry_reader_lent_a_position_sees_what_runs_for_its_waiter`.)
 /// A namespace a shared lazy realization creates (light-cljs-589 review
 /// round 2): `app/a` makes `m/shared-lazy` without realizing it. Held,
-/// `app/h` starts only once `app/g` has begun realizing it, created
-/// `made.lent` and parked inside `m/cold-val`'s initializer for its lane.
-/// `app/h` then waits for that realization, which with one slot runs inside
-/// `app/h`: `made.lent` counts at `app/h`, so that `app/k`, between them,
-/// finds it.
+/// `app/h` starts only once a later unit has parked for its lane, which
+/// `app/g` does at the realization gate before it claims `m/shared-lazy`
+/// (light-cljs-676). `app/h` realizes it, as with one slot: `made.lent`
+/// counts at `app/h`, so that `app/k`, between them, finds it. (Before the
+/// gate, `app/g` began realizing it and parked inside `m/cold-val`'s
+/// initializer, and `app/h` waited for that realization, lending `app/g`
+/// its lane.)
 const NAMESPACE_FRONTIER_LAZY: &[(&str, &str)] = &[
     (
         "m.cljs",
@@ -14446,12 +14454,14 @@ const NAMESPACE_FRONTIER_LENT: &[(&str, &str)] = &[
     ),
 ];
 
-/// A shared lazy realization that has settled before an earlier unit reads
-/// it (light-cljs-601): `app/g`, held ahead of `app/h`, realizes
-/// `m/shared-lazy` and creates `made.lent`, and `app/h` then reads the
-/// settled value without waiting. With one slot `app/h` realizes it, so
-/// `made.lent` counts at `app/h`: `app/h` itself, after its read, and
-/// `app/k`, between them, find it.
+/// A shared lazy realization that creates a namespace (light-cljs-601),
+/// with a later unit reaching it first: held, `app/h` starts only once a
+/// later unit has parked for its lane, which `app/g` does at the realization
+/// gate before it claims `m/shared-lazy` (light-cljs-676). The earliest
+/// caller, `app/h`, realizes it and creates `made.lent`, as with one slot,
+/// and `app/g` then reads the settled value: `app/h` itself, after its
+/// read, and `app/k`, between them, find `made.lent`. (Before the gate,
+/// `app/g` realized it first and `app/h` read the settled value.)
 const NAMESPACE_FRONTIER_SETTLED: &[(&str, &str)] = &[
     (
         "m.cljs",
@@ -14487,20 +14497,21 @@ fn native_namespace_frontier_counts_completed_lazy_realizations() {
         (2, 1, ""),
         (4, 2, ""),
         (8, 3, ""),
-        (4, 14, "settled"),
-        (8, 15, "settled"),
-        (8, 16, "settled"),
-        (8, 17, "settled"),
-        (8, 18, "settled"),
+        (4, 14, "held-any"),
+        (8, 15, "held-any"),
+        (8, 16, "held-any"),
+        (8, 17, "held-any"),
+        (8, 18, "held-any"),
     ];
     for &(jobs, seed, mode) in variants {
         let build = |native| frontier_program(root.path(), native, jobs, seed, mode, "app/h");
-        let native = build(true).0;
+        let (native, _, waits) = build(true);
         assert_eq!(
             program_output(&native),
             "[true [[1] true] true [1]]\n",
             "jobs {jobs} {mode}"
         );
+        assert_held_waited(mode, waits, jobs);
         #[cfg(feature = "quickjs")]
         assert!(
             native == build(false).0,
@@ -14509,12 +14520,15 @@ fn native_namespace_frontier_counts_completed_lazy_realizations() {
     }
 }
 
-/// The same with the later unit still running (light-cljs-601): held,
-/// `app/h` starts only once `app/g` has finished realizing `m/shared-lazy`
-/// (creating `made.lent`) and then parked inside `m/cold-val`'s
-/// initializer for its lane. `app/h` reads the completed sequence without
-/// waiting; with one slot it realizes it, so `app/k`, between them, finds
-/// `made.lent`.
+/// The same with an initializer after the sequence (light-cljs-601): held,
+/// `app/h` starts only once a later unit has parked for its lane, which
+/// `app/g` does at the realization gate before it claims `m/shared-lazy`
+/// (light-cljs-676). `app/h` realizes it, as with one slot, so `app/k`,
+/// between them, finds `made.lent`, and `app/g` reads the completed
+/// sequence and then `m/cold-val`, whose initializer runs for `app/g` and
+/// so lists `made.lent`. (Before the gate, `app/g` realized the sequence
+/// and parked inside `m/cold-val`'s initializer; `app/h` read the completed
+/// sequence.)
 const NAMESPACE_FRONTIER_COMPLETED: &[(&str, &str)] = &[
     (
         "m.cljs",
@@ -14551,16 +14565,17 @@ fn native_namespace_completed_lazy_frontier_matches_reference() {
         (2, 1, ""),
         (4, 2, ""),
         (8, 3, ""),
-        (8, 19, "held"),
-        (8, 20, "held"),
-        (8, 21, "held"),
-        (8, 22, "held"),
+        (8, 19, "held-any"),
+        (8, 20, "held-any"),
+        (8, 21, "held-any"),
+        (8, 22, "held-any"),
     ];
     let expected = "[true [1] true [[1] [cljs.user cljs.core m app made.lent]]]\n";
     for &(jobs, seed, mode) in variants {
         let build = |native| frontier_program(root.path(), native, jobs, seed, mode, "app/h");
-        let native = build(true).0;
+        let (native, _, waits) = build(true);
         assert_eq!(program_output(&native), expected, "jobs {jobs} {mode}");
+        assert_held_waited(mode, waits, jobs);
         #[cfg(feature = "quickjs")]
         assert!(
             native == build(false).0,
@@ -14569,11 +14584,25 @@ fn native_namespace_completed_lazy_frontier_matches_reference() {
     }
 }
 
+/// A `held-any` build's later unit parked for its lane before the held one
+/// ran (the release [`light_cljs::scheduler::Perturbation::lane_hold_any`]
+/// waits for), unless the hold ran out: the lane counters are kept in debug
+/// builds and with `scheduling-stress`.
+fn assert_held_waited(mode: &str, waits: u64, jobs: usize) {
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    assert!(
+        mode != "held-any" || waits > 0,
+        "jobs {jobs}: no later unit waited"
+    );
+    let _ = (mode, waits, jobs);
+}
+
 /// Build `files`' namespace `main` natively (or with the QuickJS reference)
 /// at `jobs` threads, natively under `seed`'s scheduling with one-job
-/// batches, fixed workers, delayed starts or `held` units (`settled`: held
-/// until `app/g` has been analyzed): its program and how many lanes opened
-/// at a position an earlier waiter lent.
+/// batches, fixed workers, delayed starts or a held unit, which starts once
+/// a later unit has parked for its lane inside an initializer or a helper's
+/// production (`held`) or anywhere (`held-any`): its program, how many
+/// lanes opened at a position an earlier waiter lent, and how many parked.
 fn frontier_program(
     root: &std::path::Path,
     native: bool,
@@ -14581,7 +14610,7 @@ fn frontier_program(
     seed: u64,
     mode: &str,
     held: &str,
-) -> (String, u64) {
+) -> (String, u64, u64) {
     use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
     let mut stats = light_cljs::CompileStats::default();
     let mut host = MacroHost::new();
@@ -14603,16 +14632,10 @@ fn frontier_program(
                 fixed: mode == "fixed",
                 start_delay: (mode == "delayed").then(|| std::time::Duration::from_millis(20)),
                 lane_hold: (mode == "held").then(|| held.into()).into_iter().collect(),
-                // `held` starts once `app/g` has been analyzed, so that what
-                // it realized has settled; `app/g` starts once `app/a` has
-                // been, so that it does not wait for its lane.
-                hold_until: match mode {
-                    "settled" => vec![
-                        (held.into(), "app/g".into()),
-                        ("app/g".into(), "app/a".into()),
-                    ],
-                    _ => Vec::new(),
-                },
+                lane_hold_any: (mode == "held-any")
+                    .then(|| held.into())
+                    .into_iter()
+                    .collect(),
                 limits: Some(light_cljs::scheduler::Limits {
                     batch_jobs: 1,
                     ..Default::default()
@@ -14623,7 +14646,7 @@ fn frontier_program(
         },
     )
     .unwrap_or_else(|e| panic!("jobs {jobs} {mode}, native {native}: {e}"));
-    (emit_js(&program), stats.lanes.inherited)
+    (emit_js(&program), stats.lanes.inherited, stats.lanes.waits)
 }
 
 #[test]
@@ -14674,11 +14697,11 @@ fn native_namespace_registration_frontier_matches_reference() {
                 (2, 1, ""),
                 (4, 2, ""),
                 (8, 3, ""),
-                (8, 9, "held"),
-                (8, 10, "held"),
-                (8, 11, "held"),
-                (8, 12, "held"),
-                (8, 13, "held"),
+                (8, 9, "held-any"),
+                (8, 10, "held-any"),
+                (8, 11, "held-any"),
+                (8, 12, "held-any"),
+                (8, 13, "held-any"),
             ],
         ),
     ];
@@ -14688,11 +14711,13 @@ fn native_namespace_registration_frontier_matches_reference() {
             std::fs::write(root.join(file), source).unwrap();
         }
         // Lent lanes across the held builds: which seeds lend depends on
-        // the order the threads reach the hold.
+        // the order the threads reach the hold. A later unit that reaches
+        // the shared lazy sequence first waits at the realization gate
+        // instead, and no earlier unit lends it a lane (light-cljs-676).
         let mut lent = 0;
         for &(jobs, seed, mode) in variants {
             let build = |native| frontier_program(root.path(), native, jobs, seed, mode, "app/h");
-            let (native, inherited) = build(true);
+            let (native, inherited, waits) = build(true);
             assert_eq!(
                 program_output(&native),
                 expected,
@@ -14701,6 +14726,7 @@ fn native_namespace_registration_frontier_matches_reference() {
             if mode == "held" {
                 lent += inherited;
             }
+            assert_held_waited(mode, waits, jobs);
             #[cfg(feature = "quickjs")]
             assert!(
                 native == build(false).0,

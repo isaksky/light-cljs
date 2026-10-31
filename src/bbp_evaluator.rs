@@ -1520,6 +1520,12 @@ impl BbpRuntime {
     /// compilation's.
     pub(crate) fn set_lanes(&self, lanes: Arc<crate::effect_lanes::Lanes>) {
         let _ = self.0.lanes.set(lanes);
+        // A published lazy sequence or delay is realized by the earliest
+        // task in source order that needs it, as with one slot: its thunk
+        // can read that task's binding overlays, gensym scope and other
+        // task-local state. The first realization of a shared cell asks
+        // the lanes first, as an atom access does (light-cljs-665).
+        self.0.runtime.set_realization_gate(LANE_EFFECT, LANE);
     }
     fn lanes(&self) -> Option<&Arc<crate::effect_lanes::Lanes>> {
         self.0.lanes.get()

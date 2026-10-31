@@ -26,7 +26,7 @@ use crate::collections::form;
 use crate::collections::lazy::{Claim, LazyCell, LazyFailure};
 use crate::heap::Heap;
 use crate::heap::gc::{Trace, TraceEdge};
-use crate::ids::TaskId;
+use crate::ids::{DependencyId, ResultKind, TaskId};
 use crate::value::{JsString, Value, share};
 use crate::vm::dispatch::Fault;
 use crate::vm::exception::{Exception, describe_thrown};
@@ -64,6 +64,20 @@ pub(crate) struct Realize {
     /// realizing it (`Claim::Reenter`): its value is that task's answer
     /// until the outer run ends, not the delay's.
     reentry: bool,
+    /// Where this frame is in the embedder's realization gate
+    /// ([`crate::Runtime::set_realization_gate`]).
+    gating: Gating,
+    /// The gate let this task claim shared cells.
+    admitted: bool,
+}
+
+/// The realization gate's steps: the host effect asked, then the
+/// dependency its answer named read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Gating {
+    Idle,
+    Asked(ResultKind),
+    Needed,
 }
 
 impl Realize {
@@ -92,6 +106,8 @@ impl Realize {
             task: None,
             failed: None,
             reentry: false,
+            gating: Gating::Idle,
+            admitted: false,
         })
     }
 
@@ -169,6 +185,28 @@ impl Realize {
             }
             return Err(Fault::Rethrow(exception));
         }
+        // The gate's answer: go on to claim, or read the dependency it names
+        // first; once read, claim.
+        let input = match (std::mem::replace(&mut self.gating, Gating::Idle), input) {
+            (Gating::Asked(kind), Input::CallResult(answer)) => match answer {
+                Value::Number(n) if n >= 1.0 => {
+                    self.gating = Gating::Needed;
+                    return Ok(Action::Need {
+                        dependency: DependencyId::new(n as u64),
+                        kind,
+                    });
+                }
+                _ => {
+                    self.admitted = true;
+                    Input::Start
+                }
+            },
+            (Gating::Needed, _) => {
+                self.admitted = true;
+                Input::Start
+            }
+            (_, input) => input,
+        };
         let mut produced = match input {
             Input::CallResult(value) => Some(value),
             _ => None,
@@ -187,6 +225,20 @@ impl Realize {
                 && let Some(action) = self.realized(heap, value)?
             {
                 return Ok(action);
+            }
+            // A shared cell's thunk can read the realizing task's own state,
+            // so the embedder chooses the task that runs it: ask before the
+            // claim, unless another task realized it or is realizing it.
+            if !self.admitted
+                && self.cell.is_shared()
+                && self.cell.is_free()
+                && let Some((effect, kind)) = heap.realizing.gate()
+            {
+                self.gating = Gating::Asked(kind);
+                return Ok(Action::Instruction {
+                    instr: Instr::HostEffect(effect),
+                    operands: vec![Value::Number(0.0)],
+                });
             }
             match self.cell.claim(task, self.waited) {
                 Claim::Realized => return Ok(self.resume()),
