@@ -1790,6 +1790,8 @@ pub(crate) struct TaskContext {
     /// The catalog frontier this task populated from shared immutable data
     /// ([`MacroEvaluator::catalog_cursor`]).
     catalog: Cell<Option<usize>>,
+    /// The task's `__lightCatalogApplied` when its counters last read it.
+    catalog_applied: Cell<usize>,
     /// The last namespace table it registered and where: a table that
     /// extends it in the same activity, no earlier, records only its tail.
     namespaces: RefCell<(
@@ -1929,6 +1931,7 @@ impl BbpEvaluator {
             native_runtime: Cell::new(None),
             gensym_scope: Cell::new(0),
             catalog: Cell::new(None),
+            catalog_applied: Cell::new(0),
             namespaces: RefCell::default(),
             prepared: Cell::new(false),
             lent: RefCell::new(LentState::default()),

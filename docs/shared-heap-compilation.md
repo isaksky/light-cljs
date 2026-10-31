@@ -2082,6 +2082,101 @@ macro results and for the core macro calls the Pants build still runs
 through their definitions. The V8 build is unchanged: it does not contain
 the engine.
 
+#### Fix 4: every task adopts the catalog, so threads do not copy the program (light-cljs-675, October 30, 2026)
+
+*The problem.* On master `95b5909e` the Pants build of the 800k generated
+project completed on one thread but ran out of its 2 GiB macro memory limit
+at two and four threads. The failures come at different points
+(`heap byte limit exceeded`, or `heap object table exhausted`, which is the
+same byte-limit denial reported by an object allocation). The build at
+light-cljs-590's commit `0689509c` fails the same way at four threads
+(`heap byte or string limit exceeded`), so four threads have failed at
+800k since 590 at least; no later commit broke it.
+
+*What grew with the thread count.* Every task that runs compile-time code,
+the coordinator's and each pool worker's, kept its own copy of the
+program's definitions. When a worker took a job, it first applied every
+catalog registration it had not seen: for each top-level definition, a
+task-owned registry entry, an initializer slot and a getter function
+(about 7.7 kB of accounted heap per definition and task in the new test
+below). A helper producer already adopted the catalog instead
+(light-cljs-590), but the pool's own tasks still applied it. At one thread
+the coordinator applied 87,761 entries; at four threads the tasks had
+applied 182,824 when the build failed, half way through its macro calls:
+the coordinator's share and three workers' copies. Counting live objects by
+kind at the same progress, functions, plain objects, initializer slots,
+arrays and JavaScript Maps were about three times as many at four threads
+as at one, and binding cells exactly four times (one set per task). The
+other suspects did not grow: tasks share one heap; task history is copied
+incrementally since light-cljs-575 (248,205 entries in the whole failing
+build); the form bridge holds no payloads at the end and its prune walk
+releases imported forms; dependency logs recorded 357 entries.
+
+*What changed.* `install_catalog` (src/bbp_evaluator/catalog.rs) now asks
+every task to adopt the catalog, not only producers, and a task that adopted
+a version extends its adoption by each later one (`lazyExtend` in
+src/bbp_runtime.js). An entry of the new suffix joins the adopted part when
+nothing has looked at its names since adoption: no name it registers was
+resolved, has an initializer slot or is a property of the registry, and no
+protocol it extends was indexed. Such a name's state is still its state at
+adoption plus its registrations, which is what `lazyResolve` computes when
+the task first uses it. Any other entry is applied at once, as before, after
+its names and protocols are resolved up to it. Bundles keep the declaration
+order eager registration would give them: each version starts a segment
+whose base is the task's bundle count when it arrived (`catalogBase`), so
+bundles a task registers itself between versions keep their places. Keys a
+task creates outside the catalog are stamped with the catalog position they
+follow (`noteCreated`), so reading the public registry (which applies the
+rest of the catalog) gives the same key order as before. A task's
+registration state now follows the definitions its macros read: the whole
+800k build applied 226 catalog entries at any thread count.
+
+*Tests.* `extended_catalogs_match_applied_catalogs_across_versions`
+(src/bbp_evaluator/tests.rs) builds 64 catalogs of two to six versions over
+a few names (roots, `defonce`, declarations, bundles, definition groups,
+protocol and `Object` extensions; initializers that read another root at
+their frontier) and, between versions, reads some names, defines a root or
+a bundle outside the catalog, or sets a root. After every step the adopting
+task and a task that applied every version (on separate runtimes, since
+tasks of one runtime share initialized roots) read the same values,
+availability, descriptors and, through the public registry, the same keys
+in the same order. Making every suffix entry join the adopted part, or
+giving every segment the first one's base, makes it fail.
+`pool_tasks_retain_catalog_bytes_independent_of_their_number` registers
+512 and 2,048 definitions in versions of 64 in one task and in four, each
+reading one definition, and compares live accounted bytes after a
+collection: the three extra tasks must add less than 64 bytes per
+definition. Applying the catalog, they add 7,732 (14.9 MB for one task's
+growth against 50.5 MB for four); adopting it, nothing measurable.
+
+*Whole build*, 800k, `release bench --no-cache --stats --jobs N`, release
+builds with `CARGO_BUILD_JOBS=4`, before (`95b5909e`) and after. Peak
+managed heap is the engine's `macro.gc.peak-managed-bytes` (what the limit
+applies to); peak memory is `/usr/bin/time -l`'s maximum resident set. The
+1-minute load is the one before each run; other workers' builds and tests
+ran throughout.
+
+| Threads | Before | After | Peak managed heap before / after | Peak memory before / after | Loads before / after |
+| ---: | --- | --- | ---: | ---: | --- |
+| 1 | 80.0, 73.2 s | 68.4 s | 1.67 / 0.64 GB | 4.77 / 4.57 GB | 15.7, 5.7 / 4.9 |
+| 2 | fails at 93.3 s; at 345.7 s, collecting near the limit | 60.7 s | 2.15 (limit) / 0.75 GB | 3.05 / 4.70 GB | 15.6, 7.3 / 6.0 |
+| 4 | fails at 78.1 s, at 197k of 378k macro calls | 81.6, 87.2 s | 2.15 (limit) / 0.93 GB | 2.18 / 5.01 GB | 18.6 / 6.0, 15.4 |
+
+Every completed build produced the same JavaScript as the V8 build of the
+same commit (one four-thread run, 29.9 s at load 6.6), byte for byte, and
+`node run-light.mjs 42 3` prints the oracle's `189716`. After rebasing onto
+master `4b80e26a`, one run each at one, two and four threads took 70.7,
+64.5 and 90.1 s (loads 14.4, 10.2 and 14.9), peaked at 0.64, 0.75 and
+0.95 GB of managed heap and again matched the V8 build (30.9 s). Live accounted heap
+at the end of the build is 0.43, 0.54 and 0.71 GB at one, two and four
+threads (1.31 GB at one thread before). What still grows with threads is
+each task's own compile-time state and the forms of the units in flight:
+at the end of the four-thread build there are twice the functions, 2.5
+times the plain objects and 3.8 times the JavaScript Maps of the one-thread
+build, and more forms and syntax occurrences (49,071 against 40,876), while
+the catalog's shared vectors are the same. Four threads are slower than two
+here; that is a scheduling question (light-cljs-573), not memory.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with

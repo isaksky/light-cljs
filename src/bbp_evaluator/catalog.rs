@@ -12,7 +12,11 @@
 //! rather than compile and evaluate their parent's registration sources, and
 //! apply a name's or a protocol's descriptors only when they first use it
 //! (light-cljs-590; `lazyAdopt` in src/bbp_runtime.js), so setting one up
-//! costs what it reads rather than the whole catalog.
+//! costs what it reads rather than the whole catalog. Every other task (the
+//! coordinator's and each pool worker's) adopts the catalog the same way and
+//! extends its adoption by each later version (light-cljs-675; `lazyExtend`),
+//! so a task's registration state follows the definitions it reads, not the
+//! program, and adding threads does not copy the program's registrations.
 use super::*;
 use crate::compilation_session::Registration;
 
@@ -46,10 +50,26 @@ fn index<'s>(
 }
 
 impl BbpEvaluator {
+    /// Give this task the catalog's registrations from `first`: it adopts
+    /// them (light-cljs-675), applying a name's or a protocol's on first
+    /// use, so a task's registration state follows what it reads rather
+    /// than the whole program, whichever thread it runs on.
     pub(crate) fn install_catalog(
         &self,
         first: usize,
         registrations: &[Registration],
+    ) -> Result<(), EvalError> {
+        self.install_catalog_as(first, registrations, true)
+    }
+
+    /// [`Self::install_catalog`], applying every registration now unless
+    /// `lazy`, as tasks did before light-cljs-675: the reference that
+    /// adopted catalogs are compared with.
+    pub(super) fn install_catalog_as(
+        &self,
+        first: usize,
+        registrations: &[Registration],
+        lazy: bool,
     ) -> Result<(), EvalError> {
         if registrations.is_empty() {
             return Ok(());
@@ -196,7 +216,7 @@ impl BbpEvaluator {
                 snapshot
             }
         };
-        self.use_catalog(snapshot, first, end, false)?;
+        self.use_catalog(snapshot, first, end, lazy)?;
         self.cx()?.catalog.set(Some(end));
         Ok(())
     }
@@ -205,7 +225,8 @@ impl BbpEvaluator {
     /// with a fresh ordinary object and the very same immutable data root,
     /// which it adopts (`lazy`) rather than applies: each name and protocol
     /// gets its registrations when the task first uses it, with the same
-    /// result as applying them all here.
+    /// result as applying them all here. A task that adopted an earlier
+    /// version extends it by the suffix (`lazyExtend` in src/bbp_runtime.js).
     pub(super) fn use_catalog(
         &self,
         snapshot: Rooted,
@@ -233,6 +254,7 @@ impl BbpEvaluator {
                 c.catalog_entries
                     .fetch_add(end.saturating_sub(first), Ordering::Relaxed);
             }
+            self.count_catalog_applied();
             c.catalog_nanos
                 .fetch_add(started.elapsed().as_nanos() as usize, Ordering::Relaxed);
         }
@@ -243,19 +265,27 @@ impl BbpEvaluator {
     /// of a name or protocol (`__lightCatalogApplied`) to the producer and
     /// catalog counters, once its work is done.
     pub(super) fn note_catalog_applied(&self) {
-        if !crate::compile_trace::any_recording() {
-            return;
+        if crate::compile_trace::any_recording() {
+            self.count_catalog_applied();
         }
+    }
+
+    /// Charge the entries this task applied on first use since the last
+    /// count to the catalog counters, and to the producer counter for a
+    /// producer (the only evaluators nested in another's service).
+    fn count_catalog_applied(&self) {
         let Ok(cx) = self.cx() else { return };
         let Ok(Some(applied)) = cx.task.global_value("__lightCatalogApplied") else {
             return;
         };
         if let ValueView::Number(applied) = applied.view() {
+            let applied = applied as usize;
+            let new = applied.saturating_sub(cx.catalog_applied.replace(applied));
             let c = &self.shared.0.counters;
-            c.producer_catalog_entries
-                .fetch_add(applied as usize, Ordering::Relaxed);
-            c.catalog_entries
-                .fetch_add(applied as usize, Ordering::Relaxed);
+            if self.service_depth > 0 {
+                c.producer_catalog_entries.fetch_add(new, Ordering::Relaxed);
+            }
+            c.catalog_entries.fetch_add(new, Ordering::Relaxed);
         }
     }
 

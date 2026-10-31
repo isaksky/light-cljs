@@ -3797,7 +3797,7 @@ const roots=new Map();
 const storeRoot=(name,value)=>{
   if(decl.storeProduct(name,value))return;
   const slot=roots.get(name);if(slot!==undefined)__rt.initializerSlotSet(slot,4,true);
-  Object.defineProperty(registry(),name,{configurable:true,writable:true,value});
+  noteCreated(name);Object.defineProperty(registry(),name,{configurable:true,writable:true,value});
 };
 // `set!` of a root, as the reference's root Proxy: demand the definition the
 // name has first (an unavailable one fails, a pending initializer runs, a
@@ -3854,7 +3854,7 @@ globalThis.__lightInstallCompilerProduct=(name,read,bundle)=>{
   const previous=roots.get(name);
   if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);
   else {const slot=__rt.initializerSlot(null,name);__rt.initializerSlotSet(slot,4,true);roots.set(name,slot);}
-  Object.defineProperty(registry(),name,{configurable:true,get:read});
+  noteCreated(name);Object.defineProperty(registry(),name,{configurable:true,get:read});
   if(bundle!==undefined)productReaders.set(read,__rt.vector(bundle,name));
 };
 // Each invocation of this runtime belongs to one VM task. Overlay snapshots
@@ -3899,7 +3899,7 @@ globalThis.__lightDefineCompilerRoot=(name,initialize,once)=>{
 };
 const defineRootValue=(name,value)=>{
   if(bindingOverlays.has(name))bindingOverlays.set(name,value);
-  else {const previous=roots.get(name);if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);Object.defineProperty(registry(),name,{configurable:true,writable:true,value});}
+  else {const previous=roots.get(name);if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);noteCreated(name);Object.defineProperty(registry(),name,{configurable:true,writable:true,value});}
   return value;
 };
 let initializerSerial=0;
@@ -3943,7 +3943,7 @@ globalThis.__lightRegisterUnit=(name,unit,once=false,location='',test=null)=>{
   // a Var reflects (`__lightCompilerVarMetadata`).
   rootTests.set(name,test);
   if(unit!==null)unitSlots.set(unit,slot);
-  Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot,decl.bundles(),previous,location)});return null;
+  noteCreated(name);Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot,decl.bundles(),previous,location)});return null;
 };
 // `frontier`: the bundles registered before the root, whose products its
 // initializer reads (`decl.atDeclarationFrontier`). `previous`: a
@@ -4053,7 +4053,7 @@ globalThis.__lightInitializeCompilerValue=(unit,factory)=>initializeValue(__rt.i
 globalThis.__lightRegisterBundle=(names,code,indices=[],location='',once=false,group=false,unit=-1)=>{
   // A bundle without a unit (a test's, or an embedder's registration) keeps
   // preloaded roots and reports demand as unsupported.
-  if(unit<0){for(const name of names)if(lazyResolve(name),!(name in registry()))Object.defineProperty(registry(),name,{configurable:true,get:()=>{throw new Error('unsupported operation: helper not preloaded: '+name);}});return null;}
+  if(unit<0){for(const name of names)if(lazyResolve(name),!(name in registry()))(noteCreated(name),Object.defineProperty(registry(),name,{configurable:true,get:()=>{throw new Error('unsupported operation: helper not preloaded: '+name);}}));return null;}
   return decl.register(names,indices,location,once,unit,group);
 };
 globalThis.__lightEnterCompilerFrontier=next=>decl.enter(next);
@@ -4071,8 +4071,9 @@ globalThis.__lightCompilerRootContext=__rt.vector(globalThis.__lightCompilerRoot
     if(!Reflect.has(target,name))throw new Error('unavailable definition: '+name);
     return Reflect.get(rootsProxy,name);
   }}),decl.frontierCell);
-// A producer task adopts its parent's catalog snapshot instead of applying
-// it (light-cljs-590): a name gets its catalog registrations when the task
+// A task adopts a catalog snapshot instead of applying it (a producer its
+// parent's, light-cljs-590; any other task the compilation's, extended by
+// each later version, light-cljs-675): a name gets its catalog registrations when the task
 // first uses it, and a protocol its catalog bundles, each with exactly the
 // state applying every registration at adoption would have given it. That
 // state is a function of the task's state at adoption and the registrations
@@ -4115,7 +4116,10 @@ const lazyAdopt=snapshot=>{
   if(pre.some(key=>!Reflect.getOwnPropertyDescriptor(rootTarget,key).configurable))return false;
   const c={entries,end,names:__rt.nth(snapshot,1),protocols:__rt.nth(snapshot,2),
     // Its bundles' declaration orders follow those registered before it.
-    base:decl.reserve(__rt.nth(snapshot,3)),
+    // Each later version the task extends it by (`lazyExtend`) starts a
+    // segment: `starts[i]` is its first entry and `bases[i]` the order
+    // before the catalog's first bundle there (`catalogBase`).
+    starts:[0],bases:[decl.reserve(__rt.nth(snapshot,3))],bundleTotal:__rt.nth(snapshot,3),
     // Each resolved name's state at adoption, each bundle's whether it is
     // registered (a defonce bundle may not be), and its task object.
     resolved:new Map(),prefixes:new Map(),effective:new Map(),bundles:new Map(),protocolsDone:new Set(),
@@ -4198,7 +4202,7 @@ const lazyBundle=(c,p)=>{
     const e=__rt.nth(c.entries,p),products=__rt.nth(e,1),extensions=__rt.nth(e,2),names=[],indices=[];
     for(let i=0;i<__rt.count(products);i++)names.push(__rt.nth(products,i));
     for(let i=0;i<__rt.count(extensions);i++)indices.push([__rt.nth(__rt.nth(extensions,i),0),__rt.nth(__rt.nth(extensions,i),1)]);
-    b=decl.makeBundle(names,indices,__rt.nth(e,3),__rt.nth(e,5),c.base+__rt.nth(e,6)+1,__rt.nth(e,7));
+    b=decl.makeBundle(names,indices,__rt.nth(e,3),__rt.nth(e,5),catalogBase(c,p)+__rt.nth(e,6)+1,__rt.nth(e,7));
     b.catalog=c;b.entry=p;
     if(b.group)b.previousReader=name=>lazyPrevious(c,name,p);
     c.bundles.set(p,b);
@@ -4263,11 +4267,65 @@ function lazyResolve(name){
     c.created.set(name,at);
   }
 }
+// The declaration order before the catalog's first bundle, as seen from the
+// segment holding entry `p`: the catalog bundle with index `k` there has
+// order `catalogBase(c,p)+k+1`, which the eager application would give it.
+const catalogBase=(c,p)=>{
+  let lo=0,hi=c.starts.length-1;
+  while(lo<hi){const mid=(lo+hi+1)>>1;if(c.starts[mid]<=p)lo=mid;else hi=mid-1;}
+  return c.bases[lo];
+};
+// Extend the adopted catalog to `snapshot`, a later version of the same
+// catalog (light-cljs-675). An entry joins the adopted part when no name it
+// registers was resolved or has task state and no protocol it extends was
+// indexed: nothing has observed those names since adoption, so their state
+// is still a function of their state at adoption and their registrations.
+// Any other entry is applied now, as the eager loop would, after its names
+// and protocols are resolved up to it; from then on they are resolved, so
+// the adopted part never applies that entry again. Bundles take their
+// declaration orders in entry order, as eager registration does.
+const lazyExtend=snapshot=>{
+  const c=lazyCatalog,entries=__rt.nth(snapshot,0),end=__rt.count(entries);
+  c.entries=entries;c.names=__rt.nth(snapshot,1);c.protocols=__rt.nth(snapshot,2);
+  c.starts.push(c.end);c.bases.push(decl.bundles()-c.bundleTotal);
+  c.bundleTotal=__rt.nth(snapshot,3);
+  const untouched=name=>!c.resolved.has(name)&&!roots.has(name)&&Object.getOwnPropertyDescriptor(rootTarget,name)===undefined;
+  for(let p=c.end;p<end;p++){
+    const e=__rt.nth(entries,p);
+    if(__rt.nth(e,0)===0){
+      const name=__rt.nth(e,1);
+      if(!untouched(name)){
+        lazyResolve(name);
+        globalThis.__lightCatalogApplied++;
+        globalThis.__lightRegisterUnit(name,__rt.nth(e,2),__rt.nth(e,3),__rt.nth(e,5),__rt.nth(e,4));
+      }
+    }else{
+      const products=__rt.nth(e,1),extensions=__rt.nth(e,2),names=[],indices=[];
+      for(let i=0;i<__rt.count(products);i++)names.push(__rt.nth(products,i));
+      for(let i=0;i<__rt.count(extensions);i++)indices.push([__rt.nth(__rt.nth(extensions,i),0),__rt.nth(__rt.nth(extensions,i),1)]);
+      if(names.every(untouched)&&indices.every(([protocol])=>!c.protocolsDone.has(protocol)))decl.reserve(1);
+      else{
+        for(const name of names)lazyResolve(name);
+        for(const [protocol] of indices)catalogProtocol(protocol);
+        globalThis.__lightCatalogApplied++;
+        decl.register(names,indices,__rt.nth(e,3),__rt.nth(e,4),__rt.nth(e,5),__rt.nth(e,7));
+      }
+    }
+    c.end=p+1;
+  }
+};
+// Before a registry key is created outside the adopted catalog: it follows
+// the entries adopted so far when `materializeAll` restores key order.
+function noteCreated(name){
+  const c=lazyCatalog;
+  if(c!==null&&typeof name==='string'&&!c.created.has(name)&&!c.pre.has(name)
+     &&Object.getOwnPropertyDescriptor(rootTarget,name)===undefined)c.created.set(name,c.end-0.5);
+}
 // The bundles a catalog registers before its entry `p`: a root there sees
 // their products.
 const catalogFrontier=(c,p)=>{
-  for(let q=p-1;q>=0;q--){const e=__rt.nth(c.entries,q);if(__rt.nth(e,0)===1)return c.base+__rt.nth(e,6)+1;}
-  return c.base;
+  for(let q=p-1;q>=0;q--){const e=__rt.nth(c.entries,q);if(__rt.nth(e,0)===1)return catalogBase(c,p)+__rt.nth(e,6)+1;}
+  return catalogBase(c,p);
 };
 // The getter of `name`'s definition before the catalog bundle `b`'s, when
 // an earlier entry of the catalog defines it: the entry that owns the name
@@ -4342,9 +4400,11 @@ for(let serial=1;;serial++){
   try {
     let result=null;
     if(op===4){
-      // A producer's whole catalog is adopted, a suffix applied.
-      const snapshot=__rt.nth(input,0),catalog=__rt.nth(snapshot,0);
-      if(!(__rt.nth(input,2)&&__rt.nth(input,1)===0&&lazyCatalog===null&&lazyAdopt(snapshot)))
+      // A whole catalog is adopted (`lazy`) and a later version extends an
+      // adopted one (light-cljs-675); otherwise the suffix is applied.
+      const snapshot=__rt.nth(input,0),catalog=__rt.nth(snapshot,0),lazy=__rt.nth(input,2),first=__rt.nth(input,1);
+      if(lazy&&lazyCatalog!==null&&lazyCatalog.end===first)lazyExtend(snapshot);
+      else if(!(lazy&&first===0&&lazyCatalog===null&&lazyAdopt(snapshot)))
       for(let at=__rt.nth(input,1);at<__rt.count(catalog);at++){
         const entry=__rt.nth(catalog,at);
         if(__rt.nth(entry,0)===0){

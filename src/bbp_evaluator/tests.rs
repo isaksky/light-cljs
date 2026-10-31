@@ -3696,7 +3696,7 @@ fn adopted_catalogs_match_applied_catalogs_whatever_is_read_first() {
         // The task a producer used to be: the same replay, then every
         // registration applied at once.
         let reference = task();
-        reference.install_catalog(0, &catalog).unwrap();
+        reference.install_catalog_as(0, &catalog, false).unwrap();
         let run = |task: &BbpEvaluator, source: &str| -> String {
             match task.evaluate_unit(source) {
                 Ok(value) => {
@@ -3762,7 +3762,12 @@ fn adopted_catalogs_match_applied_catalogs_whatever_is_read_first() {
         for (label, source) in steps {
             if label == "suffix" {
                 for task in [&parent, &child, &reference] {
-                    task.install_catalog(catalog.len(), &suffix).unwrap();
+                    task.install_catalog_as(
+                        catalog.len(),
+                        &suffix,
+                        !std::ptr::eq(task, &*reference),
+                    )
+                    .unwrap();
                 }
                 continue;
             }
@@ -3795,6 +3800,236 @@ fn adopted_catalogs_match_applied_catalogs_whatever_is_read_first() {
             Registration::Bundle(b) => format!(
                 "bundle {:?} {} once={} {:?}",
                 b.products, b.unit, b.once, b.extensions
+            ),
+        }
+    }
+}
+
+/// A task that adopts each catalog version as it arrives (a pool worker's
+/// or the coordinator's, light-cljs-675) ends with the state of a task that
+/// applied every version, whatever it read, defined or set in between: the
+/// suffixes it adopts and the ones it must apply (names it already
+/// resolved or defined) interleave in registration order.
+#[test]
+fn extended_catalogs_match_applied_catalogs_across_versions() {
+    use crate::compilation_session::{BundleRecord, Registration};
+    const NAMES: [&str; 6] = ["a", "b", "c", "10", "d", "e"];
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n) as usize
+    };
+    // Every third root reads `b` when it initializes, so it sees the
+    // products of the bundles declared before it (its frontier).
+    let service: UnitService = Rc::new(|_, id| {
+        let value = if id % 3 == 0 {
+            format!(
+                "(() => {{ try {{ return '{id}:' + String(__rt.cljReadRoot(\
+                 globalThis.__lightCompilerRootReceiver ?? globalThis.__lightCompilerRoots, \
+                 globalThis.__lightCompilerRootContext, 'b')); }} \
+                 catch (e) {{ return '{id}: throws ' + String(e); }} }})()"
+            )
+        } else {
+            id.to_string()
+        };
+        Ok(format!(
+            "rt => {{ const p = globalThis.__lightCompilerBundleProducts; \
+             if (p !== undefined) ['a','b','c','10','d','e'].forEach((n, i) => p[n] = {id} * 10 + i); \
+             return {value}; }}"
+        ))
+    });
+    let read = |names: &[&str]| {
+        let names = names
+            .iter()
+            .map(|n| format!("'{n}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            r#"rt => {{
+            const R = globalThis.__lightCompilerRootReceiver ?? globalThis.__lightCompilerRoots;
+            return JSON.stringify([{names}].map(n => {{
+                let value; try {{ value = __rt.cljReadRoot(R, globalThis.__lightCompilerRootContext, n); }} catch (e) {{ value = 'throws ' + String(e); }}
+                const kept = globalThis.__lightCompilerRootKept(n), has = n in R;
+                const d = Object.getOwnPropertyDescriptor(R, n);
+                return [n, value, kept, has, d === undefined ? null : ['value' in d, d.enumerable, d.configurable]];
+            }}));
+        }}"#
+        )
+    };
+    let public = r#"rt => {
+        const o = globalThis.__lightCompilerRoots, keys = Reflect.ownKeys(o);
+        return JSON.stringify([keys, keys.map(n => {
+            const d = Object.getOwnPropertyDescriptor(o, n);
+            let value; try { value = o[n]; } catch (e) { value = 'throws ' + String(e); }
+            return [value, 'value' in d, d.enumerable, d.configurable];
+        })]);
+    }"#;
+    let run = |task: &BbpEvaluator, source: &str| -> String {
+        match task.evaluate_unit(source) {
+            Ok(value) => {
+                let result = task.cx().unwrap().values.borrow()[&value.index]
+                    .string()
+                    .map(|s| s.to_string_lossy())
+                    .unwrap_or_default();
+                task.release(value).unwrap();
+                result
+            }
+            Err(error) => format!("error: {error}"),
+        }
+    };
+    let (mut failures, mut adopted, mut applied) = (Vec::new(), 0.0, 0.0);
+    for case in 0..64 {
+        // Separate runtimes: tasks of one runtime share initialized roots,
+        // so an initializer that ran in one would not run in the other.
+        let task = || {
+            let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+            let task = Rc::new(shared.evaluator().unwrap());
+            task.clone()
+                .install_compiler_service("__lightCompileUnit", service.clone())
+                .unwrap();
+            task
+        };
+        let (adopter, reference) = (task(), task());
+        let (mut unit, mut first, mut log) = (0, 0, Vec::new());
+        for round in 0..2 + next(5) {
+            let registrations = (0..1 + next(5))
+                .map(|_| {
+                    unit += 1;
+                    let once = next(3) == 0;
+                    if next(3) == 0 {
+                        let mut products = Vec::new();
+                        for _ in 0..1 + next(2) {
+                            let name = NAMES[next(NAMES.len() as u64)].to_string();
+                            if !products.contains(&name) {
+                                products.push(name);
+                            }
+                        }
+                        let extensions = match next(3) {
+                            0 => vec![],
+                            1 => vec![("P".into(), Some("@T".into()), "x".into())],
+                            _ => vec![
+                                ("Object".into(), None, "x".into()),
+                                ("P".into(), None, "y".into()),
+                            ],
+                        };
+                        Registration::Bundle(Arc::new(BundleRecord {
+                            products,
+                            unit,
+                            extensions,
+                            location: "fixture:1".into(),
+                            once,
+                            group: next(4) == 0,
+                        }))
+                    } else {
+                        Registration::Root(
+                            NAMES[next(NAMES.len() as u64)].into(),
+                            (next(4) != 0).then_some(unit),
+                            None,
+                            once,
+                            "fixture:1".into(),
+                        )
+                    }
+                })
+                .collect::<Vec<_>>();
+            adopter.install_catalog(first, &registrations).unwrap();
+            reference
+                .install_catalog_as(first, &registrations, false)
+                .unwrap();
+            first += registrations.len();
+            log.push(format!(
+                "round {round}: {:?}",
+                registrations.iter().map(describe).collect::<Vec<_>>()
+            ));
+            // Between versions: read some names, define one outside the
+            // catalog, set one, or nothing.
+            let name = NAMES[next(NAMES.len() as u64)];
+            let (label, source) = match next(5) {
+                3 => (
+                    "bundle b outside the catalog".to_string(),
+                    format!(
+                        "rt => {{ globalThis.__lightRegisterBundle(['b'], null, [['P', null]], \
+                         'fixture:3', false, false, {}); return 'ok'; }}",
+                        2000 + round * 3
+                    ),
+                ),
+                0 => {
+                    let names = NAMES
+                        .iter()
+                        .copied()
+                        .filter(|_| next(2) == 0)
+                        .collect::<Vec<_>>();
+                    (format!("read {names:?}"), read(&names))
+                }
+                1 => {
+                    let once = next(2) == 0;
+                    let unit = 1000 + round;
+                    for task in [&adopter, &reference] {
+                        task.register_compiler_root(name, Some(unit), once, "fixture:2", None)
+                            .unwrap();
+                    }
+                    log.push(format!("define {name} {unit} once={once}"));
+                    continue;
+                }
+                2 => (
+                    format!("set {name}"),
+                    format!(
+                        "rt => {{ try {{ return String(globalThis.__lightSetCompilerRoot('{name}', {round})); }} \
+                         catch (e) {{ return 'throws ' + String(e); }} }}"
+                    ),
+                ),
+                _ => continue,
+            };
+            let (expected, actual) = (run(&reference, &source), run(&adopter, &source));
+            log.push(format!("{label}: {expected}"));
+            if expected != actual {
+                failures.push(format!(
+                    "case {case} {label}\n  {}\n  actual {actual}",
+                    log.join("\n  ")
+                ));
+                break;
+            }
+        }
+        if failures
+            .last()
+            .is_some_and(|failure: &String| failure.starts_with(&format!("case {case} ")))
+        {
+            continue;
+        }
+        // The adopter stayed adopted until now: it applied fewer entries.
+        assert_eq!(
+            run(
+                &adopter,
+                "rt => String(globalThis.__lightCompilerRootReceiver !== null)"
+            ),
+            "true",
+            "case {case}"
+        );
+        adopted += numeric_global(&adopter, "__lightCatalogApplied");
+        applied += first as f64;
+        for (label, source) in [("read all", read(&NAMES)), ("public", public.to_string())] {
+            let (expected, actual) = (run(&reference, &source), run(&adopter, &source));
+            if expected != actual {
+                failures.push(format!(
+                    "case {case} {label}\n  {}\n  expected {expected}\n  actual   {actual}",
+                    log.join("\n  ")
+                ));
+                break;
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert!(adopted < applied, "adopted {adopted} of {applied} entries");
+
+    fn describe(registration: &Registration) -> String {
+        match registration {
+            Registration::Root(name, unit, _, once, _) => {
+                format!("root {name} {unit:?} once={once}")
+            }
+            Registration::Bundle(b) => format!(
+                "bundle {:?} {} once={} group={} {:?}",
+                b.products, b.unit, b.once, b.group, b.extensions
             ),
         }
     }
@@ -3884,7 +4119,7 @@ fn adopted_and_applied_reads(
         )
         .unwrap();
     let applied = task();
-    applied.install_catalog(0, &catalog).unwrap();
+    applied.install_catalog_as(0, &catalog, false).unwrap();
     let probe = format!(
         r#"rt => {{
           const R = globalThis.__lightCompilerRootReceiver ?? globalThis.__lightCompilerRoots;
@@ -4352,7 +4587,7 @@ fn adopted_catalog_defonce_history_is_linear() {
             )
             .unwrap();
         let reference = task();
-        reference.install_catalog(0, &catalog).unwrap();
+        reference.install_catalog_as(0, &catalog, false).unwrap();
         assert_eq!(numeric_global(&child, "__lightCatalogApplied"), 0.0);
         for task in [&*reference, &child] {
             let value = task
@@ -4494,6 +4729,69 @@ fn concurrent_catalog_task_memory() {
         report("drop parent");
         assert_eq!(rt.heap_usage().objects, realm);
     }
+}
+
+/// The tasks of a pool (the coordinator's and each worker's) take every
+/// catalog version as the compilation registers definitions. What they
+/// retain must not grow with the catalog times the number of tasks: on the
+/// 800k generated project, four threads ran out of the 2 GiB budget when
+/// each task applied every registration (light-cljs-675). Live accounted
+/// bytes after a collection, with every task holding the catalog in
+/// versions of 64 registrations and reading one definition.
+#[test]
+fn pool_tasks_retain_catalog_bytes_independent_of_their_number() {
+    use crate::compilation_session::Registration;
+    let live = |tasks: usize, count: usize| {
+        let shared = BbpRuntime::new(&EvaluatorOptions {
+            memory_limit: 4 << 30,
+            ..Default::default()
+        })
+        .unwrap();
+        let service: UnitService = Rc::new(|_, id| Ok(format!("rt => {id}")));
+        let tasks = (0..tasks)
+            .map(|_| {
+                let task = Rc::new(shared.evaluator().unwrap());
+                task.clone()
+                    .install_compiler_service("__lightCompileUnit", service.clone())
+                    .unwrap();
+                task
+            })
+            .collect::<Vec<_>>();
+        let registrations = (0..count)
+            .map(|unit| {
+                Registration::Root(
+                    format!("helper{unit}"),
+                    Some(unit),
+                    None,
+                    false,
+                    "fixture:1".into(),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (block, registrations) in registrations.chunks(64).enumerate() {
+            for task in &tasks {
+                task.install_catalog(block * 64, registrations).unwrap();
+            }
+        }
+        for task in &tasks {
+            let value = task
+                .evaluate_unit("rt => (globalThis.__lightCompilerRootReceiver ?? globalThis.__lightCompilerRoots).helper7")
+                .unwrap();
+            task.release(value).unwrap();
+        }
+        shared.0.runtime.collect().unwrap();
+        shared.0.runtime.heap_stats().last_live_bytes as i64
+    };
+    let (small, large) = (512, 2048);
+    let one = live(1, large) - live(1, small);
+    let four = live(4, large) - live(4, small);
+    // Three more tasks may add a little per version they adopt, but
+    // nothing per registration: applying them cost about 4.6 kB each.
+    let per_registration = (four - one) / (3 * (large - small) as i64);
+    assert!(
+        per_registration < 64,
+        "one task grows {one} bytes, four tasks {four}: {per_registration} more per registration and task"
+    );
 }
 
 #[test]
