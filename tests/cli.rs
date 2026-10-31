@@ -2646,7 +2646,7 @@ fn jobs_stats_report_the_unit_pool_scheduler() {
     for k in 0..24 {
         body.push_str(&format!("(defn f{k} [n] (when (pos? n) (twice n)))\n"));
     }
-    body.push_str("(js/console.log (f3 1))\n");
+    body.push_str("(js/console.log (twice (f3 1)))\n");
     std::fs::write(root.join("main.cljs"), body).unwrap();
     let root_arg = root.to_str().unwrap();
     let entry = ["--compile", "--entry", "main", "--source-root", root_arg];
@@ -2664,24 +2664,27 @@ fn jobs_stats_report_the_unit_pool_scheduler() {
     assert!(stat("time.pool-ms") > 0.0, "{stderr}");
     assert!((0.0..=1.0).contains(&stat("pool.utilization")), "{stderr}");
     // Every pooled unit ran as one job, taken by a claim, a steal or from
-    // the worker's own deque.
+    // the worker's own deque. Every unit uses a macro, so only resumable
+    // VM steps can run as helped jobs. Forced helping is covered by
+    // compilation_session's
+    // native_pool_helps_parked_consumers_and_migrates_a_saved_continuation.
     let jobs = stat("pool.jobs");
     let units = stat("deferred-units.pooled");
     let helped = stat("pool.jobs.helped");
-    // Pants schedules resumable VM steps as helped jobs beside whole units.
     if cfg!(any(feature = "quickjs", feature = "v8-macros")) {
         assert_eq!(jobs, units, "{stderr}");
     } else {
-        assert!(jobs > units && helped > 0.0, "{stderr}");
+        // A parked step can be taken by an ordinary claim as well as by
+        // a helper. Account for either, including a build with no parks.
+        assert!(jobs >= units + helped, "{stderr}");
+        assert!(jobs - units <= stat("native.tasks.steps"), "{stderr}");
     }
     assert!(units >= 24.0, "{stderr}");
     assert!(stat("pool.claims") >= 1.0, "{stderr}");
     let taken = stat("pool.claimed") + stat("pool.stolen") + stat("pool.jobs.local");
-    if cfg!(any(feature = "quickjs", feature = "v8-macros")) {
-        assert!(taken >= jobs, "{stderr}");
-    } else {
-        assert!(taken + helped >= jobs, "{stderr}");
-    }
+    // Whole units must be accounted for by ordinary claims; saved VM
+    // steps can also run directly from the urgent queue.
+    assert!(taken >= units, "{stderr}");
     assert!(stat("pool.peak-admitted") >= 1.0, "{stderr}");
     let (wait, longest) = (
         stat("time.pool.queue-wait-ms"),
