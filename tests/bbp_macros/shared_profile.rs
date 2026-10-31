@@ -392,6 +392,35 @@ fn shared_profile_cons_normalizes_non_seq_tails_immediately() {
     );
 }
 
+/// `conj` onto a list keeps a list: counted (`isCounted`, `countProtocol`)
+/// after one and repeated prepends, printed and recognized as a list, with
+/// the list's metadata kept, whether the list is the runtime's own
+/// (`listFromArray`) or an engine list; a `cons` onto a list is a cons, not
+/// counted, as the V8 profile's (light-cljs-681).
+#[test]
+fn shared_profile_conj_preserves_counted_list_kind() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const l1 = core.conj(core.list(1), 0), l2 = core.conj(l1, -1); \
+             const e1 = core.conj(__rt.formList(1), 0), e2 = core.conj(e1, -1); \
+             const withMeta = core.withMeta(core.list(1), core.hashMap(core.keyword(null, 'a'), 1)); \
+             return [core.isCounted(l1), core.countProtocol(l1), core.isCounted(l2), core.countProtocol(l2), core.prStr(l2), core.isList(l2), \
+               core.isCounted(e1), core.countProtocol(e1), core.isCounted(e2), core.countProtocol(e2), core.prStr(e2), core.isList(e2), \
+               core.prStr(core.conj(core.list(), 5)), core.isCounted(core.conj(core.list(), 5)), \
+               core.prStr(core.meta(core.conj(withMeta, 0))), core.prStr(core.conj(withMeta, 0)), \
+               core.isCounted(core.cons(0, core.list(1))), core.equal(l2, e2), core.hash(l2) === core.hash(e2)].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true 2 true 3 (-1 0 1) true true 2 true 3 (-1 0 1) true (5) true {:a 1} (0 1) false true true"
+    );
+}
+
 /// The method-key memos the boot fills and seals cover every arity a
 /// dispatcher declares: `invokeProtocol` declares arities 1 to 22, so a
 /// receiver implementing `cljs$core$IFn$_invoke$arity$22` is invoked with

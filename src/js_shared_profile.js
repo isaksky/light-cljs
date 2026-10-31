@@ -453,17 +453,25 @@
       return current == null ? null : __rt.cljCons(first(current), sharedSeqForm(rest(current)));
     });
   }
-  //@unit cons requires: count, methodKeys, protocolHooks, seq, seqValue, sharedSeqForm
+  //@unit cons requires: cells, count, ListValue, methodKeys, protocolHooks, seq, seqValue,
+  //@ sharedSeqForm
   // A tail that is not a seq (an array, a vector, an invalid object) is
   // normalized through `seq` now, as the V8 profile's `cons` has it, so a
   // later change to it is not seen and an invalid one throws here; a seq
-  // tail is kept as it is. A runtime-owned tail then goes through
-  // `sharedSeqForm`; a list tail's count is the runtime's (`count`), the
-  // engine's for an engine form.
+  // tail is kept as it is. A list (`conj` onto a list asks for one) stays a
+  // counted list: the engine's own prepend onto an engine list, a `ListValue`
+  // of the runtime's with its count onto a runtime-owned one. A cons onto a
+  // runtime-owned tail goes through `sharedSeqForm`.
   function cons(head, tail, kind = "cons") {
     if (kind === "cons" && tail != null && !(protocolHooks.implements?.(methodKeys[49], tail) ?? seqValue(tail))) tail = seq(tail);
     if (tail == null) return __rt.formList(head);
-    if (kind === "list" && (__rt.formKind(tail) !== null ? __rt.cljCount(tail) : count(tail)) === 0) return __rt.formList(head);
+    if (kind === "list") {
+      if (__rt.formKind(tail) === "list") return __rt.cljConj(tail, head);
+      if (count(tail) === 0) return __rt.formList(head);
+      const value = Object.create(ListValue.prototype);
+      cells.set(value, {kind, head, tail, count: count(tail) + 1});
+      return value;
+    }
     return __rt.cljCons(head, sharedSeqForm(tail));
   }
   //@unit subvecSources requires: sharedStore
