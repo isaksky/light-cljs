@@ -450,10 +450,12 @@
     return sharedVectorStore(__rt.formConj(sharedVectorForm(store), item));
   }
   //@unit vectorAssoc requires: sharedVectorForm, sharedVectorStore
-  // `store` with `item` at its index `i`: the engine's `assoc`.
+  // `store` with `item` at its index `i`: the engine's `assoc`. The callers
+  // check the bounds; a fractional index truncates, as the V8 profile's
+  // bitwise indexing of its trie has it, where the engine wants an integer.
   function vectorAssoc(store, i, item) {
     if (store.sub) return store.assoc(i, item);
-    return sharedVectorStore(__rt.formAssoc(sharedVectorForm(store), i, item));
+    return sharedVectorStore(__rt.formAssoc(sharedVectorForm(store), Math.trunc(i), item));
   }
   //@unit vectorPop requires: sharedVectorForm, sharedVectorStore
   // `store`, of at least one item, without its last: the engine's `pop`.
@@ -462,12 +464,13 @@
     return sharedVectorStore(__rt.cljPop(sharedVectorForm(store)));
   }
   //@unit vectorNth requires: missing, outOfBounds, vectorLeaf
-  // The item of a vector's store at a number `index`, truncated; a view's is
-  // that of the store it views.
+  // The item of a vector's store at a number `index`, truncated once in
+  // bounds (a negative fraction keeps its fallback); a view's is that of
+  // the store it views.
   function vectorNth(store, index, notFound) {
     if (index >= 0 && index < store.cnt) {
       if (store.sub) return vectorNth(store.sub, store.start + index, notFound);
-      return store.form !== undefined ? __rt.formNth(store.form, index) : vectorLeaf(store, index)[index & 31];
+      return store.form !== undefined ? __rt.formNth(store.form, Math.trunc(index)) : vectorLeaf(store, index)[index & 31];
     }
     if (notFound === missing) return outOfBounds();
     return notFound;

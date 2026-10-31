@@ -203,7 +203,10 @@ fn shared_profile_task_cells_initialize_without_existing_cells() {
 /// The vector storage contract of the engine view: the verbatim operation
 /// units read `cnt` and a small vector's `tail`, and the swapped storage
 /// units answer `nth`, `seq`, `conj`, `assoc`, `pop`, `subvec` and a
-/// transient across the 32-element boundary.
+/// transient across the 32-element boundary. A fractional index in bounds
+/// truncates, as the V8 profile's bitwise indexing has it
+/// (`vector-fractional-index` in tests/fixtures/execution.tsv), and a
+/// negative one keeps its fallback.
 #[test]
 fn shared_profile_vector_operations() {
     let rt = Runtime::new();
@@ -214,6 +217,7 @@ fn shared_profile_vector_operations() {
              let v = core.vector(); for (let i = 0; i < 40; i++) v = core.conj(v, i); \
              let p = v; for (let i = 0; i < 9; i++) p = core.pop(p); \
              const t = core.persistentBang(core.conjBang(core.conjBang(core.transient(v), 40), 41)); \
+             const three = core.vector(10, 20, 30); \
              return [core.count(v), core.nth(core.vector(10), 0), core.nth(v, 31), core.nth(v, 32), core.nth(v, 39), \
                core.nth(v, 45, 'none'), core.nth(core.assoc(v, 5, 'x'), 5), core.nth(core.assoc(v, 35, 'y'), 35), \
                core.count(core.assoc(v, 40, 'z')), core.count(p), core.nth(p, 30), core.peek(p), \
@@ -221,13 +225,17 @@ fn shared_profile_vector_operations() {
                core.count(core.seq(v)), core.nth(core.seq(v), 33), core.prStr(core.subvec(v, 30, 34)), \
                core.count(t), core.nth(t, 41), core.prStr(core.pop(core.vector(1, 2))), \
                core.hash(core.vector(1, 2)) === core.hash(core.conj(core.vector(1), 2)), \
-               core.first(core.seq({{a: 1}} && core.vector(7)))].join(' ');"
+               core.first(core.seq({{a: 1}} && core.vector(7))), \
+               core.nth(three, 1.8), core.get(three, 1.8), core.prStr(core.assoc(three, 1.8, 'x')), \
+               core.nth(v, 33.5), core.nth(core.assoc(v, 35.2, 'y'), 35), core.nth(core.vector(10, 20), -0.5, 'missing'), \
+               core.get(three, -0.5, 'missing'), core.contains(three, 1.8)].join(' ');"
         ),
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
-        "40 10 31 32 39 none x y 41 31 30 30 [1 2 3] (2 3) 40 33 [30 31 32 33] 42 41 [1] true 7"
+        "40 10 31 32 39 none x y 41 31 30 30 [1 2 3] (2 3) 40 33 [30 31 32 33] 42 41 [1] true 7 \
+         20 20 [10 \"x\" 30] 33 y missing missing false"
     );
 }
 
