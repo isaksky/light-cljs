@@ -3469,8 +3469,24 @@ fn wide_js_obj_bootstrap_matches_quickjs_at_every_pool_size() {
         )
         .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
         if native && jobs > 1 {
-            assert!(stats.native_helpers.contexts_lent > 0, "{stats:?}");
-            assert!(stats.native_helpers.contexts_borrowed > 0, "{stats:?}");
+            // The coordinator may analyze every unit before a worker
+            // starts. Context lending is checked with forced worker jobs
+            // in compilation_session::worker_tests; either schedule must
+            // still report exactly one trace row for each analysis.
+            let mut traced: Vec<_> = stats
+                .trace
+                .as_ref()
+                .unwrap()
+                .units
+                .iter()
+                .map(|u| usize::try_from(u.id).unwrap())
+                .collect();
+            traced.sort_unstable();
+            assert_eq!(
+                traced,
+                (0..stats.deferred_units.registered).collect::<Vec<_>>(),
+                "{stats:?}"
+            );
         }
         (emit_js(&program), warnings)
     };

@@ -2238,6 +2238,26 @@ helping: load fell too, and almost no analysis moved. Four threads remain
 slower than two at 800k (after medians 89.16 against 66.82 s), as in
 light-cljs-675. This change does not resolve that scaling problem.
 
+To check the load effect, the same saved binaries ran three more paired
+200k measurements at each thread count. Each pair runs before then after,
+reversing that order for the second run. Threads cycle through 2, 4 and 8
+for each run. The before 1/5/15-minute loads ranged over
+8.94–19.55 / 16.20–19.55 / 19.96–21.49; after ranged over
+8.69–20.95 / 15.96–18.96 / 19.83–21.25.
+
+| Threads | Version | Wall, s | User CPU, s | Peak memory, GB | 1-minute loads |
+| ---: | --- | --- | --- | --- | --- |
+| 2 | Before | 10.00, 11.62, 12.84 | 12.18, 14.57, 15.86 | 1.185, 1.226, 1.183 | 12.97, 8.94, 19.55 |
+| 2 | After | 10.14, 11.58, 11.09 | 12.48, 14.45, 13.91 | 1.206, 1.207, 1.170 | 11.20, 9.10, 20.95 |
+| 4 | Before | 9.72, 9.87, 9.53 | 16.66, 17.57, 17.11 | 1.208, 1.229, 1.237 | 9.87, 8.97, 19.19 |
+| 4 | After | 9.91, 9.58, 9.51 | 17.49, 17.09, 16.97 | 1.232, 1.234, 1.259 | 9.34, 9.33, 17.47 |
+| 8 | Before | 10.86, 15.85, 11.11 | 22.88, 26.01, 23.16 | 1.304, 1.316, 1.300 | 8.98, 14.31, 16.02 |
+| 8 | After | 11.94, 16.13, 10.78 | 23.48, 24.86, 22.81 | 1.291, 1.318, 1.298 | 8.69, 8.95, 14.78 |
+
+Four-thread user CPU is effectively unchanged (medians 17.11 and 17.09 s),
+and the wall-time differences vary in sign. These pairs do not establish a
+consistent gain either. Output directories match in all 18 builds.
+
 Every complete output directory was byte-identical across the before and
 after runs and all measured thread counts. JavaScript SHA-256 is
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`

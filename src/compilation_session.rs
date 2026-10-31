@@ -5876,6 +5876,58 @@ mod worker_tests {
 
     #[cfg(feature = "bbp-macros")]
     #[test]
+    fn successive_native_worker_jobs_lend_and_borrow_a_context() {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let (session, units, environment) = registered_with_host(
+            "(defn first [] (if true 1 0)) (defn second [] (+ 1 2))",
+            host,
+        );
+        let shared = session.shared();
+        shared.select_native();
+        let mut config = crate::scheduler::Config::new(crate::scheduler::Slots::new(2).unwrap(), 1);
+        config.stack_size = Some(8 << 20);
+        // One worker, one completed job at a time. Unlike an application
+        // build, no coordinator help can take either job before it runs.
+        crate::scheduler::run(
+            &config,
+            |_| WorkerSlot {
+                view: None,
+                plain: None,
+                engines: PoolEngines::Persistent,
+                _trace: None,
+            },
+            |slot, job, worker| execute_pool_job(slot, job, worker, shared, &environment),
+            |pool| {
+                for name in ["cljs.user/first", "cljs.user/second"] {
+                    let id = units[name];
+                    pool.submit_batch(shared.unit_jobs(vec![id], false));
+                    assert!(matches!(
+                        pool.next_outcome().unwrap(),
+                        crate::scheduler::Next::Outcome(())
+                    ));
+                    assert!(matches!(
+                        shared.lock().units[id].state,
+                        AnalysisState::Analyzed(..)
+                    ));
+                }
+            },
+        )
+        .unwrap();
+        let counts = shared
+            .native_runtime(environment.evaluator_options())
+            .unwrap()
+            .helper_counts();
+        // Preserve the context-reuse assertions from the wide js-obj
+        // matrix without assuming which thread wins an application unit.
+        assert!(counts.contexts_lent > 0, "{counts:?}");
+        assert!(counts.contexts_borrowed > 0, "{counts:?}");
+        assert_eq!(counts.contexts_lent, 2, "{counts:?}");
+        assert_eq!(counts.contexts_borrowed, 1, "{counts:?}");
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
     fn native_build_cancellation_reaches_every_shared_runtime_task() {
         let session = CompilationSession::default();
         let runtime = session.shared.native_runtime(&Default::default()).unwrap();
