@@ -156,6 +156,8 @@
 //! | `recordFromMap(type, m)` | `form_op` | `map->R`: fields from `m`'s field keywords, the rest as extension entries | `WrongType` |
 //! | `cljDispatch(table, v)` | `form_op` | protocol dispatch: `v`'s implementation in `table`, its default, `null`, or `undefined` for a JavaScript object | `WrongType` |
 //! | `cljProtocolLookup(snapshot, version, frontier, v)` | `form_op` | guarded protocol implementation with struct/object/default precedence; `undefined` for stale/missing snapshots, undeclared structs or host objects, for task-local slow resolution | `WrongType` |
+//! | `sealBindings(v)` | `form_op` | seals every initialized sealable binding cell of the running task reachable from `v` (light-cljs-646, `crate::vm::seal`); the number sealed | – |
+//! | `seal(o)` | `form_op` | seals one ordinary object, array or function property record of the running task in place: frozen, shared and immutable; evaluates to `o` | `TypeError` for other kinds or internal slots; `ForeignObject` |
 //!
 //! Sets are the fifth collection kind: `formCount`, `formGet` (the stored
 //! member), `formConj` (absent members only), `formWithMeta`,
@@ -453,6 +455,9 @@ fn form_step(
     host: &mut dyn crate::Host,
     instr: Instr,
 ) -> Result<(), Fault> {
+    if let Instr::FormOp(op @ (FormOp::SealBindings | FormOp::Seal)) = instr {
+        return seal_step(state, heap, op);
+    }
     if instr == Instr::FormOp(FormOp::CljCoreResolver) {
         let [resolver] = top(state.operands())?;
         super::dispatch::callee(heap, &resolver)?;
@@ -498,6 +503,20 @@ fn form_step(
         return super::native::start_sorted_equality(state, instr, n, request, answers);
     }
     state.replace(n, made?)
+}
+
+/// `__rt.seal(v)` and `__rt.sealBindings(v)` for the running task
+/// (`crate::vm::seal`). Out of line: [`form_step`] runs on 64 KiB workers.
+#[inline(never)]
+fn seal_step(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<(), Fault> {
+    let [value] = top(state.operands())?;
+    let task = state.diag.task;
+    let result = if op == FormOp::Seal {
+        super::seal::seal(heap, task, &value)?
+    } else {
+        Value::Number(super::seal::seal_bindings(heap, task, &value)? as f64)
+    };
+    state.replace(1, result)
 }
 
 /// The value of one form instruction on its operands `ops`.
@@ -920,6 +939,8 @@ fn strict_form_op(
         | FormOp::Delay
         | FormOp::CljForce
         | FormOp::CljDelayState => Value::Undefined,
+        // Run by `form_step` with the running task.
+        FormOp::SealBindings | FormOp::Seal => Value::Undefined,
     })
 }
 

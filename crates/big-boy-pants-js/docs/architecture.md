@@ -486,7 +486,7 @@ publication; spawn leaves cross-task handoff validation to the embedder.
 | Class | Contract |
 | --- | --- |
 | Immutable/shareable | Primitives, persistent collections/occurrences, native form values and eligible functions whose captures and other edges pass publication. Unchanged subtrees preserve identity. |
-| Task-owned | Ordinary objects/arrays, property records, lexical mutation cells, builders, generators and async activations; freezing JS properties does not make these publishable. |
+| Task-owned | Ordinary objects/arrays, property records, lexical mutation cells, builders, generators and async activations; freezing JS properties does not make these publishable (sealing does: see "Shared-heap profile primitives" below). |
 | Explicit concurrent reference | Atoms and all Promises/settlement guards; installs validate their contents rather than allowing arbitrary shared mutable graphs. |
 
 A closure with mutable captures or a task-owned home/property record cannot
@@ -663,6 +663,32 @@ replaces every lazy sequence inside a form with a list, in time linear in the
 form's size: it keeps its walk across the realizations it waits for and
 continues it (light-cljs-622). Tests:
 `tests/lazy_seqs.rs`.
+
+### Shared-heap profile primitives (light-cljs-646)
+
+The real cljs.core (`src/js_runtime.js`) runs in the Pants build as a
+shared-heap profile booted once and published (root
+`docs/real-core-design.md`). The light-cljs-645 spike found that no closure
+of a booted runtime published, because its forward-referenced and
+load-time-reassigned bindings were task-owned cells, and its boot-time
+registries were ordinary objects. The primitives the profile needs from the
+engine, with what exists and what was added:
+
+| Primitive | `__rt` name | Contract (ownership, publication, what parks) | Runtime units that use it | Status |
+| --- | --- | --- | --- | --- |
+| Fixed bindings | none: the compiler emits `NewFixedCell` | A `let`/`const`/parameter/function declaration that nothing assigns but a closure may read before its initialization. Immutable from its one initialization; then persistent, read by every task with no owner check; rejected as an "uninitialized binding cell" before it. Never parks. | Every mutually recursive pair of units (`privateStore`, `seq` and `first` before their wrappers, ...): 448 of the 567 members a naive boot rejected | Added (`crate::vm::function`, "Fixed and sealed bindings"; `tests/sealing.rs`) |
+| Sealed bindings | `sealBindings(v)` → count | A binding assigned only by its declaring function's own code (`NewSealableCell`) is an "unsealed binding cell" until its task calls `sealBindings` on a value reaching it; then persistent and readable by every task, and assigning it throws a `TypeError`. Seals only the calling task's cells; a binding assigned from a nested function stays task-owned. Never parks; walks the reachable graph once. | The 13 load-time wrappers (`seq = behindProtocol(seq, ...)`, `first`, `next`, `count`, `get`, `assoc`, `conj`, `contains`, `lookup`, ...) | Added (`crate::vm::seal`) |
+| Sealed registries and prototypes | `seal(o)` → `o` | Shallow and identity-preserving: an ordinary object or array of the calling task is frozen and becomes shared and immutable like a realm intrinsic (no owner, read by every task, writes, deletes and prototype changes throw a `TypeError` everywhere); a function's own-property record is sealed the same way. The values it holds are not sealed: publication still rejects a task-owned one with its path. Objects with internal slots, Maps, Sets and WeakMaps do not seal. Never parks. | `kindHooks`, `protocolHooks`, the sentinels (`noBranch`, `missing`, `protocolSentinel`), `sequencePrototype`, `mapTypes`/`setTypes`, the `methodKeys` array, the runtime types' constructors and prototypes | Added (`crate::vm::seal`) |
+| Form brands | `formKind`, `formReferenceType` | Read-only kind and reference-type tags of engine forms; shared values, no parking | The brand-store views (`vectors`, `cells`, `maps`, `sets`, `keywords`, ...) the profile swaps in | Existing (466, 592) |
+| Lazy cells | `lazySeq(thunk)`, `cljRealized`, `cljSeq`/`cljFirst`/`cljRest`, `cljChunk*`, `cljRealizeAll` | A once-cell per lazy sequence: the first task that needs it claims it and runs the thunk once; other readers park until it settles (above). `cljRealized` is `realized?` without realizing. A JavaScript view of the raw cell state (thunk, claim) is not needed: the runtime's `LazySeq` units read the value through `cljSeq`, which realizes or parks. | `LazySeq`, `lazyValues` view, `realized?`, `seq` | Existing (479, 622) |
+| Delays | `delay`, `cljForce`, `cljDelayState` | Once-cells like lazy sequences; `cljDelayState` reads `[ready value]` without running the body | `Delay`, `force`, `realized?`, printing | Existing (613) |
+| Atoms | `atomNew`, `atomLoad`, `atomCas`, `atomAux` | Concurrent references; every install checks publication; cross-task order from the compiler's effect lanes | `atom`, `swap!`, `reset!`, the global hierarchy | Existing (480) |
+| Protocol dispatch tables | `cljProtocolLookup`, `cljDispatch` | Engine tables read at the task's frontier (light-cljs-515); never call user equality or hashing | The dispatch and extension units light-cljs-649 re-targets (`kindTables`, `nativeMethods`, `coreDispatchers` move here instead of being sealed) | Existing (478, 515) |
+| Identity hash | none | Not added: no unit of the shared slice or of a sealed boot needs a cross-task identity. The runtime's `identityHash` keeps its ids in a WeakMap keyed by the object and its counter in a module `let` that a function assigns, so it stays task-local, which is correct for the task-owned objects it hashes; engine values (forms, structs) hash in the engine. Needed only if 647 shares host objects that are hashed by identity. | `identityHash`, `hash` of a host object | Skipped |
+| Keyword interning map | none | Not added: `map` does not make keywords, and engine keywords already compare by value in `=` and hash in the engine. The runtime's `keyword` unit interns run-time keywords in the `internedKeywords` Map so that `identical?` holds; in the profile that unit is swapped for `formKeyword` (647), and whether run-time keywords need an engine-wide interning table is decided by 647's harness rows (`identical?` on two `(keyword "a")` calls). | `keyword`, `internedKeywords` | Skipped |
+
+The naive-boot publication walk before and after these primitives is in
+`docs/real-core-design.md`, "Spike" (`bb benchmarks/real-core-seam.bb`).
 
 ## Atomic references
 

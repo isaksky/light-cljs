@@ -616,6 +616,8 @@ impl Executable {
                 Opcode::CurrentFunction => Instr::CurrentFunction,
                 Opcode::GetCapture => Instr::GetCapture(operand as u16),
                 Opcode::NewCell => Instr::NewCell,
+                Opcode::NewFixedCell => Instr::NewFixedCell,
+                Opcode::NewSealableCell => Instr::NewSealableCell,
                 Opcode::CellInit => Instr::CellInit,
                 Opcode::CellGet => Instr::CellGet,
                 Opcode::CellSet => Instr::CellSet,

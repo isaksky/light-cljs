@@ -7,8 +7,8 @@
 //!
 //! | Category | Kinds today | Shareable? |
 //! |----------|-------------|------------|
-//! | [`Shareability::Persistent`] | vector, map, occurrence, form value (`crate::collections::form`: its elements, keys, values and metadata are walked), function (closure; its own-property record is a separate ordinary object), built-in function, realm intrinsic ordinary object (`Object.prototype`, `crate::realm`), internal frozen template arrays; natives that declare it | when everything it references is shareable (transitively) |
-//! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects other than realm intrinsics, JavaScript Maps, Sets, WeakMaps, WeakSets, WeakRefs, FinalizationRegistries and DisposableStacks, ArrayBuffers and typed-array views, binding cells, natives that declare it | never |
+//! | [`Shareability::Persistent`] | vector, map, occurrence, form value (`crate::collections::form`: its elements, keys, values and metadata are walked), function (closure; its own-property record is a separate ordinary object), built-in function, realm intrinsic ordinary object (`Object.prototype`, `crate::realm`), internal frozen template arrays, ordinary objects, arrays and function property records sealed by `__rt.seal`, binding cells that are fixed and initialized or sealed (light-cljs-646, `crate::vm::seal`); natives that declare it | when everything it references is shareable (transitively) |
+//! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects other than realm intrinsics, JavaScript Maps, Sets, WeakMaps, WeakSets, WeakRefs, FinalizationRegistries and DisposableStacks, ArrayBuffers and typed-array views, mutable, unsealed or uninitialized binding cells, natives that declare it | never |
 //! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`), Promises (including subclasses) and their resolving-pair guards (`crate::vm::promise`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
 //! Primitives are always shareable, strings, symbols and BigInts included: a string
@@ -245,6 +245,9 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         HeapObject::Builder(_) => Shareability::TaskOwned,
         // Code and captured values are fixed at creation (`crate::vm::function`).
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => Shareability::Persistent,
+        // A fixed binding once initialized, or a sealed one, never changes
+        // again (light-cljs-646, `crate::vm::function`): a one-way change.
+        HeapObject::Cell(c) if c.is_immutable() => Shareability::Persistent,
         HeapObject::Cell(_) => Shareability::TaskOwned,
         // Every operation that installs a value checks it first (`crate::atom`).
         HeapObject::Atom(_) => Shareability::ConcurrentReference,
@@ -767,9 +770,13 @@ fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(),
         {
             continue;
         }
+        // A record the walk expanded is a sealed one it proved
+        // (light-cljs-646, `crate::vm::seal`); any other was attached since.
+        let walked: HashSet<ObjectId> = proven.iter().copied().collect();
+        let gained = |record: Option<ObjectId>| record.is_some_and(|r| !walked.contains(&r));
         let gained_properties = |o: &HeapObject| match o {
-            HeapObject::Function(f) => f.properties.is_some(),
-            HeapObject::BoundFunction(f) => f.properties.is_some(),
+            HeapObject::Function(f) => gained(f.properties),
+            HeapObject::BoundFunction(f) => gained(f.properties),
             _ => false,
         };
         if heap.mark_shareable_unless(&proven, gained_properties) {

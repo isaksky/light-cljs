@@ -181,6 +181,8 @@
 //! | `FormOp` | 0xC2 | u16 [`FormOp`] | arguments ([`FormOp::arity`]) → result | one form-value operation |
 //! | `NewFormSet` | 0xC3 | u16 count n | v1 … vn → set | new Clojure form set with structural members; the first of equal members is kept (light-cljs-477) |
 //! | `NewStruct` | 0xC4 | u16 count n | type v1 … v(n-1) → struct | new struct of a struct type with its field values (light-cljs-478) |
+//! | `NewFixedCell` | 0xC5 | – | → cell | new uninitialized binding cell that is immutable once initialized (light-cljs-646) |
+//! | `NewSealableCell` | 0xC6 | – | → cell | new uninitialized binding cell that `__rt.sealBindings` can make immutable (light-cljs-646) |
 //!
 //! Opcodes `0xBF`–`0xC3` are the private form intrinsics behind
 //! `__rt.form*` and `__rt.clj*`, documented in [`crate::vm::intrinsics`] and
@@ -776,6 +778,8 @@ pub enum Opcode {
     FormOp = 0xC2,
     NewFormSet = 0xC3,
     NewStruct = 0xC4,
+    NewFixedCell = 0xC5,
+    NewSealableCell = 0xC6,
 }
 
 /// Operand encoding of an opcode.
@@ -1007,6 +1011,8 @@ impl Opcode {
             0xC2 => FormOp,
             0xC3 => NewFormSet,
             0xC4 => NewStruct,
+            0xC5 => NewFixedCell,
+            0xC6 => NewSealableCell,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1213,6 +1219,8 @@ impl Opcode {
             NewFormVector => "new_form_vector",
             NewFormSet => "new_form_set",
             NewStruct => "new_struct",
+            NewFixedCell => "new_fixed_cell",
+            NewSealableCell => "new_sealable_cell",
             NewFormMap => "new_form_map",
             FormOp => "form_op",
             PutGlobalStrict => "put_global_strict",
@@ -1281,13 +1289,14 @@ impl Opcode {
             Undefined | Pop | Dup | Add | Sub | Mul | Lt | StrictEq | Not | Return | NewObject
             | Count | Nth | Get | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder
             | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber
-            | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction | NewCell | CellInit
-            | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PopCatch
-            | PopFinally | EndFinally | Reduce | NeedAll | BitAnd | BitOr | BitXor | Shl | Sar
-            | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt | CompareGt
-            | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis | NewArray
-            | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | SetProto
-            | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments => OperandKind::None,
+            | ToNumberPair | Gt | Le | Ge | LooseEq | CurrentFunction | NewCell | NewFixedCell
+            | NewSealableCell | CellInit | CellGet | CellSet | AtomNew | AtomLoad | AtomCas
+            | Need | Throw | PopCatch | PopFinally | EndFinally | Reduce | NeedAll | BitAnd
+            | BitOr | BitXor | Shl | Sar | UShr | BitNot | Pow | CallFinally | DropCompletion
+            | Plus | CompareLt | CompareGt | CompareLe | CompareGe | Typeof | NewObjectLiteral
+            | ToString | GetThis | NewArray | AppendElement | AppendHole | GetElem | PutElem
+            | Dup2 | ToPropertyKey | SetProto | Instanceof | Delete | In | ForInStart
+            | ForInNext | NewArguments => OperandKind::None,
             GetAsyncIterator | GetIterator | RequireObject | PendingThrow | GetGlobalObject
             | ToNumeric | Inc | Dec | CallSpread | CallMethodSpread | ConstructSpread
             | CheckSpreadArguments => OperandKind::None,
@@ -1617,11 +1626,18 @@ pub enum FormOp {
     /// delay → `[ready value]` as the reference prints it, without running
     /// its body (`cljDelayState`, light-cljs-613).
     CljDelayState = 117,
+    /// value → the number of binding cells sealed: every initialized
+    /// sealable cell of the running task reachable from `value`
+    /// (`sealBindings`, light-cljs-646, `crate::vm::seal`).
+    SealBindings = 118,
+    /// object → the same object, sealed: frozen, shared and immutable
+    /// (`seal`, light-cljs-646, `crate::vm::seal`).
+    Seal = 119,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 118] = [
+    pub const ALL: [FormOp; 120] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1740,6 +1756,8 @@ impl FormOp {
         FormOp::Delay,
         FormOp::CljForce,
         FormOp::CljDelayState,
+        FormOp::SealBindings,
+        FormOp::Seal,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1815,6 +1833,8 @@ impl FormOp {
             | FormOp::ReferenceType
             | FormOp::ReferencePayload
             | FormOp::CljDelayState
+            | FormOp::SealBindings
+            | FormOp::Seal
             | FormOp::CljForce => 1,
             FormOp::Keyword
             | FormOp::FnWithApplyTo
@@ -1959,6 +1979,8 @@ impl FormOp {
             FormOp::Delay => "delay",
             FormOp::CljForce => "cljForce",
             FormOp::CljDelayState => "cljDelayState",
+            FormOp::SealBindings => "sealBindings",
+            FormOp::Seal => "seal",
             FormOp::StructField => "structField",
             FormOp::StructTypeOf => "structTypeOf",
             FormOp::RecordFromMap => "recordFromMap",
@@ -2220,6 +2242,8 @@ pub(crate) enum Instr {
     /// Member count.
     NewFormSet(u16),
     NewStruct(u16),
+    NewFixedCell,
+    NewSealableCell,
 }
 
 impl Instr {
@@ -2416,6 +2440,8 @@ impl Instr {
             Instr::NewFormVector(_) => Opcode::NewFormVector,
             Instr::NewFormSet(_) => Opcode::NewFormSet,
             Instr::NewStruct(_) => Opcode::NewStruct,
+            Instr::NewFixedCell => Opcode::NewFixedCell,
+            Instr::NewSealableCell => Opcode::NewSealableCell,
             Instr::NewFormMap(_) => Opcode::NewFormMap,
             Instr::FormOp(_) => Opcode::FormOp,
             Instr::PutGlobalStrict(_) => Opcode::PutGlobalStrict,
@@ -2432,8 +2458,8 @@ impl Instr {
         match self {
             RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | NewObject
             | NewVectorBuilder | NewMapBuilder | ThrowError(_) | CurrentFunction
-            | GetCapture(_) | NewCell | GetBuiltinGlobal(_) | NewObjectLiteral | GetThis
-            | NewArray | NewArguments => (0, 1),
+            | GetCapture(_) | NewCell | NewFixedCell | NewSealableCell | GetBuiltinGlobal(_)
+            | NewObjectLiteral | GetThis | NewArray | NewArguments => (0, 1),
             GetGlobalObject | GetGlobal(_) | GetGlobalOrUndefined(_) | DeleteGlobal(_) => (0, 1),
             DeclareGlobalLet(_) | DeclareGlobalConst(_) => (1, 1),
             SetLocal(_) | Pop | JumpIfFalse(_) | Return | Throw | InitGlobalLexical(_) => (1, 0),
@@ -2534,6 +2560,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 196);
+        assert_eq!(assigned, 198);
     }
 }

@@ -48,6 +48,7 @@ pub(crate) mod native;
 pub(crate) mod promise;
 pub(crate) mod property;
 pub(crate) mod prototype;
+pub(crate) mod seal;
 
 pub use asm::{Assembler, Label};
 pub use executable::{

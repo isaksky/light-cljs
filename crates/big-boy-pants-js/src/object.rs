@@ -782,9 +782,26 @@ impl OrdinaryObject {
         self.owner
     }
 
-    /// True for a realm intrinsic (module docs).
+    /// True for a realm intrinsic (module docs), or an object sealed for
+    /// sharing ([`OrdinaryObject::seal`]).
     pub(crate) fn is_intrinsic(&self) -> bool {
         self.intrinsic
+    }
+
+    /// Seal the object for sharing (light-cljs-646, `crate::vm::seal`):
+    /// freeze it, then make it shared and immutable like a realm intrinsic,
+    /// with no owner. False, changing nothing, if it carries internal slots
+    /// or exotic data (an Error, wrapper, Date, RegExp, Intl object or
+    /// arguments object), which no shared object has.
+    pub(crate) fn seal(&mut self) -> bool {
+        if self.internal.is_some() || self.data.is_some() || self.error_data || self.arguments_data
+        {
+            return false;
+        }
+        self.freeze();
+        self.intrinsic = true;
+        self.owner = None;
+        true
     }
 
     /// Initialize a wrapper before publishing its identity to the heap.

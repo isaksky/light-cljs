@@ -235,7 +235,7 @@ mod tests {
         let owner = TaskId::from_raw(1);
         let heap = rt.heap();
         let cell = heap
-            .alloc(HeapObject::Cell(BindingCell { owner, value: None }))
+            .alloc(HeapObject::Cell(BindingCell::new(owner, None)))
             .unwrap();
         let ns = heap
             .alloc(HeapObject::ModuleNamespace(Box::new(Namespace {
@@ -259,10 +259,10 @@ mod tests {
         let owner = TaskId::from_raw(1);
         let value = heap.alloc(HeapObject::host_object(&heap)).unwrap();
         let cell = heap
-            .alloc(HeapObject::Cell(BindingCell {
+            .alloc(HeapObject::Cell(BindingCell::new(
                 owner,
-                value: Some(Value::Object(value)),
-            }))
+                Some(Value::Object(value)),
+            )))
             .unwrap();
         let ns = heap
             .alloc(HeapObject::ModuleNamespace(Box::new(Namespace {
@@ -304,10 +304,10 @@ mod tests {
         let heap = Heap::default();
         let owner = TaskId::from_raw(1);
         let cell = heap
-            .alloc(HeapObject::Cell(BindingCell {
+            .alloc(HeapObject::Cell(BindingCell::new(
                 owner,
-                value: Some(Value::Undefined),
-            }))
+                Some(Value::Undefined),
+            )))
             .unwrap();
         let ns = heap
             .alloc(HeapObject::ModuleNamespace(Box::new(Namespace {

@@ -357,10 +357,8 @@ impl Linker {
                                 .get(&b.name.name)
                                 .is_some_and(|(_, name)| name == NAMESPACE)
                         {
-                            let cell = BindingCell {
-                                owner,
-                                value: b.is_var().then_some(Value::Undefined),
-                            };
+                            let cell =
+                                BindingCell::new(owner, b.is_var().then_some(Value::Undefined));
                             let id = heap
                                 .alloc(HeapObject::Cell(cell))
                                 .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
@@ -647,10 +645,10 @@ impl Linker {
                     // remain in this saved, task-owned linker continuation.
                     slot.insert(ns);
                     let cell = heap
-                        .alloc(HeapObject::Cell(BindingCell {
+                        .alloc(HeapObject::Cell(BindingCell::new(
                             owner,
-                            value: Some(Value::Object(ns)),
-                        }))
+                            Some(Value::Object(ns)),
+                        )))
                         .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
                     self.slots.insert((dep, NAMESPACE.into()), self.cells.len());
                     self.cells.push(Value::Object(cell));

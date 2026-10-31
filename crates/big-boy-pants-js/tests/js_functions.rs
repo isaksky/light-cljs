@@ -1833,7 +1833,7 @@ fn top_level_function_declarations_are_var_scoped() {
                  return g();
                }
                f(1)";
-    uses(&exe(src), &[Opcode::NewCell, Opcode::CellInit]);
+    uses(&exe(src), &[Opcode::NewSealableCell, Opcode::CellInit]);
     assert_eq!(num(src), 12.0);
     // A repeated declaration refers to the binding, not to itself.
     assert_eq!(

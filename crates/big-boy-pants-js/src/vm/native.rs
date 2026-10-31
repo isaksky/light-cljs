@@ -1184,16 +1184,18 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder | NewMapBuilder
         | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber | ToNumeric | Inc
         | Dec | ToNumberPair | Gt | Le | Ge | LooseEq | ThrowError(_) | Function(..) | Call(_)
-        | CurrentFunction | GetCapture(_) | NewCell | CellInit | CellGet | CellSet | AtomNew
-        | AtomLoad | AtomCas | Need | Throw | PushCatch(_) | PushFinally(_) | PopCatch
-        | PopFinally | EndFinally | BitAnd | BitOr | BitXor | Shl | Sar | UShr | BitNot | Pow
-        | CallFinally | DropCompletion | Plus | CompareLt | CompareGt | CompareLe | CompareGe
-        | Typeof | GetField(_) | PutField(_) | DefineField(_) | GetBuiltinGlobal(_)
-        | CallMethod(_) | NewObjectLiteral | ToString | GetThis | NewArray | AppendElement
-        | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | Construct(_) | SetProto
-        | Instanceof | Delete | In | ForInStart | NewArguments | Method(..) | DefineGetter(_)
-        | DefineSetter(_) | RequireObject | PendingThrow | CallSpread | CallMethodSpread
-        | ConstructSpread | CheckSpreadArguments => false,
+        | CurrentFunction | GetCapture(_) | NewCell | NewFixedCell | NewSealableCell | CellInit
+        | CellGet | CellSet | AtomNew | AtomLoad | AtomCas | Need | Throw | PushCatch(_)
+        | PushFinally(_) | PopCatch | PopFinally | EndFinally | BitAnd | BitOr | BitXor | Shl
+        | Sar | UShr | BitNot | Pow | CallFinally | DropCompletion | Plus | CompareLt
+        | CompareGt | CompareLe | CompareGe | Typeof | GetField(_) | PutField(_)
+        | DefineField(_) | GetBuiltinGlobal(_) | CallMethod(_) | NewObjectLiteral | ToString
+        | GetThis | NewArray | AppendElement | AppendHole | GetElem | PutElem | Dup2
+        | ToPropertyKey | Construct(_) | SetProto | Instanceof | Delete | In | ForInStart
+        | NewArguments | Method(..) | DefineGetter(_) | DefineSetter(_) | RequireObject
+        | PendingThrow | CallSpread | CallMethodSpread | ConstructSpread | CheckSpreadArguments => {
+            false
+        }
         AsyncGeneratorStart
         | GeneratorStart
         | GeneratorYield

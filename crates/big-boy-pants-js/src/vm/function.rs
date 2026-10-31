@@ -70,6 +70,37 @@
 //!   even a closure handed over without the check (`Runtime::spawn` arguments
 //!   are not checked) cannot read or write another task's bindings.
 //!
+//! # Fixed and sealed bindings (light-cljs-646)
+//!
+//! A cell's [`CellMode`] says whether it can still change, so that a
+//! runtime booted in one task (the real cljs.core, whose mutually
+//! recursive functions all capture bindings before their initialization)
+//! can publish its closures:
+//!
+//! * **Fixed** (`NewFixedCell`): a `let`, `const`, parameter or function
+//!   declaration that nothing assigns, in a cell only because a closure
+//!   may read it before its initialization. Its one `CellInit` makes it
+//!   immutable; from then on it is
+//!   [`Persistent`](crate::value::share::Shareability::Persistent) and
+//!   every task reads it. Before that it is task-owned, and publication
+//!   rejects it as an "uninitialized binding cell".
+//! * **Sealable** (`NewSealableCell`): a binding assigned only by the code
+//!   of the function that declares it, never from a nested function or
+//!   direct eval (a load-time wrapper, `seq = wrap(seq)`). It is task-owned
+//!   (an "unsealed binding cell") until its task seals it with
+//!   `__rt.sealBindings` (`crate::vm::seal`); a **sealed** cell is
+//!   persistent and readable by every task, and an assignment to it throws
+//!   a `TypeError`.
+//! * **Mutable** (`NewCell`): any other binding (assigned from a closure,
+//!   visible to direct eval, a module import, an internal cell). Task-owned
+//!   for its whole life, as above.
+//!
+//! The change is one-way (task-owned to persistent, never back), and an
+//! immutable cell's single edge never changes again, so the known-shareable
+//! bit of `crate::value::share` stays sound. Only the owner writes a cell
+//! (it initializes or seals it), and a foreign `CellGet` takes the cell's
+//! access word, so it observes the value written before the change.
+//!
 //! # Tracing
 //!
 //! A function object's `Trace` reports its code's constants (primitives in
@@ -1227,10 +1258,55 @@ pub(crate) fn initialize_constructor_prototype(
 /// Storage of a mutable captured binding. See the module docs.
 #[derive(Debug)]
 pub(crate) struct BindingCell {
-    /// The task whose run created the cell; the only one that may use it.
+    /// The task whose run created the cell; the only one that may change
+    /// it, and the only one that may read it while it is mutable.
     pub(crate) owner: TaskId,
     /// `None` until `CellInit` runs (temporal dead zone).
     pub(crate) value: Option<Value>,
+    /// Whether the binding can still change (module docs, "Fixed and
+    /// sealed bindings").
+    pub(crate) mode: CellMode,
+}
+
+impl BindingCell {
+    /// A new, uninitialized, mutable cell of `owner`.
+    pub(crate) fn new(owner: TaskId, value: Option<Value>) -> BindingCell {
+        BindingCell {
+            owner,
+            value,
+            mode: CellMode::Mutable,
+        }
+    }
+
+    /// True once the binding can never change again: a fixed binding that
+    /// is initialized, or a sealed one. Such a cell is persistent
+    /// (`crate::value::share`) and every task may read it.
+    pub(crate) fn is_immutable(&self) -> bool {
+        match self.mode {
+            CellMode::Fixed => self.value.is_some(),
+            CellMode::Sealed => true,
+            CellMode::Mutable | CellMode::Sealable => false,
+        }
+    }
+}
+
+/// How a binding cell may change (light-cljs-646; module docs, "Fixed and
+/// sealed bindings"). The compiler chooses the mode from what it proves
+/// about the binding (`crate::frontend::lower`, `NewFixedCell` and
+/// `NewSealableCell`); only sealing changes it afterwards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CellMode {
+    /// Any assignment, possibly from a nested function or direct eval: the
+    /// cell stays task-owned for its whole life.
+    Mutable,
+    /// Never assigned: initialized exactly once, immutable from then on.
+    Fixed,
+    /// Assigned only by the code of the function that declares it (never
+    /// from a nested function or eval). `__rt.sealBindings` makes an
+    /// initialized one [`CellMode::Sealed`].
+    Sealable,
+    /// Sealed: immutable, and an assignment throws a `TypeError`.
+    Sealed,
 }
 
 impl Trace for BindingCell {

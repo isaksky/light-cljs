@@ -356,7 +356,14 @@ pub(crate) fn object_name(object: &HeapObject) -> &'static str {
         HeapObject::Form(f) => f.kind().diagnostic_name(),
         HeapObject::Builder(b) => b.kind().name(),
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => "function",
-        HeapObject::Cell(_) => "binding cell",
+        // Publication names why a cell is still task-owned (light-cljs-646).
+        HeapObject::Cell(c) => match c.mode {
+            crate::vm::function::CellMode::Sealable => "unsealed binding cell",
+            crate::vm::function::CellMode::Fixed if c.value.is_none() => {
+                "uninitialized binding cell"
+            }
+            _ => "binding cell",
+        },
         HeapObject::Atom(_) => "atom",
         HeapObject::Builtin(_) => "built-in function",
         HeapObject::Array(_) => "array",

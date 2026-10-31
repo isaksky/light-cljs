@@ -433,6 +433,8 @@ struct Facts {
     copied_to: Option<usize>,
     /// Some assignment targets it.
     assigned: bool,
+    /// Some assignment in a nested function (through a capture) targets it.
+    assigned_in_closure: bool,
     /// A closure capturing it is created while it is initialized.
     captured_initialized: bool,
     /// A closure capturing it may be created before it is initialized.
@@ -804,6 +806,29 @@ impl<'s> Lowerer<'s> {
 
     fn analyzing(&self) -> bool {
         self.emit.is_none()
+    }
+
+    /// The instruction that creates the cell of binding `b` at its scope's
+    /// entry (light-cljs-646; `crate::vm::function`, "Fixed and sealed
+    /// bindings"): a `let`, `const`, parameter or function declaration that
+    /// nothing assigns is fixed once initialized; a binding assigned only
+    /// by its own function's code may be sealed; any other is mutable.
+    fn new_cell_opcode(&self, b: Binding) -> Opcode {
+        let facts = self.facts_of(b.key);
+        if self.analyzing() || facts.eval_visible || facts.assigned_in_closure || self.sloppy_eval {
+            Opcode::NewCell
+        } else if !facts.assigned
+            && matches!(
+                b.kind,
+                BindingKind::Let | BindingKind::Const | BindingKind::Param | BindingKind::Function
+            )
+        {
+            Opcode::NewFixedCell
+        } else if matches!(b.kind, BindingKind::Import) {
+            Opcode::NewCell
+        } else {
+            Opcode::NewSealableCell
+        }
     }
 
     fn import_eval_bindings(&mut self, site: &EvalSite) {
@@ -1458,7 +1483,8 @@ impl<'s> Lowerer<'s> {
                 continue;
             }
             let span = name.span;
-            self.out().op(Opcode::NewCell, span);
+            let new_cell = self.new_cell_opcode(b);
+            self.out().op(new_cell, span);
             match b.kind {
                 BindingKind::Param => {
                     self.out().op(Opcode::Dup, span);
@@ -2430,12 +2456,25 @@ impl<'s> Lowerer<'s> {
                 Access::Found {
                     target: Target::SelfFn(SelfKind::Declaration { key }),
                     ..
-                } => self.fact(key).assigned = true,
+                } => {
+                    // From inside the function itself: a nested function
+                    // of the declaring scope.
+                    let facts = self.fact(key);
+                    facts.assigned = true;
+                    facts.assigned_in_closure = true;
+                }
                 Access::Found {
                     target: Target::Binding(_),
                     key,
+                    place,
                     ..
-                } => self.fact(key).assigned = true,
+                } => {
+                    let facts = self.fact(key);
+                    facts.assigned = true;
+                    if !matches!(place, Place::Local(_)) {
+                        facts.assigned_in_closure = true;
+                    }
+                }
                 _ => {}
             }
         }

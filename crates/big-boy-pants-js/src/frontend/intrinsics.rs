@@ -326,6 +326,9 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::IsArrayMap),
     form_op(FormOp::Empty),
     form_op(FormOp::Regex),
+    // Sealing boot-time state for sharing (light-cljs-646).
+    form_op(FormOp::SealBindings),
+    form_op(FormOp::Seal),
 ];
 
 const fn form_op(op: FormOp) -> Intrinsic {

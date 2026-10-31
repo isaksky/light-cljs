@@ -96,7 +96,7 @@ use crate::vm::exception::{
 };
 use crate::vm::executable::Code;
 use crate::vm::frames::{Raised, Returned, VmState};
-use crate::vm::function::{BindingCell, FunctionObject};
+use crate::vm::function::{BindingCell, CellMode, FunctionObject};
 use crate::vm::instr::{Instr, Opcode, ThrowKind};
 use crate::vm::intrinsics;
 use crate::vm::keys;
@@ -1024,10 +1024,7 @@ fn construct_target(
     }
     let this = {
         let id = heap
-            .alloc(HeapObject::Cell(BindingCell {
-                owner: task,
-                value: None,
-            }))
+            .alloc(HeapObject::Cell(BindingCell::new(task, None)))
             .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
         Value::Object(id)
     };
@@ -1918,13 +1915,22 @@ fn with_cell<R>(
     task: TaskId,
     f: impl FnOnce(&mut Option<Value>) -> Result<R, Fault>,
 ) -> Result<R, Fault> {
-    let not_cell =
-        |found: &str| Fault::Unsupported(format!("expected a binding cell, got {found}"));
+    with_cell_of(heap, cell, task, |c| f(&mut c.value))
+}
+
+/// Run `f` on the binding cell `cell` of the running task: fails if `cell`
+/// is not a binding cell, or belongs to another task.
+fn with_cell_of<R>(
+    heap: &Heap,
+    cell: &Value,
+    task: TaskId,
+    f: impl FnOnce(&mut BindingCell) -> Result<R, Fault>,
+) -> Result<R, Fault> {
     let Value::Object(id) = *cell else {
         return Err(not_cell(cell.type_name()));
     };
     heap.with_object_mut(id, |object| match object {
-        HeapObject::Cell(c) if c.owner == task => f(&mut c.value),
+        HeapObject::Cell(c) if c.owner == task => f(c),
         HeapObject::Cell(c) => Err(Fault::ForeignBinding {
             owner: c.owner,
             caller: task,
@@ -1932,6 +1938,32 @@ fn with_cell<R>(
         other => Err(not_cell(object_name(other))),
     })
     // A frame keeps its operands alive; a stale id is reported, not trusted.
+    .unwrap_or(Err(Fault::Internal("binding cell was reclaimed")))
+}
+
+fn not_cell(found: &str) -> Fault {
+    Fault::Unsupported(format!("expected a binding cell, got {found}"))
+}
+
+/// `CellGet`: the value of `cell`. The owning task reads any of its cells;
+/// another task reads only an immutable one (a fixed binding once
+/// initialized, or a sealed one; light-cljs-646), which never changes, so
+/// a published closure over it reads the same value in every task.
+fn read_cell(heap: &Heap, cell: &Value, task: TaskId) -> Result<Value, Fault> {
+    let Value::Object(id) = *cell else {
+        return Err(not_cell(cell.type_name()));
+    };
+    heap.read(id, |object| match object {
+        HeapObject::Cell(c) if c.owner == task || c.is_immutable() => c
+            .value
+            .clone()
+            .ok_or(Fault::Throw(ThrowKind::Uninitialized)),
+        HeapObject::Cell(c) => Err(Fault::ForeignBinding {
+            owner: c.owner,
+            caller: task,
+        }),
+        other => Err(not_cell(object_name(other))),
+    })
     .unwrap_or(Err(Fault::Internal("binding cell was reclaimed")))
 }
 
@@ -3067,10 +3099,12 @@ fn step_instruction(
             ))?;
             state.push(v);
         }
-        Instr::NewCell => {
-            let cell = BindingCell {
-                owner: state.diag.task,
-                value: None,
+        Instr::NewCell | Instr::NewFixedCell | Instr::NewSealableCell => {
+            let mut cell = BindingCell::new(state.diag.task, None);
+            cell.mode = match instr {
+                Instr::NewFixedCell => CellMode::Fixed,
+                Instr::NewSealableCell => CellMode::Sealable,
+                _ => CellMode::Mutable,
             };
             // Pushed in the same instruction, under this run's mutator guard.
             let id = heap
@@ -3082,11 +3116,17 @@ fn step_instruction(
             let [cell, v] = top_operands(state, 2)? else {
                 return Err(Fault::Internal("operand stack underflow"));
             };
-            with_cell(heap, cell, state.diag.task, |binding| {
-                if instr == Instr::CellSet && binding.is_none() {
+            with_cell_of(heap, cell, state.diag.task, |c| {
+                if instr == Instr::CellSet && c.value.is_none() {
                     return Err(Fault::Throw(ThrowKind::Uninitialized));
                 }
-                *binding = Some(v.clone());
+                if c.is_immutable() {
+                    return Err(Fault::TypeError(
+                        "assignment to a sealed binding: it was sealed for sharing between tasks"
+                            .into(),
+                    ));
+                }
+                c.value = Some(v.clone());
                 Ok(())
             })?;
             state.pop()?;
@@ -3096,11 +3136,7 @@ fn step_instruction(
             let [cell] = top_operands(state, 1)? else {
                 return Err(Fault::Internal("operand stack underflow"));
             };
-            let v = with_cell(heap, cell, state.diag.task, |binding| {
-                binding
-                    .clone()
-                    .ok_or(Fault::Throw(ThrowKind::Uninitialized))
-            })?;
+            let v = read_cell(heap, cell, state.diag.task)?;
             state.replace(1, v)?;
         }
         Instr::IsCell => {
@@ -3346,11 +3382,8 @@ fn global_step(
             }
             let cell = if matches!(instr, Instr::DeclareGlobalConstValue(_)) {
                 Value::Object(
-                    heap.alloc(HeapObject::Cell(BindingCell {
-                        owner: state.diag.task,
-                        value: None,
-                    }))
-                    .ok_or(Fault::OutOfMemory("global lexical binding"))?,
+                    heap.alloc(HeapObject::Cell(BindingCell::new(state.diag.task, None)))
+                        .ok_or(Fault::OutOfMemory("global lexical binding"))?,
                 )
             } else {
                 let cell = state
@@ -3479,6 +3512,8 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::DefineClassMethod | Instr::DefineClassGetter | Instr::DefineClassSetter
         | Instr::CurrentFunction
         | Instr::NewCell
+        | Instr::NewFixedCell
+        | Instr::NewSealableCell
         | Instr::AtomNew
         | Instr::AtomLoad
         | Instr::AtomCas
