@@ -829,6 +829,36 @@ fn shared_profile_symbols_are_engine_symbols() {
          null a/b null a/b symbol a/b symbol / symbol ns/c \
          symbol cljs.core cljs.core true symbol a_b symbol x/y"
     );
+    // The positional constructor keeps the slots it is given (the V8
+    // profile's `public-symbol-slots`, tests/fixtures/compiler-public-constructors.tsv):
+    // a spelling other than the pair's or a cached hash other than the
+    // engine's makes a runtime-owned symbol, which `with-meta` copies with
+    // both; a cached hash that is the engine's own leaves an engine symbol.
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const alias = new core.Symbol('source', 'name', 'printed/alias', 17, null); \
+             const copy = core.withMeta(alias, rt.arrayMapFromArray([core.keyword(null, 'm'), 2])); \
+             const engineMeta = core.withMeta(alias, __rt.formMap(core.keyword(null, 'e'), 3)), bare = core.withMeta(copy, null); \
+             const hashed = new core.Symbol('ns', 'c', 'ns/c', 17, null), same = new core.Symbol('ns', 'c', 'ns/c', core.hash(core.symbol('ns', 'c')), null); \
+             const first = [String(__rt.formKind(alias)), core.namespace(alias), core.name(alias), core.str(alias), core.prStr(alias), alias.str, alias.ns, core.hash(alias), alias._hash, \
+               core.equal(alias, core.symbol('printed', 'alias')), core.equal(core.symbol('printed', 'alias'), alias), core.equal(alias, core.symbol('source', 'name')), \
+               String(__rt.formKind(copy)), core.hash(copy), core.prStr(copy), core.get(core.meta(copy), core.keyword(null, 'm')), \
+               String(__rt.formKind(engineMeta)), core.hash(engineMeta), core.str(engineMeta), __rt.formGet(core.meta(engineMeta), core.keyword(null, 'e'), null), \
+               String(__rt.formKind(bare)), core.hash(bare), core.prStr(bare), String(core.meta(bare)), \
+               String(__rt.formKind(hashed)), core.hash(hashed), core.prStr(hashed), __rt.formKind(same), core.hash(same) === core.hash(hashed)]; \
+             copy._hash = 18; \
+             return [...first, core.hash(copy), core.hash(alias)].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "null source name printed/alias printed/alias printed/alias source 17 17 true true false \
+         null 17 printed/alias 2 null 17 printed/alias 3 null 17 printed/alias null \
+         null 17 ns/c symbol false 18 17"
+    );
     let current_ns = run(
         &rt,
         &format!("const rt = (\n{SHARED_RUNTIME}\n); return rt.core.currentNs;"),

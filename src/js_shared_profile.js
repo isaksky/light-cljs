@@ -381,13 +381,14 @@
   // until the maps view): such a symbol is a runtime-owned object over the
   // views' fallbacks with the V8 profile's prototype, which `symbols`,
   // equality, hashing and printing read alike, and its task's own.
-  function sharedSymbol(namespace, name, metadata = null, cachedHash = null) {
-    if (sharedNamedSplits(namespace, name) && (metadata == null || __rt.formKind(metadata) === "map")) {
+  function sharedSymbol(namespace, name, metadata = null, cachedHash = null, spelling = null) {
+    const canonical = namespace == null ? name : namespace + "/" + name;
+    if ((spelling === null || spelling === canonical) && sharedNamedSplits(namespace, name) && (metadata == null || __rt.formKind(metadata) === "map")) {
       const value = __rt.formSymbol(namespace, name);
-      return metadata == null ? value : __rt.formWithMeta(value, metadata);
+      if (cachedHash === null || cachedHash === __rt.formHash(value)) return metadata == null ? value : __rt.formWithMeta(value, metadata);
     }
     const value = Object.create(SymbolValue.prototype);
-    symbols.set(value, Object.freeze({namespace, name, spelling: namespace == null ? name : namespace + "/" + name}));
+    symbols.set(value, Object.freeze({namespace, name, spelling: spelling === null ? canonical : spelling}));
     if (cachedHash !== null) constructorHashes.set(value, cachedHash);
     if (metadata != null) metadataValues.set(value, metadata);
     return value;
@@ -397,21 +398,26 @@
     return sharedSymbol(namespace, name);
   }
   //@unit SymbolValue requires: invalidArity, sharedSymbol
-  // The positional constructor: the engine hashes its symbol, so the cached
-  // hash is kept only by a runtime-owned one.
+  // The positional constructor keeps the slots it is given: a spelling
+  // other than the pair's or a cached hash other than the engine's makes a
+  // runtime-owned symbol (`sharedSymbol`), as the V8 profile's
+  // `public-symbol-slots` asserts them.
   function SymbolValue(namespace, name, spelling, cachedHash, metadata) {
     if (arguments.length !== 5) return invalidArity(arguments.length);
-    return sharedSymbol(namespace, name, metadata, cachedHash);
+    return sharedSymbol(namespace, name, metadata, cachedHash, spelling);
   }
   //@unit collectionWithMeta.symbols effect: symbol, SymbolValue when: collectionWithMeta
-  //@ requires: collectionWithMeta, sharedSymbol, symbols
+  //@ requires: collectionWithMeta, constructorHashes, sharedSymbol, symbols
   // `with-meta` of a symbol builds a symbol of the metadata's kind
   // (`sharedSymbol`): an engine symbol, or a runtime-owned one for
   // runtime-built metadata; a runtime-owned symbol given engine metadata or
-  // none is an engine symbol again.
+  // none is an engine symbol again, unless its spelling or cached hash is
+  // its own (the positional constructor's), which the copy keeps.
   collectionWithMeta = (operation => (value, metadata) => {
-    const data = __rt.formKind(value) === "symbol" || (symbols.has(value) && (metadata == null || __rt.formKind(metadata) === "map")) ? symbols.get(value) : undefined;
-    return data === undefined ? operation(value, metadata) : sharedSymbol(data.namespace, data.name, metadata);
+    const own = __rt.formKind(value) === null;
+    const data = !own || (symbols.has(value) && (metadata == null || __rt.formKind(metadata) === "map")) ? symbols.get(value) : undefined;
+    return data === undefined ? operation(value, metadata)
+      : sharedSymbol(data.namespace, data.name, metadata, own && constructorHashes.has(value) ? constructorHashes.get(value) : null, own ? data.spelling : null);
   })(collectionWithMeta);
   //@unit sharedNamedString
   // An engine keyword's or symbol's string, for `str`, `displayStr` and the
