@@ -778,12 +778,14 @@ impl ObjectTable {
             }
             let mut reclaimed = 0;
             let mut bits = [0u64; SEGMENT_SIZE / 64];
+            let mut reusable = [0u64; SEGMENT_SIZE / 64];
             for word_index in (0..bits.len()).rev() {
                 let marked = segment.marked[word_index].load(Ordering::Relaxed);
                 let mut unreachable = segment.live[word_index].load(Ordering::Relaxed) & !marked;
                 segment.live[word_index].store(marked, Ordering::Relaxed);
                 segment.marked[word_index].store(0, Ordering::Relaxed);
                 bits[word_index] = unreachable;
+                reusable[word_index] = unreachable;
                 while unreachable != 0 {
                     let bit = 63 - unreachable.leading_zeros() as usize;
                     unreachable &= !(1u64 << bit);
@@ -797,6 +799,7 @@ impl ObjectTable {
                     let next = if let Some(next) = generation.checked_add(1) {
                         USED | u64::from(next)
                     } else {
+                        reusable[word_index] &= !(1u64 << bit);
                         USED | RETIRED | u64::from(generation)
                     };
                     slot.state.store(next, Ordering::Release);
@@ -816,6 +819,8 @@ impl ObjectTable {
                     segment: segment.clone(),
                     base: (segment_index * SEGMENT_SIZE) as u32,
                     bits,
+                    reusable,
+                    bodies_dropped: false,
                 });
             }
             // No thread can reserve its slots without the table lock, and
@@ -900,6 +905,8 @@ struct PendingSegment<'h> {
     segment: Arc<Segment>,
     base: u32,
     bits: [u64; SEGMENT_SIZE / 64],
+    reusable: [u64; SEGMENT_SIZE / 64],
+    bodies_dropped: bool,
 }
 
 /// Clear the slot even if a payload destructor unwinds. Its byte charge is
@@ -948,48 +955,76 @@ impl Drop for DropSlots<'_> {
     }
 }
 
-struct ReleaseSlots<'a, 'h>(&'a PendingSegment<'h>);
-
-impl Drop for ReleaseSlots<'_, '_> {
-    fn drop(&mut self) {
-        let batch = self.0;
-        let mut objects = lock(&batch.heap.objects);
-        let mut count = 0;
-        for word in (0..batch.bits.len()).rev() {
-            let mut bits = batch.bits[word];
+impl PendingSegment<'_> {
+    fn release(&self, objects: &mut ObjectTable) {
+        for word in (0..self.reusable.len()).rev() {
+            let mut bits = self.reusable[word];
             while bits != 0 {
                 let bit = 63 - bits.leading_zeros() as usize;
                 bits &= !(1u64 << bit);
                 let offset = word * 64 + bit;
-                let slot = &batch.segment.slots[offset];
-                // DropSlots (including its unwind cleanup) finishes before
-                // this guard: every body and reservation is now empty.
-                if slot.state.load(Ordering::Relaxed) & RETIRED == 0 {
-                    objects.free.push(batch.base + offset as u32);
-                }
-                count += 1;
+                objects.free.push(self.base + offset as u32);
             }
         }
-        let pending = batch.segment.pending.fetch_sub(count, Ordering::Relaxed) - count;
+        let count: usize = self
+            .bits
+            .iter()
+            .map(|bits| bits.count_ones() as usize)
+            .sum();
+        let pending = self.segment.pending.fetch_sub(count, Ordering::Relaxed) - count;
         if pending == 0
-            && batch.segment.held.load(Ordering::Acquire) == 0
-            && batch.segment.live() == 0
+            && self.segment.held.load(Ordering::Acquire) == 0
+            && self.segment.live() == 0
         {
-            objects.charges[batch.base as usize / SEGMENT_SIZE] = None;
+            objects.charges[self.base as usize / SEGMENT_SIZE] = None;
         }
     }
 }
 
-impl Drop for PendingSegment<'_> {
+struct ReleaseBatches<'a, 'h>(&'a mut [PendingSegment<'h>]);
+
+impl ReleaseBatches<'_, '_> {
+    fn clear_bodies(&mut self) {
+        for batch in &mut *self.0 {
+            if batch.bodies_dropped {
+                continue;
+            }
+            // DropSlots finishes this batch on unwind before this guard
+            // resumes cleanup of the remaining batches.
+            batch.bodies_dropped = true;
+            let mut remaining = DropSlots {
+                segment: &batch.segment,
+                bits: batch.bits,
+            };
+            remaining.clear();
+        }
+    }
+}
+
+impl Drop for ReleaseBatches<'_, '_> {
     fn drop(&mut self) {
-        // Reverse guard-drop order: destroy any remaining bodies on unwind
-        // before returning their slots and releasing the segment's charge.
-        let _release = ReleaseSlots(self);
-        let mut remaining = DropSlots {
-            segment: &self.segment,
-            bits: self.bits,
+        self.clear_bodies();
+        let Some(first) = self.0.first() else {
+            return;
         };
-        remaining.clear();
+        let mut objects = lock(&first.heap.objects);
+        let count: usize = self
+            .0
+            .iter()
+            .flat_map(|batch| batch.reusable)
+            .map(|bits| bits.count_ones() as usize)
+            .sum();
+        objects.free.reserve(count);
+        for batch in &*self.0 {
+            batch.release(&mut objects);
+        }
+    }
+}
+
+impl Drop for Garbage<'_> {
+    fn drop(&mut self) {
+        let mut cleanup = ReleaseBatches(&mut self.segments);
+        cleanup.clear_bodies();
     }
 }
 
@@ -1232,28 +1267,34 @@ mod tests {
     }
 
     #[test]
-    fn a_panicking_payload_still_clears_the_batch_before_slots_are_reused() {
+    fn a_panicking_payload_clears_all_segments_before_slots_are_reused() {
         let heap = Heap::default();
         let drops = Arc::new(AtomicUsize::new(0));
-        for panic in [false, false, true] {
+        const COUNT: usize = 2 * SEGMENT_SIZE + 1;
+        for i in 0..COUNT {
             heap.alloc(HeapObject::Native(Box::new(DropProbe {
                 entered: None,
                 resume: None,
                 drops: drops.clone(),
-                panic,
+                panic: i == COUNT - 1,
             })))
             .unwrap();
         }
         assert!(std::panic::catch_unwind(|| heap.collect()).is_err());
-        assert_eq!(drops.load(Ordering::Relaxed), 3);
+        assert_eq!(drops.load(Ordering::Relaxed), COUNT);
         let table = lock(&heap.objects);
-        assert_eq!(table.free.len(), 3);
-        assert_eq!(table.segments[0].pending.load(Ordering::Relaxed), 0);
+        assert_eq!(table.free.len(), COUNT);
+        assert!(
+            table
+                .segments
+                .iter()
+                .all(|segment| segment.pending.load(Ordering::Relaxed) == 0)
+        );
         drop(table);
         let new = owned(&heap, OWNER);
         assert_eq!((new.index, new.generation), (0, 1));
         assert_eq!(heap.collect().unwrap().reclaimed, 1);
-        assert_eq!(drops.load(Ordering::Relaxed), 3);
+        assert_eq!(drops.load(Ordering::Relaxed), COUNT);
     }
 
     #[test]
