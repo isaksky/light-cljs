@@ -388,9 +388,28 @@
   const reifyValues = sharedSet();
   //@unit emptyList
   const emptyList = __rt.formList();
-  //@unit cons
+  //@unit sharedSeqForm requires: first, rest, seq
+  // A runtime-owned sequence (design point 8: a list of `listFromArray`, an
+  // indexed seq over a vector's items, the runtime's own `iterate` cell) as
+  // an engine sequence, for the engine operations that read a tail or a
+  // thunk's result (`cljCons`, a lazy seq's realization), which cannot read
+  // a private store: a lazy seq that takes one element at a time through
+  // the verbatim `seq`, `first` and `rest`, so an infinite sequence is not
+  // traversed. `nil`, a primitive and an engine form are themselves.
+  function sharedSeqForm(value) {
+    if (value == null || __rt.formKind(value) !== null || typeof value !== "object" && typeof value !== "function") return value;
+    return __rt.lazySeq(() => {
+      const current = seq(value);
+      return current == null ? null : __rt.cljCons(first(current), sharedSeqForm(rest(current)));
+    });
+  }
+  //@unit cons requires: count, sharedSeqForm
+  // A cons onto a runtime-owned tail goes through `sharedSeqForm`; a list
+  // tail's count is the runtime's (`count`), the engine's for an engine form.
   function cons(head, tail, kind = "cons") {
-    return tail == null || kind === "list" && __rt.cljCount(tail) === 0 ? __rt.formList(head) : __rt.cljCons(head, tail);
+    if (tail == null) return __rt.formList(head);
+    if (kind === "list" && (__rt.formKind(tail) !== null ? __rt.cljCount(tail) : count(tail)) === 0) return __rt.formList(head);
+    return __rt.cljCons(head, sharedSeqForm(tail));
   }
   //@unit subvecSources requires: sharedStore
   const subvecSources = sharedStore();
@@ -512,14 +531,16 @@
   function Delay(thunk, result) {
     return __rt.delay(thunk, result);
   }
-  //@unit LazySeq
-  // An engine lazy seq of `thunk`; one made with no thunk holds the
-  // computed `result`, so its cell is realized to it at once. The engine
-  // caches the hash (`constructorHashes`), so `cachedHash` is not kept.
+  //@unit LazySeq requires: sharedSeqForm
+  // An engine lazy seq of `thunk`, whose result crosses into the engine
+  // through `sharedSeqForm` when the runtime owns it; one made with no
+  // thunk holds the computed `result`, so its cell is realized to it at
+  // once. The engine caches the hash (`constructorHashes`), so `cachedHash`
+  // is not kept.
   function LazySeq(metadata, thunk, result, cachedHash) {
     let value;
-    if (thunk == null) { value = __rt.lazySeq(() => result); __rt.cljSeq(value); }
-    else value = __rt.lazySeq(thunk);
+    if (thunk == null) { value = __rt.lazySeq(() => sharedSeqForm(result)); __rt.cljSeq(value); }
+    else value = __rt.lazySeq(() => sharedSeqForm(thunk.call(null)));
     return metadata !== null ? __rt.cljWithMeta(value, metadata) : value;
   }
   //@unit protocolKeys requires: sharedStore

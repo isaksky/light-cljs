@@ -239,6 +239,37 @@ fn shared_profile_vector_operations() {
     );
 }
 
+/// A runtime-owned sequence (a list of `listFromArray`, an indexed seq over
+/// a vector, the runtime's own `iterate` cell: design point 8) crosses into
+/// the engine's `cons` and lazy-seq realization through the profile's
+/// sequence adapter, which takes one element at a time, so an infinite one
+/// is not traversed.
+#[test]
+fn shared_profile_runtime_sequences_cross_native_boundary() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const consed = core.cons(0, core.list(1, 2)); \
+             const lazy = new core.LazySeq(null, () => core.seq(core.vector(1, 2)), null, null); \
+             let steps = 0; \
+             const infinite = core.cons(-1, core.iterate(x => {{ steps++; return x + 1; }}, 0)); \
+             const taken = core.prStr(core.take(3, infinite)); \
+             const seeded = new core.LazySeq(null, null, core.seq(core.vector(5, 6)), null); \
+             return [core.prStr(consed), core.count(consed), core.first(lazy), core.prStr(lazy), core.prStr(core.rest(lazy)), \
+               taken, steps <= 2, core.prStr(core.conj(core.list(1, 2), 0)), core.count(core.conj(core.list(1, 2), 0)), \
+               core.prStr(seeded), core.equal(consed, core.list(0, 1, 2)), core.hash(consed) === core.hash(core.list(0, 1, 2)), \
+               core.prStr(core.cons(0, [1, 2])), core.prStr(core.cons(0, core.vector(1, 2)))].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "(0 1 2) 3 1 (1 2) (2) (-1 0 1) true (0 1 2) 3 (5 6) true true (0 1 2) (0 1 2)"
+    );
+}
+
 /// The lazy and delay views reflect the engine once-cell's state: checking
 /// `realized?` runs no thunk, a successful realization is reported once
 /// made, a throwing thunk leaves the cell pending, and a `LazySeq` made
