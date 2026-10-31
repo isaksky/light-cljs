@@ -233,6 +233,14 @@ struct State {
 }
 
 impl State {
+    /// A catalog source index is a resource home only once its namespace
+    /// is known. Helper-only sources keep the conservative, unhomed lane.
+    fn unit_home(&self, unit: usize) -> Option<usize> {
+        self.unit_sources
+            .get(&unit)
+            .copied()
+            .filter(|&source| self.names.get(source).is_some_and(|name| !name.is_empty()))
+    }
     /// Whether namespace `source`'s require closure contains `home`; an
     /// unknown closure contains every namespace.
     fn reaches(&self, source: Option<usize>, home: usize) -> bool {
@@ -608,9 +616,9 @@ impl Lanes {
         let guard = self.enter_cell(cell);
         if guard.lanes.is_some() {
             let mut s = self.lock();
-            if let Some(&source) = usize::try_from(unit)
+            if let Some(source) = usize::try_from(unit)
                 .ok()
-                .and_then(|unit| s.unit_sources.get(&unit))
+                .and_then(|unit| s.unit_home(unit))
             {
                 s.homes.insert(guard.token, source);
                 s.initializer_tasks
@@ -939,7 +947,7 @@ impl Lanes {
         let Some(top) = s.tops.get(&task) else {
             return true;
         };
-        let Some(&home) = s.unit_sources.get(&unit) else {
+        let Some(home) = s.unit_home(unit) else {
             return true;
         };
         let owned: Vec<_> = top
@@ -1003,8 +1011,7 @@ impl Lanes {
         if !self.enabled() {
             return Ok(0);
         }
-        let home = (usize::try_from(unit).ok())
-            .and_then(|unit| self.lock().unit_sources.get(&unit).copied());
+        let home = (usize::try_from(unit).ok()).and_then(|unit| self.lock().unit_home(unit));
         self.check_home(task, home)
     }
     fn check_home(&self, task: u64, home: Option<usize>) -> Result<u64, String> {
@@ -1432,6 +1439,7 @@ mod tests {
     #[test]
     fn extension_admission_and_dispatch_context_follow_consumer_closures() {
         let (lanes, _) = closure_fixture();
+        lanes.note_unit(999, usize::MAX);
         let unknown = synced(&lanes, 7);
         assert!(lanes.sees_unit(unknown, 5));
         assert!(lanes.sees_unit(unknown, 999));
@@ -1440,6 +1448,12 @@ mod tests {
             synced(&lanes, 7);
             assert!(lanes.sees_unit(7, 5));
             assert!(!lanes.sees_unit(7, 10));
+            assert!(lanes.sees_unit(7, 999));
+            assert_ne!(
+                lanes.check_initializer(7, 999).unwrap(),
+                0,
+                "an unknown home still waits for every earlier activity"
+            );
             let context = lanes.visibility_context(7);
             assert_eq!(context, lanes.visibility_context(7));
             context
