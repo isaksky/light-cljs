@@ -403,10 +403,19 @@
         get value() { return __rt.cljSeq(value); }, set value(_) {},
         get hash() { return sharedSequenceHashes.get(value); }, set hash(hash) { sharedSequenceHashes.set(value, hash); }
       })),
+    // A delay's `thunk` is `false`, not null, while the cell is realized but
+    // prints as pending (`cljDelayState` reads `[ready value]`): one made
+    // with a `false` thunk, whose `realized?` is true (`!truth(false)`) and
+    // whose printer shows `:pending` (`thunk == null`), as the V8 profile's
+    // state has it. Its `value` is the state's in every case: the seed while
+    // pending or after a failed realization, else the realized value.
     delays = sharedView("delays", value => __rt.formKind(value) === "delay",
       value => ({
-        get thunk() { return __rt.cljRealized(value) ? null : () => __rt.cljForce(value); }, set thunk(_) {},
-        get value() { const state = __rt.cljDelayState(value); return __rt.formNth(state, 0) ? __rt.formNth(state, 1) : null; }, set value(_) {}
+        get thunk() {
+          if (!__rt.cljRealized(value)) return () => __rt.cljForce(value);
+          return __rt.formNth(__rt.cljDelayState(value), 0) ? null : false;
+        }, set thunk(_) {},
+        get value() { return __rt.formNth(__rt.cljDelayState(value), 1); }, set value(_) {}
       }));
   //@unit eductions requires: sharedStore
   const eductions = sharedStore();

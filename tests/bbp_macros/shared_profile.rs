@@ -315,7 +315,11 @@ fn shared_profile_equal_sequences_have_equal_host_element_hashes() {
 /// The lazy and delay views reflect the engine once-cell's state: checking
 /// `realized?` runs no thunk, a successful realization is reported once
 /// made, a throwing thunk leaves the cell pending, and a `LazySeq` made
-/// with no thunk holds its computed result, realized at once.
+/// with no thunk holds its computed result, realized at once. A delay keeps
+/// its seed while pending (printed as its `:val`) and after a failed
+/// realization; one made with a `false` thunk is realized to its seed, which
+/// `force` returns, and still prints as pending, as the V8 profile's does
+/// (light-cljs-678).
 #[test]
 fn shared_profile_realization_state() {
     let rt = Runtime::new();
@@ -334,14 +338,24 @@ fn shared_profile_realization_state() {
              let threw = false; try {{ core.deref(bad); }} catch (e) {{ threw = e.message === 'boom'; }} \
              const init = new core.LazySeq(null, null, __rt.formList(1), null); \
              const seeded = new core.Delay(null, 7); \
+             const falseThunk = new core.Delay(false, 7); \
+             const seededPending = new core.Delay(() => 9, 8); \
+             const failing = new core.Delay(() => {{ throw new Error('x'); }}, 'seed'); \
+             try {{ core.deref(failing); }} catch (e) {{}} \
              return [r0, c0, f, r1, c1, dr0, dc0, dv, dr1, threw, core.realized(bad), \
-               core.realized(init), core.first(init), core.prStr(init), core.realized(seeded), core.force(seeded)].join(' ');"
+               core.realized(init), core.first(init), core.prStr(init), core.realized(seeded), core.force(seeded), \
+               core.force(falseThunk), core.realized(falseThunk), core.prStr(falseThunk), \
+               core.prStr(seededPending), core.realized(seededPending), core.force(seededPending), core.prStr(seededPending), \
+               core.prStr(failing), core.realized(failing)].join(' ');"
         ),
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
-        "false 0 1 true 1 false 1 42 true true false true 1 (1) true 7"
+        "false 0 1 true 1 false 1 42 true true false true 1 (1) true 7 \
+         7 true #object[cljs.core.Delay {:status :pending, :val 7}] \
+         #object[cljs.core.Delay {:status :pending, :val 8}] false 9 #object[cljs.core.Delay {:status :ready, :val 9}] \
+         #object[cljs.core.Delay {:status :pending, :val \"seed\"}] false"
     );
 }
 
