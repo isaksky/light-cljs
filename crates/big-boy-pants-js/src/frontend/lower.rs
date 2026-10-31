@@ -6406,7 +6406,7 @@ impl<'s> Lowerer<'s> {
         if let Some(name) = &inner {
             self.declare(name, BindingKind::Const, false, true)?;
             let b = self.local(name)?;
-            self.out().op(Opcode::NewCell, span);
+            self.out().op(Opcode::NewFixedCell, span);
             self.out().op_u16(Opcode::SetLocal, b.slot, span);
         }
         // This inaccessible cell ties the constructor to its initializer
@@ -6417,7 +6417,7 @@ impl<'s> Lowerer<'s> {
         };
         self.declare(&initializer, BindingKind::Const, false, true)?;
         let binding = self.local(&initializer)?;
-        self.out().op(Opcode::NewCell, span);
+        self.out().op(Opcode::NewFixedCell, span);
         self.out().op_u16(Opcode::SetLocal, binding.slot, span);
         let ctor = self.temp(span)?;
         let proto = self.temp(span)?;
@@ -6492,7 +6492,7 @@ impl<'s> Lowerer<'s> {
             self.declare(&ident, BindingKind::Const, false, false)?;
             let binding = self.local(&ident)?;
             if binding.repr == Repr::Cell {
-                self.out().op(Opcode::NewCell, p.name_span);
+                self.out().op(Opcode::NewFixedCell, p.name_span);
                 self.out()
                     .op_u16(Opcode::SetLocal, binding.slot, p.name_span);
             }
@@ -6605,7 +6605,7 @@ impl<'s> Lowerer<'s> {
                 };
                 self.declare(&field_key, BindingKind::Const, false, true)?;
                 let binding = self.local(&field_key)?;
-                self.out().op(Opcode::NewCell, at);
+                self.out().op(Opcode::NewFixedCell, at);
                 self.out().op_u16(Opcode::SetLocal, binding.slot, at);
                 self.out().op_u16(Opcode::GetLocal, key, at);
                 self.pattern_store(&Pattern::ident(field_key.clone()), true, false)?;
@@ -6645,7 +6645,7 @@ impl<'s> Lowerer<'s> {
                 };
                 self.declare(&method, BindingKind::Const, false, true)?;
                 let binding = self.local(&method)?;
-                self.out().op(Opcode::NewCell, at);
+                self.out().op(Opcode::NewFixedCell, at);
                 self.out().op_u16(Opcode::SetLocal, binding.slot, at);
                 self.pattern_store(&Pattern::ident(method.clone()), true, false)?;
                 self.out().op(Opcode::Pop, at); // spelling

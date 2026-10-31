@@ -199,3 +199,31 @@ fn seal_shares_registries_and_prototypes_by_identity() {
     .unwrap();
     assert_eq!(map.string().unwrap().to_string_lossy(), "true");
 }
+
+/// A class's own constants (its inner name, private names) are fixed
+/// cells, so its static methods publish once the class and its prototype
+/// are sealed; sealing a concise method seals its home object too.
+#[test]
+fn classes_and_concise_methods_publish_once_sealed() {
+    let rt = Runtime::new();
+    let source = "class Store { #s = 1; static has(v) { return #s in v; } \
+                    static make() { return new Store(); } } \
+         const hooks = { inc(x) { return x + 1; } }; \
+         SEAL return x => Store.has(Store.make()) && !Store.has(hooks) ? hooks.inc(x) : -1;";
+    let unsealed = boot(&rt, &source.replace("SEAL", ""));
+    let error = rejection(&rt, &unsealed);
+    assert!(error.contains("is a task-owned object"), "{error}");
+    let f = boot(
+        &rt,
+        &source.replace(
+            "SEAL",
+            "__rt.seal(Store.prototype); __rt.seal(Store); __rt.seal(Store.has); \
+             __rt.seal(Store.make); __rt.seal(hooks.inc);",
+        ),
+    );
+    rt.publish(&f).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        call_on_two_threads(&rt, &f, 41.0),
+        [ValueView::Number(42.0), ValueView::Number(42.0)]
+    );
+}

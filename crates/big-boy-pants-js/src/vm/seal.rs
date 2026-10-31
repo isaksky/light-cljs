@@ -22,9 +22,9 @@
 //!   `prototype`). `__rt.seal(o)` seals the one object `o` in place and
 //!   evaluates to it: an ordinary object or array is frozen and becomes
 //!   shared and immutable, as a realm intrinsic is (`crate::object`,
-//!   [`OrdinaryObject::seal`]); a function's own-property record is sealed
-//!   the same way (a function without one is returned unchanged: it already
-//!   publishes). Identity is preserved, so code that captured the object
+//!   [`OrdinaryObject::seal`]); a function's own-property record and a
+//!   concise method's home object are sealed the same way (a function
+//!   without either is returned unchanged: it already publishes). Identity is preserved, so code that captured the object
 //!   keeps reading it. Sealing is shallow: the values the object holds are
 //!   not sealed, and publication still rejects one that is task-owned, with
 //!   its path. Writes, deletions and prototype changes of a sealed object
@@ -44,7 +44,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use crate::collections::object_name;
-use crate::heap::{Heap, HeapObject};
+use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::value::Value;
 use crate::vm::dispatch::Fault;
@@ -107,20 +107,38 @@ pub(crate) fn seal(heap: &Heap, task: TaskId, value: &Value) -> Result<Value, Fa
     let Value::Object(id) = *value else {
         return Ok(value.clone());
     };
-    let record = heap
+    seal_object(heap, task, id)?;
+    Ok(value.clone())
+}
+
+/// Seal `id`. A function is sealed through its two task-owned edges: its
+/// own-property record and a concise method's home object (an object, or
+/// for a static class method its class, a function, sealed the same way;
+/// home objects never form a cycle through functions). A function with
+/// neither already publishes; a known-shareable one can no longer gain a
+/// record.
+fn seal_object(heap: &Heap, task: TaskId, id: ObjectId) -> Result<(), Fault> {
+    let parts = heap
         .read(id, |object| match object {
-            HeapObject::Function(f) => Some(f.properties),
-            HeapObject::BoundFunction(f) => Some(f.properties),
+            HeapObject::Function(f) => Some((f.properties, f.home_object)),
+            HeapObject::BoundFunction(f) => Some((f.properties, None)),
             _ => None,
         })
         .ok_or(Fault::Internal("sealed value was reclaimed"))?;
-    let target = match record {
-        // A function without a record already publishes; a known-shareable
-        // function can no longer gain one.
-        Some(None) => return Ok(value.clone()),
-        Some(Some(record)) => record,
-        None => id,
+    let Some((record, home)) = parts else {
+        return seal_one(heap, task, id);
     };
+    if let Some(record) = record {
+        seal_one(heap, task, record)?;
+    }
+    if let Some(home) = home {
+        seal_object(heap, task, home)?;
+    }
+    Ok(())
+}
+
+/// Seal the one ordinary object or array `target` (module docs).
+fn seal_one(heap: &Heap, task: TaskId, target: ObjectId) -> Result<(), Fault> {
     let unsupported = |kind: &str| {
         Fault::TypeError(format!(
             "cannot seal {kind}: only ordinary objects, arrays and functions are sealed for sharing"
@@ -160,6 +178,5 @@ pub(crate) fn seal(heap: &Heap, task: TaskId, value: &Value) -> Result<Value, Fa
         | HeapObject::Builtin(_) => Ok(()),
         other => Err(unsupported(&format!("a {}", object_name(other)))),
     })
-    .unwrap_or(Err(Fault::Internal("sealed value was reclaimed")))?;
-    Ok(value.clone())
+    .unwrap_or(Err(Fault::Internal("sealed value was reclaimed")))
 }
