@@ -5856,15 +5856,34 @@ mod worker_tests {
         );
         assert!(session.shared.lock().units[first].charges.is_some());
         assert_eq!(session.drained_through.get(), None);
-        session.analyze_queued(None);
-        session.analyze_queued(None);
+        // The production drain keeps waiting for the earlier source's
+        // worker while tail mode permits helping a later source.
+        session.end_top_level_passes();
+        session.analyze_queued(Some(running));
+        session.analyze_queued(Some(running));
         assert_eq!(*order.lock().unwrap(), [first, second, tail]);
         assert_eq!(session.unit_counts().coordinator_units, 3);
+        assert_eq!(session.shared.lock().units[tail].analyses, 1);
+        assert!(
+            matches!(session.shared.lock().units[running].state, AnalysisState::Analyzing(owner) if owner == worker)
+        );
         assert_eq!(HELP_DEPTH.get(), 0);
         assert!(matches!(
             session.shared.lock().units[kept].state,
             AnalysisState::Unstarted
         ));
+        // Starting another top-level pass restores the same-source limit.
+        // Make the later kept unit poolable so that limit alone excludes it.
+        session.set_pooled(kept);
+        let pass = session.begin_pass(false);
+        session.analyze_queued(Some(running));
+        assert!(matches!(
+            session.shared.lock().units[kept].state,
+            AnalysisState::Unstarted
+        ));
+        assert_eq!(*order.lock().unwrap(), [first, second, tail]);
+        assert_eq!(session.unit_counts().coordinator_units, 3);
+        drop(pass);
         // A queued job reuses the result; only its drain takes the charges.
         *session.shared.on_claim.lock().unwrap() = None;
         let view = WorkerView::new(session.shared.clone(), MacroHost::new()).unwrap();
