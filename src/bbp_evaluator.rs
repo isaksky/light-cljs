@@ -1631,6 +1631,7 @@ impl BbpRuntime {
         crate::compile_stats::NativeHelperCounts {
             heap: Some(crate::compile_stats::NativeHeapStats {
                 collections: heap.collections,
+                traced_edges: heap.traced_edges,
                 live_objects: heap.last_live_objects,
                 managed_bytes: heap.managed_bytes,
                 peak_managed_bytes: heap.peak_managed_bytes,

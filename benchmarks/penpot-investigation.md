@@ -30,6 +30,99 @@ not promoted; [phase113](results/compiler-2026-10-16/penpot-phase113/README.md)
 records the controlled comparison. Further large gains are not established by
 the current profiling evidence.
 
+## Pacing collections by traced edges (light-cljs-674, October 31, 2026, on `916c0ecc`)
+
+**Summary.** Landed: the next automatic collection waits as many
+allocations as the last one traced edges (not just as many as there are
+live objects); a sweep that empties a 256-slot segment releases the
+segment's byte charge (a reservation charges it again, and falls back to
+free slots of still-charged segments when the budget has no room for
+that); the free list hands out the lowest slots first, so the slot
+capacity garbage leaves behind is not counted as live bytes; the mark
+visits each slot once (strong edges, the conditional pass and an atom's
+retired boxes under one access word) and reads and writes mark bits
+instead of swapping them. Garbage collection on Penpot `app.main` at 1
+thread fell from **15.2%** of the main thread's samples to **11.1%**,
+which misses the 8% target. Collections fell from 985 to 607 at 1 thread
+and from 895-925 to 322-339 at 4 threads. Peak memory rose about 7% at 1
+thread (1.09-1.11 to 1.18 GB) and at most 13% at 4 threads (1.19-1.21 to
+1.31-1.36 GB), within the 15% allowed; 800k at 4 threads still builds
+within its 2 GiB budget (at most 1.40 GB of managed bytes, up from 0.96
+GB).
+
+Measured and not landed: dropping a task's automatic-collection garbage
+on a short-lived thread ("freed", and "final" with the mark-bit change).
+It brought the main thread's share to 7.2-7.8%, but no wall time was
+gained over "paced" and the freeing threads spent about 4.9 s on what took
+2.6 s on the main thread (plausibly the allocator returning blocks freed
+by another thread more slowly). It also needed care: dropping a parked
+delay realization wakes other tasks, so only inert kinds could move, and
+concurrent collectors had to wait for each other's pending releases. The
+review chose to remove it.
+
+Setup: release builds (thin LTO, one codegen unit, `CARGO_BUILD_JOBS=4`) of
+`916c0ecc` ("before") and of the three steps; Penpot with the command in
+"Method and reproduction" below, the generated projects (`generate.bb
+--seed 42`) with `release bench --no-cache --stats --jobs N` and their
+2 GiB budget. Before ran three rounds per configuration first; paced and
+freed alternated; final ran last. Peak memory is `/usr/bin/time -l`'s
+maximum resident set size (GB = 1e9 bytes). Other workers, and this
+pellet's own test suites, ran throughout (1-minute loads 7-53), so wall
+times are not comparable between rows; collections, traced edges and
+managed bytes do not depend on load (at 1 thread). Every build of a
+workload wrote the same output; every Penpot build still stops at
+`core.MapEntry` (light-cljs-643).
+
+| Penpot `app.main` | Wall | Peak memory | Collections | Traced edges | Peak managed | 1-min loads |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 1 thread, before | 76.3 s [75.0-80.9] | 1.09-1.11 GB | 985 | (not counted) | 0.73 GB | 22.0, 21.4, 23.4 |
+| 1 thread, paced | 64.7 s [64.7-65.5] | 1.18 GB | 607 | 37.2 M | 0.88 GB | 16.7, 13.5, 9.8 |
+| 1 thread, freed | 65.8 s [62.3-67.0] | 1.20 GB | 607 | 37.2 M | 0.88 GB | 13.9, 10.2, 10.2 |
+| 1 thread, final | (97.6 s [69.4-169.9]) | 1.20 GB | 607 | 37.2 M | 0.88 GB | 52.7, 41.4, 31.3 |
+| 4 threads, before | 77.6 s [75.9-79.5] | 1.19-1.21 GB | 895-925 | (not counted) | 0.80 GB | 20.2, 22.7, 21.6 |
+| 4 threads, paced | 61.3 s [59.5-65.8] | 1.31-1.36 GB | 330-336 | 46.3-46.6 M | 0.98-1.00 GB | 7.2, 12.9, 7.8 |
+| 4 threads, freed | 61.7 s [58.4-61.7] | 1.31-1.34 GB | 323-339 | 44.7-47.6 M | 0.98-1.00 GB | 11.3, 8.5, 8.2 |
+| 4 threads, final | 64.7 s [61.4-76.7] | 1.32-1.35 GB | 322-336 | 45.1-47.0 M | 0.99-1.01 GB | 20.3, 25.1, 19.4 |
+
+| Generated projects | Wall | Peak memory | Collections | Traced edges | Peak managed | 1-min loads |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 200k, 1 thread, before | 16.7 s [15.5-17.0] | 1.15-1.19 GB | 83 | | 0.17 GB | 24.4, 23.5, 22.1 |
+| 200k, 1 thread, final | 17.0 s [16.2-29.2] | 1.19-1.20 GB | 62 | 2.7 M | 0.19 GB | 14.1, 15.0, 19.7 |
+| 200k, 4 threads, before | 10.1 s [9.9-10.3] | 1.21-1.24 GB | 111-123 | | 0.24-0.25 GB | 21.7, 20.9, 20.2 |
+| 200k, 4 threads, final | 10.4 s [10.2-10.5] | 1.29-1.33 GB | 49-54 | 4.6-4.8 M | 0.33-0.35 GB | 19.3, 19.4, 19.7 |
+| 800k, 1 thread, before | 78.8 s [71.3-79.3] | 3.69-4.56 GB | 130 | | 0.64 GB | 19.0, 20.0, 16.3 |
+| 800k, 1 thread, final | (97.6 s [78.5-126.7]) | 3.93-4.50 GB | 102 | 11.3 M | 0.67 GB | 20.4, 17.4, 28.4 |
+| 800k, 4 threads, before | 87.8 s [86.7-93.1] | 4.85-5.02 GB | 203-222 | | 0.94-0.96 GB | 13.2, 13.6, 13.4 |
+| 800k, 4 threads, final | (107.6 s [98.5-113.1]) | 4.86-5.21 GB | 86-103 | 22.5-30.2 M | 1.22-1.40 GB | 33.0, 26.8, 24.4 |
+
+The paced and freed rows of the generated projects match final's
+collections and peak memory within the ranges above. Garbage collection's
+share of the main thread (`/usr/bin/sample`, 1 ms, one sampled Penpot run
+at 1 thread each, `bb benchmarks/sample-inclusive.bb --buckets
+"gc=Heap>::mark_and_sweep;interp=execute_budgeted"`): before 15.2% (load
+23), paced 11.1% (load 33), freed 7.8% (load 14), final 7.2% (load 20),
+and the landed state, rebased onto `ea27ba2d`, 11.1% (load 19; 607
+collections, 37.2 M traced edges, the same as paced). Counting weak-table
+values marked through their keys as traced edges too (review round 2)
+gives 37.4 M traced edges on one more run, still 607 collections and 1.18 GB
+peak memory (68.8 s, load 14). In the before
+profile, dropping the garbage was 3.1% of the main thread. What remains
+of the 11.1% is that freeing, marking (tracing vectors, code constants,
+functions and forms) and the sweep's scan of every slot.
+
+On `bbp_evaluator::tests::namespace_macro_chains_fit_the_default_heap_with_linear_live_bytes`
+(400 macro calls, explicit collection before measuring), live bytes are
+14.96 MB before, 16.14 MB with pacing alone and 15.55 MB with the segment
+charge released (19 collections before, 16 after); the bound is 24 MiB.
+Lib tests pin the new behaviour: the next automatic collection waits as
+many allocations as the last traced edges, weak-table values included; a
+sweep that empties segments returns their charge until a reservation
+reuses them, but not while a mutator still holds a reservation of its
+slots; and a reservation that cannot charge an emptied segment takes a
+charged segment's free or never-issued slot without a denial
+(`crates/big-boy-pants-js/src/heap/storage.rs`, `gc.rs`). Stats now print
+`macro.gc.traced-edges`, the total edges all collections traced.
+
 ## What each collection traces, and pacing by its work (light-cljs-664, October 30, 2026, on `0c78606c`)
 
 **Summary.** A temporary per-collection log (not committed) on Penpot

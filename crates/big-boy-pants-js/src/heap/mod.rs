@@ -466,6 +466,10 @@ pub struct HeapStats {
     pub collections: u64,
     /// Objects reachable after the last collection.
     pub last_live_objects: usize,
+    /// Edges traced by all collections so far
+    /// ([`CollectStats::traced`](crate::CollectStats::traced)): the total
+    /// marking work, which does not depend on timing on one thread.
+    pub traced_edges: u64,
     /// Total time with all mutators stopped (excludes rendezvous and observers).
     pub pause_total: std::time::Duration,
     /// Longest stop-the-world pause.
@@ -497,7 +501,8 @@ pub struct HeapPolicy {
     /// Minimum allocations between automatic collections. `None` disables
     /// automatic collection, including collection driven by
     /// [`hard_limit_bytes`](Self::hard_limit_bytes) pressure. The actual
-    /// threshold grows with the live set.
+    /// threshold grows with the live set and the edges the last collection
+    /// traced.
     pub allocation_threshold: Option<usize>,
     /// Aggregate allocated-object admission limit, including unreachable
     /// objects until swept. This is an object count, not a byte or RSS cap.
@@ -530,8 +535,19 @@ impl Default for HeapPolicy {
 }
 
 impl HeapPolicy {
-    fn threshold(self, live: usize) -> usize {
-        let growth = self.allocation_threshold.unwrap_or(usize::MAX).max(live);
+    /// Allocations until the next automatic collection, after one that kept
+    /// `live` objects and traced `traced` edges. A collection's cost is its
+    /// traced edges (each live object is reached at least once, and an
+    /// object with many fields many times), so waiting as many allocations
+    /// as it traced keeps collection work proportional to allocation; waiting
+    /// only as many as there are live objects collected about twice as often
+    /// on compiler workloads (light-cljs-664/674).
+    fn threshold(self, live: usize, traced: usize) -> usize {
+        let growth = self
+            .allocation_threshold
+            .unwrap_or(usize::MAX)
+            .max(live)
+            .max(traced);
         growth
             .min(
                 self.hard_limit_objects
@@ -741,7 +757,7 @@ impl Heap {
             keys: PropertyKeys::with_budget(budget.clone()),
             byte_budget: budget,
             policy,
-            next_collection: AtomicUsize::new(policy.threshold(0)),
+            next_collection: AtomicUsize::new(policy.threshold(0, 0)),
             ..Self::default()
         }
     }
@@ -808,7 +824,7 @@ impl Heap {
     pub(crate) fn automatic_collection_due(&self) -> bool {
         let threshold = self.next_collection.load(Ordering::Relaxed);
         let threshold = if threshold == 0 {
-            self.policy.threshold(0)
+            self.policy.threshold(0, 0)
         } else {
             threshold
         };
@@ -966,11 +982,12 @@ impl Heap {
 
     pub(crate) fn stats(&self) -> HeapStats {
         // One lock at a time (separate statements), so the lock order holds.
-        let (collections, last_live_objects, pause_total, pause_max) = {
+        let (collections, last_live_objects, traced_edges, pause_total, pause_max) = {
             let gc = lock(&self.gc);
             (
                 gc.collections,
                 gc.last_live_objects,
+                gc.traced_edges,
                 gc.pause_total,
                 gc.pause_max,
             )
@@ -983,6 +1000,7 @@ impl Heap {
             persistent_roots,
             collections,
             last_live_objects,
+            traced_edges,
             pause_total,
             pause_max,
             managed_bytes: bytes.used(),

@@ -189,9 +189,11 @@ table reader or body borrow can survive into sweep. A lock-free frozen read
 comes from an unparked registered mutator (which delays the rendezvous), from a
 thread that keeps the object reachable from a root, or from a thread holding
 the table lock. None of them can see an unreachable body being swept. The
-collector traces mutable bodies under their words. It skips the conditional
+collector traces mutable bodies under their words, running the conditional
+discovery pass in the same visit of the slot. It skips the conditional
 pass for frozen bodies, which have no weak storage. It clears dead bodies, increments generations (retiring exhausted
-ones), and returns the reclaimed slots to the free list in one pause. Empty
+ones), and returns the reclaimed slots to the free list in one pause, highest
+index first, so the free list hands out the lowest free slots first. Empty
 reserved slots remain exclusively reserved across collections; they are not
 objects or roots. Reclaimed bodies are dropped after all heap locks are
 released. Crate-internal setup/tests without a mutator token use a single-slot
@@ -225,8 +227,10 @@ Strings own no GC object edges. Atom cells use a separate immutable-box lifetime
 boundary described below. Short metadata/object locks exist; there is no global
 interpreter lock and no lock held across ordinary bytecode execution or a wait.
 The default `HeapPolicy` requests automatic collection after 16,384 allocations.
-After each collection the threshold is the larger of that floor and the last
-live-object count. Allocation only records pressure: the next VM boundary returns
+After each collection the threshold is the largest of that floor, the last
+live-object count and the edges the last collection traced (its marking work,
+about twice the live objects on compiler workloads), so collection work stays
+proportional to allocation (light-cljs-674). Allocation only records pressure: the next VM boundary returns
 to the task's collection driver with every identity rooted. The driver releases
 its mutator token, retaining execution ownership and its remaining instruction
 budget, and uses the same stop-the-world rendezvous as explicit collection.
@@ -264,7 +268,10 @@ data-sized payload is not):
 
 - every object slot plus its boxed body and fixed boxed internal slots (Intl
   records, iterator cursors, error records; `HeapObject::boxed_bytes`), and the
-  object table's segment growth;
+  object table's segments while they hold a live object or a thread's slot
+  reservation (a sweep that empties a segment releases its charge, and a
+  reservation charges it again before taking its slots: the segment's slot
+  headers stay allocated, but empty slot capacity is not live data);
 - ordinary-object properties (512 bytes per entry, covering capacity, index and
   shape metadata), array dense capacity and sparse/attribute entries, Map/Set
   and weak tables, private elements, atom versions and the property-key table;

@@ -240,7 +240,9 @@ impl Drop for SlotGuard<'_> {
 struct Segment {
     slots: Box<[Slot]>,
     live: AtomicUsize,
-    _reservation: super::budget::ByteReservation,
+    /// Slot reservations ([`Reservation`]) naming this segment that threads
+    /// still hold: they may initialize its slots without the table lock.
+    held: AtomicUsize,
 }
 
 impl Default for Segment {
@@ -250,9 +252,17 @@ impl Default for Segment {
             // build copies would exhaust the VM's supported 64 KiB stacks.
             slots: (0..SEGMENT_SIZE).map(|_| Slot::default()).collect(),
             live: AtomicUsize::new(0),
-            _reservation: Default::default(),
+            held: AtomicUsize::new(0),
         }
     }
+}
+
+/// The byte charge of one segment: its stable slots, its share of the
+/// free-list and segment `Vec`s, and conservatively three directory pages.
+fn segment_bytes() -> usize {
+    size_of::<Segment>()
+        + SEGMENT_SIZE * (size_of::<Slot>() + 2 * size_of::<u32>() + 2 * size_of::<Arc<Segment>>())
+        + 3 * 256 * size_of::<OnceLock<Box<Page>>>()
 }
 
 // Three lazy radix levels cover all 24 segment-index bits (32 slot-index bits).
@@ -461,11 +471,60 @@ impl Directory {
 #[derive(Debug, Default)]
 pub(super) struct ObjectTable {
     segments: Vec<Arc<Segment>>,
+    /// Each segment's byte charge ([`segment_bytes`]). `None` once a sweep
+    /// leaves the segment with no live object and no thread holds a
+    /// reservation of its slots: its slots stay allocated (segments never
+    /// move or disappear), but empty slot capacity is not retained live
+    /// data, and charging it made every collection that ran later (more
+    /// garbage between collections, so a higher slot high-water mark)
+    /// raise the live bytes for good (light-cljs-674). The segment is
+    /// charged again before a reservation takes its slots, which is the
+    /// only way to initialize them.
+    charges: Vec<Option<super::budget::ByteReservation>>,
     free: Vec<u32>,
     high_water: usize,
 }
 
 impl ObjectTable {
+    /// Charge segment `index` before its slots are reserved, if a sweep
+    /// released its charge. False if the budget has no room for it; no
+    /// denial is recorded, since another segment may still serve.
+    fn charge(&mut self, index: usize, budget: &Arc<super::budget::ByteBudget>) -> bool {
+        if self.charges[index].is_some() {
+            return true;
+        }
+        let bytes = segment_bytes();
+        let fits = budget.limit().is_none_or(|limit| {
+            budget
+                .used()
+                .checked_add(bytes)
+                .is_some_and(|total| total <= limit)
+        });
+        let Some(reservation) = fits.then(|| budget.reserve(bytes)).flatten() else {
+            return false;
+        };
+        self.charges[index] = Some(reservation);
+        true
+    }
+
+    /// [`ObjectTable::charge`], recording the denial (pressure for the next
+    /// collection and the thread's denial flag) if the budget refuses.
+    fn charge_or_deny(&mut self, index: usize, budget: &Arc<super::budget::ByteBudget>) -> bool {
+        if self.charge(index, budget) {
+            return true;
+        }
+        match budget.reserve(segment_bytes()) {
+            Some(reservation) => {
+                self.charges[index] = Some(reservation);
+                true
+            }
+            None => {
+                budget.note_denial();
+                false
+            }
+        }
+    }
+
     fn reserve(
         &mut self,
         directory: &Directory,
@@ -474,9 +533,44 @@ impl ObjectTable {
     ) -> Option<Reservation> {
         let mut indices = [0; BATCH_SIZE];
         let mut len = 0;
-        let segment_index;
-        if let Some(&last) = self.free.last() {
-            segment_index = last as usize / SEGMENT_SIZE;
+        let mut segment_index = 0;
+        let from_free = match self.free.last() {
+            None => false,
+            Some(&last) => {
+                segment_index = last as usize / SEGMENT_SIZE;
+                if self.charge(segment_index, budget) {
+                    true
+                } else {
+                    // No room to charge the emptied segment again: serve
+                    // from free slots of segments still charged (moved to
+                    // the top of the free list in their order), then from
+                    // never-issued slots of a charged segment, before
+                    // reporting a denial.
+                    let (charged, uncharged): (Vec<u32>, Vec<u32>) = self
+                        .free
+                        .iter()
+                        .partition(|&&index| self.charges[index as usize / SEGMENT_SIZE].is_some());
+                    if let Some(&top) = charged.last() {
+                        self.free = uncharged;
+                        self.free.extend(charged);
+                        segment_index = top as usize / SEGMENT_SIZE;
+                        true
+                    } else if !self.high_water.is_multiple_of(SEGMENT_SIZE)
+                        && self
+                            .charges
+                            .get(self.high_water / SEGMENT_SIZE)
+                            .is_some_and(Option::is_some)
+                    {
+                        false
+                    } else if self.charge_or_deny(segment_index, budget) {
+                        true
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        };
+        if from_free {
             while len < count
                 && self
                     .free
@@ -492,24 +586,16 @@ impl ObjectTable {
             let first = u32::try_from(self.high_water).ok()? as usize;
             segment_index = first / SEGMENT_SIZE;
             if segment_index == self.segments.len() {
-                // Covers the stable slots, free-list/segment Vec capacity,
-                // and conservatively three new directory pages per segment.
-                let bytes = size_of::<Segment>()
-                    + SEGMENT_SIZE
-                        * (size_of::<Slot>()
-                            + 2 * size_of::<u32>()
-                            + 2 * size_of::<Arc<Segment>>())
-                    + 3 * 256 * size_of::<OnceLock<Box<Page>>>();
-                let Some(reservation) = budget.reserve(bytes) else {
+                let Some(reservation) = budget.reserve(segment_bytes()) else {
                     budget.note_denial();
                     return None;
                 };
-                let segment = Arc::new(Segment {
-                    _reservation: reservation,
-                    ..Segment::default()
-                });
+                let segment = Arc::new(Segment::default());
                 directory.install(segment_index, segment.clone());
                 self.segments.push(segment);
+                self.charges.push(Some(reservation));
+            } else if !self.charge_or_deny(segment_index, budget) {
+                return None;
             }
             len = count.min(SEGMENT_SIZE - first % SEGMENT_SIZE);
             for (offset, index) in indices[..len].iter_mut().rev().enumerate() {
@@ -517,8 +603,10 @@ impl ObjectTable {
             }
             self.high_water += len;
         }
+        let segment = self.segments[segment_index].clone();
+        segment.held.fetch_add(1, Ordering::Relaxed);
         Some(Reservation {
-            segment: self.segments[segment_index].clone(),
+            segment,
             base: (segment_index * SEGMENT_SIZE) as u32,
             indices,
             len,
@@ -542,23 +630,47 @@ impl ObjectTable {
         slot.current(id).map(|_| slot)
     }
 
-    /// Mark a live object and trace its strong edges (stopped world).
-    pub(super) fn mark(&self, id: ObjectId, children: &mut dyn FnMut(gc::TraceEdge)) -> bool {
+    /// Mark a live object, trace its strong edges and run the collector's
+    /// conditional pass over it, in one visit of its slot (stopped world).
+    /// Frozen kinds have no conditional storage (rule 2), so they skip it.
+    /// A marked atom's retired boxes move to `atoms`: no atom operation is
+    /// in progress while the world is stopped (`crate::atom`, reclamation).
+    pub(super) fn mark(
+        &self,
+        id: ObjectId,
+        children: &mut dyn FnMut(gc::TraceEdge),
+        conditional: &mut dyn gc::ConditionalVisitor,
+        atoms: &mut Vec<Value>,
+    ) -> bool {
         let Some(slot) = self.slot(id) else {
             return false;
         };
-        if slot.marked.swap(true, Ordering::Relaxed) {
+        // One thread marks, with the world stopped: a load and a store, not
+        // a read-modify-write per reached edge.
+        if slot.marked.load(Ordering::Relaxed) {
             return false;
         }
+        slot.marked.store(true, Ordering::Relaxed);
         let state = slot.state.load(Ordering::Acquire);
         if state & FROZEN != 0 {
             // SAFETY: live (checked above under the table lock, which
             // excludes sweep) and frozen (rule 2).
+            let body = unsafe { slot.body() };
+            body.trace(children);
+            if let HeapObject::Atom(cell) = body {
+                atoms.extend(cell.take_retired());
+            }
+            return true;
+        }
+        let _word = slot.lock();
+        if slot.state.load(Ordering::Acquire) & FROZEN != 0 {
+            // SAFETY: as above; frozen before the word was taken.
             unsafe { slot.body() }.trace(children);
         } else {
-            let _word = slot.lock();
-            // SAFETY: live and holding the access word (rule 3).
-            unsafe { slot.body() }.trace(children);
+            // SAFETY: live, not frozen, holding the access word (rule 3).
+            let body = unsafe { slot.body_mut() };
+            body.trace(children);
+            body.trace_conditional(conditional);
         }
         true
     }
@@ -584,32 +696,30 @@ impl ObjectTable {
         }
     }
 
-    pub(super) fn take_atom_retirements(&self) -> Vec<Value> {
-        let mut out = Vec::new();
-        self.for_each(|object, _| {
-            if let HeapObject::Atom(cell) = object {
-                out.extend(cell.take_retired());
-            }
-        });
-        out
-    }
-
     /// Free every unmarked live slot and return the bodies, still boxed: a
     /// body is not moved out of its box (a `HeapObject` is 304 bytes on
     /// aarch64, and one collection's garbage can be thousands of them, which
     /// moved into one growing `Vec` cost a fresh multi-MiB allocation and
     /// copy per pause), so the pause copies one pointer per object and the
     /// caller frees each box with its contents after the pause.
+    ///
+    /// Segments and slots are swept from the highest index down, so the
+    /// free list hands out the lowest reclaimed slots first: survivors and
+    /// new objects gather in the low segments, and high segments, which
+    /// fill only between collections, are left empty by the next sweep
+    /// more often. A sweep that leaves a segment empty releases its charge
+    /// ([`ObjectTable::charges`]).
     #[expect(clippy::vec_box, reason = "the boxes are the slots' own; see above")]
     pub(super) fn sweep(
         &mut self,
         mut reclaimed_object: impl FnMut(ObjectId),
     ) -> Vec<Box<HeapObject>> {
         let mut garbage = Vec::new();
-        for (segment_index, segment) in self.segments.iter().enumerate() {
+        for (segment_index, segment) in self.segments.iter().enumerate().rev() {
             let mut reclaimed = 0;
-            for (offset, slot) in segment.slots.iter().enumerate() {
-                if slot.marked.swap(false, Ordering::Relaxed) {
+            for (offset, slot) in segment.slots.iter().enumerate().rev() {
+                if slot.marked.load(Ordering::Relaxed) {
+                    slot.marked.store(false, Ordering::Relaxed);
                     continue;
                 }
                 let state = slot.state.load(Ordering::Acquire);
@@ -642,7 +752,13 @@ impl ObjectTable {
                     generation,
                 });
             }
-            segment.live.fetch_sub(reclaimed, Ordering::Relaxed);
+            let live = segment.live.fetch_sub(reclaimed, Ordering::Relaxed) - reclaimed;
+            // No thread can reserve its slots without the table lock, and
+            // none holds a reservation of them: nothing can make the
+            // segment live until `reserve` charges it again.
+            if live == 0 && segment.held.load(Ordering::Relaxed) == 0 {
+                self.charges[segment_index] = None;
+            }
         }
         garbage
     }
@@ -702,6 +818,12 @@ struct Reservation {
     base: u32,
     indices: [u16; BATCH_SIZE],
     len: usize,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        self.segment.held.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl Reservation {
@@ -1069,6 +1191,156 @@ mod tests {
         ALLOCATORS.with_borrow(|locals| assert!(locals.is_empty()));
     }
 
+    /// When the budget cannot charge the emptied segment at the top of the
+    /// free list again, a reservation takes free slots of a segment that is
+    /// still charged instead of reporting a denial (light-cljs-674 review).
+    #[test]
+    fn allocation_reuses_charged_segment_when_empty_segment_recharge_cannot_fit() {
+        let heap = Arc::new(Heap::with_policy(super::super::HeapPolicy {
+            hard_limit_bytes: Some(64 << 20),
+            allocation_threshold: None,
+            ..Default::default()
+        }));
+        let budget = heap.byte_budget();
+        let objects: Vec<ObjectId> = (0..2 * SEGMENT_SIZE).map(|_| owned(&heap, OWNER)).collect();
+        // A survivor keeps segment 1 charged; segment 0 is emptied.
+        let survivor = objects[SEGMENT_SIZE + 1];
+        assert_eq!(survivor.index as usize / SEGMENT_SIZE, 1);
+        let _survivor = Rooted::new(&heap, Value::Object(survivor));
+        assert_eq!(heap.collect().unwrap().reclaimed, 2 * SEGMENT_SIZE - 1);
+        // Room for an object, not for charging segment 0 again.
+        budget.set_limit(budget.used() + segment_bytes() / 4);
+        let id = heap
+            .alloc(HeapObject::Plain(OrdinaryObject::new(&heap, Some(OWNER))))
+            .expect("a charged segment had free slots");
+        assert_eq!(id.index as usize / SEGMENT_SIZE, 1);
+        assert!(!budget.take_denial(), "a successful fallback left a denial");
+        assert!(heap.is_live(survivor));
+    }
+
+    /// The same, when the charged segment's room is slots never issued
+    /// rather than free ones (light-cljs-674 review).
+    #[test]
+    fn allocation_uses_unissued_charged_slots_when_empty_segment_recharge_cannot_fit() {
+        let heap = Arc::new(Heap::with_policy(super::super::HeapPolicy {
+            hard_limit_bytes: Some(64 << 20),
+            allocation_threshold: None,
+            ..Default::default()
+        }));
+        let budget = heap.byte_budget();
+        let objects: Vec<ObjectId> = (0..SEGMENT_SIZE + 64)
+            .map(|_| owned(&heap, OWNER))
+            .collect();
+        let _survivors: Vec<Rooted> = objects[SEGMENT_SIZE..]
+            .iter()
+            .map(|&id| Rooted::new(&heap, Value::Object(id)))
+            .collect();
+        assert_eq!(heap.collect().unwrap().reclaimed, SEGMENT_SIZE);
+        budget.set_limit(budget.used() + segment_bytes() / 4);
+        let id = heap
+            .alloc(HeapObject::Plain(OrdinaryObject::new(&heap, Some(OWNER))))
+            .expect("a charged segment had never-issued slots");
+        assert_eq!(id.index as usize, SEGMENT_SIZE + 64);
+        assert!(!budget.take_denial(), "a successful fallback left a denial");
+    }
+
+    /// An emptied segment stays charged while a mutator still holds a
+    /// reservation of its slots, which it initializes without the table
+    /// lock; the charge is released by the first sweep after the mutator
+    /// returns them (light-cljs-674 review).
+    #[test]
+    fn empty_segment_with_a_held_reservation_stays_charged_across_collection() {
+        let heap = Arc::new(Heap::with_policy(super::super::HeapPolicy {
+            hard_limit_bytes: Some(64 << 20),
+            allocation_threshold: None,
+            ..Default::default()
+        }));
+        let budget = heap.byte_budget();
+        let start = budget.used();
+        let token = heap.enter_mutator(gc::Access::Scope);
+        let first = owned(&heap, OWNER);
+        assert_eq!(heap.collect().unwrap().reclaimed, 1);
+        assert!(!heap.is_live(first));
+        assert_eq!(
+            budget.used(),
+            start + segment_bytes(),
+            "the held segment stays charged"
+        );
+        // The reservation's next slot, initialized without the table lock.
+        let second = owned(&heap, OWNER);
+        assert_eq!(
+            second.index / SEGMENT_SIZE as u32,
+            first.index / SEGMENT_SIZE as u32
+        );
+        assert_ne!(second.index, first.index);
+        assert!(budget.used() > start + segment_bytes());
+        drop(token);
+        assert_eq!(heap.collect().unwrap().reclaimed, 1);
+        assert_eq!(budget.used(), start);
+    }
+
+    /// A sweep that empties a slot segment releases its charge, and a
+    /// reservation charges it again before reusing its slots: the slot
+    /// capacity garbage left behind is not counted as live bytes, while a
+    /// segment holding one survivor stays charged (light-cljs-674).
+    #[test]
+    fn emptied_slot_segments_release_their_charge_until_reused() {
+        let heap = Arc::new(Heap::with_policy(super::super::HeapPolicy {
+            hard_limit_bytes: Some(64 << 20),
+            allocation_threshold: None,
+            ..Default::default()
+        }));
+        let budget = heap.byte_budget();
+        let first = owned(&heap, OWNER);
+        let _survivor = Rooted::new(&heap, Value::Object(first));
+        heap.collect().unwrap();
+        let before = budget.used();
+        // Fill ten more segments with garbage.
+        let garbage: Vec<ObjectId> = (0..10 * SEGMENT_SIZE)
+            .map(|_| owned(&heap, OWNER))
+            .collect();
+        assert!(budget.used() >= before + 10 * segment_bytes());
+        assert_eq!(heap.collect().unwrap().reclaimed, garbage.len());
+        assert_eq!(budget.used(), before, "emptied segments stay charged");
+        // Reuse charges the lowest emptied segment again, before its slot.
+        let reused = owned(&heap, OWNER);
+        assert_eq!(reused.index as usize / SEGMENT_SIZE, 0);
+        let more: Vec<ObjectId> = (0..SEGMENT_SIZE).map(|_| owned(&heap, OWNER)).collect();
+        assert_eq!(more.last().unwrap().index as usize / SEGMENT_SIZE, 1);
+        assert!(budget.used() >= before + segment_bytes());
+        assert_eq!(heap.collect().unwrap().reclaimed, SEGMENT_SIZE + 1);
+        assert_eq!(budget.used(), before);
+        assert!(heap.is_live(first));
+    }
+
+    /// A collection's work is its traced edges: 20,000 live vectors of the
+    /// same ten leaves trace about ten times as many edges as there are
+    /// live objects, and the next automatic collection waits as many
+    /// allocations as were traced, not just as many as are live
+    /// (light-cljs-674).
+    #[test]
+    fn the_next_automatic_collection_waits_as_many_allocations_as_were_traced() {
+        let heap = Arc::new(Heap::default());
+        let leaves: Vec<Value> = (0..10)
+            .map(|_| Value::Object(owned(&heap, OWNER)))
+            .collect();
+        let vectors: Vec<Value> = (0..20_000)
+            .map(|_| Value::Object(vector(&heap, &leaves)))
+            .collect();
+        let root = vector(&heap, &vectors);
+        let _root = Rooted::new(&heap, Value::Object(root));
+        let stats = heap.collect().unwrap();
+        assert_eq!(stats.live, 20_011);
+        // The root, its 20,000 elements and ten leaves in each vector.
+        assert!(stats.traced >= 1 + 20_000 + 200_000, "{stats:?}");
+        assert_eq!(
+            heap.next_collection.load(Ordering::Relaxed),
+            stats.traced,
+            "{stats:?}"
+        );
+        assert_eq!(heap.stats().traced_edges, stats.traced as u64);
+    }
+
     use crate::ids::TaskId;
     use crate::object::OrdinaryObject;
     use crate::vm::dispatch::Fault;
@@ -1233,9 +1505,10 @@ mod tests {
 
         let frozen = vector(&heap, &[]);
         assert_eq!(heap.collect().unwrap().reclaimed, 2);
-        // Free-list order hands the frozen vector's slot out first.
-        let reused = owned(&heap, OWNER);
+        // Free-list order hands the lowest reclaimed slot (the owned
+        // object's) out first, then the frozen vector's.
         let other = owned(&heap, OWNER);
+        let reused = owned(&heap, OWNER);
         assert_eq!(reused.index, frozen.index);
         assert_eq!(other.index, object.index);
         for stale in [frozen, object] {

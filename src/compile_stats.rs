@@ -142,6 +142,8 @@ pub struct NativeBridgeCounters {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NativeHeapStats {
     pub collections: u64,
+    /// Edges every collection so far traced: the total marking work.
+    pub traced_edges: u64,
     pub live_objects: usize,
     pub managed_bytes: usize,
     pub peak_managed_bytes: usize,
@@ -704,6 +706,7 @@ impl CompileStats {
             let helpers = &self.native_helpers;
             if let Some(heap) = helpers.heap {
                 line("macro.gc.collections", &heap.collections);
+                line("macro.gc.traced-edges", &heap.traced_edges);
                 line("macro.gc.live-objects", &heap.live_objects);
                 line("macro.gc.managed-bytes", &heap.managed_bytes);
                 line("macro.gc.peak-managed-bytes", &heap.peak_managed_bytes);

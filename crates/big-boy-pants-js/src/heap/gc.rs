@@ -37,6 +37,9 @@
 //! Conditional marking/clearing costs expected O(live objects + strong
 //! edges + entries/weak slots in reached owners), with O(live objects +
 //! reached entries) temporary storage; the existing sweep scans all slots.
+//! The mark visits each reached object's slot once: under one access word
+//! it traces the strong edges and runs the discovery pass (and takes a
+//! marked atom's retired boxes).
 //!
 //! Before sweep, reached owners lose entries with unmarked keys and their
 //! weak slots with unmarked targets are emptied. Cleared notifying slots
@@ -694,6 +697,8 @@ pub(crate) struct GcState {
     /// Completed collections.
     pub(crate) collections: u64,
     pub(crate) last_live_objects: usize,
+    /// Edges traced by every collection so far ([`CollectStats::traced`]).
+    pub(crate) traced_edges: u64,
     pub(crate) pause_total: std::time::Duration,
     pub(crate) pause_max: std::time::Duration,
 }
@@ -861,6 +866,11 @@ pub struct CollectStats {
     pub live: usize,
     /// Objects reclaimed.
     pub reclaimed: usize,
+    /// Edges the mark followed: the roots, every strong edge of a marked
+    /// object and every ephemeron value marked because its key was,
+    /// already marked targets included. It is the
+    /// collection's work, which paces the next one ([`super::HeapPolicy`]).
+    pub traced: usize,
 }
 
 /// Why a collection did not run.
@@ -1367,40 +1377,52 @@ impl Heap {
         // awakened once, exactly when its key first becomes marked.
         let mut pending: HashMap<TraceEdge, Vec<Value>, IdentityBuild> = HashMap::default();
         let mut conditional_owners = Vec::new();
+        let mut discovery = DiscoverConditional::default();
+        // No atom operation is in progress (the world is stopped), so every
+        // retired atom box is unreachable: release them after the pause
+        // rather than at the atom's next write (`crate::atom`, reclamation).
+        let mut retired = Vec::new();
+        // Every edge through the grey stack is traced work: roots, strong
+        // edges, and table values marked at once or when their key is.
+        let mut traced = 0;
         while let Some(edge) = grey.pop() {
-            let object = match edge {
+            traced += 1;
+            match edge {
                 TraceEdge::Object(id) => {
-                    if !objects.mark(id, &mut |child| grey.push(child)) {
+                    // One slot visit marks, traces and discovers the
+                    // object's conditional storage.
+                    if !objects.mark(
+                        id,
+                        &mut |child| grey.push(child),
+                        &mut discovery,
+                        &mut retired,
+                    ) {
                         continue;
                     }
                     live += 1;
-                    Some(id)
+                    if std::mem::take(&mut discovery.has_storage) {
+                        conditional_owners.push(id);
+                    }
+                    if !discovery.entries.is_empty() {
+                        for (key, value) in discovery.entries.drain(..) {
+                            if marks.contains(&objects, key) {
+                                value.trace(&mut |child| grey.push(child));
+                            } else {
+                                pending.entry(key).or_default().push(value);
+                            }
+                        }
+                    }
                 }
                 TraceEdge::Symbol(_) | TraceEdge::PropertyKey(_) => {
                     if !marks.mark_other(edge) {
                         continue;
                     }
-                    None
                 }
-            };
+            }
             if !pending.is_empty()
                 && let Some(values) = pending.remove(&edge)
             {
                 values.trace(&mut |child| grey.push(child));
-            }
-            if let Some(id) = object {
-                let mut discovery = DiscoverConditional::default();
-                objects.trace_conditional(id, &mut discovery);
-                if discovery.has_storage {
-                    conditional_owners.push(id);
-                }
-                for (key, value) in discovery.entries {
-                    if marks.contains(&objects, key) {
-                        value.trace(&mut |child| grey.push(child));
-                    } else {
-                        pending.entry(key).or_default().push(value);
-                    }
-                }
             }
         }
         drop(code_marking);
@@ -1435,14 +1457,11 @@ impl Heap {
             watches.publish();
             garbage
         };
-        // No atom operation is in progress (the world is stopped), so every
-        // retired atom box is unreachable: release them now rather than at
-        // the atom's next write (`crate::atom`, reclamation).
-        let retired = objects.take_atom_retirements();
         let stats = CollectStats {
             roots: root_count,
             live,
             reclaimed: garbage.len(),
+            traced,
         };
         world.gc.collections += 1;
         let me = world.me;
@@ -1482,9 +1501,10 @@ impl Heap {
             .store(0, Ordering::Relaxed);
         self.allocated_objects.store(live, Ordering::Relaxed);
         self.next_collection
-            .store(self.policy.threshold(live), Ordering::Relaxed);
+            .store(self.policy.threshold(live, traced), Ordering::Relaxed);
         let byte_volume = self.byte_budget.collection_started();
         world.gc.last_live_objects = live;
+        world.gc.traced_edges += traced as u64;
         let pause = started.elapsed();
         world.gc.pause_total += pause;
         world.gc.pause_max = world.gc.pause_max.max(pause);
@@ -1879,6 +1899,54 @@ mod tests {
         let replacement = plain(&heap);
         assert_ne!(replacement, target);
         assert_eq!(conditional_read(&heap, owner, |p| p.weak[0].get()), None);
+    }
+
+    /// A table value marked because its key is (or later becomes) marked
+    /// is an edge the collection traced, and paces the next collection
+    /// like any other (light-cljs-674 review). Half the keys are roots,
+    /// reached before or after the tables; the other half are reached only
+    /// through a native object, so some entries wait for their keys.
+    #[test]
+    fn traced_edges_include_immediate_and_pending_ephemeron_values() {
+        const KEYS: usize = 200;
+        const TABLES: usize = 100;
+        let heap = Arc::new(Heap::default());
+        let leaf = plain(&heap);
+        let keys: Vec<_> = (0..KEYS).map(|_| plain(&heap)).collect();
+        let tables: Vec<_> = (0..TABLES)
+            .map(|_| {
+                let mut table = EphemeronTable::default();
+                for &key in &keys {
+                    table.insert(key, Value::Object(leaf));
+                }
+                conditional(
+                    &heap,
+                    ConditionalEdges {
+                        table,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let holder = native(
+            &heap,
+            keys[KEYS / 2..].iter().map(|&k| Value::Object(k)).collect(),
+        );
+        let mut roots: Vec<_> = keys[..KEYS / 4]
+            .iter()
+            .chain(&tables)
+            .chain(&keys[KEYS / 4..KEYS / 2])
+            .map(|&id| Rooted::new(&heap, Value::Object(id)))
+            .collect();
+        roots.push(Rooted::new(&heap, Value::Object(holder)));
+        let stats = heap.collect().unwrap();
+        assert_eq!(stats.reclaimed, 0);
+        assert!(stats.traced >= KEYS * TABLES, "{stats:?}");
+        assert_eq!(
+            heap.next_collection.load(Ordering::Relaxed),
+            stats.traced,
+            "{stats:?}"
+        );
     }
 
     #[test]
