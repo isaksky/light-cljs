@@ -442,11 +442,24 @@
     mapKinds.set(value, kind);
     return value;
   }
-  //@unit makeMap requires: sharedMapForm, sharedOwnedMap, sortedComparators
+  //@unit sharedOccurrenceNaN requires: sharedScalar
+  // Scalar occurrences normally keep their stored identity. NaN alone is
+  // unequal even to itself at the canonical runtime's scalar boundary, while
+  // engine key equality accepts the identical occurrence. Keep hashed entries
+  // on runtime-owned collections so rebuilding cannot merge distinct slots.
+  const sharedOccurrenceNaN = entry => typeof entry.key === "object" && Number.isNaN(sharedScalar(entry.key));
+  //@unit makeMap requires: hashTrie, kindHooks, sharedMapForm, sharedOccurrenceNaN,
+  //@ sharedOwnedMap, sortedComparators
   // A map of the `array-map` or `hash-map` kind is an engine map
-  // (`sharedMapForm`); a sorted map keeps the V8 profile's object.
+  // (`sharedMapForm`); a sorted map or a NaN occurrence key keeps the V8
+  // profile's object and canonical key comparison.
   function makeMap(Type, entries, kind, comparator) {
-    if (kind !== "sorted-map") return sharedMapForm(entries, kind);
+    if (kind !== "sorted-map") {
+      const ordered = Array.isArray(entries) ? entries : kindHooks.hashTraversal(entries);
+      if (kind === "hash-map" && ordered.some(sharedOccurrenceNaN))
+        return sharedOwnedMap(Type, hashTrie(ordered), kind);
+      return sharedMapForm(ordered, kind);
+    }
     const value = sharedOwnedMap(Type, entries, kind);
     sortedComparators.set(value, comparator);
     return value;
@@ -468,7 +481,7 @@
   }
   //@unit sharedUpdates requires: assoc, preserveMeta, sharedFormKind, sharedFormOf, sharedScalar
   // Native key operations are safe for primitive and canonical named keys.
-  // Composite and host-backed keys retain the canonical runtime path: a
+  // NaN, composite and host-backed keys retain the canonical runtime path: a
   // runtime list, Date or user IHash/IEquiv can be equal to a form key while
   // the engine's hostless hash/equality would instead use object identity.
   // Keep the protocol checks and fallback algorithms in their original units;
@@ -476,25 +489,31 @@
   const sharedUpdates = {
     key(value) {
       const scalar = sharedScalar(value), kind = sharedFormKind(value);
-      return scalar == null || typeof scalar !== "object" && typeof scalar !== "function" || kind === "keyword" || kind === "symbol";
+      return !Number.isNaN(scalar) && (scalar == null || typeof scalar !== "object" && typeof scalar !== "function" || kind === "keyword" || kind === "symbol");
     },
     accepts(value, keys, kind) { return sharedFormKind(value) === kind && !__rt.formHasHostKeys(sharedFormOf(value)) && keys.every(sharedUpdates.key); },
     assoc(value, key, item, pairs) {
-      let result = preserveMeta(value, __rt.formAssoc(sharedFormOf(value), key, item));
+      const form = sharedFormOf(value), updated = __rt.formAssoc(form, key, item);
+      let result = updated === form ? value : preserveMeta(value, updated);
       for (let i = 0; i < pairs.length; i += 2)
         result = assoc(result, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
       return result;
     },
     dissoc(value, keys) {
-      let result = sharedFormOf(value);
+      const form = sharedFormOf(value);
+      let result = form;
       for (const key of keys) result = __rt.formDissoc(result, key);
-      return preserveMeta(value, result);
+      return result === form ? value : preserveMeta(value, result);
     },
-    conj(value, item) { return preserveMeta(value, __rt.formConj(sharedFormOf(value), item)); },
+    conj(value, item) {
+      const form = sharedFormOf(value), result = __rt.formConj(form, item);
+      return result === form ? value : preserveMeta(value, result);
+    },
     disj(value, keys) {
-      let result = sharedFormOf(value);
+      const form = sharedFormOf(value);
+      let result = form;
       for (const key of keys) result = __rt.formDisj(result, key);
-      return preserveMeta(value, result);
+      return result === form ? value : preserveMeta(value, result);
     },
     lookup(value, key, notFound) { return __rt.formGet(sharedFormOf(value), key, notFound); }
   };
@@ -507,14 +526,18 @@
     setKinds.set(value, kind);
     return value;
   }
-  //@unit makeSet requires: kindHooks, sharedOwnedSet, sortedComparators
+  //@unit makeSet requires: hashTrie, kindHooks, sharedOccurrenceNaN, sharedOwnedSet,
+  //@ sortedComparators
   // A set of the `array-map` kind is a positional engine set
   // (`formLiteralSet`, in the members' order) and one of the `hash-map`
   // kind an engine hash set (`formSet`); a sorted set keeps the V8
-  // profile's object (light-cljs-666).
+  // profile's object (light-cljs-666). NaN occurrence members likewise keep
+  // the runtime representation so canonical insertion retains every slot.
   function makeSet(Type, entries, kind, comparator) {
     if (kind !== "sorted-set") {
       const ordered = Array.isArray(entries) ? entries : kindHooks.hashTraversal(entries);
+      if (kind === "hash-map" && ordered.some(sharedOccurrenceNaN))
+        return sharedOwnedSet(Type, hashTrie(ordered), kind);
       if (kind === "array-map") {
         let members = __rt.formVector();
         for (let i = 0; i < ordered.length; i++) members = __rt.formConj(members, ordered[i].key);
@@ -772,6 +795,7 @@
   // which the operation's engine result keeps (light-cljs-699). A
   // runtime-owned result keeps the V8 profile's store path (light-cljs-693).
   function preserveMeta(original, result) {
+    if (original === result) return original;
     const metadata = meta(original);
     if (__rt.formKind(result) !== null) {
       if (metadata == null) return __rt.formMeta(result) == null ? result : __rt.formWithMeta(result, null);

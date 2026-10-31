@@ -1300,6 +1300,121 @@ fn shared_profile_persistent_updates_preserve_value_semantics() {
     assert_eq!(out.string().unwrap().to_string_lossy(), "ok");
 }
 
+#[test]
+fn shared_profile_nan_occurrence_keys_use_canonical_equality() {
+    let rt = Runtime::new();
+    let check = compile_function(&format!(
+        "function check(key) {{ const rt = (\n{SHARED_RUNTIME}\n); {} }}",
+        r#"
+        const core = rt.core;
+        const check = (ok, label) => { if (!ok) throw new Error(label); };
+        check(!core.equal(key, key), 'NaN canonical equality');
+        for (const map of [__rt.formMap(key, 1), __rt.formLiteralMap(__rt.formVector(key, 1))]) {
+          check(core.get(map, key, 'missing') === 'missing', 'NaN map lookup');
+          check(!core.contains(map, key), 'NaN map contains');
+          const added = core.assoc(map, key, 2);
+          check(core.count(added) === 2, 'NaN assoc inserts');
+          check(typeof key !== 'object' || core.nth(core.first(core.seq(added)), 0) === key, 'NaN stored key identity');
+          check(core.get(added, key, 'missing') === 'missing', 'NaN assoc lookup');
+          check(core.count(core.dissoc(map, key)) === 1, 'NaN dissoc retains');
+          check(core.count(core.assoc(added, key, 3)) === 3 && core.count(core.dissoc(added, key)) === 2, 'NaN repeated map updates');
+          const ordinary = core.assoc(map, 'ordinary', 9);
+          check(core.count(ordinary) === 2 && core.get(ordinary, key, 'missing') === 'missing', 'ordinary update retains NaN semantics');
+          check(core.count(map) === 1, 'NaN map persistence');
+        }
+        for (const set of [__rt.formSet(key), __rt.formLiteralSet(__rt.formVector(key))]) {
+          check(core.get(set, key, 'missing') === 'missing' && !core.contains(set, key), 'NaN set lookup');
+          const added = core.conj(set, key);
+          check(core.count(added) === 2, 'NaN conj inserts');
+          check(typeof key !== 'object' || core.first(core.seq(added)) === key, 'NaN stored member identity');
+          check(core.count(core.disj(set, key)) === 1, 'NaN disj retains');
+          check(core.count(core.conj(added, key)) === 3 && core.disj(added, key) === added, 'NaN repeated set updates');
+          check(core.count(set) === 1, 'NaN set persistence');
+        }
+        check(core.count(core.hashMap(key, 1, key, 2)) === 2 && core.count(core.hashSet(key, key)) === 2, 'NaN builders retain slots');
+        return 'ok';
+        "#
+    ))
+    .unwrap();
+    for depth in 0..=2 {
+        let key = rt.scope(|s| {
+            let mut key = s.primitive(Primitive::Number(f64::NAN));
+            for _ in 0..depth {
+                key = s.new_occurrence(key, Default::default()).unwrap();
+            }
+            s.persist(key)
+        });
+        match rt.spawn(&check, &[&key]).unwrap().run() {
+            Ok(RunOutcome::Complete(value)) => {
+                assert_eq!(value.string().unwrap().to_string_lossy(), "ok");
+            }
+            other => panic!("NaN occurrence depth {depth}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn shared_profile_update_noops_preserve_occurrence_identity() {
+    let rt = Runtime::new();
+    let values = run(
+        &rt,
+        "const key = 'keep', metadata = __rt.formMap('m', true); \
+         return __rt.formVector(__rt.formWithMeta(__rt.formSet(key), metadata), \
+           __rt.formWithMeta(__rt.formMap(key, 1), metadata));",
+    )
+    .unwrap();
+    let check = compile_function(&format!(
+        "function check(set, map, key) {{ const rt = (\n{SHARED_RUNTIME}\n); {} }}",
+        r#"
+        const core = rt.core;
+        const check = (ok, label) => { if (!ok) throw new Error(label); };
+        check(core.conj(set, 'keep') === set, 'conj existing preserves occurrence');
+        check(core.disj(set, 'absent') === set, 'disj absent preserves occurrence');
+        check(core.conj(set, 'keep', 'keep') === set, 'variadic conj no-op');
+        check(core.disj(set, 'absent', 'other') === set, 'variadic disj no-op');
+        check(core.assoc(map, 'keep', 1) === map, 'assoc identical preserves occurrence');
+        check(core.dissoc(map, 'absent') === map, 'dissoc absent preserves occurrence');
+        check(core.assoc(map, 'keep', 1, 'keep', 1) === map, 'variadic assoc no-op');
+        check(core.dissoc(map, 'absent', 'other') === map, 'variadic dissoc no-op');
+        check(core.count(core.conj(set, 'added')) === 2 && core.count(set) === 1, 'changed conj');
+        check(core.count(core.disj(set, 'keep')) === 0 && core.count(set) === 1, 'changed disj');
+        check(core.meta(core.conj(set, 'added')) === core.meta(set), 'changed set metadata');
+        check(core.meta(core.assoc(map, 'added', 2)) === core.meta(map), 'changed map metadata');
+        const keyed = core.hashMap(key, 'stored'), member = core.hashSet(key);
+        check(__rt.formKind(keyed) === 'map' && __rt.formKind(member) === 'set', 'ordinary scalar key stays native');
+        check(core.get(keyed, 7) === 'stored' && core.get(member, 7) === key, 'ordinary scalar key equality');
+        check(core.nth(core.first(core.seq(keyed)), 0) === key && core.first(core.seq(member)) === key, 'ordinary scalar key identity');
+        return 'ok';
+        "#
+    ))
+    .unwrap();
+    for depth in 1..=2 {
+        let wrapped = rt.scope(|s| {
+            [0, 1, 2].map(|index| {
+                let mut value = if index == 2 {
+                    s.primitive(Primitive::Number(7.0))
+                } else {
+                    s.form_nth(s.local(&values).unwrap(), index).unwrap()
+                };
+                for _ in 0..depth {
+                    value = s.new_occurrence(value, Default::default()).unwrap();
+                }
+                s.persist(value)
+            })
+        });
+        match rt
+            .spawn(&check, &[&wrapped[0], &wrapped[1], &wrapped[2]])
+            .unwrap()
+            .run()
+        {
+            Ok(RunOutcome::Complete(value)) => {
+                assert_eq!(value.string().unwrap().to_string_lossy(), "ok");
+            }
+            other => panic!("collection occurrence depth {depth}: {other:?}"),
+        }
+    }
+}
+
 /// Pause the same owning task around each measured operation. Boot, input
 /// construction and assertions are outside the paired allocation samples.
 fn shared_profile_measured_allocations(body: &str) -> Vec<usize> {
