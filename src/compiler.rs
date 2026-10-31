@@ -2663,7 +2663,7 @@ fn analyze_entry(
     let timed = stats.is_some();
     let begun = compile_stats::start(timed);
     // The exclusive-stage trace of `--stats` ([`crate::compile_trace`]).
-    let mut recording = timed.then(crate::compile_trace::record);
+    let recording = timed.then(crate::compile_trace::record);
     if !valid_namespace(entry) {
         return Err(NamespaceCompileError::new(
             "invalid entry namespace: use dot-separated ASCII names; js is reserved",
@@ -3268,43 +3268,23 @@ fn analyze_entry(
         session.finish_pool();
     }
     macros.evaluator_options.memory_limit = memory_limit;
-    // A failed build still reports where its time went up to the failure
-    // (`--stats`, `--stats-file`); its analysis phase includes the deferred
-    // units it ran.
-    if looped.is_err()
-        && let (Some(stats), Some(analysis_started)) = (stats.as_deref_mut(), analysis_started)
-    {
-        stats.phases.resolve_parse += resolve_parse + lazy_parse;
-        stats.phases.deferred_units += analysis.deferred_time.unwrap_or_default();
-        stats.phases.analysis += analysis_started
-            .elapsed()
-            .saturating_sub(analysis.deferred_time.unwrap_or_default() + lazy_parse + cache_time);
-        stats.macro_calls = macros.executed_expansions();
-        stats.native_macro_calls = macros.native_macro_calls();
-        stats.trace = recording
-            .take()
-            .and_then(crate::compile_trace::Recording::finish);
-        if let Some(session) = macros.session_handle() {
-            #[cfg(feature = "bbp-macros")]
-            {
-                stats.native_helpers = session.shared().native_counts();
-            }
-            stats.lanes = session.shared().lanes().counts();
-            stats.deferred_units = session.unit_counts();
-        }
-        compile_stats::add(&mut stats.wall, begun);
-    }
-    looped?;
     let deferred_time = analysis.deferred_time;
-    let traced = crate::compile_trace::enter(crate::compile_trace::Stage::Finish, 0, None);
-    let program = analysis
-        .finish(entry_index, macros)
-        .map_err(|(index, error)| {
-            let file = &loader.ordered[index];
-            NamespaceCompileError::new(error.to_string()).at(&file.path, &file.source, error.span)
-        })?;
-    drop(traced);
+    let program = looped.and_then(|()| {
+        let _traced = crate::compile_trace::enter(crate::compile_trace::Stage::Finish, 0, None);
+        analysis
+            .finish(entry_index, macros)
+            .map_err(|(index, error)| {
+                let file = &loader.ordered[index];
+                NamespaceCompileError::new(error.to_string()).at(
+                    &file.path,
+                    &file.source,
+                    error.span,
+                )
+            })
+    });
     drop(build);
+    // Success and failure snapshot the same counters and exclude the same
+    // separately measured work from analysis, before returning either result.
     if let (Some(stats), Some(analysis_started), Some(deferred)) =
         (stats, analysis_started, deferred_time)
     {
@@ -3339,6 +3319,7 @@ fn analyze_entry(
         stats.parse_pool = loader.parse_pool;
         compile_stats::add(&mut stats.wall, begun);
     }
+    let program = program?;
     // With the cache, installed namespaces observed nothing: the records it
     // keyed every namespace with, stored ones for those, are the manifest.
     let mut manifest = manifest;

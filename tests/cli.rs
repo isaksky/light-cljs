@@ -1364,9 +1364,94 @@ fn stats_report_a_failed_build_up_to_its_failure() {
     };
     assert!(value("macro-calls") >= 1.0, "{stderr}");
     assert!(value("time.analysis-ms") > 0.0, "{stderr}");
+    for key in [
+        "macro-nodes.peak",
+        "memory.parsed-trees.peak-files",
+        "memory.parsed-trees.peak-bytes",
+        "memory.queued-ir.peak-units",
+        "memory.queued-ir.peak-bytes",
+    ] {
+        assert!(value(key) > 0.0, "{key}: {stderr}");
+    }
     let trace = std::fs::read_to_string(&file).unwrap();
     assert!(trace.starts_with("light-cljs-trace\t"), "{trace}");
     assert!(trace.contains("\tapp.dep\t"), "{trace}");
+}
+
+#[test]
+fn stats_failed_build_reports_cache_work() {
+    let sources = TempDir::new("cli-stats-cache-failure");
+    std::fs::create_dir(sources.join("app")).unwrap();
+    let write =
+        |name: &str, text: &str| std::fs::write(sources.join("app").join(name), text).unwrap();
+    write("cached.cljs", "(ns app.cached) (def answer 41)");
+    write("fresh.cljs", "(ns app.fresh) (def answer 42)");
+    write(
+        "main.cljs",
+        "(ns app.main (:require [app.cached :as c])) (def answer c/answer)",
+    );
+    let cache = sources.join("cache");
+    let args = [
+        "--compile",
+        "--source-root",
+        sources.path().to_str().unwrap(),
+        "--cache-dir",
+        cache.to_str().unwrap(),
+        "--macro-memory-limit",
+        ONE_WORKER_ENGINE,
+    ];
+    let warm = light_cljs(&[&args[..], &["--entry", "app.main"]].concat());
+    assert!(
+        warm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warm.stderr)
+    );
+    write(
+        "main.cljs",
+        "(ns app.main (:require [app.cached :as c] [app.fresh :as f])) (def bad missing)",
+    );
+    let output = light_cljs(
+        &[
+            &args[..],
+            &["--entry", "app.main", "--stats", "--jobs", "2"],
+        ]
+        .concat(),
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!output.status.success(), "{stderr}");
+    assert!(output.stdout.is_empty());
+    let failure = stderr.find("\nlight-cljs: ").expect(&stderr);
+    assert!(
+        stderr[failure..].contains("unresolved symbol: missing"),
+        "{stderr}"
+    );
+    let report = stderr[..failure]
+        .split_once("[cache-misses-and-bypasses]\n")
+        .expect(&stderr)
+        .0;
+    let (counters, _) = parse_stats(report);
+    let value = |key: &str| {
+        counters
+            .iter()
+            .find(|(name, _)| name == key)
+            .unwrap_or_else(|| panic!("{key} in {stderr}"))
+            .1
+    };
+    assert_eq!(value("cache.install.namespaces"), 1.0, "{stderr}");
+    assert!(value("cache.capture.namespaces") >= 1.0, "{stderr}");
+    for key in [
+        "cache.capture.bytes",
+        "parse-pool.jobs",
+        "parse-pool.peak-admitted",
+    ] {
+        assert!(value(key) > 0.0, "{key}: {stderr}");
+    }
+    for key in ["cache.capture-ms", "cache.install-ms"] {
+        assert!(
+            (0.0..=value("time.wall-ms")).contains(&value(key)),
+            "{key}: {stderr}"
+        );
+    }
 }
 
 #[test]
