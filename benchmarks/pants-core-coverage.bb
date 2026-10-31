@@ -55,15 +55,18 @@
     (cond (vector? (first body)) [(first body)]
           :else (keep #(when (and (seq? %) (vector? (first %))) (first %)) body))))
 
-(defn inventory []
-  (let [core (top-level (read-forms (str cljs-root "/src/main/cljs/cljs/core.cljs") #{:cljs}))
-        macro-forms (mapcat #(top-level (read-forms (str cljs-root "/src/main/clojure/cljs/core.cljc") %))
+(defn inventory
+  "Every public var, type, protocol and macro the pinned sources under
+  `root` define."
+  [root]
+  (let [core (top-level (read-forms (str root "/src/main/cljs/cljs/core.cljs") #{:cljs}))
+        macro-forms (mapcat #(top-level (read-forms (str root "/src/main/clojure/cljs/core.cljc") %))
                             [#{:clj} #{:cljs}])
         values (for [f core :when (seq? f)
                      :let [[head n & body] f]
                      :when (and (symbol? n) (public? n))
                      item (case head
-                            (def defonce) [{:name (str n) :kind :value :arglists (when (and (seq? (last body)) (= 'fn (first (last body)))) (arglists (rest (last body))))}]
+                            (def defonce goog-define) [{:name (str n) :kind :value :arglists (when (and (seq? (last body)) (= 'fn (first (last body)))) (arglists (rest (last body))))}]
                             defn [{:name (str n) :kind :value :arglists (arglists body)}]
                             defprotocol (cons {:name (str n) :kind :protocol}
                                               (for [s body :when (seq? s)]
@@ -77,8 +80,10 @@
         macros (for [f macro-forms
                      :when (and (seq? f) (symbol? (second f)) (public? (second f))
                                 (or (#{'core/defmacro 'defmacro} (first f))
-                                    ;; defn and defmacro are functions made macros by setMacro.
-                                    (and (= 'core/defn (first f)) (#{'defn 'defmacro} (second f)))))]
+                                    ;; defmacro is a function made a macro by setMacro;
+                                    ;; defn a def with :macro metadata.
+                                    (and (= 'core/defn (first f)) (= 'defmacro (second f)))
+                                    (and (#{'def 'core/def} (first f)) (:macro (meta (second f))))))]
                  {:name (str (second f)) :kind :macro})]
     (->> (concat values macros)
          (reduce (fn [m item] (if (contains? m [(:name item) (:kind item)]) m (assoc m [(:name item) (:kind item)] item))) (array-map))
@@ -223,9 +228,9 @@
    "add-to-string-hash-cache" "(add-to-string-hash-cache \"a\")" "keyword-identical?" "(keyword-identical? :a :a)"
    "symbol-identical?" "(symbol-identical? 'a 'a)" "string-print" "(with-out-str (string-print \"x\"))"
    "print-map" "(fn? print-map)" "print-prefix-map" "(fn? print-prefix-map)" "print-meta?" "(print-meta? {} [1])"
-   "pr-writer" "(fn? pr-writer)" "pr-seq-writer" "(fn? pr-seq-writer)" "pr-sb-with-opts" "(str (pr-sb-with-opts [1] (pr-opts)))"
-   "pr-str-with-opts" "(pr-str-with-opts [1] (pr-opts))" "prn-str-with-opts" "(prn-str-with-opts [1] (pr-opts))"
-   "pr-with-opts" "(with-out-str (pr-with-opts [1] (pr-opts)))" "write-all" "(fn? write-all)" "print-meta?*" "true"
+   "pr-writer" "(fn? pr-writer)" "pr-seq-writer" "(fn? pr-seq-writer)" "pr-sb-with-opts" "(str (pr-sb-with-opts [1] {:flush-on-newline true :readably true :meta false :dup false}))"
+   "pr-str-with-opts" "(pr-str-with-opts [1] {:flush-on-newline true :readably true :meta false :dup false})" "prn-str-with-opts" "(prn-str-with-opts [1] {:flush-on-newline true :readably true :meta false :dup false})"
+   "pr-with-opts" "(with-out-str (pr-with-opts [1] {:flush-on-newline true :readably true :meta false :dup false}))" "write-all" "(fn? write-all)" "print-meta?*" "true"
    "regexp?" "(regexp? #\"a\")" "js-mod" "(js-mod 5 3)" "mod" "(mod -5 3)" "rem" "(rem -5 3)" "quot" "(quot 7 2)"
    "max" "(max 1 2)" "min" "(min 1 2)" "abs" "(abs -1)" "parse-long" "(parse-long \"12\")" "parse-double" "(parse-double \"1.5\")"
    "parse-boolean" "(parse-boolean \"true\")" "NaN?" "(NaN? js/NaN)" "infinite?" "(infinite? js/Infinity)"
@@ -262,7 +267,7 @@
    "Inst" "true" "str_" "true" "truth_" "(truth_ 1)" "js-reserved?" "(js-reserved? \"new\")" "munge" "(munge \"a-b\")"
    "demunge" "(demunge \"a_b\")" "munge-str" "(munge-str \"a-b\")" "ffirst" "(ffirst [[1 2]])" "nfirst" "(nfirst [[1 2]])"
    "ExceptionInfo" "(ex-message (ExceptionInfo. \"m\" {:a 1} nil))" "pr-opts" "(pr-opts)"
-   "pr-sequential-writer" "(let [b (array)] (pr-sequential-writer (StringBufferWriter. (js-obj \"append\" (fn [s] (.push b s)))) pr-writer \"<\" \" \" \">\" (pr-opts) [1 2]) (vec b))"})
+   "pr-sequential-writer" "(let [b (array)] (pr-sequential-writer (StringBufferWriter. (js-obj \"append\" (fn [s] (.push b s)))) pr-writer \"<\" \" \" \">\" {:flush-on-newline true :readably true :meta false :dup false} [1 2]) (vec b))"})
 
 (def type-samples
   {"PersistentVector" "[1]" "PersistentArrayMap" "{:a 1}" "PersistentHashMap" "(zipmap (range 9) (range 9))"
@@ -396,18 +401,109 @@
                                                 params))
                      ")"))))
 
-(defn probe-of [{:keys [name kind factory arglists] :as item}]
-  (case kind
-    :value (cond (contains? value-probes name) (value-probes name)
-                 factory (str "(fn? cljs.core/" name ")")
-                 (seq arglists) (call-probe item)
-                 :else (str "cljs.core/" name))
-    :method (or (method-probes name) (call-probe item))
-    :type (if-let [s (type-samples name)]
-            (str "(instance? cljs.core/" name " " s ")")
-            (str "(fn? cljs.core/" name ")"))
-    :protocol (str "(satisfies? cljs.core/" name " " (get protocol-samples name "[1]") ")")
-    :macro (macro-probes name)))
+;; Probes that call what used to be checked only for presence (fn?), and
+;; probes that need a top-level form first ({:top forms :expr expr}). A
+;; value-probes entry that only asks fn? or answers true is ignored: the
+;; item is then called with arguments from its parameter names.
+(defn writer-probe [body]
+  (str "(let [b (array) w (StringBufferWriter. (js-obj \"append\" (fn [s] (.push b s))))] " body " (apply str b))"))
+
+(def invoked-probes
+  {"enable-console-print!" "(let [o *print-fn* e *print-err-fn*] (try (enable-console-print!) [(fn? *print-fn*) (fn? *print-err-fn*)] (finally (set! *print-fn* o) (set! *print-err-fn* e))))"
+   "set-print-fn!" "(let [o *print-fn* b (array)] (try (set-print-fn! (fn [s] (.push b s))) (print \"x\") (vec b) (finally (set! *print-fn* o))))"
+   "set-print-err-fn!" "(let [o *print-err-fn* b (array)] (try (set-print-err-fn! (fn [s] (.push b s))) (*print-err-fn* \"x\") (vec b) (finally (set! *print-err-fn* o))))"
+   "*print-fn*" "(let [b (array)] (binding [*print-fn* (fn [s] (.push b s))] (print \"x\")) (vec b))"
+   "*print-err-fn*" "(let [b (array)] (binding [*print-err-fn* (fn [s] (.push b s))] (*print-err-fn* \"x\")) (vec b))"
+   "re-matcher" "(let [m (re-matcher #\"b\" \"abcb\")] [(re-find m) (re-find m)])"
+   "load-file" "(load-file \"probe-missing.cljs\")"
+   "dispatch-fn" "(do (defmulti probe-df1 identity) ((dispatch-fn probe-df1) 5))"
+   "default-dispatch-val" "(do (defmulti probe-df2 identity) (default-dispatch-val probe-df2))"
+   "resolve" "(= inc @(resolve 'cljs.core/inc))" "find-macros-ns" "(some? (find-macros-ns 'cljs.core))"
+   "ns-name" "(ns-name (find-ns 'cljs.core))" "ns-interns*" "(contains? (ns-interns* 'cljs.core) 'inc)"
+   "es6-iterator" "(.-value (.next (es6-iterator [1 2])))"
+   "transformer-iterator" "(.next (transformer-iterator (map inc) (iter [1 2]) false))"
+   "chunked-seq" "(vec (chunked-seq [1 2] 0 0))"
+   "print-map" (writer-probe "(print-map {:a 1} pr-writer w {:flush-on-newline true :readably true :meta false :dup false})")
+   "print-prefix-map" (writer-probe "(print-prefix-map \"p\" {:a 1} pr-writer w {:flush-on-newline true :readably true :meta false :dup false})")
+   "pr-writer" (writer-probe "(pr-writer [1 \"a\"] w {:flush-on-newline true :readably true :meta false :dup false})")
+   "pr-seq-writer" (writer-probe "(pr-seq-writer [1 2] w {:flush-on-newline true :readably true :meta false :dup false})")
+   "write-all" (writer-probe "(write-all w \"a\" \"b\")")
+   "*eval*" "(*eval* '(+ 1 2))" "eval" "(eval '(+ 1 2))" "*exec-tap-fn*" "(*exec-tap-fn* (fn [] nil))"
+   "add-tap" "(let [f (fn [_])] [(add-tap f) (remove-tap f)])" "remove-tap" "(let [f (fn [_])] (add-tap f) (remove-tap f))"
+   "find-ns" "(ns-name (find-ns 'cljs.core))" "*ns*" "(str *ns*)"})
+
+(def invoked-method-probes
+  {"-comparator" "((-comparator (sorted-map 1 2)) 1 2)" "-js->clj" "(-js->clj (array 1) {:keywordize-keys false})"
+   "-add-watch" "(let [a (atom 1) l (atom nil)] (-add-watch a :w (fn [k r o n] (reset! l n))) (reset! a 2) @l)"
+   "-remove-watch" "(let [a (atom 1) l (atom 0)] (-add-watch a :w (fn [& _] (swap! l inc))) (-remove-watch a :w) (reset! a 2) @l)"
+   "-reset" "(do (defmulti probe-r1 identity) (defmethod probe-r1 1 [_] :one) (-reset probe-r1) (count (methods probe-r1)))"
+   "-add-method" "(do (defmulti probe-r2 identity) (-add-method probe-r2 1 (fn [_] :one)) (probe-r2 1))"
+   "-remove-method" "(do (defmulti probe-r3 identity) (defmethod probe-r3 1 [_] :one) (-remove-method probe-r3 1) (count (methods probe-r3)))"
+   "-prefer-method" "(do (defmulti probe-r4 identity) (-prefer-method probe-r4 :a :b) (prefers probe-r4))"
+   "-get-method" "(do (defmulti probe-r5 identity) (defmethod probe-r5 1 [_] :one) ((-get-method probe-r5 1) 1))"
+   "-methods" "(do (defmulti probe-r6 identity) (defmethod probe-r6 1 [_] :one) (count (-methods probe-r6)))"
+   "-prefers" "(do (defmulti probe-r7 identity) (-prefers probe-r7))"
+   "-default-dispatch-val" "(do (defmulti probe-r8 identity) (-default-dispatch-val probe-r8))"
+   "-dispatch-fn" "(do (defmulti probe-r9 identity) ((-dispatch-fn probe-r9) 3))"})
+
+;; Macros that only work as top-level forms, and compiler-internal macros,
+;; with a context each.
+(def macro-contexts
+  {"goog-define" {:top "(goog-define probe-gd 1)" :expr "probe-gd"}
+   "defmacro" {:top "(defmacro probe-defmacro [] 7)" :expr "(probe-defmacro)"}
+   "await" {:top "(defn ^:async probe-async [] (await 1))" :expr "(some? (probe-async))"}
+   "ns" {:top "(ns probe.ns-form)" :expr "(str *ns*)"}
+   "in-ns" {:top "(in-ns 'cljs.user)" :expr "(str *ns*)"}
+   "require" {:top "(require '[clojure.string :as probe-string])" :expr "(probe-string/upper-case \"a\")"}
+   "require*" {:top "(require* '[clojure.string :as probe-string2])" :expr "(probe-string2/upper-case \"a\")"}
+   "use" {:top "(use '[clojure.string :only [upper-case]])" :expr "(upper-case \"a\")"}
+   "refer" {:top "(refer 'clojure.string :only '[lower-case])" :expr "(lower-case \"A\")"}
+   "alias" {:top "(alias 'probe-alias 'clojure.string)" :expr "(probe-alias/upper-case \"a\")"}
+   "require-macros" {:top "(require-macros '[cljs.core :as probe-cm])" :expr "(probe-cm/when true 1)"}
+   "use-macros" {:top "(use-macros '[cljs.core :only [when-not]])" :expr "(when-not false 1)"}
+   "import" {:top "(import '[goog.string StringBuffer])" :expr "(str (StringBuffer. \"a\"))"}
+   "import-macros" {:top "(import-macros cljs.core [when])" :expr "(when true 1)"}
+   "refer-clojure" {:top "(refer-clojure :exclude '[probe-none])" :expr "(inc 1)"}
+   "refer-global" {:top "(refer-global :only '[Math])" :expr "(Math/abs -1)"}
+   "require-global" {:top "(require-global '[Math :as probe-math])" :expr "(probe-math/abs -1)"}
+   "load-file*" {:top "(load-file* \"probe-missing.cljs\")" :expr "1"}
+   "load-file" {:top "(load-file \"probe-missing.cljs\")" :expr "1"}
+   "ns-interns" "(contains? (ns-interns (quote cljs.core)) 'inc)" "ns-publics" "(contains? (ns-publics (quote cljs.core)) 'inc)"
+   "ns-imports" "(map? (ns-imports (quote cljs.core)))"
+   "ns-unmap" {:top "(def probe-unmapped 1) (ns-unmap 'cljs.user 'probe-unmapped)" :expr "1"}
+   "with-loading-context" "(with-loading-context 1)"
+   "gen-apply-to" "((fn [f args] (gen-apply-to)) + (list 1 2))"
+   "gen-apply-to-simple" "((fn [f argc args] (gen-apply-to-simple f argc args)) + 2 (list 1 2))"
+   "str_" "(str_ \"a\" 1)" "truth_" "(truth_ 1)" "bitpos" "(bitpos 5 0)" "mask" "(mask 5 0)"
+   "caching-hash" {:top "(deftype ProbeCH [^:mutable __hash] IHash (-hash [this] (caching-hash this (fn [_] 7) __hash)))"
+                   :expr "(hash (ProbeCH. nil))"}
+   "defcurried" "(do (defcurried probe-curried \"\" {} [f coll] (map f coll)) ((probe-curried inc) [1]))"
+   "rfn" "(fn? (rfn [f1 k] ([acc x] (f1 acc x))))"
+   "extend-object!" "(let [o (js-obj)] (extend-object! o {:-seq (fn [_] (list 1))}) (some? o))"
+   "unchecked-get*" "(unchecked-get* (js-obj \"a\" 1) \"a\")"})
+
+(defn probe-of
+  "The probe for an item: {:expr expr} or {:top forms :expr expr}."
+  [{:keys [name kind factory fields arglists] :as item}]
+  (let [nils (fn [n] (str/join " " (repeat n "nil")))
+        presence? (fn [p] (or (nil? p) (= p "true") (str/starts-with? p "(fn? ")))
+        probe (case kind
+                :value (cond (invoked-probes name) (invoked-probes name)
+                             (not (presence? (value-probes name))) (value-probes name)
+                             factory (str "(some? (cljs.core/" name " " (nils (count (first arglists))) "))")
+                             (seq arglists) (call-probe item)
+                             :else (str "cljs.core/" name))
+                :method (or (invoked-method-probes name)
+                            (let [p (method-probes name)] (when-not (presence? p) p))
+                            (call-probe item))
+                :type (if-let [s (type-samples name)]
+                        (str "(instance? cljs.core/" name " " s ")")
+                        (str "(some? (new cljs.core/" name " " (nils (count fields)) "))"))
+                :protocol (str "(satisfies? cljs.core/" name " " (get protocol-samples name "[1]") ")")
+                :macro (or (macro-contexts name)
+                           (let [p (macro-probes name)] (when (string? p) p))
+                           (str "(cljs.core/" name ")")))]
+    (if (map? probe) probe {:expr probe})))
 
 ;; A probe macro returns its answer as a string: the printed value, or the
 ;; message of what it threw. Functions print as #fn, sequences at most 8 items.
@@ -416,37 +512,42 @@
        " (catch :default e (str \"ERR \" (if (instance? js/Error e) (.-message e) (pr-str e))))))\n"
        "(js/console.log (js/JSON.stringify (array \"" id "\" (probe-" id "))))\n"))
 
+(defn probe-source
+  "The program for probes [[id {:top forms :expr expr}] ...]. Top-level
+  forms come first; a probe that has them runs alone (see run-all)."
+  [probes]
+  (str (str/join "\n" (keep (comp :top second) probes)) "\n" prelude
+       (str/join (map (fn [[id {:keys [expr]}]] (probe-macro id expr)) probes))))
+
 (defn sh [cmd & {:as opts}]
   (apply p/shell (merge {:out :string :err :string :continue true :dir repo} opts) cmd))
 
 (defn run-batch
-  "Compile probes [[id expr] ...] with `bin`, run the output in Node, and
+  "Compile probes [[id probe] ...] with `bin`, run the output in Node, and
   return {id answer}. A batch that does not compile is split until the
   probe that fails is alone; its answer is then the compiler's diagnostic."
   [bin label probes]
-  (let [src (str prelude (str/join (map (fn [[id expr]] (probe-macro id expr)) probes)))
-        tag (str label "-" (ffirst probes) "-" (count probes))
+  (let [tag (str label "-" (ffirst probes) "-" (count probes))
         js (str work "/" tag ".js")
-        compiled (sh [bin "--compile" "--text" src])]
+        compiled (sh [bin "--compile" "--text" (probe-source probes)])
+        split (fn [] (let [[a b] (split-at (quot (count probes) 2) probes)]
+                       (merge (run-batch bin label a) (run-batch bin label b))))]
     (if (zero? (:exit compiled))
       (do (spit js (:out compiled))
           (let [ran (sh ["node" js])
                 answers (into {} (for [line (str/split-lines (:out ran)) :when (str/starts-with? line "[")]
                                    (vec (json/parse-string line))))]
             (fs/delete-if-exists js)
-            (if (and (zero? (:exit ran)) (= (count answers) (count probes)))
-              answers
-              (if (= 1 (count probes))
-                {(ffirst probes) (str "RUN " (first (str/split-lines (str (:err ran) " "))))}
-                (let [[a b] (split-at (quot (count probes) 2) probes)]
-                  (merge (run-batch bin label a) (run-batch bin label b)))))))
+            (cond (and (zero? (:exit ran)) (= (count answers) (count probes))) answers
+                  (= 1 (count probes)) {(ffirst probes) (str "RUN " (first (str/split-lines (str (:err ran) " "))))}
+                  :else (split))))
       (if (= 1 (count probes))
         {(ffirst probes) (str "COMPILE " (or (first (remove str/blank? (str/split-lines (:err compiled)))) "failed"))}
-        (let [[a b] (split-at (quot (count probes) 2) probes)]
-          (merge (run-batch bin label a) (run-batch bin label b)))))))
+        (split)))))
 
 (defn run-all [bin label probes]
-  (let [batches (partition-all 40 probes)
+  (let [{alone true together false} (group-by (comp some? :top second) probes)
+        batches (concat (partition-all 40 together) (map vector alone))
         pool (java.util.concurrent.Executors/newFixedThreadPool 4)]
     (try
       (->> batches
@@ -459,16 +560,16 @@
 
 (defn short-text [s] (let [s (str/replace (str s) #"\s+" " ")] (if (> (count s) 120) (str (subs s 0 117) "...") s)))
 
-(defn classify
-  "How the Pants build's answer compares with the QuickJS reference's."
-  [pants reference]
-  (let [err? #(re-find #"^(ERR|COMPILE|RUN) " %)]
-    (cond (re-find #"^(COMPILE|RUN) " reference) :reference-fails
-          (= pants reference) (if (err? reference) :agrees-throwing :agrees)
-          (and (err? pants) (err? reference) (not (str/includes? pants "unsupported operation"))
-               (not (str/starts-with? pants "COMPILE")))
-          :both-throw
-          :else :differs)))
+(defn observed?
+  "Whether an answer is a value the probe returned, not a failure."
+  [answer]
+  (and (string? answer) (not (re-find #"^(ERR|COMPILE|RUN) " answer))))
+
+(defn diagnostic [answer]
+  (short-text (-> (str answer)
+                  (str/replace #"^(ERR|RUN) " "")
+                  (str/replace #"^COMPILE light-cljs: \d+:\d+: (macro expansion: )+(generated by let: )?" "")
+                  (str/replace #" \(bytes \d+\.\.\d+\)" ""))))
 
 (defn bootstrap-macros
   "Core macros whose bootstrap definition (src/compiler_core_macros.cljs)
@@ -482,21 +583,33 @@
         native (->> (re-find #"(?s)pub\(crate\) fn native\(.*?\n\}" native-src) (re-seq #"\"([^\"]+)\"") (map second) set)]
     (set (remove native listed))))
 
-(defn status-of [item pants reference bootstrap]
-  (let [c (classify pants reference)
-        reason (case c
-                 (:agrees :agrees-throwing) nil
-                 :both-throw (str "both throw, differently. Pants: " (short-text pants) " Reference: " (short-text reference))
-                 :reference-fails (str "the QuickJS reference fails too: " (short-text (-> reference (str/replace #"^COMPILE light-cljs: \d+:\d+: (macro expansion: )+(generated by let: )?" "") (str/replace #" \(bytes \d+\.\.\d+\)" ""))))
-                 :differs (if (re-find #"^(ERR|COMPILE|RUN) " pants)
-                            (short-text (str/replace pants #"^(ERR|RUN) " ""))
-                            (str "differs from the reference. Pants: " (short-text pants) " Reference: " (short-text reference))))]
-    (cond (#{:agrees :agrees-throwing} c)
-          {:status (if (and (= :macro (:kind item)) (bootstrap (:name item))) "bootstrap" "native")
-           :note (when (= c :agrees-throwing) (str "both throw: " (short-text reference)))}
-          (= c :reference-fails) {:status "n/a" :note reason}
-          (= c :both-throw) {:status "unverified" :note reason}
-          :else {:status "unsupported" :note reason})))
+(defn status-of
+  "The Pants build's support of an item from its probe's answers. Support
+  needs a value the Pants build returned that equals the reference's; a
+  Pants failure is a gap whatever the reference does, and a matching
+  failure is never support."
+  [item pants reference bootstrap]
+  (cond (not (observed? pants))
+        {:status "unsupported"
+         :note (str (diagnostic pants)
+                    (when-not (observed? reference) (str " (the QuickJS reference fails too: " (diagnostic reference) ")")))}
+        (not (observed? reference))
+        {:status "unverified" :note (str "the Pants build answers " (short-text pants)
+                                         "; the QuickJS reference cannot run the probe: " (diagnostic reference))}
+        (= pants reference)
+        {:status (if (and (= :macro (:kind item)) (bootstrap (:name item))) "bootstrap" "native")}
+        :else
+        {:status "unsupported" :note (str "differs from the reference. Pants: " (short-text pants) " Reference: " (short-text reference))}))
+
+(defn cell-agrees?
+  "A matrix cell counts only when both builds answer the same boolean."
+  [{:keys [pants reference]}]
+  (and (#{"true" "false"} reference) (= pants reference)))
+
+(defn regressed
+  "What `previous` records as supported that `now` does not."
+  [previous now]
+  (sort (remove (set now) previous)))
 
 ;; ---------------------------------------------------------------- usage
 
@@ -540,11 +653,21 @@
     (when (or (nil? ns) (#{"cljs.core" "clojure.core" "core"} ns)) n)))
 
 (defn count-tokens
-  "Occurrences of each name anywhere (:all) and right after an opening
-  parenthesis (:call)."
+  "Occurrences of each name anywhere (:all), and as an element of a list
+  (:ref): called, as in `(not-empty x)` or `( not-empty x)`, or passed, as
+  in `(keep not-empty xs)`. Names inside vectors and maps, where bindings
+  and destructuring put local names, count only in :all."
   [text]
-  {:all (frequencies (keep token-names (re-seq #"[^\s,()\[\]{}\"]+" text)))
-   :call (frequencies (keep token-names (re-seq #"(?<=\()[^\s,()\[\]{}\"]+" text)))})
+  (loop [[t & more :as ts] (re-seq #"[()\[\]{}]|[^\s,()\[\]{}\"]+" text) stack () all (transient {}) refs (transient {})]
+    (if (empty? ts)
+      {:all (persistent! all) :ref (persistent! refs)}
+      (case t
+        ("(" "[" "{") (recur more (conj stack t) all refs)
+        (")" "]" "}") (recur more (if (seq stack) (pop stack) stack) all refs)
+        (if-let [n (token-names t)]
+          (recur more stack (assoc! all n (inc (get all n 0)))
+                 (if (= "(" (peek stack)) (assoc! refs n (inc (get refs n 0))) refs))
+          (recur more stack all refs))))))
 
 (defn usage []
   (into {}
@@ -558,12 +681,14 @@
 
 ;; ---------------------------------------------------------------- doc
 
+(def kind-name {:value "function or value" :method "protocol method" :type "type" :protocol "protocol" :macro "macro"})
+
 (defn md-escape [s] (-> (str s) (str/replace "|" "\\|") (str/replace "`" "'")))
 
 (defn render [rows matrix broken-kinds usage-data pants-rev]
   (let [counts (frequencies (map :status rows))
         by-kind (group-by :kind rows)
-        mode (fn [item] (if (#{:type :protocol} (:kind item)) :all :call))
+        mode (fn [item] (if (#{:type :protocol} (:kind item)) :all :ref))
         refs (fn [k item] (get-in usage-data [k :text (mode item) (:name item)] 0))
         mrefs (fn [item] (reduce + (map #(get-in usage-data [% :macro (mode item) (:name item)] 0) [:penpot :vendored :generated])))
         gaps (->> rows (filter #(= "unsupported" (:status %)))
@@ -571,7 +696,6 @@
                                :mrefs (mrefs %)))
                   (sort-by (juxt (comp - :refs) (comp - :mrefs) :name)))
         kinds [:value :method :type :protocol :macro]
-        kind-name {:value "function or value" :method "protocol method" :type "type" :protocol "protocol" :macro "macro"}
         line (fn [cells] (str "| " (str/join " | " cells) " |"))]
     (str/join
      "\n"
@@ -586,16 +710,17 @@
             "reference, and the two printed answers are compared. `native`: the answers agree and the "
             "Pants runtime's own definition answered; `bootstrap`: they agree and the Pants build ran the "
             "core macro's bootstrap definition (src/compiler_core_macros.cljs); `unsupported`: the Pants "
-            "build fails or answers differently (reason given); `unverified`: both throw, with different "
-            "messages, so the probe does not tell; `n/a`: the reference fails too, or the macro is a "
-            "namespace form or compiler-internal and cannot run inside a macro body. Most `n/a` items are "
-            "internal vars light-cljs offers at compile time on no build.")
+            "build fails or answers differently, whatever the reference does (reason given; many are internal "
+            "vars light-cljs offers at compile time on no build, which the reason then says); `unverified`: "
+            "the Pants build answers but the reference cannot run the probe. A failure both builds share is "
+            "never support. Probes call what they test; namespace forms and other top-level macros run as "
+            "top-level forms the probe macro then observes.")
        ""
        (str "The Pants build is to run the real compiled cljs.core instead of extending the hand port in "
             "src/bbp_runtime.js (user decision, 2026-10-30). This table is the conformance check and progress "
             "measure for that change; its gaps are not meant to be ported one at a time. The script builds "
-            "both CLIs with `cargo build` (it replaces target/debug/light-cljs, so do not run it beside another "
-            "build of the same worktree) and takes about three minutes after that.")
+            "both CLIs with `cargo build` (into its own target directory, target/core-coverage/cargo; the first build there is a full one) "
+            "and probes for about three minutes after that.")
        ""
        "Check that nothing regressed (exits 1 if an item or matrix cell recorded below as supported is not;"
        "it builds both CLIs into target/core-coverage first, `--no-build` reuses them):"
@@ -604,28 +729,30 @@
        "bb benchmarks/pants-core-coverage.bb --check"
        "```"
        ""
-       "Without `--check` it also rewrites this section, unless something regressed."
+       "Without `--check` it also rewrites this section, unless something regressed (`--accept-regressions` "
+       "rewrites it anyway, for a probe that changed). The script's own tests: `bb benchmarks/pants-core-coverage-test.bb`."
        ""
        "### Summary"
        ""
-       (line ["Kind" "Items" "native" "bootstrap" "unsupported" "unverified" "n/a"])
-       (line ["---" "---:" "---:" "---:" "---:" "---:" "---:"])]
+       (line ["Kind" "Items" "native" "bootstrap" "unsupported" "unverified"])
+       (line ["---" "---:" "---:" "---:" "---:" "---:"])]
       (for [k kinds :let [rs (by-kind k) f (frequencies (map :status rs))]]
-        (line [(kind-name k) (count rs) (f "native" 0) (f "bootstrap" 0) (f "unsupported" 0) (f "unverified" 0) (f "n/a" 0)]))
-      [(line ["**all**" (count rows) (counts "native" 0) (counts "bootstrap" 0) (counts "unsupported" 0) (counts "unverified" 0) (counts "n/a" 0)])
+        (line [(kind-name k) (count rs) (f "native" 0) (f "bootstrap" 0) (f "unsupported" 0) (f "unverified" 0)]))
+      [(line ["**all**" (count rows) (counts "native" 0) (counts "bootstrap" 0) (counts "unsupported" 0) (counts "unverified" 0)])
        ""
        (str "Matrix cells: " (count matrix) ", agreeing " (count (filter :agree matrix)) ", disagreeing "
             (count (remove :agree matrix)) ".")
        ""
        "### Gaps ranked by use"
        ""
-       (str "References count a function, method or macro where it is called (right after `(`) and a type or "
-            "protocol wherever it is named; names may be unqualified or qualified `cljs.core/`, `clojure.core/` or `core/`, "
+       (str "References count a function, method or macro wherever it is an element of a list: called, as "
+            "`(not-empty x)`, or passed, as `(keep not-empty xs)`; names inside vectors and maps (bindings, "
+            "destructuring) do not count. A type or protocol counts wherever it is named; names may be unqualified or qualified `cljs.core/`, `clojure.core/` or `core/`, "
             "and comments and strings are excluded. They are counted in Penpot (`research/penpot-light`: frontend, common, shims, overrides, "
             "generated; " (get-in usage-data [:penpot :files]) " files), its vendored libraries (`vendor/`, "
             (get-in usage-data [:vendored :files]) " files) and the generated 200k project (`research/cljs-200k`, "
             (get-in usage-data [:generated :files]) " files). \"In macros\" counts only occurrences inside "
-            "`defmacro` forms, the code the Pants build runs. A local function that shares a core name is counted too.")
+            "`defmacro` forms, the code the Pants build runs. A local that shares a core name (Penpot binds `type` often) counts too where a list uses it.")
        ""
        (line ["Rank" "Item" "Kind" "Total" "Penpot" "Vendored" "Generated" "In macros" "Reason"])
        (line ["---:" "---" "---" "---:" "---:" "---:" "---:" "---:" "---"])]
@@ -666,7 +793,7 @@
        ""
        (str "`(satisfies? P x)` for each core protocol and one value of each kind, as the QuickJS reference "
             "answers it: `+` yes, `.` no. `X` marks a cell where the Pants build answers differently, `E` one "
-            "where it throws (the reference's answer follows: `X+`, `E.`), `?` one the reference cannot evaluate. Values: "
+            "where it throws (the reference's answer follows: `X+`, `E.`), `?` one the reference cannot evaluate (`E?` where the Pants build fails too); only `+` and `.` count as agreeing. Values: "
             (str/join ", " (map (fn [[k v]] (str k " `" (md-escape v) "`")) value-kinds)) ".")
        ""
        (line (cons "Protocol" (map first value-kinds)))
@@ -675,7 +802,7 @@
         (let [by (into {} (map (juxt :kind identity) cells))]
           (line (cons (str "`" proto "`")
                       (for [[k] value-kinds :let [c (by k)]]
-                        (str (cond (:agree c) "" (str/starts-with? (:pants c) "ERR") "E" :else "X")
+                        (str (cond (:agree c) "" (not (observed? (:pants c))) "E" (#{"true" "false"} (:reference c)) "X" :else "")
                              (case (:reference c) "true" "+" "false" "." "?")))))))
       ["" (str "Value kinds the Pants build cannot construct (their columns are `E` throughout; the protocols' "
                "status above ignores those cells):") ""]
@@ -719,61 +846,84 @@
 
 ;; ---------------------------------------------------------------- main
 
-(defn build! []
-  (fs/create-dirs work)
-  (doseq [[features out] [["bbp-macros" "pants"] ["quickjs" "quickjs"]]]
-    (println "building" out "...")
-    (let [r (p/shell {:dir repo :continue true :extra-env {"CARGO_BUILD_JOBS" (or (System/getenv "CARGO_BUILD_JOBS") "4")}}
-                     "cargo" "build" "--locked" "--no-default-features" "--features" features)]
-      (when-not (zero? (:exit r)) (println "build failed:" features) (System/exit 2))
-      (fs/copy (str repo "/target/debug/light-cljs") (str work "/" out) {:replace-existing true}))))
+(defn host-target []
+  (let [rustc (p/shell {:out :string :err :string :continue true} "rustc" "-vV")]
+    (or (second (re-find #"(?m)^host: (\S+)$" (:out rustc)))
+        (throw (ex-info "Cannot determine the rustc host target" {:rustc rustc})))))
+
+(defn build-plan
+  "The Cargo command for one CLI and the executable it writes. The host
+  target and target directory are explicit, so neither CARGO_TARGET_DIR,
+  CARGO_BUILD_TARGET nor a .cargo/config.toml can send the build elsewhere
+  while an older executable is copied (as benchmarks/native-macros.bb)."
+  [root target features]
+  (let [target-dir (str (fs/path root "target/core-coverage/cargo"))]
+    {:binary (str (fs/path target-dir target "debug/light-cljs"))
+     :command ["cargo" "build" "--locked" "--no-default-features" "--features" features
+               "--target" target "--target-dir" target-dir]}))
+
+(defn build!
+  "Build the Pants build and the QuickJS reference into `root`'s
+  target/core-coverage and copy each executable Cargo just wrote. `env`
+  replaces the process environment (tests use it)."
+  [root & {:keys [env]}]
+  (let [target (host-target)
+        out (str (fs/path root "target/core-coverage"))]
+    (fs/create-dirs out)
+    (doseq [[features name] [["bbp-macros" "pants"] ["quickjs" "quickjs"]]
+            :let [{:keys [binary command]} (build-plan root target features)]]
+      (println "building" name "...")
+      (fs/delete-if-exists binary)
+      (let [r (apply p/shell (merge {:dir root :continue true}
+                                     (if env
+                                       {:env env}
+                                       {:extra-env {"CARGO_BUILD_JOBS" (or (System/getenv "CARGO_BUILD_JOBS") "4")}}))
+                     command)]
+        (when-not (and (zero? (:exit r)) (fs/exists? binary))
+          (throw (ex-info (str "build failed: " features) {:command command})))
+        (fs/copy binary (str (fs/path out name)) {:replace-existing true})))))
 
 (defn -main []
   (when-not (fs/exists? (str cljs-root "/src/main/cljs/cljs/core.cljs"))
     (println "research/clojurescript is missing (see README: the pinned checkout).") (System/exit 2))
-  (when-not (contains? args "--no-build") (build!))
+  (when-not (contains? args "--no-build") (build! repo))
   (fs/create-dirs work)
-  (let [items (inventory)
+  (let [items (inventory cljs-root)
         bootstrap (bootstrap-macros)
-        probes (vec (keep-indexed (fn [i item] (let [expr (probe-of item)]
-                                                 (when (string? expr) [(str i) expr])))
-                                  items))
+        probes (vec (map-indexed (fn [i item] [(str i) (probe-of item)]) items))
         matrix-probes (vec (for [[pi proto] (map-indexed vector (map :name (filter #(= :protocol (:kind %)) items)))
                                  [ki [kind v]] (map-indexed vector value-kinds)]
-                             [(str "m" pi "_" ki) (str "(satisfies? cljs.core/" proto " " v ")") proto kind]))
-        kind-probes (vec (map-indexed (fn [i [_ v]] [(str "k" i) v]) value-kinds))
-        all-probes (concat probes kind-probes (map (fn [[id expr]] [id expr]) matrix-probes))
+                             {:id (str "m" pi "_" ki) :expr (str "(satisfies? cljs.core/" proto " " v ")")
+                              :protocol proto :kind kind}))
+        kind-probes (vec (map-indexed (fn [i [_ v]] [(str "k" i) {:expr v}]) value-kinds))
+        all-probes (concat probes kind-probes (map (fn [m] [(:id m) {:expr (:expr m)}]) matrix-probes))
         _ (println "probing" (count probes) "items and" (count matrix-probes) "matrix cells on both builds")
         pants (run-all (str work "/pants") "pants" all-probes)
         reference (run-all (str work "/quickjs") "quickjs" all-probes)
-        matrix (vec (for [[id _ proto kind] matrix-probes]
-                      {:protocol proto :kind kind :pants (pants id) :reference (reference id)
-                       :agree (= (pants id) (reference id))}))
+        matrix (vec (for [{:keys [id protocol kind]} matrix-probes
+                          :let [cell {:protocol protocol :kind kind :pants (pants id) :reference (reference id)}]]
+                      (assoc cell :agree (cell-agrees? cell))))
         ;; A kind the Pants build cannot construct fails every cell of its
         ;; column; that is the constructor's gap, not the protocol's.
         broken-kinds (into (sorted-map) (for [[i [k _]] (map-indexed vector value-kinds)
-                                              :let [a (pants (str "k" i)) b (reference (str "k" i))] :when (not= a b)]
-                                          [k (short-text (str/replace a #"^ERR " ""))]))
+                                              :let [a (pants (str "k" i)) b (reference (str "k" i))]
+                                              :when (or (not (observed? a)) (not= a b))]
+                                          [k (diagnostic a)]))
         proto-bad (group-by :protocol (remove #(or (:agree %) (broken-kinds (:kind %))) matrix))
         rows (vec (map-indexed
                    (fn [i item]
-                     (let [expr (probe-of item) id (str i)]
-                       (merge item {:probe (when (string? expr) expr)}
-                              (if (string? expr)
-                                (let [s (status-of item (pants id) (reference id) bootstrap)]
-                                  (if-let [bad (and (= :protocol (:kind item)) (#{"native"} (:status s)) (proto-bad (:name item)))]
-                                    {:status "unsupported" :note (str "matrix disagrees on " (str/join ", " (map :kind bad)))}
-                                    s))
-                                {:status "n/a" :note (if (= expr :namespace) "namespace form; not usable in a macro body"
-                                                         "compiler-internal macro")}))))
+                     (let [probe (probe-of item) id (str i)
+                           s (status-of item (pants id) (reference id) bootstrap)]
+                       (merge item {:probe (str (when (:top probe) (str (:top probe) " ")) (:expr probe))}
+                              (if-let [bad (and (= :protocol (:kind item)) (= "native" (:status s)) (proto-bad (:name item)))]
+                                {:status "unsupported" :note (str "matrix disagrees on " (str/join ", " (map :kind bad)))}
+                                s))))
                    items))
         rev (str/trim (:out (sh ["git" "rev-parse" "--short" "HEAD"])))
         prev (previous-supported)
-        kind-name {:value "function or value" :method "protocol method" :type "type" :protocol "protocol" :macro "macro"}
-        now-items (set (for [r rows :when (#{"native" "bootstrap"} (:status r))] [(:name r) (kind-name (:kind r))]))
-        now-cells (set (for [c matrix :when (:agree c)] [(:protocol c) (:kind c)]))
-        regressed-items (sort (remove now-items (:items prev)))
-        regressed-cells (sort (remove now-cells (:cells prev)))
+        regressed-items (regressed (:items prev) (for [r rows :when (#{"native" "bootstrap"} (:status r))]
+                                                   [(:name r) (kind-name (:kind r))]))
+        regressed-cells (regressed (:cells prev) (for [c matrix :when (:agree c)] [(:protocol c) (:kind c)]))
         counts (frequencies (map :status rows))]
     (spit (str work "/results.edn") (pr-str {:rows rows :matrix matrix}))
     (println "items:" (count rows) counts)
