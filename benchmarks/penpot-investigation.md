@@ -113,6 +113,98 @@ takes it from here: release or stop charging empty slot segments before
 pacing by edges, free collected objects off the collecting thread, and
 fold the per-object conditional pass into the mark.
 
+## Effect-lane waits on app.main (October 30, 2026, at `0c78606c` and `95b5909e`)
+
+**Summary.** light-cljs-665 asked which compile-time state the Pants build's
+lane waits protect on Penpot `app.main`, and whether the earlier units they
+wait for can touch it. None of the waits were atom accesses: 466 of 496
+parked accesses at 4 threads (67.7 s of 68.6 s summed, and the 20 s longest
+wait behind the grammar macro) were a macro's `binding` installing its
+overlay; the other 30 were shared initializers selecting their caller (1 s).
+An experiment build without the binding lane (the "no binding lane" rows
+below) halved the waits at 4 and 8 threads, but the waits moved to atom
+accesses: 209 of 243 are a multimethod's method table read during dispatch
+(the port keeps MultiFn tables in atoms; the caller is rumext's
+`compile-form` from the UI namespaces' macros), the longest still the whole
+grammar macro, so wall time did not change (the build also still stops at
+the end of that macro, light-cljs-643). In hindsight the grammar macro
+touched no atom, table or hierarchy (its 20,559 lane checks were shared
+mutable fields and initializer selections), but a running macro can reach any
+loaded Var by name, so nothing proves it cannot; letting a lane skip it needs
+light-cljs-446's require-closure rule (light-cljs-672).
+
+The binding lane stays. A binding's overlay is task-local, but a published
+lazy sequence or delay is realized by the first task that needs it, under that
+task's bindings, so a later task's binding could decide its value; review found
+this, and `published_once_cells_keep_source_order_bindings`
+(tests/bbp_macros.rs) now guards it. The lane does not cover a later caller
+that forces such a cell with no binding of its own; an engine realization gate
+that lets the earliest caller in source order realize every shared once-cell
+fixes both and would let the binding lane go. It was prototyped, but it changes
+what the light-cljs-601/613 scheduling tests assert, so it is
+light-cljs-676.
+
+Setup. Release builds of `0c78606c` (with the binding lane) and the experiment
+(`0c78606c` without it, branch `light-cljs-665-gate-prototype`, 1247a9f7),
+`--no-default-features --features bbp-macros`, thin LTO, `CARGO_BUILD_JOBS=4`;
+the command of the October 30 profile below (`--jobs N`, every budget,
+`--stats`, source map). Apple M3 Ultra (Virtual), 24 logical CPUs, macOS
+15.7.3, Rust 1.99.1. Peers built and ran test suites throughout: the
+1-minute load average before each run was 5.4-25.4, so ranges are wide.
+The two alternated per thread count, three rounds; medians [range]. Every
+run stops at the grammar macro's `core.MapEntry`, as before.
+
+| Build | Threads | Wall s | User CPU s | Lane waits | Summed wait s | Longest wait s | 1-min loads |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| binding lane | 1 | 75.0 [69.7-87.2] | 72.8 [68.1-77.0] | 0 | 0 | 0 | 5.7, 6.0, 17.8 |
+| no binding lane | 1 | 79.6 [71.4-90.9] | 74.3 [69.8-76.3] | 0 | 0 | 0 | 9.6, 6.4, 20.7 |
+| binding lane | 2 | 76.0 [66.9-85.4] | 77.8 [69.6-80.3] | 175 [171-181] | 32.3 [28.6-41.9] | 17.1 [15.7-26.4] | 8.1, 20.6, 19.0 |
+| no binding lane | 2 | 75.3 [66.2-87.4] | 77.2 [68.9-84.2] | 172 [165-173] | 32.6 [28.1-37.3] | 17.5 [15.2-18.3] | 9.2, 18.9, 23.3 |
+| binding lane | 4 | 76.1 [64.3-83.4] | 95.1 [78.5-95.3] | 489 [487-507] | 69.2 [58.2-75.1] | 18.2 [15.1-19.7] | 8.3, 16.7, 25.4 |
+| no binding lane | 4 | 74.8 [64.9-82.4] | 99.0 [85.1-103.0] | 256 [238-267] | 52.6 [44.7-59.5] | 17.5 [15.3-17.9] | 6.3, 15.3, 22.0 |
+| binding lane | 8 | 78.4 [67.9-83.5] | 119.3 [103.2-120.4] | 639 [619-653] | 123.8 [105.6-136.0] | 16.8 [15.4-17.8] | 6.0, 15.5, 20.7 |
+| no binding lane | 8 | 76.0 [75.8-85.9] | 141.4 [132.7-149.3] | 310 [308-335] | 83.7 [80.5-92.6] | 18.2 [16.5-21.8] | 5.4, 15.7, 16.7 |
+
+The coordinator's blocked share, at `95b5909e` (master when this was
+measured; its lanes and binding lane are `0c78606c`'s), three sampled runs
+per thread count (`/usr/bin/sample`, 1 ms, started 2 s into the run;
+`bb benchmarks/sample-inclusive.bb` buckets on the main thread, a sample
+counted blocked when its innermost frame is a condition-variable, lock,
+semaphore or Mach-message wait). Sampling slows the build, so wall times here
+are not comparable with the table above; peers built and ran suites
+throughout.
+
+| Threads | Blocked, runs 1/2/3 | In `claim_help` (drain waits) | Lane waits | Longest wait s | Wall s (sampled) | 1-min loads |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 3.2, 2.6, 2.7% | 0, 0, 0% | 0, 0, 0 | 0 | 96.8, 92.5, 95.4 | 9.0, 17.3, 15.3 |
+| 2 | 57.3, 55.7, 55.0% | 10.7, 9.7, 9.9% | 172, 170, 175 | 31.2, 21.1, 18.7 | 126.7, 90.9, 84.9 | 28.1, 15.7, 14.7 |
+| 4 | 70.5, 68.3, 67.8% | 19.5, 19.9, 18.0% | 505, 490, 492 | 39.7, 23.1, 22.0 | 138.1, 93.4, 88.5 | 27.4, 15.6, 10.2 |
+| 8 | 67.7, 69.0, 69.0% | 20.9, 20.5, 20.5% | 636, 617, 615 | 18.3, 25.7, 25.0 | 87.4, 102.9, 107.9 | 18.1, 14.3, 12.3 |
+
+At 1 thread the coordinator does all the work and is blocked about 3% of
+the time (the October 30 profile below puts the joins of JavaScript compiled
+on a helper thread at 3.1%). From 2 threads on it is blocked 55-70% of the time: about
+10-20 points waiting for drained units other threads analyze, the rest
+mostly in lane waits for the grammar macro. The experiment without the
+binding lane (one sampled run each, at `0c78606c`) was blocked 56.5% at 2
+threads, 67.0% at 4 and 69.7% at 8: the wait only moved to the multimethod
+table.
+
+What the waits touched (one traced 4-thread run each, a temporary build that
+tagged every lane check by kind and logged the earliest unfinished units;
+not in the tree): with the binding lane, 466 binding installations and 30
+initializer selections, 0 atom accesses; without it, 215 atom accesses (209 of them
+multimethod method tables in dispatch, the rest other untagged atoms) and 28
+initializer selections. 494 of the 496 waits with the lane and 242 of the
+243 without it waited for a unit that runs macros; skipping macro-free units (which can
+never enter an engine) would have saved 0.02 s, so it is not done.
+
+Output. `app.render` (JavaScript and source map) from the experiment build,
+and from the gate prototype of light-cljs-676, at 1, 2, 4 and 8 threads is
+byte-identical to the V8 build's (`72868c0c…`,
+`e249c54d…` with this run's paths); so is the seed-42 200k project
+(`workload.main`, `--optimize none`: `30f2cb4d…`, `6e9112c2…`).
+
 ## Where the Pants build's time goes on app.main (October 30, 2026, at `9907e916`)
 
 **Summary.** light-cljs-635 profiled the Pants build (docs/glossary.md) on
