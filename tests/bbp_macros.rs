@@ -9977,7 +9977,12 @@ fn helper_namespace_output_is_deterministic_with_one_two_and_four_slots() {
         }
         if jobs > 1 {
             assert!(stats.deferred_units.pool_engine_workers > 0);
-            assert!(stats.deferred_units.pool.helped > 0);
+            // Either a worker runs a helped VM step or the coordinator
+            // takes a whole queued unit. Forced worker helping remains
+            // covered by the parked-consumer pool regression.
+            assert!(
+                stats.deferred_units.pool.helped > 0 || stats.deferred_units.coordinator_units > 0
+            );
         }
     }
 }
