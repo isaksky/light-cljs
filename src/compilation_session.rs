@@ -2932,9 +2932,7 @@ impl CompilationSession {
             // Separate activities, rather than recursive help: demands made
             // by a helped unit use the ordinary bounded analysis stack.
             let _depth = HelpDepth(HELP_DEPTH.replace(1));
-            if self.flush_gensyms().is_err() {
-                return;
-            }
+            let mut flushed = false;
             let mut first = drain.unwrap_or(0);
             loop {
                 let claimed = {
@@ -2954,8 +2952,19 @@ impl CompilationSession {
                                 && matches!(unit.state, AnalysisState::Unstarted)
                                 && self.shared.admits(*id)
                         });
-                    next.map(|(id, _)| id)
-                        .map(|id| (id, self.shared.start_unit(&mut c, self.thread, id)))
+                    let next = next.map(|(id, _)| id);
+                    if next.is_some() && !flushed {
+                        // Engine entry is unnecessary at an empty drain.
+                        // Flush before claiming so a failed engine call
+                        // cannot strand a unit in Analyzing.
+                        drop(c);
+                        if self.flush_gensyms().is_err() {
+                            return;
+                        }
+                        flushed = true;
+                        continue;
+                    }
+                    next.map(|id| (id, self.shared.start_unit(&mut c, self.thread, id)))
                 };
                 let Some((id, claim)) = claimed else {
                     break;
