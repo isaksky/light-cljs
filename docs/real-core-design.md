@@ -684,9 +684,11 @@ The pieces, all in the tree:
   keywords and `keyword`/`makeKeyword` build `formKeyword` (a run-time
   keyword is fresh, as upstream's). `constructorHashes` answers an engine
   sequence's hash (vector, list, cons, lazy seq) from the runtime's own
-  `hashOrderedColl` over its items, cached per task (`formHashes` on the
-  task's cells, as the V8 profile's WeakMap caches it), and any other
-  engine form's from the engine: the engine folds a host object's identity
+  `hashOrderedColl` over its items, and an engine map's from the map branch
+  of `hash` over its entries (light-cljs-698), cached per task
+  (`formHashes` on the task's cells, as the V8 profile's WeakMap caches
+  it), and any other engine form's from the engine: the engine folds a host
+  object's identity
   hash, which is the runtime's hash of a function or a plain object but not
   of a symbol, a list of `listFromArray`, a map or a Date, which the
   runtime hashes by value and equality compares by value (light-cljs-677);
@@ -877,7 +879,13 @@ the verbatim units take their positional paths (never a hash trie) for
 printing, equality and hashing with a runtime-built map of the same
 entries, `reduce-kv`, `into` and the updates, and engine metadata (a
 symbol's, a vector's) is readable throughout
-(`shared_profile_engine_maps_are_maps`). Runtime-owned maps (sorted maps,
+(`shared_profile_engine_maps_are_maps`). An engine map hashes as the
+runtime hashes it, through the map branch of `hash` over its entries,
+cached per task with the sequences' hashes (`sharedFormHashes`): the
+engine's `formHash` folds a host object's identity, so a map holding a
+Date, a symbol or a list, equal to a runtime-built map, hashed apart from
+it and missed it as a hash-map key (light-cljs-698, from the review of
+this attempt). Runtime-owned maps (sorted maps,
 records, and every map the verbatim builders still make: an update of an
 engine map is a runtime-owned array map) keep the V8 profile's kinded
 store, a property of the view so the boot seals it and its kinds; a

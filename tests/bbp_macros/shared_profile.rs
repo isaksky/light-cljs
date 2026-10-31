@@ -315,6 +315,43 @@ fn shared_profile_equal_sequences_have_equal_host_element_hashes() {
     );
 }
 
+/// An engine map and a runtime-built map of the same entries hash alike
+/// when an entry holds a value the engine hashes by identity and the
+/// runtime by value (a Date, a symbol, a list, a runtime-owned set, a map
+/// nested in a vector), so each finds the other as a hash-map key: the
+/// engine map's hash is the runtime's, cached per task like a sequence's
+/// (light-cljs-698); a map of engine values hashes as the engine does.
+#[test]
+fn shared_profile_equal_engine_maps_have_equal_host_element_hashes() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const d = new Date(0); d.setTime(__rt.identityHash(d) + 1); \
+             const s = core.symbol('a'), set = core.hashSet(d); \
+             const m = __rt.formMap('k', d), own = rt.arrayMapFromArray(['k', d]); \
+             const keyed = __rt.formMap(core.list(s), 1), ownKeyed = rt.arrayMapFromArray([core.list(s), 1]); \
+             const nested = __rt.formMap('k', core.vector(core.list(d))), ownNested = rt.arrayMapFromArray(['k', core.vector(core.list(d))]); \
+             const setKeyed = __rt.formMap(set, d), ownSetKeyed = rt.arrayMapFromArray([set, d]); \
+             const inVector = core.vector(m), ownInVector = core.list(own); \
+             const pure = __rt.formMap(core.keyword(null, 'k'), core.vector(1, 'a')); \
+             return [core.equal(m, own), core.hash(m) === core.hash(own), core.get(core.hashMap(m, 42), own), core.get(core.hashMap(own, 43), m), \
+               core.equal(keyed, ownKeyed), core.hash(keyed) === core.hash(ownKeyed), core.get(core.hashMap(keyed, 1), ownKeyed), core.get(core.hashMap(ownKeyed, 2), keyed), \
+               core.equal(nested, ownNested), core.hash(nested) === core.hash(ownNested), core.get(core.hashMap(nested, 3), ownNested), core.get(core.hashMap(ownNested, 4), nested), \
+               core.equal(setKeyed, ownSetKeyed), core.hash(setKeyed) === core.hash(ownSetKeyed), core.get(core.hashMap(setKeyed, 5), ownSetKeyed), \
+               core.equal(inVector, ownInVector), core.hash(inVector) === core.hash(ownInVector), core.get(core.hashMap(inVector, 6), ownInVector), \
+               core.get(core.hashSet(m), own) === m, core.get(core.hashSet(own), m) === own, \
+               core.hash(m) === core.hash(m), core.hash(pure) === __rt.formHash(pure), core.hash(pure) === core.hash(rt.arrayMapFromArray([core.keyword(null, 'k'), core.vector(1, 'a')]))].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true true 42 43 true true 1 2 true true 3 4 true true 5 true true 6 true true true true true"
+    );
+}
+
 /// The lazy and delay views reflect the engine once-cell's state: checking
 /// `realized?` runs no thunk, a successful realization is reported once
 /// made, a throwing thunk leaves the cell pending, and a `LazySeq` made
