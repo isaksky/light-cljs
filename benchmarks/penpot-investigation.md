@@ -30,6 +30,130 @@ not promoted; [phase113](results/compiler-2026-10-16/penpot-phase113/README.md)
 records the controlled comparison. Further large gains are not established by
 the current profiling evidence.
 
+## Require-closure lanes (light-cljs-672, October 31, 2026)
+
+The Pants build admits compiler state and extension bundles through the
+consumer's require closure before forcing them, then skips earlier activities
+whose closures cannot reach a resource's home. Unknown closures and unknown
+homes remain conservative. The ordering, initializer election and priority
+inheritance rules are described in [compiler-concurrency.md](../docs/compiler-concurrency.md).
+
+The final source is `016fa86a623f175dbb2b8c03d6a90986b3a08fb7`, tree
+`a90ff9bd48150adf090caa30f5c99f49e43af692`, rebased onto accepted master
+`7c5244d8536190aed10e2600a335ecc8c0cf6828`. All thirteen rebased patches
+match their originals. Independent native source review passed this exact
+source, including the reflection fix: the requested namespace itself guards
+`ns-publics`, `ns-interns`, `ns-refers` and `ns-imports`; cached helpers and quoted
+macro expansions retain the eventual consumer's guard. Artifact schema 11
+retains that guard through serialization and remapping. Application emission
+and the legacy backends remain transparent to it.
+
+Fresh immutable release binaries use thin LTO, one codegen unit and
+`CARGO_BUILD_JOBS=2`. Pants uses `--no-default-features --features bbp-macros`;
+V8 uses default features and `LIGHT_CLJS_V8_CACHE=require`. SHA-256:
+
+| Binary | SHA-256 |
+| --- | --- |
+| `672-pants-016fa86a` | `8d2d628d8b7a149b38716922807081b320394940612eca58776394c4b9a3d1af` |
+| `672-v8-016fa86a` | `de5f5b49c8302e0e5d7b35dcfc75e3e2198d039a5aeb7f6875a74b6f5098985b` |
+
+Both hashes were checked again after measurement and were unchanged. Earlier
+benchmark binaries and their historical source identities were preserved.
+
+The exclusive host window was **17:40:50–17:52:35 UTC**. Each of thirteen
+measured commands has a full process snapshot, UTC time, pre/post load,
+argument vector, raw stderr, output and trace. Every pre-run process audit
+found no competing compiler, Cargo, rustc or nextest process. The host was
+macOS 15.7.3 with 24 logical CPUs, Rust/Cargo 1.99.1 and Babashka 1.12.218.
+The parent received the release signal immediately after the measured
+commands, before evidence analysis or documentation.
+
+Three Pants rounds use thread orders **1/2/4/8**, **8/4/2/1**, **2/1/8/4**.
+Each fresh process compiles Penpot `app.main` with the five source roots,
+`--compile --esm --optimize none --no-cache --stats`, a trace and source map
+including sources, and explicit `--macro-core port`. Budgets are 100,000,000
+expansions, 4,000,000,000 nodes, 3,600,000 ms, 4,000,000,000 memory bytes and
+1,000,000,000,000 polls. `LIGHT_CLJS_MACRO_CORE` is unset. A single V8 control
+uses the same arguments at one thread, without `--macro-core port`.
+
+Every Pants run exits 1, writes **zero JavaScript bytes**, and reports the
+exact retained baseline error: unsupported native runtime `core.MapEntry`
+while expanding `instaparse.abnf/precompile-cljs-grammar`, call at
+`abnf.cljc:129:21`, definition at `104:1` (bytes 5039..5064). These are
+timings through that known stop. V8 completes `app.main` (13.48 s wall,
+15.78 s user CPU), so their whole-process times do not compare equal work.
+No before-672 timing binary was remeasured in this window.
+
+Medians [minimum–maximum], with the three pre-run 1-minute loads in round
+order; longest wait is milliseconds:
+
+| Threads | Wall s | User CPU s | Lane waits | Longest wait ms | 1-minute loads |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 1 | 61.31 [61.02–61.32] | 60.08 [59.88–60.12] | 0 [0–0] | 0 [0–0] | 3.17, 3.13, 3.09 |
+| 2 | 57.48 [57.29–58.00] | 62.01 [61.81–62.59] | 158 [156–161] | 2037.7 [1978.0–2046.8] | 2.93, 3.41, 3.62 |
+| 4 | 53.72 [53.46–53.97] | 71.48 [71.06–72.24] | 235 [234–240] | 1315.5 [1306.8–1337.5] | 2.71, 3.71, 3.66 |
+| 8 | 57.43 [56.56–58.27] | 110.84 [106.44–115.76] | 304 [289–314] | 1631.6 [1624.4–1923.6] | 3.21, 3.47, 2.94 |
+
+Summed lane wait medians are 0, 10.624, 23.302 and 50.929 s. The median
+counts of skipped unrelated earlier activities are 0, 88, 41 and 46.
+
+All thirteen traces share **727 named namespaces**; empty-name placeholders
+are excluded. The one-thread Pants runs reach 727 named namespaces, the
+parallel runs 733, and V8 922. For each shared namespace, sum its
+`top-level-us` and deferred units' `us`, as in the 663 comparison below:
+
+| Build | Elapsed time summed over the common 727 namespaces, s |
+| --- | ---: |
+| Pants, 1 thread | 59.892 [59.698–59.962] |
+| Pants, 2 threads | 73.147 [72.830–73.859] |
+| Pants, 4 threads | 100.716 [100.570–101.499] |
+| Pants, 8 threads | 180.624 [175.921–187.948] |
+| V8, 1 thread, one control | 8.071 |
+
+The one-thread ratio is 7.42x. Parallel sums include overlapping work and
+waiting; they are cumulative elapsed time, not process wall time or CPU.
+The six additional namespaces reached by parallel runs also prevent treating
+their whole-process wall differences as an equal-work speedup measurement.
+
+The final binaries emit byte-identical JavaScript **and source maps** for
+Penpot `app.render` and generated seed-42 200k, comparing Pants at 1/2/4/8
+threads against V8 at one thread. All hashes also match the retained
+pre-reflection-fix results. Thus 446's output-change stop rule is not
+triggered. Maps use the same `target/out.map` path for every comparison.
+
+| Fixture | JavaScript SHA-256 | Source-map SHA-256 |
+| --- | --- | --- |
+| `app.render` | `72868c0c8c996750e2009792858084c234e5e947389a7c9d89cfeb24da4275b5` | `46598fe186cc1dce9f5bc702122d2f21b14d8fff2fadb93e19a547f78f9ffa48` |
+| seed-42 200k | `2e8fb150116a03e149ad2b8fa80ae8100b3275ac85b892b1af396abc207aa628` | `d2ace35aba9115c659256ca89cb9210f39c30f6bed56eb0b341ca5c940dac52e` |
+
+Final-source affected checks pass: 76 engine compiler-access/form tests,
+60 Pants checks, five Pants+QuickJS checks, 56 V8+Pants+QuickJS checks and
+27 default-backend checks. They cover reflection inside/outside a requested
+namespace's closure, direct/quoted views, cached provider reuse, every IR
+kind's codec round trip, runtime manifests and the lane fixtures at 1/2/4/8
+threads in free/fixed/one-job scheduling modes. The retained twelve-seed lane
+run also passes. Default strict all-target Clippy, engine-free compilation,
+formatting and diff checks pass. Combined-feature all-target Clippy passes
+with only the established deprecation, constant-chunk, byte-slice,
+unused-variable and unused-enumerate-index diagnostic categories allowed;
+no source suppressions were added.
+
+Full-suite evidence is reused by source scope: the recorded default run
+passes 2,172 tests, QuickJS 2,094, and the engine 2,283 plus seven doctests.
+The Pants run on `db911daa` passes 2,109 and fails 141: those exact failure
+identities were reproduced on baseline master `3fa2c156`. Six additional
+in-scope failures were fixed before that run. The subsequent reflection
+change and accepted `7c5244d8` integration received the affected checks above;
+these counts are retained runs, not a claim of repeated full suites on the
+final head. All three retained Node runtime workflows pass.
+
+Raw artifacts remain in this worker's `w672/target`: `672-final-016fa86a-*`
+holds matrix commands, process/load snapshots, traces, common-namespace list,
+parity outputs and summary; `672-016fa86a-*` holds builds and binary hashes.
+`672-rebase-*`, `672-pants-quickjs-*`, `672-combo-*` and
+`672-default-affected*` hold the final checks. The earlier `672-matrix-*`
+files are interrupted provisional measurements and are excluded here.
+
 ## Interpreter success-path costs (light-cljs-663, October 31, 2026)
 
 On the same 727 named namespaces reached by both builds, the Pants build's
