@@ -1353,8 +1353,12 @@ with this pellet's) fails 113 after the first commit (d637fa45: the
 imported-form view, the publication swap and the builders together),
 from 155: 43 tests fixed, one changed (`native_environment_updates_
 changed_slots_without_importing_the_namespace_again` counted a scalar the
-bridge no longer retains; the count now includes plain scalars). The
-remaining failures by first error (`bb` grouping of the run's log):
+bridge no longer retains; the count now includes plain scalars), and 110
+after the second (the reduced view: a reduction a macro stops with
+`(reduced x)`, an engine marker, stops on the real core; three tests), of
+which two are `deadline exceeded` on the loaded machine (the debug build
+ran 18 minutes at `-j 4`). The remaining failures by first error (`bb`
+grouping of the run's log, after the first commit):
 
 | Tests | First error | Cause |
 | ---: | --- | --- |
