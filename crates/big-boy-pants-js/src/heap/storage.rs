@@ -150,7 +150,6 @@ fn stand_in(object: &HeapObject) -> Option<HeapObject> {
 struct Slot {
     // Low 32 bits: generation. Flags and generation are one atomic snapshot.
     state: AtomicU64,
-    marked: AtomicBool,
     /// The access word of a mutable body (module docs, rule 3).
     locked: AtomicBool,
     object: UnsafeCell<Option<HeapObject>>,
@@ -163,6 +162,8 @@ struct Slot {
 // shared, and their kinds are Sync (2), mutable bodies have one access-word
 // holder at a time, which needs only HeapObject: Send (3), and sweep
 // additionally excludes all mutators and table readers (5).
+// Post-pause destruction exclusively owns non-live slots until returning
+// them to the free list (7).
 unsafe impl Sync for Slot {}
 
 // The same consistency guarantee as a recovered Mutex: initialization has no
@@ -246,7 +247,10 @@ impl Drop for SlotGuard<'_> {
 #[derive(Debug)]
 struct Segment {
     slots: Box<[Slot]>,
-    live: AtomicUsize,
+    /// Allocation publishes one live bit instead of updating a shared live
+    /// count. Marking writes the adjacent bitmap only with the world stopped.
+    live: [AtomicU64; SEGMENT_SIZE / 64],
+    marked: [AtomicU64; SEGMENT_SIZE / 64],
     /// Reclaimed bodies whose collecting thread has not finished freeing.
     pending: AtomicUsize,
     /// Slot reservations ([`Reservation`]) naming this segment that threads
@@ -260,10 +264,20 @@ impl Default for Segment {
             // Build in heap storage: a temporary 256-slot array and its debug
             // build copies would exhaust the VM's supported 64 KiB stacks.
             slots: (0..SEGMENT_SIZE).map(|_| Slot::default()).collect(),
-            live: AtomicUsize::new(0),
+            live: std::array::from_fn(|_| AtomicU64::new(0)),
+            marked: std::array::from_fn(|_| AtomicU64::new(0)),
             pending: AtomicUsize::new(0),
             held: AtomicUsize::new(0),
         }
+    }
+}
+
+impl Segment {
+    fn live(&self) -> usize {
+        self.live
+            .iter()
+            .map(|bits| bits.load(Ordering::Relaxed).count_ones() as usize)
+            .sum()
     }
 }
 
@@ -658,10 +672,14 @@ impl ObjectTable {
         };
         // One thread marks, with the world stopped: a load and a store, not
         // a read-modify-write per reached edge.
-        if slot.marked.load(Ordering::Relaxed) {
+        let offset = id.index as usize % SEGMENT_SIZE;
+        let marked = &self.segments[id.index as usize / SEGMENT_SIZE].marked[offset / 64];
+        let bit = 1u64 << (offset % 64);
+        let bits = marked.load(Ordering::Relaxed);
+        if bits & bit != 0 {
             return false;
         }
-        slot.marked.store(true, Ordering::Relaxed);
+        marked.store(bits | bit, Ordering::Relaxed);
         let state = slot.state.load(Ordering::Acquire);
         if state & FROZEN != 0 {
             // SAFETY: live (checked above under the table lock, which
@@ -690,8 +708,13 @@ impl ObjectTable {
     /// (stopped world, between marking and sweep). A stale identity is
     /// unmarked, as [`ObjectTable::mark`] never marks one.
     pub(super) fn is_marked(&self, id: ObjectId) -> bool {
-        self.slot(id)
-            .is_some_and(|slot| slot.marked.load(Ordering::Relaxed))
+        self.slot(id).is_some_and(|_| {
+            let offset = id.index as usize % SEGMENT_SIZE;
+            self.segments[id.index as usize / SEGMENT_SIZE].marked[offset / 64]
+                .load(Ordering::Relaxed)
+                & (1u64 << (offset % 64))
+                != 0
+        })
     }
 
     /// Run the collector's conditional pass over a live object. Frozen kinds
@@ -727,7 +750,7 @@ impl ObjectTable {
             len: 0,
         };
         for (segment_index, segment) in self.segments.iter().enumerate().rev() {
-            if segment.live.load(Ordering::Relaxed) == 0 {
+            if segment.live() == 0 {
                 if segment.held.load(Ordering::Relaxed) == 0
                     && segment.pending.load(Ordering::Relaxed) == 0
                 {
@@ -737,32 +760,36 @@ impl ObjectTable {
             }
             let mut reclaimed = 0;
             let mut bits = [0u64; SEGMENT_SIZE / 64];
-            for (offset, slot) in segment.slots.iter().enumerate().rev() {
-                if slot.marked.load(Ordering::Relaxed) {
-                    slot.marked.store(false, Ordering::Relaxed);
-                    continue;
+            for word_index in (0..bits.len()).rev() {
+                let marked = segment.marked[word_index].load(Ordering::Relaxed);
+                let mut unreachable = segment.live[word_index].load(Ordering::Relaxed) & !marked;
+                segment.live[word_index].store(marked, Ordering::Relaxed);
+                segment.marked[word_index].store(0, Ordering::Relaxed);
+                bits[word_index] = unreachable;
+                while unreachable != 0 {
+                    let bit = 63 - unreachable.leading_zeros() as usize;
+                    unreachable &= !(1u64 << bit);
+                    let offset = word_index * 64 + bit;
+                    let slot = &segment.slots[offset];
+                    let state = slot.state.load(Ordering::Acquire);
+                    debug_assert_ne!(state & LIVE, 0);
+                    let word = slot.lock();
+                    reclaimed += 1;
+                    let generation = state as u32;
+                    let next = if let Some(next) = generation.checked_add(1) {
+                        USED | u64::from(next)
+                    } else {
+                        USED | RETIRED | u64::from(generation)
+                    };
+                    slot.state.store(next, Ordering::Release);
+                    drop(word);
+                    reclaimed_object(ObjectId {
+                        index: (segment_index * SEGMENT_SIZE + offset) as u32,
+                        generation,
+                    });
                 }
-                let state = slot.state.load(Ordering::Acquire);
-                if state & LIVE == 0 {
-                    continue;
-                }
-                let word = slot.lock();
-                bits[offset / 64] |= 1 << (offset % 64);
-                reclaimed += 1;
-                let generation = state as u32;
-                let next = if let Some(next) = generation.checked_add(1) {
-                    USED | u64::from(next)
-                } else {
-                    USED | RETIRED | u64::from(generation)
-                };
-                slot.state.store(next, Ordering::Release);
-                drop(word);
-                reclaimed_object(ObjectId {
-                    index: (segment_index * SEGMENT_SIZE + offset) as u32,
-                    generation,
-                });
             }
-            let live = segment.live.fetch_sub(reclaimed, Ordering::Relaxed) - reclaimed;
+            let live = segment.live();
             if reclaimed != 0 {
                 segment.pending.fetch_add(reclaimed, Ordering::Relaxed);
                 garbage.len += reclaimed;
@@ -787,10 +814,7 @@ impl ObjectTable {
     }
 
     pub(super) fn live(&self) -> usize {
-        self.segments
-            .iter()
-            .map(|s| s.live.load(Ordering::Relaxed))
-            .sum()
+        self.segments.iter().map(|s| s.live()).sum()
     }
 
     /// Visit every live body and its known-shareable bit, under the table
@@ -928,8 +952,8 @@ impl Drop for ReleaseSlots<'_, '_> {
         }
         let pending = batch.segment.pending.fetch_sub(count, Ordering::Relaxed) - count;
         if pending == 0
-            && batch.segment.live.load(Ordering::Relaxed) == 0
-            && batch.segment.held.load(Ordering::Relaxed) == 0
+            && batch.segment.held.load(Ordering::Acquire) == 0
+            && batch.segment.live() == 0
         {
             objects.charges[batch.base as usize / SEGMENT_SIZE] = None;
         }
@@ -958,7 +982,7 @@ struct Reservation {
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        self.segment.held.fetch_sub(1, Ordering::Relaxed);
+        self.segment.held.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -984,7 +1008,8 @@ impl Reservation {
             *slot.object.get() = Some(object);
             *slot.reservation.get() = reservation;
         }
-        self.segment.live.fetch_add(1, Ordering::Relaxed);
+        self.segment.live[usize::from(offset) / 64]
+            .fetch_or(1u64 << (usize::from(offset) % 64), Ordering::Relaxed);
         slot.state.store(
             state
                 | USED
@@ -1258,6 +1283,41 @@ mod tests {
         assert_ne!(next.index, id.index, "a retired slot is never reused");
         assert!(!heap.is_live(worn));
         assert!(lock(&heap.objects).free.is_empty());
+    }
+
+    #[test]
+    fn collection_keeps_boundary_slots_and_reclaims_lost_roots_without_allocations() {
+        let heap = Arc::new(Heap::default());
+        let ids: Vec<_> = (0..2 * SEGMENT_SIZE + 1)
+            .map(|_| owned(&heap, OWNER))
+            .collect();
+        let boundaries = [
+            0, 1, 62, 63, 64, 127, 128, 191, 192, 254, 255, 256, 511, 512,
+        ];
+        let mut roots: Vec<_> = boundaries
+            .iter()
+            .map(|&i| Rooted::new(&heap, Value::Object(ids[i])))
+            .collect();
+        assert_eq!(
+            heap.collect().unwrap().reclaimed,
+            ids.len() - boundaries.len()
+        );
+        for (i, &id) in ids.iter().enumerate() {
+            assert_eq!(heap.is_live(id), boundaries.contains(&i), "slot {i}");
+        }
+        drop(roots.split_off(roots.len() / 2));
+        assert_eq!(
+            heap.collect().unwrap().reclaimed,
+            boundaries.len() - roots.len()
+        );
+        let garbage: Vec<_> = (0..ids.len()).map(|_| owned(&heap, OWNER)).collect();
+        assert_eq!(heap.collect().unwrap().reclaimed, garbage.len());
+        for &i in &boundaries[..roots.len()] {
+            assert!(heap.is_live(ids[i]));
+        }
+        drop(roots);
+        assert_eq!(heap.collect().unwrap().reclaimed, boundaries.len() / 2);
+        assert_eq!(heap.collect().unwrap().reclaimed, 0);
     }
     #[test]
     fn reserved_allocations_and_shareability_checks_do_not_take_the_table_lock() {
