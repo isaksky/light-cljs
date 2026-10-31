@@ -102,6 +102,8 @@ pub(crate) struct NamespaceLog {
     index: HashMap<Vec<u16>, usize>,
     /// Registrations at position 0, each naming more than the one before.
     zero: Vec<Registration>,
+    #[cfg(test)]
+    chain_visits: std::cell::Cell<usize>,
 }
 
 impl Default for NamespaceLog {
@@ -115,6 +117,8 @@ impl Default for NamespaceLog {
             table: Vec::new(),
             index: HashMap::new(),
             zero: Vec::new(),
+            #[cfg(test)]
+            chain_visits: std::cell::Cell::new(0),
         };
         for name in ["cljs.user", "cljs.core"] {
             log.record(
@@ -127,6 +131,11 @@ impl Default for NamespaceLog {
 }
 
 impl NamespaceLog {
+    #[cfg(test)]
+    fn visit_chain(&self) {
+        self.chain_visits.set(self.chain_visits.get() + 1);
+    }
+
     fn chain(&mut self, owners: &[Target]) -> ChainId {
         if let Some(&id) = self.chain_ids.get(owners) {
             return id;
@@ -271,6 +280,8 @@ impl NamespaceLog {
         let none = HashMap::new();
         let singles = created.map_or(&none, |c| &c.chains);
         for (&id, &(position, order)) in singles {
+            #[cfg(test)]
+            self.visit_chain();
             let chain = &self.chains[id as usize];
             let registered = index.and_then(|index| chain.earliest(index));
             let (position, order) =
@@ -279,6 +290,8 @@ impl NamespaceLog {
         }
         if let Some(index) = index {
             for (id, chain) in self.chains.iter().enumerate() {
+                #[cfg(test)]
+                self.visit_chain();
                 if chain.longest <= index || singles.contains_key(&(id as ChainId)) {
                     continue;
                 }
@@ -292,7 +305,44 @@ impl NamespaceLog {
 
     /// Whether `view` sees namespace `name`, under `floors`.
     pub(crate) fn has(&self, name: &[u16], view: &NamespaceView, floors: &Floors) -> bool {
-        (self.first_place(name, floors, |place| place.0 <= view.effective)).is_some()
+        let created = self.created.get(name);
+        let index = self.index.get(name).copied();
+        if created.is_some_and(|c| c.zero.is_some())
+            || index.is_some_and(|index| self.zero_covers(index + 1))
+        {
+            return true;
+        }
+        // Existence needs no ordering within a position, nor the minimum
+        // place across chains. A creation is visible at its own position
+        // or at any earlier floor its owners lend it.
+        let visible = |position, owners: &[Target]| {
+            position <= view.effective
+                || owners.iter().any(|owner| {
+                    floors
+                        .get(owner)
+                        .is_some_and(|&(floor, _)| floor <= view.effective)
+                })
+        };
+        if let Some(created) = created {
+            for (&id, &(position, _)) in &created.chains {
+                #[cfg(test)]
+                self.visit_chain();
+                if visible(position, &self.chains[id as usize].owners) {
+                    return true;
+                }
+            }
+        }
+        index.is_some_and(|index| {
+            self.chains.iter().any(|chain| {
+                #[cfg(test)]
+                self.visit_chain();
+                chain.longest > index
+                    && chain
+                        .registrations
+                        .iter()
+                        .any(|r| r.len > index && visible(r.position, &chain.owners))
+            })
+        })
     }
 
     /// The names `view` sees under `floors`, in the order they count in.
@@ -372,6 +422,54 @@ mod tests {
         assert!(!log.has(&[0xFFFD], &NamespaceView::ALL, &none));
         let names = log.names(&NamespaceView::ALL, &none);
         assert_eq!(&names[2..], [&[0xD800][..], &[0xD83D, 0xDE00][..]]);
+    }
+
+    #[test]
+    fn visible_lookup_stops_after_first_matching_chain() {
+        let mut log = NamespaceLog::default();
+        let app = name("app");
+        let table: crate::arena::Arena<String> = ["app".to_owned()].into_iter().collect();
+        const CHAINS: usize = 4096;
+        for unit in 1..=CHAINS {
+            log.register(&table, 1, &tag(unit as u64, &[Target::Unit(unit)]));
+        }
+        assert_eq!(log.chains.len(), CHAINS);
+        let none = Floors::new();
+        for _ in 0..32 {
+            log.chain_visits.set(0);
+            assert!(log.has(&app, &NamespaceView::ALL, &none));
+            assert_eq!(log.chain_visits.get(), 1);
+        }
+
+        // Skip an invisible first creation, then stop at the second one's
+        // lent floor. A miss must still inspect all the registrations.
+        let at_zero = NamespaceView { effective: 0 };
+        let floors = Floors::from([(Target::Unit(2), (0, 0))]);
+        log.chain_visits.set(0);
+        assert!(log.has(&app, &at_zero, &floors));
+        assert_eq!(log.chain_visits.get(), 2);
+        log.chain_visits.set(0);
+        assert!(!log.has(&app, &at_zero, &none));
+        assert_eq!(log.chain_visits.get(), CHAINS);
+        log.chain_visits.set(0);
+        assert!(!log.has(&name("missing"), &NamespaceView::ALL, &none));
+        assert_eq!(log.chain_visits.get(), 0);
+
+        // Single creations also stop at the first visible chain, whatever
+        // the hash table's iteration order. Position zero needs no walk.
+        let made = name("made");
+        for unit in 1..=CHAINS {
+            log.record(&made, &tag(unit as u64, &[Target::Unit(unit)]));
+        }
+        log.chain_visits.set(0);
+        assert!(log.has(&made, &NamespaceView::ALL, &none));
+        assert_eq!(log.chain_visits.get(), 1);
+        log.record(&made, &NamespaceTag::default());
+        log.register(&table, 1, &NamespaceTag::default());
+        log.chain_visits.set(0);
+        assert!(log.has(&made, &at_zero, &none));
+        assert!(log.has(&app, &at_zero, &none));
+        assert_eq!(log.chain_visits.get(), 0);
     }
 
     /// The log before light-cljs-702, which recorded every name of every
