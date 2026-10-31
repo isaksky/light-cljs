@@ -453,10 +453,15 @@
       return current == null ? null : __rt.cljCons(first(current), sharedSeqForm(rest(current)));
     });
   }
-  //@unit cons requires: count, sharedSeqForm
-  // A cons onto a runtime-owned tail goes through `sharedSeqForm`; a list
-  // tail's count is the runtime's (`count`), the engine's for an engine form.
+  //@unit cons requires: count, methodKeys, protocolHooks, seq, seqValue, sharedSeqForm
+  // A tail that is not a seq (an array, a vector, an invalid object) is
+  // normalized through `seq` now, as the V8 profile's `cons` has it, so a
+  // later change to it is not seen and an invalid one throws here; a seq
+  // tail is kept as it is. A runtime-owned tail then goes through
+  // `sharedSeqForm`; a list tail's count is the runtime's (`count`), the
+  // engine's for an engine form.
   function cons(head, tail, kind = "cons") {
+    if (kind === "cons" && tail != null && !(protocolHooks.implements?.(methodKeys[49], tail) ?? seqValue(tail))) tail = seq(tail);
     if (tail == null) return __rt.formList(head);
     if (kind === "list" && (__rt.formKind(tail) !== null ? __rt.cljCount(tail) : count(tail)) === 0) return __rt.formList(head);
     return __rt.cljCons(head, sharedSeqForm(tail));

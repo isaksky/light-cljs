@@ -359,6 +359,39 @@ fn shared_profile_realization_state() {
     );
 }
 
+/// `cons` normalizes a tail that is not a seq (an array, a vector, an
+/// invalid object) through `seq` when it is called, as the V8 profile's
+/// does: a cons onto an empty array is `(0)` whatever is pushed to the array
+/// later (one onto a nonempty array is the indexed seq over the array, which
+/// reads it live, as the V8 profile's does), a cons onto a plain object
+/// throws at once, and a seq tail (a lazy seq, the runtime's own `iterate`)
+/// is kept as it is, unrealized (light-cljs-680).
+#[test]
+fn shared_profile_cons_normalizes_non_seq_tails_immediately() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const a = []; const c = core.cons(0, a); a.push(1); \
+             let threw = 'no'; try {{ core.cons(0, {{}}); }} catch (e) {{ threw = e.constructor.name; }} \
+             const b = [1]; const d = core.cons(0, b); b.push(2); \
+             let calls = 0; \
+             const lazy = new core.LazySeq(null, () => {{ calls++; return core.vector(1); }}, null, null); \
+             const onLazy = core.cons(0, lazy); const before = calls; \
+             const onIterate = core.cons(-1, core.iterate(x => {{ calls++; return x + 1; }}, 0)); \
+             return [core.prStr(c), core.count(c), threw, core.prStr(d), core.prStr(core.cons(0, core.vector(1))), \
+               core.prStr(core.cons(0, core.list(1))), core.prStr(core.cons(0, 'ab')), before, core.prStr(onLazy), calls, \
+               core.prStr(core.take(2, onIterate))].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "(0) 1 Error (0 1 2) (0 1) (0 1) (0 \"a\" \"b\") 0 (0 1) 1 (-1 0)"
+    );
+}
+
 /// The method-key memos the boot fills and seals cover every arity a
 /// dispatcher declares: `invokeProtocol` declares arities 1 to 22, so a
 /// receiver implementing `cljs$core$IFn$_invoke$arity$22` is invoked with
