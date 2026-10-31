@@ -2951,6 +2951,9 @@ fn analyze_entry(
             // Past the last source, the namespaces still waiting reach
             // their drain points, whose lazy references may load more.
             if index >= loader.ordered.len() {
+                if let Some(session) = macros.session_handle() {
+                    session.analyze_queued(None);
+                }
                 if !drain_front!() {
                     break;
                 }

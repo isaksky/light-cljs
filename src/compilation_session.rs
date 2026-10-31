@@ -552,6 +552,7 @@ const _: () = {
 #[derive(Default)]
 struct PoolCounters {
     pooled: std::sync::atomic::AtomicUsize,
+    coordinator_units: std::sync::atomic::AtomicUsize,
     isolates: std::sync::atomic::AtomicUsize,
     startup_ns: std::sync::atomic::AtomicU64,
     unit_ns: std::sync::atomic::AtomicU64,
@@ -1253,8 +1254,9 @@ impl SharedCatalog {
     ///
     /// With `queued`, the unit was given to the pool and this thread waits
     /// for a worker to analyze it even while it is unstarted: the
-    /// coordinator never analyzes a pooled unit in its own isolate, whose
-    /// compile-time state would then depend on scheduling.
+    /// V8 coordinator never analyzes a pooled unit in its own isolate,
+    /// whose compile-time state would then depend on scheduling. The Pants
+    /// coordinator may preclaim an unstarted unit before this wait.
     ///
     /// While it waits, the coordinator serves its `light.build` requests
     /// that workers forward with `server` ([`Self::forward_build`]).
@@ -1423,27 +1425,30 @@ impl SharedCatalog {
                 }
                 AnalysisState::Unstarted => (),
             }
-            let depth = c.threads[thread].stack.len();
-            let unit = &mut c.units[id];
-            let inputs = unit.inputs.take().expect("unstarted unit inputs");
-            if depth >= inputs.environment.limits().expansion_depth.min(64) {
-                unit.state = AnalysisState::Failed(DEPTH_LIMIT.to_owned(), None);
-                // The coordinator may wait for a pooled unit a worker fails.
-                if c.waiting > 0 {
-                    self.settled.notify_all();
-                }
-                return Ok(Claim::TooDeep(inputs, depth));
-            }
-            unit.state = AnalysisState::Analyzing(thread);
-            unit.analyses += 1;
-            let (name, macro_free) = (unit.name.clone(), unit.macro_free);
-            // The request has stable identity even if a newer same-kind source
-            // generation is activated while this frame is suspended.
-            debug_assert!(unit.request.generation > 0);
-            debug_assert_eq!(c.bindings[&unit.name].0, unit.request.var);
-            c.threads[thread].stack.push(id);
-            return Ok(Claim::Analyze(inputs, depth, name, macro_free));
+            return Ok(self.start_unit(c, thread, id));
         }
+    }
+    /// Claim an unstarted unit under the catalog lock, whether a pool
+    /// worker or the Pants coordinator found it first.
+    fn start_unit(&self, c: &mut Catalog, thread: usize, id: usize) -> Claim {
+        let depth = c.threads[thread].stack.len();
+        let unit = &mut c.units[id];
+        debug_assert!(matches!(unit.state, AnalysisState::Unstarted));
+        let inputs = unit.inputs.take().expect("unstarted unit inputs");
+        if depth >= inputs.environment.limits().expansion_depth.min(64) {
+            unit.state = AnalysisState::Failed(DEPTH_LIMIT.to_owned(), None);
+            if c.waiting > 0 {
+                self.settled.notify_all();
+            }
+            return Claim::TooDeep(inputs, depth);
+        }
+        unit.state = AnalysisState::Analyzing(thread);
+        unit.analyses += 1;
+        let (name, macro_free) = (unit.name.clone(), unit.macro_free);
+        debug_assert!(unit.request.generation > 0);
+        debug_assert_eq!(c.bindings[&unit.name].0, unit.request.var);
+        c.threads[thread].stack.push(id);
+        Claim::Analyze(inputs, depth, name, macro_free)
     }
     /// End the analysis of unit `id` that the thread in slot `thread` claimed
     /// with `state`, or as interrupted, and wake the threads waiting for it;
@@ -2389,6 +2394,7 @@ impl CompilationSession {
         use std::sync::atomic::Ordering::Relaxed;
         let pool = &self.shared.counters;
         counts.pooled = pool.pooled.load(Relaxed);
+        counts.coordinator_units = pool.coordinator_units.load(Relaxed);
         counts.worker_isolates = pool.isolates.load(Relaxed);
         counts.worker_isolate_startup =
             std::time::Duration::from_nanos(pool.startup_ns.load(Relaxed));
@@ -2905,13 +2911,82 @@ impl CompilationSession {
         id: usize,
         queued: bool,
     ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
+        if queued {
+            self.analyze_queued(Some(id));
+        }
         self.analyze_in(id, None, queued, Take::Drain)
+    }
+    /// Use the coordinator's otherwise idle slot on the Pants build. At a
+    /// drain, take only that drain's units, in order; past the last top-level
+    /// pass, take all remaining queued units. Pool jobs reuse these results.
+    /// Nothing is charged or reported until the unit's own drain point.
+    pub(crate) fn analyze_queued(&self, drain: Option<usize>) {
+        #[cfg(feature = "bbp-macros")]
+        {
+            let enabled = self.pool.borrow().as_ref().is_some_and(|pool| {
+                pool.engines == PoolEngines::Persistent && pool.main.native_macro_backend()
+            });
+            if !enabled || HELP_DEPTH.get() != 0 {
+                return;
+            }
+            // Separate activities, rather than recursive help: demands made
+            // by a helped unit use the ordinary bounded analysis stack.
+            let _depth = HelpDepth(HELP_DEPTH.replace(1));
+            if self.flush_gensyms().is_err() {
+                return;
+            }
+            let mut first = drain.unwrap_or(0);
+            loop {
+                let claimed = {
+                    let mut c = self.shared.lock();
+                    if c.abandoned.is_some() {
+                        return;
+                    }
+                    let source = drain.map(|id| c.units[id].source);
+                    let next = c
+                        .units
+                        .iter()
+                        .enumerate()
+                        .skip(first)
+                        .take_while(|(_, unit)| source.is_none_or(|source| unit.source == source))
+                        .find(|(id, unit)| {
+                            unit.pooled
+                                && matches!(unit.state, AnalysisState::Unstarted)
+                                && self.shared.admits(*id)
+                        });
+                    next.map(|(id, _)| id)
+                        .map(|id| (id, self.shared.start_unit(&mut c, self.thread, id)))
+                };
+                let Some((id, claim)) = claimed else {
+                    break;
+                };
+                first = id + 1;
+                if matches!(claim, Claim::Analyze(..)) {
+                    self.shared
+                        .counters
+                        .coordinator_units
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                let root = self.shared.lanes.enter_root();
+                let result = self.analyze_claimed_in(id, None, false, Take::Hold, Some(claim));
+                drop(root);
+                self.shared.note_job(id);
+                if result.is_err() {
+                    break;
+                }
+            }
+        }
+        #[cfg(not(feature = "bbp-macros"))]
+        let _ = drain;
     }
     /// Wait for unit `id`'s analysis, a worker's if the pool was given it
     /// (`queued`), and add what it observed to the dependency log now, at
     /// its namespace's settle point; its drain point charges the rest
     /// (light-cljs-394). An error is the unit's failure.
     pub(crate) fn observe_pooled(&self, id: usize, queued: bool) -> Result<(), String> {
+        if queued {
+            self.analyze_queued(Some(id));
+        }
         self.analyze_in(id, None, queued, Take::Observe).map(drop)
     }
     /// Note that the dispatch of their namespace keeps `units` for its
@@ -2946,6 +3021,16 @@ impl CompilationSession {
         engine: Option<&dyn MacroEvaluator>,
         queued: bool,
         take: Take,
+    ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
+        self.analyze_claimed_in(id, engine, queued, take, None)
+    }
+    fn analyze_claimed_in(
+        &self,
+        id: usize,
+        engine: Option<&dyn MacroEvaluator>,
+        queued: bool,
+        take: Take,
+        claim: Option<Claim>,
     ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
         // A unit held for its drain point is charged there, not where a
         // later top-level pass demands it first, so that an earlier
@@ -3000,7 +3085,7 @@ impl CompilationSession {
         let server = counters.is_some().then_some(&serve as BuildServer<'_>);
         // What `gensym` gives in this engine during a kept unit's analysis
         // is the unit's, which its drain point adds, as a worker's.
-        if take == Take::Hold {
+        if take == Take::Hold && claim.is_none() {
             self.flush_gensyms()?;
         }
         let analysis = analyze_unit(
@@ -3015,6 +3100,7 @@ impl CompilationSession {
                 held: matches!(take, Take::Hold | Take::Defer),
                 server,
             },
+            claim,
             || {
                 let binding = self.take_unit_binding(id).expect("unstarted unit host");
                 (*binding, bootstrap)
@@ -3167,6 +3253,7 @@ fn analyze_unit(
     id: usize,
     engine: Option<&dyn MacroEvaluator>,
     demand: Demand<'_>,
+    claim: Option<Claim>,
     binding: impl FnOnce() -> (EngineBinding, Option<Bootstrap>),
 ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
     let Demand {
@@ -3176,18 +3263,22 @@ fn analyze_unit(
         server,
         help,
     } = demand;
-    let (inputs, depth, name, macro_free) =
-        match shared.claim_help(thread, id, queued, server, help)? {
-            Claim::Reuse(program, warnings) => return Ok((program, warnings)),
-            Claim::TooDeep(inputs, depth) => {
-                shared.lanes.finish(id, true);
-                let (binding, _) = binding();
-                crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
-                drop((inputs, binding));
-                return Err(DEPTH_LIMIT.to_owned());
-            }
-            Claim::Analyze(inputs, depth, name, macro_free) => (inputs, depth, name, macro_free),
-        };
+    let pooled_help = claim.is_some();
+    let claim = match claim {
+        Some(claim) => claim,
+        None => shared.claim_help(thread, id, queued, server, help)?,
+    };
+    let (inputs, depth, name, macro_free) = match claim {
+        Claim::Reuse(program, warnings) => return Ok((program, warnings)),
+        Claim::TooDeep(inputs, depth) => {
+            shared.lanes.finish(id, true);
+            let (binding, _) = binding();
+            crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
+            drop((inputs, binding));
+            return Err(DEPTH_LIMIT.to_owned());
+        }
+        Claim::Analyze(inputs, depth, name, macro_free) => (inputs, depth, name, macro_free),
+    };
     // Its atom effects keep its `--jobs 1` place (light-cljs-480); declared
     // before the guard, so it ends after the unit settles.
     let _lane = shared.lanes.enter_unit(id);
@@ -3308,7 +3399,14 @@ fn analyze_unit(
             // charges' wherever it is analyzed; the engine logs into this
             // thread's log already (light-cljs-442).
             let nested_log = own.then(crate::generated_names::nest_log);
-            let free = crate::macro_host::MacroFreeUnit::enter(name, macro_free, recording, !held);
+            // Coordinator help records polls for the drain just as a
+            // worker does; ordinary dispatch-held work polls as it runs.
+            let free = crate::macro_host::MacroFreeUnit::enter(
+                name,
+                macro_free,
+                recording,
+                !held || pooled_help,
+            );
             let analysis =
                 crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
             let recorded = free.finish();
@@ -3528,6 +3626,11 @@ pub(crate) trait CatalogView {
     fn help(&self) -> Result<bool, String> {
         Ok(false)
     }
+    /// The coordinator can answer forwarded build requests even while a
+    /// helped unit's engine waits for another activity.
+    fn service_build(&self, _server: BuildServer<'_>) -> bool {
+        false
+    }
     #[cfg(feature = "bbp-macros")]
     fn run_native(
         &self,
@@ -3617,6 +3720,19 @@ fn compile_unit_in(
     })
 }
 impl CatalogView for CompilationSession {
+    fn service_build(&self, serve: BuildServer<'_>) -> bool {
+        let request = self.shared.lock().requests.pop_front();
+        let Some(request) = request else {
+            return false;
+        };
+        let (reply, log) = serve(&request.text, request.analysis);
+        self.shared
+            .lock()
+            .replies
+            .push((request.ticket, reply, log));
+        self.shared.settled.notify_all();
+        true
+    }
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
         compile_unit_in(&self.shared, active, id, || self.analyze(id, Some(active)))
     }
@@ -3818,6 +3934,7 @@ impl WorkerView {
                 held: false,
                 server: None,
             },
+            None,
             || (self.host.engine.frame(), None),
         )
     }
@@ -4760,11 +4877,32 @@ pub(crate) fn install_catalog_services(
     log: Rc<RefCell<Option<crate::dependency_manifest::ObservationLog>>>,
 ) -> Result<(), String> {
     let waiting = view.clone();
+    let wait_build = build.clone();
+    let wait_log = log.clone();
     evaluator.install_wait_service(Rc::new(move || {
-        waiting
-            .upgrade()
-            .ok_or("compilation session expired")?
-            .help()
+        let view = waiting.upgrade().ok_or("compilation session expired")?;
+        let serve =
+            |text: &str, analysis: Vec<u32>| {
+                let log = wait_log.borrow().as_ref().map(|log| {
+                    crate::dependency_manifest::ObservationLog {
+                        window: analysis.first().copied().unwrap_or(log.window),
+                        ..Default::default()
+                    }
+                });
+                let log = Rc::new(RefCell::new(log));
+                let reply = crate::build_services::serve_request(
+                    &wait_build,
+                    &log,
+                    text,
+                    |unit| view.unit_source(unit),
+                    analysis,
+                );
+                (reply, log.take().map(Box::new))
+            };
+        if view.service_build(&serve) {
+            return Ok(true);
+        }
+        view.help()
     }));
     #[cfg(feature = "bbp-macros")]
     {
@@ -5389,6 +5527,155 @@ mod worker_tests {
         let all = session.unit_counts();
         assert_eq!([all.analyzed, all.prepared], [3, 2]);
         drop((early, later));
+    }
+
+    /// Keep admission under the test's control so every claim is determined
+    /// by catalog state, rather than a race with a real pool worker.
+    #[cfg(feature = "bbp-macros")]
+    fn queued_session(source: &str) -> (CompilationSession, HashMap<String, usize>) {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let (session, units, environment) = registered_with_host(source, host);
+        for &id in units.values() {
+            session.set_pooled(id);
+        }
+        *session.pool.borrow_mut() = Some(UnitPool {
+            inbox: Arc::new(Inbox::default()),
+            shared: session.shared.clone(),
+            thread: None,
+            engines: PoolEngines::Persistent,
+            workers: 1,
+            engine_workers: 1,
+            main: environment,
+        });
+        (session, units)
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn pants_coordinator_helps_its_drain_then_takes_the_tail_once_in_order() {
+        let (session, units) = queued_session(
+            "(defn running [] 1) (defn first [] (if true 2 0))
+             (defn second [] (if true 3 0)) (defn tail [] 4) (defn kept [] 5)",
+        );
+        let [running, first, second, tail, kept] = ["running", "first", "second", "tail", "kept"]
+            .map(|name| units[&format!("cljs.user/{name}")]);
+        let worker = session.shared.join();
+        let claimed = session.shared.claim(worker, running, false, None).unwrap();
+        {
+            let mut c = session.shared.lock();
+            c.units[tail].source = 1;
+            c.units[kept].source = 1;
+            c.units[kept].pooled = false;
+        }
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let observed = order.clone();
+        *session.shared.on_claim.lock().unwrap() = Some(Arc::new(move |id| {
+            assert_eq!(HELP_DEPTH.get(), 1);
+            observed.lock().unwrap().push(id);
+        }));
+        let depth = HelpDepth(HELP_DEPTH.replace(1));
+        session.analyze_queued(None);
+        assert_eq!(session.unit_counts().coordinator_units, 0);
+        drop(depth);
+        // A running first unit does not keep the coordinator from taking
+        // the remaining unstarted units of this drain.
+        session.analyze_queued(Some(running));
+        assert_eq!(*order.lock().unwrap(), [first, second]);
+        assert_eq!(session.unit_counts().coordinator_units, 2);
+        assert!(matches!(
+            session.shared.lock().units[tail].state,
+            AnalysisState::Unstarted
+        ));
+        assert!(
+            matches!(session.shared.lock().units[running].state, AnalysisState::Analyzing(owner) if owner == worker)
+        );
+        assert!(session.shared.lock().units[first].charges.is_some());
+        assert_eq!(session.drained_through.get(), None);
+        session.analyze_queued(None);
+        session.analyze_queued(None);
+        assert_eq!(*order.lock().unwrap(), [first, second, tail]);
+        assert_eq!(session.unit_counts().coordinator_units, 3);
+        assert_eq!(HELP_DEPTH.get(), 0);
+        assert!(matches!(
+            session.shared.lock().units[kept].state,
+            AnalysisState::Unstarted
+        ));
+        // A queued job reuses the result; only its drain takes the charges.
+        *session.shared.on_claim.lock().unwrap() = None;
+        let view = WorkerView::new(session.shared.clone(), MacroHost::new()).unwrap();
+        view.analyze(first, None).unwrap();
+        session.analyze_drained(first, true).unwrap();
+        assert!(session.shared.lock().units[first].charges.is_none());
+        assert_eq!(session.shared.lock().units[first].analyses, 1);
+        drop(claimed);
+        session.shared.settle(worker, running, None, 0);
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn pants_coordinator_stops_claiming_at_the_first_failed_unit() {
+        let (session, units) =
+            queued_session("(defn first [] 1) (defn bad [] (if)) (defn later [] 2)");
+        session.analyze_queued(None);
+        let first = units["cljs.user/first"];
+        let bad = units["cljs.user/bad"];
+        let later = units["cljs.user/later"];
+        assert_eq!(session.unit_counts().coordinator_units, 2);
+        assert!(session.unit_failed(bad));
+        session.analyze_drained(first, true).unwrap();
+        assert!(session.analyze_drained(bad, true).is_err());
+        session.analyze_queued(None);
+        assert!(matches!(
+            session.shared.lock().units[later].state,
+            AnalysisState::Unstarted
+        ));
+        assert_eq!(session.unit_counts().coordinator_units, 2);
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn pants_coordinator_help_records_the_same_charges_as_a_worker() {
+        let source = "(defn f [] (if true (+ 1 2) 0))";
+        let (coordinator, units) = queued_session(source);
+        let id = units["cljs.user/f"];
+        coordinator.analyze_queued(None);
+        let events = |session: &CompilationSession, id: usize| {
+            let c = session.shared.lock();
+            let charges = c.units[id].charges.as_ref().unwrap();
+            assert!(
+                charges
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, crate::macro_host::UnitEvent::Poll(_)))
+            );
+            format!("{:?}", charges.events)
+        };
+        let expected = events(&coordinator, id);
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let (worker, units, environment) = registered_with_host(source, host);
+        let view = WorkerView::new(
+            worker.shared.clone(),
+            MacroHost::bind(environment, None).unwrap(),
+        )
+        .unwrap();
+        let id = units["cljs.user/f"];
+        view.analyze(id, None).unwrap();
+        assert_eq!(events(&worker, id), expected);
+    }
+
+    #[cfg(all(feature = "bbp-macros", any(light_v8, light_quickjs)))]
+    #[test]
+    fn reference_engine_coordinator_leaves_queued_analysis_on_workers() {
+        let (session, units) = queued_session("(defn pending [] 1)");
+        session.pool.borrow_mut().as_mut().unwrap().main = MacroHost::new().environment();
+        session.analyze_queued(None);
+        assert_eq!(session.unit_counts().coordinator_units, 0);
+        assert!(matches!(
+            session.shared.lock().units[units["cljs.user/pending"]].state,
+            AnalysisState::Unstarted
+        ));
     }
 
     #[cfg(feature = "bbp-macros")]

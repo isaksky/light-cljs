@@ -224,6 +224,8 @@ pub struct DeferredUnitCounts {
     /// and the compile-time units its workers' engines initialized, each
     /// once per isolate that demanded it.
     pub pooled: usize,
+    /// Pooled units the Pants coordinator claimed before a worker started.
+    pub coordinator_units: usize,
     pub worker_isolates: usize,
     pub worker_isolate_startup: std::time::Duration,
     pub worker_unit_time: std::time::Duration,
@@ -818,6 +820,9 @@ impl CompileStats {
             line("pool.engine-workers", &units.pool_engine_workers);
             line("pool.engine-participants", &units.pool_engine_participants);
             line("pool.engine-less-units", &units.engine_less_units);
+            if self.native_helpers.contexts > 0 || units.coordinator_units > 0 {
+                line("pool.coordinator-units", &units.coordinator_units);
+            }
             line("time.pool-ms", &ms(units.pool_time));
             // The share of the workers' time spent analyzing units.
             let capacity = units.pool_time.as_secs_f64() * units.pool_workers as f64;
