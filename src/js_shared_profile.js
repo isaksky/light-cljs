@@ -162,8 +162,10 @@
   //@unit sharedMethodKeys
   // The resolved keys `coreMethod` makes for the core protocol dispatchers,
   // which only their dispatchers hold: `sharedProfileBoot` fills their memos
-  // and seals them with the keys of `methodKeys`.
-  const sharedMethodKeys = [];
+  // and seals them with the keys of `methodKeys`. `maxArity` is the largest
+  // arity a dispatcher declares (`invokeProtocol`: 22), so the boot fills a
+  // slot for every arity a dispatcher can ask for.
+  const sharedMethodKeys = Object.assign([], {maxArity: 0});
   //@unit sharedProfileBoot
   // The end of the boot: what every top-level binding holds is sealed in
   // place (`__rt.seal`, shallow; walked deeply through the properties and
@@ -182,11 +184,14 @@
   // light-cljs-649 moves the dispatch state to engine tables.
   function sharedProfileBoot(exports) {
     // The lazily filled memos of the resolved method keys, filled now:
-    // the slot of every arity a dispatcher can ask for, the dispatch cell
-    // and the public-method info (design point 5).
+    // the slot of every arity a dispatcher can ask for (through the
+    // largest a dispatcher declares, at least the 21 of the runtime's own
+    // readers), the dispatch cell and the public-method info (design
+    // point 5).
+    const maxArity = Math.max(21, sharedMethodKeys.maxArity);
     for (const key of [...methodKeys, ...sharedMethodKeys]) {
       if (key == null) continue;
-      for (let arity = 0; arity <= 21; arity++) keySlot(key, arity);
+      for (let arity = 0; arity <= maxArity; arity++) keySlot(key, arity);
       key.cell ??= dispatchCell(key.key);
       key.cell.protocol ??= coreProtocolsByName.get(key.name) ?? null;
       key.info ??= publicMethodInfo(key.key);
@@ -608,6 +613,7 @@
     __rt.seal(arities);
     const resolved = protocolHooks.methodKey?.(key);
     if (resolved !== undefined) sharedMethodKeys.push(resolved);
+    sharedMethodKeys.maxArity = Math.max(sharedMethodKeys.maxArity, ...arities);
     const dispatch = function (value, ...args) {
       const arity = arities.length === 1 ? arities[0] : arguments.length;
       if (!arities.includes(arity)) return invalidArity(arguments.length);

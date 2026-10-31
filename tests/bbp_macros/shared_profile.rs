@@ -359,6 +359,32 @@ fn shared_profile_realization_state() {
     );
 }
 
+/// The method-key memos the boot fills and seals cover every arity a
+/// dispatcher declares: `invokeProtocol` declares arities 1 to 22, so a
+/// receiver implementing `cljs$core$IFn$_invoke$arity$22` is invoked with
+/// 21 arguments through the sealed slots, where a missing slot would be
+/// written at call time and throw (light-cljs-679).
+#[test]
+fn shared_profile_invoke_protocol_max_arity() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const receiver = {{cljs$core$IFn$_invoke$arity$22: function (...args) {{ return args.length + ':' + args[21]; }}, \
+               cljs$core$IFn$_invoke$arity$2: function (self, x) {{ return 'one ' + x; }}}}; \
+             const args = Array.from({{length: 21}}, (_, i) => i); \
+             return [core.invokeProtocol(receiver, ...args), core.invokeProtocol(receiver, 'x'), \
+               core.invokeProtocol(receiver, ...args.slice(0, 20), 'last')].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "22:20 one x 22:last"
+    );
+}
+
 /// Keywords are engine keyword forms: one the engine made and one the
 /// runtime's `keyword` makes are recognized by `keyword?`, named, printed,
 /// equal and hashed alike through the real units.
