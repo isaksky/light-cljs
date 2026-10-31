@@ -241,6 +241,97 @@ fn real_core_computes_with_imported_scalar_occurrences() {
     }
 }
 
+#[test]
+fn real_core_reads_imported_nil_in_function_combinators() {
+    let source = r#"
+      (defmacro f [x] ((fnil identity 9) x))
+      (defmacro defaults [n f a b]
+        (list 'quote
+          [((fnil vector a b a) n n n n)
+           (apply (fnil vector a b) [n n f a])
+           ((fnil identity a) f)
+           ((complement identity) n) ((complement identity) f)
+           ((complement identity) a)]))
+      (js/console.log (f nil))
+      (js/console.log (pr-str (defaults nil false 7 8)))
+    "#;
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host(MacroCore::Real))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        program_output(&emit_js(&program)),
+        "9\n[[7 8 7 nil] [7 8 false 7] false true true false]\n"
+    );
+}
+
+#[test]
+fn real_core_keep_reads_imported_nil_in_lazy_and_transducer_paths() {
+    let large = ["nil", "false", "1", "2"].repeat(10).join(" ");
+    let source = format!(
+        r#"
+      (defmacro keep-values [v l large]
+        (list 'quote
+          [(vec (keep identity v)) (vec (keep identity l))
+           (vec (keep-indexed (fn [_ x] x) v))
+           (into [] (keep identity) v)
+           (into [] (keep-indexed (fn [_ x] x)) l)
+           (count (keep identity large))
+           (count (keep-indexed (fn [_ x] x) large))
+           (count (into [] (keep identity) large))]))
+      (js/console.log (pr-str (keep-values [nil false \a "a"] (nil false \a "a") [{large}])))
+    "#
+    );
+    let program = analyze_with_macros(
+        &source,
+        &parse(&source).unwrap(),
+        &mut host(MacroCore::Real),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        program_output(&emit_js(&program)),
+        "[[false \"a\" \"a\"] [false \"a\" \"a\"] [false \"a\" \"a\"] [false \"a\" \"a\"] [false \"a\" \"a\"] 30 30 30]\n"
+    );
+}
+
+#[test]
+fn real_core_reads_imported_partition_and_stride_sizes() {
+    let source = r#"
+      (defmacro sized [n step]
+        (list 'quote
+          [(vec (partitionv n [1 2 3 4]))
+           (vec (partitionv n step [1 2 3 4]))
+           (vec (partitionv n n [9] [1 2 3]))
+           (vec (partitionv-all n [1 2 3]))
+           (into [] (partitionv-all n) [1 2 3])
+           (into [] (partition-all n) [1 2 3])
+           (vec (take-nth n [0 1 2 3 4]))
+           (into [] (take-nth n) [0 1 2 3 4])
+           (vec (nthrest [0 1 2 3] n)) (vec (nthnext [0 1 2 3] n))]))
+      (js/console.log (pr-str (sized 2 1)))
+    "#;
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host(MacroCore::Real))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        program_output(&emit_js(&program)),
+        "[[[1 2] [3 4]] [[1 2] [2 3] [3 4]] [[1 2] [3 9]] [[1 2] [3]] [[1 2] [3]] [[1 2] [3]] [0 2 4] [0 2 4] [2 3] [2 3]]\n"
+    );
+}
+
+#[test]
+fn real_core_iteration_reads_imported_nil_without_erasing_values() {
+    let source = r#"
+      (defmacro iterated [n a]
+        (list 'quote
+          [(vec (take 3 (iteration (constantly n))))
+           (into [] (take 3) (iteration (constantly n)))
+           (vec (take 3 (iteration (constantly a) :kf (constantly n))))
+           (into [] (take 3) (iteration (constantly a) :kf (constantly n)))]))
+      (js/console.log (pr-str (iterated nil 7)))
+    "#;
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host(MacroCore::Real))
+        .unwrap_or_else(|e| panic!("macro expansion: {e}"));
+    assert_eq!(program_output(&emit_js(&program)), "[[] [] [7] [7]]\n");
+}
+
 /// `*ns*` in a macro is the evaluator's namespace context on the real core
 /// too, as on the port: the calling namespace while a macro runs and while
 /// the helper it reads is initialized on demand inside it, and the caller's
@@ -307,6 +398,10 @@ fn real_core_preserves_selected_scalar_occurrences() {
             (2, "(double b)"),
             (1, "(min a)"),
             (2, "(max b)"),
+            (1, "((fnil identity b) a)"),
+            (2, "((fnil identity b) nil)"),
+            (1, "(first (keep identity [nil a b]))"),
+            (1, "(first (into [] (keep identity) [nil a b]))"),
         ] {
             let source = format!("(fn [form env a b] {body})");
             let program =

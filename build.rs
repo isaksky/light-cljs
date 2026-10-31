@@ -931,14 +931,17 @@ fn shared_scalar_reads(base: &str) -> String {
                     "function range(start, end, step = 1) {".into(),
                     "start,end,step",
                 ),
-                "take" | "drop" => (format!("function {name}(n, coll) {{"), "n"),
+                "take" | "drop" | "takeNth" => (format!("function {name}(n, coll) {{"), "n"),
+                "nthrest" | "nthnext" => (format!("function {name}(value, n) {{"), "n"),
                 "isEven" | "hostRand" | "hostRandInt" => (format!("function {name}(n) {{"), "n"),
                 "bitCount" => ("function bitCount(v) {".into(), "v"),
                 "symbolCore" | "keywordCore" => (
                     format!("function {name}(namespace, name) {{"),
                     "namespace,name",
                 ),
-                "partition" => ("function partition(n, step, pad, coll) {".into(), "n,step"),
+                "partition" | "partitionV" => {
+                    (format!("function {name}(n, step, pad, coll) {{"), "n,step")
+                }
                 _ => (String::new(), ""),
             };
             if !inputs.is_empty() {
@@ -979,10 +982,21 @@ fn shared_scalar_reads(base: &str) -> String {
                 "lookup" | "contains" => vec![("const store = vectors.get(value);", "/*scalar-inputs*/key = sharedScalar(key); /*end-scalar-inputs*/const store = vectors.get(value);".into())],
                 "get" => vec![("if (Array.isArray(value)) {", "if (Array.isArray(value)) {/*scalar-inputs*/key = sharedScalar(key); /*end-scalar-inputs*/".into())],
                 "identical" => vec![("a === b", format!("{} === {}", scalar("a"), scalar("b")))],
+                "fnil" => vec![("x == null", format!("{} == null", scalar("x")))],
+                "indexedSequence" => vec![("value != null", format!("{} != null", scalar("value")))],
+                "indexedTransform" => vec![("value == null", format!("{} == null", scalar("value")))],
+                "complement" => vec![("value == null", format!("{} == null", scalar("value"))),
+                    ("value === false", format!("{} === false", scalar("value")))],
+                "bufferedTransform" => vec![("buffer.length === group.n", format!("buffer.length === {}", scalar("group.n")))],
+                "iteration" => vec![("value != null", format!("{} != null", scalar("value"))),
+                    ("key == null", format!("{} == null", scalar("key")))],
                 _ => vec![],
             } {
                 // A few reads occur twice in the same canonical expression.
-                let expected = if name == "char" && from == "typeof x" { 2 } else { 1 };
+                let expected = match (name, from) {
+                    ("char", "typeof x") | ("indexedSequence", "value != null") | ("iteration", "key == null") => 2,
+                    _ => 1,
+                };
                 assert_eq!(body.matches(from).count(), expected, "scalar adapter {name}: {from}");
                 body = body.replace(from, &to);
             }

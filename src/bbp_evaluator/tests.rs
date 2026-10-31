@@ -1829,6 +1829,94 @@ fn native_protocol_tables_stay_small_in_the_shared_heap() {
 }
 
 #[test]
+fn real_core_nil_selectors_preserve_imported_occurrences() {
+    let evaluator = BbpEvaluator::new(EvaluatorOptions {
+        macro_core: crate::evaluator::MacroCore::Real,
+        timeout: std::time::Duration::from_secs(600),
+        ..Default::default()
+    })
+    .unwrap();
+    // Direct imports exercise wrapped nil even when compiled macro calls can
+    // pass a primitive nil. Selection must return the original fallback/item.
+    for expression in [
+        "c.fnil(c.identity, b)(n)",
+        "c.fnil(c.identity, n)(b)",
+        "c.first(c.keep(c.identity, c.vector(n, b)))",
+        "c.first(c.keepIndexed((i, x) => x, c.list(n, b)))",
+        "c.first(c.into(c.vector(), c.keep(c.identity), c.vector(n, b)))",
+        "c.first(c.into(c.vector(), c.keepIndexed((i, x) => x), c.vector(n, b)))",
+        "c.first(c.iteration(() => b, c.keyword(null, 'kf'), () => n))",
+    ] {
+        let function = evaluator
+            .evaluate_unit(&format!(
+                "rt => (n, b) => {{ const c = rt.core; return {expression}; }}"
+            ))
+            .unwrap();
+        for kind in [
+            D::Integer(9_007_199_254_740_993),
+            D::Character(b'a' as u16),
+            D::Boolean(false),
+        ] {
+            let inputs = [Datum::new(D::Nil), Datum::new(kind)];
+            let arguments = inputs
+                .iter()
+                .map(|input| evaluator.import_data(input, Default::default()).unwrap())
+                .collect::<Vec<_>>();
+            let result = evaluator.call(function, &arguments).unwrap();
+            let output = evaluator.export_data(result, Default::default()).unwrap();
+            assert_eq!(
+                output.identity(),
+                inputs[1].identity(),
+                "{expression}: {inputs:?}"
+            );
+            evaluator.release(result).unwrap();
+            for argument in arguments {
+                evaluator.release(argument).unwrap();
+            }
+        }
+        evaluator.release(function).unwrap();
+    }
+    let arguments = [D::Nil, D::Boolean(false)]
+        .into_iter()
+        .map(|kind| {
+            evaluator
+                .import_data(&Datum::new(kind), Default::default())
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    for expression in [
+        "c.complement(c.identity)(n)",
+        "c.complement(c.identity)(b)",
+        "c.count(c.take(3, c.iteration(() => n))) === 0",
+        "c.count(c.into(c.vector(), c.take(3), c.iteration(() => n))) === 0",
+        "c.count(c.take(3, c.iteration(() => b, c.keyword(null, 'kf'), () => n))) === 1",
+        "c.count(c.into(c.vector(), c.take(3), c.iteration(() => b, c.keyword(null, 'kf'), () => n))) === 1",
+    ] {
+        let function = evaluator
+            .evaluate_unit(&format!(
+                "rt => (n, b) => {{ const c = rt.core; return {expression}; }}"
+            ))
+            .unwrap();
+        let result = evaluator.call(function, &arguments).unwrap();
+        assert!(
+            matches!(
+                evaluator
+                    .export_data(result, Default::default())
+                    .unwrap()
+                    .kind(),
+                D::Boolean(true)
+            ),
+            "{expression}"
+        );
+        evaluator.release(result).unwrap();
+        evaluator.release(function).unwrap();
+    }
+    for argument in arguments {
+        evaluator.release(argument).unwrap();
+    }
+}
+
+#[test]
 fn identity_numeric_conversions_keep_imported_scalar_occurrences() {
     for macro_core in [
         crate::evaluator::MacroCore::Port,
