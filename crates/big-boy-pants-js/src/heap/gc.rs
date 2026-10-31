@@ -36,12 +36,10 @@
 //! fixpoint, including chains and cycles, without rescanning all tables.
 //! Conditional marking/clearing costs expected O(live objects + strong
 //! edges + entries/weak slots in reached owners), with O(live objects +
-//! reached entries) temporary storage; sweep enumerates live-but-unmarked
-//! bits per segment. Objects are marked when queued, so each body is queued
-//! and traced once. A queued snapshot retains the validated frozen flag.
-//! Mutable bodies trace strong edges and discover conditional storage under
-//! one access word; frozen bodies need none. A marked atom's retired boxes
-//! are taken during its body visit.
+//! reached entries) temporary storage; the existing sweep scans all slots.
+//! The mark visits each reached object's slot once: under one access word
+//! it traces the strong edges and runs the discovery pass (and takes a
+//! marked atom's retired boxes).
 //!
 //! Before sweep, reached owners lose entries with unmarked keys and their
 //! weak slots with unmarked targets are emptied. Cleared notifying slots
@@ -264,7 +262,7 @@ impl std::hash::Hasher for IdentityHasher {
 pub(crate) type IdentityBuild = std::hash::BuildHasherDefault<IdentityHasher>;
 
 /// What one collection has marked. Objects carry their mark bit in their
-/// segment bitmap ([`super::storage`]); property keys are marked by dense slot
+/// table slot ([`super::storage`]); property keys are marked by dense slot
 /// in a bitset and symbol identities in a set, so marking costs no hashing
 /// per object.
 #[derive(Default)]
@@ -273,48 +271,23 @@ struct Marks {
     symbols: HashSet<u64, IdentityBuild>,
 }
 
-enum GreyEdge<'t> {
-    Object(super::storage::MarkedObject<'t>),
-    Symbol(u64),
-    PropertyKey(crate::object::PropertyKey),
-}
-
-impl GreyEdge<'_> {
-    fn edge(&self) -> TraceEdge {
-        match self {
-            Self::Object(marked) => TraceEdge::Object(marked.id()),
-            Self::Symbol(id) => TraceEdge::Symbol(*id),
-            Self::PropertyKey(key) => TraceEdge::PropertyKey(*key),
-        }
-    }
-}
-
 #[inline]
-fn enqueue<'t>(
-    objects: &'t super::ObjectTable,
+fn enqueue(
+    objects: &super::ObjectTable,
     marks: &Marks,
-    grey: &mut Vec<GreyEdge<'t>>,
+    grey: &mut Vec<TraceEdge>,
     traced: &mut usize,
-    live: &mut usize,
     edge: TraceEdge,
 ) {
     *traced += 1;
-    let edge = match edge {
-        TraceEdge::Object(id) => {
-            let Some(marked) = objects.mark(id) else {
-                return;
-            };
-            *live += 1;
-            GreyEdge::Object(marked)
-        }
-        TraceEdge::PropertyKey(key) => {
-            if marks.key_marked(key) {
-                return;
-            }
-            GreyEdge::PropertyKey(key)
-        }
-        TraceEdge::Symbol(id) => GreyEdge::Symbol(id),
+    let marked = match edge {
+        TraceEdge::Object(id) => objects.marked_slot(id),
+        TraceEdge::PropertyKey(key) => marks.key_marked(key),
+        TraceEdge::Symbol(_) => false,
     };
+    if marked {
+        return;
+    }
     grey.push(edge);
 }
 
@@ -322,7 +295,7 @@ impl Marks {
     /// Mark a non-object edge; false if it was already marked.
     fn mark_other(&mut self, edge: TraceEdge) -> bool {
         match edge {
-            TraceEdge::Object(_) => unreachable!("objects are marked in segment bitmaps"),
+            TraceEdge::Object(_) => unreachable!("objects are marked in their slots"),
             TraceEdge::Symbol(identity) => self.symbols.insert(identity),
             TraceEdge::PropertyKey(key) => {
                 let slot = key.slot() as usize;
@@ -1415,7 +1388,7 @@ impl Heap {
         let sources = registry.live();
 
         let code_marking = CodeMarking::begin();
-        let mut root_edges = Vec::new();
+        let mut grey = Vec::new();
         let mut root_count = 0;
         Self::trace_all_roots(
             &roots,
@@ -1425,20 +1398,15 @@ impl Heap {
             &self.realm,
             &mut |_, id| {
                 root_count += 1;
-                root_edges.push(id);
+                grey.push(id);
             },
         );
 
         let mut objects = lock(&self.objects);
         let mut live = 0;
-        // Objects are marked in segment bitmaps (no hashing per object); keys
+        // Objects are marked in their slots (no hashing per object); keys
         // and symbols in `marks`.
         let mut marks = Marks::default();
-        let mut grey = Vec::with_capacity(root_edges.len());
-        let mut traced = 0;
-        for edge in root_edges {
-            enqueue(&objects, &marks, &mut grey, &mut traced, &mut live, edge);
-        }
         // Only reached owners contribute entries. Each waiting entry is
         // awakened once, exactly when its key first becomes marked.
         let mut pending: HashMap<TraceEdge, Vec<Value>, IdentityBuild> = HashMap::default();
@@ -1450,21 +1418,21 @@ impl Heap {
         let mut retired = Vec::new();
         // Count every reported edge check, including redundant marked edges
         // filtered before the grey stack, and values awakened by their key.
-        while let Some(queued) = grey.pop() {
-            let edge = queued.edge();
-            match queued {
-                GreyEdge::Object(marked) => {
-                    let id = marked.id();
-                    // Marking claimed this object's one body visit before
-                    // enqueueing it. Trace and discover conditional storage.
-                    objects.trace_marked(
-                        marked,
-                        &mut |child| {
-                            enqueue(&objects, &marks, &mut grey, &mut traced, &mut live, child)
-                        },
+        let mut traced = root_count;
+        while let Some(edge) = grey.pop() {
+            match edge {
+                TraceEdge::Object(id) => {
+                    // One slot visit marks, traces and discovers the
+                    // object's conditional storage.
+                    if !objects.mark(
+                        id,
+                        &mut |child| enqueue(&objects, &marks, &mut grey, &mut traced, child),
                         &mut discovery,
                         &mut retired,
-                    );
+                    ) {
+                        continue;
+                    }
+                    live += 1;
                     if std::mem::take(&mut discovery.has_storage) {
                         conditional_owners.push(id);
                     }
@@ -1472,14 +1440,7 @@ impl Heap {
                         for (key, value) in discovery.entries.drain(..) {
                             if marks.contains(&objects, key) {
                                 value.trace(&mut |child| {
-                                    enqueue(
-                                        &objects,
-                                        &marks,
-                                        &mut grey,
-                                        &mut traced,
-                                        &mut live,
-                                        child,
-                                    )
+                                    enqueue(&objects, &marks, &mut grey, &mut traced, child)
                                 });
                             } else {
                                 pending.entry(key).or_default().push(value);
@@ -1487,7 +1448,7 @@ impl Heap {
                         }
                     }
                 }
-                GreyEdge::Symbol(_) | GreyEdge::PropertyKey(_) => {
+                TraceEdge::Symbol(_) | TraceEdge::PropertyKey(_) => {
                     if !marks.mark_other(edge) {
                         continue;
                     }
@@ -1496,12 +1457,9 @@ impl Heap {
             if !pending.is_empty()
                 && let Some(values) = pending.remove(&edge)
             {
-                values.trace(&mut |child| {
-                    enqueue(&objects, &marks, &mut grey, &mut traced, &mut live, child)
-                });
+                values.trace(&mut |child| enqueue(&objects, &marks, &mut grey, &mut traced, child));
             }
         }
-        drop(grey);
         drop(code_marking);
         // Empty grey plus no awakened values is the ephemeron fixpoint.
         // Clear before sweep, while all identities and marks are valid.
