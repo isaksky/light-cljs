@@ -1482,3 +1482,23 @@ Engine all-target lint additionally reports the existing `chunks_exact` use in
 the latter remains when the three categories are allowed. These are lint
 limitations, not a strict-lint pass. No whole suite was rerun for these targeted
 view and publication changes.
+
+Integrating the accepted scalar-occurrence repair (light-cljs-708) keeps input
+occurrences in the bridge and reads scalars at canonical computation boundaries.
+The new engine views compose with those reads. Two additional boundaries in
+this profile needed adaptation: `identical?` compares the underlying engine
+reference for non-scalar occurrences as well, and engine atom validator guards
+read an imported nil without replacing the stored validator. The constructor,
+reset and validator-removal regression fails before the latter fix and passes
+afterward, including a raw identity check of the returned nil occurrence.
+
+At `a47625f2`, the composed scalar/kind checks pass 81 tests in the Pants build
+and 82 with QuickJS (the latter also runs the QuickJS bootstrap comparison).
+The default manifest passes 21 tests and the all-engine profile/manifest plus
+regex-identity selection passes 55. After the atom nil fix, 27 selected atom,
+publication and manifest tests pass in the all-engine build. Integrating the
+accepted positional map repair (light-cljs-709) at `e27412c4` then passes all
+69 shared-profile, real-core and manifest tests in the Pants build. This includes
+duplicate and undefined map entries, engine record metadata, and the complete
+profile publication check. These bounded runs reuse unchanged engine sealing
+evidence; none is a new full-suite count.
