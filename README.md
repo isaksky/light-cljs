@@ -788,6 +788,13 @@ print options and resource limits. See [examples/embedding.rs](examples/embeddin
   ([benchmarks/compiler.md](benchmarks/compiler.md#kind-tables-for-the-seq-operations--october-18-2026)).
 - **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
   and run in an embedded JavaScript engine.
+- **Require closure (Pants build):** a namespace's macros see only its require
+  closure, itself and what it requires, directly or not. Touching compile-time
+  state (an atom a Var's definition made, a multimethod's table) of a namespace
+  outside it is an error that names the missing require, and `find-ns` and
+  `all-ns` do not list namespaces outside it; this lets compile-time effects in
+  unrelated namespaces run in parallel
+  ([docs/compiler-concurrency.md](docs/compiler-concurrency.md), "Effect lanes").
 - **Embedded engines:** the macro environment provides ECMAScript intrinsics only:
   no DOM, Node APIs, filesystem, network or process access unless the host supplies
   them, and no timers. `NamePolicy` restricts name resolution but is not a
