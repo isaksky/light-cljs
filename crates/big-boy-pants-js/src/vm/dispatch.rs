@@ -671,7 +671,7 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
     let Value::Object(id) = f else {
         return Err(Fault::NotCallable(f.type_name()));
     };
-    match direct_callee(heap, *id, |code| state.code_cache.get(code))? {
+    let known_builtin = match direct_callee(heap, *id, |code| state.code_cache.get(code))? {
         Some(Callee::Code(id, code)) => {
             if method {
                 state.remove_operand(argc + 1)?;
@@ -708,16 +708,23 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
                 state.replace(argc + 1 + usize::from(method), result)?;
                 return Ok(Flow::Next);
             }
+            Some(which)
         }
-        _ => {}
-    }
-    call_slow(state, heap, argc, method)
+        _ => None,
+    };
+    call_slow(state, heap, argc, method, known_builtin)
 }
 
 /// Forwarding and native-call temporaries must not burden ordinary VM
 /// recursion on 64 KiB workers. This re-reads only task-owned operands.
 #[inline(never)]
-fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Result<Flow, Fault> {
+fn call_slow(
+    state: &mut VmState,
+    heap: &Heap,
+    argc: usize,
+    method: bool,
+    known_builtin: Option<Builtin>,
+) -> Result<Flow, Fault> {
     let task = state.diag.task;
     let operands = top_operands(state, argc + 1 + usize::from(method))?;
     let (this, rest) = match operands.split_first() {
@@ -746,13 +753,24 @@ fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Res
         super::native::start_direct_eval(heap, state, site, &args, popped)?;
         return Ok(Flow::FrameChanged);
     }
-    let (max_args, max_hops) = state.forward_limits(state.stack_len() - popped);
     let forward = builtin::Forward {
         callee: f.clone(),
         this,
         args: args.to_vec(),
     };
-    match resolve(heap, task, forward, max_args, max_hops, &state.code_cache)? {
+    let resolved = match known_builtin {
+        // All other builtins have no synchronous forwarding hop. Their
+        // direct identity and leaf miss were established above, with no
+        // intervening JavaScript that could change the operands.
+        Some(which) if which != Builtin::FunctionPrototypeCall => {
+            Resolved::Direct(Callee::Builtin(which), forward)
+        }
+        _ => {
+            let (max_args, max_hops) = state.forward_limits(state.stack_len() - popped);
+            resolve(heap, task, forward, max_args, max_hops, &state.code_cache)?
+        }
+    };
+    match resolved {
         Resolved::Direct(Callee::Code(id, code), forward) => {
             let keep = state.stack_len() - popped;
             state.truncate_operands(keep)?;
@@ -763,8 +781,9 @@ fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Res
             Ok(Flow::FrameChanged)
         }
         Resolved::Direct(Callee::Builtin(which), forward) => {
-            if let Some(result) =
-                native::try_builtin_leaf(heap, task, which, &forward.this, &forward.args)?
+            if known_builtin.is_none_or(|which| which == Builtin::FunctionPrototypeCall)
+                && let Some(result) =
+                    native::try_builtin_leaf(heap, task, which, &forward.this, &forward.args)?
             {
                 state.replace(popped, result)?;
                 return Ok(Flow::Next);
