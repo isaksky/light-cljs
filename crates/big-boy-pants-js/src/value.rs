@@ -56,11 +56,17 @@ impl Value {
     /// numbers, booleans or object ids, which own nothing.
     #[inline(always)]
     pub(crate) fn release(self) {
-        if matches!(self, Value::String(_) | Value::Symbol(_) | Value::BigInt(_)) {
-            drop(self);
-        } else {
-            // Nothing to release: the remaining variants own no storage.
-            std::mem::forget(self);
+        match self {
+            Value::String(_) | Value::Symbol(_) | Value::BigInt(_) => drop(self),
+            // Keep this exhaustive so a new owning variant requires an
+            // explicit decision about releasing its storage.
+            Value::Undefined
+            | Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::Object(_) => {
+                std::mem::forget(self);
+            }
         }
     }
 
@@ -255,5 +261,73 @@ mod tests {
         assert!(Value::Object(ObjectId::from_index(0)).truthy());
         assert!(!Value::String(JsString::from("")).truthy());
         assert!(Value::String(JsString::from("0")).truthy());
+    }
+
+    #[test]
+    fn releasing_owned_primitives_refunds_only_the_last_reference() {
+        let heap = crate::heap::Heap::with_byte_limit(1 << 20);
+        let baseline = heap.byte_budget().used();
+        let values = [
+            Value::String(JsString::copy_units(&heap, &[120; 1000]).unwrap()),
+            Value::Symbol(
+                JsSymbol::new_accounted(&heap, Some("description".into()))
+                    .ok()
+                    .unwrap(),
+            ),
+            Value::BigInt(
+                JsBigInt::accounted(&heap, 128, || {
+                    JsBigInt::from_sign_magnitude(false, vec![u32::MAX; 4])
+                })
+                .ok()
+                .unwrap(),
+            ),
+        ];
+        for value in &values {
+            let charged = heap.byte_budget().used();
+            value.clone().release();
+            assert_eq!(heap.byte_budget().used(), charged);
+        }
+        for value in values {
+            let charged = heap.byte_budget().used();
+            value.release();
+            assert!(heap.byte_budget().used() < charged);
+        }
+        assert_eq!(heap.byte_budget().used(), baseline);
+    }
+
+    #[test]
+    fn truncating_operands_preserves_survivors_and_refunds_removed_values() {
+        let heap = crate::heap::Heap::with_byte_limit(1 << 20);
+        let baseline = heap.byte_budget().used();
+        let retained = Value::String(JsString::copy_units(&heap, &[121; 1000]).unwrap());
+        let retained_charge = heap.byte_budget().used();
+        let mut values = vec![
+            retained.clone(),
+            Value::Undefined,
+            Value::Null,
+            Value::Number(42.0),
+            Value::Bool(true),
+            Value::Object(ObjectId::from_index(0)),
+            Value::String(JsString::copy_units(&heap, &[120; 1000]).unwrap()),
+            Value::Symbol(JsSymbol::new_accounted(&heap, None).ok().unwrap()),
+            Value::BigInt(
+                JsBigInt::accounted(&heap, 128, || {
+                    JsBigInt::from_sign_magnitude(false, vec![u32::MAX; 4])
+                })
+                .ok()
+                .unwrap(),
+            ),
+        ];
+        let charged = heap.byte_budget().used();
+        Value::truncate(&mut values, 100);
+        assert_eq!(values.len(), 9);
+        assert_eq!(heap.byte_budget().used(), charged);
+        Value::truncate(&mut values, 1);
+        assert_eq!(values.as_slice(), std::slice::from_ref(&retained));
+        assert_eq!(heap.byte_budget().used(), retained_charge);
+        retained.release();
+        Value::truncate(&mut values, 0);
+        assert!(values.is_empty());
+        assert_eq!(heap.byte_budget().used(), baseline);
     }
 }
