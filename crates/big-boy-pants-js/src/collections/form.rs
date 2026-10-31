@@ -4122,12 +4122,32 @@ fn scalar_hash(v: &Value) -> i32 {
         Value::Bool(false) => 1237,
         Value::Number(n) => number_hash(*n),
         Value::String(s) => hash_int(string_hash(s.code_units())),
+        // A host object hashes by its heap identity, the one number
+        // `__rt.identityHash` answers, so a form that holds it folds the
+        // same hash the runtime gives it directly (light-cljs-647).
+        Value::Object(id) => object_identity_hash(*id),
         // Outside the supported values: a private hash consistent with `===`.
         other => {
             let h = super::map::key_hash(other);
             (h ^ (h >> 32)) as u32 as i32
         }
     }
+}
+
+/// The identity hash of the heap object `id`: a 32-bit hash of its slot
+/// and generation ([`ObjectId::to_bits`]), the same in every task for the
+/// object's lifetime and never that of another object allocated in its
+/// slot after its collection. Never 0, which is a primitive's. It is
+/// `__rt.identityHash` ([`crate::vm::intrinsics::identity_hash`]) and the
+/// hash of a host object inside a form ([`scalar_hash`]), so a value
+/// hashes the same whether the runtime reaches it directly or the engine
+/// meets it nested (light-cljs-647).
+pub(crate) fn object_identity_hash(id: ObjectId) -> i32 {
+    let bits = id.to_bits();
+    // Fold the generation into the slot index: a reused slot hashes anew.
+    let mixed = (bits ^ (bits >> 32)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let hash = (mixed >> 32) as u32 as i32;
+    if hash == 0 { 1 } else { hash }
 }
 
 /// Hash of a child whose form (if any) already has its hash cached.

@@ -270,6 +270,32 @@ fn shared_profile_runtime_sequences_cross_native_boundary() {
     );
 }
 
+/// A host object hashes the same whether the runtime hashes it directly
+/// (`identityHash`) or the engine hashes it inside a form (a vector's
+/// element through `formHash`): an engine vector and a runtime-owned list of
+/// the same function are equal and hash alike, so either finds the other's
+/// entry in a map.
+#[test]
+fn shared_profile_equal_sequences_have_equal_host_element_hashes() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const f = () => 1, o = {{}}; \
+             const v = core.vector(f), l = core.list(f); \
+             return [core.equal(v, l), core.hash(v) === core.hash(l), core.get(core.hashMap(v, 42), l), \
+               core.get(core.hashMap(l, 43), v), core.hash(core.vector(o)) === core.hash(core.list(o)), \
+               core.hash(f) === __rt.identityHash(f), core.hash(core.vector(f)) === core.hash(core.vector(f))].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true true 42 43 true true true"
+    );
+}
+
 /// The lazy and delay views reflect the engine once-cell's state: checking
 /// `realized?` runs no thunk, a successful realization is reported once
 /// made, a throwing thunk leaves the cell pending, and a `LazySeq` made

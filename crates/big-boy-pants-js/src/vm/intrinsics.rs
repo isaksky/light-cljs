@@ -954,16 +954,15 @@ fn strict_form_op(
 /// allocated in its slot after its collection; 0 for a primitive. Needs no
 /// table, so nothing retains a hashed object or grows with the count
 /// hashed. The runtime's `hash` of a host object reads it where the V8
-/// profile counts in a WeakMap (light-cljs-647/661).
+/// profile counts in a WeakMap (light-cljs-647/661). It is the hash the
+/// engine folds for a host object inside a form
+/// ([`crate::collections::form::object_identity_hash`]), so a vector of
+/// a function hashes as the runtime's list of it does.
 pub(crate) fn identity_hash(value: &Value) -> i32 {
-    let Value::Object(id) = value else {
-        return 0;
-    };
-    let bits = id.to_bits();
-    // Fold the generation into the slot index: a reused slot hashes anew.
-    let mixed = (bits ^ (bits >> 32)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    let hash = (mixed >> 32) as u32 as i32;
-    if hash == 0 { 1 } else { hash }
+    match value {
+        Value::Object(id) => crate::collections::form::object_identity_hash(*id),
+        _ => 0,
+    }
 }
 
 /// Early VM tests (hand-assembled bytecode). Cross-task use while the owner

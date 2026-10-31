@@ -478,3 +478,29 @@ fn seal_reachable_seals_captured_functions_records_and_default_prototypes() {
     .unwrap();
     assert_eq!(probe.string().unwrap().to_string_lossy(), "true");
 }
+
+/// A host object's identity hash is one number wherever it is hashed: a
+/// deftype instance, whose `=` is identity, hashes through `formHash` to
+/// the number `identityHash` answers, and a form that holds a host object
+/// folds that same number (tests/bbp_macros/shared_profile.rs checks an
+/// engine vector against the runtime's list of the same function).
+#[test]
+fn form_hashes_fold_the_identity_hash_of_host_objects() {
+    let rt = Runtime::new();
+    let out = boot(
+        &rt,
+        "const T = __rt.structType('test/T', __rt.formVector(), false, null); \
+         const instance = __rt.structNew(T), f = () => 1, o = {}; \
+         return __rt.formVector( \
+           __rt.formHash(instance) === __rt.identityHash(instance), \
+           __rt.formHash(__rt.formVector(f)) === __rt.formHash(__rt.formVector(f)), \
+           __rt.formHash(__rt.formVector(f)) !== __rt.formHash(__rt.formVector(o)));",
+    );
+    let views = rt.scope(|s| {
+        let v = s.local(&out).unwrap();
+        (0..3)
+            .map(|i| s.view(s.form_nth(v, i).unwrap()))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(views, vec![ValueView::Bool(true); 3]);
+}
