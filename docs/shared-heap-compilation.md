@@ -2594,6 +2594,77 @@ all 1,996 and 2,040. The engine's 81 heap tests pass. Formatting passes,
 strict V8 Clippy passes, and Pants and engine Clippy add no diagnostics to
 the documented baseline categories.
 
+### The namespace registry no longer serializes threads (light-cljs-702, October 31, 2026)
+
+**Summary.** Recording a task's namespaces now costs what is new, not the
+program, and four threads are faster than two at 800k again: 45.2-48.9 s
+against 52.0-56.4 s (one thread 64.2-66.3 s), where master took 83.4 and
+86.1 s at four threads against 61.8 s at two. The coordinator's wait for
+the registry lock at 800k and four threads fell from 29.1 and 29.8 s to
+0.00 s, the three workers' from 48-49 s to 0.01 s. Output is unchanged.
+
+The registry (`src/bbp_evaluator/namespaces.rs`) used to keep, per name, a
+list of creations and re-record every namespace of the program whenever a
+task's activity changed, scanning that name's list each time, all under one
+lock. Of a name's creations only some can decide what a reader sees: the
+earliest one before every activity (position 0), and otherwise, per chain of
+owning work, the earliest at its lowest position; the old list kept exactly
+those. Every program a registration names is a snapshot of the
+compilation's one namespace table, so the registry now keeps that table once
+and records a registration as one entry per chain of work: its position, the
+first of a block of creation orders (`next_orders`) and how many of the
+table's names it covers, dropping entries another entry of the chain at the
+same or a lower position covers. Single creations (`create-ns`, each macro
+call's namespace) keep the earliest per chain in a map instead of a scanned
+list. A task remembers how much of its last table the registry's table
+starts with, so a new activity over the same program compares nothing and a
+grown program only its new names; a table that diverges from the registry's
+is recorded name by name past the shared part, as before. Readers
+(`find-ns`, `all-ns`) combine both per name and see what recording every
+name gave: a randomized test drives this log and the previous algorithm
+through the same registrations (growing, shrinking, repeating and diverging
+tables), single creations and namespace floors and compares `has` and `names`
+at every step (`registrations_record_once_and_read_as_every_name_recorded`).
+Readers still work under the lock, at the cost they had: none of the
+generated projects calls them.
+
+Release Pants builds (`--no-default-features --features bbp-macros`, thin
+LTO, `CARGO_BUILD_JOBS=4`, Rust 1.99.1, Apple M3 Ultra (Virtual), 24 logical
+CPUs, macOS 15.7.3) of master `6fded635` and of this change, seed-42
+generated projects, clean builds `release bench --no-cache --stats --jobs
+N` with `LIGHT_CLJS_WAIT_TIMELINE`, one after another; other workers built
+and tested throughout. The registry wait is `bb benchmarks/wait-timeline.bb`'s
+`wait/namespace-registry`; this change also times the lock that registrations
+take (before, only `create-ns`, `find-ns` and `all-ns` were timed), so its
+numbers cover more than master's.
+
+| Project | Threads | Master wall (s) | Master registry wait, coordinator / workers (s) | This change wall (s), three runs | Registry wait, coordinator / workers (s) | 1-minute load |
+| --- | ---: | --- | --- | --- | --- | --- |
+| 800k | 1 | 64.8 | 0.00 | 66.3, 64.8, 64.2 | 0.00 | 8.7-11.0 |
+| 800k | 2 | 61.8 | 3.68 / 0.05 | 56.4, 52.0, 55.0 | 0.00 / 0.00-0.01 | 7.3-9.2 (master 14.8) |
+| 800k | 4 | 83.4, 86.1 | 29.1 / 48.0; 29.8 / 49.1 | 48.9, 45.2, 47.2 | 0.00 / 0.01 | 8.1-12.0 (master 12.9) |
+| 200k | 4 | 9.35 | 0.06 / 0.18 | 9.25, 9.27, 9.33 | 0.00 / 0.00 | 7.6-13.4 (master 9.8) |
+| 200k | 8 | 10.10 | 0.28 / 1.37 | 10.12, 9.90, 10.30 | 0.00 / 0.00 | 7.9-13.9 (master 10.0) |
+
+The registry's lock hold over a whole build is now 0.10 s on the
+coordinator at 800k (registrations included) and 0.01 s at 200k. User CPU
+at 800k and four threads fell from 126 s to 74-79 s. Peak memory is
+comparable (4.3-4.5 GiB at 800k against 4.3-4.8 on master, 1.23-1.30 GiB at 200k against 1.24-1.29). Every build of a
+size wrote the same JavaScript (SHA-256 of `workload.main.js` `6741d7c2…` at
+800k, `1a75bc87…` at 200k, as before).
+
+A 15-second `/usr/bin/sample` 30 s into the four-thread 800k build confirms
+it: on master the coordinator spent 54% of its samples in a mutex wait and
+3.5% in `NamespaceLog::record`, each worker 39-40% in mutex waits and 18-22%
+in `NamespaceLog::record`; with this change the registry appears in only
+4 samples of all threads, the coordinator waits on a mutex
+in 3.8% of its samples and the workers in 11-14%, mostly under form imports (the form bridge's
+lock, light-cljs-579). At 200k the change is within noise: the registry cost
+0.28 s of the coordinator's 10 s at eight threads. Four threads at 800k
+(about 47 s) remain far from one-thread wall / 4; the coordinator's serial
+chain (light-cljs-475) and the workers' growing per-unit analysis time are
+what is left, as the section above describes.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with

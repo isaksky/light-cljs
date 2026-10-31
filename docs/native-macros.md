@@ -2268,6 +2268,16 @@ after each of its steps. A read waits for its lane, as an access to
 another activity's atom does, at the position its lane opens at (an earlier
 waiter may lend it one), and sees the creations that count up to there, in
 one-thread order. Every thread count therefore gives the one-thread answer.
+Recording costs what is new, not the program (light-cljs-702): the
+registry keeps the compilation's namespace table once (every program a
+registration names is a snapshot of it) and records a registration as one
+entry, its place and how many of the table's names it covers, while a task
+compares only the part of its table it has not registered before. Of a
+name's creations the registry keeps only those that can decide what a
+reader sees: the earliest before every activity, or else, per chain of
+owning work, the earliest at its lowest position. Readers combine the two per
+name, with the answer that recording every name of every registration gave
+(`registrations_record_once_and_read_as_every_name_recorded`).
 Names are exact UTF-16 code units: lone surrogates stay distinct
 (`native_namespace_registry_preserves_utf16_names`). A task keeps one Namespace object per name, so a
 namespace is `identical?` to itself within a task; a namespace's object (and

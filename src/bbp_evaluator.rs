@@ -1840,11 +1840,13 @@ pub(crate) struct TaskContext {
     catalog: Cell<Option<usize>>,
     /// The task's `__lightCatalogApplied` when its counters last read it.
     catalog_applied: Cell<usize>,
-    /// The last namespace table it registered and where: a table that
-    /// extends it in the same activity, no earlier, records only its tail.
+    /// The last namespace table it registered, where, and how many of its
+    /// names the registry's table starts with
+    /// ([`BbpEvaluator::record_namespaces`]).
     namespaces: RefCell<(
         crate::effect_lanes::NamespaceTag,
         crate::arena::Arena<String>,
+        usize,
     )>,
     /// Whether a worker view prepared it (its settings and service stubs
     /// evaluated), which a view that borrows it then does not repeat.

@@ -291,9 +291,12 @@ impl BbpEvaluator {
 
     /// Record that this task's current activity registered the namespaces
     /// of `namespaces`, a program's in its order, as a legacy engine's reader
-    /// registration creates them ([`super::namespaces`]). A table that
-    /// extends the last one this task registered, in the same activity and no
-    /// earlier position, records only its new names.
+    /// registration creates them ([`super::namespaces`]): one entry for the
+    /// part the registry's table starts with, which costs the names new to
+    /// it, not the program (light-cljs-702). The task keeps its last table
+    /// and how much of it the registry's table starts with, so a table that
+    /// extends it is compared only past that; one it registered already, in
+    /// the same work and no earlier position, records nothing.
     pub(super) fn record_namespaces(
         &self,
         namespaces: &crate::arena::Arena<String>,
@@ -308,23 +311,32 @@ impl BbpEvaluator {
         let realizing = self.runtime.attribute_realizing(cx.task.id());
         tag.owners
             .extend(realizing.into_iter().map(crate::effect_lanes::Target::Lazy));
-        let from = {
-            let (last, registered) = &*cx.namespaces.borrow();
+        let (repeated, known) = {
+            let (last, registered, known) = &*cx.namespaces.borrow();
             let shared = registered.len().min(namespaces.len());
-            let extends = namespaces.changed_entries(registered, shared).is_empty();
-            if extends && last.owners == tag.owners && last.position <= tag.position {
-                shared
-            } else {
-                0
-            }
+            let same = (namespaces.changed_entries(registered, shared).first())
+                .copied()
+                .unwrap_or(shared);
+            let repeated = same == namespaces.len()
+                && same == registered.len()
+                && last.owners == tag.owners
+                && last.position <= tag.position;
+            (repeated, same.min(*known))
         };
-        if from < namespaces.len() {
-            let mut log = self.namespace_log().lock().unwrap();
-            for name in namespaces.tail_from(from) {
-                log.record(&name.encode_utf16().collect::<Vec<_>>(), &tag);
-            }
+        if repeated {
+            return Ok(());
         }
-        *cx.namespaces.borrow_mut() = (tag, namespaces.clone());
+        let known = if namespaces.is_empty() {
+            0
+        } else {
+            use crate::wait_timeline::{Kind, begin};
+            let waiting = begin(Kind::NamespacesWait, 0, 0);
+            let mut log = self.namespace_log().lock().unwrap();
+            drop(waiting);
+            let _held = begin(Kind::NamespacesHold, 0, 0);
+            log.register(namespaces, known, &tag)
+        };
+        *cx.namespaces.borrow_mut() = (tag, namespaces.clone(), known);
         Ok(())
     }
 }

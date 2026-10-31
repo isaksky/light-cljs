@@ -59,8 +59,14 @@ pub(crate) enum Target {
 /// The next number of one order of namespace creations and floors, which
 /// break ties between records at one position ([`NamespaceTag`]).
 pub(crate) fn next_order() -> u64 {
+    next_orders(1)
+}
+
+/// The first of `count` consecutive numbers of that order, for creations
+/// recorded together (a registered namespace table).
+pub(crate) fn next_orders(count: u64) -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    NEXT.fetch_add(1, Ordering::Relaxed)
+    NEXT.fetch_add(count, Ordering::Relaxed)
 }
 
 /// A stable identity for an engine key or task id, which the compiler sees
