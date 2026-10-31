@@ -1358,7 +1358,8 @@ after the second (the reduced view: a reduction a macro stops with
 `(reduced x)`, an engine marker, stops on the real core; three tests), of
 which two are `deadline exceeded` on the loaded machine (the debug build
 ran 18 minutes at `-j 4`); rebased onto master 48a3a404 (the engine's
-collector work), 109 of 338, none new against the base's list. The Pants
+collector work), 109 of 338, and onto a4dda4bb (703/704's writable Var
+slots), 107 of 339, none new against the base's list. The Pants
 build's whole suite in `real` mode (`-j 8`, 41 minutes beside peers)
 fails 330 of 2,244 (329 failed, 1 timed out; 473 on the base), with the
 port's 142 baseline failures among them, led by the changed answers (87),
