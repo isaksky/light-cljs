@@ -51,6 +51,8 @@
     // (`sharedSequenceHashes`): the task's own cache, as the V8 profile's
     // `constructorHashes` WeakMap is, keyed by the form.
     get formHashes() { return sharedTaskOwn(this, "formHashes", new WeakMap()); },
+    // The entries arrays the task built for engine maps (`sharedMapEntries`).
+    get formEntries() { return sharedTaskOwn(this, "formEntries", new WeakMap()); },
     // The dispatch and declaration registries that `defprotocol`,
     // `extend-type`, `reify` and the declaration journal write after boot:
     // each task's own Map, seeded with the boot's entries
@@ -356,6 +358,59 @@
     for (let i = 0; i < items.length; i++) value = __rt.formConj(value, items[i]);
     return value;
   }
+  //@unit sharedMapEntries requires: entryHashing
+  // The entries of an engine map, as the verbatim units read an array
+  // map's payload: a frozen array of `{key, value, hash}` in the engine's
+  // print order (`formPrintItems`), built once per task and map
+  // (`formEntries` on the task's cells), since an engine map carries no
+  // host payload (light-cljs-666, the maps view).
+  function sharedMapEntries(form) {
+    const cells = globalThis.__lightSharedCells, cache = cells.formEntries;
+    let entries = cache.get(form);
+    if (entries !== undefined) return entries;
+    const items = __rt.formPrintItems(form), length = __rt.formCount(items);
+    entries = [];
+    for (let i = 0; i < length; i++) {
+      const item = __rt.formNth(items, i), key = __rt.formNth(item, 0), value = __rt.formNth(item, 1);
+      let cachedHash;
+      entries.push(Object.freeze({key, value, get hash() { return cachedHash === undefined ? cachedHash = entryHashing.hash(key) : cachedHash; }}));
+    }
+    cache.set(form, Object.freeze(entries));
+    return entries;
+  }
+  //@unit maps requires: kindedStore, sharedMapEntries
+  // A map is an engine map form, read as an array map of its entries
+  // (`sharedMapEntries`; its kind is `array-map`, so the verbatim units
+  // take their positional paths and never a hash trie), or a runtime-owned
+  // map over the V8 profile's kinded store (`maps.store`, a property so the
+  // boot seals it and its kinds): a sorted map, a record, and every map the
+  // verbatim builders make until the builders are swapped (light-cljs-666).
+  // A form takes no payload: `set` on one throws.
+  const maps = {
+    store: kindedStore(),
+    has: value => __rt.formKind(value) === "map" || maps.store.has(value),
+    get: value => __rt.formKind(value) === "map" ? sharedMapEntries(value) : maps.store.get(value),
+    set(value, payload) {
+      if (__rt.formKind(value) !== null) throw new TypeError("shared profile: maps.set on an engine form");
+      maps.store.set(value, payload);
+    },
+    reset(value, payload) { maps.store.reset(value, payload); },
+    kinds: {
+      has: value => __rt.formKind(value) === "map" || maps.store.kinds.has(value),
+      get: value => __rt.formKind(value) === "map" ? "array-map" : maps.store.kinds.get(value),
+      set(value, kind) { maps.store.kinds.set(value, kind); return this; }
+    }
+  };
+  //@unit mapEntry.vector effect: mapEntry when: makeVector requires: mapEntries, mapEntry,
+  //@ MapEntryType, vectors
+  // A map entry is a runtime-owned pair over the vectors' fallback, as the
+  // V8 profile's `mapEntry.lean` builds one, with the vectors' prototype
+  // (`MapEntryType.vector`): the swapped `makeVector` builds an engine
+  // vector, whose prototype cannot be set (light-cljs-666).
+  mapEntry = (key, value) => {
+    const pair = Object.create(MapEntryType.prototype);
+    vectors.set(pair, {cnt: 2, shift: 5, root: [], tail: [key, value]}); mapEntries.add(pair); return pair;
+  };
   //@unit vectors requires: sharedVectorStore, sharedView
   // A vector is an engine vector form.
   const vectors = sharedView("vectors", value => __rt.formKind(value) === "vector", sharedVectorStore);

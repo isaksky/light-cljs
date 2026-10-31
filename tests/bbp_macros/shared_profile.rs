@@ -772,7 +772,7 @@ fn shared_profile_registry_getters_keep_the_profile_published() {
     });
     assert_eq!(
         out,
-        "gensymScopes:Map0 generatedNames:Set0 tapListeners:Set0 tapQueue:Array protocolSlots:Map0 formHashes:WeakMap \
+        "gensymScopes:Map0 generatedNames:Set0 tapListeners:Set0 tapQueue:Array protocolSlots:Map0 formHashes:WeakMap formEntries:WeakMap \
          coreDispatchers:Map+ nativeMethods:Map0 protocolValues:Map0 protocolFunctions:Map0 protocolVariables:Map0 \
          protocolGetters:Map0 reifySites:Map0 protocolImplementations:WeakMap typeNames:WeakMap namespaces:Map2 \
          streams:WeakMap readerMaps:WeakMap tags:Map3 builtinTags:Map3 true"
@@ -918,6 +918,56 @@ fn shared_profile_engine_collection_operations_preserve_metadata() {
         "vector:0:true vector:1:true vector:3:true vector:2:true \
          null:0:own:[] null:1:own:[1] null:3:own:[1 2 3] null:2:own:[9 2] \
          0:set 3:set [1 2 3] true"
+    );
+}
+
+/// An engine map is a map to the real units (the maps view, light-cljs-666):
+/// `map?`, `count`, `get`, `contains?`, `find`, `keys`, `vals`, `seq`,
+/// printing, equality and hashing with a runtime-built map of the same
+/// entries, `reduce-kv`, `into`, and the updates (`assoc`, `dissoc`, `conj`,
+/// `empty`, `merge`), so engine metadata is readable throughout; and a map
+/// entry is a runtime-owned pair with the vectors' prototype, so the `seq`
+/// of a runtime-built map works as well.
+#[test]
+fn shared_profile_engine_maps_are_maps() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const a = core.keyword(null, 'a'), b = core.keyword(null, 'b'), c = core.keyword(null, 'c'); \
+             const m = __rt.formMap(a, 1, b, 2), own = rt.arrayMapFromArray([a, 1, b, 2]), entry = core.first(m); \
+             const sym = core.withMeta(core.symbol(null, 's'), m), vec = __rt.formWithMeta(core.vector(1), m); \
+             return [core.isMap(m), core.count(m), core.get(m, a), core.get(m, c, 'none'), core.contains(m, a), core.contains(m, c), \
+               core.prStr(m), core.prStr(core.seq(m)), core.prStr(entry), core.prStr(core.first(entry)), core.nth(entry, 1), core.isMapEntry(entry), core.isVector(entry), core.nth(entry, 1), \
+               core.equal(m, own), core.equal(own, m), core.equal(m, __rt.formMap(b, 2, a, 1)), core.equal(m, rt.arrayMapFromArray([a, 1])), core.hash(m) === core.hash(own), \
+               core.prStr(core.keys(m)), core.prStr(core.vals(m)), core.prStr(core.find(m, b)), String(core.find(m, c)), \
+               core.prStr(core.assoc(m, c, 3)), core.count(core.dissoc(m, a)), core.prStr(core.dissoc(m, a)), core.prStr(core.conj(m, core.vector(c, 4))), \
+               core.prStr(core.empty(m)), core.count(core.empty(m)), core.prStr(core.into(core.vector(), m)), core.reduceKv((acc, _k, v) => acc + v, 0, m), \
+               core.prStr(core.merge(m, rt.arrayMapFromArray([c, 3]))), core.prStr(core.merge(own, m)), core.prStr(core.zipmap(core.vector(a), core.vector(9))), \
+               core.get(core.meta(sym), a), core.get(core.meta(vec), b), core.prStr(core.meta(vec)), core.equal(core.meta(vec), own), \
+               core.prStr(core.seq(core.hashMap(1, 2))), core.prStr(core.first(core.hashMap(1, 2))), core.isVector(core.first(core.hashMap(1, 2))), \
+               core.prStr(core.vec(m)), core.prStr(core.into(rt.arrayMapFromArray([]), m)), core.get(core.into(rt.arrayMapFromArray([]), m), b), \
+               core.get(core.selectKeys(m, core.vector(b)), b), core.count(core.selectKeys(m, core.vector(b)))].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        // `formMap` builds a hash map, whose entries print in the engine's
+        // trie order (`:b` before `:a`); a runtime-built array map keeps its
+        // insertion order.
+        "true 2 1 none true false \
+         {:b 2, :a 1} ([:b 2] [:a 1]) [:b 2] :b 2 true true 2 \
+         true true true false true \
+         (:b :a) (2 1) [:b 2] null \
+         {:b 2, :a 1, :c 3} 1 {:b 2} {:b 2, :a 1, :c 4} \
+         {} 0 [[:b 2] [:a 1]] 3 \
+         {:b 2, :a 1, :c 3} {:a 1, :b 2} {:a 9} \
+         1 2 {:b 2, :a 1} true \
+         ([1 2]) [1 2] true \
+         [[:b 2] [:a 1]] {:b 2, :a 1} 2 \
+         2 1"
     );
 }
 
