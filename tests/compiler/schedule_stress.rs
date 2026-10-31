@@ -532,6 +532,19 @@ fn failed_warning_build_counts_drained_units_under_any_schedule() {
     );
 }
 
+/// Attaching a later definition's `:test` metadata may analyze and merge
+/// its test unit before the namespace drains an earlier failure. That
+/// speculative analysis must not advance the failed-build count cutoff.
+#[test]
+fn failed_counts_exclude_speculative_definition_tests() {
+    let fixture = Fixture::main("(def bad (if)) (defn checked {:test (fn [] true)} [] 1)");
+    let serial = stress("failed build with speculative definition test", &fixture);
+    let error = serial.output.unwrap_err();
+    assert!(error.contains("if requires a test"), "{error}");
+    let units = serial.stats.deferred_units;
+    assert_eq!([units.analyzed, units.prepared], [1, 0]);
+}
+
 /// Warnings from units on several workers, and ordinary errors of two
 /// failing units where the later fails first: the one-slot warnings in
 /// their order and the earlier unit's error under any schedule.

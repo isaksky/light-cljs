@@ -1693,7 +1693,7 @@ pub(crate) struct CompilationSession {
     /// The build's unit pool, with `--jobs N` ([`UnitPool`]).
     pool: RefCell<Option<UnitPool>>,
     /// The last unit, in unit order, a drain point took
-    /// ([`Self::analyze_drained`] or [`Self::merged_ir`]); a failed build's
+    /// ([`Self::analyze_drained`] or [`Self::note_drained`]); a failed build's
     /// counts stop there ([`Self::failed_unit_counts`]).
     drained_through: Cell<Option<usize>>,
 }
@@ -2340,15 +2340,14 @@ impl CompilationSession {
     }
     /// Note that unit `id`'s analyzed IR merged into its program.
     pub(crate) fn merged_ir(&self, id: usize) {
-        // Warning-mode drains take and prepare their units during the
-        // top-level pass, without analyze_drained. Count them only when
-        // their namespace reaches its drain point and merges them: a
-        // later namespace may already have prepared units when an earlier
-        // drain point fails and becomes the build's chosen failure.
-        self.note_drained(id);
         self.shared.merged_ir(id);
     }
-    fn note_drained(&self, id: usize) {
+    /// Advance the failed-build count cutoff at a namespace drain point.
+    /// Warning-mode units are prepared during the top-level pass and count
+    /// when their namespace merges them, without [`Self::analyze_drained`].
+    /// Other merges, such as a speculative definition's `:test` metadata,
+    /// must not advance the cutoff past an earlier failing unit.
+    pub(crate) fn note_drained(&self, id: usize) {
         let last = self.drained_through.get().map_or(id, |last| last.max(id));
         self.drained_through.set(Some(last));
     }
@@ -5372,7 +5371,12 @@ mod worker_tests {
         session.release_application_ir(before);
         let (later, _) = session.analyze(after, None).unwrap();
         session.release_application_ir(after);
+        // Merging speculative IR is not a namespace drain point.
+        session.merged_ir(after);
+        let counts = session.failed_unit_counts();
+        assert_eq!([counts.analyzed, counts.prepared], [0, 0]);
         // Only the earlier namespace merged before the chosen failure.
+        session.note_drained(before);
         session.merged_ir(before);
         let counts = session.failed_unit_counts();
         assert_eq!([counts.analyzed, counts.prepared], [1, 1]);

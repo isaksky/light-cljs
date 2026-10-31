@@ -4578,6 +4578,7 @@ impl NamespaceAnalysis {
         let mut placeholders = Vec::with_capacity(drained.units.len());
         if let Some(session) = &session {
             for unit in drained.units {
+                session.note_drained(unit.unit);
                 let placeholder = unit.placeholder;
                 let root = merge_unit(
                     &mut self.program,
