@@ -169,6 +169,37 @@ fn shared_profile_task_cells_are_writable() {
     );
 }
 
+/// The vector storage contract of the engine view: the verbatim operation
+/// units read `cnt` and a small vector's `tail`, and the swapped storage
+/// units answer `nth`, `seq`, `conj`, `assoc`, `pop`, `subvec` and a
+/// transient across the 32-element boundary.
+#[test]
+fn shared_profile_vector_operations() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             let v = core.vector(); for (let i = 0; i < 40; i++) v = core.conj(v, i); \
+             let p = v; for (let i = 0; i < 9; i++) p = core.pop(p); \
+             const t = core.persistentBang(core.conjBang(core.conjBang(core.transient(v), 40), 41)); \
+             return [core.count(v), core.nth(core.vector(10), 0), core.nth(v, 31), core.nth(v, 32), core.nth(v, 39), \
+               core.nth(v, 45, 'none'), core.nth(core.assoc(v, 5, 'x'), 5), core.nth(core.assoc(v, 35, 'y'), 35), \
+               core.count(core.assoc(v, 40, 'z')), core.count(p), core.nth(p, 30), core.peek(p), \
+               core.prStr(core.vector(1, 2, 3)), core.prStr(core.rest(core.seq(core.vector(1, 2, 3)))), \
+               core.count(core.seq(v)), core.nth(core.seq(v), 33), core.prStr(core.subvec(v, 30, 34)), \
+               core.count(t), core.nth(t, 41), core.prStr(core.pop(core.vector(1, 2))), \
+               core.hash(core.vector(1, 2)) === core.hash(core.conj(core.vector(1), 2)), \
+               core.first(core.seq({{a: 1}} && core.vector(7)))].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "40 10 31 32 39 none x y 41 31 30 30 [1 2 3] (2 3) 40 33 [30 31 32 33] 42 41 [1] true 7"
+    );
+}
+
 /// The writes the boot makes to the brand stores' private fallbacks, for
 /// the migration list.
 #[test]

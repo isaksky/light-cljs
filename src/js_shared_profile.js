@@ -185,9 +185,36 @@
   }
   //@unit keywords requires: sharedStore
   const keywords = sharedStore();
-  //@unit vectors requires: sharedView
+  //@unit sharedVectorItems
+  // A new array of the items `from` to `to` of an engine vector.
+  function sharedVectorItems(form, from, to) {
+    const items = new Array(Math.max(0, to - from));
+    for (let i = from; i < to; i++) items[i - from] = __rt.formNth(form, i);
+    return items;
+  }
+  //@unit sharedVectorStore requires: sharedVectorItems, vectorTailOffset
+  // The store of an engine vector, as the verbatim units read one: `cnt`,
+  // and `tail`, the items from the tail offset (every item of a vector of
+  // at most 32), which the units that read a small vector's or a map
+  // entry's items directly take; `root` and `shift` are read only by the
+  // swapped storage units, which use `form` instead.
+  function sharedVectorStore(form) {
+    const cnt = __rt.formCount(form);
+    return {cnt, form, get tail() { return sharedVectorItems(form, vectorTailOffset(cnt), cnt); }};
+  }
+  //@unit sharedVectorForm requires: vectorSlice
+  // The engine vector of a store: its own, or one of the items of a trie
+  // store (a transient's, a map entry's) or a view (a subvector's).
+  function sharedVectorForm(store) {
+    if (store.form !== undefined) return store.form;
+    const items = vectorSlice(store, 0, store.cnt);
+    let value = __rt.formVector();
+    for (let i = 0; i < items.length; i++) value = __rt.formConj(value, items[i]);
+    return value;
+  }
+  //@unit vectors requires: sharedVectorStore, sharedView
   // A vector is an engine vector form.
-  const vectors = sharedView("vectors", value => __rt.formKind(value) === "vector", value => ({cnt: __rt.formCount(value)}));
+  const vectors = sharedView("vectors", value => __rt.formKind(value) === "vector", sharedVectorStore);
   //@unit symbols requires: sharedStore
   const symbols = sharedStore();
   //@unit sortedComparators requires: sharedStore
@@ -205,7 +232,14 @@
   //@unit stringBufferWriters requires: sharedSet
   const stringBufferWriters = sharedSet();
   //@unit constructorHashes requires: sharedStore
-  const constructorHashes = sharedStore();
+  // The hash cache: an engine form's hash is computed and cached by the
+  // engine (`formHash`), so the cache answers it from there and drops a
+  // hash given for a form; a runtime-built value keeps its own.
+  const constructorHashes = (store => ({
+    has: value => __rt.formKind(value) !== null || store.has(value),
+    get: value => __rt.formKind(value) !== null ? __rt.formHash(value) : store.get(value),
+    set(value, hash) { if (__rt.formKind(value) === null) store.set(value, hash); return this; }
+  }))(sharedStore());
   //@unit publicCollectionSlots requires: sharedStore
   const publicCollectionSlots = sharedStore();
   //@unit vectorRoots requires: sharedStore
@@ -254,20 +288,93 @@
   }
   //@unit subvecSources requires: sharedStore
   const subvecSources = sharedStore();
+  //@unit subvec requires: count, isVector, makeVector, methodKeys, nth, protocolHooks,
+  //@ vectorFromArray, vectors, VectorView
+  // An engine vector of the items: the engine has no view kind, so the
+  // result is a vector of its own, not upstream's `Subvec` with its source.
+  function subvec(value, start, end = count(value)) {
+    if (start == null || end == null) throw new Error("Assert failed: subvec indices cannot be nil");
+    start = start | 0; end = end | 0;
+    if (start < 0 || end < start || end > count(value)) throw new Error("Index out of bounds");
+    if (!isVector(value)) throw new Error("subvec requires a vector");
+    const store = !protocolHooks.publicMethod?.(value, methodKeys[25], 2, true, true) && vectors.get(value);
+    return store ? makeVector(null, new VectorView(store, start, end - start))
+      : vectorFromArray(Array.from({length: end - start}, (_, i) => nth(value, start + i)));
+  }
   //@unit hashRoots requires: sharedStore
   const hashRoots = sharedStore();
   //@unit hashTraversals requires: sharedStore
   const hashTraversals = sharedStore();
-  //@unit makeVector requires: vectorSlice
-  // A vector of the new array `items`, or of the store an operation built
-  // (a trie the V8 profile's operations still build; light-cljs-650's
-  // parity work re-targets them).
+  //@unit makeVector requires: sharedVectorForm
+  // A vector of the new array `items`, or of the store an operation built:
+  // an engine store's own vector, or a vector of a trie's or a view's items
+  // (a persisted transient, a `subvec`; light-cljs-650's parity work
+  // re-targets those).
   function makeVector(items, store) {
-    const array = store === undefined ? items : vectorSlice(store, 0, store.cnt);
+    if (store !== undefined) return sharedVectorForm(store);
     let value = __rt.formVector();
-    for (let i = 0; i < array.length; i++) value = __rt.formConj(value, array[i]);
+    for (let i = 0; i < items.length; i++) value = __rt.formConj(value, items[i]);
     return value;
   }
+  //@unit vectorLeaf requires: sharedVectorItems, vectorTailOffset
+  // The leaf, or the tail, that holds index `i` of a store; of an engine
+  // store, a new array of its items from index `i & -32`; of a view
+  // (`VectorView`), a new array of its items from index `i & -32`.
+  function vectorLeaf(store, i) {
+    if (store.sub) return store.leaf(i);
+    if (store.form !== undefined) return sharedVectorItems(store.form, i & -32, Math.min((i & -32) + 32, store.cnt));
+    if (i >= vectorTailOffset(store.cnt)) return store.tail;
+    let node = store.root;
+    for (let level = store.shift; level > 0; level -= 5) node = node[(i >>> level) & 31];
+    return node;
+  }
+  //@unit vectorSlice requires: sharedVectorItems, vectorLeaf
+  // A new array of a store's items from index `from` to `to`.
+  function vectorSlice(store, from, to) {
+    if (store.form !== undefined) return sharedVectorItems(store.form, from, to);
+    const items = [];
+    for (let i = from; i < to; i = (i | 31) + 1) items.push(...vectorLeaf(store, i).slice(i & 31, (i & 31) + to - i));
+    return items;
+  }
+  //@unit vectorConj requires: sharedVectorForm, sharedVectorStore
+  // `store` with `item` added: the engine's `conj`.
+  function vectorConj(store, item) {
+    return sharedVectorStore(__rt.formConj(sharedVectorForm(store), item));
+  }
+  //@unit vectorAssoc requires: sharedVectorForm, sharedVectorStore
+  // `store` with `item` at its index `i`: the engine's `assoc`.
+  function vectorAssoc(store, i, item) {
+    if (store.sub) return store.assoc(i, item);
+    return sharedVectorStore(__rt.formAssoc(sharedVectorForm(store), i, item));
+  }
+  //@unit vectorPop requires: sharedVectorForm, sharedVectorStore
+  // `store`, of at least one item, without its last: the engine's `pop`.
+  function vectorPop(store) {
+    if (store.sub) return store.pop();
+    return sharedVectorStore(__rt.cljPop(sharedVectorForm(store)));
+  }
+  //@unit vectorNth requires: missing, outOfBounds, vectorLeaf
+  // The item of a vector's store at a number `index`, truncated; a view's is
+  // that of the store it views.
+  function vectorNth(store, index, notFound) {
+    if (index >= 0 && index < store.cnt) {
+      if (store.sub) return vectorNth(store.sub, store.start + index, notFound);
+      return store.form !== undefined ? __rt.formNth(store.form, index) : vectorLeaf(store, index)[index & 31];
+    }
+    if (notFound === missing) return outOfBounds();
+    return notFound;
+  }
+  //@unit makeVector.transient effect: makeVector, mapEntry when: asTransient requires: kindHooks,
+  //@ vectorSlice, vectorTrie
+  // A transient vector edits a trie of the vector's items, a task-owned
+  // value (design point 8), as the V8 profile's edits a copy of the tail
+  // and the nodes along the paths it changes, which it owns
+  // (`vectorEditor`): a weak set, which keeps no node a `pop!` discarded.
+  kindHooks.transientVector = store => {
+    const trie = store.form !== undefined ? vectorTrie(vectorSlice(store, 0, store.cnt)) : store;
+    const tail = trie.tail.slice();
+    return {cnt: trie.cnt, shift: trie.shift, root: trie.root, tail, owned: new WeakSet([tail])};
+  };
   //@unit storesPredicate
   // Shareable once booted: the captured rest array is sealed.
   function storesPredicate(...stores) {
