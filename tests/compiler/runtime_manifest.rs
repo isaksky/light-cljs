@@ -131,18 +131,31 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
             // top-level binding, in declaration order, at the placeholder.
             let source = profile.unit(profile.unit_named(unit.name).unwrap());
             let source = &SHARED_PROFILE[source.body_range.clone()];
-            let (head, tail) = source.split_once("/* SHARED_BINDINGS */").unwrap();
+            let (head, rest) = source.split_once("/* SHARED_BINDINGS */").unwrap();
+            let (middle, tail) = rest.split_once("/* SHARED_BINDING_NAMES */").unwrap();
             assert!(
                 text.starts_with(head) && text.ends_with(tail),
                 "{}",
                 unit.name
             );
-            let list = &text[head.len()..text.len() - tail.len()];
-            let names = list
-                .split(',')
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .collect::<Vec<_>>();
+            let lists = &text[head.len()..text.len() - tail.len()];
+            let (list, quoted) = lists.split_once(middle).unwrap();
+            let split = |list: &str| {
+                list.split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            };
+            let names = split(list);
+            // The names, quoted, in the same order.
+            assert_eq!(
+                split(quoted),
+                names
+                    .iter()
+                    .map(|name| format!("\"{name}\""))
+                    .collect::<Vec<_>>()
+            );
             let expected = shared
                 .units
                 .iter()
@@ -213,6 +226,13 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
         "tapPending",
         "tapLimit",
         "protocolSlots",
+        "coreDispatchers",
+        "nativeMethods",
+        "protocolValues",
+        "protocolFunctions",
+        "protocolVariables",
+        "protocolGetters",
+        "reifySites",
     ];
     let defaults = profile.unit(profile.unit_named("sharedTaskDefaults").unwrap());
     let defaults = &SHARED_PROFILE[defaults.body_range.clone()];
@@ -236,7 +256,7 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
         for name in per_task {
             line = line.replace(&format!("{cells}{name}"), name);
         }
-        for name in ["reservedNames", "readerCoreNames"] {
+        for name in ["reservedNames", "readerCoreNames", "specialSymbols"] {
             line = line.replace(
                 &format!("const {name} = sharedWords("),
                 &format!("const {name} = new Set("),

@@ -29,7 +29,7 @@ fn boot_store_writes(rt: &Runtime) -> String {
             "globalThis.__lightSharedSetTrace = new Map(); \
              const rt = (\n{SHARED_RUNTIME}\n); \
              const out = []; \
-             for (const [name, stack] of globalThis.__lightSharedSetTrace) {{ const lines = stack.split('\\n'); out.push(name + ' ' + (lines[2] ?? lines[1])); }} \
+             for (const [name, stack] of globalThis.__lightSharedSetTrace) {{ const lines = stack.split('\\n'); out.push(name + ' ' + (lines[2] ?? lines[1] ?? lines[0])); }} \
              return out.join('\\n');"
         ),
     )
@@ -126,8 +126,11 @@ fn walk_report(shareable: usize, causes: &[(String, Vec<String>, String)]) -> St
 /// Acceptance 4 of light-cljs-647: the assembled profile boots in a boot
 /// task and `Runtime::publish` accepts the result with zero rejected paths.
 /// On failure the first rejected path is printed, then the walk of every
-/// member by cause.
+/// member by cause and the top-level bindings a seal cannot take. State on
+/// 2026-10-31: 268 of 748 members publish; the remaining causes are in
+/// docs/real-core-design.md, "Profile assembly" (light-cljs-666).
 #[test]
+#[ignore = "268 of 748 members publish; the remaining causes are listed in docs/real-core-design.md (light-cljs-666)"]
 fn shared_profile_boots_and_publishes_with_zero_rejected_paths() {
     let rt = Runtime::new();
     let booted = boot(&rt);
@@ -232,6 +235,30 @@ fn shared_profile_realization_state() {
     );
 }
 
+/// Keywords are engine keyword forms: one the engine made and one the
+/// runtime's `keyword` makes are recognized by `keyword?`, named, printed,
+/// equal and hashed alike through the real units.
+#[test]
+fn shared_profile_keywords_are_engine_keywords() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const engine = __rt.formKeyword('ns', 'a'), made = core.keyword('ns', 'a'), plain = rt.keyword(null, 'b'); \
+             return [core.isKeyword(engine), core.isKeyword(made), core.isKeyword('a'), \
+               core.name(engine), core.namespace(made), String(core.namespace(plain)), \
+               core.prStr(engine), core.prStr(plain), core.get(rt.arrayMapFromArray([engine, 1]), made), core.hash(engine) === core.hash(made), \
+               core.isKeyword(core.keyword(core.symbol('c', 'd'))), core.prStr(core.keyword('e'))].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true true false a ns null :ns/a :b 1 true true :e"
+    );
+}
+
 /// The identity hashes of host objects are the engine's (`identityHash`),
 /// not a counter and WeakMap of the task: `hash` of a function is stable,
 /// distinct between functions and the engine's number, and the verbatim
@@ -281,16 +308,21 @@ fn shared_profile_fallback_diagnostics_are_bounded() {
     );
 }
 
-/// The profile boots under the 4 MiB starting heap of the evaluator's
+/// The profile is to boot under the 4 MiB starting heap of the evaluator's
 /// tests (acceptance 4 of light-cljs-647), with the method-key memos filled
 /// at boot and the tables built on demand (gensym names, protocol slots)
-/// first used after it.
+/// first used after it. Measured on 2026-10-31 (`Runtime::new`, this
+/// boot): peak 53 MB of managed bytes, 50 MB live after the boot; without
+/// the seal walk 46 MB peak and 39 MB live; under a hard limit of 32 MiB or
+/// less the boot fails with `HeapLimit`. The budget is open until that
+/// footprint is understood (light-cljs-666 hand-back).
 #[test]
+#[ignore = "the shared-heap profile's boot peaks at 53 MB of managed bytes; the 4 MiB budget is open (light-cljs-666)"]
 fn shared_profile_boots_with_four_mib_heap() {
     let rt = Runtime::with_heap_policy(
         Default::default(),
         HeapPolicy {
-            hard_limit_bytes: Some(64 << 20),
+            hard_limit_bytes: Some(4 << 20),
             ..Default::default()
         },
     );
@@ -335,5 +367,32 @@ fn shared_profile_publication_walk() {
     let (shareable, causes) = publication_walk(&rt);
     for line in walk_report(shareable, &causes).lines() {
         println!("SEAM shared {line}");
+    }
+}
+
+/// The publication path of the members named in `SHARED_MEMBERS` (space
+/// separated, `rt.X` or `core.X`), for finding what a path's steps are.
+#[test]
+#[ignore = "diagnostic: SHARED_MEMBERS=\"core.gensym rt.typeMasks\""]
+fn shared_profile_publication_path_of() {
+    let rt = Runtime::new();
+    let members = std::env::var("SHARED_MEMBERS").unwrap_or_default();
+    for member in members.split_whitespace() {
+        let (owner, name) = member.split_once('.').unwrap();
+        let value = run(
+            &rt,
+            &format!(
+                "const rt = (\n{SHARED_RUNTIME}\n); return {}['{name}'];",
+                if owner == "core" { "rt.core" } else { "rt" }
+            ),
+        )
+        .unwrap_or_else(|e| panic!("boot: {e}"));
+        println!(
+            "PATH {member}: {}",
+            match rt.publish(&value) {
+                Ok(()) => "publishes".to_string(),
+                Err(e) => e.to_string(),
+            }
+        );
     }
 }

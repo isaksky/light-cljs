@@ -68,7 +68,7 @@ pub(crate) fn seal_bindings(heap: &Heap, task: TaskId, value: &Value) -> Result<
     let Value::Object(root) = *value else {
         return Ok(0);
     };
-    let (cells, _) = reachable(heap, task, root);
+    let (cells, _, _) = reachable(heap, task, root);
     seal_cells(heap, cells)
 }
 
@@ -85,7 +85,7 @@ pub(crate) fn seal_reachable(heap: &Heap, task: TaskId, value: &Value) -> Result
     let Value::Object(root) = *value else {
         return Ok(0);
     };
-    let (cells, functions) = reachable(heap, task, root);
+    let (cells, functions, captured) = reachable(heap, task, root);
     let mut sealed = seal_cells(heap, cells)?;
     let keys = heap.keys();
     let prototype_key = keys.lookup(&crate::value::string::JsString::from("prototype"));
@@ -131,6 +131,54 @@ pub(crate) fn seal_reachable(heap: &Heap, task: TaskId, value: &Value) -> Result
         }
         sealed += usize::from(seal_plain(heap, record));
     }
+    // A default prototype reached as a capture: a derived class captures
+    // its base's `prototype` for `super` and instance creation, and the base
+    // may be reachable no other way.
+    for object in captured {
+        let constructor = heap
+            .read(object, |candidate| match candidate {
+                HeapObject::Plain(o) if o.owner() == Some(task) && !o.is_sealed() => {
+                    let mut constructor = None;
+                    let untouched = o.properties().all(|(key, property)| {
+                        Some(key) == constructor_key
+                            && property.accessor.is_none()
+                            && match property.value {
+                                Value::Object(function) => {
+                                    constructor = Some(function);
+                                    true
+                                }
+                                _ => false,
+                            }
+                    });
+                    untouched.then_some(constructor).flatten()
+                }
+                _ => None,
+            })
+            .flatten();
+        let Some(constructor) = constructor else {
+            continue;
+        };
+        let record = heap
+            .read(constructor, |function| match function {
+                HeapObject::Function(f) => f.properties,
+                _ => None,
+            })
+            .flatten();
+        let is_default = record.is_some_and(|record| {
+            prototype_key.is_some_and(|key| {
+                heap.read(record, |candidate| match candidate {
+                    HeapObject::Plain(o) => o
+                        .get_own(key)
+                        .is_some_and(|p| p.value.same_object(&Value::Object(object))),
+                    _ => false,
+                })
+                .unwrap_or(false)
+            })
+        });
+        if is_default {
+            sealed += usize::from(seal_plain(heap, object));
+        }
+    }
     Ok(sealed)
 }
 
@@ -146,18 +194,19 @@ fn seal_plain(heap: &Heap, id: ObjectId) -> bool {
 }
 
 /// The graph reachable from `root`, read once: the initialized sealable
-/// cells of `task`, and every function or bound function with an
-/// own-property record, with its record.
+/// cells of `task`, every function or bound function with an own-property
+/// record, with its record, and the objects functions capture.
 #[allow(clippy::type_complexity)]
 fn reachable(
     heap: &Heap,
     task: TaskId,
     root: ObjectId,
-) -> (Vec<ObjectId>, Vec<(ObjectId, ObjectId)>) {
+) -> (Vec<ObjectId>, Vec<(ObjectId, ObjectId)>, Vec<ObjectId>) {
     let mut seen = HashSet::from([root]);
     let mut queue = VecDeque::from([root]);
     let mut cells = Vec::new();
     let mut functions = Vec::new();
+    let mut captured = Vec::new();
     while let Some(id) = queue.pop_front() {
         let edges = heap.read(id, |object| {
             match object {
@@ -169,6 +218,11 @@ fn reachable(
                 HeapObject::Function(f) => {
                     if let Some(record) = f.properties {
                         functions.push((id, record));
+                    }
+                    for capture in f.captures.iter() {
+                        if let Value::Object(object) = capture {
+                            captured.push(*object);
+                        }
                     }
                 }
                 HeapObject::BoundFunction(f) => {
@@ -192,7 +246,9 @@ fn reachable(
             }
         }
     }
-    (cells, functions)
+    captured.sort_unstable();
+    captured.dedup();
+    (cells, functions, captured)
 }
 
 /// Seal the sealable cells `cells` of the running task; the number sealed.

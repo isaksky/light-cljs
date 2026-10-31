@@ -499,6 +499,16 @@ const SHARED_TASK_STATE: &[&str] = &[
     "tapLimit",
     // The slot-name memo of `protocolSlot`.
     "protocolSlots",
+    // The dispatch and declaration registries written after boot: each
+    // task's own Map, seeded with the boot's entries (`sharedSnapshots` in
+    // the profile), until light-cljs-649 moves them to engine tables.
+    "coreDispatchers",
+    "nativeMethods",
+    "protocolValues",
+    "protocolFunctions",
+    "protocolVariables",
+    "protocolGetters",
+    "reifySites",
 ];
 
 /// Where a unit reads the task's cells: `coreCells.X` in the V8 profile.
@@ -508,7 +518,7 @@ const SHARED_CELLS: &str = "globalThis.__lightSharedCells";
 /// publishes: in the shared-heap profile their units build them with the
 /// profile's `sharedWords` instead (`const NAME = new Set(` becomes
 /// `const NAME = sharedWords(`), so the words are written once.
-const SHARED_WORDS: &[&str] = &["reservedNames", "readerCoreNames"];
+const SHARED_WORDS: &[&str] = &["reservedNames", "readerCoreNames", "specialSymbols"];
 
 /// A compile-time hook's text for the shared-heap profile: its own `let`
 /// declarations dropped and its reads of task state rewritten.
@@ -723,8 +733,20 @@ fn shared_runtime(base: &str, profile: &str) -> (String, String) {
                 .filter(|name| !own.contains(name) && !SHARED_UNLISTED.contains(name))
                 .copied()
                 .collect::<Vec<_>>();
+            let quoted = names
+                .iter()
+                .map(|name| format!("\"{name}\""))
+                .collect::<Vec<_>>();
             let body = source[section.body.clone()]
-                .replace(SHARED_BINDINGS, &wrap_list(&names, "      ", 100));
+                .replace(SHARED_BINDINGS, &wrap_list(&names, "      ", 100))
+                .replace(
+                    SHARED_BINDING_NAMES,
+                    &wrap_list(
+                        &quoted.iter().map(String::as_str).collect::<Vec<_>>(),
+                        "        ",
+                        100,
+                    ),
+                );
             assert!(
                 body != source[section.body.clone()],
                 "src/js_shared_profile.js: unit `{SHARED_BOOT}` has no `{SHARED_BINDINGS}`"
@@ -766,6 +788,9 @@ fn shared_runtime(base: &str, profile: &str) -> (String, String) {
 /// [`SHARED_BINDINGS`].
 const SHARED_BOOT: &str = "sharedProfileBoot";
 const SHARED_BINDINGS: &str = "/* SHARED_BINDINGS */";
+/// Where the boot unit names them, in the same order, for its diagnostic of
+/// the bindings a seal cannot take.
+const SHARED_BINDING_NAMES: &str = "/* SHARED_BINDING_NAMES */";
 /// Bindings the boot unit's list leaves out: `coreMethod`, which the
 /// manifest allows only as `const x = coreMethod(...)` (its load-time
 /// callers hold what it makes; nothing captures the function after boot).

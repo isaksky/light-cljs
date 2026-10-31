@@ -45,7 +45,25 @@
     // the boot task fills for the runtime's own keys (`sharedProfileBoot`)
     // and every task fills for the keys it meets.
     get protocolSlots() { return sharedTaskOwn(this, "protocolSlots", new Map()); },
+    // The dispatch and declaration registries that `defprotocol`,
+    // `extend-type`, `reify` and the declaration journal write after boot:
+    // each task's own Map, seeded with the boot's entries
+    // (`sharedSnapshots`), whose values the boot sealed. A registration
+    // made after boot is the registering task's, as the per-task fallback
+    // has it, until light-cljs-649 moves them to engine tables; a write to
+    // a sealed boot entry (a dispatch cell's `natives`) throws until then.
+    get coreDispatchers() { return sharedTaskOwn(this, "coreDispatchers", sharedRegistry("coreDispatchers")); },
+    get nativeMethods() { return sharedTaskOwn(this, "nativeMethods", sharedRegistry("nativeMethods")); },
+    get protocolValues() { return sharedTaskOwn(this, "protocolValues", sharedRegistry("protocolValues")); },
+    get protocolFunctions() { return sharedTaskOwn(this, "protocolFunctions", sharedRegistry("protocolFunctions")); },
+    get protocolVariables() { return sharedTaskOwn(this, "protocolVariables", sharedRegistry("protocolVariables")); },
+    get protocolGetters() { return sharedTaskOwn(this, "protocolGetters", sharedRegistry("protocolGetters")); },
+    get reifySites() { return sharedTaskOwn(this, "reifySites", sharedRegistry("reifySites")); },
   };
+  // The registries' boot entries, sealed with the rest at the end of the
+  // boot (`sharedProfileBoot`); a task's registry starts as a copy.
+  const sharedSnapshots = {};
+  const sharedRegistry = name => new Map(sharedSnapshots[name] ?? []);
   function sharedTaskOwn(cells, name, value) {
     if (cells === sharedTaskDefaults) {
       throw new TypeError("shared profile: per-task registry " + name + " read while booting");
@@ -73,7 +91,12 @@
     }
     return cells;
   }
-  //@unit sharedStore
+  //@unit sharedHost
+  // Whether a value can carry a private field: an object or function the
+  // task owns, not an engine form or atom (which have no private storage;
+  // a private `in` on one throws).
+  const sharedHost = value => (typeof value === "object" ? value !== null : typeof value === "function") && __rt.formKind(value) === null && !__rt.cljIsAtom(value);
+  //@unit sharedStore requires: sharedHost
   // A brand store of a kind the engine does not own (design point 8: a
   // task-owned runtime value), with a WeakMap's `has`, `get`, `set` and
   // `delete` over a private field, as `privateStore` keeps them: the store
@@ -83,11 +106,15 @@
     const absent = __rt.seal({});
     const Store = class extends (function (value) { return value; }) {
       #s;
-      static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value && value.#s !== absent; }
+      static has(value) { return sharedHost(value) && #s in value && value.#s !== absent; }
       static get(value) {
-        if ((typeof value === "object" ? value !== null : typeof value === "function") && #s in value) { const payload = value.#s; return payload === absent ? undefined : payload; }
+        if (sharedHost(value) && #s in value) { const payload = value.#s; return payload === absent ? undefined : payload; }
       }
-      static set(value, payload) { if (#s in value) value.#s = payload; else new Store(value).#s = payload; return Store; }
+      static set(value, payload) {
+        if (!sharedHost(value)) throw new TypeError("shared profile: a private store cannot brand an engine value");
+        if (#s in value) value.#s = payload; else new Store(value).#s = payload;
+        return Store;
+      }
       static reset(value, payload) { value.#s = payload; }
       static delete(value) { if (Store.has(value)) { value.#s = absent; return true; } return false; }
     };
@@ -98,6 +125,24 @@
   function sharedSet() {
     const store = sharedStore();
     return {has: value => store.has(value), add(value) { store.set(value, true); return this; }, delete: value => store.delete(value)};
+  }
+  //@unit sharedMap
+  // A registry complete after boot, a Map in the V8 profile: a Map's `get`,
+  // `has`, `size` and entry iteration over a sealed array of its entries
+  // (the boot's walk seals it), keyed by identity; string keys through a
+  // sealed dictionary. A write after boot has no method to call.
+  function sharedMap(entries) {
+    const pairs = Array.from(entries, ([key, value]) => [key, value]);
+    const dict = pairs.every(([key]) => typeof key === "string") ? Object.create(null) : null;
+    if (dict !== null) for (const [key, value] of pairs) dict[key] = value;
+    const index = key => { for (let i = 0; i < pairs.length; i++) if (pairs[i][0] === key) return i; return -1; };
+    return {
+      pairs, dict,
+      get(key) { if (dict !== null) return typeof key === "string" ? dict[key] : undefined; const i = index(key); return i < 0 ? undefined : pairs[i][1]; },
+      has(key) { return dict !== null ? typeof key === "string" && key in dict : index(key) >= 0; },
+      get size() { return pairs.length; },
+      [Symbol.iterator]() { return pairs[Symbol.iterator](); }
+    };
   }
   //@unit sharedWords
   // An immutable vocabulary (`reservedNames`, `readerCoreNames`), a Set in
@@ -138,8 +183,12 @@
       key.cell.protocol ??= coreProtocolsByName.get(key.name) ?? null;
       key.info ??= publicMethodInfo(key.key);
     }
-    // The boot's writes to the hub's cells are the hub's defaults.
+    // The boot's writes to the hub's cells are the hub's defaults; its
+    // registries' entries seed every task's copy.
     const booting = globalThis.__lightSharedCells;
+    for (const name of ["coreDispatchers", "nativeMethods", "protocolValues", "protocolFunctions", "protocolVariables", "protocolGetters", "reifySites"]) {
+      sharedSnapshots[name] = Array.from(Object.getOwnPropertyDescriptor(booting, name) !== undefined ? booting[name] : [], ([key, value]) => [key, value]);
+    }
     for (const key of Object.keys(booting)) if (Object.getOwnPropertyDescriptor(coreCells, key) !== undefined) coreCells[key] = booting[key];
     const seen = new Set();
     const seal = value => {
@@ -158,10 +207,21 @@
       /* SHARED_BINDINGS */];
     for (const binding of bindings) seal(binding);
     __rt.sealReachable(bindings);
+    // The migration trace (`sharedView`) also names the top-level bindings
+    // a seal cannot take: the registries that stay Maps and Sets.
+    const trace = globalThis.__lightSharedSetTrace;
+    if (trace !== undefined) {
+      const names = [
+        /* SHARED_BINDING_NAMES */];
+      for (let i = 0; i < names.length; i++) {
+        const tag = Object.prototype.toString.call(bindings[i + 1]).slice(8, -1);
+        if (tag === "Map" || tag === "Set" || tag === "WeakMap" || tag === "WeakSet") trace.set("unsealed " + names[i], tag + (bindings[i + 1].size === undefined ? "" : " of " + bindings[i + 1].size));
+      }
+    }
     globalThis.__lightSharedCells = sharedTaskCells();
     return exports;
   }
-  //@unit sharedView
+  //@unit sharedView requires: sharedHost
   // A brand store as a read-only view over an engine tag (design point 3):
   // `has` and `get` answer engine forms of the view's kind; `set` is only
   // called by the swapped constructors, so it throws. While the profile is
@@ -173,7 +233,7 @@
   function sharedView(name, has, get) {
     const fallback = class extends (function (value) { return value; }) {
       #s;
-      static has(value) { return (typeof value === "object" ? value !== null : typeof value === "function") && #s in value; }
+      static has(value) { return sharedHost(value) && #s in value; }
       static get(value) { if (fallback.has(value)) return value.#s; }
       static set(value, payload) { new fallback(value).#s = payload; }
       static reset(value, payload) { value.#s = payload; }
@@ -190,8 +250,25 @@
       delete() { throw new TypeError("shared profile: " + name + ".delete"); }
     };
   }
-  //@unit keywords requires: sharedStore
-  const keywords = sharedStore();
+  //@unit keywords requires: sharedView
+  // A keyword is an engine keyword form; its payload is read from the form.
+  const keywords = sharedView("keywords", value => __rt.formKind(value) === "keyword", value => {
+    const namespace = __rt.formNamespace(value), name = __rt.formName(value);
+    return {namespace, name, spelling: namespace == null ? name : namespace + "/" + name};
+  });
+  //@unit makeKeyword
+  // Engine keywords compare by value and hash in the engine; `spelling` is
+  // the form's.
+  function makeKeyword(namespace, name, spelling) {
+    return __rt.formKeyword(namespace, name);
+  }
+  //@unit keyword
+  // A keyword built at run time is fresh, as upstream's `(keyword ns name)`:
+  // the V8 profile interns the literals it builds this way, which the Pants
+  // build lowers to engine forms instead.
+  function keyword(namespace, name) {
+    return __rt.formKeyword(namespace, name);
+  }
   //@unit sharedVectorItems
   // A new array of the items `from` to `to` of an engine vector.
   function sharedVectorItems(form, from, to) {
@@ -326,6 +403,8 @@
     return store ? makeVector(null, new VectorView(store, start, end - start))
       : vectorFromArray(Array.from({length: end - start}, (_, i) => nth(value, start + i)));
   }
+  //@unit treeRoots requires: sharedStore
+  const treeRoots = sharedStore(), treeSetMaps = sharedStore();
   //@unit hashRoots requires: sharedStore
   const hashRoots = sharedStore();
   //@unit hashTraversals requires: sharedStore
@@ -468,6 +547,53 @@
     dispatchCell(key).dispatcher = dispatch;
     return dispatch;
   }
+  //@unit protocolMasks requires: protocolMaskNames, sharedMap
+  // Membership checks are on every generic collection operation. Resolve the
+  // fixed ABI once as [property, bit], including the last occurrence of
+  // duplicate protocol names.
+  const protocolMasks = sharedMap(protocolMaskNames.map((name, index) => [name,
+    ["cljs$lang$protocol_mask$partition" + (index >> 5) + "$", 1 << (index % 32)]]));
+  //@unit coreProtocolNames requires: ASeq, Fn, IAssociative, IAtom, IChunk, IChunkedNext,
+  //@ IChunkedSeq, ICloneable, ICollection, IComparable, ICounted, IDeref, IDerefWithTimeout, IDrop,
+  //@ IEditableCollection, IEmptyableCollection, IEncodeClojure, IEncodeJS, IEquiv, IFind, IFn,
+  //@ IHash, IIndexed, IIterable, IKVReduce, IList, ILookup, IMap, IMapEntry, IMeta, IMultiFn,
+  //@ INamed, INext, Inst, IPending, IPrintWithWriter, IRecord, IReduce, IReset, IReversible, ISeq,
+  //@ ISeqable, ISequential, ISet, ISorted, IStack, ISwap, ITransientAssociative,
+  //@ ITransientCollection, ITransientMap, ITransientSet, ITransientVector, IUUID, IVector,
+  //@ IVolatile, IWatchable, IWithMeta, IWriter, sharedMap
+  const coreProtocolNames = sharedMap([[Inst, "Inst"], [IUUID, "IUUID"], [ASeq, "ASeq"], [IDerefWithTimeout, "IDerefWithTimeout"], [INamed, "INamed"], [IMultiFn, "IMultiFn"], [IEditableCollection, "IEditableCollection"], [ITransientCollection, "ITransientCollection"], [ITransientAssociative, "ITransientAssociative"], [ITransientMap, "ITransientMap"], [ITransientVector, "ITransientVector"], [ITransientSet, "ITransientSet"], [IEncodeJS, "IEncodeJS"], [IEncodeClojure, "IEncodeClojure"], [IChunk, "IChunk"], [IChunkedNext, "IChunkedNext"], [IDrop, "IDrop"], [IPending, "IPending"], [Fn, "Fn"], [IList, "IList"], [IMapEntry, "IMapEntry"], [IFind, "IFind"], [ISorted, "ISorted"], [IChunkedSeq, "IChunkedSeq"], [IRecord, "IRecord"], [ICloneable, "ICloneable"], [IPrintWithWriter, "IPrintWithWriter"], [IWriter, "IWriter"], [IReduce, "IReduce"], [IKVReduce, "IKVReduce"], [IVector, "IVector"], [IMap, "IMap"], [ICollection, "ICollection"], [IEmptyableCollection, "IEmptyableCollection"], [ISet, "ISet"], [IStack, "IStack"], [IReversible, "IReversible"], [IComparable, "IComparable"], [IIterable, "IIterable"], [IHash, "IHash"], [IEquiv, "IEquiv"], [IFn, "IFn"], [ISeqable, "ISeqable"], [ISeq, "ISeq"], [INext, "INext"], [ICounted, "ICounted"], [IIndexed, "IIndexed"], [ILookup, "ILookup"], [ISequential, "ISequential"], [IAssociative, "IAssociative"], [IMeta, "IMeta"], [IWithMeta, "IWithMeta"], [IDeref, "IDeref"], [IAtom, "IAtom"], [IReset, "IReset"], [ISwap, "ISwap"], [IVolatile, "IVolatile"], [IWatchable, "IWatchable"]]);
+  //@unit coreProtocolsByName requires: coreProtocolNames, sharedMap
+  const coreProtocolsByName = sharedMap([...coreProtocolNames].map(([protocol, name]) => [name, protocol]));
+  //@unit builtinCoreImplementation requires: ASeq, aseqValue, associativeValue, atomValue,
+  //@ chunkedSeqValue, chunkValue, cloneablePayload, collectionValue, comparableValue, countedValue,
+  //@ derefValue, dropValue, editableValue, emptyableValue, findValue, Fn, fnValue, hashableValue,
+  //@ IAssociative, IAtom, IChunk, IChunkedNext, IChunkedSeq, ICloneable, ICollection, IComparable,
+  //@ ICounted, IDeref, IDrop, IEditableCollection, IEmptyableCollection, IEquiv, IFind, IFn,
+  //@ ifnValue, IHash, IIndexed, IIterable, IKVReduce, IList, ILookup, IMap, IMapEntry, IMeta,
+  //@ IMultiFn, INamed, indexedValue, INext, Inst, instValue, IPending, IPrintWithWriter, IReduce,
+  //@ IReversible, ISeq, ISeqable, ISequential, ISet, ISorted, IStack, iterableValue,
+  //@ ITransientAssociative, ITransientCollection, ITransientMap, ITransientSet, ITransientVector,
+  //@ IUUID, IVector, IVolatile, IWatchable, IWithMeta, IWriter, kvReduceValue, listValue,
+  //@ lookupValue, mapEntryValue, mapValue, metaValue, multiFnValue, namedValue, nextValue,
+  //@ pendingValue, printableValue, reduceValue, reversibleValue, seqableValue, sequential,
+  //@ seqValue, setValue, sharedMap, sortedValue, stackValue, transientAssociativeValue,
+  //@ transientMapValue, transientSetValue, transientValue, transientVectorValue,
+  //@ uuidImplementation, vectorValue, volatileValue, watchableValue, withMetaValue, writerValue
+  function builtinCoreImplementation(protocol, value) { return !!nativeImplementations.get(protocol)?.(value); }
+  const nativeImplementations = sharedMap([[Inst, instValue], [IUUID, uuidImplementation], [ASeq, aseqValue], [INamed, namedValue], [IMultiFn, multiFnValue], [IFn, ifnValue], [IEditableCollection, editableValue], [ITransientCollection, transientValue], [ITransientAssociative, transientAssociativeValue], [ITransientVector, transientVectorValue], [ITransientMap, transientMapValue], [ITransientSet, transientSetValue], [Fn, fnValue], [IList, listValue], [IChunk, chunkValue], [IChunkedNext, chunkedSeqValue], [IDrop, dropValue], [IReduce, reduceValue], [IKVReduce, kvReduceValue], [IPrintWithWriter, printableValue], [IHash, hashableValue], [IEquiv, hashableValue], [IMapEntry, mapEntryValue], [IFind, findValue], [ISorted, sortedValue], [IChunkedSeq, chunkedSeqValue], [ICloneable, cloneablePayload], [IVector, vectorValue], [IMap, mapValue], [ISet, setValue], [ICollection, collectionValue], [IEmptyableCollection, emptyableValue], [IStack, stackValue], [IReversible, reversibleValue], [IIterable, iterableValue], [IComparable, comparableValue], [ISeqable, seqableValue], [ISeq, seqValue], [INext, nextValue], [ISequential, sequential], [ICounted, countedValue], [IIndexed, indexedValue], [ILookup, lookupValue], [IAssociative, associativeValue], [IMeta, metaValue], [IWithMeta, withMetaValue], [IAtom, atomValue], [IPending, pendingValue], [IDeref, derefValue], [IVolatile, volatileValue], [IWatchable, watchableValue], [IWriter, writerValue]]);
+  //@unit maps.records effect: recordMethods when: maps requires: maps, recordTypes
+  // A record is a map without entries of its own until `updatedRecord` gives
+  // it some, so constructing one writes no store: these answer for it, with
+  // `none` as its entries (a record type is a function). `none` is sealed,
+  // not frozen: the wrapper captures it.
+  maps.has = (has => value => has.call(maps, value) || recordTypes.has(value))(maps.has);
+  maps.get = ((get, none) => value => get.call(maps, value) ?? (recordTypes.get(value) && none))(maps.get, __rt.seal([]));
+  //@unit makeKeyword.print effect: makeKeyword, makeVar, SymbolValue, symbol when: printWriterImpl
+  //@ requires: keywords, kindHooks, printKind, symbols, vars, write
+  // An engine keyword prints from its payload; a runtime-built symbol or
+  // Var through its `toString`, as in the V8 profile.
+  kindHooks.print = printKind(kindHooks.print, value => keywords.has(value) || symbols.has(value) || vars.has(value),
+    (value, writer) => write(writer, keywords.has(value) ? ":" + keywords.get(value).spelling : String(value)));
   //@unit coreCells effect requires: flush, sharedTaskCells, sharedTaskDefaults
   // The hub's cells as the V8 profile declares them (the `core` hub extends
   // this object), over the per-task defaults. The boot task's cells now
