@@ -9,8 +9,8 @@
 
 use light_cljs::evaluator::RUNTIME_SOURCE;
 use light_cljs::runtime_manifest::{
-    ANNOTATED_RUNTIME, ECMASCRIPT_GLOBALS, RUNTIME, RootUse, RuntimeManifest, UnitId,
-    is_header_line,
+    ANNOTATED_RUNTIME, ECMASCRIPT_GLOBALS, ENGINE_INTRINSICS, RUNTIME, RootUse, RuntimeManifest,
+    SHARED_ANNOTATED_RUNTIME, SHARED_PROFILE, SHARED_RUNTIME, UnitId, is_header_line,
 };
 
 fn manifest() -> &'static RuntimeManifest<'static> {
@@ -51,6 +51,241 @@ fn every_unit_declares_exactly_the_runtime_bindings_it_references() {
                 .join("\n")
         );
     }
+}
+
+/// The shared-heap profile (`src/js_shared_profile.js`, light-cljs-647) is
+/// the runtime with its representation units swapped by name: the profile
+/// parses as a manifest whose every unit either replaces a runtime unit of
+/// the same name (declaring the same bindings) or is placed first; the
+/// assembled annotated runtime validates like the runtime itself, with the
+/// engine's `__rt` as its one extra global; every unit the profile does not
+/// name is the V8 profile's identical text; the export list is the
+/// runtime's, returned through the boot function; and the runtime to boot
+/// is that text without headers, with `coreCells.X` and the per-task
+/// bindings read through the task's cells and the compile-time hooks added.
+#[test]
+fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
+    let base = manifest();
+    let profile = RuntimeManifest::parse(SHARED_PROFILE).unwrap_or_else(|errors| {
+        panic!(
+            "src/js_shared_profile.js:\n{}",
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    });
+    let shared = RuntimeManifest::parse(SHARED_ANNOTATED_RUNTIME).unwrap_or_else(|errors| {
+        panic!(
+            "the assembled shared-heap runtime:\n{}",
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    });
+    if let Err(errors) = shared.validate_allowing(ENGINE_INTRINSICS) {
+        panic!(
+            "the assembled shared-heap runtime's manifest is invalid:\n{}",
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    assert_eq!(shared.exports.names, base.exports.names);
+    assert!(shared.unit_named("sharedProfileBoot").is_some());
+    let swapped = profile
+        .units
+        .iter()
+        .map(|unit| unit.name)
+        .collect::<std::collections::HashSet<_>>();
+    // Profile-only units come first, in profile order; then the runtime's
+    // units in runtime order, each the profile's when it names it.
+    let own = profile
+        .units
+        .iter()
+        .filter(|unit| base.unit_named(unit.name).is_none())
+        .map(|unit| unit.name)
+        .collect::<Vec<_>>();
+    let expected = own
+        .iter()
+        .copied()
+        .chain(base.units.iter().map(|unit| unit.name))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        shared
+            .units
+            .iter()
+            .map(|unit| unit.name)
+            .collect::<Vec<_>>(),
+        expected
+    );
+    for unit in &shared.units {
+        let text = &SHARED_ANNOTATED_RUNTIME[unit.body_range.clone()];
+        if unit.name == "sharedProfileBoot" {
+            // Generated from the profile's unit: the list of every other
+            // top-level binding, in declaration order, at the placeholder.
+            let source = profile.unit(profile.unit_named(unit.name).unwrap());
+            let source = &SHARED_PROFILE[source.body_range.clone()];
+            let (head, tail) = source.split_once("/* SHARED_BINDINGS */").unwrap();
+            assert!(
+                text.starts_with(head) && text.ends_with(tail),
+                "{}",
+                unit.name
+            );
+            let list = &text[head.len()..text.len() - tail.len()];
+            let names = list
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .collect::<Vec<_>>();
+            let expected = shared
+                .units
+                .iter()
+                .filter(|other| other.name != unit.name)
+                .flat_map(|other| other.declares.iter().copied())
+                .filter(|name| *name != "coreMethod")
+                .collect::<Vec<_>>();
+            assert_eq!(names, expected);
+            assert_eq!(unit.requires, expected);
+            continue;
+        }
+        if swapped.contains(unit.name) {
+            let source = profile.unit(profile.unit_named(unit.name).unwrap());
+            assert_eq!(
+                text,
+                &SHARED_PROFILE[source.body_range.clone()],
+                "{}",
+                unit.name
+            );
+            if let Some(original) = base.unit_named(unit.name) {
+                let original = base.unit(original);
+                // The same contract: the bindings it declares.
+                assert_eq!(unit.declares, original.declares, "unit `{}`", unit.name);
+            }
+        } else {
+            let original = base.unit(base.unit_named(unit.name).unwrap());
+            assert_eq!(
+                text,
+                &ANNOTATED_RUNTIME[original.body_range.clone()],
+                "{}",
+                unit.name
+            );
+            assert_eq!(
+                &SHARED_ANNOTATED_RUNTIME[unit.header_range.clone()],
+                &ANNOTATED_RUNTIME[original.header_range.clone()],
+                "{}",
+                unit.name
+            );
+        }
+    }
+    // The runtime to boot: the assembled units without headers, every read
+    // of a cell or a per-task binding through the task's cells (which the
+    // inverse rewrite restores exactly), plus the compile-time hooks (whole
+    // lines; the hooks' own `let`s are not declared, their defaults are the
+    // profile's).
+    let cells = "globalThis.__lightSharedCells.";
+    let per_task = [
+        "gensymCounter",
+        "generatedNames",
+        "gensymLog",
+        "gensymScope",
+        "gensymScopes",
+        "macroexpandServices",
+        "declarationJournal",
+        "demandProtocol",
+        "demandMethod",
+        "demandMulti",
+        "demandGate",
+        "demandHost",
+        "patchDeclaration",
+        "setDeclaration",
+        "identityHashes",
+        "identityCounter",
+        "globalHierarchy",
+        "tapListeners",
+        "tapQueue",
+        "tapDraining",
+        "tapDelivered",
+        "tapPending",
+        "tapLimit",
+        "protocolSlots",
+    ];
+    let defaults = profile.unit(profile.unit_named("sharedTaskDefaults").unwrap());
+    let defaults = &SHARED_PROFILE[defaults.body_range.clone()];
+    for name in per_task {
+        assert!(
+            defaults.contains(&format!("{name}:")) || defaults.contains(&format!("\"{name}\"")),
+            "sharedTaskDefaults lacks a default for `{name}`"
+        );
+    }
+    assert!(!ANNOTATED_RUNTIME.contains(cells));
+    // The hook lines are those of the compile-time runtime that the
+    // embedded runtime lacks, read through the task's cells in the shared
+    // profile; a line restores to the V8 text by the inverse rewrite.
+    let runtime_lines = RUNTIME.lines().collect::<std::collections::HashSet<_>>();
+    let hook_lines = RUNTIME_SOURCE
+        .lines()
+        .filter(|line| !runtime_lines.contains(line))
+        .collect::<std::collections::HashSet<_>>();
+    let restore = |line: &str| {
+        let mut line = line.to_owned();
+        for name in per_task {
+            line = line.replace(&format!("{cells}{name}"), name);
+        }
+        for name in ["reservedNames", "readerCoreNames"] {
+            line = line.replace(
+                &format!("const {name} = sharedWords("),
+                &format!("const {name} = new Set("),
+            );
+        }
+        line.replace(cells, "coreCells.")
+    };
+    let restored = SHARED_RUNTIME
+        .split_inclusive('\n')
+        .map(|line| {
+            let (text, end) = match line.strip_suffix('\n') {
+                Some(text) => (text, "\n"),
+                None => (line, ""),
+            };
+            (restore(text), end)
+        })
+        .filter(|(text, _)| !hook_lines.contains(text.as_str()))
+        .map(|(text, end)| text + end)
+        .collect::<String>();
+    let expected = shared.runtime_text();
+    if restored != expected {
+        let at = restored
+            .bytes()
+            .zip(expected.bytes())
+            .position(|(a, b)| a != b)
+            .unwrap_or(restored.len().min(expected.len()));
+        let context = |text: &str| {
+            let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+            let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+            text[start..end].to_owned()
+        };
+        panic!(
+            "the shared-heap runtime differs from its annotated units at byte {at}:\n  booted:   {}\n  expected: {}",
+            context(&restored),
+            context(&expected)
+        );
+    }
+    for name in [
+        "let gensymLog = null",
+        "let gensymScope = null",
+        "let demandGate = null",
+    ] {
+        assert!(!SHARED_RUNTIME.contains(name), "{name}");
+    }
+    assert!(SHARED_RUNTIME.contains(&format!("{cells}gensymLog")));
+    assert!(!SHARED_RUNTIME.contains("//@"));
+    // The V8 profile is untouched.
+    assert_eq!(manifest().runtime_text(), RUNTIME);
 }
 
 #[test]

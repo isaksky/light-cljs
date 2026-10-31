@@ -80,6 +80,14 @@ fn main() {
     fs::write(out.join("terse_runtime.rs"), terse_runtime(&source))
         .expect("write the terse runtime");
 
+    println!("cargo::rerun-if-changed=src/js_shared_profile.js");
+    let profile =
+        fs::read_to_string("src/js_shared_profile.js").expect("read src/js_shared_profile.js");
+    let (annotated, shared) = shared_runtime(&source, &profile);
+    fs::write(out.join("js_shared_annotated.js"), annotated)
+        .expect("write the annotated shared-heap runtime");
+    fs::write(out.join("js_shared_runtime.js"), shared).expect("write the shared-heap runtime");
+
     println!("cargo::rerun-if-changed=src/core_operations.tsv");
     let table =
         fs::read_to_string("src/core_operations.tsv").expect("read src/core_operations.tsv");
@@ -227,6 +235,16 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   the prototype chain and can reach a proxy's trap, last and in order,
 ///   with the first eight tests unrolled.
 fn compiler_runtime(runtime: &str) -> String {
+    compiler_hooks(runtime, false)
+}
+
+/// The compile-time hooks inserted into `runtime` (see [`compiler_runtime`]).
+/// For the shared-heap profile (`shared`), a hook whose anchor the profile
+/// has swapped away is skipped when the profile's unit carries the hook's
+/// marker itself, the hooks' own per-task `let`s are dropped (their defaults
+/// live on `sharedTaskDefaults`), and their reads go through the task's
+/// cells like every other unit's ([`rewrite_task_state`]).
+fn compiler_hooks(runtime: &str, shared: bool) -> String {
     const ENCODE_END: &str = "      return visit(value, \"$\", 0);\n    }\n    return Object.freeze({version: 5, decode, encode,";
     // Every line holds `readerViews`, which tells the hook's lines from the
     // embedded runtime's (tests/compiler/runtime_manifest.rs).
@@ -397,19 +415,424 @@ fn compiler_runtime(runtime: &str) -> String {
     ];
     let mut runtime = runtime.to_owned();
     for (anchor, before, hook) in HOOKS {
-        assert_eq!(
-            runtime.matches(anchor).count(),
-            1,
-            "compile-time runtime hook anchor {anchor:?}"
-        );
+        // In the shared-heap profile an anchor reading task state has been
+        // rewritten like the unit around it (a declaring token has not).
+        let rewritten = (shared && !runtime.contains(anchor))
+            .then(|| (shared_hook(anchor), shared_hook(before)));
+        let (anchor, before) = match &rewritten {
+            Some((anchor, before)) => (anchor.as_str(), before.as_str()),
+            None => (anchor, before),
+        };
+        let matches = runtime.matches(anchor).count();
+        if shared && matches == 0 {
+            // The profile swapped the unit holding the anchor; its unit must
+            // carry the hook (`tests/compiler/runtime_manifest.rs` checks the
+            // markers).
+            let marker = hook
+                .split('\n')
+                .next()
+                .unwrap()
+                .rsplit("// ")
+                .next()
+                .unwrap()
+                .trim();
+            assert!(
+                runtime.contains(marker),
+                "shared-heap profile: the swapped unit at hook anchor {anchor:?} lacks the hook ({marker})"
+            );
+            continue;
+        }
+        assert_eq!(matches, 1, "compile-time runtime hook anchor {anchor:?}");
         let within = if before.is_empty() {
             anchor.len()
         } else {
             anchor.find(before).unwrap()
         };
-        runtime.insert_str(runtime.find(anchor).unwrap() + within, hook);
+        let hook = if shared {
+            shared_hook(hook)
+        } else {
+            hook.to_owned()
+        };
+        runtime.insert_str(runtime.find(anchor).unwrap() + within, &hook);
     }
     runtime
+}
+
+/// The bindings of the runtime that functions assign after boot, which the
+/// shared-heap profile keeps per task on the task's cells
+/// (`globalThis.__lightSharedCells`, whose prototype chain ends at the
+/// profile's `sharedTaskDefaults`): the module-level `let`s and the
+/// per-task registries next to them, and the `let`s the compile-time hooks
+/// declare. Every read and write of one in a unit body is rewritten to a
+/// property of the task's cells at assembly ([`rewrite_task_state`]); the
+/// declaring statement stays as an unread binding.
+const SHARED_TASK_STATE: &[&str] = &[
+    // gensym (the counter is the compiler's `__lightGensym` once the hooks
+    // run; `generatedNames` and the scopes are the task's).
+    "gensymCounter",
+    "generatedNames",
+    "gensymLog",
+    "gensymScope",
+    "gensymScopes",
+    // Evaluator services and the declaration journal.
+    "macroexpandServices",
+    "declarationJournal",
+    "demandProtocol",
+    "demandMethod",
+    "demandMulti",
+    "demandGate",
+    "demandHost",
+    "patchDeclaration",
+    "setDeclaration",
+    // Identity hashes of host objects (light-cljs-661 would make them an
+    // engine service).
+    "identityHashes",
+    "identityCounter",
+    // The global hierarchy (an engine atom under effect lanes is 649's).
+    "globalHierarchy",
+    // Taps.
+    "tapListeners",
+    "tapQueue",
+    "tapDraining",
+    "tapDelivered",
+    "tapPending",
+    "tapLimit",
+    // The slot-name memo of `protocolSlot`.
+    "protocolSlots",
+];
+
+/// Where a unit reads the task's cells: `coreCells.X` in the V8 profile.
+const SHARED_CELLS: &str = "globalThis.__lightSharedCells";
+
+/// The immutable vocabularies the runtime keeps in a Set, which never
+/// publishes: in the shared-heap profile their units build them with the
+/// profile's `sharedWords` instead (`const NAME = new Set(` becomes
+/// `const NAME = sharedWords(`), so the words are written once.
+const SHARED_WORDS: &[&str] = &["reservedNames", "readerCoreNames"];
+
+/// A compile-time hook's text for the shared-heap profile: its own `let`
+/// declarations dropped and its reads of task state rewritten.
+fn shared_hook(hook: &str) -> String {
+    let mut text = hook
+        .replace("  let gensymLog = null;\n", "")
+        .replace(
+            "  let gensymScope = null; const gensymScopes = new Map();\n",
+            "",
+        )
+        .replace(
+            "  let demandGate = null, demandHost = null; // interpreterDispatch\n",
+            "",
+        );
+    for name in SHARED_TASK_STATE {
+        text = replace_identifier(&text, name, &format!("{SHARED_CELLS}.{name}"));
+    }
+    text.replace("coreCells.", &format!("{SHARED_CELLS}."))
+}
+
+/// `text` with every whole-identifier occurrence of `name` that is not a
+/// property name (`.name`) replaced.
+fn replace_identifier(text: &str, name: &str, replacement: &str) -> String {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '$');
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(name) {
+        let before = rest[..at].chars().next_back();
+        let after = rest[at + name.len()..].chars().next();
+        // A property key (`gensymScope: (serial, ...) =>`) keeps its name.
+        let key = rest[at + name.len()..].trim_start().starts_with(':');
+        out.push_str(&rest[..at]);
+        if before.is_some_and(|c| is_word(c) || c == '.') || after.is_some_and(is_word) || key {
+            out.push_str(name);
+        } else {
+            out.push_str(replacement);
+        }
+        rest = &rest[at + name.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A unit body with its reads and writes of [`SHARED_TASK_STATE`] bindings
+/// rewritten to the task's cells, exactly: an identifier token that resolves
+/// to the unit's own top-level declaration of the name (other than the
+/// declaring token itself) or is free (another unit's binding). Locals of
+/// the same name are untouched.
+fn rewrite_task_state(source: &str, body: std::ops::Range<usize>) -> String {
+    let tokens = js_syntax::lex(source, body.clone()).unwrap_or_else(|error| {
+        panic!(
+            "shared-heap runtime byte {}: {}",
+            error.offset, error.message
+        )
+    });
+    let resolution = js_syntax::resolve(source, &tokens)
+        .unwrap_or_else(|(offset, message)| panic!("shared-heap runtime byte {offset}: {message}"));
+    let mut out = String::with_capacity(body.len());
+    let mut at = body.start;
+    for (position, token) in tokens.iter().enumerate() {
+        let text = token.text(source);
+        if !SHARED_TASK_STATE.contains(&text) {
+            continue;
+        }
+        let Some(occurrence) = resolution.occurrences[position] else {
+            continue;
+        };
+        let rewrite = match occurrence.declaration {
+            None => true,
+            Some(declaration) => {
+                let declaration = &resolution.declarations[declaration];
+                declaration.scope == 0 && declaration.token != Some(position)
+            }
+        };
+        if !rewrite {
+            continue;
+        }
+        assert!(
+            !occurrence.shorthand,
+            "shared-heap runtime: `{text}` as a shorthand property at byte {}",
+            token.start
+        );
+        out.push_str(&source[at..token.start]);
+        out.push_str(SHARED_CELLS);
+        out.push('.');
+        out.push_str(text);
+        at = token.start + text.len();
+    }
+    out.push_str(&source[at..body.end]);
+    out
+}
+
+/// One section of an annotated runtime file: a unit (its name, header and
+/// body) or the export section (name `//@exports`).
+struct Section {
+    name: String,
+    header: std::ops::Range<usize>,
+    body: std::ops::Range<usize>,
+}
+
+/// The sections of an annotated runtime, after the prologue (whose end is
+/// returned first): a header is a `//@unit NAME ...` line with its `//@ `
+/// continuation lines, or `//@exports`; a body runs to the next header.
+fn sections(source: &str) -> (usize, Vec<Section>) {
+    let mut prologue_end = None;
+    let mut sections: Vec<Section> = Vec::new();
+    let mut offset = 0;
+    let mut in_header = false;
+    for line in source.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        let header = line.trim_start();
+        if !header.starts_with("//@") {
+            if let Some(section) = sections.last_mut() {
+                section.body.end = offset;
+            }
+            in_header = false;
+            continue;
+        }
+        prologue_end.get_or_insert(start);
+        if let Some(rest) = header.strip_prefix("//@unit ") {
+            let name = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            sections.push(Section {
+                name,
+                header: start..offset,
+                body: offset..offset,
+            });
+            in_header = true;
+        } else if header.trim_end() == "//@exports" {
+            sections.push(Section {
+                name: "//@exports".to_owned(),
+                header: start..offset,
+                body: offset..offset,
+            });
+            in_header = true;
+        } else if in_header {
+            let section = sections.last_mut().unwrap();
+            section.header.end = offset;
+            section.body = offset..offset;
+        } else {
+            panic!("a `//@` continuation line must follow a `//@unit` header");
+        }
+    }
+    (
+        prologue_end.expect("the runtime has unit headers"),
+        sections,
+    )
+}
+
+/// The shared-heap profile of the runtime (docs/real-core-design.md,
+/// section 1): `src/js_runtime.js` with the units `src/js_shared_profile.js`
+/// names replaced by its units of the same names, its other units placed
+/// first (they declare what the swapped units need), its export section the
+/// profile's (which seals the booted runtime), everything else the V8
+/// profile's text. Returns the annotated result (which
+/// `tests/compiler/runtime_manifest.rs` parses and validates like the
+/// runtime itself) and the runtime to boot: the annotated text without
+/// headers, with `coreCells.X` and the [`SHARED_TASK_STATE`] bindings
+/// rewritten to the task's cells, and with the compile-time hooks.
+fn shared_runtime(base: &str, profile: &str) -> (String, String) {
+    let (base_prologue, base_sections) = sections(base);
+    let (_, profile_sections) = sections(profile);
+    let mut swapped: HashMap<&str, &Section> = HashMap::new();
+    for section in &profile_sections {
+        assert!(
+            swapped.insert(&section.name, section).is_none(),
+            "src/js_shared_profile.js: duplicate unit `{}`",
+            section.name
+        );
+    }
+    let base_names = base_sections
+        .iter()
+        .map(|section| section.name.as_str())
+        .collect::<HashSet<_>>();
+    assert!(
+        swapped.contains_key("//@exports"),
+        "src/js_shared_profile.js: no `//@exports` section"
+    );
+    // Each part of the annotated text: its source and the ranges within it.
+    let mut parts: Vec<(&str, &Section)> = Vec::new();
+    for section in &profile_sections {
+        if !base_names.contains(section.name.as_str()) && section.name != "//@exports" {
+            parts.push((profile, section));
+        }
+    }
+    for section in &base_sections {
+        match swapped.get(section.name.as_str()) {
+            Some(swap) => parts.push((profile, swap)),
+            None => parts.push((base, section)),
+        }
+    }
+    // The boot unit seals what every top-level binding holds, so it names
+    // them all: its list and its `requires:` header are generated here
+    // (`SHARED_BINDINGS` in the profile's body), in declaration order.
+    let bindings = parts
+        .iter()
+        .filter(|(_, section)| section.name != "//@exports")
+        .flat_map(|(source, section)| top_level_bindings(source, section.body.clone()))
+        .collect::<Vec<_>>();
+    let boot = parts
+        .iter()
+        .find(|(_, section)| section.name == SHARED_BOOT)
+        .map(|(source, section)| {
+            let own = top_level_bindings(source, section.body.clone());
+            let names = bindings
+                .iter()
+                .filter(|name| !own.contains(name) && !SHARED_UNLISTED.contains(name))
+                .copied()
+                .collect::<Vec<_>>();
+            let body = source[section.body.clone()]
+                .replace(SHARED_BINDINGS, &wrap_list(&names, "      ", 100));
+            assert!(
+                body != source[section.body.clone()],
+                "src/js_shared_profile.js: unit `{SHARED_BOOT}` has no `{SHARED_BINDINGS}`"
+            );
+            (shared_boot_header(&names), body)
+        })
+        .unwrap_or_else(|| panic!("src/js_shared_profile.js: no unit `{SHARED_BOOT}`"));
+    let mut annotated = String::with_capacity(base.len());
+    let mut runtime = String::with_capacity(base.len());
+    annotated.push_str(&base[..base_prologue]);
+    runtime.push_str(&base[..base_prologue]);
+    for (source, section) in &parts {
+        if section.name == SHARED_BOOT {
+            annotated.push_str(&boot.0);
+            annotated.push_str(&boot.1);
+            runtime.push_str(&boot.1);
+            continue;
+        }
+        annotated.push_str(&source[section.header.clone()]);
+        annotated.push_str(&source[section.body.clone()]);
+        if section.name == "//@exports" {
+            runtime.push_str(&source[section.body.clone()]);
+        } else {
+            let mut body = rewrite_task_state(source, section.body.clone())
+                .replace("coreCells.", &format!("{SHARED_CELLS}."));
+            if SHARED_WORDS.contains(&section.name.as_str()) {
+                let set = format!("const {} = new Set(", section.name);
+                assert_eq!(body.matches(&set).count(), 1, "{set}");
+                body = body.replace(&set, &format!("const {} = sharedWords(", section.name));
+            }
+            runtime.push_str(&body);
+        }
+    }
+    (annotated, compiler_hooks(&runtime, true))
+}
+
+/// The profile's boot unit, whose body names every top-level binding at
+/// [`SHARED_BINDINGS`].
+const SHARED_BOOT: &str = "sharedProfileBoot";
+const SHARED_BINDINGS: &str = "/* SHARED_BINDINGS */";
+/// Bindings the boot unit's list leaves out: `coreMethod`, which the
+/// manifest allows only as `const x = coreMethod(...)` (its load-time
+/// callers hold what it makes; nothing captures the function after boot).
+const SHARED_UNLISTED: &[&str] = &["coreMethod"];
+
+/// The header of the boot unit: `requires:` every other binding, wrapped
+/// like `RuntimeManifest::with_computed_requires` wraps.
+fn shared_boot_header(names: &[&str]) -> String {
+    let mut header = format!("  //@unit {SHARED_BOOT} requires:");
+    let mut column = header.len();
+    for (position, name) in names.iter().enumerate() {
+        let word = if position + 1 < names.len() {
+            format!("{name},")
+        } else {
+            name.to_string()
+        };
+        if column + 1 + word.len() > 100 {
+            header.push_str("\n  //@");
+            column = 5;
+        }
+        header.push(' ');
+        header.push_str(&word);
+        column += 1 + word.len();
+    }
+    header.push('\n');
+    header
+}
+
+/// `names` joined by `, ` on lines of at most `width` columns, each line
+/// after the first indented by `indent`.
+fn wrap_list(names: &[&str], indent: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut column = 0;
+    for (position, name) in names.iter().enumerate() {
+        let word = if position + 1 < names.len() {
+            format!("{name},")
+        } else {
+            name.to_string()
+        };
+        if column > 0 && column + 1 + word.len() > width {
+            out.push('\n');
+            out.push_str(indent);
+            column = indent.len();
+        } else if column > 0 {
+            out.push(' ');
+            column += 1;
+        }
+        out.push_str(&word);
+        column += word.len();
+    }
+    out
+}
+
+/// The bindings a unit body declares at its top level, in source order.
+fn top_level_bindings(source: &str, body: std::ops::Range<usize>) -> Vec<&str> {
+    let tokens = js_syntax::lex(source, body).unwrap_or_else(|error| {
+        panic!(
+            "shared-heap runtime byte {}: {}",
+            error.offset, error.message
+        )
+    });
+    let resolution = js_syntax::resolve(source, &tokens)
+        .unwrap_or_else(|(offset, message)| panic!("shared-heap runtime byte {offset}: {message}"));
+    resolution
+        .declarations
+        .iter()
+        .filter(|declaration| declaration.scope == 0)
+        .map(|declaration| declaration.name)
+        .collect()
 }
 
 /// The marker that opens a top-level binding's placeholder in a terse unit:

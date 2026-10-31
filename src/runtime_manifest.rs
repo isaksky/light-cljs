@@ -156,6 +156,30 @@ pub const RUNTIME: &str = include_str!(concat!(env!("OUT_DIR"), "/js_runtime.js"
 pub const COMPILER_RUNTIME: &str =
     include_str!(concat!(env!("OUT_DIR"), "/js_compiler_runtime.js"));
 
+/// `src/js_shared_profile.js` as written: the shared-heap profile's units,
+/// in the manifest format, which replace the runtime's units of the same
+/// names (docs/real-core-design.md, section 1; `build.rs`, `shared_runtime`).
+pub const SHARED_PROFILE: &str = include_str!("js_shared_profile.js");
+
+/// The shared-heap profile of the runtime with its unit headers: the
+/// annotated runtime with the profile's units swapped in, which parses and
+/// validates as a manifest ([`RuntimeManifest::validate_allowing`] with
+/// [`ENGINE_INTRINSICS`]). Written by `build.rs`.
+pub const SHARED_ANNOTATED_RUNTIME: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/js_shared_annotated.js"));
+
+/// The shared-heap profile as the Pants build boots it once: the units of
+/// [`SHARED_ANNOTATED_RUNTIME`] without headers, every `coreCells.X` and
+/// every per-task binding read through the task's cells
+/// (`globalThis.__lightSharedCells`), with the compile-time hooks of
+/// [`COMPILER_RUNTIME`]. Written by `build.rs`.
+pub const SHARED_RUNTIME: &str = include_str!(concat!(env!("OUT_DIR"), "/js_shared_runtime.js"));
+
+/// The free names the shared-heap profile's units may reference besides
+/// runtime bindings and ECMAScript globals: the engine's reserved intrinsic
+/// binding.
+pub const ENGINE_INTRINSICS: &[&str] = &["__rt"];
+
 /// Dense index of a unit in [`RuntimeManifest::units`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnitId(pub usize);
@@ -1077,6 +1101,13 @@ impl<'a> RuntimeManifest<'a> {
 
     /// Checks every unit's declared requires and effect against its body.
     pub fn validate(&self) -> Result<(), Vec<ManifestError>> {
+        self.validate_allowing(&[])
+    }
+
+    /// [`RuntimeManifest::validate`] with `globals` allowed as free names
+    /// besides the ECMAScript globals: [`ENGINE_INTRINSICS`] for the
+    /// shared-heap profile.
+    pub fn validate_allowing(&self, globals: &[&str]) -> Result<(), Vec<ManifestError>> {
         let mut errors = Vec::new();
         for (index, unit) in self.units.iter().enumerate() {
             let id = UnitId(index);
@@ -1100,7 +1131,8 @@ impl<'a> RuntimeManifest<'a> {
                         self.units[owner.0].name
                     )),
                     Some(_) => {}
-                    None if ECMASCRIPT_GLOBALS.binary_search(&reference).is_ok() => {}
+                    None if ECMASCRIPT_GLOBALS.binary_search(&reference).is_ok()
+                        || globals.contains(&reference) => {}
                     None => fail(format!(
                         "references `{reference}`, which is neither a runtime binding nor an ECMAScript global"
                     )),
@@ -1604,11 +1636,30 @@ fn parse_exports(source: &str, range: Range<usize>) -> Result<Vec<&str>, (usize,
                 .to_string(),
         )
     };
-    let head = ["return", "Object", ".", "freeze", "(", "{"];
-    let tail = ["}", ")", ";", "}", ")", "(", ")"];
+    // The shared-heap profile returns the export object through its boot
+    // function: `return sharedProfileBoot(Object.freeze({...}));`.
+    let wrapped = texts.len() > 2
+        && texts[0] == "return"
+        && tokens[1].kind == Kind::Name
+        && is_identifier(texts[1])
+        && texts[2] == "(";
+    let (head, tail): (&[&str], &[&str]) = if wrapped {
+        (
+            &["return", "", "(", "Object", ".", "freeze", "(", "{"],
+            &["}", ")", ")", ";", "}", ")", "(", ")"],
+        )
+    } else {
+        (
+            &["return", "Object", ".", "freeze", "(", "{"],
+            &["}", ")", ";", "}", ")", "(", ")"],
+        )
+    };
     if texts.len() < head.len() + tail.len()
-        || texts[..head.len()] != head
-        || texts[texts.len() - tail.len()..] != tail
+        || texts[..head.len()]
+            .iter()
+            .zip(head)
+            .any(|(text, expected)| !expected.is_empty() && text != expected)
+        || texts[texts.len() - tail.len()..] != *tail
     {
         return Err(shape_error());
     }
@@ -1639,10 +1690,12 @@ fn parse_core_table<'a>(
     let (cells, hub) = match (find(CORE_CELLS), find(CORE_HUB)) {
         (None, None) => return Ok(HashMap::new()),
         (Some(cells), Some(hub)) => (cells, hub),
-        (Some(unit), None) | (None, Some(unit)) => {
+        // The shared-heap profile swaps the cells alone (`src/js_shared_profile.js`).
+        (Some(cells), None) => (cells, cells),
+        (None, Some(unit)) => {
             return Err((
                 unit.header_range.start,
-                format!("units `{CORE_CELLS}` and `{CORE_HUB}` come together"),
+                format!("unit `{CORE_HUB}` comes with unit `{CORE_CELLS}`"),
             ));
         }
     };
@@ -1702,9 +1755,11 @@ fn parse_core_table<'a>(
             }
         }
     }
+    // The shared-heap profile's unit follows the literal with statements.
     if cell_tokens[at..]
         .iter()
         .map(|token| token.text(source))
+        .take(2)
         .ne(["}", ";"])
     {
         return Err((
@@ -1713,6 +1768,9 @@ fn parse_core_table<'a>(
         ));
     }
 
+    if hub.name == CORE_CELLS {
+        return Ok(table);
+    }
     let hub_tokens = tokens(hub)?;
     let mut at = expect_core_head(
         source,

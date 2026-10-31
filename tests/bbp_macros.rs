@@ -17588,3 +17588,6 @@ fn native_mutable_published_field_reflection_follows_source_order() {
 
 #[path = "bbp_macros/real_core_spike.rs"]
 mod real_core_spike;
+
+#[path = "bbp_macros/shared_profile.rs"]
+mod shared_profile;
