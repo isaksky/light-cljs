@@ -209,8 +209,10 @@ a booted profile.
 - **Threads.** `--jobs N` means exactly what `--jobs 1` means. Effect lanes
   (light-cljs-480) keep source order for shared atoms; the real core adds
   one shared atom (the global hierarchy) that takes the same contract. A
-  lazy sequence or delay still realizes once per build, in the first task
-  that needs it, with other readers parked (613).
+  lazy sequence or delay still realizes once per build, in the earliest
+  task in source order that needs it (the engine's realization gate in
+  `Realize::step`, light-cljs-676, which the real core's once-cells pass
+  through too), with other readers parked (613).
 - **Function semantics.** Every operation answers as the V8 build, because
   it is the V8 build's code. The port's approximations (its own `satisfies?`,
   `drop`, `partition`, printing, Var call adapters) disappear with it.

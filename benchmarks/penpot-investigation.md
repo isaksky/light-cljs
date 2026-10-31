@@ -206,6 +206,41 @@ byte-identical to the V8 build's (`72868c0c…`,
 `e249c54d…` with this run's paths); so is the seed-42 200k project
 (`workload.main`, `--optimize none`: `30f2cb4d…`, `6e9112c2…`).
 
+### Effect-lane waits on app.main after the realization gate (October 30, 2026)
+
+light-cljs-676 landed the realization gate (the earliest caller in source
+order realizes every published lazy sequence or delay) and removed the
+binding lane. On Penpot `app.main` that halves the lane waits at 4 and 8
+threads, as the experiment above did, and leaves wall time where it was:
+the longest wait is still the grammar macro's whole run (16-17 s), and at
+4 and 8 threads the waits move to atom accesses, which costs user CPU.
+
+Setup. Release builds (`--no-default-features --features bbp-macros`,
+thin LTO, `CARGO_BUILD_JOBS=4`) of master `82125317` (binding lane) and
+the change (`56abd135`, gate), `benchmarks/penpot.bb main-none` with
+`--stats --jobs N`, the same machine as above. The two alternated per
+thread count, three rounds; medians [range]. Peers built and ran test
+suites throughout, and this worker's own suites and Clippy ran during
+the first two rounds. Every run stops at the grammar macro's
+`core.MapEntry`, as before.
+
+| Build | Threads | Wall s | User CPU s | Peak memory | Lane waits | Summed wait s | Longest wait s | 1-min loads |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| binding lane | 1 | 74.6 [72.6-89.9] | 71.5 [70.6-74.8] | 1.14 GB | 0 | 0 | 0 | 21.3, 22.6, 15.2 |
+| gate | 1 | 71.7 [71.7-78.6] | 70.0 [69.9-72.0] | 1.14 GB | 0 | 0 | 0 | 18.2, 21.6, 14.5 |
+| binding lane | 2 | 71.7 [69.6-73.3] | 73.8 [72.0-74.4] | 1.24 GB | 176 [175-179] | 30.7 [29.4-30.7] | 15.6 [15.5-16.8] | 15.2, 22.1, 9.7 |
+| gate | 2 | 67.7 [65.8-73.0] | 70.5 [68.7-75.0] | 1.25 GB | 164 [164-173] | 29.0 [28.1-31.7] | 16.5 [15.6-17.2] | 15.0, 16.5, 7.2 |
+| binding lane | 4 | 72.1 [67.2-72.5] | 88.2 [83.0-90.4] | 1.39 GB | 505 [503-507] | 64.6 [59.9-66.2] | 16.8 [16.6-17.2] | 9.9, 8.8, 11.4 |
+| gate | 4 | 71.1 [71.0-73.5] | 96.3 [96.2-99.3] | 1.40 GB | 255 [255-255] | 49.9 [48.1-54.2] | 16.6 [16.2-18.6] | 8.7, 10.8, 16.2 |
+| binding lane | 8 | 77.4 [74.3-81.3] | 127.7 [127.1-129.8] | 1.56 GB | 623 [609-625] | 121.9 [115.2-123.0] | 16.5 [16.4-17.1] | 14.0, 12.4, 13.1 |
+| gate | 8 | 79.7 [74.0-85.9] | 140.2 [139.7-160.2] | 1.57 GB | 316 [313-317] | 86.2 [80.6-90.6] | 17.3 [16.5-21.9] | 16.1, 14.2, 11.3 |
+
+Output. `app.render` (JavaScript and source map, `--optimize none`) from
+the gate build at 1, 2, 4 and 8 threads is byte-identical to the V8
+build's at 1 thread (`7b38ecb0…`, `e82ac558…` with this run's paths);
+so is the seed-42 200k project (`release bench --optimize none`:
+`2f11252c…`).
+
 ## Where the Pants build's time goes on app.main (October 30, 2026, at `9907e916`)
 
 **Summary.** light-cljs-635 profiled the Pants build (docs/glossary.md) on
