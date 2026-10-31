@@ -943,10 +943,12 @@ fn shared_profile_engine_collection_operations_preserve_metadata() {
              const results = [core.empty(v), core.pop(v), core.conj(v, 3), core.assoc(v, 0, 9)]; \
              const own = core.withMeta(core.vector(1, 2), rt.arrayMapFromArray([tag, 'own'])), ownResults = [core.empty(own), core.pop(own), core.conj(own, 3), core.assoc(own, 0, 9)]; \
              const s = core.withMeta(core.hashSet(1, 2), __rt.formMap(tag, 'set')), setResults = [core.empty(s), core.conj(s, 3)]; \
+             const bare = core.withMeta(v, null), bareResults = [core.conj(bare, 3), core.pop(bare), core.assoc(bare, 0, 9), core.empty(bare)]; \
              return [...results.map(r => __rt.formKind(r) + ':' + core.count(r) + ':' + __rt.formGet(core.meta(r), tag, null)), \
                ...ownResults.map(r => String(__rt.formKind(r)) + ':' + core.count(r) + ':' + core.get(core.meta(r), tag) + ':' + core.prStr(r)), \
                ...setResults.map(r => core.count(r) + ':' + __rt.formGet(core.meta(r), tag, null)), \
-               core.prStr(core.conj(v, 3)), __rt.formGet(__rt.formMeta(core.conj(v, 3)), tag, null)].join(' ');"
+               core.prStr(core.conj(v, 3)), __rt.formGet(__rt.formMeta(core.conj(v, 3)), tag, null), \
+               core.prStr(core.meta(bare)), ...bareResults.map(r => core.prStr(core.meta(r)) + ':' + core.prStr(r)), core.prStr(__rt.formMeta(core.conj(bare, 3)))].join(' ');"
         ),
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -954,7 +956,8 @@ fn shared_profile_engine_collection_operations_preserve_metadata() {
         out.string().unwrap().to_string_lossy(),
         "vector:0:true vector:1:true vector:3:true vector:2:true \
          null:0:own:[] null:1:own:[1] null:3:own:[1 2 3] null:2:own:[9 2] \
-         0:set 3:set [1 2 3] true"
+         0:set 3:set [1 2 3] true \
+         nil nil:[1 2 3] nil:[1] nil:[9 2] nil:[] nil"
     );
 }
 

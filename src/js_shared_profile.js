@@ -511,12 +511,15 @@
   // map already), since a form's metadata is given where the form is built
   // and `metadataValues.set` on one throws; runtime-built metadata (a map
   // of the verbatim `maps`, until the maps view) takes the wrapper
-  // `with-meta` builds over the views' fallbacks. A runtime-owned result
-  // keeps the V8 profile's store path (light-cljs-693).
+  // `with-meta` builds over the views' fallbacks. An input without
+  // metadata gives a result without: the input may be the wrapper
+  // `with-meta` of nil builds over an engine form that carries metadata,
+  // which the operation's engine result keeps (light-cljs-699). A
+  // runtime-owned result keeps the V8 profile's store path (light-cljs-693).
   function preserveMeta(original, result) {
     const metadata = meta(original);
     if (__rt.formKind(result) !== null) {
-      if (metadata == null) return result;
+      if (metadata == null) return __rt.formMeta(result) == null ? result : __rt.formWithMeta(result, null);
       return __rt.formKind(metadata) === "map" ? __rt.formWithMeta(result, metadata) : collectionWithMeta(result, metadata);
     }
     if (metadata != null || metadataValues.has(original)) metadataValues.set(result, metadata);

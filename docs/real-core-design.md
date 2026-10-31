@@ -885,7 +885,12 @@ cached per task with the sequences' hashes (`sharedFormHashes`): the
 engine's `formHash` folds a host object's identity, so a map holding a
 Date, a symbol or a list, equal to a runtime-built map, hashed apart from
 it and missed it as a hash-map key (light-cljs-698, from the review of
-this attempt). Runtime-owned maps (sorted maps,
+this attempt). The same review found that `preserveMeta` returned an
+operation's engine result as it was when the input had no metadata: the
+input may be the wrapper `with-meta` of nil builds over an engine vector
+that carries metadata, so `conj`, `pop` and `assoc` of the bare wrapper
+brought the removed metadata back; a result now gets the input's nil
+metadata as well (light-cljs-699). Runtime-owned maps (sorted maps,
 records, and every map the verbatim builders still make: an update of an
 engine map is a runtime-owned array map) keep the V8 profile's kinded
 store, a property of the view so the boot seals it and its kinds; a
