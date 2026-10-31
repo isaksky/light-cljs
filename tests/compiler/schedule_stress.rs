@@ -510,6 +510,28 @@ fn duplicate_demands_for_one_unit_from_several_workers_share_one_analysis() {
     assert_several_workers("duplicate demands");
 }
 
+/// Warning-mode units are prepared before their namespace's drain point;
+/// its failure cleanup must count their analyses under every schedule.
+#[test]
+fn failed_warning_build_counts_drained_units_under_any_schedule() {
+    let mut fixture = Fixture::new(
+        "app.main",
+        &[
+            ("app/dep.cljs", "(ns app.dep) (defn f [] 1)"),
+            ("app/main.cljs", "(ns app.main (:require [app.dep])) (if)"),
+        ],
+    );
+    fixture.warning_mode = true;
+    let serial = stress("failed warning build", &fixture);
+    let error = serial.output.unwrap_err();
+    assert!(error.contains("if requires a test"), "{error}");
+    let units = serial.stats.deferred_units;
+    assert_eq!(
+        [units.registered, units.analyzed, units.prepared],
+        [1, 1, 1]
+    );
+}
+
 /// Warnings from units on several workers, and ordinary errors of two
 /// failing units where the later fails first: the one-slot warnings in
 /// their order and the earlier unit's error under any schedule.

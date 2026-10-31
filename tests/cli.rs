@@ -1379,6 +1379,45 @@ fn stats_report_a_failed_build_up_to_its_failure() {
 }
 
 #[test]
+fn stats_failed_warning_build_counts_drained_units() {
+    let sources = TempDir::new("cli-stats-warning-failure");
+    std::fs::create_dir(sources.join("app")).unwrap();
+    std::fs::write(sources.join("app/dep.cljs"), "(ns app.dep) (defn f [] 1)").unwrap();
+    std::fs::write(
+        sources.join("app/main.cljs"),
+        "(ns app.main (:require [app.dep])) (if)",
+    )
+    .unwrap();
+    for threads in ["1", "2", "4", "8"] {
+        let output = light_cljs(&[
+            "--warnings",
+            "--compile",
+            "--source-root",
+            sources.path().to_str().unwrap(),
+            "--entry",
+            "app.main",
+            "--no-cache",
+            "--stats",
+            "--jobs",
+            threads,
+        ]);
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(!output.status.success(), "{threads} threads: {stderr}");
+        assert!(output.stdout.is_empty());
+        assert!(
+            stderr.contains("if requires a test"),
+            "{threads} threads: {stderr}"
+        );
+        let report = stderr.split_once("\nlight-cljs: ").expect(&stderr).0;
+        let (counters, _) = parse_stats(report);
+        for key in ["deferred-units.analyzed", "deferred-units.prepared"] {
+            let value = counters.iter().find(|(name, _)| name == key).unwrap().1;
+            assert_eq!(value, 1.0, "{threads} threads: {key} in {stderr}");
+        }
+    }
+}
+
+#[test]
 fn stats_failed_build_reports_cache_work() {
     let sources = TempDir::new("cli-stats-cache-failure");
     std::fs::create_dir(sources.join("app")).unwrap();

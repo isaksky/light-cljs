@@ -1693,8 +1693,8 @@ pub(crate) struct CompilationSession {
     /// The build's unit pool, with `--jobs N` ([`UnitPool`]).
     pool: RefCell<Option<UnitPool>>,
     /// The last unit, in unit order, a drain point took
-    /// ([`Self::analyze_drained`]); a failed build's counts stop there
-    /// ([`Self::failed_unit_counts`]).
+    /// ([`Self::analyze_drained`] or [`Self::merged_ir`]); a failed build's
+    /// counts stop there ([`Self::failed_unit_counts`]).
     drained_through: Cell<Option<usize>>,
 }
 /// What capture needs beyond the catalog, recorded only while it is on.
@@ -2340,7 +2340,17 @@ impl CompilationSession {
     }
     /// Note that unit `id`'s analyzed IR merged into its program.
     pub(crate) fn merged_ir(&self, id: usize) {
+        // Warning-mode drains take and prepare their units during the
+        // top-level pass, without analyze_drained. Count them only when
+        // their namespace reaches its drain point and merges them: a
+        // later namespace may already have prepared units when an earlier
+        // drain point fails and becomes the build's chosen failure.
+        self.note_drained(id);
         self.shared.merged_ir(id);
+    }
+    fn note_drained(&self, id: usize) {
+        let last = self.drained_through.get().map_or(id, |last| last.max(id));
+        self.drained_through.set(Some(last));
     }
     /// How many units this compilation registered, analyzed, prepared and
     /// executed (`--stats`).
@@ -2353,12 +2363,14 @@ impl CompilationSession {
     /// units before the failure cancelled them, and one slot analyzes the
     /// units its dispatch keeps ahead of their drain points, so analyses
     /// after that unit depend on scheduling; up to it every unit was
-    /// drained, under any schedule. A failed build's namespaces and
-    /// warnings are cut at its failure the same way.
+    /// drained, under any schedule. Units drained early in warning mode
+    /// count when their namespace merges them. A failed build's namespaces
+    /// and warnings are cut at its failure the same way.
     pub fn failed_unit_counts(&self) -> crate::compile_stats::DeferredUnitCounts {
         self.counts_through(self.drained_through.get().map_or(0, |last| last + 1))
     }
-    /// The unit counts, with the analyses of the units before `end`.
+    /// The unit counts, with the analyses and preparations of the units
+    /// before `end`.
     fn counts_through(&self, end: usize) -> crate::compile_stats::DeferredUnitCounts {
         let catalog = self.shared.lock();
         let mut counts = crate::compile_stats::DeferredUnitCounts {
@@ -2371,7 +2383,8 @@ impl CompilationSession {
                 counts.macro_free_time += unit.time;
             }
             counts.analyzed += usize::from(id < end && unit.analyses > 0);
-            counts.prepared += usize::from(matches!(unit.state, AnalysisState::Prepared(..)));
+            counts.prepared +=
+                usize::from(id < end && matches!(unit.state, AnalysisState::Prepared(..)));
             counts.executed += usize::from(unit.emitted);
         }
         use std::sync::atomic::Ordering::Relaxed;
@@ -2947,8 +2960,7 @@ impl CompilationSession {
             Take::Charge if self.shared.held(id) => Take::Defer,
             Take::Drain => {
                 self.shared.release_hold(id);
-                let last = self.drained_through.get().map_or(id, |last| last.max(id));
-                self.drained_through.set(Some(last));
+                self.note_drained(id);
                 Take::Drain
             }
             take => take,
@@ -5345,6 +5357,34 @@ mod worker_tests {
             units.insert(name, unit);
         }
         (session, units, host.environment())
+    }
+
+    #[test]
+    fn failed_counts_exclude_units_prepared_after_the_chosen_failure() {
+        let (session, units, _) =
+            registered("(defn before [] 1) (defn bad [] (if)) (defn after [] 2)");
+        let before = units["cljs.user/before"];
+        let bad = units["cljs.user/bad"];
+        let after = units["cljs.user/after"];
+        // Warning-mode units may be prepared during their top-level pass,
+        // before an earlier namespace reaches its failing drain point.
+        let (early, _) = session.analyze(before, None).unwrap();
+        session.release_application_ir(before);
+        let (later, _) = session.analyze(after, None).unwrap();
+        session.release_application_ir(after);
+        // Only the earlier namespace merged before the chosen failure.
+        session.merged_ir(before);
+        let counts = session.failed_unit_counts();
+        assert_eq!([counts.analyzed, counts.prepared], [1, 1]);
+        assert!(session.analyze_drained(bad, false).is_err());
+        let counts = session.failed_unit_counts();
+        assert_eq!(
+            [counts.registered, counts.analyzed, counts.prepared],
+            [3, 2, 1]
+        );
+        let all = session.unit_counts();
+        assert_eq!([all.analyzed, all.prepared], [3, 2]);
+        drop((early, later));
     }
 
     #[cfg(feature = "bbp-macros")]
