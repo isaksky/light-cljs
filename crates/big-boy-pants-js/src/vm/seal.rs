@@ -77,10 +77,12 @@ pub(crate) fn seal_bindings(heap: &Heap, task: TaskId, value: &Value) -> Result<
 /// made while booting, held only by closure captures, which no JavaScript
 /// walk can reach), the record is sealed, and so is the untouched default
 /// `prototype` object it holds: one with no own property but its
-/// `constructor`, the function. A prototype a program gave other
-/// properties, or a record or prototype of another task, is left for the
-/// publication check to report. The number of cells, records and
-/// prototypes sealed (light-cljs-666).
+/// `constructor`, the function. A record a shallow `seal` already took
+/// still has its prototype inspected the same way: the shallow seal left
+/// it. A prototype a program gave other properties, or a record or
+/// prototype of another task, is left for the publication check to
+/// report. The number of cells, records and prototypes sealed
+/// (light-cljs-666).
 pub(crate) fn seal_reachable(heap: &Heap, task: TaskId, value: &Value) -> Result<usize, Fault> {
     let Value::Object(root) = *value else {
         return Ok(0);
@@ -91,13 +93,17 @@ pub(crate) fn seal_reachable(heap: &Heap, task: TaskId, value: &Value) -> Result
     let prototype_key = keys.lookup(&crate::value::string::JsString::from("prototype"));
     let constructor_key = keys.lookup(&crate::value::string::JsString::from("constructor"));
     for (function, record) in functions {
-        let own_record = heap
+        // The record is `task`'s to seal, or already sealed (a shallow
+        // `__rt.seal` of the function, by this task or another): either way
+        // the default prototype it holds may still be `task`'s, and is
+        // inspected on its own. A record another task owns is left.
+        let (own_record, sealed_record) = heap
             .read(record, |object| match object {
-                HeapObject::Plain(o) => o.owner() == Some(task) && !o.is_sealed(),
-                _ => false,
+                HeapObject::Plain(o) => (o.owner() == Some(task) && !o.is_sealed(), o.is_sealed()),
+                _ => (false, false),
             })
-            .unwrap_or(false);
-        if !own_record {
+            .unwrap_or((false, false));
+        if !own_record && !sealed_record {
             continue;
         }
         let prototype = prototype_key.and_then(|key| {
@@ -129,7 +135,9 @@ pub(crate) fn seal_reachable(heap: &Heap, task: TaskId, value: &Value) -> Result
                 sealed += usize::from(seal_plain(heap, prototype));
             }
         }
-        sealed += usize::from(seal_plain(heap, record));
+        if own_record {
+            sealed += usize::from(seal_plain(heap, record));
+        }
     }
     // A default prototype reached as a capture: a derived class captures
     // its base's `prototype` for `super` and instance creation, and the base

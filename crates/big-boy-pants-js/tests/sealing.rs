@@ -479,6 +479,49 @@ fn seal_reachable_seals_captured_functions_records_and_default_prototypes() {
     assert_eq!(probe.string().unwrap().to_string_lossy(), "true");
 }
 
+/// A function whose own-property record a shallow `__rt.seal` already took
+/// still holds its task-owned default prototype: the reachable seal
+/// inspects the prototype behind an already sealed record, seals it when
+/// it is untouched, and seals nothing on a repeated call.
+#[test]
+fn seal_reachable_handles_presealed_function_records() {
+    let rt = Runtime::new();
+    let source = "const make = () => { \
+           const f = function (x) { return x + 1; }; \
+           if (typeof f.prototype !== 'object') throw 'prototype'; \
+           __rt.seal(f); \
+           return x => f(x); }; \
+         const use = make(); \
+         const first = __rt.sealReachable(use), second = __rt.sealReachable(use); \
+         return __rt.formVector(use, first, second, use(40));";
+    let sealed = boot(&rt, source);
+    if let Err(error) = rt.publish(&sealed) {
+        panic!("the prototype behind the sealed record was left: {error}");
+    }
+    let use_ = rt.scope(|s| {
+        let v = s.local(&sealed).unwrap();
+        assert_eq!(s.view(s.form_nth(v, 1).unwrap()), ValueView::Number(1.0));
+        assert_eq!(s.view(s.form_nth(v, 2).unwrap()), ValueView::Number(0.0));
+        assert_eq!(s.view(s.form_nth(v, 3).unwrap()), ValueView::Number(41.0));
+        s.persist(s.form_nth(v, 0).unwrap())
+    });
+    assert_eq!(
+        call_on_two_threads(&rt, &use_, 1.0),
+        [ValueView::Number(2.0), ValueView::Number(2.0)]
+    );
+    // A prototype the program touched is still left behind a sealed record
+    // (the path's edge through the sealed record is the prototype property).
+    let touched = boot(
+        &rt,
+        &source.replace("__rt.seal(f);", "f.prototype.m = () => 0; __rt.seal(f);"),
+    );
+    let error = rejection(&rt, &touched);
+    assert!(
+        error.contains(".capture(0).properties") && error.contains("task-owned"),
+        "{error}"
+    );
+}
+
 /// A host object's identity hash is one number wherever it is hashed: a
 /// deftype instance, whose `=` is identity, hashes through `formHash` to
 /// the number `identityHash` answers, and a form that holds a host object
