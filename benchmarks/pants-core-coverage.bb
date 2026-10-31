@@ -621,6 +621,24 @@
    [:vendored ["research/penpot-light/vendor"]]
    [:generated ["research/cljs-200k/src" "research/cljs-200k/macros"]]])
 
+(defn usage-files
+  "Require source files in each usage corpus. Roots within a corpus may be
+  absent (for example optional generated Penpot sources)."
+  []
+  (into {}
+        (for [[k roots] usage-roots
+              :let [paths (mapv #(fs/path repo %) roots)
+                    files (vec (for [path paths :when (fs/exists? path)
+                                     f (fs/glob path "**.{cljs,cljc,clj}")
+                                     :when (fs/regular-file? f)] f))]]
+          (do
+            (when (empty? files)
+              (throw (ex-info (str "Missing or empty usage corpus " (name k)
+                                   ": no .cljs, .cljc or .clj source files under "
+                                   (str/join ", " paths) ". Restore these research sources before running core coverage.")
+                              {:corpus k :roots roots})))
+            [k files]))))
+
 (defn strip-text
   "Source text without comments or literal contents. Keep a placeholder for
   each string, regex or character so binding initializer positions survive."
@@ -733,15 +751,15 @@
                                         :quote identity :deref identity :var identity :syntax-quote identity
                                         :unquote identity :unquote-splicing identity})))}))
 
-(defn usage []
-  (into {}
-        (for [[k roots] usage-roots]
-          (let [files (for [r roots :when (fs/exists? (fs/path repo r))
-                            f (fs/glob (fs/path repo r) "**.{cljs,cljc,clj}")]
-                        (strip-text (slurp (str f))))]
-            [k {:text (apply merge-with (partial merge-with +) (map count-tokens files))
-                :macro (apply merge-with (partial merge-with +) (map count-tokens (mapcat macro-bodies files)))
-                :files (count files)}]))))
+(defn usage
+  ([] (usage (usage-files)))
+  ([sources]
+   (into {}
+         (for [[k paths] sources
+               :let [files (map #(strip-text (slurp (str %))) paths)]]
+           [k {:text (apply merge-with (partial merge-with +) (map count-tokens files))
+               :macro (apply merge-with (partial merge-with +) (map count-tokens (mapcat macro-bodies files)))
+               :files (count paths)}]))))
 
 ;; ---------------------------------------------------------------- doc
 
@@ -795,6 +813,7 @@
        ""
        "Without `--check` it also rewrites this section, unless something regressed (`--accept-regressions`"
        "rewrites it anyway, for a probe that changed). The script's own tests: `bb benchmarks/pants-core-coverage-test.bb`."
+       "All three usage corpora must contain source files; the script checks them before building or probing."
        ""
        "### Summary"
        ""
@@ -951,9 +970,10 @@
 (defn -main []
   (when-not (fs/exists? (str cljs-root "/src/main/cljs/cljs/core.cljs"))
     (println "research/clojurescript is missing (see README: the pinned checkout).") (System/exit 2))
-  (when-not (contains? args "--no-build") (build! repo))
-  (fs/create-dirs work)
-  (let [items (inventory cljs-root)
+  (let [usage-sources (usage-files)
+        _ (when-not (contains? args "--no-build") (build! repo))
+        _ (fs/create-dirs work)
+        items (inventory cljs-root)
         bootstrap (bootstrap-macros)
         probes (vec (map-indexed (fn [i item] [(str i) (probe-of item)]) items))
         matrix-probes (vec (for [[pi proto] (map-indexed vector (map :name (filter #(= :protocol (:kind %)) items)))
@@ -998,7 +1018,7 @@
     (let [regressed? (or (seq regressed-items) (seq regressed-cells))]
       (when (and (not (contains? args "--check")) (or (not regressed?) (contains? args "--accept-regressions")))
         (let [text (slurp doc-file)
-              section (render rows matrix broken-kinds (usage) rev)
+              section (render rows matrix broken-kinds (usage usage-sources) rev)
               b (str/index-of text begin-marker) e (str/index-of text end-marker)
               new (if (and b e)
                     (str (subs text 0 b) section (subs text (+ e (count end-marker))))

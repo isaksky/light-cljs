@@ -135,6 +135,39 @@
           :let [refs (:ref (count-tokens (strip-text source)))]]
     (is (= expected (select-keys refs ["not-empty" "inst-ms" "type"])) source)))
 
+(deftest usage-rejects-missing-corpora
+  (let [dir (fs/create-temp-dir {:dir (fs/create-dirs (fs/path repo "target")) :prefix "core-coverage-usage-test-"})
+        baseline "Preserve this coverage baseline.\n"
+        doc (str (fs/path dir "coverage.md"))
+        roots [[:penpot ["penpot" "optional-penpot-root"]]
+               [:vendored ["vendor"]] [:generated ["generated"]]]]
+    (try
+      (spit doc baseline)
+      (doseq [[_ [root]] roots]
+        (fs/create-dirs (fs/path dir root))
+        (spit (str (fs/path dir root "source.cljs")) "{:wfn inst-ms}"))
+      (let [calls (atom [])]
+        (with-redefs [repo (str dir) doc-file doc usage-roots roots args #{}
+                      build! (fn [& _] (swap! calls conj :build))
+                      run-all (fn [& _] (swap! calls conj :probe) {})]
+          (is (= {:penpot 1 :vendored 1 :generated 1} (update-vals (usage) :files)))
+          (doseq [[corpus [root]] roots
+                  state [:missing :empty]]
+            (fs/delete-tree (fs/path dir root))
+            (when (= :empty state)
+              (fs/create-dirs (fs/path dir root))
+              (spit (str (fs/path dir root "README.md")) "No source files."))
+            (doseq [run [usage -main]
+                    :let [error (try (run) nil (catch clojure.lang.ExceptionInfo ex ex))]]
+              (is (= corpus (:corpus (ex-data error))) (str corpus " " state))
+              (is (str/includes? (or (ex-message error) "") "Restore these research sources"))
+              (is (str/includes? (or (ex-message error) "") (str (fs/path dir root)))))
+            (is (= baseline (slurp doc)) "invalid corpora cannot overwrite the baseline")
+            (is (empty? @calls) "validation precedes building and probing")
+            (fs/create-dirs (fs/path dir root))
+            (spit (str (fs/path dir root "source.cljs")) "{:wfn inst-ms}"))))
+      (finally (fs/delete-tree dir)))))
+
 (deftest core-coverage-build-ignores-stale-binaries
   (let [dir (fs/create-temp-dir {:dir (fs/create-dirs (fs/path repo "target")) :prefix "core-coverage-build-test-"})]
     (try
