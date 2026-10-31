@@ -1063,3 +1063,52 @@ fn a_gated_concat_cycle_fails_instead_of_looping() {
     assert_eq!(caught(outcome), "range error");
     assert!(host.asked.load(Ordering::SeqCst) >= 2);
 }
+
+/// The cycle history also survives a pending gate dependency between its
+/// two concat cells. Bound the resumed run so lost history yields instead
+/// of hanging the suite.
+#[test]
+fn a_gated_concat_cycle_survives_a_dependency_wait() {
+    let rt = gated_runtime();
+    let xs = published(
+        &rt,
+        "const xs = __rt.lazySeq(() =>
+           __rt.cljConcat(__rt.cljConcat(xs, __rt.formList(1)), __rt.formList(2)));
+         return xs;",
+    );
+    let head = compile_function(
+        "function head(xs) {
+           try { __rt.cljFirst(xs); return 'no error'; }
+           catch (e) { return e instanceof RangeError ? 'range error' : 'other ' + e; }
+         }",
+    )
+    .unwrap();
+    let host = ScriptedGate::new(&[0.0, 0.0, 5.0]);
+    let task = rt.spawn(&head, &[&xs]).unwrap();
+    waits_at_gate(
+        task.run_with(Budget::instructions(100_000), &mut host.clone())
+            .unwrap(),
+    );
+    assert_eq!(host.asked.load(Ordering::SeqCst), 3);
+    let request = task.take_producer_requests().pop().unwrap();
+    let answer = rt.root(Primitive::Number(0.0));
+    let resumed = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            Completion::Ready(&answer),
+        )
+        .unwrap()
+        .into_runnable();
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0].id(), task.id());
+    let outcome = resumed[0]
+        .run_with(Budget::instructions(100_000), &mut host.clone())
+        .unwrap();
+    assert_eq!(caught(outcome), "range error");
+    assert_eq!(
+        host.asked.load(Ordering::SeqCst),
+        3,
+        "resuming must detect the cycle without asking to revisit a concat"
+    );
+}
