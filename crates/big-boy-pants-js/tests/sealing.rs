@@ -350,3 +350,131 @@ fn shallow_seals_preserve_transitive_publication_checks() {
         );
     }
 }
+
+/// `__rt.identityHash` is the identity service the shared-heap profile's
+/// `hash` of a host object reads (light-cljs-647/661): a 32-bit integer
+/// from the object's heap identity, the same in every task for the
+/// object's lifetime, distinct between live objects, 0 for a primitive.
+#[test]
+fn identity_hash_is_stable_across_tasks() {
+    let rt = Runtime::new();
+    let booted = boot(
+        &rt,
+        "const o = () => 1, p = () => 2; \
+         const probe = x => x === 0 ? __rt.identityHash(o) : __rt.identityHash(p); \
+         return __rt.formVector(probe, __rt.identityHash(o), __rt.identityHash(p), \
+           __rt.identityHash(1), __rt.identityHash('s'), __rt.identityHash(null), \
+           Number.isInteger(__rt.identityHash(o)) && __rt.identityHash(o) === (__rt.identityHash(o) | 0));",
+    );
+    rt.publish(&booted).unwrap();
+    let (probe, o_hash, p_hash) = rt.scope(|s| {
+        let v = s.local(&booted).unwrap();
+        let number = |i| match s.view(s.form_nth(v, i).unwrap()) {
+            ValueView::Number(n) => n,
+            other => panic!("{other:?}"),
+        };
+        for i in 3..6 {
+            assert_eq!(number(i), 0.0, "a primitive hashes to 0");
+        }
+        assert_eq!(s.view(s.form_nth(v, 6).unwrap()), ValueView::Bool(true));
+        (s.persist(s.form_nth(v, 0).unwrap()), number(1), number(2))
+    });
+    assert_ne!(o_hash, p_hash);
+    assert_eq!(
+        call_on_two_threads(&rt, &probe, 0.0),
+        [ValueView::Number(o_hash), ValueView::Number(o_hash)]
+    );
+    assert_eq!(
+        call_on_two_threads(&rt, &probe, 1.0),
+        [ValueView::Number(p_hash), ValueView::Number(p_hash)]
+    );
+}
+
+/// An object allocated after a hashed object's collection, in its slot or
+/// any other, never gets the collected object's hash: the identity carries
+/// the slot's generation.
+#[test]
+fn identity_is_not_reused_after_collection() {
+    let rt = Runtime::new();
+    let collected = boot(&rt, "return __rt.identityHash({});");
+    let ValueView::Number(hash) = collected.view() else {
+        panic!("{collected:?}");
+    };
+    rt.collect().unwrap();
+    let later = boot(
+        &rt,
+        &format!(
+            "let reused = 0; const keep = []; \
+             for (let i = 0; i < 4000; i++) {{ const o = i % 2 ? {{}} : () => i; keep.push(o); if (__rt.identityHash(o) === {hash}) reused++; }} \
+             return reused;"
+        ),
+    );
+    assert_eq!(later.view(), ValueView::Number(0.0));
+}
+
+/// `__rt.sealReachable` is `sealBindings` plus the seal no JavaScript
+/// walk can make: a function created while booting and held only by a
+/// closure capture keeps a task-owned own-property record once its
+/// `prototype` was read, so the closure does not publish. The reachable
+/// seal seals that record and the untouched default prototype; a
+/// prototype the program gave a method is left, and the publication check
+/// still names it.
+#[test]
+fn seal_reachable_seals_captured_functions_records_and_default_prototypes() {
+    let rt = Runtime::new();
+    let source = "const make = () => { \
+           const dispatch = function (x) { return x + 1; }; \
+           if (typeof dispatch.prototype !== 'object') throw 'prototype'; \
+           dispatch.arity = 1; \
+           return x => dispatch(x) + dispatch.arity; }; \
+         const use = make(); \
+         SEAL return __rt.formVector(use, use(40));";
+    let unsealed = boot(&rt, &source.replace("SEAL", ""));
+    let error = rejection(&rt, &unsealed);
+    assert!(
+        error.contains(".capture(0).properties") && error.contains("task-owned"),
+        "{error}"
+    );
+    // `sealBindings` seals no record; the reachable seal does.
+    let bindings_only = boot(&rt, &source.replace("SEAL", "__rt.sealBindings(use);"));
+    assert!(rejection(&rt, &bindings_only).contains(".properties"));
+    let sealed = boot(
+        &rt,
+        &source.replace("SEAL", "if (__rt.sealReachable(use) !== 2) throw 'count';"),
+    );
+    rt.publish(&sealed).unwrap();
+    let use_ = rt.scope(|s| {
+        let v = s.local(&sealed).unwrap();
+        assert_eq!(s.view(s.form_nth(v, 1).unwrap()), ValueView::Number(42.0));
+        s.persist(s.form_nth(v, 0).unwrap())
+    });
+    assert_eq!(
+        call_on_two_threads(&rt, &use_, 1.0),
+        [ValueView::Number(3.0), ValueView::Number(3.0)]
+    );
+    // A prototype the program gave a method is not sealed: the closure
+    // stays task-owned, and the path names the prototype.
+    let touched = boot(
+        &rt,
+        &source
+            .replace(
+                "dispatch.arity = 1;",
+                "dispatch.arity = 1; dispatch.prototype.m = () => 0;",
+            )
+            .replace("SEAL", "__rt.sealReachable(use);"),
+    );
+    let error = rejection(&rt, &touched);
+    assert!(
+        error.contains(".capture(0).properties") && error.contains("task-owned"),
+        "{error}"
+    );
+    // The sealed function's own properties can no longer change.
+    let probe = run(
+        &rt,
+        "function probe(v) { const use = __rt.formNth(v, 0); \
+           try { use.x = 1; return 'wrote'; } catch (e) { return String(e instanceof TypeError); } }",
+        &[&sealed],
+    )
+    .unwrap();
+    assert_eq!(probe.string().unwrap().to_string_lossy(), "true");
+}

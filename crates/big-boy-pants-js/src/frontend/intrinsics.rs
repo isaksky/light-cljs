@@ -329,6 +329,10 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     // Sealing boot-time state for sharing (light-cljs-646).
     form_op(FormOp::SealBindings),
     form_op(FormOp::Seal),
+    // The identity hash of a host object (light-cljs-647/661).
+    form_op(FormOp::IdentityHash),
+    // Sealing what closure captures reach (light-cljs-666).
+    form_op(FormOp::SealReachable),
 ];
 
 const fn form_op(op: FormOp) -> Intrinsic {

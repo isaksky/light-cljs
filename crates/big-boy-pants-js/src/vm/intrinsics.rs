@@ -455,7 +455,8 @@ fn form_step(
     host: &mut dyn crate::Host,
     instr: Instr,
 ) -> Result<(), Fault> {
-    if let Instr::FormOp(op @ (FormOp::SealBindings | FormOp::Seal)) = instr {
+    if let Instr::FormOp(op @ (FormOp::SealBindings | FormOp::Seal | FormOp::SealReachable)) = instr
+    {
         return seal_step(state, heap, op);
     }
     if instr == Instr::FormOp(FormOp::CljCoreResolver) {
@@ -511,10 +512,12 @@ fn form_step(
 fn seal_step(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<(), Fault> {
     let [value] = top(state.operands())?;
     let task = state.diag.task;
-    let result = if op == FormOp::Seal {
-        super::seal::seal(heap, task, &value)?
-    } else {
-        Value::Number(super::seal::seal_bindings(heap, task, &value)? as f64)
+    let result = match op {
+        FormOp::Seal => super::seal::seal(heap, task, &value)?,
+        FormOp::SealReachable => {
+            Value::Number(super::seal::seal_reachable(heap, task, &value)? as f64)
+        }
+        _ => Value::Number(super::seal::seal_bindings(heap, task, &value)? as f64),
     };
     state.replace(1, result)
 }
@@ -859,6 +862,7 @@ fn strict_form_op(
             form::struct_field(heap, &s, &name)?
         }
         FormOp::StructTypeOf => form::type_of(heap, &arg()),
+        FormOp::IdentityHash => Value::Number(f64::from(identity_hash(&arg()))),
         FormOp::RecordFromMap => {
             let (ty, map) = (arg(), arg());
             form::record_from_map(heap, &ty, &map)?
@@ -940,7 +944,7 @@ fn strict_form_op(
         | FormOp::CljForce
         | FormOp::CljDelayState => Value::Undefined,
         // Run by `form_step` with the running task.
-        FormOp::SealBindings | FormOp::Seal => Value::Undefined,
+        FormOp::SealBindings | FormOp::Seal | FormOp::SealReachable => Value::Undefined,
     })
 }
 
@@ -1081,4 +1085,22 @@ mod tests {
         let expected = BuilderError::OwnerFinished { owner: owner.id() };
         assert_eq!(err.kind(), VmErrorKind::Builder(expected));
     }
+}
+
+/// `__rt.identityHash(v)`: a 32-bit hash of an object's heap identity
+/// (slot and generation: `crate::heap::ObjectId::to_bits`), the same in
+/// every task for the object's lifetime and never that of another object
+/// allocated in its slot after its collection; 0 for a primitive. Needs no
+/// table, so nothing retains a hashed object or grows with the count
+/// hashed. The runtime's `hash` of a host object reads it where the V8
+/// profile counts in a WeakMap (light-cljs-647/661).
+pub(crate) fn identity_hash(value: &Value) -> i32 {
+    let Value::Object(id) = value else {
+        return 0;
+    };
+    let bits = id.to_bits();
+    // Fold the generation into the slot index: a reused slot hashes anew.
+    let mixed = (bits ^ (bits >> 32)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let hash = (mixed >> 32) as u32 as i32;
+    if hash == 0 { 1 } else { hash }
 }

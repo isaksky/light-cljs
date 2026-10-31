@@ -1633,11 +1633,22 @@ pub enum FormOp {
     /// object → the same object, sealed: frozen, shared and immutable
     /// (`seal`, light-cljs-646, `crate::vm::seal`).
     Seal = 119,
+    /// value → its identity hash, a 32-bit integer from the object's heap
+    /// identity: the same in every task, for the object's lifetime, and
+    /// never that of another object allocated after its collection (the
+    /// slot generation differs); 0 for a primitive (`identityHash`,
+    /// light-cljs-647/661).
+    IdentityHash = 120,
+    /// value → the number sealed: `sealBindings`, and the own-property
+    /// record and untouched default `prototype` of every function of the
+    /// running task reachable from `value` (`sealReachable`,
+    /// light-cljs-666, `crate::vm::seal`).
+    SealReachable = 121,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 120] = [
+    pub const ALL: [FormOp; 122] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1758,6 +1769,8 @@ impl FormOp {
         FormOp::CljDelayState,
         FormOp::SealBindings,
         FormOp::Seal,
+        FormOp::IdentityHash,
+        FormOp::SealReachable,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1835,6 +1848,8 @@ impl FormOp {
             | FormOp::CljDelayState
             | FormOp::SealBindings
             | FormOp::Seal
+            | FormOp::IdentityHash
+            | FormOp::SealReachable
             | FormOp::CljForce => 1,
             FormOp::Keyword
             | FormOp::FnWithApplyTo
@@ -1981,6 +1996,8 @@ impl FormOp {
             FormOp::CljDelayState => "cljDelayState",
             FormOp::SealBindings => "sealBindings",
             FormOp::Seal => "seal",
+            FormOp::IdentityHash => "identityHash",
+            FormOp::SealReachable => "sealReachable",
             FormOp::StructField => "structField",
             FormOp::StructTypeOf => "structTypeOf",
             FormOp::RecordFromMap => "recordFromMap",

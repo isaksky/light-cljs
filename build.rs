@@ -484,9 +484,9 @@ const SHARED_TASK_STATE: &[&str] = &[
     "demandHost",
     "patchDeclaration",
     "setDeclaration",
-    // Identity hashes of host objects (light-cljs-661 would make them an
-    // engine service).
-    "identityHashes",
+    // The identity counter: dead in this profile, where the engine hashes
+    // a host object by its heap identity (`identityHash`); the verbatim
+    // `hash` unit still names it in the branch the view never takes.
     "identityCounter",
     // The global hierarchy (an engine atom under effect lanes is 649's).
     "globalHierarchy",

@@ -255,6 +255,11 @@ pub struct Exports<'a> {
     pub body_range: Range<usize>,
     /// The shorthand properties of `return Object.freeze({...})`, in order.
     pub names: Vec<&'a str>,
+    /// The binding the export object is returned through, `return
+    /// WRAPPER(Object.freeze({...}));` (the shared-heap profile's
+    /// `sharedProfileBoot`): a runtime binding, an export root, and kept in
+    /// a slice that keeps its unit.
+    pub wrapper: Option<&'a str>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -416,11 +421,12 @@ impl<'a> RuntimeManifest<'a> {
         for section in sections {
             match section.header {
                 Header::Exports => match parse_exports(source, section.body.clone()) {
-                    Ok(names) => {
+                    Ok((names, wrapper)) => {
                         exports = Some(Exports {
                             header_range: section.header_range,
                             body_range: section.body,
                             names,
+                            wrapper,
                         })
                     }
                     Err((offset, message)) => errors.push(ManifestError {
@@ -730,12 +736,14 @@ impl<'a> RuntimeManifest<'a> {
             .is_some_and(|unit| self.units[unit.0].requires.contains(&binding))
     }
 
-    /// Units declaring the exported bindings, the roots of the full runtime.
+    /// Units declaring the exported bindings and the export wrapper, the
+    /// roots of the full runtime.
     pub fn export_roots(&self) -> Vec<UnitId> {
         let mut roots = self
             .exports
             .names
             .iter()
+            .chain(&self.exports.wrapper)
             .filter_map(|name| self.unit_of(name))
             .collect::<Vec<_>>();
         roots.sort_unstable();
@@ -1091,10 +1099,22 @@ impl<'a> RuntimeManifest<'a> {
         for (unit, _) in self.units.iter().zip(kept).filter(|(_, kept)| **kept) {
             text.push_str(&self.source[unit.body_range.clone()]);
         }
+        // The export wrapper is kept with its unit (an export root).
+        let wrapper = self
+            .exports
+            .wrapper
+            .filter(|wrapper| self.unit_of(wrapper).is_some_and(|unit| kept[unit.0]));
         text.push_str("  return ");
+        if let Some(wrapper) = wrapper {
+            text.push_str(wrapper);
+            text.push('(');
+        }
         text.push_str(open);
         text.push_str(&names.join(", "));
         text.push_str(close);
+        if wrapper.is_some() {
+            text.push(')');
+        }
         text.push_str(";\n})()\n");
         text
     }
@@ -1244,6 +1264,14 @@ impl<'a> RuntimeManifest<'a> {
                     message: format!("exports `{name}`, which no unit declares"),
                 });
             }
+        }
+        if let Some(wrapper) = self.exports.wrapper
+            && self.unit_of(wrapper).is_none()
+        {
+            errors.push(ManifestError {
+                line: line_at(self.source, self.exports.body_range.start),
+                message: format!("returns the exports through `{wrapper}`, which no unit declares"),
+            });
         }
         if errors.is_empty() {
             Ok(())
@@ -1624,8 +1652,12 @@ fn parse_unit_header<'a>(first: &'a str, continued: &[&'a str]) -> Result<Header
     })
 }
 
-/// Checks the export section's shape and returns the exported names.
-fn parse_exports(source: &str, range: Range<usize>) -> Result<Vec<&str>, (usize, String)> {
+/// Checks the export section's shape and returns the exported names and the
+/// wrapper the export object is returned through, if any.
+fn parse_exports(
+    source: &str,
+    range: Range<usize>,
+) -> Result<(Vec<&str>, Option<&str>), (usize, String)> {
     let tokens = lex_section(source, range.clone(), false)
         .map_err(|error| (error.offset, error.message.to_string()))?;
     let texts = tokens.iter().map(|t| t.text(source)).collect::<Vec<_>>();
@@ -1674,7 +1706,7 @@ fn parse_exports(source: &str, range: Range<usize>) -> Result<Vec<&str>, (usize,
             return Err(shape_error());
         }
     }
-    Ok(names)
+    Ok((names, wrapped.then(|| texts[1])))
 }
 
 /// The core table: every key of the [`CORE_CELLS`] literal as a cell, and the

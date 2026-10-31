@@ -3,7 +3,7 @@
 //! section 1; light-cljs-647): it boots in a boot task and publishes.
 
 use big_boy_pants_js::frontend::compile_function;
-use big_boy_pants_js::{PublishError, Rooted, RunOutcome, Runtime};
+use big_boy_pants_js::{HeapPolicy, PublishError, Rooted, RunOutcome, Runtime};
 use light_cljs::runtime_manifest::SHARED_RUNTIME;
 
 fn run(rt: &Runtime, body: &str) -> Result<Rooted, String> {
@@ -21,16 +21,15 @@ fn boot(rt: &Runtime) -> Rooted {
 }
 
 /// The writes the boot made to a brand store's private fallback (`sharedView`
-/// in the profile): the store and the writer, once each.
+/// in the profile): the store and its first writer.
 fn boot_store_writes(rt: &Runtime) -> String {
     let calls = run(
         rt,
         &format!(
-            "const rt = (\n{SHARED_RUNTIME}\n); \
-             const calls = globalThis.__lightSharedSetCalls ?? []; \
-             const seen = new Set(); const out = []; \
-             for (const call of calls) {{ const lines = call.split('\\n'); const key = lines[0] + ' ' + (lines[2] ?? lines[1]); \
-               if (!seen.has(key)) {{ seen.add(key); out.push(key); }} }} \
+            "globalThis.__lightSharedSetTrace = new Map(); \
+             const rt = (\n{SHARED_RUNTIME}\n); \
+             const out = []; \
+             for (const [name, stack] of globalThis.__lightSharedSetTrace) {{ const lines = stack.split('\\n'); out.push(name + ' ' + (lines[2] ?? lines[1])); }} \
              return out.join('\\n');"
         ),
     )
@@ -230,6 +229,89 @@ fn shared_profile_realization_state() {
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
         "false 0 1 true 1 false 1 42 true true false true 1 (1) true 7"
+    );
+}
+
+/// The identity hashes of host objects are the engine's (`identityHash`),
+/// not a counter and WeakMap of the task: `hash` of a function is stable,
+/// distinct between functions and the engine's number, and the verbatim
+/// unit's counter is never reached. tests/sealing.rs in the engine covers
+/// the same number in two tasks and no reuse after collection.
+#[test]
+fn shared_profile_identity_hashes_are_the_engines() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const f = () => 1, g = () => 2; \
+             return [core.hash(f) === core.hash(f), core.hash(f) === __rt.identityHash(f), \
+               core.hash(f) !== core.hash(g), Number.isInteger(core.hash(g)), \
+               globalThis.__lightSharedCells.identityCounter].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true true true true 0"
+    );
+}
+
+/// A write to a view's private fallback (a runtime-owned seq kind, design
+/// point 8) keeps nothing unless the task asked for the migration trace,
+/// and then one stack per view.
+#[test]
+fn shared_profile_fallback_diagnostics_are_bounded() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             let n = 0; for (let i = 0; i < 2000; i++) n += core.count(core.repeat(2, 'x')); \
+             const untraced = typeof globalThis.__lightSharedSetCalls + ' ' + typeof globalThis.__lightSharedSetTrace; \
+             const trace = globalThis.__lightSharedSetTrace = new Map(); \
+             for (let i = 0; i < 2000; i++) n += core.count(core.repeat(2, 'x')); \
+             return [n, untraced, trace.size, [...trace.keys()].join(',')].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "8000 undefined undefined 1 cells"
+    );
+}
+
+/// The profile boots under the 4 MiB starting heap of the evaluator's
+/// tests (acceptance 4 of light-cljs-647), with the method-key memos filled
+/// at boot and the tables built on demand (gensym names, protocol slots)
+/// first used after it.
+#[test]
+fn shared_profile_boots_with_four_mib_heap() {
+    let rt = Runtime::with_heap_policy(
+        Default::default(),
+        HeapPolicy {
+            hard_limit_bytes: Some(64 << 20),
+            ..Default::default()
+        },
+    );
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             return [core.name(core.gensym()).startsWith('G__'), core.prStr(core.vector(core.keyword(null, 'a'), 1)), \
+               core.reduce(core.add, 0, core.vector(1, 2, 3)), core.satisfies(core.ICounted, core.vector())].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true [:a 1] 6 true"
+    );
+    let stats = rt.heap_stats();
+    assert!(
+        stats.peak_managed_bytes <= 4 << 20,
+        "peak managed bytes {}",
+        stats.peak_managed_bytes
     );
 }
 

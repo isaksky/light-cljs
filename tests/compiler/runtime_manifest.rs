@@ -204,7 +204,6 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
         "demandHost",
         "patchDeclaration",
         "setDeclaration",
-        "identityHashes",
         "identityCounter",
         "globalHierarchy",
         "tapListeners",
@@ -2258,4 +2257,49 @@ fn protocol_lookups_take_keys_resolved_at_load() {
             assert!(!text.contains(parsing), "`{lookup}` calls `{parsing}`");
         }
     }
+}
+
+/// The export wrapper (`return sharedProfileBoot(Object.freeze({...}));`
+/// in the shared-heap profile) is a runtime binding the manifest
+/// validates, an export root, and kept by a slice that keeps its unit; the
+/// V8 profile has none.
+#[test]
+fn export_wrapper_is_validated_and_preserved() {
+    assert_eq!(manifest().exports.wrapper, None);
+    let shared = RuntimeManifest::parse(SHARED_ANNOTATED_RUNTIME).unwrap();
+    assert_eq!(shared.exports.wrapper, Some("sharedProfileBoot"));
+    let boot = shared.unit_named("sharedProfileBoot").unwrap();
+    assert!(shared.export_roots().contains(&boot));
+    // A full slice round-trips, boot call included.
+    let kept = vec![true; shared.units.len()];
+    assert_eq!(
+        shared.sliced_text(&kept, &shared.exports.names),
+        shared.runtime_text()
+    );
+    assert!(shared.runtime_text().ends_with("}));\n})()\n"));
+    // A slice without the wrapper's unit returns the exports unwrapped.
+    let mut without = kept.clone();
+    without[boot.0] = false;
+    assert!(
+        shared
+            .sliced_text(&without, &[])
+            .ends_with("  return Object.freeze({});\n})()\n")
+    );
+    // A wrapper no unit declares fails validation.
+    let missing = SHARED_ANNOTATED_RUNTIME.replace(
+        "return sharedProfileBoot(Object.freeze({",
+        "return missingBoot(Object.freeze({",
+    );
+    assert_ne!(missing, SHARED_ANNOTATED_RUNTIME);
+    let errors = RuntimeManifest::parse(&missing)
+        .unwrap()
+        .validate_allowing(ENGINE_INTRINSICS)
+        .unwrap_err();
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["returns the exports through `missingBoot`, which no unit declares"]
+    );
 }

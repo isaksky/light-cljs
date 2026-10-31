@@ -1,5 +1,5 @@
-//! Sealing boot-time state for sharing (light-cljs-646): `__rt.sealBindings`
-//! and `__rt.seal`.
+//! Sealing boot-time state for sharing (light-cljs-646): `__rt.sealBindings`,
+//! `__rt.seal` and `__rt.sealReachable` (light-cljs-666).
 //!
 //! A program that builds a runtime in one task and shares it with others
 //! (the real cljs.core booted once, `docs/real-core-design.md`) leaves two
@@ -30,6 +30,15 @@
 //!   its path. Writes, deletions and prototype changes of a sealed object
 //!   throw a `TypeError` in every task.
 //!
+//! * **Functions held only by closure captures** (a dispatcher or wrapper a
+//!   unit makes while booting, whose `prototype` something read). No
+//!   JavaScript walk reaches them, so `__rt.sealReachable(v)` does what
+//!   `sealBindings` does and, for every such function of the running task
+//!   reachable from `v`, seals its own-property record and the untouched
+//!   default `prototype` object it holds (no own property but its
+//!   `constructor`); a prototype a program gave other properties is left,
+//!   and publication names it.
+//!
 //! Only the running task's own state is sealed: `sealBindings` passes over
 //! other tasks' cells, and `seal` of another task's object is the
 //! `ForeignObject` error. JavaScript Maps and Sets, WeakMaps and other
@@ -59,17 +68,115 @@ pub(crate) fn seal_bindings(heap: &Heap, task: TaskId, value: &Value) -> Result<
     let Value::Object(root) = *value else {
         return Ok(0);
     };
+    let (cells, _) = reachable(heap, task, root);
+    seal_cells(heap, cells)
+}
+
+/// `__rt.sealReachable(value)`: [`seal_bindings`], and for every function
+/// reached whose own-property record is `task`'s (a dispatcher or wrapper
+/// made while booting, held only by closure captures, which no JavaScript
+/// walk can reach), the record is sealed, and so is the untouched default
+/// `prototype` object it holds: one with no own property but its
+/// `constructor`, the function. A prototype a program gave other
+/// properties, or a record or prototype of another task, is left for the
+/// publication check to report. The number of cells, records and
+/// prototypes sealed (light-cljs-666).
+pub(crate) fn seal_reachable(heap: &Heap, task: TaskId, value: &Value) -> Result<usize, Fault> {
+    let Value::Object(root) = *value else {
+        return Ok(0);
+    };
+    let (cells, functions) = reachable(heap, task, root);
+    let mut sealed = seal_cells(heap, cells)?;
+    let keys = heap.keys();
+    let prototype_key = keys.lookup(&crate::value::string::JsString::from("prototype"));
+    let constructor_key = keys.lookup(&crate::value::string::JsString::from("constructor"));
+    for (function, record) in functions {
+        let own_record = heap
+            .read(record, |object| match object {
+                HeapObject::Plain(o) => o.owner() == Some(task) && !o.is_sealed(),
+                _ => false,
+            })
+            .unwrap_or(false);
+        if !own_record {
+            continue;
+        }
+        let prototype = prototype_key.and_then(|key| {
+            heap.read(record, |object| match object {
+                HeapObject::Plain(o) => match o.get_own(key).map(|p| &p.value) {
+                    Some(Value::Object(prototype)) => Some(*prototype),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .flatten()
+        });
+        if let Some(prototype) = prototype {
+            let untouched = heap
+                .read(prototype, |object| match object {
+                    HeapObject::Plain(o) => {
+                        o.owner() == Some(task)
+                            && !o.is_sealed()
+                            && o.properties().all(|(key, property)| {
+                                Some(key) == constructor_key
+                                    && property.accessor.is_none()
+                                    && property.value.same_object(&Value::Object(function))
+                            })
+                    }
+                    _ => false,
+                })
+                .unwrap_or(false);
+            if untouched {
+                sealed += usize::from(seal_plain(heap, prototype));
+            }
+        }
+        sealed += usize::from(seal_plain(heap, record));
+    }
+    Ok(sealed)
+}
+
+/// Seal the ordinary object `id` if it can be sealed (no internal slots);
+/// whether it was. An object the seal cannot take is left for the
+/// publication check to report.
+fn seal_plain(heap: &Heap, id: ObjectId) -> bool {
+    heap.with_object_mut(id, |object| match object {
+        HeapObject::Plain(o) => o.seal(),
+        _ => false,
+    })
+    .unwrap_or(false)
+}
+
+/// The graph reachable from `root`, read once: the initialized sealable
+/// cells of `task`, and every function or bound function with an
+/// own-property record, with its record.
+#[allow(clippy::type_complexity)]
+fn reachable(
+    heap: &Heap,
+    task: TaskId,
+    root: ObjectId,
+) -> (Vec<ObjectId>, Vec<(ObjectId, ObjectId)>) {
     let mut seen = HashSet::from([root]);
     let mut queue = VecDeque::from([root]);
     let mut cells = Vec::new();
+    let mut functions = Vec::new();
     while let Some(id) = queue.pop_front() {
         let edges = heap.read(id, |object| {
-            if let HeapObject::Cell(c) = object
-                && c.owner == task
-                && c.mode == CellMode::Sealable
-                && c.value.is_some()
-            {
-                cells.push(id);
+            match object {
+                HeapObject::Cell(c)
+                    if c.owner == task && c.mode == CellMode::Sealable && c.value.is_some() =>
+                {
+                    cells.push(id);
+                }
+                HeapObject::Function(f) => {
+                    if let Some(record) = f.properties {
+                        functions.push((id, record));
+                    }
+                }
+                HeapObject::BoundFunction(f) => {
+                    if let Some(record) = f.properties {
+                        functions.push((id, record));
+                    }
+                }
+                _ => {}
             }
             let mut edges = Vec::new();
             crate::heap::gc::Trace::trace(object, &mut |edge| {
@@ -85,6 +192,11 @@ pub(crate) fn seal_bindings(heap: &Heap, task: TaskId, value: &Value) -> Result<
             }
         }
     }
+    (cells, functions)
+}
+
+/// Seal the sealable cells `cells` of the running task; the number sealed.
+fn seal_cells(heap: &Heap, cells: Vec<ObjectId>) -> Result<usize, Fault> {
     let mut sealed = 0;
     for id in cells {
         // Only this task assigns its cells, and it is running this
