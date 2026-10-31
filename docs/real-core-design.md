@@ -422,12 +422,32 @@ light-cljs-645, phase 0, on `df7531fa`. Code: `tests/bbp_macros/real_core_spike.
 - **Without the swaps** the verbatim units fail on the first engine vector:
   `seq` finds no brand it knows and no iterator, and its error message cannot
   stringify the vector.
-- **Not reached: boot once, publish, share between two threads.** Neither the
-  verbatim nor the swapped `mapSeq` publishes (`value.capture(2) is a
-  task-owned binding cell`), so the helper takes the per-task fallback
-  (`native.helpers.per-task` 1, `published` 0) and acceptance 2 of the spike
-  (one published `map`, two macro tasks on two threads, one realization) is
-  blocked on the engine primitives below, not on representations.
+- **Boot once, publish, share between two threads (after light-cljs-646).**
+  As first run, neither the verbatim nor the swapped `mapSeq` published
+  (`value.capture(2) is a task-owned binding cell`), so the helper took the
+  per-task fallback (`native.helpers.per-task` 1, `published` 0). With the
+  engine primitives of 646 (below) the slice seals itself at the end of its
+  boot (`shared_map_slice` in the test): `__rt.seal` on the registries,
+  sentinels, constructors and prototypes it declares (deeply through the
+  arrays and objects holding them), then `__rt.sealBindings` for the
+  bindings it reassigned while loading. Three more units are swapped to get
+  there, all profile edits of the kind 647 owns: `coreMethod` seals its
+  `arities` array and resolves its method key at boot instead of memoizing
+  it in a `let` its dispatcher assigns, `storesPredicate` seals its rest
+  array of stores, and the slice's WeakMap and WeakSet brand stores, which
+  never hold an engine value on this path, become one sealed empty store.
+  Then `mapSeq` publishes; the macro helper is published once
+  (`native.helpers.published` 1, `per-task` 0) and the program is still
+  byte-identical to the V8 build's at 1 and 2 threads; and two tasks on two
+  threads call the one published `mapSeq` together (a barrier holds each
+  inside its first call of the mapped function until both are there), each
+  realizing its result once (three calls each for two walks). A lazy
+  result of the real `map` does not itself publish: `mapSeq`'s thunk
+  captures its rest-argument array (`value.thunk.capture(0) is a
+  task-owned array`), so a helper whose value is such a sequence still
+  initializes per task. That is profile work (a thunk over a sealed copy,
+  or the engine's own `cljCons` for one collection), not an engine
+  primitive.
 
 ### Seam counts
 
@@ -491,6 +511,33 @@ WeakMaps (`keywords`, `symbols`, `metadataValues`, ...), 10 ordinary objects
 (`kindTables`, `methodKeys`), 2 Maps (`nativeMethods`, `coreDispatchers`),
 1 WeakSet, 5 through a captured array or object, and `LazySeq` through its
 prototype.
+
+**After light-cljs-646** (same script, Pants build). The naive boot now
+publishes 193 of the 748 members (181 before), and no rejection is a
+binding the engine kept in a cell for want of a primitive: fixed bindings
+publish once initialized, and the 143 members that still fail at an
+*unsealed* binding (the 13 load-time wrappers) pass that edge once the boot
+task calls `__rt.sealBindings(rt)`. The walk after that seal
+(`full-sealed`), first path per cause:
+
+| Members | Cause | First path | Who removes it |
+| ---: | --- | --- | --- |
+| 287 | closure capture, object | `rt.symbol`: `value.capture(0).properties.property(prototype)` | 647: `__rt.seal` the runtime's prototypes and object registries |
+| 99 | function own properties, object | `rt.get`: `value.properties.property(prototype)` | 647: `__rt.seal` the constructors and their prototypes |
+| 79 | closure capture, array | `rt.extendInstance`: `value.capture(2).edge(0)[0]` | 649: multimethod and extension tables move to engine tables |
+| 41 | closure capture, WeakMap | `rt.compilerExceptionMessage`: `value.capture(0).edge(0)` | 647: brand stores become views over engine tags |
+| 30 | closure capture, binding cell (assigned from a function) | `rt.setDeclarationDemand`: `value.capture(0)` | 647: the module-level `let`s move to task globals or engine services |
+| 6 | closure capture, WeakSet | `rt.makeReify`: `value.capture(1).edge(0)` | 647: brand stores |
+| 5 | member is an ordinary object | `rt.compilerForms`: `value` | 647: compile-time hooks read task globals |
+| 5 | closure capture, Map | `rt.keyword`: `value.capture(0).edge(0)` | 647 (`keyword` over `formKeyword`), 649 (reader and namespace registries) |
+| 3 | closure capture, Set | `core.munge`: `value.capture(2).edge(0)` | 647: tap state per task |
+
+Every remaining cause is an object literal, array, prototype, brand store
+or `let` capture in the runtime's units; none needs a further engine
+feature. The `map` slice walk (each of its 119 bindings on its own, after
+`sealBindings`) publishes 16; its rejections are the brand stores and
+registries the test's `shared_map_slice` seals or swaps, after which
+`mapSeq` publishes.
 
 ### Engine primitives the spike needed that do not exist (input to light-cljs-646)
 
@@ -570,3 +617,14 @@ boots and publishes with zero rejected paths) is not reachable by profile
 edits, and the real core would run as today's port does, booted once per
 task. With them, 647 (profile assembly) can start from this spike's swap
 list; the swap mechanism and the manifest slicing it needs work now.
+
+**Update after light-cljs-646: go for sharing.** The three primitives exist
+(`crates/big-boy-pants-js/docs/architecture.md`, "Shared-heap profile
+primitives": fixed bindings, `__rt.sealBindings`, `__rt.seal`); the
+identity hash and keyword interning map of section 2 were not needed by any
+unit the spike or the naive boot reaches, and that table says why. The
+real `map` now boots once, publishes and runs on two threads; what stops
+the whole runtime from publishing is the profile work listed in the table
+above, and one finding for 647: lazy results of the real sequence
+functions capture per-call arrays (`mapSeq`'s rest arguments), so they stay
+task-owned unless the profile changes how those thunks hold their inputs.

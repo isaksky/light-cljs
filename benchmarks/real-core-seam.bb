@@ -233,6 +233,8 @@
                          "cargo" "test" "--locked" "--no-default-features" "--features" "bbp-macros"
                          "--test" "bbp_macros" "publication_walk" "--" "--ignored" "--nocapture"
                          "--test-threads=1"))]
+    ;; The first line a test prints follows libtest's "test NAME ... ".
     (doseq [line (str/split-lines out)
-            :when (str/starts-with? line "SEAM ")]
-      (println (str "    " (subs line 5))))))
+            :let [at (str/index-of line "SEAM ")]
+            :when at]
+      (println (str "    " (subs line (+ at 5)))))))
