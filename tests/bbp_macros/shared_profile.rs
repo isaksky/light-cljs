@@ -1022,7 +1022,7 @@ fn shared_profile_record_noops_keep_imported_occurrences() {
          const record = __rt.cljWithMeta(__rt.structNew(type, child, child), core.arrayMap('tag', 1)); \
          return __rt.formVector(core, record);"
     )).unwrap_or_else(|e| panic!("{e}"));
-    let (core, record) = rt.scope(|s| {
+    let (core, record, nan) = rt.scope(|s| {
         let values = s.local(&values).unwrap();
         let core = s.persist(s.form_nth(values, 0).unwrap());
         let record = s.form_nth(values, 1).unwrap();
@@ -1030,23 +1030,39 @@ fn shared_profile_record_noops_keep_imported_occurrences() {
         (
             core,
             s.persist(s.new_occurrence(record, Default::default()).unwrap()),
+            s.persist(
+                s.new_occurrence(
+                    s.primitive(big_boy_pants_js::Primitive::Number(f64::NAN)),
+                    Default::default(),
+                )
+                .unwrap(),
+            ),
         )
     });
     let check = compile_function(
-        "function check(core, record) { \
+        "function check(core, record, nan) { \
            globalThis.__lightSharedCells = core.sharedTaskCells(); \
            const x = core.keyword('x'), y = core.keyword('y'), child = core.get(record, x); \
            const changed = core.assoc(record, x, core.vector('changed')); \
+           const extended = core.assoc(record, nan, child), extendedAgain = core.assoc(extended, nan, child); \
            return [core.assoc(record, x, child) === record, \
              core.assoc(record, x, child, y, child) === record, \
              core.dissoc(record, core.keyword('missing')) === record, \
              core.withMeta(record, core.meta(record)) === record, changed !== record, \
-             core.get(changed, y) === child, core.meta(changed) === core.meta(record)].join(' '); }",
+             core.get(changed, y) === child, core.meta(changed) === core.meta(record), \
+             core.get(extended, nan, 'absent') === 'absent', core.count(extendedAgain), core.count(core.dissoc(extended, nan)), \
+             __rt.formNth(__rt.formNth(__rt.formPrintItems(extendedAgain), 2), 0) === nan, \
+             core.meta(extendedAgain) === core.meta(record)].join(' '); }",
     ).unwrap();
-    match rt.spawn(&check, &[&core, &record]).unwrap().run().unwrap() {
+    match rt
+        .spawn(&check, &[&core, &record, &nan])
+        .unwrap()
+        .run()
+        .unwrap()
+    {
         RunOutcome::Complete(value) => assert_eq!(
             value.string().unwrap().to_string_lossy(),
-            "true true true true true true true"
+            "true true true true true true true true 4 3 true true"
         ),
         other => panic!("{other:?}"),
     }

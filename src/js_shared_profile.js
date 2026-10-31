@@ -1062,25 +1062,42 @@
     || type === Delay && sharedFormKind(value) === "delay"
     || type === MultiFn && sharedFormKind(value) === "struct" && __rt.formName(__rt.structTypeOf(sharedFormOf(value))) === "cljs.core/MultiFn"
     || value instanceof type;
+  //@unit sharedRecordAssoc requires: sharedFormOf, sharedScalar
+  function sharedRecordAssoc(value, key, item) {
+    const scalar = sharedScalar(key);
+    if (typeof scalar !== "number" || scalar === scalar) return __rt.cljAssoc(value, key, item);
+    // NaN never matches a language key, even its own occurrence. Append a
+    // positional extension without the native map's reference shortcut,
+    // retaining every existing key/value and the new key's provenance.
+    const form = sharedFormOf(value), entries = __rt.formPrintItems(form);
+    let pairs = __rt.formVector();
+    for (let i = 0; i < __rt.formCount(entries); i++) {
+      const entry = __rt.formNth(entries, i);
+      pairs = __rt.formConj(__rt.formConj(pairs, __rt.formNth(entry, 0)), __rt.formNth(entry, 1));
+    }
+    pairs = __rt.formConj(__rt.formConj(pairs, key), item);
+    return __rt.cljWithMeta(__rt.recordFromMap(__rt.structTypeOf(form), __rt.formLiteralMap(pairs)), __rt.cljMeta(value));
+  }
   //@unit sharedRecordOperations effect: recordMethods
-  //@ requires: assoc, collectionWithMeta, dissoc, get, seq, sharedFormKind, sharedFormOf
+  //@ requires: assoc, collectionWithMeta, dissoc, get, seq, sharedFormKind, sharedFormOf,
+  //@ sharedRecordAssoc, sharedScalar
   // Engine records already own their fields, extension map and metadata.
   // Preserve that representation on updates, leaving dispatch registration
   // (including user methods on structs) to the frontier tables of 649.
   get = (operation => function (value, key, fallback) {
     return sharedFormKind(value) === "record" && (arguments.length === 2 || arguments.length === 3)
-      ? __rt.cljGet(sharedFormOf(value), key, arguments.length === 2 ? null : fallback) : operation(...arguments);
+      ? __rt.cljGet(value, sharedScalar(key), arguments.length === 2 ? null : fallback) : operation(...arguments);
   })(get);
   assoc = (operation => function (value, key, item, ...pairs) {
     if (sharedFormKind(value) !== "record") return operation(...arguments);
-    let result = __rt.cljAssoc(value, key, item);
-    for (let i = 0; i < pairs.length; i += 2) result = __rt.cljAssoc(result, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
+    let result = sharedRecordAssoc(value, key, item);
+    for (let i = 0; i < pairs.length; i += 2) result = sharedRecordAssoc(result, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
     return result;
   })(assoc);
   dissoc = (operation => function (value, ...keys) {
     if (sharedFormKind(value) !== "record") return operation(...arguments);
     let result = value;
-    for (const key of keys) result = __rt.cljDissoc(result, key);
+    for (const key of keys) result = __rt.cljDissoc(result, sharedScalar(key));
     return result;
   })(dissoc);
   seq = (operation => value => sharedFormKind(value) === "record" ? __rt.cljSeq(sharedFormOf(value)) : operation(value))(seq);
