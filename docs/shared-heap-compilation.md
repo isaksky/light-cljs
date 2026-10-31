@@ -35,8 +35,13 @@ Clojure's concurrency model:
 - Shared change goes through explicit atoms and single-assignment dependency
   cells.
 - A task that needs a result nobody has produced yet parks at that
-  instruction, frees its worker and resumes later, possibly on another
-  worker, without replaying anything.
+  instruction and resumes later, possibly on another worker, without
+  replaying anything. In the compiler today this frees the JavaScript, not
+  the worker: the Rust analysis that called the macro stays on the worker's
+  stack until the macro returns. While it waits, the worker only helps with
+  units that run no macro and with resumed macro steps, and otherwise sleeps
+  in 20 ms intervals (measured in "Why the Pants build leaves cores idle"
+  below).
 
 These are the operations a compiler needs. Forms are immutable values. Helpers
 are results that are produced once and read many times. Compile-time state
@@ -2343,6 +2348,251 @@ test variables and `tests/execution.rs:1772`'s
 `clippy::unused_enumerate_index`; the engine-free build retains only the
 latter. Checks allowing those existing categories pass too. No source
 suppressions, limits, V8 assertions or output expectations were relaxed.
+
+### Why the Pants build leaves cores idle (light-cljs-573, October 31, 2026)
+
+**Summary.** On the generated projects the extra threads are not waiting for
+each other: they wait for the main thread. One thread (the coordinator) runs
+every namespace's top-level pass in source order and then prepares and emits
+the program; the other threads analyze the deferred units it hands them.
+That serial chain is the critical path at every thread count, in both the
+Pants build and the V8 build, and it does not get shorter with threads. It
+gets longer: the coordinator's own work costs more while other threads run.
+On the 200k project the chain priced at one-thread costs is 7.5 s of the
+13.2 s one-thread clean build, so no number of threads can beat 1.8x with
+this design; four threads reach 9.0 s and eight 10.1 s. The coordinator never
+waits at a drain point there (0.00-0.01 s at 2, 4 and 8 threads); workers are
+idle 27-39% of their time, and three quarters of that idle time falls while
+the coordinator is inside a top-level pass. On the 800k project four threads are
+slower than two because of a lock that none of the queued follow-ups covers:
+the compile-time namespace registry. At four threads the coordinator waits
+27.2 s for it (35% of the 78.5 s build) and the three workers 44 s, against
+3.6 s at two threads; every macro-bearing activity re-records every namespace
+of the program under that one lock, with a scan per name (filed as
+light-cljs-702). On Penpot `app.main` at four threads, where the build still
+stops at the end of the grammar macro, the coordinator waits 26.7 s on effect
+lanes (44% of the 60.5 s build, 14.8 s of it in one wait behind the grammar
+macro) and 9.1 s at drain points.
+
+The numbers the queued follow-ups need:
+
+| Follow-up | Number it needs | 200k | 800k | Penpot `app.main`, 4 threads |
+| --- | --- | --- | --- | --- |
+| light-cljs-577, drain window | Coordinator wait at drain points; whether idle workers had an empty queue while the coordinator ran a pass | 0.00 s (2, 4 threads), 0.01 s (8); idle with empty queue during passes: 2.7 s of 3.7 s (2 threads), 5.7 of 7.2 (4), 22.0 of 27.9 (8) | 0.00 s at 2 and 4 threads | 9.1 s (15% of wall), 6.5 s of it on the critical path |
+| light-cljs-579, bridge lock | Coordinator bridge wait and hold, as a share of its time | wait 0.24 s, hold 0.39 s at 4 threads (7.0%); wait 0.47-0.56 s, hold 0.43 s at 8 (9-10%) | wait 1.31 s, hold 2.34 s at 4 threads (4.7%) | wait 0.15 s, hold 0.52 s (1.1%) |
+| light-cljs-672, per-namespace lanes | Coordinator lane waits and the critical path without them | 0.00 s | 0.16 s (2 threads), 1.32 s (4) | 26.7 s; critical path 51.4 s with them, 39.5 s without (drain at the end) |
+| light-cljs-702 (new), namespace registry | Coordinator and worker waits for the registry lock | 0.28 s coordinator, 1.4 s workers (8 threads) | 3.6 s (2 threads); 27.2 s coordinator and 44.2 s workers (4) | not separated in this run |
+
+What this means for their order: 577 cannot recover wall time on the
+generated projects, because the coordinator never waits at a drain point
+there; the queue is empty because the coordinator produces units slowly, not
+because the window is short, so handing units over during a pass would not
+shorten the chain either (units reach the scheduler 0.2-0.9 ms after the
+coordinator dispatches them). Its only measured payoff is Penpot's 6.5 s,
+which lanes hide today. 579 passes its own gate narrowly at 200k (wait plus
+hold 7-10% of the coordinator's time, and the coordinator does wait) but the
+part a split can recover is the wait alone: 0.24 s at four threads and about
+0.5 s at eight (3-5% of wall). 672 is worth up to 12-21 s on Penpot (the
+critical path drops from 51.4-57.9 s to 39.5-46.0 s) and nothing on the
+generated projects. 702 is worth up to about 18 s (the four-thread loss
+against two) at 800k and grows with the program. Suggested order: 702, 672,
+579, then 577 only if Penpot's drain waits remain after 672. The structural
+limit, the coordinator's serial chain, is light-cljs-475's (parallel
+top-level passes), with the prepare-and-emit phase (2.8-2.9 s at 200k, 14 s
+at 800k, a fifth of the one-thread build) serial after it.
+
+The summary at the top of this document said a waiting task frees its
+worker. It frees the JavaScript, not the worker: the Rust analysis that
+called the macro stays on the worker's stack. That restriction costs nothing
+on the generated projects (no help attempt found queued work it was not
+allowed to take) and appears only on Penpot, where 930 of 3,438 help
+attempts found only units they may not take, followed by about 14.9 s of
+worker waiting, all of it on workers (the coordinator never met it).
+
+#### Method
+
+`--stats` builds now also record a per-thread timeline when
+`LIGHT_CLJS_WAIT_TIMELINE` names a file (`src/wait_timeline.rs`). Each thread
+appends begin, end and instant events to a buffer of its own, which it
+registers once, so recording takes no lock that threads share; without the
+variable every hook is one relaxed atomic load, and without `--stats` the
+variable is ignored. Events carry logical identities, because tasks move
+between threads: the unit a thread analyzes or waits for, the producer's
+state when a wait starts (analyzing elsewhere, or queued), the task and the
+dependency key a macro parks on (helper, initializer, lane, namespace), how
+each wait ended (notification, an expired 20 ms timeout, or help), units
+dispatched, submitted to the scheduler and settled, queue depth at every job
+start and submission, help attempts that found only work they may not take,
+form-bridge and namespace-registry lock waits and holds, helper production,
+and the existing `compile_trace` stage frames and engine calls. The engine
+now also counts collection rendezvous time (request until every thread has
+stopped) and the time threads spend stopped by collections
+(`HeapStats::rendezvous_total`, `stopped_total`). `bb
+benchmarks/wait-timeline.bb FILE --threads N --one-thread-wall S` gives
+each moment of a thread to its innermost open interval (a job a waiting
+thread helps with counts as that job) and prints per-thread time, waits by
+kind, what the coordinator's unit waits were spent on, idle workers against
+what the coordinator was doing, and the critical path: it replays the
+coordinator's own work in order with infinitely many workers, each unit
+ready its measured analysis time after the coordinator dispatched it, with
+the drain waits as they are or only at the end, and with or without the
+coordinator's lane waits. The one-thread wall and that critical path give
+the best wall time at N threads, `max(critical path, one-thread wall / N)`.
+
+Release builds of this change on master `e7a3bf03` (with light-cljs-578's
+coordinator help, 675's catalog adoption, 676's realization gate and 674's
+collection pacing), thin LTO, `CARGO_BUILD_JOBS=4`, Rust 1.99.1, Apple M3
+Ultra (Virtual), 24 logical CPUs, macOS 15.7.3. Seed-42 generated projects
+(`generate.bb --seed 42 --lines 200k|800k`), each run a clean build from
+the project, `release bench --no-cache --stats --jobs N`, one run per cell,
+one after another; Penpot through `benchmarks/penpot.bb main-none` with
+`--stats --jobs 4`. Other workers built and ran test suites throughout: the
+1-minute load before the runs was 7.0-11.9 (8.9-11.9 for the 800k runs,
+10.2 for Penpot), so wall times are loaded; the attribution, the counts and
+the shares inside one run do not depend on load the way wall time does. Most
+runs used a first version of this change that did not yet time the
+namespace registry's lock, so registry waits counted as macro time; the
+800k runs at 2 and 4 threads in the tables and the 200k registry numbers at
+8 threads used the final version, which differs only in that. Every build
+of a size wrote the same JavaScript, Pants and V8 builds alike (SHA-256 of
+`workload.main.js` `1a75bc87…` at 200k, as before).
+
+Recording costs nothing measurable. Three alternating pairs of the Pants
+build at four threads on 200k, with `--stats` with and without the timeline,
+took 8.98, 9.24, 9.19 s and 9.14, 9.23, 8.94 s (user CPU 16.0-16.7 s both).
+The V8 build is unchanged: three alternating pairs at four threads without
+`--stats`, master `e7a3bf03` against this change, took 5.45, 5.40, 5.36 s and
+5.47, 5.47, 5.41 s (user CPU 10.49-10.57 and 10.44-10.56 s), with the same
+output; loads 6.7-7.2.
+
+#### Per-thread time, 200k
+
+Seconds of each thread's time from the start of compilation to the
+statistics report; "macros" is engine time (calls, resumed macro steps,
+helper production, holding the form bridge), "waits" every wait above and
+"idle" a worker with no runnable unit. Worker columns are summed over the
+workers. The coordinator's "after analysis" is application preparation and
+emission.
+
+| Build | Threads | Wall | Coordinator: top-level passes (compile + macros) | units it analyzed | waits | after analysis | Workers: compile | macros | waits | idle | User CPU |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Pants | 1 | 13.3 | 2.30 + 0.87 | 5.68 | 0.00 | 2.93 | | | | | 12.0 |
+| Pants | 2 | 10.8 | 2.56 + 1.10 | 2.84 | 0.07 | 2.83 | 1.72 | 2.61 | 0.05 | 3.66 | 13.6 |
+| Pants | 4 | 9.0 | 2.99 + 1.66 | 0.00 | 0.24 | 2.80 | 3.89 | 7.10 | 0.87 | 7.17 | 16.6 |
+| Pants | 8 | 10.2 | 3.13 + 2.26 | 0.00 | 0.57 | 2.85 | 7.36 | 13.68 | 3.42 | 27.91 | 22.2 |
+| V8 | 1 | 7.6 | 1.37 + 0.48 | 2.51 | 0.00 | 2.69 | | | | | 7.8 |
+| V8 | 2 | 6.6 | 1.55 + 0.52 | 1.11 | 0.00 | 2.85 | 1.76 | 0.59 | 0.00 | 1.46 | 9.3 |
+| V8 | 4 | 5.6 | 1.60 + 0.53 | 0.00 | 0.00 | 2.86 | 3.57 | 1.30 | 0.00 | 3.56 | 11.1 |
+| V8 | 8 | 5.6 | 1.62 + 0.54 | 0.00 | 0.00 | 2.75 | 6.17 | 2.17 | 0.00 | 11.96 | 14.9 |
+
+At two threads the coordinator still analyzes a third of the units itself:
+a unit a top-level macro demands while it is still queued is analyzed where
+it is demanded. From four threads on it analyzes none, and its time is its
+passes, about 0.6 s of drain and release bookkeeping, and preparation and
+emission.
+
+Where the waits go, all threads together, at 4 and 8 threads (Pants build):
+the form bridge 1.09 s and 3.98 s (the coordinator's share 0.24 s and
+0.56 s), the namespace registry 1.65 s at eight (coordinator 0.28 s), lanes
+0.00 s, units 0.00-0.01 s, helpers and initializers none. Collections
+paused the build for 0.33-0.50 s at every thread count (47-64 collections);
+the prune walk after them took 84, 141 and 173 ms at 1, 4 and 8 threads
+(872 ms at 800k and four threads). The bridge converted 467,164 imported
+nodes, reused 13,499 and exported 32,607 in the one-thread build (the
+`macro.bridge.*` counters; at more threads they cover only the evaluators
+still reporting at the end, so they are not comparable);
+the rendezvous took at most 0.01 s, and threads spent 0.00, 0.09, 0.45 and
+1.05 s stopped (summed) at 1, 2, 4 and 8 threads.
+
+#### The critical path
+
+Replaying the coordinator with infinitely many workers changes nothing on
+the generated projects: no unit is ever late for the coordinator, so the
+critical path is the coordinator's own chain, exactly the wall time of each
+run. Its edges, at 200k and four threads (8.95 s):
+
+| Edge | Seconds | Required by |
+| --- | ---: | --- |
+| Top-level passes, Rust analysis | 2.99 | Implementation: one coordinator runs every pass in source order (light-cljs-475); semantics needs only a namespace's requires first |
+| Top-level passes, macros | 1.66 | Partly semantics (each macro's result); its growth with threads is contention |
+| Preparation and emission | 2.80 | Implementation: serial phases after analysis |
+| Bridge lock wait / hold | 0.24 / 0.39 | Wait: implementation (light-cljs-579); hold: the conversion itself |
+| Helper production | 0.24 | Semantics: a helper's result is needed before the macro continues |
+| Drain, release, append and warnings bookkeeping | 0.60 | Implementation |
+
+Priced at one-thread costs the chain is 7.5 s at 200k (Pants build), 5.0 s
+for the V8 build and 38.9 s at 800k: the one-thread wall minus the units'
+analysis. So with this design the best wall at N threads is 7.5 s at 200k
+for every N of 2 or more (13.3 s / N is smaller than 7.5 s already at two
+threads), against 10.8, 9.0 and 10.2 s measured; the V8 build reaches its
+bound (5.0 s) almost exactly at four and eight threads (5.5 s). The gap in the
+Pants build is the chain getting longer with threads: the coordinator's
+top-level macro time rises from 0.87 s at one thread to 1.66 s at four and
+2.26 s at eight, its Rust analysis from 2.30 s to 3.13 s, and it adds 0.24
+to 0.57 s of bridge waits.
+
+On Penpot `app.main` (four threads, 60.5 s to the failure at the end of the
+grammar macro) the replay does find late units. The chain is the
+coordinator's 24.7 s of work (top-level macros 17.4 s, Rust analysis 2.5 s,
+units it analyzed 2.4 s, bookkeeping), 26.7 s of lane waits and 9.1 s of
+drain waits. With infinitely many workers it is 57.9 s with today's drain
+points (6.5 s of it waiting at drain points for units dispatched too late,
+an edge the fixed drain lag introduces) and 51.4 s if units were drained
+only at the end. Dropping the coordinator's lane waits, which today wait for
+every earlier unfinished unit because nothing proves an earlier macro cannot
+reach the resource (an effect-order edge, made conservative by the
+implementation; light-cljs-672), leaves 39.5-46.0 s, the grammar macro's own
+14.8 s then being the tail. The longest lane wait is that macro: the
+coordinator waits for it from 45.5 s to 60.3 s, polling in 20 ms timeouts
+(514 of them). The coordinator's 182 lane waits end by such polling, not by
+notification, so each can add up to 20 ms after its lane opens: at most
+3.6 s, about 6% of this build.
+
+#### Why four threads are slower than two at 800k
+
+| Threads | Wall | User CPU | Coordinator: top-level compile + macros | registry wait | bridge wait | Workers: compile | macros | registry wait | idle |
+| ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 64.7 | 59.4 | 12.97 + 4.14 | | 0.01 | | | | |
+| 2 | 60.8 | 74.7 | 14.37 + 4.56 | 3.61 | 0.68 | 13.62 | 12.04 | 0.08 | 21.82 |
+| 4 | 78.5 | 117.7 | 16.91 + 7.95 | 27.23 | 1.31 | 72.82 | 32.02 | 44.19 | 44.85 |
+
+The extra 17.8 s at four threads is the namespace registry. The macro
+runtime records which namespaces a task's activity sees, for `find-ns`,
+`all-ns` and their kin (light-cljs-480). `record_namespaces`
+(src/bbp_evaluator/catalog.rs) re-records every namespace of the program
+whenever a task's activity changes (a new unit, a new position), holding the
+registry lock throughout, and each record scans the records already kept
+for that name (`NamespaceLog::record`). At 800k that is about 1,800
+namespaces per activity under one lock; at two threads the coordinator
+competes with one worker, at four with three. A 15-second `/usr/bin/sample` mid-build at four threads puts 55.7%
+of the coordinator's samples in a mutex wait inside the engine's host effect
+call and 21% of a worker's in `NamespaceLog::record` itself (40% of that
+worker's samples wait for a mutex); at two threads the coordinator waits in
+12.7% of its samples and the worker records in 15%. Collections are not the
+cause (pause 2.1 and 2.6 s, rendezvous 0.00 and 0.06 s), nor the bridge
+(0.68 and 1.31 s of coordinator waits).
+
+The workers' Rust analysis of units also costs more per unit with more
+threads: 9.8 s for all units on one thread, 18.5 s at two and 70.4 s at
+four at 800k; 2.0, 2.5, 3.4 and 6.4 s at 200k for 1, 2, 4 and 8 threads,
+and 2.0, 2.4, 2.9 and 5.0 s in the V8 build. Because the V8 build shows it
+too, it is mostly not the engine: the machine was loaded (load 7-12 on 24
+logical CPUs) and threads share the memory system and allocator. This, the
+coordinator's growing macro time and the registry and bridge waits are why
+user CPU rises with threads (12.0, 13.6, 16.6 and 22.2 s at 200k) rather
+than falling as it did before light-cljs-575: waits sleep, so they cost
+wall time, not CPU.
+
+Verification of the recording change (on master `e7a3bf03`, macOS aarch64,
+Rust 1.99.1, `CARGO_BUILD_JOBS=4`, `cargo nextest run --locked
+--no-fail-fast -j 8`): the
+V8 build's full suite passes but for the known nested-workspace playground
+check (2,165 of 2,166); the Pants build's full suite has 2,088 passed and
+the 142 baseline failures, every one in the earlier baseline list;
+Pants+QuickJS and V8+Pants (`--lib --test bbp_macros --test compiler`) pass
+all 1,996 and 2,040. The engine's 81 heap tests pass. Formatting passes,
+strict V8 Clippy passes, and Pants and engine Clippy add no diagnostics to
+the documented baseline categories.
 
 ### Single-thread speed
 

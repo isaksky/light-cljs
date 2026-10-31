@@ -1629,6 +1629,7 @@ impl BbpRuntime {
             }) = parked
             {
                 self.0.counters.woken.fetch_add(1, Ordering::Relaxed);
+                crate::wait_timeline::instant(crate::wait_timeline::Kind::Wake, task.id().get(), 0);
                 submit(step, reply);
             }
         }
@@ -2061,6 +2062,15 @@ impl BbpEvaluator {
         }
         // Collections are runtime-wide: every worker's tasks share this heap.
         let gc = self.runtime.heap_stats();
+        if crate::wait_timeline::on() {
+            use crate::wait_timeline::{Kind, instant};
+            instant(Kind::Gc, gc.collections, gc.pause_total.as_nanos() as u64);
+            instant(
+                Kind::GcWaits,
+                gc.rendezvous_total.as_nanos() as u64,
+                gc.stopped_total.as_nanos() as u64,
+            );
+        }
         BridgeStats {
             collections: gc.collections,
             gc_pause_nanos: gc.pause_total.as_nanos(),
@@ -2095,7 +2105,10 @@ impl BbpEvaluator {
         self.stats.set(stats);
     }
     fn with_bridge<T>(&self, work: impl FnOnce(&mut Bridge) -> T) -> T {
+        let waiting = crate::wait_timeline::begin(crate::wait_timeline::Kind::BridgeWait, 0, 0);
         let mut bridge = self.bridge.lock().unwrap();
+        drop(waiting);
+        let _held = crate::wait_timeline::begin(crate::wait_timeline::Kind::BridgeHold, 0, 0);
         let before = bridge.stats;
         let result = work(&mut bridge);
         let after = bridge.stats;
@@ -2325,6 +2338,14 @@ impl BbpEvaluator {
         {
             return self.park_until_woken(cx, key, submit, lane_wait.as_ref());
         }
+        let waiting = (cx.task.status() == big_boy_pants_js::TaskStatus::Waiting).then(|| {
+            crate::wait_timeline::begin(
+                crate::wait_timeline::Kind::Demand,
+                key.kind().get() as u64,
+                key.dependency().get(),
+            )
+        });
+        let mut timeouts = 0u64;
         let mut generation = shared.generation.lock().unwrap();
         // A completion publishes its cell before delivering the task's wake.
         // Only that wake makes this saved continuation runnable.
@@ -2348,11 +2369,15 @@ impl BbpEvaluator {
                     break;
                 }
             }
-            generation = shared
+            let (next, timeout) = shared
                 .changed
                 .wait_timeout(generation, std::time::Duration::from_millis(20))
-                .unwrap()
-                .0;
+                .unwrap();
+            generation = next;
+            timeouts += timeout.timed_out() as u64;
+        }
+        if let Some(waiting) = waiting {
+            waiting.end(timeouts, cx.task.id().get() << 1);
         }
         Ok(None)
     }
@@ -2427,9 +2452,25 @@ impl BbpEvaluator {
         if let Some(hook) = hook {
             hook(&cx.task, key);
         }
+        // The wait's timeline interval: how many 20 ms timeouts expired,
+        // and whether the outcome woke this thread.
+        let parked = crate::wait_timeline::begin(
+            crate::wait_timeline::Kind::Park,
+            key.kind().get() as u64,
+            key.dependency().get(),
+        );
+        let mut timeouts = 0u64;
+        let task = id.get() << 1;
+        let mut parked = Some(parked);
+        let mut resumed = |timeouts: u64, notified: u64| {
+            if let Some(parked) = parked.take() {
+                parked.end(timeouts, task | notified);
+            }
+        };
         loop {
             match outcome.try_recv() {
                 Ok(result) => {
+                    resumed(timeouts, 0);
                     handoff.finish();
                     return result.map(Some).map_err(error);
                 }
@@ -2450,18 +2491,24 @@ impl BbpEvaluator {
             }
             match outcome.recv_timeout(std::time::Duration::from_millis(20)) {
                 Ok(result) => {
+                    resumed(timeouts, 1);
                     handoff.finish();
                     return result.map(Some).map_err(error);
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(error("native task worker stopped"));
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => timeouts += 1,
             }
         }
     }
     fn produce(&self, cx: &TaskContext, request: &ProducerRequest) -> Result<Rooted, EvalError> {
         let key = request.key();
+        let _produce = crate::wait_timeline::begin(
+            crate::wait_timeline::Kind::Produce,
+            key.kind().get() as u64,
+            key.dependency().get(),
+        );
         if key.kind() == cx.string_kind {
             // The VM has parked before this thread-local callback runs. A
             // pooled step carries no Rc, analyzer borrow or resource provider.
@@ -3105,7 +3152,6 @@ impl NativeStep {
             finished: false,
         }
     }
-    #[cfg(test)]
     pub(crate) fn task_id(&self) -> big_boy_pants_js::TaskId {
         self.task.id()
     }
@@ -3282,6 +3328,14 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
             };
             let task = crate::effect_lanes::identity(call.task);
             let log = &self.5;
+            // The registry's lock, with its wait and hold on the timeline.
+            let lock_log = || {
+                use crate::wait_timeline::{Kind, begin};
+                let waiting = begin(Kind::NamespacesWait, 0, 0);
+                let guard = log.lock().unwrap();
+                drop(waiting);
+                (guard, begin(Kind::NamespacesHold, 0, 0))
+            };
             let no_floors = HashMap::new();
             // The settled realizations this run read count at its place
             // before anything it does next (light-cljs-601).
@@ -3301,7 +3355,8 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                         tag.owners
                             .extend(realizing.into_iter().map(crate::effect_lanes::Target::Lazy));
                     }
-                    log.lock().unwrap().record(name, &tag);
+                    let (mut log, _held) = lock_log();
+                    log.record(name, &tag);
                     Ok(Primitive::Null)
                 }
                 b'f' | b'v' => {
@@ -3310,7 +3365,7 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                         .map_or(crate::effect_lanes::NamespaceView::ALL, |lanes| {
                             lanes.namespace_view(task)
                         });
-                    let log = log.lock().unwrap();
+                    let (log, _held) = lock_log();
                     let read = |floors: &HashMap<_, _>| {
                         if op as u8 == b'f' {
                             return Ok(Primitive::Bool(log.has(name, &view, floors)));

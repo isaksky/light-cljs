@@ -1193,6 +1193,13 @@ impl SharedCatalog {
     /// past the first ones have no engine, a unit not found macro-free
     /// is for the ones with an engine only ([`ENGINE_PHASE`]).
     fn unit_jobs(&self, units: Vec<usize>, mixed: bool) -> Vec<UnitJob> {
+        if let Some(&first) = units.first() {
+            crate::wait_timeline::instant(
+                crate::wait_timeline::Kind::Submit,
+                first as u64,
+                units.len() as u64,
+            );
+        }
         let catalog = self.lock();
         (units.into_iter())
             .map(|id| {
@@ -1342,12 +1349,26 @@ impl SharedCatalog {
                 if _blocked.is_none() {
                     _blocked = Some(crate::compile_trace::wait(id));
                 }
+                // The producer's state as this wait starts: 1 analyzing on
+                // another thread, 2 queued and unstarted.
+                let producer = match c.units[id].state {
+                    AnalysisState::Analyzing(owner) => 1 | ((owner as u64) << 8),
+                    _ => 2,
+                };
+                let span = crate::wait_timeline::begin(
+                    crate::wait_timeline::Kind::UnitWait,
+                    id as u64,
+                    producer,
+                );
                 if let Some(help) = help {
                     drop(guard);
                     let helped = help();
                     guard = self.lock();
                     match helped {
-                        Ok(true) => continue,
+                        Ok(true) => {
+                            span.end(2, 0);
+                            continue;
+                        }
                         Err(error) => {
                             if guard.threads[thread].waiting.take().is_some() {
                                 guard.waiting -= 1;
@@ -1360,6 +1381,7 @@ impl SharedCatalog {
                     // Recheck after releasing the lock to help: a producer
                     // may have settled while this worker ran another job.
                     if !matches!(guard.units[id].state, AnalysisState::Analyzing(_)) {
+                        span.end(2, 0);
                         continue;
                     }
                     if let Some(wait) = &_lane_wait {
@@ -1367,17 +1389,19 @@ impl SharedCatalog {
                         wait.refresh();
                         guard = self.lock();
                     }
-                    guard = self
+                    let (next, timeout) = self
                         .settled
                         .wait_timeout(guard, std::time::Duration::from_millis(20))
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .0;
+                        .unwrap_or_else(PoisonError::into_inner);
+                    guard = next;
+                    span.end(timeout.timed_out() as u64, 0);
                     continue;
                 }
                 guard = self
                     .settled
                     .wait(guard)
                     .unwrap_or_else(PoisonError::into_inner);
+                span.end(0, 0);
                 continue;
             }
             #[cfg(test)]
@@ -1474,6 +1498,7 @@ impl SharedCatalog {
             });
             (previous, c.waiting > 0)
         };
+        crate::wait_timeline::instant(crate::wait_timeline::Kind::Settle, id as u64, 0);
         let failed = previous.is_some() && self.unit_failed_now(id);
         drop(previous);
         self.lanes.finish(id, failed);
@@ -1502,6 +1527,7 @@ impl SharedCatalog {
         };
         self.settled.notify_all();
         let _blocked = crate::compile_trace::wait(0);
+        let _forward = crate::wait_timeline::begin(crate::wait_timeline::Kind::Forward, 0, 0);
         let mut c = self.lock();
         loop {
             if let Some(at) = c.replies.iter().position(|(t, _, _)| *t == ticket) {
@@ -4314,6 +4340,11 @@ impl UnitPool {
             return;
         }
         (self.shared.counters.pooled).fetch_add(units.len(), std::sync::atomic::Ordering::Relaxed);
+        if crate::wait_timeline::on() {
+            for &unit in &units {
+                crate::wait_timeline::instant(crate::wait_timeline::Kind::Dispatch, unit as u64, 0);
+            }
+        }
         self.inbox.lock().batches.push_back(units);
         self.inbox.ready.notify_one();
     }
@@ -4507,6 +4538,11 @@ fn execute_pool_job(
         UnitJob::Analyze(id, _, macro_free) => (id, macro_free),
         #[cfg(feature = "bbp-macros")]
         UnitJob::Native(step, reply) => {
+            let _job = crate::wait_timeline::begin(
+                crate::wait_timeline::Kind::Job,
+                step.task_id().get(),
+                2,
+            );
             shared.counters.note_engine_participant(worker.slot());
             #[cfg(test)]
             {
@@ -4519,6 +4555,11 @@ fn execute_pool_job(
             return;
         }
     };
+    let _job = crate::wait_timeline::begin(
+        crate::wait_timeline::Kind::Job,
+        id as u64,
+        macro_free as u64,
+    );
     if !shared.admits(id) {
         return shared.skipped();
     }

@@ -64,6 +64,7 @@ pub mod shared;
 mod v8_bridge;
 #[cfg(light_v8)]
 mod v8_evaluator;
+pub mod wait_timeline;
 pub use eval_session::{
     EvalDiagnostic, EvalOptions, EvalResult, EvalSession, HostArity, HostCall, HostFunction,
     UnhandledRejections, WarningOutput,

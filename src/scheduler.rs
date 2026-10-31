@@ -539,6 +539,11 @@ impl<J: Job, O> State<J, O> {
 
     /// Mark `entry` started.
     fn start(&mut self, entry: Entry<J>) -> Entry<J> {
+        crate::wait_timeline::instant(
+            crate::wait_timeline::Kind::Queue,
+            self.runnable_total as u64,
+            self.backlog_len as u64,
+        );
         self.running += 1;
         self.clock += 1;
         self.served[entry.phase] = self.clock;
@@ -1038,6 +1043,11 @@ impl<J: Job, O> Worker<'_, J, O> {
             return Err(panic.clone());
         }
         let Some(Claim { entry, left }) = state.claim_help(self.index, &self.shared.limits) else {
+            crate::wait_timeline::instant(
+                crate::wait_timeline::Kind::HelpIdle,
+                state.runnable_total as u64,
+                state.backlog_len as u64,
+            );
             return Ok(Help::Idle);
         };
         let worker = Worker {
@@ -1205,10 +1215,16 @@ fn work<J: Job, O, W>(
         let Some(Claim { entry, left }) = state.claim(index, &shared.limits) else {
             state.parked += 1;
             state.counts.parks += 1;
+            let idle = crate::wait_timeline::begin(
+                crate::wait_timeline::Kind::Idle,
+                state.runnable_total as u64,
+                state.backlog_len as u64,
+            );
             state = shared
                 .work
                 .wait(state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            drop(idle);
             state.parked -= 1;
             continue;
         };
@@ -1308,6 +1324,11 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
         for entry in entries {
             admitted += state.submit(&self.shared.limits, entry);
         }
+        crate::wait_timeline::instant(
+            crate::wait_timeline::Kind::Queue,
+            state.runnable_total as u64,
+            state.backlog_len as u64,
+        );
         drop(state);
         self.shared.wake(admitted);
     }

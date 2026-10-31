@@ -22,6 +22,11 @@ impl TaskId {
     pub(crate) const fn from_raw(raw: u64) -> Self {
         TaskId(raw)
     }
+
+    /// The task's number, for diagnostics such as a host's timeline.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
 }
 
 impl fmt::Display for TaskId {
@@ -92,6 +97,11 @@ impl ResultKind {
     /// The result kind with host-assigned number `raw`.
     pub const fn new(raw: u32) -> Self {
         ResultKind(raw)
+    }
+
+    /// The host-assigned number.
+    pub const fn get(self) -> u32 {
+        self.0
     }
 }
 

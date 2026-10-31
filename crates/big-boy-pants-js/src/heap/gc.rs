@@ -701,6 +701,12 @@ pub(crate) struct GcState {
     pub(crate) traced_edges: u64,
     pub(crate) pause_total: std::time::Duration,
     pub(crate) pause_max: std::time::Duration,
+    /// Time requesters waited from their request until every other thread
+    /// had stopped.
+    pub(crate) rendezvous_total: std::time::Duration,
+    /// Time threads spent stopped at a safepoint or blocked from entering
+    /// heap access by a pending collection, summed over threads.
+    pub(crate) stopped_total: std::time::Duration,
 }
 
 impl GcState {
@@ -1173,8 +1179,12 @@ impl Heap {
         me: ThreadId,
     ) -> MutexGuard<'g, GcState> {
         let ticket = gc.served;
-        while gc.pending > 0 && gc.served == ticket && !gc.in_access(me) {
-            gc = wait(self, gc);
+        if gc.pending > 0 && gc.served == ticket && !gc.in_access(me) {
+            let stopped = std::time::Instant::now();
+            while gc.pending > 0 && gc.served == ticket && !gc.in_access(me) {
+                gc = wait(self, gc);
+            }
+            gc.stopped_total += stopped.elapsed();
         }
         gc
     }
@@ -1221,9 +1231,11 @@ impl Heap {
         entry.parked = Some(roots);
         self.gc_changed.notify_all();
         let ticket = gc.served;
+        let stopped = std::time::Instant::now();
         while gc.pending > 0 && gc.served == ticket {
             gc = wait(self, gc);
         }
+        gc.stopped_total += stopped.elapsed();
         if let Some(entry) = gc.threads.get_mut(&me) {
             entry.parked = None;
         }
@@ -1296,9 +1308,11 @@ impl Heap {
         self.gc_changed.notify_all();
         // Nothing here can unwind before `Stopped` takes over the request
         // (waiting recovers from poisoning).
+        let requested = std::time::Instant::now();
         while !gc.others_stopped(me) {
             gc = wait(self, gc);
         }
+        gc.rendezvous_total += requested.elapsed();
         Ok(Stopped {
             heap: self,
             gc,

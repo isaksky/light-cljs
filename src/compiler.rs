@@ -2664,6 +2664,9 @@ fn analyze_entry(
     let begun = compile_stats::start(timed);
     // The exclusive-stage trace of `--stats` ([`crate::compile_trace`]).
     let recording = timed.then(crate::compile_trace::record);
+    if timed {
+        crate::wait_timeline::start_from_environment();
+    }
     if !valid_namespace(entry) {
         return Err(NamespaceCompileError::new(
             "invalid entry namespace: use dot-separated ASCII names; js is reserved",

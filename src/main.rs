@@ -1101,6 +1101,7 @@ fn report_stats(
         // Available counters still reach the user when the trace is absent
         // (an early compilation failure) or its destination cannot be written.
         io::stderr().lock().write_all(stats.report().as_bytes())?;
+        light_cljs::wait_timeline::finish()?;
         if let Some(path) = file {
             let trace = stats
                 .trace_file()

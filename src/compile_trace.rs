@@ -650,6 +650,11 @@ impl Recorder {
 
     fn push(&mut self, mut frame: Frame, counts: Option<(usize, usize)>) {
         let now = frame.started;
+        crate::wait_timeline::begin_raw(
+            crate::wait_timeline::Kind::Stage,
+            frame.stage as u64,
+            frame.owner as u64,
+        );
         if self.depth > 0
             && let Some(started) = self.engine_started.take()
         {
@@ -669,6 +674,11 @@ impl Recorder {
             return;
         }
         let mut frame = self.frames.pop().expect("open frame");
+        crate::wait_timeline::end_raw(
+            crate::wait_timeline::Kind::Stage,
+            frame.stage as u64,
+            frame.owner as u64,
+        );
         // A frame closed inside an engine call made in it keeps that time.
         if self.depth > 0
             && let Some(started) = self.engine_started.take()
@@ -1304,6 +1314,7 @@ pub(crate) fn charged(counter: &Rc<Cell<usize>>, expansions: usize, nodes: usize
 #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 pub(crate) fn engine_enter() -> bool {
     with_recorder(|recorder| {
+        crate::wait_timeline::begin_raw(crate::wait_timeline::Kind::Engine, 0, 0);
         let now = Instant::now();
         if recorder.depth == 0 {
             recorder.engine_started = Some(now);
@@ -1329,6 +1340,7 @@ pub(crate) fn engine_exit(entered: bool, service: &str) {
     }
     let host = !matches!(service, "compilerFrontier" | "checkBridge");
     with_recorder(|recorder| {
+        crate::wait_timeline::end_raw(crate::wait_timeline::Kind::Engine, 0, 0);
         let now = Instant::now();
         recorder.depth = recorder.depth.saturating_sub(1);
         recorder.outer_depth = recorder.outer_depth.saturating_sub(1);

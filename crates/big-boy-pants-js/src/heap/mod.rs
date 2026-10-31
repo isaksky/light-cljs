@@ -474,6 +474,12 @@ pub struct HeapStats {
     pub pause_total: std::time::Duration,
     /// Longest stop-the-world pause.
     pub pause_max: std::time::Duration,
+    /// Time requesters waited from their request until every other thread
+    /// had stopped (the rendezvous), summed over collections.
+    pub rendezvous_total: std::time::Duration,
+    /// Time threads spent stopped at safepoints or blocked from entering
+    /// heap access by a pending collection, summed over threads.
+    pub stopped_total: std::time::Duration,
     /// Accounted bytes currently admitted under
     /// [`HeapPolicy::hard_limit_bytes`], including garbage not yet swept.
     /// Zero when the runtime has no byte limit (nothing is accounted then).
@@ -982,16 +988,21 @@ impl Heap {
 
     pub(crate) fn stats(&self) -> HeapStats {
         // One lock at a time (separate statements), so the lock order holds.
-        let (collections, last_live_objects, traced_edges, pause_total, pause_max) = {
+        let (collections, last_live_objects, traced_edges, pauses) = {
             let gc = lock(&self.gc);
             (
                 gc.collections,
                 gc.last_live_objects,
                 gc.traced_edges,
-                gc.pause_total,
-                gc.pause_max,
+                [
+                    gc.pause_total,
+                    gc.pause_max,
+                    gc.rendezvous_total,
+                    gc.stopped_total,
+                ],
             )
         };
+        let [pause_total, pause_max, rendezvous_total, stopped_total] = pauses;
         let persistent_roots = lock(&self.roots).live();
         let objects = lock(&self.objects).live();
         let bytes = &self.byte_budget;
@@ -1003,6 +1014,8 @@ impl Heap {
             traced_edges,
             pause_total,
             pause_max,
+            rendezvous_total,
+            stopped_total,
             managed_bytes: bytes.used(),
             peak_managed_bytes: bytes.peak(),
             last_live_bytes: bytes.last_live(),
