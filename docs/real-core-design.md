@@ -954,3 +954,189 @@ fourth: the `seq` of a runtime-built map threw, because the verbatim
 vector"); a map entry is now a runtime-owned pair over the private
 fallback of `vectors` (an engine map entry form, `formNth` of
 `formPrintItems`, is an option once entries need to publish).
+
+## Phase 1 results (light-cljs-648)
+
+`--macro-core port|real` (and `:compiler-options {:macro-core :port|:real}`
+in light-cljs.edn) selects the Pants build's cljs.core. It is accepted on the
+Pants build only (`MacroCore::check_available`: built with
+`--no-default-features --features bbp-macros`, no V8 or QuickJS), defaults to
+`port`, adds `macro-core-real` to the compiler identity when `real` (the
+port's identity is unchanged), and `--stats` prints `native.core.real` (0 or 1).
+`LIGHT_CLJS_MACRO_CORE=real` makes `real` the default where no flag or build
+file chooses, which is how a whole test binary runs in either mode.
+
+### How `real` runs
+
+- **Boot once, publish what passes** (`src/bbp_evaluator/real_core.rs`).
+  `BbpRuntime::new` runs `SHARED_RUNTIME` in a boot task, then offers every
+  member of its `core` hub, and every property of the per-task defaults
+  under it, to `Runtime::publish` one by one. The ones that publish go on
+  the published hub: a sealed object over a sealed copy of the defaults that
+  published. Each macro task gets `[hub, boot, unpublished names, private
+  boots]` as `nativeMacroTask`'s seventh parameter.
+- **A task's cells over the hub** (`src/bbp_runtime.js`, the `real` block
+  before the export object). The task makes `globalThis.__lightSharedCells`
+  over the hub, with the hub's cell defaults as its own writable properties
+  (`sharedTaskCells`'s contract, made from the published hub, since the
+  profile's own `sharedTaskCells` captures the unpublished hub). A member
+  that did not publish is a getter there: the first read boots a private
+  copy of the profile in that task (the boot function captures nothing, so
+  it publishes with the hub), takes the member from it and counts the boot
+  in `native.core.private-boots`. A per-task default whose getter did not
+  publish is resolved the same way, with the task's cells as receiver.
+- **Bindings.** `rt.nativeCoreBinding(name)` answers the hub's member as a
+  value (so a helper that captures it can still publish), a getter for an
+  unpublished member, and the port's descriptor for a name the real hub does
+  not have. `rt.core` and `globalThis.__lightNativeRuntime.core` are a view
+  whose prototype is the task's cells, with the port's own names the real
+  core lacks (`invokeMulti`, `invokeVar` and the other call adapters emitted
+  code reaches) copied onto it. `globalThis.__lightNativeRuntime.port` is
+  always the port's table, and the port's runtime reaches its own adapters
+  through it, so its Var, multimethod and struct calls and printing are
+  unchanged in both modes.
+- **What stays the evaluator's** (`evaluator_member`). The members the
+  manifest marks `compile-time` (the namespace registry, `create-ns`,
+  `find-ns`, the macro reader context, the form bridge, declaration demand)
+  and `gensym`, whose names on the Pants build come from the compiler's
+  counters and gensym scopes and are logged for the cache, resolve to the
+  port's in `real` mode too. The command loop, root registry, catalog and
+  `decl` are unchanged.
+
+### Numbers
+
+On master e30fc553 (after 666's symbol view) 698 of the 726 publish:
+`currentNs` joins the hub, and the 28 below it remain per task. The test
+runs and the failure table below are from 20ce6bfb, before that view.
+
+Members on master 20ce6bfb (the profile at 738 of its 748 members): the
+boot offers 726 members (the hub's members and the per-task defaults,
+without the evaluator's), of which 697 publish and 29 take the per-task
+fallback (`macro_core_boot_and_task_bytes` lists them): `currentNs`; the
+reader's eight entry points (`readString`, `read`, `readerReadString`,
+`readerRead`, `ednRead`, `ednReadString`, `readerParseTimestampFields`,
+`readerInitialTagTable`), which reach the V8 form bridge's
+`readerJsLiterals` (below); and all 20 per-task registry getters of the
+defaults (`coreDispatchers`, `gensymScopes`, `protocolSlots`,
+`formHashes`, the reader's `namespaces`, `streams`, `tags` and the rest),
+which reach an unsealed object in the boot's `coreDispatchers` snapshot
+through `sharedRegistry` (`BBP_PUBLISH_TRAIL=1`: `get coreDispatchers >
+sharedRegistry > sharedSnapshots > array > array > object > object`),
+reported to light-cljs-666. Until that snapshot seals, a task that reads
+one of those registries boots its private copy once; the generated 200k
+project booted one (`native.core.private-boots 1`, on the base before 20ce6bfb).
+
+### The V8 form bridge in `real` mode
+
+The Pants build does not boot the V8 form bridge as part of the shared
+core. Its forms cross between the compiler and the engine through the Rust
+bridge of `src/bbp_evaluator.rs` (memoized native-form import, unchanged
+subtree identity, the persistent `&env`), which is what the port's
+`compilerForms` serves, and which the design keeps (section 1, "Why not
+freeze on publication"). So in `real` mode:
+
+- `compilerForms` (the runtime's export, `version: 5` `decode`/`encode` over
+  JSON-like envelopes for V8 and QuickJS) is not offered for publication at
+  all; the evaluator runtime's own `compilerForms` (gensym scopes,
+  namespace context, `takeGensyms`) stays the one the command loop calls,
+  as the manifest's `compile-time` rule already keeps every other piece of
+  evaluator machinery on the port.
+- The reader entry points that reach the bridge's `readerJsLiterals.array`
+  (`#js [...]` in data read at macro time) stay per task: a task that calls
+  `read-string` or `cljs.reader/read-string` in a macro boots its private
+  copy and reads there. Making them shared is not a matter of sealing the
+  bridge: the real reader builds runtime-owned lists, symbols and
+  `#js` values, not engine forms, so its results would not cross the
+  Rust bridge either. The fix is the profile's reader building engine
+  forms, as the port's reader does today by adapting the same canonical
+  `reader` unit to the engine's constructors at assembly
+  (`native_reader_source` in `src/bbp_evaluator.rs`); that belongs with the
+  symbol and form views of light-cljs-666, and is recorded here rather than
+  done in 648, which only resolves names.
+
+Boot cost, before (`port`) and after (`real`), from
+`bbp_evaluator::tests::macro_core_boot_and_task_bytes` (debug build,
+`--ignored --nocapture`) and the generated 200k project at 1 thread
+(release build of this work on master 0338139d, before the rebase onto 20ce6bfb; `release bench --stats --jobs 1`, three
+alternating runs on a machine at load 26 to 40, so the times are noisy):
+
+| | port | real |
+| --- | ---: | ---: |
+| Runtime boot (debug) | 416 ms | 2,672 ms (of which the profile's boot and publication) |
+| Runtime live bytes after a collection (debug) | 1.07 MB | 18.1 MB |
+| Runtime peak managed bytes during boot (debug, 512 MiB limit) | 1.10 MB | 72.0 MB |
+| Bytes a task holds after its boot (8 tasks, debug) | 1.58 MB | 1.45 MB |
+| 200k: `native.core.boot-ms` | | 307 to 329 ms |
+| 200k: `native.producers.setup-ms` (57 producers) | 13.7, 22.2, 103.1 | 20.2, 24.8 |
+| 200k: `macro.gc.peak-managed-bytes` | 164.5 MB | 214.2 MB |
+| 200k: peak memory (`memory.peak-rss-bytes`) | 1.15 to 1.18 GB | 1.18 to 1.19 GB |
+| 200k: wall | 15.5 to 31.5 s | 21.5 to 24.5 s |
+| 200k: output | `1a75bc87…` | identical |
+
+A task still runs the port's factory in `real` mode (its command loop,
+registry, catalog, `decl` and adapters, which phase 3 slims to the evaluator
+runtime), so the per-task bytes do not fall yet: the real core adds one
+boot of about 0.3 s and about 50 MB of managed bytes at its peak per
+compilation (18 MB live after a collection), which the aggregate
+`--macro-memory-limit` must hold. Under the default 64 MiB the boot fits,
+with collections; a limit of 32 MiB or less cannot hold it (the profile's
+own measurement above).
+
+### Differences between the modes
+
+`cargo test --features bbp-macros --test bbp_macros` runs whole in either
+mode (`LIGHT_CLJS_MACRO_CORE=real`). On 20ce6bfb plus this work, debug
+build, 4 test threads: with `port` every test passes (325 passed, 9
+ignored); with `real` 165 pass and 160 fail. The Pants build's whole suite
+(`cargo nextest run --no-default-features --features bbp-macros`, 2,222
+tests) has 142 failures with `port`, the baseline, and 508 with `real`
+(506 failed, 2 timed out), led by the same signatures as the table below
+(`cannot convert object to primitive value` first, then changed answers,
+the boot under small memory limits, `Expected reader options map`, `assoc`
+on engine maps, protocol extension of a published hub function).
+
+No failure is a missing name ("unsupported operation: native macro runtime
+core.X" no longer occurs). The failures, by first signature, and their
+causes:
+
+| Tests | Signature | Cause | Owner |
+| ---: | --- | --- | --- |
+| 32 | `TypeError: cannot convert object to primitive value` | A real core function that strings or compares its argument (`str`, `name`, `pr-str`, `partition` over a macro argument) gets an engine symbol or an imported form, which the profile's views do not recognize: `(str 'a)` throws | the symbol and form views, light-cljs-666 |
+| 31 | the program's answer differs (`assertion left == right`) | Real functions answering for engine values through the generic path: printing of engine maps, sets and records, `satisfies?` and the reference-type predicates, Vars and multimethods built by the port, hash order | 666's views; dispatch over engine tables, light-cljs-649 |
+| 10 | `heap byte limit exceeded`, 2 of them while booting | Tests that set `--macro-memory-limit` to 16 MiB or less: the boot alone peaks near 72 MB without a limit and does not fit 32 MiB | the boot's footprint, open since 647 |
+| 8 | `assoc not supported on this type`, `native macro runtime assoc on object` | The real `assoc` (called as a value, not lowered) on an engine map, record or struct, which the maps view does not answer | 666 |
+| 8 | `Unsupported macro result arbitrary object` (or `function`) | A macro returns a value the real core built as a runtime object (a list of `listFromArray`, a hash map, a queue), which the Rust bridge cannot export | 666's views; phase 4 for queues |
+| 6 | `is not ISeqable`, `Cannot create iterator from [object Object]` | `seq` of an engine set, map or struct through the generic path | 666 |
+| 5 | `deadline exceeded` | A private copy booted inside a macro's deadline (debug build, loaded machine), for the per-task members above | 666 sealing the registry snapshot |
+| 3 | `cannot set the prototype of a form vector` | The verbatim `mapEntry` over the swapped `makeVector` (the open item of "Profile assembly") | 666 |
+| 2 | reader errors | `read-string` in a macro on the private copy: the real reader's runtime-owned values (above, "The V8 form bridge in `real` mode") | 666 |
+| 55 | one or two each | The same classes on other operations: `count`, `conj`, `seq`, `realized?`, `deref`, `name`, `namespace`, `keyword`, `rseq`, `pop` and `IWriter` on engine values; `instance?` and `cannot assign to read-only property` against runtime types, and writes to properties of the sealed, published hub functions; a shared lazy sequence whose real-core value cannot publish; `DataView`, which the engine lacks | 666, 649 |
+
+`grep` the run's log for a test's name to see its full message; the list is
+regenerated by running the binary with `LIGHT_CLJS_MACRO_CORE=real` and
+grouping the first error of each failure.
+
+The regressions this pellet adds, failing before it:
+`real_core::real_core_resolves_names_the_port_lacks` (the port's
+`core.reductions` getter throws; the real hub answers),
+`real_core::real_core_expands_as_the_port_where_both_answer`,
+`real_core::real_core_stats_report_the_boot_and_publication`
+(tests/bbp_macros/real_core.rs), `cache_key::tests::
+the_macro_core_changes_the_compiler_identity`, and
+`native_core_macros::tests::bootstrap_definitions_expand_on_the_real_core`:
+the bootstrap definitions of `doseq`, `when` and `lazy-cat` run on the real
+core and expand as the Rust expansion does, where the port lacked what they
+use. `for`'s definition does not yet
+(`bootstrap_for_expands_on_the_real_core`, ignored): it partitions its
+binding vector, an imported form, with the real `partition`, which fails on
+it with "cannot convert object to primitive value" (`(count (partition 2
+xs))` over a macro argument `[1 2]` does, over a vector the macro built it
+answers). On the base this was written on, `(str 'a)` failed the same way;
+light-cljs-666's symbol view (master e30fc553) fixed that, and also
+published `currentNs` (698 of 726 members after it); the view of imported
+forms is 666's next.
+
+For light-cljs-650: `bb benchmarks/pants-core-coverage.bb --real-core`
+runs the Pants CLI with `--macro-core real` and only checks (the doc's table
+records the port), so the inventory can be compared between the modes
+before its `real` column exists.

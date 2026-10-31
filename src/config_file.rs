@@ -151,6 +151,8 @@ pub enum Setting {
     MacroMemoryLimit,
     /// `:compiler-options :macro-poll-budget`.
     MacroPollBudget,
+    /// `:compiler-options :macro-core`, the Pants build's cljs.core.
+    MacroCore,
     /// `:build-options :cache-level`.
     CacheLevel,
     /// `:build-options :cache-blockers`.
@@ -163,7 +165,7 @@ impl Setting {
     pub const COUNT: usize = Self::ALL.len();
 
     /// Every setting, in discriminant order.
-    pub const ALL: [Setting; 30] = [
+    pub const ALL: [Setting; 31] = [
         Self::SourcePaths,
         Self::CacheRoot,
         Self::CacheBlockers,
@@ -191,6 +193,7 @@ impl Setting {
         Self::MacroTimeoutMs,
         Self::MacroMemoryLimit,
         Self::MacroPollBudget,
+        Self::MacroCore,
         Self::CacheLevel,
         Self::BuildCacheBlockers,
         Self::ReloadStrategy,
@@ -230,6 +233,7 @@ impl Setting {
             Self::MacroTimeoutMs => "macro-timeout-ms",
             Self::MacroMemoryLimit => "macro-memory-limit",
             Self::MacroPollBudget => "macro-poll-budget",
+            Self::MacroCore => "macro-core",
             Self::CacheLevel => "cache-level",
             Self::ReloadStrategy => "reload-strategy",
         }
@@ -1382,6 +1386,7 @@ const COMPILER_OPTIONS: Table = &[
         Key::Setting(Setting::CompilerClosureDefines),
     ),
     ("elide-asserts", Key::Setting(Setting::ElideAsserts)),
+    ("macro-core", Key::Setting(Setting::MacroCore)),
     ("macro-expansions", Key::Setting(Setting::MacroExpansions)),
     (
         "macro-memory-limit",
@@ -2156,6 +2161,11 @@ impl Validator {
             Setting::CheckedArrays => {
                 expect(keyword_in(&["warn", "error"]), ":warn or :error")?;
                 self.release_only(name, "checks no array accesses", key, place)
+            }
+            Setting::MacroCore => {
+                expect(keyword_in(&["port", "real"]), ":port or :real")?;
+                crate::evaluator::MacroCore::check_available(":macro-core")
+                    .map_err(|message| place.error(&value.span, message))
             }
             Setting::Optimizations => expect(
                 keyword_in(&["none", "prepare", "advanced"]),
@@ -3050,6 +3060,7 @@ fn defaults(mode: BuildMode) -> Slots {
             Setting::MacroPollBudget,
             integer(u128::from(evaluator.poll_budget)),
         ),
+        (Setting::MacroCore, keyword(evaluator.macro_core.name())),
         (Setting::CacheLevel, keyword("all")),
         (Setting::BuildCacheBlockers, ValueKind::Set(Vec::new())),
     ];

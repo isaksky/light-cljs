@@ -102,6 +102,24 @@ pub struct NativeHelperCounts {
     pub producer_replayed: usize,
     pub producer_catalog_entries: usize,
     pub producer_nanos: usize,
+    /// The real cljs.core of `--macro-core real` (light-cljs-648); none
+    /// with the port.
+    pub real_core: Option<RealCoreCounts>,
+}
+
+/// The real cljs.core one compilation booted (`--macro-core real`;
+/// `src/bbp_evaluator/real_core.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RealCoreCounts {
+    /// Members of the profile's hub (its per-task defaults included,
+    /// the evaluator's compile-time members not), and those that published.
+    pub members: usize,
+    pub published: usize,
+    /// Tasks that booted a private copy of the profile for a member that
+    /// did not publish (the per-task fallback).
+    pub private_boots: usize,
+    /// The boot task's time, from spawn to the published hub.
+    pub boot_nanos: u64,
 }
 
 /// What the Pants build's form bridge did to keep its import memo and its
@@ -748,6 +766,20 @@ impl CompileStats {
                 "native.producers.setup-ms",
                 &ms(Duration::from_nanos(helpers.producer_nanos as u64)),
             );
+            match &helpers.real_core {
+                None => line("native.core.real", &0),
+                Some(core) => {
+                    line("native.core.real", &1);
+                    line("native.core.members", &core.members);
+                    line("native.core.published", &core.published);
+                    line("native.core.per-task", &(core.members - core.published));
+                    line("native.core.private-boots", &core.private_boots);
+                    line(
+                        "native.core.boot-ms",
+                        &ms(Duration::from_nanos(core.boot_nanos)),
+                    );
+                }
+            }
             let bridge = &helpers.bridge;
             line("native.prune.passes", &bridge.prune_passes);
             line(

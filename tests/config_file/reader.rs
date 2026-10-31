@@ -715,12 +715,21 @@ fn type_rows() -> Vec<(String, String)> {
         ("macro-timeout-ms", "1.5", 41, "a positive integer"),
         ("macro-memory-limit", "\"64M\"", 43, "a positive integer"),
         ("macro-poll-budget", "1N", 42, "a positive integer"),
+        ("macro-core", ":fast", 35, ":port or :real"),
     ] {
         row(
             option(&format!(":{key} {value}")),
             &format!(
                 "light-cljs.edn:7:{column}: :{key} of build :app must be {expected}, got {value}"
             ),
+        );
+    }
+    // The Pants build's cljs.core (light-cljs-648) is its option only.
+    if !light_cljs::evaluator::MacroCore::AVAILABLE {
+        row(
+            option(":macro-core :real"),
+            "light-cljs.edn:7:35: :macro-core applies to the Pants build only (built with \
+             --no-default-features --features bbp-macros); this build runs macros on another engine",
         );
     }
     rows

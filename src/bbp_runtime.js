@@ -603,7 +603,7 @@ const decl = (() => {
       // runs with any receiver; an overloaded dispatcher needs the
       // receiver's IFn methods.
       if (overloaded && __rt.structTypeOf(this) === null) throw new TypeError('undefined is not a function');
-      return globalThis.__lightNativeRuntime.core.borrowedIFn(ty,overloaded,this,args);
+      return globalThis.__lightNativeRuntime.port.borrowedIFn(ty,overloaded,this,args);
     }));
   };
   const borrowedIFn = (ty,overloaded,receiver,args) => {
@@ -1233,9 +1233,9 @@ const native = (() => {
     // its initialization: that forward capture would box ordinary lazy
     // callbacks in a task-owned binding cell and prevent their publication.
     if(kind==='struct'&&__rt.formName(__rt.structTypeOf(value))==='cljs.core/MultiFn')
-      return (...args)=>globalThis.__lightNativeRuntime.core.invokeMulti(value,args);
+      return (...args)=>globalThis.__lightNativeRuntime.port.invokeMulti(value,args);
     if(kind==='struct'&&isVar(value))
-      return (...args)=>globalThis.__lightNativeRuntime.core.invokeVar(value,args);
+      return (...args)=>globalThis.__lightNativeRuntime.port.invokeVar(value,args);
     if (kind === 'vector' || kind === 'map' || kind === 'set' || kind === 'keyword' || kind === 'symbol') return (...args) => {
       if (kind !== 'vector' && (args.length < 1 || args.length > 2)) arity(args.length);
       return __rt.cljInvoke(f, args[0], args.length > 1 ? args[1] : null, args.length);
@@ -1247,9 +1247,9 @@ const native = (() => {
     const value=val(f),kind=__rt.formKind(value);
     if(value===globalThis.__lightNativeRuntime.intrinsicRegExp)return globalThis.__lightNativeRuntime.nativeRegExpCall(value)(...args);
     if(kind==='struct'&&__rt.formName(__rt.structTypeOf(value))==='cljs.core/MultiFn')
-      return globalThis.__lightNativeRuntime.core.invokeMulti(value,args);
-    if(kind==='struct'&&isVar(value))return globalThis.__lightNativeRuntime.core.invokeVar(value,args);
-    if(kind==='struct'||kind==='record')return globalThis.__lightNativeRuntime.core.invokeStruct(value,args);
+      return globalThis.__lightNativeRuntime.port.invokeMulti(value,args);
+    if(kind==='struct'&&isVar(value))return globalThis.__lightNativeRuntime.port.invokeVar(value,args);
+    if(kind==='struct'||kind==='record')return globalThis.__lightNativeRuntime.port.invokeStruct(value,args);
     if(kind!=='vector'&&kind!=='map'&&kind!=='set'&&kind!=='keyword'&&kind!=='symbol')return value.call(null,...args);
     if(kind!=='vector'&&(args.length<1||args.length>2))arity(args.length);
     return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null,args.length);
@@ -1260,7 +1260,7 @@ const native = (() => {
     if (__rt.formKind(__rt.formValue(this)) !== expected) throw new Error('Expected ' + expected);
     if (arguments.length === 0 && (expected === 'keyword' || expected === 'symbol' || expected === 'map' || expected === 'set'
         || expected === 'vector' && __rt.cljIsMapEntry(this))) throw new Error('Invalid arity: -1');
-    return globalThis.__lightNativeRuntime.core.invoke(this,...args);
+    return globalThis.__lightNativeRuntime.port.invoke(this,...args);
   };
   const families = ['keyword','symbol','vector','map','set'];
   const rawCalls = new Map(families.map(k=>[k,canonicalMember(k,()=>rawMember(k))]));
@@ -1269,18 +1269,18 @@ const native = (() => {
   // adapter's failure is.
   const rawMultiCall = canonicalMember('multi-call',()=>function(_, ...args) {
     if (__rt.structTypeOf(this) === null) throw new TypeError('undefined is not a function');
-    return globalThis.__lightNativeRuntime.core.invokeMulti(this,args);
+    return globalThis.__lightNativeRuntime.port.invokeMulti(this,args);
   });
   rawCalls.set('struct',rawMultiCall);
   const rawIFnCall = canonicalMember('ifn-call',()=>function(_, ...args) {
     if (__rt.structTypeOf(this) === null) throw new TypeError('undefined is not a function');
-    return globalThis.__lightNativeRuntime.core.invokeIFn(this,args);
+    return globalThis.__lightNativeRuntime.port.invokeIFn(this,args);
   });
   // The legacy collection and MultiFn adapters read `this.call` before
   // realizing the arguments; the IFn adapter realizes them first.
   const rawApplyMember = ifn => function(_, args) {
     const call = ifn ? undefined : this.call;
-    const values = globalThis.__lightNativeRuntime.core.nativeApplyArgs(args);
+    const values = globalThis.__lightNativeRuntime.port.nativeApplyArgs(args);
     if (ifn) return this.call(null,...(values.length > 20 ? [...values.slice(0,20),values.slice(20)] : values));
     return Reflect.apply(call, this, [null, ...values]);
   };
@@ -1290,19 +1290,19 @@ const native = (() => {
   // prototype's.
   const rawVarMembers = new Map([
     ['call', canonicalMember('var-call',()=>function(_, ...args) {
-      return globalThis.__lightNativeRuntime.core.invokeVar(this,args);
+      return globalThis.__lightNativeRuntime.port.invokeVar(this,args);
     })],
     ['apply', canonicalMember('var-apply',()=>function(_, args) {
       // Past 20 arguments the root's apply, as the legacy Var's apply.
-      return globalThis.__lightNativeRuntime.core.applyVar(this,globalThis.__lightNativeRuntime.core.nativeApplyArgs(args));
+      return globalThis.__lightNativeRuntime.port.applyVar(this,globalThis.__lightNativeRuntime.port.nativeApplyArgs(args));
     })],
     // The root's macro flag, read through the thunk, so the read demands
     // the root as the legacy Var's does (light-cljs-603).
     ['isMacro', canonicalMember('var-is-macro',()=>function() {
-      return globalThis.__lightNativeRuntime.core.varIsMacro(this);
+      return globalThis.__lightNativeRuntime.port.varIsMacro(this);
     })],
     ['toString', canonicalMember('var-string',()=>function() {
-      return globalThis.__lightNativeRuntime.core.str(this);
+      return globalThis.__lightNativeRuntime.port.str(this);
     })]]);
   // A native form's named member, as raw JavaScript reads it: a form is one
   // object in both worlds and no call boundary converts anything. The
@@ -1462,7 +1462,7 @@ const native = (() => {
   // applyTo's null receiver in immutable engine metadata, so they can publish
   // without a mutable JavaScript arity property record.
   const applyArgs = (f,args) => {
-    if(isVar(f))return globalThis.__lightNativeRuntime.core.applyVar(f,args);
+    if(isVar(f))return globalThis.__lightNativeRuntime.port.applyVar(f,args);
     const value=val(f),kind=__rt.formKind(value);
     if(kind!==null)return (kind==='struct'||kind==='record')
       && __rt.formName(__rt.structTypeOf(value))!=='cljs.core/MultiFn' ? decl.applyIFn(value,args) : invoke(f,...args);
@@ -1483,8 +1483,8 @@ const native = (() => {
     return target;
   };
   Object.setPrototypeOf(ExceptionInfo.prototype,Error.prototype);
-  ExceptionInfo.prototype.toString=function(){return '#error {:message '+globalThis.__lightNativeRuntime.core.prStr(this.message)
-    +(truth(this.data)?', :data '+globalThis.__lightNativeRuntime.core.prStr(this.data):'')+(truth(this.cause)?', :cause '+globalThis.__lightNativeRuntime.core.prStr(this.cause):'')+'}';};
+  ExceptionInfo.prototype.toString=function(){return '#error {:message '+globalThis.__lightNativeRuntime.port.prStr(this.message)
+    +(truth(this.data)?', :data '+globalThis.__lightNativeRuntime.port.prStr(this.data):'')+(truth(this.cause)?', :cause '+globalThis.__lightNativeRuntime.port.prStr(this.cause):'')+'}';};
   // Printing walks native seqs incrementally. In particular, a bounded print
   // must not realize the whole lazy input. All strings remain exact UTF-16.
   const namedText = x => {
@@ -2203,7 +2203,7 @@ const native = (() => {
   });
   const repeatedlyFrom=(self,f)=>lazy(()=>__rt.cljCons(invoke(f),self(self,f)));
   const treeFrom=(self,branch,children,node)=>lazy(()=>__rt.cljCons(node,truth(invoke(branch,node))
-    ?globalThis.__lightNativeRuntime.core.mapcat(x=>self(self,branch,children,x),invoke(children,node)):null));
+    ?globalThis.__lightNativeRuntime.port.mapcat(x=>self(self,branch,children,x),invoke(children,node)):null));
   const nativeSeq = x => {
     const kind = __rt.formKind(val(x));
     return kind === 'list' || kind === 'cons' || kind === 'lazy-seq';
@@ -3188,7 +3188,7 @@ const native = (() => {
       // Custom callable properties and user callbacks still undergo capture validation.
       const descriptor=memoCoreCallback(f), adapted=descriptor!==undefined;
       const cache=atom(__rt.formVector(adapted?descriptor:f,arrayMap([]),adapted));
-      return (...args)=>globalThis.__lightNativeRuntime.core.invokeMemoized(cache,args);
+      return (...args)=>globalThis.__lightNativeRuntime.port.invokeMemoized(cache,args);
     },
     invokeMemoized:(cache,args)=>{
       lane(cache);
@@ -3719,7 +3719,59 @@ const native = (() => {
     }
     return index;
   };
-  const rt={core,
+  // `--macro-core real` (light-cljs-648; docs/real-core-design.md, section
+  // 5): `realCore` is `[hub, boot, unpublished names, private boots]`, the
+  // real cljs.core booted once for the compilation and published
+  // (src/bbp_evaluator/real_core.rs). This task makes its cells over the
+  // hub (the per-task state the profile's functions read through
+  // `globalThis.__lightSharedCells`); a member that did not publish is a
+  // getter on them that boots a private copy of the profile in this task
+  // once and takes the member from it. The units' `nativeCore$X` bindings
+  // and `rt.core` then read the hub. The port's own adapters (Var, multimethod
+  // and struct calls, which emitted code and this runtime reach through
+  // `globalThis.__lightNativeRuntime`) stay the port's: `port` always holds
+  // the port's table, and `core` keeps the port's names the real core lacks.
+  const real = realCore === null ? null : (() => {
+    const hub = __rt.formNth(realCore, 0), boot = __rt.formNth(realCore, 1);
+    const failing = new Set(), counter = __rt.formNth(realCore, 3);
+    for (let i = 0; i < __rt.formCount(__rt.formNth(realCore, 2)); i++) failing.add(__rt.formNth(__rt.formNth(realCore, 2), i));
+    const cells = Object.create(hub);
+    const own = (name, value) => Object.defineProperty(cells, name, {value, writable: true, configurable: true, enumerable: true});
+    let copy = null;
+    // A member of the hub, or `defaults.NAME`, one of the profile's per-task
+    // defaults, whose getter makes the task's own registry on `cells`.
+    const resolve = name => {
+      if (copy === null) {
+        const saved = globalThis.__lightSharedCells;
+        try { copy = boot(); } finally { globalThis.__lightSharedCells = saved; }
+        for (;;) { const n = __rt.atomLoad(counter); if (Object.is(__rt.atomCas(counter, n, n + 1), n)) break; }
+      }
+      if (name.startsWith('defaults.')) {
+        name = name.slice(9);
+        Object.defineProperty(cells, name, {value: undefined, writable: true, configurable: true, enumerable: true});
+        const value = Reflect.get(Object.getPrototypeOf(copy.core), name, cells);
+        if (Object.getOwnPropertyDescriptor(cells, name).value === undefined) own(name, value);
+        return value;
+      }
+      const value = copy.core[name];
+      own(name, value);
+      return value;
+    };
+    for (const member of failing) {
+      const name = member.startsWith('defaults.') ? member.slice(9) : member;
+      if ((Object.getOwnPropertyDescriptor(cells, name) !== undefined)) continue;
+      Object.defineProperty(cells, name, {get: () => resolve(member), set: value => own(name, value), configurable: true, enumerable: true});
+    }
+    for (const name of Object.getPrototypeOf(hub).cellNames) if (!(Object.getOwnPropertyDescriptor(cells, name) !== undefined)) own(name, Reflect.get(hub, name));
+    globalThis.__lightSharedCells = cells;
+    const view = Object.create(cells);
+    for (const name of Object.getOwnPropertyNames(core))
+      if (!(name in cells)) Object.defineProperty(view, name, Object.getOwnPropertyDescriptor(core, name));
+    const binding = name => (Object.getOwnPropertyDescriptor(hub, name) !== undefined) ? {value: hub[name]}
+      : failing.has(name) ? {get: () => cells[name]} : Object.getOwnPropertyDescriptor(core, name);
+    return {view, binding};
+  })();
+  const rt={core: real === null ? core : real.view, port: core,
     // Internal apply keeps the original helper when its public Var is rebound.
     nativeBoundedCount:core.boundedCount,
     jsObject:pairs=>{
@@ -3735,7 +3787,7 @@ const native = (() => {
     },
     // Inspect data properties without running an unsupported entry's getter.
     // Units keep that getter's access at the original expression site.
-    nativeCoreBinding:name=>Object.getOwnPropertyDescriptor(core,name),
+    nativeCoreBinding:real===null?name=>Object.getOwnPropertyDescriptor(core,name):real.binding,
     nativeInterop:interop,intrinsicRegExp,nativeRegExp,nativeRegExpCall,nativeRegExpMember:function(_,...a){return nativeRegExpCall(intrinsicRegExp)(...a);},nativeConstruct:(C,...a)=>nativeRegExp(C)(...a),declarationReceiver:x=>{decl.demandObject(x);return x;},
     nativeStoreValue:(x,v)=>__rt.structState(x)!==0?v:interop(v),
     protocol:protocols.value,

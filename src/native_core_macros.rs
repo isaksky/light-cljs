@@ -3603,6 +3603,92 @@ mod tests {
         compare_all(&readable);
     }
 
+    /// The failures of `sources`, core macro calls the native expansion
+    /// expands, through their bootstrap definitions
+    /// (src/compiler_core_macros.cljs, src/compiler_sequence_macros.cljs) on
+    /// the Pants build's real cljs.core (`--macro-core real`,
+    /// light-cljs-648): an error, or an expansion whose data is not the
+    /// native expansion's.
+    #[cfg(feature = "bbp-macros")]
+    fn real_core_definition_failures(sources: &[&str]) -> Vec<String> {
+        let mut host = MacroHost::new();
+        host.evaluator_options.macro_core = crate::evaluator::MacroCore::Real;
+        // The real core boots in the session: seconds in a debug build.
+        host.evaluator_options.timeout = std::time::Duration::from_secs(600);
+        let environment = {
+            let key = |name| C.keyword(Name::new(None, name));
+            let namespace = C
+                .map(&[(key("name"), C.symbol(Name::new(None, "user")))])
+                .unwrap();
+            C.map(&[(key("ns"), namespace)]).unwrap()
+        };
+        let mut failures = Vec::new();
+        for source in sources {
+            let call = host
+                .read_compiler_form(&Source::new("native.cljs", *source))
+                .unwrap()
+                .unwrap();
+            let operator = call.children()[0].data();
+            let DatumKind::Symbol(operator) = operator.kind() else {
+                unreachable!()
+            };
+            let name = String::from_utf16_lossy(operator.name());
+            let script = {
+                let _names = crate::generated_names::enter_namespace(7);
+                host.expand_core_javascript(&name, &call, &environment, None)
+            };
+            let native = {
+                let _names = crate::generated_names::enter_namespace(7);
+                host.expand_core_native(&name, &call, "user", (&name, &(0..source.len())), None)
+                    .unwrap()
+                    .expect("a call the native expansion expands")
+            };
+            match script {
+                Err(e) => failures.push(format!("{source}: {e}")),
+                Ok(script) if !native.data().value_eq(&script.data()) => failures.push(format!(
+                    "{source}: native {:?}\nengine {:?}",
+                    native.data(),
+                    script.data()
+                )),
+                Ok(_) => {}
+            }
+        }
+        failures
+    }
+
+    /// With `--macro-core real` the Pants build runs the bootstrap
+    /// definitions of `doseq`, `when` and `lazy-cat` on the real cljs.core,
+    /// where the port lacked what they use (light-cljs-611's "bootstrap
+    /// macro" route), and they expand as the native expansion does.
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn bootstrap_definitions_expand_on_the_real_core() {
+        let failures = real_core_definition_failures(&[
+            "(doseq [x xs] (f x))",
+            "(doseq [x xs y ys :let [a 1] :when a :while b] (f x) (g y))",
+            "(when x a b)",
+            "(lazy-cat xs ys)",
+        ]);
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// `for`'s definition partitions its binding vector, a form the bridge
+    /// imported, with the real `partition`, which the profile's views do not
+    /// take yet: `(defmacro m [xs] (count (partition 2 xs)))` throws "cannot
+    /// convert object to primitive value" on the real core for `(m [1 2])`,
+    /// where the same call over a vector the macro built answers.
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    #[ignore = "the profile's views of imported forms are light-cljs-666's"]
+    fn bootstrap_for_expands_on_the_real_core() {
+        let failures = real_core_definition_failures(&[
+            "(for [x xs] x)",
+            "(for [x xs y ys] [x y])",
+            "(for [x xs :let [a 1] :when (odd? x) :while (< x 9)] x)",
+        ]);
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     #[test]
     fn sequence_macros_expand_as_their_definitions() {
         compare_all(&[

@@ -5829,3 +5829,49 @@ fn namespace_registration_does_not_retain_value_handles() {
     evaluator.collect_garbage();
     assert_eq!(evaluator.value_roots().unwrap(), roots);
 }
+
+/// light-cljs-648, acceptance 4: what a compilation's runtime and each task
+/// hold after their boot with either core (`--macro-core`), live bytes
+/// after a collection, and the boot times. Prints the numbers
+/// docs/real-core-design.md records under "Phase 1 results".
+#[test]
+#[ignore = "measurement: prints the boot cost of each core"]
+fn macro_core_boot_and_task_bytes() {
+    use crate::evaluator::MacroCore;
+    for core in [MacroCore::Port, MacroCore::Real] {
+        let options = EvaluatorOptions {
+            macro_core: core,
+            memory_limit: 512 << 20,
+            ..Default::default()
+        };
+        let started = std::time::Instant::now();
+        let shared = BbpRuntime::new(&options).unwrap();
+        let boot = started.elapsed();
+        shared.0.runtime.collect().unwrap();
+        let runtime = shared.0.runtime.heap_stats();
+        let started = std::time::Instant::now();
+        let evaluators = (0..8)
+            .map(|_| shared.evaluator().unwrap())
+            .collect::<Vec<_>>();
+        let tasks = started.elapsed();
+        shared.0.runtime.collect().unwrap();
+        let booted = shared.0.runtime.heap_stats();
+        eprintln!(
+            "{}: runtime boot {:.1} ms, live {} bytes (peak {}); 8 tasks {:.1} ms, {} bytes each",
+            core.name(),
+            boot.as_secs_f64() * 1000.0,
+            runtime.last_live_bytes,
+            runtime.peak_managed_bytes,
+            tasks.as_secs_f64() * 1000.0,
+            (booted.last_live_bytes - runtime.last_live_bytes) / evaluators.len(),
+        );
+        if let Some(real) = &shared.0.real_core {
+            eprintln!(
+                "  {} of {} members published; per task: {}",
+                real.published,
+                real.members,
+                real.unpublished.join(" ")
+            );
+        }
+    }
+}

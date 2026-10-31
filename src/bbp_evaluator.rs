@@ -32,6 +32,7 @@ use std::{
 
 mod catalog;
 mod namespaces;
+mod real_core;
 
 fn error(e: impl std::fmt::Display) -> EvalError {
     EvalError(format!("big-boy-pants-js: {e}"))
@@ -1132,6 +1133,12 @@ struct SharedRuntime {
     /// The namespaces its tasks created and the compiler registered, which
     /// `all-ns` and `find-ns` read (light-cljs-589).
     namespaces: Arc<Mutex<namespaces::NamespaceLog>>,
+    /// The real `cljs.core`, booted and published once for the compilation
+    /// with `--macro-core real` ([`real_core`]); none with the port.
+    real_core: Option<real_core::RealCore>,
+    /// What a task's `realCore` parameter receives: the real core's
+    /// handle, or null for the port.
+    real_core_handle: Rooted,
     #[cfg(test)]
     on_wait: Mutex<Option<WaitHook>>,
     #[cfg(test)]
@@ -1470,14 +1477,14 @@ impl BbpRuntime {
                     .into_iter()
                     .map(|name| {
                         let unit = manifest.unit(manifest.unit_named(name).unwrap());
-                        manifest.source()[unit.body_range.clone()].replace("coreCells.", "globalThis.__lightNativeRuntime.core.")
+                        manifest.source()[unit.body_range.clone()].replace("coreCells.", "globalThis.__lightNativeRuntime.port.")
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
             })
             .replace("/* CORE_KEYS */", &keys);
         big_boy_pants_js::frontend::compile_function(&format!(
-            "function nativeMacroTask(commandKind, beginKind, finishKind, readerTagsCell, rawMembersCell, stringKind) {{ {source} }}"
+            "function nativeMacroTask(commandKind, beginKind, finishKind, readerTagsCell, rawMembersCell, stringKind, realCore) {{ {source} }}"
         ))
         .map_err(error)
         }).clone()?;
@@ -1488,6 +1495,17 @@ impl BbpRuntime {
         let raw_members = runtime
             .new_atom(&runtime.root(Primitive::Null))
             .map_err(error)?;
+        let real_core = match options.macro_core {
+            crate::evaluator::MacroCore::Port => None,
+            // The compiler's own setup, as the V8 build's bootstrap units
+            // are: no macro's deadline or poll budget is charged for it.
+            crate::evaluator::MacroCore::Real => {
+                Some(control.exempt(|| real_core::boot(&runtime, &control))?)
+            }
+        };
+        let real_core_handle = real_core
+            .as_ref()
+            .map_or_else(|| runtime.root(Primitive::Null), |core| core.handle.clone());
         Ok(Self(Arc::new(SharedRuntime {
             _live: crate::compile_stats::Live::new(&crate::compile_stats::LIVE_ENGINES),
             memory_limit: options.memory_limit,
@@ -1513,6 +1531,8 @@ impl BbpRuntime {
             parked: Mutex::new(HashMap::new()),
             lanes: std::sync::OnceLock::new(),
             namespaces: Arc::default(),
+            real_core,
+            real_core_handle,
             #[cfg(test)]
             on_wait: Mutex::new(None),
             #[cfg(test)]
@@ -1669,6 +1689,16 @@ impl BbpRuntime {
             producer_replayed: c.producer_replayed.load(Ordering::Relaxed),
             producer_catalog_entries: c.producer_catalog_entries.load(Ordering::Relaxed),
             producer_nanos: c.producer_nanos.load(Ordering::Relaxed),
+            real_core: self
+                .0
+                .real_core
+                .as_ref()
+                .map(|core| crate::compile_stats::RealCoreCounts {
+                    members: core.members,
+                    published: core.published,
+                    private_boots: core.private_boots(&self.0.runtime),
+                    boot_nanos: core.boot_nanos,
+                }),
         }
     }
     /// The runtime's one published factory for unit `source`, compiled now
@@ -1923,6 +1953,7 @@ impl BbpEvaluator {
                     &self.shared.0.reader_tags,
                     &self.shared.0.raw_members,
                     &string,
+                    &self.shared.0.real_core_handle,
                 ],
             )
             .map_err(error)?;

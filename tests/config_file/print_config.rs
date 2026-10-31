@@ -954,3 +954,30 @@ fn a_watch_of_two_builds_prints_each_block_in_the_order_named() {
     assert!(alone("app").starts_with(";; build :app, dev mode, from "));
     assert_eq!(both, format!("{}\n{}", alone("app"), alone("worker")));
 }
+
+/// `:compiler-options :macro-core` and `--macro-core` (light-cljs-648), the
+/// Pants build's cljs.core, enter the same setting: printed with the file's
+/// place, or with the flag over the file.
+#[test]
+fn macro_core_prints_from_the_file_and_the_flag() {
+    if !light_cljs::evaluator::MacroCore::AVAILABLE {
+        return;
+    }
+    let file = "{:source-paths [\"src\"]\n :builds {:app {:target :esm :output-dir \"out\"\n  :modules {:main {:entries [app.main]}}\n  :compiler-options {:macro-core :real}}}}\n";
+    let (_dir, project) = project("print-config-macro-core", &[(FILE_NAME, file)]);
+    let from_file = prints(
+        &project,
+        &project,
+        &["compile", "app", "--print-config"],
+        &[],
+    );
+    assert!(from_file.contains(":macro-core :real"), "{from_file}");
+    let flag = prints(
+        &project,
+        &project,
+        &["compile", "app", "--macro-core", "port", "--print-config"],
+        &[],
+    );
+    assert!(flag.contains(":macro-core :port"), "{flag}");
+    assert!(flag.contains("--macro-core port"), "{flag}");
+}

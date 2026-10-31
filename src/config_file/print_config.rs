@@ -247,6 +247,7 @@ impl ConfigFile {
                 Setting::MacroTimeoutMs,
                 Setting::MacroMemoryLimit,
                 Setting::MacroPollBudget,
+                Setting::MacroCore,
             ]
             .into_iter()
             .filter_map(given),

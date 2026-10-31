@@ -17740,3 +17740,6 @@ mod real_core_spike;
 
 #[path = "bbp_macros/shared_profile.rs"]
 mod shared_profile;
+
+#[path = "bbp_macros/real_core.rs"]
+mod real_core;

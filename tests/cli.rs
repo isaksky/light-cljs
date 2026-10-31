@@ -27,6 +27,38 @@ fn prints_example() {
     );
 }
 
+/// `--macro-core port|real` is the Pants build's option (light-cljs-648):
+/// accepted there, an error on every other build, and a value other than
+/// `port` or `real` is an error everywhere.
+#[test]
+fn macro_core_is_the_pants_builds_option() {
+    let compile = |core: &str| {
+        Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .args(["--compile", "--text", "(+ 1 2)", "--macro-core", core])
+            .output()
+            .unwrap()
+    };
+    let output = compile("real");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if light_cljs::evaluator::MacroCore::AVAILABLE {
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(output.stdout, compile("port").stdout);
+    } else {
+        assert!(!output.status.success());
+        assert!(
+            stderr.contains("--macro-core applies to the Pants build only"),
+            "{stderr}"
+        );
+    }
+    let output = compile("both");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--macro-core takes port or real"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn reads_stdin_and_escapes_text() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_light-cljs"))

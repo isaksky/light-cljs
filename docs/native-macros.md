@@ -1982,6 +1982,22 @@ sequences, and returns nil for nil or empty supported inputs. Other input
 kinds report an unsupported-operation error. Lazy sequences are below ("Lazy
 sequences").
 
+### The real cljs.core (`--macro-core real`, light-cljs-648)
+
+`--macro-core port|real` (`:compiler-options {:macro-core ...}` in a build)
+chooses the cljs.core the Pants build's macros run on: `port` (the default)
+is the hand-written `core` table of `src/bbp_runtime.js` this document
+describes; `real` boots the real runtime's shared-heap profile once per
+compilation, publishes it, and resolves every `nativeCore$X` binding and
+`rt.core` from it, with the evaluator's compile-time members and `gensym`
+kept on the evaluator runtime. Other builds reject the option; the value is
+part of the cache identity; `--stats` prints `native.core.real` (0 or 1) and, for `real`,
+`native.core.members`, `.published`, `.per-task`, `.private-boots` and
+`.boot-ms`. `LIGHT_CLJS_MACRO_CORE=real` makes `real` the default where
+nothing else chooses (how a test binary runs whole in either mode).
+docs/real-core-design.md, "Phase 1 results", has the mechanism, the boot's
+cost and every difference between the modes.
+
 ### Native core lowering
 
 The backend selects a compile-time emission mode (part of its cache identity)
