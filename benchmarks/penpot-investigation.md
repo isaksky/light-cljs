@@ -134,6 +134,12 @@ wait diagnostics and timing counters; inspection confirms unchanged GC
 policy, marking and reclamation, with no dependency or build-input changes.
 The full-suite and performance results above are reused for that delta;
 affected heap, GC, doctest, lint and compiler-library checks are rerun.
+At the final rebased code `cef5525d`, all 85 heap tests, 158 tests across
+`automatic_gc`, `executor_gc`, `gc` and `gc_roots`, seven doctests, and
+the 464/420 mixed-feature library tests pass. Both formatters pass;
+strict Clippy retains exactly the control's ten diagnostics and the
+same diagnostic isolation passes. Subsequent commits only add these
+measurement and validation notes.
 
 ## Pacing collections by traced edges (light-cljs-674, October 31, 2026, on `916c0ecc`)
 
