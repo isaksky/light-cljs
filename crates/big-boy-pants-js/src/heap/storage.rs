@@ -808,6 +808,7 @@ impl ObjectTable {
             free,
             self.segments.len() * (size_of::<Segment>() + SEGMENT_SIZE * size_of::<Slot>())
                 + self.segments.capacity() * size_of::<Arc<Segment>>()
+                + self.charges.capacity() * size_of::<Option<super::budget::ByteReservation>>()
                 + self.free.capacity() * size_of::<u32>()
                 + directory.bytes(),
         )
@@ -1390,6 +1391,36 @@ mod tests {
         assert_eq!(heap.collect().unwrap().reclaimed, SEGMENT_SIZE + 1);
         assert_eq!(budget.used(), before);
         assert!(heap.is_live(first));
+    }
+
+    #[test]
+    fn usage_includes_charge_vector_capacity_after_sweep() {
+        let heap = Heap::default();
+        for _ in 0..SEGMENT_SIZE + 1 {
+            owned(&heap, OWNER);
+        }
+        for swept in [false, true] {
+            if swept {
+                assert_eq!(heap.collect().unwrap().reclaimed, SEGMENT_SIZE + 1);
+                assert_eq!(heap.usage().objects.total(), 0);
+            }
+            let mut expected = heap.usage();
+            let added_bytes = {
+                let mut table = lock(&heap.objects);
+                assert!(table.charges.iter().all(|charge| charge.is_none() == swept));
+                let before = table.charges.capacity();
+                assert!(before >= table.segments.len());
+                // Grow only this vector, with unused capacity, to isolate
+                // its contribution while segments are live and after their
+                // charges are released. Sweep retains its backing storage.
+                table.charges.reserve_exact(before + 1);
+                (table.charges.capacity() - before)
+                    * size_of::<Option<super::super::budget::ByteReservation>>()
+            };
+            assert!(added_bytes > 0);
+            expected.table_bytes += added_bytes;
+            assert_eq!(heap.usage(), expected);
+        }
     }
 
     /// A collection's work is its traced edges: 20,000 live vectors of the
