@@ -1309,19 +1309,49 @@ fn shared_profile_nan_occurrence_keys_use_canonical_equality() {
         const core = rt.core;
         const check = (ok, label) => { if (!ok) throw new Error(label); };
         check(!core.equal(key, key), 'NaN canonical equality');
+        const checkMap = (map, expected, nanCount, label) => {
+          const entries = [];
+          for (let s = core.seq(map); s !== null; s = core.next(s)) entries.push(core.first(s));
+          check(entries.length === expected.length && core.count(map) === entries.length, label + ' seq cardinality');
+          check(entries.map(entry => core.nth(entry, 1)).sort((a, b) => a - b).join(',') === expected.join(','), label + ' values');
+          check(entries.filter(entry => typeof key === 'object' ? core.nth(entry, 0) === key : Number.isNaN(core.nth(entry, 0))).length === nanCount, label + ' retained keys');
+        };
+        const built = core.hashMap(key, 1, key, 2, null, 3);
+        checkMap(built, [1, 2, 3], 2, 'NaN hash-map builder');
+        checkMap(core.assoc(built, key, 4), [1, 2, 3, 4], 3, 'NaN hash-map builder update');
+        checkMap(core.dissoc(built, null), [1, 2], 2, 'NaN hash-map nil removal');
+        checkMap(built, [1, 2, 3], 2, 'NaN hash-map builder persistence');
+        checkMap(core.PersistentHashMap.fromArray([key, 1, key, 2], false), [1, 2], 2, 'NaN cached array routing');
+        checkMap(core.PersistentHashMap.fromArrays([key, key], [1, 2]), [1, 2], 2, 'NaN parallel array routing');
         for (const map of [__rt.formMap(key, 1), __rt.formLiteralMap(__rt.formVector(key, 1))]) {
           check(core.get(map, key, 'missing') === 'missing', 'NaN map lookup');
           check(!core.contains(map, key), 'NaN map contains');
           const added = core.assoc(map, key, 2);
           check(core.count(added) === 2, 'NaN assoc inserts');
+          checkMap(added, [1, 2], 2, 'NaN assoc');
           check(typeof key !== 'object' || core.nth(core.first(core.seq(added)), 0) === key, 'NaN stored key identity');
           check(core.get(added, key, 'missing') === 'missing', 'NaN assoc lookup');
           check(core.count(core.dissoc(map, key)) === 1, 'NaN dissoc retains');
           check(core.count(core.assoc(added, key, 3)) === 3 && core.count(core.dissoc(added, key)) === 2, 'NaN repeated map updates');
+          checkMap(core.assoc(added, key, 3), [1, 2, 3], 3, 'NaN repeated assoc');
+          checkMap(core.dissoc(added, key), [1, 2], 2, 'NaN repeated dissoc');
           const ordinary = core.assoc(map, 'ordinary', 9);
           check(core.count(ordinary) === 2 && core.get(ordinary, key, 'missing') === 'missing', 'ordinary update retains NaN semantics');
           check(core.count(map) === 1, 'NaN map persistence');
         }
+        let promoted = core.arrayMap(key, 0, key, 1);
+        const expected = [0, 1];
+        for (let i = 2; i < 12; i++) {
+          promoted = core.assoc(promoted, 'ordinary-' + i, i);
+          expected.push(i);
+          checkMap(promoted, expected, 2, 'NaN map promotion at ' + expected.length);
+          if (expected.length === 8) {
+            check(core.assoc(promoted, 'ordinary-7', 7) === promoted, 'NaN array map assoc no-op');
+            check(core.dissoc(promoted, 'absent') === promoted, 'NaN array map dissoc no-op');
+          }
+        }
+        checkMap(core.assoc(promoted, key, 12), [...expected, 12], 3, 'NaN promoted map update');
+        checkMap(core.dissoc(promoted, 'ordinary-11'), expected.slice(0, -1), 2, 'NaN promoted map removal');
         for (const set of [__rt.formSet(key), __rt.formLiteralSet(__rt.formVector(key))]) {
           check(core.get(set, key, 'missing') === 'missing' && !core.contains(set, key), 'NaN set lookup');
           const added = core.conj(set, key);
@@ -1349,6 +1379,64 @@ fn shared_profile_nan_occurrence_keys_use_canonical_equality() {
                 assert_eq!(value.string().unwrap().to_string_lossy(), "ok");
             }
             other => panic!("NaN occurrence depth {depth}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn shared_profile_nan_occurrence_set_promotion_preserves_members() {
+    let rt = Runtime::new();
+    let check = compile_function(&format!(
+        "function check(key) {{ const rt = (\n{SHARED_RUNTIME}\n); {} }}",
+        r#"
+        const core = rt.core;
+        const check = (ok, label) => { if (!ok) throw new Error(label); };
+        const checkSet = (set, ordinary, nanCount, label) => {
+          const members = [];
+          for (let s = core.seq(set); s !== null; s = core.next(s)) members.push(core.first(s));
+          const isKey = member => typeof key === 'object' ? member === key : Number.isNaN(member);
+          check(members.length === ordinary.length + nanCount && core.count(set) === members.length, label + ' seq cardinality');
+          check(members.filter(isKey).length === nanCount, label + ' retained occurrences');
+          check(members.filter(member => !isKey(member)).sort().join(',') === ordinary.slice().sort().join(','), label + ' ordinary members');
+        };
+        const ordinary = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+        const built = core.hashSet(key, key, ...ordinary);
+        checkSet(built, ordinary, 2, 'NaN hash-set builder');
+        checkSet(core.conj(built, key), ordinary, 3, 'NaN hash-set builder update');
+        checkSet(core.disj(built, 'g'), ordinary.slice(0, -1), 2, 'NaN hash-set removal');
+        checkSet(core.disj(built, key), ordinary, 2, 'NaN hash-set absent removal');
+        checkSet(built, ordinary, 2, 'NaN hash-set builder persistence');
+        let promoted = core.hashSet(key, key);
+        checkSet(promoted, [], 2, 'NaN positional set');
+        for (let i = 0; i < ordinary.length; i++) {
+          promoted = core.conj(promoted, ordinary[i]);
+          checkSet(promoted, ordinary.slice(0, i + 1), 2, 'NaN set promotion at ' + (i + 3));
+          if (i + 3 === 8) {
+            check(core.conj(promoted, ordinary[i]) === promoted, 'NaN array set conj no-op');
+            check(core.disj(promoted, 'absent') === promoted, 'NaN array set disj no-op');
+          }
+        }
+        for (let n = 3; n <= 5; n++) {
+          promoted = core.conj(promoted, key);
+          checkSet(promoted, ordinary, n, 'NaN repeated promoted set update');
+        }
+        return 'ok';
+        "#
+    ))
+    .unwrap();
+    for depth in 0..=2 {
+        let key = rt.scope(|s| {
+            let mut key = s.primitive(Primitive::Number(f64::NAN));
+            for _ in 0..depth {
+                key = s.new_occurrence(key, Default::default()).unwrap();
+            }
+            s.persist(key)
+        });
+        match rt.spawn(&check, &[&key]).unwrap().run() {
+            Ok(RunOutcome::Complete(value)) => {
+                assert_eq!(value.string().unwrap().to_string_lossy(), "ok");
+            }
+            other => panic!("set NaN occurrence depth {depth}: {other:?}"),
         }
     }
 }

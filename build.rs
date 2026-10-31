@@ -896,7 +896,7 @@ fn shared_persistent_updates(base: &str) -> String {
         let leaf = match unit.name.as_str() {
             "assoc" => Some((
                 "    const mapSlots = publicCollectionSlots.get(value);",
-                "    if (sharedUpdates.accepts(value, [key], \"map\")) return sharedUpdates.assoc(value, key, item, pairs);\n",
+                "    if (sharedUpdates.accepts(value, [key], \"map\", true)) return sharedUpdates.assoc(value, key, item, pairs);\n",
             )),
             "dissoc" => Some((
                 "    const original = maps.get(value);",
@@ -904,7 +904,7 @@ fn shared_persistent_updates(base: &str) -> String {
             )),
             "makeSet.conj" => Some((
                 "    if (publicCollectionSlots.has(result)) {",
-                "    if (sharedUpdates.accepts(result, [item], \"set\")) return sharedUpdates.conj(result, item);\n",
+                "    if (sharedUpdates.accepts(result, [item], \"set\", true)) return sharedUpdates.conj(result, item);\n",
             )),
             "disj" => Some((
                 "    const original = sets.get(value);",

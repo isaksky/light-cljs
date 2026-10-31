@@ -456,8 +456,10 @@
   function makeMap(Type, entries, kind, comparator) {
     if (kind !== "sorted-map") {
       const ordered = Array.isArray(entries) ? entries : kindHooks.hashTraversal(entries);
+      // Inspect the traversal, but retain the canonical trie or the builder
+      // array's cached routing: rebuilding ordered can merge NaN occurrences.
       if (kind === "hash-map" && ordered.some(sharedOccurrenceNaN))
-        return sharedOwnedMap(Type, hashTrie(ordered), kind);
+        return sharedOwnedMap(Type, hashTrie(entries), kind);
       return sharedMapForm(ordered, kind);
     }
     const value = sharedOwnedMap(Type, entries, kind);
@@ -479,7 +481,8 @@
       return sharedOwnedMap(hash ? PersistentHashMapValue : PersistentArrayMapValue, hash ? hashTrie(entries) : entries, hash ? "hash-map" : "array-map");
     return mapFromEntries(entries, hash);
   }
-  //@unit sharedUpdates requires: assoc, preserveMeta, sharedFormKind, sharedFormOf, sharedScalar
+  //@unit sharedUpdates requires: assoc, preserveMeta, sharedFormKind, sharedFormOf,
+  //@ sharedMapEntries, sharedOccurrenceNaN, sharedScalar, sharedSetMembers
   // Native key operations are safe for primitive and canonical named keys.
   // NaN, composite and host-backed keys retain the canonical runtime path: a
   // runtime list, Date or user IHash/IEquiv can be equal to a form key while
@@ -491,7 +494,16 @@
       const scalar = sharedScalar(value), kind = sharedFormKind(value);
       return !Number.isNaN(scalar) && (scalar == null || typeof scalar !== "object" && typeof scalar !== "function" || kind === "keyword" || kind === "symbol");
     },
-    accepts(value, keys, kind) { return sharedFormKind(value) === kind && !__rt.formHasHostKeys(sharedFormOf(value)) && keys.every(sharedUpdates.key); },
+    accepts(value, keys, kind, mayPromote = false) {
+      if (sharedFormKind(value) !== kind) return false;
+      const form = sharedFormOf(value);
+      // A safe probe can still promote an array map/set and reinsert its
+      // existing NaN occurrences under the engine's identity shortcut.
+      return !__rt.formHasHostKeys(form) && keys.every(sharedUpdates.key) &&
+        (!mayPromote || !__rt.formIsArrayMap(form) || __rt.formCount(form) < 8 ||
+          keys.every(key => __rt.formGet(form, key, sharedUpdates) !== sharedUpdates) ||
+          !(kind === "map" ? sharedMapEntries(form) : sharedSetMembers(form)).some(sharedOccurrenceNaN));
+    },
     assoc(value, key, item, pairs) {
       const form = sharedFormOf(value), updated = __rt.formAssoc(form, key, item);
       let result = updated === form ? value : preserveMeta(value, updated);
@@ -536,8 +548,9 @@
   function makeSet(Type, entries, kind, comparator) {
     if (kind !== "sorted-set") {
       const ordered = Array.isArray(entries) ? entries : kindHooks.hashTraversal(entries);
+      // As with maps, the traversal must not replace the canonical routing.
       if (kind === "hash-map" && ordered.some(sharedOccurrenceNaN))
-        return sharedOwnedSet(Type, hashTrie(ordered), kind);
+        return sharedOwnedSet(Type, hashTrie(entries), kind);
       if (kind === "array-map") {
         let members = __rt.formVector();
         for (let i = 0; i < ordered.length; i++) members = __rt.formConj(members, ordered[i].key);
