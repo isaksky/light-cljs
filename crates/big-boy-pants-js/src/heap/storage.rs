@@ -1426,10 +1426,10 @@ mod tests {
     /// A collection's work is its traced edges: 20,000 live vectors of the
     /// same ten leaves trace about ten times as many edges as there are
     /// live objects, and the next automatic collection waits as many
-    /// allocations as the edge checks and live object visits together
-    /// (light-cljs-674/695).
+    /// allocations as were traced, not just as many as are live
+    /// (light-cljs-674).
     #[test]
-    fn the_next_automatic_collection_waits_for_object_visits_and_traced_edges() {
+    fn the_next_automatic_collection_waits_as_many_allocations_as_were_traced() {
         let heap = Arc::new(Heap::default());
         let leaves: Vec<Value> = (0..10)
             .map(|_| Value::Object(owned(&heap, OWNER)))
@@ -1445,7 +1445,7 @@ mod tests {
         assert!(stats.traced >= 1 + 20_000 + 200_000, "{stats:?}");
         assert_eq!(
             heap.next_collection.load(Ordering::Relaxed),
-            stats.traced + stats.live,
+            stats.traced,
             "{stats:?}"
         );
         assert_eq!(heap.stats().traced_edges, stats.traced as u64);

@@ -543,15 +543,17 @@ impl Default for HeapPolicy {
 impl HeapPolicy {
     /// Allocations until the next automatic collection, after one that kept
     /// `live` objects and traced `traced` edges. A collection's cost is its
-    /// traced edges plus its live object visits: an edge checks a target's
-    /// slot, and the first visit also traces its body. Waiting that much
-    /// allocation work keeps both costs proportional to allocation, rather
-    /// than accounting only for edges (light-cljs-674/695).
+    /// traced edges (each live object is reached at least once, and an
+    /// object with many fields many times), so waiting as many allocations
+    /// as it traced keeps collection work proportional to allocation; waiting
+    /// only as many as there are live objects collected about twice as often
+    /// on compiler workloads (light-cljs-664/674).
     fn threshold(self, live: usize, traced: usize) -> usize {
         let growth = self
             .allocation_threshold
             .unwrap_or(usize::MAX)
-            .max(traced.saturating_add(live));
+            .max(live)
+            .max(traced);
         growth
             .min(
                 self.hard_limit_objects
