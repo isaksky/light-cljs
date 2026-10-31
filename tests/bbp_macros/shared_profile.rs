@@ -998,10 +998,13 @@ fn shared_profile_fallback_diagnostics_are_bounded() {
 /// first used after it. Measured on 2026-10-31 (`Runtime::new`, this
 /// boot): peak 53 MB of managed bytes, 50 MB live after the boot; without
 /// the seal walk 46 MB peak and 39 MB live; under a hard limit of 32 MiB or
-/// less the boot fails with `HeapLimit`. The budget is open until that
-/// footprint is understood (light-cljs-666 hand-back).
+/// less the boot fails with `HeapLimit`. Re-measured after the third
+/// attempt under a 256 MiB limit: 69 MB peak over 10 collections, 5.4 MB
+/// live after a collection at the end of the boot, so the peak is the
+/// boot's garbage. The budget is open until that garbage is understood
+/// (light-cljs-666 hand-back).
 #[test]
-#[ignore = "the shared-heap profile's boot peaks at 53 MB of managed bytes; the 4 MiB budget is open (light-cljs-666)"]
+#[ignore = "the shared-heap profile's boot allocates 69 MB for 5.4 MB live; the 4 MiB budget is open (light-cljs-666)"]
 fn shared_profile_boots_with_four_mib_heap() {
     let rt = Runtime::with_heap_policy(
         Default::default(),

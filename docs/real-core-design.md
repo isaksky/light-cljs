@@ -875,8 +875,14 @@ the boot's memory below.
 The boot's memory (`shared_profile_boots_with_four_mib_heap`, ignored with
 the numbers): peak 53 MB of managed bytes and 50 MB live after the boot
 under `Runtime::new`; 46 MB peak and 39 MB live without the seal walk; the
-boot fails with `HeapLimit` under a hard limit of 32 MiB or less. The 4 MiB
-budget of acceptance 4 is open until that footprint is understood (the
+boot fails with `HeapLimit` under a hard limit of 32 MiB or less.
+Re-measured after the third attempt under a 256 MiB hard limit (the
+engine accounts bytes only under a limit): 69 MB peak with 10
+collections during the boot, and 5.4 MB live after a collection at the
+end of it, so the live profile is near the budget and the peak is the
+boot's garbage (the memos, snapshots and seal walk allocate and drop),
+which a limit of 4 MiB cannot absorb between collections. The 4 MiB
+budget of acceptance 4 is open until that garbage is understood (the
 Pants build's port boots in about 1.5 MB).
 
 Not done here, carried by light-cljs-666: the remaining causes above; the
