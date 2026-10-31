@@ -1532,7 +1532,9 @@ mod tests {
             };
             let body = std::mem::size_of::<ObjectData>();
             assert_eq!(object().boxed_bytes(), body);
-            let charge = std::mem::size_of::<HeapObject>() + body;
+            // The inline body is already admitted with its live segment;
+            // this allocation adds only its specialized payload box.
+            let charge = body;
 
             heap.byte_budget().set_limit(baseline + charge - 1);
             assert!(heap.alloc(object()).is_none());

@@ -403,10 +403,15 @@ mod tests {
         let mut owned = OwnedBuilders::default();
         let builder = new_builder(&heap, owner, BuilderKind::Vector, &mut owned).unwrap();
         conj(&heap, owner, builder.clone(), Value::Number(42.0)).unwrap();
+        // The result's inline slot body is already admitted with its
+        // segment. Exhaust headroom to deny the new vector trie instead.
+        let before = heap.byte_budget().used();
+        heap.byte_budget().set_limit(before);
         assert_eq!(
             freeze(&heap, owner, builder.clone()),
             Err(BuildFault::Collection(CollectionError::HeapLimit))
         );
+        assert_eq!(heap.byte_budget().used(), before);
         with_builder(&heap, builder, None, |builder| {
             let Draft::Vector(items, _) = builder.draft(owner)? else {
                 panic!("vector");
