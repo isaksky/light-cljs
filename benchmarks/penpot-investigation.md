@@ -117,6 +117,24 @@ bodies were admitted with their segment. Their denial, intact contents
 and exact-refund assertions remain; no 4 MiB, aggregate-budget or
 namespace-chain bound changed.
 
+Compiler feature checks at `4c2d61ca` use the pinned ClojureScript source
+and `LIGHT_CLJS_V8_CACHE=require`, serialized with 3 test threads (8 for
+nextest):
+
+| Build | Checks | Result |
+| --- | --- | --- |
+| V8 build | Full nextest suite | 2,168 pass, the known `playground_crate_checks_for_wasm32` workspace failure, 109 skipped |
+| Pants build | Full nextest suite | 2,098 pass, exactly the 142 known unsupported-port/bootstrap failures, 116 skipped |
+| Pants + QuickJS reference | Library and `bbp_macros` | 420 + 337 pass, 4 + 9 ignored |
+| V8 + Pants | Library and `bbp_macros` | 464 + 337 pass, 5 + 9 ignored |
+
+The full Pants run passes the namespace macro-chain and aggregate-budget
+checks with their original bounds. The final rebase onto `6fded635` adds
+wait diagnostics and timing counters; inspection confirms unchanged GC
+policy, marking and reclamation, with no dependency or build-input changes.
+The full-suite and performance results above are reused for that delta;
+affected heap, GC, doctest, lint and compiler-library checks are rerun.
+
 ## Pacing collections by traced edges (light-cljs-674, October 31, 2026, on `916c0ecc`)
 
 **Summary.** Landed: the next automatic collection waits as many
