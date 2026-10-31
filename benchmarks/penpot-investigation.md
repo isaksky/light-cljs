@@ -30,6 +30,59 @@ not promoted; [phase113](results/compiler-2026-10-16/penpot-phase113/README.md)
 records the controlled comparison. Further large gains are not established by
 the current profiling evidence.
 
+## Cutting marking and freeing work (light-cljs-695, October 31, 2026)
+
+The Pants build's garbage collection on Penpot `app.main` at 1 thread is
+**7.52%** of the main thread's samples (4,097 of 54,481), down from 11.1%
+at the starting `5476e21b`. Collections fall from 607 to 389; traced edges
+fall from 37.36 M to 23.57 M. The final profile's peak memory is 1.260 GB.
+Every Penpot run still stops at `core.MapEntry` in instaparse's grammar
+macro: these measurements cover that same build up to its known failure.
+
+The engine now stores bodies inside stable slots, avoiding an outer
+allocation and free for each object. Sweep compares four-word live and
+mark bitmaps per segment and records garbage in segment bitmaps. The
+collecting thread destroys it in place after the pause and returns all
+reusable slots under one allocation lock. Pending slots cannot be reused
+or lose their byte charge before destruction; unwind cleanup finishes
+the remaining segments. This is synchronous freeing on the collecting
+thread. A thread-bound garbage batch prevents moving it to another thread.
+
+Primitive-only immutable code subtrees need no constant-pool walk. Marked
+object and property-key edges are filtered before the work stack, but
+every checked edge still counts in `traced-edges`. Collection growth now
+allows the checked edges plus fifteen sixteenths of the last live count,
+amortizing first body visits while retaining the byte-pressure trigger
+and object-headroom cap. No workload names, port-specific branches or
+memory-limit exceptions are involved.
+
+Release builds use thin LTO, one codegen unit, Rust 1.99.1 on macOS aarch64,
+and `CARGO_BUILD_JOBS=4`. The command is the one in "Method and
+reproduction" below. Peak memory is `/usr/bin/time -l`'s maximum resident
+set size; GB means 1e9 bytes. Samples use `/usr/bin/sample`, 1 ms, starting
+one second into the build, and `sample-inclusive.bb --buckets
+"gc=Heap>::mark_and_sweep;interp=execute_budgeted"` on thread 0. The final
+engine changes are based on `e7a3bf03`; fresh controls use `5d5021bb` at 1
+thread and `e7a3bf03` at 4 threads. The latter includes the coordinator's
+scheduling changes; none changes the engine's collection policy. Other
+workers remained active, so loads and all three clean timings are reported.
+
+Measured and removed: per-segment marked-object counts with epoch marks
+(11.3% GC against 10.9% for code pruning alone, with extra bytes);
+marking on enqueue with queued frozen-state snapshots (8.3% against 8.1%
+for the simpler filtered stack); and the full live-count pacing allowance
+before the final storage changes (8.3% GC, but 1.359 GB peak memory).
+After the storage changes the full allowance reached 7.6% but still used
+1.313 GB, above the prompt's tighter +10% peak-memory limit. Returning
+slots one segment at a time also contended with resumed allocators; the
+final version returns them under one lock and caches reusable bitmaps to
+avoid another read of cold slots.
+
+The seed-42 800k project builds at 4 threads with the unchanged 2 GiB
+aggregate memory budget and prints `189716` for `42 3`, matching the
+Babashka reference. Its output retains SHA-256
+`6741d7c256b43ab426bbba86fee00915ca7bb619d62880b168ede37037743994`.
+
 ## Pacing collections by traced edges (light-cljs-674, October 31, 2026, on `916c0ecc`)
 
 **Summary.** Landed: the next automatic collection waits as many
