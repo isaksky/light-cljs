@@ -573,6 +573,13 @@ fn function_prototype_miss(key: &Key, access: Access) -> Fault {
 
 /// Writes: the owner task only.
 fn check_write(object: &OrdinaryObject, task: TaskId) -> Result<(), Fault> {
+    // Sealed for sharing (light-cljs-646, `crate::vm::seal`): every change
+    // throws, before sloppy-mode suppression of descriptor rejections.
+    if object.is_sealed() {
+        return Err(Fault::TypeError(
+            "cannot change a sealed object: it is shared by all tasks and immutable".into(),
+        ));
+    }
     // Internal template arrays are deeply immutable. Let their frozen
     // descriptors reject writes/defines/deletes with normal JS semantics.
     // Plain realm intrinsics are rejected separately before this check.

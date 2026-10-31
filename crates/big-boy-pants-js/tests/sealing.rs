@@ -227,3 +227,126 @@ fn classes_and_concise_methods_publish_once_sealed() {
         [ValueView::Number(42.0), ValueView::Number(42.0)]
     );
 }
+
+/// A clone made by `fnApplyNull` or `fnWithApplyTo` keeps its original's
+/// property record. Once the original is published, that record is known
+/// shareable, and publishing the clone must accept it instead of taking it
+/// for a record attached during the walk (which retried forever).
+#[test]
+fn publishing_clones_with_already_shared_property_records_terminates() {
+    let rt = std::sync::Arc::new(Runtime::new());
+    let booted = boot(
+        &rt,
+        "const f = () => 1; f.x = 1; __rt.seal(f); \
+         return __rt.formVector(f, __rt.fnApplyNull(f), __rt.fnWithApplyTo(f, xs => 2));",
+    );
+    let [f, null_clone, apply_clone] = rt.scope(|s| {
+        let v = s.local(&booted).unwrap();
+        [0, 1, 2].map(|i| s.persist(s.form_nth(v, i).unwrap()))
+    });
+    rt.publish(&f).unwrap();
+    for clone in [null_clone, apply_clone] {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let rt = rt.clone();
+        thread::spawn(move || {
+            tx.send(rt.publish(&clone).map_err(|e| e.to_string()))
+                .unwrap()
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(30))
+            .expect("publication of the clone did not terminate")
+            .unwrap();
+    }
+}
+
+/// A sealed array rejects every change with a `TypeError`, in the owner
+/// and in other tasks, in sloppy and strict code: indexed, named and
+/// `length` writes, deletion, `push` and `Object.defineProperty`.
+#[test]
+fn sealed_array_mutations_throw_in_sloppy_and_strict_tasks() {
+    let rt = Runtime::new();
+    let writes = "[a => { a[0] = 2; }, a => { a[5] = 2; }, a => { a.x = 1; }, \
+                  a => { a.length = 0; }, a => delete a[0], a => a.push(3), \
+                  a => Object.defineProperty(a, 0, {value: 9})]\
+                  .map(w => { try { w(a); return 'changed'; } \
+                              catch (e) { return e instanceof TypeError; } })\
+                  .concat([a[0], a.length]).join(' ')";
+    let expected = "true true true true true true true 1 1";
+    for strict in ["", "'use strict';"] {
+        let owner = boot(
+            &rt,
+            &format!("{strict} const a = __rt.seal([1]); return {writes};"),
+        );
+        assert_eq!(
+            owner.string().unwrap().to_string_lossy(),
+            expected,
+            "{strict}"
+        );
+        let a = boot(&rt, "return __rt.seal([1]);");
+        rt.publish(&a).unwrap();
+        let foreign = run(
+            &rt,
+            &format!("function probe(a) {{ {strict} return {writes}; }}"),
+            &[&a],
+        )
+        .unwrap();
+        assert_eq!(
+            foreign.string().unwrap().to_string_lossy(),
+            expected,
+            "{strict}"
+        );
+    }
+}
+
+/// Sealing is shallow: a sealed object, array, function record, sealed
+/// binding or fixed binding that still holds task-owned state is rejected
+/// by publication and by an atom install, at the unsealed object; sealing
+/// that object too makes the graph publish.
+#[test]
+fn shallow_seals_preserve_transitive_publication_checks() {
+    let rt = Runtime::new();
+    for (holder, rest) in [
+        (
+            "const child = {}; const v = __rt.seal({child});",
+            "__rt.seal(child);",
+        ),
+        (
+            "const child = {}; const v = __rt.seal([child]);",
+            "__rt.seal(child);",
+        ),
+        (
+            "const child = {}; const v = () => 1; v.child = child; __rt.seal(v);",
+            "__rt.seal(child);",
+        ),
+        (
+            "const child = {}; let c = 0; c = child; const v = () => c; __rt.sealBindings(v);",
+            "__rt.seal(child);",
+        ),
+        (
+            "const v = () => child; const child = {};",
+            "__rt.seal(child);",
+        ),
+    ] {
+        let install = |v: &Rooted| {
+            run(
+                &rt,
+                "function install(v) { return __rt.atomLoad(__rt.atomNew(v)) === v; }",
+                &[v],
+            )
+        };
+        let v = boot(&rt, &format!("{holder} return v;"));
+        let error = rejection(&rt, &v);
+        assert!(
+            error.contains("is a task-owned object"),
+            "{holder}: {error}"
+        );
+        let refused = install(&v).unwrap_err();
+        assert!(refused.contains("cannot publish"), "{holder}: {refused}");
+        let v = boot(&rt, &format!("{holder} {rest} return v;"));
+        rt.publish(&v).unwrap_or_else(|e| panic!("{holder}: {e}"));
+        assert_eq!(
+            install(&v).unwrap().view(),
+            ValueView::Bool(true),
+            "{holder}"
+        );
+    }
+}

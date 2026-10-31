@@ -756,7 +756,7 @@ fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(),
     // (module docs, "Functions with own properties"). Each function gains a
     // record at most once, so this ends.
     loop {
-        let (proven, lazies, fields) = walk(heap, root, expanded)?;
+        let (proven, lazies, fields, safe) = walk(heap, root, expanded)?;
         // A lazy sequence is marked shared under its lock against the state
         // the walk read; one realized since is read again (light-cljs-479,
         // `crate::collections::lazy`, "Sharing"). Each is realized at most
@@ -770,10 +770,12 @@ fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(),
         {
             continue;
         }
-        // A record the walk expanded is a sealed one it proved
-        // (light-cljs-646, `crate::vm::seal`); any other was attached since.
-        let walked: HashSet<ObjectId> = proven.iter().copied().collect();
-        let gained = |record: Option<ObjectId>| record.is_some_and(|r| !walked.contains(&r));
+        // A record the walk proved safe (a sealed one it expanded, or one
+        // already known shareable, which a clone made by `fnApplyNull` or
+        // `fnWithApplyTo` shares with its published original; light-cljs-646,
+        // `crate::vm::seal`) keeps the function shareable; any other record
+        // was attached since the walk read the function.
+        let gained = |record: Option<ObjectId>| record.is_some_and(|r| !safe.contains(&r));
         let gained_properties = |o: &HeapObject| match o {
             HeapObject::Function(f) => gained(f.properties),
             HeapObject::BoundFunction(f) => gained(f.properties),
@@ -790,12 +792,13 @@ type LazySeen = Vec<(Arc<crate::collections::lazy::LazyCell>, bool)>;
 type FieldsSeen = Vec<(Arc<crate::collections::mutable_fields::MutableFields>, u64)>;
 
 /// One breadth-first walk of [`check`] from `root`: the persistent objects
-/// it expanded and the lazy cells among them, or the rejection.
+/// it expanded, the lazy cells among them, and every object it found safe
+/// (expanded, known shareable or a concurrent reference), or the rejection.
 fn walk(
     heap: &Heap,
     root: ObjectId,
     expanded: &mut usize,
-) -> Result<(Vec<ObjectId>, LazySeen, FieldsSeen), PublishError> {
+) -> Result<(Vec<ObjectId>, LazySeen, FieldsSeen, HashSet<ObjectId>), PublishError> {
     let mut lazies = Vec::new();
     let mut fields = Vec::new();
     // Each discovered object maps to the step that first reached it.
@@ -837,7 +840,9 @@ fn walk(
             }
         }
     }
-    Ok((proven, lazies, fields))
+    // Every object discovered was dequeued and none was rejected.
+    let safe = parents.into_keys().collect();
+    Ok((proven, lazies, fields, safe))
 }
 
 /// How [`into_properties`] reaches a child: an array element or a named
@@ -1297,7 +1302,7 @@ mod tests {
             assert!(!known(&heap, &holder));
 
             // The walk reads `f` without a record ...
-            let (proven, _, _) = walk(&heap, id(&holder), &mut 0).unwrap();
+            let (proven, _, _, _) = walk(&heap, id(&holder), &mut 0).unwrap();
             assert_eq!(proven.len(), if bound { 4 } else { 2 });
             // ... then its owner attaches one ...
             let record = plain(&heap);
@@ -1413,7 +1418,7 @@ mod tests {
             let g = function();
             let holder = coll::new_vector(&heap, std::slice::from_ref(&g)).unwrap();
             let record = id(&plain(&heap));
-            let (proven, _, _) = walk(&heap, id(&holder), &mut 0).unwrap();
+            let (proven, _, _, _) = walk(&heap, id(&holder), &mut 0).unwrap();
             let (inside_tx, inside_rx) = mpsc::channel();
             let (go_tx, go_rx) = mpsc::channel::<()>();
             let attached = std::thread::scope(|s| {

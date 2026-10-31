@@ -517,6 +517,8 @@ pub(crate) struct OrdinaryObject {
     owner: Option<TaskId>,
     /// A realm intrinsic (module docs): ownerless, shared and immutable.
     intrinsic: bool,
+    /// Sealed for sharing ([`OrdinaryObject::seal`]): every change throws.
+    sealed: bool,
     prototype: Option<ObjectId>,
     extensible: bool,
     entries: Vec<(PropertyKey, Property)>,
@@ -697,6 +699,7 @@ impl OrdinaryObject {
             charged_entries: 0,
             owner,
             intrinsic: false,
+            sealed: false,
             prototype: None,
             extensible: true,
             entries: Vec::new(),
@@ -730,6 +733,7 @@ impl OrdinaryObject {
         (!internal).then(|| OrdinaryObject {
             owner: self.owner,
             intrinsic: self.intrinsic,
+            sealed: self.sealed,
             prototype: self.prototype,
             extensible: self.extensible,
             entries: self.entries.clone(),
@@ -800,8 +804,16 @@ impl OrdinaryObject {
         }
         self.freeze();
         self.intrinsic = true;
+        self.sealed = true;
         self.owner = None;
         true
+    }
+
+    /// True for an object sealed for sharing ([`OrdinaryObject::seal`]):
+    /// unlike an internal template array, a change to it throws a
+    /// `TypeError` in every task, also in sloppy code.
+    pub(crate) fn is_sealed(&self) -> bool {
+        self.sealed
     }
 
     /// Initialize a wrapper before publishing its identity to the heap.
