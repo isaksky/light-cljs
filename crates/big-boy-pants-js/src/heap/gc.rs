@@ -271,6 +271,22 @@ struct Marks {
     symbols: HashSet<u64, IdentityBuild>,
 }
 
+#[inline]
+fn enqueue(
+    objects: &super::ObjectTable,
+    grey: &mut Vec<TraceEdge>,
+    traced: &mut usize,
+    edge: TraceEdge,
+) {
+    *traced += 1;
+    if let TraceEdge::Object(id) = edge
+        && objects.marked_slot(id)
+    {
+        return;
+    }
+    grey.push(edge);
+}
+
 impl Marks {
     /// Mark a non-object edge; false if it was already marked.
     fn mark_other(&mut self, edge: TraceEdge) -> bool {
@@ -1396,18 +1412,17 @@ impl Heap {
         // retired atom box is unreachable: release them after the pause
         // rather than at the atom's next write (`crate::atom`, reclamation).
         let mut retired = Vec::new();
-        // Every edge through the grey stack is traced work: roots, strong
-        // edges, and table values marked at once or when their key is.
-        let mut traced = 0;
+        // Count every reported edge check, including redundant marked edges
+        // filtered before the grey stack, and values awakened by their key.
+        let mut traced = root_count;
         while let Some(edge) = grey.pop() {
-            traced += 1;
             match edge {
                 TraceEdge::Object(id) => {
                     // One slot visit marks, traces and discovers the
                     // object's conditional storage.
                     if !objects.mark(
                         id,
-                        &mut |child| grey.push(child),
+                        &mut |child| enqueue(&objects, &mut grey, &mut traced, child),
                         &mut discovery,
                         &mut retired,
                     ) {
@@ -1420,7 +1435,9 @@ impl Heap {
                     if !discovery.entries.is_empty() {
                         for (key, value) in discovery.entries.drain(..) {
                             if marks.contains(&objects, key) {
-                                value.trace(&mut |child| grey.push(child));
+                                value.trace(&mut |child| {
+                                    enqueue(&objects, &mut grey, &mut traced, child)
+                                });
                             } else {
                                 pending.entry(key).or_default().push(value);
                             }
@@ -1436,7 +1453,7 @@ impl Heap {
             if !pending.is_empty()
                 && let Some(values) = pending.remove(&edge)
             {
-                values.trace(&mut |child| grey.push(child));
+                values.trace(&mut |child| enqueue(&objects, &mut grey, &mut traced, child));
             }
         }
         drop(code_marking);

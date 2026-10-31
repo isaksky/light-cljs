@@ -722,6 +722,18 @@ impl ObjectTable {
         })
     }
 
+    /// A marked occupant makes any further edge to this slot redundant.
+    /// This is only an enqueue shortcut: conditional-key liveness still
+    /// requires the generation check in `is_marked`.
+    pub(super) fn marked_slot(&self, id: ObjectId) -> bool {
+        let offset = id.index as usize % SEGMENT_SIZE;
+        self.segments
+            .get(id.index as usize / SEGMENT_SIZE)
+            .is_some_and(|segment| {
+                segment.marked[offset / 64].load(Ordering::Relaxed) & (1u64 << (offset % 64)) != 0
+            })
+    }
+
     /// Run the collector's conditional pass over a live object. Frozen kinds
     /// have no conditional storage (rule 2), so they are skipped.
     pub(super) fn trace_conditional(&self, id: ObjectId, visit: &mut dyn gc::ConditionalVisitor) {
