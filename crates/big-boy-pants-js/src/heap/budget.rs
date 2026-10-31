@@ -151,6 +151,15 @@ impl ByteBudget {
         Some(reservation)
     }
 
+    /// Try admitting storage while the caller still has allocation fallbacks.
+    /// A failed probe leaves collection pressure and starvation unchanged;
+    /// use [`Self::reserve`] once failure means the allocation is denied.
+    pub(crate) fn try_reserve(self: &Arc<Self>, bytes: usize) -> Option<ByteReservation> {
+        let reservation = self.try_reserve_credit(bytes)?;
+        reservation.allocated();
+        Some(reservation)
+    }
+
     /// [`Self::reserve`] for a credit: bytes held against the limit for
     /// storage that may be allocated later, not allocated now. A credit is
     /// not allocation volume, so it does not bring the next collection
@@ -160,6 +169,18 @@ impl ByteBudget {
     /// counting them paced a collection of the whole heap every half
     /// headroom of credits (light-cljs-635).
     pub(crate) fn reserve_credit(self: &Arc<Self>, bytes: usize) -> Option<ByteReservation> {
+        self.try_reserve_credit(bytes).or_else(|| {
+            // A denial may be caused by garbage: request a collection at
+            // the next safe boundary, so a handler or the next task can
+            // proceed after it. There is no last-resort collection at the
+            // allocation itself, which cannot park.
+            self.pressure.store(true, Ordering::Relaxed);
+            self.starved.store(true, Ordering::Relaxed);
+            None
+        })
+    }
+
+    fn try_reserve_credit(self: &Arc<Self>, bytes: usize) -> Option<ByteReservation> {
         // Unconfigured runtimes do not pay for an atomic counter or an Arc
         // clone on each payload allocation.
         let Some(limit) = &self.limit else {
@@ -168,15 +189,7 @@ impl ByteBudget {
         let limit = limit.load(Ordering::Relaxed);
         let mut used = self.used.load(Ordering::Relaxed);
         loop {
-            let Some(next) = used.checked_add(bytes).filter(|&next| next <= limit) else {
-                // A denial may be caused by garbage: request a collection at
-                // the next safe boundary, so a handler or the next task can
-                // proceed after it. There is no last-resort collection at the
-                // allocation itself, which cannot park.
-                self.pressure.store(true, Ordering::Relaxed);
-                self.starved.store(true, Ordering::Relaxed);
-                return None;
-            };
+            let next = used.checked_add(bytes).filter(|&next| next <= limit)?;
             match self
                 .used
                 .compare_exchange_weak(used, next, Ordering::Relaxed, Ordering::Relaxed)
@@ -324,6 +337,38 @@ impl Drop for ByteReservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_reservation_probes_preserve_collection_flags() {
+        // Exercise both a limit denial and checked-add overflow.
+        for limit in [1000, usize::MAX] {
+            let budget = ByteBudget::new(Some(limit));
+            let held = budget.try_reserve(limit).unwrap();
+            assert_eq!(budget.used(), limit);
+            assert_eq!(budget.peak(), limit);
+            assert_eq!(budget.volume(), limit);
+            budget.collection_finished(budget.collection_started());
+            assert!(!budget.starved());
+            assert!(!budget.collection_due());
+
+            assert!(budget.try_reserve(1).is_none());
+            assert!(!budget.starved());
+            assert!(!budget.collection_due());
+            assert_eq!(budget.used(), limit);
+            assert_eq!(budget.peak(), limit);
+            assert_eq!(budget.volume(), limit);
+
+            // Exhausting all alternatives must still request collection.
+            assert!(budget.reserve(1).is_none());
+            assert!(budget.starved());
+            assert!(budget.collection_due());
+            assert!(budget.try_reserve(1).is_none());
+            assert!(budget.starved());
+            assert!(budget.collection_due());
+            drop(held);
+            assert_eq!(budget.used(), 0);
+        }
+    }
 
     #[test]
     fn split_moves_charge_between_owners() {

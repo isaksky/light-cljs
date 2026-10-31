@@ -483,6 +483,9 @@ pub(super) struct ObjectTable {
     charges: Vec<Option<super::budget::ByteReservation>>,
     free: Vec<u32>,
     high_water: usize,
+    /// Pause a recharge probe while another worker consumes its headroom.
+    #[cfg(test)]
+    before_recharge: Option<Arc<std::sync::Barrier>>,
 }
 
 impl ObjectTable {
@@ -493,14 +496,12 @@ impl ObjectTable {
         if self.charges[index].is_some() {
             return true;
         }
-        let bytes = segment_bytes();
-        let fits = budget.limit().is_none_or(|limit| {
-            budget
-                .used()
-                .checked_add(bytes)
-                .is_some_and(|total| total <= limit)
-        });
-        let Some(reservation) = fits.then(|| budget.reserve(bytes)).flatten() else {
+        #[cfg(test)]
+        if let Some(barrier) = self.before_recharge.take() {
+            barrier.wait();
+            barrier.wait();
+        }
+        let Some(reservation) = budget.try_reserve(segment_bytes()) else {
             return false;
         };
         self.charges[index] = Some(reservation);
@@ -1216,6 +1217,84 @@ mod tests {
         assert_eq!(id.index as usize / SEGMENT_SIZE, 1);
         assert!(!budget.take_denial(), "a successful fallback left a denial");
         assert!(heap.is_live(survivor));
+    }
+
+    #[test]
+    fn recharge_race_falls_back_without_marking_heap_starved() {
+        let heap = Arc::new(Heap::with_policy(super::super::HeapPolicy {
+            hard_limit_bytes: Some(64 << 20),
+            allocation_threshold: None,
+            ..Default::default()
+        }));
+        let budget = heap.byte_budget();
+        let objects: Vec<ObjectId> = (0..2 * SEGMENT_SIZE).map(|_| owned(&heap, OWNER)).collect();
+        let survivor = objects[SEGMENT_SIZE + 1];
+        let _survivor = Rooted::new(&heap, Value::Object(survivor));
+        assert_eq!(heap.collect().unwrap().reclaimed, 2 * SEGMENT_SIZE - 1);
+        budget.set_limit(budget.used() + 2 * segment_bytes());
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        lock(&heap.objects).before_recharge = Some(barrier.clone());
+        let _payload = std::thread::scope(|threads| {
+            let worker = threads.spawn(|| {
+                // The allocating thread is about to recharge segment 0
+                // and holds the table lock. Payload admission needs no table
+                // lock and consumes its headroom before the recharge CAS.
+                barrier.wait();
+                let bytes = budget.limit().unwrap() - budget.used() - segment_bytes() / 4;
+                let payload = budget.reserve(bytes).expect("payload fits before recharge");
+                // Account for the payload's volume before testing whether
+                // the failed probe itself requests another collection.
+                budget.collection_finished(budget.collection_started());
+                barrier.wait();
+                payload
+            });
+            let id = heap
+                .alloc(HeapObject::Plain(OrdinaryObject::new(&heap, Some(OWNER))))
+                .expect("the charged segment has free slots");
+            let payload = worker.join().unwrap();
+            assert_eq!(id.index as usize / SEGMENT_SIZE, 1);
+            assert!(!budget.take_denial(), "a successful fallback left a denial");
+            assert!(
+                !budget.starved(),
+                "a failed recharge probe starved the heap"
+            );
+            assert!(
+                !budget.collection_due(),
+                "a failed recharge probe set pressure"
+            );
+            assert!(heap.is_live(survivor));
+
+            // With less than an eighth free, a real denial would remain
+            // starved even after collection and trigger every later slice.
+            heap.collect().unwrap();
+            assert!(budget.limit().unwrap() - budget.used() < budget.limit().unwrap() / 8);
+            assert!(!budget.starved());
+            assert!(!budget.collection_due());
+            payload
+        });
+    }
+
+    #[test]
+    fn failed_recharge_without_a_fallback_still_marks_heap_starved() {
+        let heap = Arc::new(Heap::with_policy(super::super::HeapPolicy {
+            hard_limit_bytes: Some(64 << 20),
+            allocation_threshold: None,
+            ..Default::default()
+        }));
+        let budget = heap.byte_budget();
+        owned(&heap, OWNER);
+        assert_eq!(heap.collect().unwrap().reclaimed, 1);
+        budget.set_limit(budget.used() + segment_bytes() / 4);
+        assert!(!budget.starved());
+        assert!(!budget.collection_due());
+        assert!(
+            heap.alloc(HeapObject::Plain(OrdinaryObject::new(&heap, Some(OWNER))))
+                .is_none()
+        );
+        assert!(budget.take_denial());
+        assert!(budget.starved());
+        assert!(budget.collection_due());
     }
 
     /// The same, when the charged segment's room is slots never issued
