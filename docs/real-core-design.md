@@ -729,7 +729,9 @@ The pieces, all in the tree:
   pairs), and `typeNames`, because a private field on a prototype or on a
   type's function (`Loadable`'s, installed while booting) keeps the engine
   from sealing it, and an unsealed `Loadable` stood behind every path
-  through `kindHooks.isLoadable`. `ClassBrand`'s "some class is branded"
+  through `kindHooks.isLoadable`; after boot these two are WeakMaps seeded
+  from the boot's snapshot, so a reify or type a task discards is reclaimed
+  (683), and only the boot task's are enumerable Maps. `ClassBrand`'s "some class is branded"
   flag is the task's cell `classBrands`, not a private static of the
   class, for the same reason. The `EMPTY` statics of the kinds the runtime
   still builds as its own objects (hash sets, array and hash maps, queues)

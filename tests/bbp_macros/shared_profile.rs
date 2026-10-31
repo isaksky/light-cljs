@@ -430,6 +430,60 @@ fn shared_profile_conj_preserves_counted_list_kind() {
     );
 }
 
+/// The two brand stores kept as registries on the task's cells
+/// (`protocolImplementations`, what `installMethods` records per value, and
+/// `typeNames`) hold their keys weakly after boot, as the V8 profile's
+/// WeakMaps do: a reify discarded by the task is reclaimed while the
+/// registry stays rooted, and a named type the task keeps is still named
+/// (light-cljs-683). The boot's entries seed them.
+#[test]
+fn shared_profile_brand_registries_release_discarded_values() {
+    use big_boy_pants_js::HandleError;
+    let rt = Runtime::new();
+    let booted = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const cells = globalThis.__lightSharedCells; \
+             const reified = rt.makeReify([]); \
+             const T = rt.makeType(['a'], [], false, null, 'user/T'); \
+             const implementations = cells.protocolImplementations, names = cells.typeNames; \
+             const report = [Object.prototype.toString.call(implementations), Object.prototype.toString.call(names), \
+               implementations.has(reified), names.get(T), names.get(rt.Loadable), \
+               Object.getOwnPropertyDescriptor(cells, 'protocolImplementations') !== undefined].join(' '); \
+             return __rt.formVector(rt, implementations, names, T, reified, report);"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let (kept, implementations, names, weak_reified, report) = rt.scope(|s| {
+        let booted = s.local(&booted).unwrap();
+        let kept = (0..4)
+            .map(|i| s.persist(s.form_nth(booted, i).unwrap()))
+            .collect::<Vec<_>>();
+        let implementations = s.persist(s.form_nth(booted, 1).unwrap());
+        let names = s.persist(s.form_nth(booted, 2).unwrap());
+        let weak = s.downgrade(s.form_nth(booted, 4).unwrap());
+        let report = s
+            .string(s.form_nth(booted, 5).unwrap())
+            .unwrap()
+            .to_string_lossy();
+        (kept, implementations, names, weak, report)
+    });
+    assert_eq!(
+        report,
+        "[object WeakMap] [object WeakMap] true user/T light.lazy/Loadable true"
+    );
+    let before = implementations.weak_map_live_entry_count().unwrap();
+    let named = names.weak_map_live_entry_count().unwrap();
+    assert!(before >= 1 && named >= 2, "entries {before} {named}");
+    drop(booted);
+    rt.collect().unwrap();
+    assert_eq!(weak_reified.upgrade().unwrap_err(), HandleError::Reclaimed);
+    assert_eq!(implementations.weak_map_live_entry_count(), Some(before - 1));
+    assert_eq!(names.weak_map_live_entry_count(), Some(named));
+    drop(kept);
+}
+
 /// The method-key memos the boot fills and seals cover every arity a
 /// dispatcher declares: `invokeProtocol` declares arities 1 to 22, so a
 /// receiver implementing `cljs$core$IFn$_invoke$arity$22` is invoked with

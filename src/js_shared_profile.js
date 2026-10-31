@@ -73,14 +73,18 @@
     // read back only by itself (to merge a later `extend-type`) and by
     // `collectionWithMeta`; its boot entries are sealed arrays of the method
     // pairs, which a task's copy reads as the Maps they were. `typeNames`,
-    // the names of the types `defineType` names (`Loadable`'s).
-    get protocolImplementations() { return sharedTaskOwn(this, "protocolImplementations", sharedRegistry("protocolImplementations")); },
-    get typeNames() { return sharedTaskOwn(this, "typeNames", sharedRegistry("typeNames")); },
+    // the names of the types `defineType` names (`Loadable`'s). After boot
+    // they are WeakMaps seeded from the boot's snapshot, so a reify or type
+    // a task discards is reclaimed (light-cljs-683); the boot task's are
+    // Maps, enumerable for the snapshot.
+    get protocolImplementations() { return sharedTaskOwn(this, "protocolImplementations", sharedWeakRegistry("protocolImplementations")); },
+    get typeNames() { return sharedTaskOwn(this, "typeNames", sharedWeakRegistry("typeNames")); },
   };
   // The registries' boot entries, sealed with the rest at the end of the
   // boot (`sharedProfileBoot`); a task's registry starts as a copy.
   const sharedSnapshots = {};
   const sharedRegistry = name => new Map(sharedSnapshots[name] ?? []);
+  const sharedWeakRegistry = name => sharedSnapshots[name] === undefined ? new Map() : new WeakMap(sharedSnapshots[name]);
   function sharedTaskOwn(cells, name, value) {
     if (cells === sharedTaskDefaults) {
       throw new TypeError("shared profile: per-task registry " + name + " read while booting");
