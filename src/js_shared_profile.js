@@ -409,23 +409,22 @@
   //@unit sharedMapForm requires: kindHooks
   // An engine map of `entries` (an array of `{key, value}` in order, or the
   // V8 profile's hash trie, walked in its order): an insertion-ordered map
-  // for the `array-map` kind (`formArrayMap`) and a hash map for the
+  // for the `array-map` kind (`formLiteralMap`) and a hash map for the
   // `hash-map` kind (`formMap`), the two kinds the V8 profile keeps apart
   // (promotion at the ninth entry, `updatedMap`), so a map the real core
   // builds or updates is an engine map, which macro code's intrinsics
-  // read and which publishes (light-cljs-666). The removal padding of a
-  // positional constructor's array map (`dissoc`'s undefined pairs) is
-  // dropped.
+  // read and which publishes (light-cljs-666). Positional entries are
+  // already built: preserve equal keys and undefined pairs verbatim.
+  // Ordinary builders deduplicate through `putEntry` before conversion.
   function sharedMapForm(entries, kind) {
     const ordered = Array.isArray(entries) ? entries : kindHooks.hashTraversal(entries);
     if (kind === "array-map") {
       let pairs = __rt.formVector();
       for (let i = 0; i < ordered.length; i++) {
         const entry = ordered[i];
-        if (entry.key === undefined && entry.value === undefined) continue;
         pairs = __rt.formConj(__rt.formConj(pairs, entry.key), entry.value);
       }
-      return __rt.formArrayMap(pairs);
+      return __rt.formLiteralMap(pairs);
     }
     let value = __rt.formMap();
     for (let i = 0; i < ordered.length; i++) value = __rt.formAssoc(value, ordered[i].key, ordered[i].value);

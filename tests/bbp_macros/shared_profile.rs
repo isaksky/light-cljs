@@ -1142,6 +1142,40 @@ fn shared_profile_engine_maps_are_maps() {
     );
 }
 
+/// Converting an already-built positional map preserves every entry, even
+/// when lowering made keys equal or both members of an entry are undefined.
+/// Ordinary array-map builders still deduplicate with ClojureScript equality.
+#[test]
+fn shared_profile_positional_map_updates_keep_entries() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const m = __rt.formLiteralMap(__rt.formVector('a', 1, 'a', 2)), updated = core.assoc(m, 'a', 3); \
+             const undef = core.arrayMap(undefined, undefined); \
+             const k1 = core.vector('key'), k2 = core.vector('key'), child = core.vector('unchanged'); \
+             const metadata = core.arrayMap('tag', 'positional'); \
+             const original = __rt.formWithMeta(__rt.formLiteralMap(__rt.formVector(k1, 1, k2, child)), metadata); \
+             const copy = core.assoc(original, core.vector('key'), 3), items = __rt.formPrintItems(copy); \
+             const ordinary = core.arrayMap(k1, 1, k2, 2); \
+             return [core.count(updated), core.get(updated, 'a'), core.prStr(updated), core.prStr(m), \
+               core.count(undef), core.contains(undef, undefined), core.get(undef, undefined, 'missing') === undefined, \
+               core.count(copy), core.get(copy, k2) === 3, core.meta(copy) === metadata, \
+               __rt.formNth(__rt.formNth(items, 0), 0) === k1, \
+               __rt.formCount(items) === 2 && __rt.formNth(__rt.formNth(items, 1), 0) === k2, \
+               __rt.formCount(items) === 2 && __rt.formNth(__rt.formNth(items, 1), 1) === child, core.get(original, k1), \
+               core.count(ordinary), core.get(ordinary, core.vector('key'))].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "2 3 {\"a\" 3, \"a\" 2} {\"a\" 1, \"a\" 2} \
+         1 true true 2 true true true true true 1 1 2"
+    );
+}
+
 /// An engine set is a set (the sets view, light-cljs-666): the predicates,
 /// count, membership, printing, equality and hashing with a runtime-built
 /// set of the same members, `seq`, `conj`, `disj`, `into` and `empty`
