@@ -700,7 +700,9 @@ fn build_namespace(
         Ok(program) => program,
         Err(error) => {
             // The counters up to the failure, then the failure itself.
-            report_stats(stats, begun, flags.stats_file.as_deref())?;
+            if let Err(report_error) = report_stats(stats, begun, flags.stats_file.as_deref()) {
+                eprintln!("light-cljs: {report_error}");
+            }
             return Err(error.into());
         }
     };
@@ -1083,6 +1085,9 @@ fn report_stats(
         stats.wall = begun.elapsed();
         stats.memory.peak_rss = light_cljs::compile_stats::peak_rss();
         stats.memory.live = Some(light_cljs::compile_stats::live_counts());
+        // Available counters still reach the user when the trace is absent
+        // (an early compilation failure) or its destination cannot be written.
+        io::stderr().lock().write_all(stats.report().as_bytes())?;
         if let Some(path) = file {
             let trace = stats
                 .trace_file()
@@ -1090,7 +1095,6 @@ fn report_stats(
             fs::write(path, trace)
                 .map_err(|error| format!("--stats-file {}: {error}", path.display()))?;
         }
-        io::stderr().lock().write_all(stats.report().as_bytes())?;
     }
     Ok(())
 }

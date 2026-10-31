@@ -1264,6 +1264,59 @@ fn parse_stats(report: &str) -> (Vec<StatsCounter>, Vec<(String, usize)>) {
     (counters, table)
 }
 
+#[test]
+fn stats_file_preserves_early_compile_error() {
+    let sources = TempDir::new("cli-stats-early-failure");
+    let file = sources.join("trace.tsv");
+    for (root, diagnostic) in [
+        (sources.path().clone(), "namespace app.missing not found"),
+        (sources.join("missing-root"), "cannot open source root"),
+    ] {
+        let output = light_cljs(&[
+            "--compile",
+            "--entry",
+            "app.missing",
+            "--source-root",
+            root.to_str().unwrap(),
+            "--stats-file",
+            file.to_str().unwrap(),
+        ]);
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(!output.status.success(), "{stderr}");
+        assert!(output.stdout.is_empty());
+        assert!(stderr.contains(diagnostic), "{stderr}");
+        let failure = stderr.find("\nlight-cljs: ").expect(&stderr);
+        parse_stats(&stderr[..failure]);
+        assert!(!file.exists());
+    }
+}
+
+#[test]
+fn stats_file_preserves_compile_error_when_unwritable() {
+    let sources = TempDir::new("cli-stats-unwritable");
+    std::fs::write(sources.join("main.cljs"), "(ns main) (def x missing)").unwrap();
+    // A directory cannot be overwritten as a trace, even with elevated permissions.
+    let output = light_cljs(&[
+        "--compile",
+        "--entry",
+        "main",
+        "--source-root",
+        sources.path().to_str().unwrap(),
+        "--stats-file",
+        sources.path().to_str().unwrap(),
+    ]);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!output.status.success(), "{stderr}");
+    assert!(output.stdout.is_empty());
+    assert!(stderr.contains("unresolved symbol: missing"), "{stderr}");
+    assert!(
+        stderr.contains(&format!("--stats-file {}:", sources.display())),
+        "{stderr}"
+    );
+    let failure = stderr.find("\nlight-cljs: ").expect(&stderr);
+    parse_stats(&stderr[..failure]);
+}
+
 /// A build that fails still reports its counters up to the failure, then
 /// the failure, so a build that stops can be profiled (light-cljs-635).
 #[test]
