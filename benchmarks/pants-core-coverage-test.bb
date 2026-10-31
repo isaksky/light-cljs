@@ -66,6 +66,16 @@
   (let [factory {:name "->Atom" :kind :value :factory "Atom" :arglists '[[state meta validator watches]]}]
     (is (= "(some? (cljs.core/->Atom nil nil nil nil))" (:expr (probe-of factory))))))
 
+(deftest pr-writer-probe-invokes-the-method
+  (let [expr (:expr (probe-of {:name "-pr-writer" :kind :method}))
+        form (e/parse-string expr {:all true})
+        call (some #(when (and (seq? %) (= 'cljs.core/-pr-writer (first %))) %)
+                   (tree-seq coll? seq form))]
+    (is (= '(cljs.core/-pr-writer [1 "a"] w
+                                {:flush-on-newline true :readably true :meta false :dup false})
+           call))
+    (is (= '(apply str b) (last form)) "the probe observes what the writer receives")))
+
 (deftest usage-counts-higher-order-references
   (let [{:keys [ref all]} (count-tokens (strip-text (str "(keep not-empty children)\n"
                                                          "(map clj->js xs)\n"

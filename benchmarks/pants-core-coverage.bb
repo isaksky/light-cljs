@@ -302,9 +302,14 @@
    "Inst" "(js/Date. 0)" "IDrop" "[1 2]" "ICloneable" "[1]" "Fn" "inc" "APersistentVector" "[1]"
    "IEncodeJS" "[1]" "IEncodeClojure" "(array 1)"})
 
+(defn writer-probe [body]
+  (str "(let [b (array) w (StringBufferWriter. (js-obj \"append\" (fn [s] (.push b s))))] " body " (apply str b))"))
+
 (def method-probes
   {"-write" "(let [b (array)] (-write (StringBufferWriter. (js-obj \"append\" (fn [s] (.push b s)))) \"x\") (vec b))"
-   "-flush" "(-flush (StringBufferWriter. (js-obj)))" "-pr-writer" "(pr-str [1])" "-invoke" "(-invoke inc 1)"
+   "-flush" "(-flush (StringBufferWriter. (js-obj)))"
+   "-pr-writer" (writer-probe "(cljs.core/-pr-writer [1 \"a\"] w {:flush-on-newline true :readably true :meta false :dup false})")
+   "-invoke" "(-invoke inc 1)"
    "-add-watch" "(some? (-add-watch (atom 1) :w (fn [& _])))" "-remove-watch" "(some? (-remove-watch (atom 1) :w))"
    "-notify-watches" "(-notify-watches (atom 1) 1 2)" "-swap!" "(-swap! (atom 1) inc)" "-reset!" "(-reset! (atom 1) 2)"
    "-vreset!" "(-vreset! (volatile! 1) 2)" "-compare" "(-compare 1 2)" "-reduce" "(-reduce [1 2] +)" "-kv-reduce" "(-kv-reduce {:a 1} (fn [a k v] (+ a v)) 0)"
@@ -405,9 +410,6 @@
 ;; probes that need a top-level form first ({:top forms :expr expr}). A
 ;; value-probes entry that only asks fn? or answers true is ignored: the
 ;; item is then called with arguments from its parameter names.
-(defn writer-probe [body]
-  (str "(let [b (array) w (StringBufferWriter. (js-obj \"append\" (fn [s] (.push b s))))] " body " (apply str b))"))
-
 (def invoked-probes
   {"enable-console-print!" "(let [o *print-fn* e *print-err-fn*] (try (enable-console-print!) [(fn? *print-fn*) (fn? *print-err-fn*)] (finally (set! *print-fn* o) (set! *print-err-fn* e))))"
    "set-print-fn!" "(let [o *print-fn* b (array)] (try (set-print-fn! (fn [s] (.push b s))) (print \"x\") (vec b) (finally (set! *print-fn* o))))"
