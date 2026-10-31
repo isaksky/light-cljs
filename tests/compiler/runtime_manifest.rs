@@ -60,7 +60,7 @@ fn every_unit_declares_exactly_the_runtime_bindings_it_references() {
 /// assembled annotated runtime validates like the runtime itself, with the
 /// engine's `__rt` as its one extra global; every unit the profile does not
 /// name restores exactly to the V8 profile after removing the marked scalar
-/// reads and public constructor allocation adapters inserted by shared assembly;
+/// reads and runtime-owned allocation adapters inserted by shared assembly;
 /// the export list is the
 /// runtime's, returned through the boot function; and the runtime to boot
 /// is that text without headers, with `coreCells.X` and the per-task
@@ -80,6 +80,10 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
             .replace(
                 "/*public-constructor*/sharedOwnedSet/*public-constructor*/",
                 "makeSet",
+            )
+            .replace(
+                "/*public-constructor*/sharedTreeEntry/*public-constructor*/",
+                "mapEntry",
             );
         while let Some(start) = text.find("/*scalar-inputs*/") {
             let end = start
@@ -217,7 +221,8 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
                     .replace("requires: sharedScalar,", "requires:")
                     .replace(" requires: sharedScalar", "")
                     .replace("sharedOwnedMap", "makeMap")
-                    .replace("sharedOwnedSet", "makeSet"),
+                    .replace("sharedOwnedSet", "makeSet")
+                    .replace("sharedTreeEntry", "mapEntry"),
                 &ANNOTATED_RUNTIME[original.header_range.clone()],
                 "{}",
                 unit.name

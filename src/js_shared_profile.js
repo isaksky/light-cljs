@@ -597,6 +597,16 @@
   // (light-cljs-666). `MapEntryType.prototype` is not its prototype, as an
   // engine keyword has no `Keyword` prototype.
   mapEntry = (key, value) => __rt.cljFirst(__rt.formArrayMap(__rt.formVector(key, value)));
+  //@unit sharedTreeEntry requires: mapEntries, MapEntryType, vectors
+  // publicTree attaches fields to its nodes, so its allocation boundary must
+  // return a runtime-owned entry. Keep the canonical builder and cache intact;
+  // ordinary map entries still use the immutable engine form above.
+  function sharedTreeEntry(key, value) {
+    const pair = Object.create(MapEntryType.prototype);
+    vectors.set(pair, {cnt: 2, shift: 5, root: [], tail: [key, value]});
+    mapEntries.add(pair);
+    return pair;
+  }
   //@unit mapEntryValue requires: mapEntries
   const mapEntryValue = value => __rt.cljIsMapEntry(value) || mapEntries.has(value);
   //@unit entryKey requires: mapEntryValue, nth

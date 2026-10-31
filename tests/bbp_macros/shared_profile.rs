@@ -1144,6 +1144,105 @@ fn shared_profile_public_map_and_set_constructors_keep_slots() {
     assert_eq!(out.string().unwrap().to_string_lossy(), "ok");
 }
 
+/// Sorted-map find returns cached, runtime-owned tree nodes implementing
+/// IMapEntry, while ordinary map sequences keep immutable engine entries.
+#[test]
+fn shared_profile_sorted_map_find_builds_tree_nodes() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); {}",
+            r#"
+            const core = rt.core;
+            const check = (ok, label) => { if (!ok) throw new Error(label); };
+            const single = core.sortedMap(1, 'a'), entry = core.find(single, 1);
+            check(core.prStr(entry) === '[1 "a"]', 'single find');
+            check(core.keyProtocol(entry) === 1 && core.valProtocol(entry) === 'a', 'entry key/val');
+            check(core.isMapEntry(entry) && core.isVector(entry) && entry instanceof core.MapEntry, 'node brand');
+            check(__rt.formKind(entry) === null && entry === single.tree && entry === core.find(single, 1), 'cached node');
+            check(entry.left === null && entry.right === null && core.find(single, 2) === null, 'single edges');
+            const empty = core.sortedMap();
+            check(empty.tree === null && core.find(empty, 1) === null, 'empty tree');
+            const child = core.vector('child'), metadata = core.hashMap('meta', true);
+            const m = core.withMeta(core.sortedMap(3, 'c', 1, 'a', 4, 'd', 2, child), metadata);
+            const root = m.tree, nodes = [];
+            const visit = node => {
+              if (node === null) return;
+              visit(node.left);
+              check(core.isMapEntry(node) && core.keyProtocol(node) === node.key && core.valProtocol(node) === node.val, 'traversal entry');
+              check(core.find(m, node.key) === node, 'find node identity');
+              nodes.push(node.key);
+              visit(node.right);
+            };
+            visit(root);
+            check(nodes.join(',') === '1,2,3,4' && m.tree === root, 'ordered cached traversal');
+            check(core.valProtocol(core.find(m, 2)) === child && core.meta(m) === metadata, 'value/metadata identity');
+            check(core.prStr(core.keys(m)) === '(1 2 3 4)' && core.count(m) === 4, 'sequence order');
+            const cmp = (a, b) => core.nth(b, 0) - core.nth(a, 0);
+            const retained = core.vector(2, 'retained'), equal = core.vector(2, 'query');
+            const descending = core.sortedMapBy(cmp, core.vector(1), 'one', retained, child, equal, 'new', core.vector(3), 'three');
+            const found = core.find(descending, equal);
+            check(core.keyProtocol(found) === retained && found.key === retained && found.val === 'new', 'comparator retains key');
+            check(core.prStr(core.keys(descending)) === '([3] [2 "retained"] [1])', 'custom order');
+            check(core.comparatorProtocol(descending)(retained, core.vector(1)) < 0, 'comparator preserved');
+            check(core.find(descending, core.vector(0)) === null, 'custom missing');
+            const supplied = new core.PersistentTreeMap(cmp, descending.tree, 3, metadata, 71);
+            check(supplied.tree === descending.tree && core.find(supplied, equal) === found, 'public tree identity');
+            check(core.meta(supplied) === metadata && core.hash(supplied) === 71, 'public metadata/hash');
+            const ordinary = core.first(core.seq(core.hashMap('k', child)));
+            check(__rt.cljIsMapEntry(ordinary) && __rt.formKind(ordinary) === 'vector', 'ordinary engine entry');
+            check(core.keyProtocol(ordinary) === 'k' && core.valProtocol(ordinary) === child, 'ordinary entry identity');
+            return ordinary;
+            "#
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    rt.publish(&out)
+        .unwrap_or_else(|e| panic!("ordinary map entry does not publish: {e}"));
+}
+
+/// Tree construction remains callable through published runtime functions.
+#[test]
+fn shared_profile_sorted_map_find_members_publish() {
+    let rt = Runtime::new();
+    let members = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             return __rt.formVector(core.find, core.sortedMap, core.keyProtocol, core.valProtocol, core.sharedTaskCells);"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let values = rt.scope(|s| {
+        let members = s.local(&members).unwrap();
+        (0..5)
+            .map(|i| s.persist(s.form_nth(members, i).unwrap()))
+            .collect::<Vec<_>>()
+    });
+    for value in &values[..4] {
+        rt.publish(value)
+            .unwrap_or_else(|e| panic!("sorted map member does not publish: {e}"));
+    }
+    let call = compile_function(
+        "function call(find, sortedMap, key, val, taskCells) { \
+           globalThis.__lightSharedCells = taskCells(); \
+           const m = sortedMap(1, 'a'), node = find(m, 1); \
+           return String(key(node) === 1 && val(node) === 'a' && node === m.tree); }",
+    )
+    .unwrap();
+    let args = values.iter().collect::<Vec<_>>();
+    let task = rt.spawn(&call, &args).unwrap();
+    std::thread::scope(|s| {
+        s.spawn(|| match task.run().unwrap() {
+            RunOutcome::Complete(v) => assert_eq!(v.string().unwrap().to_string_lossy(), "true"),
+            other => panic!("{other:?}"),
+        })
+        .join()
+        .unwrap();
+    });
+}
+
 /// An engine map is a map to the real units (the maps view, light-cljs-666):
 /// `map?`, `count`, `get`, `contains?`, `find`, `keys`, `vals`, `seq`,
 /// printing, equality and hashing with a runtime-built map of the same

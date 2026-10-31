@@ -741,7 +741,7 @@ fn sections(source: &str) -> (usize, Vec<Section>) {
 /// headers, with `coreCells.X` and the [`SHARED_TASK_STATE`] bindings
 /// rewritten to the task's cells, and with the compile-time hooks.
 fn shared_runtime(base: &str, profile: &str) -> (String, String) {
-    let constructor_base = shared_public_constructors(base);
+    let constructor_base = shared_owned_allocations(base);
     let scalar_base = shared_scalar_reads(&constructor_base);
     let base = scalar_base.as_str();
     let (base_prologue, base_sections) = sections(base);
@@ -852,16 +852,17 @@ fn shared_runtime(base: &str, profile: &str) -> (String, String) {
     (annotated, compiler_hooks(&runtime, true))
 }
 
-/// Public constructors retain their canonical payload-building algorithms,
-/// including live positional arrays and opaque roots. Only their allocation
-/// boundary differs: constructorSlots needs a runtime-owned return value.
-fn shared_public_constructors(base: &str) -> String {
+/// Public constructors and the public tree builder retain their canonical
+/// algorithms. Only their allocation boundary differs: constructorSlots and
+/// publicTree need runtime-owned objects on which they can attach fields.
+fn shared_owned_allocations(base: &str) -> String {
     let (prologue, units) = sections(base);
     let mut result = base[..prologue].to_owned();
     for unit in units {
         let builder = match unit.name.as_str() {
             "publicArrayMap" | "PersistentHashMapValue" => Some(("makeMap", "sharedOwnedMap")),
             "publicHashSet" => Some(("makeSet", "sharedOwnedSet")),
+            "publicTree" => Some(("mapEntry", "sharedTreeEntry")),
             _ => None,
         };
         let header = &base[unit.header];
