@@ -93,6 +93,48 @@
     (is (= 1 (ref "type")) "only the use in (str type), not the binding")
     (is (= 2 (all "run!")))))
 
+(deftest usage-counts-collection-references
+  (let [{:keys [ref all]}
+        (count-tokens
+         (strip-text (str "{:wfn inst-ms :convert [cljs.core/clj->js]} [not-empty]\n"
+                          "(let [type \"a string\" f clj->js\n"
+                          "      {:keys [run!] :or {run! inst-ms}} m\n"
+                          "      [map & rest] xs] [f type])\n"
+                          "(fn named [filter {:keys [keep] :or {keep not-empty}}] [filter])\n"
+                          "(defn clj->js [not-empty {:keys [inst-ms]}] [not-empty])\n"
+                          "(for [type xs :let [f clj->js] :when (not-empty xs)] [f])\n"
+                          "#{not-empty} #?(:clj [inst-ms] :cljs {:wfn inst-ms})")))]
+    (is (= 4 (ref "inst-ms")) "map values, defaults and both reader-conditional branches")
+    (is (= 3 (ref "clj->js")) "collection elements and initializers, excluding the defn name")
+    (is (= 5 (ref "not-empty")) "collection, function body, default and comprehension expressions")
+    (is (= 1 (ref "type")) "binding names are excluded even after a string initializer")
+    (is (= 1 (ref "filter")) "function parameters are excluded; their uses still count")
+    (doseq [n ["run!" "map" "rest" "keep"]]
+      (is (nil? (ref n)) (str n " only occurs in binding declarations")))
+    (is (= 5 (all "inst-ms")))
+    (is (= 2 (all "run!")))))
+
+(deftest usage-keeps-literal-slots-and-ignores-comment-contents
+  (let [refs (:ref (count-tokens
+                   (strip-text (str "; An unmatched quote \" in a comment\n"
+                                    "(let [type \"ignored not-empty\" f clj->js\n"
+                                    "      run! \\u200B g inst-ms\n"
+                                    "      keep #\"a;not-empty\" h not-empty] [type])"))))]
+    (is (= {"let" 1 "clj->js" 1 "inst-ms" 1 "not-empty" 1 "type" 1} refs)))
+  (is (= 1 (get-in (count-tokens (strip-text "{:label\"s\" :wfn inst-ms} [\"s\"not-empty]")) [:ref "not-empty"]))
+      "a removed literal still separates adjacent tokens"))
+
+(deftest usage-distinguishes-other-binding-forms
+  (doseq [[source expected]
+          [["(loop [not-empty [inst-ms]] [not-empty])" {"not-empty" 1 "inst-ms" 1}]
+           ["(letfn [(not-empty [inst-ms] [inst-ms])] [not-empty])" {"not-empty" 1 "inst-ms" 1}]
+           ["(defn f ([not-empty] [not-empty]) ([inst-ms type] {:x type}))" {"not-empty" 1 "type" 1}]
+           ["(defprotocol P (-first [not-empty] [not-empty type]))" {}]
+           ["(deftype T [not-empty] P (-first [this inst-ms] [inst-ms]))" {"inst-ms" 1}]
+           ["`(let ~bindings ~@body) `(for ~bindings ~@body) `(letfn ~bindings ~@body)" {}]]
+          :let [refs (:ref (count-tokens (strip-text source)))]]
+    (is (= expected (select-keys refs ["not-empty" "inst-ms" "type"])) source)))
+
 (deftest core-coverage-build-ignores-stale-binaries
   (let [dir (fs/create-temp-dir {:dir (fs/create-dirs (fs/path repo "target")) :prefix "core-coverage-build-test-"})]
     (try

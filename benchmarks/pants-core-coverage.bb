@@ -622,12 +622,11 @@
    [:generated ["research/cljs-200k/src" "research/cljs-200k/macros"]]])
 
 (defn strip-text
-  "Source text without comments, strings, regex and character literals."
+  "Source text without comments or literal contents. Keep a placeholder for
+  each string, regex or character so binding initializer positions survive."
   [text]
-  (-> text
-      (str/replace #"#?\"(?:[^\"\\]|\\.)*\"" " ")
-      (str/replace #"\\(?:newline|space|tab|[^\s])" " ")
-      (str/replace #";[^\n]*" " ")))
+  (str/replace text #";[^\n]*|#?\"(?:[^\"\\]|\\[\s\S])*\"|\\(?:[A-Za-z][A-Za-z0-9]*|[^\s])"
+               (fn [s] (if (str/starts-with? s ";") " " " :coverage/literal "))))
 
 (defn macro-bodies
   "The text of every (defmacro ...) form."
@@ -655,21 +654,84 @@
     (when (or (nil? ns) (#{"cljs.core" "clojure.core" "core"} ns)) n)))
 
 (defn count-tokens
-  "Occurrences of each name anywhere (:all), and as an element of a list
-  (:ref): called, as in `(not-empty x)` or `( not-empty x)`, or passed, as
-  in `(keep not-empty xs)`. Names inside vectors and maps, where bindings
-  and destructuring put local names, count only in :all."
+  "Occurrences of each name anywhere (:all), and in expression positions
+  (:ref), including collection elements and binding initializers. Binding
+  declarations and destructuring names count only in :all. This counts
+  occurrences, not resolved vars: a use of a same-named local counts too."
   [text]
-  (loop [[t & more :as ts] (re-seq #"[()\[\]{}]|[^\s,()\[\]{}\"]+" text) stack () all (transient {}) refs (transient {})]
-    (if (empty? ts)
-      {:all (persistent! all) :ref (persistent! refs)}
-      (case t
-        ("(" "[" "{") (recur more (conj stack t) all refs)
-        (")" "]" "}") (recur more (if (seq stack) (pop stack) stack) all refs)
-        (if-let [n (token-names t)]
-          (recur more stack (assoc! all n (inc (get all n 0)))
-                 (if (= "(" (peek stack)) (assoc! refs n (inc (get refs n 0))) refs))
-          (recur more stack all refs))))))
+  (letfn [(branches [form] (take-nth 2 (rest (:form form))))
+          (splice-forms [forms]
+            (mapcat #(if (and (reader-conditional? %) (:splicing? %))
+                       (mapcat splice-forms (branches %)) [%]) forms))
+          (binding-refs [form]
+            (cond
+              (reader-conditional? form) (mapcat binding-refs (branches form))
+              (vector? form) (mapcat binding-refs form)
+              (map? form) (mapcat (fn [[k v]]
+                                   (cond (= :or k) (mapcat expr (take-nth 2 (rest (::entries v))))
+                                         (keyword? k) nil
+                                         :else (binding-refs k)))
+                                 (partition 2 (::entries form)))))
+          (bindings [forms]
+            (if (vector? forms)
+              (mapcat (fn [[pattern init]] (concat (binding-refs pattern) (expr init)))
+                      (partition-all 2 (splice-forms forms)))
+              (expr forms)))
+          (comprehension [forms]
+            (if (vector? forms)
+              (mapcat (fn [[pattern init]]
+                        (cond (= :let pattern) (bindings init)
+                              (keyword? pattern) (expr init)
+                              :else (concat (binding-refs pattern) (expr init))))
+                      (partition-all 2 (splice-forms forms)))
+              (expr forms)))
+          (function-body [body]
+            (let [[params & more :as body] (drop-while #(not (or (vector? %) (seq? %))) body)]
+              (if (vector? params)
+                (concat (binding-refs params) (mapcat expr more))
+                (mapcat #(if (and (seq? %) (vector? (first %))) (function-body %) (expr %)) body))))
+          (expr [form]
+            (cond
+              (symbol? form) (when-let [n (token-names (str form))] [n])
+              (reader-conditional? form) (mapcat expr (branches form))
+              (map? form) (mapcat expr (::entries form))
+              (vector? form) (mapcat expr form)
+              (seq? form)
+              (let [[head & body] form
+                    n (when (symbol? head) (token-names (str head)))]
+                (concat (expr head)
+                        (cond
+                          (#{"let" "let*" "loop" "loop*" "if-let" "when-let" "if-some" "when-some"
+                             "when-first" "with-open" "letfn*"} n)
+                          (concat (bindings (first body)) (mapcat expr (rest body)))
+                          (#{"fn" "fn*" "defn" "defn-" "defmacro"} n) (function-body body)
+                          (= "letfn" n) (concat (if (vector? (first body))
+                                                  (mapcat #(if (seq? %) (function-body (rest %)) (expr %)) (first body))
+                                                  (expr (first body)))
+                                                (mapcat expr (rest body)))
+                          (#{"for" "doseq"} n) (concat (comprehension (first body)) (mapcat expr (rest body)))
+                          (= "dotimes" n) (concat (binding-refs (ffirst body))
+                                                  (mapcat expr (rest (first body))) (mapcat expr (rest body)))
+                          (#{"def" "defonce" "this-as"} n) (mapcat expr (rest body))
+                          (= "declare" n) nil
+                          (= "as->" n) (concat (expr (first body)) (mapcat expr (drop 2 body)))
+                          (= "catch" n) (concat (expr (first body)) (mapcat expr (drop 2 body)))
+                          (#{"deftype" "defrecord"} n)
+                          (concat (binding-refs (second body))
+                                  (mapcat #(if (and (seq? %) (vector? (second %)))
+                                             (function-body (rest %)) (expr %)) (drop 2 body)))
+                          (= "defprotocol" n) nil
+                          :else (mapcat expr body))))))]
+    {:all (frequencies (keep token-names (re-seq #"[^\s,()\[\]{}\"]+" text)))
+     :ref (frequencies
+           (mapcat expr
+                   (e/parse-string-all text
+                                       {:all true :read-cond :preserve :readers (fn [_] identity)
+                                        :auto-resolve (fn [x] (if (= x :current) 'coverage (symbol (str x))))
+                                        ;; Keep entries in order, including #?@ branches in maps.
+                                        :map (fn [& entries] {::entries entries}) :set vector
+                                        :quote identity :deref identity :var identity :syntax-quote identity
+                                        :unquote identity :unquote-splicing identity})))}))
 
 (defn usage []
   (into {}
@@ -747,14 +809,15 @@
        ""
        "### Gaps ranked by use"
        ""
-       (str "References count a function, method or macro wherever it is an element of a list: called, as "
-            "`(not-empty x)`, or passed, as `(keep not-empty xs)`; names inside vectors and maps (bindings, "
-            "destructuring) do not count. A type or protocol counts wherever it is named; names may be unqualified or qualified `cljs.core/`, `clojure.core/` or `core/`, "
+       (str "References count a function, method or macro in expression positions: called, as "
+            "`(not-empty x)`, passed, as `(keep not-empty xs)`, stored in collections, as `{:wfn inst-ms}` "
+            "or `[not-empty]`, or used as a binding initializer, as `(let [f clj->js] ...)`. Binding declarations "
+            "and destructuring names do not count. A type or protocol counts wherever it is named; names may be unqualified or qualified `cljs.core/`, `clojure.core/` or `core/`, "
             "and comments and strings are excluded. They are counted in Penpot (`research/penpot-light`: frontend, common, shims, overrides, "
             "generated; " (get-in usage-data [:penpot :files]) " files), its vendored libraries (`vendor/`, "
             (get-in usage-data [:vendored :files]) " files) and the generated 200k project (`research/cljs-200k`, "
             (get-in usage-data [:generated :files]) " files). \"In macros\" counts only occurrences inside "
-            "`defmacro` forms, the code the Pants build runs. A local that shares a core name (Penpot binds `type` often) counts too where a list uses it.")
+            "`defmacro` forms, the code the Pants build runs. A local that shares a core name (Penpot binds `type` often) counts too where an expression uses it.")
        ""
        (line ["Rank" "Item" "Kind" "Total" "Penpot" "Vendored" "Generated" "In macros" "Reason"])
        (line ["---:" "---" "---" "---:" "---:" "---:" "---:" "---:" "---"])]
