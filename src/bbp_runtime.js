@@ -4315,11 +4315,14 @@ const lazyExtend=snapshot=>{
   }
 };
 // Before a registry key is created outside the adopted catalog: it follows
-// the entries adopted so far when `materializeAll` restores key order.
+// the entries adopted so far when `materializeAll` restores key order. A
+// bundle at entry `p` creates its products at `p` to `p+1` exclusive, so the
+// key takes `c.end`, after every one of them. An entry at `c.end` arrives
+// later and is resolved later, so the stable sort keeps the key first.
 function noteCreated(name){
   const c=lazyCatalog;
   if(c!==null&&typeof name==='string'&&!c.created.has(name)&&!c.pre.has(name)
-     &&Object.getOwnPropertyDescriptor(rootTarget,name)===undefined)c.created.set(name,c.end-0.5);
+     &&Object.getOwnPropertyDescriptor(rootTarget,name)===undefined)c.created.set(name,c.end);
 }
 // The bundles a catalog registers before its entry `p`: a root there sees
 // their products.

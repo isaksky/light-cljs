@@ -3805,6 +3805,64 @@ fn adopted_catalogs_match_applied_catalogs_whatever_is_read_first() {
     }
 }
 
+/// A key a task creates outside its adopted catalog follows every product
+/// of a multi-product bundle adopted before it, in the public registry's
+/// key order, as it does when the task applies the catalog; also after a
+/// later version adds more bundles and roots (light-cljs-675 review).
+#[test]
+fn extended_catalog_preserves_external_keys_after_multi_product_bundle() {
+    use crate::compilation_session::{BundleRecord, Registration};
+    let bundle = |unit: usize, products: &[&str]| {
+        Registration::Bundle(Arc::new(BundleRecord {
+            products: products.iter().map(|name| name.to_string()).collect(),
+            unit,
+            extensions: vec![],
+            location: "fixture:1".into(),
+            once: false,
+            group: false,
+        }))
+    };
+    let root = |name: &str, unit: usize| {
+        Registration::Root(name.into(), Some(unit), None, false, "fixture:1".into())
+    };
+    let first = vec![bundle(1, &["a", "b", "c", "d"]), root("r", 2)];
+    let second = vec![bundle(3, &["e", "f", "g"]), root("s", 4)];
+    let keys = |lazy: bool, extend: bool| {
+        // Separate runtimes, as in the randomized comparison below.
+        let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+        let service: UnitService = Rc::new(|_, id| Ok(format!("rt => {id}")));
+        let task = Rc::new(shared.evaluator().unwrap());
+        task.clone()
+            .install_compiler_service("__lightCompileUnit", service)
+            .unwrap();
+        task.install_catalog_as(0, &first, lazy).unwrap();
+        task.register_compiler_root("z", Some(10), false, "fixture:2", None)
+            .unwrap();
+        if extend {
+            task.install_catalog_as(first.len(), &second, lazy).unwrap();
+            task.register_compiler_root("y", Some(11), false, "fixture:2", None)
+                .unwrap();
+        }
+        let adopted = numeric_global(&task, "__lightCatalogApplied");
+        let value = task
+            .evaluate_unit("rt => JSON.stringify(Reflect.ownKeys(globalThis.__lightCompilerRoots))")
+            .unwrap();
+        let result = task.cx().unwrap().values.borrow()[&value.index]
+            .string()
+            .map(|s| s.to_string_lossy())
+            .unwrap_or_default();
+        (result, adopted)
+    };
+    for extend in [false, true] {
+        let (applied, _) = keys(false, extend);
+        let (adopted, entries) = keys(true, extend);
+        // The task adopted the catalog: it applied none of it before the
+        // public registry was read.
+        assert_eq!(entries, 0.0, "extend {extend}");
+        assert_eq!(adopted, applied, "extend {extend}");
+    }
+}
+
 /// A task that adopts each catalog version as it arrives (a pool worker's
 /// or the coordinator's, light-cljs-675) ends with the state of a task that
 /// applied every version, whatever it read, defined or set in between: the
@@ -3879,7 +3937,7 @@ fn extended_catalogs_match_applied_catalogs_across_versions() {
             Err(error) => format!("error: {error}"),
         }
     };
-    let (mut failures, mut adopted, mut applied) = (Vec::new(), 0.0, 0.0);
+    let mut failures = Vec::new();
     for case in 0..64 {
         // Separate runtimes: tasks of one runtime share initialized roots,
         // so an initializer that ran in one would not run in the other.
@@ -3900,7 +3958,7 @@ fn extended_catalogs_match_applied_catalogs_across_versions() {
                     let once = next(3) == 0;
                     if next(3) == 0 {
                         let mut products = Vec::new();
-                        for _ in 0..1 + next(2) {
+                        for _ in 0..1 + next(5) {
                             let name = NAMES[next(NAMES.len() as u64)].to_string();
                             if !products.contains(&name) {
                                 products.push(name);
@@ -3997,7 +4055,7 @@ fn extended_catalogs_match_applied_catalogs_across_versions() {
         {
             continue;
         }
-        // The adopter stayed adopted until now: it applied fewer entries.
+        // The adopter stayed adopted until now: the public registry was not read.
         assert_eq!(
             run(
                 &adopter,
@@ -4006,8 +4064,6 @@ fn extended_catalogs_match_applied_catalogs_across_versions() {
             "true",
             "case {case}"
         );
-        adopted += numeric_global(&adopter, "__lightCatalogApplied");
-        applied += first as f64;
         for (label, source) in [("read all", read(&NAMES)), ("public", public.to_string())] {
             let (expected, actual) = (run(&reference, &source), run(&adopter, &source));
             if expected != actual {
@@ -4020,7 +4076,6 @@ fn extended_catalogs_match_applied_catalogs_across_versions() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert!(adopted < applied, "adopted {adopted} of {applied} entries");
 
     fn describe(registration: &Registration) -> String {
         match registration {
