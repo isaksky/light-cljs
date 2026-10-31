@@ -59,12 +59,27 @@ fn every_unit_declares_exactly_the_runtime_bindings_it_references() {
 /// the same name (declaring the same bindings) or is placed first; the
 /// assembled annotated runtime validates like the runtime itself, with the
 /// engine's `__rt` as its one extra global; every unit the profile does not
-/// name is the V8 profile's identical text; the export list is the
+/// name restores exactly to the V8 profile after removing the marked scalar
+/// reads inserted by shared assembly; the export list is the
 /// runtime's, returned through the boot function; and the runtime to boot
 /// is that text without headers, with `coreCells.X` and the per-task
 /// bindings read through the task's cells and the compile-time hooks added.
 #[test]
 fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
+    // Strip only inserted scalar reads, retaining the full canonical algorithm.
+    // Dependency validation above still checks every adapted body's actual reads.
+    let restore_scalars = |text: &str| {
+        let mut text = text
+            .replace("sharedScalar(/*scalar*/", "")
+            .replace("/*scalar*/)", "");
+        while let Some(start) = text.find("/*scalar-inputs*/") {
+            let end = start
+                + text[start..].find("/*end-scalar-inputs*/").unwrap()
+                + "/*end-scalar-inputs*/".len();
+            text.replace_range(start..end, "");
+        }
+        text
+    };
     let base = manifest();
     let profile = RuntimeManifest::parse(SHARED_PROFILE).unwrap_or_else(|errors| {
         panic!(
@@ -183,13 +198,15 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
         } else {
             let original = base.unit(base.unit_named(unit.name).unwrap());
             assert_eq!(
-                text,
+                restore_scalars(text),
                 &ANNOTATED_RUNTIME[original.body_range.clone()],
                 "{}",
                 unit.name
             );
             assert_eq!(
-                &SHARED_ANNOTATED_RUNTIME[unit.header_range.clone()],
+                SHARED_ANNOTATED_RUNTIME[unit.header_range.clone()]
+                    .replace("requires: sharedScalar,", "requires:")
+                    .replace(" requires: sharedScalar", ""),
                 &ANNOTATED_RUNTIME[original.header_range.clone()],
                 "{}",
                 unit.name

@@ -297,6 +297,14 @@
   // other kind of value is its own kind, and `null` is a host value.
   const sharedFormKind = value => { const kind = __rt.formKind(value); return kind === "occurrence" ? __rt.formKind(__rt.formValue(value)) : kind; };
   const sharedFormOf = value => __rt.formKind(value) === "occurrence" ? __rt.formValue(value) : value;
+  //@unit sharedScalar
+  // Read a scalar at a computation boundary. Keep collections and named forms
+  // in their occurrences, and never rewrite a stored item or a returned input.
+  const sharedScalar = value => {
+    if (value === null || typeof value !== "object") return value;
+    const raw = __rt.formValue(value);
+    return raw === null || (typeof raw !== "object" && typeof raw !== "function") ? raw : value;
+  };
   //@unit sharedView requires: sharedFormKind, sharedFormOf, sharedHost
   // A brand store as a read-only view over an engine tag (design point 3):
   // `has` answers engine forms of the view's kind (`has` is given the
@@ -334,18 +342,18 @@
     const namespace = __rt.formNamespace(value), name = __rt.formName(value);
     return {namespace, name, spelling: namespace == null ? name : namespace + "/" + name};
   });
-  //@unit makeKeyword
+  //@unit makeKeyword requires: sharedScalar
   // Engine keywords compare by value and hash in the engine; `spelling` is
   // the form's.
   function makeKeyword(namespace, name, spelling) {
-    return __rt.formKeyword(namespace, name);
+    return __rt.formKeyword(sharedScalar(namespace), sharedScalar(name));
   }
-  //@unit keyword
+  //@unit keyword requires: sharedScalar
   // A keyword built at run time is fresh, as upstream's `(keyword ns name)`:
   // the V8 profile interns the literals it builds this way, which the Pants
   // build lowers to engine forms instead.
   function keyword(namespace, name) {
-    return __rt.formKeyword(namespace, name);
+    return __rt.formKeyword(sharedScalar(namespace), sharedScalar(name));
   }
   //@unit sharedVectorItems
   // A new array of the items `from` to `to` of an engine vector.
@@ -659,10 +667,10 @@
     const namespace = __rt.formNamespace(value), name = __rt.formName(value);
     return (kind === "keyword" ? ":" : "") + (namespace == null ? name : namespace + "/" + name);
   }
-  //@unit str requires: kindHooks, maps, recordTypes, sequential, sets, sharedNamedString
-  function str(...values) { return values.map(value => value == null ? "" : typeof value === "string" ? value : sharedNamedString(value) ?? (sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? kindHooks.strCollection(value) : String(value))).join(""); }
-  //@unit displayStr requires: sharedNamedString
-  const displayStr = value => value == null ? "" : sharedNamedString(value) ?? String(value);
+  //@unit str requires: kindHooks, maps, recordTypes, sequential, sets, sharedNamedString, sharedScalar
+  function str(...values) { return values.map(value => { value = sharedScalar(value); return value == null ? "" : typeof value === "string" ? value : sharedNamedString(value) ?? (sequential(value) || (maps.has(value) && !recordTypes.has(value)) || sets.has(value) ? kindHooks.strCollection(value) : String(value)); }).join(""); }
+  //@unit displayStr requires: sharedNamedString, sharedScalar
+  const displayStr = value => { value = sharedScalar(value); return value == null ? "" : sharedNamedString(value) ?? String(value); };
   //@unit Namespace effect requires: equalPair, hash, installMethods, keyword, makeVar,
   //@ mapFromArray, mungeStr, str, symbol
   // The V8 profile's, with `toString` through `str`: the name is an engine

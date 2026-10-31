@@ -105,6 +105,14 @@ QuickJS profile (`lightCljsWeakMapStores`, light-cljs-292): the
    `partition-by`, `group-by`, `MapEntry`, printing, `delay`, transducers),
    is the same text the V8 build runs. Coverage is complete by construction:
    a name exists because the manifest has its unit.
+
+   Imported scalars retain occurrence identity too. Shared assembly inserts
+   primitive reads at the canonical units' scalar computation boundaries;
+   it keeps the algorithms in the canonical source. Selectors and identity
+   casts return original inputs, and stored collection items retain their
+   occurrences. The shared manifest validates dependencies and checks that
+   removing these marked reads restores every canonical body byte for byte.
+   The V8 runtime's assembly is unchanged.
 3. **Brand stores become read-only views over engine tags.** A store's
    `has`/`get` read `__rt.formKind`, `__rt.formReferenceType`
    (light-cljs-592's reference-type brand) or a struct field; `set` is only

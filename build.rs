@@ -741,6 +741,8 @@ fn sections(source: &str) -> (usize, Vec<Section>) {
 /// headers, with `coreCells.X` and the [`SHARED_TASK_STATE`] bindings
 /// rewritten to the task's cells, and with the compile-time hooks.
 fn shared_runtime(base: &str, profile: &str) -> (String, String) {
+    let scalar_base = shared_scalar_reads(base);
+    let base = scalar_base.as_str();
     let (base_prologue, base_sections) = sections(base);
     let (_, profile_sections) = sections(profile);
     let mut swapped: HashMap<&str, &Section> = HashMap::new();
@@ -847,6 +849,156 @@ fn shared_runtime(base: &str, profile: &str) -> (String, String) {
         }
     }
     (annotated, compiler_hooks(&runtime, true))
+}
+
+/// Imported scalar occurrences retain compiler identity until an operation
+/// reads their primitive. Adapt the canonical units only in the shared profile:
+/// do not fork the algorithms or erase arguments at calls/collection storage.
+/// Mark inserted text so the manifest test can restore every canonical byte.
+fn shared_scalar_reads(base: &str) -> String {
+    let (prologue, units) = sections(base);
+    let mut result = base[..prologue].to_owned();
+    for unit in units {
+        let mut body = base[unit.body.clone()].to_owned();
+        let original = body.clone();
+        let name = unit.name.as_str();
+        let scalar = |value: &str| format!("sharedScalar(/*scalar*/{value}/*scalar*/)");
+        // Scalar predicates and arithmetic always produce a computed result.
+        // The canonical arrow expression stays byte-for-byte inside the body.
+        let parameters = match name {
+            "inc" | "dec" | "uncheckedInc" | "uncheckedIncInt" | "uncheckedDec"
+            | "uncheckedDecInt" | "uncheckedNegate" | "uncheckedNegateInt" | "abs" | "int"
+            | "fix" | "bitNot" | "isZero" | "isPositive" | "isNegative" | "isInteger"
+            | "isPositiveInt" | "isNegativeInt" | "isNaturalInt" | "isNumber" | "isFloat"
+            | "isDouble" | "isInfinite" | "boolean" | "not" | "isBoolean" | "isTrue"
+            | "isFalse" | "isNil" | "isSome" | "isUndefined" | "isString" | "isChar"
+            | "isSeqable" => "x",
+            "mod" | "quot" | "jsMod" | "rem" => "n,d",
+            "bitClear"
+            | "bitFlip"
+            | "bitSet"
+            | "bitTest"
+            | "bitShiftLeft"
+            | "bitShiftRight"
+            | "bitShiftRightZeroFill"
+            | "unsignedBitShiftRight" => "x,n",
+            "truth" => "value",
+            _ => "",
+        };
+        if !parameters.is_empty() {
+            assert_eq!(body.matches(" => ").count(), 1, "scalar arrow {name}");
+            let args = if parameters.contains(',') {
+                format!("({})", parameters.replace(',', ", "))
+            } else {
+                parameters.to_owned()
+            };
+            assert!(
+                body.contains(&format!("const {name} = {args} => ")),
+                "scalar arrow {name}"
+            );
+            let (head, expression) = body.split_once(" => ").expect("scalar arrow");
+            let (expression, tail) = expression.rsplit_once(';').expect("scalar arrow end");
+            let inputs = parameters
+                .split(',')
+                .map(|p| format!("{p} = sharedScalar({p}); "))
+                .collect::<String>();
+            body = format!(
+                "{head} => /*scalar-inputs*/{{ {inputs}return /*end-scalar-inputs*/{expression}/*scalar-inputs*/; }}/*end-scalar-inputs*/;{tail}"
+            );
+        } else {
+            // Read-only receivers, numeric indexes and sizes. Defaults, stored
+            // values, callbacks and collection occurrences remain untouched.
+            let (signature, inputs) = match name {
+                "seq" | "first" | "rest" | "next" | "count" | "hash" | "parsingString"
+                | "numberArgument" => (format!("function {name}(value) {{"), "value"),
+                "nth" => (
+                    "function nth(value, index, notFound) {".into(),
+                    "value,index",
+                ),
+                "lookup" | "get" => (format!("function {name}(value, key, notFound) {{"), "value"),
+                "equalPair" => ("function equalPair(left, right) {".into(), "left,right"),
+                "compareKeys" => ("function compareKeys(a, b) {".into(), "a,b"),
+                "printWriterImpl" => (
+                    "function printWriterImpl(value, writer, options, skipMetadata = false) {"
+                        .into(),
+                    "value",
+                ),
+                "subs" => (
+                    "function subs(value, start, end) {".into(),
+                    "value,start,end",
+                ),
+                "range" => (
+                    "function range(start, end, step = 1) {".into(),
+                    "start,end,step",
+                ),
+                "take" | "drop" => (format!("function {name}(n, coll) {{"), "n"),
+                "isEven" | "hostRand" | "hostRandInt" => (format!("function {name}(n) {{"), "n"),
+                "bitCount" => ("function bitCount(v) {".into(), "v"),
+                "symbolCore" | "keywordCore" => (
+                    format!("function {name}(namespace, name) {{"),
+                    "namespace,name",
+                ),
+                "partition" => ("function partition(n, step, pad, coll) {".into(), "n,step"),
+                _ => (String::new(), ""),
+            };
+            if !inputs.is_empty() {
+                let reads = inputs
+                    .split(',')
+                    .map(|p| format!("{p} = sharedScalar({p}); "))
+                    .collect::<String>();
+                assert_eq!(
+                    body.matches(&signature).count(),
+                    1,
+                    "scalar adapter {name}: {signature}"
+                );
+                body = body.replacen(
+                    &signature,
+                    &format!("{signature}/*scalar-inputs*/{reads}/*end-scalar-inputs*/"),
+                    1,
+                );
+            }
+            // Selectors keep their original operands on every return path.
+            for (from, to) in match name {
+                "add" => vec![("x + y", format!("{} + {}", scalar("x"), scalar("y"))),
+                    ("result + arguments[i]", format!("result + {}", scalar("arguments[i]")))],
+                "subtract" => vec![("? -x :", format!("? -{} :", scalar("x"))),
+                    ("a - b", format!("{} - {}", scalar("a"), scalar("b")))],
+                "multiply" => vec![("a * b", format!("{} * {}", scalar("a"), scalar("b")))],
+                "divide" => vec![("? 1 / x :", format!("? 1 / {} :", scalar("x"))),
+                    ("a / b", format!("{} / {}", scalar("a"), scalar("b")))],
+                "bitOperation" => vec![("numericFold(operation, x, y, more)", format!("numericFold(operation, {}, {}, more/*scalar-inputs*/.map(sharedScalar)/*end-scalar-inputs*/)", scalar("x"), scalar("y")))],
+                "foldSeq" => vec![("operation(x, y)", format!("operation({}, {})", scalar("x"), scalar("y"))),
+                    ("operation(result, first(s))", format!("operation(result, {})", scalar("first(s)")))],
+                "comparison" | "comparisonVariadic" => vec![("test(x, y)", format!("test({}, {})", scalar("x"), scalar("y"))),
+                    ("test(y, item)", format!("test({}, {})", scalar("y"), scalar("item")))],
+                "extrema" => vec![("isNaN(a)", format!("isNaN({})", scalar("a"))), ("isNaN(b)", format!("isNaN({})", scalar("b"))),
+                    ("test(a, b)", format!("test({}, {})", scalar("a"), scalar("b")))],
+                "char" => vec![("typeof x", format!("typeof {}", scalar("x"))), ("String.fromCharCode(x)", format!("String.fromCharCode({})", scalar("x"))), ("x.length", format!("{}.length", scalar("x")))],
+                "name" => vec![("typeof value", format!("typeof {}", scalar("value")))],
+                "isNaNCore" => vec![("isNaN(x)", format!("isNaN({})", scalar("x")))],
+                "lookup" | "contains" => vec![("const store = vectors.get(value);", "/*scalar-inputs*/key = sharedScalar(key); /*end-scalar-inputs*/const store = vectors.get(value);".into())],
+                "get" => vec![("if (Array.isArray(value)) {", "if (Array.isArray(value)) {/*scalar-inputs*/key = sharedScalar(key); /*end-scalar-inputs*/".into())],
+                "identical" => vec![("a === b", format!("{} === {}", scalar("a"), scalar("b")))],
+                _ => vec![],
+            } {
+                // A few reads occur twice in the same canonical expression.
+                let expected = if name == "char" && from == "typeof x" { 2 } else { 1 };
+                assert_eq!(body.matches(from).count(), expected, "scalar adapter {name}: {from}");
+                body = body.replace(from, &to);
+            }
+        }
+        let header = &base[unit.header];
+        if body == original {
+            result.push_str(header);
+        } else if header.contains("requires:") {
+            result.push_str(&header.replacen("requires:", "requires: sharedScalar,", 1));
+        } else {
+            let (first, rest) = header.split_once('\n').expect("unit header");
+            result.push_str(&format!("{first} requires: sharedScalar\n{rest}"));
+        }
+        result.push_str(&body);
+    }
+    result
 }
 
 /// The profile's boot unit, whose body names every top-level binding at

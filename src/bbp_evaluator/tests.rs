@@ -1830,36 +1830,103 @@ fn native_protocol_tables_stay_small_in_the_shared_heap() {
 
 #[test]
 fn identity_numeric_conversions_keep_imported_scalar_occurrences() {
-    let evaluator = BbpEvaluator::new(Default::default()).unwrap();
-    for operation in ["byte", "short", "float", "double"] {
-        let function = evaluator
-            .evaluate_unit(&format!("rt => x => rt.core.{operation}(x)"))
-            .unwrap();
-        for kind in [
-            D::Integer(9_007_199_254_740_993),
-            D::Character(b'a' as u16),
-            D::String(vec![0xd800].into()),
-        ] {
-            let input = Datum::new(kind);
-            let argument = evaluator.import_data(&input, Default::default()).unwrap();
-            let result = evaluator.call(function, &[argument]).unwrap();
-            let root = evaluator.cx().unwrap().values.borrow()[&result.index].clone();
-            let output = evaluator
-                .host_scope(|s| {
-                    evaluator.with_bridge(|bridge| {
-                        bridge.export(s, s.local(&root).map_err(error)?, 16, &mut 100)
-                    })
-                })
+    for macro_core in [
+        crate::evaluator::MacroCore::Port,
+        crate::evaluator::MacroCore::Real,
+    ] {
+        let evaluator = BbpEvaluator::new(EvaluatorOptions {
+            macro_core,
+            timeout: std::time::Duration::from_secs(600),
+            ..Default::default()
+        })
+        .unwrap();
+        // The canonical real core returns its unary multiply input. The port
+        // instead multiplies by 1, so its identity contract covers the others.
+        for operation in ["byte", "short", "float", "double", "add", "min", "max"]
+            .into_iter()
+            .chain((macro_core == crate::evaluator::MacroCore::Real).then_some("multiply"))
+        {
+            let function = evaluator
+                .evaluate_unit(&format!("rt => x => rt.core.{operation}(x)"))
                 .unwrap();
-            assert_eq!(
-                output.identity(),
-                input.identity(),
-                "{operation}: {input:?}"
-            );
-            evaluator.release(result).unwrap();
-            evaluator.release(argument).unwrap();
+            for kind in [
+                D::Integer(9_007_199_254_740_993),
+                D::Character(b'a' as u16),
+                D::String(vec![0xd800].into()),
+            ] {
+                let input = Datum::new(kind);
+                let argument = evaluator.import_data(&input, Default::default()).unwrap();
+                let result = evaluator.call(function, &[argument]).unwrap();
+                let root = evaluator.cx().unwrap().values.borrow()[&result.index].clone();
+                let output = evaluator
+                    .host_scope(|s| {
+                        evaluator.with_bridge(|bridge| {
+                            bridge.export(s, s.local(&root).map_err(error)?, 16, &mut 100)
+                        })
+                    })
+                    .unwrap();
+                assert_eq!(
+                    output.identity(),
+                    input.identity(),
+                    "{operation}: {input:?}"
+                );
+                evaluator.release(result).unwrap();
+                evaluator.release(argument).unwrap();
+            }
+            evaluator.release(function).unwrap();
         }
-        evaluator.release(function).unwrap();
+    }
+}
+
+#[test]
+fn scalar_extrema_return_the_selected_occurrence_in_both_cores() {
+    for macro_core in [
+        crate::evaluator::MacroCore::Port,
+        crate::evaluator::MacroCore::Real,
+    ] {
+        let evaluator = BbpEvaluator::new(EvaluatorOptions {
+            macro_core,
+            timeout: std::time::Duration::from_secs(600),
+            ..Default::default()
+        })
+        .unwrap();
+        for operation in ["min", "max"] {
+            let function = evaluator
+                .evaluate_unit(&format!("rt => (a, b) => rt.core.{operation}(a, b)"))
+                .unwrap();
+            for (left, right, selected) in [
+                (
+                    D::Integer(9_007_199_254_740_992),
+                    D::Integer(9_007_199_254_740_993),
+                    1,
+                ),
+                (D::Double(f64::NAN), D::Integer(1), 0),
+                (D::Integer(1), D::Double(f64::NAN), 1),
+                (
+                    D::Character(b'a' as u16),
+                    D::String(vec![b'a' as u16].into()),
+                    0,
+                ),
+            ] {
+                let inputs = [Datum::new(left), Datum::new(right)];
+                let arguments = inputs
+                    .iter()
+                    .map(|input| evaluator.import_data(input, Default::default()).unwrap())
+                    .collect::<Vec<_>>();
+                let result = evaluator.call(function, &arguments).unwrap();
+                let output = evaluator.export_data(result, Default::default()).unwrap();
+                assert_eq!(
+                    output.identity(),
+                    inputs[selected].identity(),
+                    "{macro_core:?} {operation}: {inputs:?}"
+                );
+                evaluator.release(result).unwrap();
+                for argument in arguments {
+                    evaluator.release(argument).unwrap();
+                }
+            }
+            evaluator.release(function).unwrap();
+        }
     }
 }
 

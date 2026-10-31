@@ -184,9 +184,9 @@ fn real_core_dynamic_bindings_reach_runtime_functions() {
 /// The real core's functions read a macro's arguments as the Rust bridge
 /// imports them (light-cljs-666, the view of imported forms): a vector,
 /// map, list, symbol or keyword through its occurrence (`partition`,
-/// `get`, `name`, `str`, `=`, `meta`, printing), and a scalar as the plain
-/// primitive the V8 profile's JavaScript computes with (`inc`, `str`,
-/// `=`, `nth` with an imported index). The port answers the same.
+/// `get`, `name`, `str`, `=`, `meta`, printing), and a scalar through a
+/// computation boundary (`inc`, `str`, `=`, `nth` with an imported index).
+/// The port answers the same.
 #[test]
 fn real_core_reads_imported_forms_through_their_occurrences() {
     let source = "(defmacro over [v m l k s n] \
@@ -201,6 +201,39 @@ fn real_core_reads_imported_forms_through_their_occurrences() {
                        (= (into #{} v) #{1 2 3 4}) (get (frequencies [n n 1]) n)])) \
                   (js/console.log (pr-str (over [1 2 3 4] {:a 1 :b 2} (^{:x 1} a b) :b/c \"s\" 2)))";
     let expected = "[2 [(1 2) (3 4)] \":b/cs2\" \"c\" \"b\" true 3 3 true true true 1 [:a :b] 2 true {:a 1, :b 2, :c 3} 1 [2 3 4 5] [1 2 3 4 9] true true 2 1 \"[1 2 3 4] {:a 1, :b 2} (a b) :b/c \\\"s\\\" 2\" 2 true true true true 2]\n";
+    for core in [MacroCore::Port, MacroCore::Real] {
+        let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host(core))
+            .unwrap_or_else(|e| panic!("{core:?}: {e}"));
+        assert_eq!(program_output(&emit_js(&program)), expected, "{core:?}");
+    }
+}
+
+/// Imported scalar provenance must coexist with ordinary user computations,
+/// including applied arithmetic, primitive predicates, string operations and
+/// collection indexes. This deliberately passes scalars as macro arguments.
+#[test]
+fn real_core_computes_with_imported_scalar_occurrences() {
+    let source = r#"
+      (defmacro bump [x] (inc x))
+      (defmacro compute [n d z s c yes no nothing]
+        (list 'quote
+          [(+ n d) (- n d) (* n d) (/ n d) (inc n) (dec n)
+           (mod n d) (quot n d) (rem n d)
+           (apply + [n d n]) (apply * [n d d]) (apply < [d n (+ n d)])
+           (bit-and n d) (bit-shift-left d d) (even? n) (integer? n)
+           (pos-int? n) (zero? z) (number? n) (boolean? no) (false? no)
+           (true? yes) (nil? nothing) (not nothing) (not no) (boolean no)
+           (= n 6) (= no false) (= nothing nil) (= s "abcd") (= c \a)
+           (identical? s "abcd") (= (hash n) (hash 6))
+           (str n ":" s ":" no ":" nothing) (subs s d) (count s)
+           (first s) (nth s d) (nth [c s] z) (get [s c] z)
+           (contains? [s c] z) (name s) (name (keyword s))
+           (vec (range z n d)) (vec (take d [c s n]))
+           (vec (partition d [n d z n]))]))
+      (js/console.log (bump 2))
+      (js/console.log (pr-str (compute 6 2 0 "abcd" \a true false nil)))
+    "#;
+    let expected = "3\n[8 4 12 3 7 5 0 3 0 14 24 true 2 8 true true true true true true true true true true true false true true true true true true true \"6:abcd:false:\" \"cd\" 4 \"a\" \"c\" \"a\" \"abcd\" true \"abcd\" \"abcd\" [0 2 4] [\"a\" \"abcd\"] [(6 2) (0 6)]]\n";
     for core in [MacroCore::Port, MacroCore::Real] {
         let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host(core))
             .unwrap_or_else(|e| panic!("{core:?}: {e}"));
@@ -266,7 +299,15 @@ fn real_core_preserves_selected_scalar_occurrences() {
             kind: CollectionKind::Map,
             children: Box::new([]),
         });
-        for (selected, body) in [(1, "a"), (2, "b")] {
+        for (selected, body) in [
+            (1, "a"),
+            (2, "b"),
+            (1, "(+ a)"),
+            (1, "(byte a)"),
+            (2, "(double b)"),
+            (1, "(min a)"),
+            (2, "(max b)"),
+        ] {
             let source = format!("(fn [form env a b] {body})");
             let program =
                 analyze_with_macros(&source, &parse(&source).unwrap(), &mut host).unwrap();
