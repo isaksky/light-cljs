@@ -3276,9 +3276,9 @@ fn analyze_entry(
     {
         stats.phases.resolve_parse += resolve_parse + lazy_parse;
         stats.phases.deferred_units += analysis.deferred_time.unwrap_or_default();
-        stats.phases.analysis += analysis_started.elapsed().saturating_sub(
-            analysis.deferred_time.unwrap_or_default() + lazy_parse + cache_time,
-        );
+        stats.phases.analysis += analysis_started
+            .elapsed()
+            .saturating_sub(analysis.deferred_time.unwrap_or_default() + lazy_parse + cache_time);
         stats.macro_calls = macros.executed_expansions();
         stats.native_macro_calls = macros.native_macro_calls();
         stats.trace = recording
