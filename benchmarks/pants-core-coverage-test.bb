@@ -168,6 +168,79 @@
             (spit (str (fs/path dir root "source.cljs")) "{:wfn inst-ms}"))))
       (finally (fs/delete-tree dir)))))
 
+(deftest regression-guard-preserves-baseline
+  (let [dir (fs/create-temp-dir {:dir (fs/create-dirs (fs/path repo "target")) :prefix "core-coverage-guard-test-"})
+        script (str (fs/path repo "benchmarks/pants-core-coverage.bb"))
+        doc (str (fs/path dir "coverage.md"))
+        roots [[:penpot ["penpot"]] [:vendored ["vendor"]] [:generated ["generated"]]]
+        kinds [["vector" "[1]"] ["list" "'(1)"]]
+        items [{:name "inc" :kind :value} {:name "simple-benchmark" :kind :macro} {:name "ISeq" :kind :protocol}]
+        supported-items #{["inc" "function or value"] ["simple-benchmark" "macro"] ["ISeq" "protocol"]}
+        supported-cells #{["ISeq" "vector"] ["ISeq" "list"]}
+        rows (concat (map #(assoc % :status (if (= :macro (:kind %)) "bootstrap" "native")) items)
+                     [{:name "previous-gap" :kind :value :status "unsupported"}
+                      {:name "previous-unverified" :kind :value :status "unverified"}])
+        matrix [{:protocol "ISeq" :kind "vector" :pants "false" :reference "false" :agree true}
+                {:protocol "ISeq" :kind "list" :pants "true" :reference "true" :agree true}
+                {:protocol "IFn" :kind "vector" :pants "ERR unavailable" :reference "true" :agree false}
+                {:protocol "IFn" :kind "list" :pants "false" :reference "true" :agree false}]
+        baseline (str "Before coverage.\n"
+                      (with-redefs [value-kinds kinds] (render rows matrix {} {} "fixture"))
+                      "\nAfter coverage.\n")
+        run (fn [scenario]
+              (let [current (if (= :item-disappears scenario) (subvec items 1) items)
+                    answers (merge {"k0" "[1]" "k1" "(1)" "m0_0" "false" "m0_1" "true"}
+                                   (into {} (map-indexed (fn [i item] [(str i) (if (= "inc" (:name item)) "2" "true")]) current)))
+                    pants (cond-> answers
+                            (= :item-fails scenario) (assoc "0" "ERR inc unavailable")
+                            (= :bootstrap-fails scenario) (assoc "1" "ERR benchmark unavailable")
+                            (#{:matrix-fails :matrix-shared-error} scenario) (assoc "m0_0" "ERR unavailable"))
+                    reference (cond-> answers (= :matrix-shared-error scenario) (assoc "m0_0" "ERR unavailable"))
+                    flags (cond-> #{"--no-build"} (= :check scenario) (conj "--check"))
+                    form `(do
+                            (load-file ~script)
+                            (with-redefs [repo ~(str dir) doc-file ~doc work ~(str (fs/path dir "work"))
+                                          usage-roots ~roots value-kinds ~kinds args ~flags
+                                          inventory (constantly ~current)
+                                          bootstrap-macros (constantly #{"simple-benchmark"})
+                                          build! (fn [& _#] (throw (ex-info "unexpected build" {})))
+                                          sh (fn [& _#] {:out "fixture\n"})
+                                          run-all (fn [_# label# probes#]
+                                                    (let [answers# (if (= "pants" label#) ~pants ~reference)]
+                                                      (into {} (map (fn [[id# _#]] [id# (get answers# id#)]) probes#))))]
+                              (-main)))]
+                (p/shell {:out :string :err :string :continue true} "bb" "-e" (pr-str form))))]
+    (try
+      (doseq [[_ [root]] roots]
+        (fs/create-dirs (fs/path dir root))
+        (spit (str (fs/path dir root "source.cljs")) "(inc 1)"))
+      (spit doc baseline)
+      (with-redefs [doc-file doc]
+        (is (= {:items supported-items :cells supported-cells} (previous-supported))
+            "read native and bootstrap rows and both agreeing boolean cells, excluding gaps"))
+      (doseq [[scenario diagnostic]
+              [[:item-fails "REGRESSED item: inc"]
+               [:item-disappears "REGRESSED item: inc"]
+               [:bootstrap-fails "REGRESSED item: simple-benchmark"]
+               [:matrix-fails "REGRESSED matrix cell: ISeq on vector"]
+               [:matrix-shared-error "REGRESSED matrix cell: ISeq on vector"]]
+              :let [_ (spit doc baseline) result (run scenario)]]
+        (is (= 1 (:exit result)) (str scenario ": " (:out result) (:err result)))
+        (is (str/includes? (:out result) diagnostic) (str scenario ": " (:out result)))
+        (is (= baseline (slurp doc)) (str scenario " must preserve the document")))
+      (let [result (run :check)]
+        (is (zero? (:exit result)) (str (:out result) (:err result)))
+        (is (= baseline (slurp doc)) "a successful --check does not write"))
+      (let [result (run :write) text (slurp doc)]
+        (is (zero? (:exit result)) (str (:out result) (:err result)))
+        (is (str/includes? (:out result) "wrote"))
+        (is (not= baseline text) "a nonregressing run rewrites the section")
+        (is (str/starts-with? text "Before coverage.\n"))
+        (is (str/ends-with? text "\nAfter coverage.\n"))
+        (with-redefs [doc-file doc]
+          (is (= {:items supported-items :cells supported-cells} (previous-supported)))))
+      (finally (fs/delete-tree dir)))))
+
 (deftest core-coverage-build-ignores-stale-binaries
   (let [dir (fs/create-temp-dir {:dir (fs/create-dirs (fs/path repo "target")) :prefix "core-coverage-build-test-"})]
     (try
