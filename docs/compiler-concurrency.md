@@ -3182,11 +3182,42 @@ state and determinism"; this is what was delivered.
   realizing task's bindings, gensym scope and other task state). A macro's
   `binding` does not: its overlay is task-local, and other tasks see it only
   through those last two (light-cljs-676; docs/native-macros.md).
-  A lane still waits for every earlier unfinished unit, not only those that
-  can touch the same state: a running macro can reach any loaded Var, so no
-  sound bound on what it touches exists without light-cljs-446's
-  require-closure rule (light-cljs-672; benchmarks/penpot-investigation.md,
-  "Effect-lane waits on app.main").
+- **Per-namespace lanes (light-cljs-672).** On the Pants build a
+  namespace's compile-time code may touch only the state of its require
+  closure (the user's rule of 2026-10-23, light-cljs-446): itself and its
+  transitive requires, runtime and macro, as the loader resolved them;
+  `cljs.core` and host or package requires add nothing. Each namespace's
+  closure is a dense bitset of source indices, made once when the
+  namespace's turn comes in load order (`Lanes::register_namespace`). An
+  atom a Var initializer makes is *homed* in the initializer's namespace,
+  and so are the atoms that keep its bookkeeping (a multimethod's table
+  history); a shared initializer's caller selection is homed in the
+  initializer's namespace too. A task touching homed state waits only for
+  earlier unfinished units and pass segments whose namespace's closure
+  contains the home, or whose closure is unknown; it skips the others
+  (`native.lanes.skipped` counts the accesses that went on, or parked
+  lanes that opened, only because of that). Everything else above still
+  waits for every earlier unit: atoms a unit or pass made directly, the
+  global hierarchy, shared mutable fields, registry and `*ns*` reads and
+  the realization gate.
+  The skip is sound because the rule is enforced where it matters: a task
+  that touches homed state, or selects the caller of a homed initializer,
+  fails with "N reached compile-time state of K, which it does not
+  require" when the namespace whose work the access counts as (the task's
+  own unit or pass, and the one at its effective position) does not
+  require K. So a namespace outside the closure never touches the state, at
+  any thread count, and its units cannot be ordered against it. The check
+  is the same at `--jobs 1`, so the error does not depend on N (fixture
+  `outside`, tests/fixtures/native-lanes). What the rule does not restrict
+  yet: `find-ns`, `all-ns` and the registry still answer in load order (the
+  registry's lane waits for every earlier unit, so that stays ordered),
+  reader contexts, and the extension frontier of protocols and multimethods
+  (a multimethod's table is read at the load-order frontier; a method
+  defined outside the reader's closure that touches its own namespace's
+  state then fails as above). The analyzer's resolution of qualified names
+  is unchanged; a temporary probe found no resolution leaving the closure
+  on Penpot `app.main` (V8 build, 922 namespaces), `app.render` and the
+  seed-42 200k project (Pants build), so no output changed.
 - **No deadlock by order.** An earlier activity never waits for a later
   one parked on its lane: a demand lends the later one its position. The
   test `an_earlier_unit_demanding_a_parked_initializer_lends_it_its_lane`

@@ -23,6 +23,15 @@
 //! `--jobs`, and nothing is replayed. An initializer's `gensym` uses the same
 //! lane and the earliest caller's generated-name scope (light-cljs-512).
 //!
+//! On the Pants build a namespace's compile-time code may touch only the
+//! state of its require closure (light-cljs-672). An atom a Var initializer
+//! makes, and the initializer's caller selection, are *homed* in the
+//! initializer's namespace: a task touching them waits only for earlier
+//! units and passes whose namespace's closure contains the home, and fails
+//! if its own work's namespace does not require it, which makes the skip
+//! sound ([`Lanes::check`]). Other state has no home and orders against
+//! every earlier unit.
+//!
 //! The thread-local stack records the activities a thread runs, innermost
 //! last; a *root* entry starts an activity unrelated to those below it (a
 //! pool job, or one a waiting worker helps with), so inheritance looks no
@@ -586,7 +595,12 @@ impl Lanes {
     /// [`Self::enter_cell`] for the initializer of catalog unit `unit`:
     /// the atoms it makes are homed in the unit's namespace
     /// (light-cljs-672).
-    pub(crate) fn enter_initializer(self: &Arc<Self>, cell: u64, unit: u64, task: u64) -> EntryGuard {
+    pub(crate) fn enter_initializer(
+        self: &Arc<Self>,
+        cell: u64,
+        unit: u64,
+        task: u64,
+    ) -> EntryGuard {
         let guard = self.enter_cell(cell);
         if guard.lanes.is_some() {
             let mut s = self.lock();
@@ -595,7 +609,10 @@ impl Lanes {
                 .and_then(|unit| s.unit_sources.get(&unit))
             {
                 s.homes.insert(guard.token, source);
-                s.initializer_tasks.entry(task).or_default().push(guard.token);
+                s.initializer_tasks
+                    .entry(task)
+                    .or_default()
+                    .push(guard.token);
                 s.initializer_task_of.insert(guard.token, task);
             }
         }
@@ -862,14 +879,13 @@ impl Lanes {
         if !self.enabled() {
             return Ok(0);
         }
-        let mut s = self.lock();
+        let s = self.lock();
         let Some(top) = s.tops.get(&task) else {
             return Ok(0);
         };
-        let (token, position) = (top.token, top.position);
-        let initializing = |owner| {
-            (s.initializer_tasks.get(&task)).is_some_and(|tokens| tokens.contains(&owner))
-        };
+        let token = top.token;
+        let initializing =
+            |owner| (s.initializer_tasks.get(&task)).is_some_and(|tokens| tokens.contains(&owner));
         if owner != 0 && (owner == token || initializing(owner)) {
             return Ok(0);
         }
@@ -1293,7 +1309,8 @@ mod tests {
         lanes.attach(cell, Box::new(move || opened.send(()).unwrap()));
         assert!(wait.try_recv().is_err());
         lanes.finish(11, false);
-        wait.try_recv().expect("grammar's unit does not hold the lane");
+        wait.try_recv()
+            .expect("grammar's unit does not hold the lane");
         assert_eq!(lanes.check(task, owner).unwrap(), 0);
         // An atom with no home still waits for every earlier unit.
         assert_ne!(lanes.check(task, 0).unwrap(), 0, "grammar is unfinished");

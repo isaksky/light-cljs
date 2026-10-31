@@ -2840,7 +2840,11 @@ impl BbpEvaluator {
                 let wait = self.shared.lanes().map(|lanes| {
                     let target = crate::effect_lanes::identity(key);
                     let wait = lanes.wait_for(crate::effect_lanes::Target::Cell(target));
-                    let entry = lanes.enter_initializer(target, unit as u64, crate::effect_lanes::identity(cx.task.id()));
+                    let entry = lanes.enter_initializer(
+                        target,
+                        unit as u64,
+                        crate::effect_lanes::identity(cx.task.id()),
+                    );
                     cx.initializer_lanes.borrow_mut().insert(key, entry);
                     wait
                 });
