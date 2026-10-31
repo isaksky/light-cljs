@@ -235,6 +235,9 @@ impl State {
     /// Whether namespace `source`'s require closure contains `home`; an
     /// unknown closure contains every namespace.
     fn reaches(&self, source: Option<usize>, home: usize) -> bool {
+        if self.names.get(home).is_some_and(|name| name == "cljs.core") {
+            return true;
+        }
         let Some(Some(closure)) = source.and_then(|s| self.closures.get(s)) else {
             return true;
         };
@@ -907,7 +910,7 @@ impl Lanes {
             return true;
         }
         let s = self.lock();
-        let Some(position) = s.tops.get(&task).and_then(|top| top.position) else {
+        let Some(top) = s.tops.get(&task) else {
             return true;
         };
         let Some(&home) = String::from_utf16(name)
@@ -916,7 +919,14 @@ impl Lanes {
         else {
             return true;
         };
-        s.reaches(s.source_at(position), home)
+        let owned: Vec<_> = top
+            .chain
+            .iter()
+            .flat_map(|&(token, target)| [Some(Target::Activity(token)), target])
+            .flatten()
+            .collect();
+        s.enforce(home, top.position, min(top.position, s.inherited(&owned)))
+            .is_ok()
     }
     /// The namespaces `task`'s current activity does not see
     /// ([`Self::sees`]), as UTF-16 names.
@@ -925,12 +935,18 @@ impl Lanes {
             return HashSet::new();
         }
         let s = self.lock();
-        let Some(position) = s.tops.get(&task).and_then(|top| top.position) else {
+        let Some(top) = s.tops.get(&task) else {
             return HashSet::new();
         };
-        let source = s.source_at(position);
+        let owned: Vec<_> = top
+            .chain
+            .iter()
+            .flat_map(|&(token, target)| [Some(Target::Activity(token)), target])
+            .flatten()
+            .collect();
+        let effective = min(top.position, s.inherited(&owned));
         (s.sources.iter())
-            .filter(|&(_, &home)| !s.reaches(source, home))
+            .filter(|&(_, &home)| s.enforce(home, top.position, effective).is_err())
             .map(|(name, _)| name.encode_utf16().collect())
             .collect()
     }

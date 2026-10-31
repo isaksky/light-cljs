@@ -3382,6 +3382,7 @@ const native = (() => {
     // `exists?` demands a definition's value, while `resolve` only tests
     // whether its binding was registered (a declaration counts).
     nativeRootExists:(name,binding)=>{
+      if(!compilerRootVisible(name))return false;
       lazyResolve(name);
       const bindings=registry();
       if(bindingOverlays.has(name))return binding||bindingOverlays.get(name)!==undefined;
@@ -4157,9 +4158,13 @@ globalThis.__lightRegisterBundle=(names,code,indices=[],location='',once=false,g
 globalThis.__lightEnterCompilerFrontier=next=>decl.enter(next);
 globalThis.__lightLeaveCompilerFrontier=()=>decl.leave();
 const rootTarget={};
+const compilerRootVisible=name=>typeof name!=='string'||!name.includes('/')||__rt.effect(65527,name.slice(0,name.indexOf('/')));
+const checkCompilerRoot=name=>{
+  if(!compilerRootVisible(name))throw new Error('compile-time namespace outside require closure: '+name+' (add a require of '+name.slice(0,name.indexOf('/'))+')');
+};
 globalThis.__lightCompilerRoots=new Proxy(rootTarget, {
-  get:(target,name,receiver)=>bindingOverlays.has(name)?bindingOverlays.get(name):(lazyCatalog!==null&&lazyResolve(name),Reflect.get(target,name,receiver)),
-  has:(target,name)=>bindingOverlays.has(name)||(lazyCatalog!==null&&lazyResolve(name),Reflect.has(target,name)),
+  get:(target,name,receiver)=>{checkCompilerRoot(name);return bindingOverlays.has(name)?bindingOverlays.get(name):(lazyCatalog!==null&&lazyResolve(name),Reflect.get(target,name,receiver));},
+  has:(target,name)=>compilerRootVisible(name)&&(bindingOverlays.has(name)||(lazyCatalog!==null&&lazyResolve(name),Reflect.has(target,name))),
 });
 // The compiler's bounded read intrinsic checks this live overlay Map and
 // target on every read. Ordinary interop retains the Proxy and its receiver.
@@ -4168,7 +4173,7 @@ globalThis.__lightCompilerRootContext=__rt.vector(globalThis.__lightCompilerRoot
     lazyResolve(name);
     if(!Reflect.has(target,name))throw new Error('unavailable definition: '+name);
     return Reflect.get(rootsProxy,name);
-  }}),decl.frontierCell);
+  }}),decl.frontierCell,true);
 // A task adopts a catalog snapshot instead of applying it (a producer its
 // parent's, light-cljs-590; any other task the compilation's, extended by
 // each later version, light-cljs-675): a name gets its catalog registrations when the task

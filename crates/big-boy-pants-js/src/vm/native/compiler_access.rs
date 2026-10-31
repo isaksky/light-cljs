@@ -47,6 +47,15 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
                 ));
             };
             let key = property::Key::Name(key.clone());
+            // An embedder may require the live Proxy's visibility policy on
+            // every access, including data properties and ready products.
+            if collections::count(heap, context.clone())? > 6
+                && collections::nth(heap, context.clone(), 6)? == Value::Bool(true)
+            {
+                let read = property::read(heap, state.diag.task, &receiver, &key)?;
+                read_result(heap, state, read, receiver)?;
+                return Ok(true);
+            }
             // The context is created once per compiler task. It retains the
             // original Proxy, its target and its live task-owned overlay Map.
             // Replacing the public registry takes the ordinary property path.

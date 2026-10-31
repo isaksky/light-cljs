@@ -1262,6 +1262,8 @@ const NAMESPACES_EFFECT: u16 = 65529;
 /// The effect lane of a shared initializer's caller selection, given its
 /// catalog unit: 0 to go on or a lane cell to park on (light-cljs-672).
 const LANE_INITIALIZER_EFFECT: u16 = 65528;
+/// Require-closure visibility, including reads of already initialized roots.
+const NAMESPACE_VISIBLE_EFFECT: u16 = 65527;
 
 /// The runtime-wide collection and admission policy for `options`.
 ///
@@ -3376,7 +3378,6 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                         .map_or(crate::effect_lanes::NamespaceView::ALL, |lanes| {
                             lanes.namespace_view(task)
                         });
-                    let (log, _held) = lock_log();
                     // A namespace outside the reader's require closure is
                     // not there (light-cljs-672); asked before the locks.
                     let (sees, hidden) = match (self.2, op as u8) {
@@ -3384,6 +3385,7 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                         (Some(lanes), _) => (true, lanes.hidden(task)),
                         (None, _) => (true, Default::default()),
                     };
+                    let (log, _held) = lock_log();
                     let read = |floors: &HashMap<_, _>| {
                         if op as u8 == b'f' {
                             return Ok(Primitive::Bool(sees && log.has(name, &view, floors)));
@@ -3406,6 +3408,16 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                 }
                 _ => Err("unknown namespace registry request".into()),
             };
+        }
+        if call.op == NAMESPACE_VISIBLE_EFFECT {
+            let Primitive::String(name) = call.arg else {
+                return Err("invalid namespace visibility request".into());
+            };
+            let task = crate::effect_lanes::identity(call.task);
+            return Ok(Primitive::Bool(
+                self.2
+                    .is_none_or(|lanes| lanes.sees(task, name.code_units())),
+            ));
         }
         if call.op == LANE_INITIALIZER_EFFECT {
             let task = crate::effect_lanes::identity(call.task);
