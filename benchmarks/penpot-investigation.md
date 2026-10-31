@@ -3,7 +3,10 @@
 See the [October 27 regression check and repair](#default-v8-regression-check-october-27-2026)
 for the later default-compiler slowdown and restored Penpot timings, and the
 [October 29 comparison with shadow-cljs, cached and uncached](#re-measured-against-shadow-cljs-cached-and-uncached-october-29-2026-at-0ad2514f)
-for the latest numbers.
+for the latest numbers. The
+[October 30 Pants-build profile of `app.main`](#where-the-pants-builds-time-goes-on-appmain-october-30-2026-at-9907e916)
+is the baseline the real-core redesign (docs/real-core-design.md) is measured
+against.
 
 Latest validated production rerun (phase112): **21.97 s / 0.948 GB RSS** for
 main none, **28.24 s / 1.178 GB** for advanced, and **3.73 s / 0.498 GB** for
@@ -26,6 +29,266 @@ specialization experiment yielded only a 0.7% average timing reduction and was
 not promoted; [phase113](results/compiler-2026-10-16/penpot-phase113/README.md)
 records the controlled comparison. Further large gains are not established by
 the current profiling evidence.
+
+## Where the Pants build's time goes on app.main (October 30, 2026, at `9907e916`)
+
+**Summary.** light-cljs-635 profiled the Pants build (docs/glossary.md) on
+Penpot `app.main` up to its current stop (`core.MapEntry` in instaparse's
+grammar macro, light-cljs-643). One macro, `instaparse.abnf/abnf-parser`,
+took 37-41 s of the 86.9 s one-thread build, and 25-28 s of that was garbage
+collection paced by a cost that grew quadratically: every string append
+charged a credit for a flattened copy of the whole string, and the credits
+counted as allocation volume. The fix (below) takes the one-thread build
+from 86.9 s to 66.5 s (-24%) and the four-thread build from 95.5 s to
+60.6 s (-37%); four threads is now faster than one, but only 1.1x. What
+remains, ranked by what survives the switch to the real `cljs.core`
+(docs/real-core-design.md): interpreter speed (65% of the main thread),
+garbage collection (19%) and, at 4 threads, waits on effect lanes. The
+Pants build is 8.3x slower than V8 on the namespaces both builds reach,
+7.0x without the grammar macro.
+
+Setup. light-cljs master `9907e916` plus this change, release builds
+(`cargo build --locked --release`, thin LTO, one codegen unit, as the
+earlier Penpot numbers; `CARGO_BUILD_JOBS=4`): the Pants build
+(`--no-default-features --features bbp-macros`), copied to fixed paths
+before and after the change, and the V8 build (default features, V8 from
+the machine cache). Apple M3 Ultra (Virtual), 24 logical CPUs, 32 GiB,
+macOS 15.7.3, Rust/Cargo 1.99.1. The command is light-cljs-632's: the five
+absolute read-only roots of `research/penpot-light`, `--entry app.main
+--optimize none --no-cache --stats --stats-file FILE`, every budget from
+docs/native-macros.md (`--macro-memory-limit 4000000000`) and
+`--source-map FILE --source-map-include-sources`. Two peers (light-cljs-646
+and the coverage script) built now and then; the 1-minute load average
+before each run is recorded. Before and after alternated, three rounds;
+medians [range]. Peak memory is `/usr/bin/time -l`'s maximum resident set
+size; GB is 1e9 bytes.
+
+| Build | Threads | Wall | User CPU | Peak memory | 1-min loads | Result |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| Pants, before | 1 | 86.9 s [86.2-92.8] | 85.9 s | 1.02 GB | 4.2, 3.2, 3.5 | stops at `core.MapEntry` |
+| Pants, after | 1 | 66.5 s [63.1-67.6] | 65.3 s | 1.15 GB | 6.1, 2.8, 2.7 | same stop |
+| Pants, before | 4 | 95.5 s [93.1-96.3] | 107.9 s | 1.22 GB | 4.8, 2.7, 3.8 | same stop |
+| Pants, after | 4 | 60.6 s [59.9-62.2] | 72.5 s | 1.41 GB | 4.2, 2.5, 4.8 | same stop |
+| V8 | 1 | 12.3 s [12.2-12.5] | 14.2 s | 1.10 GB | 2.3, 2.7, 3.0 | builds |
+| V8 | 4 | 7.8 s [7.7-8.1] | 18.1 s | 1.42 GB | 2.7, 2.5, 2.4 | builds |
+
+The V8 build compiles all 922 namespaces and emits; the Pants build stops
+in namespace 727 before emission, so whole-build ratios understate the gap.
+From the `--stats-file` traces (top-level pass plus deferred units per
+namespace, one thread), on the 728 namespaces both builds reach:
+
+| | Pants, before | Pants, after | V8 | Slowdown vs V8, after |
+| --- | ---: | ---: | ---: | ---: |
+| all 728 namespaces | 95.8 s (sampled run) | 61.9 s | 7.5 s | 8.3x |
+| `instaparse.abnf` (the grammar macro) | 41.4 s | 14.1 s | 0.70 s | 20x |
+| the other 727 | 54.4 s | 47.8 s | 6.8 s | 7.0x |
+| `app.main.ui.icons` | 2.28 s | 1.90 s | 0.19 s | 9.9x |
+| `app.main.ui.dashboard.team` | 1.76 s | 1.68 s | 0.13 s | 13x |
+| `app.plugins.shape` | 0.86 s | 0.65 s | 0.16 s | 4.2x |
+
+User-interface namespaces (rumext components) are 10-14x slower than V8,
+the plugin proxies 4-6x. JavaScript commands and form conversions are 92%
+of the one-thread wall time after the fix (`trace.top-level.engine-ms` +
+`trace.unit.engine-ms` = 58.3 s of 63.0 s).
+
+### 1. The grammar macro and the quadratic credit (fixed)
+
+`precompile-cljs-grammar` runs instaparse's parser over its grammar text at
+macro time. On the Pants build that one call ran 297 collections (24.9-27.7 s
+by the pause counter) and admitted 514.6 GB to the byte budget; the whole
+rest of the build admitted 31 GB. The admissions grew linearly in size, from
+223 KB to 3.2 MB each (a temporary backtrace of every admission over 64 KB
+put them all in `JsString::concat_accounted` under the interpreter's `+`):
+a loop appending to one string. Since light-cljs-632 a rope keeps a credit
+for its possible flattened copy only while a handle can still flatten it, so
+used bytes stay linear; but every credit still counted as allocation volume,
+and the byte trigger collects the whole heap after half the remaining
+headroom has been admitted. With a 4 GB limit and 200-400 MB live, that was a
+full collection every ~1.9 GB of credits, each tracing the whole heap.
+
+The fix: a credit is reserved against the limit without counting as volume
+(`ByteBudget::reserve_credit`, crates/big-boy-pants-js/src/heap/budget.rs)
+and counts once a flatten makes the copy (`ByteReservation::allocated`).
+The limit is enforced exactly as before. The regression test
+`an_append_loop_admits_volume_linear_in_its_length` (src/value/string.rs)
+admitted 401 MB for 2,000 appends of 100 units before the fix and fails;
+it now admits about 500 KB. On Penpot the grammar macro falls from
+37.3-39.6 s to 14.1-14.6 s at 1 thread and from 297 to 48 collections;
+the build's admitted volume from 545 GB to 34 GB, its collections from 880
+to 631. Peak memory rises 13-15% (fewer collections leave more garbage
+between them). `app.render` from the fixed Pants build is byte-identical to
+the V8 build's, JavaScript and source map (SHA-256 `0cc8853b…` and
+`2f369231…` with this run's output paths).
+
+The same search found a second, smaller accounting cost that did not matter
+here: the regular-expression matcher charges 256 bytes of volume per
+matching step (`regexp::matcher::Budget::charge`), so a failing `exec` over
+a 7,500-unit string admits 3.9 MB. Charging the backtracking stacks' high
+water instead cut a synthetic macro of 20,000 such searches from 2.4 s to
+1.0 s, but did not change Penpot (regular expressions are 0.3% of its
+samples), so it is not part of this change.
+
+`--stats` and `--stats-file` now also report a failed build's counters up
+to the failure (src/main.rs, src/compiler.rs); before, a build that stops,
+as `app.main` does, printed none. `stats_report_a_failed_build_up_to_its_failure`
+(tests/cli.rs) covers it.
+
+### 2. Where the main thread's time goes, one thread
+
+Share of the main thread's samples (`/usr/bin/sample`, 1 ms, whole build;
+`bb benchmarks/sample-inclusive.bb SAMPLE --buckets ...`, each sample given
+to the innermost listed function on its stack). Sampling slows the build
+(97 s and 81 s), so use shares, not times:
+
+| Work | Before | After |
+| --- | ---: | ---: |
+| interpreting JavaScript (`execute_budgeted`) | 47.5% | 65.0% |
+| garbage collection (`Heap::mark_and_sweep`) | 39.7% | 18.8% |
+| Rust analysis (`light_cljs::analyzer`) | 2.9% | 4.1% |
+| task command loop (`BbpEvaluator::run`'s own work) | 3.7% | 3.5% |
+| compiling JavaScript source on a helper thread (join) | 2.1% | 3.1% |
+| form conversion (import, export, `&env`) | 1.8% | 2.6% |
+| preparing and emitting deferred units | 1.6% | 2.2% |
+| prune walk | 0.2% | 0.3% |
+| everything else | 0.5% | 0.6% |
+
+Form conversion, the prune walk, catalog application (`native.catalog.ms`
+377 ms) and helper-producer setup (45 ms) are small on Penpot. The
+single-entry `&env` cache never hits (`native.env.hits` 0 of 14,284;
+485 ms), which is under 1%.
+
+Inside the interpreter (inclusive shares of the main thread, after): the
+dispatch loop's own time 16.4%, form intrinsics (`form_step`) 8.9%, calls
+(`call`, `call_slow`, constructor entry) about 12%, property reads
+(`lookup_cursor`, `property_read_step`, `read_named`) about 14%, dropping
+values 3.7%, compiling `eval` source 2.5%.
+
+### 3. What the interpreter runs: the port against what survives
+
+`/usr/bin/sample` sees Rust frames only. To split interpreter work by the
+JavaScript function running, a temporary build (not committed) counted
+every 64th dispatch-loop iteration under the executing function's script,
+name and first line. Iterations approximate instructions, not time; the
+native work an instruction does is charged to its function. Groups by the
+line ranges of the assembled `src/bbp_runtime.js` (its `decl`, `native` and
+root sections):
+
+| Code | Before the grammar macro | The grammar macro | Whole run |
+| --- | ---: | ---: | ---: |
+| the port's core functions and helpers (`native` section) | 50.3% | 42.7% | 48.1% |
+| compiled macro and library code (helpers, `eval` units) | 27.0% | 33.7% | 29.0% |
+| protocol and type dispatch (`decl`) | 13.4% | 13.6% | 13.4% |
+| compiler plumbing (roots, initializers, command loop) | 9.3% | 9.9% | 9.5% |
+
+The largest single port functions: `str` (13.1% before the grammar macro,
+its inner mapping function included), `invoke` (6.4%), the macro-function
+wrapper `macroReaderFunction` (3.5%), `val` (2.5%); in the grammar macro,
+JavaScript interop dispatch (`jsMember` and friends, 8.7%), `coreLookup`
+(5.4%), `invoke` (4.9%) and atom operations with their lane checks (`lane`,
+`swapPair`, `resetPair`, `deref`, `notifyWatches`, about 10%). These belong
+to the port and are not optimized here: the real core replaces them with
+`src/js_runtime.js` definitions that run in the same interpreter, so their
+share moves rather than disappears, and light-cljs-652 measures by how
+much. Everything else (compiled macro code, dispatch over engine tables,
+plumbing, and the interpreter's cost per instruction, call and property
+read underneath all of it) survives the switch.
+
+### 4. Garbage collection after the fix
+
+Of the 631 collections left at 1 thread, the byte trigger accounts for
+about 18 (34 GB admitted, a collection per ~1.9 GB); the rest come from the
+allocation-count trigger, which collects after as many object allocations
+as there are live objects (at least 16,384). Penpot keeps only 65,000-72,000
+live objects, but most live bytes sit inside persistent values (forms,
+vectors, compiled code) that every collection traces in full, and those
+grow with the build. Per 2,000 macro calls (pause counter, which undercounts
+collection work as 575 found; samples put collection at 18.8%):
+
+| Macro calls | Collections | Pause per collection | Live bytes at the end |
+| --- | ---: | ---: | ---: |
+| 0-2,000 | 90 | 5.3 ms | 88 MB |
+| 2,000-4,000 | 131 | 10.5 ms | 112 MB |
+| 8,000-10,000 | 88 | 15.7 ms | 164 MB |
+| 12,000-14,000 | 68 | 17.9 ms | 174 MB |
+| 14,000-14,288 (grammar macro) | 54 | 49 ms | 412 MB |
+
+Collections do not get rarer as each one costs more: collection time grows
+with the program's size times its allocations, faster than linearly. This
+is the second surviving cause (light-cljs-664).
+
+### 5. Why 4 threads was slower than 1, and is only 1.1x faster now
+
+At 4 threads the grammar macro runs on a pool worker while the coordinator
+goes on with later namespaces until one of its tasks touches a compile-time
+atom. An effect lane opens only when every unit and pass segment scheduled
+before the task has finished (src/effect_lanes.rs), whether or not it
+touches that atom, so the coordinator waited for the whole grammar macro:
+
+| 4 threads | Before | After |
+| --- | ---: | ---: |
+| longest lane wait | 48.2-49.0 s | 14.8-15.2 s |
+| lane waits, summed over tasks | 86-90 s | 54-56 s |
+| the grammar macro on its worker | 48.2-49.1 s | 14.8-15.2 s |
+| its collections, pause, live bytes | 320, 34.9 s, 719 MB | 28, 2.3 s, 918 MB |
+| coordinator's top-level passes (`trace.top-level-ms`) | 80.7 s | 47.8 s |
+| deferred units, summed (`trace.units.host-ms`) | 120.0 s | 87.7 s |
+
+Before the fix, the macro was slower on a worker (48-49 s) than on one
+thread (37-40 s): with more units in flight the live heap was twice as
+large (719 MB against 377 MB), so each of its credit-paced collections
+traced twice as much, and every collection stops every thread. The
+coordinator sat in the lane for that whole time, so the build's critical
+path was the work before the macro, plus the slower macro, plus the rest.
+
+After the fix the lane wait still equals the macro's duration. In the
+samples of a four-thread run (77 s sampled), the coordinator is blocked 66%
+of the time: 45% in `BbpEvaluator::demand` (lane and helper waits) and 20%
+in `SharedCatalog::claim_help` (waiting for units other threads analyze at a
+drain); it interprets 22% of the time. The three workers are idle in the
+scheduler 35-60% of the time; the `light-cljs-units` thread is idle
+throughout. User CPU is 72 s for 61 s of wall time, about 1.2 cores. The
+summed unit time (87.7 s against 43.2 s at 1 thread) is waiting, not
+computing: user CPU rose only 7 s.
+
+### Ranked causes that survive the switch to the real core
+
+| Rank | Cause | Share | Pellet |
+| --- | --- | --- | --- |
+| 1 | Interpreter cost per instruction, call and property read | 65% of the one-thread main thread; 52% of interpreted work is code that survives, the rest moves to the real core's definitions | light-cljs-663 |
+| 2 | Collections paced by object count while each traces a growing heap of persistent values | 19% of the one-thread main thread, growing with program size | light-cljs-664 |
+| 3 | Effect lanes wait for every earlier unit, not only those touching the atom | longest wait 15 s of 61 s at 4 threads (the whole grammar macro); coordinator blocked 66% | light-cljs-665 |
+| - | Drain waits (`claim_help`, 20% of the coordinator at 4 threads) | below the lane waits; already covered | light-cljs-578, -577, -573 |
+| fixed | Rope credits counted as allocation volume | 25-28 s of collection pauses in an 87 s build at 1 thread, 35 s at 4 | this change |
+
+Form conversion (2.6%), the command loop's own work (3.5%), compiling
+JavaScript source (3.1%) and Rust analysis (4.1%) are each under 10%.
+
+### Method and reproduction
+
+Run from a worktree, with `S` a scratch directory and `P` the absolute
+`research/penpot-light` path:
+
+```sh
+CARGO_BUILD_JOBS=4 cargo build --locked --release --no-default-features --features bbp-macros
+/usr/bin/time -l target/release/light-cljs --compile --esm --entry app.main \
+  --source-root $P/frontend/src --source-root $P/common/src --source-root $P/vendor \
+  --source-root $P/generated --source-root $P/shims \
+  --optimize none --jobs 1 --no-cache --stats --stats-file $S/trace.tsv \
+  --macro-expansions 100000000 --macro-nodes 4000000000 \
+  --macro-timeout-ms 3600000 --macro-memory-limit 4000000000 \
+  --macro-poll-budget 1000000000000 \
+  --source-map $S/out.map --source-map-include-sources > $S/out.js
+```
+
+Per-namespace times come from the trace's `namespace` rows (top-level
+microseconds) plus its `unit` rows by namespace; per-call collection
+counters from the `macro.gc.N.*` lines of `--stats`. Samples:
+`sample PID 90 1 -mayDie -file $S/run.sample` started one second into the
+run, then `bb benchmarks/sample-inclusive.bb $S/run.sample --buckets ...`
+(`--thread N` for the workers). The JavaScript-function counts used a
+temporary counter at the top of `execute_budgeted`'s loop keyed by the
+executing code's script name, source length, function name and first line;
+it is not in the tree.
 
 ## Re-measured against shadow-cljs, cached and uncached (October 29, 2026, at `0ad2514f`)
 
