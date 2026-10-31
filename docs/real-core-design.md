@@ -866,11 +866,49 @@ user decides; the options, found while closing the other causes):
 Recommendation: 1 now (a two-line assembly rewrite, no new unit), with 2
 if 648 finds a macro that reads `rt.compilerForms` through the hub.
 
-Left for the next attempt besides the table: the chunks view and the
-`mapSeq` thunk over sealed inputs (acceptance 3), the engine-kind views
-for atoms, Vars, multimethods, regex, structs and records (acceptance 4;
-the maps view before symbol metadata can be engine-built throughout), and
-the boot's memory below.
+The fourth attempt (2026-10-31, after the review fixes light-cljs-691 to
+693) added the maps view, the first half of it: `maps` recognizes an
+engine map form and reads it as an array map of its entries
+(`sharedMapEntries`: a frozen `{key, value, hash}` array in the engine's
+print order, `formPrintItems`, built once per task and map on the task's
+cells, `formEntries`), and `mapKinds` answers `array-map` for a form, so
+the verbatim units take their positional paths (never a hash trie) for
+`map?`, `count`, `get`, `contains?`, `find`, `keys`, `vals`, `seq`,
+printing, equality and hashing with a runtime-built map of the same
+entries, `reduce-kv`, `into` and the updates, and engine metadata (a
+symbol's, a vector's) is readable throughout
+(`shared_profile_engine_maps_are_maps`). Runtime-owned maps (sorted maps,
+records, and every map the verbatim builders still make: an update of an
+engine map is a runtime-owned array map) keep the V8 profile's kinded
+store, a property of the view so the boot seals it and its kinds; a
+`kindedStore()` in a profile-only unit would run before the runtime's
+`weakMapStores` is initialized. A map entry is a runtime-owned pair over
+the vectors' fallback with the vectors' prototype, as the V8 profile's
+lean entry (`mapEntry.lean`) is, which fixes the `seq` of a runtime-built
+map below. The engine's `arguments` object gained its `Symbol.iterator`
+(`Array.prototype.values`, as CreateUnmappedArgumentsObject gives it):
+`conj` of a map entry onto a map reaches `indexedNth` through protocol
+dispatch, whose `nth(...arguments)` threw. The second half, left: swap the
+builders (`makeMap`, `mapFromEntries`, `hashTrie`, `updatedMap`,
+`kindHooks.updatedRecord`, the transient paths, `empty`) so an update of
+an engine map is an engine map (`formAssoc`, `formDissoc`, `formArrayMap`
+for the array-map kind, `formMap` for the hash-map kind) and the hot
+reads (`lookup`, `kindTables[5][6]`, `mapCount`, `kindTables[5][4]`)
+read `formGet` and `formCount` without building the entries; the kinded
+payload's `Array.isArray` tests and `hashRoots` then matter only to the
+runtime-owned kinds. Two cautions found: engine key comparison
+(`formGet`) hashes a runtime-owned key (a set, a sorted map, a symbol of
+`sharedSymbol`'s fallback) by identity, as noted for `formHashes`, so the
+swapped lookups must keep the verbatim path for such keys or convert
+them; and `formMap` is a hash map, whose entries print in trie order
+(`{:b 2, :a 1}` for `(formMap :a 1 :b 2)`), while a runtime-built array
+map keeps insertion order, so a literal that must print in source order
+needs `formArrayMap`.
+
+Left for the next attempt besides the table: the second half of the maps
+view above, the chunks view and the `mapSeq` thunk over sealed inputs
+(acceptance 3), the engine-kind views for atoms, Vars, multimethods,
+regex, structs and records (acceptance 4), and the boot's memory below.
 
 The boot's memory (`shared_profile_boots_with_four_mib_heap`, ignored with
 the numbers): peak 53 MB of managed bytes and 50 MB live after the boot
@@ -895,10 +933,11 @@ not recognized by the brand; the global hierarchy stays on the task's cells
 until atoms are engine atoms); moving the port's representation code
 (`src/bbp_runtime.js`) into profile units.
 
-Also for light-cljs-666, found by the third attempt: the `seq` of a
-runtime-built map throws, because the verbatim `mapEntry` sets the
-prototype of the entry it builds with the swapped `makeVector`, an engine
-vector, which is not extensible (`core.seq(core.hashMap(1, 2))`: "cannot
-set the prototype of a form vector"); the maps view decides what a map
-entry is on this profile (an engine map entry, or a runtime-owned pair
-over the private fallback of `vectors`).
+Also for light-cljs-666, found by the third attempt and fixed by the
+fourth: the `seq` of a runtime-built map threw, because the verbatim
+`mapEntry` set the prototype of the entry it builds with the swapped
+`makeVector`, an engine vector, which is not extensible
+(`core.seq(core.hashMap(1, 2))`: "cannot set the prototype of a form
+vector"); a map entry is now a runtime-owned pair over the private
+fallback of `vectors` (an engine map entry form, `formNth` of
+`formPrintItems`, is an option once entries need to publish).
