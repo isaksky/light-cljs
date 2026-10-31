@@ -297,6 +297,10 @@
   // other kind of value is its own kind, and `null` is a host value.
   const sharedFormKind = value => { const kind = __rt.formKind(value); return kind === "occurrence" ? __rt.formKind(__rt.formValue(value)) : kind; };
   const sharedFormOf = value => __rt.formKind(value) === "occurrence" ? __rt.formValue(value) : value;
+  //@unit identical requires: sharedFormOf
+  // Occurrences carry source identity, not a distinct language value.
+  // Read the underlying reference without changing stored or returned values.
+  const identical = (a, b) => sharedFormOf(a) === sharedFormOf(b);
   //@unit sharedScalar
   // Read a scalar at a computation boundary. Keep collections and named forms
   // in their occurrences, and never rewrite a stored item or a returned input.
