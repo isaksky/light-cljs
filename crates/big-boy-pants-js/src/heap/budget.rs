@@ -146,6 +146,20 @@ impl ByteBudget {
     }
 
     pub(crate) fn reserve(self: &Arc<Self>, bytes: usize) -> Option<ByteReservation> {
+        let reservation = self.reserve_credit(bytes)?;
+        reservation.allocated();
+        Some(reservation)
+    }
+
+    /// [`Self::reserve`] for a credit: bytes held against the limit for
+    /// storage that may be allocated later, not allocated now. A credit is
+    /// not allocation volume, so it does not bring the next collection
+    /// closer until [`ByteReservation::allocated`] says its storage exists.
+    /// A rope's flattened copy is one: a loop of appends charges a credit
+    /// of the whole string at every step and releases the last one, and
+    /// counting them paced a collection of the whole heap every half
+    /// headroom of credits (light-cljs-635).
+    pub(crate) fn reserve_credit(self: &Arc<Self>, bytes: usize) -> Option<ByteReservation> {
         // Unconfigured runtimes do not pay for an atomic counter or an Arc
         // clone on each payload allocation.
         let Some(limit) = &self.limit else {
@@ -174,7 +188,6 @@ impl ByteBudget {
                 Err(actual) => used = actual,
             }
         }
-        self.volume.fetch_add(bytes, Ordering::Relaxed);
         Some(ByteReservation {
             budget: Some(self.clone()),
             bytes,
@@ -216,6 +229,15 @@ impl ByteReservation {
     pub(crate) fn shrink_to(&mut self, bytes: usize) {
         if self.is_charged() && self.bytes > bytes {
             self.refund(self.bytes - bytes);
+        }
+    }
+    /// Count this reservation's bytes as allocation volume, which paces
+    /// collections ([`ByteBudget::collection_due`]): its storage now exists.
+    /// [`ByteBudget::reserve`] does this at once; a credit
+    /// ([`ByteBudget::reserve_credit`]) when its storage is made.
+    pub(crate) fn allocated(&self) {
+        if let Some(budget) = &self.budget {
+            budget.volume.fetch_add(self.bytes, Ordering::Relaxed);
         }
     }
     pub(crate) fn is_charged(&self) -> bool {

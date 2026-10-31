@@ -455,9 +455,18 @@ impl JsString {
         // keeps the credit only while a handle can still flatten it
         // (`Rope::flat_credit`), so a retained chain of appends is charged
         // its nodes and one copy per handle, not every prefix's length.
+        // The credit is not allocated until a flatten makes the copy, so it
+        // does not pace collections before then (`ByteBudget::reserve_credit`).
         let rope = len > FLAT_CONCAT_LIMIT;
-        let mut node = Self::reserve_owned(heap, len, if rope { 2 } else { 1 })?;
-        let credit = rope.then(|| node.split(len * 2 + BODY_BYTES)).flatten();
+        let node = Self::reserve_owned(heap, if rope { 0 } else { len }, 1)?;
+        let credit = if rope {
+            Some(
+                heap.reserve_credit_bytes(len * 2 + BODY_BYTES)
+                    .ok_or(crate::vm::dispatch::Fault::HeapLimit)?,
+            )
+        } else {
+            None
+        };
         let mut text = self.concat(other).expect("checked length");
         if let Some(credit) = credit {
             let body = Arc::get_mut(&mut text.0).expect("a fresh rope");
@@ -563,7 +572,11 @@ impl JsString {
             // charge, which includes the copy.
             let reservation = rope
                 .take_flat_credit()
-                .map(Arc::new)
+                .map(|credit| {
+                    // The copy exists now: it is allocation volume.
+                    credit.allocated();
+                    Arc::new(credit)
+                })
                 .or_else(|| self.0.reservation.clone());
             Self::from_owned_code_units(units)
                 .expect("checked string length")
@@ -3057,6 +3070,35 @@ mod byte_budget_tests {
         assert_eq!(heap.byte_budget().used(), used - credit);
         assert_eq!(third.code_units().len(), 3 * UNITS);
         assert_eq!(second.code_units()[..UNITS], third.code_units()[..UNITS]);
+    }
+
+    /// A loop of appends (`s = s + piece`) admits allocation volume in
+    /// proportion to its nodes, not to every prefix's credit, so it does not
+    /// pace collections quadratically in the string's length; the copy a
+    /// flatten makes is volume when it is made (light-cljs-635). Before,
+    /// these 2,000 appends admitted about 400 MB of credits.
+    #[test]
+    fn an_append_loop_admits_volume_linear_in_its_length() {
+        const PIECE: usize = 100;
+        const APPENDS: usize = 2_000;
+        let heap = crate::heap::Heap::with_byte_limit(1 << 30);
+        let piece = JsString::copy_units(&heap, &[120; PIECE]).unwrap();
+        let before = heap.byte_budget().volume();
+        let mut text = piece.clone();
+        for _ in 1..APPENDS {
+            text = text.concat_accounted(&heap, &piece).ok().unwrap();
+        }
+        let admitted = heap.byte_budget().volume() - before;
+        assert!(
+            admitted <= APPENDS * (BODY_BYTES + 2 * PIECE),
+            "admitted {admitted} bytes"
+        );
+        // The credit of the last rope still covers its flattened copy, and
+        // the copy counts as volume once made.
+        let used = heap.byte_budget().used();
+        assert_eq!(text.code_units().len(), PIECE * APPENDS);
+        assert_eq!(heap.byte_budget().used(), used);
+        assert!(heap.byte_budget().volume() - before >= admitted + 2 * PIECE * APPENDS);
     }
 
     #[test]

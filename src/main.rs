@@ -696,7 +696,14 @@ fn build_namespace(
     if options.warning_mode {
         print_warnings(&warnings);
     }
-    let (program, files) = program?;
+    let (program, files) = match program {
+        Ok(program) => program,
+        Err(error) => {
+            // The counters up to the failure, then the failure itself.
+            report_stats(stats, begun, flags.stats_file.as_deref())?;
+            return Err(error.into());
+        }
+    };
     if let (true, Some(out_dir)) = (reloadable, &out_dir) {
         write_dev_build(
             &program,

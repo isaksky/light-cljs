@@ -693,6 +693,10 @@ impl Heap {
     pub(crate) fn reserve_bytes(&self, bytes: usize) -> Option<budget::ByteReservation> {
         self.byte_budget.reserve(bytes)
     }
+    /// See [`budget::ByteBudget::reserve_credit`].
+    pub(crate) fn reserve_credit_bytes(&self, bytes: usize) -> Option<budget::ByteReservation> {
+        self.byte_budget.reserve_credit(bytes)
+    }
 
     #[cfg(test)]
     pub(crate) fn with_byte_limit(bytes: usize) -> Self {
