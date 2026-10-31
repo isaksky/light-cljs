@@ -671,11 +671,19 @@ The pieces, all in the tree:
   `realized?` read the engine's state, and a delay's `value` reads
   `cljDelayState` without running the body. `cons`, `emptyList`, `LazySeq`
   (a computed result with no thunk realizes the cell at once) and `Delay`
-  build engine forms. `keywords` is a view over engine keywords and
-  `keyword`/`makeKeyword` build `formKeyword` (a run-time keyword is fresh,
-  as upstream's). `constructorHashes` answers an engine form's hash from the
-  engine and `identityHashes` reads `__rt.identityHash`, the engine's
-  runtime-wide identity service. Every other WeakMap and WeakSet brand store
+  build engine forms; a runtime-owned sequence that reaches the engine
+  there (a `cons` tail, a lazy thunk's result: a list of the verbatim
+  `listFromArray`, an indexed seq, the runtime's own `iterate`) goes
+  through `sharedSeqForm`, a lazy engine seq that takes one element at a
+  time through the verbatim `seq`, `first` and `rest`. A fractional vector
+  index in bounds truncates (`vectorNth`, `vectorAssoc`), as the V8
+  profile's bitwise indexing has it. `keywords` is a view over engine
+  keywords and `keyword`/`makeKeyword` build `formKeyword` (a run-time
+  keyword is fresh, as upstream's). `constructorHashes` answers an engine
+  form's hash from the engine and `identityHashes` reads
+  `__rt.identityHash`, the engine's runtime-wide identity service, which
+  is also the hash the engine folds for a host object inside a form, so
+  `[f]` and `(f)` hash alike. Every other WeakMap and WeakSet brand store
   (`symbols`, `metadataValues`, `atoms`, `vars`, `typeNames`, `recordTypes`,
   `multiFns`, `treeRoots`, ... 36 stores) is a `sharedStore`, a
   private-field class with a WeakMap's API that seals and publishes and
@@ -704,10 +712,12 @@ The pieces, all in the tree:
   a seal cannot take), then calls `__rt.sealReachable` (light-cljs-666:
   `sealBindings` plus, through the closure captures no JavaScript walk
   follows, the own-property records and untouched default prototypes of
-  the functions made while booting), and gives the boot task cells of its
-  own (`sharedTaskCells`: the hub's cells and the defaults' data as
-  writable own properties, which every task makes before it reads the
-  runtime; `core.sharedTaskCells` for the tasks light-cljs-648 starts).
+  the functions made while booting, the prototype inspected even behind
+  a record a shallow `seal` already took), and gives the boot task cells
+  of its own (`sharedTaskCells`: the hub's cells and the defaults' data,
+  read from the hub itself, as writable own properties, which every task
+  makes before it reads the runtime; `core.sharedTaskCells` for the tasks
+  light-cljs-648 starts).
 
 `tests/bbp_macros/shared_profile.rs` boots `SHARED_RUNTIME` in a boot task
 and publishes it; on failure it prints the first rejected path, the walk
@@ -717,12 +727,17 @@ of the 748 members by cause and the top-level bindings a seal cannot take
 `BBP_PUBLISH_TRAIL=1` the engine prints the kind and function name of every
 object on it. The other tests there cover the task's writable cells, the
 vector contract across the 32-element boundary, the lazy and delay states,
-engine keywords, identity hashes, the bounded fallback diagnostic and the
-boot's memory.
+engine keywords, identity hashes (an engine vector and the runtime's list
+of one host function hash alike), a task's first cells (the boot's
+defaults, with no cells needed), runtime-owned sequences crossing into
+the engine's `cons` and lazy realization, fractional vector indexes, the
+bounded fallback diagnostic and the boot's memory.
 
-State after light-cljs-647's second attempt (2026-10-31): the profile
-boots; 268 of 748 members publish (259 after the first attempt, 193 after
-646). The causes the attempt removed: the default `prototype` objects of
+State after light-cljs-647's third attempt (2026-10-31): the profile
+boots; 267 of 748 members publish (268 after the second attempt, 259
+after the first, 193 after 646; the third attempt's `cons` and `LazySeq`
+reach `seq` through `sharedSeqForm`, so they join the first cause below).
+The causes the second attempt removed: the default `prototype` objects of
 the functions made while booting (425 members, the reachable seal), the
 captured Maps (the registries above), the frozen empty array the record
 wrapper of `maps` captured (283 members once the prototypes were gone), and
@@ -730,7 +745,7 @@ the `EMPTY` statics. The remaining rejections, by cause:
 
 | Members | Cause | Example | What removes it |
 | ---: | --- | --- | --- |
-| 405 + 46 + 3 | a hook function (the third traced edge of a sealed hook table) captures a cell whose value is a function named `fn` that captures a task-owned object; reached from almost every operation through `count`, `seq` and the kind tables. Its trail: `object > function anonymous () > binding cell > function anonymous (fn) > object` | `rt.get`, `core.str`, `core.mapcat` | find the hook with `BBP_PUBLISH_TRAIL=1` and `shared_profile_publication_path_of`, then seal or swap what it captures (one unit; the count says it is one object) |
+| 407 + 45 + 3 | a hook function (the third traced edge of a sealed hook table) captures a cell whose value is a function named `fn` that captures a task-owned object; reached from almost every operation through `count`, `seq` and the kind tables. Its trail: `object > function anonymous () > binding cell > function anonymous (fn) > object` | `rt.get`, `core.str`, `core.mapcat` | find the hook with `BBP_PUBLISH_TRAIL=1` and `shared_profile_publication_path_of`, then seal or swap what it captures (one unit; the count says it is one object) |
 | 11 | the reader's and compiler input's WeakMaps (`stateOf`: `streams`, `readerMaps`) | `core.readLine`, `core.compilerInputWindow` | per-unit swaps to `sharedStore` in the reader unit |
 | 8 | the reader's `tags`/`builtinTags` Maps and `namespaces` | `core.readerRegisterTagParser`, `core.createNs` | the reader's tag tables to the task's cells with a sealed builtin-tag table; namespaces as sealed registries (648) |
 | 5 | the reader's nested `let`s (`defaultTag`, `activeDepth`) | `core.ednReadString` | the reader's state to the task's cells |
@@ -752,3 +767,11 @@ runtime-built value works inside a task and an engine form of the kind is
 not recognized by the brand; the global hierarchy stays on the task's cells
 until atoms are engine atoms); moving the port's representation code
 (`src/bbp_runtime.js`) into profile units.
+
+Also for light-cljs-666, found by the third attempt: the `seq` of a
+runtime-built map throws, because the verbatim `mapEntry` sets the
+prototype of the entry it builds with the swapped `makeVector`, an engine
+vector, which is not extensible (`core.seq(core.hashMap(1, 2))`: "cannot
+set the prototype of a form vector"); the maps view decides what a map
+entry is on this profile (an engine map entry, or a runtime-owned pair
+over the private fallback of `vectors`).

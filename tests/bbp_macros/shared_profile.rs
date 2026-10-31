@@ -127,10 +127,10 @@ fn walk_report(shareable: usize, causes: &[(String, Vec<String>, String)]) -> St
 /// task and `Runtime::publish` accepts the result with zero rejected paths.
 /// On failure the first rejected path is printed, then the walk of every
 /// member by cause and the top-level bindings a seal cannot take. State on
-/// 2026-10-31: 268 of 748 members publish; the remaining causes are in
+/// 2026-10-31: 267 of 748 members publish; the remaining causes are in
 /// docs/real-core-design.md, "Profile assembly" (light-cljs-666).
 #[test]
-#[ignore = "268 of 748 members publish; the remaining causes are listed in docs/real-core-design.md (light-cljs-666)"]
+#[ignore = "267 of 748 members publish; the remaining causes are listed in docs/real-core-design.md (light-cljs-666)"]
 fn shared_profile_boots_and_publishes_with_zero_rejected_paths() {
     let rt = Runtime::new();
     let booted = boot(&rt);
