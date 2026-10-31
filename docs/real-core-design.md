@@ -434,14 +434,29 @@ light-cljs-645, phase 0, on `df7531fa`. Code: `tests/bbp_macros/real_core_spike.
 Static, from `src/js_runtime.js` (textual: a unit names a binding outside
 the unit declaring it; the manifest's own analysis is exact):
 
-| Store | Units reading the payload (`get`) | Units writing it (`set`/`reset`) | Units testing the brand only (`has`) |
-| --- | ---: | ---: | ---: |
-| `vectors` | 40 | 2 | 32 |
-| `cells` | 55 | 16 | 8 |
-| `maps` | 21 | 3 | 28 |
-| `sets` | 17 | 2 | 20 |
-| `views` | 24 | 2 | 11 |
-| `lazyValues` | 12 | 1 | 15 |
+| Store | Units reading the payload (`get`) | Units calling `set`/`reset` | Units writing the payload (any way) | Units testing the brand only (`has`) |
+| --- | ---: | ---: | ---: | ---: |
+| `vectors` | 40 | 2 | 4 | 32 |
+| `cells` | 55 | 16 | 18 | 8 |
+| `maps` | 21 | 3 | 3 | 28 |
+| `sets` | 17 | 2 | 2 | 20 |
+| `views` | 24 | 2 | 2 | 11 |
+| `lazyValues` | 12 | 1 | 9 | 15 |
+
+"Writing the payload (any way)" adds the units that mutate a payload they
+retrieved: through the `get` call (`LazySeq.fields` assigns
+`lazyValues.get(this)[key]`), through a local holding it (`ChunkedCons.fields`
+sets `cells.get(this).chunkedState.hash`), or by passing it to a helper that
+mutates its first parameter (`deferredValue`, `kindHooks.realizeLazy`), which
+counts the helper's unit too (`bb benchmarks/real-core-seam.bb --writers`
+lists them; `--self-test` checks the analysis on fixtures). It is an upper
+bound: the two extra `vectors` units call a subvector payload's own `pop`
+function, which writes nothing. The real writers are the representation
+units the profile swaps (constructors, `.fields` setters, the lazy
+realization in `deferredValue`/`LazySeq.seq`/`lazyBranch`/`seq`/`next.cells`,
+`makeVector.hash`, the compiler form bridge): for `lazyValues` the spike's
+view already answers them, as its `thunk` is `null` and its `value` setter
+drops the write while the engine cell holds the value.
 
 | Captured state | Units naming it |
 | --- | ---: |
@@ -495,21 +510,40 @@ prototype.
    assign after boot (gensym and identity counters, tap and printing state,
    the global hierarchy, declaration-journal hooks) cannot be sealed; they
    move to task globals or engine services, as point 6 of section 1 says.
-3. **Sealed boot-time registries.** The registries are complete after boot
-   and read through captured identity (`methodKeys` by 179 units,
-   `protocolHooks` 156, `kindHooks` 153, `kindTables` 57): object literals
-   (`protocolHooks`, `kindHooks`, the hub and its sentinels), arrays
-   (`kindTables`, `methodKeys`, the multimethod tables), Maps
-   (`nativeMethods`, `coreDispatchers`) and the prototypes of the runtime's
-   own types (49 members fail through `.properties.prototype`). Rewriting
-   every reader to engine vectors and maps, as point 5 of section 1
-   proposes, would edit hundreds of units. An identity-preserving
-   seal, which turns a frozen ordinary object, array or Map whose values
-   all publish into a persistent value and rejects later writes, keeps them
-   verbatim. This is the "freeze on publication" option section 1 rejects,
-   but only for boot-time registries and prototypes, not for values: values
-   stay engine-owned, so its objections (prototype dispatch for values, the
-   bridge, interpreted tries) do not apply.
+3. **Sealed boot-time registries.** The runtime's shared state is read
+   through captured identity (`methodKeys` by 179 units, `protocolHooks`
+   156, `kindHooks` 153, `kindTables` 57), so rewriting every reader to
+   engine vectors and maps, as point 5 of section 1 proposes, would edit
+   hundreds of units. Of that state, two kinds need different treatment:
+   - *Complete after boot, never written again:* `kindHooks` and
+     `protocolHooks` (their members are assigned only by load-time effect
+     units), the sentinels (`noBranch`, `missing`, `protocolSentinel`),
+     `sequencePrototype`, `mapTypes`/`setTypes`, the `methodKeys` array
+     itself, and the prototypes of the runtime's own types (49 members fail
+     through `.properties.prototype`). An identity-preserving seal, which
+     turns a frozen ordinary object, array or Map whose values all publish
+     into a persistent value and rejects later writes, keeps these units
+     verbatim. This is the "freeze on publication" option section 1
+     rejects, but only for boot-time registries and prototypes, not for
+     values: values stay engine-owned, so its objections (prototype
+     dispatch for values, the bridge, interpreted tries) do not apply.
+   - *Dispatch state that changes after boot,* which a seal would break:
+     `kindTables` (`extend-type` and `specify!` on a runtime kind empty
+     it), `nativeMethods` (`extend-type` of host types, set and undone by
+     the declaration journal), `coreDispatchers` and the dispatch cells
+     `dispatchCell` creates on first use, the protocol type tables and
+     protocol values `extend-type` patches (`ICounted.number = true`), the
+     runtime types' prototypes when a program extends them, the method
+     keys' lazily filled memos (`key.slots[arity]`, `key.cell`,
+     `key.info`), and the multimethod tables (`defmethod`; the 65 members
+     failing through a captured array). These are not sealed: the memos
+     are filled at boot (about 55 keys), and the rest move to the engine's
+     dispatch tables read at the task's frontier (point 4 of section 1,
+     `cljProtocolLookup`/`cljDispatch`, light-cljs-515) or to the keyed
+     structs Vars and multimethods already use (589/521), with cross-task
+     order from the effect lanes. The units that write them are the
+     dispatch and extension units light-cljs-649 re-targets; the seal
+     applies only once they no longer write captured objects.
 4. **Not needed for `map`:** an identity hash, a lazy cell's raw state, or a
    CAS interning map (section 2's list). Realization through
    `__rt.cljSeq`, `__rt.lazySeq`, `__rt.cljCons`, `__rt.formList` and

@@ -86,6 +86,93 @@
 
 (def stores ["vectors" "cells" "maps" "sets" "views" "lazyValues"])
 
+;; Writers of a store's payload. A unit writes one when it calls the store's
+;; `set`/`reset`, or mutates a payload it retrieved: through the `get` call
+;; itself (`lazyValues.get(this)[key] = v`), through a local holding it
+;; (`const cell = cells.get(x); cell.chunkedState.hash = h`), or by passing
+;; it to a helper that mutates its first parameter (`deferredValue(lazy)`),
+;; in which case the helper's unit writes it too. Textual and
+;; over-inclusive: a property write on a payload's nested object counts.
+
+(def mutation-suffix
+  "After an expression: a property or index step and an assignment, an
+  update, or a mutating method call."
+  (str "(?:\\??\\.[\\w$]+|\\[[^\\]]*\\])*"
+       "(?:(?:\\??\\.[\\w$]+|\\[[^\\]]*\\])\\s*(?:\\*\\*|<<|>>>?|&&|\\|\\||\\?\\?|[-+*/%&|^])?=(?!=)"
+       "|(?:\\.[\\w$]+|\\[[^\\]]*\\])\\s*(?:\\+\\+|--)"
+       "|\\.(?:push|pop|shift|unshift|splice|sort|reverse|fill|copyWithin|set|delete|clear|add)\\()"))
+
+(defn store-get [store]
+  (str "(?<![\\w$.])" store "\\.get\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)"))
+
+(defn quote-re [s] (java.util.regex.Pattern/quote s))
+
+(defn aliases
+  "Locals a unit binds to a payload of `store`."
+  [store c]
+  (set (map second (re-seq (re-pattern (str "(?:\\b(?:const|let|var)\\s+|,\\s*)([\\w$]+)\\s*=\\s*"
+                                             (store-get store)))
+                           c))))
+
+(defn mutates? [expr c]
+  (re-find (re-pattern (str expr mutation-suffix)) c))
+
+(defn mutating-helpers
+  "`[name unit]` of functions that mutate their first parameter:
+  `function deferredValue(state, ...)` or `kindHooks.realizeLazy = lazy =>`."
+  [units]
+  (for [u units
+        [_ fname param] (concat
+                         (re-seq #"function\s+([\w$]+)\s*\(\s*([\w$]+)" (:code u))
+                         (re-seq #"([\w$][\w$.]*)\s*=\s*\(?\s*([\w$]+)\s*(?:,[^)=]*)?\)?\s*=>" (:code u)))
+        :when (mutates? (str "(?<![\\w$.])" (quote-re param)) (:code u))]
+    [fname (:name u)]))
+
+(defn payload-writers
+  "Names of the units that write `store`'s payload."
+  [units store]
+  (let [helpers (mutating-helpers units)
+        passes? (fn [c expr]
+                  (some (fn [[h _]] (re-find (re-pattern (str "(?<![\\w$.])" (quote-re h) "\\(\\s*" expr)) c))
+                        helpers))
+        writes (for [u units
+                     :let [c (:code u)
+                           locals (aliases store c)
+                           alias-exprs (map #(str "(?<![\\w$.])" (quote-re %) "(?![\\w$])") locals)]
+                     :when (or (calls? store "set" c) (calls? store "reset" c)
+                               (mutates? (store-get store) c)
+                               (some #(mutates? % c) alias-exprs)
+                               (some #(passes? c %) (cons (store-get store) alias-exprs)))]
+                 (:name u))
+        via-helpers (for [u units
+                          :let [c (:code u)
+                                exprs (cons (store-get store)
+                                            (map #(str "(?<![\\w$.])" (quote-re %) "(?![\\w$])")
+                                                 (aliases store c)))]
+                          [h owner] helpers
+                          :when (some #(re-find (re-pattern (str "(?<![\\w$.])" (quote-re h) "\\(\\s*" %)) c)
+                                      exprs)]
+                      owner)]
+    (set (concat writes via-helpers))))
+
+(when (some #{"--self-test"} *command-line-args*)
+  (let [units [{:name "set" :code "vectors.set(v, store);"}
+               {:name "direct" :code "lazyValues.get(this)[key] = value;"}
+               {:name "alias" :code "const cell = cells.get(x); cell.chunkedState.hash = h;"}
+               {:name "push" :code "const items = vectors.get(v); items.push(1);"}
+               {:name "helper" :code "function deferredValue(state, lazy) { state.value = 1; return state.value; }"}
+               {:name "caller" :code "const lazy = lazyValues.get(x); return deferredValue(lazy, true);"}
+               {:name "read" :code "const cell = cells.get(x); return cell.head === y;"}
+               {:name "rebind" :code "let cell = cells.get(x); cell = other; return cell;"}]
+        expect {"vectors" #{"set" "push"} "lazyValues" #{"direct" "helper" "caller"} "cells" #{"alias"}}]
+    (doseq [[store want] expect]
+      (let [got (payload-writers units store)]
+        (when (not= got want)
+          (binding [*out* *err*] (println "self-test failed:" store "got" got "want" want))
+          (System/exit 1))))
+    (println "self-test passed")
+    (System/exit 0)))
+
 (def module-lets
   (->> (re-seq #"(?m)^  let ([^;]*);" runtime-text)
        (mapcat (fn [[_ decls]]
@@ -107,15 +194,18 @@
 (println)
 (println (format "Units: %d (src/js_runtime.js)." (count bodies)))
 (println)
-(println "| Store | Units reading the payload (`get`) | Units writing it (`set`/`reset`) | Units testing the brand only (`has`) |")
-(println "| --- | ---: | ---: | ---: |")
+(println "| Store | Units reading the payload (`get`) | Units calling `set`/`reset` | Units writing the payload (any way) | Units testing the brand only (`has`) |")
+(println "| --- | ---: | ---: | ---: | ---: |")
 (doseq [s stores]
   (let [reads (count-units #(calls? s "get" (:code %)))
-        writes (count-units #(or (calls? s "set" (:code %)) (calls? s "reset" (:code %))))
+        setters (count-units #(or (calls? s "set" (:code %)) (calls? s "reset" (:code %))))
+        writers (payload-writers bodies s)
         has-only (count-units #(and (calls? s "has" (:code %))
                                     (not (calls? s "get" (:code %)))
                                     (not (calls? s "set" (:code %)))))]
-    (println (format "| `%s` | %d | %d | %d |" s reads writes has-only))))
+    (println (format "| `%s` | %d | %d | %d | %d |" s reads setters (count writers) has-only))
+    (when (some #{"--writers"} *command-line-args*)
+      (println (format "|   %s writers: %s | | | | |" s (str/join " " (sort writers)))))))
 (println)
 (println "| Captured state | Units naming it |")
 (println "| --- | ---: |")
