@@ -1530,3 +1530,49 @@ rare association path walks the entries; ordinary record updates retain the
 native operation. The regression first reproduced lost no-op occurrences and
 NaN replacement/removal, then passes with all 24 selected record, publication
 and manifest checks at `843c423c`.
+
+### Final composed acceptance evidence (2026-10-31)
+
+Code checkpoint `15020ee2e73d82f563233dc1b3265fbc6ce0ad4d` includes the accepted
+708–713 commits and is rebased on master `3fa2c156`. The engine tree, shared
+assembly in `build.rs`, scalar bridge implementation/tests and compiler manifest
+tests are byte-identical to accepted peer head `b38a47ca`; their reviews and
+unchanged engine evidence are reused. The integration delta retains the new
+engine-kind views, complete publication, chunk behavior, regex identity and
+record/atom occurrence boundaries described above.
+
+| Build/check | Final selected result |
+| --- | --- |
+| Pants, real core: profile, manifest, real-core, scalar provenance, bootstrap, native atom/Var/regex and struct protocol matrix | 95 passed, one failure owned by 649 |
+| Pants + QuickJS: profile, manifest and real-core | 81 passed |
+| V8 + QuickJS: manifest | 21 passed, one diagnostic ignored |
+| V8 + Pants + QuickJS: profile, manifest and regex constructor identity | 68 passed |
+| Engine sealing | 11 passed |
+
+These use `cargo nextest run --locked --no-fail-fast -j 4` for the compiler
+selections, with `LIGHT_CLJS_MACRO_CORE=real`, Cargo jobs 2 and the feature flags
+listed above. The default manifest and engine sealing use `cargo test --locked`
+with two test threads. `LIGHT_CLJS_V8_CACHE=require` prevents a V8 source rebuild.
+The complete-profile test passes without exclusions in every Pants feature
+combination; all engine-kind and lazy/chunk acceptance tests pass.
+
+The sole observed functional failure is
+`native_struct_core_protocol_operation_matrix_matches_legacy`: at `equiv-hash`,
+jobs 1, actual `[true false false true 107 107 108]` differs from expected
+`[true false true true 107 107 108]`. This exactly matches the retained protocol
+dispatch failure owned by 649; `(apply = [a b])` is the differing result. No
+selected 666 or 708–713 integration check fails. This is a bounded failure count:
+the whole suite was not rerun, and the historical 107/339 and 330/2244 counts
+above are not current counts or exemptions for the repaired findings.
+
+All seven generated V8 runtime files retain SHA-256
+`e90491c20e978d6eeb062d1023ed46a517d19aa7aab1d699f621dd90603db7e3`.
+The canonical runtime source and manifest implementation remain unchanged from
+`d4cf4c59`; the accepted assembly adapters apply only to the shared profile.
+
+Final formatting and default all-target strict Clippy pass. Pants strict Clippy
+stops on the same eight engine library diagnostics; engine all-target strict
+Clippy reports the same ten diagnostics including the list-format test and
+unused `Wakeups` noted above. Combined compiler all-target Clippy passes with
+only the three documented baseline categories allowed. These remain explicit
+strict-lint failures owned by the engine baseline, not a clean strict run.
