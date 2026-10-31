@@ -498,3 +498,51 @@ fn foreign_runtime_wake_handles_are_stale() {
     assert_eq!(task.status(), TaskStatus::Waiting);
     assert!(matches!(task.wake(own), Wake::Runnable(_)));
 }
+
+/// A completion's outcome is observable once installed, but its cell
+/// becomes a root source only after the cell lock is released
+/// (`crate::dep`, "Collector boundary"). A collection forced into that
+/// window (the `CompleteBeforeRegister` hook) keeps the payload, which the
+/// producer still roots, and a reader can root it there; once the
+/// completion returns and the producer's and reader's handles are dropped,
+/// the registered cell alone keeps it, for `Ready` and `Failed` alike.
+#[test]
+fn published_outcomes_survive_collection_before_source_registration() {
+    for (def, failed) in [(DependencyId::new(4), false), (DependencyId::new(5), true)] {
+        let rt = Runtime::new();
+        let task = consumer(&rt);
+        let key = DependencyKey::new(rt.world(), def, KIND);
+        let request = rt.claim(key).unwrap();
+        let payload = rt.scope(|s| {
+            let items = [1.0, 2.0, 3.0].map(|n| s.primitive(Primitive::Number(n)));
+            let vector = s.new_vector(&items).unwrap();
+            s.persist(vector)
+        });
+        let read = Arc::new(Mutex::new(None));
+        let (observed, reader) = (rt.clone(), Arc::clone(&read));
+        hooks(&task).once(HookPoint::CompleteBeforeRegister, move || {
+            observed.collect().unwrap();
+            let status = observed.cell_status(DependencyKey::new(observed.world(), def, KIND));
+            *reader.lock().unwrap() = Some(status);
+        });
+        let completion = if failed {
+            Completion::Failed(&payload)
+        } else {
+            Completion::Ready(&payload)
+        };
+        rt.complete(key, request.producer(), completion).unwrap();
+        let in_window = read.lock().unwrap().take().expect("the hook ran");
+        let in_window = match (in_window, failed) {
+            (CellStatus::Ready(v), false) | (CellStatus::Failed(v), true) => v,
+            (other, _) => panic!("{other:?}"),
+        };
+        assert_eq!(rt.scope(|s| s.count(s.local(&in_window).unwrap())), Ok(3));
+        drop((payload, in_window));
+        rt.collect().unwrap();
+        let kept = match (rt.cell_status(key), failed) {
+            (CellStatus::Ready(v), false) | (CellStatus::Failed(v), true) => v,
+            (other, _) => panic!("{other:?}"),
+        };
+        assert_eq!(rt.scope(|s| s.count(s.local(&kept).unwrap())), Ok(3));
+    }
+}

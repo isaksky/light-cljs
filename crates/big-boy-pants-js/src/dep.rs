@@ -256,6 +256,10 @@ pub(crate) enum HookPoint {
     /// A completion passed its unlocked publication check and is about to
     /// take the cell lock to install.
     CompleteBeforeInstall,
+    /// A completion installed its outcome and released the cell lock, and is
+    /// about to register the cell as a root source if the outcome holds a
+    /// heap edge: only the producer's own root keeps the value alive here.
+    CompleteBeforeRegister,
     /// A completion installed its outcome and drained the waiters, released
     /// the cell lock, and is about to deliver the wakes.
     CompleteAfterDrain,
@@ -544,6 +548,7 @@ impl DependencyTable {
         // The cell lock is a leaf: register after releasing it. The caller
         // still roots the value, so it is traced throughout.
         drop(state);
+        self.hook(HookPoint::CompleteBeforeRegister);
         self.register_if_rooting(cell);
         Ok(waiters)
     }
