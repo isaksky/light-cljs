@@ -1502,3 +1502,20 @@ accepted positional map repair (light-cljs-709) at `e27412c4` then passes all
 duplicate and undefined map entries, engine record metadata, and the complete
 profile publication check. These bounded runs reuse unchanged engine sealing
 evidence; none is a new full-suite count.
+
+The accepted constructor and tree repairs (710 and 711) keep public collection
+constructor slots on runtime-owned wrappers. Their canonical payload algorithms
+still retain live positional arrays, metadata and cached hashes; ordinary
+builders continue returning engine forms. Shared assembly adapts only the
+allocation calls, and the manifest check restores the canonical source exactly.
+Sorted-map tree nodes also remain writable runtime-owned map entries while
+ordinary map entries remain immutable engine forms. The reader-array repair
+(712) makes `array?` recognize engine `#js` array descriptors through occurrences,
+while retaining the host predicate for ordinary JavaScript arrays.
+
+Integration checkpoints `be72ea3f` (through 710) and `8bc5db5d` (through 711)
+pass 70 profile/real-core/manifest and 58 profile/manifest tests respectively
+in the Pants build. At `ce6fb9ba`, through 712, all 73 profile, real-core and
+manifest tests pass with Pants + QuickJS. The one adjacent-text conflict
+retains both the engine-Var printer and the bridge-free `compilerForms` unit;
+the complete-profile publication test remains enabled and passing.
