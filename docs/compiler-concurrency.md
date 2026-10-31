@@ -3177,18 +3177,16 @@ state and determinism"; this is what was delivered.
 - **What takes a lane.** Atom accesses (including a multimethod's tables,
   which the port keeps in atoms), shared mutable fields, namespace registry
   reads, `*ns*` reads, a `gensym` inside an initializer, a shared
-  initializer's caller selection, the first realization of a shared lazy
-  sequence or delay (the engine's realization gate, light-cljs-676) and a
-  macro's `binding` (before it
-  installs its overlay: a published lazy sequence or delay realized under
-  the binding would otherwise take a later caller's value;
-  `published_once_cells_keep_source_order_bindings`). A lane waits for
-  every earlier unfinished unit, not only those that can touch the same
-  state: a running macro can reach any loaded Var, so no sound bound on
-  what it touches exists without light-cljs-446's require-closure rule
-  (light-cljs-672). On Penpot `app.main` the binding lane is most of the
-  waits (benchmarks/penpot-investigation.md, "Effect-lane waits on
-  app.main"); light-cljs-676 removes it.
+  initializer's caller selection and the first realization of a shared lazy
+  sequence or delay (the engine's realization gate: its thunk reads the
+  realizing task's bindings, gensym scope and other task state). A macro's
+  `binding` does not: its overlay is task-local, and other tasks see it only
+  through those last two (light-cljs-676; docs/native-macros.md).
+  A lane still waits for every earlier unfinished unit, not only those that
+  can touch the same state: a running macro can reach any loaded Var, so no
+  sound bound on what it touches exists without light-cljs-446's
+  require-closure rule (light-cljs-672; benchmarks/penpot-investigation.md,
+  "Effect-lane waits on app.main").
 - **No deadlock by order.** An earlier activity never waits for a later
   one parked on its lane: a demand lends the later one its position. The
   test `an_earlier_unit_demanding_a_parked_initializer_lends_it_its_lane`

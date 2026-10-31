@@ -5222,6 +5222,99 @@ fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slo
     }
 }
 
+/// A macro's `binding` changes only its own task's overlay, so installing
+/// one takes no effect lane (light-cljs-665): `app/l` binds and expands
+/// while the earlier `app/e` is still unstarted. Held, `app/e` starts only
+/// once `app/l` has been analyzed; had the binding waited for its lane,
+/// `app/l` would have parked behind `app/e` until the hold gave up. A
+/// shared root read under the binding (`captured`) still takes the
+/// initializer's lane, so it keeps the first source-order caller's value
+/// (a shared lazy sequence or delay forced under it takes the realization
+/// gate: `published_once_cells_keep_source_order_bindings`).
+#[test]
+fn a_macro_binding_does_not_wait_for_earlier_units() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-binding-lane");
+    for (file, source) in [
+        (
+            "m.cljs",
+            r#"(ns m)
+            (def ^:dynamic *x* :root)
+            (def captured *x*)
+            (defmacro early [] (list 'quote [:early *x*]))
+            (defmacro bound [t] (binding [*x* t] (list 'quote [*x* (binding [*x* :inner] *x*) *x*])))
+            (defmacro capture [t] (binding [*x* t] (list 'quote [*x* captured])))"#,
+        ),
+        (
+            "app.cljs",
+            r#"(ns app (:require [m :refer [early bound capture]]))
+            (def e (early))
+            (def l (bound :later))
+            (def c1 (capture :one))
+            (def c2 (capture :two))"#,
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [app])) (js/console.log (pr-str [app/e app/l app/c1 app/c2]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |jobs: usize, held: bool| {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "main",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                stats: Some(&mut stats),
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: Some(light_cljs::scheduler::Perturbation {
+                    seed: 665,
+                    // `app/e` after `app/l`, then `app/c1` and `app/c2` in
+                    // source order, so that only a binding could wait.
+                    hold_until: if held {
+                        vec![
+                            ("app/e".into(), "app/l".into()),
+                            ("app/c1".into(), "app/e".into()),
+                            ("app/c2".into(), "app/c1".into()),
+                        ]
+                    } else {
+                        Vec::new()
+                    },
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("jobs {jobs}, held {held}: {e}"));
+        (emit_js(&program), stats.lanes)
+    };
+    let (reference, _) = build(1, false);
+    assert_eq!(
+        program_output(&reference),
+        "[[:early :root] [:later :inner :later] [:one :one] [:two :one]]\n"
+    );
+    for (jobs, held) in [(2, false), (4, false), (8, false), (8, true)] {
+        let (program, lanes) = build(jobs, held);
+        assert_eq!(program, reference, "jobs {jobs}, held {held}");
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        if held {
+            assert_eq!(lanes.waits, 0, "jobs {jobs}: a binding waited for its lane");
+        }
+        let _ = lanes;
+    }
+}
+
 /// A published delay or lazy sequence is realized by the earliest task in
 /// source order that needs it, with that task's bindings (light-cljs-665,
 /// light-cljs-676): its thunk reads `*x*` from the realizing task's

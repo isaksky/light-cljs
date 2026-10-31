@@ -2288,24 +2288,34 @@ therefore preserve pending, initialized and failed slots, including nil, false
 and undefined overlays. Emitted `finally` blocks restore overlays after throws,
 and saved VM frames retain them across helper waits and task migration. Bound
 `set!` uses a native compiler service rather than an engine Proxy `set` trap.
-Installation joins the existing source-order effect lane before changing an
-overlay: a pending shared root can capture a binding without touching an atom,
-so later callers must not initialize it first. It also keeps a published lazy
-sequence or delay that reads the bound Var realized under the earliest
-binding caller's value (`published_once_cells_keep_source_order_bindings`).
-A later caller that forces such a cell without a binding is ordered by the
-engine's realization gate (`Runtime::set_realization_gate`, light-cljs-676):
-the first realization of a shared lazy sequence or delay waits for the
-realizing task's lane before it claims the cell. A shared initializer reserves
-its dependency before waiting for the lane, allowing earlier callers to lend
-their position. Once the lane opens, the earliest caller's task executes the
-factory, even if a later task reserved it first. Selection rechecks each
-candidate's caller ancestry, including positions lent to helper producers
-after reservation; inheritance through the initializer being selected cannot
-change the candidates' relative order. This retains the caller's
-overlays and mutable binding values by identity, with no factory effects to
-replay or task-owned objects to publish. Bindings installed inside that
-initializer still override its caller's bindings. Cancelling the current owner
+Installing an overlay takes no effect lane (light-cljs-676). The overlay Map
+is the task's own, and other tasks observe it only through shared values
+computed under it: a pending shared root's initializer, and a published lazy
+sequence or delay's thunk. A helper's production runs in a fresh task without
+overlays, and roots, bound `set!` and a declaration group's products are per
+task. The initializer waits for its lane before it selects a caller, and the
+first realization of a shared lazy sequence or delay waits for the realizing
+task's lane before it claims the cell (the engine's realization gate,
+`Runtime::set_realization_gate`), so the earliest caller in source order
+computes either value with its own bindings, as with one thread, also when a
+later caller has no binding at all
+(`published_once_cells_keep_source_order_bindings`). Until light-cljs-676 the
+installation itself waited for the lane (728ef1e8), which made every macro
+`binding` wait for every earlier unit: on Penpot `app.main` at 4 threads, 466
+of 496 lane waits and the 20 s longest one; and it did not order a later
+caller that forced such a cell unbound. A later unit's `binding` running
+while an earlier unit is unstarted is
+`a_macro_binding_does_not_wait_for_earlier_units` (tests/bbp_macros.rs).
+A shared initializer reserves its dependency before waiting for the lane,
+allowing earlier callers to lend their position. Once the lane opens, the
+earliest caller's task executes the factory, even if a later task reserved
+it first. Selection rechecks each candidate's caller ancestry, including
+positions lent to helper producers after reservation; inheritance through
+the initializer being selected cannot change the candidates' relative order.
+This retains the caller's overlays and mutable binding values by identity,
+with no factory effects to replay or task-owned objects to publish.
+Bindings installed inside that initializer still override its caller's
+bindings. Cancelling the current owner
 before task selection fails the reserved claim and wakes its consumers.
 Cancelling a superseded reserver withdraws that candidate and leaves the
 transferred claim and its consumers alive.

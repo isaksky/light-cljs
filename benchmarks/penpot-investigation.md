@@ -133,7 +133,8 @@ mutable fields and initializer selections), but a running macro can reach any
 loaded Var by name, so nothing proves it cannot; letting a lane skip it needs
 light-cljs-446's require-closure rule (light-cljs-672).
 
-The binding lane stays. A binding's overlay is task-local, but a published
+The binding lane stayed until light-cljs-676 (below, "Effect-lane waits on
+app.main after the realization gate"). A binding's overlay is task-local, but a published
 lazy sequence or delay is realized by the first task that needs it, under that
 task's bindings, so a later task's binding could decide its value; review found
 this, and `published_once_cells_keep_source_order_bindings`
