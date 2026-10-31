@@ -1,1 +1,12 @@
-(ns views.m) (defmacro probe [] [(some? (find-ns 'views.x)) (some? (find-ns 'views.m)) (contains? (set (map ns-name (all-ns))) 'views.x)])
+(ns views.m)
+(defmacro probe []
+  [(some? (find-ns 'views.x))
+   (some? (find-ns 'views.m))
+   (contains? (set (map ns-name (all-ns))) 'views.x)
+   (some? (resolve 'views.x/y))
+   (try (contains? (ns-publics 'views.x) 'y) (catch :default _ false))
+   (try (contains? (ns-interns 'views.x) 'y) (catch :default _ false))
+   (try (read-string "::x/k") (catch :default _ nil))
+   (try (js* "globalThis.__lightCompilerRoots['views.x/y']") (catch :default _ nil))
+   (js* "Reflect.ownKeys(globalThis.__lightCompilerRoots).includes('views.x/y')")
+   (js* "Object.getOwnPropertyDescriptor(globalThis.__lightCompilerRoots,'views.x/y') !== undefined")])

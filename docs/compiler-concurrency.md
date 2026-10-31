@@ -3217,11 +3217,11 @@ state and determinism"; this is what was delivered.
   `the-ns` see a namespace of the build's sources only from a unit or pass
   whose namespace requires it (fixture `views`); other names (`cljs.user`,
   `cljs.core`, `create-ns`) stay as they were, and the registry's lane
-  still waits for every earlier unit. What the rule does not restrict yet:
-  reader contexts, and the extension frontier of protocols and multimethods
-  (a multimethod's table is read at the load-order frontier; a method
-  defined outside the reader's closure that touches its own namespace's
-  state then fails as above). The analyzer's resolution of qualified names
+  still waits for every earlier unit. Namespace member views, resolution,
+  and global root reads and enumeration use the same closure; reader
+  aliases come from the consumer's own namespace snapshot. Protocol and
+  multimethod extension views intersect the source frontier with the
+  defining namespace's admission. The analyzer's resolution of qualified names
   is unchanged; a temporary probe found no resolution leaving the closure
   on Penpot `app.main` (V8 build, 922 namespaces), `app.render` and the
   seed-42 200k project (Pants build), so no output changed.

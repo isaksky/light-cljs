@@ -11832,7 +11832,9 @@ const LANE_FIXTURES: &[(&str, bool, Result<&str, &str>)] = &[
     (
         "views.main",
         false,
-        Ok("[[false true false] [true true true]]\n"),
+        Ok(
+            "[[false true false false false false nil nil false false] [true true true true true true :views.x/k 1 true true]]\n",
+        ),
     ),
 ];
 

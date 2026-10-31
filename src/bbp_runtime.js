@@ -1086,7 +1086,10 @@ const native = (() => {
   };
   const symText = s => { s = val(s); const ns = __rt.formNamespace(s); return (ns === null ? '' : ns + '/') + __rt.formName(s); };
   const varText = v => "#'" + symText(varField(v,'sym'));
-  const makeVar = (get, sym, metadata = null) => __rt.structNew(varType, get, sym, metadata, null);
+  const makeVar = (get, sym, metadata = null) => {
+    checkCompilerRoot(symText(sym));
+    return __rt.structNew(varType, get, sym, metadata, null);
+  };
   // The metadata the legacy runtime's `definitionVar` gives: its base keys
   // in their order, the definition's metadata, then :ns, :name and :test.
   // Without a deferred :test the root is read, as the legacy runtime does.
@@ -1095,6 +1098,9 @@ const native = (() => {
     return [__rt.cljKeyword('ns'), ns === null ? null : __rt.formSymbol(null, ns), __rt.cljKeyword('name'), __rt.formSymbol(null, __rt.formName(val(sym))), ...entries];
   };
   const definitionVar = (get, sym, metadata = null, deferred = null) => {
+    // Namespace reflection macros construct Vars without reading roots.
+    // Apply admission even when the root or its metadata is already ready.
+    checkCompilerRoot(symText(sym));
     const root = deferred === null ? val(get()) : null;
     const k = name => __rt.cljKeyword(name), base = varBase(sym, []);
     let m = arrayMap(varBase(sym, [k('doc'), null, k('file'), null, k('line'), null, k('column'), null, k('arglists'), __rt.formList()]));
@@ -1726,7 +1732,8 @@ const native = (() => {
   };
   const findNs = (...a) => {
     if(a.length!==1)return arity(a.length);
-    const name=val(a[0]);if(name==null)return null;if(name instanceof Namespace)return name;
+    const name=val(a[0]);if(name==null)return null;
+    if(name instanceof Namespace)return __rt.effect(65527,namedText(name.name))?name:null;
     if(__rt.formKind(name)!=='symbol')throw new TypeError('find-ns requires a symbol or Namespace');
     const key=namedText(name);registryLane();
     return __rt.effect(65529,'f'+key)?localNs(key):null;
@@ -4172,6 +4179,8 @@ const checkCompilerRoot=name=>{
 globalThis.__lightCompilerRoots=new Proxy(rootTarget, {
   get:(target,name,receiver)=>{checkCompilerRoot(name);return bindingOverlays.has(name)?bindingOverlays.get(name):(lazyCatalog!==null&&lazyResolve(name),Reflect.get(target,name,receiver));},
   has:(target,name)=>compilerRootVisible(name)&&(bindingOverlays.has(name)||(lazyCatalog!==null&&lazyResolve(name),Reflect.has(target,name))),
+  ownKeys:target=>Reflect.ownKeys(target).filter(compilerRootVisible),
+  getOwnPropertyDescriptor:(target,name)=>compilerRootVisible(name)?Reflect.getOwnPropertyDescriptor(target,name):undefined,
 });
 // The compiler's bounded read intrinsic checks this live overlay Map and
 // target on every read. Ordinary interop retains the Proxy and its receiver.
