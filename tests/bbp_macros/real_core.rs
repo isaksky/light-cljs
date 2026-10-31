@@ -181,6 +181,33 @@ fn real_core_dynamic_bindings_reach_runtime_functions() {
     }
 }
 
+/// The real core's functions read a macro's arguments as the Rust bridge
+/// imports them (light-cljs-666, the view of imported forms): a vector,
+/// map, list, symbol or keyword through its occurrence (`partition`,
+/// `get`, `name`, `str`, `=`, `meta`, printing), and a scalar as the plain
+/// primitive the V8 profile's JavaScript computes with (`inc`, `str`,
+/// `=`, `nth` with an imported index). The port answers the same.
+#[test]
+fn real_core_reads_imported_forms_through_their_occurrences() {
+    let source = "(defmacro over [v m l k s n] \
+                    (list 'quote \
+                      [(count (partition 2 v)) (vec (partition 2 v)) \
+                       (str k s n) (name k) (namespace k) \
+                       (= n 2) (inc n) (nth v n) (= :b/c k) (keyword? k) (symbol? (first l)) \
+                       (get m :a) (vec (keys m)) (count m) (contains? m :a) (assoc m :c 3) \
+                       (first v) (vec (map inc v)) (conj v 9) (vector? v) (list? l) (count l) \
+                       (:x (meta (first l))) (pr-str v m l k s n) (count (hash-set k :a)) \
+                       (= v [1 2 3 4]) (= m {:a 1 :b 2}) (= l '(^{:x 1} a b)) \
+                       (= (into #{} v) #{1 2 3 4}) (get (frequencies [n n 1]) n)])) \
+                  (js/console.log (pr-str (over [1 2 3 4] {:a 1 :b 2} (^{:x 1} a b) :b/c \"s\" 2)))";
+    let expected = "[2 [(1 2) (3 4)] \":b/cs2\" \"c\" \"b\" true 3 3 true true true 1 [:a :b] 2 true {:a 1, :b 2, :c 3} 1 [2 3 4 5] [1 2 3 4 9] true true 2 1 \"[1 2 3 4] {:a 1, :b 2} (a b) :b/c \\\"s\\\" 2\" 2 true true true true 2]\n";
+    for core in [MacroCore::Port, MacroCore::Real] {
+        let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host(core))
+            .unwrap_or_else(|e| panic!("{core:?}: {e}"));
+        assert_eq!(program_output(&emit_js(&program)), expected, "{core:?}");
+    }
+}
+
 /// `*ns*` in a macro is the evaluator's namespace context on the real core
 /// too, as on the port: the calling namespace while a macro runs and while
 /// the helper it reads is initialized on demand inside it, and the caller's

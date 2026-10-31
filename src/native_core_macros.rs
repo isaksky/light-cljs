@@ -3678,13 +3678,13 @@ mod tests {
     }
 
     /// `for`'s definition partitions its binding vector, a form the bridge
-    /// imported, with the real `partition`, which the profile's views do not
-    /// take yet: `(defmacro m [xs] (count (partition 2 xs)))` throws "cannot
-    /// convert object to primitive value" on the real core for `(m [1 2])`,
-    /// where the same call over a vector the macro built answers.
+    /// imported, with the real `partition`, which reads the vector through
+    /// its occurrence and its count as a plain number (light-cljs-666, the
+    /// view of imported forms): `(defmacro m [xs] (count (partition 2 xs)))`
+    /// threw "cannot convert object to primitive value" on the real core
+    /// for `(m [1 2])` before it.
     #[cfg(feature = "bbp-macros")]
     #[test]
-    #[ignore = "the profile's views of imported forms are light-cljs-666's"]
     fn bootstrap_for_expands_on_the_real_core() {
         let failures = real_core_definition_failures(&[
             "(for [x xs] x)",

@@ -823,11 +823,12 @@ fn shared_profile_registry_getters_keep_the_profile_published() {
 /// `symbol?`, named, printed, stringified, equal, hashed and compared alike
 /// through the real units, and the namespace registry's names are engine
 /// symbols, so `currentNs` and the namespaces publish. Metadata is the
-/// engine's on an engine symbol; a symbol given runtime-built metadata (a
-/// map of the verbatim `maps`, until the maps view) is a runtime-owned
-/// symbol that reads alike, and an engine symbol again once its metadata is
-/// engine-built or removed. An unqualified name holding `/`, which no engine
-/// form spells, is a runtime-owned symbol too.
+/// engine's on an engine symbol, and a map the runtime builds is an engine
+/// map since the builders swap, so a symbol given one as metadata is an
+/// engine symbol too; one given a runtime-owned map (a sorted map) is a
+/// runtime-owned symbol that reads alike, and an engine symbol again once
+/// its metadata is engine-built or removed. An unqualified name holding
+/// `/`, which no engine form spells, is a runtime-owned symbol too.
 #[test]
 fn shared_profile_symbols_are_engine_symbols() {
     let rt = Runtime::new();
@@ -861,8 +862,11 @@ fn shared_profile_symbols_are_engine_symbols() {
     .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
+        // `withM`'s metadata, a map of `arrayMapFromArray`, is an engine map
+        // since the builders swap (light-cljs-666), so `withM` is an engine
+        // symbol.
         "true true false symbol symbol a ns null ns/a b :k ns/a/b true true -1 1 null \
-         null true true true 1 ns/a ns/a symbol null true map symbol map true \
+         symbol true true true 1 ns/a ns/a symbol null true map symbol map true \
          null a/b null a/b symbol a/b symbol / symbol ns/c \
          symbol cljs.core cljs.core true symbol a_b symbol x/y"
     );
@@ -929,9 +933,9 @@ fn shared_profile_vars_with_engine_symbol_names_print() {
 /// The operations that copy a collection's metadata to their result
 /// (`preserveMeta`: `empty`, `pop`, `conj`, `assoc`) give an engine result
 /// the engine metadata of its input as a form (`formWithMeta`), never by
-/// writing to the form; runtime-built metadata on an engine result takes
-/// the wrapper `with-meta` builds, and a runtime-owned result keeps the
-/// store path (light-cljs-693).
+/// writing to the form; a map the runtime builds (`arrayMapFromArray`) is
+/// an engine map too since the builders swap (light-cljs-666), so a
+/// vector given one as metadata stays an engine vector (light-cljs-693).
 #[test]
 fn shared_profile_engine_collection_operations_preserve_metadata() {
     let rt = Runtime::new();
@@ -955,7 +959,7 @@ fn shared_profile_engine_collection_operations_preserve_metadata() {
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
         "vector:0:true vector:1:true vector:3:true vector:2:true \
-         null:0:own:[] null:1:own:[1] null:3:own:[1 2 3] null:2:own:[9 2] \
+         vector:0:own:[] vector:1:own:[1] vector:3:own:[1 2 3] vector:2:own:[9 2] \
          0:set 3:set [1 2 3] true \
          nil nil:[1 2 3] nil:[1] nil:[9 2] nil:[] nil"
     );
@@ -995,20 +999,81 @@ fn shared_profile_engine_maps_are_maps() {
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
         // `formMap` builds a hash map, whose entries print in the engine's
-        // trie order (`:b` before `:a`); a runtime-built array map keeps its
-        // insertion order.
+        // trie order (`:b` before `:a`), and an update of it is a hash map
+        // again (`:c` first; the builders swap, light-cljs-666); a
+        // runtime-built array map keeps its insertion order.
         "true 2 1 none true false \
          {:b 2, :a 1} ([:b 2] [:a 1]) [:b 2] :b 2 true true 2 \
          true true true false true \
          (:b :a) (2 1) [:b 2] null \
-         {:b 2, :a 1, :c 3} 1 {:b 2} {:b 2, :a 1, :c 4} \
+         {:c 3, :b 2, :a 1} 1 {:b 2} {:c 4, :b 2, :a 1} \
          {} 0 [[:b 2] [:a 1]] 3 \
-         {:b 2, :a 1, :c 3} {:a 1, :b 2} {:a 9} \
+         {:c 3, :b 2, :a 1} {:a 1, :b 2} {:a 9} \
          1 2 {:b 2, :a 1} true \
          ([1 2]) [1 2] true \
          [[:b 2] [:a 1]] {:b 2, :a 1} 2 \
          2 1"
     );
+}
+
+/// An engine set is a set (the sets view, light-cljs-666): the predicates,
+/// count, membership, printing, equality and hashing with a runtime-built
+/// set of the same members, `seq`, `conj`, `disj`, `into` and `empty`
+/// read it as a positional set of its members.
+#[test]
+fn shared_profile_engine_sets_are_sets() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const a = core.keyword(null, 'a'), b = core.keyword(null, 'b'), c = core.keyword(null, 'c'); \
+             const s = __rt.formSet(a, b), own = rt.setFromArray([a, b]); \
+             return [core.isSet(s), core.isColl(s), core.count(s), core.contains(s, a), core.contains(s, c), core.prStr(core.get(s, b)), String(core.get(s, c)), \
+               core.prStr(s), core.prStr(core.seq(s)), core.prStr(core.first(s)), core.equal(s, own), core.equal(own, s), core.equal(s, rt.setFromArray([a])), \
+               core.hash(s) === core.hash(own), core.count(core.conj(s, c)), core.contains(core.conj(s, c), c), core.count(core.disj(s, a)), core.contains(core.disj(s, a), a), \
+               core.count(core.empty(s)), core.prStr(core.into(core.vector(), s)), core.count(core.into(s, core.vector(c, a))), core.count(core.set(s)), \
+               core.count(rt.setFromArray([s, __rt.formSet(b, a)]))].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true true 2 true false :b null #{:a :b} (:a :b) :a true true false true 3 true 1 false 0 [:a :b] 3 2 1"
+    );
+}
+
+/// A `#js` literal the profile's reader reads is an engine compiler
+/// literal, as the Pants build's reader builds one (the `compilerForms`
+/// swap, light-cljs-666): the reader entry points then hold nothing of the
+/// V8 form bridge and publish.
+#[test]
+fn shared_profile_reader_js_literals_are_engine_literals() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const array = core.readString('#js [1 2]'), object = core.readString('#js {{:a 1 \"b\" 2}}'); \
+             const payload = __rt.formLiteralPayload(object); \
+             return [__rt.formKind(array), __rt.formName(array), __rt.formKind(__rt.formLiteralPayload(array)), __rt.formCount(__rt.formLiteralPayload(array)), \
+               __rt.formKind(object), __rt.formName(object), __rt.formKind(payload), __rt.formCount(payload), __rt.formGet(payload, 'a', null), __rt.formGet(payload, 'b', null)].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "compiler-literal js-array vector 2 compiler-literal js-object map 2 1 2"
+    );
+    for member in ["readString", "read", "ednReadString", "readerInitialTagTable"] {
+        let value = run(
+            &rt,
+            &format!("const rt = (\n{SHARED_RUNTIME}\n); return rt.core['{member}'];"),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        rt.publish(&value)
+            .unwrap_or_else(|e| panic!("core.{member} does not publish: {e}"));
+    }
 }
 
 /// A lazy result of the real `map` publishes (its thunk captures the

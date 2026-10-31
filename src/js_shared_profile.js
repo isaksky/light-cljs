@@ -283,14 +283,28 @@
     globalThis.__lightSharedCells = sharedTaskCells();
     return exports;
   }
-  //@unit sharedView requires: sharedHost
+  //@unit sharedFormKind
+  // The kind of an engine form, through the occurrence the Rust bridge
+  // wraps an imported form in (docs/native-macros.md, identity and
+  // provenance: a macro argument's vector, map, symbol or keyword is the
+  // form behind an occurrence, whose identity export maps back to the
+  // compiler's Datum), and the form itself (`sharedFormOf`): the views
+  // read the imported form as they read one the runtime built, and keep
+  // the occurrence where the value is kept (an item, a tail), so a value
+  // returned unchanged exports with its identity (light-cljs-666). Every
+  // other kind of value is its own kind, and `null` is a host value.
+  const sharedFormKind = value => { const kind = __rt.formKind(value); return kind === "occurrence" ? __rt.formKind(__rt.formValue(value)) : kind; };
+  const sharedFormOf = value => __rt.formKind(value) === "occurrence" ? __rt.formValue(value) : value;
+  //@unit sharedView requires: sharedFormKind, sharedFormOf, sharedHost
   // A brand store as a read-only view over an engine tag (design point 3):
-  // `has` and `get` answer engine forms of the view's kind; `set` is only
-  // called by the swapped constructors, so it throws. While the profile is
-  // assembled, a runtime-built value of the kind takes a private store (the
-  // store's own, since the view loads before `privateStore`). A task that
-  // sets `globalThis.__lightSharedSetTrace` to a Map before it writes gets
-  // the first writer's stack per view, for the migration list
+  // `has` answers engine forms of the view's kind (`has` is given the
+  // form's kind) and `get` reads the form (`get` is given the form, through
+  // its occurrence, and its kind); `set` is only called by the swapped
+  // constructors, so it throws. While the profile is assembled, a
+  // runtime-built value of the kind takes a private store (the store's own,
+  // since the view loads before `privateStore`). A task that sets
+  // `globalThis.__lightSharedSetTrace` to a Map before it writes gets the
+  // first writer's stack per view, for the migration list
   // (tests/bbp_macros/shared_profile.rs); otherwise a write keeps nothing.
   function sharedView(name, has, get) {
     const fallback = class extends (function (value) { return value; }) {
@@ -305,8 +319,8 @@
       if (trace !== undefined && !trace.has(name)) trace.set(name, new Error().stack);
     };
     return {
-      has: value => has(value) || fallback.has(value),
-      get: value => has(value) ? get(value) : fallback.get(value),
+      has: value => has(sharedFormKind(value)) || fallback.has(value),
+      get: value => { const kind = sharedFormKind(value); return has(kind) ? get(sharedFormOf(value), kind) : fallback.get(value); },
       set(value, payload) { record(); fallback.set(value, payload); },
       reset(value, payload) { record(); fallback.reset(value, payload); },
       delete() { throw new TypeError("shared profile: " + name + ".delete"); }
@@ -314,7 +328,7 @@
   }
   //@unit keywords requires: sharedView
   // A keyword is an engine keyword form; its payload is read from the form.
-  const keywords = sharedView("keywords", value => __rt.formKind(value) === "keyword", value => {
+  const keywords = sharedView("keywords", kind => kind === "keyword", value => {
     const namespace = __rt.formNamespace(value), name = __rt.formName(value);
     return {namespace, name, spelling: namespace == null ? name : namespace + "/" + name};
   });
@@ -378,47 +392,204 @@
     cache.set(form, Object.freeze(entries));
     return entries;
   }
-  //@unit maps requires: kindedStore, sharedMapEntries
-  // A map is an engine map form, read as an array map of its entries
-  // (`sharedMapEntries`; its kind is `array-map`, so the verbatim units
-  // take their positional paths and never a hash trie), or a runtime-owned
+  //@unit sharedMapForm requires: kindHooks
+  // An engine map of `entries` (an array of `{key, value}` in order, or the
+  // V8 profile's hash trie, walked in its order): an insertion-ordered map
+  // for the `array-map` kind (`formArrayMap`) and a hash map for the
+  // `hash-map` kind (`formMap`), the two kinds the V8 profile keeps apart
+  // (promotion at the ninth entry, `updatedMap`), so a map the real core
+  // builds or updates is an engine map, which macro code's intrinsics
+  // read and which publishes (light-cljs-666). The removal padding of a
+  // positional constructor's array map (`dissoc`'s undefined pairs) is
+  // dropped.
+  function sharedMapForm(entries, kind) {
+    const ordered = Array.isArray(entries) ? entries : kindHooks.hashTraversal(entries);
+    if (kind === "array-map") {
+      let pairs = __rt.formVector();
+      for (let i = 0; i < ordered.length; i++) {
+        const entry = ordered[i];
+        if (entry.key === undefined && entry.value === undefined) continue;
+        pairs = __rt.formConj(__rt.formConj(pairs, entry.key), entry.value);
+      }
+      return __rt.formArrayMap(pairs);
+    }
+    let value = __rt.formMap();
+    for (let i = 0; i < ordered.length; i++) value = __rt.formAssoc(value, ordered[i].key, ordered[i].value);
+    return value;
+  }
+  //@unit makeMap requires: mapKinds, maps, sharedMapForm, sortedComparators
+  // A map of the `array-map` or `hash-map` kind is an engine map
+  // (`sharedMapForm`); a sorted map keeps the V8 profile's object.
+  function makeMap(Type, entries, kind, comparator) {
+    if (kind !== "sorted-map") return sharedMapForm(entries, kind);
+    const value = Object.create(Type.prototype);
+    maps.set(value, Object.freeze(entries));
+    mapKinds.set(value, kind);
+    sortedComparators.set(value, comparator);
+    return value;
+  }
+  //@unit mapFromEntries requires: makeMap, PersistentArrayMapValue, PersistentHashMapValue
+  // The V8 profile's, without building a hash trie of the entries: the
+  // engine hashes them (`sharedMapForm`).
+  function mapFromEntries(entries, hash) {
+    return hash ? makeMap(PersistentHashMapValue, entries, "hash-map") : makeMap(PersistentArrayMapValue, entries, "array-map");
+  }
+  //@unit makeSet requires: kindHooks, setKinds, sets, sortedComparators
+  // A set of the `array-map` kind is a positional engine set
+  // (`formLiteralSet`, in the members' order) and one of the `hash-map`
+  // kind an engine hash set (`formSet`); a sorted set keeps the V8
+  // profile's object (light-cljs-666).
+  function makeSet(Type, entries, kind, comparator) {
+    if (kind !== "sorted-set") {
+      const ordered = Array.isArray(entries) ? entries : kindHooks.hashTraversal(entries);
+      if (kind === "array-map") {
+        let members = __rt.formVector();
+        for (let i = 0; i < ordered.length; i++) members = __rt.formConj(members, ordered[i].key);
+        return __rt.formLiteralSet(members);
+      }
+      let value = __rt.formSet();
+      for (let i = 0; i < ordered.length; i++) value = __rt.formConj(value, ordered[i].key);
+      return value;
+    }
+    const value = Object.create(Type.prototype);
+    sets.set(value, Object.freeze(entries));
+    setKinds.set(value, kind);
+    sortedComparators.set(value, comparator);
+    return value;
+  }
+  //@unit makeMap.seq effect: makeMap, treeMapConstructor, recordMethods when: first, rest, seq
+  //@ requires: IndexedSeqValue, kindHooks, mapEntry, mapKinds, mapTraversal, NodeSeqType,
+  //@ publicCollectionSlots, view
+  // The V8 profile's: a map entry is an engine entry (`mapEntry`), so the
+  // seq of an engine map crosses into macro code.
+  kindHooks.seqMap = value => {
+    const treeSlots = publicCollectionSlots.get(value);
+    if (treeSlots && "tree" in treeSlots) return kindHooks.seqTree(treeSlots);
+    const entries = mapTraversal(value), kind = mapKinds.get(value);
+    return entries.length ? view(kind === "hash-map" ? NodeSeqType : kind === "sorted-map" ? kindHooks.sortedMapSeq : IndexedSeqValue,
+      Object.freeze(entries.map(entry => mapEntry(entry.key, entry.value))), 0, false, kind) : null;
+  };
+  //@unit mapTraversal requires: collectionTraversal, mapKinds, maps, sharedFormKind
+  // An engine map's entries are in its order already (`sharedMapEntries`).
+  function mapTraversal(value) {
+    return sharedFormKind(value) === "map" ? maps.get(value) : collectionTraversal(maps.get(value), mapKinds.get(value));
+  }
+  //@unit setTraversal requires: collectionTraversal, setKinds, sets, sharedFormKind
+  function setTraversal(value) {
+    return sharedFormKind(value) === "set" ? sets.get(value) : collectionTraversal(sets.get(value), setKinds.get(value));
+  }
+  //@unit collectionEntryIndex requires: entryIndex, kindHooks, mapKinds, setKinds, sharedFormKind,
+  //@ sortedComparators
+  // An engine map's or set's entries are positional whatever its kind.
+  function collectionEntryIndex(value, entries, key) {
+    const comparator = sortedComparators.get(value);
+    if (comparator) return kindHooks.sortedEntryIndex(entries, key, comparator);
+    const form = sharedFormKind(value), kind = form === "map" || form === "set" ? "array-map" : mapKinds.get(value) ?? setKinds.get(value);
+    return kind === "array-map" ? entryIndex(entries, key) : kindHooks.hashEntryIndex(entries, key, kind);
+  }
+  //@unit maps requires: kindedStore, sharedFormKind, sharedFormOf, sharedMapEntries
+  // A map is an engine map form (an imported one through its occurrence),
+  // read as a positional map of its entries (`sharedMapEntries`, in the
+  // engine's order: the verbatim units take their positional paths,
+  // `collectionEntryIndex`, and never a hash trie), of the `array-map`
+  // kind when it is positional (`formArrayMap`, a literal) and the
+  // `hash-map` kind when the engine hashes it (`formMap`), as the V8
+  // profile keeps the two apart; or a runtime-owned
   // map over the V8 profile's kinded store (`maps.store`, a property so the
-  // boot seals it and its kinds): a sorted map, a record, and every map the
-  // verbatim builders make until the builders are swapped (light-cljs-666).
+  // boot seals it and its kinds): a sorted map or a record (light-cljs-666).
   // A form takes no payload: `set` on one throws.
   const maps = {
     store: kindedStore(),
-    has: value => __rt.formKind(value) === "map" || maps.store.has(value),
-    get: value => __rt.formKind(value) === "map" ? sharedMapEntries(value) : maps.store.get(value),
+    has: value => sharedFormKind(value) === "map" || maps.store.has(value),
+    get: value => sharedFormKind(value) === "map" ? sharedMapEntries(sharedFormOf(value)) : maps.store.get(value),
     set(value, payload) {
       if (__rt.formKind(value) !== null) throw new TypeError("shared profile: maps.set on an engine form");
       maps.store.set(value, payload);
     },
     reset(value, payload) { maps.store.reset(value, payload); },
     kinds: {
-      has: value => __rt.formKind(value) === "map" || maps.store.kinds.has(value),
-      get: value => __rt.formKind(value) === "map" ? "array-map" : maps.store.kinds.get(value),
+      has: value => sharedFormKind(value) === "map" || maps.store.kinds.has(value),
+      get: value => sharedFormKind(value) === "map" ? (__rt.formIsArrayMap(sharedFormOf(value)) ? "array-map" : "hash-map") : maps.store.kinds.get(value),
       set(value, kind) { maps.store.kinds.set(value, kind); return this; }
     }
   };
-  //@unit mapEntry.vector effect: mapEntry when: makeVector requires: mapEntries, mapEntry,
-  //@ MapEntryType, vectors
-  // A map entry is a runtime-owned pair over the vectors' fallback, as the
-  // V8 profile's `mapEntry.lean` builds one, with the vectors' prototype
-  // (`MapEntryType.vector`): the swapped `makeVector` builds an engine
-  // vector, whose prototype cannot be set (light-cljs-666).
-  mapEntry = (key, value) => {
-    const pair = Object.create(MapEntryType.prototype);
-    vectors.set(pair, {cnt: 2, shift: 5, root: [], tail: [key, value]}); mapEntries.add(pair); return pair;
+  //@unit sharedSetMembers requires: entryHashing
+  // The members of an engine set, as the verbatim units read a positional
+  // set's payload: a frozen array of `{key, hash}` in the engine's print
+  // order (`formPrintItems`), built once per task and set (`formEntries`
+  // on the task's cells, with the maps' entries; light-cljs-666).
+  function sharedSetMembers(form) {
+    const cells = globalThis.__lightSharedCells, cache = cells.formEntries;
+    let members = cache.get(form);
+    if (members !== undefined) return members;
+    const items = __rt.formPrintItems(form), length = __rt.formCount(items);
+    members = [];
+    for (let i = 0; i < length; i++) {
+      const key = __rt.formNth(items, i);
+      let cachedHash;
+      members.push(Object.freeze({key, get hash() { return cachedHash === undefined ? cachedHash = entryHashing.hash(key) : cachedHash; }}));
+    }
+    cache.set(form, Object.freeze(members));
+    return members;
+  }
+  //@unit sets requires: kindedStore, sharedFormKind, sharedFormOf, sharedSetMembers
+  // A set is an engine set form (an imported one through its occurrence),
+  // read as a positional set of its members (`sharedSetMembers`, in the
+  // engine's order; the verbatim units take their positional paths:
+  // `set?`, `count`, `contains?`, `get`, `seq`, printing, equality and
+  // hashing, `conj` and `disj`, which build an engine set again,
+  // `makeSet`), of the `array-map` kind when it is positional
+  // (`formLiteralSet`) and the `hash-map` kind when the engine hashes it
+  // (`formSet`); or a runtime-owned set over the V8 profile's kinded store
+  // (`sets.store`): a sorted set (light-cljs-666). A form takes no
+  // payload: `set` on one throws.
+  const sets = {
+    store: kindedStore(),
+    has: value => sharedFormKind(value) === "set" || sets.store.has(value),
+    get: value => sharedFormKind(value) === "set" ? sharedSetMembers(sharedFormOf(value)) : sets.store.get(value),
+    set(value, payload) {
+      if (__rt.formKind(value) !== null) throw new TypeError("shared profile: sets.set on an engine form");
+      sets.store.set(value, payload);
+    },
+    reset(value, payload) { sets.store.reset(value, payload); },
+    kinds: {
+      has: value => sharedFormKind(value) === "set" || sets.store.kinds.has(value),
+      get: value => sharedFormKind(value) === "set" ? (__rt.formIsArrayMap(sharedFormOf(value)) ? "array-map" : "hash-map") : sets.store.kinds.get(value),
+      set(value, kind) { sets.store.kinds.set(value, kind); return this; }
+    }
   };
+  //@unit mapEntry.vector effect: mapEntry when: makeVector requires: mapEntry
+  // A map entry is an engine map entry form (the first entry of a
+  // one-entry map's seq: a vector form to `formKind` and the `vectors`
+  // view, equality, hashing and printing, and a map entry to
+  // `cljIsMapEntry` and so to `isMapEntry`, `key` and `val`), so the
+  // entries of a map's seq and of `find` cross into macro code and publish
+  // (light-cljs-666). `MapEntryType.prototype` is not its prototype, as an
+  // engine keyword has no `Keyword` prototype.
+  mapEntry = (key, value) => __rt.cljFirst(__rt.formArrayMap(__rt.formVector(key, value)));
+  //@unit mapEntryValue requires: mapEntries
+  const mapEntryValue = value => __rt.cljIsMapEntry(value) || mapEntries.has(value);
+  //@unit entryKey requires: mapEntryValue, nth
+  // `-key` and `-val` of a map entry (an engine entry, or the runtime's),
+  // which are all that implement IMapEntry where no protocol
+  // implementation exists.
+  function entryKey(entry) {
+    if (!mapEntryValue(entry)) throw new Error("No protocol method IMapEntry/-key defined for this value");
+    return nth(entry, 0);
+  }
+  //@unit entryVal requires: mapEntryValue, nth
+  function entryVal(entry) {
+    if (!mapEntryValue(entry)) throw new Error("No protocol method IMapEntry/-val defined for this value");
+    return nth(entry, 1);
+  }
   //@unit vectors requires: sharedVectorStore, sharedView
-  // A vector is an engine vector form.
-  const vectors = sharedView("vectors", value => __rt.formKind(value) === "vector", sharedVectorStore);
+  // A vector is an engine vector form (an engine map entry is one).
+  const vectors = sharedView("vectors", kind => kind === "vector", sharedVectorStore);
   //@unit symbols requires: sharedView
   // A symbol is an engine symbol form; its payload is read from the form.
   // The two symbols the engine's forms do not carry (`sharedSymbol`) take
   // the view's fallback, with the V8 profile's prototype (light-cljs-666).
-  const symbols = sharedView("symbols", value => __rt.formKind(value) === "symbol", value => {
+  const symbols = sharedView("symbols", kind => kind === "symbol", value => {
     const namespace = __rt.formNamespace(value), name = __rt.formName(value);
     return {namespace, name, spelling: namespace == null ? name : namespace + "/" + name};
   });
@@ -427,8 +598,8 @@
   // splits back into the namespace and name at its first `/` (the engine's
   // `FormName::splits_back`; `formSymbol` of another pair is an error).
   const sharedNamedSplits = (namespace, name) => namespace == null ? name === "/" || !name.includes("/") : !namespace.includes("/") && (namespace !== "" || name !== "");
-  //@unit sharedSymbol requires: constructorHashes, metadataValues, sharedNamedSplits, symbols,
-  //@ SymbolValue
+  //@unit sharedSymbol requires: constructorHashes, metadataValues, sharedFormKind, sharedFormOf,
+  //@ sharedNamedSplits, symbols, SymbolValue
   // A fresh engine symbol, with its metadata when that is an engine map
   // (`formWithMeta`). The engine's forms carry neither a pair that does not
   // split back (a `/` inside an unqualified name, as `(symbol nil "a/b")`
@@ -438,9 +609,9 @@
   // equality, hashing and printing read alike, and its task's own.
   function sharedSymbol(namespace, name, metadata = null, cachedHash = null, spelling = null) {
     const canonical = namespace == null ? name : namespace + "/" + name;
-    if ((spelling === null || spelling === canonical) && sharedNamedSplits(namespace, name) && (metadata == null || __rt.formKind(metadata) === "map")) {
+    if ((spelling === null || spelling === canonical) && sharedNamedSplits(namespace, name) && (metadata == null || sharedFormKind(metadata) === "map")) {
       const value = __rt.formSymbol(namespace, name);
-      if (cachedHash === null || cachedHash === __rt.formHash(value)) return metadata == null ? value : __rt.formWithMeta(value, metadata);
+      if (cachedHash === null || cachedHash === __rt.formHash(value)) return metadata == null ? value : __rt.formWithMeta(value, sharedFormOf(metadata));
     }
     const value = Object.create(SymbolValue.prototype);
     symbols.set(value, Object.freeze({namespace, name, spelling: spelling === null ? canonical : spelling}));
@@ -462,7 +633,7 @@
     return sharedSymbol(namespace, name, metadata, cachedHash, spelling);
   }
   //@unit collectionWithMeta.symbols effect: symbol, SymbolValue when: collectionWithMeta
-  //@ requires: collectionWithMeta, constructorHashes, sharedSymbol, symbols
+  //@ requires: collectionWithMeta, constructorHashes, sharedFormKind, sharedSymbol, symbols
   // `with-meta` of a symbol builds a symbol of the metadata's kind
   // (`sharedSymbol`): an engine symbol, or a runtime-owned one for
   // runtime-built metadata; a runtime-owned symbol given engine metadata or
@@ -470,16 +641,18 @@
   // its own (the positional constructor's), which the copy keeps.
   collectionWithMeta = (operation => (value, metadata) => {
     const own = __rt.formKind(value) === null;
-    const data = !own || (symbols.has(value) && (metadata == null || __rt.formKind(metadata) === "map")) ? symbols.get(value) : undefined;
+    const data = !own || (symbols.has(value) && (metadata == null || sharedFormKind(metadata) === "map")) ? symbols.get(value) : undefined;
     return data === undefined ? operation(value, metadata)
       : sharedSymbol(data.namespace, data.name, metadata, own && constructorHashes.has(value) ? constructorHashes.get(value) : null, own ? data.spelling : null);
   })(collectionWithMeta);
-  //@unit sharedNamedString
-  // An engine keyword's or symbol's string, for `str`, `displayStr` and the
-  // printer: a form has no `toString`, so `String` of one throws.
+  //@unit sharedNamedString requires: sharedFormKind, sharedFormOf
+  // An engine keyword's or symbol's string (an imported one's through its
+  // occurrence), for `str`, `displayStr` and the printer: a form has no
+  // `toString`, so `String` of one throws.
   function sharedNamedString(value) {
-    const kind = __rt.formKind(value);
+    const kind = sharedFormKind(value);
     if (kind !== "keyword" && kind !== "symbol") return undefined;
+    value = sharedFormOf(value);
     const namespace = __rt.formNamespace(value), name = __rt.formName(value);
     return (kind === "keyword" ? ":" : "") + (namespace == null ? name : namespace + "/" + name);
   }
@@ -505,7 +678,7 @@
     if (!Object.prototype.hasOwnProperty.call(this.obj, key)) return null;
     return makeVar(() => this.obj[key], symbol(str(this.name), str(local)), mapFromArray([keyword(null, "ns"), this]), true);
   };
-  //@unit preserveMeta requires: collectionWithMeta, meta, metadataValues
+  //@unit preserveMeta requires: collectionWithMeta, meta, metadataValues, sharedFormKind, sharedFormOf
   // An operation's engine result (a vector, a list) takes its input's
   // metadata as a form (`formWithMeta`; the form itself when it is the same
   // map already), since a form's metadata is given where the form is built
@@ -520,7 +693,7 @@
     const metadata = meta(original);
     if (__rt.formKind(result) !== null) {
       if (metadata == null) return __rt.formMeta(result) == null ? result : __rt.formWithMeta(result, null);
-      return __rt.formKind(metadata) === "map" ? __rt.formWithMeta(result, metadata) : collectionWithMeta(result, metadata);
+      return sharedFormKind(metadata) === "map" ? __rt.formWithMeta(result, sharedFormOf(metadata)) : collectionWithMeta(result, metadata);
     }
     if (metadata != null || metadataValues.has(original)) metadataValues.set(result, metadata);
     return result;
@@ -544,9 +717,8 @@
   const mapEntries = sharedSet();
   //@unit cells requires: sharedView
   const cells = sharedView("cells",
-    value => { const kind = __rt.formKind(value); return kind === "cons" || kind === "chunked-cons" || kind === "list"; },
-    value => {
-      const kind = __rt.formKind(value);
+    kind => kind === "cons" || kind === "chunked-cons" || kind === "list",
+    (value, kind) => {
       if (kind === "list") return {kind, head: __rt.cljFirst(value), tail: __rt.cljRest(value), count: __rt.cljCount(value)};
       return {kind: "cons", head: __rt.cljFirst(value), tail: __rt.cljRest(value)};
     });
@@ -554,7 +726,7 @@
   const stringBufferWriters = sharedSet();
   //@unit sharedFormHashes
   // The hash cache of the engine collections that hold values (vectors,
-  // lists, conses, lazy seqs, maps): the engine hashes a host object inside
+  // lists, conses, lazy seqs, maps, sets): the engine hashes a host object inside
   // a form by its identity, which is the runtime's hash of a function or a
   // plain object (`identityHashes`) but not of a symbol, a list of
   // `listFromArray`, a map or a Date, which the runtime hashes by value
@@ -564,32 +736,33 @@
   // light-cljs-698), and the result is cached in the task's cells
   // (`formHashes`), as the V8 profile's WeakMap caches it. A collection of
   // engine values hashes the same either way. Every other form (a keyword,
-  // a symbol, a set, until the sets view) hashes in the engine (`formHash`).
+  // a symbol) hashes in the engine (`formHash`).
   const sharedFormHashes = {
-    kinds: __rt.seal(["vector", "list", "cons", "chunked-cons", "lazy-seq", "map"]),
+    kinds: __rt.seal(["vector", "list", "cons", "chunked-cons", "lazy-seq", "map", "set"]),
     is: kind => sharedFormHashes.kinds.includes(kind),
     cache() { const cells = globalThis.__lightSharedCells; return cells.formHashes; },
     has: value => sharedFormHashes.cache().has(value),
     get: value => sharedFormHashes.cache().get(value),
     set(value, hash) { sharedFormHashes.cache().set(value, hash); }
   };
-  //@unit constructorHashes requires: sharedFormHashes, sharedStore
+  //@unit constructorHashes requires: sharedFormHashes, sharedFormKind, sharedFormOf, sharedStore
   // The hash cache: an engine collection's hash is the runtime's, cached
-  // per task (`sharedFormHashes`); any other engine form's is computed and
+  // per task (`sharedFormHashes`, keyed by the form behind an imported
+  // form's occurrence); any other engine form's is computed and
   // cached by the engine (`formHash`), so the cache answers it from there
   // and drops a hash given for one; a runtime-built value keeps its own.
   const constructorHashes = (store => ({
     has(value) {
-      const kind = __rt.formKind(value);
-      return kind === null ? store.has(value) : sharedFormHashes.is(kind) ? sharedFormHashes.has(value) : true;
+      const kind = sharedFormKind(value);
+      return kind === null ? store.has(value) : sharedFormHashes.is(kind) ? sharedFormHashes.has(sharedFormOf(value)) : true;
     },
     get(value) {
-      const kind = __rt.formKind(value);
-      return kind === null ? store.get(value) : sharedFormHashes.is(kind) ? sharedFormHashes.get(value) : __rt.formHash(value);
+      const kind = sharedFormKind(value);
+      return kind === null ? store.get(value) : sharedFormHashes.is(kind) ? sharedFormHashes.get(sharedFormOf(value)) : __rt.formHash(value);
     },
     set(value, hash) {
-      const kind = __rt.formKind(value);
-      if (kind === null) store.set(value, hash); else if (sharedFormHashes.is(kind)) sharedFormHashes.set(value, hash);
+      const kind = sharedFormKind(value);
+      if (kind === null) store.set(value, hash); else if (sharedFormHashes.is(kind)) sharedFormHashes.set(sharedFormOf(value), hash);
       return this;
     }
   }))(sharedStore());
@@ -599,13 +772,14 @@
   const vectorRoots = sharedStore();
   //@unit canonicalVectorRoots requires: sharedStore
   const canonicalVectorRoots = sharedStore();
-  //@unit metadataValues requires: sharedStore
-  // Metadata is the engine's on an engine form (`formMeta`; a form's is
-  // given where the form is built, `formWithMeta`, so `set` on one throws)
-  // and the fallback's on a runtime-owned value (light-cljs-666).
+  //@unit metadataValues requires: sharedFormOf, sharedStore
+  // Metadata is the engine's on an engine form (`formMeta`, of an imported
+  // form through its occurrence; a form's is given where the form is
+  // built, `formWithMeta`, so `set` on one throws) and the fallback's on a
+  // runtime-owned value (light-cljs-666).
   const metadataValues = (store => ({
-    has: value => __rt.formKind(value) !== null ? __rt.formMeta(value) != null : store.has(value),
-    get: value => __rt.formKind(value) !== null ? __rt.formMeta(value) : store.get(value),
+    has: value => __rt.formKind(value) !== null ? __rt.formMeta(sharedFormOf(value)) != null : store.has(value),
+    get: value => __rt.formKind(value) !== null ? __rt.formMeta(sharedFormOf(value)) : store.get(value),
     set(value, metadata) {
       if (__rt.formKind(value) !== null) throw new TypeError("shared profile: metadataValues.set on an engine form");
       store.set(value, metadata);
@@ -639,7 +813,7 @@
   // without running its body (`cljDelayState`): its seed until realized.
   // A lazy seq's `hash` is the task's cache of the runtime's hash
   // (`sharedFormHashes`), which `hashSequential` fills.
-  const lazyValues = sharedView("lazyValues", value => __rt.formKind(value) === "lazy-seq",
+  const lazyValues = sharedView("lazyValues", kind => kind === "lazy-seq",
       value => ({
         get thunk() { return __rt.cljRealized(value) ? null : () => __rt.cljSeq(value); }, set thunk(_) {},
         get value() { return __rt.cljSeq(value); }, set value(_) {},
@@ -651,7 +825,7 @@
     // whose printer shows `:pending` (`thunk == null`), as the V8 profile's
     // state has it. Its `value` is the state's in every case: the seed while
     // pending or after a failed realization, else the realized value.
-    delays = sharedView("delays", value => __rt.formKind(value) === "delay",
+    delays = sharedView("delays", kind => kind === "delay",
       value => ({
         get thunk() {
           if (!__rt.cljRealized(value)) return () => __rt.cljForce(value);
@@ -693,7 +867,7 @@
     });
   }
   //@unit cons requires: cells, count, emptyList, ListValue, methodKeys, protocolHooks, seq,
-  //@ seqValue, sharedSeqForm
+  //@ seqValue, sharedFormKind, sharedSeqForm
   // A tail that is not a seq (an array, a vector, an invalid object) is
   // normalized through `seq` now, as the V8 profile's `cons` has it, so a
   // later change to it is not seen and an invalid one throws here; a seq
@@ -712,7 +886,7 @@
     }
     if (tail == null) return __rt.formList(head);
     if (kind === "list") {
-      if (__rt.formKind(tail) === "list") return __rt.cljConj(tail, head);
+      if (sharedFormKind(tail) === "list") return __rt.cljConj(tail, head);
       if (count(tail) === 0) return __rt.formList(head);
       const value = Object.create(ListValue.prototype);
       cells.set(value, {kind, head, tail, count: count(tail) + 1});
@@ -997,29 +1171,28 @@
   maps.get = ((get, none) => value => get.call(maps, value) ?? (recordTypes.get(value) && none))(maps.get, __rt.seal([]));
   //@unit PersistentHashSetValue.statics effect: PersistentHashSetValue when: typeStatics requires: makeSet,
   //@ PersistentHashSetValue
-  // The empty statics of the kinds the runtime still builds as its own
-  // objects (sets, maps, queues; design point 8) are task-owned, so each
-  // is a getter that builds the task's own on first read.
-  Object.defineProperty(PersistentHashSetValue, "EMPTY", {configurable: true, enumerable: true,
-    get() { const cells = globalThis.__lightSharedCells; return cells.emptyHashSet ??= makeSet(PersistentHashSetValue, [], "array-map"); }});
+  // The empty set and maps are engine forms (`makeSet`, `makeMap`), built
+  // once at boot; the empty queue, a kind the runtime still builds as its
+  // own object (design point 8), is task-owned, so it is a getter that
+  // builds the task's own on first read.
+  PersistentHashSetValue.EMPTY = makeSet(PersistentHashSetValue, [], "array-map");
   //@unit PersistentQueueValue.statics effect: PersistentQueueValue when: reader, typeStatics
   //@ requires: PersistentQueueValue, queueFromArray
   Object.defineProperty(PersistentQueueValue, "EMPTY", {configurable: true, enumerable: true,
     get() { const cells = globalThis.__lightSharedCells; return cells.emptyQueue ??= queueFromArray([]); }});
   //@unit PersistentArrayMapValue.statics effect: PersistentArrayMapValue when: typeStatics
   //@ requires: makeMap, PersistentArrayMapValue
-  Object.defineProperty(PersistentArrayMapValue, "EMPTY", {configurable: true, enumerable: true,
-    get() { const cells = globalThis.__lightSharedCells; return cells.emptyArrayMap ??= makeMap(PersistentArrayMapValue, [], "array-map"); }});
+  PersistentArrayMapValue.EMPTY = makeMap(PersistentArrayMapValue, [], "array-map");
   PersistentArrayMapValue.HASHMAP_THRESHOLD = 8;
   //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue when: typeStatics requires: aclone,
-  //@ displayStr, hashTrie, makeMap, PersistentHashMapValue, putEntry
-  Object.defineProperty(PersistentHashMapValue, "EMPTY", {configurable: true, enumerable: true,
-    get() { const cells = globalThis.__lightSharedCells; return cells.emptyHashMap ??= makeMap(PersistentHashMapValue, hashTrie([]), "hash-map"); }});
+  //@ displayStr, makeMap, PersistentHashMapValue, putEntry
+  // The V8 profile's, without the hash tries: the engine hashes the entries.
+  PersistentHashMapValue.EMPTY = makeMap(PersistentHashMapValue, [], "hash-map");
   PersistentHashMapValue.fromArray = (array, noClone) => {
     const items = noClone ? array : aclone(array), entries = [], length = items.length;
     const edit = {};
     for (let i = 0; i < length; i += 2) putEntry(entries, items[i], items[i + 1], "hash-map", edit);
-    return makeMap(PersistentHashMapValue, hashTrie(entries), "hash-map");
+    return makeMap(PersistentHashMapValue, entries, "hash-map");
   };
   PersistentHashMapValue.fromArrays = (keys, values) => {
     const length = keys.length, entries = [], edit = {};
@@ -1027,7 +1200,7 @@
       if (values.length <= i) throw new Error("No value supplied for key: " + displayStr(keys[i]));
       putEntry(entries, keys[i], values[i], "hash-map", edit);
     }
-    return makeMap(PersistentHashMapValue, hashTrie(entries), "hash-map");
+    return makeMap(PersistentHashMapValue, entries, "hash-map");
   };
   //@unit makeKeyword.print effect: makeKeyword, makeVar, SymbolValue, symbol when: printWriterImpl
   //@ requires: keywords, kindHooks, printKind, symbols, vars, write
@@ -1035,6 +1208,27 @@
   // symbol or a Var through its `toString`, as in the V8 profile.
   kindHooks.print = printKind(kindHooks.print, value => keywords.has(value) || symbols.has(value) || vars.has(value),
     (value, writer) => write(writer, keywords.has(value) ? ":" + keywords.get(value).spelling : symbols.has(value) ? symbols.get(value).spelling : String(value)));
+  //@unit compilerForms compile-time effect requires: compilerFormBridge, readerJsLiterals,
+  //@ vectorFromArray
+  // The V8 form bridge's `decode`/`encode` stay the evaluator's member
+  // (not offered for publication in `real` mode; light-cljs-648), but a
+  // `#js` literal the reader reads for a macro is an engine compiler
+  // literal, as the Pants build's reader builds one (src/bbp_runtime.js,
+  // `jsArray` and `jsObject`), not the bridge's branded array or object:
+  // the bridge's WeakMap stood behind every reader entry point
+  // (`core.read`, `core.readString`, the tag tables; light-cljs-666). The
+  // object keeps JavaScript own-property order and last writes, drops
+  // `__proto__`, and its payload is a positional map of string keys in the
+  // reader's order (`formLiteralMap`, `formReaderCollection`), as the
+  // port's is.
+  const compilerForms = compilerFormBridge();
+  readerJsLiterals.array = items => __rt.formCompilerLiteral("js-array", vectorFromArray(Array.from(items)));
+  readerJsLiterals.object = pairs => {
+    const object = {};
+    for (let i = 0; i < pairs.length; i += 2) if (pairs[i] !== "__proto__") Object.defineProperty(object, pairs[i], {value: pairs[i + 1], enumerable: true, configurable: true});
+    const flat = Object.keys(object).flatMap(key => [key, object[key]]);
+    return __rt.formCompilerLiteral("js-object", __rt.formReaderCollection(__rt.formLiteralMap(vectorFromArray(flat))));
+  };
   //@unit coreCells effect requires: flush, sharedTaskCells, sharedTaskDefaults
   // The hub's cells as the V8 profile declares them (the `core` hub extends
   // this object), over the per-task defaults. The boot task's cells now

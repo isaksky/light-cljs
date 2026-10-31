@@ -325,6 +325,7 @@ fn nested_sorted_by_equality_asks_the_task_resolver_per_comparison() {
         const sorted=x=>__rt.formSortedInsert(__rt.formSortedMapBy(null),0,1,x);
         const a=sorted('x'), b=sorted('x'), c=sorted('y'), plain=__rt.formArrayMap(__rt.formVector(1,'x'));
         if(!__rt.formIsSortedBy(a)||__rt.formIsSortedBy(plain)||!__rt.formIsArrayMap(plain)||__rt.formIsArrayMap(a)||__rt.formIsArrayMap(__rt.formMap(1,'x')))throw new Error('predicates');
+        if(!__rt.formIsArrayMap(__rt.formLiteralSet(__rt.formVector(1,2)))||__rt.formIsArrayMap(__rt.formSet(1,2))||__rt.formIsArrayMap(__rt.formVector(1)))throw new Error('set predicates');
         let offer=true;
         __rt.cljCoreResolver((op,x)=>offer&&op==='formEquals'&&__rt.formIsSortedBy(x)?(l,r)=>{
           log.push(l===plain?'plain':l===a?'a':'?');
