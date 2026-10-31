@@ -119,10 +119,19 @@ impl Build {
             .unwrap_or(0)
     }
 
-    /// The build's error: its stderr without the `--stats` report.
-    fn error(&self) -> &str {
+    /// The build's error: its stderr without the `--stats` report, which a
+    /// failed build prints before its error (light-cljs-635) and whose
+    /// times and cache counters differ between builds.
+    fn error(&self) -> String {
         assert!(!self.success, "the build succeeds");
-        &self.stderr
+        let Some(start) = self.stderr.find("light-cljs-stats ") else {
+            return self.stderr.clone();
+        };
+        let report = &self.stderr[start..];
+        let end = report
+            .find("\nlight-cljs: ")
+            .map_or(report.len(), |at| at + 1);
+        format!("{}{}", &self.stderr[..start], &report[end..])
     }
 
     /// Require byte equality with the build `oracle` of the same mode.

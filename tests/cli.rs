@@ -1454,6 +1454,65 @@ fn stats_failed_build_reports_cache_work() {
     }
 }
 
+/// A build whose final analysis fails, at a lazy target its namespace does
+/// not define, reports its counters and trace before the failure, as one
+/// that fails earlier does (light-cljs-670).
+#[test]
+fn stats_file_reports_finish_error() {
+    let sources = TempDir::new("cli-stats-finish-failure");
+    std::fs::create_dir(sources.join("app")).unwrap();
+    let write =
+        |name: &str, text: &str| std::fs::write(sources.join("app").join(name), text).unwrap();
+    write("lib.cljs", "(ns app.lib) (defn f [x] (when x (inc x)))");
+    write(
+        "main.cljs",
+        "(ns app.main)\n(def later (light.lazy/loadable app.lib/missing))",
+    );
+    let file = sources.join("trace.tsv");
+    let output = light_cljs(&[
+        "--compile",
+        "--entry",
+        "app.main",
+        "--source-root",
+        sources.path().to_str().unwrap(),
+        "--no-cache",
+        "--stats",
+        "--stats-file",
+        file.to_str().unwrap(),
+    ]);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!output.status.success(), "{stderr}");
+    assert!(output.stdout.is_empty());
+    let failure = stderr.find("\nlight-cljs: ").expect(&stderr);
+    assert!(
+        stderr[failure..].contains("main.cljs:2:")
+            && stderr[failure..].contains("lazy target app.lib/missing is not defined"),
+        "{stderr}"
+    );
+    let (counters, _) = parse_stats(&stderr[..failure]);
+    let value = |key: &str| {
+        counters
+            .iter()
+            .find(|(name, _)| name == key)
+            .unwrap_or_else(|| panic!("{key} in {stderr}"))
+            .1
+    };
+    for key in [
+        "macro-nodes.peak",
+        "memory.parsed-trees.peak-files",
+        "memory.parsed-trees.peak-bytes",
+        "memory.queued-ir.peak-units",
+        "memory.queued-ir.peak-bytes",
+        "deferred-units.analyzed",
+    ] {
+        assert!(value(key) > 0.0, "{key}: {stderr}");
+    }
+    let trace = std::fs::read_to_string(&file).unwrap();
+    assert!(trace.starts_with("light-cljs-trace\t"), "{trace}");
+    assert!(trace.contains("\nstage\tfinish\t"), "{trace}");
+    assert!(trace.contains("\tapp.lib\t"), "{trace}");
+}
+
 #[test]
 fn stats_reports_phase_times_and_macro_calls_on_stderr_without_changing_output() {
     let sources = TempDir::new("cli-stats");

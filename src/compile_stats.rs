@@ -200,7 +200,9 @@ pub struct DeferredUnitCounts {
     /// Units registered: compile-time definitions, each analyzed only on
     /// demand or when its namespace drains.
     pub registered: usize,
-    /// Units analyzed.
+    /// Units analyzed. A build that fails before its final analysis
+    /// counts those up to the last unit a drain point took, in unit order,
+    /// which no schedule changes.
     pub analyzed: usize,
     /// Analyzed units whose compile-time JavaScript was prepared and whose
     /// IR moved into the program.

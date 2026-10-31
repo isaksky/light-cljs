@@ -1692,6 +1692,10 @@ pub(crate) struct CompilationSession {
     gensyms_seen: RefCell<std::collections::HashSet<Vec<u16>>>,
     /// The build's unit pool, with `--jobs N` ([`UnitPool`]).
     pool: RefCell<Option<UnitPool>>,
+    /// The last unit, in unit order, a drain point took
+    /// ([`Self::analyze_drained`]); a failed build's counts stop there
+    /// ([`Self::failed_unit_counts`]).
+    drained_through: Cell<Option<usize>>,
 }
 /// What capture needs beyond the catalog, recorded only while it is on.
 #[derive(Default)]
@@ -1792,6 +1796,7 @@ impl Default for CompilationSession {
             gensym_buffer: Default::default(),
             gensyms_seen: Default::default(),
             pool: Default::default(),
+            drained_through: Default::default(),
         }
     }
 }
@@ -2340,17 +2345,32 @@ impl CompilationSession {
     /// How many units this compilation registered, analyzed, prepared and
     /// executed (`--stats`).
     pub fn unit_counts(&self) -> crate::compile_stats::DeferredUnitCounts {
+        self.counts_through(usize::MAX)
+    }
+    /// [`Self::unit_counts`] of a build that failed before its final
+    /// analysis: the analyses only of the units up to the last one a drain
+    /// point took, in unit order. Pool workers may have analyzed later
+    /// units before the failure cancelled them, and one slot analyzes the
+    /// units its dispatch keeps ahead of their drain points, so analyses
+    /// after that unit depend on scheduling; up to it every unit was
+    /// drained, under any schedule. A failed build's namespaces and
+    /// warnings are cut at its failure the same way.
+    pub fn failed_unit_counts(&self) -> crate::compile_stats::DeferredUnitCounts {
+        self.counts_through(self.drained_through.get().map_or(0, |last| last + 1))
+    }
+    /// The unit counts, with the analyses of the units before `end`.
+    fn counts_through(&self, end: usize) -> crate::compile_stats::DeferredUnitCounts {
         let catalog = self.shared.lock();
         let mut counts = crate::compile_stats::DeferredUnitCounts {
             registered: catalog.units.len(),
             ..Default::default()
         };
-        for unit in &catalog.units {
+        for (id, unit) in catalog.units.iter().enumerate() {
             counts.macro_free += usize::from(unit.macro_free);
             if unit.macro_free {
                 counts.macro_free_time += unit.time;
             }
-            counts.analyzed += usize::from(unit.analyses > 0);
+            counts.analyzed += usize::from(id < end && unit.analyses > 0);
             counts.prepared += usize::from(matches!(unit.state, AnalysisState::Prepared(..)));
             counts.executed += usize::from(unit.emitted);
         }
@@ -2927,6 +2947,8 @@ impl CompilationSession {
             Take::Charge if self.shared.held(id) => Take::Defer,
             Take::Drain => {
                 self.shared.release_hold(id);
+                let last = self.drained_through.get().map_or(id, |last| last.max(id));
+                self.drained_through.set(Some(last));
                 Take::Drain
             }
             take => take,

@@ -3269,6 +3269,9 @@ fn analyze_entry(
     }
     macros.evaluator_options.memory_limit = memory_limit;
     let deferred_time = analysis.deferred_time;
+    // Whether the build failed before its final analysis, which its unit
+    // counts stop at ([`CompilationSession::failed_unit_counts`]).
+    let stopped = looped.is_err();
     let program = looped.and_then(|()| {
         let _traced = crate::compile_trace::enter(crate::compile_trace::Stage::Finish, 0, None);
         analysis
@@ -3310,7 +3313,11 @@ fn analyze_entry(
                 stats.native_helpers = session.shared().native_counts();
             }
             stats.lanes = session.shared().lanes().counts();
-            stats.deferred_units = session.unit_counts();
+            stats.deferred_units = if stopped {
+                session.failed_unit_counts()
+            } else {
+                session.unit_counts()
+            };
             stats.memory.queued_ir = session.queued_ir();
         }
         if let Some(trees) = trees {
