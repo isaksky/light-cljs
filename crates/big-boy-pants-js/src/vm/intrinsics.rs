@@ -130,6 +130,7 @@
 //! | `formSortedComparator(v)` | `form_op` | a sorted-map-by map's comparator, else `null` | – |
 //! | `formIsSortedBy(v)` | `form_op` | whether `v` is a sorted-map-by map (also with a `null` comparator) | – |
 //! | `formIsArrayMap(v)` | `form_op` | whether `v` is a positional unsorted (array or literal) map, which `=` compares own value first, or a positional set (`formLiteralSet`; light-cljs-666) | – |
+//! | `formHasHostKeys(v)` | `form_op` | conservative host-key summary of a map/set; updates retain it without traversing entries, so runtimes can preserve custom key semantics | – |
 //! | `formSortedEntry(m, i, part)`, `formSortedInsert(m, i, k, v)`, `formSortedReplace(m, i, v)`, `formSortedRemove(m, i)` | `form_op` | read or edit sorted-map-by entry `i` at a position the runtime computed (insert allows `i == count`); updates keep the comparator and metadata | `WrongType`, `InvalidIndex`, `IndexOutOfBounds` |
 //! | `formCompare(a, b)` | `form_op` | -1, 0 or 1 in the default sorted-map order | incomparable keys |
 //! | `formEquals(a, b)`, `formHash(v)` | `form_op` | value equality (boolean) and the light-cljs runtime's 32-bit hash (number) | – |
@@ -767,6 +768,10 @@ fn strict_form_op(
                 !f.is_sorted()
                     && matches!(f.body(), form::FormBody::Map(m) | form::FormBody::Set(m) if m.positional())
             }),
+        ),
+        FormOp::HasHostKeys => Value::Bool(
+            form::form_object(heap, &form::unwrap(heap, arg()))
+                .is_some_and(|f| f.has_host_keys()),
         ),
         FormOp::SortedEntry => {
             let (m, i, part) = (arg(), arg(), arg());

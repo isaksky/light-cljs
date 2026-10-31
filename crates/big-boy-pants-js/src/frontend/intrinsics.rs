@@ -324,6 +324,7 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::Compare),
     form_op(FormOp::IsSortedBy),
     form_op(FormOp::IsArrayMap),
+    form_op(FormOp::HasHostKeys),
     form_op(FormOp::Empty),
     form_op(FormOp::Regex),
     // Sealing boot-time state for sharing (light-cljs-646).

@@ -742,7 +742,8 @@ fn sections(source: &str) -> (usize, Vec<Section>) {
 /// rewritten to the task's cells, and with the compile-time hooks.
 fn shared_runtime(base: &str, profile: &str) -> (String, String) {
     let constructor_base = shared_owned_allocations(base);
-    let scalar_base = shared_scalar_reads(&constructor_base);
+    let update_base = shared_persistent_updates(&constructor_base);
+    let scalar_base = shared_scalar_reads(&update_base);
     let base = scalar_base.as_str();
     let (base_prologue, base_sections) = sections(base);
     let (_, profile_sections) = sections(profile);
@@ -874,6 +875,69 @@ fn shared_owned_allocations(base: &str) -> String {
             result.push_str(&body.replace(
                 &call,
                 &format!("/*public-constructor*/{to}/*public-constructor*/("),
+            ));
+        } else {
+            result.push_str(header);
+            result.push_str(body);
+        }
+    }
+    result
+}
+
+/// Keep canonical protocol dispatch, arity handling and runtime fallbacks.
+/// Only shared engine forms take the persistent leaves, before an entry-array
+/// read. Mark every insertion so the manifest test restores the V8 bytes.
+fn shared_persistent_updates(base: &str) -> String {
+    let (prologue, units) = sections(base);
+    let mut result = base[..prologue].to_owned();
+    for unit in units {
+        let header = &base[unit.header];
+        let body = &base[unit.body];
+        let leaf = match unit.name.as_str() {
+            "assoc" => Some((
+                "    const mapSlots = publicCollectionSlots.get(value);",
+                "    if (sharedUpdates.accepts(value, [key], \"map\")) return sharedUpdates.assoc(value, key, item, pairs);\n",
+            )),
+            "dissoc" => Some((
+                "    const original = maps.get(value);",
+                "    if (sharedUpdates.accepts(value, keys, \"map\")) return sharedUpdates.dissoc(value, keys);\n",
+            )),
+            "makeSet.conj" => Some((
+                "    if (publicCollectionSlots.has(result)) {",
+                "    if (sharedUpdates.accepts(result, [item], \"set\")) return sharedUpdates.conj(result, item);\n",
+            )),
+            "disj" => Some((
+                "    const original = sets.get(value);",
+                "    if (sharedUpdates.accepts(value, keys, \"set\")) return sharedUpdates.disj(value, keys);\n",
+            )),
+            "lookup" => Some((
+                "    const entries = maps.get(value);",
+                "    if (sharedUpdates.accepts(value, [key], \"map\")) return sharedUpdates.lookup(value, key, notFound);\n",
+            )),
+            "lookup.sets" => Some((
+                "    const members = sets.get(value);",
+                "    if (sharedUpdates.accepts(value, [key], \"set\")) return sharedUpdates.lookup(value, key, notFound);\n",
+            )),
+            _ => None,
+        };
+        if let Some((before, leaf)) = leaf {
+            assert_eq!(body.matches(before).count(), 1, "update {}", unit.name);
+            result.push_str(&header.replacen("requires:", "requires: sharedUpdates,", 1));
+            result.push_str(&body.replace(
+                before,
+                &format!("/*persistent-update*/{leaf}/*end-persistent-update*/{before}"),
+            ));
+        } else if unit.name == "updatedMap" {
+            let call = "mapFromEntries(entries,";
+            assert_eq!(body.matches(call).count(), 1, "updatedMap allocation");
+            result.push_str(&replace_identifier(
+                header,
+                "mapFromEntries",
+                "sharedUpdatedMapFromEntries",
+            ));
+            result.push_str(&body.replace(
+                call,
+                "/*updated-map*/sharedUpdatedMapFromEntries(original, entries,/*end-updated-map*/",
             ));
         } else {
             result.push_str(header);

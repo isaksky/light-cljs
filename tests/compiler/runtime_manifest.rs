@@ -84,7 +84,17 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
             .replace(
                 "/*public-constructor*/sharedTreeEntry/*public-constructor*/",
                 "mapEntry",
+            )
+            .replace(
+                "/*updated-map*/sharedUpdatedMapFromEntries(original, entries,/*end-updated-map*/",
+                "mapFromEntries(entries,",
             );
+        while let Some(start) = text.find("/*persistent-update*/") {
+            let end = start
+                + text[start..].find("/*end-persistent-update*/").unwrap()
+                + "/*end-persistent-update*/".len();
+            text.replace_range(start..end, "");
+        }
         while let Some(start) = text.find("/*scalar-inputs*/") {
             let end = start
                 + text[start..].find("/*end-scalar-inputs*/").unwrap()
@@ -222,7 +232,9 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
                     .replace(" requires: sharedScalar", "")
                     .replace("sharedOwnedMap", "makeMap")
                     .replace("sharedOwnedSet", "makeSet")
-                    .replace("sharedTreeEntry", "mapEntry"),
+                    .replace("sharedTreeEntry", "mapEntry")
+                    .replace("requires: sharedUpdates,", "requires:")
+                    .replace("sharedUpdatedMapFromEntries", "mapFromEntries"),
                 &ANNOTATED_RUNTIME[original.header_range.clone()],
                 "{}",
                 unit.name

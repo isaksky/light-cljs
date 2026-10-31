@@ -644,6 +644,9 @@ pub(crate) struct FormObject {
     /// frozen body may race to set it, and every writer stores the same
     /// number.
     hash: OnceLock<i32>,
+    /// Conservative map/set key summary, computed at construction and carried
+    /// through path copies. Host keys can implement runtime-only equality/hash.
+    host_keys: Option<bool>,
 }
 
 /// The QuickJS reference's type of a sequence where a form's body and flags
@@ -759,6 +762,7 @@ impl FormObject {
             comparator: None,
             brand: Brand::None,
             hash: OnceLock::new(),
+            host_keys: None,
         }
     }
 
@@ -779,6 +783,7 @@ impl FormObject {
             comparator: self.comparator.clone(),
             brand: self.brand,
             hash,
+            host_keys: self.host_keys,
         }
     }
 
@@ -789,6 +794,18 @@ impl FormObject {
         object.sorted = self.sorted;
         object.comparator = self.comparator.clone();
         object
+    }
+
+    /// A key update retains the summary in O(1). Removal may conservatively
+    /// leave it true; other body replacements recompute it at allocation.
+    fn updated_keys(&self, body: FormBody, host_key: bool) -> FormObject {
+        let mut object = self.updated(body);
+        object.host_keys = self.host_keys.map(|prior| prior || host_key);
+        object
+    }
+
+    pub(crate) fn has_host_keys(&self) -> bool {
+        self.host_keys.unwrap_or(false)
     }
 
     pub(crate) fn is_sorted(&self) -> bool {
@@ -1032,7 +1049,12 @@ fn wrong(heap: &Heap, expected: &'static str, v: &Value) -> CollectionError {
 
 /// Allocate a form. `parts` are the values it was derived from, for the
 /// known-shareable bit (`Heap::alloc_persistent`).
-fn alloc(heap: &Heap, object: FormObject, parts: &[Value]) -> Result<Value, CollectionError> {
+fn alloc(heap: &Heap, mut object: FormObject, parts: &[Value]) -> Result<Value, CollectionError> {
+    if object.host_keys.is_none()
+        && let FormBody::Map(map) | FormBody::Set(map) = object.body()
+    {
+        object.host_keys = Some(map_has_host_keys(heap, map));
+    }
     // Mutable fields need the publication walk to promote their cell, even
     // when all constructor operands already have known-shareable bits.
     let mutable = matches!(object.body(), FormBody::Struct(s) if s.mutable.is_some());
@@ -1044,6 +1066,28 @@ fn alloc(heap: &Heap, object: FormObject, parts: &[Value]) -> Result<Value, Coll
     })
     .map(Value::Object)
     .ok_or(CollectionError::OutOfMemory)
+}
+
+fn host_key(heap: &Heap, key: &Value) -> bool {
+    let key = unwrap(heap, key.clone());
+    matches!(key, Value::Object(_)) && form_object(heap, &key).is_none()
+}
+
+fn map_has_host_keys(heap: &Heap, map: &FormMap) -> bool {
+    match map {
+        FormMap::Positional(pairs) => (0..pairs.len())
+            .step_by(2)
+            .any(|i| host_key(heap, &pairs.get(i).unwrap())),
+        FormMap::Hashed(map) => {
+            let mut cursor = super::map::Cursor::new(map);
+            while let Some((key, _)) = cursor.next() {
+                if host_key(heap, &key) {
+                    return true;
+                }
+            }
+            false
+        }
+    }
 }
 
 /// The trie hash of a value hash: a bijective spread (splitmix64), so
@@ -3270,6 +3314,7 @@ pub(crate) fn assoc(
         return Err(wrong(heap, "form vector or form map", coll));
     };
     let parts = [coll.clone(), key.clone(), value.clone()];
+    let host_key = matches!(f.body(), FormBody::Map(_)) && host_key(heap, &key);
     match &f.body {
         FormBody::Map(map) => match if f.sorted {
             f.custom_order(SORTED_BY_LEAF)?;
@@ -3277,7 +3322,11 @@ pub(crate) fn assoc(
         } else {
             map_assoc(heap, map, key, value)?
         } {
-            Some(updated) => alloc(heap, f.updated(FormBody::Map(updated)), &parts),
+            Some(updated) => alloc(
+                heap,
+                f.updated_keys(FormBody::Map(updated), host_key),
+                &parts,
+            ),
             None => Ok(coll.clone()),
         },
         FormBody::Vector(items) => {
@@ -3321,16 +3370,17 @@ pub(crate) fn dissoc(heap: &Heap, map: &Value, key: &Value) -> Result<Value, Col
         items.drain(i..i + 2);
         return alloc(
             heap,
-            f.updated(FormBody::Map(FormMap::Positional(
-                PVector::try_from_values(heap, &items)?,
-            ))),
+            f.updated_keys(
+                FormBody::Map(FormMap::Positional(PVector::try_from_values(heap, &items)?)),
+                false,
+            ),
             std::slice::from_ref(map),
         );
     }
     match map_dissoc(heap, body, key)? {
         Some(updated) => alloc(
             heap,
-            f.updated(FormBody::Map(updated)),
+            f.updated_keys(FormBody::Map(updated), false),
             std::slice::from_ref(map),
         ),
         None => Ok(map.clone()),
@@ -3345,6 +3395,7 @@ pub(crate) fn conj(heap: &Heap, coll: &Value, value: Value) -> Result<Value, Col
         return Err(wrong(heap, expected, coll));
     };
     let parts = [coll.clone(), value.clone()];
+    let host_key = matches!(f.body(), FormBody::Set(_)) && host_key(heap, &value);
     let body = match &f.body {
         FormBody::Vector(items) => FormBody::Vector(items.try_push(heap, value)?),
         FormBody::List(items) => FormBody::List(items.try_prepend(heap, value)?),
@@ -3354,7 +3405,12 @@ pub(crate) fn conj(heap: &Heap, coll: &Value, value: Value) -> Result<Value, Col
         },
         _ => return Err(wrong(heap, expected, coll)),
     };
-    alloc(heap, f.updated(body), &parts)
+    let object = if matches!(body, FormBody::Set(_)) {
+        f.updated_keys(body, host_key)
+    } else {
+        f.updated(body)
+    };
+    alloc(heap, object, &parts)
 }
 
 /// `pop` of a form vector: the vector without its last element, keeping its
@@ -3421,7 +3477,7 @@ pub(crate) fn disj(heap: &Heap, set: &Value, member: &Value) -> Result<Value, Co
     match map_dissoc(heap, body, member)? {
         Some(updated) => alloc(
             heap,
-            f.updated(FormBody::Set(updated)),
+            f.updated_keys(FormBody::Set(updated), false),
             std::slice::from_ref(set),
         ),
         None => Ok(set.clone()),

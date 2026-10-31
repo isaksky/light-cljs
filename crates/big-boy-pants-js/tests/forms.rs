@@ -70,6 +70,46 @@ fn empty_forms_preserve_storage_comparator_and_metadata() {
 }
 
 #[test]
+fn host_key_summaries_follow_persistent_updates_and_metadata() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function f() {
+      const check=(ok,label)=>{if(!ok)throw new Error(label);};
+      const host={get toString(){throw new Error('host property read');}};
+      const named=__rt.formSymbol('n','k'), meta=__rt.formMap('m',true);
+      const maps=[__rt.formMap(named,host),__rt.formArrayMap(__rt.formVector(named,host)),
+        __rt.formLiteralMap(__rt.formVector(named,host))];
+      for(const map of maps){
+        check(!__rt.formHasHostKeys(map),'native keys with host value');
+        const added=__rt.formAssoc(map,host,1);
+        check(__rt.formHasHostKeys(added)&&!__rt.formHasHostKeys(map),'added host key');
+        check(__rt.formHasHostKeys(__rt.formWithMeta(added,meta)),'metadata copy');
+        check(__rt.formHasHostKeys(__rt.formAssoc(added,'other',2)),'retained host key');
+        check(__rt.formHasHostKeys(__rt.formDissoc(added,named)),'removal retains other host');
+        check(!__rt.formHasHostKeys(__rt.formEmpty(added)),'empty map');
+      }
+      check(__rt.formHasHostKeys(__rt.formMap(host,1)),'host map constructor');
+      check(__rt.formHasHostKeys(__rt.formLiteralMap(__rt.formVector(host,1))),'host literal map');
+      for(const set of [__rt.formSet(named),__rt.formLiteralSet(__rt.formVector(named))]){
+        check(!__rt.formHasHostKeys(set),'native set');
+        const added=__rt.formConj(set,host);
+        check(__rt.formHasHostKeys(added)&&!__rt.formHasHostKeys(set),'set host addition');
+        check(__rt.formHasHostKeys(__rt.formWithMeta(added,meta)),'set metadata copy');
+        check(__rt.formHasHostKeys(__rt.formDisj(added,named)),'set removal retains host');
+        check(!__rt.formHasHostKeys(__rt.formEmpty(added)),'empty set');
+      }
+      check(__rt.formHasHostKeys(__rt.formSet(host)),'host set constructor');
+      const sorted=__rt.formSortedInsert(__rt.formSortedMapBy(()=>0),0,host,1);
+      check(__rt.formHasHostKeys(sorted),'sorted insert recomputes summary');
+      return true;
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
 fn mutable_struct_publication_traces_current_fields_and_collects_cycles() {
     let rt = Runtime::new();
     let made = call(

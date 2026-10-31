@@ -1644,11 +1644,13 @@ pub enum FormOp {
     /// running task reachable from `value` (`sealReachable`,
     /// light-cljs-666, `crate::vm::seal`).
     SealReachable = 121,
+    /// map/set → conservative presence of host keys requiring runtime semantics.
+    HasHostKeys = 122,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 122] = [
+    pub const ALL: [FormOp; 123] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1771,6 +1773,7 @@ impl FormOp {
         FormOp::Seal,
         FormOp::IdentityHash,
         FormOp::SealReachable,
+        FormOp::HasHostKeys,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1794,6 +1797,7 @@ impl FormOp {
             | FormOp::SortedComparator
             | FormOp::IsSortedBy
             | FormOp::IsArrayMap
+            | FormOp::HasHostKeys
             | FormOp::AtomAux
             | FormOp::CljCoreResolver
             | FormOp::LiteralPayload
@@ -1931,6 +1935,7 @@ impl FormOp {
             FormOp::Compare => "formCompare",
             FormOp::IsSortedBy => "formIsSortedBy",
             FormOp::IsArrayMap => "formIsArrayMap",
+            FormOp::HasHostKeys => "formHasHostKeys",
             FormOp::Empty => "formEmpty",
             FormOp::Regex => "formRegex",
             FormOp::CljCoreResolver => "cljCoreResolver",

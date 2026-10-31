@@ -457,6 +457,47 @@
   function mapFromEntries(entries, hash) {
     return hash ? makeMap(PersistentHashMapValue, entries, "hash-map") : makeMap(PersistentArrayMapValue, entries, "array-map");
   }
+  //@unit sharedUpdatedMapFromEntries requires: hashTrie, mapFromEntries, PersistentArrayMapValue,
+  //@ PersistentHashMapValue, publicCollectionSlots, sharedOwnedMap
+  // updatedMap retains public counts and slots on its result. Its allocation
+  // boundary must therefore keep a wrapper, just as the public constructors do.
+  function sharedUpdatedMapFromEntries(original, entries, hash) {
+    if (publicCollectionSlots.get(original)?.cnt != null)
+      return sharedOwnedMap(hash ? PersistentHashMapValue : PersistentArrayMapValue, hash ? hashTrie(entries) : entries, hash ? "hash-map" : "array-map");
+    return mapFromEntries(entries, hash);
+  }
+  //@unit sharedUpdates requires: assoc, preserveMeta, sharedFormKind, sharedFormOf, sharedScalar
+  // Native key operations are safe for primitive and canonical named keys.
+  // Composite and host-backed keys retain the canonical runtime path: a
+  // runtime list, Date or user IHash/IEquiv can be equal to a form key while
+  // the engine's hostless hash/equality would instead use object identity.
+  // Keep the protocol checks and fallback algorithms in their original units;
+  // shared assembly inserts these leaves before those units read entry arrays.
+  const sharedUpdates = {
+    key(value) {
+      const scalar = sharedScalar(value), kind = sharedFormKind(value);
+      return scalar == null || typeof scalar !== "object" && typeof scalar !== "function" || kind === "keyword" || kind === "symbol";
+    },
+    accepts(value, keys, kind) { return sharedFormKind(value) === kind && !__rt.formHasHostKeys(sharedFormOf(value)) && keys.every(sharedUpdates.key); },
+    assoc(value, key, item, pairs) {
+      let result = preserveMeta(value, __rt.formAssoc(sharedFormOf(value), key, item));
+      for (let i = 0; i < pairs.length; i += 2)
+        result = assoc(result, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
+      return result;
+    },
+    dissoc(value, keys) {
+      let result = sharedFormOf(value);
+      for (const key of keys) result = __rt.formDissoc(result, key);
+      return preserveMeta(value, result);
+    },
+    conj(value, item) { return preserveMeta(value, __rt.formConj(sharedFormOf(value), item)); },
+    disj(value, keys) {
+      let result = sharedFormOf(value);
+      for (const key of keys) result = __rt.formDisj(result, key);
+      return preserveMeta(value, result);
+    },
+    lookup(value, key, notFound) { return __rt.formGet(sharedFormOf(value), key, notFound); }
+  };
   //@unit sharedOwnedSet requires: setKinds, sets
   // The set counterpart: preserve the constructor's source-map slot on a
   // wrapper without changing ordinary builders' engine-form return values.

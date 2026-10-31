@@ -3,7 +3,7 @@
 //! section 1; light-cljs-647): it boots in a boot task and publishes.
 
 use big_boy_pants_js::frontend::compile_function;
-use big_boy_pants_js::{HeapPolicy, PublishError, Rooted, RunOutcome, Runtime};
+use big_boy_pants_js::{HeapPolicy, Primitive, PublishError, Rooted, RunOutcome, Runtime};
 use light_cljs::runtime_manifest::SHARED_RUNTIME;
 
 fn run(rt: &Runtime, body: &str) -> Result<Rooted, String> {
@@ -1198,6 +1198,234 @@ fn shared_profile_public_map_and_set_constructors_keep_slots() {
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(out.string().unwrap().to_string_lossy(), "ok");
+}
+
+#[test]
+fn shared_profile_public_collection_updates_keep_constructor_slots() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); {}",
+            r#"
+            const core = rt.core;
+            const check = (ok, label) => { if (!ok) throw new Error(label); };
+            const child = core.vector(7), metadata = core.hashMap('m', 1);
+            const pairs = ['k', child, 'keep', child];
+            const a = new core.PersistentArrayMap(metadata, 2, pairs, 59);
+            const h = new core.PersistentHashMap(metadata, 2, core.hashMap('k', child, 'keep', child), false, null, 61);
+            for (const original of [a, h]) {
+              const added = core.assoc(original, 'new', 3), replaced = core.assoc(original, 'k', 4);
+              const removed = core.dissoc(original, 'k'), conjoined = core.conj(original, core.vector('new', 3));
+              for (const updated of [added, replaced, removed, conjoined]) {
+                check(__rt.formKind(updated) === null && updated instanceof original.constructor, 'updated wrapper');
+                check(core.meta(updated) === metadata && core.get(updated, 'keep') === child, 'retained metadata/child');
+                check(updated.cnt === core.count(updated), 'updated count slot');
+                check(core.hash(updated) !== core.hash(original), 'invalidated cached hash');
+              }
+              check(added.cnt === 3 && replaced.cnt === 2 && removed.cnt === 1, 'count changes');
+              check(core.get(original, 'k') === child && core.count(original) === 2, 'persistent original');
+            }
+            const full = new core.PersistentArrayMap(metadata, 8, [0, child, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7], 71);
+            const promoted = core.assoc(full, 8, 8);
+            check(core.count(promoted) === 9 && core.get(promoted, 0) === child && core.meta(promoted) === metadata, 'public promotion');
+            const nil = core.assoc(h, null, 9);
+            check(nil.has_nil_QMARK_ === true && nil.nil_val === 9 && core.get(nil, null) === 9, 'nil slots');
+            check(core.dissoc(nil, null).has_nil_QMARK_ === false, 'removed nil slot');
+            const set = new core.PersistentHashSet(metadata, h, 67);
+            const added = core.conj(set, 'new'), removed = core.disj(added, 'k');
+            check(added instanceof core.PersistentHashSet && removed instanceof core.PersistentHashSet, 'set wrappers');
+            check(core.count(added) === 3 && core.count(removed) === 2 && !core.contains(removed, 'k'), 'set changes');
+            check(core.meta(added) === metadata && core.meta(removed) === metadata && core.contains(set, 'k'), 'set persistence');
+            return 'ok';
+            "#
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(out.string().unwrap().to_string_lossy(), "ok");
+}
+
+#[test]
+fn shared_profile_persistent_updates_preserve_value_semantics() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); {}",
+            r#"
+            const core = rt.core;
+            const check = (ok, label) => { if (!ok) throw new Error(label); };
+            const child = core.vector('child'), metadata = core.hashMap('m', true);
+            let map = core.withMeta(core.hashMap('keep', child, null, 0), metadata);
+            const original = map;
+            map = core.assoc(map, 'x', 1, 'y', 2, 'odd');
+            check(__rt.formKind(map) === 'map' && core.count(map) === 5 && core.get(map, 'odd') === null, 'native variadic assoc');
+            map = core.conj(map, core.vector('z', 3));
+            map = core.update(map, 'z', x => x + 1);
+            map = core.dissoc(map, 'x', 'y', 'absent', null);
+            check(__rt.formKind(map) === 'map' && core.get(map, 'z') === 4 && core.get(map, 'keep') === child, 'native map updates');
+            check(core.meta(map) === metadata && core.count(original) === 2 && core.get(original, null) === 0, 'map persistence');
+            const expected = core.hashMap('keep', child, 'odd', null, 'z', 4);
+            check(core.equal(map, expected) && core.hash(map) === core.hash(expected), 'map equality/hash');
+            check(core.assoc(map, 'keep', child) === map && core.dissoc(map, 'absent') === map, 'map no-op');
+            let positional = rt.constantMapFromArray(['a', child, 'a', 2, 'b', 3]);
+            positional = core.assoc(positional, 'a', 9);
+            check(core.prStr(positional) === '{"a" 9, "a" 2, "b" 3}', 'positional duplicates/order');
+            check(core.prStr(core.dissoc(positional, 'a')) === '{"b" 3, nil nil}', 'positional removal holes');
+            const key = core.vector(1, 2), equalKey = core.list(1, 2);
+            const keyed = core.hashMap(key, child);
+            const replaced = core.assoc(keyed, equalKey, 9);
+            check(core.count(replaced) === 1 && core.get(replaced, key) === 9, 'runtime structural equality fallback');
+            check(core.nth(core.first(core.seq(replaced)), 0) === key, 'retained equal key identity');
+            check(core.count(core.dissoc(replaced, equalKey)) === 0, 'structural dissoc fallback');
+            let set = core.withMeta(core.hashSet('a', 'b'), metadata), oldSet = set;
+            set = core.conj(set, 'c', 'd');
+            set = core.disj(set, 'a', 'absent');
+            check(__rt.formKind(set) === 'set' && core.count(set) === 3 && core.meta(set) === metadata, 'native set updates');
+            check(core.contains(oldSet, 'a') && !core.contains(set, 'a') && core.get(set, 'c') === 'c', 'set persistence/lookup');
+            check(core.conj(set, 'b') === set && core.disj(set, 'absent') === set, 'set no-op');
+            check(core.equal(set, core.hashSet('b', 'c', 'd')) && core.hash(set) === core.hash(core.hashSet('b', 'c', 'd')), 'set equality/hash');
+            const named = core.keyword('n', 'k'), namedMap = core.assoc(core.hashMap(named, child), core.keyword('n', 'k'), 9);
+            check(core.count(namedMap) === 1 && core.get(namedMap, named) === 9, 'named key equality');
+            const canonical = core.symbol('a', 'b');
+            const alias = new core.Symbol('other', 'parts', 'a/b', core.hash(canonical), null);
+            const aliased = core.hashMap(alias, child), renamed = core.assoc(aliased, canonical, 9);
+            check(core.get(aliased, canonical) === child && core.count(renamed) === 1 && core.get(renamed, alias) === 9, 'host-backed named equality');
+            check(core.count(core.dissoc(aliased, canonical)) === 0, 'host-backed named dissoc');
+            return 'ok';
+            "#
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(out.string().unwrap().to_string_lossy(), "ok");
+}
+
+/// Pause the same owning task around each measured operation. Boot, input
+/// construction and assertions are outside the paired allocation samples.
+fn shared_profile_measured_allocations(body: &str) -> Vec<usize> {
+    let rt = Runtime::with_heap_policy(
+        Default::default(),
+        HeapPolicy {
+            hard_limit_bytes: Some(1 << 30),
+            ..Default::default()
+        },
+    );
+    let code = compile_function(&format!(
+        "function measure() {{ const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; {body} }}"
+    ))
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let ready = rt.root(Primitive::Null);
+    let mut samples = Vec::new();
+    loop {
+        match task.run().unwrap() {
+            RunOutcome::Waiting(_) => {
+                samples.push(rt.heap_stats().admitted_bytes_total);
+                let requests = task.take_producer_requests();
+                assert_eq!(requests.len(), 1);
+                let request = &requests[0];
+                let wakeups = rt
+                    .complete(
+                        request.key(),
+                        request.producer(),
+                        big_boy_pants_js::Completion::Ready(&ready),
+                    )
+                    .unwrap();
+                assert_eq!(wakeups.task_ids(), [task.id()]);
+            }
+            RunOutcome::Complete(result) => {
+                assert_eq!(result.string().unwrap().to_string_lossy(), "ok");
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(samples.len() % 2, 0);
+    let allocations: Vec<_> = samples
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| pair[1] - pair[0])
+        .collect();
+    assert!(
+        allocations.iter().all(|bytes| *bytes > 0),
+        "byte accounting must be enabled: {allocations:?}"
+    );
+    allocations
+}
+
+#[test]
+fn shared_profile_hash_map_updates_copy_only_changed_paths() {
+    let allocations = shared_profile_measured_allocations(
+        r#"
+        const check = (ok, label) => { if (!ok) throw new Error(label); };
+        let phase = 0;
+        for (const n of [32, 512, 4096]) {
+          let map = __rt.formMap(), set = __rt.formSet();
+          const child = __rt.formVector(7), metadata = __rt.formMap('m', true);
+          for (let i = 0; i < n; i++) {
+            map = __rt.formAssoc(map, i, child); set = __rt.formConj(set, i);
+          }
+          map = __rt.formWithMeta(map, metadata); set = __rt.formWithMeta(set, metadata);
+          for (let operation = 0; operation < 7; operation++) {
+            globalThis.__lightSharedCells = core.sharedTaskCells();
+            __rt.need(713, phase++);
+            let result;
+            switch (operation) {
+              case 0: result = core.assoc(map, 0, 9); break;
+              case 1: result = core.assoc(map, -1, 9); break;
+              case 2: result = core.dissoc(map, 0); break;
+              case 3: result = core.conj(map, __rt.formVector(-1, 9)); break;
+              case 4: result = core.update(map, 0, () => 9); break;
+              case 5: result = core.conj(set, -1); break;
+              case 6: result = core.disj(set, 0); break;
+            }
+            __rt.need(713, phase++);
+            check(__rt.formKind(result) === (operation < 5 ? 'map' : 'set'), 'native result');
+            check(core.meta(result) === metadata, 'metadata');
+            if (operation < 5) check(core.get(result, 1) === child && core.get(map, 0) === child, 'unchanged child/original');
+            const expected = operation === 0 || operation === 4 ? n : operation === 2 || operation === 6 ? n - 1 : n + 1;
+            check(core.count(result) === expected, 'updated count');
+          }
+        }
+        return 'ok';
+    "#,
+    );
+    eprintln!(
+        "single updates at 32/512/4096 entries, admitted bytes: {:?}",
+        allocations.chunks(7).collect::<Vec<_>>()
+    );
+    assert_eq!(allocations.len(), 21);
+    for operation in 0..7 {
+        assert!(
+            allocations[14 + operation] < 4 * allocations[operation],
+            "whole-collection allocation in operation {operation}: {allocations:?}"
+        );
+    }
+}
+
+#[test]
+fn shared_profile_frequencies_allocation_grows_with_input() {
+    let allocations = shared_profile_measured_allocations(
+        r#"
+        let phase = 0;
+        for (const n of [64, 256]) {
+          let input = __rt.formVector();
+          for (let i = 0; i < n; i++) input = __rt.formConj(input, i);
+          __rt.need(713, phase++);
+          const result = core.frequencies(input);
+          __rt.need(713, phase++);
+          if (__rt.formCount(result) !== n || core.get(result, 0) !== 1 || core.get(result, n - 1) !== 1) throw new Error('frequencies values');
+        }
+        return 'ok';
+    "#,
+    );
+    eprintln!("frequencies 64/256 admitted bytes: {allocations:?}");
+    assert_eq!(allocations.len(), 2);
+    assert!(
+        allocations[1] < 6 * allocations[0],
+        "quadratic frequencies allocation: {allocations:?}"
+    );
 }
 
 /// Sorted-map find returns cached, runtime-owned tree nodes implementing
