@@ -161,6 +161,7 @@ struct Parked {
     targets: Vec<Target>,
     since: Instant,
     complete: Option<Box<dyn FnOnce() + Send>>,
+    home: Option<usize>,
 }
 
 #[derive(Default)]
@@ -198,9 +199,67 @@ struct State {
     /// namespace creations of that work count there ([`NamespaceTag`]).
     floors: HashMap<Target, (Position, u64)>,
     rescued: HashSet<usize>,
+    /// Each namespace's require closure, by source index, as a dense
+    /// bitset of source indices (light-cljs-672); `None` when unknown.
+    closures: Vec<Option<Box<[u64]>>>,
+    names: Vec<String>,
+    sources: HashMap<String, usize>,
+    /// The namespace of each catalog unit, of each scheduled position and
+    /// of the open pass segment.
+    unit_sources: HashMap<usize, usize>,
+    position_sources: HashMap<Position, usize>,
+    pass_source: Option<usize>,
+    /// The home namespace of the atoms an activity makes, by its token: a
+    /// Var initializer's namespace. Every other activity's atoms have no
+    /// home and order against every earlier activity.
+    homes: HashMap<u64, usize>,
+    /// Per home, the first scheduled unit not yet known to be finished or
+    /// outside the home's reach ([`State::frontier_for`]).
+    home_cursors: HashMap<usize, usize>,
+    /// The homed initializers each task runs, innermost last, wherever
+    /// its steps run, and the task of each.
+    initializer_tasks: HashMap<u64, Vec<u64>>,
+    initializer_task_of: HashMap<u64, u64>,
 }
 
 impl State {
+    /// Whether namespace `source`'s require closure contains `home`; an
+    /// unknown closure contains every namespace.
+    fn reaches(&self, source: Option<usize>, home: usize) -> bool {
+        let Some(Some(closure)) = source.and_then(|s| self.closures.get(s)) else {
+            return true;
+        };
+        closure
+            .get(home / 64)
+            .is_some_and(|word| word & (1 << (home % 64)) != 0)
+    }
+    /// The lowest position of an unfinished scheduled unit or the open pass
+    /// segment whose namespace can reach a resource homed in `home`: one
+    /// whose require closure contains it, or whose closure is unknown.
+    fn frontier_for(&mut self, home: Option<usize>) -> Position {
+        let frontier = self.frontier();
+        let Some(home) = home else {
+            return frontier;
+        };
+        let mut at = (self.home_cursors.get(&home).copied())
+            .unwrap_or(0)
+            .max(self.cursor);
+        while let Some(&(_, unit)) = self.scheduled.get(at) {
+            if !self.finished.contains(&unit)
+                && self.reaches(self.unit_sources.get(&unit).copied(), home)
+            {
+                break;
+            }
+            at += 1;
+        }
+        self.home_cursors.insert(home, at);
+        let unit = self.scheduled.get(at).map_or(Position::MAX, |&(p, _)| p);
+        let pass = match self.pass {
+            Some((p, _)) if self.reaches(self.pass_source, home) => p,
+            _ => Position::MAX,
+        };
+        unit.min(pass)
+    }
     fn frontier(&mut self) -> Position {
         while let Some(&(_, unit)) = self.scheduled.get(self.cursor) {
             if !self.finished.contains(&unit) {
@@ -227,6 +286,11 @@ impl State {
     }
     /// Whether an activity at effective `position` may touch shared atoms.
     fn open(&mut self, position: Option<Position>) -> bool {
+        self.open_for(position, None)
+    }
+    /// Whether an activity at effective `position` may touch a resource
+    /// homed in `home` (`None`: reachable from every namespace).
+    fn open_for(&mut self, position: Option<Position>, home: Option<usize>) -> bool {
         let Some(position) = position else {
             return true;
         };
@@ -242,7 +306,35 @@ impl State {
         {
             return true;
         }
-        frontier >= position
+        frontier >= position || (home.is_some() && self.frontier_for(home) >= position)
+    }
+    /// The namespace whose unit or pass segment holds `position`.
+    fn source_at(&self, position: Position) -> Option<usize> {
+        self.position_sources.get(&position).copied()
+    }
+    /// The require closure rule for a resource homed in `home` that a task
+    /// at its own `position` and effective position `effective` touches:
+    /// the namespaces whose work the access counts as, with one slot, must
+    /// require the home, or another activity's lane may have skipped them.
+    fn enforce(
+        &self,
+        home: usize,
+        position: Option<Position>,
+        effective: Option<Position>,
+    ) -> Result<(), String> {
+        for at in [position, effective].into_iter().flatten() {
+            let source = self.source_at(at);
+            if !self.reaches(source, home) {
+                let name = |s: usize| self.names.get(s).map_or("?", String::as_str);
+                return Err(format!(
+                    "{} reached compile-time state of {}, which it does not require: a namespace's macros see only its require closure (add a require of {})",
+                    name(source.expect("a known closure")),
+                    name(home),
+                    name(home),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -267,6 +359,7 @@ pub(crate) struct Lanes {
     wait_nanos: AtomicU64,
     longest_nanos: AtomicU64,
     rescued: AtomicU64,
+    skipped: AtomicU64,
 }
 
 /// What a lane that waits for an unstarted earliest unit calls to have it
@@ -287,6 +380,10 @@ pub struct LaneCounts {
     pub longest_wait_nanos: u64,
     /// Earliest units a waiting lane had analyzed on a thread of its own.
     pub rescued: u64,
+    /// Lane accesses that went on, or parked lanes that opened, only
+    /// because the earlier unfinished activities cannot reach the
+    /// resource (light-cljs-672).
+    pub skipped: u64,
 }
 
 thread_local! {
@@ -316,6 +413,7 @@ impl Drop for EntryGuard {
                     stack.remove(at);
                 }
             });
+            lanes.forget_initializer(self.token);
             lanes.changed();
         }
     }
@@ -330,6 +428,7 @@ impl Drop for PassGuard {
             let mut s = lanes.lock();
             if s.pass.is_some_and(|(_, token)| token == self.0.token) {
                 s.pass = None;
+                s.pass_source = None;
             }
         }
     }
@@ -484,10 +583,80 @@ impl Lanes {
     pub(crate) fn enter_cell(self: &Arc<Self>, cell: u64) -> EntryGuard {
         self.push(None, Some(Target::Cell(cell)), false).0
     }
+    /// [`Self::enter_cell`] for the initializer of catalog unit `unit`:
+    /// the atoms it makes are homed in the unit's namespace
+    /// (light-cljs-672).
+    pub(crate) fn enter_initializer(self: &Arc<Self>, cell: u64, unit: u64, task: u64) -> EntryGuard {
+        let guard = self.enter_cell(cell);
+        if guard.lanes.is_some() {
+            let mut s = self.lock();
+            if let Some(&source) = usize::try_from(unit)
+                .ok()
+                .and_then(|unit| s.unit_sources.get(&unit))
+            {
+                s.homes.insert(guard.token, source);
+                s.initializer_tasks.entry(task).or_default().push(guard.token);
+                s.initializer_task_of.insert(guard.token, task);
+            }
+        }
+        guard
+    }
+    /// Record namespace `name`, source index `source`, whose direct requires
+    /// are `requires`: its require closure is itself and the closures of
+    /// the requires recorded before it (light-cljs-672). Requires that name
+    /// no recorded source (`cljs.core`, JavaScript packages, host
+    /// namespaces) add nothing.
+    pub(crate) fn register_namespace(&self, source: usize, name: &str, requires: &[String]) {
+        if !self.enabled() {
+            return;
+        }
+        let mut s = self.lock();
+        let words = source / 64 + 1;
+        let mut closure = vec![0u64; words];
+        closure[source / 64] |= 1 << (source % 64);
+        for require in requires {
+            let Some(&required) = s.sources.get(require.as_str()) else {
+                continue;
+            };
+            match s.closures.get(required) {
+                Some(Some(theirs)) => {
+                    for (word, bits) in closure.iter_mut().zip(theirs.iter()) {
+                        *word |= bits;
+                    }
+                }
+                _ => {
+                    // A require whose closure is unknown: so is this one's.
+                    if s.closures.len() <= source {
+                        s.closures.resize(source + 1, None);
+                        s.names.resize(source + 1, String::new());
+                    }
+                    s.names[source] = name.to_owned();
+                    s.sources.insert(name.to_owned(), source);
+                    s.closures[source] = None;
+                    return;
+                }
+            }
+        }
+        if s.closures.len() <= source {
+            s.closures.resize(source + 1, None);
+            s.names.resize(source + 1, String::new());
+        }
+        s.names[source] = name.to_owned();
+        s.sources.insert(name.to_owned(), source);
+        s.closures[source] = Some(closure.into_boxed_slice());
+    }
+    /// Note that catalog unit `unit` belongs to namespace `source`.
+    pub(crate) fn note_unit(&self, unit: usize, source: usize) {
+        if !self.enabled() {
+            return;
+        }
+        self.lock().unit_sources.insert(unit, source);
+    }
     /// Start a namespace's top-level pass on the coordinator: its segment
     /// is the next position. A blocker's consumer (`forced`) waits for its
     /// lane first, so it runs after every earlier unit, as with one slot.
-    pub(crate) fn begin_pass(self: &Arc<Self>, forced: bool) -> PassGuard {
+    /// `source` is the namespace's source index, when known.
+    pub(crate) fn begin_pass(self: &Arc<Self>, forced: bool, source: Option<usize>) -> PassGuard {
         if !self.enabled() {
             return PassGuard(self.push(None, None, true).0);
         }
@@ -495,6 +664,10 @@ impl Lanes {
             let mut s = self.lock();
             let position = s.next;
             s.next += 1;
+            if let Some(source) = source {
+                s.position_sources.insert(position, source);
+            }
+            s.pass_source = source;
             position
         };
         let (guard, _) = self.push(Some(position), None, true);
@@ -522,6 +695,9 @@ impl Lanes {
             s.next += 1;
             s.position_of.insert(unit, position);
             s.scheduled.push((position, unit));
+            if let Some(&source) = s.unit_sources.get(&unit) {
+                s.position_sources.insert(position, source);
+            }
             if forced {
                 s.forced.insert(unit);
             }
@@ -531,6 +707,9 @@ impl Lanes {
             let position = s.next;
             s.next += 1;
             s.pass = Some((position, token));
+            if let Some(source) = s.pass_source {
+                s.position_sources.insert(position, source);
+            }
             STACK.with(|stack| {
                 if let Some(entry) = (stack.borrow_mut().iter_mut())
                     .rev()
@@ -650,31 +829,72 @@ impl Lanes {
             .0
     }
     /// The token of `task`'s current activity, which owns the atoms it
-    /// makes; 0 outside any.
-    pub(crate) fn token(&self, task: u64) -> u64 {
+    /// makes; 0 outside any. A Var initializer running on this thread owns
+    /// what it makes, and its token comes negated: its atoms have a home
+    /// ([`Self::enter_initializer`]), which every task must see.
+    pub(crate) fn token(&self, task: u64) -> i64 {
         if !self.enabled() {
             return 0;
         }
-        self.lock().tops.get(&task).map_or(0, |top| top.token)
+        let s = self.lock();
+        if let Some(&token) = s.initializer_tasks.get(&task).and_then(|t| t.last()) {
+            return -(token as i64);
+        }
+        s.tops.get(&task).map_or(0, |top| top.token as i64)
+    }
+    fn forget_initializer(&self, token: u64) {
+        let mut s = self.lock();
+        if let Some(task) = s.initializer_task_of.remove(&token)
+            && let Some(tokens) = s.initializer_tasks.get_mut(&task)
+        {
+            tokens.retain(|&t| t != token);
+            if tokens.is_empty() {
+                s.initializer_tasks.remove(&task);
+            }
+        }
     }
     /// Before `task` touches an atom `owner` made: 0 if it may go on, else a
-    /// fresh lane cell it parks on ([`Self::attach`]).
-    pub(crate) fn check(&self, task: u64, owner: u64) -> u64 {
+    /// fresh lane cell it parks on ([`Self::attach`]). An atom an
+    /// initializer made is homed in the initializer's namespace: the lane
+    /// skips earlier activities whose require closure does not contain it,
+    /// and a task whose own work cannot reach it fails (light-cljs-672).
+    pub(crate) fn check(&self, task: u64, owner: u64) -> Result<u64, String> {
         if !self.enabled() {
-            return 0;
+            return Ok(0);
         }
         let mut s = self.lock();
-        let Some((token, position)) = s.tops.get(&task).map(|top| (top.token, top.position)) else {
-            return 0;
+        let Some(top) = s.tops.get(&task) else {
+            return Ok(0);
         };
-        if owner != 0 && owner == token {
-            return 0;
+        let (token, position) = (top.token, top.position);
+        let initializing = |owner| {
+            (s.initializer_tasks.get(&task)).is_some_and(|tokens| tokens.contains(&owner))
+        };
+        if owner != 0 && (owner == token || initializing(owner)) {
+            return Ok(0);
+        }
+        let home = if owner == 0 {
+            None
+        } else {
+            s.homes.get(&owner).copied()
+        };
+        if let Some(home) = home {
+            let owned: Vec<Target> = (top.chain.iter())
+                .flat_map(|&(token, target)| [Some(Target::Activity(token)), target])
+                .flatten()
+                .collect();
+            let effective = min(position, s.inherited(&owned));
+            s.enforce(home, position, effective)?;
         }
         if s.entered.insert(token) {
             self.entered.fetch_add(1, Ordering::Relaxed);
         }
         if s.open(position) {
-            return 0;
+            return Ok(0);
+        }
+        if s.open_for(position, home) {
+            self.skipped.fetch_add(1, Ordering::Relaxed);
+            return Ok(0);
         }
         s.next_cell += 1;
         let cell = s.next_cell;
@@ -685,9 +905,10 @@ impl Lanes {
                 targets: Vec::new(),
                 since: Instant::now(),
                 complete: None,
+                home,
             },
         );
-        cell
+        Ok(cell)
     }
     /// The parked task's thread gives lane cell `cell` what its activity
     /// chain owns and how to complete it, which happens once the lane
@@ -736,8 +957,14 @@ impl Lanes {
                 }
                 let own = parked.position;
                 let position = min(own, s.inherited(&parked.targets));
+                let home = parked.home;
                 if s.open(position) {
                     let lent = position != own && !s.open(own);
+                    let parked = s.parked.remove(&cell).expect("parked lane");
+                    ready.push((parked, lent));
+                } else if s.open_for(position, home) {
+                    let lent = position != own && !s.open_for(own, home);
+                    self.skipped.fetch_add(1, Ordering::Relaxed);
                     let parked = s.parked.remove(&cell).expect("parked lane");
                     ready.push((parked, lent));
                 }
@@ -967,6 +1194,7 @@ impl Lanes {
             wait_nanos: self.wait_nanos.load(Ordering::Relaxed),
             longest_wait_nanos: self.longest_nanos.load(Ordering::Relaxed),
             rescued: self.rescued.load(Ordering::Relaxed),
+            skipped: self.skipped.load(Ordering::Relaxed),
         }
     }
 }
@@ -990,9 +1218,9 @@ mod tests {
         // Unit 2 touches an atom unit 0 made: unit 0 and 1 are unfinished.
         let _unit = lanes.enter_unit(2);
         let task = synced(&lanes, 7);
-        let own = lanes.token(task);
-        assert_eq!(lanes.check(task, own), 0, "its own atom");
-        let cell = lanes.check(task, 0);
+        let own = lanes.token(task) as u64;
+        assert_eq!(lanes.check(task, own).unwrap(), 0, "its own atom");
+        let cell = lanes.check(task, 0).unwrap();
         assert_ne!(cell, 0);
         let (opened, wait) = mpsc::channel();
         lanes.attach(cell, Box::new(move || opened.send(()).unwrap()));
@@ -1000,7 +1228,7 @@ mod tests {
         assert!(wait.try_recv().is_err(), "unit 0 is still running");
         lanes.finish(0, false);
         wait.try_recv().expect("the lane opened");
-        assert_eq!(lanes.check(task, 0), 0);
+        assert_eq!(lanes.check(task, 0).unwrap(), 0);
         let counts = lanes.counts();
         assert_eq!((counts.entered, counts.waits, counts.inherited), (1, 1, 0));
     }
@@ -1014,7 +1242,7 @@ mod tests {
         let _unit = lanes.enter_unit(2);
         let _initializer = lanes.enter_cell(99);
         let task = synced(&lanes, 7);
-        let cell = lanes.check(task, 0);
+        let cell = lanes.check(task, 0).unwrap();
         let (opened, wait) = mpsc::channel();
         lanes.attach(cell, Box::new(move || opened.send(()).unwrap()));
         // Unit 1 waits for the initializer, on another thread.
@@ -1129,7 +1357,7 @@ mod tests {
         // The realizer enters a cold helper, which first waits for its lane.
         // The task's recorded activity precedes that nested helper.
         let _helper = lanes.enter_cell(99);
-        let cell = lanes.check(task, 0);
+        let cell = lanes.check(task, 0).unwrap();
         let (opened, wait) = mpsc::channel();
         lanes.attach(cell, Box::new(move || opened.send(()).unwrap()));
         let other = lanes.clone();
@@ -1152,11 +1380,11 @@ mod tests {
     fn a_drain_inside_a_pass_moves_the_pass_after_its_units_and_a_failure_frees_later_lanes() {
         let lanes = Arc::new(Lanes::default());
         lanes.enable();
-        let pass = lanes.begin_pass(false);
+        let pass = lanes.begin_pass(false, None);
         lanes.schedule([0, 1], false);
         // The pass, after its drained units, waits for them.
         let task = synced(&lanes, 3);
-        let cell = lanes.check(task, 0);
+        let cell = lanes.check(task, 0).unwrap();
         assert_ne!(cell, 0);
         let (opened, wait) = mpsc::channel();
         lanes.attach(cell, Box::new(move || opened.send(()).unwrap()));
@@ -1165,7 +1393,7 @@ mod tests {
         wait.try_recv().expect("lanes after a failure are open");
         drop(pass);
         let _unit = lanes.enter_unit(1);
-        assert_eq!(lanes.check(synced(&lanes, 4), 0), 0);
+        assert_eq!(lanes.check(synced(&lanes, 4), 0).unwrap(), 0);
     }
 
     #[test]
@@ -1175,7 +1403,7 @@ mod tests {
         lanes.schedule([0, 1, 2], false);
         let _unit = lanes.enter_unit(2);
         let task = synced(&lanes, 5);
-        let cell = lanes.check(task, 0);
+        let cell = lanes.check(task, 0).unwrap();
         let (opened, wait) = mpsc::channel();
         lanes.attach(cell, Box::new(move || opened.send(()).unwrap()));
         // Unit 1 fails while unit 0 still runs: unit 0 may fail first.
@@ -1191,7 +1419,7 @@ mod tests {
         let lanes = Arc::new(Lanes::default());
         lanes.schedule([0], false);
         let _unit = lanes.enter_unit(0);
-        assert_eq!(lanes.check(synced(&lanes, 1), 0), 0);
+        assert_eq!(lanes.check(synced(&lanes, 1), 0).unwrap(), 0);
         assert_eq!(lanes.counts(), LaneCounts::default());
     }
 }

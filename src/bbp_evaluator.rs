@@ -2837,7 +2837,7 @@ impl BbpEvaluator {
                 let wait = self.shared.lanes().map(|lanes| {
                     let target = crate::effect_lanes::identity(key);
                     let wait = lanes.wait_for(crate::effect_lanes::Target::Cell(target));
-                    let entry = lanes.enter_cell(target);
+                    let entry = lanes.enter_initializer(target, unit as u64, crate::effect_lanes::identity(cx.task.id()));
                     cx.initializer_lanes.borrow_mut().insert(key, entry);
                     wait
                 });
@@ -3399,11 +3399,11 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                 _ => 0.0,
             };
             let answer = match self.2 {
-                None => 0,
-                Some(lanes) if argument < 0.0 => lanes.token(task),
-                Some(lanes) => lanes.check(task, argument as u64),
+                None => 0.0,
+                Some(lanes) if argument < 0.0 => lanes.token(task) as f64,
+                Some(lanes) => lanes.check(task, argument as u64)? as f64,
             };
-            return Ok(Primitive::Number(answer as f64));
+            return Ok(Primitive::Number(answer));
         }
         #[cfg(test)]
         if call.op == 65534 {

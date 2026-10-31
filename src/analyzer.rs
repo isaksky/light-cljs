@@ -4744,7 +4744,7 @@ impl NamespaceAnalysis {
         // (light-cljs-480).
         let _pass = macro_host
             .session_handle()
-            .map(|session| session.begin_pass(self.main_isolate));
+            .map(|session| session.begin_pass(self.main_isolate, source_index));
         let top_level = crate::compile_trace::enter(
             crate::compile_trace::Stage::TopLevel,
             source_index,

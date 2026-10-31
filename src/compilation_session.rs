@@ -2063,6 +2063,7 @@ impl CompilationSession {
                             if let Some(capture) = self.capture.borrow_mut().as_mut() {
                                 capture.units.push(UnitCapture::default());
                             }
+                            self.shared.lanes.note_unit(c.units.len(), source as usize);
                             c.units.push(Unit {
                                 request,
                                 name: name.clone(),
@@ -2582,6 +2583,7 @@ impl CompilationSession {
                         added: Vec::new(),
                     });
                 }
+                self.shared.lanes.note_unit(id, snapshot.source_index);
                 c.units.push(Unit {
                     request,
                     name: name.clone(),
@@ -3067,9 +3069,9 @@ impl CompilationSession {
     }
     /// Start a namespace's top-level pass segment on its lane
     /// ([`crate::effect_lanes::Lanes::begin_pass`]).
-    pub(crate) fn begin_pass(&self, forced: bool) -> crate::effect_lanes::PassGuard {
+    pub(crate) fn begin_pass(&self, forced: bool, source: usize) -> crate::effect_lanes::PassGuard {
         self.tail_ready.set(false);
-        self.shared.lanes.begin_pass(forced)
+        self.shared.lanes.begin_pass(forced, Some(source))
     }
     /// Remaining drains can use all queued units while they wait, taking
     /// each ready result's charges before starting the next drain.
@@ -5875,7 +5877,7 @@ mod worker_tests {
         // Starting another top-level pass restores the same-source limit.
         // Make the later kept unit poolable so that limit alone excludes it.
         session.set_pooled(kept);
-        let pass = session.begin_pass(false);
+        let pass = session.begin_pass(false, 0);
         session.analyze_queued(Some(running));
         assert!(matches!(
             session.shared.lock().units[kept].state,

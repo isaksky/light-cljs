@@ -2986,6 +2986,11 @@ fn analyze_entry(
                 )
             };
             crate::compile_trace::namespace(index, &file.name, file.source.len(), &file.requires);
+            // Its require closure, which bounds what its effect lanes wait
+            // for (light-cljs-672).
+            if let Some(session) = macros.session_handle() {
+                (session.shared().lanes()).register_namespace(index, &file.name, &file.requires);
+            }
             macros.observe(|log| log.window = index as u32);
             build.analyze(index, &file.name, file.path.to_str());
             // A cancelled compilation stops at the next namespace.

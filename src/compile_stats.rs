@@ -832,6 +832,7 @@ impl CompileStats {
                 &ms(Duration::from_nanos(lanes.longest_wait_nanos)),
             );
             line("native.lanes.rescued", &lanes.rescued);
+            line("native.lanes.skipped", &lanes.skipped);
         }
         line("macro-nodes.peak", &self.peak_macro_nodes);
         line("deferred-units.registered", &self.deferred_units.registered);

@@ -1797,14 +1797,32 @@ const native = (() => {
   };
   const optionsOf=a=>{const registry=__rt.atomLoad(__rt.atomAux(a));return registry===null?null:__rt.getOr(registry,'atom',null);};
   const atomOptions=(a,metadata=null,validator=null,watches=null)=>auxiliary(a,'atom',()=>__rt.atomNew(__rt.formVector(metadata,validator,watches)));
+  // An atom a Var initializer made is homed in the initializer's namespace
+  // (light-cljs-672): the effect answers its activity's token negated, and
+  // the owner also goes into the atom's shared bookkeeping, since
+  // `atomOwners` is this task's own.
+  const sharedOwner=a=>{const registry=__rt.atomLoad(__rt.atomAux(a));return registry===null?0:__rt.getOr(registry,'owner',0);};
   const lane = a => {
     if (!__rt.cljIsAtom(a)) throw new Error('unsupported operation: native macro runtime atom operation on ' + typeof val(a));
-    const cell = __rt.effect(65532, atomOwners.get(a) ?? 0);
+    const cell = __rt.effect(65532, atomOwners.get(a) ?? sharedOwner(a));
     if (cell !== 0) __rt.need(cell, 5);
   };
+  const own=(a,owner)=>{
+    if(owner<0){owner=-owner;auxiliary(a,'owner',()=>owner);}
+    if(owner!==0)atomOwners.set(a,owner);
+  };
+  // An atom that keeps `parent`'s bookkeeping (a multimethod's table
+  // history) belongs where `parent` does.
+  const childAtom = (parent, state) => {
+    const owner = sharedOwner(parent);
+    if (owner === 0) return atom(state);
+    const a = __rt.atomNew(state);
+    own(a, -owner);
+    return a;
+  };
   const atom = (state, ...options) => {
-    const a = __rt.atomNew(state), owner = __rt.effect(65532, -1);
-    if (owner !== 0) atomOwners.set(a, owner);
+    const a = __rt.atomNew(state);
+    own(a, __rt.effect(65532, -1));
     if(options.length){
       const opts=core.seqToMap(list(options));
       atomOptions(a,get(opts,__rt.cljKeyword('meta')),get(opts,__rt.cljKeyword('validator')));
@@ -1929,7 +1947,7 @@ const native = (() => {
     const tableState=ref=>{
       const slot=auxiliary(ref,'multifn',()=>__rt.atomNew(null)),existing=__rt.atomLoad(slot);
       if(existing!==null){reconcile(ref,existing);return existing;}
-      const initial=deref(ref),candidate=vector([initial,atom(empty()),atom(initial)]);
+      const initial=deref(ref),candidate=vector([initial,childAtom(ref,empty()),childAtom(ref,initial)]);
       const previous=__rt.atomCas(slot,null,candidate);
       if(previous===null)return candidate;
       reconcile(ref,previous);return previous;
@@ -1997,11 +2015,14 @@ const native = (() => {
       }
     };
     const getMethod=(m,dispatch)=>{
-      const {methods,prefs}=tables(m),h=deref(field(m,'hierarchy'));
+      const {methods,prefs}=tables(m);
       // CLJS seeds its method cache with the table itself: an exact method
       // wins before preference/hierarchy search, even over a preferred parent.
       const exact=get(methods,dispatch);
       if(truth(exact))return exact;
+      // Read the hierarchy only when it can decide: the read waits for its
+      // lane, which an exact method needs none of (light-cljs-672).
+      const h=deref(field(m,'hierarchy'));
       const dominates=(x,y)=>truth(get(get(prefs,x),y))||isaIn(h,x,y);
       let best=null;
       for(const entry of arr(methods)){
