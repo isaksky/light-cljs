@@ -944,7 +944,10 @@ checks the unchanged publication and ordinary outcome contracts.
   table lock. Repeated and ThreadSanitizer results are in `measurement.md`.
 - **Not reclaimable while the runtime lives.** A dependency cell is never
   removed, so a published outcome stays rooted until the runtime and every
-  task are gone; the reclamation test drops a cell table directly. Likewise
+  task are gone; the reclamation test drops a cell table directly. Only a
+  cell whose outcome holds an object or a symbol is registered as a root
+  source, when that outcome is installed, so a collection visits those cells
+  and not every cell the runtime has made (light-cljs-664). Likewise
   the realm (clj-quickjs-117) lives as long as its heap; its reclamation
   test drops the realm slot directly.
 

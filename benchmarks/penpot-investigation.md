@@ -30,6 +30,89 @@ not promoted; [phase113](results/compiler-2026-10-16/penpot-phase113/README.md)
 records the controlled comparison. Further large gains are not established by
 the current profiling evidence.
 
+## What each collection traces, and pacing by its work (light-cljs-664, October 30, 2026, on `0c78606c`)
+
+**Summary.** A temporary per-collection log (not committed) on Penpot
+`app.main` at 1 thread found two reasons each Pants-build collection cost
+more as the build went on. First, every dependency cell the runtime had
+ever made was a root source, so each collection upgraded, visited and
+released all of them: 240,000 by the end, 3-5 ms of an 18-24 ms
+collection, while only about 400 hold a heap value. Now a cell becomes a
+root source only when its outcome holds an object or a symbol
+(`crates/big-boy-pants-js/src/dep.rs`). That change is landed: garbage
+collection falls from 18.3% to 15.0% of the main thread's samples, with
+the same collections (631) and the same peak memory. Second, the
+allocation-count trigger waits as many allocations as there are live
+objects (65,000) while a collection traces 2.2 times as many edges. Pacing
+by traced edges halved the collections and brought collection to 10.7%,
+but it raised peak memory and broke a memory-budget test, so it is not
+landed (below; light-cljs-674). The 8% target is missed.
+
+Setup as in the October 30 profile below: release builds (thin LTO, one
+codegen unit, `CARGO_BUILD_JOBS=4`) of `0c78606c` ("before"), of
+`0c78606c` with both changes ("both", the experiment) and of this commit
+("landed", the root-source change only); the same command and budgets.
+Before and both alternated over three rounds; landed ran three rounds
+afterwards. Medians [range]; peak memory is `/usr/bin/time -l`'s maximum
+resident set size, GB = 1e9 bytes. Other workers built and tested
+throughout, and this pellet's own suites ran during the landed rounds
+(1-minute loads up to 32), so its wall times are not comparable;
+collections and peak memory do not depend on load.
+
+| Penpot `app.main` | Wall | Peak memory | Collections | 1-min loads |
+| --- | ---: | ---: | ---: | --- |
+| 1 thread, before | 88.4 s [76.6-90.7] | 1.15 GB | 631 | 5.4, 14.7, 16.8 |
+| 1 thread, landed | (89.9 s [73.9-91.5]) | 1.14 GB | 631 | 7.8, 21.7, 32.2 |
+| 1 thread, both | 71.1 s [70.9-72.1] | 1.22 GB | 295 | 20.8, 15.4, 20.1 |
+| 4 threads, before | 79.8 s [76.8-83.9] | 1.37 GB | 350-368 | 20.3, 16.3, 19.5 |
+| 4 threads, landed | (94.3 s [75.2-102.4]) | 1.36 GB | 358-377 | 14.3, 28.5, 24.9 |
+| 4 threads, both | 69.4 s [66.3-78.9] | 1.68 GB | 124-127 | 17.3, 14.8, 23.4 |
+
+Every build still stops at `core.MapEntry` (light-cljs-643). Garbage
+collection's share of the main thread (`/usr/bin/sample`, 1 ms, one
+sampled run each at 1 thread; `bb benchmarks/sample-inclusive.bb
+--buckets "gc=Heap>::mark_and_sweep;interp=execute_budgeted"`): before
+18.3% (load 10.3), landed 15.0% (load 28.3), both 10.7% (load 10.8).
+
+Generated projects (`generate.bb --seed 42`, `release bench --no-cache
+--stats`, the projects' 2 GiB budget); every build of a size wrote the
+same output (`1a75bc87b26f3121…` at 200k, `6741d7c256b43ab4…` at 800k):
+
+| | Wall | Peak memory | Collections | 1-min loads |
+| --- | ---: | ---: | ---: | --- |
+| 200k, 1 thread, before | 18.7 s [16.2-23.3] | 1.25 GB | 58 | 24.5, 23.0, 23.0 |
+| 200k, 1 thread, landed | (20.7 s [18.2-25.2]) | 1.26 GB | 58 | 13.0, 28.0, 26.2 |
+| 200k, 1 thread, both | 18.9 s [16.9-22.9] | 1.35 GB | 28 | 22.8, 22.6, 21.3 |
+| 200k, 4 threads, before | 13.4 s [12.0-15.5] | 1.56 GB | 52-62 | 21.9, 23.8, 20.2 |
+| 200k, 4 threads, landed | (13.9 s [12.0-16.1]) | 1.56 GB | 47-59 | 21.2, 29.5, 31.7 |
+| 200k, 4 threads, both | 12.4 s [12.0-13.9] | 1.69 GB | 23-28 | 23.7, 23.1, 20.8 |
+| 800k, 1 thread, before | 70.3 s [65.5-79.7] | 4.78 GB | 84 | 20.0, 10.2, 2.8 |
+| 800k, 1 thread, both | 73.2 s [68.3-75.6] | 4.76 GB | 43 | 15.2, 7.1, 2.3 |
+| 800k, 4 threads, before | fails | 2.19-2.42 GB | 251-468 | 12.0, 4.4, 8.6 |
+| 800k, 4 threads, both | fails | 2.18-2.20 GB | 207-572 | 12.5, 3.6, 10.3 |
+
+The landed change was not run at 800k. At 800k and 4 threads both before
+and both exceed the project's 2 GiB budget (`heap byte or string limit
+exceeded`) after about 1,175 namespaces and 196,000 macro calls. The
+generated projects' collections are cheap (small live heaps), so halving
+them does not move wall time beyond this machine's noise.
+
+**Why pacing by traced edges is not landed.** It made each collection wait
+as many allocations as the last one traced edges (`HeapPolicy::threshold`
+taking the larger of the live objects and the edges). Peak memory rose 6%
+at 1 thread and 22% at 4 threads on Penpot, against the 15% allowed, and
+`bbp_evaluator::tests::namespace_macro_chains_fit_the_default_heap_with_linear_live_bytes`
+failed: the object table's slot segments are charged to the byte budget
+and never shrink, so more garbage between collections leaves 1.5 MB more
+"live" bytes at 400 calls (23.2 MB against the test's 22.0 MB bound; the
+unchanged build leaves 21.6 MB). What remains at 1 thread (from the log,
+with both changes): 5.0 s of pauses, 4.2 s of them marking at about 230 ns
+per live object, and 2.5 s freeing collected objects after each pause on
+the collecting thread, about 4% of the build by itself. light-cljs-674
+takes it from here: release or stop charging empty slot segments before
+pacing by edges, free collected objects off the collecting thread, and
+fold the per-object conditional pass into the mark.
+
 ## Where the Pants build's time goes on app.main (October 30, 2026, at `9907e916`)
 
 **Summary.** light-cljs-635 profiled the Pants build (docs/glossary.md) on

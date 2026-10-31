@@ -1031,6 +1031,12 @@ impl Heap {
         lock(&self.sources).register(source);
     }
 
+    /// Test hook: the registered root sources that are still alive.
+    #[cfg(test)]
+    pub(crate) fn live_root_sources(&self) -> usize {
+        lock(&self.sources).live().len()
+    }
+
     /// Persistently root `value` if it is still live, atomically with respect
     /// to collection (the roots lock is held across the liveness check).
     /// Returns the root slot.

@@ -113,9 +113,8 @@
 //! # Lock and ordering contract
 //!
 //! * **Dependency table lock** (`RwLock`): held only to find (read) or
-//!   insert (write) a cell. Creating a cell registers it as a collector root
-//!   source while holding the write lock, so the order is *table → heap
-//!   `sources`*. Never held while taking a cell lock.
+//!   insert (write) a cell. Never held while taking a cell lock or the
+//!   heap `sources` lock.
 //! * **Cell lock** (the small per-cell pending-waiter lock): a leaf. Its
 //!   critical sections read or write the producer and waiter bookkeeping
 //!   (including a cancelled consumer's removal), set the outcome, and
@@ -139,11 +138,16 @@
 //!
 //! # Collector boundary
 //!
-//! Each cell is a `RootSource`: while the cell exists, a `Ready` value or
-//! `Failed` error it holds is a root (`RootCategory::DependencyOutcome`), so
-//! a published result survives collection after the producer drops its own
-//! handle. Values are checked with `share::check` before installation:
-//! task-owned mutation (builders, plain objects) is rejected with
+//! A cell whose `Ready` value or `Failed` error holds a heap edge (an object
+//! or a symbol) is a `RootSource`: while the cell exists, that outcome is a
+//! root (`RootCategory::DependencyOutcome`), so a published result survives
+//! collection after the producer drops its own handle. The completion
+//! registers it after installing the outcome and releasing the cell lock,
+//! while the producer still roots the value; cells that stay pending, are
+//! cancelled, or hold a primitive or weak outcome are never registered, so
+//! a collection visits only the cells that root something. Values are
+//! checked with `share::check` before installation: task-owned mutation
+//! (builders, plain objects) is rejected with
 //! [`CompleteError::NotShareable`] and the cell stays pending. A terminal
 //! outcome is immutable and the cell outlives every reader, so a value
 //! copied out of the cell stays reachable until the reader roots it.
@@ -354,8 +358,9 @@ impl DependencyTable {
         self.cells.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The cell for `key`, created (and registered as a root source) if
-    /// absent. Lock order: table → heap `sources`.
+    /// The cell for `key`, created if absent. It becomes a root source only
+    /// when an outcome that roots a heap edge is installed
+    /// ([`Self::settle`]).
     fn cell(&self, key: DependencyKey) -> Arc<Cell> {
         if let Some(cell) = self.existing(key) {
             return cell;
@@ -363,14 +368,28 @@ impl DependencyTable {
         let mut cells = self.cells.write().unwrap_or_else(PoisonError::into_inner);
         match cells.entry(key) {
             Entry::Occupied(e) => Arc::clone(e.get()),
-            Entry::Vacant(e) => {
-                let cell = Arc::new(Cell::default());
-                // Registered before the cell is visible to anyone, so no
-                // outcome can be installed in an untraced cell.
-                let source: Weak<dyn RootSource> = Arc::downgrade(&cell) as Weak<Cell>;
-                self.heap.register_source(source);
-                Arc::clone(e.insert(cell))
+            Entry::Vacant(e) => Arc::clone(e.insert(Arc::new(Cell::default()))),
+        }
+    }
+
+    /// Register `cell` as a collector root source if its outcome roots a
+    /// heap edge (module docs, "Collector boundary"). Most outcomes are
+    /// primitives or cancellations, and registering every cell made each
+    /// collection upgrade, visit and release every cell the build had made
+    /// (240,000 on a large program, light-cljs-664). The caller still roots
+    /// the value, so no collection can miss it before this returns.
+    fn register_if_rooting(&self, cell: &Arc<Cell>) {
+        let roots = match cell.outcome.get() {
+            Some(Terminal::Ready(value) | Terminal::Failed(value)) => {
+                let mut edge = false;
+                value.trace(&mut |_| edge = true);
+                edge
             }
+            Some(Terminal::WeakReady(_) | Terminal::Cancelled) | None => false,
+        };
+        if roots {
+            let source: Weak<dyn RootSource> = Arc::downgrade(cell) as Weak<Cell>;
+            self.heap.register_source(source);
         }
     }
 
@@ -495,7 +514,7 @@ impl DependencyTable {
     /// must be the claimed one) and embedder cancellation (`None`).
     fn settle(
         &self,
-        cell: &Cell,
+        cell: &Arc<Cell>,
         key: DependencyKey,
         producer: Option<ProducerId>,
         outcome: Terminal,
@@ -521,7 +540,12 @@ impl DependencyTable {
             unreachable!("may_complete rejected a completed cell");
         }
         state.subscribed = HashMap::new();
-        Ok(std::mem::take(&mut state.waiters))
+        let waiters = std::mem::take(&mut state.waiters);
+        // The cell lock is a leaf: register after releasing it. The caller
+        // still roots the value, so it is traced throughout.
+        drop(state);
+        self.register_if_rooting(cell);
+        Ok(waiters)
     }
 
     /// `producer`: `None` for the embedder, who may settle any pending cell.
@@ -994,9 +1018,12 @@ mod tests {
         ] {
             let cell = table.cell(key(def));
             cell.outcome.set(outcome).unwrap();
+            table.register_if_rooting(&cell);
         }
         let pending = table.read_or_subscribe(w(9), key(5));
         assert!(matches!(pending, Read::Waiting { produce: Some(_) }));
+        // Only the two cells whose outcome holds an object are visited.
+        assert_eq!(heap.live_root_sources(), 2);
         let mut roots = heap.root_snapshot().unwrap();
         roots.sort_by_key(|(_, id)| id.to_bits());
         assert_eq!(

@@ -600,7 +600,7 @@ impl SourceRegistry {
     }
 
     /// Strong references to the live sources; dead ones are dropped.
-    fn live(&mut self) -> Vec<Arc<dyn RootSource>> {
+    pub(super) fn live(&mut self) -> Vec<Arc<dyn RootSource>> {
         let mut live = Vec::with_capacity(self.sources.len());
         self.sources.retain(|s| match s.upgrade() {
             Some(strong) => {
