@@ -1863,6 +1863,53 @@ fn identity_numeric_conversions_keep_imported_scalar_occurrences() {
     }
 }
 
+#[test]
+fn scalar_data_round_trips_keep_each_occurrence_in_both_cores() {
+    for macro_core in [
+        crate::evaluator::MacroCore::Port,
+        crate::evaluator::MacroCore::Real,
+    ] {
+        let evaluator = BbpEvaluator::new(EvaluatorOptions {
+            macro_core,
+            timeout: std::time::Duration::from_secs(600),
+            ..Default::default()
+        })
+        .unwrap();
+        let inputs = [
+            D::Integer(9_007_199_254_740_992),
+            D::Integer(9_007_199_254_740_993),
+            D::Double(9_007_199_254_740_992.0),
+            D::Ratio {
+                numerator: 1,
+                denominator: 2,
+            },
+            D::Double(0.5),
+            D::Character(b'a' as u16),
+            D::String(vec![b'a' as u16].into()),
+            D::String(vec![0xd800].into()),
+            D::Nil,
+            D::Boolean(false),
+            D::Boolean(true),
+            D::Double(-0.0),
+        ]
+        .map(Datum::new);
+        // Keep every colliding import live before exporting any of them.
+        let values = inputs
+            .iter()
+            .map(|data| evaluator.import_data(data, Default::default()).unwrap())
+            .collect::<Vec<_>>();
+        for (input, value) in inputs.iter().zip(values) {
+            let output = evaluator.export_data(value, Default::default()).unwrap();
+            assert_eq!(
+                output.identity(),
+                input.identity(),
+                "{macro_core:?}: {input:?}"
+            );
+            evaluator.release(value).unwrap();
+        }
+    }
+}
+
 /// A large live result that leaves only a little room must still be
 /// releasable: the release allocates no value-table entry for it.
 #[test]

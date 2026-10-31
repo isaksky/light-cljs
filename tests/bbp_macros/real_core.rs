@@ -248,3 +248,67 @@ fn real_core_preserves_macro_namespace_context() {
     assert_eq!(output(MacroCore::Port), expected);
     assert_eq!(output(MacroCore::Real), expected);
 }
+
+/// Selecting either of two scalars must preserve its reader representation,
+/// even when both have the same JavaScript primitive value.
+#[test]
+fn real_core_preserves_selected_scalar_occurrences() {
+    use light_cljs::{
+        CollectionKind,
+        bbp_evaluator::BbpEvaluator,
+        compiler_data::{Datum, DatumKind, ExpansionOrigin, Name, Source},
+        evaluator::MacroEvaluator,
+    };
+    for core in [MacroCore::Port, MacroCore::Real] {
+        let mut host = host(core);
+        let evaluator = BbpEvaluator::new(host.evaluator_options.clone()).unwrap();
+        let environment = Datum::new(DatumKind::Collection {
+            kind: CollectionKind::Map,
+            children: Box::new([]),
+        });
+        for (selected, body) in [(1, "a"), (2, "b")] {
+            let source = format!("(fn [form env a b] {body})");
+            let program =
+                analyze_with_macros(&source, &parse(&source).unwrap(), &mut host).unwrap();
+            let function = evaluator
+                .evaluate_unit(&light_cljs::emitter::emit_js_unit(&program))
+                .unwrap();
+            for input in [
+                "(pick \\a \"a\")",
+                "(pick \"a\" \\a)",
+                "(pick 1 1.0)",
+                "(pick 1.0 1)",
+                "(pick 9007199254740992 9007199254740993)",
+                "(pick 2.5 2.5)",
+            ] {
+                let call = host
+                    .read_compiler_form(&Source::new("scalars.cljs", input))
+                    .unwrap()
+                    .unwrap();
+                let result = host
+                    .expand_javascript(
+                        &evaluator,
+                        function,
+                        &call,
+                        &environment,
+                        ExpansionOrigin {
+                            macro_name: Name::new(None, "pick"),
+                            call: call.span(),
+                            definition: None,
+                            helpers: vec![],
+                        },
+                    )
+                    .unwrap_or_else(|e| panic!("{core:?} {input}, select {selected}: {e}"));
+                assert_eq!(
+                    result.data().inspect(),
+                    call.children()[selected].data().inspect(),
+                    "{core:?} {input}, select {selected}"
+                );
+                let original = &call.children()[selected];
+                assert!(std::ptr::eq(result.data().kind(), original.data().kind()));
+                assert_eq!(result.span().bytes(), original.span().bytes());
+            }
+            evaluator.release(function).unwrap();
+        }
+    }
+}

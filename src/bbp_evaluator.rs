@@ -248,16 +248,6 @@ struct Bridge {
     /// The prune walk's and `&env` cache's work, kept only while a trace
     /// records (`--stats`).
     counters: crate::compile_stats::NativeBridgeCounters,
-    /// With the real cljs.core (`--macro-core real`; light-cljs-666), an
-    /// imported scalar (nil, a boolean, a number, a string, a character) is
-    /// the plain primitive, as the V8 build's bridge gives it: the real
-    /// core's functions are the V8 profile's JavaScript (`x + 1`, `typeof x
-    /// === "number"`, `a === b`), which an occurrence wrapper fails. Export
-    /// maps a scalar back to its argument's exact Datum by value
-    /// (`scalar_origins`), so exactness does not need the wrapper. Imported
-    /// collections, symbols and keywords keep their occurrences, which the
-    /// profile's views see through; the port keeps every wrapper.
-    plain_scalars: bool,
 }
 impl Bridge {
     /// Observable native objects keep their full compiler-side Datum tree.
@@ -579,14 +569,10 @@ impl Bridge {
                 .form_with_meta(value, Some(s.form_value(m)))
                 .map_err(error)?;
         }
-        if self.plain_scalars && s.object_identity(value).is_none() {
-            // Converted, though not retained: the count stays the nodes
-            // the bridge converted.
-            self.stats.imported += 1;
-            return Ok(value);
-        }
         // Every input node is an occurrence, including numbers and strings.
         // Returning it preserves exact integer/ratio/character representation.
+        // Both cores must unwrap scalars at computation boundaries rather than
+        // erase their identity here: distinct inputs can share one primitive.
         self.retain(s, d, value)
     }
     fn retain<'s>(
@@ -1532,7 +1518,6 @@ impl BbpRuntime {
             raw_members,
             bridge: Arc::new(Mutex::new(Bridge {
                 control: Some(control.clone()),
-                plain_scalars: real_core.is_some(),
                 ..Default::default()
             })),
             control,
@@ -1600,7 +1585,6 @@ impl BbpRuntime {
         let mut evaluator = BbpEvaluator::shell(self.clone(), 0);
         evaluator.bridge = Arc::new(Mutex::new(Bridge {
             control: Some(self.0.control.clone()),
-            plain_scalars: self.0.real_core.is_some(),
             ..Default::default()
         }));
         evaluator.private_namespaces = Some(Arc::default());
