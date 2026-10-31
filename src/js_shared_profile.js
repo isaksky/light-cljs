@@ -450,6 +450,19 @@
     if (!Object.prototype.hasOwnProperty.call(this.obj, key)) return null;
     return makeVar(() => this.obj[key], symbol(str(this.name), str(local)), mapFromArray([keyword(null, "ns"), this]), true);
   };
+  //@unit varPrototype requires: ifnApply, ifnPrototype, meta, str, Var, vars
+  // The V8 profile's, with `toString` through `str`: a Var's name is an
+  // engine symbol, which `String` cannot take (light-cljs-692).
+  const varPrototype = Object.freeze({
+    constructor: Var,
+    isMacro() { return vars.get(this).get.call(null).cljs$lang$macro; },
+    get val() { return vars.get(this).get; },
+    get sym() { return vars.get(this).symbol; },
+    get _meta() { return meta(this); },
+    apply(_self, args) { return ifnApply(this, args); },
+    call(_self, ...args) { return ifnPrototype.call.call(this, _self, ...args); },
+    toString() { return "#'" + str(vars.get(this).symbol); }
+  });
   //@unit sortedComparators requires: sharedStore
   const sortedComparators = sharedStore();
   //@unit mapEntries requires: sharedSet

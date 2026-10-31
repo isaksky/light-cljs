@@ -868,6 +868,27 @@ fn shared_profile_symbols_are_engine_symbols() {
         .unwrap_or_else(|e| panic!("core.currentNs does not publish: {e}"));
 }
 
+/// A Var named by an engine symbol prints and converts to a string as the
+/// V8 profile's does: `varPrototype.toString` spells the name through `str`,
+/// since a form has no `toString` (light-cljs-692).
+#[test]
+fn shared_profile_vars_with_engine_symbol_names_print() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const v = rt.makeVar(() => 1, core.symbol('demo', 'x')), plain = rt.makeVar(() => 2, core.symbol(null, 'a/b')); \
+             return [core.prStr(v), core.str(v), rt.displayStr(v), String(v), v.toString(), core.str(plain), core.prStr(v.sym)].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "#'demo/x #'demo/x #'demo/x #'demo/x #'demo/x #'a/b demo/x"
+    );
+}
+
 /// A lazy result of the real `map` publishes (its thunk captures the
 /// sealed collections; light-cljs-666, acceptance 3) and a task spawned
 /// separately walks it; and `map` over a 40-element vector calls the mapped
