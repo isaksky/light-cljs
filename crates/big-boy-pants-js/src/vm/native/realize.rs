@@ -25,6 +25,7 @@ use crate::collections::clj;
 use crate::collections::form;
 use crate::collections::lazy::{Claim, LazyCell, LazyFailure};
 use crate::heap::Heap;
+use crate::heap::budget::GrowthCharge;
 use crate::heap::gc::{Trace, TraceEdge};
 use crate::ids::{DependencyId, ResultKind, TaskId};
 use crate::value::{JsString, Value, share};
@@ -69,6 +70,9 @@ pub(crate) struct Realize {
     /// Kept across the gate's questions and waits, which end a step between
     /// two of them (light-cljs-685 review).
     concats: Vec<u64>,
+    /// Kept with the vector's capacity, including after installing a value
+    /// clears its entries.
+    concats_charge: GrowthCharge,
     /// Where this frame is in the embedder's realization gate
     /// ([`crate::Runtime::set_realization_gate`]).
     gating: Gating,
@@ -113,6 +117,7 @@ impl Realize {
             failed: None,
             reentry: false,
             concats: Vec::new(),
+            concats_charge: GrowthCharge::default(),
             gating: Gating::Idle,
             admitted: false,
         })
@@ -263,6 +268,11 @@ impl Realize {
                     match clj::concat_step(heap, &thunk) {
                         Ok(value) => produced = Some(value),
                         Err(clj::CljError::Realize(inner)) => {
+                            self.concats_charge.admit(
+                                heap,
+                                self.concats.len(),
+                                std::mem::size_of::<u64>(),
+                            )?;
                             self.concats.push(self.cell.serial());
                             let again = form::form_object(heap, &inner)
                                 .and_then(|f| f.lazy_cell().cloned())

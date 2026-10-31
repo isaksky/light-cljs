@@ -945,6 +945,94 @@ fn realization_gate_is_asked_for_the_collection_a_concat_realizes() {
     assert_eq!(host.ran(), [2.0]);
 }
 
+/// Readers share the concat graph, but each retains its own cycle history
+/// while parked at the deepest collection's gate. Charge that storage to
+/// the aggregate budget until cancellation drops the realization frame.
+#[test]
+fn parked_concat_history_is_charged_to_the_heap_budget() {
+    let limit = 16 << 20;
+    let rt = Runtime::with_heap_policy(
+        Default::default(),
+        HeapPolicy {
+            allocation_threshold: None,
+            hard_limit_bytes: Some(limit),
+            ..Default::default()
+        },
+    );
+    rt.set_realization_gate(2, GATE_KIND);
+    let depth = 2048;
+    let history_bytes = depth * std::mem::size_of::<u64>();
+    let xs = published(
+        &rt,
+        &format!(
+            "let xs = __rt.lazySeq(() => {{ __rt.effect(1, 1); return __rt.formList(1); }});
+             for (let i = 0; i < {depth}; i++) xs = __rt.cljConcat(xs, null);
+             return xs;"
+        ),
+    );
+    let head = compile_function("function head(xs) { return __rt.cljFirst(xs); }").unwrap();
+    let mut answers = vec![0.0; depth];
+    answers.push(5.0);
+    let tasks: Vec<_> = (0..3).map(|_| rt.spawn(&head, &[&xs]).unwrap()).collect();
+    rt.collect().unwrap();
+    for task in &tasks {
+        let host = ScriptedGate::new(&answers);
+        let before = rt.heap_stats().managed_bytes;
+        waits_at_gate(
+            task.run_with(Budget::instructions(100_000), &mut host.clone())
+                .unwrap(),
+        );
+        assert_eq!(host.asked.load(Ordering::SeqCst), depth + 1);
+        assert!(host.ran().is_empty());
+        let retained = rt.heap_stats().managed_bytes.saturating_sub(before);
+        assert!(
+            retained >= history_bytes,
+            "parked reader retained {retained} charged bytes, history needs {history_bytes}"
+        );
+    }
+
+    // A fourth reader cannot retain its full history when less than that
+    // storage remains in the same budget. Keep the graph and other readers
+    // rooted, so collection cannot make their reservations available.
+    let denied = rt.spawn(&head, &[&xs]).unwrap();
+    rt.collect().unwrap();
+    let before = rt.heap_stats().managed_bytes;
+    let probe = rt.scope(|s| s.persist(s.try_string_units(&[0]).unwrap()));
+    let overhead = rt.heap_stats().managed_bytes - before - 2;
+    drop(probe);
+    let units = (limit - rt.heap_stats().managed_bytes - history_bytes / 2 - overhead) / 2;
+    let padding = rt.scope(|s| s.persist(s.try_string_units(&vec![0; units]).unwrap()));
+    let host = ScriptedGate::new(&answers);
+    match denied
+        .run_with(Budget::instructions(100_000), &mut host.clone())
+        .unwrap()
+    {
+        RunOutcome::Failed(error) => {
+            assert_eq!(error.kind(), big_boy_pants_js::VmErrorKind::HeapLimit);
+        }
+        other => panic!("expected concat history admission to fail, got {other:?}"),
+    }
+    let asked = host.asked.load(Ordering::SeqCst);
+    assert!(asked > 1 && asked <= depth, "denied after {asked} gates");
+    assert!(host.ran().is_empty());
+    assert!(rt.heap_stats().peak_managed_bytes <= limit);
+    drop(padding);
+    rt.collect().unwrap();
+
+    for task in tasks {
+        let before = rt.heap_stats().managed_bytes;
+        let big_boy_pants_js::Cancel::Runnable(cancelled) = task.cancel() else {
+            panic!("parked reader was not made runnable for cancellation");
+        };
+        assert!(matches!(cancelled.run().unwrap(), RunOutcome::Cancelled));
+        let released = before - rt.heap_stats().managed_bytes;
+        assert!(
+            released >= history_bytes,
+            "cancellation released {released} bytes, history held {history_bytes}"
+        );
+    }
+}
+
 /// A cycle through two shared `concat` cells fails with a RangeError, as
 /// an unshared one does (`a_concat_that_contains_itself_fails_instead_of_looping`),
 /// although the frame asks the realization gate before each cell it goes
