@@ -928,11 +928,32 @@ fn path_to(
     mut id: ObjectId,
 ) -> ValuePath {
     let mut steps = Vec::new();
+    // `BBP_PUBLISH_TRAIL=1` prints the kind, and a function's name, of every
+    // object on the path, for finding what a step is (light-cljs-666).
+    let trail = std::env::var_os("BBP_PUBLISH_TRAIL").is_some();
+    let mut names = Vec::new();
     while let Some(Some((parent, step))) = parents.get(&id) {
+        if trail {
+            names.push(
+                heap.read(id, |o| match o {
+                    HeapObject::Function(f) => format!(
+                        "function {} ({})",
+                        f.code.name,
+                        f.code.function_name.to_string_lossy()
+                    ),
+                    other => object_name(other).to_string(),
+                })
+                .unwrap_or_default(),
+            );
+        }
         steps.push(name_step(heap, step.clone()));
         id = *parent;
     }
     steps.reverse();
+    if trail {
+        names.reverse();
+        eprintln!("publish trail: {}", names.join(" > "));
+    }
     ValuePath(steps)
 }
 

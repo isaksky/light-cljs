@@ -690,6 +690,10 @@ engine, with what exists and what was added:
 
 The naive-boot publication walk before and after these primitives is in
 `docs/real-core-design.md`, "Spike" (`bb benchmarks/real-core-seam.bb`).
+With `BBP_PUBLISH_TRAIL=1` in the environment, a rejected publication also
+prints to stderr the kind, and a function's name, of every object on the
+rejected path (`crate::value::share`), which names what a `capture(n)` or
+`edge(n)` step is.
 
 ## Atomic references
 

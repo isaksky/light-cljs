@@ -588,6 +588,40 @@
   // not frozen: the wrapper captures it.
   maps.has = (has => value => has.call(maps, value) || recordTypes.has(value))(maps.has);
   maps.get = ((get, none) => value => get.call(maps, value) ?? (recordTypes.get(value) && none))(maps.get, __rt.seal([]));
+  //@unit PersistentHashSetValue.statics effect: PersistentHashSetValue when: typeStatics requires: makeSet,
+  //@ PersistentHashSetValue
+  // The empty statics of the kinds the runtime still builds as its own
+  // objects (sets, maps, queues; design point 8) are task-owned, so each
+  // is a getter that builds the task's own on first read.
+  Object.defineProperty(PersistentHashSetValue, "EMPTY", {configurable: true, enumerable: true,
+    get() { const cells = globalThis.__lightSharedCells; return cells.emptyHashSet ??= makeSet(PersistentHashSetValue, [], "array-map"); }});
+  //@unit PersistentQueueValue.statics effect: PersistentQueueValue when: reader, typeStatics
+  //@ requires: PersistentQueueValue, queueFromArray
+  Object.defineProperty(PersistentQueueValue, "EMPTY", {configurable: true, enumerable: true,
+    get() { const cells = globalThis.__lightSharedCells; return cells.emptyQueue ??= queueFromArray([]); }});
+  //@unit PersistentArrayMapValue.statics effect: PersistentArrayMapValue when: typeStatics
+  //@ requires: makeMap, PersistentArrayMapValue
+  Object.defineProperty(PersistentArrayMapValue, "EMPTY", {configurable: true, enumerable: true,
+    get() { const cells = globalThis.__lightSharedCells; return cells.emptyArrayMap ??= makeMap(PersistentArrayMapValue, [], "array-map"); }});
+  PersistentArrayMapValue.HASHMAP_THRESHOLD = 8;
+  //@unit PersistentHashMapValue.statics effect: PersistentHashMapValue when: typeStatics requires: aclone,
+  //@ displayStr, hashTrie, makeMap, PersistentHashMapValue, putEntry
+  Object.defineProperty(PersistentHashMapValue, "EMPTY", {configurable: true, enumerable: true,
+    get() { const cells = globalThis.__lightSharedCells; return cells.emptyHashMap ??= makeMap(PersistentHashMapValue, hashTrie([]), "hash-map"); }});
+  PersistentHashMapValue.fromArray = (array, noClone) => {
+    const items = noClone ? array : aclone(array), entries = [], length = items.length;
+    const edit = {};
+    for (let i = 0; i < length; i += 2) putEntry(entries, items[i], items[i + 1], "hash-map", edit);
+    return makeMap(PersistentHashMapValue, hashTrie(entries), "hash-map");
+  };
+  PersistentHashMapValue.fromArrays = (keys, values) => {
+    const length = keys.length, entries = [], edit = {};
+    for (let i = 0; i < length; i++) {
+      if (values.length <= i) throw new Error("No value supplied for key: " + displayStr(keys[i]));
+      putEntry(entries, keys[i], values[i], "hash-map", edit);
+    }
+    return makeMap(PersistentHashMapValue, hashTrie(entries), "hash-map");
+  };
   //@unit makeKeyword.print effect: makeKeyword, makeVar, SymbolValue, symbol when: printWriterImpl
   //@ requires: keywords, kindHooks, printKind, symbols, vars, write
   // An engine keyword prints from its payload; a runtime-built symbol or
