@@ -36,7 +36,8 @@
 //! fixpoint, including chains and cycles, without rescanning all tables.
 //! Conditional marking/clearing costs expected O(live objects + strong
 //! edges + entries/weak slots in reached owners), with O(live objects +
-//! reached entries) temporary storage; the existing sweep scans all slots.
+//! reached entries) temporary storage; sweep skips empty and fully marked
+//! segments, scanning mixed segments only until their garbage is reclaimed.
 //! The mark visits each reached object's slot once: under one access word
 //! it traces the strong edges and runs the discovery pass (and takes a
 //! marked atom's retired boxes).
@@ -1383,6 +1384,7 @@ impl Heap {
         );
 
         let mut objects = lock(&self.objects);
+        objects.begin_marking();
         let mut live = 0;
         // Objects are marked in their slots (no hashing per object); keys
         // and symbols in `marks`.

@@ -143,7 +143,8 @@ fn stand_in(object: &HeapObject) -> Option<HeapObject> {
 struct Slot {
     // Low 32 bits: generation. Flags and generation are one atomic snapshot.
     state: AtomicU64,
-    marked: AtomicBool,
+    /// Collection epoch that last reached this slot; zero means never.
+    marked: AtomicU64,
     /// The access word of a mutable body (module docs, rule 3).
     locked: AtomicBool,
     object: UnsafeCell<Option<Box<HeapObject>>>,
@@ -240,6 +241,9 @@ impl Drop for SlotGuard<'_> {
 struct Segment {
     slots: Box<[Slot]>,
     live: AtomicUsize,
+    /// Objects reached in the current marking. Only the stopped collector
+    /// writes this counter; sweep resets it without visiting survivor slots.
+    marked: AtomicUsize,
     /// Slot reservations ([`Reservation`]) naming this segment that threads
     /// still hold: they may initialize its slots without the table lock.
     held: AtomicUsize,
@@ -252,6 +256,7 @@ impl Default for Segment {
             // build copies would exhaust the VM's supported 64 KiB stacks.
             slots: (0..SEGMENT_SIZE).map(|_| Slot::default()).collect(),
             live: AtomicUsize::new(0),
+            marked: AtomicUsize::new(0),
             held: AtomicUsize::new(0),
         }
     }
@@ -471,6 +476,9 @@ impl Directory {
 #[derive(Debug, Default)]
 pub(super) struct ObjectTable {
     segments: Vec<Arc<Segment>>,
+    epoch: u64,
+    #[cfg(test)]
+    swept_slots: usize,
     /// Each segment's byte charge ([`segment_bytes`]). `None` once a sweep
     /// leaves the segment with no live object and no thread holds a
     /// reservation of its slots: its slots stay allocated (segments never
@@ -489,6 +497,20 @@ pub(super) struct ObjectTable {
 }
 
 impl ObjectTable {
+    /// Start a fresh marking without clearing a bit in every survivor slot.
+    /// Epoch rollover is rare but must not make old marks current again.
+    pub(super) fn begin_marking(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            for segment in &self.segments {
+                for slot in &segment.slots {
+                    slot.marked.store(0, Ordering::Relaxed);
+                }
+            }
+            self.epoch = 1;
+        }
+    }
+
     /// Charge segment `index` before its slots are reserved, if a sweep
     /// released its charge. False if the budget has no room for it; no
     /// denial is recorded, since another segment may still serve.
@@ -643,16 +665,23 @@ impl ObjectTable {
         conditional: &mut dyn gc::ConditionalVisitor,
         atoms: &mut Vec<Value>,
     ) -> bool {
-        let Some(slot) = self.slot(id) else {
+        let Some(segment) = self.segments.get(id.index as usize / SEGMENT_SIZE) else {
+            return false;
+        };
+        let slot = &segment.slots[id.index as usize % SEGMENT_SIZE];
+        let Some(state) = slot.current(id) else {
             return false;
         };
         // One thread marks, with the world stopped: a load and a store, not
         // a read-modify-write per reached edge.
-        if slot.marked.load(Ordering::Relaxed) {
+        if slot.marked.load(Ordering::Relaxed) == self.epoch {
             return false;
         }
-        slot.marked.store(true, Ordering::Relaxed);
-        let state = slot.state.load(Ordering::Acquire);
+        slot.marked.store(self.epoch, Ordering::Relaxed);
+        segment.marked.store(
+            segment.marked.load(Ordering::Relaxed) + 1,
+            Ordering::Relaxed,
+        );
         if state & FROZEN != 0 {
             // SAFETY: live (checked above under the table lock, which
             // excludes sweep) and frozen (rule 2).
@@ -681,7 +710,7 @@ impl ObjectTable {
     /// unmarked, as [`ObjectTable::mark`] never marks one.
     pub(super) fn is_marked(&self, id: ObjectId) -> bool {
         self.slot(id)
-            .is_some_and(|slot| slot.marked.load(Ordering::Relaxed))
+            .is_some_and(|slot| slot.marked.load(Ordering::Relaxed) == self.epoch)
     }
 
     /// Run the collector's conditional pass over a live object. Frozen kinds
@@ -710,17 +739,36 @@ impl ObjectTable {
     /// fill only between collections, are left empty by the next sweep
     /// more often. A sweep that leaves a segment empty releases its charge
     /// ([`ObjectTable::charges`]).
+    /// Empty and fully reached segments need no slot scan. Epoch marks do
+    /// not need clearing in survivor slots; a mixed segment stops as soon
+    /// as its known number of unreachable objects has been reclaimed.
     #[expect(clippy::vec_box, reason = "the boxes are the slots' own; see above")]
     pub(super) fn sweep(
         &mut self,
         mut reclaimed_object: impl FnMut(ObjectId),
     ) -> Vec<Box<HeapObject>> {
         let mut garbage = Vec::new();
+        #[cfg(test)]
+        {
+            self.swept_slots = 0;
+        }
         for (segment_index, segment) in self.segments.iter().enumerate().rev() {
+            let live = segment.live.load(Ordering::Relaxed);
+            let marked = segment.marked.load(Ordering::Relaxed);
+            segment.marked.store(0, Ordering::Relaxed);
+            if live == marked {
+                if live == 0 && segment.held.load(Ordering::Relaxed) == 0 {
+                    self.charges[segment_index] = None;
+                }
+                continue;
+            }
             let mut reclaimed = 0;
             for (offset, slot) in segment.slots.iter().enumerate().rev() {
-                if slot.marked.load(Ordering::Relaxed) {
-                    slot.marked.store(false, Ordering::Relaxed);
+                #[cfg(test)]
+                {
+                    self.swept_slots += 1;
+                }
+                if slot.marked.load(Ordering::Relaxed) == self.epoch {
                     continue;
                 }
                 let state = slot.state.load(Ordering::Acquire);
@@ -752,6 +800,9 @@ impl ObjectTable {
                     index: (segment_index * SEGMENT_SIZE + offset) as u32,
                     generation,
                 });
+                if reclaimed == live - marked {
+                    break;
+                }
             }
             let live = segment.live.fetch_sub(reclaimed, Ordering::Relaxed) - reclaimed;
             // No thread can reserve its slots without the table lock, and
@@ -1421,6 +1472,45 @@ mod tests {
             expected.table_bytes += added_bytes;
             assert_eq!(heap.usage(), expected);
         }
+    }
+
+    #[test]
+    fn sweep_skips_empty_and_fully_marked_segments_but_reclaims_lost_roots() {
+        let heap = Arc::new(Heap::default());
+        let mut roots: Vec<_> = (0..3 * SEGMENT_SIZE)
+            .map(|_| Rooted::new(&heap, Value::Object(owned(&heap, OWNER))))
+            .collect();
+        assert_eq!(heap.collect().unwrap().live, 3 * SEGMENT_SIZE);
+        assert_eq!(lock(&heap.objects).swept_slots, 0);
+        // No allocation since that collection: losing a root must still
+        // cause its segment to be swept, leaving the other two untouched.
+        drop(roots.pop());
+        assert_eq!(heap.collect().unwrap().reclaimed, 1);
+        assert_eq!(lock(&heap.objects).swept_slots, 1);
+        assert_eq!(heap.collect().unwrap().reclaimed, 0);
+        assert_eq!(lock(&heap.objects).swept_slots, 0);
+        drop(roots);
+        assert_eq!(heap.collect().unwrap().reclaimed, 3 * SEGMENT_SIZE - 1);
+        assert_eq!(lock(&heap.objects).swept_slots, 3 * SEGMENT_SIZE);
+        assert_eq!(heap.collect().unwrap().reclaimed, 0);
+        assert_eq!(lock(&heap.objects).swept_slots, 0);
+    }
+
+    #[test]
+    fn marking_epoch_rollover_does_not_preserve_old_unreachable_objects() {
+        let heap = Arc::new(Heap::default());
+        let old = owned(&heap, OWNER);
+        let old_root = Rooted::new(&heap, Value::Object(old));
+        let live = owned(&heap, OWNER);
+        let _live_root = Rooted::new(&heap, Value::Object(live));
+        heap.collect().unwrap();
+        assert_eq!(lock(&heap.objects).epoch, 1);
+        drop(old_root);
+        lock(&heap.objects).epoch = u64::MAX;
+        assert_eq!(heap.collect().unwrap().reclaimed, 1);
+        assert!(!heap.is_live(old));
+        assert!(heap.is_live(live));
+        assert_eq!(lock(&heap.objects).epoch, 1);
     }
 
     /// A collection's work is its traced edges: 20,000 live vectors of the
