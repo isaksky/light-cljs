@@ -1171,6 +1171,10 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
             | LiteralSet(items)
             | Do(items) => self.exprs(items),
             DefinitionTest { value, .. } => self.expr(value),
+            NamespaceView { namespace, value } => {
+                self.string(namespace);
+                self.expr(value);
+            }
             WithMeta { value, metadata } => {
                 self.expr(value);
                 self.expr(metadata);

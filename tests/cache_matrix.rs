@@ -1185,3 +1185,44 @@ fn repeated_builds_and_teardown() {
         "{report}"
     );
 }
+
+#[test]
+fn requested_namespace_views_stay_guarded_in_cached_macro_helpers() {
+    let a = "(ns a (:require [p] [m :refer [probe]])) (def value (probe))";
+    let b = "(ns b (:require [x] [m :refer [probe]])) (def value (probe))";
+    let project = Project::new(&[
+        ("p.cljs", "(ns p) (defmacro v [] 9)"),
+        (
+            "x.cljs",
+            "(ns x (:require [p :refer [v]]) (:import [Math max]))",
+        ),
+        (
+            "m.cljs",
+            "(ns m) (defmacro probe [] [(contains? (ns-refers 'x) 'v) (contains? (ns-imports 'x) 'max)])",
+        ),
+        ("a.cljs", a),
+        ("b.cljs", b),
+        (
+            "main.cljs",
+            "(ns main (:require [x] [a] [b])) (js/console.log (pr-str [a/value b/value]))",
+        ),
+    ]);
+    let pants = cfg!(all(
+        feature = "bbp-macros",
+        not(any(feature = "quickjs", feature = "v8-macros"))
+    ));
+    let expected = if pants {
+        "[[false false] [true true]]\n"
+    } else {
+        "[[true true] [true true]]\n"
+    };
+    assert_eq!(project.checked("main", &[]).1, expected);
+    project.cached("main", &[]).assert_all_hits(6);
+    // Reuse the provider artifact while both consumers invoke its helper
+    // again under their distinct closures; cached IR must retain the guard.
+    project.write("a.cljs", &format!("{a}\n; recompile consumer a"));
+    project.write("b.cljs", &format!("{b}\n; recompile consumer b"));
+    let (reused, printed) = project.checked("main", &[]);
+    assert_eq!(printed, expected);
+    assert_eq!(reused.stat("cache.hits"), 3);
+}

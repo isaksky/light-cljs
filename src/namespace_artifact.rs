@@ -518,6 +518,10 @@ pub enum ExprKind {
         value: ExprRef,
         unit: UnitRef,
     },
+    NamespaceView {
+        namespace: StringRef,
+        value: ExprRef,
+    },
     WithMeta {
         value: ExprRef,
         metadata: ExprRef,
@@ -999,6 +1003,10 @@ fn kind_references(kind: &ExprKind, visit: &mut impl FnMut(Reference)) {
         DefinitionTest { value, unit } => {
             visit(R::Expr(*value));
             visit(R::Unit(*unit));
+        }
+        NamespaceView { namespace, value } => {
+            visit(R::String(*namespace));
+            visit(R::Expr(*value));
         }
         WithMeta { value, metadata } => {
             visit(R::Expr(*value));

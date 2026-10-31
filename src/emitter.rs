@@ -8783,6 +8783,18 @@ impl<'a> Emitter<'a> {
                     self.value(*value);
                 }
             }
+            ExprKind::NamespaceView { namespace, value } => {
+                if self.native_forms {
+                    self.output.push_str("(__rt.effect(65527,");
+                    self.string(*namespace);
+                    self.output.push_str(") ? ");
+                    self.value(*value);
+                    self.output
+                        .push_str(" : __rt.formArrayMap(__rt.formVector()))");
+                } else {
+                    self.value(*value);
+                }
+            }
             ExprKind::WithMeta { value, metadata } => {
                 // `#js` data keeps its compiler form `withMeta`.
                 let core = composite(self.program, &self.program.exprs[id.0].kind).is_some();

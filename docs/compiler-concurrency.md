@@ -3221,7 +3221,11 @@ state and determinism"; this is what was delivered.
   `the-ns` see a namespace of the build's sources only from a unit or pass
   whose namespace requires it (fixture `views`); other names (`cljs.user`,
   `cljs.core`, `create-ns`) stay as they were, and the registry's lane
-  still waits for every earlier unit. Namespace member views, resolution,
+  still waits for every earlier unit. Member views check the namespace being
+  enumerated before constructing members, including refers to an otherwise
+  visible Var and imports of JavaScript values. The per-consumer check stays
+  in cached helper IR and quoted macro expansions; application emission is
+  transparent. Namespace member views, resolution,
   and global root reads and enumeration use the same closure; reader
   aliases come from the consumer's own namespace snapshot. Protocol and
   multimethod extension views intersect the source frontier with the

@@ -934,6 +934,10 @@ impl Converter<'_> {
                 value: self.expr(*value)?,
                 unit: self.unit(*unit)?,
             },
+            K::NamespaceView { namespace, value } => ExprKind::NamespaceView {
+                namespace: self.string(*namespace),
+                value: self.expr(*value)?,
+            },
             K::WithMeta { value, metadata } => ExprKind::WithMeta {
                 value: self.expr(*value)?,
                 metadata: self.expr(*metadata)?,

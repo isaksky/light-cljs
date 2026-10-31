@@ -2313,6 +2313,11 @@ pub enum ExprKind {
         value: ExprId,
         unit: usize,
     },
+    /// A compile-time namespace view; application emission keeps only value.
+    NamespaceView {
+        namespace: StringId,
+        value: ExprId,
+    },
     WithMeta {
         value: ExprId,
         metadata: ExprId,
@@ -6046,6 +6051,32 @@ impl Analyzer<'_> {
                 {
                     return self.assert_form(id, args, context);
                 }
+                "compiler-namespace-view*"
+                    if self.generated.get(id.0).and_then(Option::as_ref).is_some() =>
+                {
+                    if args.len() != 2 {
+                        return Err(self.error(
+                            id,
+                            AnalysisErrorKind::InvalidForm(
+                                "namespace view requires a name and value",
+                            ),
+                        ));
+                    }
+                    let NodeKind::String(text) = &self.syntax.nodes[args[0].0].kind else {
+                        return Err(self.error(
+                            id,
+                            AnalysisErrorKind::InvalidForm("namespace view name must be a string"),
+                        ));
+                    };
+                    let units = text.to_utf16(self.source);
+                    let value = self.form(args[1], context)?;
+                    let namespace = self.own_string(units);
+                    return Ok(self.push(
+                        ExprKind::NamespaceView { namespace, value },
+                        self.syntax.nodes[id.0].span.clone(),
+                        context,
+                    ));
+                }
                 "case*" => return self.case_form(id, args, context, false),
                 "compiler-case*" if self.generated.get(id.0).and_then(Option::as_ref).is_some() => {
                     return self.case_form(id, args, context, true);
@@ -7880,6 +7911,7 @@ impl Analyzer<'_> {
                     | "defrecord"
                     | "assert"
                     | "compiler-assert*"
+                    | "compiler-namespace-view*"
                     | "compiler-case*"
                     | "loadable"
                     | "loadable-type"
@@ -11374,6 +11406,7 @@ impl Analyzer<'_> {
                     &form,
                     &crate::compiler_data::Name::new(Some("cljs.core"), core_name),
                     Some((&name, &call_span)),
+                    false,
                 )
                 .map_err(error)?
             {
@@ -11570,10 +11603,33 @@ impl Analyzer<'_> {
                 break;
             }
         }
+        // A quoted reflection expansion still checks the eventual caller's
+        // namespace before constructing its returned data. Do not quote the
+        // compiler-only guard itself or freeze the first helper caller's view.
+        let mut namespace_guards = Vec::new();
+        loop {
+            let parts = form.children();
+            if parts.len() != 3
+                || !matches!(parts[0].data().kind(), DatumKind::Symbol(name) if *name == Name::new(None, "compiler-namespace-view*"))
+            {
+                break;
+            }
+            namespace_guards.push(parts[1].data());
+            form = parts[2].clone();
+        }
         let builder = DataBuilder;
-        let data = builder
+        let mut data = builder
             .list(&[builder.symbol(Name::new(None, "quote")), form.data()])
             .map_err(error)?;
+        for namespace in namespace_guards.into_iter().rev() {
+            data = builder
+                .list(&[
+                    builder.symbol(Name::new(None, "compiler-namespace-view*")),
+                    namespace,
+                    data,
+                ])
+                .map_err(error)?;
+        }
         // Preserve each returned subtree's source/argument identity and prior
         // expansions, but attribute this new quotation to the source call.
         fn collect(form: &Form, originals: &mut HashMap<usize, Form>) {

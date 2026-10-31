@@ -2320,6 +2320,7 @@ impl MacroHost {
         form: &Form,
         name: &Name,
         site: Option<(&str, &std::ops::Range<usize>)>,
+        runtime_reflection: bool,
     ) -> Result<Option<Form>, String> {
         let builder = crate::compiler_data::DataBuilder;
         let extended = crate::compiler_destructuring::expand(&builder, form, name)?;
@@ -2377,7 +2378,7 @@ impl MacroHost {
         };
         let expanded = match expanded {
             Some(form) => Some(form),
-            None => self.expand_namespace_reflection(form, name)?,
+            None => self.expand_namespace_reflection(form, name, runtime_reflection)?,
         };
         if let Some(expanded) = &expanded {
             if let Some((operator, span)) = site {
@@ -2431,6 +2432,7 @@ impl MacroHost {
         &self,
         form: &Form,
         name: &Name,
+        runtime_reflection: bool,
     ) -> Result<Option<Form>, String> {
         let operation = String::from_utf16_lossy(name.name());
         let operation = operation.strip_prefix("compiler-").unwrap_or(&operation);
@@ -2460,6 +2462,18 @@ impl MacroHost {
                 unreachable!()
             };
             let namespace = String::from_utf16(namespace.name())?;
+            let guarded = self.native_macro_backend();
+            let c = crate::compiler_data::DataBuilder;
+            // Dynamic macroexpand requests use the live consumer immediately.
+            // Compiled helper bodies retain a guard evaluated by each caller.
+            if guarded
+                && runtime_reflection
+                && self
+                    .session_handle()
+                    .is_some_and(|session| !session.shared().lanes().sees_here(&namespace))
+            {
+                return Ok(Form::from_expansion(c.map(&[])?, form, name.clone()));
+            }
             if !matches!(namespace.as_str(), "cljs.core" | "clojure.core") {
                 self.observe(|log| {
                     log.named(&namespace, crate::dependency_manifest::EdgeKinds::OBSERVED)
@@ -2511,7 +2525,6 @@ impl MacroHost {
             }
             declarations.sort();
             declarations.dedup();
-            let c = crate::compiler_data::DataBuilder;
             let symbol = |s: &str| c.symbol(Name::new(None, s));
             let mut entries = Vec::new();
             for (local, qualified) in declarations {
@@ -2524,7 +2537,17 @@ impl MacroHost {
                 };
                 entries.push((key, value));
             }
-            Ok(Form::from_expansion(c.map(&entries)?, form, name.clone()))
+            let view = c.map(&entries)?;
+            let view = if guarded && !runtime_reflection {
+                c.list(&[
+                    symbol("compiler-namespace-view*"),
+                    c.string(namespace.encode_utf16().collect::<Vec<_>>()),
+                    view,
+                ])?
+            } else {
+                view
+            };
+            Ok(Form::from_expansion(view, form, name.clone()))
         };
         run().map(Some).map_err(|e| e.to_string())
     }

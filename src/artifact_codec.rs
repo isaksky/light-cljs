@@ -66,7 +66,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -1673,6 +1673,11 @@ impl Writer<'_> {
                 e(self, class);
                 e(self, value);
             }
+            K::NamespaceView { namespace, value } => {
+                self.u8(58);
+                self.index(namespace.0);
+                e(self, value);
+            }
         }
     }
 
@@ -3096,6 +3101,10 @@ impl<'a> Reader<'a> {
                 class: self.expr()?,
                 value: self.expr()?,
             },
+            58 => K::NamespaceView {
+                namespace: StringRef(self.index()?),
+                value: self.expr()?,
+            },
             tag => return Err(self.tag("expression", tag)),
         })
     }
@@ -3296,6 +3305,10 @@ mod tests {
             K::DefinitionTest {
                 value: e,
                 unit: UnitRef(0),
+            },
+            K::NamespaceView {
+                namespace: StringRef(0),
+                value: e,
             },
             K::WithMeta {
                 value: e,

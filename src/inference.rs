@@ -1407,7 +1407,7 @@ impl<'p> Walker<'p> {
                     _ => Inferred::ANY,
                 }
             }
-            K::DefinitionTest { value, .. } => self.walk(*value),
+            K::DefinitionTest { value, .. } | K::NamespaceView { value, .. } => self.walk(*value),
             K::WithMeta { value, metadata } => {
                 let arguments = [self.walk(*value).ty, self.walk(*metadata).ty];
                 self.core_call(CoreFnId::WithMeta, &arguments)
@@ -2156,9 +2156,9 @@ impl<'p> Walker<'p> {
                     .push((*local, Filter::Keep(Type::NIL.union(Type::BOOLEAN))));
                 narrowing
             }
-            K::BooleanHint(inner) | K::DefinitionTest { value: inner, .. } => {
-                self.narrowing(*inner, depth + 1)
-            }
+            K::BooleanHint(inner)
+            | K::DefinitionTest { value: inner, .. }
+            | K::NamespaceView { value: inner, .. } => self.narrowing(*inner, depth + 1),
             K::Do(items) if items.len() == 1 => self.narrowing(items[0], depth + 1),
             K::Call { callee, args } => {
                 let K::CoreFn(core) = program.exprs[callee.0].kind else {

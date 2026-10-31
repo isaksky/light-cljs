@@ -1328,6 +1328,10 @@ impl Installer<'_> {
                 value: self.expr(*value),
                 unit: self.unit(*unit),
             },
+            ExprKind::NamespaceView { namespace, value } => K::NamespaceView {
+                namespace: self.string(*namespace),
+                value: self.expr(*value),
+            },
             ExprKind::WithMeta { value, metadata } => K::WithMeta {
                 value: self.expr(*value),
                 metadata: self.expr(*metadata),

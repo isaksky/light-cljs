@@ -680,6 +680,7 @@ impl InteractiveCompiler {
                             &form,
                             &Name::new(Some("cljs.core"), &name),
                             None,
+                            true,
                         )? {
                             Some(expanded)
                         } else {

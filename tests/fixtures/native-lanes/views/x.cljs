@@ -1,1 +1,1 @@
-(ns views.x) (def y 1)
+(ns views.x (:require [views.p :refer [v]]) (:import [Math max])) (def y 1)
