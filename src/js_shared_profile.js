@@ -1140,31 +1140,54 @@
     || type === Delay && sharedFormKind(value) === "delay"
     || type === MultiFn && sharedFormKind(value) === "struct" && __rt.formName(__rt.structTypeOf(sharedFormOf(value))) === "cljs.core/MultiFn"
     || value instanceof type;
-  //@unit sharedRecordAssoc requires: sharedFormOf, sharedScalar
+  //@unit sharedRecordNativeKey requires: sharedUpdates
+  // Records need the same key policy as maps. Check stored keys too: a native
+  // query can match a runtime-owned key, and an ordinary update can promote an
+  // extension map containing repeated NaN occurrences under native equality.
+  const sharedRecordNativeKey = (entries, key) => sharedUpdates.key(key) && entries.every(entry => sharedUpdates.key(entry.key));
+  //@unit sharedRecordFromEntries requires: sharedFormOf, sharedMapForm
+  // These entries already occupy distinct positions. Rehashing them on a
+  // record update or field removal could merge identical NaN occurrences.
+  function sharedRecordFromEntries(value, entries, keepRecord = true) {
+    const map = sharedMapForm(entries, "array-map");
+    return __rt.cljWithMeta(keepRecord ? __rt.recordFromMap(__rt.structTypeOf(sharedFormOf(value)), map) : map, __rt.cljMeta(value));
+  }
+  //@unit sharedRecordAssoc requires: equalPair, sharedFormOf, sharedMapEntries,
+  //@ sharedRecordFromEntries, sharedRecordNativeKey
   function sharedRecordAssoc(value, key, item) {
-    const scalar = sharedScalar(key);
-    if (typeof scalar !== "number" || scalar === scalar) return __rt.cljAssoc(value, key, item);
-    // NaN never matches a language key, even its own occurrence. Append a
-    // positional extension without the native map's reference shortcut,
-    // retaining every existing key/value and the new key's provenance.
-    const form = sharedFormOf(value), entries = __rt.formPrintItems(form);
-    let pairs = __rt.formVector();
-    for (let i = 0; i < __rt.formCount(entries); i++) {
-      const entry = __rt.formNth(entries, i);
-      pairs = __rt.formConj(__rt.formConj(pairs, __rt.formNth(entry, 0)), __rt.formNth(entry, 1));
-    }
-    pairs = __rt.formConj(__rt.formConj(pairs, key), item);
-    return __rt.cljWithMeta(__rt.recordFromMap(__rt.structTypeOf(form), __rt.formLiteralMap(pairs)), __rt.cljMeta(value));
+    const entries = sharedMapEntries(sharedFormOf(value));
+    if (sharedRecordNativeKey(entries, key)) return __rt.cljAssoc(value, key, item);
+    const index = entries.findIndex(entry => equalPair(key, entry.key));
+    if (index >= 0 && entries[index].value === item) return value;
+    const updated = entries.slice(), entry = {key: index < 0 ? key : entries[index].key, value: item};
+    if (index < 0) updated.push(entry); else updated[index] = entry;
+    return sharedRecordFromEntries(value, updated);
+  }
+  //@unit sharedRecordDissoc requires: equalPair, sharedFormOf, sharedMapEntries,
+  //@ sharedRecordFromEntries, sharedRecordNativeKey
+  function sharedRecordDissoc(value, key) {
+    const form = sharedFormOf(value), entries = sharedMapEntries(form);
+    if (sharedRecordNativeKey(entries, key)) return __rt.cljDissoc(value, key);
+    const index = entries.findIndex(entry => equalPair(key, entry.key));
+    if (index < 0) return value;
+    const fields = sharedMapEntries(__rt.structNew(__rt.structTypeOf(form)));
+    const keepRecord = !fields.some(entry => equalPair(key, entry.key));
+    const updated = entries.slice();
+    updated.splice(index, 1);
+    return sharedRecordFromEntries(value, updated, keepRecord);
   }
   //@unit sharedRecordOperations effect: recordMethods
-  //@ requires: assoc, collectionWithMeta, dissoc, get, seq, sharedFormKind, sharedFormOf,
-  //@ sharedRecordAssoc, sharedScalar
+  //@ requires: assoc, collectionWithMeta, dissoc, equalPair, get, seq, sharedFormKind, sharedFormOf,
+  //@ sharedMapEntries, sharedRecordAssoc, sharedRecordDissoc, sharedRecordNativeKey
   // Engine records already own their fields, extension map and metadata.
   // Preserve that representation on updates, leaving dispatch registration
   // (including user methods on structs) to the frontier tables of 649.
   get = (operation => function (value, key, fallback) {
-    return sharedFormKind(value) === "record" && (arguments.length === 2 || arguments.length === 3)
-      ? __rt.cljGet(value, sharedScalar(key), arguments.length === 2 ? null : fallback) : operation(...arguments);
+    if (sharedFormKind(value) !== "record" || (arguments.length !== 2 && arguments.length !== 3)) return operation(...arguments);
+    const entries = sharedMapEntries(sharedFormOf(value)), notFound = arguments.length === 2 ? null : fallback;
+    if (sharedRecordNativeKey(entries, key)) return __rt.cljGet(value, key, notFound);
+    const index = entries.findIndex(entry => equalPair(key, entry.key));
+    return index < 0 ? notFound : entries[index].value;
   })(get);
   assoc = (operation => function (value, key, item, ...pairs) {
     if (sharedFormKind(value) !== "record") return operation(...arguments);
@@ -1175,7 +1198,7 @@
   dissoc = (operation => function (value, ...keys) {
     if (sharedFormKind(value) !== "record") return operation(...arguments);
     let result = value;
-    for (const key of keys) result = __rt.cljDissoc(result, sharedScalar(key));
+    for (const key of keys) result = sharedFormKind(result) === "record" ? sharedRecordDissoc(result, key) : operation(result, key);
     return result;
   })(dissoc);
   seq = (operation => value => sharedFormKind(value) === "record" ? __rt.cljSeq(sharedFormOf(value)) : operation(value))(seq);
@@ -1398,11 +1421,11 @@
   mapv = sharedRegExpCallback(mapv);
   //@unit rePattern requires: sharedFormOf, sharedIntrinsicRegExp
   function rePattern(pattern) {
-    pattern = sharedFormOf(pattern);
-    if (pattern instanceof RegExp) return pattern;
-    if (typeof pattern !== "string") throw new TypeError("regex pattern requires a string");
-    const prefix = /^\(\?([dgimsuxy]*)\)/.exec(pattern);
-    const value = new RegExp(prefix ? pattern.slice(prefix[0].length) : pattern, prefix ? prefix[1] : "");
+    const source = sharedFormOf(pattern);
+    if (source instanceof RegExp) return pattern;
+    if (typeof source !== "string") throw new TypeError("regex pattern requires a string");
+    const prefix = /^\(\?([dgimsuxy]*)\)/.exec(source);
+    const value = new RegExp(prefix ? source.slice(prefix[0].length) : source, prefix ? prefix[1] : "");
     return RegExp !== sharedIntrinsicRegExp || value.global || value.sticky ? value : __rt.formRegex(value.source, value.flags);
   }
   //@unit reMatch requires: sharedFormOf, vectorFromArray

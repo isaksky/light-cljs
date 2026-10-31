@@ -989,6 +989,33 @@ fn shared_profile_engine_regex_and_lazy_matches_publish() {
 }
 
 #[test]
+fn shared_profile_regex_pattern_preserves_imported_occurrences() {
+    let rt = Runtime::new();
+    let regex = run(&rt, "return __rt.formRegex('(a)', 'i');").unwrap();
+    let check = compile_function(&format!(
+        "function check(regex) {{ const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+         if (core.rePattern(regex) !== regex) throw new Error('regex occurrence identity'); \
+         if (core.prStr(core.reFind(regex, 'A')) !== '[\"A\" \"A\"]') throw new Error('regex matching'); \
+         return 'ok'; }}"
+    )).unwrap();
+    for depth in 0..=2 {
+        let regex = rt.scope(|s| {
+            let mut value = s.local(&regex).unwrap();
+            for _ in 0..depth {
+                value = s.new_occurrence(value, Default::default()).unwrap();
+            }
+            s.persist(value)
+        });
+        match rt.spawn(&check, &[&regex]).unwrap().run() {
+            Ok(RunOutcome::Complete(value)) => {
+                assert_eq!(value.string().unwrap().to_string_lossy(), "ok");
+            }
+            other => panic!("regex occurrence depth {depth}: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn shared_profile_engine_structs_and_records_keep_their_brands() {
     let rt = Runtime::new();
     let out = run(&rt, &format!(
@@ -1010,6 +1037,109 @@ fn shared_profile_engine_structs_and_records_keep_their_brands() {
         out.string().unwrap().to_string_lossy(),
         "true true false true false true 2 1 #demo.Point{:x 1, :y 2} ([:x 1] [:y 2]) 3 4 3 record 9 true false true 1 true true"
     );
+}
+
+#[test]
+fn shared_profile_record_keys_use_canonical_equality() {
+    let rt = Runtime::new();
+    let out = run(&rt, &format!(
+        "const rt = (\n{SHARED_RUNTIME}\n); {}", r#"
+        const core = rt.core, check = (ok, label) => { if (!ok) throw new Error(label); };
+        const type = __rt.structType('demo/Point', __rt.formVector('x'), true, null);
+        const child = core.vector('child'), metadata = core.arrayMap('tag', 1), x = core.keyword('x');
+        const original = core.withMeta(__rt.structNew(type, child), metadata);
+        const vector = core.vector(1), list = core.list(1), named = core.symbol('a', 'b');
+        const alias = new core.Symbol('other', 'parts', 'a/b', core.hash(named), null);
+        for (const [stored, query] of [[vector, list], [list, vector], [named, alias], [alias, named]]) {
+          const record = core.assoc(original, stored, 7);
+          check(core.get(record, query, 'missing') === 7, 'record canonical lookup');
+          check(core.contains(record, query) && core.nth(core.find(record, query), 1) === 7, 'record contains/find');
+          const updated = core.assoc(record, query, 8);
+          check(core.count(updated) === 2 && core.get(updated, stored) === 8, 'record canonical replacement');
+          check(core.nth(core.first(core.next(core.seq(updated))), 0) === stored, 'record retained key');
+          check(core.isRecord(updated) && core.meta(updated) === metadata && core.get(updated, x) === child, 'record type/metadata/child');
+          const removed = core.dissoc(updated, query);
+          check(core.isRecord(removed) && core.count(removed) === 1 && core.get(removed, stored, 'missing') === 'missing', 'record canonical removal');
+          check(core.get(record, query) === 7 && core.count(original) === 1, 'record persistence');
+          const map = core.dissoc(updated, x, query);
+          check(!core.isRecord(map) && core.count(map) === 0 && core.meta(map) === metadata, 'variadic removal after record becomes map');
+        }
+        return 'ok';
+        "#
+    )).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(out.string().unwrap().to_string_lossy(), "ok");
+}
+
+fn check_record_nan_entries(remove_field_first: bool) {
+    let rt = Runtime::new();
+    let check = compile_function(&format!(
+        "function check(key, removeFieldFirst) {{ const rt = (\n{SHARED_RUNTIME}\n); {} }}", r#"
+        const core = rt.core, check = (ok, label) => { if (!ok) throw new Error(label); };
+        const type = __rt.structType('demo/Point', __rt.formVector('x'), true, null), x = core.keyword('x');
+        const metadata = core.arrayMap('tag', 1);
+        const original = core.withMeta(__rt.structNew(type, 99), metadata);
+        const checkEntries = (value, expected, nanCount, label) => {
+          const entries = [];
+          for (let s = core.seq(value); s !== null; s = core.next(s)) entries.push(core.first(s));
+          check(entries.length === expected.length && core.count(value) === entries.length, label + ' seq cardinality');
+          check(entries.map(e => core.nth(e, 1)).sort((a, b) => a - b).join(',') === expected.slice().sort((a, b) => a - b).join(','), label + ' values');
+          check(entries.filter(e => typeof key === 'object' ? core.nth(e, 0) === key : Number.isNaN(core.nth(e, 0))).length === nanCount, label + ' key identity');
+          check(core.meta(value) === metadata && core.get(value, key, 'missing') === 'missing', label + ' metadata/lookup');
+        };
+        const record = core.assoc(original, key, 0, key, 1);
+        checkEntries(record, [0, 1, 99], 2, 'repeated record NaN');
+        let value = removeFieldFirst ? core.dissoc(record, x) : record;
+        let expected = removeFieldFirst ? [0, 1] : [0, 1, 99];
+        checkEntries(value, expected, 2, 'declared field removal');
+        for (let i = 2; i < 12; i++) {
+          value = core.assoc(value, 'ordinary-' + i, i);
+          expected.push(i);
+          checkEntries(value, expected, 2, 'ordinary promotion ' + i);
+          check(core.isRecord(value) === !removeFieldFirst, 'promotion record brand');
+        }
+        value = core.assoc(value, key, 12, key, 13);
+        expected.push(12, 13);
+        checkEntries(value, expected, 4, 'repeated NaN after promotion');
+        checkEntries(core.dissoc(value, key), expected, 4, 'NaN removal after promotion');
+        value = core.assoc(value, 'ordinary-2', 22);
+        expected[expected.indexOf(2)] = 22;
+        checkEntries(value, expected, 4, 'ordinary replacement after promotion');
+        value = core.dissoc(value, 'ordinary-3', x);
+        checkEntries(value, expected.filter(v => v !== 3 && v !== 99), 4, 'ordinary and field removal after promotion');
+        check(!core.isRecord(value), 'field removal returns map');
+        checkEntries(record, [0, 1, 99], 2, 'record persistence');
+        check(core.count(original) === 1, 'original persistence');
+        return 'ok';
+        "#
+    )).unwrap();
+    for depth in 0..=2 {
+        let (key, remove_field) = rt.scope(|s| {
+            let mut key = s.primitive(Primitive::Number(f64::NAN));
+            for _ in 0..depth {
+                key = s.new_occurrence(key, Default::default()).unwrap();
+            }
+            (
+                s.persist(key),
+                s.persist(s.primitive(Primitive::Bool(remove_field_first))),
+            )
+        });
+        match rt.spawn(&check, &[&key, &remove_field]).unwrap().run() {
+            Ok(RunOutcome::Complete(value)) => {
+                assert_eq!(value.string().unwrap().to_string_lossy(), "ok");
+            }
+            other => panic!("record NaN occurrence depth {depth}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn shared_profile_record_field_removal_preserves_nan_entries() {
+    check_record_nan_entries(true);
+}
+
+#[test]
+fn shared_profile_record_extension_promotion_preserves_nan_entries() {
+    check_record_nan_entries(false);
 }
 
 #[test]
