@@ -57,6 +57,22 @@
   // loads, then over the hub; `sharedProfileBoot` moves its writes to the
   // hub's cells into the hub.
   globalThis.__lightSharedCells = Object.create(sharedTaskDefaults);
+  //@unit sharedTaskCells requires: coreCells, sharedTaskDefaults
+  // A task's cells: an object over the published hub with the hub's cells
+  // and the defaults' data properties (`sharedTaskDefaults.cellNames`: the
+  // gensym counter, the print state, the evaluator services, ...) as
+  // writable own properties, since an assignment to a property inherited
+  // from the sealed hub throws. The registries the defaults make on first
+  // use (their getters) stay lazy. Every task makes its cells before it
+  // reads the runtime: the boot task at the end of `sharedProfileBoot`,
+  // every other task through `core.sharedTaskCells` (light-cljs-648).
+  function sharedTaskCells() {
+    const cells = Object.create(coreCells);
+    for (const name of sharedTaskDefaults.cellNames) {
+      Object.defineProperty(cells, name, {value: coreCells[name], writable: true, configurable: true, enumerable: true});
+    }
+    return cells;
+  }
   //@unit sharedStore
   // A brand store of a kind the engine does not own (design point 8: a
   // task-owned runtime value), with a WeakMap's `has`, `get`, `set` and
@@ -139,7 +155,7 @@
       /* SHARED_BINDINGS */];
     for (const binding of bindings) seal(binding);
     __rt.sealBindings(bindings);
-    globalThis.__lightSharedCells = Object.create(coreCells);
+    globalThis.__lightSharedCells = sharedTaskCells();
     return exports;
   }
   //@unit sharedView
@@ -309,7 +325,7 @@
     dispatchCell(key).dispatcher = dispatch;
     return dispatch;
   }
-  //@unit coreCells effect requires: flush, sharedTaskDefaults
+  //@unit coreCells effect requires: flush, sharedTaskCells, sharedTaskDefaults
   // The hub's cells as the V8 profile declares them (the `core` hub extends
   // this object), over the per-task defaults. The boot task's cells now
   // read through it; `sharedProfileBoot` moves the boot's writes to hub
@@ -323,6 +339,12 @@
     hostClock: null, hostRandom: null, execTapFn: null, rand: null, flush};
   Object.setPrototypeOf(coreCells, sharedTaskDefaults);
   Object.setPrototypeOf(globalThis.__lightSharedCells, coreCells);
+  // The names a task's cells own (`sharedTaskCells`): the hub's cells and
+  // the defaults that are data, not registries made on first use.
+  Object.defineProperty(sharedTaskDefaults, "cellNames", {value: __rt.seal([...Object.keys(coreCells),
+    ...Object.keys(sharedTaskDefaults).filter(name => "value" in Object.getOwnPropertyDescriptor(sharedTaskDefaults, name))])});
+  // Reached from the hub, for the tasks light-cljs-648 starts.
+  Object.defineProperty(coreCells, "sharedTaskCells", {value: sharedTaskCells});
   //@exports
   return sharedProfileBoot(Object.freeze({setDeclarationDemand, declarationReceiver, declarationTransaction, applyDeclarationPatches, snapshotDeclarationPatches, restoreDeclarationPatches, compilerExceptionMessage, compilerForms, keyword, keywordFqn, get, symbol, vector, vectorFromArray, listFromArray, mapFromArray, arrayMapFromArray, mapFromArrays, mapShape, mapFromShape, hashMapShape, hashMapFromShape, setFromArray, arraySetFromArray, constantMapFromArray, constantSetFromArray, literalSetFromArray, setShape, setFromShape, queueFromArray, jsObject, makeVar, definitionVar, makeIFn, protocol, protocolPredicate, protocolMethod, metadataMethod, extendType, extendInstance, makeReify, reify, makeType, typeMasks, recordMethods, recordFromMap, Loadable, fnRest, fnApplyTo, displayStr, setMacroexpandServices, compilerFormBridge, core, inspect, hash, hashed}));
 })()

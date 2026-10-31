@@ -527,6 +527,7 @@ fn shared_hook(hook: &str) -> String {
         text = replace_identifier(&text, name, &format!("{SHARED_CELLS}.{name}"));
     }
     text.replace("coreCells.", &format!("{SHARED_CELLS}."))
+        .replace("coreCells[", &format!("{SHARED_CELLS}["))
 }
 
 /// `text` with every whole-identifier occurrence of `name` that is not a
@@ -748,7 +749,8 @@ fn shared_runtime(base: &str, profile: &str) -> (String, String) {
             runtime.push_str(&source[section.body.clone()]);
         } else {
             let mut body = rewrite_task_state(source, section.body.clone())
-                .replace("coreCells.", &format!("{SHARED_CELLS}."));
+                .replace("coreCells.", &format!("{SHARED_CELLS}."))
+                .replace("coreCells[", &format!("{SHARED_CELLS}["));
             if SHARED_WORDS.contains(&section.name.as_str()) {
                 let set = format!("const {} = new Set(", section.name);
                 assert_eq!(body.matches(&set).count(), 1, "{set}");

@@ -142,6 +142,33 @@ fn shared_profile_boots_and_publishes_with_zero_rejected_paths() {
     }
 }
 
+/// A task's cells (`sharedTaskCells` in the profile) own the state the
+/// runtime assigns per task, so an assignment lands on the task's object
+/// where an inherited property of the sealed hub would throw: the evaluator
+/// services, the gensym counter and names, and a temporary print setting.
+#[test]
+fn shared_profile_task_cells_are_writable() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+             const cells = globalThis.__lightSharedCells; \
+             const expand = form => form; rt.setMacroexpandServices({{macroexpand: expand}}); \
+             const a = core.name(core.gensym()), b = core.name(core.gensym()); \
+             const before = core.prStr('a'); \
+             cells.printReadably = false; const plain = core.prStr('a'); cells.printReadably = true; \
+             return [cells.macroexpandServices.macroexpand === expand, a !== b, cells.gensymCounter, \
+               before, plain, core.prStr('a'), Object.isFrozen(core), typeof core.sharedTaskCells().gensymCounter].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true true 2 \"a\" a \"a\" true number"
+    );
+}
+
 /// The writes the boot makes to the brand stores' private fallbacks, for
 /// the migration list.
 #[test]

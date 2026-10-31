@@ -244,6 +244,7 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
             );
         }
         line.replace(cells, "coreCells.")
+            .replace("globalThis.__lightSharedCells[", "coreCells[")
     };
     let restored = SHARED_RUNTIME
         .split_inclusive('\n')
