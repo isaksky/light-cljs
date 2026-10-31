@@ -2282,6 +2282,68 @@ at 200k and
 at 800k. Compiled and published helper counts remain 57 and 226 respectively,
 with no per-task helpers. The V8 baseline's 200k output directory matches too.
 
+After the final rebase onto `5d5021bb`, the final scheduler was measured
+again. These are integration checks, rather than another causal comparison
+against `cf6e6186`: the base and machine load have changed. Pants 1/5/15-minute
+loads ranged over 10.88–12.56 / 11.44–11.74 / 11.90–12.03; the V8 runs
+ranged over 10.55–10.69 / 11.16–11.19 / 11.70–11.71. The same clean-build
+command and seed-42 inputs were used.
+
+| Build | Size | Threads | Wall, s | User CPU, s | Peak memory, GB | Coordinator units |
+| --- | --- | ---: | --- | --- | --- | --- |
+| Pants | 200k | 2 | 10.94, 10.92, 11.03 | 13.69, 13.66, 13.85 | 1.231, 1.225, 1.226 | 0, 0, 0 |
+| Pants | 200k | 4 | 9.30, 9.56, 9.26 | 17.00, 17.65, 17.08 | 1.296, 1.303, 1.293 | 1, 0, 1 |
+| Pants | 200k | 8 | 10.46, 10.02, 10.12 | 21.69, 21.36, 21.93 | 1.435, 1.382, 1.366 | 8, 8, 8 |
+| Pants | 800k | 2 | 58.92 | 71.66 | 4.717 | 0 |
+| Pants | 800k | 4 | 80.58 | 121.30 | 4.433 | 21 |
+| V8 | 200k | 4 | 5.52, 5.56, 5.46 | 10.68, 10.82, 10.67 | 1.453, 1.438, 1.421 | not reported |
+
+All complete output directories still match the hashes above, including
+the V8 build. Executing the final generated JavaScript with Node 26.12.1
+returns 484264 at 200k and 189716 at 800k, matching the earlier runs.
+The V8 statistics have no coordinator-unit line.
+
+Verification uses macOS aarch64, Homebrew Rust/Cargo 1.99.1,
+`CARGO_BUILD_JOBS=4` and the pinned ClojureScript sources at
+`a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`. Feature combinations run
+sequentially, with `LIGHT_CLJS_V8_CACHE=require`. The common test command is
+`cargo nextest run --locked --no-fail-fast -j 8`; the mixed combinations add
+`--lib --test bbp_macros --test compiler`.
+
+| Build | Feature arguments | Result |
+| --- | --- | --- |
+| V8 build, full suite | none | 2,165 passed; only the known nested-workspace playground check failed; 109 skipped |
+| Pants build, full suite | `--no-default-features --features bbp-macros` | 2,088 passed; exactly 142 baseline failures; 114 skipped |
+| Pants+QuickJS | `--no-default-features --features bbp-macros,quickjs` | all 1,996 passed; 67 skipped |
+| V8+Pants | `--features bbp-macros` | all 2,040 passed; 68 skipped |
+
+Those suites ran with this scheduler change on integration base
+`91d9e540`. The untouched integration base `9e6a7830`
+was also run in this worktree: 2,078 passed and 142 failed, and its failing
+names match the final Pants full suite exactly. The later rebase onto
+`5d5021bb` changes engine identity hashing and its focused tests, without
+changing the V8 build. After that rebase, all **330** release `bbp_macros`
+tests pass with `LIGHT_CLJS_STRESS_SEEDS=12` and
+`--no-default-features --features bbp-macros,scheduling-stress -j 3`.
+All existing JavaScript, source-map, warning and helper-count comparisons
+remain in the stress matrices.
+
+The final opt-in 200k matrix also passes all **13 builds** in 187.74 s:
+an unperturbed reference plus three seeds at 1, 2, 4 and 8 threads. It
+compares full JavaScript and source maps at `none` and `advanced`, warnings
+and compiled/published/private helper counts (57/57/0). The engine's 11
+sealing tests pass after the identity-hash rebase.
+
+Formatting passes. Strict V8 Clippy passes. Strict checks with Pants retain
+the eight documented engine-library diagnostics in `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`.
+Allowing only those categories makes both mixed combinations pass. The
+Pants build additionally has the existing unused `frozen`/`comparable`
+test variables and `tests/execution.rs:1772`'s
+`clippy::unused_enumerate_index`; the engine-free build retains only the
+latter. Checks allowing those existing categories pass too. No source
+suppressions, limits, V8 assertions or output expectations were relaxed.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
