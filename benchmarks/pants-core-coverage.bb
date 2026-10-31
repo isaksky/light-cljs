@@ -729,7 +729,7 @@
        "bb benchmarks/pants-core-coverage.bb --check"
        "```"
        ""
-       "Without `--check` it also rewrites this section, unless something regressed (`--accept-regressions` "
+       "Without `--check` it also rewrites this section, unless something regressed (`--accept-regressions`"
        "rewrites it anyway, for a probe that changed). The script's own tests: `bb benchmarks/pants-core-coverage-test.bb`."
        ""
        "### Summary"
