@@ -3737,6 +3737,11 @@ const native = (() => {
     for (let i = 0; i < __rt.formCount(__rt.formNth(realCore, 2)); i++) failing.add(__rt.formNth(__rt.formNth(realCore, 2), i));
     const cells = Object.create(hub);
     const own = (name, value) => Object.defineProperty(cells, name, {value, writable: true, configurable: true, enumerable: true});
+    // Core Vars, including functions, can be replaced by emitted `set!`,
+    // `binding` and `with-redefs`. Shadow the published values with writable
+    // task slots: assignment cannot shadow the hub's read-only descriptors.
+    // The functions themselves stay shared and the hub stays immutable.
+    for (const name of Object.getOwnPropertyNames(hub)) own(name, hub[name]);
     let copy = null;
     // A member of the hub, or `defaults.NAME`, one of the profile's per-task
     // defaults, whose getter makes the task's own registry on `cells`.

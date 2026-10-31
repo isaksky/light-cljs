@@ -54,6 +54,47 @@ fn real_core_expands_as_the_port_where_both_answer() {
     assert_eq!(emit(MacroCore::Real), port);
 }
 
+/// A demanded value can replace a core Var through a writable task slot,
+/// while the published hub retains its original, read-only function.
+#[test]
+fn real_core_replacements_stay_in_writable_task_slots() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("real-core-replacement");
+    std::fs::write(
+        root.join("app.cljs"),
+        r#"(ns app)
+           (def result
+             (do (set! cljs.core/inc (fn [_] 42))
+                 (inc 2)))
+           (defmacro m []
+             (list 'quote [result
+                  (js* "Object.getPrototypeOf(globalThis.__lightNativeRuntime.core).inc(2)")
+                  (js* "Object.getOwnPropertyDescriptor(globalThis.__lightNativeRuntime.core, 'inc').writable")
+                  (js* "Object.getOwnPropertyDescriptor(Object.getPrototypeOf(globalThis.__lightNativeRuntime.core), 'inc').writable")]))
+           (js/console.log (pr-str (m)))"#,
+    )
+    .unwrap();
+    for threads in [1, 2, 4, 8] {
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host(MacroCore::Real),
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(threads).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("{threads} threads: {e:?}"));
+        assert_eq!(
+            program_output(&emit_js(&program)),
+            "[42 3 true false]\n",
+            "{threads} threads"
+        );
+    }
+}
+
 /// `--stats` names the core, and with the real one how many of its hub's
 /// members published, how many tasks booted a private copy for the rest,
 /// and the boot's time.
