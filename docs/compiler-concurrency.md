@@ -3196,6 +3196,10 @@ state and determinism"; this is what was delivered.
   bundles are admitted by their defining namespace before forcing them;
   installed entries and activation obey the same closure filter, and cached
   dispatch views are scoped to the consumer's own and inherited closures.
+  Source macro providers are admitted before execution using the actual
+  activity, so rebinding `*ns*` cannot widen admission. Unknown initializers
+  shadow an outer home and retain the conservative global lane, as does the
+  global hierarchy; bookkeeping atoms inherit their parent's ownership.
   The source-order frontier remains an additional restriction. A
   task touching homed state waits only for
   earlier unfinished units and pass segments whose namespace's closure

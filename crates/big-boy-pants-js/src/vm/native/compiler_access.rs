@@ -52,8 +52,13 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
             if collections::count(heap, context.clone())? > 6
                 && collections::nth(heap, context.clone(), 6)? == Value::Bool(true)
             {
-                let read = property::read(heap, state.diag.task, &receiver, &key)?;
-                read_result(heap, state, read, receiver)?;
+                let guarded = if receiver == collections::nth(heap, context.clone(), 0)? {
+                    collections::nth(heap, context.clone(), 4)?
+                } else {
+                    receiver
+                };
+                let read = property::read(heap, state.diag.task, &guarded, &key)?;
+                read_result(heap, state, read, guarded)?;
                 return Ok(true);
             }
             // The context is created once per compiler task. It retains the

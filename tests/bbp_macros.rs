@@ -14520,7 +14520,7 @@ const NAMESPACE_FRONTIER: &[(&str, &str)] = &[
     ("gap.cljs", "(ns gap) (def x 1)"),
     (
         "q2.cljs",
-        r#"(ns q2 (:require [m :refer [mk names has via-helper same loaded-names]]))
+        r#"(ns q2 (:require [q1] [m :refer [mk names has via-helper same loaded-names]]))
 (def g (loaded-names))
 (def a (names))
 (def b (has made.one))
@@ -14532,7 +14532,7 @@ const NAMESPACE_FRONTIER: &[(&str, &str)] = &[
     ),
     (
         "q3.cljs",
-        r#"(ns q3 (:require [m :refer [mk names has]]))
+        r#"(ns q3 (:require [q2] [m :refer [mk names has]]))
 (def v1 (names))
 (def v2 (has made.two))
 (def v3 (has made.four))

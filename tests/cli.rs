@@ -2353,17 +2353,13 @@ fn stats_file_traces_prepared_and_bundle_root_reads() {
         row(&square, "top-level", main),
         row(&record, "top-level", main),
     ];
-    // Pants dispatches through installed protocol/type tables without reading
-    // those root values again when the later unit calls the method.
-    if cfg!(any(feature = "quickjs", feature = "v8-macros")) {
-        expected.extend([
-            row(&protocol, "unit", &later),
-            row(&square, "unit", &later),
-            row(&record, "unit", &later),
-        ]);
-    } else {
-        expected.push(row(&square, "unit", &later));
-    }
+    // Pants also checks ready roots through the live visibility Proxy, so
+    // the later unit's protocol and constructor reads remain observed.
+    expected.extend([
+        row(&protocol, "unit", &later),
+        row(&square, "unit", &later),
+        row(&record, "unit", &later),
+    ]);
     assert_eq!(rows("read"), expected, "{trace}");
 }
 

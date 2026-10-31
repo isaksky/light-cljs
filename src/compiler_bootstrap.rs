@@ -1716,6 +1716,15 @@ impl MacroHost {
             .ok_or_else(|| format!("compile-time macro {key} is not declared"))?
             .clone();
         let (owner, member) = key.split_once('/').unwrap();
+        if self.native_macro_backend()
+            && self
+                .session_handle()
+                .is_some_and(|session| !session.shared().lanes().sees_here(owner))
+        {
+            return Err(format!(
+                "compile-time namespace outside require closure: {key} (add a require of {owner})"
+            ));
+        }
         if owner != namespace && self.source_binding_private(owner, member) {
             return Err(format!(
                 "{key} is private; macros can only be imported from public bindings"

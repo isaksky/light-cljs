@@ -1828,9 +1828,8 @@ const native = (() => {
   // history) belongs where `parent` does.
   const childAtom = (parent, state) => {
     const owner = sharedOwner(parent);
-    if (owner === 0) return atom(state);
     const a = __rt.atomNew(state);
-    own(a, -owner);
+    own(a, owner === 0 ? atomOwners.get(parent) ?? 0 : -owner);
     return a;
   };
   const atom = (state, ...options) => {
@@ -4186,9 +4185,11 @@ globalThis.__lightCompilerRoots=new Proxy(rootTarget, {
 // target on every read. Ordinary interop retains the Proxy and its receiver.
 globalThis.__lightCompilerRootContext=__rt.vector(globalThis.__lightCompilerRoots,rootTarget,bindingOverlays,productReaders,
   new Proxy(rootTarget,{get:(target,name)=>{
+    checkCompilerRoot(name);
+    if(bindingOverlays.has(name))return bindingOverlays.get(name);
     lazyResolve(name);
     if(!Reflect.has(target,name))throw new Error('unavailable definition: '+name);
-    return Reflect.get(rootsProxy,name);
+    return Reflect.get(target,name,rootsProxy);
   }}),decl.frontierCell,true);
 // A task adopts a catalog snapshot instead of applying it (a producer its
 // parent's, light-cljs-590; any other task the compilation's, extended by

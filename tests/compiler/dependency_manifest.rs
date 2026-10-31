@@ -551,6 +551,25 @@ fn source_macros_see_extensions_from_namespaces_outside_the_require_closure() {
         "main.cljs",
         "(ns main (:require [x] [c])) (js/console.log c/greeting)",
     );
+    if cfg!(all(
+        feature = "bbp-macros",
+        not(any(feature = "quickjs", feature = "v8-macros"))
+    )) {
+        let error = light_cljs::compile_namespace("main", &roots.paths())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("No protocol method p/shout"), "{error}");
+        // Requiring the defining namespace admits the same extension.
+        roots.write(
+            0,
+            "c.cljs",
+            "(ns c (:require [x] [m :refer [loud]])) (def greeting (loud \"hi\"))",
+        );
+        let (js, manifest) = roots.manifest("main");
+        assert_eq!(execute(&js), "hi!\n");
+        assert_eq!(edge(&manifest, "c", "x"), Some(EdgeKinds::RUNTIME));
+        return;
+    }
     let (js, manifest) = roots.manifest("main");
     // The expansion used `x`'s extension.
     assert_eq!(execute(&js), "hi!\n");
@@ -619,6 +638,27 @@ fn a_fully_qualified_macro_of_a_loaded_namespace_is_a_macro_provider() {
         "main2.cljs",
         "(ns main2 (:require [m] [q])) (js/console.log q/value)",
     );
+    if cfg!(all(
+        feature = "bbp-macros",
+        not(any(feature = "quickjs", feature = "v8-macros"))
+    )) {
+        let error = light_cljs::compile_namespace("main2", &roots.paths())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("outside require closure: m/twice (add a require of m)"),
+            "{error}"
+        );
+        roots.write(0, "q.cljs", "(ns q (:require [m])) (def value (m/twice 4))");
+        let (js, manifest) = roots.manifest("main2");
+        assert_eq!(execute(&js), "8\n");
+        assert_eq!(
+            edge(&manifest, "q", "m"),
+            Some(EdgeKinds::RUNTIME | EdgeKinds::MACRO_PROVIDER)
+        );
+        assert_eq!(edge(&manifest, "q", "h"), Some(EdgeKinds::HELPER));
+        return;
+    }
     let (js, manifest) = roots.manifest("main2");
     assert_eq!(execute(&js), "8\n");
     assert_eq!(

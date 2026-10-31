@@ -943,6 +943,28 @@ impl Lanes {
         s.enforce(home, top.position, min(top.position, s.inherited(&owned)))
             .is_ok()
     }
+    /// Macro provider admission before entering the runtime, using the
+    /// actual activity rather than a dynamically rebound namespace name.
+    pub(crate) fn sees_here(&self, name: &str) -> bool {
+        if !self.enabled() {
+            return true;
+        }
+        let Some(top) = current(self.key()) else {
+            return true;
+        };
+        let s = self.lock();
+        let Some(&home) = s.sources.get(name) else {
+            return true;
+        };
+        let owned: Vec<_> = top
+            .chain
+            .iter()
+            .flat_map(|&(token, target)| [Some(Target::Activity(token)), target])
+            .flatten()
+            .collect();
+        s.enforce(home, top.position, min(top.position, s.inherited(&owned)))
+            .is_ok()
+    }
     /// Extension admission uses the defining unit, including bundles with no
     /// named products. Unknown defining namespaces remain conservative.
     pub(crate) fn sees_unit(&self, task: u64, unit: usize) -> bool {
@@ -1454,6 +1476,8 @@ mod tests {
             synced(&lanes, 7);
             assert!(lanes.sees_unit(7, 5));
             assert!(!lanes.sees_unit(7, 10));
+            assert!(lanes.sees_here("lib"));
+            assert!(!lanes.sees_here("grammar"));
             assert!(lanes.sees_unit(7, 999));
             assert_ne!(
                 lanes.check_initializer(7, 999).unwrap(),
