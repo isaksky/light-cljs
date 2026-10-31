@@ -2643,6 +2643,11 @@ fn analyze_entry(
         #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         perturbation,
     } = recorders;
+    if let Some(stats) = stats.as_deref_mut() {
+        stats.macro_core = macros
+            .native_macro_backend()
+            .then_some(macros.evaluator_options.macro_core);
+    }
     // V8 is initialized before this compilation starts a thread: the load
     // pool's now, the analysis workers' later.
     #[cfg(light_v8)]

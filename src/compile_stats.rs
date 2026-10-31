@@ -268,6 +268,10 @@ pub struct DeferredUnitCounts {
 /// The numbers of one compilation; see the module documentation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CompileStats {
+    /// The Pants build's selected core, even when no macro task executes
+    /// (a macro-free compilation or a rebuild using cached artifacts).
+    /// Other macro engines have no core selection.
+    pub macro_core: Option<crate::evaluator::MacroCore>,
     pub native_macro_calls: Vec<NativeBridgeCall>,
     pub native_helpers: NativeHelperCounts,
     /// The native backend's effect lanes (light-cljs-480).
@@ -722,6 +726,12 @@ impl CompileStats {
             );
             line(&format!("macro.helpers.{i}.waits"), &call.helper_waits);
         }
+        if let Some(core) = self.macro_core {
+            line(
+                "native.core.real",
+                &usize::from(core == crate::evaluator::MacroCore::Real),
+            );
+        }
         if self.native_helpers.steps > 0 {
             let helpers = &self.native_helpers;
             if let Some(heap) = helpers.heap {
@@ -766,19 +776,15 @@ impl CompileStats {
                 "native.producers.setup-ms",
                 &ms(Duration::from_nanos(helpers.producer_nanos as u64)),
             );
-            match &helpers.real_core {
-                None => line("native.core.real", &0),
-                Some(core) => {
-                    line("native.core.real", &1);
-                    line("native.core.members", &core.members);
-                    line("native.core.published", &core.published);
-                    line("native.core.per-task", &(core.members - core.published));
-                    line("native.core.private-boots", &core.private_boots);
-                    line(
-                        "native.core.boot-ms",
-                        &ms(Duration::from_nanos(core.boot_nanos)),
-                    );
-                }
+            if let Some(core) = &helpers.real_core {
+                line("native.core.members", &core.members);
+                line("native.core.published", &core.published);
+                line("native.core.per-task", &(core.members - core.published));
+                line("native.core.private-boots", &core.private_boots);
+                line(
+                    "native.core.boot-ms",
+                    &ms(Duration::from_nanos(core.boot_nanos)),
+                );
             }
             let bridge = &helpers.bridge;
             line("native.prune.passes", &bridge.prune_passes);

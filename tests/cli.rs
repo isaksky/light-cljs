@@ -59,6 +59,74 @@ fn macro_core_is_the_pants_builds_option() {
     );
 }
 
+// Only the Pants build accepts the core-selection flag.
+#[cfg(all(
+    feature = "bbp-macros",
+    not(any(feature = "v8-macros", feature = "quickjs"))
+))]
+#[test]
+fn macro_core_stats_report_selection_without_macro_execution() {
+    let sources = TempDir::new("cli-macro-core-stats");
+    std::fs::write(
+        sources.join("app.cljs"),
+        "(ns app) (def answer 42) (js/console.log answer)",
+    )
+    .unwrap();
+    let mut reference = None;
+    for (core, selected) in [("port", 0.0), ("real", 1.0)] {
+        let cache = sources.join(core);
+        // A clean build, cache population, then a rebuild reusing output.
+        for run in 0..3 {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
+            command
+                .args(["--compile", "--entry", "app", "--source-root"])
+                .arg(sources.path())
+                .args(["--stats", "--macro-core", core, "--jobs", "1"]);
+            if run == 0 {
+                command.arg("--no-cache");
+            } else {
+                command.arg("--cache-dir").arg(&cache);
+            }
+            let output = command.output().unwrap();
+            let report = String::from_utf8(output.stderr).unwrap();
+            assert!(output.status.success(), "{core}, run {run}: {report}");
+            // Cache reports have additional tables after the counters.
+            let counters = report
+                .lines()
+                .skip(1)
+                .take_while(|line| !line.starts_with('['))
+                .map(|line| {
+                    let (key, value) = line.split_once(' ').unwrap();
+                    (key.to_owned(), value.parse::<f64>().unwrap())
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                counters
+                    .iter()
+                    .filter(|(key, _)| key == "native.core.real")
+                    .map(|(_, value)| *value)
+                    .collect::<Vec<_>>(),
+                [selected],
+                "{core}, run {run}: {report}"
+            );
+            assert!(counters.contains(&("macro-calls".into(), 0.0)), "{report}");
+            assert!(!report.contains("native.tasks.steps"), "{report}");
+            assert!(!report.contains("native.core.boot-ms"), "{report}");
+            if run == 2 {
+                assert!(
+                    counters.contains(&("cache.output.reused".into(), 1.0)),
+                    "{report}"
+                );
+            }
+            if let Some(reference) = &reference {
+                assert_eq!(&output.stdout, reference, "{core}, run {run}");
+            } else {
+                reference = Some(output.stdout);
+            }
+        }
+    }
+}
+
 #[test]
 fn reads_stdin_and_escapes_text() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
