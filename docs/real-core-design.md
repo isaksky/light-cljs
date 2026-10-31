@@ -1576,3 +1576,44 @@ Clippy reports the same ten diagnostics including the list-format test and
 unused `Wakeups` noted above. Combined compiler all-target Clippy passes with
 only the three documented baseline categories allowed. These remain explicit
 strict-lint failures owned by the engine baseline, not a clean strict run.
+
+### Record and regex integration corrections (2026-10-31)
+
+Code checkpoint `615d400a7761e9595a454707bd8d9b76bd144737` corrects the three
+integration findings from review of the preceding evidence. Record key operations
+now apply the shared key policy to both the query and stored keys. Runtime-backed
+and composite keys use the canonical `equalPair` comparison, retaining the first
+stored key on replacement. This covers a vector queried by a runtime list and
+runtime-owned named keys queried by an engine symbol, in either direction.
+
+Record fallbacks rebuild from positional entries. Removing a declared field or
+adding ordinary extension keys therefore retains repeated NaN occurrences and
+their values; neither operation reinserts those positions into a native hash
+map. Type, metadata, unchanged children and no-op occurrences are retained where
+applicable. Safe record operations still use the existing native operations.
+`re-pattern` inspects an unwrapped regex but returns the original argument,
+including nested imported occurrences.
+
+Four new regressions fail on `f2b2d853` and pass after these changes: canonical
+record lookup/update/removal, NaN field removal, NaN extension promotion, and
+regex occurrence identity. The NaN cases check sequence cardinality, all values,
+stored key identity, repeated updates, ordinary replacement/removal, metadata and
+persistence at occurrence depths zero through two.
+
+| Build/check | Selected result at `615d400a` |
+| --- | --- |
+| Pants, real core: full shared-profile and real-core modules, scalar occurrence, native regex and manifest tests | 94 passed |
+| Pants + QuickJS: affected record/regex/scalar tests, complete publication and manifest | 31 passed |
+| V8 + Pants + QuickJS: four regressions, complete publication, regex constructor identity and manifest | 27 passed |
+| Default V8 + QuickJS manifest | 21 passed, one diagnostic ignored |
+
+These use the same macOS arm64 / Rust 1.99.1 toolchain, Cargo jobs 2 and nextest
+jobs 4 as above; default manifest uses two test threads. Node runtime assertions,
+formatting and combined all-target Clippy with the same three documented baseline
+allowances also pass. The rebase onto master `3fa2c156` is a no-op. The engine,
+bridge, assembly and canonical runtime are unchanged, so the accepted 708–713
+reviews, engine sealing checks and unaffected feature checks above remain valid.
+All seven generated V8 runtime hashes still match
+`e90491c20e978d6eeb062d1023ed46a517d19aa7aab1d699f621dd90603db7e3`.
+This is scoped integration evidence, not a new whole-suite result; the unchanged
+649 protocol failure and strict-lint baseline limitations above remain explicit.
