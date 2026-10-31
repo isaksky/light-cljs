@@ -367,7 +367,10 @@ fn shared_profile_realization_state() {
 /// later (one onto a nonempty array is the indexed seq over the array, which
 /// reads it live, as the V8 profile's does), a cons onto a plain object
 /// throws at once, and a seq tail (a lazy seq, the runtime's own `iterate`)
-/// is kept as it is, unrealized (light-cljs-680).
+/// is kept as it is, unrealized (light-cljs-680). A tail that normalizes to
+/// nil (an empty array, vector or string) keeps the cons kind, not counted,
+/// as the V8 profile's `Cons` with a nil tail is; only an originally nil
+/// tail makes a counted list (light-cljs-682).
 #[test]
 fn shared_profile_cons_normalizes_non_seq_tails_immediately() {
     let rt = Runtime::new();
@@ -384,13 +387,17 @@ fn shared_profile_cons_normalizes_non_seq_tails_immediately() {
              const onIterate = core.cons(-1, core.iterate(x => {{ calls++; return x + 1; }}, 0)); \
              return [core.prStr(c), core.count(c), threw, core.prStr(d), core.prStr(core.cons(0, core.vector(1))), \
                core.prStr(core.cons(0, core.list(1))), core.prStr(core.cons(0, 'ab')), before, core.prStr(onLazy), calls, \
-               core.prStr(core.take(2, onIterate))].join(' ');"
+               core.prStr(core.take(2, onIterate)), \
+               core.isCounted(c), core.isCounted(core.cons(0, core.vector())), core.isCounted(core.cons(0, '')), \
+               core.isCounted(core.cons(0, null)), core.prStr(core.cons(0, core.vector())), core.count(core.cons(0, '')), \
+               core.prStr(core.rest(c)), core.isSeq(c), core.equal(c, core.list(0)), core.hash(c) === core.hash(core.list(0))].join(' ');"
         ),
     )
     .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
-        "(0) 1 Error (0 1 2) (0 1) (0 1) (0 \"a\" \"b\") 0 (0 1) 1 (-1 0)"
+        "(0) 1 Error (0 1 2) (0 1) (0 1) (0 \"a\" \"b\") 0 (0 1) 1 (-1 0) \
+         false false false true (0) 1 () true true true"
     );
 }
 

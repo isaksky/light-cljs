@@ -695,7 +695,10 @@ The pieces, all in the tree:
   after a failed realization) and reports a `false` thunk for a realized
   delay that prints as pending, as a `(Delay. false x)` does in the V8
   profile (678). `cons` normalizes a tail that is not a seq through `seq`
-  when it is called, as the V8 profile's does (680), and a `conj` onto a
+  when it is called, as the V8 profile's does (680); one that normalizes to
+  nil keeps the cons kind (an engine cons over the empty list, not counted),
+  as the V8 profile's `Cons` with a nil tail is, and only an originally nil
+  tail makes a counted list (682); and a `conj` onto a
   list stays a counted list: the engine's prepend onto an engine list, a
   `ListValue` with its count onto a runtime-owned one (681). Every other
   WeakMap and WeakSet brand store (`symbols`, `metadataValues`, `atoms`,
