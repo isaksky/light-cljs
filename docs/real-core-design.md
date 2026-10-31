@@ -988,26 +988,43 @@ file chooses, which is how a whole test binary runs in either mode.
 - **Bindings.** `rt.nativeCoreBinding(name)` answers the hub's member as a
   value (so a helper that captures it can still publish), a getter for an
   unpublished member, and the port's descriptor for a name the real hub does
-  not have. `rt.core` and `globalThis.__lightNativeRuntime.core` are a view
-  whose prototype is the task's cells, with the port's own names the real
-  core lacks (`invokeMulti`, `invokeVar` and the other call adapters emitted
-  code reaches) copied onto it. `globalThis.__lightNativeRuntime.port` is
-  always the port's table, and the port's runtime reaches its own adapters
-  through it, so its Var, multimethod and struct calls and printing are
-  unchanged in both modes.
+  not have. `rt.core` and `globalThis.__lightNativeRuntime.core` are the
+  task's cells themselves, with the port's own names the real core lacks
+  (`invokeMulti`, `invokeVar` and the other call adapters emitted code
+  reaches, the evaluator's members) added to them. So the emitted code's
+  writes to a core cell (a `binding` of `*print-readably*`, `*print-length*`,
+  `with-out-str`'s `*print-fn*`) and their restoration in its `finally`
+  land on the cells the real functions read; a first version made `rt.core`
+  a child of the cells, where those writes shadowed the cells and the real
+  printer never saw them
+  (`real_core_dynamic_bindings_reach_runtime_functions`). The port's data
+  cells of the same names forward to the task's cells, so the port's
+  functions that still run (the adapters' printing) see the same bindings.
+  `globalThis.__lightNativeRuntime.port` is always the port's table, and
+  the port's runtime reaches its own adapters through it, so its Var,
+  multimethod and struct calls are unchanged in both modes.
+- **`*ns*` stays the evaluator's.** `currentNs` is not offered for
+  publication (`evaluator_member`), and a task's cells take the port's
+  `currentNs` accessor, which answers from the compiler's namespace frames
+  and which the port's reader context and namespace machinery bind. A
+  first version published the profile's boot value, so `*ns*` in a macro
+  called from `app` read `cljs.user`
+  (`real_core_preserves_macro_namespace_context`).
 - **What stays the evaluator's** (`evaluator_member`). The members the
   manifest marks `compile-time` (the namespace registry, `create-ns`,
-  `find-ns`, the macro reader context, the form bridge, declaration demand)
-  and `gensym`, whose names on the Pants build come from the compiler's
-  counters and gensym scopes and are logged for the cache, resolve to the
-  port's in `real` mode too. The command loop, root registry, catalog and
+  `find-ns`, the macro reader context, the form bridge, declaration demand),
+  `gensym`, whose names on the Pants build come from the compiler's
+  counters and gensym scopes and are logged for the cache, and `currentNs`
+  (above) resolve to the port's in `real` mode too. The command loop, root registry, catalog and
   `decl` are unchanged.
 
 ### Numbers
 
-On master e30fc553 (after 666's symbol view) 698 of the 726 publish:
-`currentNs` joins the hub, and the 28 below it remain per task. The test
-runs and the failure table below are from 20ce6bfb, before that view.
+On master 91d9e540 with the review fixes, 697 of the 725 offered members
+publish (`macro_core_boot_and_task_bytes`): `currentNs` is the
+evaluator's now (above) and no longer offered, and the 28 listed below
+after `currentNs` remain per task. The test runs and the differences below
+are from the same tree.
 
 Members on master 20ce6bfb (the profile at 738 of its 748 members): the
 boot offers 726 members (the hub's members and the per-task defaults,
@@ -1062,10 +1079,10 @@ alternating runs on a machine at load 26 to 40, so the times are noisy):
 
 | | port | real |
 | --- | ---: | ---: |
-| Runtime boot (debug) | 416 ms | 2,672 ms (of which the profile's boot and publication) |
-| Runtime live bytes after a collection (debug) | 1.07 MB | 18.1 MB |
-| Runtime peak managed bytes during boot (debug, 512 MiB limit) | 1.10 MB | 72.0 MB |
-| Bytes a task holds after its boot (8 tasks, debug) | 1.58 MB | 1.45 MB |
+| Runtime boot (debug) | 416 ms; 466 ms on 91d9e540 | 2,672 ms (of which the profile's boot and publication); 2,637 ms on 91d9e540 |
+| Runtime live bytes after a collection (debug) | 1.07 MB | 18.1 MB; 20.1 MB on 91d9e540 |
+| Runtime peak managed bytes during boot (debug, 512 MiB limit) | 1.10 MB | 72.0 MB; 105.3 MB on 91d9e540 |
+| Bytes a task holds after its boot (8 tasks, debug) | 1.58 MB | 1.45 MB; 1.41 MB on 91d9e540 |
 | 200k: `native.core.boot-ms` | | 307 to 329 ms |
 | 200k: `native.producers.setup-ms` (57 producers) | 13.7, 22.2, 103.1 | 20.2, 24.8 |
 | 200k: `macro.gc.peak-managed-bytes` | 164.5 MB | 214.2 MB |
@@ -1077,64 +1094,171 @@ A task still runs the port's factory in `real` mode (its command loop,
 registry, catalog, `decl` and adapters, which phase 3 slims to the evaluator
 runtime), so the per-task bytes do not fall yet: the real core adds one
 boot of about 0.3 s and about 50 MB of managed bytes at its peak per
-compilation (18 MB live after a collection), which the aggregate
-`--macro-memory-limit` must hold. Under the default 64 MiB the boot fits,
-with collections; a limit of 32 MiB or less cannot hold it (the profile's
-own measurement above).
+compilation (18 MB live after a collection, 20 MB on 91d9e540), which
+the aggregate `--macro-memory-limit` must hold. Under the default 64 MiB
+the boot fits, with collections; a limit of 32 MiB or less cannot hold it
+(the profile's own measurement above), and a build that runs several
+tasks at once under the default runs out in a task ("heap byte limit
+exceeded" below).
 
 ### Differences between the modes
 
 `cargo test --features bbp-macros --test bbp_macros` runs whole in either
-mode (`LIGHT_CLJS_MACRO_CORE=real`). On 20ce6bfb plus this work, debug
-build, 4 test threads: with `port` every test passes (325 passed, 9
-ignored); with `real` 165 pass and 160 fail. The Pants build's whole suite
-(`cargo nextest run --no-default-features --features bbp-macros`, 2,222
-tests) has 142 failures with `port`, the baseline, and 508 with `real`
-(506 failed, 2 timed out), led by the same signatures as the table below
-(`cannot convert object to primitive value` first, then changed answers,
-the boot under small memory limits, `Expected reader options map`, `assoc`
-on engine maps, protocol extension of a published hub function).
+mode (`LIGHT_CLJS_MACRO_CORE=real`). On master 91d9e540 plus this work
+(debug build, `cargo nextest run --no-default-features --features
+bbp-macros --test bbp_macros -j 4`, a loaded machine): with `port` all 335
+pass (9 ignored); with `real` 181 pass and 154 fail (the first attempt,
+on 20ce6bfb: 165 and 160). The Pants build's whole suite (`cargo nextest
+run --no-default-features --features bbp-macros -j 8`, 2,234 tests) has
+142 failures with `port`, the baseline, and 473 with `real` (472 failed, 1
+timed out; 508 on the first attempt), led by the same causes as the list
+below: `cannot convert object to primitive value` in about 110, changed
+answers in about 65, then the collection views on engine values (`count`,
+`seq`, `assoc`, `nth` on engine maps and structs, `WrongType`), the
+memory limit (17), interop with engine forms and protocol extension of a
+hub function.
 
 No failure is a missing name ("unsupported operation: native macro runtime
-core.X" no longer occurs). The failures, by first signature, and their
-causes:
-
-| Tests | Signature | Cause | Owner |
-| ---: | --- | --- | --- |
-| 32 | `TypeError: cannot convert object to primitive value` | A real core function that strings or compares its argument (`str`, `name`, `pr-str`, `partition` over a macro argument) gets an engine symbol or an imported form, which the profile's views do not recognize: `(str 'a)` throws | the symbol and form views, light-cljs-666 |
-| 31 | the program's answer differs (`assertion left == right`) | Real functions answering for engine values through the generic path: printing of engine maps, sets and records, `satisfies?` and the reference-type predicates, Vars and multimethods built by the port, hash order | 666's views; dispatch over engine tables, light-cljs-649 |
-| 10 | `heap byte limit exceeded`, 2 of them while booting | Tests that set `--macro-memory-limit` to 16 MiB or less: the boot alone peaks near 72 MB without a limit and does not fit 32 MiB | the boot's footprint, open since 647 |
-| 8 | `assoc not supported on this type`, `native macro runtime assoc on object` | The real `assoc` (called as a value, not lowered) on an engine map, record or struct, which the maps view does not answer | 666 |
-| 8 | `Unsupported macro result arbitrary object` (or `function`) | A macro returns a value the real core built as a runtime object (a list of `listFromArray`, a hash map, a queue), which the Rust bridge cannot export | 666's views; phase 4 for queues |
-| 6 | `is not ISeqable`, `Cannot create iterator from [object Object]` | `seq` of an engine set, map or struct through the generic path | 666 |
-| 5 | `deadline exceeded` | A private copy booted inside a macro's deadline (debug build, loaded machine), for the per-task members above | 666 sealing the registry snapshot |
-| 3 | `cannot set the prototype of a form vector` | The verbatim `mapEntry` over the swapped `makeVector` (the open item of "Profile assembly") | 666 |
-| 2 | reader errors | `read-string` in a macro on the private copy: the real reader's runtime-owned values (above, "The V8 form bridge in `real` mode") | 666 |
-| 55 | one or two each | The same classes on other operations: `count`, `conj`, `seq`, `realized?`, `deref`, `name`, `namespace`, `keyword`, `rseq`, `pop` and `IWriter` on engine values; `instance?` and `cannot assign to read-only property` against runtime types, and writes to properties of the sealed, published hub functions; a shared lazy sequence whose real-core value cannot publish; `DataView`, which the engine lacks | 666, 649 |
-
-`grep` the run's log for a test's name to see its full message; the list is
+core.X" no longer occurs). Every failing test of the `real` run follows,
+under its cause, with the first engine error of its log (or the kind of
+assertion that failed) and the number of tests with that error. The list is
 regenerated by running the binary with `LIGHT_CLJS_MACRO_CORE=real` and
-grouping the first error of each failure.
+grouping the first error of each failure; a test's full message is in the
+run's log.
+
+26 tests. **A real function strings or compares an imported form** (`cannot convert object to primitive value`). A real core function that converts its argument to a string or number (`str`, `name`, `pr-str`, `partition`, `=` over a macro argument or a name the compiler supplied) gets a form the Rust bridge imported, which the profile's views do not recognize yet (`(str (ns-name *ns*))` in a macro called from a namespace the compiler named fails the same way). Owner: the view of imported forms, light-cljs-666.
+
+- `TypeError: cannot convert object to primitive value` (25): `native_imported_queue_seq_protocols_match_quickjs`, `build_config::a_custom_data_reader_reads_configuration_and_declares_views`, `build_config::config_answers_a_set_key_an_unset_key_and_a_collection_value`, `build_config::configuration_preserves_floating_negative_zero`, `compiler_literal_first_entry_helper_matches_quickjs`, `compiler_literal_operations_match_quickjs_at_every_pool_size`, `explicit_compiler_literals_match_quickjs`, `explicit_compiler_readers_keep_definition_and_read_gensyms_apart_from_macros`, `function_combinators_match_the_legacy_compiler_and_run`, `lazy_sequence_macros_match_the_legacy_compiler_and_run`, `native_delay_values_match_quickjs`, `native_explicit_nil_metadata_keeps_following_reify_ids`, `native_generated_scalar_mappings_match_legacy`, `native_hash_collection_emission_matches_legacy`, `native_mutable_deftype_published_helper_matches_quickjs_at_all_threads`, `native_namespace_context_matches_quickjs_across_helpers_and_jobs`, `native_namespace_registry_preserves_utf16_names`, `native_printing_matches_quickjs_for_every_native_value_kind`, `native_protocol_value_kind_table_matches_quickjs_at_all_threads`, `native_transducer_call_shapes_match_legacy`, `native_transducer_helpers_publish_and_resume_without_replay`, `native_verbatim_cuerdas_unsafe_concat_pipeline`, `producer_catalog_work_does_not_grow_with_the_catalog`, `seq_preserves_list_identity_and_existing_element_occurrences`, `sequence_predicate_table_matches_quickjs_at_all_jobs`
+- `Error: mixed: cannot convert object to primitive value` (1): `flatten_sequence_tree_table_matches_quickjs_at_all_jobs`
+
+17 tests. **The real core does not fit the macro memory limit** (`heap byte limit exceeded`). The real core holds about 20 MB live after its boot, and 105 MB at the boot's peak without a limit (`macro_core_boot_and_task_bytes`); two tests set 16 MiB or less and fail in the boot, and the others run several tasks or pool slots under the default 64 MiB and run out in a task. Owner: the boot's footprint, light-cljs-666 acceptance 4.
+
+- `heap byte limit exceeded` (17): `an_earlier_unit_demanding_a_parked_initializer_lends_it_its_lane`, `demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slots`, `effect_lanes_keep_one_slot_atom_effects_under_seeded_scheduling_stress`, `indirect_initializers_use_the_earlier_callers_bindings_under_seeded_scheduling`, `inherited_initializers_use_the_earlier_callers_bindings_under_seeded_scheduling`, `keep_helpers_publish_and_resume_at_seeded_pool_sizes`, `native_atom_watchers_follow_the_shared_atom_across_tasks`, `native_definition_groups_publish_all_products_without_replaying_effects`, `native_integer_predicates_work_as_shared_atom_validators`, `native_iteration_views_publish_without_replaying_their_initializer`, `native_namespace_completed_lazy_frontier_matches_reference`, `native_namespace_frontier_counts_completed_lazy_realizations`, `native_namespace_registration_frontier_matches_reference`, `native_profile_stats_cover_engine_bridge_and_helpers`, `published_once_cells_keep_source_order_bindings`, `the_macro_memory_limit_denies_allocation_catchably_and_the_build_recovers`, `wide_js_obj_bootstrap_matches_quickjs_at_every_pool_size`
+
+20 tests. **A macro returns a runtime-owned value** (`Unsupported macro result arbitrary object` or `function`, at the path shown). The real core built the result as a runtime object (a list of `listFromArray`, a hash map, a sorted map or set, a deftype instance, a queue), which the Rust bridge cannot export to the compiler. Owner: light-cljs-666's views (engine forms for those values); queues, phase 4.
+
+- `Error: Unsupported macro result arbitrary object (including promise) at $[1][0]` (5): `native_compile_time_code_reader_uses_macro_visibility`, `native_find_preserves_comparator_equal_stored_keys`, `native_map_selection_and_updates_keep_metadata_and_missing_values`, `native_nested_updates_and_key_projections_keep_callback_contracts`, `native_sorted_set_by_stays_an_explicit_boundary`
+- `Error: Unsupported macro result arbitrary object (including promise) at $` (3): `native_macro_result_errors_identify_the_value_and_container_path`, `native_mutable_deftype_member_store_preserves_operand_order`, `unsupported_operations_are_explicit_and_do_not_fall_back`
+- `Error: Unsupported macro result arbitrary object (including promise) at $[1][4]` (2): `native_compile_time_empty_primitive_sequences_and_scalar_predicates`, `native_name_munging_nested_association_and_merge_with_match_core`
+- `Error: Unsupported macro result arbitrary object (including promise) at $[1][1]` (1): `native_mutable_deftype_shared_stores_reject_host_objects_catchably`
+- `Error: Unsupported macro result arbitrary object (including promise) at $[1][2]` (1): `native_struct_call_fields_override_ifn_in_callbacks`
+- `Error: Unsupported macro result arbitrary object (including promise) at $[1][16]` (1): `native_struct_host_interop_matches_quickjs_at_every_pool_size`
+- `Error: Unsupported macro result arbitrary object (including promise) at $[0]` (1): `native_helpers_ignore_public_core_rebindings`
+- `Error: Unsupported macro result arbitrary object (including promise) at $[1][12]` (1): `native_ifn_object_member_precedence_matches_legacy`
+- `Error: Unsupported macro result arbitrary object (including promise) at $[1]` (1): `native_core_bindings_keep_unsupported_getters_at_the_original_read`
+- `Error: Unsupported macro result arbitrary object (including promise) at $[1][1][6]` (1): `fnext_and_nfirst_match_quickjs_at_all_threads`
+- `Error: Unsupported macro result function at $` (1): `memoize_rejects_task_owned_captures_keys_and_results`
+- `Error: Unsupported macro result arbitrary object (including promise) at $[4][2]` (1): `native_transformed_sequences_honor_host_iterable_extensions`
+- `Error: Unsupported macro result arbitrary object (including promise) at $[1][4][0][1].value[0]` (1): `memoize_supports_first_class_construction_and_independent_instances`
+
+36 tests. **The program's answer differs.** A real function answers for an engine value or a port-built value through its generic path: printing engine maps, sets and records; `satisfies?`, `instance?` and the reference-type predicates; Vars, multimethods, regexes and delays the port built; hash order; `with-redefs` of a core function; a host property read as a protocol. The assertion's left and right are in the run's log. Owner: light-cljs-666's views; dispatch over engine tables, light-cljs-649.
+
+- `changed answer (assertion left == right)` (32): `build_resources::service_arguments_with_lone_surrogates_are_refused_in_both_engines`, `compiler_literal_array_and_object_predicates_match_quickjs`, `compiler_literal_sequential_classification_does_not_realize_values`, `delay_reentry_and_constructors_publish_at_all_threads`, `delays_publish_and_run_once_at_all_threads`, `demanded_compiler_literals_publish_and_keep_source_order_at_all_jobs`, `demanded_multimethods_reject_task_owned_dispatch_without_replaying_effects`, `memoize_preserves_apply_receiver_semantics`, `memoize_supports_first_class_core_callbacks`, `memoize_uses_argument_equality_and_caches_falsey_results`, `native_atom_metadata_and_throwing_watch_preserve_committed_state`, `native_compile_time_exception_uuid_and_array_helpers_match_application_values`, `native_compiler_literal_protocols_match_quickjs`, `native_core_bindings_preserve_with_redefs_and_restoration`, `native_core_replacements_reanalyze_helpers_from_earlier_artifacts`, `native_core_writes_through_javascript_holes_observe_replacements`, `native_js_call_and_apply_read_struct_fields`, `native_nested_sorted_map_by_equality_matches_quickjs`, `native_object_operation_table_matches_quickjs`, `native_protocol_extensions_and_saved_protocols_match_quickjs`, `native_protocol_predicates_read_host_properties_like_quickjs`, `native_protocol_satisfies_demands_before_mask_short_circuit`, `native_regex_constructor_calls_keep_macro_argument_identity`, `native_regex_property_mutations`, `native_resolve_reflects_a_declared_var`, `native_scalar_predicates_and_binding_probes_match_legacy`, `native_shared_sequence_and_map_protocols_match_quickjs`, `native_sorted_map_by_equality_direction_matches_quickjs`, `native_struct_core_protocol_operation_matrix_matches_legacy`, `nested_helper_macros_keep_generations_and_execute_effects_once`, `protocol_values_publish_and_match_quickjs_at_all_threads`, `regex_helpers_and_parse_thunks_publish_at_seeded_pool_sizes`
+- `assertion failed: std::ptr::eq(result.data().kind(), original.data().kind())` (1): `extracted_native_metadata_reuses_the_original_datum_and_occurrence`
+- `QuickJS reference: [[[false false true false false false false false 1 true] [false false false 1]] [false fal` (1): `native_protocol_redeclaration_identity_matches_quickjs_at_all_threads`
+- `called 'Result::unwrap_err()' on an 'Ok' value: Program { namespaces: ["cljs.user"], reader_contexts: Layered` (1): `atoms_still_reject_host_regexps`
+- `missing "map set-field => \"error: cannot add property 'x': the object is not extensible\"" in` (1): `native_form_object_operations_match_quickjs`
+
+9 tests. **The published hub is immutable, or a runtime type is not the port's.** Writes to properties of the sealed, published hub functions (`cannot assign to read-only property`, `cannot set property 'call'`), protocol extension of a hub function, `instance?` against a runtime type the port's value is not (`invalid 'instanceof' right operand`), a number's prototype in the real IFn path. Owner: light-cljs-649 (engine tables for dispatch and extension) and 666.
+
+- `TypeError: invalid 'instanceof' right operand` (2): `native_mutable_deftype_closure_in_atom_matches_quickjs`, `native_mutable_deftype_publishes_current_fields_and_user_protocols`
+- `TypeError: cannot read property 'get' of undefined` (1): `native_regexp_adapters_preserve_callee_before_arguments`
+- `TypeError: cannot assign to read-only property 'isEven'` (1): `generated_core_writes_in_demanded_values_match_quickjs_at_every_pool_size`
+- `TypeError: cannot set property 'call' of a published function: functions shared between tasks are immutable` (1): `native_core_property_writes_preserve_call_overrides`
+- `UnsupportedOperand: Object.getPrototypeOf of a number needs a wrapper object, which is not supported (in ifnMe` (1): `native_core_protocol_predicate_matrix_matches_quickjs`
+- `TypeError: cannot assign to read-only property 'inc'` (1): `native_core_reads_observe_replacements_in_demanded_helpers`
+- `TypeError: undefined is not a function` (1): `compiler_literal_string_slices_and_runtime_literals_match_quickjs`
+- `Error: cljs.user:58:12: extension: unsupported operation: native protocol extension of [object Function]` (1): `native_member_precedence_table_matches_quickjs`
+
+3 tests. **A port-built multimethod has no method for the real core's dispatch.** `defmulti` and `defmethod` lower to the port's MultiFn; the real core's dispatch reads its own registry. Owner: light-cljs-649.
+
+- `Error: No method in multimethod 'helpers/m' for dispatch value: x` (1): `demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size`
+- `Error: No method in multimethod 'helpers/m' for dispatch value: :x` (1): `demanded_multimethod_effects_run_once_across_suspension_and_lending`
+- `Error: No method in multimethod 'helpers/mf' for dispatch value: :still-callable` (1): `native_multifn_host_coercions_match_legacy`
+
+2 tests. **A private copy of the profile booted inside a macro's deadline** (`deadline exceeded`, debug build, loaded machine), for a member that did not publish. Owner: publication of every member, light-cljs-666 (below).
+
+- `deadline exceeded` (2): `native_raw_call_apply_matrix_matches_quickjs`, `native_raw_callable_collections_match_quickjs`
+
+2 tests. **A shared lazy sequence's value cannot publish** (`a shared lazy sequence realized a value it cannot share`): the real `map` captures its rest-argument array, or a regex state is task-owned. Owner: light-cljs-666.
+
+- `TypeError: a shared lazy sequence realized a value it cannot share: cannot publish: value.rest.thunk.capture(1` (1): `for_and_doseq_over_lazy_helpers_match_the_legacy_compiler_at_one_two_and_four_slots`
+- `TypeError: a shared lazy sequence realized a value it cannot share: cannot publish: value[0] is a task-owned o` (1): `published_regex_state_matches_quickjs`
+
+1 tests. **The engine lacks `DataView`**, which the real `hash` of a double uses. Owner: the engine's intrinsics, light-cljs-666's list.
+
+- `ReferenceError: DataView is not defined` (1): `native_public_hash_helpers_preserve_numeric_and_unordered_contracts`
+
+2 tests. **Downstream of a failure above in a dependency or a helper's artifact** (a dependency cell failed with one of the errors above; a macro-provider unit's artifact).
+
+- `Error: dependency world#0kind#3 failed with String(` (1): `native_compiler_macro_fixtures_keep_their_legacy_results`
+- `native macro-provider artifact: "a unit declared a macro"` (1): `native_installed_macros_expand_in_demanded_helpers`
+
+36 tests. **A collection operation on an engine value takes the generic path.** `seq`, `count`, `conj`, `assoc`, `nth`, `pop`, `rseq`, `name`, `deref`, `realized?`, `reduce-kv`, `IWriter` and the iterator protocols on engine maps, sets, structs, reduced values, symbols and Vars, which the maps, sets and kind views do not answer yet. Owner: light-cljs-666's views, 649.
+
+- `Collection(WrongType { expected:` (5): `memoize_shares_results_and_once_only_effects_across_tasks_and_cold_helpers`, `native_empty_sorted_maps_do_not_call_the_comparator`, `native_ifn_apply_uses_direct_invoke_entries`, `native_instance_ifn_apply_keeps_captures_and_direct_receivers`, `native_nil_metadata_preserves_collection_identity`
+- `Error: [object Object] is not ISeqable` (4): `native_custom_reducers_do_not_require_a_sequence_implementation`, `native_predicate_apply_observes_count_before_traversal`, `nthrest_identity_realization_and_callbacks_match_quickjs_at_all_jobs`, `protocol_type_and_record_macros_match_the_legacy_compiler_and_run`
+- `TypeError: unsupported operation: native macro runtime conj on reduced` (3): `native_core_services_match_quickjs`, `native_iteration_reduction_stops_before_requesting_a_continuation_key`, `rumext_property_filters_resume_reduce_kv_callbacks`
+- `TypeError: unsupported operation: native macro runtime count on object` (3): `native_reduce_kv_matches_quickjs`, `native_var_identity_apply_and_metadata_match_quickjs`, `native_zipmap_matches_legacy_collection_and_realization_semantics`
+- `Error: Cannot create iterator from [object Object]` (2): `native_transformed_sequences_keep_source_and_mapper_call_member_order`, `native_transformed_sequences_preserve_seqability_and_deferred_methods`
+- `Error: Doesn't support name on this type` (2): `compiler_literal_string_keys_keep_exact_names`, `native_interned_keyword_mappings_match_legacy`
+- `TypeError: unsupported operation: native macro runtime seq on object` (2): `multifns_sharing_constructor_tables_observe_each_others_mutations`, `native_positional_literal_matrix_matches_legacy`
+- `Error: (:w :w :w) is not ISeqable` (1): `native_reference_typed_sequences_export_like_quickjs`
+- `TypeError: unsupported operation: native macro runtime assoc on object` (1): `sorted_map_by_helpers_publish_and_resume_at_seeded_pool_sizes`
+- `Error: Index out of bounds` (1): `native_map_entry_calls_match_legacy`
+- `Error: No protocol method IWriter/-write defined for this value` (1): `native_reify_keeps_captures_metadata_and_instance_protocol_methods`
+- `Error: assoc not supported on this type` (1): `compiler_literal_property_updates_keep_callbacks_and_metadata`
+- `Error: No protocol method IStack.-pop defined for this value` (1): `native_pop_matches_quickjs_at_every_pool_size`
+- `Error: No protocol method IReversible.-rseq defined for this value` (1): `native_rseq_protocol_dispatch_matches_quickjs`
+- `Error: conj not supported on this type` (1): `collection_core_lowering_matches_the_legacy_compiler_and_runs`
+- `Error: count not supported on this type` (1): `native_array_helpers_preserve_nested_writes_holes_and_checked_failures`
+- `Error: value does not support deref` (1): `native_var_reflection_and_namespace_views_match_quickjs_at_every_pool_size`
+- `Error: light.build/depend!: expected {:resource path}, {:namespace sym} or {:provider token :fingerprint strin` (1): `build_resources::depend_declares_resources_namespaces_and_providers_without_reading`
+- `Error: no conversion to symbol` (1): `native_var_symbol_conversion_and_raw_apply_match_quickjs`
+- `TypeError: unsupported operation: native macro runtime realized? on object` (1): `native_repeat_realized_and_native_drop_match_quickjs`
+- `Error: keyword expects strings or keywords and an optional nil namespace` (1): `native_dynamic_constructors_match_legacy`
+- `Error: {3 [:z], 2 [:w], 1 [:x :y]} is not ISeqable` (1): `native_sorted_map_by_matches_quickjs`
 
 The regressions this pellet adds, failing before it:
 `real_core::real_core_resolves_names_the_port_lacks` (the port's
 `core.reductions` getter throws; the real hub answers),
 `real_core::real_core_expands_as_the_port_where_both_answer`,
-`real_core::real_core_stats_report_the_boot_and_publication`
-(tests/bbp_macros/real_core.rs), `cache_key::tests::
-the_macro_core_changes_the_compiler_identity`, and
+`real_core::real_core_stats_report_the_boot_and_publication`,
+`real_core::real_core_dynamic_bindings_reach_runtime_functions` (a
+`binding` of `*print-readably*` or `*print-length*`, `with-out-str`, and the
+restoration after a throw, against the real printer: "No *print-fn* fn set"
+before the fix) and `real_core::real_core_preserves_macro_namespace_context`
+(`*ns*` in a macro, in a helper initialized on demand and after a `binding`
+of `*ns*`: `cljs.user` before the fix) (tests/bbp_macros/real_core.rs),
+`commands::macro_core_selects_the_build_runtime` (tests/config_file: a
+build file's `:macro-core :real` reaches a release build whose macro calls
+`reductions`, and `--macro-core port` after the command selects the port),
+`cache_key::tests::the_macro_core_changes_the_compiler_identity`, and
 `native_core_macros::tests::bootstrap_definitions_expand_on_the_real_core`:
 the bootstrap definitions of `doseq`, `when` and `lazy-cat` run on the real
 core and expand as the Rust expansion does, where the port lacked what they
-use. `for`'s definition does not yet
-(`bootstrap_for_expands_on_the_real_core`, ignored): it partitions its
-binding vector, an imported form, with the real `partition`, which fails on
-it with "cannot convert object to primitive value" (`(count (partition 2
-xs))` over a macro argument `[1 2]` does, over a vector the macro built it
-answers). On the base this was written on, `(str 'a)` failed the same way;
-light-cljs-666's symbol view (master e30fc553) fixed that, and also
-published `currentNs` (698 of 726 members after it); the view of imported
-forms is 666's next.
+use. That test selects the Pants build's engine itself, so it checks the
+real core in every feature combination that has it, not V8 or QuickJS.
+
+### Left to light-cljs-666
+
+The review of the first attempt found two parts of this pellet's acceptance
+that need the profile's publication work, which light-cljs-666 owns; 648
+closes without them:
+
+- **`for` on the real core.** `for`'s bootstrap definition does not expand
+  yet (`bootstrap_for_expands_on_the_real_core`, ignored with that reason):
+  it partitions its binding vector, an imported form, with the real
+  `partition`, which fails on it with "cannot convert object to primitive
+  value" (`(count (partition 2 xs))` over a macro argument `[1 2]` does,
+  over a vector the macro built it answers). The fix is the view of
+  imported forms, the first cause above.
+- **Publish instead of booting private copies.** The 28 members and
+  per-task defaults that do not publish (the reader's entry points and the
+  per-task registry getters, "Numbers" above) are still taken from a
+  private copy of the profile that the reading task boots, counted in
+  `native.core.private-boots`; the once-per-compilation contract holds only
+  once they publish, and then the fallback and its counter go.
 
 For light-cljs-650: `bb benchmarks/pants-core-coverage.bb --real-core`
 runs the Pants CLI with `--macro-core real` and only checks (the doc's table

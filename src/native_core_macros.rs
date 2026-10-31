@@ -3612,6 +3612,11 @@ mod tests {
     #[cfg(feature = "bbp-macros")]
     fn real_core_definition_failures(sources: &[&str]) -> Vec<String> {
         let mut host = MacroHost::new();
+        // The Pants build's engine in every feature combination: with V8 or
+        // QuickJS built in, the host would otherwise pick that engine, which
+        // ignores the core selection.
+        host.use_native_macros();
+        assert!(host.native_macro_backend());
         host.evaluator_options.macro_core = crate::evaluator::MacroCore::Real;
         // The real core boots in the session: seconds in a debug build.
         host.evaluator_options.timeout = std::time::Duration::from_secs(600);

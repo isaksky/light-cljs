@@ -150,9 +150,14 @@ fn run(
 /// the profile's `gensym` counts in the task's cells
 /// (docs/real-core-design.md, section 1 point 6). It stays the evaluator's
 /// until the profile's reads the compiler's scope.
+///
+/// `currentNs` (`*ns*`) is the evaluator's as well: the port's accessor
+/// answers it from the compiler's namespace frames and the port's reader
+/// context binds it, so a task's cells take that accessor
+/// (`src/bbp_runtime.js`) rather than the profile's boot namespace.
 fn evaluator_member(manifest: &crate::runtime_manifest::RuntimeManifest<'_>, name: &str) -> bool {
     use crate::runtime_manifest::CoreReference;
-    if name == "gensym" {
+    if name == "gensym" || name == "currentNs" {
         return true;
     }
     let binding = match manifest.core_reference(name) {

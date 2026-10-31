@@ -946,3 +946,59 @@ fn watch_errors_have_exact_messages() {
     }
     assert!(!project.join("out").exists() && !project.join(".light-cljs").exists());
 }
+
+/// `:compiler-options {:macro-core :real}` in light-cljs.edn reaches the
+/// compilation (light-cljs-648): on the Pants build a macro that calls
+/// `reductions`, which only the real cljs.core has, expands and the build
+/// runs; `--macro-core port` after the command selects the port, which
+/// reports the operation unsupported. Every other build refuses the key.
+#[test]
+fn macro_core_selects_the_build_runtime() {
+    let dir = TempDir::new("config-commands-macro-core");
+    let project = fs::canonicalize(&*dir).unwrap().join("project");
+    fs::create_dir_all(project.join("src/app")).unwrap();
+    for (name, text) in [
+        (
+            "light-cljs.edn",
+            "{:source-paths [\"src\"]\n :builds {:app {:target :esm :output-dir \"out/app\"\n  \
+             :modules {:main {:entries [app.main]}}\n  :compiler-options {:macro-core :real}}}}\n",
+        ),
+        (
+            "src/app/macros.cljs",
+            "(ns app.macros) (defmacro steps [] (list 'quote (vec (reductions + [1 2 3]))))",
+        ),
+        (
+            "src/app/main.cljs",
+            "(ns app.main (:require [app.macros :refer [steps]])) (js/console.log (pr-str (steps)))",
+        ),
+    ] {
+        fs::write(project.join(name), text).unwrap();
+    }
+    if !light_cljs::evaluator::MacroCore::AVAILABLE {
+        let stderr = fails(&project, &["release", "app", "--no-cache"]);
+        assert!(
+            stderr.contains(":macro-core applies to the Pants build only"),
+            "{stderr}"
+        );
+        return;
+    }
+    succeeds(&project, &["release", "app", "--no-cache"]);
+    let output = Command::new(std::env::var("NODE").unwrap_or_else(|_| "node".into()))
+        .arg(project.join("out/app/app.main.js"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "[1 3 6]\n");
+    let stderr = fails(
+        &project,
+        &["release", "app", "--no-cache", "--macro-core", "port"],
+    );
+    assert!(
+        stderr.contains("unsupported operation: native macro runtime core.reductions"),
+        "{stderr}"
+    );
+}

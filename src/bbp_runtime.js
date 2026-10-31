@@ -3762,14 +3762,30 @@ const native = (() => {
       if ((Object.getOwnPropertyDescriptor(cells, name) !== undefined)) continue;
       Object.defineProperty(cells, name, {get: () => resolve(member), set: value => own(name, value), configurable: true, enumerable: true});
     }
+    // `*ns*` stays the evaluator's: the port's accessor answers it from the
+    // compiler's namespace frames, and the port's reader context and
+    // namespace machinery bind it, so the real core's reads of its cell
+    // (`ns-name` of `*ns*`, the reader's `::kw`) see the macro's namespace.
+    Object.defineProperty(cells, 'currentNs', Object.getOwnPropertyDescriptor(core, 'currentNs'));
     for (const name of Object.getPrototypeOf(hub).cellNames) if (!(Object.getOwnPropertyDescriptor(cells, name) !== undefined)) own(name, Reflect.get(hub, name));
     globalThis.__lightSharedCells = cells;
-    const view = Object.create(cells);
+    // `rt.core` is the cells themselves, so the emitted code's writes to a
+    // core cell (`binding` of `*print-readably*`, `with-out-str`'s
+    // `*print-fn*`) and their restoration land where the real functions
+    // read them. The port's names the real core lacks (the call adapters
+    // emitted code reaches, the evaluator's members) are added to them.
     for (const name of Object.getOwnPropertyNames(core))
-      if (!(name in cells)) Object.defineProperty(view, name, Object.getOwnPropertyDescriptor(core, name));
+      if (!(name in cells)) Object.defineProperty(cells, name, Object.getOwnPropertyDescriptor(core, name));
+    // The port's functions that still run (the adapters' printing) read
+    // the same dynamic cells: its data cells forward to the task's.
+    for (const name of Object.getPrototypeOf(hub).cellNames) {
+      const d = Object.getOwnPropertyDescriptor(core, name);
+      if (Object.getOwnPropertyDescriptor(hub, name) !== undefined && d !== undefined && 'value' in d && d.configurable && typeof d.value !== 'function')
+        Object.defineProperty(core, name, {get: () => cells[name], set: value => { cells[name] = value; }, configurable: true, enumerable: true});
+    }
     const binding = name => (Object.getOwnPropertyDescriptor(hub, name) !== undefined) ? {value: hub[name]}
       : failing.has(name) ? {get: () => cells[name]} : Object.getOwnPropertyDescriptor(core, name);
-    return {view, binding};
+    return {view: cells, binding};
   })();
   const rt={core: real === null ? core : real.view, port: core,
     // Internal apply keeps the original helper when its public Var is rebound.
