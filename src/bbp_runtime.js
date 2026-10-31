@@ -286,9 +286,9 @@ const decl = (() => {
             factory(globalThis.__lightNativeRuntime);
             let result=__rt.map();for(const name of b.names)if(name in b.products)result=__rt.assoc(result,name,b.products[name]);
             return result;
-          });
+          },true);
           const absent={};b.products={};for(const name of b.names){const value=__rt.getOr(products,name,absent);if(value!==absent)b.products[name]=value;}
-        } else if (b.multi) globalThis.__lightInitializeCompilerValue(b.unit, () => { factory(globalThis.__lightNativeRuntime); return null; });
+        } else if (b.multi) globalThis.__lightInitializeCompilerValue(b.unit, () => { factory(globalThis.__lightNativeRuntime); return null; }, true);
         else factory(globalThis.__lightNativeRuntime);
       } finally { installing.pop(); frontierCell.group = savedGroup; }
       b.state = 2;
@@ -4093,7 +4093,7 @@ globalThis.__lightCompilerVarMetadata=name=>{
   const test=productReaders.has(descriptor?.get)?null:rootTests.get(name)??null;
   return ()=>test===null?null:globalThis.__lightCompilerTest(test);
 };
-const initializeValue=(slot,factory)=>{
+const initializeValue=(slot,factory,extension=false)=>{
     const unit=__rt.initializerSlotGet(slot,0),state=__rt.initializerSlotGet(slot,2);
     if(globalThis.__lightRootReads!==null)globalThis.__lightRootReads+=unit+',';
     if(state===2){__rt.need(unit,4);return __rt.initializerSlotGet(slot,3);}
@@ -4114,7 +4114,10 @@ const initializeValue=(slot,factory)=>{
       const candidate=__rt.need(serial,beginKind);
       let producer=false;
       if(candidate){
-        const cell=__rt.effect(65528,unit);if(cell!==0)__rt.need(cell,5);
+        // A Var initializer's selection orders only against what its
+        // namespace's closure reaches (light-cljs-672); an extension bundle
+        // installs at the load-order frontier, so it orders against all.
+        const cell=extension?__rt.effect(65532,0):__rt.effect(65528,unit);if(cell!==0)__rt.need(cell,5);
         globalThis.__lightInitializerUnit=unit;
         globalThis.__lightInitializerSelect=true;
         try{producer=__rt.need(++initializerSerial,beginKind);}
@@ -4142,7 +4145,7 @@ const initializeValue=(slot,factory)=>{
     }
     catch(e){__rt.initializerSlotSet(slot,3,e);__rt.initializerSlotSet(slot,2,3);throw e;}
 };
-globalThis.__lightInitializeCompilerValue=(unit,factory)=>initializeValue(__rt.initializerSlot(unit,undefined),factory);
+globalThis.__lightInitializeCompilerValue=(unit,factory,extension=false)=>initializeValue(__rt.initializerSlot(unit,undefined),factory,extension);
 // Declaration bundles advertise their products without demanding their code.
 // Keep preloaded roots and the same explicit unsupported-demand getters as units.
 globalThis.__lightRegisterBundle=(names,code,indices=[],location='',once=false,group=false,unit=-1)=>{

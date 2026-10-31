@@ -3191,8 +3191,10 @@ state and determinism"; this is what was delivered.
   namespace's turn comes in load order (`Lanes::register_namespace`). An
   atom a Var initializer makes is *homed* in the initializer's namespace,
   and so are the atoms that keep its bookkeeping (a multimethod's table
-  history); a shared initializer's caller selection is homed in the
-  initializer's namespace too. A task touching homed state waits only for
+  history); a shared Var initializer's caller selection is homed in the
+  initializer's namespace too (an extension bundle's, a `defmethod` or
+  protocol extension installed at the load-order frontier, is not). A
+  task touching homed state waits only for
   earlier unfinished units and pass segments whose namespace's closure
   contains the home, or whose closure is unknown; it skips the others
   (`native.lanes.skipped` counts the accesses that went on, or parked
