@@ -5441,7 +5441,7 @@ fn assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
     read: &str,
 ) {
     use crate::effect_lanes::{Lanes, Target, identity};
-    use std::{cell::Cell, sync::mpsc, time::Duration};
+    use std::{sync::mpsc, time::Duration};
 
     let shared = BbpRuntime::new(&EvaluatorOptions {
         timeout: Duration::from_secs(15),
@@ -5478,7 +5478,13 @@ fn assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
                 .unwrap();
         }
     }));
+    // Each task's park, once a wake would queue its step: the step a test
+    // runs must be parked before what wakes it runs, or the task takes it
+    // back and runs it itself.
     let (parked, parks) = mpsc::channel();
+    shared.on_park(Arc::new(move |task, key| {
+        parked.send((task.id(), key.kind())).unwrap();
+    }));
     let (queued, queue) = mpsc::channel();
     std::thread::scope(|scope| {
         let run = |unit| {
@@ -5499,17 +5505,6 @@ fn assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
                 queued.send((step, reply)).unwrap();
             });
             evaluator.install_native_submitter(Rc::new(move || Some(submit.clone())));
-            let task = evaluator.cx().unwrap().task.id();
-            let observed = shared.clone();
-            let parked = parked.clone();
-            let notified = Cell::new(false);
-            evaluator.install_wait_service(Rc::new(move || {
-                if observed.0.parked.lock().unwrap().contains_key(&task) && !notified.replace(true)
-                {
-                    parked.send((unit, task)).unwrap();
-                }
-                Ok(false)
-            }));
             // The earlier reader represents a task resuming after a previous
             // helper wait; the realizer becomes resumable at its cold helper.
             if unit == 0 {
@@ -5527,8 +5522,8 @@ fn assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
             );
         };
         let realizer = scope.spawn(move || run(1));
-        let (unit, realizer_id) = parks.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(unit, 1);
+        let (realizer_id, kind) = parks.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(kind, LANE);
         assert!(
             lanes.counts().waits > 0,
             "realizer did not park at the realization gate"
@@ -5550,15 +5545,21 @@ fn assert_pooled_reader_inherits_lane_and_wakes_after_cold_helper(
         );
         // Past the gate, the realizer claims the cell and parks inside its
         // thunk for its own lane, which no earlier activity lends it now.
+        // The reader starts only once that park is registered, so the lane
+        // its wait opens queues the realizer's step.
         let (step, reply) = queue.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(step.task_id(), realizer_id);
         reply.send(step.run()).unwrap();
+        assert_eq!(
+            parks.recv_timeout(Duration::from_secs(5)).unwrap(),
+            (realizer_id, LANE)
+        );
         let reader = scope.spawn(move || run(0));
         let (reader_id, lazy_owner) = waits.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(lazy_owner, realizer_id);
         assert_eq!(
             parks.recv_timeout(Duration::from_secs(5)).unwrap(),
-            (0, reader_id)
+            (reader_id, big_boy_pants_js::LAZY_REALIZATION)
         );
         // The realizer's lane in the thunk opened at the reader's position.
         assert_eq!(

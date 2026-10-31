@@ -1136,6 +1136,10 @@ struct SharedRuntime {
     on_wait: Mutex<Option<WaitHook>>,
     #[cfg(test)]
     on_initializer: Mutex<Option<WaitHook>>,
+    /// Called once a task is parked in the pool, so that any wake from then
+    /// on queues its step ([`BbpEvaluator::park_until_woken`]).
+    #[cfg(test)]
+    on_park: Mutex<Option<WaitHook>>,
 }
 /// A task parked on a dependency: its next step, where that step's outcome
 /// goes, and the pool that runs it once a completion wakes the task.
@@ -1513,6 +1517,8 @@ impl BbpRuntime {
             on_wait: Mutex::new(None),
             #[cfg(test)]
             on_initializer: Mutex::new(None),
+            #[cfg(test)]
+            on_park: Mutex::new(None),
         })))
     }
 
@@ -1756,6 +1762,10 @@ impl BbpRuntime {
     #[cfg(test)]
     pub(crate) fn on_wait(&self, hook: WaitHook) {
         *self.0.on_wait.lock().unwrap() = Some(hook);
+    }
+    #[cfg(test)]
+    pub(crate) fn on_park(&self, hook: WaitHook) {
+        *self.0.on_park.lock().unwrap() = Some(hook);
     }
 }
 
@@ -2379,6 +2389,12 @@ impl BbpEvaluator {
         if reclaimed {
             handoff.finish();
             return Ok(None);
+        }
+        #[cfg(test)]
+        let hook = shared.on_park.lock().unwrap().clone();
+        #[cfg(test)]
+        if let Some(hook) = hook {
+            hook(&cx.task, key);
         }
         loop {
             match outcome.try_recv() {
