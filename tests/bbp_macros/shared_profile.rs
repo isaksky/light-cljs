@@ -1013,6 +1013,46 @@ fn shared_profile_engine_structs_and_records_keep_their_brands() {
 }
 
 #[test]
+fn shared_profile_record_noops_keep_imported_occurrences() {
+    let rt = Runtime::new();
+    let values = run(&rt, &format!(
+        "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+         const type = __rt.structType('demo/Point', __rt.formVector('x', 'y'), true, null); \
+         const child = core.vector('unchanged'); \
+         const record = __rt.cljWithMeta(__rt.structNew(type, child, child), core.arrayMap('tag', 1)); \
+         return __rt.formVector(core, record);"
+    )).unwrap_or_else(|e| panic!("{e}"));
+    let (core, record) = rt.scope(|s| {
+        let values = s.local(&values).unwrap();
+        let core = s.persist(s.form_nth(values, 0).unwrap());
+        let record = s.form_nth(values, 1).unwrap();
+        let record = s.new_occurrence(record, Default::default()).unwrap();
+        (
+            core,
+            s.persist(s.new_occurrence(record, Default::default()).unwrap()),
+        )
+    });
+    let check = compile_function(
+        "function check(core, record) { \
+           globalThis.__lightSharedCells = core.sharedTaskCells(); \
+           const x = core.keyword('x'), y = core.keyword('y'), child = core.get(record, x); \
+           const changed = core.assoc(record, x, core.vector('changed')); \
+           return [core.assoc(record, x, child) === record, \
+             core.assoc(record, x, child, y, child) === record, \
+             core.dissoc(record, core.keyword('missing')) === record, \
+             core.withMeta(record, core.meta(record)) === record, changed !== record, \
+             core.get(changed, y) === child, core.meta(changed) === core.meta(record)].join(' '); }",
+    ).unwrap();
+    match rt.spawn(&check, &[&core, &record]).unwrap().run().unwrap() {
+        RunOutcome::Complete(value) => assert_eq!(
+            value.string().unwrap().to_string_lossy(),
+            "true true true true true true true"
+        ),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn shared_profile_engine_atoms_keep_state_options_and_watch_order() {
     let rt = Runtime::new();
     let out = run(&rt, &format!(

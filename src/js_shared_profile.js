@@ -1073,7 +1073,7 @@
   })(get);
   assoc = (operation => function (value, key, item, ...pairs) {
     if (sharedFormKind(value) !== "record") return operation(...arguments);
-    let result = __rt.cljAssoc(sharedFormOf(value), key, item);
+    let result = __rt.cljAssoc(value, key, item);
     for (let i = 0; i < pairs.length; i += 2) result = __rt.cljAssoc(result, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
     return result;
   })(assoc);
@@ -1085,7 +1085,7 @@
   })(dissoc);
   seq = (operation => value => sharedFormKind(value) === "record" ? __rt.cljSeq(sharedFormOf(value)) : operation(value))(seq);
   collectionWithMeta = (operation => (value, metadata) => sharedFormKind(value) === "record"
-    ? __rt.cljWithMeta(sharedFormOf(value), metadata) : operation(value, metadata))(collectionWithMeta);
+    ? __rt.cljWithMeta(value, metadata) : operation(value, metadata))(collectionWithMeta);
   //@unit reifyValues requires: sharedSet
   const reifyValues = sharedSet();
   //@unit emptyList
