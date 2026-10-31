@@ -241,16 +241,16 @@ pub(super) fn new_function(
             captures
                 .len()
                 .checked_mul(std::mem::size_of::<Value>() * 4)
-                .ok_or(Fault::HeapLimit)?,
+                .ok_or_else(|| Fault::HeapLimit)?,
         )
-        .ok_or(Fault::HeapLimit)?;
+        .ok_or_else(|| Fault::HeapLimit)?;
     let mut function = FunctionObject::new(code, captures.into(), owner);
     function.reservation = ticket.is_charged().then(|| Arc::new(ticket));
     function.home_object = home_object;
     let object = HeapObject::Function(function);
     let id = heap
         .alloc(object)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
     if generator {
         super::generator::initialize_function(heap, owner, id)?;
     }
@@ -339,9 +339,7 @@ pub(crate) fn to_js_string_accounted(heap: &Heap, v: &Value) -> Result<JsString,
     if let Value::BigInt(number) = v {
         return crate::value::bigint::BigIntToString::new_accounted(heap, number, 10)?
             .advance()
-            .ok_or(Fault::Internal(
-                "BigInt ToString requires a resumable frame",
-            ));
+            .ok_or_else(|| Fault::Internal("BigInt ToString requires a resumable frame"));
     }
     // All other successful primitive decimal spellings fit in 32 units.
     let ticket = JsString::reserve(heap, 32, 1)?;
@@ -356,9 +354,9 @@ pub(crate) fn to_js_string(v: &Value) -> Result<JsString, Fault> {
             // Long values must go through native::Convert; this helper is
             // also used by leaf operations on already converted operands.
             let mut formatter = crate::value::bigint::BigIntToString::new(n, 10);
-            formatter.advance().ok_or(Fault::Internal(
-                "BigInt ToString requires a resumable frame",
-            ))?
+            formatter
+                .advance()
+                .ok_or_else(|| Fault::Internal("BigInt ToString requires a resumable frame"))?
         }
         Value::Undefined => JsString::from("undefined"),
         Value::Null => JsString::from("null"),
@@ -482,7 +480,7 @@ pub(crate) fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 HeapObject::ModuleNamespace(_) | HeapObject::Proxy(_) => "object",
             })
             // A frame keeps its operands alive; a stale id is reported.
-            .ok_or(Fault::Internal("typeof operand was reclaimed"))?,
+            .ok_or_else(|| Fault::Internal("typeof operand was reclaimed"))?,
     })
 }
 
@@ -588,7 +586,7 @@ fn named_property(code: &Code, i: u16) -> Result<&property::NamedProperty, Fault
     code.property_names
         .get(usize::from(i))
         .and_then(Option::as_ref)
-        .ok_or(Fault::Internal("property name was not classified"))
+        .ok_or_else(|| Fault::Internal("property name was not classified"))
 }
 
 /// What a callable value runs.
@@ -630,7 +628,7 @@ fn callee_code<C>(
         return Ok(callee);
     }
     let id = super::proxy::unwrapped(heap, id)?;
-    direct_callee(heap, id, code)?.ok_or(Fault::Internal("unresolved Proxy callee"))
+    direct_callee(heap, id, code)?.ok_or_else(|| Fault::Internal("unresolved Proxy callee"))
 }
 
 /// Classify once without forwarding a Proxy. Direct calls must preserve its
@@ -719,7 +717,7 @@ fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Res
             .read(*id, |object| {
                 matches!(object, HeapObject::Builtin(f) if f.which == Builtin::Eval)
             })
-            .ok_or(Fault::Internal("callee was reclaimed"))?
+            .ok_or_else(|| Fault::Internal("callee was reclaimed"))?
     {
         let site = site.clone();
         let args = args.to_vec();
@@ -784,7 +782,7 @@ fn check_direct_eval(state: &VmState, heap: &Heap) -> Result<Flow, Fault> {
             *id,
             |object| matches!(object, HeapObject::Builtin(f) if f.which == Builtin::Eval),
         )
-        .ok_or(Fault::Internal("direct eval candidate was reclaimed"))?
+        .ok_or_else(|| Fault::Internal("direct eval candidate was reclaimed"))?
     } else {
         false
     };
@@ -850,7 +848,7 @@ fn spread_arguments(state: &VmState, heap: &Heap, copy: bool) -> Result<Vec<Valu
             .map(|i| array.get(i).cloned().unwrap_or(Value::Undefined))
             .collect())
     })
-    .ok_or(Fault::Internal("spread arguments were reclaimed"))?
+    .ok_or_else(|| Fault::Internal("spread arguments were reclaimed"))?
 }
 
 fn call_spread(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<Flow, Fault> {
@@ -1025,7 +1023,7 @@ fn construct_target(
     let this = {
         let id = heap
             .alloc(HeapObject::Cell(BindingCell::new(task, None)))
-            .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+            .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
         Value::Object(id)
     };
     let keep = state.stack_len() - argc - 1;
@@ -1046,7 +1044,8 @@ pub(crate) fn resolve_this(heap: &Heap, task: TaskId, value: &Value) -> Result<V
             .unwrap_or(false)
     {
         return with_cell(heap, value, task, |v| {
-            v.clone().ok_or(Fault::Throw(ThrowKind::Uninitialized))
+            v.clone()
+                .ok_or_else(|| Fault::Throw(ThrowKind::Uninitialized))
         });
     }
     Ok(value.clone())
@@ -1075,7 +1074,7 @@ pub(super) fn global_object(state: &mut VmState, heap: &Heap) -> Result<Value, F
         return Ok(Value::Object(id));
     }
     let id = realm::new_global_object(heap, state.diag.task)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
     state.global_object = Some(id);
     Ok(Value::Object(id))
 }
@@ -1113,7 +1112,7 @@ pub(super) fn top_operands(state: &VmState, n: usize) -> Result<&[Value], Fault>
         .len()
         .checked_sub(n)
         .map(|at| &operands[at..])
-        .ok_or(Fault::Internal("operand stack underflow"))
+        .ok_or_else(|| Fault::Internal("operand stack underflow"))
 }
 
 /// Property operations can invoke descriptors and conversion callbacks.
@@ -1140,7 +1139,7 @@ fn property_step(
                     _ => None,
                 })
                 .flatten()
-                .ok_or(Fault::Internal("super method has no home object"))?;
+                .ok_or_else(|| Fault::Internal("super method has no home object"))?;
             let base = prototype::get_prototype_of(heap, state.diag.task, home)?;
             state.push(base.map_or(Value::Null, Value::Object));
         }
@@ -1293,7 +1292,7 @@ fn property_step(
             let start = ops
                 .len()
                 .checked_sub(2)
-                .ok_or(Fault::Internal("operand stack underflow"))?;
+                .ok_or_else(|| Fault::Internal("operand stack underflow"))?;
             let (a, b) = (ops[start].clone(), ops[start + 1].clone());
             state.push(a);
             state.push(b);
@@ -1306,7 +1305,7 @@ fn property_step(
             // so the conversion stays the only observable one.
             let key = state.pop()?;
             let base = state.operands().last().cloned();
-            let base = base.ok_or(Fault::Internal("operand stack underflow"))?;
+            let base = base.ok_or_else(|| Fault::Internal("operand stack underflow"))?;
             let converted = property::element_key(&base, &key, false)?;
             state.push(key_operand(heap, &key, converted)?);
         }
@@ -1346,7 +1345,7 @@ fn closure_step(
         .functions
         .get(usize::from(i))
         .cloned()
-        .ok_or(Fault::Internal("function index out of range"))?;
+        .ok_or_else(|| Fault::Internal("function index out of range"))?;
     if child.captures != n {
         return Err(Fault::Internal("capture count differs from the child code"));
     }
@@ -1437,7 +1436,7 @@ fn class_step(
             let parent = state
                 .operands()
                 .last()
-                .ok_or(Fault::Internal("missing class heritage"))?;
+                .ok_or_else(|| Fault::Internal("missing class heritage"))?;
             if !matches!(parent, Value::Null)
                 && !is_constructor(heap, parent, state.forward_limits(state.stack_len()).1)?
             {
@@ -1452,7 +1451,7 @@ fn class_step(
             let class = state
                 .operands()
                 .last()
-                .ok_or(Fault::Internal("missing class constructor"))?;
+                .ok_or_else(|| Fault::Internal("missing class constructor"))?;
             let Value::Object(id) = class else {
                 return Err(Fault::Internal("invalid class constructor"));
             };
@@ -1502,9 +1501,9 @@ fn class_step(
                 .top()
                 .arguments
                 .as_ref()
-                .ok_or(Fault::Internal("missing forwarded arguments"))?;
+                .ok_or_else(|| Fault::Internal("missing forwarded arguments"))?;
             let prototype = realm::intrinsics(heap)
-                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+                .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?
                 .array_prototype;
             let mut array =
                 crate::object::array::ArrayObject::with_prototype(heap, task, prototype);
@@ -1513,7 +1512,7 @@ fn class_step(
             }
             let id = heap
                 .alloc(HeapObject::Array(Box::new(array)))
-                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+                .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
             state.clear_arguments();
             state.push(Value::Object(id));
         }
@@ -1680,7 +1679,7 @@ fn property_read_step(
             let base = state
                 .operands()
                 .last()
-                .ok_or(Fault::Internal("property base missing"))?;
+                .ok_or_else(|| Fault::Internal("property base missing"))?;
             property::element_key(base, &raw, false)?
         }
         _ => return Err(Fault::Internal("invalid property read instruction")),
@@ -1865,7 +1864,7 @@ fn computed_name_step(
                 "computed function name needs a fresh owned function",
             )),
         })
-        .ok_or(Fault::Internal("computed function was reclaimed"))?
+        .ok_or_else(|| Fault::Internal("computed function was reclaimed"))?
         .unwrap_or_else(|| {
             Err(Fault::Internal(
                 "computed function name needs a fresh owned function",
@@ -1904,7 +1903,7 @@ fn require_iterator_object(state: &VmState) -> Result<(), Fault> {
 fn new_null_object(heap: &Heap, task: crate::ids::TaskId) -> Result<Value, Fault> {
     heap.alloc(HeapObject::Plain(OrdinaryObject::new(heap, Some(task))))
         .map(Value::Object)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
 }
 
 /// Run `f` on the binding of `cell` for the running task: fails if `cell` is
@@ -1938,7 +1937,7 @@ fn with_cell_of<R>(
         other => Err(not_cell(object_name(other))),
     })
     // A frame keeps its operands alive; a stale id is reported, not trusted.
-    .unwrap_or(Err(Fault::Internal("binding cell was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("binding cell was reclaimed")))
 }
 
 fn not_cell(found: &str) -> Fault {
@@ -1957,14 +1956,14 @@ fn read_cell(heap: &Heap, cell: &Value, task: TaskId) -> Result<Value, Fault> {
         HeapObject::Cell(c) if c.owner == task || c.is_immutable() => c
             .value
             .clone()
-            .ok_or(Fault::Throw(ThrowKind::Uninitialized)),
+            .ok_or_else(|| Fault::Throw(ThrowKind::Uninitialized)),
         HeapObject::Cell(c) => Err(Fault::ForeignBinding {
             owner: c.owner,
             caller: task,
         }),
         other => Err(not_cell(object_name(other))),
     })
-    .unwrap_or(Err(Fault::Internal("binding cell was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("binding cell was reclaimed")))
 }
 
 /// The operands of `Need`: a definition id (an integer number in
@@ -2423,36 +2422,36 @@ fn raise_fault(
 #[inline(never)]
 fn new_arguments(state: &mut VmState, heap: &Heap) -> Result<Value, Fault> {
     let intrinsics =
-        realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+        realm::intrinsics(heap).ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
     let prototype = intrinsics.object_prototype;
     // `arguments[Symbol.iterator]` is `Array.prototype.values` (CreateUnmappedArgumentsObject
     // step 7), so `f(...arguments)` and `[...arguments]` work.
     let iterator_key = heap
         .keys()
         .intern_symbol(&crate::value::symbol::well_known("iterator"))
-        .ok_or(Fault::OutOfMemory("property key table exhausted"))?;
+        .ok_or_else(|| Fault::OutOfMemory("property key table exhausted"))?;
     let values_key = heap
         .keys()
         .intern(&JsString::from("values"))
-        .ok_or(Fault::OutOfMemory("property key table exhausted"))?;
+        .ok_or_else(|| Fault::OutOfMemory("property key table exhausted"))?;
     let values = heap
         .read(intrinsics.array_prototype, |o| match o {
             HeapObject::Plain(o) => o.get_own(values_key).map(|p| p.value.clone()),
             _ => None,
         })
         .flatten()
-        .ok_or(Fault::Internal("Array.prototype.values missing"))?;
+        .ok_or_else(|| Fault::Internal("Array.prototype.values missing"))?;
     let args = state
         .top()
         .arguments
         .as_ref()
-        .ok_or(Fault::Internal("arguments already materialized"))?;
+        .ok_or_else(|| Fault::Internal("arguments already materialized"))?;
     let mut object =
         OrdinaryObject::with_prototype(heap, state.diag.task, prototype).with_arguments_data();
     let intern = |name: &str| {
         heap.keys()
             .intern(&JsString::from(name))
-            .ok_or(Fault::OutOfMemory("property key table exhausted"))
+            .ok_or_else(|| Fault::OutOfMemory("property key table exhausted"))
     };
     object.define_with(
         intern("length")?,
@@ -2465,7 +2464,7 @@ fn new_arguments(state: &mut VmState, heap: &Heap) -> Result<Value, Fault> {
     object.define_with(iterator_key, values, PropertyFlags::METHOD);
     let id = heap
         .alloc(HeapObject::Plain(object))
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
     state.clear_arguments();
     Ok(Value::Object(id))
 }
@@ -2480,7 +2479,8 @@ fn template_object(state: &mut VmState, heap: &Heap, n: u16) -> Result<(), Fault
     let code = state.top().code.shared();
     let pc = state.top().pc.saturating_sub(1);
     let key = (Arc::as_ptr(&code) as usize, pc);
-    let realm = realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    let realm =
+        realm::intrinsics(heap).ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
     // No JS or safepoint runs under this leaf metadata lock. Serializing
     // first installation gives concurrent tasks exactly one site object.
     // GC traces this lock before taking the object table lock.
@@ -2509,11 +2509,11 @@ fn template_object(state: &mut VmState, heap: &Heap, n: u16) -> Result<(), Fault
     raw.freeze();
     let raw = heap
         .alloc(HeapObject::Array(Box::new(raw)))
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
     let raw_key = heap
         .keys()
         .intern(&JsString::from("raw"))
-        .ok_or(Fault::OutOfMemory("property key table exhausted"))?;
+        .ok_or_else(|| Fault::OutOfMemory("property key table exhausted"))?;
     cooked.object_mut().define_with(
         raw_key,
         Value::Object(raw),
@@ -2526,7 +2526,7 @@ fn template_object(state: &mut VmState, heap: &Heap, n: u16) -> Result<(), Fault
     cooked.freeze();
     let id = heap
         .alloc(HeapObject::Array(Box::new(cooked)))
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
     // The realm roots the cooked array and its raw edge before any
     // collection can run; shared executable code has no heap edges.
     templates.insert(key, (code, id));
@@ -2636,7 +2636,7 @@ fn step_instruction(
                 .constants
                 .get(usize::from(i))
                 .cloned()
-                .ok_or(Fault::Internal("constant index out of range"))?;
+                .ok_or_else(|| Fault::Internal("constant index out of range"))?;
             state.push(v);
         }
         Instr::Undefined => state.push(Value::Undefined),
@@ -2657,7 +2657,7 @@ fn step_instruction(
                 .operands()
                 .last()
                 .cloned()
-                .ok_or(Fault::Internal("operand stack underflow"))?;
+                .ok_or_else(|| Fault::Internal("operand stack underflow"))?;
             state.push(v);
         }
         Instr::Add
@@ -2838,7 +2838,7 @@ fn step_instruction(
                 .code
                 .regexps
                 .get(&index)
-                .ok_or(Fault::Internal("RegExp constant missing"))?
+                .ok_or_else(|| Fault::Internal("RegExp constant missing"))?
                 .as_ref()
                 .map_err(|e| e.fault())?
                 .clone();
@@ -3112,9 +3112,11 @@ fn step_instruction(
             // Validation bounds `i` by the code's declared captures, which
             // every closure over the code carries; only code with captures
             // run directly as a task entry (no closure) gets here.
-            let v = captured.ok_or(Fault::Internal(
-                "captured value read in a frame that is not a closure over this code",
-            ))?;
+            let v = captured.ok_or_else(|| {
+                Fault::Internal(
+                    "captured value read in a frame that is not a closure over this code",
+                )
+            })?;
             state.push(v);
         }
         Instr::NewCell | Instr::NewFixedCell | Instr::NewSealableCell => {
@@ -3127,7 +3129,7 @@ fn step_instruction(
             // Pushed in the same instruction, under this run's mutator guard.
             let id = heap
                 .alloc(HeapObject::Cell(cell))
-                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+                .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
             state.push(Value::Object(id));
         }
         Instr::CellInit | Instr::CellSet => {
@@ -3162,7 +3164,7 @@ fn step_instruction(
             let is_cell = match value {
                 Value::Object(id) => heap
                     .read(id, |o| matches!(o, HeapObject::Cell(_)))
-                    .ok_or(Fault::Internal("environment was reclaimed"))?,
+                    .ok_or_else(|| Fault::Internal("environment was reclaimed"))?,
                 _ => false,
             };
             state.push(Value::Bool(is_cell));
@@ -3175,7 +3177,7 @@ fn step_instruction(
             let value = state
                 .operands()
                 .last()
-                .ok_or(Fault::Internal("missing with object"))?;
+                .ok_or_else(|| Fault::Internal("missing with object"))?;
             if matches!(value, Value::Undefined | Value::Null) {
                 return Err(Fault::TypeError("with object is null or undefined".into()));
             }
@@ -3223,7 +3225,7 @@ fn step_instruction(
             let value = state
                 .operands()
                 .last()
-                .ok_or(Fault::Internal("missing eval receiver"))?
+                .ok_or_else(|| Fault::Internal("missing eval receiver"))?
                 .clone();
             let this = checked_this(state, heap, &value, false)?;
             state.pop()?;
@@ -3250,9 +3252,10 @@ fn step_instruction(
         Instr::GetBuiltinGlobal(i) => {
             // Validation checked the operand. Builds the realm on first use
             // (a poll point); its objects are roots from then on.
-            let global = Global::from_u16(i).ok_or(Fault::Internal("unknown built-in global"))?;
-            let intrinsics =
-                realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+            let global =
+                Global::from_u16(i).ok_or_else(|| Fault::Internal("unknown built-in global"))?;
+            let intrinsics = realm::intrinsics(heap)
+                .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
             state.push(intrinsics.global(global));
         }
     }
@@ -3305,7 +3308,8 @@ fn global_read_step(
             let name = name_constant(code, i)?;
             if let Some(binding) = state.global_lexicals.get(name) {
                 let value = with_cell(heap, &binding.cell, state.diag.task, |v| {
-                    v.clone().ok_or(Fault::Throw(ThrowKind::Uninitialized))
+                    v.clone()
+                        .ok_or_else(|| Fault::Throw(ThrowKind::Uninitialized))
                 })?;
                 state.push(value);
                 return Ok(Flow::Next);
@@ -3344,7 +3348,7 @@ fn global_step(
                 let value = state
                     .operands()
                     .last()
-                    .ok_or(Fault::Internal("missing global assignment value"))?
+                    .ok_or_else(|| Fault::Internal("missing global assignment value"))?
                     .clone();
                 with_cell(heap, &binding.cell, state.diag.task, |v| {
                     if v.is_none() {
@@ -3401,13 +3405,13 @@ fn global_step(
             let cell = if matches!(instr, Instr::DeclareGlobalConstValue(_)) {
                 Value::Object(
                     heap.alloc(HeapObject::Cell(BindingCell::new(state.diag.task, None)))
-                        .ok_or(Fault::OutOfMemory("global lexical binding"))?,
+                        .ok_or_else(|| Fault::OutOfMemory("global lexical binding"))?,
                 )
             } else {
                 let cell = state
                     .operands()
                     .last()
-                    .ok_or(Fault::Internal("missing lexical cell"))?
+                    .ok_or_else(|| Fault::Internal("missing lexical cell"))?
                     .clone();
                 with_cell(heap, &cell, state.diag.task, |_| Ok(()))?;
                 cell
@@ -3425,11 +3429,11 @@ fn global_step(
             let binding = state
                 .global_lexicals
                 .get(name)
-                .ok_or(Fault::Internal("missing global lexical"))?;
+                .ok_or_else(|| Fault::Internal("missing global lexical"))?;
             let value = state
                 .operands()
                 .last()
-                .ok_or(Fault::Internal("missing lexical initializer"))?
+                .ok_or_else(|| Fault::Internal("missing lexical initializer"))?
                 .clone();
             with_cell(heap, &binding.cell, state.diag.task, |v| {
                 *v = Some(value);

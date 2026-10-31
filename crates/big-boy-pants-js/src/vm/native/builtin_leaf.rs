@@ -152,7 +152,7 @@ fn mutate(
             _ => Err(Fault::Internal("plain array length was rejected")),
         }
     })
-    .unwrap_or(Err(Fault::Internal("array receiver was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("array receiver was reclaimed")))
 }
 
 // Only numeric/undefined indices take the leaf; all other inputs preserve
@@ -226,7 +226,7 @@ fn search(
         Some(if includes { Value::Bool(false) } else { Value::Number(-1.0) })
     })
     .map(Ok)
-    .unwrap_or(Err(Fault::Internal("array receiver was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("array receiver was reclaimed")))
 }
 
 fn slice(heap: &Heap, task: TaskId, this: &Value, args: &[Value]) -> Result<Option<Value>, Fault> {
@@ -261,7 +261,7 @@ fn slice(heap: &Heap, task: TaskId, this: &Value, args: &[Value]) -> Result<Opti
             }
             Some((start, end))
         })
-        .ok_or(Fault::Internal("array receiver was reclaimed"))?;
+        .ok_or_else(|| Fault::Internal("array receiver was reclaimed"))?;
     let Some((start, end)) = bounds else {
         return Ok(None);
     };
@@ -274,7 +274,7 @@ fn slice(heap: &Heap, task: TaskId, this: &Value, args: &[Value]) -> Result<Opti
                 HeapObject::Array(a) => a.get(i).cloned(),
                 _ => None,
             })
-            .ok_or(Fault::Internal("array receiver was reclaimed"))?;
+            .ok_or_else(|| Fault::Internal("array receiver was reclaimed"))?;
         property::append(heap, task, &result, element)?;
     }
     Ok(Some(result))

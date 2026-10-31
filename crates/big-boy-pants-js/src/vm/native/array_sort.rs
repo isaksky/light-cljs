@@ -189,7 +189,7 @@ impl State {
                 let value = Self::value(input)?;
                 let charge = heap
                     .reserve_bytes(4 * std::mem::size_of::<Value>() + 64)
-                    .ok_or(Fault::HeapLimit)?;
+                    .ok_or_else(|| Fault::HeapLimit)?;
                 self.source.push(value);
                 self.reservation.merge(charge);
                 self.stage = Stage::Scan;

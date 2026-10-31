@@ -435,7 +435,7 @@ impl Parser {
                 } => {
                     if next == end {
                         let text = JsString::from_owned_code_units(units)
-                            .ok_or(Fault::StringTooLong)?
+                            .ok_or_else(|| Fault::StringTooLong)?
                             .with_reservation(self.string_reservation.take());
                         self.token = Token::Ready(Lexeme::String(text), position);
                         continue;
@@ -597,7 +597,7 @@ pub(super) fn check_key_snapshot(heap: &Heap, task: TaskId, id: ObjectId) -> Res
         .read(id, |o| {
             matches!(o, HeapObject::Function(_) | HeapObject::BoundFunction(_))
         })
-        .ok_or(Fault::Internal("JSON.stringify object reclaimed"))?;
+        .ok_or_else(|| Fault::Internal("JSON.stringify object reclaimed"))?;
     let id = if function {
         match super::function::property_record(heap, id)? {
             Some(record) => record,
@@ -673,7 +673,7 @@ pub(super) fn check_key_snapshot(heap: &Heap, task: TaskId, id: ObjectId) -> Res
                     .count(),
         )
     })
-    .ok_or(Fault::Internal("JSON.stringify object reclaimed"))?
+    .ok_or_else(|| Fault::Internal("JSON.stringify object reclaimed"))?
 }
 // StringToNumber remains a leaf; bound strings returned by a Number
 // wrapper's observable ToPrimitive before invoking its scanner/parser.
@@ -846,11 +846,11 @@ impl Stringifier {
             .units
             .checked_add(text.len())
             .filter(|n| *n <= MAX_STRING_LEN)
-            .ok_or(Fault::StringTooLong)?;
+            .ok_or_else(|| Fault::StringTooLong)?;
         if !text.is_empty() {
             let len = text.len();
-            let charge = heap.reserve_bytes(128).ok_or(Fault::HeapLimit)?;
-            let text = text.import(heap).ok_or(Fault::HeapLimit)?;
+            let charge = heap.reserve_bytes(128).ok_or_else(|| Fault::HeapLimit)?;
+            let text = text.import(heap).ok_or_else(|| Fault::HeapLimit)?;
             self.parts.push((text, 0, len));
             self.parts_reservation.merge(charge);
         }
@@ -944,14 +944,15 @@ impl Stringifier {
             }
             S::ArrayLengthValue => {
                 self.stage = S::ArrayLengthNumber;
-                return Ok(A::ToNumber(
-                    input.ok_or(Fault::Internal("JSON.stringify missing array length"))?,
-                ));
+                return Ok(A::ToNumber(input.ok_or_else(|| {
+                    Fault::Internal("JSON.stringify missing array length")
+                })?));
             }
             S::ArrayLengthNumber => {
-                let len = super::native::to_length(
-                    &input.ok_or(Fault::Internal("JSON.stringify missing length conversion"))?,
-                )?;
+                let len =
+                    super::native::to_length(&input.ok_or_else(|| {
+                        Fault::Internal("JSON.stringify missing length conversion")
+                    })?)?;
                 self.append(heap, JsString::from("["))?;
                 let Value::Object(id) = self.value else {
                     return Err(Fault::Internal("JSON.stringify array container"));
@@ -1035,8 +1036,8 @@ impl Stringifier {
                 self.set_gap();
             }
             S::SpaceConverted => {
-                self.space =
-                    input.ok_or(Fault::Internal("JSON.stringify missing space conversion"))?;
+                self.space = input
+                    .ok_or_else(|| Fault::Internal("JSON.stringify missing space conversion"))?;
                 self.set_gap();
             }
             S::SpacePrefix {
@@ -1091,12 +1092,12 @@ impl Stringifier {
             S::Method => {
                 return Ok(self.method(
                     heap,
-                    input.ok_or(Fault::Internal("JSON.stringify missing method"))?,
+                    input.ok_or_else(|| Fault::Internal("JSON.stringify missing method"))?,
                 ));
             }
             S::ToJsonResult => {
                 self.value =
-                    input.ok_or(Fault::Internal("JSON.stringify missing toJSON result"))?;
+                    input.ok_or_else(|| Fault::Internal("JSON.stringify missing toJSON result"))?;
                 self.stage = S::Unwrap;
             }
             S::Unwrap => {
@@ -1118,8 +1119,8 @@ impl Stringifier {
                 }
             }
             S::Converted => {
-                self.value =
-                    input.ok_or(Fault::Internal("JSON.stringify missing wrapper conversion"))?;
+                self.value = input
+                    .ok_or_else(|| Fault::Internal("JSON.stringify missing wrapper conversion"))?;
                 self.stage = S::Ready;
             }
             S::Ready => {
@@ -1289,7 +1290,7 @@ impl Stringifier {
             }
             S::PropertyResult => {
                 self.value =
-                    input.ok_or(Fault::Internal("JSON.stringify missing getter result"))?;
+                    input.ok_or_else(|| Fault::Internal("JSON.stringify missing getter result"))?;
                 self.stage = S::Prepare;
             }
             S::Quote {

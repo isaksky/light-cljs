@@ -52,7 +52,7 @@ impl Boundary {
                 ),
                 _ => unreachable!(),
             })
-            .ok_or(Fault::Internal("async activation reclaimed"))?;
+            .ok_or_else(|| Fault::Internal("async activation reclaimed"))?;
         if let Some(value) = self.failed.take() {
             // Resolver entry itself can fail (e.g. the native-frame limit).
             // Reject the still-unclaimed capability rather than silently
@@ -98,7 +98,7 @@ pub(crate) fn start(heap: &Heap, vm: &mut VmState) -> Result<Flow, Fault> {
             resolve,
             reject,
         })))
-        .ok_or(Fault::OutOfMemory("async activation"))?;
+        .ok_or_else(|| Fault::OutOfMemory("async activation"))?;
     super::native::async_boundary(
         vm,
         Boundary {
@@ -127,7 +127,8 @@ pub(crate) fn await_value(heap: &Heap, vm: &mut VmState) -> Result<Flow, Fault> 
 }
 
 pub(crate) fn suspend(heap: &Heap, vm: &mut VmState, source: ObjectId) -> Result<Flow, Fault> {
-    let id = super::native::async_id(vm).ok_or(Fault::Internal("await outside async function"))?;
+    let id = super::native::async_id(vm)
+        .ok_or_else(|| Fault::Internal("await outside async function"))?;
     if heap
         .read(id, |o| matches!(o, HeapObject::Generator(_)))
         .unwrap_or(false)
@@ -147,7 +148,7 @@ pub(crate) fn suspend(heap: &Heap, vm: &mut VmState, source: ObjectId) -> Result
             a.activation = Some(saved);
         }
     })
-    .ok_or(Fault::Internal("async activation reclaimed"))?;
+    .ok_or_else(|| Fault::Internal("async activation reclaimed"))?;
     vm.suspended_async.push((id, name));
     vm.push(Value::Undefined);
     Ok(Flow::FrameChanged)
@@ -173,14 +174,14 @@ pub(crate) fn resume(
             .map_or(Ok(()), |a| vm.check_activation(a)),
         _ => Err(Fault::Internal("foreign async activation")),
     })
-    .ok_or(Fault::Internal("async activation reclaimed"))??;
+    .ok_or_else(|| Fault::Internal("async activation reclaimed"))??;
     let saved = heap
         .with_object_mut(id, |o| match o {
             HeapObject::AsyncState(a) => a.activation.take(),
             _ => None,
         })
         .flatten()
-        .ok_or(Fault::Internal("async activation not suspended"))?;
+        .ok_or_else(|| Fault::Internal("async activation not suspended"))?;
     super::native::async_boundary(
         vm,
         Boundary {

@@ -164,14 +164,15 @@ pub(crate) fn start_sorted_equality(
         right,
         in_set,
     } = request;
-    let resolver = state.core_resolver.clone().ok_or(Fault::Internal(
-        "sorted-map-by comparison without a runtime",
-    ))?;
+    let resolver = state
+        .core_resolver
+        .clone()
+        .ok_or_else(|| Fault::Internal("sorted-map-by comparison without a runtime"))?;
     let at = state
         .operands()
         .len()
         .checked_sub(n)
-        .ok_or(Fault::Internal("operand stack underflow"))?;
+        .ok_or_else(|| Fault::Internal("operand stack underflow"))?;
     let operands = state.operands()[at..].to_vec();
     for _ in 0..n {
         state.pop()?;
@@ -249,7 +250,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
         .operands()
         .len()
         .checked_sub(n)
-        .ok_or(Fault::Internal("core protocol operand underflow"))?;
+        .ok_or_else(|| Fault::Internal("core protocol operand underflow"))?;
     let args = &state.operands()[start..];
     let mut receiver = args[0].clone();
     // An array sequence cursor is task-owned. Equality must also offer a
@@ -452,7 +453,7 @@ impl State {
         let mut retry = self
             .retry
             .take()
-            .ok_or(Fault::Internal("sorted-map-by answer without a retry"))?;
+            .ok_or_else(|| Fault::Internal("sorted-map-by answer without a retry"))?;
         let answers = &mut retry.answers;
         answers.charge.admit(
             heap,

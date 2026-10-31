@@ -30,7 +30,7 @@ pub(super) fn start_async_stack(
             .expect("internal async disposal driver")
     });
     let body = crate::realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?
         .async_dispose_body;
     let function = dispatch::new_function(
         heap,
@@ -299,7 +299,7 @@ impl Run {
             return Err(Fault::Thrown(
                 self.error
                     .take()
-                    .ok_or(Fault::Internal("missing disposal error"))?,
+                    .ok_or_else(|| Fault::Internal("missing disposal error"))?,
             ));
         }
         Ok(Action::Return(Value::Undefined))
@@ -466,7 +466,7 @@ impl Stack {
                         stack::DisposableStack::new(heap, task, prototype, *kind),
                     )))
                     .map(Value::Object)
-                    .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+                    .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
                 Ok(Action::Return(value))
             }
         }

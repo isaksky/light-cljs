@@ -125,7 +125,7 @@ impl State {
             Input::Start => self
                 .read_value
                 .take()
-                .ok_or(Fault::Internal("array copy expected saved read")),
+                .ok_or_else(|| Fault::Internal("array copy expected saved read")),
             _ => Err(Fault::Internal("array copy expected call result")),
         }
     }

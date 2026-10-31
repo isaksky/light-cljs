@@ -275,8 +275,8 @@ fn charge(work: &mut Work, units: usize) -> Result<(), Fault> {
     let remaining = work.remaining.checked_sub(units).ok_or_else(limit)?;
     let ticket = work
         .budget
-        .reserve(units.checked_mul(128).ok_or(Fault::HeapLimit)?)
-        .ok_or(Fault::HeapLimit)?;
+        .reserve(units.checked_mul(128).ok_or_else(|| Fault::HeapLimit)?)
+        .ok_or_else(|| Fault::HeapLimit)?;
     work.reservation.merge(ticket);
     work.remaining = remaining;
     Ok(())

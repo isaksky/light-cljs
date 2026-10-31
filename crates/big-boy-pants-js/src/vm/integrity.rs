@@ -109,7 +109,7 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
         }
         for key in keys {
             let property = crate::vm::property::get_own_attributes(heap, task, id, &key.key)?
-                .ok_or(Fault::Internal("namespace key missing"))?;
+                .ok_or_else(|| Fault::Internal("namespace key missing"))?;
             if property.flags.writable {
                 return Ok(false);
             }
@@ -188,7 +188,7 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
         _ => Ok(true),
     })
     // The argument is an operand of the running frame.
-    .unwrap_or(Err(Fault::Internal("integrity argument was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("integrity argument was reclaimed")))
 }
 
 /// Give `v` `level` (module docs, table), for the running task.
@@ -365,7 +365,7 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
         }
         _ => Ok(()),
     })
-    .unwrap_or(Err(Fault::Internal("integrity argument was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("integrity argument was reclaimed")))
 }
 
 fn is_function(heap: &Heap, id: ObjectId) -> bool {

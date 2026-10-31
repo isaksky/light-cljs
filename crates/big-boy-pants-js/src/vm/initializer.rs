@@ -64,7 +64,7 @@ pub(crate) fn operation(
         return heap
             .alloc(HeapObject::Native(Box::new(slot)))
             .map(Value::Object)
-            .ok_or(Fault::OutOfMemory("heap object table exhausted"));
+            .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"));
     }
     let Value::Object(id) = args[0] else {
         return Err(invalid());

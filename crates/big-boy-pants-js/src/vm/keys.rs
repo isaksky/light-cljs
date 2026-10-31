@@ -255,7 +255,7 @@ pub(crate) fn own_property_keys_charged(
         .read(target, |o| {
             matches!(o, HeapObject::Function(_) | HeapObject::BoundFunction(_))
         })
-        .ok_or(Fault::Internal("key enumeration target was reclaimed"))?;
+        .ok_or_else(|| Fault::Internal("key enumeration target was reclaimed"))?;
     if function {
         let initial = function::initial_keys(heap, target)?;
         if !initial.is_empty() {
@@ -285,7 +285,7 @@ pub(crate) fn own_property_keys_charged(
 fn collect_object(heap: &Heap, task: TaskId, store: ObjectId) -> Result<Raw, Fault> {
     let mut raw = heap
         .read(store, |object| collect(heap, object, task))
-        .unwrap_or(Err(Fault::Internal("key enumeration target was reclaimed")))?;
+        .unwrap_or_else(|| Err(Fault::Internal("key enumeration target was reclaimed")))?;
     if let Some(view) = crate::object::typed_array::view(heap, task, store)? {
         // A typed array's keys are virtual: charge them before listing them
         // (one byte of buffer can stand for a key record many times larger).
@@ -306,7 +306,7 @@ fn key_store(heap: &Heap, target: ObjectId) -> Result<Option<ObjectId>, Fault> {
         .read(target, |o| {
             matches!(o, HeapObject::Function(_) | HeapObject::BoundFunction(_))
         })
-        .ok_or(Fault::Internal("key enumeration target was reclaimed"))?;
+        .ok_or_else(|| Fault::Internal("key enumeration target was reclaimed"))?;
     if function {
         function::property_record(heap, target)
     } else {
@@ -808,7 +808,7 @@ fn chain_next(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<ObjectId
     }
     let fixed = heap
         .read(id, |object| matches!(object, HeapObject::Builtin(_)))
-        .ok_or(Fault::Internal("prototype was reclaimed"))?;
+        .ok_or_else(|| Fault::Internal("prototype was reclaimed"))?;
     if fixed {
         return Ok(None);
     }
@@ -844,7 +844,7 @@ pub(crate) fn for_in_start(heap: &Heap, task: TaskId, value: &Value) -> Result<V
     };
     heap.alloc(HeapObject::Native(Box::new(iterator)))
         .map(Value::Object)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
 }
 
 /// Apply `f` to the enumerator `id` under the object lock.
@@ -861,7 +861,7 @@ fn with_iterator<R>(
         _ => None,
     })
     .flatten()
-    .ok_or(Fault::Internal("for-in enumerator is not an enumerator"))
+    .ok_or_else(|| Fault::Internal("for-in enumerator is not an enumerator"))
 }
 
 /// `ForInNext`: the next key of the enumerator `iterator`, as a string;

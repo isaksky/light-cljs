@@ -247,14 +247,14 @@ impl State {
                         .map(Action::Return);
                 }
                 let proto = crate::realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("realm exhausted"))?
+                    .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
                     .intl_display_names_prototype;
                 let object = OrdinaryObject::with_prototype(heap, task, proto)
                     .with_display_names(self.slots.take().unwrap());
                 heap.alloc(HeapObject::Plain(object))
                     .map(Value::Object)
                     .map(Action::Return)
-                    .ok_or(Fault::OutOfMemory("heap exhausted"))
+                    .ok_or_else(|| Fault::OutOfMemory("heap exhausted"))
             }
             Stage::Code => {
                 self.stage = Stage::CodeValue;

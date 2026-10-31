@@ -40,19 +40,19 @@ fn call(callee: Value, this: Value, args: Vec<Value>) -> Action {
 }
 fn intrinsic(heap: &Heap) -> Result<Value, Fault> {
     Ok(crate::realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("realm exhausted"))?
+        .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
         .global(crate::realm::Global::Promise))
 }
 fn environment(heap: &Heap, task: TaskId, fields: &[(&str, Value)]) -> Result<Value, Fault> {
     let prototype = crate::realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("realm exhausted"))?
+        .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
         .object_prototype;
     let mut object = OrdinaryObject::with_prototype(heap, task, prototype);
     for (name, value) in fields {
         let key = heap
             .keys()
             .intern(&JsString::from(*name))
-            .ok_or(Fault::OutOfMemory("Promise closure key"))?;
+            .ok_or_else(|| Fault::OutOfMemory("Promise closure key"))?;
         object.define_with(key, value.clone(), PropertyFlags::DATA);
     }
     alloc(heap, HeapObject::Plain(object)).map(Value::Object)
@@ -292,7 +292,7 @@ impl State {
                     HeapObject::Promise(p) => p.check_owner(task),
                     _ => unreachable!(),
                 })
-                .ok_or(Fault::Internal("promise reclaimed"))??;
+                .ok_or_else(|| Fault::Internal("promise reclaimed"))??;
                 Self::Then(Then {
                     source,
                     species: Species {
@@ -432,7 +432,7 @@ impl Static {
                         HeapObject::Promise(p) => p.check_owner(task),
                         _ => unreachable!(),
                     })
-                    .ok_or(Fault::Internal("promise reclaimed"))??;
+                    .ok_or_else(|| Fault::Internal("promise reclaimed"))??;
                     self.stage = 1;
                     return Ok(get(self.value.clone(), "constructor"));
                 }
@@ -968,7 +968,7 @@ fn remaining(heap: &Heap, task: TaskId, group: &Value, delta: f64) -> Result<f64
 fn aggregate(heap: &Heap, errors: Value) -> Result<Action, Fault> {
     Ok(call(
         crate::realm::intrinsics(heap)
-            .ok_or(Fault::OutOfMemory("realm exhausted"))?
+            .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
             .global(crate::realm::Global::AggregateError),
         Value::Undefined,
         vec![errors],

@@ -118,7 +118,7 @@ impl State {
             Input::Start => self
                 .read_value
                 .take()
-                .ok_or(Fault::Internal("array mutator expected a saved read")),
+                .ok_or_else(|| Fault::Internal("array mutator expected a saved read")),
             _ => Err(Fault::Internal("array mutator expected a call result")),
         }
     }

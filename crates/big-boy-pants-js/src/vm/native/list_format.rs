@@ -280,14 +280,14 @@ impl State {
                         .map(Action::Return);
                 }
                 let prototype = crate::realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("realm exhausted"))?
+                    .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
                     .intl_list_format_prototype;
                 let object = OrdinaryObject::with_prototype(heap, task, prototype)
                     .with_list_format(self.slots.take().unwrap());
                 heap.alloc(HeapObject::Plain(object))
                     .map(Value::Object)
                     .map(Action::Return)
-                    .ok_or(Fault::OutOfMemory("heap exhausted"))
+                    .ok_or_else(|| Fault::OutOfMemory("heap exhausted"))
             }
             Stage::Start => {
                 if matches!(self.source, Value::Undefined) {
@@ -381,11 +381,11 @@ impl State {
                 self.stage = Stage::Rethrow;
                 Ok(Action::Continue)
             }
-            Stage::Rethrow => Err(Fault::Rethrow(
-                self.pending
-                    .take()
-                    .ok_or(Fault::Internal("missing ListFormat exception"))?,
-            )),
+            Stage::Rethrow => {
+                Err(Fault::Rethrow(self.pending.take().ok_or_else(|| {
+                    Fault::Internal("missing ListFormat exception")
+                })?))
+            }
         }
     }
     fn format(&mut self, heap: &Heap, task: TaskId) -> Result<Action, Fault> {

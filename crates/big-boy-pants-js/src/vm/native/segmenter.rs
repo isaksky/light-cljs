@@ -176,7 +176,7 @@ impl State {
             OrdinaryObject::with_prototype(heap, task, proto).with_segmenter(data),
         ))
         .map(Value::Object)
-        .ok_or(Fault::OutOfMemory("Segmenter object"))
+        .ok_or_else(|| Fault::OutOfMemory("Segmenter object"))
     }
     fn done(&self, heap: &Heap, task: TaskId) -> Result<Action, Fault> {
         if self.containing {
@@ -254,7 +254,7 @@ impl State {
                         .map(Action::Return);
                 }
                 let proto = crate::realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("realm"))?
+                    .ok_or_else(|| Fault::OutOfMemory("realm"))?
                     .intl_segmenter_prototype;
                 Self::alloc(
                     heap,
@@ -286,7 +286,7 @@ impl State {
                 };
                 self.flatten = None;
                 let proto = crate::realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("realm"))?
+                    .ok_or_else(|| Fault::OutOfMemory("realm"))?
                     .intl_segments_prototype;
                 Self::alloc(
                     heap,
@@ -387,7 +387,7 @@ pub(crate) fn iterator(heap: &Heap, task: TaskId, this: &Value) -> Result<Value,
         return Err(Fault::TypeError("Segments receiver required".into()));
     };
     let proto = crate::realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("realm"))?
+        .ok_or_else(|| Fault::OutOfMemory("realm"))?
         .intl_segment_iterator_prototype;
     State::alloc(
         heap,

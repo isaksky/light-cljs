@@ -74,7 +74,7 @@ fn cursor<R>(
         }
         Ok(f(data))
     })
-    .ok_or(Fault::Internal("RegExp iterator reclaimed"))?
+    .ok_or_else(|| Fault::Internal("RegExp iterator reclaimed"))?
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -314,8 +314,8 @@ impl State {
     fn charge(&mut self, amount: usize) -> Result<(), Fault> {
         let ticket = self
             .budget
-            .reserve(amount.checked_mul(256).ok_or(Fault::HeapLimit)?)
-            .ok_or(Fault::HeapLimit)?;
+            .reserve(amount.checked_mul(256).ok_or_else(|| Fault::HeapLimit)?)
+            .ok_or_else(|| Fault::HeapLimit)?;
         self.reservation.merge(ticket);
         self.work = self.work.checked_sub(amount).ok_or_else(|| {
             Fault::RangeError(
@@ -593,7 +593,7 @@ impl State {
                 }
                 self.phase = FallbackCreated;
                 let ctor = crate::realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("RegExp realm"))?
+                    .ok_or_else(|| Fault::OutOfMemory("RegExp realm"))?
                     .global(crate::realm::Global::RegExp);
                 Ok(Action::Construct {
                     callee: ctor,
@@ -668,7 +668,7 @@ impl State {
                     .as_mut()
                     .unwrap()
                     .advance()
-                    .ok_or(Fault::OutOfMemory("split string allocation failed"))?
+                    .ok_or_else(|| Fault::OutOfMemory("split string allocation failed"))?
                 {
                     crate::value::string::SplitStep::Part(s) => {
                         self.push(heap, task, Value::String(s))?
@@ -719,7 +719,7 @@ impl State {
             }
             Constructor => {
                 let default = crate::realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("RegExp realm"))?
+                    .ok_or_else(|| Fault::OutOfMemory("RegExp realm"))?
                     .global(crate::realm::Global::RegExp);
                 self.constructor = default;
                 if matches!(v, Value::Undefined) {
@@ -807,7 +807,7 @@ impl State {
             }
             IteratorCreate => {
                 let proto = crate::realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("RegExp realm"))?
+                    .ok_or_else(|| Fault::OutOfMemory("RegExp realm"))?
                     .regexp_iterator_prototype;
                 let o = OrdinaryObject::with_prototype(heap, task, proto).with_regexp_iterator(
                     IteratorData {
@@ -821,7 +821,7 @@ impl State {
                 heap.alloc(HeapObject::Plain(o))
                     .map(Value::Object)
                     .map(Action::Return)
-                    .ok_or(Fault::OutOfMemory("RegExp iterator"))
+                    .ok_or_else(|| Fault::OutOfMemory("RegExp iterator"))
             }
             SearchIndex => {
                 self.previous = v;
@@ -872,7 +872,7 @@ impl State {
                         *id,
                         |o| matches!(o, HeapObject::Builtin(f) if f.which == RegExpExec),
                     )
-                    .ok_or(Fault::Internal("exec callee reclaimed"))?
+                    .ok_or_else(|| Fault::Internal("exec callee reclaimed"))?
                 } else {
                     false
                 };
@@ -1088,7 +1088,7 @@ impl State {
                         .extend_from_slice(&self.text.code_units()[suffix..]);
                     return Ok(Action::Return(Value::String(
                         JsString::from_owned_code_units(std::mem::take(&mut self.rendered))
-                            .ok_or(Fault::StringTooLong)?
+                            .ok_or_else(|| Fault::StringTooLong)?
                             .with_reservation(Some(std::sync::Arc::new(std::mem::take(
                                 &mut self.reservation,
                             )))),
@@ -1269,7 +1269,7 @@ impl State {
                 if let Some(offset) = offset {
                     let end = i + 2 + offset;
                     let name = JsString::from_code_units(&self.template.code_units()[i + 2..end])
-                        .ok_or(Fault::StringTooLong)?;
+                        .ok_or_else(|| Fault::StringTooLong)?;
                     self.template_at = end + 1;
                     return self.read(
                         heap,
@@ -1313,5 +1313,5 @@ fn slice(heap: &Heap, text: &JsString, start: usize, end: usize) -> Result<JsStr
     let ticket = JsString::reserve(heap, end - start, 1)?;
     JsString::from_code_units(&text.code_units()[start..end])
         .map(|text| text.with_reservation(ticket))
-        .ok_or(Fault::StringTooLong)
+        .ok_or_else(|| Fault::StringTooLong)
 }

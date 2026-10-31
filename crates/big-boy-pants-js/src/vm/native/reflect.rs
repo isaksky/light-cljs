@@ -184,7 +184,7 @@ impl State {
                 let reader = self
                     .reader
                     .as_mut()
-                    .ok_or(Fault::Internal("Reflect descriptor missing"))?;
+                    .ok_or_else(|| Fault::Internal("Reflect descriptor missing"))?;
                 let value = match input {
                     Input::Start => None,
                     Input::CallResult(v) => Some(v),
@@ -213,7 +213,7 @@ impl State {
                 match self
                     .ops
                     .as_mut()
-                    .ok_or(Fault::Internal("Reflect receiver operation missing"))?
+                    .ok_or_else(|| Fault::Internal("Reflect receiver operation missing"))?
                     .step(heap, task, input)?
                 {
                     proxy::Progress::Action(a) => return Ok(a),
@@ -452,9 +452,9 @@ impl State {
         let key = self.key()?;
         if self.typed_write {
             let index = crate::object::typed_array::numeric_key(&key)
-                .ok_or(Fault::Internal("Reflect typed index"))?;
+                .ok_or_else(|| Fault::Internal("Reflect typed index"))?;
             let view = crate::object::typed_array::view(heap, task, id)?
-                .ok_or(Fault::Internal("Reflect typed receiver"))?;
+                .ok_or_else(|| Fault::Internal("Reflect typed receiver"))?;
             view.set(heap, index, self.desc.value.as_ref().unwrap())?;
             return boolean(true);
         }

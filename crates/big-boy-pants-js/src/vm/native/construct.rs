@@ -126,7 +126,7 @@ impl State {
                         &self.args,
                         true,
                     )?
-                    .ok_or(Fault::Internal("RegExp constructor missing"))?;
+                    .ok_or_else(|| Fault::Internal("RegExp constructor missing"))?;
                     regexp.set_new_target(self.target.clone());
                     self.regexp = Some(Box::new(regexp));
                     self.args.clear();
@@ -200,12 +200,12 @@ impl State {
             if let Some(callee) = &self.ordinary {
                 let prototype = self
                     .prototype
-                    .ok_or(Fault::Internal("ordinary constructor prototype missing"))?;
+                    .ok_or_else(|| Fault::Internal("ordinary constructor prototype missing"))?;
                 let receiver = heap
                     .alloc(crate::heap::HeapObject::Plain(
                         crate::object::OrdinaryObject::with_prototype(heap, task, prototype),
                     ))
-                    .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+                    .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
                 return Ok(Action::EnterConstructor(Box::new(Invocation {
                     callee: callee.clone(),
                     target: self.target.clone(),
@@ -233,7 +233,7 @@ impl State {
                 task,
                 &self.result,
                 self.prototype
-                    .ok_or(Fault::Internal("constructor prototype missing"))?,
+                    .ok_or_else(|| Fault::Internal("constructor prototype missing"))?,
             )?;
         }
         Ok(Action::Return(self.result.clone()))
@@ -241,7 +241,7 @@ impl State {
 }
 
 fn default_prototype(heap: &Heap, which: Builtin) -> Result<ObjectId, Fault> {
-    let r = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("realm exhausted"))?;
+    let r = crate::realm::intrinsics(heap).ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?;
     Ok(match which {
         Builtin::Object => r.object_prototype,
         Builtin::Array => r.array_prototype,

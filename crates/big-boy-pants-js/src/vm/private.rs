@@ -90,7 +90,7 @@ fn storage<R>(
             _ => f(None),
         }
     })
-    .ok_or(Fault::Internal("private receiver was reclaimed"))?
+    .ok_or_else(|| Fault::Internal("private receiver was reclaimed"))?
 }
 
 fn symbol(key: &Value) -> Result<&JsSymbol, Fault> {
@@ -194,7 +194,7 @@ pub(crate) fn define(
         } else {
             property.value = value;
         }
-        let ticket = heap.reserve_bytes(512).ok_or(Fault::HeapLimit)?;
+        let ticket = heap.reserve_bytes(512).ok_or_else(|| Fault::HeapLimit)?;
         s.0.insert(key.clone(), property);
         s.1.merge(ticket);
         Ok(())

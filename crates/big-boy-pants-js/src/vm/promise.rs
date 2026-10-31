@@ -150,7 +150,7 @@ pub(crate) fn constructor(
     let executor = args.first().cloned().unwrap_or(Value::Undefined);
     dispatch::callee(heap, &executor)?;
     let intrinsic = crate::realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("realm exhausted"))?
+        .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
         .promise_prototype;
     let owner = (prototype != intrinsic).then_some(task);
     let promise = new_with_prototype(heap, prototype, owner)?;
@@ -197,11 +197,11 @@ impl Trace for Reaction {
 }
 fn alloc(heap: &Heap, object: HeapObject) -> Result<ObjectId, Fault> {
     heap.alloc(object)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
 }
 fn new(heap: &Heap) -> Result<ObjectId, Fault> {
     let prototype = crate::realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("realm exhausted"))?
+        .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
         .promise_prototype;
     new_with_prototype(heap, prototype, None)
 }
@@ -236,7 +236,7 @@ fn receiver(heap: &Heap, value: &Value) -> Result<ObjectId, Fault> {
 }
 fn function(heap: &Heap, which: Builtin) -> Result<Value, Fault> {
     let prototype = crate::realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("realm exhausted"))?
+        .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
         .function_prototype;
     let mut properties = OrdinaryObject::intrinsic(heap, Some(prototype));
     for (name, value) in [
@@ -246,7 +246,7 @@ fn function(heap: &Heap, which: Builtin) -> Result<Value, Fault> {
         let key = heap
             .keys()
             .intern(&JsString::from(name))
-            .ok_or(Fault::OutOfMemory("key table exhausted"))?;
+            .ok_or_else(|| Fault::OutOfMemory("key table exhausted"))?;
         properties.define_with(key, value, PropertyFlags::FUNCTION_INFO);
     }
     Ok(Value::Object(alloc(
@@ -292,7 +292,7 @@ fn claim_with_capacity(
         }
         _ => Err(Fault::Internal("promise changed kind")),
     })
-    .ok_or(Fault::Internal("promise reclaimed"))?
+    .ok_or_else(|| Fault::Internal("promise reclaimed"))?
 }
 fn forwarding_guard(heap: &Heap, fulfilled: &Value, rejected: &Value) -> Option<ObjectId> {
     let resolver = |value: &Value| {
@@ -349,7 +349,7 @@ fn settle(
         }
         _ => Err(Fault::Internal("promise changed kind")),
     })
-    .ok_or(Fault::Internal("promise reclaimed"))?
+    .ok_or_else(|| Fault::Internal("promise reclaimed"))?
 }
 #[derive(Debug)]
 pub(crate) enum PromiseState {
@@ -566,7 +566,7 @@ impl PromiseState {
                     return Err(Fault::Internal("PromiseResolve constructor missing"));
                 };
                 let intrinsic = crate::realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("realm exhausted"))?
+                    .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
                     .global(crate::realm::Global::Promise);
                 if crate::atom::same_value(&constructor, &intrinsic) {
                     return if *awaiting {
@@ -582,7 +582,7 @@ impl PromiseState {
                 if !*called {
                     *called = true;
                     let callee = crate::realm::intrinsics(heap)
-                        .ok_or(Fault::OutOfMemory("realm exhausted"))?
+                        .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
                         .global(crate::realm::Global::TypeError);
                     return Ok(Action::Call {
                         callee,
@@ -626,7 +626,7 @@ impl PromiseState {
                 if !*called {
                     *called = true;
                     let callee = crate::realm::intrinsics(heap)
-                        .ok_or(Fault::OutOfMemory("realm exhausted"))?
+                        .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
                         .global(crate::realm::Global::TypeError);
                     return Ok(Action::Call {
                         callee,
@@ -749,7 +749,7 @@ impl PromiseState {
                     let callable = function(heap, Builtin::PromiseResolveThenable(*promise))?;
                     inbox
                         .upgrade()
-                        .ok_or(Fault::Internal("promise task inbox gone"))?
+                        .ok_or_else(|| Fault::Internal("promise task inbox gone"))?
                         .push(Job {
                             callable,
                             args: vec![value.clone(), then],
@@ -769,7 +769,7 @@ impl PromiseState {
                             _ => None,
                         })
                         .flatten()
-                        .ok_or(Fault::Internal("reaction source is pending"))?;
+                        .ok_or_else(|| Fault::Internal("reaction source is pending"))?;
                     let handler = if result.rejected {
                         reaction.rejected.clone()
                     } else {
@@ -807,7 +807,7 @@ impl PromiseState {
                         _ => None,
                     })
                     .flatten()
-                    .ok_or(Fault::Internal("reaction source is pending"))?;
+                    .ok_or_else(|| Fault::Internal("reaction source is pending"))?;
                 if result.owner.is_some_and(|owner| owner != task) {
                     if let Some(id) = reaction.async_state {
                         *self = Self::AsyncRejectTypeError { id, called: false };
@@ -927,7 +927,7 @@ pub(crate) fn start(
         }
         Builtin::Promise if construct => {
             let prototype = crate::realm::intrinsics(heap)
-                .ok_or(Fault::OutOfMemory("realm exhausted"))?
+                .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
                 .promise_prototype;
             constructor(heap, task, args, prototype)?
         }
@@ -965,7 +965,7 @@ pub(crate) fn start(
                     _ => None,
                 })
                 .flatten()
-                .ok_or(Fault::Internal("reaction reclaimed"))?;
+                .ok_or_else(|| Fault::Internal("reaction reclaimed"))?;
             PromiseState::Reaction {
                 reaction,
                 called: false,
@@ -1003,7 +1003,7 @@ fn intrinsic_resolve(
             HeapObject::Promise(p) => p.check_owner(task),
             _ => Err(Fault::Internal("promise changed kind")),
         })
-        .ok_or(Fault::Internal("promise reclaimed"))??;
+        .ok_or_else(|| Fault::Internal("promise reclaimed"))??;
         return Ok(PromiseState::IntrinsicResolve {
             value,
             awaiting,
@@ -1070,7 +1070,7 @@ fn register(
         // reaction's delivery must not fail after registration succeeds.
         let ticket = heap
             .reserve_bytes(Registration::TICKET)
-            .ok_or(Fault::HeapLimit)?;
+            .ok_or_else(|| Fault::HeapLimit)?;
         if p.result.as_ref().is_some_and(|r| r.rejected)
             && !p.is_handled
             && let Some((owner, stored)) = p.rejection.take()
@@ -1091,6 +1091,6 @@ fn register(
         }
         Ok::<(), Fault>(())
     })
-    .ok_or(Fault::Internal("promise reclaimed"))??;
+    .ok_or_else(|| Fault::Internal("promise reclaimed"))??;
     Ok(())
 }

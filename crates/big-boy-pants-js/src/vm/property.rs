@@ -191,7 +191,7 @@ impl NamedProperty {
     fn intern(&self, heap: &Heap) -> Result<PropertyKey, Fault> {
         heap.keys()
             .bind_name(&self.name, &self.binding)
-            .ok_or(Fault::OutOfMemory("property-key table exhausted"))
+            .ok_or_else(|| Fault::OutOfMemory("property-key table exhausted"))
     }
 }
 
@@ -318,7 +318,7 @@ impl Key {
             Key::Symbol(s) => heap
                 .keys()
                 .intern_symbol(s)
-                .ok_or(Fault::OutOfMemory("property-key table exhausted")),
+                .ok_or_else(|| Fault::OutOfMemory("property-key table exhausted")),
             Key::Name(name) => intern(heap, name),
             Key::Index(_) => intern(heap, &self.to_name()),
         }
@@ -499,14 +499,13 @@ fn primitive_prototype(heap: &Heap, base: &Value, key: &Key) -> Result<ObjectId,
         | Value::String(_)
         | Value::BigInt(_)
         | Value::Symbol(_)
-        | Value::Bool(_) => {
-            realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?
-        }
+        | Value::Bool(_) => realm::intrinsics(heap)
+            .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?,
         _ => return Err(primitive_base(base, key, Access::Read)),
     };
-    intrinsics.primitive_prototype(base).ok_or(Fault::Internal(
-        "a primitive without its registered prototype",
-    ))
+    intrinsics
+        .primitive_prototype(base)
+        .ok_or_else(|| Fault::Internal("a primitive without its registered prototype"))
 }
 
 /// A struct's field as a JavaScript property: a struct is a frozen object
@@ -1155,7 +1154,7 @@ fn lookup_cursor(
             })
             // The frame keeps the base alive and every object keeps its
             // prototype alive; a stale id is reported, not trusted.
-            .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
+            .unwrap_or_else(|| Err(Fault::Internal("property base was reclaimed")))?;
         match step {
             Lookup::Exotic(Exotic::Proxy) => {
                 if matches!(mode, LookupMode::Probe) {
@@ -1195,7 +1194,7 @@ fn lookup_cursor(
             Lookup::NeedsName => interned = Some(key.lookup(heap)),
             Lookup::RegExpPrototype => {
                 id = crate::realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("RegExp realm"))?
+                    .ok_or_else(|| Fault::OutOfMemory("RegExp realm"))?
                     .regexp_prototype;
                 // Building the realm may have interned the name.
                 realm = heap.realm().get();
@@ -1294,7 +1293,7 @@ fn stored(outcome: SetOutcome, key: &Key, prototype: Option<ObjectId>) -> Result
         SetOutcome::NotExtensible => Ok(Stored::Rejected(not_extensible(key))),
         SetOutcome::Inherited => prototype
             .map(Stored::Inherited)
-            .ok_or(Fault::Internal("an inherited write without a prototype")),
+            .ok_or_else(|| Fault::Internal("an inherited write without a prototype")),
     }
 }
 
@@ -1424,7 +1423,7 @@ fn store(
 fn intern(heap: &Heap, name: &JsString) -> Result<PropertyKey, Fault> {
     heap.keys()
         .intern(name)
-        .ok_or(Fault::OutOfMemory("property key table exhausted"))
+        .ok_or_else(|| Fault::OutOfMemory("property key table exhausted"))
 }
 
 /// `base[key] = value` for the running task `task` (`[[Set]]`; QuickJS
@@ -1587,7 +1586,7 @@ fn prepare_write_cached(
                     cache.map(|(_, cache)| cache),
                 )
             })
-            .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
+            .unwrap_or_else(|| Err(Fault::Internal("property base was reclaimed")))?;
         match outcome {
             Stored::MutableStruct => return Ok(Write::MutableStruct),
             Stored::Exotic(Exotic::Proxy) => {
@@ -1694,7 +1693,7 @@ fn prepare_write_cached(
             }
             _ => Err(Fault::Internal("property base changed kind")),
         })
-        .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
+        .unwrap_or_else(|| Err(Fault::Internal("property base was reclaimed")))?;
     match added {
         SetOutcome::Done => Ok(Write::Complete(None)),
         SetOutcome::HeapLimit => Err(Fault::HeapLimit),
@@ -1827,7 +1826,7 @@ fn check_super_receiver_mutability(
             matches!(object, HeapObject::Plain(o) if o.is_intrinsic())
                 || matches!(object, HeapObject::Builtin(_))
         })
-        .ok_or(Fault::Internal("super receiver was reclaimed"))?;
+        .ok_or_else(|| Fault::Internal("super receiver was reclaimed"))?;
     if immutable {
         return Err(immutable_define(key));
     }
@@ -2001,7 +2000,7 @@ fn check_inherited(
                     },
                 }
             })
-            .unwrap_or(Err(Fault::Internal("prototype was reclaimed")))?;
+            .unwrap_or_else(|| Err(Fault::Internal("prototype was reclaimed")))?;
         match next {
             Walk::Exotic(Exotic::Proxy) => id = super::proxy::forward(heap, task, id, "set")?,
             Walk::Exotic(Exotic::Namespace(_)) => return Err(read_only(key)),
@@ -2019,7 +2018,7 @@ fn check_inherited(
             },
             Walk::RegExpPrototype => {
                 id = crate::realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("RegExp realm"))?
+                    .ok_or_else(|| Fault::OutOfMemory("RegExp realm"))?
                     .regexp_prototype;
                 realm = heap.realm().get();
             }
@@ -2127,7 +2126,7 @@ fn define_field_interned(
             object_name(other)
         ))),
     })
-    .unwrap_or(Err(Fault::Internal("object literal was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("object literal was reclaimed")))
 }
 
 /// `[[DefineOwnProperty]]` of `key` on the object `target` for the running
@@ -2219,7 +2218,7 @@ pub(crate) fn store_mutable_field(
             _ => None,
         })
         .flatten()
-        .ok_or(Fault::Internal("mutable field store target"))?;
+        .ok_or_else(|| Fault::Internal("mutable field store target"))?;
     cell.set(heap, index, value)
 }
 
@@ -2282,7 +2281,7 @@ pub(crate) fn define_own_property(
                 Err(outcome) => defined(outcome, key),
             };
         }
-        let k = interned.ok_or(Fault::Internal("a property name was not interned"))?;
+        let k = interned.ok_or_else(|| Fault::Internal("a property name was not interned"))?;
         defined(o.define_own_property(k, desc), key)
     };
     let unsupported = |what: &str| {
@@ -2391,7 +2390,7 @@ pub(crate) fn define_own_property(
             object_name(other)
         ))),
     })
-    .unwrap_or(Err(Fault::Internal("property target was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("property target was reclaimed")))
 }
 
 /// ArraySetLength's ToUint32/ToNumber validation. For primitive values both
@@ -2438,9 +2437,7 @@ pub(crate) fn define_accessor(
         }
         _ => Err(Fault::Internal("accessor literal on non-ordinary object")),
     })
-    .unwrap_or(Err(Fault::Internal(
-        "accessor literal object was reclaimed",
-    )))
+    .unwrap_or_else(|| Err(Fault::Internal("accessor literal object was reclaimed")))
 }
 
 /// The fault of a [`DefineOutcome`].
@@ -2555,7 +2552,7 @@ fn own_property(
             };
             Ok(Own::Property(property))
         })
-        .unwrap_or(Err(Fault::Internal("property target was reclaimed")))?;
+        .unwrap_or_else(|| Err(Fault::Internal("property target was reclaimed")))?;
     match own {
         Own::Property(property) => Ok(property),
         Own::Exotic(Exotic::Proxy) => {
@@ -2779,7 +2776,7 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
             None => Ok(DeleteOutcome::Absent),
         },
     })
-    .unwrap_or(Err(Fault::Internal("property base was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("property base was reclaimed")))
 }
 
 /// The failure of a define on a realm intrinsic (`crate::realm`).
@@ -2834,7 +2831,7 @@ pub(crate) fn append(
         }
         other => Err(wrong(object_name(other))),
     })
-    .unwrap_or(Err(Fault::Internal("array literal was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("array literal was reclaimed")))
 }
 
 #[cfg(test)]

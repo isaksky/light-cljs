@@ -435,8 +435,8 @@ impl VmState {
                     .and_then(|h| n.checked_add(h))
             })
             .and_then(|n| n.checked_add(std::mem::size_of::<Frame>()))
-            .ok_or(Fault::HeapLimit)?;
-        heap.reserve_bytes(bytes).ok_or(Fault::HeapLimit)
+            .ok_or_else(|| Fault::HeapLimit)?;
+        heap.reserve_bytes(bytes).ok_or_else(|| Fault::HeapLimit)
     }
 
     /// Detach the top activation under a [`Self::reserve_activation`]
@@ -753,7 +753,7 @@ impl VmState {
             .get(at)
             .cloned()
             .filter(|_| at >= self.top().floor())
-            .ok_or(Fault::Internal("operand index out of range"))
+            .ok_or_else(|| Fault::Internal("operand index out of range"))
     }
 
     /// Drop the running frame's operands from value-stack index `len` up.
@@ -773,7 +773,7 @@ impl VmState {
         }
         self.stack
             .pop()
-            .ok_or(Fault::Internal("operand stack underflow"))
+            .ok_or_else(|| Fault::Internal("operand stack underflow"))
     }
 
     /// The running frame's operands, oldest first.
@@ -993,7 +993,7 @@ impl VmState {
             .len()
             .checked_sub(above + 1)
             .filter(|&at| at >= self.top().floor())
-            .ok_or(Fault::Internal("operand stack underflow"))?;
+            .ok_or_else(|| Fault::Internal("operand stack underflow"))?;
         native::assert_no_borrow("removing an operand (moving the value stack)");
         Ok(self.stack.remove(at))
     }
@@ -1005,7 +1005,7 @@ impl VmState {
             .len()
             .checked_sub(popped)
             .filter(|&keep| keep >= self.top().floor())
-            .ok_or(Fault::Internal("operand stack underflow"))?;
+            .ok_or_else(|| Fault::Internal("operand stack underflow"))?;
         self.stack.truncate(keep);
         self.stack.push(result);
         Ok(())
@@ -1020,7 +1020,7 @@ impl VmState {
         let at = top.base + usize::from(index);
         self.stack
             .get_mut(at)
-            .ok_or(Fault::Internal("local index out of range"))
+            .ok_or_else(|| Fault::Internal("local index out of range"))
     }
 
     /// Enter `code`, called through the function object `callee`: its
@@ -1059,7 +1059,7 @@ impl VmState {
             .len()
             .checked_sub(argc + 1)
             .filter(|&b| b >= self.top().floor())
-            .ok_or(Fault::Internal("operand stack underflow"))?;
+            .ok_or_else(|| Fault::Internal("operand stack underflow"))?;
         if self.depth() >= self.limits.max_call_depth.max(1) {
             return Err(Fault::StackOverflow(format!(
                 "maximum call depth of {} frames exceeded",
@@ -1577,7 +1577,7 @@ impl VmState {
                 // lone surrogates. Preserve them without a Rust str round trip.
                 code.function_name
                     .try_copy_code_units_to(&mut stack.units)
-                    .ok_or(Fault::OutOfMemory("error stack allocation failed"))?;
+                    .ok_or_else(|| Fault::OutOfMemory("error stack allocation failed"))?;
             }
             let file = code.debug.as_ref().map_or(&*code.name, |d| &*d.filename);
             stack.text(" (");
@@ -1592,7 +1592,7 @@ impl VmState {
             }
             stack.text(")\n");
         }
-        JsString::from_owned_code_units(stack.units).ok_or(Fault::StringTooLong)
+        JsString::from_owned_code_units(stack.units).ok_or_else(|| Fault::StringTooLong)
     }
 
     /// A failure at instruction `pc` of the running frame, with the call

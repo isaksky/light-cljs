@@ -89,10 +89,10 @@ impl StringRaw {
             .units
             .checked_add(len)
             .filter(|n| *n <= crate::value::string::MAX_STRING_LEN)
-            .ok_or(Fault::StringTooLong)?;
+            .ok_or_else(|| Fault::StringTooLong)?;
         if len != 0 {
-            let charge = heap.reserve_bytes(128).ok_or(Fault::HeapLimit)?;
-            let text = text.import(heap).ok_or(Fault::HeapLimit)?;
+            let charge = heap.reserve_bytes(128).ok_or_else(|| Fault::HeapLimit)?;
+            let text = text.import(heap).ok_or_else(|| Fault::HeapLimit)?;
             self.parts.push((text, 0, len));
             self.parts_reservation.merge(charge);
         }

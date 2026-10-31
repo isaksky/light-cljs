@@ -80,7 +80,7 @@ impl ErrorState {
         // Calls use the intrinsic prototype; Construct installs its selected
         // new.target prototype before this continuation runs any callbacks.
         let intrinsics = crate::realm::intrinsics(heap)
-            .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+            .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
         let proto = match kind {
             Some(kind) => intrinsics.native_error_prototype(kind),
             None => intrinsics.error_prototype,
@@ -88,7 +88,7 @@ impl ErrorState {
         let object = OrdinaryObject::with_prototype(heap, task, proto).with_error_data();
         let id = heap
             .alloc(HeapObject::Plain(object))
-            .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+            .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
         let suppressed = kind == Some(NativeErrorKind::Suppressed);
         let aggregate = kind == Some(NativeErrorKind::Aggregate);
         Ok(Self::Constructor {
@@ -329,8 +329,8 @@ pub(super) fn suppressed_error(
     suppressed: Value,
     stack: JsString,
 ) -> Result<Value, Fault> {
-    let intrinsics =
-        crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    let intrinsics = crate::realm::intrinsics(heap)
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
     let prototype = intrinsics.native_error_prototype(NativeErrorKind::Suppressed);
     let mut object = OrdinaryObject::with_prototype(heap, task, prototype).with_error_data();
     for (name, value) in [
@@ -341,12 +341,12 @@ pub(super) fn suppressed_error(
         let key = heap
             .keys()
             .intern(&JsString::from(name))
-            .ok_or(Fault::OutOfMemory("property key table exhausted"))?;
+            .ok_or_else(|| Fault::OutOfMemory("property key table exhausted"))?;
         object.define_with(key, value, PropertyFlags::METHOD);
     }
     heap.alloc(HeapObject::Plain(object))
         .map(Value::Object)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
 }
 
 fn result(input: Input) -> Result<Value, Fault> {
@@ -373,14 +373,14 @@ fn define(heap: &Heap, object: &Value, name: &str, value: Value) -> Result<(), F
     let key = heap
         .keys()
         .intern(&JsString::from(name))
-        .ok_or(Fault::OutOfMemory("property key table exhausted"))?;
+        .ok_or_else(|| Fault::OutOfMemory("property key table exhausted"))?;
     heap.with_object_mut(*id, |o| match o {
         HeapObject::Plain(o) => {
             o.define_with(key, value, PropertyFlags::METHOD);
         }
         _ => unreachable!("Error constructor allocates an ordinary object"),
     })
-    .ok_or(Fault::Internal("Error object was reclaimed"))
+    .ok_or_else(|| Fault::Internal("Error object was reclaimed"))
 }
 
 fn join(heap: &Heap, name: &Value, message: &Value) -> Result<JsString, Fault> {

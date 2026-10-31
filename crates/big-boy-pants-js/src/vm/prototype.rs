@@ -152,7 +152,7 @@ pub(crate) fn get_prototype_of(
             HeapObject::Form(_) | HeapObject::Occurrence(_) => Ok(Step::ObjectPrototype),
             _ => Ok(Step::Prototype(None)),
         })
-        .unwrap_or(Err(Fault::Internal("prototype target was reclaimed")))?;
+        .unwrap_or_else(|| Err(Fault::Internal("prototype target was reclaimed")))?;
     match step {
         Step::Prototype(prototype) => Ok(prototype),
         Step::ObjectPrototype => {
@@ -229,7 +229,7 @@ pub(crate) fn set_prototype_of(
             object_name(other)
         ))),
     })
-    .unwrap_or(Err(Fault::Internal("prototype target was reclaimed")))?;
+    .unwrap_or_else(|| Err(Fault::Internal("prototype target was reclaimed")))?;
     check_chain(heap, task, proto, Some(id))?;
     heap.with_object_mut(id, |object| match object {
         HeapObject::Plain(o) => {
@@ -281,7 +281,7 @@ pub(crate) fn set_prototype_of(
         }
         _ => Err(Fault::Internal("prototype target changed kind")),
     })
-    .unwrap_or(Err(Fault::Internal("prototype target was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("prototype target was reclaimed")))
 }
 
 /// Walk the chain that starts at `proto` (module docs): the running task
@@ -334,13 +334,13 @@ pub(crate) fn object_get_prototype_of(
     match v {
         Value::Bool(_) => crate::realm::intrinsics(heap)
             .map(|realm| Value::Object(realm.boolean_prototype))
-            .ok_or(Fault::OutOfMemory("heap object table exhausted")),
+            .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted")),
         Value::Symbol(_) => crate::realm::intrinsics(heap)
             .map(|realm| Value::Object(realm.symbol_prototype))
-            .ok_or(Fault::OutOfMemory("heap object table exhausted")),
+            .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted")),
         Value::BigInt(_) => crate::realm::intrinsics(heap)
             .map(|realm| Value::Object(realm.bigint_prototype))
-            .ok_or(Fault::OutOfMemory("heap object table exhausted")),
+            .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted")),
         Value::Object(id) => Ok(prototype_value(get_prototype_of(heap, task, id)?)),
         Value::Undefined | Value::Null => Err(Fault::TypeError(format!(
             "cannot convert {} to object",
@@ -407,7 +407,7 @@ pub(crate) fn object_create(heap: &Heap, task: TaskId, args: &[Value]) -> Result
     object.set_prototype(proto);
     heap.alloc(HeapObject::Plain(object))
         .map(Value::Object)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
 }
 
 /// The `__proto__` getter: ToObject(this), then `[[GetPrototypeOf]]`.
@@ -422,7 +422,7 @@ pub(crate) fn proto_getter(heap: &Heap, task: TaskId, this: &Value) -> Result<Va
         ))),
         _ => {
             let realm = crate::realm::intrinsics(heap)
-                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+                .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
             realm.primitive_prototype(this).map(Value::Object).ok_or_else(|| {
                 Fault::Unsupported(format!(
                     "__proto__ getter on a {} needs a wrapper prototype, which is not supported",

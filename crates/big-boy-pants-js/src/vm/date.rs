@@ -1150,7 +1150,7 @@ pub(crate) fn time_value(heap: &Heap, task: TaskId, this: &Value) -> Result<Opti
         }
         _ => Ok(None),
     })
-    .unwrap_or(Err(Fault::Internal("Date receiver was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("Date receiver was reclaimed")))
 }
 
 pub(crate) fn this_time_value(heap: &Heap, task: TaskId, this: &Value) -> Result<f64, Fault> {
@@ -1161,13 +1161,13 @@ pub(crate) fn this_time_value(heap: &Heap, task: TaskId, this: &Value) -> Result
 /// Construct after resumable argument conversion and optional string parsing.
 pub(crate) fn construct(heap: &Heap, task: TaskId, time: f64) -> Result<Value, Fault> {
     let time = time_clip(time);
-    let realm =
-        crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    let realm = crate::realm::intrinsics(heap)
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
     let object =
         OrdinaryObject::with_prototype(heap, task, realm.date_prototype).with_date_value(time);
     heap.alloc(HeapObject::Plain(object))
         .map(Value::Object)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
 }
 
 /// Internal-slot mutation is independent of extensibility/frozen properties.
@@ -1188,7 +1188,7 @@ pub(crate) fn set_time(heap: &Heap, task: TaskId, this: &Value, time: f64) -> Re
         }
         _ => Err(Fault::Internal("Date receiver lost its slot")),
     })
-    .unwrap_or(Err(Fault::Internal("Date receiver was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("Date receiver was reclaimed")))
 }
 
 #[cfg(test)]

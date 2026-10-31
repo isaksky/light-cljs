@@ -265,7 +265,7 @@ pub(crate) fn apply_null(heap: &Heap, value: Value) -> Result<Value, Fault> {
     function.apply_null_receiver = true;
     heap.alloc(HeapObject::Function(function))
         .map(Value::Object)
-        .ok_or(Fault::HeapLimit)
+        .ok_or_else(|| Fault::HeapLimit)
 }
 
 /// The receiver used by Clojure `apply`, including a native variadic
@@ -297,7 +297,7 @@ pub(crate) fn with_apply_to(heap: &Heap, value: Value, entry: Value) -> Result<V
     function.apply_to = Some(entry);
     heap.alloc(HeapObject::Function(function))
         .map(Value::Object)
-        .ok_or(Fault::HeapLimit)
+        .ok_or_else(|| Fault::HeapLimit)
 }
 
 pub(crate) fn apply_to_entry(heap: &Heap, value: &Value) -> Value {
@@ -429,9 +429,9 @@ pub(crate) fn bind_with_metadata(
         .reserve_bytes(
             args.len()
                 .checked_mul(std::mem::size_of::<Value>() * 4)
-                .ok_or(Fault::HeapLimit)?,
+                .ok_or_else(|| Fault::HeapLimit)?,
         )
-        .ok_or(Fault::HeapLimit)?;
+        .ok_or_else(|| Fault::HeapLimit)?;
     let metadata = heap.alloc(HeapObject::Plain(store)).ok_or_else(exhausted)?;
     heap.alloc(HeapObject::BoundFunction(BoundFunction {
         target: target.clone(),
@@ -518,7 +518,7 @@ fn info(heap: &Heap, function: ObjectId) -> Result<Info, Fault> {
         _ => Err(Fault::Internal("not a function object")),
     })
     // The frame keeps the function alive; a stale id is reported.
-    .unwrap_or(Err(Fault::Internal("function object was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("function object was reclaimed")))
 }
 
 /// The function's property record, if it has one (own-key enumeration,
@@ -702,7 +702,7 @@ pub(crate) fn function_prototype(heap: &Heap) -> Result<ObjectId, Fault> {
 fn intern(heap: &Heap, name: &str) -> Result<PropertyKey, Fault> {
     heap.keys()
         .intern(&JsString::from(name))
-        .ok_or(Fault::OutOfMemory("property key table exhausted"))
+        .ok_or_else(|| Fault::OutOfMemory("property key table exhausted"))
 }
 
 /// The name of `key` if it needs the function's own handling: `prototype`
@@ -762,7 +762,7 @@ fn record_property(
             "a function's property record is not an object",
         )),
     })
-    .unwrap_or(Err(Fault::Internal("property record was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("property record was reclaimed")))
 }
 
 fn unsupported_inherited(name: &str, verb: &str) -> Fault {
@@ -1094,7 +1094,7 @@ fn writable_record(
             };
             Ok(*properties.get_or_insert(fresh))
         })
-        .ok_or(Fault::Internal("function object was reclaimed"))?
+        .ok_or_else(|| Fault::Internal("function object was reclaimed"))?
         // A check proved it shareable since `info` was read.
         .unwrap_or_else(|| Err(change.on_shared()))?;
     // Complete initial property order before a user property can be added.
@@ -1127,7 +1127,7 @@ fn materialize(
             ),
             _ => (false, false, false),
         })
-        .ok_or(Fault::Internal("function object was reclaimed"))?;
+        .ok_or_else(|| Fault::Internal("function object was reclaimed"))?;
     let parent = if asynchronous {
         super::async_generator::prototype(heap)?
     } else if generator {
@@ -1169,7 +1169,7 @@ fn materialize(
 pub(crate) fn initialize_class(heap: &Heap, task: TaskId, function: ObjectId) -> Result<(), Fault> {
     let key = Key::Name(JsString::from("prototype"));
     let record = own_store(heap, task, function, &key)?
-        .ok_or(Fault::Internal("class prototype record is missing"))?;
+        .ok_or_else(|| Fault::Internal("class prototype record is missing"))?;
     let Value::Object(prototype) = materialize(heap, task, function, record)? else {
         return Err(Fault::Internal("class prototype is not an object"));
     };
@@ -1178,7 +1178,7 @@ pub(crate) fn initialize_class(heap: &Heap, task: TaskId, function: ObjectId) ->
             f.home_object = Some(prototype);
         }
     })
-    .ok_or(Fault::Internal("class constructor was reclaimed"))?;
+    .ok_or_else(|| Fault::Internal("class constructor was reclaimed"))?;
     Ok(())
 }
 
@@ -1207,14 +1207,14 @@ pub(crate) fn inherit_class(
             _ => None,
         })
         .flatten()
-        .ok_or(Fault::Internal("class inheritance target is not a class"))?;
+        .ok_or_else(|| Fault::Internal("class inheritance target is not a class"))?;
     if let Value::Object(parent) = parent {
         heap.with_object_mut(record, |o| {
             if let HeapObject::Plain(o) = o {
                 o.set_prototype(Some(*parent));
             }
         })
-        .ok_or(Fault::Internal("class record was reclaimed"))?;
+        .ok_or_else(|| Fault::Internal("class record was reclaimed"))?;
     }
     super::prototype::set_prototype_of(heap, task, home, proto)
 }
@@ -1231,7 +1231,7 @@ pub(crate) fn inheritance_prototype(
                 HeapObject::Plain(o) => Ok(o.prototype()),
                 _ => Err(Fault::Internal("function record is not an object")),
             })
-            .ok_or(Fault::Internal("function record was reclaimed"))?;
+            .ok_or_else(|| Fault::Internal("function record was reclaimed"))?;
     }
     function_prototype(heap).map(Some)
 }

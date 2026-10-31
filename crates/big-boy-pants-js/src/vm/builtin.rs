@@ -1821,7 +1821,7 @@ pub(crate) fn call(
                 }
                 _ => Ok(Value::Undefined),
             })
-            .ok_or(Fault::Internal("typed array was reclaimed"))?
+            .ok_or_else(|| Fault::Internal("typed array was reclaimed"))?
         }
         Builtin::ObjectPrototypeValueOf => match this {
             Value::Undefined | Value::Null => Err(Fault::TypeError(format!(
@@ -2149,7 +2149,7 @@ fn string_access(heap: &Heap, which: Builtin, this: &Value, pos: &Value) -> Resu
     };
     Ok(match (which, unit) {
         (Builtin::StringPrototypeCharAt, Some(unit)) => {
-            Value::String(JsString::copy_units(heap, &[unit]).ok_or(Fault::HeapLimit)?)
+            Value::String(JsString::copy_units(heap, &[unit]).ok_or_else(|| Fault::HeapLimit)?)
         }
         (Builtin::StringPrototypeCharAt, None) => Value::String(JsString::from("")),
         (Builtin::StringPrototypeCharCodeAt, None) => Value::Number(f64::NAN),
@@ -2175,7 +2175,11 @@ pub(super) fn string_from_codes(
     which: Builtin,
     args: &[Value],
 ) -> Result<Value, Fault> {
-    let ticket = JsString::reserve(heap, args.len().checked_mul(4).ok_or(Fault::HeapLimit)?, 1)?;
+    let ticket = JsString::reserve(
+        heap,
+        args.len().checked_mul(4).ok_or_else(|| Fault::HeapLimit)?,
+        1,
+    )?;
     let mut units = Vec::new();
     for arg in args {
         let Value::Number(n) = *arg else {
@@ -2210,7 +2214,7 @@ pub(super) fn string_from_codes(
     }
     JsString::from_code_units(units)
         .map(|text| Value::String(text.with_reservation(ticket)))
-        .ok_or(Fault::StringTooLong)
+        .ok_or_else(|| Fault::StringTooLong)
 }
 
 fn validate_code_point(n: f64) -> Result<(), Fault> {
@@ -2346,7 +2350,7 @@ pub(crate) fn string_build(
         total
             .checked_add(*len)
             .filter(|total| *total <= crate::value::string::MAX_STRING_LEN)
-            .ok_or(Fault::StringTooLong)
+            .ok_or_else(|| Fault::StringTooLong)
     })?;
     if which == StringPrototypeConcat {
         crate::value::string::StringBuild::concatenation_accounted(heap, parts)
@@ -2541,12 +2545,13 @@ fn symbol_wrapper(heap: &Heap, task: TaskId, value: &Value) -> Result<Value, Fau
     let Value::Symbol(symbol) = value else {
         return Err(Fault::Internal("not a symbol primitive"));
     };
-    let realm = realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    let realm =
+        realm::intrinsics(heap).ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
     let object = OrdinaryObject::with_prototype(heap, task, realm.symbol_prototype)
         .with_primitive_data(PrimitiveData::Symbol(symbol.clone()));
     heap.alloc(HeapObject::Plain(object))
         .map(Value::Object)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
 }
 
 /// Inspect the receiver's own internal slots, never its prototype's slots.
@@ -2573,7 +2578,7 @@ pub(super) fn wrapper_data(
         }
         _ => Ok(None),
     })
-    .unwrap_or(Err(Fault::Internal("wrapper receiver was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("wrapper receiver was reclaimed")))
 }
 
 /// ToBigInt after resumable ToPrimitive. StringToBigInt runs in a native frame;
@@ -2707,13 +2712,13 @@ pub(crate) fn array_string_receiver(
         ),
         Value::Symbol(_) => symbol_wrapper(heap, task, this),
         Value::BigInt(value) => {
-            let realm =
-                realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+            let realm = realm::intrinsics(heap)
+                .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
             let object = OrdinaryObject::with_prototype(heap, task, realm.bigint_prototype)
                 .with_primitive_data(PrimitiveData::BigInt(std::sync::Arc::new(value.clone())));
             heap.alloc(HeapObject::Plain(object))
                 .map(Value::Object)
-                .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+                .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
         }
     }
 }
@@ -2829,12 +2834,12 @@ pub(crate) fn array_constructor(heap: &Heap, task: TaskId, args: &[Value]) -> Re
 /// Allocate the task-owned target before the resumable iterable consumer.
 pub(crate) fn map_constructor(heap: &Heap, task: TaskId) -> Result<Value, Fault> {
     let prototype = realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?
         .map_prototype;
     let map = crate::object::map::MapObject::new(heap, task, prototype);
     heap.alloc(HeapObject::JsMap(Box::new(map)))
         .map(Value::Object)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
 }
 
 fn map_operation(
@@ -2883,7 +2888,7 @@ fn map_operation(
             _ => return Err(Fault::Internal("not a Map operation")),
         })
     })
-    .unwrap_or(Err(Fault::Internal("Map receiver was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("Map receiver was reclaimed")))
 }
 
 /// Array.prototype is an immutable empty-array intrinsic whose property
@@ -2896,12 +2901,12 @@ pub(crate) fn is_array(heap: &Heap, value: &Value) -> Result<bool, Fault> {
     let target = super::proxy::unwrapped(heap, *id)?;
     let id = &target;
     let intrinsics =
-        realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+        realm::intrinsics(heap).ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
     if *id == intrinsics.array_prototype {
         return Ok(true);
     }
     heap.read(*id, |object| matches!(object, HeapObject::Array(_)))
-        .ok_or(Fault::Internal("array test argument was reclaimed"))
+        .ok_or_else(|| Fault::Internal("array test argument was reclaimed"))
 }
 
 /// Compute builtinTag before the observable tag read. Only IsArray and
@@ -2930,7 +2935,7 @@ pub(super) fn builtin_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fau
                             | HeapObject::BoundFunction(_)
                     )
                 })
-                .ok_or(Fault::Internal("receiver was reclaimed"))?
+                .ok_or_else(|| Fault::Internal("receiver was reclaimed"))?
             {
                 return Ok("Function");
             }
@@ -2949,7 +2954,7 @@ pub(super) fn builtin_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fau
                 },
                 _ => "Object",
             })
-            .ok_or(Fault::Internal("receiver was reclaimed"))
+            .ok_or_else(|| Fault::Internal("receiver was reclaimed"))
         }
     }
 }
@@ -2957,13 +2962,13 @@ pub(super) fn builtin_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fau
 /// Allocate an empty WeakMap; AddEntriesFromIterable performs user calls.
 pub(crate) fn weak_map_constructor(heap: &Heap, task: TaskId) -> Result<Value, Fault> {
     let prototype = realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?
         .weak_map_prototype;
     heap.alloc(HeapObject::WeakMap(Box::new(
         crate::object::weak_map::WeakMapObject::new(heap, task, prototype),
     )))
     .map(Value::Object)
-    .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+    .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
 }
 
 /// State-dependent leaf call. Every dynamically resolved builtin call uses
@@ -3022,7 +3027,7 @@ pub(crate) fn call_in_state(
             }
             Ok(weak.deref())
         })
-        .unwrap_or(Err(Fault::Internal("WeakRef receiver was reclaimed")))?;
+        .unwrap_or_else(|| Err(Fault::Internal("WeakRef receiver was reclaimed")))?;
     if let Some(edge) = crate::object::weak_map::weak_key(&value) {
         state
             .kept_objects
@@ -3041,7 +3046,7 @@ pub(crate) fn weak_ref_constructor(
     let edge = crate::object::weak_map::weak_key(target)
         .ok_or_else(|| Fault::TypeError("invalid WeakRef target".into()))?;
     let prototype = realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?
         .weak_ref_prototype;
     let id = heap
         .alloc(HeapObject::WeakRef(Box::new(
@@ -3053,7 +3058,7 @@ pub(crate) fn weak_ref_constructor(
                 edge,
             ),
         )))
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
     state
         .kept_objects
         .entry(edge)
@@ -3104,7 +3109,7 @@ fn weak_map_operation(
             _ => return Err(Fault::Internal("not a WeakMap operation")),
         })
     })
-    .unwrap_or(Err(Fault::Internal("WeakMap receiver was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("WeakMap receiver was reclaimed")))
 }
 
 pub(crate) fn finalization_registry_constructor(
@@ -3115,7 +3120,7 @@ pub(crate) fn finalization_registry_constructor(
     let callback = args.first().unwrap_or(&Value::Undefined);
     callable(heap, callback)?;
     let prototype = realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?
         .finalization_registry_prototype;
     heap.alloc(HeapObject::FinalizationRegistry(Box::new(
         crate::object::finalization_registry::FinalizationRegistryObject::new(
@@ -3127,7 +3132,7 @@ pub(crate) fn finalization_registry_constructor(
         ),
     )))
     .map(Value::Object)
-    .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+    .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
 }
 
 fn finalization_registry_operation(
@@ -3148,7 +3153,7 @@ fn finalization_registry_operation(
     let inbox = state
         .jobs
         .upgrade()
-        .ok_or(Fault::Internal("missing job inbox"))?;
+        .ok_or_else(|| Fault::Internal("missing job inbox"))?;
     heap.with_object_mut(*id, |object| {
         let HeapObject::FinalizationRegistry(registry) = object else {
             return Err(invalid());
@@ -3185,9 +3190,11 @@ fn finalization_registry_operation(
         inbox.retain_registry(*id, !registry.is_empty());
         Ok(result)
     })
-    .unwrap_or(Err(Fault::Internal(
-        "FinalizationRegistry receiver was reclaimed",
-    )))
+    .unwrap_or_else(|| {
+        Err(Fault::Internal(
+            "FinalizationRegistry receiver was reclaimed",
+        ))
+    })
 }
 
 fn disposable_stack_method(
@@ -3227,7 +3234,7 @@ fn disposable_stack_method(
         // must leave the stack usable with all of its resources.
         let destination = heap
             .alloc(HeapObject::DisposableStack(Box::new(moved)))
-            .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+            .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?;
         let (resources, reservation) = stack::access(heap, task, this, kind, true, |s| {
             s.disposed = true;
             (
@@ -3242,7 +3249,7 @@ fn disposable_stack_method(
             moved.resources = resources;
             moved.reservation = reservation;
         })
-        .ok_or(Fault::Internal("moved stack reclaimed"))?;
+        .ok_or_else(|| Fault::Internal("moved stack reclaimed"))?;
         return Ok(Value::Object(destination));
     }
     let (value, method, hint, result) = match which {
@@ -3270,12 +3277,12 @@ fn disposable_stack_method(
 
 pub(crate) fn set_constructor(heap: &Heap, task: TaskId) -> Result<Value, Fault> {
     let prototype = realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?
         .set_prototype;
     let map = crate::object::map::MapObject::new(heap, task, prototype);
     heap.alloc(HeapObject::JsSet(Box::new(map)))
         .map(Value::Object)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
 }
 
 fn set_operation(
@@ -3323,18 +3330,18 @@ fn set_operation(
             _ => return Err(Fault::Internal("not a Set operation")),
         })
     })
-    .unwrap_or(Err(Fault::Internal("Set receiver was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("Set receiver was reclaimed")))
 }
 
 pub(crate) fn weak_set_constructor(heap: &Heap, task: TaskId) -> Result<Value, Fault> {
     let prototype = realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))?
         .weak_set_prototype;
     heap.alloc(HeapObject::WeakSet(Box::new(
         crate::object::weak_map::WeakMapObject::new(heap, task, prototype),
     )))
     .map(Value::Object)
-    .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+    .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
 }
 
 fn weak_set_operation(
@@ -3376,7 +3383,7 @@ fn weak_set_operation(
             _ => return Err(Fault::Internal("not a WeakSet operation")),
         })
     })
-    .unwrap_or(Err(Fault::Internal("WeakSet receiver was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("WeakSet receiver was reclaimed")))
 }
 
 #[cfg(test)]

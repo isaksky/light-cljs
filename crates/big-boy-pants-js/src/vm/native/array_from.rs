@@ -237,7 +237,7 @@ impl State {
                 let action = self
                     .acquisition
                     .as_mut()
-                    .ok_or(Fault::Internal("missing GetIterator"))?
+                    .ok_or_else(|| Fault::Internal("missing GetIterator"))?
                     .step(heap, task, input)?;
                 if let Action::Return(record) = action {
                     self.iterator =
@@ -360,11 +360,11 @@ impl State {
                 self.stage = Stage::Rethrow;
                 Ok(Action::Continue)
             }
-            Stage::Rethrow => Err(Fault::Rethrow(
-                self.pending
-                    .take()
-                    .ok_or(Fault::Internal("missing Array.from exception"))?,
-            )),
+            Stage::Rethrow => {
+                Err(Fault::Rethrow(self.pending.take().ok_or_else(|| {
+                    Fault::Internal("missing Array.from exception")
+                })?))
+            }
         }
     }
 }

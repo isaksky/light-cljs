@@ -179,7 +179,7 @@ fn map_get(heap: &Heap, task: TaskId, map: &Value, key: &Value) -> Result<Option
         }
         Ok(map.get(key).cloned())
     })
-    .ok_or(Fault::Internal("compiler root context was reclaimed"))?
+    .ok_or_else(|| Fault::Internal("compiler root context was reclaimed"))?
 }
 
 // Peeking never executes an accessor. If compiler-owned bookkeeping has

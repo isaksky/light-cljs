@@ -54,7 +54,7 @@ impl Trace for Generator {
 pub(crate) fn prototype(heap: &Heap) -> Result<ObjectId, Fault> {
     crate::realm::intrinsics(heap)
         .map(|r| r.generator_prototype)
-        .ok_or(Fault::OutOfMemory("generator prototype"))
+        .ok_or_else(|| Fault::OutOfMemory("generator prototype"))
 }
 
 /// Establish the task-owned property record before publication can mark a
@@ -126,7 +126,7 @@ pub(crate) fn create(heap: &Heap, vm: &mut VmState) -> Result<(), Fault> {
             state: State::SuspendedStart(activation),
             asynchronous: asynchronous.then(super::async_generator::Data::default),
         })))
-        .ok_or(Fault::OutOfMemory("generator object"))?;
+        .ok_or_else(|| Fault::OutOfMemory("generator object"))?;
     vm.push(Value::Object(id));
     Ok(())
 }
@@ -153,7 +153,7 @@ pub(crate) fn receiver(heap: &Heap, task: TaskId, value: &Value) -> Result<Objec
             "generator method requires a generator receiver".into(),
         )),
     })
-    .unwrap_or(Err(Fault::Internal("generator reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("generator reclaimed")))
 }
 
 pub(crate) fn resume(
@@ -173,13 +173,13 @@ pub(crate) fn resume(
         },
         _ => Err(Fault::Internal("generator missing")),
     })
-    .ok_or(Fault::Internal("generator reclaimed"))??;
+    .ok_or_else(|| Fault::Internal("generator reclaimed"))??;
     let old = heap
         .with_object_mut(id, |o| match o {
             HeapObject::Generator(g) => std::mem::replace(&mut g.state, State::Executing),
             _ => unreachable!(),
         })
-        .ok_or(Fault::Internal("generator reclaimed"))?;
+        .ok_or_else(|| Fault::Internal("generator reclaimed"))?;
     match old {
         State::SuspendedStart(_) if kind != ResumeKind::Next => {
             complete(heap, id);
@@ -203,8 +203,8 @@ pub(crate) fn resume(
 }
 
 pub(crate) fn suspend(heap: &Heap, vm: &mut VmState, delegated: bool) -> Result<(), Fault> {
-    let id =
-        super::native::generator_boundary(vm).ok_or(Fault::Internal("yield outside generator"))?;
+    let id = super::native::generator_boundary(vm)
+        .ok_or_else(|| Fault::Internal("yield outside generator"))?;
     let value = vm.pop()?;
     let activation = vm.detach_activation(heap)?;
     heap.with_object_mut(id, |o| {
@@ -216,7 +216,7 @@ pub(crate) fn suspend(heap: &Heap, vm: &mut VmState, delegated: bool) -> Result<
             };
         }
     })
-    .ok_or(Fault::Internal("generator reclaimed"))?;
+    .ok_or_else(|| Fault::Internal("generator reclaimed"))?;
     vm.push(value);
     Ok(())
 }
@@ -231,17 +231,17 @@ pub(crate) fn complete(heap: &Heap, id: ObjectId) {
 
 pub(crate) fn result(heap: &Heap, task: TaskId, value: Value, done: bool) -> Result<Value, Fault> {
     let parent = crate::realm::intrinsics(heap)
-        .ok_or(Fault::OutOfMemory("realm"))?
+        .ok_or_else(|| Fault::OutOfMemory("realm"))?
         .object_prototype;
     let mut o = OrdinaryObject::with_prototype(heap, task, parent);
     for (name, value) in [("value", value), ("done", Value::Bool(done))] {
         let key = heap
             .keys()
             .intern(&name.into())
-            .ok_or(Fault::OutOfMemory("iterator result key"))?;
+            .ok_or_else(|| Fault::OutOfMemory("iterator result key"))?;
         o.define_with(key, value, PropertyFlags::DATA);
     }
     heap.alloc(HeapObject::Plain(o))
         .map(Value::Object)
-        .ok_or(Fault::OutOfMemory("iterator result"))
+        .ok_or_else(|| Fault::OutOfMemory("iterator result"))
 }

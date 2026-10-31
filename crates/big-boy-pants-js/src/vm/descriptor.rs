@@ -164,7 +164,7 @@ pub(crate) fn from_property_descriptor(
         let key = heap
             .keys()
             .intern(&JsString::from(name))
-            .ok_or(Fault::OutOfMemory("property key table exhausted"))?;
+            .ok_or_else(|| Fault::OutOfMemory("property key table exhausted"))?;
         if !object.define_with(key, value, PropertyFlags::DATA) {
             return Err(Fault::Internal("a fresh object is not extensible"));
         }

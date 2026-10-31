@@ -196,7 +196,7 @@ impl Intl {
             // entry and the result string before keeping either.
             let entry = heap
                 .reserve_bytes(canonical.len() + 64)
-                .ok_or(Fault::HeapLimit)?;
+                .ok_or_else(|| Fault::HeapLimit)?;
             let ticket = JsString::reserve(heap, canonical.len(), 1)?;
             self.seen.insert(canonical.clone());
             self.seen_charge.merge(entry);
@@ -304,14 +304,14 @@ impl Intl {
             }
             Stage::Build => {
                 let proto = crate::realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("realm exhausted"))?
+                    .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
                     .intl_locale_prototype;
                 let object = OrdinaryObject::with_prototype(heap, task, proto)
                     .with_locale_data(self.tag.take().unwrap());
                 let value = heap
                     .alloc(HeapObject::Plain(object))
                     .map(Value::Object)
-                    .ok_or(Fault::OutOfMemory("heap exhausted"))?;
+                    .ok_or_else(|| Fault::OutOfMemory("heap exhausted"))?;
                 Ok(Action::Return(value))
             }
             Stage::List => {

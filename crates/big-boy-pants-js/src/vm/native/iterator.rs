@@ -65,7 +65,7 @@ fn cursor<R>(
         }
         o.iterator().map(f).ok_or_else(invalid)
     })
-    .ok_or(Fault::Internal("iterator was reclaimed"))?
+    .ok_or_else(|| Fault::Internal("iterator was reclaimed"))?
 }
 
 fn map<R>(
@@ -102,7 +102,7 @@ fn map<R>(
         }
         Ok(f(map))
     })
-    .ok_or(Fault::Internal("Map was reclaimed"))?
+    .ok_or_else(|| Fault::Internal("Map was reclaimed"))?
 }
 
 fn object(
@@ -110,7 +110,8 @@ fn object(
     task: TaskId,
     fields: &[(&property::FixedName, Value)],
 ) -> Result<Value, Fault> {
-    let realm = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("iterator realm"))?;
+    let realm =
+        crate::realm::intrinsics(heap).ok_or_else(|| Fault::OutOfMemory("iterator realm"))?;
     let mut o = OrdinaryObject::with_prototype(heap, task, realm.object_prototype);
     for (name, value) in fields {
         let key = name
@@ -120,7 +121,7 @@ fn object(
     }
     heap.alloc(HeapObject::Plain(o))
         .map(Value::Object)
-        .ok_or(Fault::OutOfMemory("iterator object"))
+        .ok_or_else(|| Fault::OutOfMemory("iterator object"))
 }
 
 pub(crate) fn create(
@@ -141,7 +142,8 @@ pub(crate) fn create(
     if is_set(kind) || is_map(kind) {
         map(heap, task, source, is_set(kind), |_| ())?;
     }
-    let realm = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("iterator realm"))?;
+    let realm =
+        crate::realm::intrinsics(heap).ok_or_else(|| Fault::OutOfMemory("iterator realm"))?;
     let prototype = if is_set(kind) {
         realm.set_iterator_prototype
     } else if is_map(kind) {
@@ -159,7 +161,7 @@ pub(crate) fn create(
     });
     heap.alloc(HeapObject::Plain(o))
         .map(Value::Object)
-        .ok_or(Fault::OutOfMemory("iterator cursor"))
+        .ok_or_else(|| Fault::OutOfMemory("iterator cursor"))
 }
 
 #[derive(Debug)]
@@ -535,7 +537,7 @@ impl State {
                     };
                     let value = Value::String(
                         JsString::copy_units(heap, &units[start..start + count])
-                            .ok_or(Fault::HeapLimit)?,
+                            .ok_or_else(|| Fault::HeapLimit)?,
                     );
                     cursor(heap, task, &self.iterator, |data| {
                         data.index = self.index + count as u64

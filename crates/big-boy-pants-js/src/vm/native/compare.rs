@@ -525,7 +525,7 @@ impl Diagnostic {
             let mut charge = std::mem::take(&mut self.header_charge);
             charge.merge(std::mem::take(&mut self.output_charge).into_reservation());
             let message = JsString::from_owned_code_units(std::mem::take(&mut self.units))
-                .ok_or(Fault::StringTooLong)?
+                .ok_or_else(|| Fault::StringTooLong)?
                 .with_reservation(charge.is_charged().then(|| std::sync::Arc::new(charge)));
             let mut host_charge = std::mem::take(&mut self.host_header);
             host_charge.merge(std::mem::take(&mut self.host_charge).into_reservation());

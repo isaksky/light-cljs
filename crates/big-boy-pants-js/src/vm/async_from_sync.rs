@@ -146,7 +146,8 @@ pub(crate) fn create(
             driver(ResumeKind::Throw),
         ]
     });
-    let realm = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("async iterator realm"))?;
+    let realm =
+        crate::realm::intrinsics(heap).ok_or_else(|| Fault::OutOfMemory("async iterator realm"))?;
     let mut object = OrdinaryObject::with_prototype(heap, task, realm.async_iterator_prototype);
     let mut next_method = Value::Undefined;
     for (name, code) in ["next", "return", "throw"].into_iter().zip(drivers) {
@@ -163,11 +164,11 @@ pub(crate) fn create(
         let key = heap
             .keys()
             .intern(&name.into())
-            .ok_or(Fault::OutOfMemory("async iterator method"))?;
+            .ok_or_else(|| Fault::OutOfMemory("async iterator method"))?;
         object.define_with(key, method, PropertyFlags::METHOD);
     }
     let id = heap
         .alloc(HeapObject::Plain(object))
-        .ok_or(Fault::OutOfMemory("async-from-sync iterator"))?;
+        .ok_or_else(|| Fault::OutOfMemory("async-from-sync iterator"))?;
     Ok((Value::Object(id), next_method))
 }

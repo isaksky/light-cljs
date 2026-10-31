@@ -382,14 +382,14 @@ impl State {
                 let mut slots = self.slots.take().unwrap();
                 slots.finish()?;
                 let proto = crate::realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("realm exhausted"))?
+                    .ok_or_else(|| Fault::OutOfMemory("realm exhausted"))?
                     .intl_date_time_format_prototype;
                 heap.alloc(HeapObject::Plain(
                     OrdinaryObject::with_prototype(heap, task, proto).with_date_time_format(slots),
                 ))
                 .map(Value::Object)
                 .map(Action::Return)
-                .ok_or(Fault::OutOfMemory("heap exhausted"))
+                .ok_or_else(|| Fault::OutOfMemory("heap exhausted"))
             }
             Stage::Format => {
                 if matches!(self.argument, Value::Object(_)) {

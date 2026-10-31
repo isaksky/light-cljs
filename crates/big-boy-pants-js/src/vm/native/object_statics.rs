@@ -245,7 +245,7 @@ impl Define {
                 let reader = self
                     .reader
                     .as_mut()
-                    .ok_or(Fault::Internal("missing descriptor reader"))?;
+                    .ok_or_else(|| Fault::Internal("missing descriptor reader"))?;
                 let value = match input {
                     Input::CallResult(value) => Some(value),
                     _ => None,

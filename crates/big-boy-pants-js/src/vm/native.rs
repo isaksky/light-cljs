@@ -778,10 +778,10 @@ impl ArrayJoin {
             .units
             .checked_add(len)
             .filter(|n| *n <= crate::value::string::MAX_STRING_LEN)
-            .ok_or(Fault::StringTooLong)?;
+            .ok_or_else(|| Fault::StringTooLong)?;
         if len != 0 {
-            let charge = heap.reserve_bytes(128).ok_or(Fault::HeapLimit)?;
-            let text = text.import(heap).ok_or(Fault::HeapLimit)?;
+            let charge = heap.reserve_bytes(128).ok_or_else(|| Fault::HeapLimit)?;
+            let text = text.import(heap).ok_or_else(|| Fault::HeapLimit)?;
             self.parts.push((text, 0, len));
             self.parts_reservation.merge(charge);
         }
@@ -1340,7 +1340,7 @@ fn operands<const N: usize>(state: &VmState) -> Result<[Value; N], Fault> {
     ops.len()
         .checked_sub(N)
         .map(|at| std::array::from_fn(|i| ops[at + i].clone()))
-        .ok_or(Fault::Internal("operand stack underflow"))
+        .ok_or_else(|| Fault::Internal("operand stack underflow"))
 }
 
 /// Start a continuation for object conversion or BigInt/String comparison.
@@ -1361,7 +1361,7 @@ pub(crate) fn start_conversion(
         let at = ops
             .len()
             .checked_sub(2)
-            .ok_or(Fault::Internal("operand stack underflow"))?;
+            .ok_or_else(|| Fault::Internal("operand stack underflow"))?;
         if let Some(parser) = bigint_comparison(heap, instr, &ops[at..])? {
             state.pop()?;
             state.pop()?;
@@ -1395,9 +1395,9 @@ pub(crate) fn start_conversion(
                 .get(
                     ops.len()
                         .checked_sub(count)
-                        .ok_or(Fault::Internal("operand stack underflow"))?,
+                        .ok_or_else(|| Fault::Internal("operand stack underflow"))?,
                 )
-                .ok_or(Fault::Internal("operand stack underflow"))?;
+                .ok_or_else(|| Fault::Internal("operand stack underflow"))?;
             if matches!(base, Value::Undefined | Value::Null) {
                 return Ok(false);
             }
@@ -1409,7 +1409,7 @@ pub(crate) fn start_conversion(
                 .iter()
                 .rev()
                 .nth(2)
-                .ok_or(Fault::Internal("operand stack underflow"))?;
+                .ok_or_else(|| Fault::Internal("operand stack underflow"))?;
             if !matches!(base, Value::Object(_)) {
                 return Ok(false);
             }
@@ -1428,7 +1428,7 @@ pub(crate) fn start_conversion(
     let at = ops
         .len()
         .checked_sub(count)
-        .ok_or(Fault::Internal("operand stack underflow"))?;
+        .ok_or_else(|| Fault::Internal("operand stack underflow"))?;
     if !ops[at + first..at + end].iter().any(|v| {
         matches!(v, Value::Object(_))
             || (matches!(v, Value::BigInt(_))
@@ -1533,7 +1533,7 @@ fn eval_source(
                 })
                 .flatten()
             })
-            .ok_or(Fault::Internal("eval caller capture is missing")),
+            .ok_or_else(|| Fault::Internal("eval caller capture is missing")),
         EvalSource::This => Ok(state.top().this.clone()),
         EvalSource::NewTarget => Ok(state.top().new_target.clone()),
         EvalSource::GlobalObject => dispatch::global_object(state, heap),
@@ -2039,7 +2039,7 @@ fn initialize_builtin_slow(
     let result = match which {
         Builtin::RegExp => {
             let native = regexp::start(heap, task, which, &Value::Undefined, args, true)?
-                .ok_or(Fault::Internal("RegExp constructor missing"))?;
+                .ok_or_else(|| Fault::Internal("RegExp constructor missing"))?;
             return push_native(state, NativeState::RegExp(native));
         }
         Builtin::IntlLocale
@@ -2074,7 +2074,7 @@ fn initialize_builtin_slow(
                 heap,
                 task,
                 &result,
-                prototype.ok_or(Fault::Internal("collection prototype missing"))?,
+                prototype.ok_or_else(|| Fault::Internal("collection prototype missing"))?,
             )?;
             let items = args.first().cloned().unwrap_or(Value::Undefined);
             return if matches!(which, Builtin::Set | Builtin::WeakSet) {
@@ -2092,7 +2092,7 @@ fn initialize_builtin_slow(
                 heap,
                 task,
                 args,
-                prototype.ok_or(Fault::Internal("promise prototype missing"))?,
+                prototype.ok_or_else(|| Fault::Internal("promise prototype missing"))?,
             )?;
             return push_native(state, NativeState::Promise(native));
         }
@@ -2551,7 +2551,7 @@ fn start_generator_resume(
         let boundary = state
             .natives
             .get_mut(boundary_index)
-            .ok_or(Fault::Internal("missing generator boundary"))?;
+            .ok_or_else(|| Fault::Internal("missing generator boundary"))?;
         boundary.awaiting = Awaiting::CallResult;
     } else {
         state.pop_native_catch(state.natives.len() - 1);
@@ -3326,7 +3326,7 @@ pub(crate) fn start(
                     .top()
                     .arguments
                     .as_ref()
-                    .ok_or(Fault::Internal("rest arguments unavailable"))?
+                    .ok_or_else(|| Fault::Internal("rest arguments unavailable"))?
                     .iter()
                     .skip(usize::from(index))
                     .cloned()
@@ -3572,7 +3572,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
         .natives
         .last()
         .filter(|n| n.depth == depth)
-        .ok_or(Fault::Internal("no running native frame"))?;
+        .ok_or_else(|| Fault::Internal("no running native frame"))?;
     let (base, awaiting) = (frame.base, frame.awaiting);
     // The completion is read in place: it stays rooted in the operand area
     // until the step has stored it in the frame.
@@ -3608,7 +3608,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     let frame = state
         .natives
         .last_mut()
-        .ok_or(Fault::Internal("no running native frame"))?;
+        .ok_or_else(|| Fault::Internal("no running native frame"))?;
     frame.awaiting = Awaiting::Nothing;
     let action = {
         let _borrow = scoped_borrow();
@@ -4122,7 +4122,7 @@ fn set_awaiting(state: &mut VmState, awaiting: Awaiting) -> Result<(), Fault> {
     let frame = state
         .natives
         .last_mut()
-        .ok_or(Fault::Internal("no running native frame"))?;
+        .ok_or_else(|| Fault::Internal("no running native frame"))?;
     frame.awaiting = awaiting;
     Ok(())
 }
@@ -4559,7 +4559,7 @@ impl NativeState {
             if *stage == 0 && super::proxy::inspect(heap, task, *id)?.is_some() {
                 *stage = 3;
                 let object = crate::realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("realm allocation"))?
+                    .ok_or_else(|| Fault::OutOfMemory("realm allocation"))?
                     .global(crate::realm::Global::Object);
                 let callee = property::get(
                     heap,
@@ -5398,7 +5398,7 @@ impl NativeState {
                                 *concat_len = concat_len
                                     .checked_add(text.len())
                                     .filter(|n| *n <= crate::value::string::MAX_STRING_LEN)
-                                    .ok_or(Fault::StringTooLong)?;
+                                    .ok_or_else(|| Fault::StringTooLong)?;
                             }
                             *hint = if builtin::string_operand_is_text(which, *next + 1) {
                                 Hint::String
@@ -5674,7 +5674,7 @@ impl NativeState {
                             return Err(Fault::Internal("typed array write key"));
                         };
                         let view = crate::object::typed_array::view(heap, task, id)?
-                            .ok_or(Fault::Internal("typed array write kind"))?;
+                            .ok_or_else(|| Fault::Internal("typed array write kind"))?;
                         view.set(heap, index, &operands[3])?;
                         Ok(Action::Return(operands[1].clone()))
                     }

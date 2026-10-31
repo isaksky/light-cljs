@@ -55,7 +55,7 @@ pub(crate) fn construct(heap: &Heap, task: TaskId, args: &[Value]) -> Result<Val
         handler: *handler,
     }))
     .map(Value::Object)
-    .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+    .ok_or_else(|| Fault::OutOfMemory("heap object table exhausted"))
 }
 pub(crate) fn inspect(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<Info>, Fault> {
     // Immutable realm views are authoritative. Intrinsic property reads must
@@ -79,7 +79,7 @@ pub(crate) fn inspect(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<
         })),
         _ => Ok(None),
     })
-    .ok_or(Fault::Internal("Proxy was reclaimed"))?
+    .ok_or_else(|| Fault::Internal("Proxy was reclaimed"))?
 }
 fn error(message: &str) -> Fault {
     Fault::TypeError(format!("Proxy: {message}"))
@@ -176,7 +176,7 @@ pub(crate) fn unwrapped(heap: &Heap, mut id: ObjectId) -> Result<ObjectId, Fault
                 HeapObject::Proxy(p) => Some(p.target),
                 _ => None,
             })
-            .ok_or(Fault::Internal("Proxy target was reclaimed"))?;
+            .ok_or_else(|| Fault::Internal("Proxy target was reclaimed"))?;
         match target {
             Some(target) => id = target,
             None => return Ok(id),
@@ -352,7 +352,7 @@ impl Operation {
 fn key_value(heap: &Heap, key: &Key) -> Result<Value, Fault> {
     Ok(match key {
         Key::Index(i) => Value::String(keys::index_name(heap, *i)?),
-        Key::Name(n) => Value::String(n.import(heap).ok_or(Fault::HeapLimit)?),
+        Key::Name(n) => Value::String(n.import(heap).ok_or_else(|| Fault::HeapLimit)?),
         Key::Symbol(s) => Value::Symbol(s.clone()),
     })
 }
@@ -436,11 +436,9 @@ impl Operations {
     }
     fn advance(&mut self, heap: &Heap, task: TaskId, input: Input) -> Result<Progress, Fault> {
         if self.stack.is_empty() {
-            return Ok(Progress::Done(
-                self.output
-                    .take()
-                    .ok_or(Fault::Internal("Proxy operation missing result"))?,
-            ));
+            return Ok(Progress::Done(self.output.take().ok_or_else(|| {
+                Fault::Internal("Proxy operation missing result")
+            })?));
         }
         if self.stack.len() > 512 {
             return Err(error("operation depth exceeded"));
@@ -580,7 +578,7 @@ impl Operations {
                 let out = self
                     .output
                     .take()
-                    .ok_or(Fault::Internal("Proxy forwarding result missing"))?;
+                    .ok_or_else(|| Fault::Internal("Proxy forwarding result missing"))?;
                 return self.finish(out);
             }
             Stage::TrapResult => {
@@ -825,7 +823,7 @@ impl Operations {
                 let mut own = op
                     .reported
                     .take()
-                    .ok_or(Fault::Internal("mutable field descriptor missing"))?;
+                    .ok_or_else(|| Fault::Internal("mutable field descriptor missing"))?;
                 own.value = result(input)?;
                 return self.finish(Output::Descriptor(Some(own)));
             }
@@ -1452,7 +1450,8 @@ impl Call {
         let Value::Object(id) = call.callee else {
             return Err(error("call target must be an object"));
         };
-        let proxy = inspect(heap, task, id)?.ok_or(Fault::Internal("Proxy call lost its Proxy"))?;
+        let proxy =
+            inspect(heap, task, id)?.ok_or_else(|| Fault::Internal("Proxy call lost its Proxy"))?;
         Ok(Self {
             proxy,
             this: call.this,

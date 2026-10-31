@@ -241,7 +241,7 @@ impl State {
     fn finish(&mut self) -> Result<Action, Fault> {
         Ok(Action::Return(Value::String(
             JsString::from_owned_code_units(std::mem::take(&mut self.out))
-                .ok_or(Fault::StringTooLong)?
+                .ok_or_else(|| Fault::StringTooLong)?
                 .with_reservation(self.output_reservation.take()),
         )))
     }
@@ -446,7 +446,7 @@ impl State {
                             self.cursor = None;
                             let flat =
                                 JsString::from_owned_code_units(std::mem::take(&mut self.units))
-                                    .ok_or(Fault::StringTooLong)?
+                                    .ok_or_else(|| Fault::StringTooLong)?
                                     .with_reservation(self.copy_reservation.take());
                             if self.stage == Stage::CollectNeedle {
                                 self.needle = flat;
@@ -648,12 +648,15 @@ impl State {
         } else if self.which == StringAt {
             return Ok(Action::Return(Value::String(
                 JsString::copy_units(heap, &self.text.code_units()[self.start..self.start + 1])
-                    .ok_or(Fault::HeapLimit)?,
+                    .ok_or_else(|| Fault::HeapLimit)?,
             )));
         } else {
             // Cover decoding, Unicode expansion, sorting scratch and the returned body.
-            self.output_reservation =
-                JsString::reserve(heap, len.checked_mul(128).ok_or(Fault::HeapLimit)?, 1)?;
+            self.output_reservation = JsString::reserve(
+                heap,
+                len.checked_mul(128).ok_or_else(|| Fault::HeapLimit)?,
+                1,
+            )?;
             reserve(&mut self.scalars, len)?;
             // Unicode 17 maximum default case expansion is 3 UTF-16 units per
             // source unit; maximum fully recursive compatibility expansion 18.

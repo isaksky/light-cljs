@@ -525,7 +525,7 @@ pub(crate) fn start(
     let at = ops
         .len()
         .checked_sub(n)
-        .ok_or(Fault::Internal("operand stack underflow"))?;
+        .ok_or_else(|| Fault::Internal("operand stack underflow"))?;
     let operands = ops[at..].to_vec();
     let realize = Realize::new(heap, instr, operands, lazy, answers, walk).ok_or(
         Fault::Internal("realization request for a value that is not lazy"),

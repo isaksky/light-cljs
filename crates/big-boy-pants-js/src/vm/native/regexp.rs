@@ -156,7 +156,8 @@ pub(crate) fn getter(
     this: &Value,
 ) -> Result<Value, Fault> {
     let c = object::data(heap, task, this)?;
-    let intrinsic = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("RegExp realm"))?;
+    let intrinsic =
+        crate::realm::intrinsics(heap).ok_or_else(|| Fault::OutOfMemory("RegExp realm"))?;
     let prototype = matches!(this, Value::Object(id) if *id == intrinsic.regexp_prototype);
     match (which, c) {
         (Builtin::RegExpSource, Some(c)) => Ok(Value::String(object::source(heap, &c.source)?)),
@@ -270,7 +271,7 @@ impl State {
                     1 => {
                         if *identity {
                             let constructor = crate::realm::intrinsics(heap)
-                                .ok_or(Fault::OutOfMemory("RegExp realm"))?
+                                .ok_or_else(|| Fault::OutOfMemory("RegExp realm"))?
                                 .global(crate::realm::Global::RegExp);
                             if crate::atom::same_value(&v, &constructor) {
                                 return Ok(Action::Return(original.clone()));
@@ -338,7 +339,7 @@ impl State {
                                 Value::Object(id) => id,
                                 _ => {
                                     crate::realm::intrinsics(heap)
-                                        .ok_or(Fault::OutOfMemory("RegExp realm"))?
+                                        .ok_or_else(|| Fault::OutOfMemory("RegExp realm"))?
                                         .regexp_prototype
                                 }
                             });
@@ -410,7 +411,7 @@ impl State {
                                 // Fall back to the intrinsic exec when an own exec isn't callable.
                                 let proto = Value::Object(
                                     crate::realm::intrinsics(heap)
-                                        .ok_or(Fault::OutOfMemory("RegExp realm"))?
+                                        .ok_or_else(|| Fault::OutOfMemory("RegExp realm"))?
                                         .regexp_prototype,
                                 );
                                 property::get(heap, task, &proto, &key("exec"))?

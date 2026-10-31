@@ -44,7 +44,7 @@ impl Trace for Data {
 pub(crate) fn prototype(heap: &Heap) -> Result<ObjectId, Fault> {
     crate::realm::intrinsics(heap)
         .map(|r| r.async_generator_prototype)
-        .ok_or(Fault::OutOfMemory("async generator prototype"))
+        .ok_or_else(|| Fault::OutOfMemory("async generator prototype"))
 }
 
 #[derive(Debug)]
@@ -109,7 +109,7 @@ impl Boundary {
         let request = self
             .request
             .as_ref()
-            .ok_or(Fault::Internal("async generator request missing"))?;
+            .ok_or_else(|| Fault::Internal("async generator request missing"))?;
         self.stage = Stage::Settling;
         self.rejecting = rejected;
         Ok(Action::Call {
@@ -269,7 +269,7 @@ pub(crate) fn enqueue(
             HeapObject::Generator(g) => !g.asynchronous.as_ref().unwrap().busy,
             _ => unreachable!(),
         })
-        .ok_or(Fault::Internal("async generator reclaimed"))?;
+        .ok_or_else(|| Fault::Internal("async generator reclaimed"))?;
     // Admit geometric queue capacity before installing a native boundary.
     let capacity = heap
         .read(id, |o| match o {
@@ -283,14 +283,14 @@ pub(crate) fn enqueue(
             }
             _ => unreachable!(),
         })
-        .ok_or(Fault::Internal("async generator reclaimed"))?;
+        .ok_or_else(|| Fault::Internal("async generator reclaimed"))?;
     let charge = heap
         .reserve_bytes(
             capacity
                 .checked_mul(std::mem::size_of::<Request>())
-                .ok_or(Fault::HeapLimit)?,
+                .ok_or_else(|| Fault::HeapLimit)?,
         )
-        .ok_or(Fault::HeapLimit)?;
+        .ok_or_else(|| Fault::HeapLimit)?;
     // Reserve the native boundary and catch handler before claiming the
     // queue, so a limit cannot leave it marked busy without a driver.
     if start {
@@ -305,7 +305,7 @@ pub(crate) fn enqueue(
         }
         _ => unreachable!(),
     })
-    .ok_or(Fault::Internal("async generator reclaimed"))?;
+    .ok_or_else(|| Fault::Internal("async generator reclaimed"))?;
     if !start {
         vm.push(Value::Object(promise));
     }
@@ -362,7 +362,7 @@ pub(crate) fn resume(
             },
             _ => Err(Fault::Internal("foreign async generator")),
         })
-        .ok_or(Fault::Internal("async generator reclaimed"))??;
+        .ok_or_else(|| Fault::Internal("async generator reclaimed"))??;
     let mut boundary = Boundary::new(id, Value::Undefined);
     boundary.stage = Stage::Running;
     if awaiting_return {
@@ -384,13 +384,13 @@ pub(crate) fn resume(
         },
         _ => Err(Fault::Internal("async generator reclaimed")),
     })
-    .ok_or(Fault::Internal("async generator reclaimed"))??;
+    .ok_or_else(|| Fault::Internal("async generator reclaimed"))??;
     let old = heap
         .with_object_mut(id, |o| match o {
             HeapObject::Generator(g) => std::mem::replace(&mut g.state, State::Executing),
             _ => unreachable!(),
         })
-        .ok_or(Fault::Internal("async generator reclaimed"))?;
+        .ok_or_else(|| Fault::Internal("async generator reclaimed"))?;
     match old {
         State::Awaiting(a) => {
             vm.attach_activation(a);
