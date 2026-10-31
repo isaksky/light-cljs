@@ -127,13 +127,10 @@ fn walk_report(shareable: usize, causes: &[(String, Vec<String>, String)]) -> St
 /// task and `Runtime::publish` accepts the result with zero rejected paths.
 /// On failure the first rejected path is printed, then the walk of every
 /// member by cause and the top-level bindings a seal cannot take. State on
-/// 2026-10-31 (after light-cljs-666's third attempt, the symbols view): 739
-/// of 748 members publish; the one remaining cause is the V8 form bridge
-/// (`compilerForms` and, through `readerJsLiterals`, the eight reader entry
-/// points; what the Pants build boots of the bridge is light-cljs-648's,
-/// with the options in docs/real-core-design.md, "Profile assembly").
+/// The complete profile publishes, including its reader literal builders.
+/// The Pants evaluator owns its bridge; this profile does not instantiate
+/// the V8 bridge's mutable decode/encode state.
 #[test]
-#[ignore = "739 of 748 members publish; the V8 form bridge (light-cljs-648) remains, see docs/real-core-design.md"]
 fn shared_profile_boots_and_publishes_with_zero_rejected_paths() {
     let rt = Runtime::new();
     let booted = boot(&rt);
@@ -809,7 +806,7 @@ fn shared_profile_registry_getters_keep_the_profile_published() {
     });
     assert_eq!(
         out,
-        "gensymScopes:Map0 generatedNames:Set0 tapListeners:Set0 tapQueue:Array protocolSlots:Map0 formHashes:WeakMap formEntries:WeakMap \
+        "gensymScopes:Map0 generatedNames:Set0 tapListeners:Set0 tapQueue:Array protocolSlots:Map0 formHashes:WeakMap formEntries:WeakMap varMetadata:WeakMap atomOwners:WeakMap \
          coreDispatchers:Map+ nativeMethods:Map0 protocolValues:Map0 protocolFunctions:Map0 protocolVariables:Map0 \
          protocolGetters:Map0 reifySites:Map0 protocolImplementations:WeakMap typeNames:WeakMap namespaces:Map2 \
          streams:WeakMap readerMaps:WeakMap tags:Map3 builtinTags:Map3 true"
@@ -927,6 +924,138 @@ fn shared_profile_vars_with_engine_symbol_names_print() {
     assert_eq!(
         out.string().unwrap().to_string_lossy(),
         "#'demo/x #'demo/x #'demo/x #'demo/x #'demo/x #'a/b demo/x"
+    );
+}
+
+#[test]
+fn shared_profile_engine_vars_keep_identity_metadata_and_deferred_roots() {
+    let rt = Runtime::new();
+    let out = run(&rt, &format!(
+        "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+         const type = __rt.structType('cljs.core/Var', __rt.formVector('val', 'sym', '__metadata', '__deferred'), 1, null); \
+         const name = core.symbol('demo', 'x'), metadata = core.arrayMap(core.keyword('tag'), 7); \
+         let roots = 0, deferred = 0; \
+         const v = __rt.structNew(type, () => {{ roots++; return 42; }}, name, metadata, () => {{ deferred++; return 'test'; }}); \
+         const own = rt.makeVar(() => 9, name); \
+         const identity = [core.isVar(v), core.isFn(v), core.equal(v, own), core.equal(own, v), core.hash(v) === core.hash(own), core.str(v), core.prStr(v), roots, deferred]; \
+         const m = core.meta(v), again = core.meta(v); \
+         const copy = core.withMeta(v, core.arrayMap(core.keyword('tag'), 8)); \
+         return [...identity, m === again, core.get(m, core.keyword('tag')), core.get(m, core.keyword('test')), deferred, \
+           core.get(core.meta(copy), core.keyword('tag')), core.isVar(copy), core.deref(copy), roots].join(' ');"
+    )).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true true true true true #'demo/x #'demo/x 0 0 true 7 test 1 8 true 42 1"
+    );
+}
+
+#[test]
+fn shared_profile_engine_regex_and_lazy_matches_publish() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+         const re = __rt.formRegex('(a)', ''), built = core.rePattern('(a)'); \
+         const matches = core.reSeq(re, 'aba'); \
+         return __rt.formVector(matches, core.sharedTaskCells, \
+           [core.isRegex(re), core.isRegex(built), __rt.formKind(built), core.prStr(re), \
+            core.prStr(core.reFind(re, 'ba')), core.prStr(core.reMatches(re, 'a')), \
+            core.rePattern(re) === re, __rt.formKind(core.rePattern('(?g)a')) === null].join(' '));"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let (matches, cells, text) = rt.scope(|s| {
+        let out = s.local(&out).unwrap();
+        (
+            s.persist(s.form_nth(out, 0).unwrap()),
+            s.persist(s.form_nth(out, 1).unwrap()),
+            s.string(s.form_nth(out, 2).unwrap())
+                .unwrap()
+                .to_string_lossy(),
+        )
+    });
+    assert_eq!(
+        text,
+        "true true compiler-literal #\"(a)\" [\"a\" \"a\"] [\"a\" \"a\"] true true"
+    );
+    rt.publish(&matches).unwrap();
+    let walk = compile_function(
+        "function walk(xs, makeCells) { globalThis.__lightSharedCells = makeCells(); \
+        return String(__rt.cljCount(xs)); }",
+    )
+    .unwrap();
+    match rt.spawn(&walk, &[&matches, &cells]).unwrap().run().unwrap() {
+        RunOutcome::Complete(value) => assert_eq!(value.string().unwrap().to_string_lossy(), "2"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn shared_profile_engine_structs_and_records_keep_their_brands() {
+    let rt = Runtime::new();
+    let out = run(&rt, &format!(
+        "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+         const type = __rt.structType('demo/Point', __rt.formVector('x', 'y'), true, null); \
+         const plain = __rt.structType('demo/Box', __rt.formVector('x'), false, null); \
+         const r = __rt.structNew(type, 1, 2), s = __rt.structNew(plain, 1); \
+         const x = core.keyword('x'), extra = core.keyword('extra'), tag = core.keyword('tag'); \
+         const updated = core.assoc(r, x, 3, extra, 4), metadata = core.arrayMap(tag, 9); \
+         const withMeta = core.withMeta(updated, metadata), removed = core.dissoc(withMeta, extra), map = core.dissoc(r, x); \
+         return [core.isInstance(type, r), core.isInstance(plain, s), core.isInstance(type, s), \
+           core.isRecord(r), core.isRecord(s), core.isMap(r), core.count(r), core.get(r, x), \
+           core.prStr(r), core.prStr(core.seq(r)), core.get(updated, x), core.get(updated, extra), \
+           core.count(updated), __rt.formKind(updated), core.get(core.meta(removed), tag), core.isRecord(removed), \
+           core.isRecord(map), core.isMap(map), core.count(map), core.equal(r, __rt.structNew(type, 1, 2)), \
+           core.hash(r) === core.hash(__rt.structNew(type, 1, 2))].join(' ');"
+    )).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true true false true false true 2 1 #demo.Point{:x 1, :y 2} ([:x 1] [:y 2]) 3 4 3 record 9 true false true 1 true true"
+    );
+}
+
+#[test]
+fn shared_profile_engine_atoms_keep_state_options_and_watch_order() {
+    let rt = Runtime::new();
+    let out = run(&rt, &format!(
+        "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+         const a = __rt.atomNew(1), seen = __rt.atomNew(null), key = core.keyword('watch'); \
+         const made = core.atom(2), metadata = core.arrayMap(core.keyword('tag'), 3); \
+         core.resetMeta(a, metadata); core.setValidator(a, x => x >= 0); \
+         core.addWatch(a, key, (key, ref, before, after) => {{ __rt.atomCas(seen, __rt.atomLoad(seen), __rt.formVector(before, after)); }}); \
+         core.swap(a, x => x + 4); const swapped = core.deref(a), watched = core.prStr(core.deref(seen)); \
+         let rejected = false; try {{ core.reset(a, -1); }} catch (e) {{ rejected = true; }} \
+         const unchanged = core.deref(a); core.removeWatch(a, key); core.reset(a, 6); \
+         core.addWatch(a, key, () => {{ throw new Error('watch'); }}); \
+         let threw = false; try {{ core.reset(a, 7); }} catch (e) {{ threw = true; }} \
+         return [core.satisfies(core.IAtom, a), core.isInstance(core.Atom, a), __rt.cljIsAtom(made), \
+           swapped, watched, rejected, unchanged, core.prStr(core.deref(seen)), threw, core.deref(a), \
+           core.get(core.meta(a), core.keyword('tag')), core.getValidator(a)(1), core.prStr(made)].join(' ');"
+    )).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true true true 5 [1 5] true 5 [1 5] true 7 3 true #object[cljs.core.Atom {:val 2}]"
+    );
+}
+
+#[test]
+fn shared_profile_engine_multimethod_brand_is_recognized() {
+    let rt = Runtime::new();
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{SHARED_RUNTIME}\n); const core = rt.core; \
+         const type = __rt.structType('cljs.core/MultiFn', __rt.formVector('name'), 0, null); \
+         const multi = __rt.structNew(type, core.symbol('demo', 'dispatch')); \
+         return [core.isInstance(core.MultiFn, multi), core.satisfies(core.IMultiFn, multi), \
+           core.name(multi), core.namespace(multi), core.isVar(multi)].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true true dispatch demo false"
     );
 }
 

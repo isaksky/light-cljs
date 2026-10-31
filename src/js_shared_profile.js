@@ -53,6 +53,8 @@
     get formHashes() { return sharedTaskOwn(this, "formHashes", new WeakMap()); },
     // The entries arrays the task built for engine maps (`sharedMapEntries`).
     get formEntries() { return sharedTaskOwn(this, "formEntries", new WeakMap()); },
+    get varMetadata() { return sharedTaskOwn(this, "varMetadata", new WeakMap()); },
+    get atomOwners() { return sharedTaskOwn(this, "atomOwners", new WeakMap()); },
     // The dispatch and declaration registries that `defprotocol`,
     // `extend-type`, `reify` and the declaration journal write after boot:
     // each task's own Map, seeded with the boot's entries
@@ -645,11 +647,12 @@
     return data === undefined ? operation(value, metadata)
       : sharedSymbol(data.namespace, data.name, metadata, own && constructorHashes.has(value) ? constructorHashes.get(value) : null, own ? data.spelling : null);
   })(collectionWithMeta);
-  //@unit sharedNamedString requires: sharedFormKind, sharedFormOf
+  //@unit sharedNamedString requires: sharedEngineVar, sharedFormKind, sharedFormOf
   // An engine keyword's or symbol's string (an imported one's through its
   // occurrence), for `str`, `displayStr` and the printer: a form has no
   // `toString`, so `String` of one throws.
   function sharedNamedString(value) {
+    if (sharedEngineVar(value)) return "#'" + sharedNamedString(__rt.structField(sharedFormOf(value), "sym"));
     const kind = sharedFormKind(value);
     if (kind !== "keyword" && kind !== "symbol") return undefined;
     value = sharedFormOf(value);
@@ -778,14 +781,14 @@
   const vectorRoots = sharedStore();
   //@unit canonicalVectorRoots requires: sharedStore
   const canonicalVectorRoots = sharedStore();
-  //@unit metadataValues requires: sharedFormOf, sharedStore
+  //@unit metadataValues requires: sharedEngineVar, sharedFormOf, sharedStore, sharedVarMeta
   // Metadata is the engine's on an engine form (`formMeta`, of an imported
   // form through its occurrence; a form's is given where the form is
   // built, `formWithMeta`, so `set` on one throws) and the fallback's on a
   // runtime-owned value (light-cljs-666).
   const metadataValues = (store => ({
-    has: value => __rt.formKind(value) !== null ? __rt.formMeta(sharedFormOf(value)) != null : store.has(value),
-    get: value => __rt.formKind(value) !== null ? __rt.formMeta(sharedFormOf(value)) : store.get(value),
+    has: value => sharedEngineVar(value) || (__rt.formKind(value) !== null ? __rt.formMeta(sharedFormOf(value)) != null : store.has(value)),
+    get: value => sharedEngineVar(value) ? sharedVarMeta(value) : __rt.formKind(value) !== null ? __rt.formMeta(sharedFormOf(value)) : store.get(value),
     set(value, metadata) {
       if (__rt.formKind(value) !== null) throw new TypeError("shared profile: metadataValues.set on an engine form");
       store.set(value, metadata);
@@ -805,10 +808,146 @@
   const uuids = sharedStore();
   //@unit uuidHashes requires: sharedStore
   const uuidHashes = sharedStore();
-  //@unit vars requires: sharedStore
-  const vars = sharedStore();
+  //@unit sharedEngineVar requires: sharedFormOf
+  // A Var's keyed type, also recognized for a Var another task (or the
+  // compiler's declaration adapter) constructed. Reading its brand never
+  // demands the Var's root.
+  function sharedEngineVar(value) {
+    const type = __rt.structTypeOf(sharedFormOf(value));
+    return type !== null && __rt.formName(type) === "cljs.core/Var";
+  }
+  //@unit sharedVarMeta requires: sharedFormOf
+  function sharedVarMeta(value) {
+    value = sharedFormOf(value);
+    const metadata = __rt.structField(value, "__metadata"), deferred = __rt.structField(value, "__deferred");
+    if (deferred == null) return metadata;
+    const cells = globalThis.__lightSharedCells, cache = cells.varMetadata;
+    if (!cache.has(value)) cache.set(value, __rt.cljAssoc(metadata, __rt.formKeyword(null, "test"), deferred.call(null)));
+    return cache.get(value);
+  }
+  //@unit vars requires: sharedEngineVar, sharedFormOf, sharedStore
+  const vars = (store => ({
+    has: value => sharedEngineVar(value) || store.has(value),
+    get: value => sharedEngineVar(value) ? {get: __rt.structField(sharedFormOf(value), "val"), symbol: __rt.structField(sharedFormOf(value), "sym")} : store.get(value),
+    set(value, payload) { store.set(value, payload); return this; }
+  }))(sharedStore());
+  //@unit collectionWithMeta.vars effect: makeVar when: collectionWithMeta
+  //@ requires: collectionWithMeta, sharedEngineVar, sharedFormOf
+  collectionWithMeta = (operation => (value, metadata) => sharedEngineVar(value)
+    ? __rt.structNew(__rt.structTypeOf(sharedFormOf(value)), __rt.structField(sharedFormOf(value), "val"), __rt.structField(sharedFormOf(value), "sym"), metadata, null)
+    : operation(value, metadata))(collectionWithMeta);
+  //@unit sharedAtomOptions
+  // The engine atom's auxiliary registry is shared with the compiler's
+  // adapter: the "atom" slot holds [metadata validator watches]. Its
+  // internal map is keyed by identity, never by language equality.
+  function sharedAtomOptions(value, create = false) {
+    const auxiliary = __rt.atomAux(value);
+    let candidate;
+    for (;;) {
+      const current = __rt.atomLoad(auxiliary), found = current === null ? null : __rt.getOr(current, "atom", null);
+      if (found !== null || !create) return found;
+      if (candidate === undefined) candidate = __rt.atomNew(__rt.formVector(null, null, null));
+      const next = __rt.assoc(current === null ? __rt.map() : current, "atom", candidate);
+      if (Object.is(__rt.atomCas(auxiliary, current, next), current)) return candidate;
+    }
+  }
+  function sharedAtomStore(value, next) {
+    for (;;) {
+      const current = __rt.atomLoad(value);
+      if (Object.is(__rt.atomCas(value, current, next), current)) return current;
+    }
+  }
+  function sharedAtomLane(value) {
+    // Standalone profile tasks have no compiler scheduler. Macro tasks
+    // use the same source-order lane and saved continuation as the port.
+    if (globalThis.__lightNativeRuntime !== undefined) {
+      const cells = globalThis.__lightSharedCells;
+      const cell = __rt.effect(65532, cells.atomOwners.get(value) ?? 0);
+      if (cell !== 0) __rt.need(cell, 5);
+    }
+  }
+  function sharedAtomRead(value, index) {
+    sharedAtomLane(value);
+    const slot = sharedAtomOptions(value);
+    return slot === null ? null : __rt.formNth(__rt.atomLoad(slot), index);
+  }
+  function sharedAtomWrite(value, index, item) {
+    sharedAtomLane(value);
+    const slot = sharedAtomOptions(value, true);
+    for (;;) {
+      const current = __rt.atomLoad(slot), next = __rt.formAssoc(current, index, item);
+      if (Object.is(__rt.atomCas(slot, current, next), current)) return item;
+    }
+  }
   //@unit atoms requires: sharedStore
-  const atoms = sharedStore(), volatiles = sharedStore();
+  const atoms = (store => ({
+    has: value => __rt.cljIsAtom(value) || store.has(value),
+    get: value => __rt.cljIsAtom(value) ? value : store.get(value),
+    set(value, payload) { store.set(value, payload); return this; }
+  }))(sharedStore()), volatiles = sharedStore();
+  //@unit Atom requires: sharedAtomOptions, sharedAtomStore
+  function Atom(state, metadata, validator, watches) {
+    const value = __rt.atomNew(state);
+    if (globalThis.__lightNativeRuntime !== undefined) {
+      const cells = globalThis.__lightSharedCells, owner = __rt.effect(65532, -1);
+      if (owner !== 0) cells.atomOwners.set(value, owner);
+    }
+    if (metadata != null || validator != null || watches != null)
+      sharedAtomStore(sharedAtomOptions(value, true), __rt.formVector(metadata, validator, watches));
+    return value;
+  }
+  //@unit sharedAtomOperations effect: Atom
+  //@ requires: addWatchProtocol, alterMeta, apply, assoc, derefProtocol, dissoc, first, getValidator,
+  //@ meta, next, notifyWatches, nth, removeWatchProtocol, resetAtom, resetMeta, rest, seq,
+  //@ setValidator, sharedAtomLane, sharedAtomRead, sharedAtomStore, sharedAtomWrite, swapState,
+  //@ toArray, truth, vector
+  derefProtocol = (operation => value => {
+    if (!__rt.cljIsAtom(value)) return operation(value);
+    sharedAtomLane(value); return __rt.atomLoad(value);
+  })(derefProtocol);
+  meta = (operation => value => __rt.cljIsAtom(value) ? sharedAtomRead(value, 0) : operation(value))(meta);
+  resetMeta = (operation => (value, metadata) => __rt.cljIsAtom(value) ? sharedAtomWrite(value, 0, metadata) : operation(value, metadata))(resetMeta);
+  alterMeta = (operation => (value, fn, ...args) => __rt.cljIsAtom(value) ? resetMeta(value, apply(fn, meta(value), args)) : operation(value, fn, ...args))(alterMeta);
+  getValidator = (operation => value => __rt.cljIsAtom(value) ? sharedAtomRead(value, 1) : operation(value))(getValidator);
+  setValidator = (operation => (value, validator) => {
+    if (!__rt.cljIsAtom(value)) return operation(value, validator);
+    if (validator != null && !truth(validator.call(null, derefProtocol(value)))) throw new Error("Validator rejected reference state");
+    return sharedAtomWrite(value, 1, validator);
+  })(setValidator);
+  notifyWatches = (operation => (value, oldState, state) => {
+    if (!__rt.cljIsAtom(value)) return operation(value, oldState, state);
+    const watches = sharedAtomRead(value, 2);
+    for (let s = seq(watches); s !== null; s = next(s)) {
+      const entry = first(s); nth(entry, 1).call(null, nth(entry, 0), value, oldState, state);
+    }
+    return null;
+  })(notifyWatches);
+  addWatchProtocol = (operation => (value, key, fn) => {
+    if (!__rt.cljIsAtom(value)) return operation(value, key, fn);
+    sharedAtomWrite(value, 2, assoc(sharedAtomRead(value, 2), key, fn)); return value;
+  })(addWatchProtocol);
+  removeWatchProtocol = (operation => (value, key) => __rt.cljIsAtom(value)
+    ? sharedAtomWrite(value, 2, dissoc(sharedAtomRead(value, 2), key)) : operation(value, key))(removeWatchProtocol);
+  resetAtom = (operation => (value, state, pair) => {
+    if (!__rt.cljIsAtom(value)) return operation(value, state, pair);
+    const validator = sharedAtomRead(value, 1);
+    if (validator != null && !truth(validator.call(null, state))) throw new Error("Validator rejected reference state");
+    const previous = sharedAtomStore(value, state);
+    notifyWatches(value, previous, state);
+    return pair ? vector(previous, state) : state;
+  })(resetAtom);
+  swapState = (operation => (value, fn, args, pair, variadic = false) => {
+    if (!__rt.cljIsAtom(value)) return operation(value, fn, args, pair, variadic);
+    const previous = derefProtocol(value);
+    const state = variadic ? apply(fn, previous, first(args), first(next(args)), rest(next(args))) : fn.call(null, previous, ...toArray(args));
+    return resetAtom(value, state, pair);
+  })(swapState);
+  //@unit Atom.print effect: Atom, Volatile when: printWriterImpl
+  //@ requires: atoms, derefProtocol, kindHooks, printKind, printWriter, volatiles, write
+  kindHooks.print = printKind(kindHooks.print, value => atoms.has(value) || volatiles.has(value), (value, writer, options) => {
+    write(writer, "#object[cljs.core." + (atoms.has(value) ? "Atom" : "Volatile") + " {:val ");
+    printWriter(__rt.cljIsAtom(value) ? derefProtocol(value) : value.state, writer, options); return write(writer, "}]");
+  });
   //@unit lazyValues requires: sharedFormHashes, sharedView
   // A lazy payload over the engine's once-cell: `thunk` is null once the
   // cell is realized (`cljRealized`, which realizes nothing), else a
@@ -870,6 +1009,45 @@
   const typeFields = sharedStore();
   //@unit recordTypes requires: sharedStore
   const recordTypes = sharedStore();
+  //@unit typeFields.brands effect: TypeBrand when: typeFields
+  //@ requires: sharedFormKind, typeFields, TypeBrand
+  typeFields.has = value => ["struct", "record"].includes(sharedFormKind(value)) || TypeBrand.type(value) !== undefined;
+  //@unit recordTypes.brands effect: recordMethods when: recordTypes
+  //@ requires: recordTypes, sharedFormKind, sharedFormOf, TypeBrand
+  recordTypes.has = value => sharedFormKind(value) === "record" || !!TypeBrand.type(value);
+  recordTypes.get = value => sharedFormKind(value) === "record" ? __rt.structTypeOf(sharedFormOf(value)) : TypeBrand.type(value) ?? undefined;
+  //@unit isRecord requires: methodKeys, protocolHooks, recordTypes, sharedFormKind
+  const isRecord = value => sharedFormKind(value) === "record" || (protocolHooks.satisfies?.(methodKeys[42], value) ?? recordTypes.has(value));
+  //@unit isInstance requires: Atom, Delay, MultiFn, sharedEngineVar, sharedFormKind, sharedFormOf, Var
+  const isInstance = (type, value) => sharedFormKind(type) === "type" ? __rt.structTypeOf(sharedFormOf(value)) === sharedFormOf(type)
+    : type === Var && sharedEngineVar(value) || type === Atom && __rt.cljIsAtom(value)
+    || type === Delay && sharedFormKind(value) === "delay"
+    || type === MultiFn && sharedFormKind(value) === "struct" && __rt.formName(__rt.structTypeOf(sharedFormOf(value))) === "cljs.core/MultiFn"
+    || value instanceof type;
+  //@unit sharedRecordOperations effect: recordMethods
+  //@ requires: assoc, collectionWithMeta, dissoc, get, seq, sharedFormKind, sharedFormOf
+  // Engine records already own their fields, extension map and metadata.
+  // Preserve that representation on updates, leaving dispatch registration
+  // (including user methods on structs) to the frontier tables of 649.
+  get = (operation => function (value, key, fallback) {
+    return sharedFormKind(value) === "record" && (arguments.length === 2 || arguments.length === 3)
+      ? __rt.cljGet(sharedFormOf(value), key, arguments.length === 2 ? null : fallback) : operation(...arguments);
+  })(get);
+  assoc = (operation => function (value, key, item, ...pairs) {
+    if (sharedFormKind(value) !== "record") return operation(...arguments);
+    let result = __rt.cljAssoc(sharedFormOf(value), key, item);
+    for (let i = 0; i < pairs.length; i += 2) result = __rt.cljAssoc(result, pairs[i], i + 1 < pairs.length ? pairs[i + 1] : null);
+    return result;
+  })(assoc);
+  dissoc = (operation => function (value, ...keys) {
+    if (sharedFormKind(value) !== "record") return operation(...arguments);
+    let result = value;
+    for (const key of keys) result = __rt.cljDissoc(result, key);
+    return result;
+  })(dissoc);
+  seq = (operation => value => sharedFormKind(value) === "record" ? __rt.cljSeq(sharedFormOf(value)) : operation(value))(seq);
+  collectionWithMeta = (operation => (value, metadata) => sharedFormKind(value) === "record"
+    ? __rt.cljWithMeta(sharedFormOf(value), metadata) : operation(value, metadata))(collectionWithMeta);
   //@unit reifyValues requires: sharedSet
   const reifyValues = sharedSet();
   //@unit emptyList
@@ -1058,8 +1236,45 @@
   const demungePattern = Object.keys(demungeCharacters).sort((a, b) => b.length - a.length).join("|") + "|\\$";
   //@unit demunge requires: demungeCharacters, demungePattern, str, symbolCore, symbols
   function demunge(value) { let result = str(value); result = result === "_DOT__DOT_" ? ".." : result.replace(/\$$/, "").replace(new RegExp(demungePattern, "g"), key => key === "$" ? "/" : demungeCharacters[key]); return symbols.has(value) ? symbolCore(result) : result; }
-  //@unit multiFns requires: sharedSet
-  const multiFns = sharedSet();
+  //@unit sharedIntrinsicRegExp
+  const sharedIntrinsicRegExp = RegExp;
+  //@unit rePattern requires: sharedFormOf, sharedIntrinsicRegExp
+  function rePattern(pattern) {
+    pattern = sharedFormOf(pattern);
+    if (pattern instanceof RegExp) return pattern;
+    if (typeof pattern !== "string") throw new TypeError("regex pattern requires a string");
+    const prefix = /^\(\?([dgimsuxy]*)\)/.exec(pattern);
+    const value = new RegExp(prefix ? pattern.slice(prefix[0].length) : pattern, prefix ? prefix[1] : "");
+    return RegExp !== sharedIntrinsicRegExp || value.global || value.sticky ? value : __rt.formRegex(value.source, value.flags);
+  }
+  //@unit reMatch requires: sharedFormOf, vectorFromArray
+  function reMatch(pattern, input, full) {
+    const re = sharedFormOf(pattern), text = sharedFormOf(input);
+    if (typeof text !== "string") throw new TypeError("regex matching requires a string");
+    const result = re.exec(text);
+    if (result === null || (full && result[0] !== text)) return null;
+    return result.length === 1 ? result[0] : vectorFromArray(Array.from(result));
+  }
+  //@unit reSeq requires: cons, lazySequence, sharedFormOf, vectorFromArray
+  function reSeq(pattern, input) {
+    const re = sharedFormOf(pattern), text = sharedFormOf(input);
+    if (typeof text !== "string") throw new TypeError("regex matching requires a string");
+    const match = re.exec(text);
+    if (match === null) return null;
+    const value = match.length === 1 ? match[0] : vectorFromArray(Array.from(match));
+    // Only the offset survives in the lazy tail. Capturing exec's mutable
+    // result array would prevent publication even for an engine regex.
+    const offset = match.index + Math.max(1, match[0].length);
+    return cons(value, lazySequence(() => offset <= text.length ? reSeq(re, text.slice(offset)) : null));
+  }
+  //@unit multiFns requires: sharedFormOf, sharedSet
+  // Only the brand view belongs here. Mutable method/preference registries
+  // and dispatch frontier installation remain light-cljs-649's.
+  const multiFns = (store => ({
+    has(value) { const type = __rt.structTypeOf(sharedFormOf(value)); return type !== null && __rt.formName(type) === "cljs.core/MultiFn" || store.has(value); },
+    add(value) { store.add(value); return this; },
+    delete: value => store.delete(value)
+  }))(__rt.seal(sharedSet()));
   //@unit leanTables requires: entryIndex, sharedStore
   const leanTables = sharedStore();
   // The value of `key` in `entries`, as `get` of an array map gives it.
@@ -1195,13 +1410,18 @@
   //@ uuidImplementation, vectorValue, volatileValue, watchableValue, withMetaValue, writerValue
   function builtinCoreImplementation(protocol, value) { return !!nativeImplementations.get(protocol)?.(value); }
   const nativeImplementations = sharedMap([[Inst, instValue], [IUUID, uuidImplementation], [ASeq, aseqValue], [INamed, namedValue], [IMultiFn, multiFnValue], [IFn, ifnValue], [IEditableCollection, editableValue], [ITransientCollection, transientValue], [ITransientAssociative, transientAssociativeValue], [ITransientVector, transientVectorValue], [ITransientMap, transientMapValue], [ITransientSet, transientSetValue], [Fn, fnValue], [IList, listValue], [IChunk, chunkValue], [IChunkedNext, chunkedSeqValue], [IDrop, dropValue], [IReduce, reduceValue], [IKVReduce, kvReduceValue], [IPrintWithWriter, printableValue], [IHash, hashableValue], [IEquiv, hashableValue], [IMapEntry, mapEntryValue], [IFind, findValue], [ISorted, sortedValue], [IChunkedSeq, chunkedSeqValue], [ICloneable, cloneablePayload], [IVector, vectorValue], [IMap, mapValue], [ISet, setValue], [ICollection, collectionValue], [IEmptyableCollection, emptyableValue], [IStack, stackValue], [IReversible, reversibleValue], [IIterable, iterableValue], [IComparable, comparableValue], [ISeqable, seqableValue], [ISeq, seqValue], [INext, nextValue], [ISequential, sequential], [ICounted, countedValue], [IIndexed, indexedValue], [ILookup, lookupValue], [IAssociative, associativeValue], [IMeta, metaValue], [IWithMeta, withMetaValue], [IAtom, atomValue], [IPending, pendingValue], [IDeref, derefValue], [IVolatile, volatileValue], [IWatchable, watchableValue], [IWriter, writerValue]]);
-  //@unit maps.records effect: recordMethods when: maps requires: maps, recordTypes
+  //@unit maps.records effect: recordMethods when: maps requires: maps, recordTypes, sharedFormKind, sharedFormOf, sharedMapEntries
   // A record is a map without entries of its own until `updatedRecord` gives
   // it some, so constructing one writes no store: these answer for it, with
   // `none` as its entries (a record type is a function). `none` is sealed,
   // not frozen: the wrapper captures it.
   maps.has = (has => value => has.call(maps, value) || recordTypes.has(value))(maps.has);
-  maps.get = ((get, none) => value => get.call(maps, value) ?? (recordTypes.get(value) && none))(maps.get, __rt.seal([]));
+  maps.get = ((get, none) => value => sharedFormKind(value) === "record" ? sharedMapEntries(sharedFormOf(value)) : get.call(maps, value) ?? (recordTypes.get(value) && none))(maps.get, __rt.seal([]));
+  //@unit makeMap.print effect: makeMap, recordMethods, treeMapConstructor when: printWriterImpl
+  //@ requires: kindHooks, maps, mapTraversal, printKind, printMapEntries, sharedFormKind, sharedFormOf
+  kindHooks.print = printKind(kindHooks.print, value => maps.has(value), (value, writer, options) =>
+    printMapEntries(mapTraversal(value), writer, options, sharedFormKind(value) === "record"
+      ? "#" + __rt.formName(__rt.structTypeOf(sharedFormOf(value))).replaceAll("/", ".") : ""));
   //@unit PersistentHashSetValue.statics effect: PersistentHashSetValue when: typeStatics requires: makeSet,
   //@ PersistentHashSetValue
   // The empty set and maps are engine forms (`makeSet`, `makeMap`), built
@@ -1236,15 +1456,15 @@
     return makeMap(PersistentHashMapValue, entries, "hash-map");
   };
   //@unit makeKeyword.print effect: makeKeyword, makeVar, SymbolValue, symbol when: printWriterImpl
-  //@ requires: keywords, kindHooks, printKind, symbols, vars, write
+  //@ requires: keywords, kindHooks, printKind, sharedNamedString, symbols, vars, write
   // An engine keyword or symbol prints from its payload; a runtime-built
   // symbol or a Var through its `toString`, as in the V8 profile.
   kindHooks.print = printKind(kindHooks.print, value => keywords.has(value) || symbols.has(value) || vars.has(value),
-    (value, writer) => write(writer, keywords.has(value) ? ":" + keywords.get(value).spelling : symbols.has(value) ? symbols.get(value).spelling : String(value)));
-  //@unit compilerForms compile-time effect requires: compilerFormBridge, readerJsLiterals,
+    (value, writer) => write(writer, keywords.has(value) ? ":" + keywords.get(value).spelling : symbols.has(value) ? symbols.get(value).spelling : sharedNamedString(value) ?? String(value)));
+  //@unit compilerForms compile-time effect requires: readerJsLiterals,
   //@ vectorFromArray
-  // The V8 form bridge's `decode`/`encode` stay the evaluator's member
-  // (not offered for publication in `real` mode; light-cljs-648), but a
+  // The V8 form bridge's `decode`/`encode` belong to the V8 evaluator;
+  // the Pants evaluator has its own bridge and never uses them. A
   // `#js` literal the reader reads for a macro is an engine compiler
   // literal, as the Pants build's reader builds one (src/bbp_runtime.js,
   // `jsArray` and `jsObject`), not the bridge's branded array or object:
@@ -1254,9 +1474,9 @@
   // `__proto__`, and its payload is a positional map of string keys in the
   // reader's order (`formLiteralMap`, `formReaderCollection`), as the
   // port's is.
-  const compilerForms = compilerFormBridge();
-  readerJsLiterals.array = items => __rt.formCompilerLiteral("js-array", vectorFromArray(Array.from(items)));
-  readerJsLiterals.object = pairs => {
+  const compilerForms = {};
+  compilerForms.jsArray = readerJsLiterals.array = items => __rt.formCompilerLiteral("js-array", vectorFromArray(Array.from(items)));
+  compilerForms.jsObject = readerJsLiterals.object = pairs => {
     const object = {};
     for (let i = 0; i < pairs.length; i += 2) if (pairs[i] !== "__proto__") Object.defineProperty(object, pairs[i], {value: pairs[i + 1], enumerable: true, configurable: true});
     const flat = Object.keys(object).flatMap(key => [key, object[key]]);
