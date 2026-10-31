@@ -911,7 +911,7 @@
   //@unit sharedAtomOperations effect: Atom
   //@ requires: addWatchProtocol, alterMeta, apply, assoc, derefProtocol, dissoc, first, getValidator,
   //@ meta, next, notifyWatches, nth, removeWatchProtocol, resetAtom, resetMeta, rest, seq,
-  //@ setValidator, sharedAtomLane, sharedAtomRead, sharedAtomStore, sharedAtomWrite, swapState,
+  //@ setValidator, sharedAtomLane, sharedAtomRead, sharedAtomStore, sharedAtomWrite, sharedScalar, swapState,
   //@ toArray, truth, vector
   derefProtocol = (operation => value => {
     if (!__rt.cljIsAtom(value)) return operation(value);
@@ -923,7 +923,7 @@
   getValidator = (operation => value => __rt.cljIsAtom(value) ? sharedAtomRead(value, 1) : operation(value))(getValidator);
   setValidator = (operation => (value, validator) => {
     if (!__rt.cljIsAtom(value)) return operation(value, validator);
-    if (validator != null && !truth(validator.call(null, derefProtocol(value)))) throw new Error("Validator rejected reference state");
+    if (sharedScalar(validator) != null && !truth(validator.call(null, derefProtocol(value)))) throw new Error("Validator rejected reference state");
     return sharedAtomWrite(value, 1, validator);
   })(setValidator);
   notifyWatches = (operation => (value, oldState, state) => {
@@ -943,7 +943,7 @@
   resetAtom = (operation => (value, state, pair) => {
     if (!__rt.cljIsAtom(value)) return operation(value, state, pair);
     const validator = sharedAtomRead(value, 1);
-    if (validator != null && !truth(validator.call(null, state))) throw new Error("Validator rejected reference state");
+    if (sharedScalar(validator) != null && !truth(validator.call(null, state))) throw new Error("Validator rejected reference state");
     const previous = sharedAtomStore(value, state);
     notifyWatches(value, previous, state);
     return pair ? vector(previous, state) : state;

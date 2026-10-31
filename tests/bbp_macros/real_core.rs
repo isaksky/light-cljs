@@ -242,6 +242,31 @@ fn real_core_computes_with_imported_scalar_occurrences() {
 }
 
 #[test]
+fn real_core_engine_atoms_read_imported_nil_options() {
+    let source = r#"
+      (defmacro options [nothing state]
+        (let [a (atom state :validator nothing)
+              first-state (reset! a (inc state))
+              selected (set-validator! a nothing)
+              second-state (swap! a inc)
+              metadata (reset-meta! a nothing)]
+          (list 'quote [first-state (nil? (get-validator a))
+                        (js* "~{} === ~{}" nothing selected)
+                        second-state (nil? metadata) (nil? (meta a))])))
+      (js/console.log (pr-str (options nil 2)))
+    "#;
+    for core in [MacroCore::Port, MacroCore::Real] {
+        let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host(core))
+            .unwrap_or_else(|e| panic!("{core:?}: {e}"));
+        assert_eq!(
+            program_output(&emit_js(&program)),
+            "[3 true true 4 true true]\n",
+            "{core:?}"
+        );
+    }
+}
+
+#[test]
 fn real_core_reads_imported_nil_in_function_combinators() {
     let source = r#"
       (defmacro f [x] ((fnil identity 9) x))
