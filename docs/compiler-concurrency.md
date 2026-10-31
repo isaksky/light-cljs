@@ -3192,8 +3192,11 @@ state and determinism"; this is what was delivered.
   atom a Var initializer makes is *homed* in the initializer's namespace,
   and so are the atoms that keep its bookkeeping (a multimethod's table
   history); a shared Var initializer's caller selection is homed in the
-  initializer's namespace too (an extension bundle's, a `defmethod` or
-  protocol extension installed at the load-order frontier, is not). A
+  initializer's namespace too, including an extension bundle's. Extension
+  bundles are admitted by their defining namespace before forcing them;
+  installed entries and activation obey the same closure filter, and cached
+  dispatch views are scoped to the consumer's own and inherited closures.
+  The source-order frontier remains an additional restriction. A
   task touching homed state waits only for
   earlier unfinished units and pass segments whose namespace's closure
   contains the home, or whose closure is unknown; it skips the others

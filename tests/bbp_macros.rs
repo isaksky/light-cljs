@@ -11809,6 +11809,16 @@ const LANE_FIXTURES: &[(&str, bool, Result<&str, &str>)] = &[
     // touched by `early`, `a` and `b`, which require it, around `slow`,
     // which does not and whose units their lanes skip (light-cljs-672).
     ("closure.main", false, Ok("[1 42 2 3]\n")),
+    // The earlier-loaded extension is hidden from a, explicitly required
+    // by b. Its installer reads its own root, so eager foreign execution
+    // would fail admission before either dispatch could produce a value.
+    (
+        "extensions.main",
+        false,
+        Ok(
+            "[[\"base\" \"base\" \"base\" \"base\" \"base\"] [\"extension\" \"extension\" \"extension\" \"extension\" \"extension\"] [\"base\" \"base\" \"base\" \"base\" \"base\"]]\n",
+        ),
+    ),
     // `outside.m`'s macro reaches `outside.k`'s atom through a table both
     // require, but `m` does not require `k`: a namespace's macros see only
     // its require closure, so the touch fails at every slot count.

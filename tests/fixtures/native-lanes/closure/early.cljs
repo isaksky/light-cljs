@@ -1,1 +1,1 @@
-(ns closure.early (:require [closure.lib :refer [note]])) (def e (note :early))
+(ns closure.early (:require [closure.lib :refer [note]])) (defn e [] (note :early))

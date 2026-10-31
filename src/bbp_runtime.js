@@ -215,7 +215,7 @@ const decl = (() => {
         pendingProtocols.set(protocol, (pendingProtocols.get(protocol) ?? 0) + 1);
     }
     const from = lazy ? bundle : null;
-    if (info !== undefined && !info.declaring) info.installs.push({order, overlay, bundle: from});
+    if (info !== undefined && !info.declaring) info.installs.push({order, overlay, bundle: from, origin: bundle});
     for (const [name, arity, fn, , variadic, member, direct] of specs) {
       const object = name.startsWith('Object/');
       const n = object && variadic != null ? -1 : arity;
@@ -223,7 +223,7 @@ const decl = (() => {
       // operand. Adapt scope-sensitive legacy entries once at installation;
       // their raw JavaScript and `this-as` still see the original receiver.
       const entry = object || direct || arity === 0 ? fn : (x, ...args) => fn.call(x, x, ...args);
-      methodTable(name, n).entries.push({order, overlay, key, fn: entry, bundle: object ? from : null,
+      methodTable(name, n).entries.push({order, overlay, key, fn: entry, origin: bundle, bundle: object ? from : null,
         protocol: arity === 0 && name.indexOf('/') >= 0 ? protocolNow(name) : undefined});
       if (!object) continue;
       let arities = objectArities.get(name);
@@ -235,6 +235,9 @@ const decl = (() => {
     return null;
   };
   const installing = [];
+  const admitted = b => b == null || __rt.effect(65526,b.unit);
+  const visibleEntry = e => admitted(e.origin) && (e.overlay > 0 || e.order <= frontier) && (e.bundle == null || e.bundle.active);
+  const current = t => t.version === version && t.frontier === frontier && t.context === __rt.effect(65525,0);
   // The value a program protocol's name has as an extension installs, which
   // the extension extends: as the legacy bundle reads its protocol when it
   // is forced, a bundle forced after a redeclaration extends the new one.
@@ -253,7 +256,7 @@ const decl = (() => {
   // A bundle's installations become active (visible to member reads and
   // precedence) once the legacy runtime would have installed it.
   const activate = b => {
-    if (b.active) return;
+    if (!admitted(b) || b.active) return;
     b.active = true;
     if (!pendingBundles.delete(b)) return;
     for (const protocol of new Set(b.indices.map(([p]) => p))) {
@@ -264,6 +267,7 @@ const decl = (() => {
   };
   // `lazy`: forced for a protocol table build, not demanded for a type.
   const force = (b, lazy = false) => {
+    if (!admitted(b)) throw new Error("extension outside require closure: "+b.location);
     if(globalThis.__lightRootReads!==null)globalThis.__lightRootReads+=b.unit+',';
     if (!lazy) activate(b);
     if (b.state === 2) return;
@@ -286,9 +290,9 @@ const decl = (() => {
             factory(globalThis.__lightNativeRuntime);
             let result=__rt.map();for(const name of b.names)if(name in b.products)result=__rt.assoc(result,name,b.products[name]);
             return result;
-          },true);
+          });
           const absent={};b.products={};for(const name of b.names){const value=__rt.getOr(products,name,absent);if(value!==absent)b.products[name]=value;}
-        } else if (b.multi) globalThis.__lightInitializeCompilerValue(b.unit, () => { factory(globalThis.__lightNativeRuntime); return null; }, true);
+        } else if (b.multi) globalThis.__lightInitializeCompilerValue(b.unit, () => { factory(globalThis.__lightNativeRuntime); return null; });
         else factory(globalThis.__lightNativeRuntime);
       } finally { installing.pop(); frontierCell.group = savedGroup; }
       b.state = 2;
@@ -304,11 +308,12 @@ const decl = (() => {
   // extension of its protocol registered up to the frontier.
   const build = t => {
     const pending = protocolBundles(t.protocol);
-    if (pending !== undefined) for (const b of pending) { if (b.order > frontier) break; force(b, true); }
+    if (pending !== undefined) for (const b of pending) { if (b.order > frontier) break; if (admitted(b)) force(b, true); }
     let map = __rt.map();
-    const visible = t.entries.filter(e => (e.overlay > 0 || e.order <= frontier) && (e.bundle == null || e.bundle.active))
+    const visible = t.entries.filter(visibleEntry)
       .sort((a, b) => a.overlay - b.overlay || a.order - b.order);
     for (const e of visible) map = __rt.assoc(map, e.key, e.fn);
+    t.context = __rt.effect(65525,0);
     t.map = map; t.promise=__rt.getOr(map,'js/Promise',undefined);t.version = version; t.frontier = frontier;
     t.mutable = visible.some(e => mutableTypes.has(e.key));
     // A pending bundle of this protocol may need any dispatch to demand it.
@@ -331,12 +336,12 @@ const decl = (() => {
     // Tables carry their fixed arity independently of installed type entries.
     const instance=ownMethod(__rt.formValue(x),t.name,t.arity);
     if(instance!==undefined)return instance;
-    const cached = __rt.cljProtocolLookup(t.snapshot, version, frontier, x);
+    const cached = current(t) ? __rt.cljProtocolLookup(t.snapshot, version, frontier, x) : undefined;
     if (cached !== undefined) return cached;
     // Demand an unknown type before building the protocol's pending bundles:
     // declaration effects, errors and dependency waits keep their order.
     declare(x);
-    if (t.version !== version || t.frontier !== frontier) build(t);
+    if (!current(t)) build(t);
     demandFor(t.protocol, x);
     const value=t.promise===undefined?null:__rt.formValue(x);
     const promise=value!==null&&typeof value==='object'&&__rt.formKind(value)===null&&value instanceof Promise;
@@ -461,12 +466,12 @@ const decl = (() => {
   const extended = (key, x, p = undefined) => {
     const t = methodTable(key, 0);
     declare(x);
-    if (t.version !== version || t.frontier !== frontier) build(t);
+    if (!current(t)) build(t);
     demandFor(t.protocol, x);
-    if (t.version !== version || t.frontier !== frontier) build(t);
+    if (!current(t)) build(t);
     const host = hostType(x);
     if (p === undefined) return (__rt.getOr(t.map, host, null) ?? __rt.getOr(t.map, '_', null)) !== null;
-    return t.entries.some(e => (e.overlay > 0 || e.order <= frontier) && (e.bundle == null || e.bundle.active)
+    return t.entries.some(e => visibleEntry(e)
       && (e.key === host || e.key === '_') && e.protocol === p);
   };
   // The legacy `nativeType`: a struct type is a constructor function
@@ -482,7 +487,7 @@ const decl = (() => {
   const demand = (key, x) => {
     const t = methodTable(key, 0);
     declare(x);
-    if (t.version !== version || t.frontier !== frontier) build(t);
+    if (!current(t)) build(t);
     demandFor(t.protocol, x);
   };
   // Owned core implementations precede object/default extensions. Explicit
@@ -493,10 +498,10 @@ const decl = (() => {
     if (directOnly && !builtin && !implementsDirectly(t.protocol, x)) return null;
     let m;
     if (builtin) {
-      m = __rt.cljProtocolLookup(t.directSnapshot, version, frontier, x);
+      m = current(t) ? __rt.cljProtocolLookup(t.directSnapshot, version, frontier, x) : undefined;
       if (m === undefined) {
         declare(x);
-        if (t.version !== version || t.frontier !== frontier) build(t);
+        if (!current(t)) build(t);
         const key = directKey(x);
         demandFor(t.protocol, x, key);
         m = key === null ? null : __rt.getOr(t.map, key, null);
@@ -516,7 +521,7 @@ const decl = (() => {
   // receiver need not be a `ty` (`(.call f other)`).
   const implementation = (name, n, ty) => {
     const t = methodTable(name, n);
-    if (t.version !== version || t.frontier !== frontier) build(t);
+    if (!current(t)) build(t);
     return __rt.getOr(t.map, ty, null);
   };
   // A call of the JavaScript member `member` of the type `info` describes,
@@ -661,7 +666,7 @@ const decl = (() => {
   // so the adapters win only while no later installation is visible.
   const objectWins = (info, member) => hasObjectMember(info, member)
     && (info.ifn.length === 0 || member !== 'call' && member !== 'apply'
-      || info.installs.some(e => (e.overlay > 0 || e.order <= frontier) && (e.bundle === null || e.bundle.active)));
+      || info.installs.some(visibleEntry));
   // The legacy runtime's compiled-interop demand (`declarationReceiver`):
   // install the Object extension bundles registered up to the frontier for
   // the type of `x` (a struct, an object inheriting from one, or a mutable
@@ -682,7 +687,7 @@ const decl = (() => {
     const key = ty !== null ? ty : kind !== null ? formKey(value, kind) : hostKey;
     const native = hostType(x);
     for (const b of [...pendingBundles])
-      if (b.order <= frontier && b.indices.some(([p, s]) => p === protocol
+      if (admitted(b) && b.order <= frontier && b.indices.some(([p, s]) => p === protocol
           && (s === null || s === '_' || s === native || s.startsWith('@') && key !== null && b.keys?.get(protocol)?.has(key) === true)))
         activate(b);
   };
@@ -690,7 +695,7 @@ const decl = (() => {
     if (lazyCatalog !== null) catalogProtocol('Object');
     // Once every Object bundle up to the frontier is installed there is
     // nothing to demand, and the receiver is not inspected at all.
-    if (!objectBundles.some(({b}) => b.order <= frontier && (b.state !== 2 || !b.active))) return;
+    if (!objectBundles.some(({b}) => admitted(b) && b.order <= frontier && (b.state !== 2 || !b.active))) return;
     // As the legacy demand does for every receiver, a bundle with no
     // selector (an alias or other unnamed target), `default` or the
     // receiver's JavaScript type is installed whatever the receiver is.
@@ -720,7 +725,7 @@ const decl = (() => {
     };
     for (const {b, selector} of objectBundles) {
       if (b.order > frontier) break;
-      if (installing.includes(b)) continue;
+      if (!admitted(b) || installing.includes(b)) continue;
       if (selector === null || selector === '_' || selector === native || owns(selector)) force(b);
     }
   };
@@ -858,7 +863,7 @@ const decl = (() => {
   const demandMulti = name => {
     const pending = [...(protocolBundles('multifn:' + name) ?? []), ...(protocolBundles('multifn:*') ?? [])]
       .sort((a,b) => a.order-b.order);
-    for (const b of pending) if (b.order <= frontier && !installing.includes(b)) force(b);
+    for (const b of pending) if (admitted(b) && b.order <= frontier && !installing.includes(b)) force(b);
   };
   const productOwner = name => {
     const b = installing[installing.length-1];
@@ -896,7 +901,8 @@ const decl = (() => {
     callable, invokeIFn, applyIFn, callMember, borrowedIFn,
     demandMulti, keptProduct, productOwner, defineProduct,productAvailable,readProduct,
     storeProduct:(name,value)=>{const b=productOwner(name);if(b?.group){b.products[name]=value;return true;}return false;},
-    multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
+    multiOrder:()=>order, multiUnit:()=>installing[installing.length-1]?.unit??-1,
+    multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
     coreMethod:resolveCore,
     coreTable:methodTable, coreLookup,
     printer:x=>resolve(methodTable('IPrintWithWriter/-pr-writer',3),x),
@@ -1963,7 +1969,7 @@ const native = (() => {
     const record=(state,op,x,y)=>{
       const ref=__rt.formNth(state,1),history=deref(ref),order=decl.multiOrder();
       const key=order===0?-(__rt.cljCount(history)+1):order;
-      reset(ref,__rt.cljAssoc(history,key,__rt.cljConj(get(history,key,vector([])),vector([op,x,y]))));
+      reset(ref,__rt.cljAssoc(history,key,__rt.cljConj(get(history,key,vector([])),vector([op,x,y,decl.multiUnit()]))));
     };
     // The public table may have been reset/swapped independently of a
     // MultiFn. Remember the last observed/published identity in shared state,
@@ -1988,12 +1994,14 @@ const native = (() => {
     const views=new WeakMap();
     const materialize=(table,state)=>{
       reconcile(table,state);
-      const ref=__rt.formNth(state,1),history=deref(ref),frontier=decl.multiFrontier(),old=views.get(ref);
-      if(old!==undefined&&old.history===history&&old.frontier===frontier)return old.value;
+      const ref=__rt.formNth(state,1),history=deref(ref),frontier=decl.multiFrontier(),context=__rt.effect(65525,0),old=views.get(ref);
+      if(old!==undefined&&old.history===history&&old.frontier===frontier&&old.context===context)return old.value;
       const entries=arr(history).filter(e=>__rt.formNth(e,0)<=frontier)
         .sort((a,b)=>{const x=__rt.formNth(a,0),y=__rt.formNth(b,0);return (x<0)-(y<0)||(x<0?y-x:x-y);});
       let value=__rt.formNth(state,0);
       for(const entry of entries)for(const e of arr(__rt.formNth(entry,1))){
+        const unit=__rt.formNth(e,3);
+        if(unit>=0&&!__rt.effect(65526,unit))continue;
         const op=__rt.formNth(e,0),x=__rt.formNth(e,1),y=__rt.formNth(e,2);
         if(op==='add')value=__rt.cljAssoc(value,x,y);
         else if(op==='remove')value=__rt.cljDissoc(value,x);
@@ -2001,7 +2009,7 @@ const native = (() => {
         else if(op==='replace')value=x;
         else value=__rt.cljAssoc(value,x,__rt.cljConj(get(value,x,set([])),y));
       }
-      views.set(ref,{value,history,frontier});return value;
+      views.set(ref,{value,history,frontier,context});return value;
     };
     const tables=(m,force=true)=>{
       if(force)demand(m);
@@ -4094,7 +4102,7 @@ globalThis.__lightCompilerVarMetadata=name=>{
   const test=productReaders.has(descriptor?.get)?null:rootTests.get(name)??null;
   return ()=>test===null?null:globalThis.__lightCompilerTest(test);
 };
-const initializeValue=(slot,factory,extension=false)=>{
+const initializeValue=(slot,factory)=>{
     const unit=__rt.initializerSlotGet(slot,0),state=__rt.initializerSlotGet(slot,2);
     if(globalThis.__lightRootReads!==null)globalThis.__lightRootReads+=unit+',';
     if(state===2){__rt.need(unit,4);return __rt.initializerSlotGet(slot,3);}
@@ -4115,10 +4123,9 @@ const initializeValue=(slot,factory,extension=false)=>{
       const candidate=__rt.need(serial,beginKind);
       let producer=false;
       if(candidate){
-        // A Var initializer's selection orders only against what its
-        // namespace's closure reaches (light-cljs-672); an extension bundle
-        // installs at the load-order frontier, so it orders against all.
-        const cell=extension?__rt.effect(65532,0):__rt.effect(65528,unit);if(cell!==0)__rt.need(cell,5);
+        // Every initializer, including an admitted extension bundle, keeps
+        // its defining namespace as its resource home.
+        const cell=__rt.effect(65528,unit);if(cell!==0)__rt.need(cell,5);
         globalThis.__lightInitializerUnit=unit;
         globalThis.__lightInitializerSelect=true;
         try{producer=__rt.need(++initializerSerial,beginKind);}
@@ -4146,7 +4153,7 @@ const initializeValue=(slot,factory,extension=false)=>{
     }
     catch(e){__rt.initializerSlotSet(slot,3,e);__rt.initializerSlotSet(slot,2,3);throw e;}
 };
-globalThis.__lightInitializeCompilerValue=(unit,factory,extension=false)=>initializeValue(__rt.initializerSlot(unit,undefined),factory,extension);
+globalThis.__lightInitializeCompilerValue=(unit,factory)=>initializeValue(__rt.initializerSlot(unit,undefined),factory);
 // Declaration bundles advertise their products without demanding their code.
 // Keep preloaded roots and the same explicit unsupported-demand getters as units.
 globalThis.__lightRegisterBundle=(names,code,indices=[],location='',once=false,group=false,unit=-1)=>{

@@ -229,6 +229,7 @@ struct State {
     /// its steps run, and the task of each.
     initializer_tasks: HashMap<u64, Vec<u64>>,
     initializer_task_of: HashMap<u64, u64>,
+    visibility_contexts: HashMap<(Option<usize>, Option<usize>, usize), usize>,
 }
 
 impl State {
@@ -928,6 +929,50 @@ impl Lanes {
         s.enforce(home, top.position, min(top.position, s.inherited(&owned)))
             .is_ok()
     }
+    /// Extension admission uses the defining unit, including bundles with no
+    /// named products. Unknown defining namespaces remain conservative.
+    pub(crate) fn sees_unit(&self, task: u64, unit: usize) -> bool {
+        if !self.enabled() {
+            return true;
+        }
+        let s = self.lock();
+        let Some(top) = s.tops.get(&task) else {
+            return true;
+        };
+        let Some(&home) = s.unit_sources.get(&unit) else {
+            return true;
+        };
+        let owned: Vec<_> = top
+            .chain
+            .iter()
+            .flat_map(|&(token, target)| [Some(Target::Activity(token)), target])
+            .flatten()
+            .collect();
+        s.enforce(home, top.position, min(top.position, s.inherited(&owned)))
+            .is_ok()
+    }
+    /// Dispatch snapshots belong to the consumer's visibility context, which
+    /// can change when a parked producer inherits an earlier caller's lane.
+    pub(crate) fn visibility_context(&self, task: u64) -> usize {
+        let mut s = self.lock();
+        let Some(top) = s.tops.get(&task).filter(|_| self.enabled()) else {
+            return 0;
+        };
+        let owned: Vec<_> = top
+            .chain
+            .iter()
+            .flat_map(|&(token, target)| [Some(Target::Activity(token)), target])
+            .flatten()
+            .collect();
+        let effective = min(top.position, s.inherited(&owned));
+        let key = (
+            top.position.and_then(|p| s.source_at(p)),
+            effective.and_then(|p| s.source_at(p)),
+            s.sources.len(),
+        );
+        let next = s.visibility_contexts.len() + 1;
+        *s.visibility_contexts.entry(key).or_insert(next)
+    }
     /// The namespaces `task`'s current activity does not see
     /// ([`Self::sees`]), as UTF-16 names.
     pub(crate) fn hidden(&self, task: u64) -> HashSet<Vec<u16>> {
@@ -1382,6 +1427,28 @@ mod tests {
         );
         // Its own and unhomed atoms are unaffected.
         assert_eq!(lanes.check(task, 0).unwrap(), 0);
+    }
+
+    #[test]
+    fn extension_admission_and_dispatch_context_follow_consumer_closures() {
+        let (lanes, _) = closure_fixture();
+        let unknown = synced(&lanes, 7);
+        assert!(lanes.sees_unit(unknown, 5));
+        assert!(lanes.sees_unit(unknown, 999));
+        let context = {
+            let _unit = lanes.enter_unit(12);
+            synced(&lanes, 7);
+            assert!(lanes.sees_unit(7, 5));
+            assert!(!lanes.sees_unit(7, 10));
+            let context = lanes.visibility_context(7);
+            assert_eq!(context, lanes.visibility_context(7));
+            context
+        };
+        let _unit = lanes.enter_unit(10);
+        synced(&lanes, 7);
+        assert!(!lanes.sees_unit(7, 5));
+        assert!(lanes.sees_unit(7, 10));
+        assert_ne!(context, lanes.visibility_context(7));
     }
 
     #[test]

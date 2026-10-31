@@ -1,1 +1,1 @@
-(ns closure.b (:require [closure.lib :refer [note]])) (def b (note :b))
+(ns closure.b (:require [closure.lib :refer [note]])) (defn b [] (note :b))

@@ -1264,6 +1264,8 @@ const NAMESPACES_EFFECT: u16 = 65529;
 const LANE_INITIALIZER_EFFECT: u16 = 65528;
 /// Require-closure visibility, including reads of already initialized roots.
 const NAMESPACE_VISIBLE_EFFECT: u16 = 65527;
+const BUNDLE_VISIBLE_EFFECT: u16 = 65526;
+const VISIBILITY_CONTEXT_EFFECT: u16 = 65525;
 
 /// The runtime-wide collection and admission policy for `options`.
 ///
@@ -3408,6 +3410,22 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                 }
                 _ => Err("unknown namespace registry request".into()),
             };
+        }
+        if call.op == VISIBILITY_CONTEXT_EFFECT {
+            let task = crate::effect_lanes::identity(call.task);
+            return Ok(Primitive::Number(
+                self.2.map_or(0, |lanes| lanes.visibility_context(task)) as f64,
+            ));
+        }
+        if call.op == BUNDLE_VISIBLE_EFFECT {
+            let Primitive::Number(unit) = call.arg else {
+                return Err("invalid bundle visibility request".into());
+            };
+            let task = crate::effect_lanes::identity(call.task);
+            return Ok(Primitive::Bool(
+                self.2
+                    .is_none_or(|lanes| lanes.sees_unit(task, unit as usize)),
+            ));
         }
         if call.op == NAMESPACE_VISIBLE_EFFECT {
             let Primitive::String(name) = call.arg else {
