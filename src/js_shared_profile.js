@@ -1242,29 +1242,27 @@
   function sharedRegExpCall(constructor, args) {
     const values = args.map(sharedFormOf), value = constructor(...values);
     // RegExp(existing) preserves identity, including task-owned regexes.
-    if (values.length && value === values[0]) return value;
+    if (values.length && value === values[0]) return args[0];
     return value.global || value.sticky ? value : __rt.formRegex(value.source, value.flags);
   }
-  //@unit apply requires: applyTo, boundedCount, cons, seq, sharedIntrinsicRegExp,
-  //@ sharedRegExpCall, toArray
-  function apply(fn, ...args) {
-    if (args.length === 0) args = [undefined, undefined, undefined, undefined, null];
-    const hasApplyTo = fn.cljs$lang$applyTo;
-    let tail = args.pop();
-    const prefix = args;
-    if (prefix.length >= 4) tail = seq(tail);
-    if (hasApplyTo) {
-      let arglist = tail;
-      for (let i = prefix.length - 1; i >= 0; i--) arglist = cons(prefix[i], arglist);
-      const fixed = fn.cljs$lang$maxFixedArity;
-      const n = prefix.length + boundedCount(fixed + 1 - prefix.length, tail);
-      return n <= fixed ? applyTo(fn, n, arglist) : fn.cljs$lang$applyTo(arglist);
-    }
-    const values = prefix.concat(toArray(tail));
-    if (values.length > 20) return fn === sharedIntrinsicRegExp ? sharedRegExpCall(fn, values) : fn.apply(fn, values);
-    const entry = fn["cljs$core$IFn$_invoke$arity$" + values.length];
-    return entry ? entry.call(fn, ...values) : fn === sharedIntrinsicRegExp ? sharedRegExpCall(fn, values) : fn.call(fn, ...values);
+  //@unit sharedRegExpCallback requires: sharedIntrinsicRegExp, sharedRegExpCall
+  // Adapt the constructor value at the callback boundary, leaving the
+  // canonical operations' arity, receiver and sequence handling intact.
+  // This is the same constructor representation the evaluator's invoke
+  // adapter uses for an intrinsic RegExp passed as a function.
+  function sharedRegExpCallback(operation) {
+    return function (...args) {
+      if (args.length && args[0] === sharedIntrinsicRegExp) args[0] = sharedRegExpFunction;
+      return operation(...args);
+    };
   }
+  const sharedRegExpFunction = (...args) => sharedRegExpCall(sharedIntrinsicRegExp, args);
+  //@unit sharedRegExpCallbacks effect: rePattern
+  //@ requires: apply, applyTo, mapSeq, mapv, sharedRegExpCallback
+  apply = sharedRegExpCallback(apply);
+  applyTo = sharedRegExpCallback(applyTo);
+  mapSeq = sharedRegExpCallback(mapSeq);
+  mapv = sharedRegExpCallback(mapv);
   //@unit rePattern requires: sharedFormOf, sharedIntrinsicRegExp
   function rePattern(pattern) {
     pattern = sharedFormOf(pattern);

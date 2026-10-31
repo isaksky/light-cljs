@@ -956,7 +956,9 @@ fn shared_profile_engine_regex_and_lazy_matches_publish() {
            [core.isRegex(re), core.isRegex(built), __rt.formKind(built), core.prStr(re), \
             core.prStr(core.reFind(re, 'ba')), core.prStr(core.reMatches(re, 'a')), \
             core.rePattern(re) === re, __rt.formKind(core.rePattern('(?g)a')) === null, \
-            __rt.formKind(applied), applied.test('A'), core.apply(RegExp, core.vector(re)) === re].join(' '));"
+            __rt.formKind(applied), applied.test('A'), core.apply(RegExp, core.vector(re)) === re, \
+            __rt.formKind(core.first(core.mapv(RegExp, core.vector('x')))), \
+            __rt.formKind(core.first(core.mapSeq(RegExp, core.vector('x'))))].join(' '));"
         ),
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -972,7 +974,7 @@ fn shared_profile_engine_regex_and_lazy_matches_publish() {
     });
     assert_eq!(
         text,
-        "true true compiler-literal #\"(a)\" [\"a\" \"a\"] [\"a\" \"a\"] true true compiler-literal true true"
+        "true true compiler-literal #\"(a)\" [\"a\" \"a\"] [\"a\" \"a\"] true true compiler-literal true true compiler-literal compiler-literal"
     );
     rt.publish(&matches).unwrap();
     let walk = compile_function(
