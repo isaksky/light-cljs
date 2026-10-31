@@ -4,14 +4,15 @@
 //! realized, a failure reaches every reader of the failed attempt, and
 //! parked readers survive collection. Synthetic JavaScript, driven by hand.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 
 use big_boy_pants_js::frontend::compile_function;
 use big_boy_pants_js::{
-    Budget, CellStatus, HeapPolicy, Host, HostCall, LAZY_REALIZATION, Primitive, RunOutcome,
-    Runtime, Task, ValueView,
+    Budget, CellStatus, Completion, DependencyId, HeapPolicy, Host, HostCall, LAZY_REALIZATION,
+    Primitive, ResultKind, RunOutcome, Runtime, Task, ValueView,
 };
 
 /// Counts thunk runs (`__rt.effect(1, …)`), optionally holding the first
@@ -806,4 +807,140 @@ fn readers_of_a_settled_attributed_realization_are_noted() {
     );
     assert!(rt.take_lazy_consumed(c.id()).is_empty());
     assert!(rt.take_lazy_consumed(e.id()).is_empty());
+}
+
+/// Answers the realization gate (`__rt.effect(2, 0)`) from `answers` in
+/// order, then with 0 (admitted), and records which thunk ran
+/// (`__rt.effect(1, tag)`).
+#[derive(Clone, Default)]
+struct ScriptedGate {
+    answers: Arc<Mutex<VecDeque<f64>>>,
+    asked: Arc<AtomicUsize>,
+    ran: Arc<Mutex<Vec<f64>>>,
+}
+
+impl ScriptedGate {
+    fn new(answers: &[f64]) -> ScriptedGate {
+        ScriptedGate {
+            answers: Arc::new(Mutex::new(answers.iter().copied().collect())),
+            ..Default::default()
+        }
+    }
+
+    fn ran(&self) -> Vec<f64> {
+        self.ran.lock().unwrap().clone()
+    }
+}
+
+impl Host for ScriptedGate {
+    fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+        match (call.op, call.arg) {
+            (1, Primitive::Number(tag)) => {
+                self.ran.lock().unwrap().push(tag);
+                Ok(Primitive::Undefined)
+            }
+            (2, _) => {
+                self.asked.fetch_add(1, Ordering::SeqCst);
+                let answer = self.answers.lock().unwrap().pop_front().unwrap_or(0.0);
+                Ok(Primitive::Number(answer))
+            }
+            (op, arg) => Err(format!("unexpected effect {op} {arg:?}")),
+        }
+    }
+}
+
+/// The published value `body` (a function body over `__rt`) returns.
+fn published(rt: &Runtime, body: &str) -> big_boy_pants_js::Rooted {
+    let value = eval(rt, body);
+    rt.publish(&value).unwrap();
+    value
+}
+
+/// Completes with 0 the gate dependency `task` waits on, then runs it.
+fn open_gate(rt: &Runtime, task: &Task, host: &ScriptedGate) -> RunOutcome {
+    let request = task.take_producer_requests().pop().unwrap();
+    let answer = rt.root(Primitive::Number(0.0));
+    let task = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            Completion::Ready(&answer),
+        )
+        .unwrap()
+        .into_runnable()
+        .pop()
+        .unwrap();
+    task.run_with(Budget::UNLIMITED, &mut host.clone()).unwrap()
+}
+
+const GATE_KIND: ResultKind = ResultKind::new(9);
+
+/// A runtime whose realization gate is `__rt.effect(2, 0)`.
+fn gated_runtime() -> Runtime {
+    let rt = Runtime::new();
+    rt.set_realization_gate(2, GATE_KIND);
+    rt
+}
+
+/// `outcome` is a wait at the gate, on the dependency 5 the host named.
+fn waits_at_gate(outcome: RunOutcome) {
+    match outcome {
+        RunOutcome::Waiting(key) => {
+            assert_eq!(key.kind(), GATE_KIND);
+            assert_eq!(key.dependency(), DependencyId::new(5));
+        }
+        other => panic!("expected a gate wait, got {other:?}"),
+    }
+}
+
+/// The embedder's realization gate is asked before each shared cell a
+/// realization claims, not once per realization frame (light-cljs-685): a
+/// frame that realizes the chain of a whole-sequence read goes on to the
+/// next cell of the chain, and its admission to the first cell does not
+/// admit it to the next. Here the gate admits the outer cell and closes
+/// for its tail: the task waits on the gate's dependency without running
+/// the tail's thunk, and finishes once that dependency completes.
+#[test]
+fn realization_gate_is_asked_for_each_shared_cell_in_a_chain() {
+    let rt = gated_runtime();
+    let outer = published(
+        &rt,
+        "const tail = __rt.lazySeq(() => { __rt.effect(1, 2); return __rt.formList(2, 3); });
+         return __rt.lazySeq(() => { __rt.effect(1, 1); return __rt.cljCons(1, tail); });",
+    );
+    let count = compile_function("function count(xs) { return __rt.cljCount(xs); }").unwrap();
+    let host = ScriptedGate::new(&[0.0, 5.0]);
+    let task = rt.spawn(&count, &[&outer]).unwrap();
+    waits_at_gate(task.run_with(Budget::UNLIMITED, &mut host.clone()).unwrap());
+    assert_eq!(host.asked.load(Ordering::SeqCst), 2);
+    assert_eq!(host.ran(), [1.0], "the tail ran without the gate");
+    assert_eq!(
+        complete(open_gate(&rt, &task, &host)),
+        ValueView::Number(3.0)
+    );
+    assert_eq!(host.ran(), [1.0, 2.0]);
+}
+
+/// A `concat` realizes its first collection, another shared cell, in the
+/// frame that claimed the `concat` (light-cljs-685): the gate is asked
+/// again before that frame claims the collection.
+#[test]
+fn realization_gate_is_asked_for_the_collection_a_concat_realizes() {
+    let rt = gated_runtime();
+    let joined = published(
+        &rt,
+        "const first = __rt.lazySeq(() => { __rt.effect(1, 2); return __rt.formList(2, 3); });
+         return __rt.cljConcat(first, __rt.formList(4));",
+    );
+    let head = compile_function("function head(xs) { return __rt.cljFirst(xs); }").unwrap();
+    let host = ScriptedGate::new(&[0.0, 5.0]);
+    let task = rt.spawn(&head, &[&joined]).unwrap();
+    waits_at_gate(task.run_with(Budget::UNLIMITED, &mut host.clone()).unwrap());
+    assert_eq!(host.asked.load(Ordering::SeqCst), 2);
+    assert!(host.ran().is_empty(), "the collection ran without the gate");
+    assert_eq!(
+        complete(open_gate(&rt, &task, &host)),
+        ValueView::Number(2.0)
+    );
+    assert_eq!(host.ran(), [2.0]);
 }

@@ -67,7 +67,8 @@ pub(crate) struct Realize {
     /// Where this frame is in the embedder's realization gate
     /// ([`crate::Runtime::set_realization_gate`]).
     gating: Gating,
-    /// The gate let this task claim shared cells.
+    /// The gate let this task claim `cell` (reset when the frame goes on
+    /// to another cell).
     admitted: bool,
 }
 
@@ -405,6 +406,9 @@ impl Realize {
     }
 
     /// Realize the lazy form `next` instead (a cell of the same chain).
+    /// The gate admitted this frame to its earlier cell only: before it
+    /// claims `next`, a shared cell nobody has realized or is realizing,
+    /// it asks the gate again (light-cljs-685).
     fn retarget(&mut self, heap: &Heap, next: Value) -> bool {
         let Some(cell) = form::form_object(heap, &next).and_then(|f| f.lazy_cell().cloned()) else {
             return false;
@@ -412,6 +416,7 @@ impl Realize {
         self.lazy = next;
         self.cell = cell;
         self.waited = None;
+        self.admitted = false;
         true
     }
 
