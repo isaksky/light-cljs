@@ -2377,6 +2377,7 @@ mod tests {
     /// exercise the constant-pool edge.
     fn spawn_with_constant(rt: &Runtime, constant: ObjectId, args: &[&Rooted]) -> crate::Task {
         let code = Code {
+            traces_constants: true,
             property_names: Box::new([]),
             property_caches: Box::new([]),
             regexps: std::collections::HashMap::new(),
@@ -2406,6 +2407,7 @@ mod tests {
 
     fn code_with(constants: Box<[Value]>, functions: Box<[Arc<Code>]>) -> Code {
         Code {
+            traces_constants: true,
             property_names: Box::new([]),
             property_caches: Box::new([]),
             regexps: std::collections::HashMap::new(),
@@ -2462,6 +2464,69 @@ mod tests {
         assert_eq!(
             edges(&[&child, &parent]),
             [inner, outer].map(TraceEdge::Object)
+        );
+    }
+
+    #[test]
+    fn primitive_code_is_pruned_but_descendant_symbol_constants_remain_roots() {
+        use crate::{Assembler, Primitive};
+
+        let rt = Runtime::new();
+        let heap = rt.heap();
+        let primitive = crate::frontend::compile_script(
+            "primitives",
+            "function f() { return [1, 'text', 12n, null]; } f;",
+        )
+        .unwrap();
+        assert!(!primitive.0.traces_constants);
+        {
+            let _marking = CodeMarking::begin();
+            primitive
+                .0
+                .trace(&mut |_| panic!("primitive code has no heap edges"));
+            // Pruning avoids even entering the collection's code-address set.
+            assert_eq!(
+                first_code_visit(Arc::as_ptr(&primitive.0).cast()),
+                Some(true)
+            );
+        }
+
+        let symbol = crate::value::JsSymbol::new(None);
+        let leaf = plain(heap);
+        let mut entries = EphemeronTable::default();
+        entries.insert(TraceEdge::Symbol(symbol.identity()), obj(leaf));
+        let owner = conditional(
+            heap,
+            ConditionalEdges {
+                table: entries,
+                ..Default::default()
+            },
+        );
+        let _owner = Rooted::new(heap, obj(owner));
+        let child = Assembler::new()
+            .constant(Primitive::Symbol(symbol.clone()))
+            .op(Opcode::Return)
+            .finish("symbol", 0, 0)
+            .unwrap();
+        let parent = Assembler::new()
+            .function(&primitive)
+            .op(Opcode::Pop)
+            .function(&child)
+            .op(Opcode::Return)
+            .finish("parent", 0, 0)
+            .unwrap();
+        assert!(parent.0.traces_constants);
+        let task = rt.spawn(&parent, &[]).unwrap();
+        // The child closure has never been created. Only its code is reached.
+        for _ in 0..2 {
+            rt.collect().unwrap();
+            assert!(heap.is_live(leaf));
+        }
+        drop(task);
+        rt.collect().unwrap();
+        assert!(
+            !heap.is_live(leaf),
+            "bare executable handles do not root constants"
         );
     }
 

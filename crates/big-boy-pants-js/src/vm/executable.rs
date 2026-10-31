@@ -190,6 +190,10 @@ pub(crate) struct Code {
     pub(crate) function_name: JsString,
     pub(crate) locals: u16,
     pub(crate) constants: Box<[Value]>,
+    /// Whether this immutable code subtree holds object or symbol constants.
+    /// Computed bottom-up at load time; ordinary primitive-only code needs
+    /// no collector walk, even when many live closures share it.
+    pub(crate) traces_constants: bool,
     pub(crate) property_names: Box<[Option<super::property::NamedProperty>]>,
     pub(crate) property_caches: Box<[crate::object::InlineCache]>,
     pub(crate) regexps: std::collections::HashMap<
@@ -877,7 +881,10 @@ impl Executable {
         let property_caches = (0..instrs.len())
             .map(|_| crate::object::InlineCache::default())
             .collect();
+        let traces_constants = constants.iter().any(|v| matches!(v, Primitive::Symbol(_)))
+            || functions.iter().any(|f| f.0.traces_constants);
         Ok(Executable(Arc::new(Code {
+            traces_constants,
             property_names: property_names.into(),
             property_caches,
             regexps,
@@ -1049,9 +1056,15 @@ impl Executable {
 /// per collection.
 impl Trace for Code {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
+        if !self.traces_constants {
+            return;
+        }
         let mut pending = vec![self];
         let mut seen: Option<std::collections::HashSet<*const Code>> = None;
         while let Some(code) = pending.pop() {
+            if !code.traces_constants {
+                continue;
+            }
             let address = std::ptr::from_ref(code);
             let first = crate::heap::gc::first_code_visit(address.cast())
                 .unwrap_or_else(|| seen.get_or_insert_default().insert(address));

@@ -4748,6 +4748,7 @@ mod tests {
         let heap = Heap::default();
         for (instrs, functions) in programs {
             let code = Code {
+                traces_constants: true,
                 property_names: Box::new([]),
                 property_caches: Box::new([]),
                 regexps: std::collections::HashMap::new(),
