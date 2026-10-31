@@ -245,9 +245,11 @@ boundary described below. Short metadata/object locks exist; there is no global
 interpreter lock and no lock held across ordinary bytecode execution or a wait.
 The default `HeapPolicy` requests automatic collection after 16,384 allocations.
 After each collection the threshold is the largest of that floor, the last
-live-object count and the edges the last collection traced (its marking work,
-about twice the live objects on compiler workloads), so collection work stays
-proportional to allocation (light-cljs-674). Allocation only records pressure: the next VM boundary returns
+live-object count and the edges the last collection checked plus seven eighths
+of its live-object count. The extra allowance amortizes first visits to object
+bodies; the full live count exceeded the measured peak-memory bound
+(light-cljs-674/695). Every checked edge counts, including already-marked
+targets filtered before the work stack. Allocation only records pressure: the next VM boundary returns
 to the task's collection driver with every identity rooted. The driver releases
 its mutator token, retaining execution ownership and its remaining instruction
 budget, and uses the same stop-the-world rendezvous as explicit collection.

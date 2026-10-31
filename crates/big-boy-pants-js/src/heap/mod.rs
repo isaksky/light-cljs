@@ -544,14 +544,16 @@ impl HeapPolicy {
     /// Allocations until the next automatic collection, after one that kept
     /// `live` objects and traced `traced` edges. A collection's cost is its
     /// traced edges plus the first visits that trace object bodies. Allow
-    /// one allocation per edge and another per live object to amortize
-    /// both, while limiting the extra retained garbage (light-cljs-695).
+    /// one allocation per edge and an allowance for first visits. Retain
+    /// seven eighths of the live count as that allowance: the full count
+    /// exceeded the measured peak-memory bound (light-cljs-695).
     fn threshold(self, live: usize, traced: usize) -> usize {
+        let visit_allowance = live - live / 8;
         let growth = self
             .allocation_threshold
             .unwrap_or(usize::MAX)
             .max(live)
-            .max(traced.saturating_add(live));
+            .max(traced.saturating_add(visit_allowance));
         growth
             .min(
                 self.hard_limit_objects

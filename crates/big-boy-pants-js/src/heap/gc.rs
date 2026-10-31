@@ -1975,7 +1975,7 @@ mod tests {
         assert!(stats.traced >= KEYS * TABLES, "{stats:?}");
         assert_eq!(
             heap.next_collection.load(Ordering::Relaxed),
-            stats.traced + stats.live,
+            stats.traced + stats.live - stats.live / 8,
             "{stats:?}"
         );
     }
