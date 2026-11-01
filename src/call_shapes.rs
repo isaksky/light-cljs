@@ -211,7 +211,7 @@ use crate::analyzer::{
 };
 use crate::core_operations::Type;
 use crate::inference::Inference;
-use crate::program_fragment::children;
+use crate::program_fragment::visit_children;
 
 /// How the definition and the calls of one global are emitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1137,13 +1137,13 @@ impl Scan {
         let mut pending = vec![program.root];
         while let Some(id) = pending.pop() {
             order.push(id);
-            for child in children(program, id) {
+            visit_children(&program.exprs[id.0].kind, |child| {
                 parents[child.0] = parents[child.0].saturating_add(1);
                 parent[child.0] = Some(id);
                 if !std::mem::replace(&mut visited[child.0], true) {
                     pending.push(child);
                 }
-            }
+            });
         }
         let parent_of = |id: ExprId| parent[id.0].filter(|_| parents[id.0] == 1);
         let callee_of = |id: ExprId| {
@@ -1631,7 +1631,7 @@ impl LocalFunctions {
                 for (_, method) in object_methods {
                     walk.bind(method.params.iter().chain(&method.rest).copied());
                 }
-                for child in children(program, id) {
+                visit_children(&program.exprs[id.0].kind, |child| {
                     // An expression with two parents is emitted in both places.
                     if scan.parents[child.0] > 1 {
                         walk.scope_frames();
@@ -1639,7 +1639,7 @@ impl LocalFunctions {
                     if !std::mem::replace(&mut visited[child.0], true) {
                         tasks.push(Task::Visit(child));
                     }
-                }
+                });
             }
         }
         // A method that calls a scoped method reads the binding of its entry.
@@ -1851,7 +1851,7 @@ fn raw_javascript(program: &Program, body: ExprId) -> bool {
         match program.exprs[id.0].kind {
             ExprKind::JsTemplate { .. } => return true,
             ExprKind::Fn { .. } => (),
-            _ => pending.extend(children(program, id)),
+            _ => visit_children(&program.exprs[id.0].kind, |child| pending.push(child)),
         }
     }
     false

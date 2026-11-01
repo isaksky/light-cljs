@@ -585,6 +585,32 @@ struct InternalSlots {
 const BOXED_SLOT_EXTRA: usize = 1024;
 
 impl OrdinaryObject {
+    pub(crate) fn template_copy(&self, owner: TaskId) -> Result<Self, &'static str> {
+        // Internal slots need kind-specific copying; never silently discard them.
+        if self.internal.is_some() || self.data.is_some() {
+            return Err("template: ordinary object has internal slots");
+        }
+        let reservation = self.reservation.duplicate().ok_or("template: heap byte limit exceeded")?;
+        Ok(Self {
+            budget: self.budget.clone(), charged_entries: self.charged_entries,
+            owner: Some(owner), intrinsic: false, sealed: self.sealed,
+            prototype: self.prototype, extensible: self.extensible,
+            entries: self.entries.clone(), shape: self.shape.clone(), index: self.index.clone(),
+            error_data: self.error_data, arguments_data: self.arguments_data,
+            internal: None, data: None, reservation,
+        })
+    }
+
+    pub(crate) fn template_remap(&mut self, ids: &crate::template::IdMap) {
+        self.prototype = self.prototype.map(|id| crate::template::remap_id(id, ids));
+        for (_, property) in &mut self.entries {
+            crate::template::remap_value(&mut property.value, ids);
+            if let Some((get, set)) = &mut property.accessor {
+                crate::template::remap_value(get, ids);
+                crate::template::remap_value(set, ids);
+            }
+        }
+    }
     /// The fixed metadata in this object's boxed internal slots
     /// (`HeapObject::boxed_bytes`). Every slot is installed before the
     /// object is allocated except the private-element record, whose

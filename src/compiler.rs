@@ -2622,6 +2622,10 @@ fn merge_namespace(
     Ok(Some(point))
 }
 
+#[cfg(feature = "bbp-macros")]
+#[path = "compiler_namespace_workers.rs"]
+mod namespace_workers;
+
 fn analyze_entry(
     entry: &str,
     sources: &dyn SourceProvider,
@@ -2659,6 +2663,12 @@ fn analyze_entry(
     let reserve = reserve.or(cache_reservation.as_ref());
     // The cache captures each namespace it analyzes, to publish it.
     let capturing = capture.is_some() || cache.is_some();
+    // Investigative path until namespace metadata, failures, budgets and
+    // compiler services have passed the same production conformance tests.
+    let namespace_workers = cfg!(feature = "bbp-macros")
+        && macros.native_macro_backend()
+        && std::env::var_os("LIGHT_CLJS_NAMESPACE_WORKERS").is_some()
+        && !capturing && manifest.is_none() && install.is_none() && blockers.is_empty();
     if let Some(reservation) = reserve {
         crate::generated_names::reserve(&reservation.to);
     }
@@ -2715,6 +2725,10 @@ fn analyze_entry(
     // The persistent cache's lookups and publications, outside `analysis`.
     let mut cache_time = Duration::ZERO;
     let mut analysis = NamespaceAnalysis::new(macros);
+    #[cfg(feature = "bbp-macros")]
+    if namespace_workers {
+        macros.session_handle().unwrap().enable_namespace_publication().map_err(NamespaceCompileError::new)?;
+    }
     #[cfg(feature = "bbp-macros")]
     if let Some(session) = macros.session_handle() {
         for file in &loader.ordered {
@@ -2796,7 +2810,7 @@ fn analyze_entry(
     // adds them where it charges the unit, in unit order
     // (docs/compiler-concurrency.md, "As built (light-cljs-374)").
     let memory_limit = macros.evaluator_options.memory_limit;
-    if analysis.unit_slots.get() > 1
+    if !namespace_workers && analysis.unit_slots.get() > 1
         && let Some(session) = macros.session_handle()
     {
         use crate::compilation_session::PoolEngines;
@@ -2954,6 +2968,8 @@ fn analyze_entry(
             }
         }};
     }
+    #[cfg(feature = "bbp-macros")]
+    let mut namespace_results = std::collections::VecDeque::new();
     let looped = (|| -> Result<(), NamespaceCompileError> {
         loop {
             // Past the last source, the namespaces still waiting reach
@@ -2966,6 +2982,13 @@ fn analyze_entry(
                     break;
                 }
                 continue;
+            }
+            #[cfg(feature = "bbp-macros")]
+            if namespace_workers && namespace_results.is_empty() && analysis.unit_slots.get() > 1 {
+                let end = namespace_workers::end(&loader.ordered, index, analysis.unit_slots.get());
+                if end > index + 1 {
+                    namespace_results = namespace_workers::run(&mut analysis, macros, &loader.ordered[index..end], index, entry_index, options);
+                }
             }
             let file = &loader.ordered[index];
             let mark = loader.ordered.len();
@@ -3110,8 +3133,20 @@ fn analyze_entry(
                     aliases: &file.aliases,
                     requires: &file.requires,
                 };
-                analysis
-                    .analyze(
+                #[cfg(feature = "bbp-macros")]
+                let published = if let Some(result) = namespace_results.pop_front() {
+                    let mut completed = result?;
+                    let session = macros.session_handle().unwrap();
+                    session.publish_namespace_registrations(completed.registrations).map_err(NamespaceCompileError::new)?;
+                    completed.publication.charge(macros).map_err(at)?;
+                    session.adopt_completed_namespace_units(completed.publication.deferred_units(), macros).map_err(NamespaceCompileError::new)?;
+                    macros.publish_namespace_metadata(&completed.metadata).map_err(NamespaceCompileError::new)?;
+                    analysis.publish_namespace(completed.publication);
+                    true
+                } else { false };
+                #[cfg(not(feature = "bbp-macros"))]
+                let published = false;
+                if !published { analysis.analyze(
                         &input,
                         resolution,
                         index == entry_index,
@@ -3119,7 +3154,7 @@ fn analyze_entry(
                         options,
                         warnings,
                     )
-                    .map_err(at)?;
+                    .map_err(at)?; }
                 lazy_marks.push_back((mark, index));
                 // A unit kept on this thread that failed stops the build
                 // now, before any later top-level pass, as with one slot

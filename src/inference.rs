@@ -524,7 +524,9 @@ impl ProgramFacts {
         let mut pending = vec![program.root];
         while let Some(id) = pending.pop() {
             if !std::mem::replace(&mut emitted[id.0], true) {
-                pending.extend(crate::program_fragment::children(program, id));
+                crate::program_fragment::visit_children(&program.exprs[id.0].kind, |child| {
+                    pending.push(child);
+                });
             }
         }
         for (index, expr) in program.exprs.iter().enumerate() {
@@ -2352,7 +2354,9 @@ fn reads_arguments(program: &Program, id: ExprId) -> bool {
         if matches!(program.exprs[id.0].kind, ExprKind::JsArguments) {
             return true;
         }
-        pending.extend(crate::program_fragment::children(program, id));
+        crate::program_fragment::visit_children(&program.exprs[id.0].kind, |child| {
+            pending.push(child);
+        });
     }
     false
 }

@@ -1537,6 +1537,7 @@ impl Heap {
             .store(0, Ordering::Relaxed);
         self.allocated_objects.store(live, Ordering::Relaxed);
         self.next_collection
+            .0
             .store(self.policy.threshold(live, traced), Ordering::Relaxed);
         let byte_volume = self.byte_budget.collection_started();
         world.gc.last_live_objects = live;
@@ -1979,7 +1980,7 @@ mod tests {
         assert_eq!(stats.reclaimed, 0);
         assert!(stats.traced >= KEYS * TABLES, "{stats:?}");
         assert_eq!(
-            heap.next_collection.load(Ordering::Relaxed),
+            heap.next_collection.0.load(Ordering::Relaxed),
             stats.traced + stats.live - stats.live / 16,
             "{stats:?}"
         );

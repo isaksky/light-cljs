@@ -2,6 +2,441 @@ use super::*;
 use crate::{MacroHost, analyze_with_macros, parse};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[test]
+fn boot_template_keeps_parallel_evaluators_isolated_after_source_mutation() {
+    let runtime = BbpRuntime::new(&EvaluatorOptions { memory_limit: 512 * 1024 * 1024, ..Default::default() }).unwrap();
+    let original = runtime.evaluator().unwrap();
+    assert!(matches!(runtime.0.boot_template.get(), Some(Ok(_))), "port bootstrap must be template-compatible");
+    let value = original.evaluate_unit("rt => { globalThis.templatePoison = 1; rt.port.inc.templatePoison = 2; return null; }").unwrap();
+    original.release(value).unwrap();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8).map(|_| scope.spawn(|| {
+            let evaluator = runtime.evaluator().unwrap();
+            let value = evaluator.evaluate_unit("rt => { if (globalThis.templatePoison !== undefined || rt.port.inc.templatePoison !== undefined) throw Error('shared task state'); globalThis.templatePoison = 3; rt.port.inc.templatePoison = 4; return rt.port.inc(41); }").unwrap();
+            assert!(matches!(evaluator.export_data(value, ConversionLimits::default()).unwrap().kind(), D::Double(42.0)));
+            evaluator.release(value).unwrap();
+        })).collect();
+        for worker in workers { worker.join().unwrap(); }
+    });
+    assert_eq!(runtime.0.counters.contexts_from_template.load(Ordering::Relaxed), 8);
+    let bounded = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let _first = bounded.evaluator().unwrap();
+    assert!(matches!(bounded.0.boot_template.get(), Some(Err("bootstrap template exceeds its cache budget"))));
+    let _second = bounded.evaluator().unwrap();
+    assert_eq!(bounded.0.counters.contexts_from_template.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn remembered_occurrences_preserve_order_partial_failures_and_poll_charges() {
+    use crate::compiler_data::{FormId, FormKind as HostKind, FormNode, Origin, Source};
+
+    let source = Source::new("remember.cljs", "01234567");
+    let shared = Datum::new(D::Symbol(Name::new(None, "shared")));
+    let literal = Datum::new(D::CompilerLiteral {
+        kind: L::Regex,
+        payload: shared.clone(),
+    }).with_metadata(shared.clone());
+    let root = Datum::new(D::Collection {
+        kind: C::Vector,
+        children: vec![shared.clone(), literal.clone(), shared.clone()].into(),
+    }).with_metadata(shared.clone());
+    let mut nodes = vec![FormNode {
+        kind: HostKind::Scalar,
+        metadata: None,
+        compiler_payload: None,
+        origin: Origin::Source,
+    }; 7];
+    nodes[3].compiler_payload = Some(FormId(1));
+    nodes[3].metadata = Some(FormId(2));
+    nodes[5].kind = HostKind::Collection {
+        kind: C::Vector,
+        children: vec![FormId(0), FormId(3), FormId(4)].into(),
+    };
+    nodes[5].metadata = Some(FormId(6));
+    let form = Form::from_parts(
+        nodes,
+        vec![shared.clone(), shared.clone(), shared.clone(), literal.clone(),
+             shared.clone(), root.clone(), shared.clone()],
+        (0..7).map(|n| source.span(n..n + 1).unwrap()).collect(),
+        FormId(5),
+    ).with_compiler_spans(HashMap::from([
+        (FormId(6), source.span(7..8).unwrap()),
+    ]));
+
+    // Metadata follows the literal payload, and root metadata follows all
+    // ordinary children. A failed visit must preserve exactly the completed
+    // occurrences, even when identities were recorded on an earlier call.
+    for (nodes, depth, last, has_literal, success, polls, left) in [
+        (3, 3, Some(0), false, false, 4, 0),
+        (4, 3, Some(1), false, false, 5, 0),
+        (5, 3, Some(2), true, false, 6, 0),
+        (6, 3, Some(4), true, false, 7, 0),
+        (7, 3, Some(6), true, true, 7, 0),
+        (7, 1, None, false, false, 2, 6),
+        (7, 2, Some(0), false, false, 4, 4),
+    ] {
+        for cached in [false, true] {
+            let control = ExecutionControl::new(&EvaluatorOptions {
+                poll_budget: 100,
+                ..Default::default()
+            }).unwrap();
+            let mut bridge = Bridge::default();
+            if cached {
+                bridge.remember(&form, 3, &mut 7).unwrap();
+            }
+            bridge.control = Some(control.clone());
+            let mut remaining = nodes;
+            let result = bridge.remember(&form, depth, &mut remaining);
+            assert_eq!(result.is_ok(), success);
+            if let Err(error) = result {
+                assert!(error.to_string().contains("form conversion limit exceeded"));
+            }
+            assert_eq!(remaining, left);
+            assert_eq!(control.remaining_polls(), 100 - polls);
+            let expected = last.or(cached.then_some(6));
+            assert_eq!(bridge.forms.get(&shared.identity()).map(|f| f.id().0), expected);
+            assert_eq!(bridge.forms.contains_key(&literal.identity()), has_literal || cached);
+            assert_eq!(bridge.forms.contains_key(&root.identity()), success || cached);
+            assert_eq!(bridge.unretained.len(), bridge.forms.len());
+            if expected == Some(6) {
+                let remembered = &bridge.forms[&shared.identity()];
+                assert_eq!(remembered.span().bytes(), 6..7);
+                assert_eq!(remembered.compiler_span().bytes(), 7..8);
+            }
+        }
+    }
+
+    let control = ExecutionControl::new(&EvaluatorOptions {
+        poll_budget: 3,
+        ..Default::default()
+    }).unwrap();
+    let mut bridge = Bridge { control: Some(control.clone()), ..Default::default() };
+    let mut remaining = 7;
+    assert!(bridge.remember(&form, 3, &mut remaining).is_err());
+    assert_eq!(control.remaining_polls(), 0);
+    assert_eq!(remaining, 4);
+    assert_eq!(bridge.forms.len(), 1);
+    assert_eq!(bridge.forms[&shared.identity()].id(), FormId(0));
+}
+
+#[test]
+fn boot_core_inventory_preserves_distinct_lazy_getters_and_existing_functions() {
+    let evaluator = BbpEvaluator::new(Default::default()).unwrap();
+    let keys = crate::CoreFnId::ALL.iter().map(|id| format!("{:?}", id.runtime_key()))
+        .collect::<Vec<_>>().join(",");
+    let result = evaluator.evaluate_unit(&format!(r#"rt => {{
+      const keys=[{keys}], unsupported=[];
+      for(const name of keys){{
+        if(!(name in rt.port))throw Error('missing core entry '+name);
+        const d=Object.getOwnPropertyDescriptor(rt.port,name);
+        if(d?.get===undefined || name==='currentNs')continue;
+        try{{d.get.call(rt.port);}}catch(e){{
+          if(!String(e).includes('core.'+name))throw e;
+          if(d.enumerable || d.configurable || d.set!==undefined)throw Error('getter flags '+name);
+          unsupported.push(name);
+        }}
+      }}
+      if(unsupported.length<2)throw Error('expected distinct unsupported getters');
+      const order=Object.getOwnPropertyNames(rt.port).filter(k=>unsupported.includes(k));
+      if(JSON.stringify(order)!==JSON.stringify(unsupported))throw Error('core property order');
+      const original=rt.port.add;
+      rt.port.add=()=>99;
+      if(original(1,2)!==3 || rt.port.add(1,2)!==99)throw Error('existing core function was replaced');
+      return true;
+    }}"#)).unwrap();
+    assert!(matches!(evaluator.export_data(result, Default::default()).unwrap().kind(), D::Boolean(true)));
+    evaluator.release(result).unwrap();
+}
+
+#[test]
+fn frontier_commands_preserve_dynamic_lookup_errors_values_and_cancellation() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let kept = evaluator.evaluate_unit("rt => rt.vector(42)").unwrap();
+    let setup = evaluator.evaluate_unit("rt => { globalThis.frontierEvents=[]; globalThis.__lightEnterCompilerFrontier=function(next){frontierEvents.push(next); if(this !== globalThis)throw Error('receiver'); if(next===7)throw Error('frontier-test'); return {unused:42};}; globalThis.__lightLeaveCompilerFrontier=()=>frontierEvents.push('leave'); return null; }").unwrap();
+    evaluator.release(setup).unwrap();
+    let evaluated = shared.helper_counts().units_evaluated;
+    for next in [Some(0), Some(2), None, None] {
+        evaluator.compiler_frontier(next).unwrap();
+        evaluator.runtime.collect().unwrap();
+    }
+    assert!(evaluator.compiler_frontier(Some(7)).unwrap_err().to_string().contains("frontier-test"));
+    assert_eq!(shared.helper_counts().units_evaluated, evaluated);
+    let setup = evaluator.evaluate_unit("rt => {globalThis.__lightEnterCompilerFrontier=next=>frontierEvents.push(next+100); return null;}").unwrap();
+    evaluator.release(setup).unwrap();
+    evaluator.compiler_frontier(Some(3)).unwrap();
+    let events = evaluator.evaluate_unit("rt => JSON.stringify(frontierEvents)").unwrap();
+    let data = evaluator.export_data(events, Default::default()).unwrap();
+    assert!(matches!(data.kind(), D::String(text)
+        if String::from_utf16_lossy(text) == "[0,2,\"leave\",\"leave\",7,103]"));
+    evaluator.release(events).unwrap();
+    let data = evaluator.export_data(kept, Default::default()).unwrap();
+    assert!(matches!(data.kind(), D::Collection { children, .. }
+        if matches!(children[0].kind(), D::Double(n) if *n == 42.0)));
+    evaluator.release(kept).unwrap();
+    assert!(evaluator.cx().unwrap().values.borrow().is_empty());
+    assert!(evaluator.cx().unwrap().task_values.borrow().is_empty());
+    evaluator.control.cancel();
+    assert!(evaluator.compiler_frontier(None).unwrap_err().to_string().contains("cancelled"));
+}
+
+#[test]
+fn frontier_commands_read_the_runtime_argument_before_the_service() {
+    let evaluator = BbpEvaluator::new(Default::default()).unwrap();
+    let setup = evaluator.evaluate_unit("rt => { globalThis.frontierEvents=[]; Object.defineProperty(globalThis,'__lightNativeRuntime',{get:()=>{frontierEvents.push('runtime');return rt;},configurable:true}); globalThis.__lightEnterCompilerFrontier=next=>frontierEvents.push(next); globalThis.__lightLeaveCompilerFrontier=()=>frontierEvents.push('leave'); return null; }").unwrap();
+    evaluator.release(setup).unwrap();
+    evaluator.compiler_frontier(Some(0)).unwrap();
+    evaluator.compiler_frontier(None).unwrap();
+    // evaluate() reads no extra runtime argument, unlike evaluate_unit().
+    let result = evaluator.evaluate("JSON.stringify(frontierEvents)").unwrap();
+    let data = evaluator.export_data(result, Default::default()).unwrap();
+    assert!(matches!(data.kind(), D::String(text)
+        if String::from_utf16_lossy(text) == "[\"runtime\",0,\"runtime\",\"leave\"]"));
+    evaluator.release(result).unwrap();
+}
+
+#[test]
+fn gensym_scope_commands_preserve_retirement_and_live_values_without_eval() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let kept = evaluator.evaluate_unit("rt => rt.vector(42)").unwrap();
+    for (serial, prefix, retired, expected) in [
+        (17, "17__", "", "g17__1"),
+        (17, "17__", "", "g17__2"),
+        (18, "18__", "", "g18__1"),
+        (17, "17__", "17", "g17__1"),
+    ] {
+        let evaluated = shared.helper_counts().units_evaluated;
+        evaluator.gensym_scope(serial, prefix, retired, false).unwrap();
+        assert_eq!(shared.helper_counts().units_evaluated, evaluated);
+        evaluator.runtime.collect().unwrap();
+        let name = evaluator.evaluate_unit("rt => rt.core.str(rt.core.gensym('g'))").unwrap();
+        let name_data = evaluator.export_data(name, Default::default()).unwrap();
+        assert!(matches!(name_data.kind(), D::String(text) if String::from_utf16_lossy(text) == expected));
+        evaluator.release(name).unwrap();
+        let kept_data = evaluator.export_data(kept, Default::default()).unwrap();
+        assert!(matches!(kept_data.kind(), D::Collection { children, .. }
+            if matches!(children[0].kind(), D::Double(n) if *n == 42.0)));
+    }
+    evaluator.release(kept).unwrap();
+    assert!(evaluator.cx().unwrap().values.borrow().is_empty());
+    assert!(evaluator.cx().unwrap().task_values.borrow().is_empty());
+}
+
+#[test]
+fn gensym_scope_commands_observe_runtime_replacement_and_recover_after_errors() {
+    let evaluator = BbpEvaluator::new(Default::default()).unwrap();
+    let install = evaluator.evaluate_unit("rt => { globalThis.__lightNativeRuntime = {compilerForms: {gensymScope: function(...args) { globalThis.scopeArgs = args; globalThis.scopeThis = this; return 9; }}}; return null; }").unwrap();
+    evaluator.release(install).unwrap();
+    evaluator.gensym_scope(27, "27__", "17,18", false).unwrap();
+    let result = evaluator.evaluate_unit("rt => JSON.stringify([globalThis.scopeArgs, globalThis.scopeThis === rt.compilerForms])").unwrap();
+    let data = evaluator.export_data(result, Default::default()).unwrap();
+    assert!(matches!(data.kind(), D::String(text)
+        if String::from_utf16_lossy(text) == "[[27,\"27__\",\"17,18\",false],true]"));
+    evaluator.release(result).unwrap();
+    let install = evaluator.evaluate_unit("rt => { rt.compilerForms.gensymScope = () => { throw Error('scope-test'); }; return null; }").unwrap();
+    evaluator.release(install).unwrap();
+    assert!(evaluator.gensym_scope(0, "", "", false).unwrap_err().to_string().contains("scope-test"));
+    let result = evaluator.evaluate_unit("rt => 42").unwrap();
+    assert!(matches!(evaluator.export_data(result, Default::default()).unwrap().kind(), D::Double(n) if *n == 42.0));
+    evaluator.release(result).unwrap();
+    assert!(evaluator.cx().unwrap().values.borrow().is_empty());
+    assert!(evaluator.cx().unwrap().task_values.borrow().is_empty());
+}
+
+#[test]
+fn repeated_generated_spellings_reuse_accounted_storage_without_weakening_admission() {
+    let shared = BbpRuntime::new(&EvaluatorOptions {
+        memory_limit: 4 << 20,
+        ..Default::default()
+    })
+    .unwrap();
+    let runtime = &shared.0.runtime;
+    let mut bridge = Bridge::default();
+    let key = [b'a' as u16, b'x' as u16, 0xd800];
+    runtime.scope(|s| {
+        assert!(bridge.remember_generated_name(s, &key).unwrap());
+        // A runtime request also joins this same set. Its source spelling
+        // must be found by code units, regardless of who created the body.
+        let runtime_key = [b'a' as u16, b'y' as u16, 0xdc00];
+        bridge
+            .generated_names
+            .insert(string(s, &runtime_key).unwrap());
+        let admitted = runtime.heap_stats().admitted_bytes_total;
+        for _ in 0..1024 {
+            assert!(!bridge.remember_generated_name(s, &key).unwrap());
+            assert!(!bridge.remember_generated_name(s, &runtime_key).unwrap());
+        }
+        assert_eq!(runtime.heap_stats().admitted_bytes_total, admitted);
+        // A genuinely new spelling still must pass managed byte admission.
+        assert!(
+            bridge
+                .remember_generated_name(s, &vec![97; 4 << 20])
+                .is_err()
+        );
+        assert_eq!(bridge.generated_names.len(), 2);
+    });
+    runtime.collect().unwrap();
+    runtime.scope(|s| assert!(!bridge.remember_generated_name(s, &key).unwrap()));
+}
+
+#[test]
+fn imported_occurrences_keep_byte_coordinates_and_source_line_offsets() {
+    let source = crate::compiler_data::Source::with_line_offset("coordinates.cljs", "\nα 42", 10);
+    let data = Datum::new(D::Integer(42));
+    let form = Form::from_data(
+        data.clone(),
+        source.span(4..6).unwrap(),
+        crate::compiler_data::Origin::Source,
+    );
+    let rt = Runtime::new();
+    let mut bridge = Bridge::default();
+    rt.scope(|s| {
+        bridge.remember(&form, 128, &mut 1000).unwrap();
+        let value = bridge.import(s, &data, 128, &mut 1000).unwrap();
+        let location = s.provenance(value).unwrap();
+        assert_eq!((location.line, location.column), (12, 4));
+        let generated = Datum::new(D::Integer(7));
+        let value = bridge.import(s, &generated, 128, &mut 1000).unwrap();
+        let location = s.provenance(value).unwrap();
+        assert_eq!((location.line, location.column), (0, 0));
+    });
+}
+
+#[test]
+fn host_import_handles_survive_collection_without_running_the_command_loop() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let function = evaluator.evaluate_unit("rt => x => x").unwrap();
+    let input = Datum::new(D::Collection {
+        kind: C::Vector,
+        children: vec![Datum::new(D::Integer(9_007_199_254_740_993))].into(),
+    });
+    let steps = shared.helper_counts().steps;
+    let argument = evaluator.import_data(&input, Default::default()).unwrap();
+    assert_eq!(shared.helper_counts().steps, steps);
+    shared.0.runtime.collect().unwrap();
+    let result = evaluator.call(function, &[argument]).unwrap();
+    let steps = shared.helper_counts().steps;
+    evaluator.release(argument).unwrap();
+    assert_eq!(shared.helper_counts().steps, steps);
+    assert!(evaluator.call(function, &[argument]).is_err());
+    shared.0.runtime.collect().unwrap();
+    assert_eq!(
+        evaluator
+            .export_data(result, Default::default())
+            .unwrap()
+            .identity(),
+        input.identity()
+    );
+    evaluator.release(result).unwrap();
+    evaluator.release(function).unwrap();
+    assert!(evaluator.cx().unwrap().values.borrow().is_empty());
+    assert!(evaluator.cx().unwrap().task_values.borrow().is_empty());
+}
+
+#[test]
+fn failed_import_flushes_reclamation_watches_after_leaving_the_bridge_lock() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let child = Datum::new(D::Collection {
+        kind: C::Vector,
+        children: vec![Datum::new(D::Integer(7))].into(),
+    });
+    let input = Datum::new(D::Collection {
+        kind: C::Vector,
+        children: vec![child.clone(), Datum::new(D::Nil)].into(),
+    });
+    // Root, child and its scalar fit; the last sibling fails. Both a raw
+    // native form and occurrence wrappers have already entered the cache.
+    assert!(
+        evaluator
+            .import_data(&input, ConversionLimits { nodes: 3, depth: 3 })
+            .is_err()
+    );
+    let saved = {
+        let bridge = shared.0.bridge.lock().unwrap();
+        assert!(bridge.pending_watches.is_none());
+        assert!(bridge.imports.contains_key(&child.identity()));
+        assert!(!bridge.imports.contains_key(&input.identity()));
+        bridge.imports[&child.identity()].occurrence.clone()
+    };
+    shared.0.runtime.collect().unwrap();
+    assert!(!saved.is_live());
+    shared.0.runtime.scope(|_| {
+        let mut bridge = shared.0.bridge.lock().unwrap();
+        bridge.prune(shared.0.runtime.collection_count());
+        assert!(bridge.imports.is_empty());
+        assert!(bridge.native_objects.is_empty());
+        assert!(bridge.retained.is_empty());
+        assert_eq!(bridge.cost_entries, 0);
+    });
+}
+
+#[test]
+fn host_import_handles_keep_conversion_limits_and_release_after_call_errors() {
+    let evaluator = BbpEvaluator::new(Default::default()).unwrap();
+    let function = evaluator
+        .evaluate_unit("rt => x => { throw Error('probe'); }")
+        .unwrap();
+    let input = Datum::new(D::Collection {
+        kind: C::Vector,
+        children: vec![Datum::new(D::Integer(42))].into(),
+    });
+    let limits = ConversionLimits { nodes: 2, depth: 2 };
+    let argument = evaluator.import_data(&input, limits).unwrap();
+    for limited in [
+        ConversionLimits { nodes: 1, ..limits },
+        ConversionLimits { depth: 1, ..limits },
+    ] {
+        assert!(evaluator.import_data(&input, limited).is_err());
+    }
+    assert!(
+        evaluator
+            .call(function, &[argument])
+            .unwrap_err()
+            .0
+            .contains("probe")
+    );
+    evaluator.release(argument).unwrap();
+    evaluator.release(function).unwrap();
+    assert!(evaluator.cx().unwrap().values.borrow().is_empty());
+    assert!(evaluator.cx().unwrap().task_values.borrow().is_empty());
+    let result = evaluator.evaluate_unit("rt => 42").unwrap();
+    assert!(matches!(
+        evaluator.export_data(result, limits).unwrap().kind(),
+        D::Double(42.0)
+    ));
+    evaluator.release(result).unwrap();
+}
+
+#[test]
+fn host_import_calls_mix_published_inputs_with_task_owned_functions_and_objects() {
+    let evaluator = BbpEvaluator::new(Default::default()).unwrap();
+    let function = evaluator
+        .evaluate_unit("rt => { let calls = 0; return (object, input) => { object.calls = ++calls; return input; }; }")
+        .unwrap();
+    let object = evaluator.evaluate_unit("rt => ({calls: 0})").unwrap();
+    let input = Datum::new(D::Integer(42));
+    let argument = evaluator.import_data(&input, Default::default()).unwrap();
+    for calls in 1..=2 {
+        evaluator.runtime.collect().unwrap();
+        let result = evaluator.call(function, &[object, argument]).unwrap();
+        let output = evaluator.export_data(result, Default::default()).unwrap();
+        assert_eq!(output.identity(), input.identity());
+        evaluator.release(result).unwrap();
+        let read = evaluator.evaluate_unit("rt => x => x.calls").unwrap();
+        let count = evaluator.call(read, &[object]).unwrap();
+        let output = evaluator.export_data(count, Default::default()).unwrap();
+        assert!(matches!(output.kind(), D::Double(n) if *n == calls as f64));
+        evaluator.release(count).unwrap();
+        evaluator.release(read).unwrap();
+    }
+    for value in [argument, object, function] {
+        evaluator.release(value).unwrap();
+    }
+}
+
 fn native(source: &str) -> String {
     let mut host = MacroHost::new();
     host.use_native_macros();
@@ -4062,6 +4497,273 @@ fn extended_catalog_preserves_external_keys_after_multi_product_bundle() {
         // public registry was read.
         assert_eq!(entries, 0.0, "extend {extend}");
         assert_eq!(adopted, applied, "extend {extend}");
+    }
+}
+
+#[test]
+fn catalog_branches_separate_reordered_journals_and_inherit_producer_suffixes() {
+    use crate::compilation_session::Registration;
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let root = |name: &str, unit| {
+        Registration::Root(name.into(), Some(unit), None, false, "branch.cljs:1".into())
+    };
+    let parent = Rc::new(shared.evaluator().unwrap());
+    parent
+        .clone()
+        .install_compiler_service(
+            "__lightCompileUnit",
+            Rc::new(|_, unit| Ok(format!("rt => {unit}"))),
+        )
+        .unwrap();
+    parent
+        .install_catalog(0, &[root("pick", 10), root("common", 11)])
+        .unwrap();
+    let spawn = |task: &BbpEvaluator| {
+        task.spawn_producer(&task.cx().unwrap(), task.service.borrow().clone(), |_| {})
+            .unwrap()
+    };
+    let arrival = spawn(&parent);
+    let canonical = spawn(&parent);
+    canonical.fork_catalog().unwrap();
+    shared.0.runtime.scope(|s| {
+        let prefix = parent
+            .cx()
+            .unwrap()
+            .catalog_snapshot
+            .borrow()
+            .clone()
+            .unwrap();
+        let fork = canonical
+            .cx()
+            .unwrap()
+            .catalog_snapshot
+            .borrow()
+            .clone()
+            .unwrap();
+        assert!(
+            s.same_object(s.local(&prefix).unwrap(), s.local(&fork).unwrap()),
+            "forking must share the existing immutable prefix"
+        );
+    });
+    arrival
+        .install_catalog(2, &[root("pick", 2), root("pick", 1)])
+        .unwrap();
+    canonical
+        .install_catalog(2, &[root("pick", 1), root("pick", 2)])
+        .unwrap();
+    let read = |task: &BbpEvaluator, name: &str| {
+        let id = task
+            .evaluate_unit(&format!("rt => globalThis.__lightCompilerRoots.{name}"))
+            .unwrap();
+        let data = task.export_data(id, Default::default()).unwrap();
+        task.release(id).unwrap();
+        let D::Double(number) = data.kind() else {
+            panic!("expected numeric root")
+        };
+        *number
+    };
+    assert_eq!(read(&parent, "pick"), 10.0);
+    assert_eq!(read(&arrival, "pick"), 1.0);
+    assert_eq!(
+        read(&canonical, "pick"),
+        2.0,
+        "same cursor must not select another branch's order"
+    );
+    arrival.install_catalog(4, &[root("later", 21)]).unwrap();
+    let child = spawn(&canonical);
+    child.install_catalog(4, &[root("later", 20)]).unwrap();
+    let sibling = spawn(&canonical);
+    sibling.install_catalog(4, &[root("later", 20)]).unwrap();
+    shared.0.runtime.collect().unwrap();
+    assert_eq!(
+        read(&child, "later"),
+        20.0,
+        "producer must inherit its catalog branch"
+    );
+    assert_eq!(read(&sibling, "later"), 20.0);
+    assert_eq!(read(&arrival, "later"), 21.0);
+    assert_eq!(read(&canonical, "common"), 11.0);
+    let snapshot = |task: &BbpEvaluator| {
+        task.cx()
+            .unwrap()
+            .catalog_snapshot
+            .borrow()
+            .clone()
+            .unwrap()
+    };
+    let a = snapshot(&child);
+    let b = snapshot(&sibling);
+    shared.0.runtime.scope(|s| {
+        assert!(
+            s.same_object(s.local(&a).unwrap(), s.local(&b).unwrap()),
+            "same-branch prefixes remain shared"
+        )
+    });
+    let weak = a.downgrade();
+    drop((a, b, child, sibling, canonical, arrival, parent));
+    shared.0.runtime.collect().unwrap();
+    assert!(
+        !weak.is_live(),
+        "branch cache must not root catalog history"
+    );
+}
+
+#[test]
+fn concurrent_catalog_builders_publish_one_live_frontier() {
+    use crate::compilation_session::Registration;
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let registrations = (0..512)
+        .map(|id| Registration::Root(format!("r{id}"), Some(id), None, false, "race.cljs:1".into()))
+        .collect::<Vec<_>>();
+    let ready = std::sync::Barrier::new(4);
+    let roots = std::thread::scope(|scope| {
+        let handles = (0..4).map(|_| {
+            let (shared, registrations, ready) = (&shared, &registrations, &ready);
+            scope.spawn(move || {
+                let task = Rc::new(shared.evaluator().unwrap());
+                task.clone().install_compiler_service("__lightCompileUnit", Rc::new(|_, id| {
+                    Ok(format!("rt => {id}"))
+                })).unwrap();
+                ready.wait();
+                task.install_catalog(0, registrations).unwrap();
+                let snapshot = task.cx().unwrap().catalog_snapshot.borrow().clone().unwrap();
+                // Hold every installed frontier live until all builders have
+                // published, then demand one initializer twice in each task.
+                ready.wait();
+                let value = task.evaluate_unit("rt => globalThis.__lightCompilerRoots.r511 + globalThis.__lightCompilerRoots.r511").unwrap();
+                let result = task.export_data(value, Default::default()).unwrap();
+                task.release(value).unwrap();
+                assert!(matches!(result.kind(), D::Double(n) if *n == 1022.0));
+                snapshot
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|thread| thread.join().unwrap()).collect::<Vec<_>>()
+    });
+    shared.0.runtime.collect().unwrap();
+    shared.0.runtime.scope(|scope| {
+        let first = scope.local(&roots[0]).unwrap();
+        for root in &roots[1..] {
+            assert!(scope.same_object(first, scope.local(root).unwrap()));
+        }
+    });
+    let weak = roots[0].downgrade();
+    drop(roots);
+    shared.0.runtime.collect().unwrap();
+    assert!(!weak.is_live());
+}
+
+#[test]
+fn namespace_catalog_seeds_share_live_prefixes_after_the_owner_is_dropped() {
+    use crate::compilation_session::Registration;
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let root = |name: String, unit| Registration::Root(name, Some(unit), None, false, "seed.cljs:1".into());
+    let registrations = (0..512).map(|id| root(format!("common{id}"), id)).collect::<Vec<_>>();
+    let parent = shared.evaluator().unwrap();
+    parent.install_catalog(0, &registrations).unwrap();
+    let seed = parent.catalog_seed().unwrap();
+    let snapshot = parent.cx().unwrap().catalog_snapshot.borrow().clone().unwrap();
+    drop(parent);
+    shared.0.runtime.collect().unwrap();
+    std::thread::scope(|scope| {
+        let handles = (0..4).map(|slot| {
+            let (shared, registrations, seed, snapshot) = (&shared, &registrations, seed.clone(), snapshot.clone());
+            scope.spawn(move || {
+                let task = Rc::new(shared.evaluator().unwrap());
+                task.clone().install_compiler_service("__lightCompileUnit", Rc::new(|_, id| Ok(format!("rt => {id}")))).unwrap();
+                task.adopt_catalog_seed(&seed).unwrap();
+                assert_eq!(task.catalog_versions(), 1,
+                    "adoption must not rebuild the preceding all-but-last frontier");
+                let installed = task.cx().unwrap().catalog_snapshot.borrow().clone().unwrap();
+                shared.0.runtime.scope(|s| assert!(s.same_object(s.local(&snapshot).unwrap(), s.local(&installed).unwrap()), "a fresh namespace must reuse the exact prefix, not rebuild it"));
+                task.install_catalog(registrations.len(), &[root("pick".into(), 1000 + slot)]).unwrap();
+                let value = task.evaluate_unit("rt => globalThis.__lightCompilerRoots.common511 + globalThis.__lightCompilerRoots.pick").unwrap();
+                let result = task.export_data(value, Default::default()).unwrap();
+                task.release(value).unwrap();
+                assert!(matches!(result.kind(), D::Double(n) if *n == (1511 + slot) as f64));
+            })
+        }).collect::<Vec<_>>();
+        for handle in handles { handle.join().unwrap(); }
+    });
+    let weak = snapshot.downgrade();
+    drop((snapshot, seed));
+    shared.0.runtime.collect().unwrap();
+    assert!(!weak.is_live(), "catalog seeds must not retain historical prefixes after use");
+}
+
+#[test]
+fn concurrent_catalog_branches_keep_distinct_equal_length_views_through_gc() {
+    use crate::compilation_session::Registration;
+    for prefix in [false, true] {
+        let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+        let ready = std::sync::Barrier::new(5);
+        let collected = std::sync::Barrier::new(5);
+        let roots = std::thread::scope(|scope| {
+            let threads = (0..4)
+                .map(|slot| {
+                    let shared = &shared;
+                    let ready = &ready;
+                    let collected = &collected;
+                    scope.spawn(move || {
+                        let task = Rc::new(shared.evaluator().unwrap());
+                        task.clone()
+                            .install_compiler_service(
+                                "__lightCompileUnit",
+                                Rc::new(|_, unit| Ok(format!("rt => {unit}"))),
+                            )
+                            .unwrap();
+                        let root = |name: &str, unit| {
+                            Registration::Root(
+                                name.into(),
+                                Some(unit),
+                                None,
+                                false,
+                                "branch.cljs:1".into(),
+                            )
+                        };
+                        if prefix {
+                            task.install_catalog(0, &[root("common", 10)]).unwrap();
+                        }
+                        task.fork_catalog().unwrap();
+                        task.install_catalog(usize::from(prefix), &[root("pick", 100 + slot)])
+                            .unwrap();
+                        let snapshot = task
+                            .cx()
+                            .unwrap()
+                            .catalog_snapshot
+                            .borrow()
+                            .clone()
+                            .unwrap();
+                        ready.wait();
+                        collected.wait();
+                        let id = task
+                            .evaluate_unit("rt => globalThis.__lightCompilerRoots.pick")
+                            .unwrap();
+                        let value = task.export_data(id, Default::default()).unwrap();
+                        task.release(id).unwrap();
+                        assert!(matches!(value.kind(), D::Double(n) if *n == (100 + slot) as f64));
+                        snapshot
+                    })
+                })
+                .collect::<Vec<_>>();
+            ready.wait();
+            shared.0.runtime.collect().unwrap();
+            collected.wait();
+            threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        shared.0.runtime.scope(|s| {
+            for (i, a) in roots.iter().enumerate() {
+                for b in roots.iter().skip(i + 1) {
+                    assert!(!s.same_object(s.local(a).unwrap(), s.local(b).unwrap()));
+                }
+            }
+        });
+        let weak = roots.iter().map(Rooted::downgrade).collect::<Vec<_>>();
+        drop(roots);
+        shared.0.runtime.collect().unwrap();
+        assert!(weak.iter().all(|snapshot| !snapshot.is_live()));
     }
 }
 

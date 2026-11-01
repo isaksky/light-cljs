@@ -8,6 +8,721 @@ that depended on the schedule until light-cljs-379; light-cljs-343 under
 Stages C and D are not built. The "As built" notes record what was
 implemented; the rest of the document is the design as proposed.
 
+October 31 experiment: a test-only shared-runtime namespace probe executes
+independent namespace analysis concurrently (`src/analyzer_parallel_probe.rs`).
+The corrected probe uses ordinary deferred units, canonical effect-lane pass
+reservations and the build's worker budget, with each writer executing its own
+units. It joins the resulting IR fragments in canonical order. For 64 copies
+of the 200k project's worker namespace with fixed providers, three release runs
+measured 1186 ms at one worker, 537 ms at four and 538 ms at eight (medians),
+or 2.21x analysis speedup. Publication takes about 19 ms at eight workers.
+These figures exclude setup and application preparation/emission; they are not
+whole-compiler speedups. Production top-level namespace execution remains serial.
+
+Combined JavaScript and source-map tables match a sequential NamespaceAnalysis
+reference exactly at both Prepare and Advanced optimization. Node results
+match the Babashka worker oracle. A shared macro-counter stress delays the first
+namespace and verifies that later effects wait: eight stamps remain 1 through 8.
+The reference drains each source immediately, as this probe does; it is not the
+CLI's DRAIN_LAG/unit-pool pipeline. General registration visibility, changing
+macro inventories, cross-namespace generations/extensions, failures and aggregate
+analysis-budget publication still need production integration and validation.
+
+Correction: the initial experiment-12 through experiment-14 probes used bound
+bootstrap-mode hosts. They analyzed ordinary bodies inline, bypassing normal
+deferred-unit registration. Their 2.1–2.2x results describe that narrower path
+and are superseded by experiment-15. The ordinary serial reference exposed
+the mismatch; the corrected probe now asserts actual deferred-unit registration.
+The earlier per-node bridge-lock experiment also remains rejected: it increased
+contention. Shared form-import contention persists in the corrected probe.
+
+Reproducible commands, exact results and remaining limits are in
+`research/pants-speedup-2026-10-31/experiment-15/README.txt`. Older evidence is
+preserved with correction notices in experiments 12 through 14.
+
+Experiment 16 adds native catalog branches as a publication prerequisite.
+Each branch shares its existing immutable prefix and has a separate weak
+snapshot cache for subsequent registrations. Producers inherit that branch.
+This permits different registration orders at equal-length frontiers without
+selecting another view's snapshot. Concurrent branch and collection tests
+cover isolation, prefix sharing and reclamation. Production still uses the
+single append-only journal; it does not yet fork these branches. Canonical
+journal construction and namespace visibility remain to be implemented.
+
+Experiment 17 separates the compiler's registration journal from shared unit
+allocation. The manual namespace probe now gives each writer a fresh task and
+a fixed provider prefix, records its own suffix, and publishes the suffixes in
+namespace order. Native catalog checks reject foreign writer declarations and
+demand ordinary and macro-generated functions from the combined journal.
+Branch-local extension counts, multimethod names and generations have a
+concurrent regression test. Synthetic declaration and metadata-test names now
+take their unit ID under the allocation lock. These changes do not enable a
+production namespace scheduler: the probe still uses fixed providers and
+disjoint namespaces, and ordinary pool workers still use the serial journal.
+General macro inventories, dependency-dependent prefixes, cache capture,
+cross-namespace redefinitions and budget/failure publication remain open.
+Three release repeats of this fresh-task path measured 1332 ms at one worker
+and 562 ms at eight (2.37x), with 19 ms publication. Absolute eight-worker time
+is slightly slower than experiment 15, so this is a correctness improvement,
+not a throughput win. Full builds remain about 7.44 s Pants versus 6.75 s V8
+in a three-round regression check. Commands and limits are recorded in
+`research/pants-speedup-2026-10-31/experiment-17/README.txt`.
+
+Experiment 18 adds an actual dependent namespace after the concurrent wave.
+It consumes ordinary helpers, records, protocols, reify, multimethods and newly
+declared macros through a fresh bound host. Namespace metadata publication
+transfers the macro inventory and declarations while retaining the receiver's
+other tables and counters. Independently emitted compile-time unit factories
+now hold distinct Symbol tokens for their reify sites; local expression IDs
+collided across namespace fragments. Tokens are stable across calls of the
+same factory and can cross native task publication. Whole-application emission
+continues using numeric expression IDs. Regression tests cover distinct types,
+stable factory identity, raw-JS hygiene, lazy demand and macro rebinding after
+the declaring host is dropped. This remains a test-only scheduling path;
+dependency-driven production scheduling and aggregate budgets/failures are
+still outstanding. Evidence is in
+`research/pants-speedup-2026-10-31/experiment-18/README.txt`.
+
+Experiment 19 connects the workers to the real compiler loop behind the
+experimental `LIGHT_CLJS_NAMESPACE_WORKERS=1` switch. Contiguous dependency-ready
+batches run at most `--jobs` namespaces, with no nested unit pool. Top-level IR
+publishes in source order while deferred bodies retain the production drain
+lag. Relocation maps preserve references into each writer's fixed prefix.
+Native catalog seeds share the actual immutable prefix with fresh tasks;
+rebuilding it for every namespace had overwhelmed the parallel work. A full
+199,936-line build now completes with the established exact output hash,
+oracle 855170 and zero retained waste markers. One clean exploratory run took
+8.82 seconds, still slower than experiment 18's 7.46-second ordinary-path
+median. This is integration evidence, not a performance win. The switch remains
+off by default: general build/data-reader services, sibling reflection,
+partial-failure ordering and aggregate-budget regressions are still open.
+The new profile shows shared form import/export locks remain a major cost.
+Three whole-build scaling repeats give 10.96/10.82/9.12/8.70 seconds at
+1/2/4/8 jobs, only 1.26x at eight. The experimental path also removes the
+ordinary unit pool from serial provider analysis. Experiment 20 below tests
+whether that explains the slowdown. Narrowing the native catalog
+registry lock produced no measured benefit (8.87 versus 8.85 seconds) and
+was reverted. These results do not meet either speed gate.
+An unrelated lazy-loading example exposed lost declarations for globals that
+were reserved before their namespace ran. Publication now transfers changes
+to the writer's frozen global prefix, detected by shared arena subtrees,
+without replaying unchanged sibling bindings. The regression checks exact
+serial output and fails when that transfer is disabled. Both unrelated
+examples pass after the fix; a single corrected full build takes 9.15 seconds
+and preserves the target hash/oracle/waste checks. Earlier repeated timings
+precede this correctness fix. The default path remains unchanged.
+Evidence and ongoing catalog-lock measurements are in
+`research/pants-speedup-2026-10-31/experiment-19/README.txt`.
+
+Experiment 20 rejects two attempts to improve the concurrent path. Reusing
+the existing worker pool increased its median from 8.72 to 9.13 seconds.
+The first dependency-ready batch already contains `workload.common` and
+`workload.m0`, before any serial provider work; singleton namespaces contain
+only 0.37% of source bytes. The earlier lost-provider-pool explanation is
+therefore unsupported. Keeping an incremental environment cache per task
+reduced rebuilt entries but left the concurrent median at 8.70 versus 8.69
+seconds. Both prototypes were reverted. Form imports still held the shared
+bridge lock for about 1.5 cumulative seconds and incurred about 5.4 cumulative
+seconds of worker waits in a separate profile. These are sums across threads,
+not additive wall-time stages. Full evidence and rejected source snapshots:
+`research/pants-speedup-2026-10-31/experiment-20/README.txt`.
+
+Experiment 21 retests per-scope native local storage now that namespace
+analysis actually runs concurrently. Local access takes the scope's own lock;
+the shared scope table remains responsible for lifecycle and GC tracing.
+The seven-round concurrent comparison improves from 8.75 seconds median
+(8.64–8.85) to 8.56 (8.44–8.66), with exact application bytes, oracle and waste
+checks. A separate profile reduces cumulative bridge import hold time from
+about 1.51 to 1.33 seconds and waits from 5.43 to 4.76. The change is retained,
+with 886 runtime tests, 397 compiler library tests and both unrelated example
+workloads passing. An earlier three-round comparison shows ordinary-path
+7.42 versus 7.45 seconds; this is not an ordinary-path speedup claim. The
+concurrent path remains slower than the ordinary path, experimental and off
+by default. Neither goal gate is met; the seven-round A/B is not the final
+fresh-V8 acceptance comparison. Evidence:
+`research/pants-speedup-2026-10-31/experiment-21/README.txt`.
+
+Experiments 22–24 investigated repeated native task setup and service calls.
+Reducing shared atomics in object byte accounting did not establish a wall-time
+gain and was reverted. A source-frequency diagnostic then identified 28,036
+small evaluations per build that only enter or leave a compiler frontier.
+Native task commands now invoke those same mutable JavaScript services
+directly, preserving runtime-global lookup, receiver, nesting, errors,
+cancellation and result lifetimes. Gensym scope updates use the same command
+mechanism. No compiler work or budget limit is removed.
+The paired three-round frontier experiment improves the concurrent median
+from 8.94 to 8.14 seconds (ranges 8.93–8.99 and 8.08–8.23). Ordinary compilation
+changes from 7.58 to 7.52 seconds. All outputs retain the established exact
+bytes, oracle and waste checks; 401 compiler library tests and five frontier
+integration tests pass, as do the unrelated examples. The profile confirms
+only 1,060 small evaluations remain, all service installation. These commands
+are retained; neither goal gate is met, and concurrency remains experimental.
+The same profile counts 12,213 macro-free units among 14,018 analyzed units.
+Ordinary native pool jobs give these units an engine-free view; namespace
+workers inherit an engine. That distinction motivated experiment 25 below.
+Evidence:
+`research/pants-speedup-2026-10-31/experiment-22/README.txt`,
+`research/pants-speedup-2026-10-31/experiment-23/README.txt`, and
+`research/pants-speedup-2026-10-31/experiment-24/README.txt`.
+
+Experiment 25 omits VM frontier and gensym scope transitions around native
+bodies already proven macro-free. The existing eligibility guard forbids VM
+entry from those bodies. The analyzer still receives its engine: dispatch-held
+units must keep spending their immediate control polls. Focused tests compare
+emitted code and recorded charges with an engine-free view, check that other
+bodies retain scope transitions, and verify cancellation in held analysis.
+403 library tests pass, as do five frontier and five gensym integration tests.
+Nine of ten macro-free integration tests pass; the poll-budget case also fails
+on both unchanged experiment 24 and the original 134d04ca binary, with the test
+source unchanged. No test or budget was weakened.
+Three alternating rounds give ordinary medians 7.60/7.55 seconds and concurrent
+medians 8.15/7.95 seconds before/after. A seven-round concurrent repeat gives
+8.31/8.00 seconds (ranges 8.11–8.47 and 7.88–8.23); all seven pairs improve.
+All benchmark outputs, oracle and waste checks pass, as do unrelated examples
+with the previously documented collections byte difference. The change is
+retained. A separate profile still spends 5.82 seconds in analysis and 1.85
+seconds in preparation and emission; cumulative bridge import hold time is
+1.31 seconds, with 4.69 seconds of aggregate thread waiting. Concurrency alone
+cannot remove that serial tail. Neither goal gate is met, and the namespace
+path remains experimental and off by default. Evidence:
+`research/pants-speedup-2026-10-31/experiment-25/README.txt`.
+
+Experiment 26 profiles the full build and improves shared arena access. Task
+boot still accounts for about 24% of non-blocked samples across threads;
+preparation also repeatedly calls out-of-line arena accessors. Ordinary inline
+hints leave that access code unchanged. The retained variant force-inlines the
+short indexing and cached-leaf iterator paths, with tree traversal and frozen
+copy-on-write mutation kept out of line. Bounds, entry order and compiler
+passes are unchanged. All 403 library tests and the unrelated workload checks
+pass. Three alternating rounds per variant give ordinary Pants 7.68/7.44
+seconds before/after, concurrent Pants 7.97/7.82, and V8 6.81/6.73. The candidate
+V8 is freshly built; every same-mode pair improves and all output checks pass.
+Separate profiles place the gain in preparation (ordinary 1.09/0.89 seconds,
+concurrent 1.04/0.92). Analysis is slightly slower in those profile runs, and
+concurrent median CPU time and RSS rise, so this is a shared-stage improvement,
+not evidence of better parallel scaling. The optimization is retained; neither
+goal gate passes and these three-round comparisons are not final acceptance.
+Evidence: `research/pants-speedup-2026-10-31/experiment-26/README.txt`.
+
+Experiment 27 avoids full heap-statistics snapshots for narrower queries.
+Import cache pruning now reads the existing collection counter under the GC
+metadata lock without taking root or object-table locks. Native-backend
+capability checks use a boolean query; actual per-macro statistics remain
+unchanged. The runtime regression verifies the count against full statistics
+and queries it while root and object locks are held. It and all 403 compiler
+library tests pass. A seven-round paired repeat gives ordinary Pants medians
+7.30/7.22 seconds and concurrent Pants 7.60/7.32 before/after; six of seven
+concurrent pairs favor the change, with one 0.02-second loss. Ranges overlap,
+so the improvement is modest. The earlier three-round comparison has unchanged
+V8 medians of 6.52 seconds, including a fresh candidate build. All output,
+oracle, waste and unrelated-workload checks pass. Separate profiles without
+`--stats` reduce samples inside full heap-statistics calls from 408 to 154,
+including blocked samples; these are thread sample counts, not wall time.
+The change is retained. Serialized import construction and repeated runtime
+startup remain significant, and neither goal gate is met. Evidence:
+`research/pants-speedup-2026-10-31/experiment-27/README.txt`.
+
+Experiment 28 remeasures scaling with the retained experiment-27 binary:
+three-round medians are 9.03, 9.31, 7.94 and 7.37 seconds at 1/2/4/8 jobs.
+One job uses the serial fallback; the other points use namespace workers.
+Eight jobs reduce wall time by about 18% from one job but use 2.21 times
+the user CPU time. Every output matches, including the oracle and waste check.
+More specific attribution of the existing profile identifies bridge import
+and export waits as the largest worker mutex waits. A candidate releases heap
+access while waiting for that lock, preserving scoped roots and dropping the
+temporary lock guard before reentering heap access. Its collection-progress
+regression and all 404 library tests pass, but three paired eight-job rounds
+give 7.50/7.49 seconds before/after with overlapping ranges. Separate profiles
+reduce GC rendezvous by about 7 ms while increasing aggregate bridge waits.
+The candidate is rejected and both source files restored exactly; its patch,
+binary, tests and measurements remain in
+`research/pants-speedup-2026-10-31/experiment-28/README.txt`. Concurrency remains
+promising, but this change does not resolve serialized bridge construction or
+repeated task startup. Neither acceptance gate is met.
+
+Experiment 29 consolidates the bridge's import and retention indices and uses
+cached child indices to calculate conversion costs. Its child-lifetime
+regression, all 404 library tests and unrelated workload checks pass. A separate
+profile reduces import lock-holding time from 1,269 to 1,203 aggregate thread
+milliseconds. However, concurrent build medians worsen slightly in both the
+initial three-round comparison (7.39/7.44 seconds before/after) and a seven-round
+repeat (7.38/7.41). Repeat CPU time and peak memory also increase. Ordinary
+three-round medians improve from 7.16 to 7.09, but the concurrent result does
+not justify retaining this change. Both source files are restored exactly;
+all 32 timed/warmup outputs match the oracle, bytes and waste requirements.
+Evidence and the rejected patch are in
+`research/pants-speedup-2026-10-31/experiment-29/README.txt`. The next candidate
+is batching reclamation registration outside the bridge lock while the
+existing heap scope still excludes collection. Neither acceptance gate is met.
+
+Experiment 30 implements that batching. Imports collect already-computed object
+identities while holding the bridge, then validate and register the batch under
+one runtime registry lock after releasing the bridge. The original heap scope
+remains active throughout; partial imports are registered even on conversion
+failure. Tests cover foreign/stale batch rejection, deduplication, non-retention
+and failed-import cleanup. All 727 selected runtime tests and 404 compiler
+library tests pass, as do unrelated workload checks.
+
+Seven paired rounds give ordinary Pants medians 7.20/7.13 seconds and namespace
+workers 7.41/7.26 before/after. The concurrent candidate improves five of seven
+pairs; ranges overlap, so the gain is modest. Ordinary peak RSS rises from
+1.421 to 1.440 GB, while concurrent RSS falls from 1.590 to 1.566 GB. All 48
+timed/warmup outputs across the initial comparison and repeat pass exact-byte,
+oracle and strict waste checks. Separate profiling shows about 203 aggregate
+thread milliseconds less import/environment lock-holding time and 157 ms of
+registration work measured outside that lock. The latter is moved work, not
+eliminated work; traced environment accounting also adds a statistics lock
+absent from ordinary timing. This change is retained. Evidence:
+`research/pants-speedup-2026-10-31/experiment-30/README.txt`. The V8 binary used
+for unrelated checks is the saved experiment-27 build; no fresh V8 timing is
+claimed here. Neither acceptance gate is met.
+
+Experiment 31 instruments the actual namespace batches. Its diagnostic run has
+529 jobs in 91 batches, averaging 6.18 occupied jobs during batch wall time;
+occupancy includes waiting and is not useful CPU parallelism. Task boot costs
+6.48 aggregate worker seconds, and bridge waits total 7.19 thread seconds
+excluding traced-only accounting. Removing the eight-namespace batch cap would
+grow ready groups only to nine under the current loader order. Moving source
+form traversal outside the bridge reduces locked work but leaves the measured
+concurrent median at 7.27 seconds, with higher CPU time, so it is reverted.
+Evidence: `research/pants-speedup-2026-10-31/experiment-31/README.txt`.
+
+Experiment 32 reduces serial lexer work: punctuation dispatch first selects by
+the initial byte, preserving longest matches and the optional-chain decimal
+exception. Both the runtime generator and emitted-output lexer use this path.
+405 Pants and 360 default-backend library tests pass, including exhaustive
+two-byte punctuation checks and truncated-section cases. Three paired rounds
+give ordinary Pants medians 7.10/6.94 seconds, namespace workers 7.30/7.12 and
+V8 6.49/6.39 (saved experiment 27 versus freshly built experiment 32). All nine
+same-round comparisons improve. A seven-round worker repeat gives 7.33/7.11
+seconds, with every pair faster; ranges are 7.12–7.40 and 7.04–7.20. Worker
+median user CPU rises slightly, 19.74/19.88 seconds, while RSS falls from
+1.581 to 1.571 GB. This is a measured latency gain, not a CPU-saving claim.
+Separate diagnostic runs place final emission at 794.7/626.6 ms. All 40 timed
+and warm-up outputs pass exact-byte, oracle and strict waste checks, and the
+unrelated examples preserve their established outputs in both modes. The
+lexer change is retained; it does not introduce parallel emission. Evidence:
+`research/pants-speedup-2026-10-31/experiment-32/README.txt`. The fourfold and
+absolute-time acceptance gates remain unmet.
+
+Experiments 33–35 move fresh native form allocation outside the shared bridge.
+The initial survey found 87.5% of remember/import work in entirely fresh Datum
+trees. Workers now reserve bounded, disjoint trees under the bridge, allocate
+through the existing converter outside it, then publish successful descendants
+and register reclamation watches before leaving the original heap scope.
+Overlapping imports wait and reuse the same native identities. Conversion
+errors retain their successful prefix; polls, node/depth limits, provenance,
+metadata and GC retention keep the existing behavior. Gensym reservations wait
+for imported spellings. Environment imports inspect both their new input and
+previous keys that incremental conversion might reimport, allowing disjoint
+conversions to proceed without waiting for every active tree.
+
+Experiment 34's broad environment wait had inconclusive timing evidence.
+Experiment 35 removes those claim waits in its diagnostic run. Allocation
+overlaps across up to six workers, while bridge import hold time falls from
+about 1.20 to 0.75 aggregate thread seconds compared with the earlier baseline
+profile. These thread sums include internal waits and do not predict wall gains.
+Seven paired runs against retained experiment 32 give 7.19/7.10 seconds median,
+with five pairs faster and ranges 7.16–7.28/6.98–7.24. Median user CPU increases
+19.57/20.41 seconds; RSS decreases 1.586/1.561 GB. The combined change is retained
+as a small latency improvement in the existing experimental worker path.
+All 415 Pants library tests pass, including ten focused import regressions;
+36 timed/warm-up outputs pass exact bytes, oracle and strict waste checks,
+and unrelated examples retain their established behavior. Ordinary compilation
+remains faster than namespace workers. No new V8 timing or final acceptance is
+claimed; both speed gates remain unmet. Evidence and reproducible commands:
+`research/pants-speedup-2026-10-31/experiment-35/README.txt`.
+
+Experiment 36 reduces repeated task startup work. The native runtime's fixed
+core-name inventory now uses indexed traversal of its private bootstrap array,
+preserving every lookup, definition, descriptor and per-name getter closure.
+This avoids native iterator-result objects before user code runs. It changes
+no user iterator handling, task sharing, macro budgets or compiler work.
+Seven paired namespace-worker runs improve from 7.04 to 6.75 seconds median,
+with all seven pairs faster; ranges are 6.79–7.17 and 6.73–6.94 seconds. Median
+user CPU falls from 20.38 to 18.35 seconds, and RSS from 1.586 to 1.576 GB.
+The ordinary three-round comparison is roughly level at 6.93/6.91 seconds.
+Separate samples show startup iterator-result counts falling from 412 to 83;
+managed bytes admitted over those builds fall from about 3.85 to 3.35 GB, with
+the same 589 task contexts. Sample counts are not wall-time measurements.
+The change is retained. All 416 Pants library tests, 32 timed/warm-up output
+checks and unrelated examples pass. The namespace path remains experimental,
+and neither speed gate is met. Evidence and reproduction:
+`research/pants-speedup-2026-10-31/experiment-36/README.txt`.
+
+Experiment 37 tests indexed traversal of the other three small private startup
+inventories. Functional regressions and 418 library tests pass, but the seven
+paired worker runs do not confirm the initial timing result: medians are
+6.73/6.69 seconds, only three pairs improve, and the average paired reduction
+is about 0.02 seconds. Median user CPU rises slightly from 18.48 to 18.55
+seconds. Both source files and the release binary are restored exactly to
+retained experiment 36. All 32 timed/warm-up outputs pass bytes, oracle and
+waste checks. The rejected candidate and evidence remain in
+`research/pants-speedup-2026-10-31/experiment-37/README.txt`.
+
+Experiment 38 shares compiled service-installation factories while executing
+each installation in its requesting task with fresh runtime-global lookup.
+It removes all 1,060 short evaluated units, replacing them with calls to two
+shared compiled factories, with the same 589 task contexts. However, seven
+paired worker runs give 6.75/6.82 seconds median, with only two pairs faster.
+Median user CPU falls 18.84/18.51 seconds, but elapsed time does not improve.
+The candidate is rejected and all three source files and the release binary
+are restored exactly to retained experiment 36. All 419 library tests, 32
+benchmark outputs and unrelated examples pass; candidate source and evidence
+remain in `research/pants-speedup-2026-10-31/experiment-38/README.txt`.
+
+Experiment 39 reuses GC-aware fixed-name bindings for descriptor-field presence
+checks and reads. All focused and compiler tests pass, including concurrent
+heaps collecting between instructions, but seven paired worker medians are
+both 6.81 seconds. Only one pair improves; median user CPU rises 18.58/18.77
+seconds. The candidate is rejected and production sources and binary restored
+exactly to experiment 36. All 32 benchmark outputs and unrelated examples pass.
+Evidence: `research/pants-speedup-2026-10-31/experiment-39/README.txt`.
+
+Experiment 40 removes a second bridge-lock acquisition when detached imports
+finish. Focused tests and all 418 library tests pass, but three paired worker
+medians are 6.71/6.73 seconds, with only one pair faster and higher median CPU.
+Separate profiles confirm cleanup waiting disappears while total namespace
+blocking remains roughly unchanged. The candidate is rejected and source and
+binary restored exactly to experiment 36. All 16 benchmark outputs and unrelated
+examples pass. Evidence: `research/pants-speedup-2026-10-31/experiment-40/README.txt`.
+
+Experiment 41 measures work inside the bridge lock without retaining a source
+change. Mixed root imports account for only 11 ms of serial conversion and
+contain fewer than 16 fresh nodes each. A deeper diagnostic attributes about
+405 ms to environment slot imports, 225 ms to provenance recording, 232 ms to
+pruning, and 153 ms to publication. Environment map assembly takes only 53 ms.
+Classifying environment values finds just 344 large mixed values, accounting
+for 84 ms of conversion; most values are small. These are instrumented thread
+times, not additive wall stages or claimed speedups. They do not justify a
+complex mixed-tree concurrency refactor by themselves. Four diagnostic outputs
+and 11 focused tests pass; all three source files and binary are restored
+exactly to experiment 36. Evidence:
+`research/pants-speedup-2026-10-31/experiment-41/README.txt`.
+
+Experiment 45 retains borrowed form traversal during analyzer import. It avoids
+temporary child vectors and redundant ownership operations while preserving
+occurrence identity, metadata and provenance. Seven paired ordinary-build medians
+improve from 7.91 to 7.65 seconds, with 26% less user CPU; namespace workers improve
+from 8.00 to 7.91 seconds. Fresh V8 timing is essentially unchanged. Library,
+provenance and unrelated-example checks pass, as do all 72 timed output checks.
+Evidence: `research/pants-speedup-2026-10-31/experiment-45/README.txt`.
+
+Experiment 46 tests persistent OS workers while moving namespace inputs without
+copying them and keeping each namespace's JavaScript context fresh. It passes
+correctness checks but regresses all three worker pairs (8.20 to 8.56 seconds
+median, with higher CPU). The candidate is rejected and experiment 45 restored.
+Evidence: `research/pants-speedup-2026-10-31/experiment-46/README.txt`.
+
+Experiment 47 retains a limit of two simultaneous fresh port-runtime bootstraps
+within each namespace batch. Analysis still admits the requested number of jobs;
+the permit ends before host setup, catalog installation or user macro work.
+The separate 1/2/4/8-permit study uses eight compilation jobs throughout. Seven
+paired confirmation rounds improve namespace-worker medians from 7.86 to 7.53
+seconds, all seven pairs faster, with 13.8% less user CPU. Ordinary controls show
+no regression. Library, effect-ordering, failure, task-state and unrelated-example
+checks pass; all 52 timed outputs preserve exact bytes, oracle and strict waste.
+`LIGHT_CLJS_NAMESPACE_BOOT_SLOTS` overrides this experimental admission limit;
+zero or a value at least the batch width disables it. Real-core bootstrap is
+excluded. Namespace workers themselves remain opt-in, their broader conformance
+limits remain, and neither speed goal is met. These timings use different load
+conditions from earlier experiments and should be compared within their paired
+runs. Evidence: `research/pants-speedup-2026-10-31/experiment-47/README.txt`.
+
+Experiment 48 retains borrowed provenance traversal under the bridge lock. It
+removes temporary child vectors and ownership clones while preserving visit
+order, last-occurrence provenance, exact poll/conversion charges and partial
+failure effects. All 420 native library tests pass, plus the namespace fixtures
+and unrelated examples. Seven paired runs show an ordinary-path saving from
+7.52 to 7.44 s (six pairs faster). Namespace-worker time is effectively flat:
+7.55 to 7.53 s, only three pairs faster, mean paired delta +0.016 s and slightly
+higher user CPU. This is retained for the ordinary-path saving, not counted as
+a concurrency win. Sampled provenance work falls but broader bridge waiting
+does not. All 48 timed and four profiled outputs pass exact output/oracle/waste
+checks. Evidence and the unchanged acceptance limits are in
+`research/pants-speedup-2026-10-31/experiment-48/README.txt`.
+
+Experiment 49 rejects per-thread ownership handles for byte reservations. The
+candidate preserves exact global admission/accounting but moves frequent Arc
+reference-count operations to an outer owning handle. All 879 selected runtime
+and GC tests, 420 compiler tests, fixtures and examples pass. Seven paired runs
+show identical namespace-worker medians of 7.49 s and effectively unchanged
+ordinary compilation (7.44 versus 7.43 s); median CPU time does not improve.
+The added lookup/indirection and changed inlining do not yield a measured win.
+The budget source and binary are restored to retained48; all 48 timed and four
+profiled outputs passed the checks. Evidence is in
+`research/pants-speedup-2026-10-31/experiment-49/README.txt`.
+
+Experiment 50 retains direct child visitation in compiler passes. All callers
+of the temporary `Vec<ExprId>` helper now use the existing exhaustive visitor,
+preserving edge order, stack order, duplicate-parent checks and scope flags.
+Seven paired medians improve ordinary Pants from 7.47 to 7.38 s, namespace
+workers from 7.55 to 7.44 s, and freshly built V8 from 7.05 to 7.01 s. This is
+a modest shared-pipeline improvement, not a distinct concurrency advantage;
+the worker mean is influenced by a large fifth-round swing. All 78 timed and
+profiled outputs pass exact output/oracle/waste checks. Both library suites pass;
+optimization and chunking suites match baseline, including two existing Pants
+namespace-reporting failures. The 1.8625 s and fourfold gates remain unmet.
+Evidence, complete ranges and load observations are in
+`research/pants-speedup-2026-10-31/experiment-50/README.txt`.
+
+Experiment 51 measures closure allocation separately from timing. Two worker
+runs each allocate 898,941 functions through `new_function`, compared with
+294,259 and 295,465 on the ordinary path. About 51% of worker environments
+capture at most two values. Experiment 52 tests inline storage for those small
+environments without growing heap slots or changing budget charges. All 969
+runtime/GC tests, 420 compiler tests, fixtures and examples pass, but the initial
+timing improvement does not repeat: seven-round worker medians are both 7.52 s,
+and ordinary Pants changes from 7.37 to 7.38 s. Only two pairs improve in each
+mode. The candidate is rejected and retained50 remains the implementation.
+The allocation counts identify extra worker work; they do not establish that
+removing those allocations improves the critical path. Evidence is in
+`research/pants-speedup-2026-10-31/experiment-51/README.txt` and
+`research/pants-speedup-2026-10-31/experiment-52/README.txt`.
+
+Experiment 53 separates namespace batch phases from per-thread CPU consumption.
+Each diagnostic run covers 529 namespaces in 91 batches. With two boot permits,
+the workers consume 18.15–18.29 CPU seconds over 4.88–4.94 seconds inside batches,
+averaging about 3.7 CPUs. Eight simultaneous boots increase consumption to
+22.27–22.34 CPU seconds and batch elapsed time to 5.25–5.32 seconds. Boot CPU
+alone grows from 2.23–2.40 to 5.55–5.63 seconds. These figures include runtime
+overhead and spinning; active worker intervals are not equivalent to useful
+parallel computation. Analysis remains the largest phase, and the 57 full-width
+batches account for most batch elapsed time. All twelve diagnostic outputs pass
+the exact-output/oracle/waste checks. No optimization or gate change is retained;
+the temporary instrumentation is restored away. The phase decomposition and
+its limits are recorded in
+`research/pants-speedup-2026-10-31/experiment-53/README.txt`.
+
+Experiment 54 retains separation of the byte budget's admission counters,
+allocation volume and frequently polled collection state into distinct cache
+lines. Every atomic operation, charge, limit and collection check is preserved.
+Seven paired runs with eight simultaneous boots improve in all pairs: median
+elapsed time falls from 7.81 to 7.51 s and user CPU from 22.77 to 20.18 s. The
+existing two-boot setting remains faster overall and is unchanged: its median
+falls from 7.44 to 7.38 s, with four pairs faster and a mean saving of 0.05 s.
+Ordinary Pants changes modestly from 7.33 to 7.31 s, with five pairs faster.
+The same interpreter polling instructions address the newly separated fields;
+separate eight-boot samples at the pressure load fall from 190 to 6. Samples
+are not durations, but support the CPU-contention explanation. All 968 selected
+runtime/GC tests and 420 compiler tests pass, as do fixtures and examples. All
+70 timed, warmup and profiled outputs pass exact output/oracle/waste checks.
+The 1.8625 s and fourfold goals remain unmet; no fresh V8 acceptance comparison
+is claimed. Full ranges, pair variation and evidence are in
+`research/pants-speedup-2026-10-31/experiment-54/README.txt`.
+
+Experiment 55 additionally isolates the heap's collection-threshold read from
+allocation counters and metadata writes. The threshold calculations, atomic
+operations and collection-check frequency remain unchanged. Heap alignment also
+separates its Arc header; the experiment cannot isolate that secondary effect.
+Seven paired runs against retained54 improve the two-boot worker median from
+7.46 to 7.38 s, with six pairs faster and user CPU falling from 19.02 to 18.62 s.
+Ordinary Pants changes from 7.39 to 7.37 s, with five pairs faster. Eight-boot
+workers change from 7.44 to 7.40 s, with four pairs faster; they beat the updated
+two-boot configuration in only two pairs, so the default remains two simultaneous
+boots. Namespace workers remain opt-in. All 969 selected runtime/GC tests and
+420 compiler tests pass, as do the native-state fixtures and unrelated examples.
+All 78 timed, warm-up and profiled outputs pass exact-output/oracle/waste checks.
+Separate boot-ancestry samples at the threshold load fall from 8 to 1 with two
+boots and 23 to 3 with eight; total eight-boot samples rise, so this load-site
+improvement is not evidence that all boot work got cheaper.
+The modest timing gains include all outliers and were measured with recorded
+Finder/WindowServer activity; they do not establish the fourfold goal or a fresh
+V8 comparison. Full evidence and limitations are in
+`research/pants-speedup-2026-10-31/experiment-55/README.txt`.
+
+Experiment 56 retains borrowed provenance collection for pure compiler macro
+expansion. Its temporary identity map stores occurrence IDs into the input arena,
+avoiding owned Form/Datum clones and child vectors. Lookup during output
+construction borrows occurrences; generated forms still own their data, source
+spans, origins, expansion history and native span overrides. Parent/children/
+metadata/payload order and the last-occurrence rule are unchanged. A regression
+covers repeated identities, subtree boundaries, distinct spans/origins, malformed
+UTF16 and ownership after dropping the input. Seven paired runs improve ordinary
+Pants from 7.41 to 7.34 s (six pairs faster), namespace workers from 7.46 to 7.36 s
+(all seven faster), and freshly built default V8 from 6.99 to 6.97 s (five faster,
+one tie). All outliers remain. The 421 Pants and 362 V8 library tests pass; the
+selected compiler tests pass 72/77 respectively, with two native reader failures
+reproduced unchanged on retained55 (`core.taggedLiteral` is unsupported). All 78
+timed, warm-up and profiled outputs pass exact-output/oracle/waste checks.
+Separate samples in pure expansion decline 940 to 831 for ordinary
+Pants, 621 to 557 for workers and 888 to 816 for V8; these are counts, not durations.
+This shared-pipeline improvement does not establish the required native speed advantage:
+fresh V8/Pants ratio is about 0.950 and Pants still exceeds 1.8625 s. Namespace
+workers remain opt-in with two simultaneous bootstraps. Details and raw evidence:
+`research/pants-speedup-2026-10-31/experiment-56/README.txt`.
+
+Experiment 57 retains one source owner per single-source generated form arena,
+with borrowed internal spans and independently owned public spans. Mixed-source
+arenas retain individual spans; distinct sources with identical paths/text stay
+distinct. Two regressions cover source ownership after dropping arenas, metadata,
+literal payloads, native overrides and compacted leaves. The 423 Pants and 364
+V8 library tests pass; selected compiler tests retain the same two native reader
+failures and otherwise pass, as do native-state fixtures and unrelated examples.
+Seven paired confirmation rounds improve ordinary Pants from 7.38 to 7.35 s
+(five pairs faster), workers from 7.36 to 7.33 s (four faster), and V8 from 6.96
+to 6.94 s (five faster, one tie). All outliers remain. Ordinary/V8 user CPU falls
+12.40 to 11.71 s and 13.44 to 12.55 s, while worker CPU is nearly flat and worker
+median peak RSS rises from 1.556 to 1.577 GB. The worker saving is small and
+variable. All 78 timed, warm-up and profiled outputs pass exact-output/oracle/
+waste checks. Separate pure-expansion samples fall 885 to 568 for ordinary Pants
+and 776 to 505 for V8, but stay flat at 560/563 for workers. These are sample
+counts, not durations; the V8 profiled analysis itself is slower. This change
+does not establish reduced worker contention or the native speed advantage:
+fresh V8/ordinary Pants is 0.944x, far from 4x, and Pants exceeds 1.8625 s.
+Namespace workers remain opt-in with two simultaneous bootstraps. Evidence:
+`research/pants-speedup-2026-10-31/experiment-57/README.txt`.
+
+Experiment 58 shares immutable registration-history entries between namespace
+writers using the compiler's existing persistent arena. Taking a prefix freezes
+its tail; each writer appends privately while retaining the same registration
+order and independent visibility indexes. A regression verifies shared prefix
+entries, isolated additions, ordered range traversal and surviving snapshots.
+All 424 Pants and 364 V8 library tests pass, along with the same selected compiler
+outcomes, native-state fixtures and unrelated examples as experiment 57.
+Seven paired rounds improve namespace workers from 7.27 to 7.12 s: six pairs
+faster and one tie, mean paired saving 0.126 s. Median user CPU falls from 18.50
+to 17.96 s and peak RSS from 1.585 to 1.482 GB. Ordinary Pants measures 7.32 to
+7.25 s, with six pairs faster. V8 medians are nearly flat at 6.82/6.81 s, while
+its mean paired delta is +0.013 s; large opposite-direction outliers prevent a
+V8 improvement claim. Every outlier is retained. All 78 timed, warm-up and
+profiled outputs pass exact-output/oracle/waste checks. Separate samples beneath
+registration-journal cloning fall from 533 to 210 with the same 589 contexts and
+1,060 evaluated units; these are sample counts, not durations. Workers remain opt-in
+with two simultaneous bootstraps, and both performance targets remain unmet:
+ordinary Pants is 7.25 s and fresh V8/Pants is 0.939x. An additional analysis of
+archived batch phases quantifies finished-worker idle capacity, but does not
+equate it with recoverable wall time or justify a scheduler rewrite by itself.
+Evidence, full ranges and measurement limitations:
+`research/pants-speedup-2026-10-31/experiment-58/README.txt`.
+
+Experiment 59 tests moving each worker's already-owned registration snapshot
+into its session, removing a second journal clone. All 425 native and 364 V8
+library tests, the established compiler outcomes, native-state fixtures and
+unrelated examples pass. Seven worker pairs give medians 7.11/7.10 s, with five
+pairs faster and a mean saving of 0.096 s. Two larger gains account for 0.64 s
+of the 0.67 s summed paired saving; all samples remain included. Median user CPU
+falls 17.95 to 17.67 s, but the median elapsed gain is only 0.01 s. Ordinary and
+V8 controls are mixed. Separate worker journal-clone samples fall 211 to 110
+with the same 589 contexts and 1,060 evaluated units; the copy reduction does
+not establish a convincing whole-build improvement. All 78 timed, warm-up and
+profiled outputs pass exact-output/oracle/waste checks. The candidate is rejected;
+all three source files and the target binary are restored exactly to experiment
+58, whose source/target/workload evidence is rechecked after restoration.
+Evidence and the remaining coordinator-side snapshot-copying lead:
+`research/pants-speedup-2026-10-31/experiment-59/README.txt`.
+
+Experiment 60 shares frozen visibility indexes and caches history-derived root
+generation counts. Writers keep private replacement/deletion overlays; later
+snapshots merge changes without changing older readers. Counts advance from
+actual registrations, independently of a writer's local request counter. The
+default V8 backend keeps its original HashMap representation. Three regressions
+cover branch isolation, defonce/declaration behavior and cached counts; an arena
+read counter verifies that eight writers no longer rescan the prefix. All 427
+native and 364 V8 library tests pass, with the established compiler outcomes,
+native-state fixtures and unrelated examples. Seven paired worker runs improve
+7.19 to 7.08 s, all seven faster, with mean saving 0.134 s; median user CPU falls
+17.98 to 17.27 s and peak RSS 1.483 to 1.450 GB. Ordinary Pants measures 7.30/7.31 s
+and V8 6.94/6.95 s, with mean increases 0.031/0.040 s; no control improvement is
+claimed, and all samples remain included. Separate worker journal-clone samples
+fall 229 to zero and writer-journal-setup samples 243 to zero, with four samples
+under the new prefix snapshot. Inlining and sampling resolution limit those
+counts; they do not imply zero cost. Worker contexts/evaluations remain
+589/1,060. All 78 timed, warm-up and profiled outputs pass the exact-output,
+oracle and waste checks. The change is retained, workers remain opt-in with two
+simultaneous bootstraps, and both targets remain unmet: workers take 7.08 s and
+fresh V8/workers is 0.982x. Full ranges, controls, load and profile limitations:
+`research/pants-speedup-2026-10-31/experiment-60/README.txt`.
+
+Experiment 61 removes temporary qualified-name strings from source-binding and
+JavaScript-macro probes. It keeps the existing layered maps and original key
+spellings, with borrowed namespace/member keys that hash and compare the same
+parts as stored keys. Two regressions cover separator and Unicode cases plus
+mutation, deletion, compaction and snapshot isolation. All 429 native and 366
+V8 library tests pass, along with established compiler outcomes, fixtures and
+unrelated examples. Seven paired ordinary runs improve 7.31 to 7.26 s: five
+pairs faster, all seven with lower user CPU, whose median falls 11.67 to 11.57 s.
+Median peak RSS falls 1.443 to 1.412 GB. Workers measure 7.09/7.11 s, with two
+faster, two ties and three slower; no concurrency gain is claimed. V8 measures
+6.92/6.87 s. Every sample remains included, including the larger ordinary
+fourth-pair gain. Separate combined name-resolution samples fall 407 to 336
+ordinary, 389 to 371 workers and stay 386/386 for V8; inlining moves samples
+between lookup functions, so the source-key function alone overstates the
+reduction. All 78 timed, warm-up and profiled outputs pass exact-output, oracle
+and waste checks. The change is retained for the ordinary-build gain. Namespace
+workers remain opt-in; both goals remain unmet, with ordinary Pants at 7.26 s
+and fresh V8/Pants at 0.946x. Full ranges, CPU, RSS and load:
+`research/pants-speedup-2026-10-31/experiment-61/README.txt`.
+
+Experiment 62 uses an address-mixing hasher for the temporary pure-expansion
+provenance map. Only live internal Datum identities enter it; traversal order,
+last-occurrence replacement, source ownership and all provenance rules stay the
+same. A regression checks 1,024 equal-valued but distinct objects through map
+growth and repeated occurrences. All 430 native and 367 V8 library tests pass,
+with established compiler outcomes, native-state fixtures and unrelated examples.
+Seven paired ordinary runs improve 7.22 to 7.14 s, six pairs faster, with median
+user CPU 11.58 to 11.31 s and peak RSS 1.442 to 1.431 GB. The sixth pair's 0.53 s
+saving accounts for much of the average improvement; no samples are excluded.
+Workers measure 7.02/7.04 s despite five faster pairs, while user CPU falls
+17.22 to 16.98 s in all seven pairs. No worker latency improvement is established.
+Fresh V8 measures 6.83/6.79 s. Separate profiles show pure-expansion samples
+552/410 ordinary, 516/360 workers and 522/354 V8; SipHash leaves in that ancestry
+fall from 165/156/141 to zero. These are sample counts, not elapsed durations.
+All 78 outputs pass byte identity, oracle and strict waste checks, with unchanged
+project sources and budgets. The change is retained for the ordinary-build gain;
+namespace workers remain opt-in. Shared preparation and emission remain material:
+the new phase attribution identifies ProgramFacts construction and terse-name
+processing as further leads, without claiming recoverable parallel speedup.
+Both goal criteria remain unmet: ordinary Pants is 7.14 s versus fresh V8 at
+6.79 s (0.951x). Ranges, paired results, memory and load are recorded in
+`research/pants-speedup-2026-10-31/experiment-62/README.txt`.
+
+Experiment 63 tested isolating inference's emitted-expression reachability walk
+from the rest of fact construction. Matching assembly confirms fewer reloads
+of traversal state, but complete ProgramFacts ancestry, including the new helper,
+only falls 139/136 ordinary, 136/129 workers and 139/135 V8 in separate profiles.
+The three-round screen is mixed: ordinary 7.17/7.14 s, workers 7.01/7.02 s and
+V8 6.78/6.84 s. The candidate passes 431 native and 368 V8 library tests,
+established compiler outcomes, fixtures and unrelated examples; all 30 screen
+and profiled outputs pass exact-output, oracle and waste checks. It is rejected
+without seven-round confirmation, and the exact retained62 source and native
+binary are restored. No performance gain is claimed from code generation alone.
+A read-only property-cache review also finds no compelling new redesign lead.
+The next concurrency hypothesis is persistent OS workers with the current
+two-permit bootstrap gate and retained budget layouts: experiment46 tested and
+rejected persistence before those changes. Any retest must preserve fresh
+private task state and ordered batch publication. Evidence and restoration:
+`research/pants-speedup-2026-10-31/experiment-63/README.txt`.
+
+Experiment 65 replaces repeated port-runtime interpretation with an initialized
+task template. The first evaluator captures a clean command boundary; later
+evaluators copy private globals, closure cells, object properties and mutable
+collections with fresh task ownership. Aliases, cycles and private persistent
+vector contents are relocated consistently. Canonical published data and realm
+intrinsics remain shared. The snapshot does not retain later source-task
+mutations. Template construction is synchronized once; copying reads immutable
+snapshot data concurrently. The optional cache is bounded to 1/64 of the heap:
+the 2 GiB workload uses it, while small heaps retain the replay path without
+raising their limits. Real-core and unsupported checkpoints also retain replay.
+Namespace workers remain opt-in, with the existing two-permit bootstrap gate,
+batch barriers and ordered publication; experiment64's OS-thread proposal was
+not implemented.
+
+Seven fresh paired runs improve ordinary8 from 6.65 to 6.55 s and namespace
+workers from 6.26 to 5.79 s, all seven native pairs faster. Worker user CPU falls
+14.96 to 13.30 s (11.1%); median RSS is 1.506/1.526 GB. Fresh V8 is 6.26/6.24 s
+with effectively zero mean paired difference. These are contemporary reference
+runs on a less busy machine, not a comparison to historical 7-second timings.
+All 78 timed/warmup/profile outputs match the exact JS hash, oracle and strict
+waste gate; source files and benchmark budgets are unchanged. Engine tests,
+compiler checks, low-memory tests and an additional 512 MiB fixture pass cover
+both replay and template execution. Worker profiles still show 589 task
+contexts and 1060 service evaluations, but admitted bytes fall 3.325/3.026 GB
+and GC collections 47/37. Shared allocation, services, bridge/catalog contention
+and serial final stages remain; the original 4×/1.8625 s goal is still unmet.
+Evidence and limitations:
+`research/pants-speedup-2026-10-31/experiment-65/README.md`.
+
 Original status: proposed design, October 17, 2026. Nothing here is implemented. The
 document merges the feasibility research (measurements, schedule models and
 the scheduler, discovery and failure semantics) with the review of that
@@ -3147,11 +3862,37 @@ state and determinism"; this is what was delivered.
   object fails the macro with the engine's `NotShareable` error, which no
   handler catches (engine atom errors are not JavaScript exceptions). Atom
   options (`:meta`, `:validator`) and watches are unsupported operations.
-- **Positions.** The coordinator advances one counter (`src/effect_lanes.rs`)
-  in `--jobs 1` order: a namespace's top-level pass is a segment, the units
-  its dispatch schedules follow it in unit order, and a drain inside a pass
-  moves the pass's segment after the units it drained. Positions do not
-  depend on slots or scheduling.
+- **Positions.** The coordinator reserves pass groups (`src/effect_lanes.rs`)
+  in `--jobs 1` order. A position has a group number and a local counter,
+  stored in the two halves of a `u128`. A namespace's top-level pass is a
+  segment, the units its dispatch schedules follow it in unit order, and
+  a drain moves only that thread's pass segment after its drained units.
+  An unstarted reservation is already a barrier, so later work cannot
+  overtake units that an earlier pass has yet to discover. Dropping a
+  reservation or finishing its pass removes the barrier; unfinished units
+  retain their positions. An ordered pending map supports insertion from
+  earlier groups, and insertion lowers cached home frontiers as needed.
+  A pass reserved with a known source may schedule only units of that
+  source, so its require closure bounds undiscovered work too. Mixed-source
+  batches must use an unknown source. Positions do not depend on slots or
+  scheduling, or on an estimate of how many forms a macro will introduce.
+  Production namespace passes still reserve and start inline; reservations
+  alone do not provide concurrent catalog admission or host publication.
+- **Declaration order.** Until pass reservations overlap, allocation IDs are
+  also declaration order; the serial compiler needs no per-unit key storage
+  or extra lock to advance a drain. Once reservations overlap, new units get
+  immutable keys: their pass group and a separate declaration counter. Keys
+  for the preceding serial units remain implicit ID order in an earlier group.
+  The catalog stores explicit keys separately, preserving Unit's layout.
+  Drains can move
+  the pass's effect segment without changing declaration order. Catalog IDs
+  remain storage addresses. Failure admission, drained-unit statistics and
+  coordinator help compare declaration order, so a later pass registering
+  first cannot exclude earlier work when it fails. The catalog creates an
+  ordered ID index only if registration is out of order; ordinary serial
+  registration keeps contiguous traversal.
+  Registration visibility, capture prefixes and worker host publication still
+  require a separate protocol before concurrent namespace execution is safe.
 - **Activities and inheritance.** What runs at a position is an activity:
   a pass, a unit a pool slot, a dispatch or a rescue thread analyzes, a unit
   demanded inside another activity (at the lower of the two positions), a

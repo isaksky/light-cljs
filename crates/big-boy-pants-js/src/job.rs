@@ -68,6 +68,11 @@ fn run_hook(slot: &TestHook) {
 }
 
 impl JobInbox {
+    pub(crate) fn template_idle(&self) -> bool {
+        let inbox = self.inbox.lock().unwrap();
+        inbox.queue.is_empty() && inbox.registries.is_empty() && inbox.rejections.is_empty()
+            && inbox.dropped_rejections == 0 && !inbox.closed
+    }
     pub(crate) fn new(heap: &Heap) -> Self {
         Self {
             budget: heap.byte_budget(),

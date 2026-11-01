@@ -785,6 +785,17 @@ impl Task {
         &self.0.executable
     }
 
+    pub(crate) fn template(&self, anchors: &[&Rooted]) -> Result<crate::TaskTemplate, &'static str> {
+        // A dependency-waiting task is intentionally not runnable. Capture its
+        // parked body under a short native access, without claiming execution.
+        let _access = self.0.heap.enter_mutator(Access::Op);
+        let body = self.0.body.try_lock().map_err(|_| "template: task is not available")?;
+        if !self.0.jobs.template_idle() { return Err("template: task has pending jobs"); }
+        let TaskBody::Ready(vm) = &*body else { return Err("template: task has finished"); };
+        let vm = vm.template(&self.0.heap)?;
+        crate::template::capture(&self.0.heap, self.executable().clone(), vm, anchors, self.id())
+    }
+
     /// Best-effort module scheduler phase; None for scripts, finished tasks,
     /// or an unavailable snapshot while a run holds task state. Never blocks
     /// a running task (including a leaf host effect querying its own task).

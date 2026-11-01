@@ -59,9 +59,10 @@ pub(crate) enum Kind {
     Demand = 7,
     /// A worker waits for the coordinator to answer a forwarded request.
     Forward = 8,
-    /// Waiting for the form bridge lock.
+    /// Waiting for the form bridge lock. `a`: 0 other, 1 form/data import,
+    /// 2 environment import, 3 value export, 4 source reconstruction.
     BridgeWait = 9,
-    /// Holding the form bridge lock.
+    /// Holding the form bridge lock; `a` uses the same operation codes.
     BridgeHold = 10,
     /// Producing helper or initializer key `b` of kind `a` inline.
     Produce = 11,
@@ -88,6 +89,15 @@ pub(crate) enum Kind {
     NamespacesWait = 20,
     /// Holding the compile-time namespace registry's lock.
     NamespacesHold = 21,
+    /// Registering imported-object reclamation watches outside the bridge
+    /// lock, inside the original heap scope. `a`: bridge operation code;
+    /// `b`: number of registrations in the batch.
+    BridgeReclamation = 22,
+    /// Native allocation in a reserved fresh input tree outside Bridge.
+    /// `a`: number of reserved Datum identities.
+    BridgeDetachedImport = 28,
+    /// Waiting for an overlapping input-tree reservation.
+    BridgeImportWait = 29,
 }
 
 #[derive(Clone, Copy)]

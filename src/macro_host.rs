@@ -420,7 +420,7 @@ fn take_encode_peak(
 ) -> Option<usize> {
     // Native forms have no descriptor encoder. Input and output nodes are
     // accounted by the host, without adding a fictitious bridge export.
-    if evaluator.native_bridge_stats().is_some() {
+    if evaluator.has_native_bridge() {
         return Some(0);
     }
     use crate::compiler_data::{Datum, DatumKind};
@@ -671,12 +671,12 @@ pub(crate) struct MacroTables {
     pub(crate) name_policy: Option<crate::eval_compiler::NamePolicy>,
     pub(crate) bootstrap_seed: bool,
     pub(crate) javascript_macros:
-        crate::layered::Layered<String, crate::compiler_bootstrap::CompiledMacro>,
+        crate::layered::QualifiedNames<crate::compiler_bootstrap::CompiledMacro>,
     /// The names of `javascript_macros` by namespace, sorted
     /// ([`MacroHost::source_macro_names`]); change both through
     /// [`MacroHost::insert_javascript_macro`].
     macro_names: crate::layered::Layered<String, Vec<String>>,
-    pub(crate) source_bindings: crate::layered::Layered<String, SourceBindingKind>,
+    pub(crate) source_bindings: crate::layered::QualifiedNames<SourceBindingKind>,
     /// Which inventory of `javascript_macros` this is, unique in the
     /// process ([`next_macro_version`]), which a macro environment cache
     /// is made from.
@@ -842,6 +842,21 @@ pub(crate) struct NamespaceDeclarations<'a> {
     pub renames: &'a [(String, String, String)],
     pub namespace_imports: &'a [(String, String)],
     pub doc: Option<&'a crate::compiler_data::Datum>,
+}
+
+/// Sendable declarations of one completed namespace. Engine handles are
+/// retained only as foreign macro identities; another host binds their code.
+#[derive(Clone)]
+pub(crate) struct NamespaceMetadata {
+    namespace: String,
+    imports: Vec<MacroImport>,
+    renames: Vec<(String, String, String)>,
+    namespace_imports: Vec<(String, String)>,
+    symbol: Option<crate::compiler_data::Datum>,
+    doc: Option<crate::compiler_data::Datum>,
+    bindings: Vec<(String, SourceBindingKind)>,
+    runtime_vars: Vec<(String, bool)>,
+    macros: Vec<(String, crate::compiler_bootstrap::CompiledMacro)>,
 }
 
 /// A name's namespace and name as text, for a cache key.
@@ -1784,6 +1799,90 @@ impl MacroHost {
             doc: self.tables.namespace_docs.get(namespace),
         }
     }
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn namespace_metadata(&self, namespace: &str) -> NamespaceMetadata {
+        let declarations = self.namespace_declarations(namespace);
+        let prefix = format!("{namespace}/");
+        let mut bindings: Vec<_> = self
+            .tables
+            .source_bindings
+            .iter()
+            .filter_map(|(key, kind)| Some((key.strip_prefix(&prefix)?.to_owned(), *kind)))
+            .collect();
+        bindings.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut runtime_vars: Vec<_> = self
+            .tables
+            .runtime_vars
+            .iter()
+            .filter_map(|(key, private)| Some((key.strip_prefix(&prefix)?.to_owned(), *private)))
+            .collect();
+        runtime_vars.sort_by(|a, b| a.0.cmp(&b.0));
+        let macros = self
+            .source_macro_names(namespace)
+            .into_iter()
+            .map(|name| {
+                let declaration =
+                    self.tables.javascript_macros[&format!("{namespace}/{name}")].published();
+                (name, declaration)
+            })
+            .collect();
+        NamespaceMetadata {
+            namespace: namespace.to_owned(),
+            imports: declarations.imports.to_vec(),
+            renames: declarations.renames.to_vec(),
+            namespace_imports: declarations.namespace_imports.to_vec(),
+            symbol: self.namespace_symbol(namespace).cloned(),
+            doc: declarations.doc.cloned(),
+            bindings,
+            runtime_vars,
+            macros,
+        }
+    }
+    /// Publish only this namespace's tables, retaining all other namespaces
+    /// and the receiving host's engine, configuration and analysis counters.
+    /// Published macro code binds lazily to the receiver's evaluator; no
+    /// callable handle from the declaring thread is installed here.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn publish_namespace_metadata(
+        &mut self,
+        metadata: &NamespaceMetadata,
+    ) -> Result<(), String> {
+        let namespace = &metadata.namespace;
+        // Reject a phase conflict before publishing any of the snapshot.
+        for (name, kind) in &metadata.bindings {
+            let key = format!("{namespace}/{name}");
+            if self
+                .tables
+                .source_bindings
+                .get(&key)
+                .is_some_and(|old| old != kind)
+            {
+                return Err(format!(
+                    "binding {key} cannot change between an ordinary Var and a compile-time macro; use distinct names for the two phases"
+                ));
+            }
+        }
+        self.restore_namespace_declarations(
+            namespace,
+            metadata.imports.clone(),
+            metadata.renames.clone(),
+            metadata.namespace_imports.clone(),
+            metadata.symbol.clone(),
+            metadata.doc.clone(),
+        );
+        for (name, kind) in &metadata.bindings {
+            self.register_source_binding(namespace, name, *kind)?;
+        }
+        for (name, private) in &metadata.runtime_vars {
+            self.register_runtime_var(namespace, name, *private)?;
+        }
+        for (name, declaration) in &metadata.macros {
+            self.install_javascript_macro(format!("{namespace}/{name}"), declaration.published());
+        }
+        self.engine.namespace_environment = Default::default();
+        self.engine.reader_environment = Default::default();
+        Ok(())
+    }
     /// Restore what `prepare_source` and analysis declared for a namespace
     /// installed from its artifact (`crate::artifact_install`), as
     /// [`Self::namespace_declarations`] and [`Self::namespace_symbol`] read
@@ -2055,7 +2154,7 @@ impl MacroHost {
     pub(crate) fn has_source_value(&self, namespace: &str, name: &str) -> bool {
         self.tables
             .source_bindings
-            .get(&format!("{namespace}/{name}"))
+            .get_parts(namespace, name)
             == Some(&SourceBindingKind::Value)
     }
     pub(crate) fn begin_compilation(&mut self) {
@@ -2168,7 +2267,7 @@ impl MacroHost {
         }
         self.tables
             .javascript_macros
-            .get(&format!("{namespace}/{name}"))
+            .get_parts(namespace, name)
             .and_then(|m| m.metadata.as_ref())
             .and_then(|m| {
                 m.get(&crate::compiler_data::DataBuilder.keyword(Name::new(None, "private")))
@@ -2246,7 +2345,8 @@ impl MacroHost {
         if self
             .tables
             .javascript_macros
-            .contains_key(&format!("{namespace}/{name}"))
+            .get_parts(namespace, name)
+            .is_some()
         {
             return Ok(!self.source_binding_private(namespace, name));
         }
@@ -3012,6 +3112,94 @@ impl MacroHost {
 mod compiler_pure_tests {
     use super::*;
     use crate::compiler_data::{DataBuilder, Datum, DatumKind};
+
+    #[test]
+    fn namespace_metadata_crosses_threads_and_rebinds_macros_without_importing_other_namespaces() {
+        let metadata = std::thread::spawn(|| {
+            let mut writer = MacroHost::new();
+            crate::compile_with_macros(
+                "(def ^:private secret 7) (defmacro exported [x] x)",
+                &mut writer,
+            )
+            .unwrap();
+            writer
+                .register_runtime_var("other", "leaked", false)
+                .unwrap();
+            writer.restore_namespace_declarations(
+                "cljs.user",
+                vec![MacroImport {
+                    namespace: "cljs.core".into(),
+                    alias: Some("c".into()),
+                    refers: vec![],
+                }],
+                vec![("renamed".into(), "cljs.core".into(), "when".into())],
+                vec![("Date".into(), "js/Date".into())],
+                Some(DataBuilder.symbol(Name::new(None, "cljs.user"))),
+                Some(DataBuilder.string("published docs".encode_utf16().collect::<Vec<_>>())),
+            );
+            writer.namespace_metadata("cljs.user")
+        })
+        .join()
+        .unwrap();
+        // The producer's host and evaluator have already been dropped.
+        // A coordinator can receive code before it has needed any evaluator.
+        let mut receiver = MacroHost::new();
+        assert!(receiver.engine.bootstrap.is_none());
+        receiver
+            .register_runtime_var("keep", "value", false)
+            .unwrap();
+        receiver.engine.expansions.set(17);
+        receiver.limits.generated_nodes = 99_999;
+        receiver.publish_namespace_metadata(&metadata).unwrap();
+        assert_eq!(receiver.engine.expansions.get(), 17);
+        assert_eq!(receiver.limits.generated_nodes, 99_999);
+        assert_eq!(receiver.runtime_var("cljs.user/secret"), Some(true));
+        assert_eq!(receiver.runtime_var("keep/value"), Some(false));
+        assert_eq!(receiver.runtime_var("other/leaked"), None);
+        assert_eq!(receiver.source_macro_names("cljs.user"), ["exported"]);
+        let declarations = receiver.namespace_declarations("cljs.user");
+        assert_eq!(declarations.imports, metadata.imports);
+        assert_eq!(declarations.renames, metadata.renames);
+        assert_eq!(declarations.namespace_imports, metadata.namespace_imports);
+        assert!(declarations.doc.is_some());
+        assert!(receiver.namespace_symbol("cljs.user").is_some());
+        let call = receiver
+            .read_compiler_form(&crate::compiler_data::Source::new(
+                "consumer.cljs",
+                "(exported 42)",
+            ))
+            .unwrap()
+            .unwrap();
+        let result = receiver
+            .expand_source_javascript(
+                "cljs.user",
+                "exported",
+                &call,
+                &DataBuilder.map(&[]).unwrap(),
+                None,
+            )
+            .unwrap();
+        assert!(matches!(result.data().kind(), DatumKind::Integer(42)));
+
+        let mut conflict = MacroHost::new();
+        conflict
+            .register_source_binding("cljs.user", "exported", SourceBindingKind::Value)
+            .unwrap();
+        assert!(
+            conflict
+                .publish_namespace_metadata(&metadata)
+                .unwrap_err()
+                .contains("cannot change")
+        );
+        assert_eq!(conflict.runtime_var("cljs.user/secret"), None);
+        assert!(
+            conflict
+                .namespace_declarations("cljs.user")
+                .imports
+                .is_empty()
+        );
+        assert!(conflict.source_macro_names("cljs.user").is_empty());
+    }
 
     fn field(data: &Datum, key: &str) -> Datum {
         let (ns, name) = key

@@ -131,6 +131,25 @@ pub(crate) const FROZEN_ELEMENT: PropertyFlags = PropertyFlags {
 };
 
 impl ArrayObject {
+    pub(crate) fn template_copy(&self, owner: TaskId) -> Result<Self, &'static str> {
+        let reservation = self.reservation.duplicate().ok_or("template: heap byte limit exceeded")?;
+        Ok(Self {
+            object: self.object.template_copy(owner)?, dense: self.dense.clone(),
+            sparse: self.sparse.clone(), length: self.length, attributes: self.attributes.clone(),
+            accessors: self.accessors.clone(), length_writable: self.length_writable,
+            frozen: self.frozen, budget: self.budget.clone(), reservation,
+        })
+    }
+    pub(crate) fn template_remap(&mut self, ids: &crate::template::IdMap) {
+        self.object.template_remap(ids);
+        for value in self.dense.iter_mut().flatten().chain(self.sparse.values_mut()) {
+            crate::template::remap_value(value, ids);
+        }
+        for (get, set) in self.accessors.values_mut() {
+            crate::template::remap_value(get, ids);
+            crate::template::remap_value(set, ids);
+        }
+    }
     /// Internal immutable array storage, built before allocation. Only
     /// TemplateObject uses this, with primitive elements and intrinsic
     /// prototypes; freeze before exposing it to JavaScript.

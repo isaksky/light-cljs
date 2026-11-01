@@ -223,6 +223,76 @@ impl Runtime {
         self.spawn_in(self.0.world, executable, args)
     }
 
+    /// Capture initialized private state at an entry-frame dependency boundary.
+    /// `anchors` are non-publishable object-valued parameters replaced on instantiation.
+    /// The source task can subsequently run without changing this checkpoint.
+    pub fn task_template(&self, task: &Task, anchors: &[&Rooted]) -> Result<crate::TaskTemplate, &'static str> {
+        if task.runtime_id() != self.0.deps.runtime { return Err("template: foreign task"); }
+        task.template(anchors)
+    }
+
+    /// Instantiate a checkpoint with fresh ownership and a new first dependency.
+    /// No JavaScript executes during copying. All copied storage is charged to
+    /// this runtime's existing heap budget; the original VM limits are retained.
+    pub fn spawn_template(&self, template: &crate::TaskTemplate, anchors: &[&Rooted],
+        pending: DependencyKey) -> Result<Task, &'static str> {
+        let template = &template.0;
+        if !Arc::ptr_eq(&template.heap, &self.0.heap) || anchors.len() != template.anchors.len() {
+            return Err("template: foreign runtime or wrong parameter count");
+        }
+        let heap = &self.0.heap;
+        let _access = heap.enter_mutator(crate::heap::gc::Access::Op);
+        let id = TaskId::from_raw(self.0.next_task.fetch_add(1, Ordering::Relaxed));
+        let _scratch = heap.reserve_bytes(template.nodes.len().saturating_mul(128))
+            .ok_or("template: heap byte limit exceeded")?;
+        let mut ids = crate::template::IdMap::with_capacity(template.nodes.len() + anchors.len());
+        for (old, replacement) in template.anchors.iter().zip(anchors) {
+            let Value::Object(new) = replacement.value_in(heap).map_err(|_| "template: foreign parameter")?
+                else { return Err("template: parameters must be objects"); };
+            ids.insert(*old, new);
+        }
+        for (old, object) in &template.nodes {
+            if matches!(object, crate::template::Node::Vector(_)) { continue; }
+            let copy = object.copy(heap, id)?;
+            let new = heap.alloc(copy).ok_or("template: heap allocation failed")?;
+            ids.insert(*old, new);
+        }
+        // Persistent vectors may contain private objects. Build their remapped
+        // bodies before allocation, preserving frozen-slot immutability. Their
+        // direct persistent edges form a DAG; cycles through mutable objects
+        // already have identities from the first pass.
+        let mut vectors: Vec<_> = template.nodes.iter().filter_map(|(old, object)| {
+            if let crate::template::Node::Vector(vector) = object { Some((*old, vector)) } else { None }
+        }).collect();
+        let vector_ids: std::collections::HashSet<_> = vectors.iter().map(|(id, _)| *id).collect();
+        while !vectors.is_empty() {
+            let before = vectors.len();
+            let mut deferred = Vec::new();
+            for (old, vector) in vectors {
+                let mut values = vector.to_vec();
+                if values.iter().any(|value| matches!(value, Value::Object(child) if vector_ids.contains(child) && !ids.contains_key(child))) {
+                    deferred.push((old, vector)); continue;
+                }
+                values.iter_mut().for_each(|v| crate::template::remap_value(v, &ids));
+                let vector = crate::collections::PVector::try_from_values(heap, &values)
+                    .map_err(|_| "template: heap byte limit exceeded")?;
+                ids.insert(old, heap.alloc(crate::heap::HeapObject::Vector(vector)).ok_or("template: heap allocation failed")?);
+            }
+            if before == deferred.len() { return Err("template: cyclic persistent graph"); }
+            vectors = deferred;
+        }
+        // Allocate before rewriting so aliases, forward edges and cycles all
+        // resolve. No collection can run until the fully rooted task exists.
+        for (old, object) in &template.nodes {
+            if matches!(object, crate::template::Node::Vector(_)) { continue; }
+            heap.with_object_mut(ids[old], |o| crate::template::remap_object(o, &ids))
+                .ok_or("template: copied object disappeared")?;
+        }
+        let world = pending.world();
+        let vm = template.vm.instantiate(DiagnosticContext { task: id, world }, pending, &ids);
+        Ok(Task::new(id, world, template.executable.clone(), heap.clone(), self.0.deps.clone(), vm))
+    }
+
     /// Lower each record, then spawn a loaded module graph in its
     /// world. Graph traversal and export resolution consume the run budget.
     /// Module cells and
@@ -400,6 +470,13 @@ impl Runtime {
     /// Heap usage counters.
     pub fn heap_stats(&self) -> HeapStats {
         self.0.heap.stats()
+    }
+
+    /// Completed collections, for invalidating embedder caches. Reads only
+    /// collector metadata; unlike `heap_stats`, takes no root or object-table
+    /// lock. A host scope keeps this count stable between safepoints.
+    pub fn collection_count(&self) -> u64 {
+        self.0.heap.collection_count()
     }
 
     /// Collector test hook: the `lastIndex` entries that tasks hold in

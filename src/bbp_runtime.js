@@ -3735,7 +3735,16 @@ const native = (() => {
   // A core protocol's value is the getter of its name, as unsupported
   // entries are: the runtime builds nothing for either until it is read.
   const missing = name => function(){return protocols.known(name)?protocols.value(name):unsupported('core.'+name)();};
-  for (const name of [/* CORE_KEYS */]) if (!(name in core)) Object.defineProperty(core,name,{get:missing(name)});
+  // This private array is traversed during bootstrap, before user code can
+  // replace iteration methods. Keep every lookup/definition in source order
+  // without allocating an iterator-result object for each fixed core name.
+  {
+    const names = [/* CORE_KEYS */];
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      if (!(name in core)) Object.defineProperty(core,name,{get:missing(name)});
+    }
+  }
   // Compact identity snapshot before user core writes. Bootstrap data entries
   // have the same order in every task; live/unsupported getters are nonenumerable.
   // Descriptors store an index, never a task-owned function or property table.
@@ -4025,7 +4034,7 @@ globalThis.__lightCallStringService=(name,request)=>{
   if(typeof request!=='string')throw new TypeError('compiler service expected a string');
   globalThis.__lightStringServiceName=name;
   globalThis.__lightStringServiceRequest=request;
-  try{return __rt.nth(__rt.need(++stringServiceSerial,stringKind),0);}
+  try{return __rt.nth(__rt.need(++stringServiceSerial,__rt.nth(channels,0)+3),0);}
   finally{globalThis.__lightStringServiceName=null;globalThis.__lightStringServiceRequest=null;}
 };
 globalThis.__lightInitializerUnit=null;
@@ -4126,7 +4135,7 @@ const initializeValue=(slot,factory)=>{
       // Reserve before waiting so earlier callers can lend their lane.
       // No factory code runs until the lane selects the earliest caller's
       // task, retaining its overlays without sharing task-owned objects.
-      const candidate=__rt.need(serial,beginKind);
+      const candidate=__rt.need(serial,__rt.nth(channels,0)+1);
       let producer=false;
       if(candidate){
         // Every initializer, including an admitted extension bundle, keeps
@@ -4134,7 +4143,7 @@ const initializeValue=(slot,factory)=>{
         const cell=__rt.effect(65528,unit);if(cell!==0)__rt.need(cell,5);
         globalThis.__lightInitializerUnit=unit;
         globalThis.__lightInitializerSelect=true;
-        try{producer=__rt.need(++initializerSerial,beginKind);}
+        try{producer=__rt.need(++initializerSerial,__rt.nth(channels,0)+1);}
         finally{globalThis.__lightInitializerSelect=false;}
       }
       if(producer){
@@ -4147,7 +4156,7 @@ const initializeValue=(slot,factory)=>{
         globalThis.__lightInitializerFailure=failed?String(failure):null;
         const type=__rt.structTypeOf(__rt.initializerSlotGet(slot,3));
         globalThis.__lightInitializerRequireShared=type!==null&&__rt.formName(type)==='cljs.core/MultiFn';
-        __rt.need(serial,finishKind);
+        __rt.need(serial,__rt.nth(channels,0)+2);
         if(failed)throw failure;
         __rt.need(unit,4);
       }else{
@@ -4516,7 +4525,7 @@ globalThis.__lightRootReads=null;
 // drops the held value or deletes an entered one, keeping any other held.
 let held=false,heldId=0,heldValue=null;
 for(let serial=1;;serial++){
-  const command=__rt.need(serial,commandKind);
+  const command=__rt.need(serial,__rt.nth(channels,0));
   const op=__rt.nth(command,0), id=__rt.nth(command,1), input=__rt.nth(command,2);
   globalThis.__lightRootReads=__rt.nth(command,3)?'':null;
   globalThis.__lightFailure=null;
@@ -4545,10 +4554,21 @@ for(let serial=1;;serial++){
       if(held){values.set(heldId,heldValue);held=false;heldValue=null;}
       if(op===0) result=(0,eval)(input);
       else if(op===1) result=input;
-      else {const args=[];for(let i=1;i<__rt.count(input);i++)args.push(values.get(__rt.nth(input,i)));
+      else if(op===5) result=globalThis.__lightNativeRuntime.compilerForms.gensymScope(
+        __rt.nth(input,0),__rt.nth(input,1),__rt.nth(input,2),__rt.nth(input,3));
+      else if(op===6){
+        // Preserve the evaluated unit's runtime-argument read, including a
+        // replaced global accessor, before looking up the frontier service.
+        void globalThis.__lightNativeRuntime;
+        result=input===null?globalThis.__lightLeaveCompilerFrontier():globalThis.__lightEnterCompilerFrontier(input);
+      }
+      else {const args=[];for(let i=2;i<__rt.count(input);i+=2){
+        const value=__rt.nth(input,i+1);
+        args.push(__rt.nth(input,i)?values.get(value):value);}
+        const value=__rt.nth(input,1),fn=__rt.nth(input,0)?values.get(value):value;
         // A call result is exported as finite forms: its lazy sequences are
         // realized into lists here, in the task (light-cljs-479).
-        result=__rt.cljRealizeAll(values.get(__rt.nth(input,0))(...args));}
+        result=__rt.cljRealizeAll(fn(...args));}
       held=true;heldId=id;heldValue=result;
     }
     globalThis.__lightResult=result;

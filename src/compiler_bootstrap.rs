@@ -174,7 +174,9 @@ fn reads_macro_environment(program: &crate::Program, root: crate::ExprId) -> boo
             }
             _ => {}
         }
-        pending.extend(crate::program_fragment::children(program, id));
+        crate::program_fragment::visit_children(&program.exprs[id.0].kind, |child| {
+            pending.push(child);
+        });
     }
     false
 }
@@ -267,7 +269,9 @@ fn source_environment_keys(program: &crate::Program) -> Option<Vec<Datum>> {
             }
             _ => {}
         }
-        pending.extend(crate::program_fragment::children(program, id));
+        crate::program_fragment::visit_children(&program.exprs[id.0].kind, |child| {
+            pending.push(child);
+        });
     }
     Some(keys)
 }
@@ -1225,7 +1229,7 @@ impl MacroHost {
             env
         };
         #[cfg(feature = "bbp-macros")]
-        if name == "js-obj" && engine.native_bridge_stats().is_some() {
+        if name == "js-obj" && engine.has_native_bridge() {
             let result = self.expand_form_javascript(
                 engine,
                 declaration.function(engine, &self.engine)?,
@@ -1282,6 +1286,8 @@ enum MacroFunction {
         std::sync::Arc<MacroValue>,
         Option<std::sync::Arc<MacroCode>>,
     ),
+    /// Code published by another namespace task, without its engine handle.
+    Published(std::sync::Arc<MacroCode>),
     /// Shared by every frame's copy of the declaration, so the function is
     /// evaluated once.
     Installed(std::sync::Arc<std::sync::Mutex<InstalledFunction>>),
@@ -1325,6 +1331,13 @@ impl CodeIdentity {
     }
 }
 impl CompiledMacro {
+    pub(crate) fn published(&self) -> Self {
+        let mut published = self.clone();
+        if let MacroFunction::Ready(_, Some(code)) = &self.function {
+            published.function = MacroFunction::Published(code.clone());
+        }
+        published
+    }
     /// A macro of a namespace installed from its artifact
     /// (`crate::artifact_install`): its prepared compile-time function and
     /// the declarations it saw, evaluated when a later expansion first needs
@@ -1359,7 +1372,7 @@ impl CompiledMacro {
         engine: &dyn crate::evaluator::MacroEvaluator,
         binding: &crate::macro_host::EngineBinding,
     ) -> Result<ValueId, String> {
-        if engine.native_bridge_stats().is_some() {
+        if engine.has_native_bridge() {
             // A helper's analysis runs in a fresh native task, even on the
             // coordinator. Only its declaring task may use the ready handle;
             // every other task materializes the declaration from its code.
@@ -1379,6 +1392,7 @@ impl CompiledMacro {
             #[cfg(feature = "bbp-macros")]
             MacroFunction::NativeDefinition(..) => return self.foreign_function(engine, binding),
             MacroFunction::Ready(function, _) => return Ok(function.id),
+            MacroFunction::Published(_) => return self.foreign_function(engine, binding),
             MacroFunction::Installed(installed) => installed,
         };
         if let Some(function) = &installed.lock().expect("installed macro").function {
@@ -1422,14 +1436,14 @@ impl CompiledMacro {
                     .source_macro_function(identity.0, source)
                     .map_err(|e| e.to_string());
             }
-            MacroFunction::Ready(_, Some(code)) => code.identity.0,
+            MacroFunction::Ready(_, Some(code)) | MacroFunction::Published(code) => code.identity.0,
             // A bootstrap macro, which the worker's own bootstrap holds.
             MacroFunction::Ready(function, None) => return Ok(function.id),
             MacroFunction::Installed(installed) => {
                 installed.lock().expect("installed macro").identity.0
             }
         };
-        let native = engine.native_bridge_stats().is_some();
+        let native = engine.has_native_bridge();
         let cached = if native {
             engine.cached_source_macro_function(key)
         } else {
@@ -1440,7 +1454,7 @@ impl CompiledMacro {
         }
         let parts;
         let (tables, unit) = match &self.function {
-            MacroFunction::Ready(_, Some(code)) => (&code.tables, &code.unit),
+            MacroFunction::Ready(_, Some(code)) | MacroFunction::Published(code) => (&code.tables, &code.unit),
             MacroFunction::Installed(installed) => {
                 parts = installed.lock().expect("installed macro").parts();
                 (&parts.0, &parts.1)
@@ -1576,7 +1590,7 @@ impl MacroHost {
         let generation = self
             .tables
             .javascript_macros
-            .get(&format!("{namespace}/{name}"))
+            .get_parts(namespace, &name)
             .map_or(1, |previous| previous.generation + 1);
         for (key, value) in [
             (Name::new(None, "name"), c.symbol(Name::new(None, &name))),
@@ -1670,8 +1684,7 @@ impl MacroHost {
             }
             // A fully qualified macro of a namespace the program loaded: a macro
             // expansion names its own namespace's dependencies, as upstream.
-            let key = format!("{qualifier}/{member}");
-            let found = self.tables.javascript_macros.contains_key(&key);
+            let found = self.tables.javascript_macros.get_parts(qualifier, member).is_some();
             if found {
                 self.observe(|log| {
                     log.named(
@@ -1680,13 +1693,14 @@ impl MacroHost {
                     )
                 });
             }
-            return found.then_some(key);
+            return found.then(|| format!("{qualifier}/{member}"));
         }
         if self.has_source_value(namespace, name)
             || self
                 .tables
                 .javascript_macros
-                .contains_key(&format!("{namespace}/{name}"))
+                .get_parts(namespace, name)
+                .is_some()
         {
             return Some(format!("{namespace}/{name}"));
         }
@@ -1733,7 +1747,7 @@ impl MacroHost {
         // A macro installed from an artifact may be the compilation's first:
         // its session starts as declaring one would have started it.
         if self.engine.bootstrap.is_none()
-            && matches!(declaration.function, MacroFunction::Installed(_))
+            && matches!(declaration.function, MacroFunction::Installed(_) | MacroFunction::Published(_))
         {
             self.engine.bootstrap = self
                 .session_handle()

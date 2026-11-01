@@ -73,7 +73,7 @@ use crate::analyzer::{CoreFnId, ExprId, ExprKind, LocalId, NamedLiteralId, Progr
 use crate::core_operations::{Purity, Type};
 use crate::emitter::{ConstantClass, constant_nodes};
 use crate::inference::ProgramFacts;
-use crate::program_fragment::{children, kind_children};
+use crate::program_fragment::visit_children;
 use std::collections::HashMap;
 
 /// A value the folder knows at compile time.
@@ -864,7 +864,7 @@ pub fn fold(program: &mut Program, built: &mut Vec<bool>) -> usize {
         while let Some(id) = pending.pop() {
             if position[id.0] == NOWHERE {
                 position[id.0] = index as u32;
-                pending.extend(children(program, id));
+                visit_children(&program.exprs[id.0].kind, |child| pending.push(child));
             }
         }
     }
@@ -998,14 +998,14 @@ fn reachable_reads(
         if let ExprKind::Local(local) = program.exprs[id.0].kind {
             reads[local.0] = reads[local.0].saturating_add(1);
         }
-        for child in children(program, id) {
+        visit_children(&program.exprs[id.0].kind, |child| {
             if let Some(parents) = parents.as_deref_mut() {
                 parents[child.0] = parents[child.0].saturating_add(1);
             }
             if !std::mem::replace(&mut reached[child.0], true) {
                 pending.push(child);
             }
-        }
+        });
     }
     reads
 }
@@ -1528,9 +1528,7 @@ impl Folder<'_> {
                 }
             }
             kind => {
-                for child in kind_children(self.program, &kind) {
-                    self.visit(child);
-                }
+                visit_children(&kind, |child| self.visit(child));
                 kind
             }
         }
@@ -2016,7 +2014,9 @@ impl Folder<'_> {
             if nodes > COPY_LIMIT || self.built.get(node.0).copied().unwrap_or(false) {
                 return false;
             }
-            pending.extend(children(self.program, node));
+            visit_children(&self.program.exprs[node.0].kind, |child| {
+                pending.push(child)
+            });
         }
         true
     }
@@ -2142,13 +2142,13 @@ const SWEEPS: usize = 4;
 pub(crate) fn scoped(program: &Program, id: ExprId) -> bool {
     let mut pending = vec![id];
     while let Some(id) = pending.pop() {
-        match program.exprs[id.0].kind {
+        match &program.exprs[id.0].kind {
             ExprKind::JsArguments
             | ExprKind::CopyArguments(_)
             | ExprKind::JsTemplate { .. }
             | ExprKind::Def { test: Some(_), .. } => return true,
             ExprKind::Fn { .. } => (),
-            _ => pending.extend(children(program, id)),
+            kind => visit_children(kind, |child| pending.push(child)),
         }
     }
     false

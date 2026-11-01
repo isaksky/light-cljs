@@ -209,7 +209,7 @@ impl Default for VmLimits {
 }
 
 /// One activation of a function. See the module docs.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Frame {
     /// Eval's var/function declarations create configurable global properties.
     pub(crate) eval: bool,
@@ -335,6 +335,62 @@ pub(crate) struct GlobalLexical {
     pub(crate) mutable: bool,
 }
 
+/// A deliberately narrow checkpoint: an entry activation waiting for its next
+/// host command, with no active calls, handlers, jobs or native continuations.
+#[derive(Debug)]
+pub(crate) struct VmTemplate {
+    _reservation: crate::heap::budget::ByteReservation,
+    entry: Frame,
+    stack: Vec<Value>,
+    global: Option<ObjectId>,
+    lexicals: Vec<(crate::value::JsString, Value, bool)>,
+    core: Option<Value>,
+    pending: PendingNeed,
+    limits: VmLimits,
+    pending_arguments: usize,
+}
+
+impl Trace for VmTemplate {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
+        self.entry.code.trace(visit);
+        if let Some(id) = self.entry.callee { visit(id.into()); }
+        self.entry.this.trace(visit);
+        self.entry.new_target.trace(visit);
+        self.entry.arguments.iter().flatten().for_each(|v| v.trace(visit));
+        self.stack.iter().for_each(|v| v.trace(visit));
+        if let Some(id) = self.global { visit(id.into()); }
+        self.lexicals.iter().for_each(|(_, v, _)| v.trace(visit));
+        self.core.iter().for_each(|v| v.trace(visit));
+    }
+}
+
+impl VmTemplate {
+    pub(crate) fn instantiate(&self, diag: DiagnosticContext, pending: DependencyKey,
+        ids: &crate::template::IdMap) -> VmState {
+        use crate::template::{remap_id, remap_value};
+        let mut vm = VmState::new(&self.entry.code.shared(), &[], diag, self.limits);
+        vm.entry = self.entry.clone();
+        // Keep task-local code reference counts local to the new task as well.
+        vm.entry.code = vm.code_cache.get(&self.entry.code.shared());
+        vm.entry.callee = vm.entry.callee.map(|id| remap_id(id, ids));
+        remap_value(&mut vm.entry.this, ids);
+        remap_value(&mut vm.entry.new_target, ids);
+        vm.entry.arguments.iter_mut().flatten().for_each(|v| remap_value(v, ids));
+        vm.stack = self.stack.clone();
+        vm.stack.iter_mut().for_each(|v| remap_value(v, ids));
+        vm.global_object = self.global.map(|id| remap_id(id, ids));
+        for (name, value, mutable) in &self.lexicals {
+            let mut cell = value.clone(); remap_value(&mut cell, ids);
+            vm.global_lexicals.insert(name.clone(), GlobalLexical { cell, mutable: *mutable });
+        }
+        vm.core_resolver = self.core.clone();
+        vm.core_resolver.iter_mut().for_each(|v| remap_value(v, ids));
+        vm.pending_need = Some(PendingNeed { key: pending, pc: self.pending.pc });
+        vm.pending_arguments = self.pending_arguments;
+        vm
+    }
+}
+
 /// The complete VM state of one task.
 #[derive(Debug)]
 pub(crate) struct VmState {
@@ -402,6 +458,27 @@ fn bind_args(stack: &mut Vec<Value>, base: usize, code: &Code, argc: usize) {
 }
 
 impl VmState {
+    pub(crate) fn template(&self, heap: &crate::heap::Heap) -> Result<VmTemplate, &'static str> {
+        if !self.calls.is_empty() || !self.handlers.is_empty() || !self.natives.is_empty()
+            || self.module_link.is_some() || self.sim_host.is_some() || self.script_result.is_some()
+            || !self.suspended_async.is_empty() || !self.kept_objects.is_empty()
+            || self.realize_all.is_some() || self.cancelling || self.random_state != 0
+            || !self.sorted_answers.items.is_empty() {
+            return Err("template: checkpoint has active execution state");
+        }
+        let bytes = self.stack.len().saturating_add(self.entry.arguments.as_ref().map_or(0, Vec::len))
+            .saturating_mul(std::mem::size_of::<Value>())
+            .saturating_add(self.global_lexicals.len().saturating_mul(128))
+            .saturating_add(std::mem::size_of::<VmTemplate>());
+        let reservation = heap.reserve_bytes(bytes).ok_or("template: heap byte limit exceeded")?;
+        Ok(VmTemplate {
+            _reservation: reservation,
+            entry: self.entry.clone(), stack: self.stack.clone(), global: self.global_object,
+            lexicals: self.global_lexicals.iter().map(|(k,v)| (k.clone(), v.cell.clone(), v.mutable)).collect(),
+            core: self.core_resolver.clone(), pending: self.pending_need.ok_or("template: checkpoint is not waiting for a dependency")?,
+            limits: self.limits, pending_arguments: self.pending_arguments,
+        })
+    }
     pub(crate) fn detach_activation(
         &mut self,
         heap: &crate::heap::Heap,

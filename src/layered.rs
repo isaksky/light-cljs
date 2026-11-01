@@ -229,9 +229,176 @@ impl<K: Eq + Hash + Clone, V: Clone> Extend<(K, V)> for Layered<K, V> {
     }
 }
 
+/// Qualified names retain their original spelling for iteration and artifacts,
+/// but can be looked up with borrowed namespace/member parts. The borrowed key
+/// and the stored key hash the same pair, including whether a slash is present.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct QualifiedName(String);
+
+trait NameParts {
+    fn parts(&self) -> (Option<&str>, &str);
+}
+
+impl NameParts for QualifiedName {
+    fn parts(&self) -> (Option<&str>, &str) {
+        name_parts(&self.0)
+    }
+}
+
+fn name_parts(name: &str) -> (Option<&str>, &str) {
+    match name.split_once('/') {
+        Some((namespace, member)) => (Some(namespace), member),
+        None => (None, name),
+    }
+}
+
+impl NameParts for (Option<&str>, &str) {
+    fn parts(&self) -> (Option<&str>, &str) {
+        *self
+    }
+}
+
+impl Hash for QualifiedName {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.parts().hash(state);
+    }
+}
+
+impl Hash for dyn NameParts + '_ {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.parts().hash(state);
+    }
+}
+
+impl PartialEq for dyn NameParts + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.parts() == other.parts()
+    }
+}
+impl Eq for dyn NameParts + '_ {}
+
+impl<'a> Borrow<dyn NameParts + 'a> for QualifiedName {
+    fn borrow(&self) -> &(dyn NameParts + 'a) {
+        self
+    }
+}
+
+/// The same layered snapshot semantics for compiler names. No auxiliary index
+/// needs invalidating when a declaration is replaced or a host is cloned.
+pub(crate) struct QualifiedNames<V>(Layered<QualifiedName, V>);
+
+impl<V> Default for QualifiedNames<V> {
+    fn default() -> Self {
+        Self(Layered::default())
+    }
+}
+impl<V: Clone> Clone for QualifiedNames<V> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<V: Clone> QualifiedNames<V> {
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub(crate) fn get(&self, key: &str) -> Option<&V> {
+        self.0.get(&name_parts(key) as &dyn NameParts)
+    }
+    pub(crate) fn get_parts(&self, namespace: &str, member: &str) -> Option<&V> {
+        if namespace.contains('/') {
+            // Preserve concatenated-string semantics even for an unusual
+            // namespace containing a slash; split at the first one as usual.
+            return self.get(&format!("{namespace}/{member}"));
+        }
+        self.0.get(&(Some(namespace), member) as &dyn NameParts)
+    }
+    pub(crate) fn contains_key(&self, key: &str) -> bool {
+        self.get(key).is_some()
+    }
+    pub(crate) fn insert(&mut self, key: String, value: V) -> Option<V> {
+        self.0.insert(QualifiedName(key), value)
+    }
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, &V)> {
+        self.0.iter().map(|(key, value)| (&key.0, value))
+    }
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &String> {
+        self.0.keys().map(|key| &key.0)
+    }
+}
+
+impl<V: Clone, Q: AsRef<str> + ?Sized> std::ops::Index<&Q> for QualifiedNames<V> {
+    type Output = V;
+    fn index(&self, key: &Q) -> &V {
+        self.get(key.as_ref()).expect("no entry found for qualified name")
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Layered;
+    use super::{Layered, QualifiedName, QualifiedNames};
+
+    #[test]
+    fn qualified_names_borrow_parts_without_changing_spelling_or_identity() {
+        let mut names = QualifiedNames::default();
+        for (i, key) in ["plain", "/plain", "a/b", "a/b/c", "a//", "a/", "/", "", "λ/名"]
+            .into_iter()
+            .enumerate()
+        {
+            names.insert(key.into(), i);
+            assert_eq!(names.get(key), Some(&i));
+        }
+        assert_eq!(names.get_parts("", "plain"), Some(&1));
+        assert_eq!(names.get_parts("a", "b"), Some(&2));
+        assert_eq!(names.get_parts("a", "b/c"), Some(&3));
+        assert_eq!(names.get_parts("a/b", "c"), Some(&3));
+        assert_eq!(names.get_parts("a", "/"), Some(&4));
+        assert_eq!(names.get_parts("a", ""), Some(&5));
+        assert_eq!(names.get_parts("", ""), Some(&6));
+        assert_eq!(names.get_parts("λ", "名"), Some(&8));
+        assert_eq!(names.get_parts("a", "bc"), None);
+        assert_eq!(names.get_parts("ab", "c"), None);
+        assert_eq!(names["plain"], 0);
+        assert_eq!(names[&"/plain".to_owned()], 1);
+        let mut keys = names.keys().map(String::as_str).collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(keys, ["", "/", "/plain", "a/", "a//", "a/b", "a/b/c", "plain", "λ/名"]);
+    }
+
+    #[test]
+    fn qualified_names_keep_borrowed_lookup_equivalent_across_snapshot_mutations() {
+        let mut names = QualifiedNames::default();
+        let mut expected = std::collections::HashMap::new();
+        let mut snapshots = Vec::new();
+        for i in 0..400 {
+            let namespace = format!("ns{}", i % 9);
+            let member = format!("v{}", i % 31);
+            let key = format!("{namespace}/{member}");
+            assert_eq!(names.insert(key.clone(), i), expected.insert(key.clone(), i));
+            assert_eq!(names.get_parts(&namespace, &member), expected.get(&key));
+            if i % 17 == 0 {
+                snapshots.push((names.clone(), expected.clone()));
+            }
+            if i % 13 == 0 {
+                assert_eq!(names.0.remove(&QualifiedName(key.clone())), expected.remove(&key));
+                assert_eq!(names.get_parts(&namespace, &member), expected.get(&key));
+            }
+        }
+        snapshots.push((names.clone(), expected));
+        names.clear();
+        assert!(names.iter().next().is_none());
+        for (snapshot, expected) in snapshots {
+            assert_eq!(snapshot.iter().count(), expected.len());
+            for (key, value) in expected {
+                let (namespace, member) = key.split_once('/').unwrap();
+                assert_eq!(snapshot.get(&key), Some(&value));
+                assert_eq!(snapshot.get_parts(namespace, member), Some(&value));
+            }
+        }
+    }
 
     #[test]
     fn frames_keep_own_entries_across_mutation_removal_and_compaction() {

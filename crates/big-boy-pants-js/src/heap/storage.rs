@@ -342,7 +342,6 @@ impl Directory {
         self.state(id).is_some()
     }
 
-    #[cfg(test)]
     pub(super) fn known(&self, id: ObjectId) -> Option<bool> {
         Some(self.state(id)? & SHAREABLE != 0)
     }
@@ -1801,7 +1800,7 @@ mod tests {
         // The root, its 20,000 elements and ten leaves in each vector.
         assert!(stats.traced >= 1 + 20_000 + 200_000, "{stats:?}");
         assert_eq!(
-            heap.next_collection.load(Ordering::Relaxed),
+            heap.next_collection.0.load(Ordering::Relaxed),
             stats.traced + stats.live - stats.live / 16,
             "{stats:?}"
         );

@@ -127,30 +127,33 @@ impl Trace for RootTable {
 /// Locals of one open scope.
 #[derive(Debug)]
 struct ScopeEntry {
-    locals: Vec<Value>,
+    locals: Mutex<Vec<Value>>,
 }
 
 /// Locals of every open scope, owned by the heap so the collector can trace
 /// them. Freed entries are reused.
 #[derive(Debug, Default)]
 pub(crate) struct ScopeTable {
-    entries: Vec<Option<ScopeEntry>>,
+    entries: Vec<Option<Arc<ScopeEntry>>>,
     free: Vec<usize>,
 }
 
 impl ScopeTable {
-    fn open(&mut self) -> usize {
-        let entry = Some(ScopeEntry { locals: Vec::new() });
-        match self.free.pop() {
+    fn open(&mut self) -> (usize, Arc<ScopeEntry>) {
+        let entry = Arc::new(ScopeEntry {
+            locals: Mutex::new(Vec::new()),
+        });
+        let slot = match self.free.pop() {
             Some(slot) => {
-                self.entries[slot] = entry;
+                self.entries[slot] = Some(entry.clone());
                 slot
             }
             None => {
-                self.entries.push(entry);
+                self.entries.push(Some(entry.clone()));
                 self.entries.len() - 1
             }
-        }
+        };
+        (slot, entry)
     }
 
     fn close(&mut self, slot: usize) {
@@ -160,15 +163,6 @@ impl ScopeTable {
             self.free.push(slot);
         }
     }
-
-    fn locals(&mut self, slot: usize) -> &mut Vec<Value> {
-        // A `Scope` owns its entry from `open` until its drop calls `close`,
-        // so the entry exists whenever a scope method runs.
-        &mut self.entries[slot]
-            .as_mut()
-            .expect("scope entry exists while the scope is open")
-            .locals
-    }
 }
 
 impl Trace for ScopeTable {
@@ -176,7 +170,7 @@ impl Trace for ScopeTable {
         self.entries
             .iter()
             .flatten()
-            .for_each(|e| e.locals.trace(visit));
+            .for_each(|e| super::lock(&e.locals).trace(visit));
     }
 }
 
@@ -230,7 +224,7 @@ type ReclamationEvents = Mutex<Reclaimed>;
 /// enqueues its identity and the caller's token when swept, before mutators
 /// resume. Taking notifications never invokes JavaScript or a callback.
 /// Registrations and notifications are host bookkeeping, like weak handles.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ReclamationQueue(Arc<ReclamationEvents>);
 
 impl ReclamationQueue {
@@ -552,6 +546,11 @@ pub struct Scope<'s> {
     heap: &'s Arc<Heap>,
     /// This scope's entry in the heap's scope table.
     slot: usize,
+    /// Local access takes only this scope's lock. The table retains the
+    /// same entry so collection still sees the locals of released scopes.
+    /// Never hold this lock while entering heap access or taking another
+    /// heap lock: tracing acquires it after the scope table lock.
+    entry: Arc<ScopeEntry>,
     _brand: Brand<'s>,
     _not_sync: PhantomData<Cell<()>>,
     /// The thread's registration as a mutator; dropped after the entry is
@@ -570,10 +569,11 @@ impl<'s> Scope<'s> {
     pub(crate) fn new(heap: &'s Arc<Heap>) -> Self {
         // Register first: entering waits while a collection is requested.
         let mutator = heap.enter_mutator(Access::Scope);
-        let slot = heap.scopes().open();
+        let (slot, entry) = heap.scopes().open();
         Scope {
             heap,
             slot,
+            entry,
             _brand: PhantomData,
             _not_sync: PhantomData,
             _mutator: mutator,
@@ -588,8 +588,7 @@ impl<'s> Scope<'s> {
     /// Register `value` as a local of this scope. The caller guarantees it
     /// is live (see [`Scope::new_object`]).
     pub(crate) fn new_local(&self, value: Value) -> Local<'s> {
-        let mut scopes = self.heap.scopes();
-        let locals = scopes.locals(self.slot);
+        let mut locals = super::lock(&self.entry.locals);
         locals.push(value);
         Local {
             index: locals.len() - 1,
@@ -599,8 +598,7 @@ impl<'s> Scope<'s> {
 
     /// Register several live values as locals under one lock acquisition.
     pub(crate) fn new_locals(&self, values: impl IntoIterator<Item = Value>) -> Vec<Local<'s>> {
-        let mut scopes = self.heap.scopes();
-        let locals = scopes.locals(self.slot);
+        let mut locals = super::lock(&self.entry.locals);
         values
             .into_iter()
             .map(|value| {
@@ -617,7 +615,7 @@ impl<'s> Scope<'s> {
     pub(crate) fn local_value(&self, local: Local<'s>) -> Value {
         // The brand guarantees `local` was created by this scope, and the
         // local list only grows while the scope is open, so the index exists.
-        self.heap.scopes().locals(self.slot)[local.index].clone()
+        super::lock(&self.entry.locals)[local.index].clone()
     }
 
     /// Allocate a new (property-less) plain object.
@@ -693,6 +691,37 @@ impl<'s> Scope<'s> {
         if let Some(identity) = self.object_identity(local) {
             super::lock(&self.heap.reclamation).watch(identity, queue, token);
         }
+    }
+
+    /// Register a batch of non-rooting reclamation watches using identities
+    /// already obtained from this heap. All identities must still be live.
+    /// A foreign or reclaimed identity rejects the whole batch before any
+    /// registration. Repeated identity/queue/token tuples notify only once,
+    /// including repetitions across batches and [`Self::watch_reclamation`].
+    ///
+    /// Keep a scope active, without releasing it or reaching a safepoint,
+    /// between obtaining identities and this call if no other root retains
+    /// their objects. The batch itself does not keep any object alive.
+    pub fn watch_reclamation_identities(
+        &self,
+        queue: &ReclamationQueue,
+        identities: Vec<(ObjectIdentity, usize)>,
+    ) -> Result<(), HandleError> {
+        for (identity, _) in &identities {
+            if !std::ptr::eq(identity.heap.as_ptr(), Arc::as_ptr(self.heap)) {
+                return Err(HandleError::ForeignRuntime);
+            }
+            if !self.heap.is_live(identity.object) {
+                return Err(HandleError::Reclaimed);
+            }
+        }
+        if !identities.is_empty() {
+            let mut registry = super::lock(&self.heap.reclamation);
+            for (identity, token) in identities {
+                registry.watch(identity, queue, token);
+            }
+        }
+        Ok(())
     }
 
     /// Access a weak handle's value within this scope, or fail with
@@ -861,6 +890,23 @@ mod tests {
         seen = 0;
         heap.scopes().trace(&mut |_| seen += 1);
         assert_eq!(seen, 0, "a closed scope's locals are no longer roots");
+    }
+
+    #[test]
+    fn local_access_does_not_take_the_scope_table_or_another_scopes_lock() {
+        let heap = Arc::new(Heap::default());
+        let first = Scope::new(&heap);
+        let second = Scope::new(&heap);
+        // Keep these guards through every access. A shared-table or shared-
+        // entry lock in a local operation would deadlock, just as it would
+        // serialize independent importers using the same heap.
+        let _table = heap.scopes();
+        let _other_locals = super::super::lock(&first.entry.locals);
+        let one = second.new_local(Value::Number(1.0));
+        let more = second.new_locals([Value::Number(2.0), Value::Null]);
+        assert!(matches!(second.local_value(one), Value::Number(1.0)));
+        assert!(matches!(second.local_value(more[0]), Value::Number(2.0)));
+        assert!(matches!(second.local_value(more[1]), Value::Null));
     }
 
     #[test]

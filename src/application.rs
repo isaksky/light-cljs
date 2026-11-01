@@ -4,7 +4,7 @@ use crate::analyzer::{CoreFnId, ExprId, ExprKind, GlobalId, Program};
 use crate::call_shapes::{CallShapes, FunctionShape};
 use crate::core_operations::{Calls, Purity, Type};
 use crate::inference::{Definition, Inference, ProgramFacts, TypeRole};
-use crate::program_fragment::children;
+use crate::program_fragment::visit_children;
 use std::collections::HashMap;
 
 #[cfg(test)]
@@ -507,6 +507,19 @@ pub fn prepare_owned_application(
     // definitions nothing reads any more.
     if level.advanced() {
         let mut growth = crate::inlining::growth_budget(prepared.program.exprs.len());
+        // Discarded definitions leave their bodies in the arena. Remove those
+        // before repeated whole-arena scans, keeping the original growth budget.
+        if let Some(origins) = crate::program_fragment::compact_expressions(&mut prepared.program) {
+            let mut ids = vec![ExprId(usize::MAX); retained.candidates.len()];
+            for (new, &old) in origins.iter().enumerate() {
+                ids[old] = ExprId(new);
+            }
+            for (id, _) in &mut retained.top {
+                *id = ids[id.0];
+            }
+            retained.candidates = origins.iter().map(|&id| retained.candidates[id]).collect();
+            retained.pinned = origins.iter().map(|&id| retained.pinned[id]).collect();
+        }
         // Literals the program builds at each evaluation stay built, however
         // constant their items become.
         let mut built = crate::folding::built_literals(&prepared.program);
@@ -713,7 +726,7 @@ fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained 
                 pending.extend(&definitions[global.0]);
             }
         }
-        pending.extend(children(program, id));
+        visit_children(&program.exprs[id.0].kind, |child| pending.push(child));
     }
     prepared.globals = retained;
     for (index, candidate) in candidates.iter().enumerate() {
@@ -1316,7 +1329,7 @@ fn reachable(program: &Program, root: ExprId) -> Vec<ExprId> {
             continue;
         }
         result.push(id);
-        pending.extend(children(program, id));
+        visit_children(&program.exprs[id.0].kind, |child| pending.push(child));
     }
     result
 }

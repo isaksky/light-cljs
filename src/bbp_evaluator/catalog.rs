@@ -20,12 +20,38 @@
 use super::*;
 use crate::compilation_session::Registration;
 
+/// A live immutable prefix for fresh namespace tasks. Keeping this one root
+/// alive lets every task fork the same data without rebuilding descriptors.
+#[derive(Clone)]
+pub(crate) struct CatalogSeed {
+    cursor: usize,
+    snapshot: Option<Rooted>,
+}
+impl CatalogSeed {
+    pub(crate) fn len(&self) -> usize { self.cursor }
+}
+
 #[derive(Default)]
 pub(super) struct Registry {
     // Tasks own their frontiers. The cache shares live immutable data without
     // rooting every historical prefix (including its copied vector spine).
     versions: BTreeMap<usize, WeakHandle>,
+    // The ordinary compiler has one append-only journal (branch zero). Forked
+    // namespace views share its immutable prefix but can append different
+    // registrations at the same cursor. Keep their version indexes separate.
+    branches: HashMap<u64, BTreeMap<usize, WeakHandle>>,
+    next_branch: u64,
     collected: u64,
+}
+
+impl Registry {
+    fn versions_for(&mut self, branch: u64) -> &mut BTreeMap<usize, WeakHandle> {
+        if branch == 0 {
+            &mut self.versions
+        } else {
+            self.branches.entry(branch).or_default()
+        }
+    }
 }
 
 fn text<'s>(s: &Scope<'s>, value: &str) -> Result<Local<'s>, EvalError> {
@@ -50,6 +76,58 @@ fn index<'s>(
 }
 
 impl BbpEvaluator {
+    #[cfg(test)]
+    pub(super) fn catalog_versions(&self) -> usize {
+        self.shared.0.catalog.lock().unwrap().versions_for(self.cx().unwrap().catalog_branch.get()).len()
+    }
+    pub(crate) fn catalog_seed(&self) -> Result<CatalogSeed, EvalError> {
+        let cx = self.cx()?;
+        Ok(CatalogSeed {
+            cursor: cx.catalog.get().unwrap_or(0),
+            snapshot: cx.catalog_snapshot.borrow().clone(),
+        })
+    }
+
+    pub(crate) fn fork_catalog_from(&self, seed: &CatalogSeed) -> Result<(), EvalError> {
+        if self.cx()?.catalog.get().unwrap_or(0) != 0 {
+            return Err(error("a seeded namespace task must have an empty catalog"));
+        }
+        if let Some(snapshot) = &seed.snapshot {
+            self.host_scope(|scope| scope.local(snapshot).map(|_| ()).map_err(error))?;
+        }
+        self.new_catalog_branch(seed)
+    }
+
+    pub(crate) fn adopt_catalog_seed(&self, seed: &CatalogSeed) -> Result<(), EvalError> {
+        self.fork_catalog_from(seed)?;
+        if let Some(snapshot) = &seed.snapshot {
+            self.use_catalog(snapshot.clone(), 0, seed.cursor, true)?;
+        }
+        self.cx()?.catalog.set(Some(seed.cursor));
+        Ok(())
+    }
+
+    fn new_catalog_branch(&self, seed: &CatalogSeed) -> Result<(), EvalError> {
+        if seed.cursor != 0 && seed.snapshot.is_none() {
+            return Err(error("missing native catalog frontier"));
+        }
+        let mut registry = self.shared.0.catalog.lock().unwrap();
+        let branch = registry.next_branch.checked_add(1).ok_or_else(|| error("too many native catalog branches"))?;
+        registry.next_branch = branch;
+        if let Some(snapshot) = &seed.snapshot {
+            registry.versions_for(branch).insert(seed.cursor, snapshot.downgrade());
+        }
+        self.cx()?.catalog_branch.set(branch);
+        Ok(())
+    }
+    /// Start an independent registration suffix while sharing this task's
+    /// current immutable prefix. Namespace publication can then use canonical
+    /// order without aliasing an arrival-ordered catalog of the same length.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn fork_catalog(&self) -> Result<(), EvalError> {
+        self.new_catalog_branch(&self.catalog_seed()?)
+    }
+
     /// Give this task the catalog's registrations from `first`: it adopts
     /// them (light-cljs-675), applying a name's or a protocol's on first
     /// use, so a task's registration state follows what it reads rather
@@ -74,21 +152,27 @@ impl BbpEvaluator {
         if registrations.is_empty() {
             return Ok(());
         }
+        let cx = self.cx()?;
+        let branch = cx.catalog_branch.get();
         let end = first + registrations.len();
         let snapshot = {
             let mut registry = self.shared.0.catalog.lock().unwrap();
             let collected = self.runtime.heap_stats().collections;
             if registry.collected != collected {
                 registry.versions.retain(|_, snapshot| snapshot.is_live());
+                registry.branches.retain(|_, versions| {
+                    versions.retain(|_, snapshot| snapshot.is_live());
+                    !versions.is_empty()
+                });
                 registry.collected = collected;
             }
-            if let Some(snapshot) = registry.versions.get(&end).and_then(|s| s.upgrade().ok()) {
+            let versions = registry.versions_for(branch);
+            if let Some(snapshot) = versions.get(&end).and_then(|s| s.upgrade().ok()) {
                 snapshot
             } else {
                 // Reuse the greatest live prefix, even when another task
                 // installed it. Weak cache entries must not retain history.
-                let cached = registry
-                    .versions
+                let cached = versions
                     .range(first..end)
                     .rev()
                     .find_map(|(&cursor, weak)| Some((cursor, weak.upgrade().ok()?)));
@@ -100,7 +184,7 @@ impl BbpEvaluator {
                         let previous = if first == 0 {
                             None
                         } else {
-                            self.cx()?.catalog_snapshot.borrow().clone()
+                            cx.catalog_snapshot.borrow().clone()
                         };
                         if first != 0 && previous.is_none() {
                             return Err(error("missing native catalog frontier"));
@@ -212,12 +296,12 @@ impl BbpEvaluator {
                     Ok::<_, EvalError>(s.persist(version))
                 })?;
                 self.runtime.publish(&snapshot).map_err(error)?;
-                registry.versions.insert(end, snapshot.downgrade());
+                versions.insert(end, snapshot.downgrade());
                 snapshot
             }
         };
         self.use_catalog(snapshot, first, end, lazy)?;
-        self.cx()?.catalog.set(Some(end));
+        cx.catalog.set(Some(end));
         Ok(())
     }
 

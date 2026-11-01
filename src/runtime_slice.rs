@@ -991,7 +991,9 @@ fn first_references(program: &Program, form: ExprId) -> HashMap<crate::analyzer:
                 *at = id;
             }
         }
-        pending.extend(crate::program_fragment::children(program, id));
+        crate::program_fragment::visit_children(&program.exprs[id.0].kind, |child| {
+            pending.push(child);
+        });
     }
     first
 }

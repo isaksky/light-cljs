@@ -66,7 +66,7 @@ use crate::call_shapes::CallShapes;
 use crate::core_operations::{Calls, Purity};
 use crate::folding::{NOWHERE, constant_like};
 use crate::inference::ProgramFacts;
-use crate::program_fragment::children;
+use crate::program_fragment::visit_children;
 
 /// The most expressions a body inlined at every call may have.
 pub const INLINE_BUDGET: usize = 10;
@@ -421,11 +421,7 @@ fn child_roles(program: &Program, id: ExprId, block: bool, out: &mut Vec<(ExprId
             out.push((*body, true));
         }
         ExprKind::Fn { methods, .. } => out.extend(methods.iter().map(|m| (m.body, true))),
-        _ => out.extend(
-            children(program, id)
-                .into_iter()
-                .map(|child| (child, false)),
-        ),
+        _ => visit_children(&program.exprs[id.0].kind, |child| out.push((child, false))),
     }
 }
 
@@ -448,7 +444,7 @@ fn builds(program: &Program, built: &[bool], id: ExprId) -> bool {
                 | ExprKind::LiteralSet(_)
                 | ExprKind::WithMeta { .. }
         ) {
-            pending.extend(children(program, id));
+            visit_children(&program.exprs[id.0].kind, |child| pending.push(child));
         }
     }
     false
@@ -683,11 +679,7 @@ fn measure(program: &Program, facts: &ProgramFacts, body: ExprId, limit: usize) 
             | ExprKind::InstanceOf { .. }
             | ExprKind::WithMeta { .. } => {
                 result.pure = false;
-                pending.extend(
-                    children(program, id)
-                        .into_iter()
-                        .map(|child| (child, false)),
-                );
+                visit_children(&program.exprs[id.0].kind, |child| pending.push((child, false)));
             }
             _ => return None,
         }

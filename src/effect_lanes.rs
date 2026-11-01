@@ -3,9 +3,10 @@
 //! (light-cljs-480)").
 //!
 //! Every top-level pass segment and every unit a namespace's dispatch (or a
-//! drain) schedules gets a *position*: one counter that the coordinator
-//! advances in the order `--jobs 1` runs them, so a pass, then the units it
-//! scheduled in unit order, then the next pass (or the rest of this one).
+//! drain) schedules gets a *position*: a pass group reserved in source order,
+//! followed by a counter within that group. Thus units discovered late by an
+//! earlier pass still precede later passes. Within a group the order is the
+//! one `--jobs 1` runs: a pass, its scheduled units, then the rest of the pass.
 //! An *activity* is what runs at a position on a thread: a pass, a unit a
 //! pool slot, a rescue thread or a dispatch analyzes, a unit demanded inside
 //! another activity, a Var initializer or a helper's production. Its
@@ -39,7 +40,7 @@
 #![cfg_attr(not(feature = "bbp-macros"), allow(dead_code))]
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     hash::{Hash, Hasher},
     sync::{
         Arc, Condvar, Mutex, MutexGuard, PoisonError,
@@ -48,8 +49,39 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// A place in the `--jobs 1` order of passes and units.
-pub(crate) type Position = u64;
+/// A place in the `--jobs 1` order of passes and units: a reserved group in
+/// the high half and a local sequence in the low half. Neither half depends
+/// on the number of parsed forms (macros can introduce arbitrary units).
+pub(crate) type Position = u128;
+
+/// A unit's declaration order, independent of its catalog storage ID and
+/// of drain segments (which move the effect position of a running pass).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct UnitOrder(u64, u64);
+impl UnitOrder {
+    pub(crate) const MAX: Self = Self(u64::MAX, u64::MAX);
+    pub(crate) fn serial(id: usize) -> Self {
+        Self(0, id as u64)
+    }
+}
+
+fn position(group: u64, local: u64) -> Position {
+    (Position::from(group) << 64) | Position::from(local)
+}
+
+struct Pass {
+    position: Position,
+    next: u64,
+    next_unit: u64,
+    source: Option<usize>,
+    token: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+enum Pending {
+    Unit(usize),
+    Pass(Option<usize>),
+}
 
 /// What an activity owns that other activities can wait for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -175,12 +207,13 @@ struct Parked {
 
 #[derive(Default)]
 struct State {
-    next: Position,
-    /// The open pass segment's position and its entry's token.
-    pass: Option<(Position, u64)>,
-    /// Scheduled units in position order, and the first unfinished one.
-    scheduled: Vec<(Position, usize)>,
-    cursor: usize,
+    next_group: u64,
+    /// Reserved passes, including those that have not started on a worker.
+    passes: HashMap<u64, Pass>,
+    pass_groups: HashMap<u64, u64>,
+    /// Unfinished units and pass barriers in source order, independent of
+    /// the order in which workers discover units or finish their passes.
+    pending: BTreeMap<Position, Pending>,
     position_of: HashMap<usize, Position>,
     finished: HashSet<usize>,
     /// The lowest position of a failed unit: once every unit before it has
@@ -213,18 +246,16 @@ struct State {
     closures: Vec<Option<Box<[u64]>>>,
     names: Vec<String>,
     sources: HashMap<String, usize>,
-    /// The namespace of each catalog unit, of each scheduled position and
-    /// of the open pass segment.
+    /// The namespace of each catalog unit and of each scheduled position.
     unit_sources: HashMap<usize, usize>,
     position_sources: HashMap<Position, usize>,
-    pass_source: Option<usize>,
     /// The home namespace of the atoms an activity makes, by its token: a
     /// Var initializer's namespace. Every other activity's atoms have no
     /// home and order against every earlier activity.
     homes: HashMap<u64, usize>,
-    /// Per home, the first scheduled unit not yet known to be finished or
-    /// outside the home's reach ([`State::frontier_for`]).
-    home_cursors: HashMap<usize, usize>,
+    /// Per home, a lower bound for the next relevant pending position.
+    /// Insertion of earlier work lowers these bounds; removal need not.
+    home_cursors: HashMap<usize, Position>,
     /// The homed initializers each task runs, innermost last, wherever
     /// its steps run, and the task of each.
     initializer_tasks: HashMap<u64, Vec<u64>>,
@@ -233,6 +264,18 @@ struct State {
 }
 
 impl State {
+    fn reserve_group(&mut self) -> u64 {
+        let group = self.next_group;
+        self.next_group = group.checked_add(1).expect("effect lane groups exhausted");
+        group
+    }
+    /// Adding work can invalidate a home cursor that skipped an open pass
+    /// or reached the end before this earlier group discovered its units.
+    fn inserted_at(&mut self, position: Position) {
+        for cursor in self.home_cursors.values_mut() {
+            *cursor = (*cursor).min(position);
+        }
+    }
     /// A catalog source index is a resource home only once its namespace
     /// is known. Helper-only sources keep the conservative, unhomed lane.
     fn unit_home(&self, unit: usize) -> Option<usize> {
@@ -262,37 +305,24 @@ impl State {
         let Some(home) = home else {
             return frontier;
         };
-        let mut at = (self.home_cursors.get(&home).copied())
+        let at = (self.home_cursors.get(&home).copied())
             .unwrap_or(0)
-            .max(self.cursor);
-        while let Some(&(_, unit)) = self.scheduled.get(at) {
-            if !self.finished.contains(&unit)
-                && self.reaches(self.unit_sources.get(&unit).copied(), home)
-            {
-                break;
-            }
-            at += 1;
-        }
-        self.home_cursors.insert(home, at);
-        let unit = self.scheduled.get(at).map_or(Position::MAX, |&(p, _)| p);
-        let pass = match self.pass {
-            Some((p, _)) if self.reaches(self.pass_source, home) => p,
-            _ => Position::MAX,
-        };
-        unit.min(pass)
+            .max(frontier);
+        let next = self.pending.range(at..).find_map(|(&position, &pending)| {
+            let source = match pending {
+                Pending::Unit(unit) => self.unit_sources.get(&unit).copied(),
+                Pending::Pass(source) => source,
+            };
+            self.reaches(source, home).then_some(position)
+        });
+        let next = next.unwrap_or(Position::MAX);
+        self.home_cursors.insert(home, next);
+        next
     }
-    fn frontier(&mut self) -> Position {
-        while let Some(&(_, unit)) = self.scheduled.get(self.cursor) {
-            if !self.finished.contains(&unit) {
-                break;
-            }
-            self.cursor += 1;
-        }
-        let unit = self
-            .scheduled
-            .get(self.cursor)
-            .map_or(Position::MAX, |&(p, _)| p);
-        unit.min(self.pass.map_or(Position::MAX, |(p, _)| p))
+    fn frontier(&self) -> Position {
+        self.pending
+            .first_key_value()
+            .map_or(Position::MAX, |(&p, _)| p)
     }
     /// The lowest effective position of the activities waiting for one of
     /// `targets`.
@@ -370,6 +400,9 @@ fn namespace_tag(top: &Top) -> NamespaceTag {
 #[derive(Default)]
 pub(crate) struct Lanes {
     enabled: AtomicBool,
+    /// Once pass reservations overlap, declaration order can differ from
+    /// allocation order. Before then, IDs already give the canonical order.
+    reserved_unit_order: AtomicBool,
     state: Mutex<State>,
     opened: Condvar,
     rescuer: Mutex<Option<Rescuer>>,
@@ -440,19 +473,66 @@ impl Drop for EntryGuard {
     }
 }
 
-/// Ends the open pass segment when dropped.
+/// A source-order barrier that may be sent to a worker before it starts a
+/// pass. Dropping an unstarted reservation releases its barrier too.
 #[must_use]
-pub(crate) struct PassGuard(EntryGuard);
-impl Drop for PassGuard {
-    fn drop(&mut self) {
-        if let Some(lanes) = &self.0.lanes {
-            let mut s = lanes.lock();
-            if s.pass.is_some_and(|(_, token)| token == self.0.token) {
-                s.pass = None;
-                s.pass_source = None;
+pub(crate) struct PassReservation {
+    lanes: Option<Arc<Lanes>>,
+    group: u64,
+}
+impl PassReservation {
+    pub(crate) fn begin(self, forced: bool) -> PassGuard {
+        let entry = if let Some(lanes) = &self.lanes {
+            let position = lanes.lock().passes[&self.group].position;
+            let (guard, _) = lanes.push(Some(position), None, true);
+            {
+                let mut s = lanes.lock();
+                s.passes.get_mut(&self.group).unwrap().token = Some(guard.token);
+                s.pass_groups.insert(guard.token, self.group);
             }
+            if forced {
+                lanes.wait_open(Some(position));
+            }
+            guard
+        } else {
+            EntryGuard {
+                lanes: None,
+                token: 0,
+            }
+        };
+        PassGuard {
+            _reservation: self,
+            _entry: entry,
+            _thread: std::marker::PhantomData,
         }
     }
+}
+impl Drop for PassReservation {
+    fn drop(&mut self) {
+        if let Some(lanes) = &self.lanes {
+            {
+                let mut s = lanes.lock();
+                if let Some(pass) = s.passes.remove(&self.group) {
+                    s.pending.remove(&pass.position);
+                    if let Some(token) = pass.token {
+                        s.pass_groups.remove(&token);
+                    }
+                }
+            }
+            lanes.changed();
+        }
+    }
+}
+
+/// Ends this thread's pass. Release the barrier before popping the entry,
+/// whose destructor polls lanes, just as for an inline coordinator pass.
+#[must_use]
+pub(crate) struct PassGuard {
+    _reservation: PassReservation,
+    _entry: EntryGuard,
+    // A pass runs on the thread that owns its stack entry. Its unstarted
+    // reservation can move to a worker; the running pass cannot.
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 /// A registered wait for a target, refreshed while it lasts.
@@ -524,6 +604,17 @@ fn chain(lanes: usize) -> (Option<Position>, Vec<Target>) {
             }
         }
         (position, targets)
+    })
+}
+
+fn root_token(lanes: usize) -> Option<u64> {
+    STACK.with(|stack| {
+        stack
+            .borrow()
+            .iter()
+            .rev()
+            .find(|entry| entry.lanes == lanes && entry.root)
+            .map(|entry| entry.token)
     })
 }
 
@@ -676,79 +767,166 @@ impl Lanes {
         s.sources.insert(name.to_owned(), source);
         s.closures[source] = Some(closure.into_boxed_slice());
     }
-    /// Note that catalog unit `unit` belongs to namespace `source`.
+    /// Give a test fixture unit a home without registering a declaration.
+    #[cfg(test)]
     pub(crate) fn note_unit(&self, unit: usize, source: usize) {
         if !self.enabled() {
             return;
         }
         self.lock().unit_sources.insert(unit, source);
     }
-    /// Start a namespace's top-level pass on the coordinator: its segment
-    /// is the next position. A blocker's consumer (`forced`) waits for its
-    /// lane first, so it runs after every earlier unit, as with one slot.
-    /// `source` is the namespace's source index, when known.
-    pub(crate) fn begin_pass(self: &Arc<Self>, forced: bool, source: Option<usize>) -> PassGuard {
+    /// Give a newly registered catalog unit its immutable declaration order.
+    /// Reserved passes can register in any worker order. Outside a pass,
+    /// registration remains serial and gets a fresh group. Disabled lanes
+    /// use the existing serial catalog order without taking the lane lock.
+    pub(crate) fn register_unit(&self, unit: usize, source: usize) -> UnitOrder {
         if !self.enabled() {
-            return PassGuard(self.push(None, None, true).0);
+            return UnitOrder::serial(unit);
         }
-        let position = {
+        let mut s = self.lock();
+        s.unit_sources.insert(unit, source);
+        if !self.uses_reserved_unit_order() {
+            return UnitOrder::serial(unit);
+        }
+        let token = root_token(self.key());
+        let (group, local) = match token.and_then(|t| s.pass_groups.get(&t).copied()) {
+            Some(group) => {
+                let pass = s.passes.get_mut(&group).unwrap();
+                let local = pass.next_unit;
+                pass.next_unit = local
+                    .checked_add(1)
+                    .expect("unit declaration order exhausted");
+                (group, local)
+            }
+            None => (s.reserve_group(), 0),
+        };
+        // Group zero holds registrations made before reservations overlapped.
+        // reserve_group never returns u64::MAX, leaving room for this offset.
+        UnitOrder(group + 1, local)
+    }
+    pub(crate) fn uses_reserved_unit_order(&self) -> bool {
+        self.reserved_unit_order.load(Ordering::Acquire)
+    }
+    /// Reserve a namespace pass in canonical order, before launching its
+    /// worker. Its barrier orders later work even while the pass is queued.
+    /// The source index identifies resource reachability, not pass order:
+    /// the same source can have multiple passes.
+    pub(crate) fn reserve_pass(self: &Arc<Self>, source: Option<usize>) -> PassReservation {
+        if !self.enabled() {
+            return PassReservation {
+                lanes: None,
+                group: 0,
+            };
+        }
+        let group = {
             let mut s = self.lock();
-            let position = s.next;
-            s.next += 1;
+            if !s.passes.is_empty() {
+                self.reserved_unit_order.store(true, Ordering::Release);
+            }
+            let group = s.reserve_group();
+            let position = position(group, 0);
             if let Some(source) = source {
                 s.position_sources.insert(position, source);
             }
-            s.pass_source = source;
-            position
+            s.passes.insert(
+                group,
+                Pass {
+                    position,
+                    next: 1,
+                    next_unit: 0,
+                    source,
+                    token: None,
+                },
+            );
+            s.pending.insert(position, Pending::Pass(source));
+            s.inserted_at(position);
+            group
         };
-        let (guard, _) = self.push(Some(position), None, true);
-        self.lock().pass = Some((position, guard.token));
-        if forced {
-            self.wait_open(Some(position));
+        PassReservation {
+            lanes: Some(self.clone()),
+            group,
         }
-        PassGuard(guard)
     }
-    /// Give `units` their positions, in order, after everything scheduled
-    /// so far. An open pass segment moves after them: the pass continues
-    /// after these units, as with one slot.
+    /// Reserve and immediately start an inline namespace pass. A blocker's
+    /// consumer (`forced`) waits for every earlier activity before starting.
+    pub(crate) fn begin_pass(self: &Arc<Self>, forced: bool, source: Option<usize>) -> PassGuard {
+        self.reserve_pass(source).begin(forced)
+    }
+    /// Give units positions within this thread's pass group. Only that
+    /// pass moves after them; another worker's pass cannot move. Outside a
+    /// pass, reserve a new group for the batch in discovery order.
     pub(crate) fn schedule(&self, units: impl IntoIterator<Item = usize>, forced: bool) {
         if !self.enabled() {
             return;
         }
         let key = self.key();
+        let token = root_token(key);
         let mut s = self.lock();
-        let mut any = false;
+        let pass_group = token.and_then(|t| s.pass_groups.get(&t).copied());
+        let mut batch = None;
         for unit in units {
             if s.position_of.contains_key(&unit) {
                 continue;
             }
-            let position = s.next;
-            s.next += 1;
+            // A reserved pass's require closure bounds all work it may
+            // still discover. Otherwise a later homed effect could have
+            // skipped its barrier before this unit was known. Callers
+            // scheduling mixed-source work must reserve an unknown source.
+            if let Some(source) = pass_group.and_then(|g| s.passes[&g].source) {
+                assert_eq!(
+                    s.unit_sources.get(&unit),
+                    Some(&source),
+                    "a namespace pass scheduled a unit from another source"
+                );
+            }
+            let (group, next) = batch.get_or_insert_with(|| match pass_group {
+                Some(g) => (g, s.passes[&g].next),
+                None => (s.reserve_group(), 0),
+            });
+            let position = position(*group, *next);
+            *next = next
+                .checked_add(1)
+                .expect("effect lane positions exhausted");
             s.position_of.insert(unit, position);
-            s.scheduled.push((position, unit));
+            if !s.finished.contains(&unit) {
+                s.pending.insert(position, Pending::Unit(unit));
+            }
             if let Some(&source) = s.unit_sources.get(&unit) {
                 s.position_sources.insert(position, source);
             }
             if forced {
                 s.forced.insert(unit);
             }
-            any = true;
         }
-        if any && let Some((_, token)) = s.pass {
-            let position = s.next;
-            s.next += 1;
-            s.pass = Some((position, token));
-            if let Some(source) = s.pass_source {
-                s.position_sources.insert(position, source);
-            }
-            STACK.with(|stack| {
-                if let Some(entry) = (stack.borrow_mut().iter_mut())
-                    .rev()
-                    .find(|e| e.lanes == key && e.token == token)
-                {
-                    entry.position = Some(position);
+        if let Some((group, next)) = batch {
+            // The previous barrier is a conservative lower bound for all
+            // work added to this pass; a standalone batch starts at zero.
+            let first = pass_group.map_or(position(group, 0), |g| s.passes[&g].position);
+            s.inserted_at(first);
+            if let Some(group) = pass_group {
+                let position = position(group, next);
+                let pass = s.passes.get_mut(&group).unwrap();
+                let prior = pass.position;
+                pass.position = position;
+                pass.next = next
+                    .checked_add(1)
+                    .expect("effect lane positions exhausted");
+                let source = pass.source;
+                let token = pass.token.unwrap();
+                s.pending.remove(&prior);
+                s.pending.insert(position, Pending::Pass(source));
+                if let Some(source) = source {
+                    s.position_sources.insert(position, source);
                 }
-            });
+                STACK.with(|stack| {
+                    if let Some(entry) = (stack.borrow_mut().iter_mut())
+                        .rev()
+                        .find(|e| e.lanes == key && e.token == token)
+                    {
+                        entry.position = Some(position);
+                    }
+                });
+            }
         }
     }
     /// Note that `unit`'s analysis ended (analyzed or failed), which may
@@ -760,6 +938,9 @@ impl Lanes {
         {
             let mut s = self.lock();
             s.finished.insert(unit);
+            if let Some(&position) = s.position_of.get(&unit) {
+                s.pending.remove(&position);
+            }
             if failed && let Some(&position) = s.position_of.get(&unit) {
                 s.failed = Some(s.failed.map_or(position, |f| f.min(position)));
             }
@@ -1317,11 +1498,10 @@ impl Lanes {
     pub(crate) fn rescue(&self) {
         let unit = {
             let mut s = self.lock();
-            let frontier = s.frontier();
-            let Some(&(position, unit)) = s.scheduled.get(s.cursor) else {
+            let Some((&_, &Pending::Unit(unit))) = s.pending.first_key_value() else {
                 return;
             };
-            if position != frontier || s.rescued.contains(&unit) {
+            if s.rescued.contains(&unit) {
                 return;
             }
             match s.starved {
@@ -1698,11 +1878,280 @@ mod tests {
     }
 
     #[test]
+    fn reserved_passes_order_late_units_even_when_workers_start_backwards() {
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        let earlier = lanes.reserve_pass(None);
+        let later = lanes.reserve_pass(None);
+        let (ready, started) = mpsc::channel();
+        let (opened, wait) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let other = lanes.clone();
+        let worker = std::thread::spawn(move || {
+            let pass = later.begin(false);
+            let at = other.namespace_tag_here().position;
+            // This unit is discovered before any of the earlier pass's.
+            other.schedule([20], false);
+            let after = other.namespace_tag_here().position;
+            assert!(after > at);
+            let cell = other.check(synced(&other, 7), 0).unwrap();
+            assert_ne!(cell, 0, "the unstarted earlier pass is a barrier");
+            other.attach(cell, Box::new(move || opened.send(()).unwrap()));
+            ready.send(after).unwrap();
+            released.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(
+                other.namespace_tag_here().position,
+                after,
+                "another worker's drain cannot move this pass"
+            );
+            drop(pass);
+        });
+        let later_position = started.recv_timeout(Duration::from_secs(5)).unwrap();
+        let pass = earlier.begin(false);
+        lanes.schedule([10], false);
+        let first_segment = lanes.namespace_tag_here().position;
+        lanes.schedule([11], false);
+        let second_segment = lanes.namespace_tag_here().position;
+        assert!(first_segment < second_segment && second_segment < later_position);
+        {
+            let s = lanes.lock();
+            assert!(s.position_of[&10] < s.position_of[&11]);
+            assert!(s.position_of[&11] < s.position_of[&20]);
+        }
+        lanes.finish(20, false);
+        lanes.finish(11, false);
+        drop(pass);
+        assert!(
+            wait.try_recv().is_err(),
+            "the late-discovered unit 10 remains"
+        );
+        lanes.finish(10, false);
+        wait.recv_timeout(Duration::from_secs(5)).unwrap();
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(lanes.lock().frontier(), Position::MAX);
+    }
+
+    #[test]
+    fn reservations_keep_home_filtering_and_repeat_sources_in_reservation_order() {
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        lanes.register_namespace(0, "lib", &[]);
+        lanes.register_namespace(1, "unrelated", &[]);
+        lanes.register_namespace(2, "app", &["lib".into()]);
+        lanes.note_unit(5, 0);
+        lanes.note_unit(10, 2);
+        let owner = {
+            let _root = lanes.enter_root();
+            let _initializer = lanes.enter_initializer(77, 5, 40);
+            (-lanes.token(synced(&lanes, 40))) as u64
+        };
+        let unrelated = lanes.reserve_pass(Some(1));
+        let earlier = lanes.reserve_pass(Some(2));
+        let later = lanes.reserve_pass(Some(2));
+        let _pass = later.begin(false);
+        let task = synced(&lanes, 7);
+        let cell = lanes.check(task, owner).unwrap();
+        assert_ne!(cell, 0);
+        let (opened, wait) = mpsc::channel();
+        lanes.attach(cell, Box::new(move || opened.send(()).unwrap()));
+        let other = lanes.clone();
+        std::thread::spawn(move || {
+            let pass = earlier.begin(false);
+            other.schedule([10], false);
+            drop(pass);
+        })
+        .join()
+        .unwrap();
+        assert!(wait.try_recv().is_err(), "the earlier app unit is pending");
+        lanes.finish(10, false);
+        wait.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(lanes.check(task, owner).unwrap(), 0, "unrelated is skipped");
+        let global = lanes.check(task, 0).unwrap();
+        assert_ne!(global, 0, "unknown homes still wait for unrelated work");
+        let (opened, wait) = mpsc::channel();
+        lanes.attach(global, Box::new(move || opened.send(()).unwrap()));
+        drop(unrelated);
+        wait.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn dropping_an_unstarted_reservation_releases_a_forced_pass() {
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        let earlier = lanes.reserve_pass(None);
+        let later = lanes.reserve_pass(None);
+        let (started, wait) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _pass = later.begin(true);
+            started.send(()).unwrap();
+        });
+        assert!(wait.try_recv().is_err());
+        drop(earlier);
+        wait.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
+        assert!(lanes.lock().pending.is_empty());
+    }
+
+    #[test]
+    fn a_reserved_earlier_pass_lends_its_position_to_later_work() {
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        let earlier = lanes.reserve_pass(None);
+        let later = lanes.reserve_pass(None);
+        let (ready, started) = mpsc::channel();
+        let (opened, wait) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let other = lanes.clone();
+        let worker = std::thread::spawn(move || {
+            let _pass = later.begin(false);
+            other.schedule([20], false);
+            let _root = other.enter_root();
+            let _unit = other.enter_unit(20);
+            let _helper = other.enter_cell(99);
+            let task = synced(&other, 7);
+            let cell = other.check(task, 0).unwrap();
+            assert_ne!(cell, 0);
+            other.attach(cell, Box::new(move || opened.send(()).unwrap()));
+            ready.send(()).unwrap();
+            released.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        let _pass = earlier.begin(false);
+        let at = lanes.namespace_tag_here().position;
+        let _waiting = lanes.wait_for(Target::Cell(99));
+        wait.recv_timeout(Duration::from_secs(5)).unwrap();
+        lanes.namespace_floors(|floors| {
+            assert_eq!(floors[&Target::Cell(99)].0, at);
+        });
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        lanes.finish(20, false);
+    }
+
+    #[test]
+    fn reserved_failures_wait_for_earlier_undiscovered_work_and_abandon_opens_all() {
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        let first = lanes.reserve_pass(None);
+        let failed = lanes.reserve_pass(None);
+        let later = lanes.reserve_pass(None);
+        {
+            let _pass = failed.begin(false);
+            lanes.schedule([10], false);
+        }
+        lanes.finish(10, true);
+        let _pass = later.begin(false);
+        let cell = lanes.check(synced(&lanes, 7), 0).unwrap();
+        assert_ne!(
+            cell, 0,
+            "the first pass can still discover an earlier failure"
+        );
+        let (opened, wait) = mpsc::channel();
+        lanes.attach(cell, Box::new(move || opened.send(()).unwrap()));
+        drop(first);
+        wait.recv_timeout(Duration::from_secs(5)).unwrap();
+        // A fresh compilation can instead stop with reservations outstanding.
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        let _reserved = lanes.reserve_pass(None);
+        let _later = lanes.begin_pass(false, None);
+        let cell = lanes.check(synced(&lanes, 7), 0).unwrap();
+        let (opened, wait) = mpsc::channel();
+        lanes.attach(cell, Box::new(move || opened.send(()).unwrap()));
+        lanes.abandon();
+        wait.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn rescue_selects_source_order_and_never_overtakes_an_unstarted_pass() {
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        let earlier = lanes.reserve_pass(None);
+        let later = lanes.reserve_pass(None);
+        {
+            let _pass = later.begin(false);
+            lanes.schedule([20], false);
+        }
+        let (rescued, wait) = mpsc::channel();
+        lanes.set_rescuer(Some(Arc::new(move |unit| {
+            rescued.send(unit).unwrap();
+            None
+        })));
+        lanes.lock().starved = Some((20, Instant::now() - STARVED));
+        lanes.rescue();
+        assert!(
+            wait.try_recv().is_err(),
+            "earlier has not discovered its work"
+        );
+        {
+            let _pass = earlier.begin(false);
+            lanes.schedule([10], false);
+        }
+        lanes.lock().starved = Some((10, Instant::now() - STARVED));
+        lanes.rescue();
+        assert_eq!(wait.try_recv().unwrap(), 10);
+        lanes.finish(10, false);
+        lanes.lock().starved = Some((20, Instant::now() - STARVED));
+        lanes.rescue();
+        assert_eq!(wait.try_recv().unwrap(), 20);
+        lanes.finish(20, false);
+        // Demanded units can finish before the dispatch schedules them.
+        lanes.finish(30, false);
+        lanes.schedule([30], false);
+        assert!(lanes.lock().pending.is_empty());
+    }
+
+    #[test]
     fn disabled_lanes_answer_every_check_as_open() {
         let lanes = Arc::new(Lanes::default());
         lanes.schedule([0], false);
         let _unit = lanes.enter_unit(0);
         assert_eq!(lanes.check(synced(&lanes, 1), 0).unwrap(), 0);
         assert_eq!(lanes.counts(), LaneCounts::default());
+    }
+
+    #[test]
+    fn declaration_order_survives_drains_reverse_registration_and_enabling_lanes() {
+        let lanes = Arc::new(Lanes::default());
+        let boot = lanes.register_unit(99, 0);
+        lanes.enable();
+        let earlier = lanes.reserve_pass(Some(0));
+        let later = lanes.reserve_pass(Some(0));
+        let late_order = {
+            let _pass = later.begin(false);
+            lanes.register_unit(0, 0)
+        };
+        let (a, b) = {
+            let _pass = earlier.begin(false);
+            let a = lanes.register_unit(1, 0);
+            lanes.schedule([1], false);
+            let b = lanes.register_unit(2, 0);
+            (a, b)
+        };
+        let outside = lanes.register_unit(3, 0);
+        assert!(boot < a && a < b && b < late_order && late_order < outside);
+    }
+
+    #[test]
+    fn overlapping_reservations_preserve_units_registered_in_the_serial_fast_path() {
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        let _earlier = lanes.begin_pass(false, Some(0));
+        assert!(!lanes.uses_reserved_unit_order());
+        let serial = lanes.register_unit(0, 0);
+        assert_eq!(serial, UnitOrder::serial(0));
+        let later = lanes.reserve_pass(Some(1));
+        assert!(lanes.uses_reserved_unit_order());
+        let late = {
+            let _later = later.begin(false);
+            lanes.register_unit(1, 1)
+        };
+        let early = lanes.register_unit(2, 0);
+        assert!(serial < early && early < late);
+        assert!(
+            lanes.uses_reserved_unit_order(),
+            "the transition is permanent"
+        );
     }
 }

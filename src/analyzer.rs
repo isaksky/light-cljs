@@ -4300,6 +4300,12 @@ impl NamespaceAnalysis {
 
     pub(crate) fn new(macro_host: &mut MacroHost) -> Self {
         macro_host.begin_compilation();
+        Self::in_compilation()
+    }
+
+    /// Empty IR state for a host already attached to this compilation. Starting
+    /// another namespace writer must not reset its engine or shared session.
+    fn in_compilation() -> Self {
         Self {
             arities: Default::default(),
             program: empty_program(),
@@ -4736,8 +4742,59 @@ impl NamespaceAnalysis {
         options: AnalysisOptions,
         warnings: &mut Vec<AnalysisWarning>,
     ) -> Result<DrainedNamespace, AnalysisError> {
-        let source_index = self.roots.len();
         let first_lazy = self.program.lazy_targets.len();
+        let mut top = NamespaceTop {
+            program: std::mem::replace(&mut self.program, empty_program()),
+            globals: std::mem::take(&mut self.globals),
+            members: std::mem::take(&mut self.members),
+            record_layouts: std::mem::take(&mut self.record_layouts),
+            source_index: self.roots.len(),
+            unit_slots: self.unit_slots,
+            main_isolate: self.main_isolate,
+            deferred_time: self.deferred_time.take(),
+        };
+        let outcome = top.analyze(input, resolution, result, macro_host, options, warnings);
+        // Even a failed pass owns declarations made before its failure. Put
+        // those back before reporting the error or draining earlier sources.
+        self.program = top.program;
+        self.globals = top.globals;
+        self.members = top.members;
+        self.record_layouts = top.record_layouts;
+        self.deferred_time = top.deferred_time;
+        let (root, drained) = outcome?;
+        self.last_lazy = self.lazy_namespaces_since(first_lazy);
+        self.roots.push(root);
+        self.requires.push(input.requires.to_vec());
+        Ok(drained)
+    }
+}
+
+/// Owned state for one namespace's top-level pass. The pass needs no borrow of
+/// the coordinator's pending merges, roots or capture indexes. The host and
+/// warning sink are explicit thread-local arguments; this state and the drained
+/// result contain no evaluator handles. Execution is currently inline.
+struct NamespaceTop {
+    program: Program,
+    globals: crate::name_index::NameIndex,
+    members: NamespaceMembers,
+    record_layouts: RecordLayouts,
+    source_index: usize,
+    unit_slots: crate::scheduler::Slots,
+    main_isolate: bool,
+    deferred_time: Option<std::time::Duration>,
+}
+
+impl NamespaceTop {
+    fn analyze(
+        &mut self,
+        input: &NamespaceInput<'_>,
+        resolution: NamespaceResolution,
+        result: bool,
+        macro_host: &mut MacroHost,
+        options: AnalysisOptions,
+        warnings: &mut Vec<AnalysisWarning>,
+    ) -> Result<(ExprId, DrainedNamespace), AnalysisError> {
+        let source_index = self.source_index;
         let warnings_start = warnings.len();
         // The names its analysis generates, deferred units included, are
         // the same whenever and wherever it runs ([`crate::generated_names`]).
@@ -4849,24 +4906,136 @@ impl NamespaceAnalysis {
         self.record_layouts = std::mem::take(&mut analyzer.record_layouts);
         let (dispatched, pooled) = analyzer.dispatched.take().unwrap_or_default();
         let root = outcome?;
-        // The namespaces its top-level pass's lazy references name, in site
-        // order; its bodies' are read at its drain point.
-        self.last_lazy = self.lazy_namespaces_since(first_lazy);
-        self.roots.push(root);
-        self.requires.push(input.requires.to_vec());
-        Ok(DrainedNamespace {
-            namespace: input.name.into(),
-            source_index,
-            top,
-            units,
-            dispatched,
-            pooled,
-            warnings: HeldWarnings::Reported(warnings_start),
-            checked_array_exprs,
-            defines_macros,
-        })
+        Ok((
+            root,
+            DrainedNamespace {
+                namespace: input.name.into(),
+                source_index,
+                top,
+                units,
+                dispatched,
+                pooled,
+                warnings: HeldWarnings::Reported(warnings_start),
+                checked_array_exprs,
+                defines_macros,
+            },
+        ))
     }
 }
+
+#[cfg(test)]
+mod namespace_top_tests {
+    use super::*;
+
+    #[test]
+    fn owned_top_level_state_and_result_cross_threads_without_engine_handles() {
+        fn send<T: Send>() {}
+        send::<NamespaceTop>();
+        send::<Result<(ExprId, DrainedNamespace), AnalysisError>>();
+        let empty = || NamespaceTop {
+            program: empty_program(),
+            globals: Default::default(),
+            members: Default::default(),
+            record_layouts: Default::default(),
+            source_index: 0,
+            unit_slots: crate::scheduler::Slots::ONE,
+            main_isolate: false,
+            deferred_time: None,
+        };
+        fn run(mut top: NamespaceTop) -> (NamespaceTop, DrainedNamespace, Vec<AnalysisWarning>) {
+            let source = "(ns moved) (+ 1 2)";
+            let syntax = crate::parse(source).unwrap();
+            let input = NamespaceInput {
+                name: "moved",
+                source,
+                syntax: &syntax,
+                aliases: &[],
+                requires: &[],
+            };
+            // Construct the thread-local host on the executing thread.
+            let mut host = MacroHost::new();
+            host.begin_compilation();
+            let mut warnings = Vec::new();
+            let (root, drained) = top
+                .analyze(
+                    &input,
+                    Default::default(),
+                    true,
+                    &mut host,
+                    Default::default(),
+                    &mut warnings,
+                )
+                .unwrap();
+            top.program.root = root;
+            (top, drained, warnings)
+        }
+        let input = empty();
+        let (moved, drained, warnings) = std::thread::spawn(move || run(input)).join().unwrap();
+        let (inline, inline_drained, inline_warnings) = run(empty());
+        assert_eq!(
+            crate::emit_js(&moved.program),
+            crate::emit_js(&inline.program)
+        );
+        assert_eq!(drained.top, inline_drained.top);
+        assert_eq!(drained.namespace, "moved");
+        assert_eq!(warnings, inline_warnings);
+    }
+
+    #[test]
+    fn failed_top_level_pass_returns_declarations_without_advancing_namespace_roots() {
+        let mut host = MacroHost::new();
+        let mut analysis = NamespaceAnalysis::new(&mut host);
+        let mut warnings = Vec::new();
+        for (name, source, fails) in [
+            ("first", "(ns first) (def kept 42) kept", false),
+            ("broken", "(ns broken) (def retained) missing", true),
+        ] {
+            let syntax = crate::parse(source).unwrap();
+            let input = NamespaceInput {
+                name,
+                source,
+                syntax: &syntax,
+                aliases: &[],
+                requires: &[],
+            };
+            let result = analysis.analyze(
+                &input,
+                Default::default(),
+                true,
+                &mut host,
+                Default::default(),
+                &mut warnings,
+            );
+            assert_eq!(result.is_err(), fails);
+            if let Err(error) = result {
+                assert_eq!(
+                    error.kind,
+                    AnalysisErrorKind::UnresolvedSymbol("missing".into())
+                );
+            }
+        }
+        assert_eq!(analysis.roots.len(), 1);
+        assert_eq!(analysis.requires.len(), 1);
+        assert_eq!(analysis.pending_merges(), 1);
+        for (namespace, name) in [("first", "kept"), ("broken", "retained")] {
+            let id = analysis
+                .globals
+                .get(&(namespace.into(), name.into()))
+                .unwrap();
+            assert!(analysis.program.globals[id.0].declared);
+        }
+        analysis.merge_all(&host, &mut warnings).unwrap();
+        assert_eq!(analysis.pending_merges(), 0);
+    }
+}
+
+#[cfg(all(test, feature = "bbp-macros"))]
+#[path = "analyzer_parallel_probe.rs"]
+mod parallel_probe;
+
+#[cfg(feature = "bbp-macros")]
+#[path = "namespace_publication.rs"]
+pub(crate) mod namespace_publication;
 
 /// A namespace's top-level pass and drain ([`NamespaceAnalysis::analyze`]):
 /// the value of its body, or the error that stopped it.
@@ -9533,7 +9702,9 @@ impl Analyzer<'_> {
                 }
                 _ => (),
             }
-            pending.extend(crate::program_fragment::children(&self.program, value));
+            crate::program_fragment::visit_children(&self.program.exprs[value.0].kind, |child| {
+                pending.push(child);
+            });
         }
         if products.is_empty() {
             return Ok(expr);
@@ -12114,6 +12285,11 @@ impl Analyzer<'_> {
     /// Append semantic data directly to a private syntax arena. Spellings are
     /// owned side-table data, never printed/reparsed or sliced from fake source.
     fn import_form(&mut self, form: &Form) -> Result<NodeId, AnalysisError> {
+        self.import_form_view(form.view())
+    }
+
+    fn import_form_view(&mut self, form: crate::compiler_data::FormView<'_>) -> Result<NodeId, AnalysisError> {
+        use crate::compiler_data::DatumKind;
         let mut spelling = None;
         let mut numeric = None;
         let unsupported = |what| AnalysisError {
@@ -12124,48 +12300,47 @@ impl Analyzer<'_> {
             FormKind::Collection { kind, .. } => {
                 let children = form
                     .children()
-                    .iter()
-                    .map(|child| self.import_form(child))
+                    .map(|child| self.import_form_view(child))
                     .collect::<Result<_, _>>()?;
                 NodeKind::Collection {
                     kind: *kind,
                     children,
                 }
             }
-            FormKind::Scalar => match form.data().inspect() {
-                DatumView::Nil => NodeKind::Nil,
-                DatumView::Boolean(value) => NodeKind::Boolean(value),
-                DatumView::Integer(value) => {
-                    numeric = Some(Some(value as f64));
+            FormKind::Scalar => match form.data().kind() {
+                DatumKind::Nil => NodeKind::Nil,
+                DatumKind::Boolean(value) => NodeKind::Boolean(*value),
+                DatumKind::Integer(value) => {
+                    numeric = Some(Some(*value as f64));
                     NodeKind::Number(NumberKind::Integer)
                 }
-                DatumView::Double(value) => {
-                    numeric = Some(Some(value));
+                DatumKind::Double(value) => {
+                    numeric = Some(Some(*value));
                     NodeKind::Number(NumberKind::Float)
                 }
-                DatumView::Keyword(_) => NodeKind::Keyword {
+                DatumKind::Keyword(_) => NodeKind::Keyword {
                     auto_resolve: false,
                 },
-                DatumView::Ratio {
+                DatumKind::Ratio {
                     numerator,
                     denominator,
                 } => {
-                    if denominator != 1 {
+                    if *denominator != 1 {
                         return Err(unsupported(
                             "non-integral ratios are not ClojureScript constants".into(),
                         ));
                     }
-                    numeric = Some(Some(numerator as f64));
+                    numeric = Some(Some(*numerator as f64));
                     NodeKind::Number(NumberKind::Integer)
                 }
-                DatumView::CompilerLiteral(_) => NodeKind::Regex,
-                DatumView::Character(value) => {
-                    NodeKind::String(crate::StringValue::Decoded(vec![value]))
+                DatumKind::CompilerLiteral { .. } => NodeKind::Regex,
+                DatumKind::Character(value) => {
+                    NodeKind::String(crate::StringValue::Decoded(vec![*value]))
                 }
-                DatumView::String(value) => {
+                DatumKind::String(value) => {
                     NodeKind::String(crate::StringValue::Decoded(value.to_vec()))
                 }
-                DatumView::Symbol(name) => {
+                DatumKind::Symbol(name) => {
                     // Invalid Unicode is legal quoted name data. Delay the
                     // executable-name check until analysis knows its context.
                     spelling = Some(
@@ -12179,9 +12354,9 @@ impl Analyzer<'_> {
                     );
                     NodeKind::Symbol
                 }
-                other => {
+                DatumKind::Collection { .. } => {
                     return Err(unsupported(format!(
-                        "runtime value generated by a macro: {other:?}"
+                        "runtime value generated by a macro: {:?}", form.data().inspect()
                     )));
                 }
             },
@@ -12197,7 +12372,7 @@ impl Analyzer<'_> {
         self.generated.resize(id.0, None);
         self.spellings.resize(id.0, None);
         self.numbers.resize(id.0, None);
-        self.generated.push(Some(form.clone()));
+        self.generated.push(Some(form.to_form()));
         self.spellings.push(spelling);
         self.numbers.push(numeric);
         Ok(id)

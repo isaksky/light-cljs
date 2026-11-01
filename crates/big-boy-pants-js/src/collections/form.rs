@@ -4627,6 +4627,56 @@ impl<'s> Scope<'s> {
         self.result(realized_keys(|| assoc(self.heap(), &c, k, v)))
     }
 
+    /// Associate entries in order, retaining the map's metadata, key
+    /// representatives and storage transitions exactly as repeated
+    /// [`Scope::form_assoc`]. Only the final map wrapper is allocated.
+    /// The original map remains unchanged if any update fails.
+    pub fn form_assoc_entries(
+        &self,
+        map: Local<'s>,
+        entries: &[(Local<'s>, Local<'s>)],
+    ) -> Result<Local<'s>, CollectionError> {
+        let original = self.local_value(map);
+        let Some(form) = form_object(self.heap(), &original) else {
+            return Err(wrong(self.heap(), "form map", &original));
+        };
+        let FormBody::Map(body) = form.body() else {
+            return Err(wrong(self.heap(), "form map", &original));
+        };
+        let mut body = body.clone();
+        let mut changed = false;
+        let mut has_host_key = false;
+        let mut parts = vec![original.clone()];
+        self.result(realized_keys(|| {
+            for &(key, value) in entries {
+                let key = self.local_value(key);
+                let value = self.local_value(value);
+                let host_key = host_key(self.heap(), &key);
+                parts.extend([key.clone(), value.clone()]);
+                let updated = if form.sorted {
+                    form.custom_order(SORTED_BY_LEAF)?;
+                    sorted_assoc(self.heap(), &body, key, value)?
+                } else {
+                    map_assoc(self.heap(), &body, key, value)?
+                };
+                if let Some(updated) = updated {
+                    body = updated;
+                    changed = true;
+                    has_host_key |= host_key;
+                }
+            }
+            if changed {
+                alloc(
+                    self.heap(),
+                    form.updated_keys(FormBody::Map(body), has_host_key),
+                    &parts,
+                )
+            } else {
+                Ok(original)
+            }
+        }))
+    }
+
     /// A new map without the entry for an equal key.
     pub fn form_dissoc(
         &self,

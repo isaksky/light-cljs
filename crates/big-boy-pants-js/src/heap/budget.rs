@@ -16,16 +16,30 @@ thread_local! {
 
 static NEXT_BUDGET: AtomicUsize = AtomicUsize::new(1);
 
+// Interpreter collection checks read the limit and pressure on every dispatch
+// pass. Keep allocation writes, and the Arc's ownership counters before this
+// allocation, off those read-mostly cache lines. 128 also separates the lines
+// on machines with 64-byte caches and adjacent-line prefetching.
+#[repr(align(128))]
+#[derive(Debug, Default)]
+struct AdmissionCounters {
+    used: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+#[repr(align(128))]
+#[derive(Debug, Default)]
+struct AllocationVolume(AtomicUsize);
+
 #[derive(Debug, Default)]
 pub(crate) struct ByteBudget {
     id: usize,
     limit: Option<AtomicUsize>,
-    used: AtomicUsize,
-    peak: AtomicUsize,
+    admission: AdmissionCounters,
     last_live: AtomicUsize,
     pressure: std::sync::atomic::AtomicBool,
     starved: std::sync::atomic::AtomicBool,
-    volume: AtomicUsize,
+    volume: AllocationVolume,
     collected_volume: AtomicUsize,
     next_collection: AtomicUsize,
 }
@@ -33,7 +47,7 @@ pub(crate) struct ByteBudget {
 impl ByteBudget {
     /// Highest admitted total since the budget was created.
     pub(crate) fn peak(&self) -> usize {
-        self.peak.load(Ordering::Relaxed)
+        self.admission.peak.load(Ordering::Relaxed)
     }
 
     pub(crate) fn last_live(&self) -> usize {
@@ -70,19 +84,18 @@ impl ByteBudget {
         Arc::new(Self {
             id: NEXT_BUDGET.fetch_add(1, Ordering::Relaxed),
             limit: limit.map(AtomicUsize::new),
-            used: AtomicUsize::new(0),
-            peak: AtomicUsize::new(0),
+            admission: AdmissionCounters::default(),
             last_live: AtomicUsize::new(0),
             pressure: std::sync::atomic::AtomicBool::new(false),
             starved: std::sync::atomic::AtomicBool::new(false),
-            volume: AtomicUsize::new(0),
+            volume: AllocationVolume::default(),
             collected_volume: AtomicUsize::new(0),
             next_collection: AtomicUsize::new(limit.map_or(usize::MAX, |bytes| (bytes / 4).max(1))),
         })
     }
 
     pub(crate) fn used(&self) -> usize {
-        self.used.load(Ordering::Relaxed)
+        self.admission.used.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -92,7 +105,7 @@ impl ByteBudget {
     }
 
     pub(crate) fn volume(&self) -> usize {
-        self.volume.load(Ordering::Relaxed)
+        self.volume.0.load(Ordering::Relaxed)
     }
 
     pub(crate) fn collection_due(&self) -> bool {
@@ -187,15 +200,17 @@ impl ByteBudget {
             return Some(ByteReservation::default());
         };
         let limit = limit.load(Ordering::Relaxed);
-        let mut used = self.used.load(Ordering::Relaxed);
+        let mut used = self.admission.used.load(Ordering::Relaxed);
         loop {
             let next = used.checked_add(bytes).filter(|&next| next <= limit)?;
-            match self
-                .used
-                .compare_exchange_weak(used, next, Ordering::Relaxed, Ordering::Relaxed)
-            {
+            match self.admission.used.compare_exchange_weak(
+                used,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => {
-                    self.peak.fetch_max(next, Ordering::Relaxed);
+                    self.admission.peak.fetch_max(next, Ordering::Relaxed);
                     break;
                 }
                 Err(actual) => used = actual,
@@ -218,6 +233,12 @@ pub(crate) struct ByteReservation {
 }
 
 impl ByteReservation {
+    pub(crate) fn duplicate(&self) -> Option<Self> {
+        match &self.budget {
+            Some(budget) => budget.reserve(self.bytes),
+            None => Some(Self::default()),
+        }
+    }
     pub(crate) fn belongs_to(&self, budget: &Arc<ByteBudget>) -> bool {
         self.budget
             .as_ref()
@@ -236,7 +257,7 @@ impl ByteReservation {
     pub(crate) fn refund(&mut self, bytes: usize) {
         if let Some(budget) = &self.budget {
             self.bytes = self.bytes.checked_sub(bytes).expect("owned byte refund");
-            budget.used.fetch_sub(bytes, Ordering::Relaxed);
+            budget.admission.used.fetch_sub(bytes, Ordering::Relaxed);
         }
     }
     pub(crate) fn shrink_to(&mut self, bytes: usize) {
@@ -250,7 +271,7 @@ impl ByteReservation {
     /// ([`ByteBudget::reserve_credit`]) when its storage is made.
     pub(crate) fn allocated(&self) {
         if let Some(budget) = &self.budget {
-            budget.volume.fetch_add(self.bytes, Ordering::Relaxed);
+            budget.volume.0.fetch_add(self.bytes, Ordering::Relaxed);
         }
     }
     pub(crate) fn is_charged(&self) -> bool {
@@ -328,7 +349,10 @@ impl GrowthCharge {
 impl Drop for ByteReservation {
     fn drop(&mut self) {
         if let Some(budget) = &self.budget {
-            let before = budget.used.fetch_sub(self.bytes, Ordering::Relaxed);
+            let before = budget
+                .admission
+                .used
+                .fetch_sub(self.bytes, Ordering::Relaxed);
             debug_assert!(before >= self.bytes, "byte reservation refunded twice");
         }
     }
@@ -337,6 +361,28 @@ impl Drop for ByteReservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dispatch_poll_fields_do_not_share_allocation_counter_lines() {
+        fn line<T>(field: &T) -> usize {
+            field as *const T as usize / 128
+        }
+        let budget = ByteBudget::new(Some(1024));
+        assert_eq!(Arc::as_ptr(&budget) as usize % 128, 0);
+        let admission = line(&budget.admission.used);
+        let volume = line(&budget.volume.0);
+        assert_eq!(admission, line(&budget.admission.peak));
+        assert_ne!(admission, volume);
+        for read_line in [
+            line(&budget.limit),
+            line(&budget.pressure),
+            line(&budget.collected_volume),
+            line(&budget.next_collection),
+        ] {
+            assert_ne!(read_line, admission);
+            assert_ne!(read_line, volume);
+        }
+    }
 
     #[test]
     fn failed_reservation_probes_preserve_collection_flags() {

@@ -41,7 +41,7 @@
 
 use crate::analyzer::{ExprId, ExprKind, GlobalId, LazyTargetId, Program};
 use crate::application::PreparedApplication;
-use crate::program_fragment::children;
+use crate::program_fragment::visit_children;
 use crate::source_map::json_string;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -629,7 +629,7 @@ impl ItemGraph {
                         reads.push(dispatcher);
                     }
                 }
-                pending.extend(children(program, id));
+                visit_children(&program.exprs[id.0].kind, |child| pending.push(child));
             }
             reads.sort_unstable_by_key(|global| global.0);
             reads.dedup();

@@ -85,6 +85,69 @@ fn reclamation_queue_reports_only_watched_deaths_with_exact_identity() {
 }
 
 #[test]
+fn reclamation_batches_deduplicate_without_retaining_objects() {
+    let rt = Runtime::new();
+    let queue = ReclamationQueue::default();
+    let other = ReclamationQueue::default();
+    let identities = rt.scope(|s| {
+        let objects = [s.new_object(), s.new_object()];
+        let ids = objects.map(|object| s.object_identity(object).unwrap());
+        s.watch_reclamation(objects[0], &queue, 7);
+        s.watch_reclamation_identities(
+            &queue.clone(),
+            vec![(ids[0].clone(), 7), (ids[0].clone(), 9), (ids[1].clone(), 7)],
+        )
+        .unwrap();
+        s.watch_reclamation_identities(&queue, vec![(ids[0].clone(), 9)])
+            .unwrap();
+        s.watch_reclamation_identities(&other, vec![(ids[0].clone(), 11)])
+            .unwrap();
+        ids
+    });
+    rt.collect().unwrap();
+    let events = queue.take();
+    assert_eq!(events.len(), 3);
+    for expected in [
+        (identities[0].clone(), 7),
+        (identities[0].clone(), 9),
+        (identities[1].clone(), 7),
+    ] {
+        assert!(events.contains(&expected));
+    }
+    assert_eq!(other.take(), vec![(identities[0].clone(), 11)]);
+    rt.collect().unwrap();
+    assert!(queue.take().is_empty());
+}
+
+#[test]
+fn reclamation_batches_reject_foreign_and_stale_identities_before_registering() {
+    let rt = Runtime::new();
+    let foreign_rt = Runtime::new();
+    let foreign = foreign_rt.scope(|s| s.object_identity(s.new_object()).unwrap());
+    let stale = rt.scope(|s| s.object_identity(s.new_object()).unwrap());
+    rt.collect().unwrap();
+    let queue = ReclamationQueue::default();
+    rt.scope(|s| {
+        let live = s.object_identity(s.new_object()).unwrap();
+        for (bad, expected) in [
+            (foreign, HandleError::ForeignRuntime),
+            (stale, HandleError::Reclaimed),
+        ] {
+            assert_eq!(
+                s.watch_reclamation_identities(&queue, vec![(live.clone(), 1), (bad, 2)]),
+                Err(expected),
+            );
+        }
+        s.watch_reclamation_identities(&queue, Vec::new()).unwrap();
+    });
+    rt.collect().unwrap();
+    assert!(
+        queue.take().is_empty(),
+        "rejected batches must register nothing"
+    );
+}
+
+#[test]
 fn array_buffer_reclaimed_when_unreachable() {
     let rt = Runtime::new();
     let code =

@@ -1093,6 +1093,122 @@ fn positional_forms_publish_and_trace_every_duplicate_and_metadata() {
 }
 
 #[test]
+fn batched_map_associations_preserve_sequential_updates_and_snapshots() {
+    let rt = Runtime::new();
+    let sorted = call(
+        &rt,
+        "function make(){return __rt.formSortedMap(__rt.formVector(1, 10));}",
+        &[],
+    );
+    let custom = call(
+        &rt,
+        "function make(){return __rt.formSortedMapBy(()=>0);}",
+        &[],
+    );
+    let kept = rt.scope(|s| {
+        let number = |n| s.primitive(Primitive::Number(n as f64));
+        let key = s.new_occurrence(number(1), at(1, 1)).unwrap();
+        let equal_key = s.new_occurrence(number(1), at(2, 1)).unwrap();
+        let first = s.new_form_vector(&[number(10)]).unwrap();
+        let last = s.new_form_vector(&[number(20)]).unwrap();
+        let meta = s.new_literal_map(&[(key, first)]).unwrap();
+        let mut retained = Vec::new();
+        // A literal may retain equal lowered keys. Updating one keeps its
+        // representative; promotion merges them exactly as serial assoc.
+        for map in [
+            s.new_literal_map(&[(key, first), (equal_key, last)])
+                .unwrap(),
+            s.new_form_map(&[(key, first)]).unwrap(),
+            s.local(&sorted).unwrap(),
+        ] {
+            let map = s.form_with_meta(map, Some(meta)).unwrap();
+            assert!(s.same_object(map, s.form_assoc_entries(map, &[]).unwrap()));
+            let original = s.form_entries(map).unwrap();
+            let mut updates = vec![(equal_key, first), (equal_key, last)];
+            updates.extend((2..16).map(|n| (number(n), number(n * 10))));
+            updates.push((equal_key, first));
+            let sequential = updates.iter().fold(map, |map, &(key, value)| {
+                s.form_assoc(map, key, value).unwrap()
+            });
+            let batch = s.form_assoc_entries(map, &updates).unwrap();
+            assert!(s.form_equals(batch, sequential));
+            let unchanged = s.form_entries(map).unwrap();
+            assert_eq!(unchanged.len(), original.len());
+            for ((ak, av), (ek, ev)) in unchanged.into_iter().zip(original) {
+                assert_eq!(s.view(ak), s.view(ek));
+                assert_eq!(s.view(av), s.view(ev));
+                assert_eq!(s.object_identity(ak), s.object_identity(ek));
+                assert_eq!(s.object_identity(av), s.object_identity(ev));
+            }
+            assert!(s.same_object(s.form_meta(batch).unwrap(), meta));
+            let actual = s.form_entries(batch).unwrap();
+            let expected = s.form_entries(sequential).unwrap();
+            assert_eq!(actual.len(), expected.len());
+            for ((ak, av), (ek, ev)) in actual.into_iter().zip(expected) {
+                assert_eq!(s.view(ak), s.view(ek));
+                assert_eq!(s.view(av), s.view(ev));
+                assert_eq!(s.object_identity(ak), s.object_identity(ek));
+                assert_eq!(s.object_identity(av), s.object_identity(ev));
+            }
+            // A no-op batch keeps the map itself, including metadata and
+            // provenance-bearing key objects.
+            assert!(s.same_object(
+                batch,
+                s.form_assoc_entries(batch, &[(equal_key, first)]).unwrap()
+            ));
+            retained.push(s.persist(batch));
+        }
+        let custom = s.local(&custom).unwrap();
+        assert_eq!(
+            s.form_assoc_entries(custom, &[(key, first)]).err(),
+            s.form_assoc(custom, key, first).err()
+        );
+        retained
+    });
+    for map in &kept {
+        rt.publish(map).unwrap();
+    }
+    rt.collect().unwrap();
+    rt.scope(|s| {
+        for map in &kept {
+            let map = s.local(map).unwrap();
+            assert_eq!(s.form_entries(map).unwrap().len(), 15);
+            assert!(s.form_meta(map).is_some());
+        }
+    });
+}
+
+#[test]
+fn batched_map_associations_obey_the_heap_limit_without_changing_the_input() {
+    use big_boy_pants_js::{HeapPolicy, VmLimits};
+    let policy = |bytes| HeapPolicy {
+        hard_limit_bytes: Some(bytes),
+        ..Default::default()
+    };
+    let realm = Runtime::try_with_heap_policy(VmLimits::default(), policy(usize::MAX / 2))
+        .unwrap()
+        .heap_stats()
+        .managed_bytes;
+    let limit = realm + 256 * 1024;
+    let rt = Runtime::try_with_heap_policy(VmLimits::default(), policy(limit)).unwrap();
+    rt.scope(|s| {
+        let map = s.new_literal_map(&[]).unwrap();
+        let entries = (0..65_536)
+            .map(|n| {
+                let v = s.primitive(Primitive::Number(n as f64));
+                (v, v)
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            s.form_assoc_entries(map, &entries),
+            Err(CollectionError::HeapLimit | CollectionError::OutOfMemory)
+        ));
+        assert!(s.form_entries(map).unwrap().is_empty());
+    });
+    assert!(rt.heap_stats().peak_managed_bytes <= limit);
+}
+
+#[test]
 fn positional_storage_obeys_the_aggregate_byte_limit() {
     use big_boy_pants_js::{HeapPolicy, VmLimits};
     let policy = |bytes| HeapPolicy {

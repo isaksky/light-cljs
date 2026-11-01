@@ -421,7 +421,7 @@ fn write_units<'n>(
 /// object's keys (`captures4.l7`) are such names too. A constant member key
 /// that is one of them stays bracketed (`x["f"]`).
 pub(crate) fn compiler_name(word: &str) -> bool {
-    const NUMBERED: [&str; 16] = [
+    const NUMBERED: [&str; 17] = [
         "l",
         "g",
         "k",
@@ -438,6 +438,7 @@ pub(crate) fn compiler_name(word: &str) -> bool {
         "installed",
         "operand",
         "receiver",
+        "__lightUnitReify",
     ];
     let numbered = |word: &str| {
         NUMBERED.iter().any(|head| {

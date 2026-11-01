@@ -23,6 +23,19 @@ pub(crate) struct Proxy {
     handler: ObjectId,
 }
 
+impl Proxy {
+    pub(crate) fn template_copy(&self, owner: TaskId) -> Result<Self, &'static str> {
+        let mut has_private = false;
+        self.private.trace(&mut |_| has_private = true);
+        if has_private { return Err("template: Proxy has private elements"); }
+        Ok(Self { private: Default::default(), owner, target: self.target, handler: self.handler })
+    }
+    pub(crate) fn template_remap(&mut self, ids: &crate::template::IdMap) {
+        self.target = crate::template::remap_id(self.target, ids);
+        self.handler = crate::template::remap_id(self.handler, ids);
+    }
+}
+
 /// Public Proxy operations snapshot only immutable routing metadata. Private
 /// slots stay on the receiver and are never copied into trap continuations.
 #[derive(Clone, Debug)]

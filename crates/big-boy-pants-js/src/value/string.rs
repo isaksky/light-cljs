@@ -1357,6 +1357,14 @@ impl Hash for JsString {
     }
 }
 
+// Equality and hashing both use these exact UTF-16 code units, including
+// lone surrogates. Borrowed table lookups need not allocate another string.
+impl std::borrow::Borrow<[u16]> for JsString {
+    fn borrow(&self) -> &[u16] {
+        self.code_units()
+    }
+}
+
 /// Lexicographic order over code units: JavaScript's relational order for
 /// two strings. See the module docs.
 impl Ord for JsString {
@@ -2957,6 +2965,26 @@ mod tests {
         assert_eq!(a.content_hash(), b.content_hash());
         assert_ne!(a.content_hash(), JsString::from("ba").content_hash());
         assert_eq!(a, "ab");
+    }
+
+    #[test]
+    fn borrowed_utf16_lookup_matches_flat_and_rope_hashes() {
+        let left = vec![0xd800; 128];
+        let right = vec![0xdc00; 128];
+        let units = [left.as_slice(), right.as_slice()].concat();
+        let rope = JsString::from_code_units(left)
+            .unwrap()
+            .concat(&JsString::from_code_units(right).unwrap())
+            .unwrap();
+        let flat = JsString::from_code_units(units.clone()).unwrap();
+        for text in [rope, flat] {
+            let mut set = std::collections::HashSet::from([text]);
+            assert!(set.contains(units.as_slice()));
+            assert!(!set.contains(&units[..units.len() - 1]));
+            assert!(!set.insert(JsString::from_code_units(units.clone()).unwrap()));
+            assert!(set.remove(units.as_slice()));
+            assert!(set.is_empty());
+        }
     }
 
     #[test]

@@ -2837,9 +2837,9 @@ fn the_features_runtime_splits_by_signature() {
         .iter()
         .map(|unit| unit.name)
         .collect::<Vec<_>>();
-    // Each unit once; the single file's slice also holds the variadic arity
-    // of `str`, since its output-level cell (`clojure.string` hands `str`
-    // to raw text) holds the value, which no chunk reads but to call it.
+    // Each unit once. Unreachable clojure.string bodies no longer make str
+    // escape through their raw-text holes, so the single-file slice also
+    // omits its unused variadic entry.
     let missing = single
         .iter()
         .filter(|unit| !placed.contains(unit))
@@ -2850,7 +2850,7 @@ fn the_features_runtime_splits_by_signature() {
     assert_eq!(once, placed, "a unit in several chunks");
     assert_eq!(placed.len(), single.len() - missing.len());
     assert!(placed.iter().all(|unit| single.contains(unit)));
-    assert_eq!(missing, ["str.variadic"]);
+    assert!(missing.is_empty(), "{missing:?}");
     for name in [
         "treeMapConstructor",
         "treeSetConstructor",
@@ -3096,7 +3096,7 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     let helper = startup
         .find("=(m=>")
         .map(|start| &startup[start..])
-        .and_then(|rest| rest.find("([]);").map(|end| &rest[..end]))
+        .and_then(|rest| rest.find("([])").map(|end| &rest[..end]))
         .expect("startup's lazy$");
     assert!(helper.len() <= 250, "{helper}");
 }

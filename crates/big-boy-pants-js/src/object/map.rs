@@ -25,6 +25,20 @@ pub(crate) struct MapObject {
 }
 
 impl MapObject {
+    pub(crate) fn template_copy(&self, owner: TaskId) -> Result<Self, &'static str> {
+        let reservation = self.reservation.duplicate().ok_or("template: heap byte limit exceeded")?;
+        Ok(Self { object: self.object.template_copy(owner)?, entries: self.entries.clone(),
+            index: self.index.clone(), next_position: self.next_position, reservation })
+    }
+    pub(crate) fn template_remap(&mut self, ids: &crate::template::IdMap) {
+        self.object.template_remap(ids);
+        self.index.clear();
+        for (&position, (key, value)) in &mut self.entries {
+            crate::template::remap_value(key, ids);
+            crate::template::remap_value(value, ids);
+            self.index.entry(key_hash(key)).or_default().push(position);
+        }
+    }
     pub(crate) fn new(heap: &crate::heap::Heap, owner: TaskId, prototype: ObjectId) -> Self {
         Self {
             object: OrdinaryObject::with_prototype(heap, owner, prototype),

@@ -1470,6 +1470,12 @@ pub trait MacroEvaluator {
     fn native_bridge_stats(&self) -> Option<crate::compile_stats::NativeBridgeCall> {
         None
     }
+    /// Whether calls use the native form bridge. Engines with an inexpensive
+    /// capability flag can override this without collecting heap statistics.
+    /// The default preserves detection for embedders that supply native stats.
+    fn has_native_bridge(&self) -> bool {
+        self.native_bridge_stats().is_some()
+    }
     fn control(&self) -> ExecutionControl;
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError>;
     /// A source macro already materialized in the current native task, so

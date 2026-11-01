@@ -26,6 +26,15 @@ pub(crate) fn weak_key(value: &Value) -> Option<TraceEdge> {
 }
 
 impl WeakMapObject {
+    pub(crate) fn template_copy(&self, owner: TaskId) -> Result<Self, &'static str> {
+        // Populated ephemerons require a weak-reachability copying policy.
+        if self.len() != 0 { return Err("template: nonempty weak collection"); }
+        Ok(Self { object: self.object.template_copy(owner)?, entries: EphemeronTable::default(),
+            reservation: Default::default() })
+    }
+    pub(crate) fn template_remap(&mut self, ids: &crate::template::IdMap) {
+        self.object.template_remap(ids);
+    }
     pub(crate) fn new(heap: &crate::heap::Heap, owner: TaskId, prototype: ObjectId) -> Self {
         Self {
             object: OrdinaryObject::with_prototype(heap, owner, prototype),

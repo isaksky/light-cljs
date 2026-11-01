@@ -135,6 +135,20 @@ pub(crate) struct UnitCharges {
     trace: Option<Box<crate::compile_trace::WorkerRows>>,
 }
 impl UnitCharges {
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn namespace(recorded: crate::macro_host::RecordedUnit, host: &MacroHost, name: &str) -> Self {
+        Self {
+            events: recorded.events,
+            macro_depth: host.engine.work.macro_depth.get(),
+            analysis_depth: host.engine.work.analysis_depth.get(),
+            limits: (host.limits.expansions, host.limits.generated_nodes),
+            depth_limit: host.limits.expansion_depth.min(64),
+            location: name.to_owned(),
+            observations: recorded.observations,
+            gensyms: Vec::new(),
+            trace: None,
+        }
+    }
     /// Add the charges to `binding`'s counters and marks, and spend the
     /// unit's polls from `control`, the execution control its analysis on
     /// the charging thread would have polled; the unit was analyzed at
@@ -145,14 +159,16 @@ impl UnitCharges {
     fn charge(
         &self,
         binding: &EngineBinding,
-        depth: usize,
+        depth: Option<usize>,
         mut control: Option<crate::evaluator::ExecutionControl>,
         start: &dyn Fn() -> Result<Option<crate::evaluator::ExecutionControl>, String>,
         session: &CompilationSession,
     ) -> Result<(), (String, crate::AnalysisError)> {
         use crate::macro_host::UnitEvent;
         use crate::macro_host::WorkMarks;
-        WorkMarks::note(&binding.work.unit_depth, depth + 1);
+        if let Some(depth) = depth {
+            WorkMarks::note(&binding.work.unit_depth, depth + 1);
+        }
         WorkMarks::note(&binding.work.macro_depth, self.macro_depth);
         WorkMarks::note(&binding.work.analysis_depth, self.analysis_depth);
         let (expansions, nodes) = (&binding.expansions, &binding.generated_nodes);
@@ -264,6 +280,21 @@ pub(crate) enum Registration {
     Root(String, Option<usize>, Option<usize>, bool, String),
     Bundle(Arc<BundleRecord>),
 }
+#[derive(Clone)]
+enum RegistrationName {
+    Var(String),
+    Declaration,
+    Test(String),
+}
+impl RegistrationName {
+    fn resolve(self, unit: usize) -> String {
+        match self {
+            Self::Var(name) => name,
+            Self::Declaration => format!("declaration#{unit}"),
+            Self::Test(owner) => format!("{owner} :test#{unit}"),
+        }
+    }
+}
 /// A declaration bundle's registration, kept as data: its JavaScript names
 /// the bundle's unit ID, which an artifact records as a relocatable reference.
 pub(crate) struct BundleRecord {
@@ -359,17 +390,14 @@ impl BundleRecord {
 #[derive(Default)]
 struct Catalog {
     units: Vec<Unit>,
-    active: HashMap<String, bool>,
-    // Only active defmulti products have stable named demand keys.
-    multifn_targets: HashMap<String, String>,
+    /// Declaration keys are implicit IDs until pass reservations overlap.
+    /// Keeping them out of Unit preserves the ordinary compiler's layout.
+    unit_orders: Option<Vec<crate::effect_lanes::UnitOrder>>,
+    /// Needed only when reserved passes register out of source order. The
+    /// serial compiler keeps its allocation-free, contiguous ID traversal.
+    unit_order: Option<std::collections::BTreeMap<crate::effect_lanes::UnitOrder, usize>>,
     bindings: HashMap<String, (VarId, usize)>,
-    /// Every registration in order; each engine installs them in this order
-    /// and records how far it got in its own view.
-    registrations: Vec<Registration>,
-    bundle_count: usize,
-    /// How many of those bundles could be demanded or called by converting
-    /// or looking up environment data ([`reaches_environment_data`]).
-    environment_bundles: usize,
+    journal: RegistrationJournal,
     /// By the slot each view joined with ([`SharedCatalog::join`]).
     threads: Vec<AnalysisThread>,
     /// How many threads wait for a unit another thread analyzes.
@@ -384,6 +412,260 @@ struct Catalog {
     /// With `--stats`, the analyzed unit IR waiting to merge
     /// ([`CompilationSession::measure_queued_ir`]).
     queued_ir: QueuedIr,
+}
+
+#[cfg(not(feature = "bbp-macros"))]
+type JournalMap<T> = HashMap<String, T>;
+
+/// A namespace snapshot shares its immutable index, while each writer keeps
+/// replacements and deletions in a private overlay. Ordinary compilation keeps
+/// the original owned-map path until somebody actually takes a snapshot.
+#[cfg(feature = "bbp-macros")]
+enum JournalMap<T> {
+    Owned(HashMap<String, T>),
+    Shared {
+        prefix: Arc<HashMap<String, T>>,
+        changes: HashMap<String, Option<T>>,
+    },
+}
+
+#[cfg(feature = "bbp-macros")]
+impl<T> Default for JournalMap<T> {
+    fn default() -> Self {
+        Self::Owned(HashMap::new())
+    }
+}
+
+#[cfg(feature = "bbp-macros")]
+impl<T: Clone> Clone for JournalMap<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Owned(map) => Self::Owned(map.clone()),
+            Self::Shared { prefix, changes } => Self::Shared {
+                prefix: prefix.clone(),
+                // A frozen coordinator may retain scratch capacity. Empty
+                // snapshots need neither that allocation nor any entries.
+                changes: if changes.is_empty() { HashMap::new() } else { changes.clone() },
+            },
+        }
+    }
+}
+
+#[cfg(feature = "bbp-macros")]
+impl<T> JournalMap<T> {
+    fn get(&self, key: &str) -> Option<&T> {
+        match self {
+            Self::Owned(map) => map.get(key),
+            Self::Shared { prefix, changes } => match changes.get(key) {
+                Some(value) => value.as_ref(),
+                None => prefix.get(key),
+            },
+        }
+    }
+    fn contains_key(&self, key: &str) -> bool {
+        self.get(key).is_some()
+    }
+    fn insert(&mut self, key: String, value: T) {
+        match self {
+            Self::Owned(map) => { map.insert(key, value); }
+            Self::Shared { changes, .. } => { changes.insert(key, Some(value)); }
+        }
+    }
+    fn remove(&mut self, key: &str) {
+        match self {
+            Self::Owned(map) => { map.remove(key); }
+            Self::Shared { prefix, changes } => {
+                if prefix.contains_key(key) {
+                    changes.insert(key.to_owned(), None);
+                } else {
+                    changes.remove(key);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "bbp-macros")]
+impl<T: Clone> JournalMap<T> {
+    fn freeze(&mut self) {
+        match self {
+            Self::Owned(map) => {
+                *self = Self::Shared {
+                    prefix: Arc::new(std::mem::take(map)),
+                    changes: HashMap::new(),
+                };
+            }
+            Self::Shared { prefix, changes } => {
+                if !changes.is_empty() {
+                    // Never mutate an index visible to an older snapshot.
+                    // Once readers drop, the coordinator can reuse its map.
+                    let map = Arc::make_mut(prefix);
+                    for (key, value) in changes.drain() {
+                        match value {
+                            Some(value) => { map.insert(key, value); }
+                            None => { map.remove(&key); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fn value_mut_or_default(&mut self, key: &str) -> &mut T
+    where
+        T: Default,
+    {
+        match self {
+            Self::Owned(map) => map.entry(key.to_owned()).or_default(),
+            Self::Shared { prefix, changes } => changes.entry(key.to_owned())
+                .or_insert_with(|| Some(prefix.get(key).cloned().unwrap_or_default()))
+                .get_or_insert_with(T::default),
+        }
+    }
+}
+
+/// An append-only visibility history, separate from shared unit allocation.
+/// Its derived indexes must describe exactly the registrations an engine sees.
+#[derive(Clone, Default)]
+pub(crate) struct RegistrationJournal {
+    // Frozen namespace prefixes share registration payloads. Each writer
+    // appends to its own tail without copying the history it inherited.
+    registrations: crate::arena::Arena<Registration>,
+    active: JournalMap<bool>,
+    // Only active defmulti products have stable named demand keys.
+    multifn_targets: JournalMap<String>,
+    // Built once when a namespace prefix is first requested, then advanced
+    // from the same registration history that a fresh writer used to scan.
+    #[cfg(feature = "bbp-macros")]
+    root_generations: Option<JournalMap<usize>>,
+    bundle_count: usize,
+    environment_bundles: usize,
+}
+impl RegistrationJournal {
+    #[cfg(feature = "bbp-macros")]
+    fn snapshot(&mut self) -> Self {
+        self.registrations.freeze();
+        self.active.freeze();
+        self.multifn_targets.freeze();
+        if self.root_generations.is_none() {
+            self.root_generations = Some(self.count_generations());
+        }
+        self.root_generations.as_mut().unwrap().freeze();
+        self.clone()
+    }
+    #[cfg(feature = "bbp-macros")]
+    fn count_generations(&self) -> JournalMap<usize> {
+        let mut counts = HashMap::new();
+        for registration in &self.registrations {
+            if let Registration::Root(name, Some(_), ..) = registration {
+                *counts.entry(name.clone()).or_insert(0) += 1;
+            }
+        }
+        JournalMap::Owned(counts)
+    }
+    #[cfg(all(test, feature = "bbp-macros"))]
+    pub(crate) fn append_namespace(&mut self, registrations: Vec<Registration>) {
+        for registration in registrations {
+            self.push(registration);
+        }
+    }
+    fn push(&mut self, registration: Registration) -> usize {
+        match &registration {
+            Registration::Root(name, unit, _, once, _) => {
+                #[cfg(feature = "bbp-macros")]
+                if unit.is_some() && let Some(counts) = &mut self.root_generations {
+                    *counts.value_mut_or_default(name) += 1;
+                }
+                if !(unit.is_none() && self.active.contains_key(name)
+                    || *once && self.active.get(name) == Some(&true))
+                {
+                    self.multifn_targets.remove(name);
+                    self.active.insert(name.clone(), unit.is_some());
+                }
+            }
+            Registration::Bundle(bundle) => {
+                self.bundle_count += 1;
+                self.environment_bundles +=
+                    usize::from(reaches_environment_data(&bundle.extensions));
+                for name in &bundle.products {
+                    if bundle.once && self.active.get(name) == Some(&true) {
+                        continue;
+                    }
+                    if bundle.once {
+                        self.multifn_targets.insert(name.clone(), name.clone());
+                    } else {
+                        self.multifn_targets.remove(name);
+                    }
+                    self.active.insert(name.clone(), true);
+                }
+            }
+        }
+        self.registrations.push(registration);
+        self.registrations.len()
+    }
+}
+impl Catalog {
+    fn order(&self, id: usize) -> crate::effect_lanes::UnitOrder {
+        self.unit_orders.as_ref().map_or_else(
+            || crate::effect_lanes::UnitOrder::serial(id),
+            |orders| orders[id],
+        )
+    }
+    fn push_unit(&mut self, unit: Unit, order: crate::effect_lanes::UnitOrder) {
+        let id = self.units.len();
+        if self.unit_orders.is_none() && order != crate::effect_lanes::UnitOrder::serial(id) {
+            self.unit_orders = Some(
+                (0..id)
+                    .map(crate::effect_lanes::UnitOrder::serial)
+                    .collect(),
+            );
+        }
+        if self.unit_order.is_none() && id > 0 && self.order(id - 1) > order {
+            self.unit_order = Some((0..id).map(|id| (self.order(id), id)).collect());
+        }
+        if let Some(orders) = &mut self.unit_orders {
+            orders.push(order);
+        }
+        if let Some(index) = &mut self.unit_order {
+            assert!(index.insert(order, id).is_none(), "duplicate unit order");
+        }
+        self.units.push(unit);
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    fn next_queued(
+        &self,
+        from: std::ops::Bound<usize>,
+        source: Option<u32>,
+        shared: &SharedCatalog,
+    ) -> Option<usize> {
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        let ready = |id: usize| {
+            let unit = &self.units[id];
+            unit.pooled
+                && matches!(unit.state, AnalysisState::Unstarted)
+                && shared.admits_in(self, id)
+        };
+        match &self.unit_order {
+            Some(order) => {
+                let from = from.map(|id| self.order(id));
+                order
+                    .range((from, Unbounded))
+                    .map(|(_, &id)| id)
+                    .take_while(|&id| source.is_none_or(|source| self.units[id].source == source))
+                    .find(|&id| ready(id))
+            }
+            None => {
+                let first = match from {
+                    Included(id) => id,
+                    Excluded(id) => id + 1,
+                    Unbounded => 0,
+                };
+                (first..self.units.len())
+                    .take_while(|&id| source.is_none_or(|source| self.units[id].source == source))
+                    .find(|&id| ready(id))
+            }
+        }
+    }
 }
 /// The analyzed unit IR of a compilation measured with `--stats` that
 /// waits to merge into its program: from when a unit's analysis settles,
@@ -514,9 +796,9 @@ pub(crate) struct SharedCatalog {
     #[cfg(feature = "bbp-macros")]
     native_runtime:
         std::sync::OnceLock<Result<crate::bbp_evaluator::BbpRuntime, crate::evaluator::EvalError>>,
-    /// One more than the lowest unit ID of a pool job whose analysis
-    /// failed, or 0: the drain stops at that unit, so no job after it in
-    /// unit order is needed and none starts ([`Self::admits`]).
+    /// One more than the ID of the earliest failed pool job in declaration
+    /// order, or 0. The ID locates the cutoff; IDs themselves are not ordered.
+    /// Updates hold the catalog lock; the atomic keeps the no-failure fast path.
     failed_job: std::sync::atomic::AtomicUsize,
     /// What the compilation records of each analysis beyond its charges,
     /// which a unit recorded off the coordinator hands it
@@ -1181,7 +1463,12 @@ impl SharedCatalog {
     /// (docs/compiler-concurrency.md, "As built (light-cljs-341)").
     fn admits(&self, id: usize) -> bool {
         let failed = self.failed_job.load(std::sync::atomic::Ordering::Relaxed);
-        failed == 0 || id < failed
+        failed == 0 || self.admits_in(&self.lock(), id)
+    }
+    /// The same check when the caller already holds the catalog lock.
+    fn admits_in(&self, catalog: &Catalog, id: usize) -> bool {
+        let failed = self.failed_job.load(std::sync::atomic::Ordering::Relaxed);
+        failed == 0 || catalog.order(id) <= catalog.order(failed - 1)
     }
     /// Wake the threads waiting for a pool job that will not start
     /// ([`Self::admits`]), which [`Self::claim`] then fails.
@@ -1217,13 +1504,14 @@ impl SharedCatalog {
             .collect()
     }
     /// Note that pool job `id` ended with its unit failed, if it did.
-    #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
     fn note_job(&self, id: usize) {
-        if matches!(self.lock().units[id].state, AnalysisState::Failed(..)) {
+        let catalog = self.lock();
+        if matches!(catalog.units[id].state, AnalysisState::Failed(..)) {
             use std::sync::atomic::Ordering::Relaxed;
-            let _ = self.failed_job.fetch_update(Relaxed, Relaxed, |failed| {
-                (failed == 0 || id + 1 < failed).then_some(id + 1)
-            });
+            let failed = self.failed_job.load(Relaxed);
+            if failed == 0 || catalog.order(id) < catalog.order(failed - 1) {
+                self.failed_job.store(id + 1, Relaxed);
+            }
         }
     }
     /// Whether the catalog measures the IR waiting to merge (`--stats`).
@@ -1314,7 +1602,7 @@ impl SharedCatalog {
             // starts ([`Self::admits`]): its namespace's analysis stops,
             // and the earlier failure, whose drain point comes first, is
             // the build's (light-cljs-395).
-            let skipped = matches!(*state, AnalysisState::Unstarted) && !self.admits(id);
+            let skipped = matches!(*state, AnalysisState::Unstarted) && !self.admits_in(c, id);
             if waits && (skipped || c.abandoned.is_some()) {
                 if c.threads[thread].waiting.take().is_some() {
                     c.waiting -= 1;
@@ -1567,11 +1855,11 @@ impl SharedCatalog {
     }
     /// How many extension bundles the compilation registered.
     pub(crate) fn extension_frontier(&self) -> usize {
-        self.lock().bundle_count
+        self.lock().journal.bundle_count
     }
     /// How many of them [`reaches_environment_data`].
     pub(crate) fn environment_bundles(&self) -> usize {
-        self.lock().environment_bundles
+        self.lock().journal.environment_bundles
     }
     /// The unit `id`'s initializer, prepared, unless it is not yet.
     fn prepared(&self, id: usize) -> Result<Option<Arc<crate::emitter::DeferredUnit>>, String> {
@@ -1726,9 +2014,27 @@ pub(crate) struct CompilationSession {
     /// The last unit, in unit order, a drain point took
     /// ([`Self::analyze_drained`] or [`Self::note_drained`]); a failed build's
     /// counts stop there ([`Self::failed_unit_counts`]).
-    drained_through: Cell<Option<usize>>,
+    drained_through: Cell<Option<crate::effect_lanes::UnitOrder>>,
     /// No top-level pass remains; a drain may help later namespaces too.
     tail_ready: Cell<bool>,
+    // The manual namespace probe owns a local IR prefix but runs on a
+    // compilation-wide lane. Production source indexes remain unchanged.
+    #[cfg(test)]
+    probe_source: Cell<Option<(usize, usize)>>,
+    #[cfg(feature = "bbp-macros")]
+    namespace_pass: RefCell<Option<crate::effect_lanes::PassReservation>>,
+    #[cfg(feature = "bbp-macros")]
+    namespace_journal: RefCell<Option<NamespaceJournal>>,
+    #[cfg(feature = "bbp-macros")]
+    owns_namespace_journal: Cell<bool>,
+    #[cfg(feature = "bbp-macros")]
+    namespace_seed: Option<crate::bbp_evaluator::CatalogSeed>,
+}
+#[cfg(feature = "bbp-macros")]
+struct NamespaceJournal {
+    prefix: usize,
+    journal: RegistrationJournal,
+    generations: JournalMap<usize>,
 }
 /// What capture needs beyond the catalog, recorded only while it is on.
 #[derive(Default)]
@@ -1831,6 +2137,16 @@ impl Default for CompilationSession {
             pool: Default::default(),
             drained_through: Default::default(),
             tail_ready: Default::default(),
+            #[cfg(test)]
+            probe_source: Default::default(),
+            #[cfg(feature = "bbp-macros")]
+            namespace_pass: Default::default(),
+            #[cfg(feature = "bbp-macros")]
+            namespace_journal: Default::default(),
+            #[cfg(feature = "bbp-macros")]
+            owns_namespace_journal: Cell::new(false),
+            #[cfg(feature = "bbp-macros")]
+            namespace_seed: None,
         }
     }
 }
@@ -1862,7 +2178,11 @@ impl CompilationSession {
     /// How many units, registrations and bundles the catalog holds.
     pub fn capture_marks(&self) -> (usize, usize, usize) {
         let c = self.shared.lock();
-        (c.units.len(), c.registrations.len(), c.bundle_count)
+        (
+            c.units.len(),
+            c.journal.registrations.len(),
+            c.journal.bundle_count,
+        )
     }
     pub fn capture_macro(
         &self,
@@ -1996,6 +2316,7 @@ impl CompilationSession {
     ) -> Vec<RegistrationRecord> {
         self.shared
             .lock()
+            .journal
             .registrations
             .iter()
             .take(registrations.end)
@@ -2063,62 +2384,44 @@ impl CompilationSession {
                             if let Some(capture) = self.capture.borrow_mut().as_mut() {
                                 capture.units.push(UnitCapture::default());
                             }
-                            self.shared.lanes.note_unit(c.units.len(), source as usize);
-                            c.units.push(Unit {
-                                request,
-                                name: name.clone(),
-                                source,
-                                inputs: None,
-                                state: AnalysisState::Prepared(
-                                    std::sync::Weak::new(),
-                                    Vec::new(),
-                                    Arc::new(prepared),
-                                ),
-                                analyses: 0,
-                                emitted: false,
-                                waiters: 0,
-                                retained: None,
-                                macro_free: false,
-                                pooled: false,
-                                held: false,
-                                dispatched: false,
-                                charges: None,
-                                time: Default::default(),
-                            });
+                            let order = self
+                                .shared
+                                .lanes
+                                .register_unit(c.units.len(), source as usize);
+                            c.push_unit(
+                                Unit {
+                                    request,
+                                    name: name.clone(),
+                                    source,
+                                    inputs: None,
+                                    state: AnalysisState::Prepared(
+                                        std::sync::Weak::new(),
+                                        Vec::new(),
+                                        Arc::new(prepared),
+                                    ),
+                                    analyses: 0,
+                                    emitted: false,
+                                    waiters: 0,
+                                    retained: None,
+                                    macro_free: false,
+                                    pooled: false,
+                                    held: false,
+                                    dispatched: false,
+                                    charges: None,
+                                    time: Default::default(),
+                                },
+                                order,
+                            );
                         }
-                        if !(unit.is_none() && c.active.contains_key(name)
-                            || *once && c.active.get(name).is_some_and(|defined| *defined))
-                        {
-                            c.multifn_targets.remove(name);
-                            c.active.insert(name.clone(), unit.is_some());
-                        }
-                        c.registrations.push(Registration::Root(
-                            name.clone(),
-                            *unit,
-                            *test,
-                            *once,
-                            location.clone(),
-                        ));
+                        self.record_registration(
+                            c,
+                            Registration::Root(name.clone(), *unit, *test, *once, location.clone()),
+                        )
                     }
                     InstalledRegistration::Bundle(bundle) => {
-                        c.registrations.push(Registration::Bundle(bundle.clone()));
-                        c.bundle_count += 1;
-                        c.environment_bundles +=
-                            usize::from(reaches_environment_data(&bundle.extensions));
-                        for name in &bundle.products {
-                            if bundle.once && c.active.get(name) == Some(&true) {
-                                continue;
-                            }
-                            if bundle.once {
-                                c.multifn_targets.insert(name.clone(), name.clone());
-                            } else {
-                                c.multifn_targets.remove(name);
-                            }
-                            c.active.insert(name.clone(), true);
-                        }
+                        self.record_registration(c, Registration::Bundle(bundle.clone()))
                     }
                 }
-                c.registrations.len()
             };
             self.install_registrations(end, |_| Ok(()))?;
         }
@@ -2148,8 +2451,25 @@ impl CompilationSession {
         }
         installed.installed = end;
         drop(installed);
-        let pending = self.shared.lock().registrations[start..end].to_vec();
+        let pending: Vec<_> = self.with_journal(|journal| journal.registrations.range(start..end).cloned().collect());
         install_registrations(bootstrap.evaluator.as_ref(), start, &pending, before_last)
+    }
+    fn with_journal<T>(&self, read: impl FnOnce(&RegistrationJournal) -> T) -> T {
+        #[cfg(feature = "bbp-macros")]
+        if self.owns_namespace_journal.get() {
+            return read(&self.namespace_journal.borrow().as_ref().unwrap().journal);
+        }
+        read(&self.shared.lock().journal)
+    }
+    fn record_registration(&self, catalog: &mut Catalog, registration: Registration) -> usize {
+        #[cfg(feature = "bbp-macros")]
+        if self.owns_namespace_journal.get() {
+            // The shared catalog retains the arrival log for unit allocation
+            // diagnostics. This writer's engine only installs its own view.
+            catalog.journal.push(registration.clone());
+            return self.namespace_journal.borrow_mut().as_mut().unwrap().journal.push(registration);
+        }
+        catalog.journal.push(registration)
     }
     /// Keep the compile-time runtime's `gensym` from returning any of
     /// `names` in this compilation: now if the session has started, else
@@ -2325,6 +2645,112 @@ impl CompilationSession {
     pub fn new() -> Rc<Self> {
         Rc::new(Self::default())
     }
+    /// Namespace writers share unit IDs and the native runtime, while retaining
+    /// engine bindings and an independent registration view on their threads.
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn namespace_writer(
+        shared: Arc<SharedCatalog>,
+        prefix: &RegistrationJournal,
+    ) -> Rc<Self> {
+        let mut session = Self::default();
+        session.thread = shared.join();
+        session.shared = shared;
+        session.set_namespace_journal(prefix.clone());
+        Rc::new(session)
+    }
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn namespace_writer_seeded(shared: Arc<SharedCatalog>, prefix: &RegistrationJournal, seed: crate::bbp_evaluator::CatalogSeed) -> Rc<Self> {
+        assert_eq!(seed.len(), prefix.registrations.len(), "native and compiler namespace prefixes must agree");
+        let mut session = Self::namespace_writer(shared, prefix);
+        Rc::get_mut(&mut session).unwrap().namespace_seed = Some(seed);
+        session
+    }
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn namespace_catalog_seed(self: &Rc<Self>, host: &MacroHost) -> Result<crate::bbp_evaluator::CatalogSeed, String> {
+        self.start_dispatch_engine(host)?;
+        self.bootstrap().unwrap().evaluator.native_shell().ok_or("namespace publication needs a native engine")?
+            .catalog_seed().map_err(|e| e.to_string())
+    }
+    #[cfg(all(test, feature = "bbp-macros"))]
+    pub(crate) fn namespace_probe(shared: Arc<SharedCatalog>, prefix: &RegistrationJournal) -> Rc<Self> {
+        Self::namespace_writer(shared, prefix)
+    }
+    #[cfg(feature = "bbp-macros")]
+    fn set_namespace_journal(&self, prefix: RegistrationJournal) {
+        let generations = prefix.root_generations.clone()
+            .unwrap_or_else(|| prefix.count_generations());
+        *self.namespace_journal.borrow_mut() = Some(NamespaceJournal {
+            prefix: prefix.registrations.len(),
+            journal: prefix,
+            generations,
+        });
+        self.owns_namespace_journal.set(true);
+    }
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn enable_namespace_publication(&self) -> Result<(), String> {
+        if !self.owns_namespace_journal.get() {
+            self.set_namespace_journal(self.namespace_prefix());
+            if let Some(bootstrap) = self.bootstrap() {
+                bootstrap.evaluator.native_shell().ok_or("namespace publication needs a native engine")?
+                    .fork_catalog().map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn namespace_prefix(&self) -> RegistrationJournal {
+        if self.owns_namespace_journal.get() {
+            self.namespace_journal.borrow_mut().as_mut().unwrap().journal.snapshot()
+        } else {
+            self.shared.lock().journal.snapshot()
+        }
+    }
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn namespace_fragment(&self) -> Vec<Registration> {
+        let owned = self.namespace_journal.borrow();
+        let journal = owned.as_ref().unwrap();
+        journal.journal.registrations.tail_from(journal.prefix).cloned().collect()
+    }
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn publish_namespace_registrations(&self, registrations: Vec<Registration>) -> Result<(), String> {
+        let end = {
+            let mut owned = self.namespace_journal.borrow_mut();
+            let journal = owned.as_mut().expect("coordinator has a namespace journal");
+            for registration in registrations {
+                if let Registration::Root(name, Some(_), ..) = &registration {
+                    *journal.generations.value_mut_or_default(name) += 1;
+                }
+                journal.journal.push(registration);
+            }
+            journal.journal.registrations.len()
+        };
+        self.install_registrations(end, |_| Ok(()))
+    }
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn reserve_namespace_pass(&self, reservation: crate::effect_lanes::PassReservation) {
+        assert!(self.namespace_pass.borrow().is_none());
+        *self.namespace_pass.borrow_mut() = Some(reservation);
+    }
+    #[cfg(all(test, feature = "bbp-macros"))]
+    pub(crate) fn reserve_probe_namespace(
+        &self,
+        local: usize,
+        canonical: usize,
+        reservation: crate::effect_lanes::PassReservation,
+    ) {
+        self.probe_source.set(Some((local, canonical)));
+        self.reserve_namespace_pass(reservation);
+    }
+    #[inline]
+    fn lane_source(&self, source: usize) -> usize {
+        #[cfg(test)]
+        if let Some((local, canonical)) = self.probe_source.get()
+            && source == local
+        {
+            return canonical;
+        }
+        source
+    }
     pub fn attach(self: &Rc<Self>, bootstrap: &Bootstrap, host: &MacroHost) -> Result<(), String> {
         if self.engine.borrow().bootstrap.is_some() {
             return Ok(());
@@ -2341,7 +2767,19 @@ impl CompilationSession {
             Self::take_gensyms_from(evaluator.as_ref())?;
         }
         self.engine.borrow_mut().bootstrap = Some(bootstrap.clone());
-        let end = self.shared.lock().registrations.len();
+        #[cfg(feature = "bbp-macros")]
+        if self.owns_namespace_journal.get() {
+            let native = evaluator.native_shell().ok_or("namespace writer needs a native engine")?;
+            match &self.namespace_seed {
+                Some(seed) => {
+                    native.adopt_catalog_seed(seed).map_err(|e| e.to_string())?;
+                    self.engine.borrow_mut().installed = seed.len();
+                    Ok(())
+                }
+                None => native.fork_catalog(),
+            }.map_err(|e| e.to_string())?;
+        }
+        let end = self.with_journal(|journal| journal.registrations.len());
         self.install_registrations(end, |_| Ok(()))
     }
     pub fn compilation_uses(&self) -> Vec<crate::analyzer::CompilationUse> {
@@ -2383,13 +2821,21 @@ impl CompilationSession {
     /// Other merges, such as a speculative definition's `:test` metadata,
     /// must not advance the cutoff past an earlier failing unit.
     pub(crate) fn note_drained(&self, id: usize) {
-        let last = self.drained_through.get().map_or(id, |last| last.max(id));
+        let order = if self.shared.lanes.uses_reserved_unit_order() {
+            self.shared.lock().order(id)
+        } else {
+            crate::effect_lanes::UnitOrder::serial(id)
+        };
+        let last = self
+            .drained_through
+            .get()
+            .map_or(order, |last| last.max(order));
         self.drained_through.set(Some(last));
     }
     /// How many units this compilation registered, analyzed, prepared and
     /// executed (`--stats`).
     pub fn unit_counts(&self) -> crate::compile_stats::DeferredUnitCounts {
-        self.counts_through(usize::MAX)
+        self.counts_through(Some(crate::effect_lanes::UnitOrder::MAX))
     }
     /// [`Self::unit_counts`] of a build that failed before its final
     /// analysis: the analyses only of the units up to the last one a drain
@@ -2401,11 +2847,14 @@ impl CompilationSession {
     /// count when their namespace merges them. A failed build's namespaces
     /// and warnings are cut at its failure the same way.
     pub fn failed_unit_counts(&self) -> crate::compile_stats::DeferredUnitCounts {
-        self.counts_through(self.drained_through.get().map_or(0, |last| last + 1))
+        self.counts_through(self.drained_through.get())
     }
     /// The unit counts, with the analyses and preparations of the units
-    /// before `end`.
-    fn counts_through(&self, end: usize) -> crate::compile_stats::DeferredUnitCounts {
+    /// through `end`, or none when no unit has been drained.
+    fn counts_through(
+        &self,
+        end: Option<crate::effect_lanes::UnitOrder>,
+    ) -> crate::compile_stats::DeferredUnitCounts {
         let catalog = self.shared.lock();
         let mut counts = crate::compile_stats::DeferredUnitCounts {
             registered: catalog.units.len(),
@@ -2416,9 +2865,10 @@ impl CompilationSession {
             if unit.macro_free {
                 counts.macro_free_time += unit.time;
             }
-            counts.analyzed += usize::from(id < end && unit.analyses > 0);
+            let drained = end.is_some_and(|end| catalog.order(id) <= end);
+            counts.analyzed += usize::from(drained && unit.analyses > 0);
             counts.prepared +=
-                usize::from(id < end && matches!(unit.state, AnalysisState::Prepared(..)));
+                usize::from(drained && matches!(unit.state, AnalysisState::Prepared(..)));
             counts.executed += usize::from(unit.emitted);
         }
         use std::sync::atomic::Ordering::Relaxed;
@@ -2447,14 +2897,14 @@ impl CompilationSession {
         counts
     }
     pub fn extension_frontier(&self) -> usize {
-        self.shared.lock().bundle_count
+        self.with_journal(|journal| journal.bundle_count)
     }
     /// How many registered bundles [`reaches_environment_data`].
     pub fn environment_bundles(&self) -> usize {
-        self.shared.lock().environment_bundles
+        self.with_journal(|journal| journal.environment_bundles)
     }
     pub fn multifn_target(&self, name: &str) -> Option<String> {
-        self.shared.lock().multifn_targets.get(name).cloned()
+        self.with_journal(|journal| journal.multifn_targets.get(name).cloned())
     }
     pub fn register_bundle(
         &self,
@@ -2478,9 +2928,15 @@ impl CompilationSession {
                 format!("{}/{}", b.namespace, b.name)
             })
             .collect::<Vec<_>>();
-        let name = format!("declaration#{}", self.shared.lock().units.len());
         let unit = self
-            .register(name, Some(form), snapshot, host, false, location.clone())?
+            .register_named(
+                RegistrationName::Declaration,
+                Some(form),
+                snapshot,
+                host,
+                false,
+                location.clone(),
+            )?
             .unwrap();
         let group = analyzed.is_some();
         if let Some(mut program) = analyzed {
@@ -2495,7 +2951,6 @@ impl CompilationSession {
             let binding = self.take_unit_binding(unit);
             drop((inputs, binding));
         }
-        let reaches = reaches_environment_data(extensions);
         let bundle = Arc::new(BundleRecord {
             products: names,
             unit,
@@ -2506,23 +2961,7 @@ impl CompilationSession {
         });
         let end = {
             let mut c = self.shared.lock();
-            c.registrations.push(Registration::Bundle(bundle));
-            c.bundle_count += 1;
-            c.environment_bundles += usize::from(reaches);
-            for g in products {
-                let b = &program.globals[g.0];
-                let name = format!("{}/{}", b.namespace, b.name);
-                if once && c.active.get(&name) == Some(&true) {
-                    continue;
-                }
-                if once {
-                    c.multifn_targets.insert(name.clone(), name.clone());
-                } else {
-                    c.multifn_targets.remove(&name);
-                }
-                c.active.insert(name, true);
-            }
-            c.registrations.len()
+            self.record_registration(&mut c, Registration::Bundle(bundle))
         };
         // Initializers that call `gensym` number in the scope that
         // registers them.
@@ -2538,6 +2977,24 @@ impl CompilationSession {
         &self,
         name: String,
         form: Option<Form>,
+        snapshot: DefinitionSnapshot,
+        host: MacroHost,
+        once: bool,
+        location: String,
+    ) -> Result<Option<usize>, String> {
+        self.register_named(
+            RegistrationName::Var(name),
+            form,
+            snapshot,
+            host,
+            once,
+            location,
+        )
+    }
+    fn register_named(
+        &self,
+        name: RegistrationName,
+        form: Option<Form>,
         mut snapshot: DefinitionSnapshot,
         host: MacroHost,
         once: bool,
@@ -2546,9 +3003,9 @@ impl CompilationSession {
         // Executable metadata has its own source-site unit and root state.
         // Reflecting it cannot analyze or execute the ordinary initializer.
         if let Some(test) = snapshot.definition_test.take().filter(|_| form.is_some()) {
-            let test_name = format!("{name} :test#{}", self.shared.lock().units.len());
-            snapshot.definition_test_unit = self.register(
-                test_name,
+            let owner = name.clone().resolve(self.next_unit());
+            snapshot.definition_test_unit = self.register_named(
+                RegistrationName::Test(owner),
                 Some(test),
                 snapshot.clone(),
                 host.macro_analysis_frame(),
@@ -2565,6 +3022,9 @@ impl CompilationSession {
         let (id, end) = {
             let mut c = self.shared.lock();
             let c = &mut *c;
+            // Allocate synthetic names under the same lock as their unit ID.
+            // Reading units.len() before entering register races other writers.
+            let name = name.resolve(c.units.len());
             let next_var = VarId(c.bindings.len());
             let binding = c.bindings.entry(name.clone()).or_insert((next_var, 0));
             if form.is_some() {
@@ -2573,6 +3033,19 @@ impl CompilationSession {
             let request = UnitRequest {
                 var: binding.0,
                 generation: binding.1,
+            };
+            #[cfg(feature = "bbp-macros")]
+            let request = if self.owns_namespace_journal.get() {
+                let mut owned = self.namespace_journal.borrow_mut();
+                let journal = owned.as_mut().unwrap();
+                let generation = journal.generations.value_mut_or_default(&name);
+                *generation += usize::from(form.is_some());
+                UnitRequest {
+                    generation: *generation,
+                    ..request
+                }
+            } else {
+                request
             };
             let id = form.map(|form| {
                 let id = c.units.len();
@@ -2583,39 +3056,37 @@ impl CompilationSession {
                         added: Vec::new(),
                     });
                 }
-                self.shared.lanes.note_unit(id, snapshot.source_index);
-                c.units.push(Unit {
-                    request,
-                    name: name.clone(),
-                    source: snapshot.source_index as u32,
-                    inputs: Some(Box::new(UnitInputs {
-                        form,
-                        snapshot,
-                        environment,
-                    })),
-                    state: AnalysisState::Unstarted,
-                    analyses: 0,
-                    emitted: false,
-                    waiters: 0,
-                    retained: None,
-                    macro_free: false,
-                    pooled: false,
-                    held: false,
-                    dispatched: false,
-                    charges: None,
-                    time: Default::default(),
-                });
+                let source = self.lane_source(snapshot.source_index);
+                let order = self.shared.lanes.register_unit(id, source);
+                c.push_unit(
+                    Unit {
+                        request,
+                        name: name.clone(),
+                        source: source as u32,
+                        inputs: Some(Box::new(UnitInputs {
+                            form,
+                            snapshot,
+                            environment,
+                        })),
+                        state: AnalysisState::Unstarted,
+                        analyses: 0,
+                        emitted: false,
+                        waiters: 0,
+                        retained: None,
+                        macro_free: false,
+                        pooled: false,
+                        held: false,
+                        dispatched: false,
+                        charges: None,
+                        time: Default::default(),
+                    },
+                    order,
+                );
                 id
             });
-            if !(id.is_none() && c.active.contains_key(&name)
-                || once && c.active.get(&name).is_some_and(|defined| *defined))
-            {
-                c.multifn_targets.remove(&name);
-                c.active.insert(name.clone(), id.is_some());
-            }
-            c.registrations
-                .push(Registration::Root(name, id, test, once, location));
-            (id, c.registrations.len())
+            let end =
+                self.record_registration(c, Registration::Root(name, id, test, once, location));
+            (id, end)
         };
         if let Some(id) = id {
             let mut bindings = self.unit_bindings.borrow_mut();
@@ -2947,6 +3418,45 @@ impl CompilationSession {
         }
         self.analyze_in(id, None, queued, Take::Drain)
     }
+
+    /// Completed namespace-worker units keep their recorded charges in the
+    /// shared catalog. Their ordinary drain point charges the coordinator's
+    /// counters, even after the worker's thread-local binding has gone away.
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn adopt_completed_namespace_units(
+        &self,
+        units: impl Iterator<Item = usize>,
+        host: &MacroHost,
+    ) -> Result<(), String> {
+        let units: Vec<_> = units.collect();
+        {
+            let catalog = self.shared.lock();
+            for &id in &units {
+                if !matches!(catalog.units[id].state, AnalysisState::Analyzed(..) | AnalysisState::Failed(..)) {
+                    return Err(format!("namespace unit {id} has not finished analysis"));
+                }
+            }
+        }
+        let mut bindings = self.unit_bindings.borrow_mut();
+        for id in units {
+            if bindings.len() <= id {
+                bindings.resize_with(id + 1, || None);
+            }
+            assert!(bindings[id].is_none(), "unit already has a coordinator binding");
+            bindings[id] = Some(Box::new(host.engine.frame()));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn charge_namespace(&self, charges: UnitCharges, host: &MacroHost) -> Result<(), crate::AnalysisError> {
+        let binding = &host.engine;
+        let control = binding.bootstrap.as_ref().or(self.bootstrap().as_ref()).map(|b| b.evaluator.control());
+        let start = || self.start_main_engine(binding).map(|b| b.map(|b| b.evaluator.control()));
+        charges.charge(binding, None, control, &start, self).map_err(|(_, diagnostic)| diagnostic)?;
+        self.shared.raise_charged(binding.expansions.get(), binding.generated_nodes.get());
+        Ok(())
+    }
     /// Use the coordinator's otherwise idle slot on the Pants build. At a
     /// drain, take only that drain's units, in order; past the last top-level
     /// pass, take all remaining queued units. Pool jobs reuse these results.
@@ -2964,7 +3474,7 @@ impl CompilationSession {
             // by a helped unit use the ordinary bounded analysis stack.
             let _depth = HelpDepth(HELP_DEPTH.replace(1));
             let mut flushed = false;
-            let mut first = drain.unwrap_or(0);
+            let mut from = drain.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Included);
             loop {
                 let claimed = {
                     let mut c = self.shared.lock();
@@ -2985,18 +3495,7 @@ impl CompilationSession {
                     let source = drain
                         .filter(|_| !self.tail_ready.get())
                         .map(|id| c.units[id].source);
-                    let next = c
-                        .units
-                        .iter()
-                        .enumerate()
-                        .skip(first)
-                        .take_while(|(_, unit)| source.is_none_or(|source| unit.source == source))
-                        .find(|(id, unit)| {
-                            unit.pooled
-                                && matches!(unit.state, AnalysisState::Unstarted)
-                                && self.shared.admits(*id)
-                        });
-                    let next = next.map(|(id, _)| id);
+                    let next = c.next_queued(from, source, &self.shared);
                     if next.is_some() && !flushed {
                         // Engine entry is unnecessary at an empty drain.
                         // Flush before claiming so a failed engine call
@@ -3013,7 +3512,7 @@ impl CompilationSession {
                 let Some((id, claim)) = claimed else {
                     break;
                 };
-                first = id + 1;
+                from = std::ops::Bound::Excluded(id);
                 if matches!(claim, Claim::Analyze(..)) {
                     self.shared
                         .counters
@@ -3071,7 +3570,13 @@ impl CompilationSession {
     /// ([`crate::effect_lanes::Lanes::begin_pass`]).
     pub(crate) fn begin_pass(&self, forced: bool, source: usize) -> crate::effect_lanes::PassGuard {
         self.tail_ready.set(false);
-        self.shared.lanes.begin_pass(forced, Some(source))
+        #[cfg(feature = "bbp-macros")]
+        if let Some(reservation) = self.namespace_pass.borrow_mut().take() {
+            return reservation.begin(forced);
+        }
+        self.shared
+            .lanes
+            .begin_pass(forced, Some(self.lane_source(source)))
     }
     /// Remaining drains can use all queued units while they wait, taking
     /// each ready result's charges before starting the next drain.
@@ -3269,7 +3774,7 @@ impl CompilationSession {
                     .map(|b| b.map(|b| b.evaluator.control()))
             };
             if let Err((message, diagnostic)) =
-                charges.charge(&binding, depth, control, &start, self)
+                charges.charge(&binding, Some(depth), control, &start, self)
             {
                 self.shared.fail(id, message.clone(), Some(diagnostic));
                 return Err(message);
@@ -3425,7 +3930,17 @@ fn analyze_unit(
                 .as_ref()
                 .map(|e| e.as_ref() as &dyn MacroEvaluator)
         });
-        let _frontier = if let Some(engine) = engine {
+        // A proven macro-free native body cannot enter the VM, just as it
+        // can run in the pool's engine-free view. Its analysis cannot see or
+        // change the VM's frontier or gensym scope. Keep the engine available
+        // to the analyzer for control polls, including dispatch-held units
+        // whose polls are spent immediately rather than recorded.
+        let scope_engine = if macro_free && host.native_macro_backend() {
+            None
+        } else {
+            engine
+        };
+        let _frontier = if let Some(engine) = scope_engine {
             engine
                 .compiler_frontier(Some(snapshot.extension_frontier))
                 .map_err(|e| e.to_string())?;
@@ -3435,7 +3950,7 @@ fn analyze_unit(
         };
         // The unit's macros number in its scope; whatever demanded it, such
         // as a running macro calling it, numbers in its own again after.
-        let _gensyms = crate::generated_names::RestoreGensymScope(engine);
+        let _gensyms = crate::generated_names::RestoreGensymScope(scope_engine);
         if records {
             let started = crate::evaluator::Instant::now();
             host.engine.work = Default::default();
@@ -3758,7 +4273,7 @@ fn compile_unit_in(
             Ok((program, _)) => {
                 let code = {
                     #[cfg(feature = "bbp-macros")]
-                    if active.native_bridge_stats().is_some() {
+                    if active.has_native_bridge() {
                         crate::emitter::emit_native_macro_unit(
                             &program,
                             true,
@@ -3874,7 +4389,7 @@ impl WorkerView {
             return Ok(());
         };
         let producer = active.is_some_and(|active| {
-            active.native_bridge_stats().is_some() && active.heap() != bootstrap.evaluator.heap()
+            active.has_native_bridge() && active.heap() != bootstrap.evaluator.heap()
         });
         let engine = active.unwrap_or(bootstrap.evaluator.as_ref());
         // A producer imported its parent's catalog frontier, which is the
@@ -3886,13 +4401,13 @@ impl WorkerView {
         };
         let pending = {
             let c = self.shared.lock();
-            if c.registrations.len() == first {
+            if c.journal.registrations.len() == first {
                 return Ok(());
             }
-            let pending = c.registrations[first..].to_vec();
+            let pending: Vec<_> = c.journal.registrations.tail_from(first).cloned().collect();
             match producer {
-                true => engine.set_catalog_cursor(c.registrations.len()),
-                false => self.installed.set(c.registrations.len()),
+                true => engine.set_catalog_cursor(c.journal.registrations.len()),
+                false => self.installed.set(c.journal.registrations.len()),
             }
             pending
         };
@@ -4448,7 +4963,7 @@ fn worker_view(
     let engine_view = engine.is_some();
     let counted = engine
         .as_ref()
-        .is_some_and(|engine| engine.native_bridge_stats().is_none());
+        .is_some_and(|engine| !engine.has_native_bridge());
     let view = WorkerView::new(
         shared.clone(),
         MacroHost::bind(environment.clone(), engine)?,
@@ -5585,6 +6100,513 @@ mod worker_tests {
         (session, units, host.environment())
     }
 
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_macro_free_analysis_preserves_charges_without_vm_scope_transitions() {
+        use crate::compiler_evaluator::CompilerEvaluator;
+        let mut expected = None;
+        for (macro_free, with_engine) in [(true, false), (true, true), (false, true)] {
+            let mut host = MacroHost::new();
+            host.use_native_macros();
+            let (session, units, environment) = registered_with_host(
+                "(defn f [x] (if x (+ x 1) 0))", host,
+            );
+            let id = units["cljs.user/f"];
+            if macro_free {
+                session.set_macro_free(id);
+            }
+            let evaluator = Rc::new(crate::bbp_evaluator::BbpEvaluator::new(Default::default()).unwrap());
+            let binding = MacroHost::bind(environment, with_engine.then(|| evaluator.clone() as Rc<dyn crate::compiler_evaluator::CompilerEvaluator>)).unwrap();
+            let setup = evaluator.evaluate_unit("rt => {globalThis.scopeEvents=[]; globalThis.__lightEnterCompilerFrontier=next=>scopeEvents.push('enter'); globalThis.__lightLeaveCompilerFrontier=()=>scopeEvents.push('leave'); rt.compilerForms.gensymScope=()=>scopeEvents.push('gensym'); return null;}").unwrap();
+            evaluator.release(setup).unwrap();
+            let (program, warnings) = analyze_unit(
+                &session.shared, session.thread, id, None,
+                Demand { queued: false, on_worker: true, held: false, server: None, help: None },
+                None, || (binding.engine.frame(), None),
+            ).unwrap();
+            assert!(warnings.is_empty());
+            let code = crate::emitter::DeferredUnit::prepare_native(&program, &[]).code().to_owned();
+            let events = format!("{:?}", session.shared.lock().units[id].charges.as_ref().unwrap().events);
+            if let Some((expected_code, expected_events)) = &expected {
+                assert_eq!(&code, expected_code);
+                assert_eq!(&events, expected_events);
+            } else {
+                assert!(events.contains("Poll("), "{events}");
+                expected = Some((code, events));
+            }
+            let result = evaluator.evaluate_unit("rt => JSON.stringify(scopeEvents)").unwrap();
+            let data = evaluator.export_data(result, Default::default()).unwrap();
+            let DatumKind::String(text) = data.kind() else { panic!("expected scope event string") };
+            let events = String::from_utf16_lossy(text);
+            if macro_free {
+                assert_eq!(events, "[]");
+            } else {
+                assert!(events.starts_with("[\"enter\""), "{events}");
+                assert!(events.ends_with("\"leave\"]"), "{events}");
+            }
+            evaluator.release(result).unwrap();
+        }
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_macro_free_held_analysis_still_polls_its_engine_control() {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let (session, units, environment) = registered_with_host("(defn f [x] (+ x 1))", host);
+        let id = units["cljs.user/f"];
+        session.set_macro_free(id);
+        let evaluator = Rc::new(crate::bbp_evaluator::BbpEvaluator::new(Default::default()).unwrap());
+        let binding = MacroHost::bind(environment, Some(evaluator.clone())).unwrap();
+        evaluator.control().cancel();
+        let error = analyze_unit(
+            &session.shared, session.thread, id, Some(evaluator.as_ref()),
+            Demand { queued: false, on_worker: false, held: true, server: None, help: None },
+            None, || (binding.engine.frame(), None),
+        ).unwrap_err();
+        assert!(error.contains("cancelled"), "{error}");
+        assert!(session.unit_failed(id));
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn namespace_journal_maps_isolate_replacements_deletions_and_refrozen_branches() {
+        let mut map = JournalMap::default();
+        map.insert("kept".into(), "original".to_owned());
+        map.insert("removed".into(), "visible".to_owned());
+        map.freeze();
+        let old = map.clone();
+        assert!(std::ptr::eq(map.get("kept").unwrap(), old.get("kept").unwrap()));
+        map.insert("kept".into(), "changed".into());
+        map.remove("removed");
+        map.insert("new".into(), "private".into());
+        map.insert("temporary".into(), "deleted".into());
+        map.remove("temporary");
+        let mut sibling = map.clone();
+        sibling.insert("kept".into(), "sibling".into());
+        sibling.insert("removed".into(), "restored".into());
+        map.freeze();
+        sibling.freeze();
+        assert_eq!(old.get("kept").map(String::as_str), Some("original"));
+        assert_eq!(old.get("removed").map(String::as_str), Some("visible"));
+        assert!(!old.contains_key("new"));
+        assert_eq!(map.get("kept").map(String::as_str), Some("changed"));
+        assert!(!map.contains_key("removed"));
+        assert!(!map.contains_key("temporary"));
+        assert_eq!(sibling.get("removed").map(String::as_str), Some("restored"));
+        assert_eq!(sibling.get("kept").map(String::as_str), Some("sibling"));
+        drop(old);
+        drop(sibling);
+        map.insert("new".into(), "newer".into());
+        map.freeze();
+        assert_eq!(map.get("new").map(String::as_str), Some("newer"));
+        assert!(!map.contains_key("removed"));
+
+        let mut counters = JournalMap::default();
+        *counters.value_mut_or_default("count") = 7usize;
+        counters.freeze();
+        let frozen = counters.clone();
+        *counters.value_mut_or_default("count") += 1;
+        assert_eq!(frozen.get("count"), Some(&7));
+        assert_eq!(counters.get("count"), Some(&8));
+        counters.remove("count");
+        assert_eq!(*counters.value_mut_or_default("count"), 0);
+        counters.freeze();
+        assert_eq!(counters.get("count"), Some(&0));
+        assert_eq!(frozen.get("count"), Some(&7));
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn namespace_journal_indexes_preserve_once_replacement_and_history_generations() {
+        let root = |name: &str, unit, once| {
+            Registration::Root(name.into(), unit, None, once, "source:1".into())
+        };
+        let bundle = |once| Registration::Bundle(Arc::new(BundleRecord {
+            products: vec!["app/mf".into()], unit: 10, extensions: vec![],
+            location: "source:2".into(), once, group: false,
+        }));
+        let mut coordinator = RegistrationJournal::default();
+        coordinator.push(bundle(true));
+        coordinator.push(root("app/x", Some(0), false));
+        assert!(coordinator.root_generations.is_none());
+        let mut left = coordinator.snapshot();
+        let right = left.clone();
+        left.push(root("app/mf", None, false));
+        left.push(root("app/mf", Some(1), true));
+        assert_eq!(left.multifn_targets.get("app/mf").map(String::as_str), Some("app/mf"));
+        left.push(root("app/mf", Some(2), false));
+        assert!(!left.multifn_targets.contains_key("app/mf"));
+        let left = left.snapshot();
+        assert_eq!(left.root_generations.as_ref().unwrap().get("app/mf"), Some(&2));
+        assert_eq!(right.multifn_targets.get("app/mf").map(String::as_str), Some("app/mf"));
+        assert_eq!(right.root_generations.as_ref().unwrap().get("app/mf"), None);
+        coordinator.push(bundle(false));
+        coordinator.push(root("app/x", None, false));
+        coordinator.push(root("app/x", Some(3), true));
+        let later = coordinator.snapshot();
+        assert!(!later.multifn_targets.contains_key("app/mf"));
+        assert_eq!(later.root_generations.as_ref().unwrap().get("app/x"), Some(&2));
+        assert_eq!(right.root_generations.as_ref().unwrap().get("app/x"), Some(&1));
+        for journal in [&left, &right, &later] {
+            let replay = journal.count_generations();
+            for name in ["app/x", "app/mf", "missing"] {
+                assert_eq!(journal.root_generations.as_ref().unwrap().get(name), replay.get(name));
+            }
+        }
+        drop(coordinator);
+        assert_eq!(right.multifn_targets.get("app/mf").map(String::as_str), Some("app/mf"));
+        assert_eq!(left.active.get("app/mf"), Some(&true));
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn namespace_journal_generation_snapshots_do_not_rescan_history_per_writer() {
+        let mut coordinator = RegistrationJournal::default();
+        for unit in 0..256 {
+            coordinator.push(Registration::Root(format!("app/v{}", unit % 7), Some(unit), None, false, "source:1".into()));
+        }
+        let (prefix, reads) = crate::arena::count_reads(|| coordinator.snapshot());
+        assert_eq!(reads, 256);
+        let shared = Arc::new(SharedCatalog::default());
+        let (writers, reads) = crate::arena::count_reads(|| {
+            (0..8).map(|_| CompilationSession::namespace_writer(shared.clone(), &prefix)).collect::<Vec<_>>()
+        });
+        assert_eq!(reads, 0);
+        // A request can advance a writer's local counter before its root is
+        // recorded. A fresh prefix still reflects registrations only.
+        *writers[0].namespace_journal.borrow_mut().as_mut().unwrap()
+            .generations.value_mut_or_default("app/v0") += 1;
+        let (unrecorded, reads) = crate::arena::count_reads(|| writers[0].namespace_prefix());
+        assert_eq!(reads, 0);
+        assert_eq!(unrecorded.root_generations.as_ref().unwrap().get("app/v0"), Some(&37));
+        assert_eq!(writers[0].namespace_journal.borrow().as_ref().unwrap().generations.get("app/v0"), Some(&38));
+        coordinator.push(Registration::Root("app/v0".into(), Some(256), None, false, "source:2".into()));
+        coordinator.push(Registration::Root("app/v0".into(), None, None, false, "source:3".into()));
+        let (later, reads) = crate::arena::count_reads(|| coordinator.snapshot());
+        assert_eq!(reads, 0);
+        assert_eq!(later.root_generations.as_ref().unwrap().get("app/v0"), Some(&38));
+        assert_eq!(prefix.root_generations.as_ref().unwrap().get("app/v0"), Some(&37));
+        for writer in &writers[1..] {
+            assert_eq!(writer.namespace_journal.borrow().as_ref().unwrap().generations.get("app/v0"), Some(&37));
+        }
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn namespace_journal_snapshots_share_history_and_keep_private_append_order() {
+        let root = |name: &str, unit, once| {
+            Registration::Root(name.into(), unit, None, once, "source:1".into())
+        };
+        let mut coordinator = RegistrationJournal::default();
+        for i in 0..130 {
+            coordinator.push(root(&format!("prefix/v{i}"), Some(i), false));
+        }
+        let mut left = coordinator.snapshot();
+        let mut right = left.clone();
+        for i in 0..130 {
+            assert!(std::ptr::eq(&coordinator.registrations[i], &left.registrations[i]));
+            assert!(std::ptr::eq(&left.registrations[i], &right.registrations[i]));
+        }
+        left.push(root("left/new", Some(130), false));
+        right.push(root("right/new", Some(131), false));
+        left.push(root("prefix/v0", None, false));
+        left.push(root("prefix/v1", Some(132), true));
+        assert!(!coordinator.active.contains_key("left/new"));
+        assert!(!right.active.contains_key("left/new"));
+        assert!(!left.active.contains_key("right/new"));
+        assert_eq!(left.active.get("prefix/v0"), Some(&true));
+        assert_eq!(left.active.get("prefix/v1"), Some(&true));
+        coordinator.push(root("coordinator/new", Some(133), false));
+        let later = coordinator.snapshot();
+        assert_eq!(later.registrations.len(), 131);
+        assert_eq!(right.registrations.len(), 131);
+        let names = |journal: &RegistrationJournal, start| {
+            journal.registrations.tail_from(start).map(|r| match r {
+                Registration::Root(name, ..) => name.clone(),
+                _ => unreachable!(),
+            }).collect::<Vec<_>>()
+        };
+        assert_eq!(names(&left, 129), ["prefix/v129", "left/new", "prefix/v0", "prefix/v1"]);
+        assert_eq!(names(&right, 130), ["right/new"]);
+        assert_eq!(names(&later, 130), ["coordinator/new"]);
+        drop(coordinator);
+        drop(left);
+        assert!(std::ptr::eq(&later.registrations[64], &right.registrations[64]));
+        assert_eq!(names(&right, 129), ["prefix/v129", "right/new"]);
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn namespace_journals_keep_local_generations_and_allocate_exact_synthetic_names() {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let (seed, units, _) = registered_with_host("(def value 1)", host);
+        let prefix = seed.namespace_prefix();
+        let shared = seed.shared.clone();
+        let (form, snapshot, environment) = {
+            let catalog = shared.lock();
+            let inputs = catalog.units[units["cljs.user/value"]]
+                .inputs
+                .as_ref()
+                .unwrap();
+            (
+                inputs.form.clone(),
+                inputs.snapshot.clone(),
+                inputs.environment.clone(),
+            )
+        };
+        let ready = std::sync::Barrier::new(4);
+        let fragments = std::thread::scope(|scope| {
+            let threads = (0..4)
+                .map(|slot| {
+                    let (shared, prefix, form, snapshot, environment, ready) =
+                        (&shared, &prefix, &form, &snapshot, &environment, &ready);
+                    scope.spawn(move || {
+                        let session = CompilationSession::namespace_probe(shared.clone(), prefix);
+                        ready.wait();
+                        let mut own_unit = 0;
+                        for i in 0..32 {
+                            let make_host = || MacroHost::bind(environment.clone(), None).unwrap();
+                            let id = session
+                                .register_named(
+                                    RegistrationName::Declaration,
+                                    Some(form.clone()),
+                                    snapshot.clone(),
+                                    make_host(),
+                                    false,
+                                    "declaration".into(),
+                                )
+                                .unwrap()
+                                .unwrap();
+                            assert_eq!(shared.unit_name(id), format!("declaration#{id}"));
+                            own_unit = id;
+                            let mut definition = snapshot.clone();
+                            definition.definition_test = Some(form.clone());
+                            let id = session
+                                .register(
+                                    "cljs.user/value".into(),
+                                    Some(form.clone()),
+                                    definition,
+                                    make_host(),
+                                    false,
+                                    "value".into(),
+                                )
+                                .unwrap()
+                                .unwrap();
+                            assert_eq!(shared.lock().units[id].request.generation, i + 2);
+                        }
+                        let bundle = Registration::Bundle(Arc::new(BundleRecord {
+                            products: vec![format!("route{slot}")],
+                            unit: own_unit,
+                            extensions: vec![(
+                                if slot == 0 { "ICounted" } else { "user/P" }.into(),
+                                None,
+                                "test".into(),
+                            )],
+                            location: "test".into(),
+                            once: true,
+                            group: false,
+                        }));
+                        session.record_registration(&mut shared.lock(), bundle);
+                        assert_eq!(session.extension_frontier(), 1);
+                        assert_eq!(session.environment_bundles(), usize::from(slot == 0));
+                        for other in 0..4 {
+                            let name = format!("route{other}");
+                            assert_eq!(
+                                session.multifn_target(&name),
+                                (other == slot).then_some(name)
+                            );
+                        }
+                        session.namespace_fragment()
+                    })
+                })
+                .collect::<Vec<_>>();
+            threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let catalog = shared.lock();
+        assert_eq!(catalog.units.len(), 1 + 4 * 32 * 3);
+        for (id, unit) in catalog.units.iter().enumerate().skip(1) {
+            if unit.name.starts_with("declaration#") {
+                assert_eq!(unit.name, format!("declaration#{id}"));
+                assert_eq!(unit.request.generation, 1);
+            } else if unit.name.contains(" :test#") {
+                assert_eq!(unit.name, format!("cljs.user/value :test#{id}"));
+                assert_eq!(unit.request.generation, 1);
+            }
+        }
+        drop(catalog);
+        let mut published = prefix;
+        for fragment in fragments {
+            assert_eq!(fragment.len(), 32 * 3 + 1);
+            published.append_namespace(fragment);
+        }
+        assert_eq!(published.bundle_count, 4);
+        assert_eq!(published.environment_bundles, 1);
+        for slot in 0..4 {
+            let name = format!("route{slot}");
+            assert_eq!(published.multifn_targets.get(&name), Some(&name));
+        }
+    }
+
+    /// Real registration through reserved passes, with allocation order the
+    /// reverse of declaration order. Constant bodies avoid importing another
+    /// fixture's catalog IDs through the captured resolution snapshots.
+    #[cfg(feature = "bbp-macros")]
+    fn registered_backwards(source: &str) -> (CompilationSession, HashMap<String, usize>) {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        RETAINED.set(Some(Vec::new()));
+        let _ = crate::compile_with_macros(source, &mut host);
+        let jobs = RETAINED.take().unwrap();
+        let original = host.session_handle().unwrap();
+        let session = CompilationSession::default();
+        session.shared.lanes.enable();
+        let passes: Vec<_> = jobs
+            .iter()
+            .map(|(_, _, snapshot, _)| {
+                session
+                    .shared
+                    .lanes
+                    .reserve_pass(Some(snapshot.source_index))
+            })
+            .collect();
+        let mut units = HashMap::new();
+        for ((id, form, snapshot, environment), pass) in jobs.into_iter().zip(passes).rev() {
+            let _pass = pass.begin(false);
+            let name = original.shared.unit_name(id);
+            let id = session
+                .register(
+                    name.clone(),
+                    Some(form),
+                    snapshot,
+                    MacroHost::bind(environment, None).unwrap(),
+                    false,
+                    name.clone(),
+                )
+                .unwrap()
+                .unwrap();
+            session.set_pooled(id);
+            units.insert(name, id);
+        }
+        *session.pool.borrow_mut() = Some(UnitPool {
+            inbox: Arc::new(Inbox::default()),
+            shared: session.shared.clone(),
+            thread: None,
+            engines: PoolEngines::Persistent,
+            workers: 1,
+            engine_workers: 1,
+            main: host.environment(),
+        });
+        (session, units)
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn reversed_registration_keeps_failure_admission_and_drained_counts_in_source_order() {
+        let (session, units) = registered_backwards(
+            "(defn first [] 1) (defn bad [] (if)) (defn later-bad [] (if)) (defn tail [] 4)",
+        );
+        let [first, bad, later_bad, tail] =
+            ["first", "bad", "later-bad", "tail"].map(|name| units[&format!("cljs.user/{name}")]);
+        assert!(first > bad && bad > later_bad && later_bad > tail);
+        // A later failure with a smaller ID must not exclude earlier work
+        // that registered later, or count in that earlier source's drain.
+        assert!(session.analyze(later_bad, None).is_err());
+        session.shared.note_job(later_bad);
+        assert!(session.shared.admits(first));
+        assert!(session.shared.admits(bad));
+        assert!(!session.shared.admits(tail));
+        let waiter = session.shared.join();
+        assert!(matches!(session.shared.claim(waiter, tail, true, None),
+            Err(message) if message == SKIPPED_AFTER_FAILURE));
+        session.analyze_drained(first, true).unwrap();
+        let counts = session.failed_unit_counts();
+        assert_eq!([counts.analyzed, counts.prepared], [1, 0]);
+        assert!(session.analyze_drained(bad, true).is_err());
+        session.shared.note_job(bad);
+        assert_eq!(
+            session
+                .shared
+                .failed_job
+                .load(std::sync::atomic::Ordering::Relaxed),
+            bad + 1
+        );
+        assert!(!session.shared.admits(later_bad));
+        assert!(session.shared.admits(first));
+        let counts = session.failed_unit_counts();
+        assert_eq!(
+            counts.analyzed, 2,
+            "the speculative later failure is excluded"
+        );
+        assert_eq!(session.unit_counts().analyzed, 3);
+        // A repeated earlier drain does not move the cutoff backwards.
+        session.note_drained(first);
+        assert_eq!(session.failed_unit_counts().analyzed, 2);
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn reversed_registration_keeps_coordinator_help_in_source_order() {
+        let (session, units) = registered_backwards(
+            "(defn first [] 1) (defn second [] 2) (defn bad [] (if)) (defn tail [] 4)",
+        );
+        let [first, second, bad, tail] =
+            ["first", "second", "bad", "tail"].map(|name| units[&format!("cljs.user/{name}")]);
+        assert!(first > second && second > bad && bad > tail);
+        let claimed = Arc::new(Mutex::new(Vec::new()));
+        let observed = claimed.clone();
+        *session.shared.on_claim.lock().unwrap() = Some(Arc::new(move |id| {
+            observed.lock().unwrap().push(id);
+        }));
+        session.analyze_queued(None);
+        assert_eq!(*claimed.lock().unwrap(), [first, second, bad]);
+        assert!(session.unit_failed(bad));
+        assert!(matches!(
+            session.shared.lock().units[tail].state,
+            AnalysisState::Unstarted
+        ));
+        assert_eq!(session.unit_counts().coordinator_units, 3);
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn reversed_registration_help_stays_within_the_awaited_sources_drain() {
+        let (session, units) = registered_backwards(
+            "(defn running [] 1) (defn same-source [] 2) (defn other-source [] 3)",
+        );
+        let [running, same, other] = ["running", "same-source", "other-source"]
+            .map(|name| units[&format!("cljs.user/{name}")]);
+        session.shared.lock().units[other].source = 1;
+        let worker = session.shared.join();
+        let claimed = session.shared.claim(worker, running, false, None).unwrap();
+        session.analyze_queued(Some(running));
+        {
+            let catalog = session.shared.lock();
+            assert!(matches!(
+                catalog.units[same].state,
+                AnalysisState::Analyzed(..)
+            ));
+            assert!(matches!(
+                catalog.units[other].state,
+                AnalysisState::Unstarted
+            ));
+        }
+        assert_eq!(session.unit_counts().coordinator_units, 1);
+        session.end_top_level_passes();
+        session.analyze_queued(Some(running));
+        assert_eq!(session.unit_counts().coordinator_units, 2);
+        assert!(matches!(
+            session.shared.lock().units[other].state,
+            AnalysisState::Analyzed(..)
+        ));
+        drop(claimed);
+        session.shared.settle(worker, running, None, 0);
+    }
+
     #[test]
     fn failed_counts_exclude_units_prepared_after_the_chosen_failure() {
         let (session, units, _) =
@@ -6679,7 +7701,7 @@ mod worker_tests {
                         ))
                         .unwrap();
                     evaluator.release(value).unwrap();
-                    assert_eq!(view.installed.get(), shared.lock().registrations.len());
+                    assert_eq!(view.installed.get(), shared.lock().journal.registrations.len());
                 })
                 .join()
                 .unwrap();
@@ -6700,7 +7722,7 @@ mod worker_tests {
             .unwrap();
         let session = host.session_handle().unwrap();
         let shared = session.shared().clone();
-        let total = shared.lock().registrations.len();
+        let total = shared.lock().journal.registrations.len();
         assert!(total > 0);
         let environment = host.environment();
         std::thread::scope(|scope| {

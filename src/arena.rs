@@ -426,6 +426,8 @@ impl<T> Arena<T> {
         self.iter().cloned().collect()
     }
 
+    // Keep tree traversal out of the inlined indexing/iterator fast paths.
+    #[inline(never)]
     fn leaf(&self, id: usize) -> (usize, &[T]) {
         if id >= self.frozen {
             return (self.frozen, &self.tail);
@@ -437,6 +439,13 @@ impl<T> Arena<T> {
 }
 
 impl<T: Clone> Arena<T> {
+    /// Consume the arena as contiguous entries, moving unshared chunks and
+    /// copying shared ones so earlier snapshots keep their contents.
+    pub(crate) fn into_vec(mut self) -> Vec<T> {
+        self.unfreeze();
+        self.tail
+    }
+
     /// Move the tail into a frozen chunk, so a clone shares it instead of
     /// copying it. The entries keep their IDs. A new chunk at least half as
     /// long as the one before it is merged with it into a new chunk, so the
@@ -486,6 +495,14 @@ impl<T: Clone> Arena<T> {
         Arc::make_mut(&mut self.chunks[chunk]).get_mut(index)
     }
 
+    #[inline(never)]
+    fn frozen_index_mut(&mut self, id: usize) -> &mut T {
+        let (chunk, index) = self.chunk(id);
+        Arc::make_mut(&mut self.chunks[chunk])
+            .get_mut(index)
+            .expect("arena index")
+    }
+
     /// Copy every frozen chunk into the tail, so no entry is shared.
     pub fn unfreeze(&mut self) {
         if self.chunks.is_empty() {
@@ -511,6 +528,7 @@ impl<T: Clone> Arena<T> {
 
 impl<T> Index<usize> for Arena<T> {
     type Output = T;
+    #[inline(always)]
     fn index(&self, id: usize) -> &T {
         #[cfg(all(test, feature = "bbp-macros"))]
         note_read();
@@ -523,14 +541,12 @@ impl<T> Index<usize> for Arena<T> {
 }
 
 impl<T: Clone> IndexMut<usize> for Arena<T> {
+    #[inline(always)]
     fn index_mut(&mut self, id: usize) -> &mut T {
         if id >= self.frozen {
             return &mut self.tail[id - self.frozen];
         }
-        let (chunk, index) = self.chunk(id);
-        Arc::make_mut(&mut self.chunks[chunk])
-            .get_mut(index)
-            .expect("arena index")
+        self.frozen_index_mut(id)
     }
 }
 
@@ -582,6 +598,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
         self.next_back()
     }
 
+    #[inline(always)]
     fn next(&mut self) -> Option<&'a T> {
         if self.front >= self.back {
             return None;
@@ -612,6 +629,7 @@ impl<T> DoubleEndedIterator for Iter<'_, T> {
         self.next_back()
     }
 
+    #[inline(always)]
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.front >= self.back {
             return None;

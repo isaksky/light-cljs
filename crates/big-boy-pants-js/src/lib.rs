@@ -98,6 +98,8 @@ mod realm;
 mod runtime;
 pub mod task;
 mod value;
+mod template;
+pub use template::TaskTemplate;
 pub mod vm;
 // Internal enqueue APIs have no production producer until the promise and
 // FinalizationRegistry pellets land; this pellet exercises them in lib tests.

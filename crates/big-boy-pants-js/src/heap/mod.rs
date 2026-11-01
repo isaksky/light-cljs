@@ -567,6 +567,13 @@ impl HeapPolicy {
 #[cfg(test)]
 pub(crate) struct ObjectsHeld<'a>(#[allow(dead_code)] MutexGuard<'a, ObjectTable>);
 
+// Read on every interpreter dispatch pass, but written only after collection.
+// Keep allocation counters, metadata locks and Arc ownership traffic off this
+// line. 128-byte alignment also separates adjacent 64-byte cache lines.
+#[repr(align(128))]
+#[derive(Debug, Default)]
+struct CollectionThreshold(AtomicUsize);
+
 /// The heap shared by all tasks of one runtime.
 #[derive(Debug, Default)]
 pub(crate) struct Heap {
@@ -574,7 +581,7 @@ pub(crate) struct Heap {
     policy: HeapPolicy,
     allocations_since_collection: AtomicUsize,
     allocated_objects: AtomicUsize,
-    next_collection: AtomicUsize,
+    next_collection: CollectionThreshold,
     /// Immutable host zone, shared by every task/world of this runtime.
     pub(crate) date_zone: std::sync::OnceLock<crate::host::TimeZone>,
     /// Collector state: the per-thread mutator registry, pending
@@ -763,7 +770,7 @@ impl Heap {
             keys: PropertyKeys::with_budget(budget.clone()),
             byte_budget: budget,
             policy,
-            next_collection: AtomicUsize::new(policy.threshold(0, 0)),
+            next_collection: CollectionThreshold(AtomicUsize::new(policy.threshold(0, 0))),
             ..Self::default()
         }
     }
@@ -833,7 +840,7 @@ impl Heap {
     /// Allocation only records pressure. The runner releases its run token
     /// after all new identities have reached traced frames, then rendezvous.
     pub(crate) fn automatic_collection_due(&self) -> bool {
-        let threshold = self.next_collection.load(Ordering::Relaxed);
+        let threshold = self.next_collection.0.load(Ordering::Relaxed);
         let threshold = if threshold == 0 {
             self.policy.threshold(0, 0)
         } else {
@@ -937,7 +944,6 @@ impl Heap {
     }
 
     /// The known-shareable bit of a live object (tests).
-    #[cfg(test)]
     pub(crate) fn known_shareable(&self, id: ObjectId) -> Option<bool> {
         self.slot_directory.known(id)
     }
@@ -989,6 +995,10 @@ impl Heap {
     #[cfg(test)]
     pub(crate) fn address(&self, id: ObjectId) -> Option<usize> {
         self.read(id, |o| std::ptr::from_ref(o) as usize)
+    }
+
+    pub(crate) fn collection_count(&self) -> u64 {
+        lock(&self.gc).collections
     }
 
     pub(crate) fn stats(&self) -> HeapStats {
@@ -1090,6 +1100,48 @@ impl Heap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collection_threshold_has_its_own_cache_line() {
+        let heap = Arc::new(Heap::default());
+        let line = |address: usize| address / 128;
+        let threshold = &heap.next_collection.0 as *const AtomicUsize as usize;
+        assert_eq!(threshold % 128, 0);
+        assert_eq!(std::mem::size_of::<CollectionThreshold>(), 128);
+        assert_eq!(Arc::as_ptr(&heap) as usize % 128, 0);
+        for other in [
+            &heap.allocations_since_collection as *const _ as usize,
+            &heap.allocated_objects as *const _ as usize,
+            &heap.requested as *const _ as usize,
+            &heap.gc as *const _ as usize,
+            &heap.objects as *const _ as usize,
+            &heap.scopes as *const _ as usize,
+        ] {
+            assert_ne!(line(threshold), line(other));
+        }
+    }
+
+    #[test]
+    fn collection_count_matches_stats_without_root_or_object_locks() {
+        let heap = Arc::new(Heap::default());
+        assert_eq!(heap.collection_count(), 0);
+        for expected in 1..=3 {
+            heap.collect().unwrap();
+            assert_eq!(heap.collection_count(), expected);
+            assert_eq!(heap.collection_count(), heap.stats().collections);
+        }
+        let roots = lock(&heap.roots);
+        let objects = lock(&heap.objects);
+        let queried = heap.clone();
+        let (send, receive) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            send.send(queried.collection_count()).unwrap();
+        });
+        let count = receive.recv_timeout(std::time::Duration::from_secs(2));
+        drop((objects, roots));
+        thread.join().unwrap();
+        assert_eq!(count.unwrap(), 3);
+    }
 
     #[test]
     fn allocation_gives_distinct_stable_identities() {

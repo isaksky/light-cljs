@@ -14,6 +14,7 @@ use crate::call_shapes::{CallShapes, DirectCall, Entry, FunctionShape, LocalFunc
 use crate::core_operations::Type;
 use crate::folding::Members;
 use crate::inference::{Inference, Known};
+use crate::program_fragment::visit_children;
 use crate::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RuntimeManifest};
 use crate::runtime_slice::{
     ConstantPool, EmittedRuntime, NameUse, RuntimeEmbedding, RuntimeName, RuntimeRoots,
@@ -23,6 +24,35 @@ use crate::value_hash::ConstantHashes;
 
 mod chunked;
 pub(crate) use chunked::{ChunkConstant, EmittedChunk, emit_chunked};
+
+#[cfg(test)]
+thread_local! {
+    static BODY_EMISSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+mod emission_pass_tests {
+    #[test]
+    fn record_kits_and_observed_private_brands_share_the_final_emission() {
+        let source = "(defrecord R [a])
+                      (let [r (->R 1) s (assoc r :b 2)]
+                        (array (record? s) (= r (->R 1)) (hash s)))";
+        let program = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+        let mut options = crate::ApplicationOptions::new(crate::OptimizationLevel::Advanced);
+        options.pseudo_names = true;
+        let prepared = crate::prepare_application(&program, options);
+        super::BODY_EMISSIONS.set(0);
+        let plain = prepared.emit_js();
+        assert_eq!(super::BODY_EMISSIONS.get(), 2);
+        assert!(plain.contains("rt$defineClass(class { #b;"));
+        assert!(plain.contains("this.constructor === a1.constructor"));
+        assert!(plain.contains("rt$recordEntriesHash"));
+        super::BODY_EMISSIONS.set(0);
+        let (mapped, _) = prepared.emit_js_mapped();
+        assert_eq!(super::BODY_EMISSIONS.get(), 2);
+        assert_eq!(plain, mapped);
+    }
+}
 
 /// What `rt.core.<name>` holds in the embedded runtime's core table.
 fn core_reference(name: &str) -> CoreReference<'static> {
@@ -291,6 +321,88 @@ pub(crate) fn emit_reader_registration(
 #[cfg(test)]
 mod deferred_storage_tests {
     use super::*;
+
+    #[test]
+    fn independently_emitted_reify_sites_keep_distinct_types_and_stable_factory_identity() {
+        let host = crate::MacroHost::new();
+        for deferred in [false, true] {
+            let engine = host.new_compiler_evaluator().unwrap();
+            let bootstrap = crate::compiler_bootstrap::bind(engine.clone()).unwrap();
+            let session = crate::compilation_session::CompilationSession::new();
+            session.attach(&bootstrap, &host).unwrap();
+            let mut sites = Vec::new();
+            let code = [1, 2].map(|offset| {
+                let text = format!(r#"(fn [x]
+                    (js* "(() => {{ if (typeof __lightUnitReify0 !== 'undefined') throw new Error('captured compiler site'); return null; }})()")
+                    (reify Object (toString [_] (str (+ x {offset})))))"#);
+                let program = crate::analyze(&text, &crate::parse(&text).unwrap()).unwrap();
+                sites.push(
+                    program
+                        .exprs
+                        .iter()
+                        .position(|e| matches!(e.kind, ExprKind::Reify { .. }))
+                        .unwrap(),
+                );
+                #[cfg(feature = "bbp-macros")]
+                if engine.native_forms() {
+                    return emit_native_macro_unit(&program, deferred, &[]);
+                }
+                if deferred {
+                    emit_deferred_unit(&program)
+                } else {
+                    emit_js_unit(&program)
+                }
+            });
+            assert_eq!(
+                sites[0], sites[1],
+                "fixture must reuse local expression IDs"
+            );
+            let source = format!(
+                r#"rt => {{
+                const af = ({}), bf = ({});
+                const a = af(rt), again = af(rt), b = bf(rt);
+                const a1 = a(10), a2 = again(20), b1 = b(10), b2 = b(20);
+                const actual = JSON.stringify([a1.toString(), b1.toString(), a2.toString(), b2.toString(),
+                    Object.getPrototypeOf(a1) === Object.getPrototypeOf(a2),
+                    Object.getPrototypeOf(b1) === Object.getPrototypeOf(b2),
+                    Object.getPrototypeOf(a1) !== Object.getPrototypeOf(b1)]);
+                if (actual !== '["11","12","21","22",true,true,true]') throw new Error(actual);
+                return null;
+            }}"#,
+                code[0], code[1]
+            );
+            let value = engine.evaluate_unit(&source).unwrap_or_else(|e| panic!("deferred={deferred}: {e}"));
+            engine.release(value).unwrap();
+            engine
+                .clone()
+                .install_compiler_service(
+                    "__lightCompileUnit",
+                    std::rc::Rc::new(move |_, id| Ok(code[id as usize].clone())),
+                )
+                .unwrap();
+            engine
+                .register_compiler_root("sites/a", Some(0), false, "site-a", None)
+                .unwrap();
+            engine
+                .register_compiler_root("sites/b", Some(1), false, "site-b", None)
+                .unwrap();
+            // Native lazy demand publishes each factory across tasks. A
+            // task-owned object token would pass the direct calls above but
+            // fail this publication; symbols are immutable shared values.
+            let value = engine
+                .evaluate_unit(
+                    r#"rt => {
+                const a = globalThis.__lightCompilerRoots['sites/a'];
+                const b = globalThis.__lightCompilerRoots['sites/b'];
+                const actual = JSON.stringify([a(30).toString(), b(30).toString()]);
+                if (actual !== '["31","32"]') throw new Error(actual);
+                return null;
+            }"#,
+                )
+                .unwrap();
+            engine.release(value).unwrap();
+        }
+    }
 
     #[cfg(feature = "bbp-macros")]
     #[test]
@@ -592,6 +704,8 @@ fn emit_js_mode(
     });
     // The prelude, the `let g<n>;` declarations and the program body.
     let body = |register_namespaces: bool, brand_types: TypeBrands, record_kits: [bool; 2]| {
+        #[cfg(test)]
+        BODY_EMISSIONS.with(|count| count.set(count.get() + 1));
         let mut emitter = Emitter::new(
             program,
             Setup {
@@ -607,6 +721,7 @@ fn emit_js_mode(
         );
         emitter.brand_types = brand_types;
         emitter.native_forms = native_forms;
+        emitter.unit_reify_sites = (shared == Some(UNIT_RUNTIME)).then(HashMap::new);
         if native_forms {
             emitter.index_native_unit(root);
             emitter
@@ -695,7 +810,18 @@ fn emit_js_mode(
         [false; 2]
     };
     if record_kits.contains(&true) {
-        (emitter, prelude_end) = body(emitter.register_namespaces, TypeBrands::Shared, record_kits);
+        // Record kits only add runtime roots. If the first body already
+        // reads brands and its constructors cannot escape, those brands
+        // will still be read with the kits installed. Choose the final
+        // class representation now, avoiding an entire intermediate body.
+        // When brands are unread, the added roots may change that decision;
+        // keep the shared representation until the check below in that case.
+        let brands = if emitter.own_brands() && !emitter.unobserved_brands() {
+            TypeBrands::Own
+        } else {
+            TypeBrands::Shared
+        };
+        (emitter, prelude_end) = body(emitter.register_namespaces, brands, record_kits);
     }
     // A type's own constructor brands its instance only where a brand may be
     // observed (`Emitter::unobserved_brands`): the body is emitted again
@@ -929,10 +1055,17 @@ fn emit_js_mode(
         // A native unit's struct types exist once for every task that runs
         // its factory, which captures them (light-cljs-478).
         let mut open = String::new();
-        if !emitter.native_types.is_empty() {
+        let reify_sites = emitter.unit_reify_sites.as_ref().map_or(0, HashMap::len);
+        if !emitter.native_types.is_empty() || reify_sites != 0 {
             open.push_str("(() => { ");
             for (index, ty) in emitter.native_types.iter().enumerate() {
                 write!(open, "const __lightUnitType{index} = {ty}; ").unwrap();
+            }
+            // A local expression number is not a type identity across
+            // independently emitted units. Keep opaque site tokens in the
+            // factory's closure, shared by all calls of that factory.
+            for index in 0..reify_sites {
+                write!(open, "const __lightUnitReify{index} = Symbol(); ").unwrap();
             }
             open.push_str("return ");
             emitter.output.push_str("; })()");
@@ -1856,6 +1989,9 @@ struct Emitter<'a> {
     /// `defrecord`s define, created once where the unit's factory is made
     /// (light-cljs-478): each the expression of `__lightUnitType<i>`.
     native_types: Vec<String>,
+    /// Compile-time units share a runtime but not an expression arena.
+    /// Application emission retains its whole-program numeric site IDs.
+    unit_reify_sites: Option<HashMap<ExprId, usize>>,
     registration_chunks: Vec<(String, std::ops::Range<usize>)>,
     program: &'a Program,
     demand_roots: bool,
@@ -2102,7 +2238,7 @@ impl<'a> Emitter<'a> {
                 }
                 _ => (),
             }
-            pending.extend(crate::program_fragment::children(program, id));
+            visit_children(&program.exprs[id.0].kind, |child| pending.push(child));
         }
     }
 
@@ -2148,6 +2284,7 @@ impl<'a> Emitter<'a> {
             native_call_member_temporary: None,
             struct_targets: Default::default(),
             native_types: Vec::new(),
+            unit_reify_sites: None,
             registration_chunks: Vec::new(),
             program,
             demand_roots,
@@ -6677,7 +6814,6 @@ impl<'a> Emitter<'a> {
                 self.scope_flags[id.0] = own | SCOPE_DONE;
                 continue;
             }
-            let children = crate::program_fragment::children(program, id);
             if expanded {
                 let statement = match program.exprs[id.0].kind {
                     ExprKind::Loop { .. }
@@ -6688,20 +6824,18 @@ impl<'a> Emitter<'a> {
                     | ExprKind::Try { .. } => SCOPE_STATEMENT,
                     _ => 0,
                 };
-                let flags = children
-                    .iter()
-                    .fold(SCOPE_DONE | statement, |flags, child| {
-                        flags | self.scope_flags[child.0]
-                    });
+                let mut flags = SCOPE_DONE | statement;
+                visit_children(&program.exprs[id.0].kind, |child| {
+                    flags |= self.scope_flags[child.0];
+                });
                 self.scope_flags[id.0] = flags;
             } else {
                 pending.push((id, true));
-                pending.extend(
-                    children
-                        .into_iter()
-                        .filter(|child| self.scope_flags[child.0] & SCOPE_DONE == 0)
-                        .map(|child| (child, false)),
-                );
+                visit_children(&program.exprs[id.0].kind, |child| {
+                    if self.scope_flags[child.0] & SCOPE_DONE == 0 {
+                        pending.push((child, false));
+                    }
+                });
             }
         }
         self.scope_flags[id.0]
@@ -7110,7 +7244,7 @@ impl<'a> Emitter<'a> {
                 | ExprKind::JsTemplate { .. }
                 | ExprKind::Def { test: Some(_), .. } => return false,
                 ExprKind::Fn { .. } => (),
-                _ => pending.extend(crate::program_fragment::children(program, id)),
+                _ => visit_children(&program.exprs[id.0].kind, |child| pending.push(child)),
             }
         }
         true
@@ -8355,7 +8489,13 @@ impl<'a> Emitter<'a> {
                 methods,
             } => {
                 self.rt(RuntimeName::export("reify"));
-                write!(self.output, "({}, [", id.0).unwrap();
+                if let Some(sites) = &mut self.unit_reify_sites {
+                    let next = sites.len();
+                    let site = *sites.entry(id).or_insert(next);
+                    write!(self.output, "(__lightUnitReify{site}, [").unwrap();
+                } else {
+                    write!(self.output, "({}, [", id.0).unwrap();
+                }
                 for (index, local) in captures.iter().enumerate() {
                     if index > 0 {
                         self.output.push_str(", ");
@@ -9458,7 +9598,7 @@ fn reads_function_scope(program: &Program, id: ExprId) -> bool {
                 return true;
             }
             ExprKind::Fn { .. } => (),
-            _ => pending.extend(crate::program_fragment::children(program, id)),
+            _ => visit_children(&program.exprs[id.0].kind, |child| pending.push(child)),
         }
     }
     false

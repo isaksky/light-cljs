@@ -361,7 +361,7 @@ impl NamespaceLog {
 mod tests {
     use super::*;
 
-    fn tag(position: u64, owners: &[Target]) -> NamespaceTag {
+    fn tag(position: Position, owners: &[Target]) -> NamespaceTag {
         NamespaceTag {
             position,
             owners: owners.to_vec(),
@@ -431,7 +431,7 @@ mod tests {
         let table: crate::arena::Arena<String> = ["app".to_owned()].into_iter().collect();
         const CHAINS: usize = 4096;
         for unit in 1..=CHAINS {
-            log.register(&table, 1, &tag(unit as u64, &[Target::Unit(unit)]));
+            log.register(&table, 1, &tag(unit as Position, &[Target::Unit(unit)]));
         }
         assert_eq!(log.chains.len(), CHAINS);
         let none = Floors::new();
@@ -459,7 +459,7 @@ mod tests {
         // the hash table's iteration order. Position zero needs no walk.
         let made = name("made");
         for unit in 1..=CHAINS {
-            log.record(&made, &tag(unit as u64, &[Target::Unit(unit)]));
+            log.record(&made, &tag(unit as Position, &[Target::Unit(unit)]));
         }
         log.chain_visits.set(0);
         assert!(log.has(&made, &NamespaceView::ALL, &none));
@@ -555,7 +555,7 @@ mod tests {
                 } else {
                     1 + next(5)
                 };
-                let tag = tag(position, &owners);
+                let tag = tag(position.into(), &owners);
                 match next(6) {
                     0 => {
                         let n = name(&format!("ns{}", next(26)));
@@ -568,7 +568,7 @@ mod tests {
                             1 => Target::Cell(next(3)),
                             _ => Target::Unit(next(6) as usize),
                         };
-                        let floor = (next(6), crate::effect_lanes::next_order());
+                        let floor = (Position::from(next(6)), crate::effect_lanes::next_order());
                         let entry = floors.entry(target).or_insert(floor);
                         *entry = (*entry).min(floor);
                     }
@@ -623,7 +623,7 @@ mod tests {
         let mut log = NamespaceLog::default();
         let table: crate::arena::Arena<String> = (0..1000).map(|i| format!("ns{i}")).collect();
         for unit in 1..=50 {
-            let tag = tag(unit as u64, &[Target::Unit(unit)]);
+            let tag = tag(unit as Position, &[Target::Unit(unit)]);
             assert_eq!(log.register(&table, 0, &tag), 1000);
             assert_eq!(log.register(&table, 1000, &tag), 1000);
         }

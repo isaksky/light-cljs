@@ -3,7 +3,7 @@
 use crate::{
     CollectionKind as C,
     compiler_data::{
-        CompilerLiteralKind as L, Datum, DatumKind as D, ExpansionOrigin, Form, Name, SourceSpan,
+        CompilerLiteralKind as L, Datum, DatumKind as D, ExpansionOrigin, Form, FormView, Name, SourceSpan,
     },
     compiler_evaluator::{
         CompilerEvaluator, NativeRunner, NativeSubmit, NativeSubmitter, StringService, UnitService,
@@ -31,6 +31,8 @@ use std::{
 };
 
 mod catalog;
+pub(crate) use catalog::CatalogSeed;
+mod imports;
 mod namespaces;
 mod real_core;
 
@@ -216,7 +218,11 @@ struct Bridge {
     imports: IdentityMap<usize, Imported>,
     forms: IdentityMap<usize, Form>,
     stats: BridgeStats,
-    next_token: u32,
+    next_token: Arc<AtomicU32>,
+    inflight: IdentityMap<usize, Arc<imports::Claim>>,
+    // A detached allocator stores costs but no retention edges. Its successful
+    // imports acquire the ordinary global retention graph at publication.
+    detached_imports: Option<Vec<usize>>,
     collected: u64,
     environment: Option<(Datum, Rooted)>,
     cost_entries: usize,
@@ -226,6 +232,10 @@ struct Bridge {
     // already belong to Imported, so the lookup need not duplicate them.
     native_objects: IdentityMap<ObjectIdentity, usize>,
     reclaimed: ReclamationQueue,
+    // Only set while an evaluator import holds the bridge. Its enclosing
+    // no-GC scope remains active until these watches are registered outside
+    // the bridge lock, including when conversion returns an error.
+    pending_watches: Option<Vec<(ObjectIdentity, usize)>>,
     // Each identity stays allocated through a surviving Imported Datum tree.
     // When a root dies, hold that Datum until its child links are released.
     retained: IdentityMap<usize, usize>,
@@ -237,10 +247,10 @@ struct Bridge {
     gensym_counter: u64,
     // Keys include the native service's 'a' request tag. Retain accounted
     // engine strings: generated spellings cannot grow uncharged host buffers.
-    generated_names: HashSet<JsString>,
+    generated_names: imports::GeneratedNames,
     // A parked initializer may inherit an earlier caller. Gensym uses that
     // caller's counter and capture log, even on the later caller's VM task.
-    initializer_callers: HashMap<u64, BTreeMap<u64, u64>>,
+    initializer_callers: HashMap<u64, BTreeMap<crate::effect_lanes::Position, u64>>,
     initializer_parents: HashMap<u64, HashSet<u64>>,
     caller_gensyms: HashMap<u64, crate::generated_names::NativeGensyms>,
     initializer_namespaces: HashMap<(u64, u64), (u64, bool)>,
@@ -468,6 +478,11 @@ impl Bridge {
     fn poll(&self) -> Result<(), EvalError> {
         self.control.as_ref().map_or(Ok(()), ExecutionControl::poll)
     }
+    /// Existing spellings already own accounted engine storage. Probe by code
+    /// units before allocating another managed body just to discard it.
+    fn remember_generated_name(&mut self, s: &Scope<'_>, key: &[u16]) -> Result<bool, EvalError> {
+        self.generated_names.remember(s, key)
+    }
     fn charge(&self, data: &Datum, depth: usize, remaining: &mut usize) -> Result<(), EvalError> {
         let (nodes, height) = self.cost(data.identity()).expect("imported cost");
         if depth < height || *remaining < nodes {
@@ -510,7 +525,7 @@ impl Bridge {
                     if n.namespace().is_none() {
                         let mut key = vec![b'a' as u16];
                         key.extend_from_slice(n.name());
-                        self.generated_names.insert(string(s, &key)?);
+                        self.remember_generated_name(s, &key)?;
                     }
                     s.new_symbol(ns, name)
                 } else {
@@ -585,42 +600,60 @@ impl Bridge {
         let native = s
             .object_identity(raw)
             .map(|identity| (identity, s.downgrade(raw)));
-        let token = self.next_token;
-        self.next_token = token
-            .checked_add(1)
-            .ok_or_else(|| error("too many imported occurrences"))?;
-        let location = self
-            .forms
-            .get(&d.identity())
-            .map(|f| crate::compiler_data::DiagnosticLocation::from_span(&f.span()));
+        let token = self
+            .next_token
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |token| {
+                token.checked_add(1)
+            })
+            .map_err(|_| error("too many imported occurrences"))?;
+        let location = self.forms.get(&d.identity()).map(|f| {
+            // Occurrences need coordinates, not a diagnostic's owned copy
+            // of the source name and complete form text. In particular a
+            // collection's text includes every descendant imported below it.
+            let span = f.span();
+            span.source().line_column(span.bytes().start).unwrap()
+        });
         let value = s
             .new_occurrence(
                 value,
                 Provenance {
                     source: token,
-                    line: location.as_ref().map_or(0, |l| l.line as u32),
-                    column: location.as_ref().map_or(0, |l| l.column as u32),
+                    line: location.map_or(0, |(line, _)| line as u32),
+                    column: location.map_or(0, |(_, column)| column as u32),
                 },
             )
             .map_err(error)?;
         let occurrence = s.downgrade(value);
         // Publish the raw-object entry only after occurrence allocation
         // succeeds, so failed imports cannot leave an unwatched entry.
+        let mut raw_watch = None;
         let native = native.map(|(identity, weak)| {
+            if self.pending_watches.is_some() {
+                raw_watch = Some(identity.clone());
+            }
             self.native_objects.insert(identity, d.identity());
             weak
         });
         let identity = s
             .object_identity(value)
             .expect("an occurrence is an object");
+        if let Some(pending) = &mut self.pending_watches {
+            pending.push((identity.clone(), d.identity()));
+            if let Some(identity) = raw_watch {
+                pending.push((identity, d.identity()));
+            }
+        }
         self.native_objects.insert(identity, d.identity());
         let retained = match self.imports.get(&d.identity()) {
             Some(imported) => imported.retained,
+            None if self.detached_imports.is_some() => self.retain_reference(d.identity()).0,
             None => self.retain_datum(d),
         };
-        s.watch_reclamation(value, &self.reclaimed, d.identity());
-        if native.is_some() {
-            s.watch_reclamation(raw, &self.reclaimed, d.identity());
+        if self.pending_watches.is_none() {
+            s.watch_reclamation(value, &self.reclaimed, d.identity());
+            if native.is_some() {
+                s.watch_reclamation(raw, &self.reclaimed, d.identity());
+            }
         }
         self.imports.insert(
             d.identity(),
@@ -650,6 +683,9 @@ impl Bridge {
             .expect("retained import");
         self.cost_entries += usize::from(state.cost.replace(cost).is_none());
         self.stats.imported += 1;
+        if let Some(imported) = &mut self.detached_imports {
+            imported.push(d.identity());
+        }
         Ok(value)
     }
     fn environment<'s>(
@@ -698,6 +734,7 @@ impl Bridge {
                 rebuilt += 1;
             }
         }
+        let mut updates = Vec::new();
         for (key, new) in &after {
             if before
                 .iter()
@@ -707,9 +744,10 @@ impl Bridge {
             }
             let k = self.import(s, key, limits.depth, &mut remaining)?;
             let v = self.import(s, new, limits.depth, &mut remaining)?;
-            value = s.form_assoc(value, k, v).map_err(error)?;
+            updates.push((k, v));
             rebuilt += 1;
         }
+        value = s.form_assoc_entries(value, &updates).map_err(error)?;
         if counted {
             self.counters.env_entries_rebuilt += rebuilt;
         }
@@ -992,6 +1030,15 @@ impl Bridge {
         depth: usize,
         remaining: &mut usize,
     ) -> Result<(), EvalError> {
+        self.remember_view(form.view(), depth, remaining)
+    }
+
+    fn remember_view(
+        &mut self,
+        form: FormView<'_>,
+        depth: usize,
+        remaining: &mut usize,
+    ) -> Result<(), EvalError> {
         self.poll()?;
         // A generated symbol (notably an anonymous fn parameter) may share
         // one Datum at several source positions. Legacy retain chooses the
@@ -1001,16 +1048,16 @@ impl Bridge {
         }
         *remaining -= 1;
         for f in form.children() {
-            self.remember(&f, depth - 1, remaining)?;
+            self.remember_view(f, depth - 1, remaining)?;
         }
         if let Some(f) = form.node().compiler_payload.and_then(|id| form.at(id)) {
-            self.remember(&f, depth - 1, remaining)?;
+            self.remember_view(f, depth - 1, remaining)?;
         }
-        if let Some(f) = form.metadata() {
-            self.remember(&f, depth - 1, remaining)?;
+        if let Some(f) = form.node().metadata.and_then(|id| form.at(id)) {
+            self.remember_view(f, depth - 1, remaining)?;
         }
         let key = form.data().identity();
-        self.forms.insert(key, form.clone());
+        self.forms.insert(key, form.to_form());
         if !self.retained.contains_key(&key) {
             self.unretained.insert(key);
         }
@@ -1100,6 +1147,8 @@ struct SharedRuntime {
     counters: Arc<NativeCounters>,
     runtime: Runtime,
     executable: Executable,
+    boot_template: std::sync::OnceLock<Result<big_boy_pants_js::TaskTemplate, &'static str>>,
+    boot_template_init: Mutex<()>,
     // One canonical immutable builtin tag table for this runtime. The
     // reader recognizes builtin handlers by identity across task migration.
     reader_tags: Rooted,
@@ -1193,6 +1242,8 @@ struct NativeCounters {
     steps: AtomicUsize,
     migrations: AtomicUsize,
     contexts: AtomicUsize,
+    #[cfg(test)]
+    contexts_from_template: AtomicUsize,
     units_compiled: AtomicUsize,
     units_shared: AtomicUsize,
     units_evaluated: AtomicUsize,
@@ -1493,7 +1544,7 @@ impl BbpRuntime {
             })
             .replace("/* CORE_KEYS */", &keys);
         big_boy_pants_js::frontend::compile_function(&format!(
-            "function nativeMacroTask(commandKind, beginKind, finishKind, readerTagsCell, rawMembersCell, stringKind, realCore) {{ {source} }}"
+            "function nativeMacroTask(channels, readerTagsCell, rawMembersCell, realCore) {{ {source} }}"
         ))
         .map_err(error)
         }).clone()?;
@@ -1521,6 +1572,8 @@ impl BbpRuntime {
             counters: Arc::new(NativeCounters::default()),
             runtime,
             executable,
+            boot_template: std::sync::OnceLock::new(),
+            boot_template_init: Mutex::new(()),
             reader_tags,
             raw_members,
             bridge: Arc::new(Mutex::new(Bridge {
@@ -1833,9 +1886,14 @@ pub(crate) struct TaskContext {
     last_thread: Arc<Mutex<std::thread::ThreadId>>,
     registrations: RefCell<Vec<String>>,
     catalog_snapshot: RefCell<Option<Rooted>>,
+    /// Identity of this append-only registration journal; producers inherit it.
+    catalog_branch: Cell<u64>,
     session: u64,
     next: Cell<u64>,
     values: RefCell<HashMap<u64, Rooted>>,
+    /// Results the command loop also holds until release. Imported values
+    /// live only in `values` and enter JavaScript in the call's rooted payload.
+    task_values: RefCell<HashSet<u64>>,
     /// Source macro declarations materialized in this task, keyed by code
     /// identity. A producer cannot use its parked parent's function handles;
     /// this cache also travels with a context borrowed by another pool slot.
@@ -1899,6 +1957,11 @@ pub struct BbpEvaluator {
     private_namespaces: Option<Arc<Mutex<namespaces::NamespaceLog>>>,
     stats: Cell<BridgeStats>,
     context: RefCell<Option<Rc<TaskContext>>>,
+    parallel_imports: Cell<bool>,
+    #[cfg(test)]
+    import_claimed: RefCell<Option<Box<dyn Fn()>>>,
+    #[cfg(test)]
+    import_waiting: RefCell<Option<Box<dyn Fn()>>>,
 }
 impl BbpEvaluator {
     pub fn new(options: EvaluatorOptions) -> Result<Self, EvalError> {
@@ -1926,6 +1989,11 @@ impl BbpEvaluator {
             submitter: RefCell::new(None),
             stats: Cell::new(BridgeStats::default()),
             context: RefCell::new(None),
+            parallel_imports: Cell::new(false),
+            #[cfg(test)]
+            import_claimed: RefCell::new(None),
+            #[cfg(test)]
+            import_waiting: RefCell::new(None),
         }
     }
     fn namespace_log(&self) -> &Arc<Mutex<namespaces::NamespaceLog>> {
@@ -1951,24 +2019,37 @@ impl BbpEvaluator {
                 kind.checked_add(4)
             })
             .map_err(|_| error("native task identity exhausted"))?;
-        let argument = runtime.root(Primitive::Number(kind as f64));
-        let begin = runtime.root(Primitive::Number((kind + 1) as f64));
-        let finish = runtime.root(Primitive::Number((kind + 2) as f64));
-        let string = runtime.root(Primitive::Number((kind + 3) as f64));
-        let task = runtime
+        let channels = runtime.scope(|scope| {
+            let kind = scope.primitive(Primitive::Number(kind as f64));
+            // The private token prevents this replaceable task parameter (or
+            // a closure capturing it) from entering published shared state.
+            let private = scope.try_new_object().ok_or_else(|| error("native task configuration allocation failed"))?;
+            scope.new_vector(&[kind, private]).map(|v| scope.persist(v)).map_err(error)
+        })?;
+        let use_template = self.shared.0.real_core.is_none()
+            && std::env::var_os("LIGHT_CLJS_REPLAY_BOOT").is_none();
+        // Only the first initializer holds this guard, before it runs any
+        // compiler services. Copies read the immutable template concurrently.
+        let mut template_init = if use_template && self.shared.0.boot_template.get().is_none() {
+            Some(self.shared.0.boot_template_init.lock().unwrap())
+        } else { None };
+        if self.shared.0.boot_template.get().is_some() { template_init.take(); }
+        let task = if use_template && let Some(Ok(template)) = self.shared.0.boot_template.get() {
+            #[cfg(test)]
+            self.shared.0.counters.contexts_from_template.fetch_add(1, Ordering::Relaxed);
+            runtime.spawn_template(template, &[&channels], DependencyKey::new(
+                runtime.world(), DependencyId::new(1), ResultKind::new(kind))).map_err(error)?
+        } else { runtime
             .spawn(
                 &self.shared.0.executable,
                 &[
-                    &argument,
-                    &begin,
-                    &finish,
+                    &channels,
                     &self.shared.0.reader_tags,
                     &self.shared.0.raw_members,
-                    &string,
                     &self.shared.0.real_core_handle,
                 ],
             )
-            .map_err(error)?;
+            .map_err(error)? };
         *self.context.borrow_mut() = Some(Rc::new(TaskContext {
             task,
             command_kind: ResultKind::new(kind),
@@ -1984,9 +2065,11 @@ impl BbpEvaluator {
             last_thread: Arc::new(Mutex::new(std::thread::current().id())),
             registrations: RefCell::new(Vec::new()),
             catalog_snapshot: RefCell::new(None),
+            catalog_branch: Cell::new(0),
             session: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
             next: Cell::new(1),
             values: RefCell::new(HashMap::new()),
+            task_values: RefCell::new(HashSet::new()),
             macro_functions: RefCell::new(HashMap::new()),
             native_runtime: Cell::new(None),
             gensym_scope: Cell::new(0),
@@ -2005,6 +2088,18 @@ impl BbpEvaluator {
         let booted = self.run();
         if booted.is_err() {
             self.context.borrow_mut().take();
+        } else if use_template && self.shared.0.boot_template.get().is_none() {
+            let before = runtime.heap_stats().managed_bytes;
+            let captured = runtime.task_template(&self.cx()?.task, &[&channels]);
+            // This is an optional cache, not space taken from a caller's
+            // working set without bound. Small heaps keep the replay path.
+            // Initialization is exclusive, before other evaluators can run;
+            // concurrently allocated task parameters can only overestimate it.
+            let retained = runtime.heap_stats().managed_bytes.saturating_sub(before);
+            let captured = if retained > self.shared.0.memory_limit / 64 {
+                Err("bootstrap template exceeds its cache budget")
+            } else { captured };
+            let _ = self.shared.0.boot_template.set(captured);
         }
         booted
     }
@@ -2116,10 +2211,15 @@ impl BbpEvaluator {
         self.stats.set(stats);
     }
     fn with_bridge<T>(&self, work: impl FnOnce(&mut Bridge) -> T) -> T {
-        let waiting = crate::wait_timeline::begin(crate::wait_timeline::Kind::BridgeWait, 0, 0);
+        self.with_bridge_operation(0, work)
+    }
+    fn with_bridge_operation<T>(&self, operation: u64, work: impl FnOnce(&mut Bridge) -> T) -> T {
+        let waiting =
+            crate::wait_timeline::begin(crate::wait_timeline::Kind::BridgeWait, operation, 0);
         let mut bridge = self.bridge.lock().unwrap();
         drop(waiting);
-        let _held = crate::wait_timeline::begin(crate::wait_timeline::Kind::BridgeHold, 0, 0);
+        let _held =
+            crate::wait_timeline::begin(crate::wait_timeline::Kind::BridgeHold, operation, 0);
         let before = bridge.stats;
         let result = work(&mut bridge);
         let after = bridge.stats;
@@ -2128,6 +2228,78 @@ impl BbpEvaluator {
             s.exported += after.exported - before.exported;
             s.reused += after.reused - before.reused;
         });
+        result
+    }
+    fn with_import_bridge<T>(
+        &self,
+        scope: &Scope<'_>,
+        operation: u64,
+        work: impl FnOnce(&mut Bridge) -> T,
+    ) -> T {
+        self.with_import_bridge_for(scope, operation, None, work)
+    }
+    fn with_import_bridge_for<T>(
+        &self,
+        scope: &Scope<'_>,
+        operation: u64,
+        environment: Option<&Datum>,
+        work: impl FnOnce(&mut Bridge) -> T,
+    ) -> T {
+        let mut work = Some(work);
+        let (result, queue, pending) = loop {
+            let attempt = self.with_bridge_operation(operation, |bridge| {
+                // Check and convert under the same guard. An environment can
+                // proceed when none of its imports overlaps a reservation.
+                // Gensyms must see every imported spelling and wait for all.
+                let claim = match (operation, environment) {
+                    (2, Some(data)) => bridge.environment_claim(data),
+                    (2 | 5, _) => bridge.inflight.values().next().cloned(),
+                    _ => None,
+                };
+                if let Some(claim) = claim {
+                    return Err(claim);
+                }
+                assert!(bridge.pending_watches.is_none(), "nested bridge import");
+                bridge.pending_watches = Some(Vec::new());
+                let result = work.take().unwrap()(bridge);
+                // Do not propagate a conversion error before taking the watches:
+                // successfully imported descendants still need GC notifications.
+                Ok((
+                    result,
+                    bridge.reclaimed.clone(),
+                    bridge.pending_watches.take().unwrap(),
+                ))
+            });
+            match attempt {
+                Ok(done) => break done,
+                Err(claim) => {
+                    #[cfg(test)]
+                    if let Some(hook) = &*self.import_waiting.borrow() {
+                        hook();
+                    }
+                    claim.wait();
+                }
+            }
+        };
+        // The bridge guard has dropped, but the caller's scope still excludes
+        // collection. Never release that scope or run a task before this flush.
+        let env_started = (operation == 2 && crate::compile_trace::any_recording())
+            .then(std::time::Instant::now);
+        let registration = crate::wait_timeline::begin(
+            crate::wait_timeline::Kind::BridgeReclamation,
+            operation,
+            pending.len() as u64,
+        );
+        scope
+            .watch_reclamation_identities(&queue, pending)
+            .expect("imported objects remain live in their allocating scope");
+        drop(registration);
+        if let Some(started) = env_started {
+            let elapsed = started.elapsed().as_nanos();
+            // Preserve the environment-work counter's registration time.
+            // This extra statistics update runs only during tracing.
+            self.with_bridge(|bridge| bridge.counters.env_nanos += elapsed);
+        }
         result
     }
     pub(crate) fn preload(&self, name: &str, source: &str) -> Result<(), EvalError> {
@@ -2657,6 +2829,7 @@ impl BbpEvaluator {
         // macro expansion use independent mutable state on the same heap.
         let active = Self::in_runtime(self.shared.clone(), self.service_depth + 1)?;
         let producer_cx = active.cx()?;
+        producer_cx.catalog_branch.set(cx.catalog_branch.get());
         bind(producer_cx.task.id());
         *active.service.borrow_mut() = service;
         *active.unit_services.borrow_mut() = self.unit_services.borrow().clone();
@@ -3035,6 +3208,8 @@ impl BbpEvaluator {
             1 => "adopt",
             2 => "call",
             3 => "release",
+            5 => "gensymScope",
+            6 => "compilerFrontier",
             _ => "useCatalog",
         };
         crate::compile_trace::engine_exit(traced, service);
@@ -3043,6 +3218,16 @@ impl BbpEvaluator {
     fn request_untraced(&self, op: u32, id: ValueId, input: Rooted) -> Result<(), EvalError> {
         self.control.check()?;
         let cx = self.cx()?;
+        if op == 1 {
+            // The host already owns a persistent root. Adopting it needs no
+            // JavaScript execution or mailbox: call() passes the rooted value
+            // itself, and release() drops this host handle directly.
+            // Command mailboxes publish their contents. Keep the same
+            // ownership validation even though this root bypasses a mailbox.
+            self.runtime.publish(&input).map_err(error)?;
+            cx.values.borrow_mut().insert(id.index, input);
+            return Ok(());
+        }
         let frame = crate::compile_trace::frame();
         // Built before the boundary is taken: a denied message leaves the
         // task waiting at the same boundary for the next request.
@@ -3088,14 +3273,16 @@ impl BbpEvaluator {
         if let Some(message) = failed.string() {
             return Err(error(message.to_string_lossy()));
         }
-        // Only evaluate, adopt and call give a value a caller holds.
-        if matches!(op, 0..=2) {
+        // Evaluate, call and service commands leave a result held by the task. Adopted
+        // imports returned above, without advancing the command loop.
+        if matches!(op, 0 | 2 | 5 | 6) {
             let value = cx
                 .task
                 .global_value("__lightResult")
                 .map_err(error)?
                 .ok_or_else(|| error("missing macro result"))?;
             cx.values.borrow_mut().insert(id.index, value);
+            cx.task_values.borrow_mut().insert(id.index);
         }
         Ok(())
     }
@@ -3118,17 +3305,7 @@ impl BbpEvaluator {
         self.control.poll()?;
         let started = std::time::Instant::now();
         let traced = crate::compile_trace::engine_enter();
-        let value = self.host_scope(|s| {
-            let collected = self.runtime.heap_stats().collections;
-            let v = self.with_bridge(|b| {
-                b.prune(collected);
-                if let Some(form) = form {
-                    b.remember(form, limits.depth, &mut limits.nodes.clone())?;
-                }
-                b.import(s, data, limits.depth, &mut limits.nodes.clone())
-            })?;
-            Ok::<_, EvalError>(s.persist(v))
-        });
+        let value = self.import_root(data, form, limits);
         crate::compile_trace::engine_exit(traced, "importForm");
         let value = value?;
         self.note(|s| s.nanos += started.elapsed().as_nanos());
@@ -3328,7 +3505,7 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                     Ok(Primitive::Number(bridge.gensym_counter as f64))
                 }
                 b'a' => Ok(Primitive::Bool(
-                    self.4.lock().unwrap().generated_names.insert(request),
+                    imports::reserve_generated_name(self.4, request),
                 )),
                 _ => Err("unknown native gensym request".into()),
             };
@@ -3483,6 +3660,14 @@ impl MacroEvaluator for BbpEvaluator {
     fn native_shell(&self) -> Option<&BbpEvaluator> {
         Some(self)
     }
+    fn compiler_frontier(&self, next: Option<usize>) -> Result<(), EvalError> {
+        let input = self.runtime.root(next.map_or(Primitive::Null, |next| {
+            Primitive::Number(next as f64)
+        }));
+        let value = self.id()?;
+        self.request(6, value, input)?;
+        self.release(value)
+    }
     fn gensym_scope(
         &self,
         serial: u64,
@@ -3513,9 +3698,21 @@ impl MacroEvaluator for BbpEvaluator {
         }
         debug_assert!(prefix.bytes().all(|b| b.is_ascii_digit() || b == b'_'));
         debug_assert!(retired.bytes().all(|b| b.is_ascii_digit() || b == b','));
-        let value = self.evaluate_unit(&format!(
-            "rt => rt.compilerForms.gensymScope({serial}, \"{prefix}\", \"{retired}\", {native})"
-        ))?;
+        let input = self.host_scope(|s| {
+            let prefix = s.try_primitive(Primitive::string(prefix))
+                .ok_or_else(|| error("heap byte limit exceeded"))?;
+            let retired = s.try_primitive(Primitive::string(retired))
+                .ok_or_else(|| error("heap byte limit exceeded"))?;
+            let args = [
+                s.primitive(Primitive::Number(serial as f64)),
+                prefix,
+                retired,
+                s.primitive(Primitive::Bool(native)),
+            ];
+            Ok::<_, EvalError>(s.persist(s.new_vector(&args).map_err(error)?))
+        })?;
+        let value = self.id()?;
+        self.request(5, value, input)?;
         self.release(value)
     }
     fn register_compiler_root(
@@ -3572,6 +3769,9 @@ impl MacroEvaluator for BbpEvaluator {
     }
     fn native_bridge_stats(&self) -> Option<BridgeStats> {
         Some(self.bridge_stats())
+    }
+    fn has_native_bridge(&self) -> bool {
+        true
     }
     fn needs_reader_registration(&self) -> bool {
         false
@@ -3637,11 +3837,23 @@ impl MacroEvaluator for BbpEvaluator {
         for a in arguments {
             self.check(*a)?;
         }
+        let cx = self.cx()?;
         let input = self.host_scope(|s| {
-            let values = std::iter::once(function)
-                .chain(arguments.iter().copied())
-                .map(|v| s.primitive(Primitive::Number(v.index as f64)))
-                .collect::<Vec<_>>();
+            let handles = cx.values.borrow();
+            let in_task = cx.task_values.borrow();
+            let mut values = Vec::with_capacity((arguments.len() + 1) * 2);
+            for value in std::iter::once(function).chain(arguments.iter().copied()) {
+                let retained = in_task.contains(&value.index);
+                values.push(s.primitive(Primitive::Bool(retained)));
+                // Task-owned results (notably a factory's runtime argument)
+                // cannot be published through a mailbox. They still travel
+                // by ID; imports are already published and travel directly.
+                values.push(if retained {
+                    s.primitive(Primitive::Number(value.index as f64))
+                } else {
+                    s.local(&handles[&value.index]).map_err(error)?
+                });
+            }
             Ok::<_, EvalError>(s.persist(s.new_vector(&values).map_err(error)?))
         })?;
         let id = self.id()?;
@@ -3663,16 +3875,17 @@ impl MacroEvaluator for BbpEvaluator {
         let started = std::time::Instant::now();
         let traced = crate::compile_trace::engine_enter();
         let value = self.host_scope(|s| {
-            let heap = self.runtime.heap_stats();
-            let v = self.with_bridge(|b| {
-                b.prune(heap.collections);
-                let env_started =
-                    crate::compile_trace::any_recording().then(std::time::Instant::now);
+            let collected = self.runtime.collection_count();
+            let counted = crate::compile_trace::any_recording();
+            let admitted_before = counted.then(|| self.runtime.heap_stats().admitted_bytes_total);
+            let v = self.with_import_bridge_for(s, 2, Some(data), |b| {
+                b.prune(collected);
+                let env_started = counted.then(std::time::Instant::now);
                 let value = b.environment(s, data, limits);
                 if let Some(env_started) = env_started {
                     let admitted = self.runtime.heap_stats().admitted_bytes_total;
                     b.counters.env_bytes_rebuilt +=
-                        admitted.saturating_sub(heap.admitted_bytes_total);
+                        admitted.saturating_sub(admitted_before.unwrap());
                     b.counters.env_nanos += env_started.elapsed().as_nanos();
                 }
                 value
@@ -3699,7 +3912,7 @@ impl MacroEvaluator for BbpEvaluator {
         let origins = scalar_origins(call);
         let traced = crate::compile_trace::engine_enter();
         let data = self.host_scope(|s| {
-            self.with_bridge(|b| {
+            self.with_bridge_operation(3, |b| {
                 b.export_with_origins(
                     s,
                     s.local(&v).map_err(error)?,
@@ -3715,7 +3928,7 @@ impl MacroEvaluator for BbpEvaluator {
             })
         });
         let result = data.map(|data| {
-            self.with_bridge(|b| {
+            self.with_bridge_operation(4, |b| {
                 let result = Form::from_bridge_expansion(data, call, origin, &b.forms);
                 b.compiler_spans(result, &origins)
             })
@@ -3727,8 +3940,15 @@ impl MacroEvaluator for BbpEvaluator {
     }
     fn release(&self, id: ValueId) -> Result<(), EvalError> {
         self.check(id)?;
-        self.request(3, id, self.runtime.root(Primitive::Null))?;
-        self.cx()?.values.borrow_mut().remove(&id.index);
+        let cx = self.cx()?;
+        let in_task = cx.task_values.borrow().contains(&id.index);
+        if in_task {
+            self.request(3, id, self.runtime.root(Primitive::Null))?;
+            cx.task_values.borrow_mut().remove(&id.index);
+        } else {
+            self.control.check()?;
+        }
+        cx.values.borrow_mut().remove(&id.index);
         Ok(())
     }
 }
@@ -3737,7 +3957,7 @@ impl CompilerEvaluator for BbpEvaluator {
         self.check(id)?;
         let value = self.cx()?.values.borrow()[&id.index].clone();
         self.host_scope(|s| {
-            self.with_bridge(|bridge| {
+            self.with_bridge_operation(3, |bridge| {
                 bridge.export_with_origins(
                     s,
                     s.local(&value).map_err(error)?,
@@ -3858,9 +4078,9 @@ impl BbpEvaluator {
         let mut keys = Vec::new();
         decoded(call, &mut keys);
         let names = self.host_scope(|s| {
-            self.with_bridge(|b| {
+            self.with_import_bridge(s, 5, |b| {
                 for key in &keys {
-                    b.generated_names.insert(string(s, key)?);
+                    b.remember_generated_name(s, key)?;
                 }
                 bases
                     .iter()
@@ -3874,7 +4094,7 @@ impl BbpEvaluator {
                             let key = std::iter::once(b'a' as u16)
                                 .chain(name.encode_utf16())
                                 .collect::<Vec<_>>();
-                            if b.generated_names.insert(string(s, &key)?) {
+                            if b.remember_generated_name(s, &key)? {
                                 break Ok(name);
                             }
                         }

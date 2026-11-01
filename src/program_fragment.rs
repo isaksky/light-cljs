@@ -21,6 +21,9 @@ pub(crate) struct SharedPrefix {
     /// target still has: a program never drops one.
     reader_contexts: usize,
     tables: SharedTables,
+    /// A namespace's top-level tables may have been published after other
+    /// namespaces. Its deferred units retain their original snapshot IDs.
+    publication: Option<std::sync::Arc<Publication>>,
 }
 
 /// The snapshot's keyed tables, held so that they cannot change in place: a
@@ -131,7 +134,8 @@ impl SharedPrefix {
             );
         }
         if let Some(last) = self.globals.checked_sub(1) {
-            let (a, b) = (&target.globals[last], &fragment.globals[last]);
+            let published = self.publication.as_ref().map_or(last, |p| p.globals.map(last));
+            let (a, b) = (&target.globals[published], &fragment.globals[last]);
             assert!(
                 a.namespace == b.namespace && a.name == b.name,
                 "a fragment's shared global {}/{} is {}/{} in its program",
@@ -157,7 +161,13 @@ impl SharedPrefix {
             namespaces: snapshot.namespaces.len(),
             reader_contexts: snapshot.reader_contexts.len(),
             tables: SharedTables::of(snapshot),
+            publication: None,
         }
+    }
+
+    pub(crate) fn published(mut self, publication: std::sync::Arc<Publication>) -> Self {
+        self.publication = Some(publication);
+        self
     }
 
     /// An estimate of the bytes `fragment` adds to what it shares, for
@@ -211,22 +221,61 @@ impl SharedPrefix {
 /// Maps one fragment table's IDs to the target's: the first `shared` keep
 /// theirs, and the fragment's own entries take their appended positions from
 /// `start`. The default is the identity used by read-only traversals.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Debug, Default)]
 struct Ids {
     shared: usize,
     start: usize,
+    prefix: Option<PublishedIds>,
 }
 
 impl Ids {
     fn new(shared: usize, start: usize) -> Self {
-        Self { shared, start }
+        Self { shared, start, prefix: None }
     }
-    fn map(self, id: usize) -> usize {
+    fn with_prefix(mut self, prefix: Option<&PublishedIds>) -> Self {
+        self.prefix = prefix.cloned();
+        self
+    }
+    fn map(&self, id: usize) -> usize {
         if id < self.shared {
-            id
+            self.prefix.as_ref().map_or(id, |prefix| prefix.map(id))
         } else {
             id - self.shared + self.start
         }
+    }
+}
+
+/// Only a published namespace's additions need an ID table; its original
+/// shared provider prefix keeps its IDs. Clones share the small suffix.
+#[derive(Clone, Debug)]
+struct PublishedIds {
+    shared: usize,
+    suffix: std::sync::Arc<[usize]>,
+}
+impl PublishedIds {
+    fn map(&self, id: usize) -> usize {
+        if id < self.shared { id } else { self.suffix[id - self.shared] }
+    }
+    fn capture(shared: usize, end: usize, map: impl Fn(usize) -> usize) -> Self {
+        Self { shared, suffix: (shared..end).map(map).collect() }
+    }
+}
+
+/// Relocates snapshots of one namespace's top-level pass at its ordinary
+/// deferred drain point. This contains no evaluator or thread-owned state.
+#[derive(Clone, Debug)]
+pub(crate) struct Publication {
+    exprs: PublishedIds,
+    locals: PublishedIds,
+    recur: PublishedIds,
+    strings: PublishedIds,
+    named: PublishedIds,
+    globals: PublishedIds,
+    js: PublishedIds,
+}
+impl Publication {
+    pub(crate) fn expr(&self, id: ExprId) -> ExprId {
+        ExprId(self.exprs.map(id.0))
     }
 }
 
@@ -248,10 +297,57 @@ pub(crate) fn append(
     shared: &SharedPrefix,
     update_shared_globals: bool,
     own_namespace: Option<&str>,
+    names: Option<&mut crate::name_index::NameIndex>,
+) -> ExprId {
+    append_impl(target, fragment, shared, update_shared_globals, own_namespace, names, None)
+}
+
+pub(crate) fn append_published(
+    target: &mut Program,
+    fragment: &Program,
+    shared: &SharedPrefix,
+    own_namespace: &str,
+    names: &mut crate::name_index::NameIndex,
+    changed_globals: &[usize],
+) -> (ExprId, std::sync::Arc<Publication>) {
+    let mut publication = None;
+    let root = append_impl(target, fragment, shared, false, Some(own_namespace), Some(names), Some(&mut publication));
+    let publication = std::sync::Arc::new(publication.unwrap());
+    // Top-level analysis may define a global reserved before its namespace
+    // loaded. Publish exactly the prefix entries this writer changed, so an
+    // unchanged sibling snapshot cannot undo an earlier writer's definition.
+    for &index in changed_globals {
+        assert!(index < shared.globals);
+        let global = GlobalId(publication.globals.map(index));
+        let mut binding = fragment.globals[index].clone();
+        binding.metadata = binding.metadata.map(|id| publication.expr(id));
+        target.globals[global.0] = binding;
+        if let Some(methods) = fragment.protocols.get(&GlobalId(index)) {
+            let mut methods = methods.clone();
+            for method in &mut methods {
+                method.global = GlobalId(publication.globals.map(method.global.0));
+            }
+            target.protocols.insert(global, methods);
+        }
+        if fragment.record_constructors.contains(&GlobalId(index)) {
+            target.record_constructors.insert(global);
+        }
+    }
+    (root, publication)
+}
+
+fn append_impl(
+    target: &mut Program,
+    fragment: &Program,
+    shared: &SharedPrefix,
+    update_shared_globals: bool,
+    own_namespace: Option<&str>,
     mut names: Option<&mut crate::name_index::NameIndex>,
+    publication: Option<&mut Option<Publication>>,
 ) -> ExprId {
     shared.check(target, fragment);
-    let exprs = Ids::new(shared.exprs, target.exprs.len());
+    let previous = shared.publication.as_deref();
+    let exprs = Ids::new(shared.exprs, target.exprs.len()).with_prefix(previous.map(|p| &p.exprs));
     // Shared globals keep their IDs and, unless the caller wants the
     // fragment's view of them, their live flags and metadata.
     let first_global = if update_shared_globals {
@@ -261,11 +357,12 @@ pub(crate) fn append(
     };
     let mut remap = Remap {
         map_expr: move |id: ExprId| ExprId(exprs.map(id.0)),
-        local: Ids::new(shared.locals, target.locals.len()),
-        recur: Ids::new(shared.recur_targets, target.recur_targets.len()),
-        string: Ids::new(shared.strings, target.strings.len()),
-        named: Ids::new(shared.named_literals, target.named_literals.len()),
+        local: Ids::new(shared.locals, target.locals.len()).with_prefix(previous.map(|p| &p.locals)),
+        recur: Ids::new(shared.recur_targets, target.recur_targets.len()).with_prefix(previous.map(|p| &p.recur)),
+        string: Ids::new(shared.strings, target.strings.len()).with_prefix(previous.map(|p| &p.strings)),
+        named: Ids::new(shared.named_literals, target.named_literals.len()).with_prefix(previous.map(|p| &p.named)),
         first_global,
+        shared_globals: previous.map(|p| p.globals.clone()),
         globals: Vec::with_capacity(fragment.globals.len() - first_global),
         js: Vec::with_capacity(fragment.js_globals.len()),
         lazy: Vec::with_capacity(fragment.lazy_targets.len()),
@@ -283,10 +380,6 @@ pub(crate) fn append(
             target.lazy_targets.len() + appended_lazy.len() - 1
         })));
     }
-    debug_assert!(
-        remap.shares_prefix(target, fragment, shared),
-        "a fragment's shared entries must be unchanged in its target"
-    );
     for namespace in fragment.namespaces.iter().skip(shared.namespaces) {
         if !target.namespaces.contains(namespace) {
             target.namespaces.push(namespace.clone());
@@ -339,7 +432,7 @@ pub(crate) fn append(
             })
         };
         let existing = if index < shared.globals {
-            Some(index)
+            Some(previous.map_or(index, |p| p.globals.map(index)))
         } else if let Some(names) = names.as_deref() {
             let found = names
                 .get(&(global.namespace.clone(), global.name.clone()))
@@ -376,7 +469,7 @@ pub(crate) fn append(
     }
     for (index, global) in fragment.js_globals.iter().enumerate() {
         let existing = if index < shared.js_globals {
-            Some(index)
+            Some(previous.map_or(index, |p| p.js.map(index)))
         } else {
             target
                 .js_globals
@@ -393,6 +486,10 @@ pub(crate) fn append(
         };
         remap.js.push(id);
     }
+    debug_assert!(
+        remap.shares_prefix(target, fragment, shared),
+        "a fragment's shared entries must be unchanged in its target"
+    );
     for index in appended_lazy {
         let lazy = fragment.lazy_targets[index];
         let name = &fragment.lazy_namespaces[lazy.namespace];
@@ -514,6 +611,18 @@ pub(crate) fn append(
                 e
             }),
     );
+    if let Some(publication) = publication {
+        let capture = |shared, end, map: &dyn Fn(usize) -> usize| PublishedIds::capture(shared, end, map);
+        *publication = Some(Publication {
+            exprs: capture(previous.map_or(shared.exprs, |p| p.exprs.shared), fragment.exprs.len(), &|id| (remap.map_expr)(ExprId(id)).0),
+            locals: capture(previous.map_or(shared.locals, |p| p.locals.shared), fragment.locals.len(), &|id| remap.local.map(id)),
+            recur: capture(previous.map_or(shared.recur_targets, |p| p.recur.shared), fragment.recur_targets.len(), &|id| remap.recur.map(id)),
+            strings: capture(previous.map_or(shared.strings, |p| p.strings.shared), fragment.strings.len(), &|id| remap.string.map(id)),
+            named: capture(previous.map_or(shared.named_literals, |p| p.named.shared), fragment.named_literals.len(), &|id| remap.named.map(id)),
+            globals: capture(previous.map_or(shared.globals, |p| p.globals.shared), fragment.globals.len(), &|id| remap.mapped_global(GlobalId(id)).0),
+            js: capture(previous.map_or(shared.js_globals, |p| p.js.shared), fragment.js_globals.len(), &|id| remap.js[id].0),
+        });
+    }
     (remap.map_expr)(fragment.root)
 }
 
@@ -598,50 +707,40 @@ pub(crate) fn extend_interactive_snapshot(
     let mut released = 1;
     for &i in &changed_globals {
         if let Some(root) = previous.globals[i].metadata {
-            let seen = std::cell::RefCell::new(HashSet::new());
-            let pending = std::cell::RefCell::new(vec![root]);
-            let visitor = identity_remap(previous, |id| {
-                pending.borrow_mut().push(id);
-                id
-            });
-            loop {
-                let Some(id) = pending.borrow_mut().pop() else {
-                    break;
-                };
-                if seen.borrow_mut().insert(id.0) {
-                    visitor.kind(&mut previous.exprs[id.0].kind.clone());
+            let mut seen = HashSet::new();
+            let mut pending = vec![root];
+            while let Some(id) = pending.pop() {
+                if seen.insert(id.0) {
+                    visit_children(&previous.exprs[id.0].kind, |id| pending.push(id));
                 }
             }
-            released += seen.into_inner().len();
+            released += seen.len();
         }
     }
     // The new expressions reachable from new or changed metadata and from
     // changed old expressions, in their original order.
-    let pending = std::cell::RefCell::new(
-        changed_globals
-            .iter()
-            .copied()
-            .chain(old_globals..program.globals.len())
-            .filter_map(|i| program.globals[i].metadata)
-            .filter(|id| id.0 >= old_exprs)
-            .collect::<Vec<_>>(),
-    );
-    let discover = identity_remap(program, |id| {
-        if id.0 >= old_exprs {
-            pending.borrow_mut().push(id);
-        }
-        id
-    });
+    let mut pending = changed_globals
+        .iter()
+        .copied()
+        .chain(old_globals..program.globals.len())
+        .filter_map(|i| program.globals[i].metadata)
+        .filter(|id| id.0 >= old_exprs)
+        .collect::<Vec<_>>();
     for &id in &changed_exprs {
-        discover.kind(&mut program.exprs[id].kind.clone());
+        visit_children(&program.exprs[id].kind, |id| {
+            if id.0 >= old_exprs {
+                pending.push(id);
+            }
+        });
     }
     let mut fresh = HashSet::new();
-    loop {
-        let Some(id) = pending.borrow_mut().pop() else {
-            break;
-        };
+    while let Some(id) = pending.pop() {
         if fresh.insert(id.0) {
-            discover.kind(&mut program.exprs[id.0].kind.clone());
+            visit_children(&program.exprs[id.0].kind, |id| {
+                if id.0 >= old_exprs {
+                    pending.push(id);
+                }
+            });
         }
     }
     let mut origins = fresh.into_iter().collect::<Vec<_>>();
@@ -805,31 +904,19 @@ pub(crate) fn extend_interactive_snapshot(
 /// literals, locals and recur targets are left to the caller; without `root`,
 /// so is the snapshot's root.
 fn retain(program: &Program, root: Option<ExprId>) -> (Program, Vec<usize>) {
-    use std::cell::RefCell;
-
-    let pending = RefCell::new(
-        program
-            .globals
-            .iter()
-            .filter_map(|global| global.metadata)
-            .collect::<Vec<_>>(),
-    );
-    pending.borrow_mut().extend(root);
+    let mut pending = program
+        .globals
+        .iter()
+        .filter_map(|global| global.metadata)
+        .collect::<Vec<_>>();
+    pending.extend(root);
     let mut ids = HashMap::new();
-    let visitor = identity_remap(program, |id| {
-        pending.borrow_mut().push(id);
-        id
-    });
-    loop {
-        let Some(id) = pending.borrow_mut().pop() else {
-            break;
-        };
+    while let Some(id) = pending.pop() {
         if ids.insert(id.0, id).is_some() {
             continue;
         }
-        // The same exhaustive traversal used by append discovers every child,
-        // including nested metadata and function bodies if metadata contains one.
-        visitor.kind(&mut program.exprs[id.0].kind.clone());
+        // Include nested metadata and function bodies if metadata contains one.
+        visit_children(&program.exprs[id.0].kind, |id| pending.push(id));
     }
     let mut origins = ids.keys().copied().collect::<Vec<_>>();
     origins.sort_unstable();
@@ -966,27 +1053,235 @@ pub(crate) fn awaits(program: &Program, id: ExprId) -> bool {
         match program.exprs[id.0].kind {
             ExprKind::Await(_) => return true,
             ExprKind::Fn { .. } => (),
-            _ => pending.extend(children(program, id)),
+            _ => visit_children(&program.exprs[id.0].kind, |child| pending.push(child)),
         }
     }
     false
 }
 
-/// Visit semantic child IDs using the same exhaustive mapping as fragment linking.
-pub(crate) fn children(program: &Program, id: ExprId) -> Vec<ExprId> {
-    kind_children(program, &program.exprs[id.0].kind)
+/// Semantic child IDs, in fragment-linking order. Read only expression edges,
+/// without allocating a child vector or cloning strings, method parameters,
+/// captures or type layouts just to run an identity relocation. Keep this
+/// exhaustive match in the same order as `Remap::kind`; the regression test
+/// compares the visitor with the linker's actual relocation for every kind.
+pub(crate) fn visit_children(kind: &ExprKind, mut visit: impl FnMut(ExprId)) {
+    use ExprKind::*;
+    match kind {
+        Nil
+        | Bool(_)
+        | Number(_)
+        | String(_)
+        | Keyword(_)
+        | Symbol(_)
+        | CoreFn(_)
+        | Local(_)
+        | Global(_)
+        | JsGlobal(_)
+        | JsArguments
+        | LoadableType
+        | DefProtocol { .. } => {}
+        Loadable { class: value, .. }
+        | DefinitionTest { value, .. }
+        | NamespaceView { value, .. }
+        | ThisAs { body: value, .. }
+        | QualifiedMethod { class: value, .. }
+        | Property {
+            receiver: value, ..
+        }
+        | CopyArguments(value)
+        | WithOutStr(value)
+        | Exists(value)
+        | BindingExists(value)
+        | BooleanHint(value)
+        | Throw(value)
+        | Await(value) => visit(*value),
+        ReaderLiteral { items, .. }
+        | List(items)
+        | Vector(items)
+        | Map(items)
+        | Set(items)
+        | LiteralMap(items)
+        | LiteralSet(items)
+        | Do(items)
+        | JsTemplate { args: items, .. }
+        | Recur { args: items, .. } => {
+            items.iter().copied().for_each(visit);
+        }
+        WithMeta {
+            value: a,
+            metadata: b,
+        }
+        | JsDelete {
+            receiver: a,
+            key: b,
+        }
+        | ProtocolPredicate {
+            protocol: a,
+            value: b,
+            ..
+        }
+        | SetGlobal {
+            target: a,
+            value: b,
+        }
+        | InstanceOf { class: a, value: b } => {
+            visit(*a);
+            visit(*b);
+        }
+        Var {
+            value, metadata, ..
+        } => {
+            visit(*value);
+            metadata.iter().copied().for_each(visit);
+        }
+        JsIndex {
+            receiver,
+            indices: args,
+        }
+        | MethodCall { receiver, args, .. }
+        | Construct {
+            callee: receiver,
+            args,
+        }
+        | Call {
+            callee: receiver,
+            args,
+        } => {
+            visit(*receiver);
+            args.iter().copied().for_each(visit);
+        }
+        ExtendType {
+            target, methods, ..
+        } => {
+            visit(*target);
+            methods.iter().for_each(|(_, method)| visit(method.body));
+        }
+        Reify {
+            metadata, methods, ..
+        } => {
+            metadata.iter().copied().for_each(&mut visit);
+            methods.iter().for_each(|(_, method)| visit(method.body));
+        }
+        DefType {
+            layout, methods, ..
+        } => {
+            layout
+                .body
+                .iter()
+                .chain(&layout.masks)
+                .copied()
+                .for_each(&mut visit);
+            methods.iter().for_each(|(_, method)| visit(method.body));
+        }
+        Assert { test, message, .. } => {
+            visit(*test);
+            message.iter().copied().for_each(visit);
+        }
+        Def { init, test, .. } => init.iter().chain(test).copied().for_each(visit),
+        Binding { bindings, body } => {
+            for (target, value) in bindings {
+                visit(*target);
+                visit(*value);
+            }
+            visit(*body);
+        }
+        If { test, yes, no } => {
+            visit(*test);
+            visit(*yes);
+            visit(*no);
+        }
+        Let { bindings, body } | LetFn { bindings, body } | Loop { bindings, body, .. } => {
+            bindings.iter().for_each(|(_, value)| visit(*value));
+            visit(*body);
+        }
+        Try {
+            body,
+            catches,
+            finally,
+        } => {
+            visit(*body);
+            for catch in catches {
+                catch.class.iter().copied().for_each(&mut visit);
+                visit(catch.body);
+            }
+            finally.iter().copied().for_each(visit);
+        }
+        Case {
+            test,
+            branches,
+            default,
+            ..
+        } => {
+            visit(*test);
+            for (test, value) in branches {
+                visit(*test);
+                visit(*value);
+            }
+            default.iter().copied().for_each(visit);
+        }
+        Fn { methods, .. } => methods.iter().for_each(|method| visit(method.body)),
+    }
 }
 
-/// The child expressions of an expression of this kind, in [`children`]
-/// order, for passes that hold a kind outside the arena while they rewrite it.
-pub(crate) fn kind_children(program: &Program, kind: &ExprKind) -> Vec<ExprId> {
-    let children = std::cell::RefCell::new(Vec::new());
-    identity_remap(program, |child| {
-        children.borrow_mut().push(child);
-        child
-    })
-    .kind(&mut kind.clone());
-    children.into_inner()
+/// Remove expressions unreachable from the application or its side tables.
+/// Return the old ID of each remaining expression, in arena order. All other
+/// tables retain their IDs; expression references in those tables are remapped.
+/// This is for owned application preparation, after analysis/linkage has ended.
+pub(crate) fn compact_expressions(program: &mut Program) -> Option<Vec<usize>> {
+    let mut pending = vec![program.root];
+    pending.extend(program.globals.iter().filter_map(|global| global.metadata));
+    pending.extend(program.namespace_entries.keys().copied());
+    pending.extend(program.macro_functions.iter().copied());
+    pending.extend(program.lazy_targets.iter().map(|target| target.site));
+    let mut live = vec![false; program.exprs.len()];
+    while let Some(id) = pending.pop() {
+        if !std::mem::replace(&mut live[id.0], true) {
+            visit_children(&program.exprs[id.0].kind, |child| pending.push(child));
+        }
+    }
+    let origins = live
+        .iter()
+        .enumerate()
+        .filter_map(|(id, live)| live.then_some(id))
+        .collect::<Vec<_>>();
+    if origins.len() == live.len() {
+        return None;
+    }
+    let mut ids = vec![ExprId(usize::MAX); live.len()];
+    for (new, &old) in origins.iter().enumerate() {
+        ids[old] = ExprId(new);
+    }
+    let remap = identity_remap(program, |id| {
+        let mapped = ids[id.0];
+        assert_ne!(mapped.0, usize::MAX, "unretained expression reference");
+        mapped
+    });
+    // Compact the existing allocation rather than allocating another arena.
+    let mut exprs = std::mem::take(&mut program.exprs).into_vec();
+    let mut old = 0;
+    exprs.retain_mut(|expr| {
+        let keep = live[old];
+        old += 1;
+        if keep {
+            remap.kind(&mut expr.kind);
+        }
+        keep
+    });
+    program.exprs = exprs.into();
+    remap.expr(&mut program.root);
+    for global in &mut program.globals {
+        remap.optional(&mut global.metadata);
+    }
+    program.namespace_entries = program
+        .namespace_entries
+        .iter()
+        .map(|(id, namespace)| (ids[id.0], namespace.clone()))
+        .collect();
+    program.macro_functions = program.macro_functions.iter().map(|id| ids[id.0]).collect();
+    for target in program.lazy_targets.iter_mut() {
+        remap.expr(&mut target.site);
+    }
+    Some(origins)
 }
 
 fn identity_remap<F: Fn(ExprId) -> ExprId>(_program: &Program, map_expr: F) -> Remap<F> {
@@ -997,6 +1292,7 @@ fn identity_remap<F: Fn(ExprId) -> ExprId>(_program: &Program, map_expr: F) -> R
         string: Ids::default(),
         named: Ids::default(),
         first_global: 0,
+        shared_globals: None,
         globals: Vec::new(),
         js: Vec::new(),
         lazy: Vec::new(),
@@ -1012,6 +1308,7 @@ struct Remap<F> {
     /// The fragment's first global that `globals` maps; the ones before it
     /// keep their IDs.
     first_global: usize,
+    shared_globals: Option<PublishedIds>,
     /// An empty table is the identity mapping used by read-only traversals.
     globals: Vec<GlobalId>,
     js: Vec<JsGlobalId>,
@@ -1059,16 +1356,12 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
             && (fragment
                 .globals
                 .shares_prefix(&target.globals, shared.globals)
-                || fragment
-                    .globals
-                    .range(0..shared.globals)
-                    .zip(target.globals.iter())
-                    .all(|(a, b)| a.namespace == b.namespace && a.name == b.name));
+                || fragment.globals.range(0..shared.globals).enumerate().all(|(id, a)| {
+                    let b = &target.globals[self.mapped_global(GlobalId(id)).0];
+                    a.namespace == b.namespace && a.name == b.name
+                }));
         let js_globals = target.js_globals.len() >= shared.js_globals
-            && target
-                .js_globals
-                .range(0..shared.js_globals)
-                .eq(fragment.js_globals.range(0..shared.js_globals));
+            && (0..shared.js_globals).all(|id| target.js_globals[self.js[id].0] == fragment.js_globals[id]);
         exprs && strings && named && locals && recur_targets && globals && js_globals
     }
     fn expr(&self, id: &mut ExprId) {
@@ -1093,7 +1386,9 @@ impl<F: Fn(ExprId) -> ExprId> Remap<F> {
         self.string(&mut literal.name);
     }
     fn mapped_global(&self, id: GlobalId) -> GlobalId {
-        if self.globals.is_empty() || id.0 < self.first_global {
+        if id.0 < self.first_global {
+            GlobalId(self.shared_globals.as_ref().map_or(id.0, |p| p.map(id.0)))
+        } else if self.globals.is_empty() {
             id
         } else {
             self.globals[id.0 - self.first_global]
@@ -1351,6 +1646,347 @@ mod tests {
 
     fn analyze(source: &str) -> Program {
         crate::analyze(source, &crate::parse(source).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn expression_compaction_preserves_side_table_roots_edges_and_shared_snapshots() {
+        let mut program = analyze("(def unused 90) (fn [] 20) [30 31] 40 50 60 70 80");
+        let number = |n| {
+            ExprId(
+                program
+                    .exprs
+                    .iter()
+                    .position(|expr| expr.kind == ExprKind::Number(n))
+                    .unwrap(),
+            )
+        };
+        let metadata = number(40.0);
+        let namespace = number(50.0);
+        let site = number(60.0);
+        let class = number(70.0);
+        let function = ExprId(
+            program
+                .exprs
+                .iter()
+                .position(|expr| matches!(expr.kind, ExprKind::Fn { .. }))
+                .unwrap(),
+        );
+        let root = ExprId(
+            program
+                .exprs
+                .iter()
+                .position(|expr| matches!(expr.kind, ExprKind::Vector(_)))
+                .unwrap(),
+        );
+        program.root = root;
+        program.globals[0].metadata = Some(metadata);
+        program
+            .namespace_entries
+            .insert(namespace, "example".into());
+        program.macro_functions.insert(function);
+        program.exprs[site.0].kind = ExprKind::Loadable {
+            target: LazyTargetId(0),
+            class,
+        };
+        program.exprs[class.0].kind = ExprKind::LoadableType;
+        program.lazy_targets.push(LazyTarget {
+            site,
+            namespace: 0,
+            global: Some(GlobalId(0)),
+        });
+        program.freeze();
+        let snapshot = program.clone();
+        let original = program.clone();
+        let origins = compact_expressions(&mut program).unwrap();
+        assert!(origins.len() < original.exprs.len());
+        let mapped = |old| ExprId(origins.iter().position(|&id| ExprId(id) == old).unwrap());
+        assert_eq!(program.root, mapped(root));
+        assert_eq!(program.globals[0].metadata, Some(mapped(metadata)));
+        assert_eq!(
+            program
+                .namespace_entries
+                .get(&mapped(namespace))
+                .map(String::as_str),
+            Some("example")
+        );
+        assert!(program.macro_functions.contains(&mapped(function)));
+        assert_eq!(
+            program.lazy_targets[0],
+            LazyTarget {
+                site: mapped(site),
+                namespace: 0,
+                global: Some(GlobalId(0))
+            }
+        );
+        let remap = identity_remap(&original, mapped);
+        for (new, &old) in origins.iter().enumerate() {
+            let mut expected = original.exprs[old].clone();
+            remap.kind(&mut expected.kind);
+            assert_eq!(program.exprs[new], expected);
+        }
+        assert_eq!(snapshot, original);
+        assert_eq!(program.locals, original.locals);
+        assert_eq!(program.recur_targets, original.recur_targets);
+        assert_eq!(program.strings, original.strings);
+        assert_eq!(program.named_literals, original.named_literals);
+        assert_eq!(program.js_globals, original.js_globals);
+        let compacted = program.clone();
+        assert_eq!(compact_expressions(&mut program), None);
+        assert_eq!(program, compacted);
+    }
+
+    #[test]
+    fn borrowed_children_match_linker_edges_and_order_for_every_expression_kind() {
+        use crate::compiler_data::CompilerLiteralKind;
+        use ExprKind::*;
+        let e = ExprId;
+        let method = |body| FnMethod {
+            params: vec![LocalId(90), LocalId(91)],
+            rest: Some(LocalId(92)),
+            body: e(body),
+            target: RecurTargetId(93),
+            captures: vec![LocalId(94)],
+            asynchronous: false,
+        };
+        let methods = || {
+            vec![
+                (MethodDispatch::Protocol("p".into()), method(6)),
+                (MethodDispatch::Builtin("b".into()), method(7)),
+            ]
+        };
+        // Deliberately overlap IDs from different tables. Only expression IDs
+        // are edges, including catch classes, executable metadata and a type's
+        // constructor body/masks; captures and lazy targets are not edges.
+        let kinds = vec![
+            Nil,
+            Bool(true),
+            Number(42.0),
+            String(StringId(1)),
+            Keyword(NamedLiteralId(1)),
+            Symbol(NamedLiteralId(1)),
+            CoreFn(CoreFnId::Add),
+            Local(LocalId(1)),
+            Global(GlobalId(1)),
+            JsGlobal(JsGlobalId(1)),
+            JsArguments,
+            LoadableType,
+            ReaderLiteral {
+                kind: CompilerLiteralKind::JsArray,
+                items: vec![e(1), e(2)],
+                quoted: true,
+            },
+            DefinitionTest {
+                value: e(1),
+                unit: 2,
+            },
+            NamespaceView {
+                namespace: StringId(2),
+                value: e(1),
+            },
+            WithMeta {
+                value: e(1),
+                metadata: e(2),
+            },
+            Var {
+                definition: true,
+                value: e(1),
+                symbol: NamedLiteralId(3),
+                metadata: Some(e(2)),
+            },
+            Var {
+                definition: false,
+                value: e(1),
+                symbol: NamedLiteralId(3),
+                metadata: None,
+            },
+            List(vec![e(1), e(2)]),
+            Vector(vec![e(1), e(2)]),
+            Map(vec![e(1), e(2), e(1), e(3)]),
+            Set(vec![e(1), e(2)]),
+            LiteralMap(vec![e(1), e(2)]),
+            LiteralSet(vec![e(1), e(2)]),
+            ThisAs {
+                binding: LocalId(2),
+                body: e(1),
+            },
+            JsTemplate {
+                segments: vec!["a".into(), "b".into()],
+                args: vec![e(1), e(2)],
+            },
+            JsIndex {
+                receiver: e(1),
+                indices: vec![e(2), e(3)],
+            },
+            JsDelete {
+                receiver: e(1),
+                key: e(2),
+            },
+            QualifiedMethod {
+                class: e(1),
+                method: Some("m".into()),
+            },
+            CopyArguments(e(1)),
+            WithOutStr(e(1)),
+            Exists(e(1)),
+            BindingExists(e(1)),
+            BooleanHint(e(1)),
+            Throw(e(1)),
+            Await(e(1)),
+            DefProtocol {
+                global: GlobalId(1),
+                methods: vec![ProtocolMethod {
+                    global: GlobalId(2),
+                    key: "m".into(),
+                    arities: vec![1, 2],
+                    variadic: Some(3),
+                }],
+                via_metadata: true,
+            },
+            ProtocolPredicate {
+                protocol: e(1),
+                value: e(2),
+                key: "p".into(),
+                direct: true,
+            },
+            ExtendType {
+                instance: true,
+                return_target: true,
+                target: e(1),
+                methods: methods(),
+            },
+            Reify {
+                metadata: Some(e(1)),
+                captures: vec![LocalId(2)],
+                methods: methods(),
+            },
+            DefType {
+                record: true,
+                global: GlobalId(1),
+                methods: methods(),
+                layout: Box::new(TypeLayout {
+                    constructor: Some(GlobalId(2)),
+                    body: Some(e(3)),
+                    masks: Some(e(4)),
+                    map_constructor: Some(GlobalId(5)),
+                    fields: vec!["field".into()],
+                    mutable: true,
+                }),
+            },
+            Construct {
+                callee: e(1),
+                args: vec![e(2), e(3)],
+            },
+            Assert {
+                test: e(1),
+                message: Some(e(2)),
+                form: StringId(3),
+            },
+            Def {
+                global: GlobalId(3),
+                init: Some(e(1)),
+                test: Some(e(2)),
+                once: true,
+            },
+            Def {
+                global: GlobalId(3),
+                init: None,
+                test: None,
+                once: false,
+            },
+            SetGlobal {
+                target: e(1),
+                value: e(2),
+            },
+            Binding {
+                bindings: vec![(e(1), e(2)), (e(3), e(4))],
+                body: e(5),
+            },
+            Loadable {
+                target: LazyTargetId(2),
+                class: e(1),
+            },
+            Property {
+                receiver: e(1),
+                property: "p".into(),
+            },
+            MethodCall {
+                receiver: e(1),
+                method: "m".into(),
+                args: vec![e(2), e(3)],
+            },
+            If {
+                test: e(1),
+                yes: e(2),
+                no: e(3),
+            },
+            Do(vec![e(1), e(1), e(2)]),
+            Do(vec![]),
+            Let {
+                bindings: vec![(LocalId(3), e(1))],
+                body: e(2),
+            },
+            LetFn {
+                bindings: vec![(LocalId(3), e(1))],
+                body: e(2),
+            },
+            Loop {
+                target: RecurTargetId(3),
+                bindings: vec![(LocalId(4), e(1))],
+                body: e(2),
+            },
+            Recur {
+                target: RecurTargetId(1),
+                args: vec![e(2), e(3)],
+            },
+            Try {
+                body: e(1),
+                catches: vec![
+                    CatchClause {
+                        class: Some(e(2)),
+                        binding: LocalId(9),
+                        body: e(3),
+                    },
+                    CatchClause {
+                        class: None,
+                        binding: LocalId(9),
+                        body: e(4),
+                    },
+                ],
+                finally: Some(e(5)),
+            },
+            Case {
+                strict: false,
+                keyword_tests: true,
+                test: e(1),
+                branches: vec![(e(2), e(3)), (e(4), e(5))],
+                default: Some(e(6)),
+            },
+            Fn {
+                name: Some(LocalId(1)),
+                methods: vec![method(2), method(3)],
+            },
+            Call {
+                callee: e(1),
+                args: vec![e(2), e(3)],
+            },
+            InstanceOf {
+                class: e(1),
+                value: e(2),
+            },
+        ];
+        let program = analyze("nil");
+        for kind in kinds {
+            let expected = std::cell::RefCell::new(Vec::new());
+            let mut linked = kind.clone();
+            identity_remap(&program, |id| {
+                expected.borrow_mut().push(id);
+                ExprId(id.0 + 1000)
+            })
+            .kind(&mut linked);
+            let mut actual = Vec::new();
+            visit_children(&kind, |child| actual.push(child));
+            assert_eq!(actual, expected.into_inner(), "{kind:?}");
+        }
     }
 
     #[test]

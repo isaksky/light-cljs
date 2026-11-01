@@ -165,7 +165,9 @@ fn find(program: &Program, name: &str) -> Option<(GlobalId, ExprId)> {
             )
             .then_some((global, literal));
         }
-        pending.extend(crate::program_fragment::children(program, id));
+        crate::program_fragment::visit_children(&program.exprs[id.0].kind, |child| {
+            pending.push(child);
+        });
     }
     None
 }

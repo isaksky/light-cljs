@@ -54,12 +54,52 @@ pub struct LexError {
     pub message: &'static str,
 }
 
+#[cfg(test)]
 const PUNCTUATORS: &[&str] = &[
     ">>>=", "...", "===", "!==", "**=", "<<=", ">>=", ">>>", "&&=", "||=", "??=", "=>", "==", "!=",
     "<=", ">=", "&&", "||", "??", "?.", "++", "--", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
     "**", "<<", ">>", "{", "}", "(", ")", "[", "]", ";", ",", "<", ">", "+", "-", "*", "/", "%",
     "&", "|", "^", "!", "~", "?", ":", "=", ".", "@",
 ];
+
+/// Longest punctuator at this position. Dispatch before testing prefixes:
+/// most emitted tokens are single-character delimiters, and none needs to
+/// compare against operators beginning with a different byte.
+#[inline]
+fn punctuator(source: &str) -> Option<&'static str> {
+    let candidates: &[&str] = match *source.as_bytes().first()? {
+        b'>' => &[">>>=", ">>=", ">>>", ">=", ">>", ">"],
+        b'<' => &["<<=", "<=", "<<", "<"],
+        b'=' => &["===", "=>", "==", "="],
+        b'!' => &["!==", "!=", "!"],
+        b'*' => &["**=", "*=", "**", "*"],
+        b'&' => &["&&=", "&&", "&=", "&"],
+        b'|' => &["||=", "||", "|=", "|"],
+        b'?' => &["??=", "??", "?.", "?"],
+        b'+' => &["++", "+=", "+"],
+        b'-' => &["--", "-=", "-"],
+        b'/' => &["/=", "/"],
+        b'%' => &["%=", "%"],
+        b'^' => &["^=", "^"],
+        b'.' => &["...", "."],
+        b'{' => return Some("{"),
+        b'}' => return Some("}"),
+        b'(' => return Some("("),
+        b')' => return Some(")"),
+        b'[' => return Some("["),
+        b']' => return Some("]"),
+        b';' => return Some(";"),
+        b',' => return Some(","),
+        b'~' => return Some("~"),
+        b':' => return Some(":"),
+        b'@' => return Some("@"),
+        _ => return None,
+    };
+    candidates.iter().copied().find(|candidate| {
+        source.starts_with(candidate)
+            && !(*candidate == "?." && source.as_bytes().get(2).is_some_and(u8::is_ascii_digit))
+    })
+}
 
 pub fn identifier_start(byte: u8) -> bool {
     byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$' || byte >= 0x80
@@ -278,16 +318,14 @@ pub fn lex_section(
             }
             _ => {
                 let rest = &source[i..end];
-                let Some(punctuator) = PUNCTUATORS.iter().find(|p| {
-                    rest.starts_with(**p) && !(**p == "?." && at(i + 2).is_ascii_digit())
-                }) else {
+                let Some(punctuator) = punctuator(rest) else {
                     return Err(LexError {
                         offset: i,
                         message: "unexpected character",
                     });
                 };
                 i += punctuator.len();
-                match *punctuator {
+                match punctuator {
                     "(" => parens.push(tokens.last().is_some_and(|t| {
                         t.kind == Kind::Name
                             && matches!(t.text(source), "if" | "while" | "for" | "with")
@@ -2171,6 +2209,37 @@ pub fn terse(source: &str, tokens: &[Token]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dispatched_punctuation_preserves_longest_matches_and_section_boundaries() {
+        let reference = |source: &str| PUNCTUATORS.iter().copied().find(|p| {
+            source.starts_with(p)
+                && !(*p == "?." && source.as_bytes().get(2).is_some_and(u8::is_ascii_digit))
+        });
+        for first in 0..128u8 {
+            for second in 0..128u8 {
+                let bytes = [first, second];
+                let text = std::str::from_utf8(&bytes).unwrap();
+                assert_eq!(punctuator(text), reference(text), "{text:?}");
+            }
+        }
+        for operator in PUNCTUATORS {
+            for suffix in ["", "0", "9", "x", ".0", ".9", ".x", "=", "=>", "?", "?.", "??=", "/", "//", "/*", "😀"] {
+                let text = format!("{operator}{suffix}");
+                for end in (0..=text.len()).filter(|&end| text.is_char_boundary(end)) {
+                    let section = &text[..end];
+                    assert_eq!(punctuator(section), reference(section), "{section:?}");
+                }
+            }
+        }
+        let text = "?.3";
+        let whole = lex_section(text, 0..text.len(), false).unwrap();
+        assert_eq!(whole.iter().map(|t| (t.kind, t.text(text))).collect::<Vec<_>>(),
+                   [(Kind::Punct, "?"), (Kind::Number, ".3")]);
+        let section = lex_section(text, 0..2, false).unwrap();
+        assert_eq!(section.len(), 1);
+        assert_eq!(section[0].text(text), "?.");
+    }
 
     #[test]
     fn existing_var_assignment_respects_patterns_scopes_and_directives() {

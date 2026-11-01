@@ -567,9 +567,9 @@ impl Walker<'_> {
                 }
                 self.pending.extend(args);
             }
-            _ => self
-                .pending
-                .extend(crate::program_fragment::children(program, id)),
+            _ => crate::program_fragment::visit_children(&program.exprs[id.0].kind, |child| {
+                self.pending.push(child);
+            }),
         }
     }
 

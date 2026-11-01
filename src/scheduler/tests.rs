@@ -1226,7 +1226,7 @@ fn a_phase_with_fewer_servers_runs_only_on_them() {
                         config.perturbation = perturbation;
                     }
                     #[cfg(not(any(debug_assertions, feature = "scheduling-stress")))]
-                    let _ = perturbation;
+                    let _: Option<()> = perturbation;
                     let (runs, outcomes, _) = graph.run(&config);
                     let case = format!("slots {slots} servers {servers} seed {seed} {mode}");
                     assert!(runs.iter().all(|&n| n == 1), "{case}");
