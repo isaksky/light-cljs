@@ -4691,6 +4691,46 @@ fn namespace_catalog_seeds_share_live_prefixes_after_the_owner_is_dropped() {
 }
 
 #[test]
+fn independent_catalog_branch_progresses_while_other_journals_are_locked() {
+    use crate::compilation_session::Registration;
+    use std::sync::mpsc;
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let root = |name: &str, unit| {
+        Registration::Root(name.into(), Some(unit), None, false, "branch.cljs:1".into())
+    };
+    let parent = shared.evaluator().unwrap();
+    parent.install_catalog(0, &[root("common", 10)]).unwrap();
+    let seed = parent.catalog_seed().unwrap();
+    parent.fork_catalog().unwrap();
+    let branch = parent.cx().unwrap().catalog_branch.borrow().clone();
+    let (done, completed) = mpsc::channel();
+    std::thread::scope(|scope| {
+        // Hold both the ordinary journal and another namespace's journal.
+        // A fresh namespace must still fork, extend and read its own catalog.
+        let canonical_guard = shared.0.catalog.lock().unwrap();
+        let branch_guard = branch.lock().unwrap();
+        let handle = scope.spawn(|| {
+            let task = Rc::new(shared.evaluator().unwrap());
+            task.clone().install_compiler_service("__lightCompileUnit", Rc::new(|_, unit| {
+                Ok(format!("rt => {unit}"))
+            })).unwrap();
+            task.adopt_catalog_seed(&seed).unwrap();
+            task.install_catalog(1, &[root("pick", 20)]).unwrap();
+            let value = task.evaluate_unit("rt => globalThis.__lightCompilerRoots.common + globalThis.__lightCompilerRoots.pick").unwrap();
+            let result = task.export_data(value, Default::default()).unwrap();
+            task.release(value).unwrap();
+            assert!(matches!(result.kind(), D::Double(n) if *n == 30.0));
+            done.send(()).unwrap();
+        });
+        let result = completed.recv_timeout(std::time::Duration::from_secs(10));
+        // Release before joining/asserting so a regression cannot hang the test.
+        drop((canonical_guard, branch_guard));
+        handle.join().unwrap();
+        result.expect("an independent catalog branch waited for another journal");
+    });
+}
+
+#[test]
 fn concurrent_catalog_branches_keep_distinct_equal_length_views_through_gc() {
     use crate::compilation_session::Registration;
     for prefix in [false, true] {

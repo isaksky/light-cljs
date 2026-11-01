@@ -1171,7 +1171,7 @@ struct SharedRuntime {
     /// task calls the one published function. `None` records a source
     /// whose factory cannot be shared, which tasks evaluate themselves.
     factories: Mutex<HashMap<String, Arc<std::sync::OnceLock<Option<Rooted>>>>>,
-    catalog: Mutex<catalog::Registry>,
+    catalog: Arc<Mutex<catalog::Registry>>,
     /// Task contexts that pool slots parked between jobs, for any slot to
     /// borrow ([`BbpEvaluator::park`], [`BbpEvaluator::adopt`]).
     idle: Mutex<Vec<TaskContext>>,
@@ -1588,7 +1588,7 @@ impl BbpRuntime {
             graph: Mutex::new(big_boy_pants_js::DependencyGraph::new()),
             pending_initializers: Mutex::new(HashMap::new()),
             factories: Mutex::new(HashMap::new()),
-            catalog: Mutex::new(catalog::Registry::default()),
+            catalog: Arc::new(Mutex::new(catalog::Registry::default())),
             idle: Mutex::new(Vec::new()),
             parked: Mutex::new(HashMap::new()),
             lanes: std::sync::OnceLock::new(),
@@ -1886,8 +1886,9 @@ pub(crate) struct TaskContext {
     last_thread: Arc<Mutex<std::thread::ThreadId>>,
     registrations: RefCell<Vec<String>>,
     catalog_snapshot: RefCell<Option<Rooted>>,
-    /// Identity of this append-only registration journal; producers inherit it.
-    catalog_branch: Cell<u64>,
+    /// Version cache for this append-only journal. Producers share its lock;
+    /// independent namespace branches build their immutable suffixes separately.
+    catalog_branch: RefCell<Arc<Mutex<catalog::Registry>>>,
     session: u64,
     next: Cell<u64>,
     values: RefCell<HashMap<u64, Rooted>>,
@@ -2065,7 +2066,7 @@ impl BbpEvaluator {
             last_thread: Arc::new(Mutex::new(std::thread::current().id())),
             registrations: RefCell::new(Vec::new()),
             catalog_snapshot: RefCell::new(None),
-            catalog_branch: Cell::new(0),
+            catalog_branch: RefCell::new(self.shared.0.catalog.clone()),
             session: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
             next: Cell::new(1),
             values: RefCell::new(HashMap::new()),
@@ -2829,7 +2830,7 @@ impl BbpEvaluator {
         // macro expansion use independent mutable state on the same heap.
         let active = Self::in_runtime(self.shared.clone(), self.service_depth + 1)?;
         let producer_cx = active.cx()?;
-        producer_cx.catalog_branch.set(cx.catalog_branch.get());
+        *producer_cx.catalog_branch.borrow_mut() = cx.catalog_branch.borrow().clone();
         bind(producer_cx.task.id());
         *active.service.borrow_mut() = service;
         *active.unit_services.borrow_mut() = self.unit_services.borrow().clone();

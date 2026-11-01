@@ -36,22 +36,10 @@ pub(super) struct Registry {
     // Tasks own their frontiers. The cache shares live immutable data without
     // rooting every historical prefix (including its copied vector spine).
     versions: BTreeMap<usize, WeakHandle>,
-    // The ordinary compiler has one append-only journal (branch zero). Forked
-    // namespace views share its immutable prefix but can append different
-    // registrations at the same cursor. Keep their version indexes separate.
-    branches: HashMap<u64, BTreeMap<usize, WeakHandle>>,
-    next_branch: u64,
+    // One registry per append-only journal. Tasks on that journal share this
+    // cache and its build lock. Forked namespace journals own separate caches:
+    // constructing their immutable suffixes must not serialize each other.
     collected: u64,
-}
-
-impl Registry {
-    fn versions_for(&mut self, branch: u64) -> &mut BTreeMap<usize, WeakHandle> {
-        if branch == 0 {
-            &mut self.versions
-        } else {
-            self.branches.entry(branch).or_default()
-        }
-    }
 }
 
 fn text<'s>(s: &Scope<'s>, value: &str) -> Result<Local<'s>, EvalError> {
@@ -78,7 +66,7 @@ fn index<'s>(
 impl BbpEvaluator {
     #[cfg(test)]
     pub(super) fn catalog_versions(&self) -> usize {
-        self.shared.0.catalog.lock().unwrap().versions_for(self.cx().unwrap().catalog_branch.get()).len()
+        self.cx().unwrap().catalog_branch.borrow().lock().unwrap().versions.len()
     }
     pub(crate) fn catalog_seed(&self) -> Result<CatalogSeed, EvalError> {
         let cx = self.cx()?;
@@ -111,13 +99,11 @@ impl BbpEvaluator {
         if seed.cursor != 0 && seed.snapshot.is_none() {
             return Err(error("missing native catalog frontier"));
         }
-        let mut registry = self.shared.0.catalog.lock().unwrap();
-        let branch = registry.next_branch.checked_add(1).ok_or_else(|| error("too many native catalog branches"))?;
-        registry.next_branch = branch;
+        let mut registry = Registry::default();
         if let Some(snapshot) = &seed.snapshot {
-            registry.versions_for(branch).insert(seed.cursor, snapshot.downgrade());
+            registry.versions.insert(seed.cursor, snapshot.downgrade());
         }
-        self.cx()?.catalog_branch.set(branch);
+        *self.cx()?.catalog_branch.borrow_mut() = Arc::new(Mutex::new(registry));
         Ok(())
     }
     /// Start an independent registration suffix while sharing this task's
@@ -153,20 +139,18 @@ impl BbpEvaluator {
             return Ok(());
         }
         let cx = self.cx()?;
-        let branch = cx.catalog_branch.get();
+        let branch = cx.catalog_branch.borrow().clone();
         let end = first + registrations.len();
         let snapshot = {
-            let mut registry = self.shared.0.catalog.lock().unwrap();
-            let collected = self.runtime.heap_stats().collections;
+            let mut registry = branch.lock().unwrap();
+            // Cache expiry needs only the collection epoch, not a heap census
+            // that also locks the shared root and object tables on every append.
+            let collected = self.runtime.collection_count();
             if registry.collected != collected {
                 registry.versions.retain(|_, snapshot| snapshot.is_live());
-                registry.branches.retain(|_, versions| {
-                    versions.retain(|_, snapshot| snapshot.is_live());
-                    !versions.is_empty()
-                });
                 registry.collected = collected;
             }
-            let versions = registry.versions_for(branch);
+            let versions = &mut registry.versions;
             if let Some(snapshot) = versions.get(&end).and_then(|s| s.upgrade().ok()) {
                 snapshot
             } else {
