@@ -53,11 +53,35 @@
 (def cells (vec (concat (for [engine [:v8 :pants :goose] workers (if (= engine :v8) [1] [1 2 4 8])] {:engine engine :workers workers :control :branch})
                        (for [engine [:v8 :pants :goose] control [:serial :rebuild]] {:engine engine :workers 1 :control control}))))
 (defn median [xs] (nth (vec (sort xs)) (quot (count xs) 2)))
+(defn observations [r]
+  (let [phase (fn [p k] (some #(when (= p (:phase %)) (get % k)) (:rows r)))
+        batch (fn [n] (some #(when (and (= :batch (:phase %)) (= n (:batch %))) (:wall-ns %)) (:rows r)))
+        stats (phase :adapter :stats)
+        native (mapv #(mapv parse-long (drop 2 (str/split % #"\s+"))) (filter #(str/starts-with? % "METRIC ") (:trace stats)))
+        worker (reduce + 0 (map #(nth % 2) native))
+        native-wall (when-let [xs (seq (keep #(get % 12) native))] (apply max xs))]
+    (into {} (remove (comp nil? val)
+      {:process-wall-ns (:process-wall-ns r) :prepare-ns (phase :prepare :ns) :runtime-ns (phase :runtime :ns)
+       :cold-batch-ns (batch 0) :reused-batch-ns (batch 1) :dispose-ns (phase :dispose :ns)
+       :compiler-analyze-ns (phase :compiler :analyze-ns) :compiler-emit-ns (phase :compiler :emit-ns) :compiler-cleanup-ns (phase :compiler :cleanup-ns)
+       :rust-export-sum-ns (:export-ns stats) :rust-bridge-sum-ns (:rust-bridge-ns stats) :native-base-capture-ns (:snapshot-ns stats)
+       :native-restore-sum-ns (when (seq native) (reduce + (map first native)))
+       :native-execution-sum-ns (when (seq native) (reduce + (map second native)))
+       :native-worker-active-lower-bound-ns (when (seq native) worker)
+       :native-observed-wall-ns native-wall
+       :coordinator-sleep-ns (when-let [xs (seq (keep #(get % 11) native))] (apply max xs))
+       :worker-idle-or-uninstrumented-fraction (when native-wall (max 0.0 (- 1.0 (/ worker (* (:workers r) native-wall)))))}))))
 (defn summarize []
   (let [rows (read-rows (fs/path directory "branch-samples.edn")) samples (filter #(= :sample (:kind %)) rows)]
     (doseq [[cell rs] (sort-by (comp pr-str key) (group-by #(select-keys % [:scope :case :engine :workers :control]) samples))]
-      (let [times (map #(/ (:process-wall-ns %) 1e6) rs)]
-        (println (pr-str (merge cell {:rounds (count rs) :median-ms (median times) :min-ms (apply min times) :max-ms (apply max times)})))))))
+      (let [times (map #(/ (:process-wall-ns %) 1e6) rs)
+            reference (filter #(and (= (:scope cell) (:scope %)) (= (:case cell) (:case %)) (= :v8 (:engine %)) (= :branch (:control %))) samples)
+            one (filter #(and (= (:scope cell) (:scope %)) (= (:case cell) (:case %)) (= (:engine cell) (:engine %)) (= 1 (:workers %)) (= :branch (:control %))) samples)
+            metrics (apply merge-with into (map #(update-vals (observations %) vector) rs))]
+        (println (pr-str (merge cell {:rounds (count rs) :median-ms (median times) :min-ms (apply min times) :max-ms (apply max times)
+                                     :ratio-to-v8 (/ (median times) (/ (median (map :process-wall-ns reference)) 1e6))
+                                     :speedup-vs-own-one (when (= :branch (:control cell)) (/ (median (map :process-wall-ns one)) (median (map :process-wall-ns rs))))
+                                     :metrics (update-vals metrics #(hash-map :median (median %) :min (apply min %) :max (apply max %)))})))))))
 (if (= mode "--summarize") (summarize)
 (let [temporary (fs/create-temp-dir {:dir (str directory) :prefix ".goose-benchmark-"}) native (str (fs/path temporary "compiler-session"))]
   (try
