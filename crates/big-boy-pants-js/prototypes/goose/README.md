@@ -906,9 +906,9 @@ equal source text does not merge distinct definitions. Conflicting source under
 one macro code identity is terminal. A helper's immutable catalog unit includes
 its resolved declaration context: equivalent native/canonical emission before
 and after application IR release reuses its first export. Compiler callbacks
-still run on every demand before that reuse. The declaring evaluator and foreign worker views use the
-same definition identity. GCS1
-correlates requests, dependency demands and results over one long-lived native
+still run on every demand before that reuse. The declaring evaluator and foreign
+worker views use the same definition identity. GCS1 correlates requests,
+dependency demands and results over one long-lived native
 process. Compiler callbacks resolve helpers from the real declaration catalog.
 Returned forms own their data, occurrences and source spans independently of
 Goose jobs and the session. The pipeline test compares forms, provenance,
@@ -1091,3 +1091,37 @@ The [measured report](branching-results.md) records a no-go for a compiler
 speedup at this scope. It links the raw samples, storage/allocation invocation,
 copy/validation controls, setup-inclusive ratios, thread/load observations and
 limitations. The earlier [serial diagnostics](serial-costs.md) remain preserved.
+
+### Initialized definition comparison
+
+`benchmark.bb --initialization-comparison` limits the actual compiler comparison
+to small/medium/larger and pairs the current executable with the exact
+`f29175c4496a25ca77812dcad4a10eb0aff4263e` predecessor. Build that revision in an
+owned detached worktree. From that worktree's root, build:
+
+```sh
+GOOSE_HOME="$PWD/target/goose" goose build crates/big-boy-pants-js/prototypes/goose/compiler_session.goose -o compiler-session-baseline
+CARGO_TARGET_DIR="$PWD/target" CARGO_BUILD_JOBS=3 LIGHT_CLJS_V8_CACHE=require cargo test --release --locked --features goose-macros --lib final_benchmark --no-run --message-format=json
+```
+
+Set
+`GOOSE_PREDECESSOR_ROOT`, `GOOSE_PREDECESSOR_BINARY` (the Cargo JSON executable),
+and `GOOSE_PREDECESSOR_RUNNER` to those paths. Keep both Cargo targets in their
+respective worktrees; `GOOSE_HOME="$PWD/target/goose"` also keeps Goose C
+intermediates inside the current worktree. Then run the comparison from the
+current tree. The predecessor's tracked tree must remain unchanged.
+
+Every logical cell has five adjacent predecessor/current pairs, reversing the
+first revision each round, after one warmup per revision/cell. Ordinary source
+namespace dependencies place the two measured batches across the compiler's
+six-namespace deferred drain lag; the batch completion assertion remains
+enabled. All supporting sources, byte counts and hashes are in the manifest.
+The complete process interval includes compiler setup, source reading/emission,
+definition preparation, real body calls, result conversion and cleanup.
+
+`benchmark.bb --initialization-allocations` runs the same current compiler cells
+once with separate Rust allocation/native storage instrumentation. Results go to
+`initialization-samples.edn.gz` and `initialization-allocations.edn.gz`, preserving
+the earlier branch files. The [initialized-definition results](branching-results.md#initialized-definition-reuse)
+state the exact revisions, scope, raw history, counters and remaining measured
+loss.

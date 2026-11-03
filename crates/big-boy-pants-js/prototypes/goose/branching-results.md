@@ -359,3 +359,181 @@ capture metadata), QuickJS 498 passed with the matching namespace failure,
 QuickJS bridge 3/3 passed, baseline-allowed all-target Clippy passed. Root
 rustfmt has existing unrelated differences, and the full compiler suite's
 existing wasm dead-code blocker remains; neither is represented as passing.
+
+## Initialized definition reuse
+
+This section is a separate experiment at source revision
+`362ff4c5242303d8fb693a1a44284f41ca6d0183`, paired against the unmodified
+`f29175c4496a25ca77812dcad4a10eb0aff4263e` predecessor. Earlier reports and raw
+branch/serial files remain unchanged. The live adapter now exports and prepares
+each macro definition once under its compiler `CodeIdentity`, scoped to one
+compilation. Calls restore a validated initialized callable into private heaps
+and execute their real bodies. Equal text from distinct definitions does not
+merge them; fresh compilations need fresh sessions.
+
+Helper export/publication uses the immutable compiler catalog unit identity,
+which includes its resolved declaration context. A unit can emit equivalent
+native/canonical source before/after application IR release. Its first supported
+export remains valid through that transition; every compiler callback still
+runs. Different unit identities keep different results. Releasing a function
+handle evicts its evaluator-local lookup, allowing a new handle to reuse the
+session checkpoint. Neither expansion results nor compiler callbacks are cached
+by the macro definition cache.
+
+### Scope and reproducibility
+
+The existing `benchmark.bb --initialization-comparison` runs actual namespace
+compilation only, with seed 24301 and the existing small/medium/larger cases:
+work 8/32/100, fan-out 1/4/8 per batch, and vector widths 8/32/100. There are
+45 logical cells: V8 at one execution worker, Pants/Goose at 1/2/4/8, and each
+engine's one-slot serial/rebuild controls. Each cell has five adjacent revision
+pairs, alternating which revision runs first, after one complete warmup per
+revision/cell: **450 successful measured comparisons**. Every invocation checks
+deterministic application JS against V8, and every measured output is run under
+Node and compared with the V8 output. The compiler regression suite separately
+compares full canonical forms, scalar datum/UTF-16 pools, metadata and provenance.
+
+The initial direct `batch1 -> batch0` require could let deferred macro expansions
+overlap across namespaces. An ordering assertion caught this at high concurrency.
+The corrected fixture uses six ordinary source namespace dependencies between
+the two measured batches, crossing the actual compiler's `DRAIN_LAG = 6` drain
+boundary. The assertion is retained, and both revisions use identical sources.
+All gate source bytes/hashes are recorded. This changes the fixture scope from
+the earlier report; timings must not be spliced into that earlier matrix.
+
+Rust uses the locked release profile, thin LTO and one codegen unit, with
+`CARGO_BUILD_JOBS=3` and `LIGHT_CLJS_V8_CACHE=require`. Native Goose uses
+`goose v2026.3-267-g369c7a2c` / runtime `3025e5810379`, `/usr/bin/cc -O2`
+(Apple clang 21.0.0), without debug checks. Rust is 1.99.1, Babashka 1.12.218,
+Node 26.12.1, on macOS 15.7.3 / Apple M3 Ultra (Virtual), 24 CPUs, 32 GiB RAM.
+The three quiet gates recorded 97.65%, 97.38% and 94.88% idle, with no competing
+build/measurement. Manifests include toolchains, source and binary hashes, build
+commands, process/load observations and the empty tracked-diff hash. Fixture
+generation, native/Rust builds, warmups and Node oracle execution are outside the
+compiler process wall interval. Source reading, analysis, export/load/factory
+preparation/capture, calls, dispatch/import, application JS emission and full
+session/host/program cleanup are inside it. Cold/reused intervals remain the
+times to each batch's last real expansion, with intervening compiler work paid.
+
+Raw files:
+
+- [Final paired timings](initialization-samples.edn.gz), source `362ff4c5`.
+- [Separate allocation/storage cells](initialization-allocations.edn.gz), the
+  same clean source, 45/45 successful current compiler cells.
+- [Completed prior checkpoint](initialization-samples-cb9f3682.edn.gz), source
+  `cb9f3682`: 450 successful ordered comparisons before the handle-release fix.
+  Final numbers below use only `362ff4c5`.
+- [Discontinued unordered attempt](initialization-unordered-attempt.edn.gz):
+  416 rows at `2bd8ff62`, ending during the larger fourth round before the ordering
+  assertion failed. This incomplete run is history, not an aggregate result.
+
+The predecessor was built in a detached owned worktree and supplied through
+`GOOSE_PREDECESSOR_ROOT`, `GOOSE_PREDECESSOR_BINARY` and
+`GOOSE_PREDECESSOR_RUNNER`; the driver verifies its exact revision and unchanged
+tracked tree. The temporary predecessor worktree/executable/target were removed
+afterward. Subsequent instrumented Goose builds used an owned `GOOSE_HOME` under
+`target/goose`; generated intermediate cache directories from earlier builds
+were identified by their exact worker/baseline source paths and removed.
+
+### Complete process wall results
+
+All entries are median milliseconds, **predecessor → initialized**. Raw samples
+retain all five values and the paired order; no confidence interval is claimed.
+
+| Engine / control / workers | Small | Medium | Larger |
+|---|---:|---:|---:|
+| V8 branch 1 | 36.28 → 35.77 | 41.75 → 41.41 | 53.48 → 53.78 |
+| Pants branch 1 | 81.65 → 81.34 | 85.67 → 84.51 | 96.78 → 95.49 |
+| Pants branch 2 | 82.27 → 83.16 | 86.75 → 85.64 | 93.90 → 95.06 |
+| Pants branch 4 | 83.71 → 82.56 | 86.33 → 86.77 | 93.27 → 93.57 |
+| Pants branch 8 | 83.40 → 82.92 | 86.91 → 86.89 | 95.02 → 95.01 |
+| Goose branch 1 | 57.71 → 59.97 | 105.13 → 104.47 | 163.37 → 166.73 |
+| Goose branch 2 | 81.21 → 82.62 | 127.61 → 129.75 | 189.74 → 191.18 |
+| Goose branch 4 | 106.07 → 108.29 | 107.47 → 106.84 | 139.91 → 139.39 |
+| Goose branch 8 | 108.22 → 106.74 | 120.22 → 116.39 | 140.64 → 140.83 |
+| V8 serial 1 | 35.58 → 35.55 | 42.21 → 41.91 | 54.97 → 54.06 |
+| Pants serial 1 | 82.75 → 83.15 | 86.94 → 87.02 | 96.00 → 95.92 |
+| Goose serial 1 | 42.53 → 41.80 | 50.04 → 45.32 | 66.06 → 57.86 |
+| V8 rebuild 1 | 49.04 → 49.74 | 146.91 → 144.79 | 296.68 → 295.60 |
+| Pants rebuild 1 | 91.40 → 92.02 | 145.25 → 144.57 | 213.52 → 217.75 |
+| Goose rebuild 1 | 81.42 → 83.25 | 271.02 → 274.08 | 515.07 → 526.97 |
+
+There is still **no measured compiler speedup over V8**. Larger Goose's best
+branch median is 139.39 ms (four workers), 2.59 times V8's 53.78 ms. Its range
+137.96–141.15 ms overlaps the predecessor's 136.34–142.70 ms. The retained serial
+control improved from 66.06 to 57.86 ms; its range is 56.83–60.43 ms, versus
+63.72–67.29 ms before. It executes this pure workload in one retained heap;
+branch calls retain private mutation and resumable helper boundaries. Rebuild
+includes a fresh complete compilation per source job, so it cannot reuse a
+definition across jobs. These results are limited to the supported corpus.
+
+### Counters, phases and storage
+
+Every final Goose timing and allocation session was checked for one base boot,
+one macro preparation, two distinct definition exports (macro + helper), one
+actual helper producer, and a `FINISH` for each submitted real body. The larger
+reused compilation executes 16 bodies across its two batches. Branch exports
+fell from **32 to 2**; serial exports fell from **17 to 2**. The base-only
+`initializations` counter remains separate from `preparations` and `exports`.
+Each fresh rebuild session has one body and its own preparation/exports.
+
+Larger one-worker medians, milliseconds:
+
+| Inclusive observation | Branch before | Branch initialized | Serial before | Serial initialized |
+|---|---:|---:|---:|---:|
+| Rust export sum | 11.989 | 0.873 | 9.641 | 0.844 |
+| Cold batch interval | 89.918 | 92.531 | 43.662 | 40.115 |
+| Reused batch interval | 61.616 | 62.075 | 13.133 | 8.897 |
+| Compiler analyze | 150.439 | 152.276 | 55.183 | 47.397 |
+| Cleanup | 4.424 | 4.700 | 2.478 | 2.301 |
+| Native restore sum | 2.921 | 3.079 | 0 | 0 |
+
+The native job-load counter now includes complete once-only definition
+preparation (base restore, code load, factory evaluation and capture), plus
+helper loading. The predecessor's load counter had a narrower scope. The
+unconditional coordinator sleep/dispatch policy is unchanged here. Initialized
+one-worker larger observations show 147.320 ms coordinator sleep over a
+151.820 ms native observed interval. These overlap other activity; subtracting
+sleep from wall time would not predict a corrected runtime.
+
+Separate instrumented larger branch observations, decimal MB:
+
+| Engine / workers | Rust allocation requested MB | Rust process peak MB | Goose process peak MB |
+|---|---:|---:|---:|
+| V8 / 1 | 46.71 | 57.92 | — |
+| Pants / 1 | 98.12 | 44.40 | — |
+| Goose / 1 | 48.45 | 42.43 | 25.12 |
+| Goose / 4 | 57.68 | 58.49 | 28.08 |
+| Goose / 8 | 66.82 | 90.83 | 29.82 |
+
+Rust allocation requests are cumulative and exclude native engine allocations;
+process peaks are separate high-water marks, not a simultaneous combined peak.
+The initialized macro checkpoint is 19,551 bytes, versus the 5,338-byte boot
+checkpoint used by helper producers. Saved body continuations are about
+0.786–0.801 MB; aggregate worker restore copying is 12.99–13.00 MB per larger
+compilation. These counters expose retained/copy costs without a general GC or
+an allocation-instrumented timing claim. No paired before/after memory claim is
+made from this one instrumented pass.
+
+### Verification and limits
+
+At the final implementation tree `3650035965a4ee3b3f8553cd69800109ae16a069`,
+`compiler.bb` passed 18/18 tests with both debug and native runners, including
+1/2/4/8 workers, repeated concurrent calls in dependent namespaces, full canonical
+V8 comparison, distinct definitions/contexts and fresh sessions, private captured
+mutation, live helper callbacks, release/reacquire without preparation replay,
+one-worker reentrancy, terminal preparation failures and cleanup. Snapshot/source
+format/check/debug/native smoke passed; the underlying VM/bridge/snapshot code
+is unchanged. Changed Rust formatting and `git diff --check` pass.
+
+Default library tests passed 367 with two ignored, and QuickJS-only library tests
+passed 322 with one ignored. These results remain applicable after the later
+Goose-only changes. Focused Goose library/tests Clippy passes both ordinary and
+`count-allocations` configurations with the existing deprecated/chunk/byte-string
+and single-element-loop allowances. Default/QuickJS all-target Clippy passes with
+only the existing dead-code/items-after-test-module allowances. Strict audits
+reproduced the eight existing engine diagnostics and the three existing
+`program_fragment` dead-code diagnostics plus `analyzer.rs` test-module ordering;
+root rustfmt still differs in unrelated files. The prior full-suite wasm
+dead-code blocker remains, so a full-suite pass is not claimed. Unaffected VM
+shape-matrix evidence is reused; the affected actual compiler cells were rerun.
