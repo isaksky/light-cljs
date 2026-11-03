@@ -8,7 +8,7 @@ static gs_i64 goose_measure_peak_rss(void) {
 /* Keep a flat copy observable to the optimizer without a per-byte checksum.
    This barrier may access every byte; it performs no allocation or copying. */
 static __attribute__((noinline)) gs_i64
-goose_measure_observe(const unsigned char *bytes, gs_i64 count) {
+goose_measure_observe(r_u8 bytes, gs_i64 count) {
     __asm__ __volatile__("" : : "r"(bytes), "r"(count) : "memory");
     return count + bytes[count - 1];
 }
