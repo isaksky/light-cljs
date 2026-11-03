@@ -118,7 +118,10 @@
                          (if (fs/exists? reference) (assert (= actual (hash-file reference)) (str "Compiler JS mismatch " (:id c) " " cell))
                            (do (assert (= :v8 (:engine cell))) (fs/copy (fs/path (:directory c) "actual.js") reference)))))
                      (merge cell {:scope scope :case (:id c) :process-wall-ns wall :rust-peak-rss-bytes peak :rows rows}
-                            (when (= mode "--allocations") {:storage-diagnostics @diagnostics :observed-thread-peaks @thread-observations :allocation-counts (edn/read-string (slurp (str (fs/path (:directory c) "allocations.edn"))))}))))]
+                            (when (= mode "--allocations")
+                              (cond-> {:storage-diagnostics @diagnostics :observed-thread-peaks @thread-observations :allocation-counts (edn/read-string (slurp (str (fs/path (:directory c) "allocations.edn"))))}
+                                (and (= scope :vm) (= :goose (:engine cell)) (= :rebuild (:control cell)))
+                                (assoc :rebuild-adapter-stats (mapv #(edn/read-string (slurp (str %))) (sort (fs/glob (:directory c) "rebuild-*.edn")))))))))]
       (assert binary)
       (spit (str sample-path) (str (pr-str {:kind :manifest :version 1 :seed seed :rounds (if (#{"--check" "--allocations"} mode) 1 5) :warmup (if (= mode "--measure") :one-complete-cell-process :none) :cases (mapv #(dissoc % :directory) prepared) :cells cells
                                          :revision (str/trim (command environment "git" "rev-parse" "HEAD")) :tracked-diff-sha256 (hash-bytes (.getBytes (command environment "git" "diff") "UTF-8")) :rust-tree (hash-file (fs/path directory "benchmark.rs")) :native-source-sha256 (hash-file (fs/path directory "compiler_session.goose")) :native-adapter-sha256 (hash-file (fs/path directory "measurement.h"))

@@ -345,6 +345,20 @@ fn run() {
                                         }
                                         drop(task);
                                         if let Some(s) = fresh_goose {
+                                            #[cfg(feature = "count-allocations")]
+                                            {
+                                                let destination = PathBuf::from(
+                                                    std::env::var_os("GOOSE_BENCH_DIRECTORY")
+                                                        .unwrap(),
+                                                );
+                                                std::fs::write(
+                                                    destination.join(format!(
+                                                        "rebuild-{batch}-{index}.edn"
+                                                    )),
+                                                    stats(&s),
+                                                )
+                                                .unwrap();
+                                            }
                                             s.close();
                                         }
                                         output.push((index, form, costs));
