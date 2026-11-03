@@ -52,6 +52,29 @@ fn roundtrip() {
     let unicode = decoded.nodes[decoded.children[root.start + 4]]; assert(decoded.units[unicode.start..(unicode.start + unicode.count)] == [233 as u16, 55357, 56832, 55296]);
     assert(decoded.bytes[..] == "one two");
 }
+fn positional_map_equality() {
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let a = source::allocate(heap, source::Node { kind: 11, value: source::number(7) });
+    let b = source::allocate(heap, source::Node { kind: 11, value: source::number(7) });
+    assert(a.a != b.a && source::form_equal(heap, a, b));
+    // LiteralMap retains duplicate operands; lookup and equality must both
+    // stop at the first equal key, even when a later value would match.
+    let first = source::form_op(heap, 65, [source::form_collection(heap, 6, [a, source::number(1), b, source::number(2)])]);
+    let swapped = source::form_op(heap, 65, [source::form_collection(heap, 6, [b, source::number(2), a, source::number(1)])]);
+    assert(source::form_count(heap, first) == 2 && source::form_count(heap, swapped) == 2);
+    assert(source::form_get(heap, first, b, source::nil()).number == 1 && source::form_get(heap, swapped, a, source::nil()).number == 2);
+    assert(!source::form_equal(heap, first, swapped) && !source::form_equal(heap, swapped, first));
+    assert(!source::form_equal(heap, source::form_collection(heap, 8, [first]), source::form_collection(heap, 8, [swapped])));
+    let outer = source::form_construct(heap, 7, [first, source::number(10), swapped, source::number(20)]);
+    assert(source::form_count(heap, outer) == 2);
+    assert(source::form_get(heap, outer, first, source::nil()).number == 10 && source::form_get(heap, outer, swapped, source::nil()).number == 20);
+    let changed = source::form_assoc(heap, outer, swapped, source::number(30));
+    assert(source::form_get(heap, changed, first, source::nil()).number == 10 && source::form_get(heap, changed, swapped, source::nil()).number == 30 && source::form_get(heap, outer, swapped, source::nil()).number == 20);
+    let ordered = source::form_construct(heap, 7, [a, source::number(1), source::number(8), source::number(2)]);
+    let reordered = source::form_construct(heap, 7, [source::number(8), source::number(2), b, source::number(1)]);
+    assert(source::form_equal(heap, ordered, reordered) && source::form_equal(heap, reordered, ordered) && heap.fault == source::Fault.None);
+    print("positional map equality: first matching key agrees with lookup, nested keys and persistent assoc passed");
+}
 fn number_bits() {
     var code = source::Code {}; code_init(code); var g = bridge::Graph {};
     for number in [-0.0, 0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0] { g.roots.push(g.nodes.len); g.nodes.push(bridge::Form { tag: 2, number: number }); }
@@ -136,4 +159,4 @@ fn budgets() {
     assert(!bridge::export_graph(heap, roots, cycle_out, cycle_control, roots[0]) && cycle_control.error == bridge::Error.Depth && cycle_out.nodes.len == 0);
     heap.nodes[roots[0].a].metadata = saved;
 }
-fn main() { roundtrip(); number_bits(); unsupported_values(); primitive_fallback(); budgets(); print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
+fn main() { roundtrip(); positional_map_equality(); number_bits(); unsupported_values(); primitive_fallback(); budgets(); print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }

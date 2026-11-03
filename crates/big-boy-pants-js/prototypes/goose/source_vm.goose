@@ -384,7 +384,10 @@ recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool
             var found = false;
             for j in (m.count / stride) {
                 if form_equal(heap, heap.values[n.start + i * stride], heap.values[m.start + j * stride], depth + 1) {
-                    if stride == 1 || form_equal(heap, heap.values[n.start + i * stride + 1], heap.values[m.start + j * stride + 1], depth + 1) { found = true; break; }
+                    // Match form_get: later equal keys cannot replace the
+                    // first match when its value differs.
+                    found = stride == 1 || form_equal(heap, heap.values[n.start + i * stride + 1], heap.values[m.start + j * stride + 1], depth + 1);
+                    break;
                 }
             }
             if !found { return false; }
