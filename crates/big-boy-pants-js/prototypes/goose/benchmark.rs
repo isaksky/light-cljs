@@ -10,7 +10,7 @@ mod allocations;
 #[global_allocator]
 static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocator;
 
-fn compare(a: &Form, b: &Form) {
+pub(super) fn compare(a: &Form, b: &Form) {
     assert!(a.data().value_eq(&b.data()));
     let (mut sa, mut sb, mut da, mut db) = (
         Sources::default(),
@@ -132,11 +132,13 @@ fn invoke(
 fn stats(session: &crate::goose_evaluator::GooseSession) -> String {
     let s = session.stats();
     format!(
-        "{{:subprocesses {} :initializations {} :jobs {} :exports {} :export-ns {} :bridge-bytes {} :spawn-ns {} :rust-bridge-ns {} :base-load-ns {} :boot-ns {} :snapshot-ns {} :job-load-ns {} :goose-bridge-ns {} :trace {:?}}}",
+        "{{:subprocesses {} :initializations {} :jobs {} :exports {} :definitions {} :preparations {} :export-ns {} :bridge-bytes {} :spawn-ns {} :rust-bridge-ns {} :base-load-ns {} :boot-ns {} :snapshot-ns {} :job-load-ns {} :goose-bridge-ns {} :trace {:?}}}",
         s.subprocesses,
         s.initializations,
         s.jobs,
         s.exports,
+        s.definitions,
+        s.preparations,
         s.export_ns,
         s.bridge_bytes,
         s.spawn_ns,
@@ -193,6 +195,9 @@ fn compile(
     if let Some(s) = &session {
         assert_eq!(s.stats().initializations, 1);
         assert_eq!(s.stats().jobs as usize, expected_jobs);
+        assert_eq!(s.stats().definitions, 2, "one macro plus shared helper");
+        assert_eq!(s.stats().exports, 2);
+        assert_eq!(s.stats().preparations, 1);
         assert_eq!(
             s.trace()
                 .iter()

@@ -51,6 +51,7 @@ pub struct GooseSession {
     readers: Mutex<Vec<thread::JoinHandle<()>>>,
     starts: AtomicU64,
     exports: AtomicU64,
+    preparations: Arc<AtomicU64>,
     export_ns: AtomicU64,
     bytes: AtomicU64,
     started: Instant,
@@ -59,6 +60,7 @@ pub struct GooseSession {
     control: Mutex<Option<ExecutionControl>>,
     trace: Arc<Mutex<Vec<String>>>,
     costs: Arc<Mutex<[u64; 5]>>,
+    definitions: Mutex<HashMap<DefinitionKey, (u64, String)>>,
     stderr: Arc<Mutex<Vec<u8>>>,
     terminal: Mutex<Option<EvalError>>,
     claimed: AtomicBool,
@@ -70,6 +72,8 @@ pub struct SessionStats {
     pub initializations: u64,
     pub jobs: u64,
     pub exports: u64,
+    pub definitions: u64,
+    pub preparations: u64,
     pub export_ns: u64,
     pub bridge_bytes: u64,
     pub elapsed_ns: u64,
@@ -132,6 +136,8 @@ impl GooseSession {
         let traces = trace.clone();
         let costs = Arc::new(Mutex::new([0u64; 5]));
         let measured = costs.clone();
+        let preparations = Arc::new(AtomicU64::new(0));
+        let prepared = preparations.clone();
         let reader = thread::spawn(move || {
             let mut output = BufReader::new(output);
             let mut line = String::new();
@@ -159,6 +165,9 @@ impl GooseSession {
                             return Some((0, Event::Ready));
                         }
                         "START" if parts.len() == 2 => Event::Start,
+                        "PREPARED" if parts.len() == 3 && parts[2].parse::<u64>().is_ok() => {
+                            Event::Resumed
+                        }
                         "CLOSED" if parts == ["CLOSED", "1"] => return Some((0, Event::Resumed)),
                         "RESUME" if parts.len() == 2 => Event::Resumed,
                         "PRODUCE" if parts.len() == 3 && parts[2].parse::<u64>().is_ok() => {
@@ -193,6 +202,9 @@ impl GooseSession {
                 })();
                 match parsed {
                     Some((id, event)) => {
+                        if parts[0] == "PREPARED" {
+                            prepared.fetch_add(1, Ordering::Relaxed);
+                        }
                         let mut costs = measured.lock().unwrap();
                         if parts[0] == "READY" && parts.len() == 6 {
                             for i in 0..3 {
@@ -257,6 +269,7 @@ impl GooseSession {
             readers: Mutex::new(vec![reader, drain]),
             starts: AtomicU64::new(0),
             exports: AtomicU64::new(0),
+            preparations,
             export_ns: AtomicU64::new(0),
             bytes: AtomicU64::new(0),
             started,
@@ -265,6 +278,7 @@ impl GooseSession {
             control: Mutex::new(None),
             trace,
             costs,
+            definitions: Mutex::new(HashMap::new()),
             stderr: errors,
             terminal: Mutex::new(None),
             claimed: AtomicBool::new(false),
@@ -288,6 +302,8 @@ impl GooseSession {
             initializations: 1,
             jobs: self.starts.load(Ordering::Relaxed),
             exports: self.exports.load(Ordering::Relaxed),
+            definitions: self.definitions.lock().unwrap().len() as u64,
+            preparations: self.preparations.load(Ordering::Relaxed),
             export_ns: self.export_ns.load(Ordering::Relaxed),
             bridge_bytes: self.bytes.load(Ordering::Relaxed),
             elapsed_ns: self.started.elapsed().as_nanos() as u64,
@@ -353,8 +369,29 @@ impl GooseSession {
         )
         .map_err(error)
     }
+    // Compiler CodeIdentity includes the resolved declaration context. Never
+    // merge equal source text from distinct definitions or compilation sessions.
+    // The lock covers export/publication only, never a VM wait or callback.
+    fn definition(&self, key: DefinitionKey, source: &str) -> Result<u64, EvalError> {
+        let mut definitions = self.definitions.lock().unwrap();
+        if let Some((id, previous)) = definitions.get(&key) {
+            return if previous == source {
+                Ok(*id)
+            } else {
+                Err(error("definition identity/source conflict"))
+            };
+        }
+        if definitions.len() >= 1024 {
+            return Err(error("definition budget"));
+        }
+        let id = definitions.len() as u64 + 1;
+        self.export(&self.directory.join(format!("definition-{id}.gsp")), source)?;
+        definitions.insert(key, (id, source.to_owned()));
+        Ok(id)
+    }
     fn execute(
         &self,
+        key: DefinitionKey,
         source: &str,
         graph: &bridge::Graph,
         c: &ExecutionControl,
@@ -367,7 +404,9 @@ impl GooseSession {
             c.check()?;
             let id = self.next.fetch_add(1, Ordering::Relaxed);
             let stem = self.directory.join(id.to_string());
-            self.export(&stem.with_extension("gsp"), source)?;
+            let definition = self.definition(key, source)?;
+            std::fs::write(stem.with_extension("definition"), definition.to_string())
+                .map_err(error)?;
             let bridged = Instant::now();
             let input = graph.encode()?;
             self.bytes.fetch_add(input.len() as u64, Ordering::Relaxed);
@@ -395,7 +434,7 @@ impl GooseSession {
                             return Err(error);
                         }
                         let bytes = std::fs::read(stem.with_extension("out")).map_err(error)?;
-                        for extension in ["gsp", "gfb", "out"] {
+                        for extension in ["definition", "gfb", "out"] {
                             let _ = std::fs::remove_file(stem.with_extension(extension));
                         }
                         for sequence in helpers {
@@ -425,7 +464,12 @@ impl GooseSession {
                         };
                         c.poll()?;
                         let temporary = self.directory.join(format!("{id}-{sequence}.tmp"));
-                        self.export(&temporary, &source)?;
+                        let definition = self.definition(DefinitionKey::Helper(unit), &source)?;
+                        std::fs::copy(
+                            self.directory.join(format!("definition-{definition}.gsp")),
+                            &temporary,
+                        )
+                        .map_err(error)?;
                         std::fs::rename(
                             temporary,
                             self.directory.join(format!("{id}-{sequence}.helper")),
@@ -468,7 +512,7 @@ impl Drop for GooseSession {
 }
 #[derive(Clone)]
 enum Stored {
-    Source(String),
+    Source(DefinitionKey, String),
     Form(Form, ConversionLimits),
     Data(Datum, ConversionLimits),
     Result(
@@ -476,6 +520,12 @@ enum Stored {
         Arc<HashMap<i32, bridge::Input>>,
         Rc<bridge::Budget>,
     ),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum DefinitionKey {
+    Compiler(usize),
+    Anonymous(u64),
+    Helper(usize),
 }
 type HelperService = Rc<dyn Fn(&dyn MacroEvaluator, usize) -> Result<String, String>>;
 /// A thread-local compiler view with session/version-scoped, non-reused handles.
@@ -488,6 +538,7 @@ pub struct GooseEvaluator {
     helper: RefCell<Option<HelperService>>,
     roots: RefCell<HashMap<String, usize>>,
     budget: RefCell<Option<Rc<bridge::Budget>>>,
+    functions: RefCell<HashMap<usize, ValueId>>,
     #[cfg(test)]
     pub(crate) helper_delay: Cell<Duration>,
 }
@@ -509,6 +560,7 @@ impl GooseEvaluator {
             helper: RefCell::new(None),
             roots: RefCell::new(HashMap::new()),
             budget: RefCell::new(None),
+            functions: RefCell::new(HashMap::new()),
             #[cfg(test)]
             helper_delay: Cell::new(Duration::ZERO),
         })
@@ -589,11 +641,34 @@ impl MacroEvaluator for GooseEvaluator {
     }
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
         self.available()?;
-        Ok(self.store(Stored::Source(source.to_owned())))
+        Ok(self.store(Stored::Source(
+            DefinitionKey::Anonymous(NEXT.fetch_add(1, Ordering::Relaxed)),
+            source.to_owned(),
+        )))
+    }
+    fn cached_source_macro_function(&self, identity: usize) -> Option<ValueId> {
+        self.functions.borrow().get(&identity).copied()
+    }
+    fn source_macro_function(&self, identity: usize, source: &str) -> Result<ValueId, EvalError> {
+        self.available()?;
+        if let Some(id) = self.cached_source_macro_function(identity) {
+            if let Stored::Source(_, previous) = self.get(id)?
+                && previous == source
+            {
+                return Ok(id);
+            }
+            return Err(error("definition identity/source conflict"));
+        }
+        let id = self.store(Stored::Source(
+            DefinitionKey::Compiler(identity),
+            source.to_owned(),
+        ));
+        self.functions.borrow_mut().insert(identity, id);
+        Ok(id)
     }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
         self.available()?;
-        let Stored::Source(source) = self.get(function)? else {
+        let Stored::Source(key, source) = self.get(function)? else {
             return Err(error("handle is not a function"));
         };
         let values = arguments
@@ -620,7 +695,7 @@ impl MacroEvaluator for GooseEvaluator {
                 .fetch_add(bridged.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let bytes =
                 self.session
-                    .execute(&source, &graph, &self.control, |name| {
+                    .execute(key, &source, &graph, &self.control, |name| {
                         #[cfg(test)]
                         thread::sleep(self.helper_delay.get());
                         let unit = self.roots.borrow().get(name).copied().ok_or_else(|| {
@@ -698,8 +773,14 @@ mod tests {
             std::fs::create_dir(&root).unwrap();
             std::fs::write(root.join("macros.cljs"),"(ns macros) (def shared [11 22]) (defmacro work [n] (loop [i 0] (if (= i n) (list 'quote shared) (recur (+ i 1)))))").unwrap();
             std::fs::write(root.join("main.cljs"),"(ns main (:require [macros :refer [work]])) (def shared [99]) (def a (work 20000)) (def b (work 20000)) (def c (work 20000)) (def d (work 20000)) (js/console.log (pr-str [a b c d]))").unwrap();
+            std::fs::write(root.join("batch0.cljs"), "(ns batch0 (:require [macros :refer [work]])) (def a (work 20000)) (def b (work 20001)) (def c (work 20002)) (def d (work 20003))").unwrap();
+            std::fs::write(root.join("main.cljs"), "(ns main (:require [batch0 :as b0] [macros :refer [work]])) (def a (work 20004)) (def b (work 20005)) (def c (work 20006)) (def d (work 20007)) (js/console.log (pr-str [b0/a b0/b b0/c b0/d a b c d]))").unwrap();
             let mut builds = Vec::new();
+            let mut expansions = Vec::new();
             for goose in [false, true] {
+                *crate::compiler_bootstrap::goose_capture::CONCURRENT_FORMS
+                    .lock()
+                    .unwrap() = Some(Vec::new());
                 let mut host = crate::MacroHost::new();
                 host.evaluator_options.memory_limit = 512 << 20;
                 if goose {
@@ -724,9 +805,27 @@ mod tests {
                     )
                 });
                 builds.push(crate::emit_js(&program));
+                expansions.push(
+                    crate::compiler_bootstrap::goose_capture::CONCURRENT_FORMS
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .unwrap(),
+                );
             }
+            assert_eq!(expansions[0].len(), 8);
+            crate::compiler_bootstrap::goose_capture::compare_concurrent_forms(
+                expansions.remove(0),
+                expansions.remove(0),
+            );
             assert_eq!(builds[0], builds[1], "deterministic compiler output");
             let trace = session.trace();
+            let stats = session.stats();
+            assert_eq!(stats.initializations, 1);
+            assert_eq!(stats.jobs, 8);
+            assert_eq!(stats.preparations, 1, "one initialized macro checkpoint");
+            assert_eq!(stats.definitions, 2, "macro and shared helper");
+            assert_eq!(stats.exports, 2, "export each definition once");
             eprintln!("workers={workers}: {trace:?}");
             assert_eq!(
                 trace

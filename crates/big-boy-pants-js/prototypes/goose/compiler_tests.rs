@@ -38,6 +38,105 @@ fn cleaned(s: &GooseSession) {
     assert!(s.pending.lock().unwrap().is_empty());
     assert!(!s.directory.exists());
 }
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_preparation_identity_and_private_calls() {
+    let source = "rt => { let state = {n: 40}; return (form, env) => { state.n = state.n + 1; return state.n; }; }";
+    for workers in [1, 2, 4, 8] {
+        // Identical compiler identity in a new session must prepare afresh.
+        for _ in 0..2 {
+            let session = GooseSession::start(&runner(), workers).unwrap();
+            thread::scope(|scope| {
+                let handles = (0..8)
+                    .map(|_| {
+                        let session = session.clone();
+                        scope.spawn(move || {
+                            let e = GooseEvaluator::new(session, &Default::default()).unwrap();
+                            let (_, args, call) = inputs(&e, source);
+                            let f = e.source_macro_function(777, source).unwrap();
+                            for _ in 0..2 {
+                                let result = e.call(f, &args).unwrap();
+                                let form = e
+                                    .export_form(result, &call, origin(&call), Default::default())
+                                    .unwrap();
+                                assert!(form.data().value_eq(&Datum::new(DatumKind::Integer(41))));
+                            }
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                for h in handles {
+                    h.join().unwrap();
+                }
+            });
+            assert_eq!(session.stats().exports, 1);
+            assert_eq!(session.stats().preparations, 1);
+            assert_eq!(session.stats().jobs, 16);
+            let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+            let (_, args, _) = inputs(&e, source);
+            let other = e.source_macro_function(778, source).unwrap();
+            e.call(other, &args).unwrap();
+            assert_eq!(
+                session.stats().exports,
+                2,
+                "distinct context despite equal source"
+            );
+            assert_eq!(session.stats().preparations, 2);
+            let conflict = e
+                .source_macro_function(777, "rt => (form, env) => 99")
+                .unwrap();
+            assert!(
+                e.call(conflict, &args)
+                    .unwrap_err()
+                    .0
+                    .contains("identity/source conflict")
+            );
+            cleaned(&session);
+        }
+    }
+}
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_preparation_failure_cleanup() {
+    for source in [
+        "rt => 42",
+        "rt => { null.x; return (form, env) => 1; }",
+        "rt => { globalThis.forbidden = 1; return (form, env) => 1; }",
+    ] {
+        let session = GooseSession::start(&runner(), 2).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let (f, args, _) = inputs(&e, source);
+        let failure = e.call(f, &args).unwrap_err();
+        assert!(
+            failure.0.contains("preparation-") && failure.0.contains("emitted-span="),
+            "{failure}"
+        );
+        assert_eq!(session.stats().preparations, 0);
+        assert_eq!(session.stats().jobs, 0);
+        cleaned(&session);
+    }
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let e = GooseEvaluator::new(
+        session.clone(),
+        &EvaluatorOptions {
+            timeout: Duration::from_millis(50),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (f, args, _) = inputs(&e, "rt => { while (true) {} return (form, env) => 1; }");
+    let failure = e.call(f, &args).unwrap_err();
+    // Native execution can hit its finite VM instruction budget before the
+    // wall deadline. Both must retire the preparing session, never publish it.
+    assert!(
+        failure.0.contains("deadline")
+            || failure.0.contains("preparation-Fault.InstructionLimit")
+            || failure.0.contains("preparation-Fault.WorkLimit"),
+        "{failure}"
+    );
+    assert_eq!(session.stats().preparations, 0);
+    assert_eq!(session.stats().jobs, 0);
+    cleaned(&session);
+}
 #[cfg(unix)]
 fn fake(body: &str) -> Arc<GooseSession> {
     use std::os::unix::fs::PermissionsExt;
@@ -338,8 +437,12 @@ fn goose_compiler_injected_worker_abort_cleans_entire_session() {
     for workers in [1, 2, 4, 8] {
         let session = GooseSession::start(&runner(), workers).unwrap();
         session
-            .export(&session.directory.join("1.gsp"), "rt => (form, env) => 1")
+            .export(
+                &session.directory.join("definition-2.gsp"),
+                "rt => (form, env) => 1",
+            )
             .unwrap();
+        std::fs::write(session.directory.join("1.definition"), "2").unwrap();
         std::fs::write(session.directory.join("1.gfb"), b"GFB1").unwrap();
         let (tx, rx) = mpsc::channel();
         session.pending.lock().unwrap().insert(1, tx);

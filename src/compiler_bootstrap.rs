@@ -1456,7 +1456,9 @@ impl CompiledMacro {
         }
         let parts;
         let (tables, unit) = match &self.function {
-            MacroFunction::Ready(_, Some(code)) | MacroFunction::Published(code) => (&code.tables, &code.unit),
+            MacroFunction::Ready(_, Some(code)) | MacroFunction::Published(code) => {
+                (&code.tables, &code.unit)
+            }
             MacroFunction::Installed(installed) => {
                 parts = installed.lock().expect("installed macro").parts();
                 (&parts.0, &parts.1)
@@ -1669,17 +1671,22 @@ impl MacroHost {
         }
         let tables = crate::reader_registration::ReaderTables::take(&mut program);
         crate::reader_registration::register(engine, &tables).map_err(|e| e.to_string())?;
-        let function = engine
-            .evaluate_unit(&format!(
-                "rt => rt.core.macroReaderFunction(({})(rt))",
-                unit
-            ))
-            .map_err(|e| e.to_string())?;
+        let identity = CodeIdentity::next();
+        let source = format!("rt => rt.core.macroReaderFunction(({})(rt))", unit);
+        #[cfg(feature = "goose-macros")]
+        let prepared = if engine.source_only() {
+            engine.source_macro_function(identity.0, &source)
+        } else {
+            engine.evaluate_unit(&source)
+        };
+        #[cfg(not(feature = "goose-macros"))]
+        let prepared = engine.evaluate_unit(&source);
+        let function = prepared.map_err(|e| e.to_string())?;
         let function = std::sync::Arc::new(bootstrap.own(engine, function));
         let code = std::sync::Arc::new(MacroCode {
             tables,
             unit,
-            identity: CodeIdentity::next(),
+            identity,
         });
         self.insert_javascript_macro(
             format!("{namespace}/{name}"),
@@ -1702,7 +1709,11 @@ impl MacroHost {
             }
             // A fully qualified macro of a namespace the program loaded: a macro
             // expansion names its own namespace's dependencies, as upstream.
-            let found = self.tables.javascript_macros.get_parts(qualifier, member).is_some();
+            let found = self
+                .tables
+                .javascript_macros
+                .get_parts(qualifier, member)
+                .is_some();
             if found {
                 self.observe(|log| {
                     log.named(
@@ -1765,7 +1776,10 @@ impl MacroHost {
         // A macro installed from an artifact may be the compilation's first:
         // its session starts as declaring one would have started it.
         if self.engine.bootstrap.is_none()
-            && matches!(declaration.function, MacroFunction::Installed(_) | MacroFunction::Published(_))
+            && matches!(
+                declaration.function,
+                MacroFunction::Installed(_) | MacroFunction::Published(_)
+            )
         {
             self.engine.bootstrap = self
                 .session_handle()

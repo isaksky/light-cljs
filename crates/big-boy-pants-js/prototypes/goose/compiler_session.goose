@@ -27,6 +27,32 @@ struct Event { id: i64, kind: i64, saved: Saved = Saved {}, sequence: i64 = 0, k
 struct Running { id: i64, thread: i64, key: i64 = -1 }
 struct Waiting { id: i64, name: u8[], saved: Saved, key: i64 = -2, active: bool = true }
 struct Produced { key: i64, data: u8[] }
+struct Prepared { key: i64, heap: snapshot::Snapshot }
+struct SerialDefinition { key: i64, function: source::Value }
+fn definition(directory: const u8[:], id: i64) -> i64 {
+    var bytes: u8[>..] = []; assert(read_file(str(directory, "/", id, ".definition"), bytes)); let key, ok = parse_int(bytes); assert(ok && key > 0); return key;
+}
+// Preparation runs once in the coordinator, before admission. It cannot invoke
+// compiler callbacks: those remain body effects in private resumable jobs.
+fn initialize(id: i64, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64) -> source::Value, bool {
+    var job = source::Job { heap: heap, protected_nodes: protected }; defer { source::retire(job); }
+    if !source::start(job, callee, args) || source::run(job, -1) != tiny::Outcome.Complete {
+        let pc = job.fault_pc; let start = if pc >= 0 && pc < heap.code.ops.len { heap.code.ops[pc].start } else { -1 }; let end = if pc >= 0 && pc < heap.code.ops.len { heap.code.ops[pc].end } else { -1 };
+        print("ERROR ", id, " preparation-", job.fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end); flush_stdout(); return source::Value {}, false;
+    }
+    return job.result, true;
+}
+fn prepare(base: const snapshot::Snapshot&, directory: const u8[:], id: i64, key: i64) -> snapshot::Snapshot, bool {
+    let started = clock_ns(); var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, bindings, source::reserve_identity(), sc)); let rt = bindings[0].value;
+    let entry = append(code, heap, str(directory, "/definition-", key, ".gsp")); assert(entry >= 0);
+    let factory, loaded = initialize(id, heap, source::closure(heap, entry, []), [], base.nodes.len); if !loaded { return snapshot::Snapshot {}, false; }
+    let function, ready = initialize(id, heap, factory, [rt], base.nodes.len); if !ready { return snapshot::Snapshot {}, false; }
+    if !source::valid(heap, function) || function.tag != 5 || heap.nodes[function.a].kind != 2 { print("ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); flush_stdout(); return snapshot::Snapshot {}, false; }
+    heap.initializer_count += 1;
+    let result = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: function }], sc); assert(sc.error == snapshot::Error.None);
+    print("PREPARED ", id, " ", key); print("COST ", id, " ", clock_ns() - started, " 0"); flush_stdout(); return copy(result), true;
+}
 thread_fn input() {
     loop { var line: u8[>..] = []; if !read_line(line) { assert(qput(Command { id: 0 })); return; }
         let id, ok = parse_int(line); if !ok || id < 0 { assert(qput(Command { id: -1 })); return; }
@@ -67,11 +93,10 @@ thread_fn worker(saved: Saved, directory: u8[>..], id: i64, identity: i64, mode:
     var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
     assert(snapshot::restore(saved.heap, code, heap, bindings, identity, sc)); let rt = bindings[0].value;
     var costs = saved.costs; var control = saved.bridge; var args: source::Value[>..] = []; var call = source::Value {}; var function = source::Value {};
-    if mode == 0 || mode == 2 {
-        let path = if mode == 0 { str(directory, "/", id, ".gsp") } else { str(directory, "/", id, "-", saved.sequence, ".helper") }; let loading = clock_ns(); let entry = append(code, heap, path); assert(entry >= 0); costs[0] += clock_ns() - loading;
-        if mode == 0 { let importing = clock_ns();
-            var bytes: u8[>..] = []; assert(read_file(str(directory, "/", id, ".gfb"), bytes)); var graph = bridge::Graph {}; assert(bridge::decode(graph, bytes, control)); assert(bridge::import_graph(heap, graph, args, control)); assert(args.len >= 2); call = args[0]; costs[1] += clock_ns() - importing;
-        }
+    if mode == 0 { function = bindings[1].value; let importing = clock_ns();
+        var bytes: u8[>..] = []; assert(read_file(str(directory, "/", id, ".gfb"), bytes)); var graph = bridge::Graph {}; assert(bridge::decode(graph, bytes, control)); assert(bridge::import_graph(heap, graph, args, control)); assert(args.len >= 2); call = args[0]; costs[1] += clock_ns() - importing;
+    } else if mode == 2 {
+        let loading = clock_ns(); let entry = append(code, heap, str(directory, "/", id, "-", saved.sequence, ".helper")); assert(entry >= 0); costs[0] += clock_ns() - loading;
         let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], saved.protected); if !loaded { return; }
         let value, initialized = leaf(id, heap, factory, [rt], saved.protected); if !initialized { return; } function = value;
         if mode == 2 { let exporting = clock_ns();
@@ -132,11 +157,16 @@ fn serial_call(directory: const u8[:], id: i64, code: source::Code&, heap: sourc
     }
 }
 fn serial(directory: const u8[:], code: source::Code&, heap: source::Heap&, rt: source::Value, instrumented: bool) {
+    var definitions: SerialDefinition[>..] = [];
     loop {
         var line: u8[>..] = []; assert(read_line(line)); let id, ok = parse_int(line); assert(ok && id >= 0); if id == 0 { break; }
-        print("START ", id); flush_stdout(); let started = clock_ns(); let entry = append(code, heap, str(directory, "/", id, ".gsp")); assert(entry >= 0); let loaded = clock_ns();
+        print("START ", id); flush_stdout(); let started = clock_ns(); let key = definition(directory, id); var function = source::Value {}; var found = false;
+        for d in definitions { if d.key == key { function = d.function; found = true; break; } }
+        if !found { let entry = append(code, heap, str(directory, "/definition-", key, ".gsp")); assert(entry >= 0);
+            let factory, a = initialize(id, heap, source::closure(heap, entry, []), [], 0); if !a { continue; } let value, b = initialize(id, heap, factory, [rt], 0); if !b { continue; } function = value; definitions.push(SerialDefinition { key: key, function: function }); print("PREPARED ", id, " ", key); flush_stdout(); }
+        let loaded = clock_ns();
         var data: u8[>..] = []; assert(read_file(str(directory, "/", id, ".gfb"), data)); var graph = bridge::Graph {}; var c = bridge::Control {}; assert(bridge::decode(graph, data, c)); var args: source::Value[>..] = []; assert(bridge::import_graph(heap, graph, args, c));
-        let factory, a = leaf(id, heap, source::closure(heap, entry, []), [], 0); assert(a); let function, b = leaf(id, heap, factory, [rt], 0); assert(b); let ready = clock_ns(); let value = serial_call(directory, id, code, heap, rt, function, args); let invoked = clock_ns();
+        let ready = clock_ns(); let value = serial_call(directory, id, code, heap, rt, function, args); let invoked = clock_ns();
         var output = bridge::Graph {}; var bytes: u8[>..] = []; assert(bridge::export_graph(heap, [value], output, c, args[0]) && bridge::encode(output, bytes, c)); assert(write_file(str(directory, "/", id, ".out"), bytes));
         let empty = Saved { storage: instrumented }; print("METRIC ", id, " 0 ", invoked - ready, " ", clock_ns() - started, " ", storage(empty, heap, snapshot::Control {}, bytes.len), " 0");
         print("COST ", id, " ", loaded - started, " ", ready - loaded + clock_ns() - invoked); print("FINISH ", id, " 0 0"); print("DONE ", id); flush_stdout();
@@ -156,11 +186,14 @@ fn main() {
         var restored_code = source::Code {}; var restored_heap = source::Heap { code: restored_code }; var bindings: snapshot::Binding[>..] = []; var restore = snapshot::Control {}; assert(snapshot::restore(base, restored_code, restored_heap, bindings, source::reserve_identity(), restore));
         print("{:snapshot-bytes ", snapshot::footprint(base), " :capture-copy-bytes ", sc.copied_bytes, " :capture-ns ", sc.capture_ns, " :raw-copy-repeats 1000 :raw-copy-ns ", copy_ns, " :raw-barrier-only-ns ", barrier_ns, " :raw-copy-payload-bytes ", snapshot::payload_bytes(base) * 1000, " :validation-ns ", validation_ns, " :validation-visits ", validation.visited, " :validation-peak-bytes ", validation.validation_peak, " :restore-ns ", restore.restore_ns, " :restore-copy-bytes ", restore.copied_bytes, " :peak-rss-native ", peak_memory(), " :checksum ", checksum, "}"); return;
     }
-    qlimit<Command>(128); qlimit<Event>(16); let reader = thread_spawn(input); var running: Running[>..] = []; var queue: i64[>..] = []; var received: i64 = 0; var waiting: Waiting[>..] = []; var produced: Produced[>..] = []; var closing = false; var retained: i64 = 0; var sleep_ns: i64 = 0;
+    qlimit<Command>(128); qlimit<Event>(16); let reader = thread_spawn(input); var running: Running[>..] = []; var queue: i64[>..] = []; var received: i64 = 0; var waiting: Waiting[>..] = []; var produced: Produced[>..] = []; var prepared: Prepared[>..] = []; var closing = false; var retained: i64 = 0; var sleep_ns: i64 = 0;
     print("READY 1 ", heap.boot_count, " ", loaded - beginning, " ", booted - loaded, " ", clock_ns() - booted); flush_stdout();
     while !closing || running.len > 0 {
         let command, available = qpoll<Command>(); if available { if command.id <= 0 { closing = true; } else { assert(queue.len < 1024); queue.push(command.id); } }
-        if !closing && received < queue.len && running.len < limit { let id = queue[received]; received += 1; let initial = Saved { heap: copy(base), protected: base.nodes.len, storage: instrumented }; let t = thread_spawn(worker, copy(initial), copy(directory), id, identity(initial), 0, [], -1, source::reserve_identity()); running.push(Running { id: id, thread: t }); print("START ", id); flush_stdout(); }
+        if !closing && received < queue.len && running.len < limit { let id = queue[received]; received += 1; let key = definition(directory, id); var index: i64 = -1;
+            for p, i in prepared { if p.key == key { index = i; break; } }
+            if index < 0 { let checkpoint, ok = prepare(base, directory, id, key); if !ok { continue; } let bytes = snapshot::footprint(checkpoint); if prepared.len >= 1024 || bytes > 67108864 - retained { print("ERROR ", id, " definition-budget"); flush_stdout(); continue; } retained += bytes; index = prepared.len; prepared.push(Prepared { key: key, heap: copy(checkpoint) }); }
+            for p in prepared { if p.key != key { continue; } let initial = Saved { heap: copy(p.heap), protected: base.nodes.len, storage: instrumented }; let t = thread_spawn(worker, copy(initial), copy(directory), id, identity(initial), 0, [], -1, source::reserve_identity()); running.push(Running { id: id, thread: t }); print("START ", id); flush_stdout(); break; } }
         let event, present = qpoll<Event>(); if present {
             join(running, event.id); let bytes = if event.kind == 1 { snapshot::footprint(event.saved.heap) + bytes_of(event.saved.frames).len + bytes_of(event.saved.locals).len + bytes_of(event.saved.operands).len + bytes_of(event.saved.writes).len + bytes_of(event.saved.handlers).len } else { event.data.len }; if bytes > 67108864 - retained { print("ERROR ", event.id, " retained-budget"); flush_stdout(); continue; } retained += bytes; if event.metrics.len > 0 { print("METRIC ", event.id, " ", event.metrics, " ", sleep_ns, " ", clock_ns() - beginning); } if event.kind == 2 || event.kind == 5 { print("COST ", event.id, " ", event.name); }
             if event.kind == 1 { assert(waiting.len < 128); waiting.push(Waiting { id: event.id, name: copy(event.name), saved: copy(event.saved) }); print("NEED ", event.id, " ", event.saved.sequence, " ", event.name, " ", event.steps, " ", event.saved.writes.len); }

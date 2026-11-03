@@ -12,11 +12,40 @@ struct Request {
     expanded: Form,
     origin: ExpansionOrigin,
 }
+#[cfg(feature = "goose-macros")]
+pub(crate) static CONCURRENT_FORMS: std::sync::Mutex<Option<Vec<(Form, Form)>>> =
+    std::sync::Mutex::new(None);
+#[cfg(feature = "goose-macros")]
+pub(crate) fn compare_concurrent_forms(mut a: Vec<(Form, Form)>, mut b: Vec<(Form, Form)>) {
+    let key = |pair: &(Form, Form)| {
+        (
+            pair.0.span().source().name().to_owned(),
+            pair.0.span().bytes().start,
+        )
+    };
+    a.sort_by_key(key);
+    b.sort_by_key(key);
+    assert_eq!(a.len(), b.len());
+    for ((call_a, a), (call_b, b)) in a.iter().zip(&b) {
+        benchmark::compare(call_a, call_b);
+        benchmark::compare(a, b);
+    }
+}
 thread_local! {
     static REQUESTS: std::cell::RefCell<Option<Vec<Request>>> = const { std::cell::RefCell::new(None) };
     static UNITS: std::cell::RefCell<Option<BTreeSet<(bool, String)>>> = const { std::cell::RefCell::new(None) };
 }
 pub(crate) fn record(call: &Form, environment: &Datum, expanded: &Form, origin: &ExpansionOrigin) {
+    #[cfg(feature = "goose-macros")]
+    if let Some(forms) = CONCURRENT_FORMS.lock().unwrap().as_mut() {
+        if origin
+            .macro_name
+            .namespace()
+            .is_some_and(|n| n == "macros".encode_utf16().collect::<Vec<_>>())
+        {
+            forms.push((call.clone(), expanded.clone()));
+        }
+    }
     #[cfg(feature = "goose-macros")]
     benchmark::record_batch(call, origin);
     REQUESTS.with_borrow_mut(|requests| {
