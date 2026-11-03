@@ -20,7 +20,7 @@ root struct Code {
     ops:          Op[>..]         = [], units: u16[>..] = [], valid: bool = false,
     error:        tiny::LoadError = tiny::LoadError.None, error_pc: i64 = -1,
 }
-enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary }
+enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed }
 struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576, properties: i64 = 1048576, work: i64 = 10000000, steps: i64 = 1000000, frames: i64 = 256, stack: i64 = 65536 }
 // All heap tables append until session teardown; IDs are never recycled.
 // kind: plain=0, array=1, closure=2, cell=3. Captures and cell values never
@@ -522,7 +522,15 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         21 => { return form_nth(heap, a, 0); },
         65 => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != 5 && kind != 6 { heap.fault = Fault.TypeError; return Value {}; } let n = heap.nodes[v.a]; return form_collection(heap, 7, heap.values[n.start..(n.start + n.count)]); },
         69 => { if form_kind(heap, a) != 7 && form_kind(heap, a) != 8 { heap.fault = Fault.TypeError; return Value {}; } return a; },
-        82 => { if a.tag != 5 || heap.nodes[a.a].kind != 0 || args[1].tag > 1 { heap.fault = Fault.NativeBoundary; return Value {}; } return get(heap, a, args[2]); },
+        82 => {
+            if a.tag != 5 || heap.nodes[a.a].kind != 0 || args[1].tag > 1 { heap.fault = Fault.NativeBoundary; return Value {}; }
+            if args[2].tag != 4 { heap.fault = Fault.TypeError; return Value {}; }
+            let value, found = own_property(heap, a, args[2]);
+            // A compiler root read is a dependency request, even if the JS
+            // value would otherwise be undefined. No live-job parking/replay
+            // is supported: prerequisites must be resolved before admission.
+            if !found && heap.fault == Fault.None { heap.fault = Fault.DependencyNeed; } return value;
+        },
         _ => { heap.fault = Fault.NativeBoundary; return Value {}; },
     }
 }

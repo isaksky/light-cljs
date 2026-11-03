@@ -463,6 +463,95 @@ goose build artifact_tests.goose -o .artifact-tests
 rm .artifact-tests
 ```
 
+## Dependency-ready native worker pool
+
+`scheduler.goose` owns one coordinator on the caller thread and exactly the
+configured 1–8 persistent execution threads, with no nested workers. The
+compiler supplies a sealed `Plan`: correlated request IDs, already-lowered Code
+entry indices, scalar invocation arguments, and exact prerequisite keys and
+root installation names. The coordinator performs execution scheduling;
+light-cljs retains name resolution and compilation. The live compiler adapter
+and arbitrary form argument transport remain the separate adapter boundary.
+`Run.unresolved` returns exact compiler requests absent from the sealed plan;
+they settle as `Missing`, so an incomplete plan cannot wait indefinitely.
+
+`dependency.goose` adapts the single-assignment invariants from
+`be0e53e7:tests/dependency.rs` and `27d517f4:src/dep.rs` as ordered coordinator
+messages. Keys contain compilation, session, definition/query ID, definition
+version (`generation`), and result kind. First demand issues one producer token;
+repeated demands retain one recorded edge and one terminal delivery per
+consumer/key, including ready reads. Completion requires the exact key/token
+and rechecks the pending cell after artifact validation. Success, failure and
+cancellation remain immutable. Each cell also supplies a publication ID local
+to the initialized checkpoint: distinct versions and kinds of one definition
+can coexist in the artifact import table without aliasing their public keys.
+Claims, subscriptions, delivery logs and publication IDs belong to the
+coordinator and never enter a private heap snapshot.
+
+Every accepted work packet receives a fresh private heap identity. A worker
+restores the initialized snapshot, validates/imports all successful prerequisite
+artifacts and installs the requested compiler roots while no VM Job exists,
+then enters the emitted function/factory/macro. Publication occurs after all VM
+Jobs retire. A missing emitted `cljReadRoot` now reports `DependencyNeed`, mapped
+to `MidJobNeed`; it cannot silently return undefined or trigger replay. A
+present root whose value is undefined remains a valid read. Explicitly declared
+mid-job requests fail before dispatch. Failed producers settle their waiting
+consumers as `Prerequisite`; unrelated work continues. Once no active work can
+make progress, remaining cycles (including their blocked dependents) settle as
+`Cycle`.
+
+Work and result queues have independent types and configurable capacities 1–8;
+workers deliberately consume a shared work queue. Admission counts both queued
+and executing jobs and never exceeds the worker limit. Failed puts retain the
+work/result for retry. On cancellation the coordinator stops admission and
+installs cancellation for pending cells, then drains the already admitted,
+budgeted executions. Installed terminal winners remain unchanged. Shutdown
+retries one stop per worker and joins every owned thread after all results have
+been drained. Cancellation messages include compilation/session and have a
+capacity of eight. Exactly one coordinator owns these process-wide queue types.
+Native process crashes remain process failures.
+
+Plans are bounded to 128 jobs/1,024 prerequisite records, with caller-specified
+cell/edge capacity checked before mutation. Each invocation has a step cap and each job has a
+work cap; private heap growth is additionally capped to 8,192 nodes, 32,768
+values, 4,096 properties and 65,536 UTF-16 units beyond the base, with 64 frames
+and 1,024 stack entries. The defaults bound each result's artifact payload to
+1 MiB, a prerequisite packet to 8 MiB, and retained artifacts to 64 MiB.
+Equal per-job artifact quotas reserve the retention budget before workers start,
+so budget winners cannot depend on arrival order. Import caches use the packet
+budget. Queue capacities count flat owned packets; all copies, VM storage and
+validation scratch still incur their existing snapshot/artifact bounds.
+
+`scheduler_tests.goose` executes chain, fan-out/fan-in and diamond graphs at
+1/2/4/8 workers with reversed delays. Chain/fan-out edges are explicit protocol
+fixtures executing unchanged real helper bodies. The diamond consumes actual
+compiler-emitted `branches.cljs` helper results using the emitted root reads;
+its base contains no precomputed helper results. Each run traces producer
+starts and artifact installations and asserts every prerequisite installation
+precedes consumer admission. Reordered runs compare ordered diagnostics and
+exported expansion graphs (`(quote [2 3 9 16])`). Physical completion traces
+retain their actual order; `output` emits terminal diagnostics (including fault function/PC) in submission
+order, and correlated results carry the request IDs. Additional native cases
+exercise same-definition versions/kinds, missing/cyclic dependencies, undeclared
+reads, unrelated success, scoped cancellation, VM/packet/artifact exhaustion,
+capacity-one backpressure for jobs/results/stops, and complete thread joining.
+`dependency_tests.goose` deterministically exercises both demand/completion
+orders, duplicate first demand, and two validated completions awaiting install.
+Snapshot restore tests retain one original claim/waiter and reject VM identities
+as completion tokens.
+
+Run the bounded correctness checks from the repository root:
+
+```sh
+bb crates/big-boy-pants-js/prototypes/goose/smoke.bb
+```
+
+Smoke includes dependency check/debug/native execution and native debug/optimized
+pool execution (Goose's JIT cannot link thread-local storage). The pool test
+reports actual coordinator/worker/admitted counts and asserts cleanup within a
+30-second correctness bound. These are correctness runs with deliberate delays;
+they do not supply worker-scaling or compiler end-to-end performance evidence.
+
 ## Early native source diagnostic
 
 Run `bb crates/big-boy-pants-js/prototypes/goose/measure.bb` from the repository

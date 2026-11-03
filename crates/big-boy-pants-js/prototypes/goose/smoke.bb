@@ -20,21 +20,22 @@
              (apply process/shell {:dir (str directory)} arguments))]
   (try
     (run! goose "version")
-    (doseq [source ["vm.goose" "tests.goose" "encoding.goose" "program.goose" "scalar.goose" "export_schema.goose" "inspect.goose" "source_tests.goose" "layout_probe.goose" "source_vm.goose" "execute.goose" "serial_tests.goose" "form_bridge.goose" "bridge_tests.goose" "macro_tests.goose" "macro_run.goose" "snapshot.goose" "snapshot_fixture.goose" "snapshot_tests.goose" "snapshot_workers.goose" "artifact.goose" "artifact_tests.goose"]]
+    (doseq [source ["vm.goose" "tests.goose" "encoding.goose" "program.goose" "scalar.goose" "export_schema.goose" "inspect.goose" "source_tests.goose" "layout_probe.goose" "source_vm.goose" "execute.goose" "serial_tests.goose" "form_bridge.goose" "bridge_tests.goose" "macro_tests.goose" "macro_run.goose" "snapshot.goose" "snapshot_fixture.goose" "snapshot_tests.goose" "snapshot_workers.goose" "artifact.goose" "artifact_tests.goose" "dependency.goose" "dependency_tests.goose" "scheduler.goose" "scheduler_tests.goose"]]
       (run! goose "format" "--check" (str (fs/path directory source))))
     (let [probe (str (fs/path directory "layout_probe.goose"))]
       (run! goose "check" probe)
       (run! goose probe "--debug")
       (run! goose "build" probe "-o" executable)
       (run! executable))
-    (doseq [source ["bridge_tests.goose" "macro_tests.goose" "snapshot_tests.goose" "artifact_tests.goose"]]
+    (doseq [source ["bridge_tests.goose" "macro_tests.goose" "snapshot_tests.goose" "artifact_tests.goose" "dependency_tests.goose"]]
       (let [path (str (fs/path directory source))]
         (run! goose "check" path)
         (run! goose path "--debug")
         (run! goose "build" path "-o" executable)
         (run! executable)))
     ;; Threads require native linking, including the debug isolation run.
-    (let [workers (str (fs/path directory "snapshot_workers.goose"))]
+    (doseq [source ["snapshot_workers.goose" "scheduler_tests.goose"]
+            :let [workers (str (fs/path directory source))]]
       (run! goose "check" workers)
       (run! goose "build" workers "--debug" "-o" executable)
       (run! executable)
