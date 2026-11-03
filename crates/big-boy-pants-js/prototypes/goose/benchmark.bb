@@ -91,10 +91,14 @@
     (command environment "goose" "format" "--check" (str (fs/path directory "compiler_session.goose")))
     (command environment "goose" "check" (str (fs/path directory "compiler_session.goose")))
     (command environment "goose" "build" (str (fs/path directory "compiler_session.goose")) "-o" native)
-    (let [features (str "goose-macros" (when (= mode "--allocations") ",count-allocations"))
+    (let [wrapper (fs/path temporary "native-resources")
+          _ (spit (str wrapper) "#!/bin/sh\nexec /usr/bin/time -l -o \"$GOOSE_BENCH_DIRECTORY/native-memory-$$.txt\" \"$GOOSE_NATIVE_BINARY\" \"$@\"\n")
+          _ (.setExecutable (fs/file wrapper) true)
+          features (str "goose-macros" (when (= mode "--allocations") ",count-allocations"))
           build (command environment "cargo" "test" "--release" "--locked" "--features" features "--lib" "final_benchmark" "--no-run" "--message-format=json")
           binary (some #(let [row (json/parse-string % true)] (when (and (= "compiler-artifact" (:reason row)) (get-in row [:profile :test]) (:executable row)) (:executable row))) (str/split-lines build))
-          env (cond-> (assoc environment "GOOSE_COMPILER_RUNNER" native) (= mode "--allocations") (assoc "LIGHT_V8_STATS" "1"))
+          env (cond-> (assoc environment "GOOSE_COMPILER_RUNNER" native)
+                (= mode "--allocations") (assoc "LIGHT_V8_STATS" "1" "GOOSE_COMPILER_RUNNER" (str wrapper) "GOOSE_NATIVE_BINARY" native))
           prepared (mapv (fn [c]
                            (let [dir (fs/path temporary (name (:id c))) _ (fs/create-dirs dir)
                                  calls (mapv #(str "(work " (+ (:work c) (mod % 2)) " " (payload c) ")") (range (:fanout c)))
@@ -107,6 +111,7 @@
           invoke (fn [c scope cell]
                    (let [env (merge env {"GOOSE_BENCH_DIRECTORY" (:directory c) "GOOSE_BENCH_SCOPE" (name scope) "GOOSE_BENCH_ENGINE" (name (:engine cell)) "GOOSE_BENCH_WORKERS" (str (:workers cell)) "GOOSE_BENCH_CONTROL" (name (:control cell))})
                          _ (reset! thread-observations {})
+                         _ (when (= mode "--allocations") (doseq [path (fs/glob (:directory c) "native-memory-*.txt")] (fs/delete path)))
                          started (System/nanoTime)
                          _ (apply command env (concat (when (not= mode "--measure") ["/usr/bin/time" "-l" "-o" (str (fs/path (:directory c) "resources.txt"))]) [binary "compiler_bootstrap::goose_capture::benchmark::final_benchmark" "--ignored" "--exact" "--test-threads=1"]))
                          wall (- (System/nanoTime) started)
@@ -119,7 +124,7 @@
                            (do (assert (= :v8 (:engine cell))) (fs/copy (fs/path (:directory c) "actual.js") reference)))))
                      (merge cell {:scope scope :case (:id c) :process-wall-ns wall :rust-peak-rss-bytes peak :rows rows}
                             (when (= mode "--allocations")
-                              (cond-> {:storage-diagnostics @diagnostics :observed-thread-peaks @thread-observations :allocation-counts (edn/read-string (slurp (str (fs/path (:directory c) "allocations.edn"))))}
+                              (cond-> {:storage-diagnostics @diagnostics :observed-thread-peaks @thread-observations :native-process-resources (mapv #(slurp (str %)) (sort (fs/glob (:directory c) "native-memory-*.txt"))) :allocation-counts (edn/read-string (slurp (str (fs/path (:directory c) "allocations.edn"))))}
                                 (and (= scope :vm) (= :goose (:engine cell)) (= :rebuild (:control cell)))
                                 (assoc :rebuild-adapter-stats (mapv #(edn/read-string (slurp (str %))) (sort (fs/glob (:directory c) "rebuild-*.edn")))))))))]
       (assert binary)
