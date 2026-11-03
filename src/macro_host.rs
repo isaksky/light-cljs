@@ -625,6 +625,8 @@ pub struct MacroHost {
 /// ([`MacroHost::environment`]).
 #[derive(Clone)]
 pub(crate) struct MacroEnvironment {
+    #[cfg(feature = "goose-macros")]
+    goose: Option<std::sync::Arc<crate::goose_evaluator::GooseSession>>,
     limits: MacroLimits,
     evaluator_options: crate::evaluator::EvaluatorOptions,
     opaque_packages: bool,
@@ -1232,8 +1234,14 @@ impl MacroHost {
     /// Execute compiler-emitted user source macros in one experimental Goose
     /// session. Core syntax expansion remains the compiler's bootstrap service.
     #[cfg(feature = "goose-macros")]
-    pub fn use_goose_source_macros(&mut self, session: std::sync::Arc<crate::goose_evaluator::GooseSession>) -> Result<(), crate::evaluator::EvalError> {
-        self.engine.goose = Some(std::rc::Rc::new(crate::goose_evaluator::GooseEvaluator::new(session, &self.evaluator_options)?));
+    pub fn use_goose_source_macros(
+        &mut self,
+        session: std::sync::Arc<crate::goose_evaluator::GooseSession>,
+    ) -> Result<(), crate::evaluator::EvalError> {
+        session.claim_compilation()?;
+        self.engine.goose = Some(std::rc::Rc::new(
+            crate::goose_evaluator::GooseEvaluator::new(session, &self.evaluator_options)?,
+        ));
         Ok(())
     }
     /// One entry per expansion executed by the native backend, in call order.
@@ -1954,6 +1962,8 @@ impl MacroHost {
     /// an engine of its own ([`Self::bind`]).
     pub(crate) fn environment(&self) -> MacroEnvironment {
         MacroEnvironment {
+            #[cfg(feature = "goose-macros")]
+            goose: self.engine.goose.as_ref().map(|e| e.session()),
             limits: self.limits,
             evaluator_options: self.evaluator_options.clone(),
             opaque_packages: self.opaque_packages,
@@ -1977,6 +1987,8 @@ impl MacroHost {
             engine,
         } = self;
         let environment = MacroEnvironment {
+            #[cfg(feature = "goose-macros")]
+            goose: engine.goose.as_ref().map(|e| e.session()),
             limits,
             evaluator_options,
             opaque_packages,
@@ -1986,11 +1998,24 @@ impl MacroHost {
     }
     pub(crate) fn from_parts(environment: MacroEnvironment, engine: EngineBinding) -> Self {
         let MacroEnvironment {
+            #[cfg(feature = "goose-macros")]
+            goose,
             limits,
             evaluator_options,
             opaque_packages,
             tables,
         } = environment;
+        #[cfg(feature = "goose-macros")]
+        let mut engine = engine;
+        #[cfg(feature = "goose-macros")]
+        if engine.goose.is_none()
+            && let Some(session) = goose
+        {
+            engine.goose = Some(std::rc::Rc::new(
+                crate::goose_evaluator::GooseEvaluator::new(session, &evaluator_options)
+                    .expect("validated Goose compilation options"),
+            ));
+        }
         Self {
             limits,
             evaluator_options,
@@ -2172,6 +2197,8 @@ impl MacroHost {
     }
     pub(crate) fn begin_compilation(&mut self) {
         if !self.tables.bootstrap_seed {
+            #[cfg(feature = "goose-macros")]
+            if let Some(goose) = &self.engine.goose { goose.session().begin_compilation(); }
             let mut readers = self.engine.data_readers.borrow_mut();
             readers.evaluator = None;
             readers.functions.clear();

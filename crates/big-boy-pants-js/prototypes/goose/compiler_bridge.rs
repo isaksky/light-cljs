@@ -3,7 +3,40 @@ use crate::CollectionKind;
 use crate::compiler_data::{Datum, DatumKind, ExpansionOrigin, Form, Name};
 use crate::evaluator::{EvalError, ExecutionControl};
 use crate::form_bridge::ConversionLimits;
-use std::collections::HashMap;
+use std::{cell::Cell, collections::HashMap};
+
+pub(super) struct Budget {
+    remaining: Cell<usize>,
+    bytes: Cell<usize>,
+    control: ExecutionControl,
+}
+impl Budget {
+    pub fn new(nodes: usize, control: ExecutionControl) -> Self {
+        Self {
+            remaining: Cell::new(nodes),
+            bytes: Cell::new(MAX_BYTES * 4),
+            control,
+        }
+    }
+    fn check(&self) -> Result<(), EvalError> {
+        self.control.poll()?;
+        let Some(next) = self.remaining.get().checked_sub(1) else {
+            return Err(EvalError("Goose conversion limit exceeded".into()));
+        };
+        self.remaining.set(next);
+        Ok(())
+    }
+    fn bytes(&self, count: usize) -> Result<(), EvalError> {
+        self.control.poll()?;
+        let Some(left) = self.bytes.get().checked_sub(count) else {
+            return Err(EvalError(
+                "Goose conversion byte/work limit exceeded".into(),
+            ));
+        };
+        self.bytes.set(left);
+        Ok(())
+    }
+}
 
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 fn bad() -> EvalError {
@@ -34,6 +67,7 @@ pub(super) struct Graph {
     roots: Vec<u32>,
     pub originals: HashMap<i32, Form>,
     memo: HashMap<(usize, usize), u32>,
+    source_ids: HashMap<crate::compiler_data::SourceId, usize>,
 }
 fn tag(d: &Datum) -> Result<u32, EvalError> {
     Ok(match d.kind() {
@@ -58,7 +92,7 @@ impl Graph {
         &self,
         depth: usize,
         limits: ConversionLimits,
-        control: &ExecutionControl,
+        control: &Budget,
     ) -> Result<(), EvalError> {
         control.check()?;
         if depth > limits.depth || self.nodes.len() >= limits.nodes || self.size() > MAX_BYTES {
@@ -84,7 +118,7 @@ impl Graph {
         d: &Datum,
         depth: usize,
         limits: ConversionLimits,
-        c: &ExecutionControl,
+        c: &Budget,
     ) -> Result<u32, EvalError> {
         self.charge(depth, limits, c)?;
         let mut n = Node {
@@ -94,18 +128,20 @@ impl Graph {
         match d.kind() {
             DatumKind::Boolean(v) => n.number = if *v { 1. } else { 0. },
             DatumKind::Integer(v) => {
-                if (*v as f64) as i64 != *v {
+                if *v as f64 >= i64::MAX as f64 || (*v as f64) as i64 != *v {
                     return Err(bad());
                 }
                 n.number = *v as f64;
             }
             DatumKind::Double(v) => n.number = *v,
             DatumKind::String(v) => {
+                c.bytes(v.len() * 2)?;
                 let (s, l) = self.text(v);
                 n.fields[0] = s;
                 n.fields[1] = l;
             }
             DatumKind::Symbol(v) | DatumKind::Keyword(v) => {
+                c.bytes((v.name().len() + v.namespace().map_or(0, <[u16]>::len)) * 2)?;
                 let (s, l) = self.text(v.name());
                 n.fields[0] = s;
                 n.fields[1] = l;
@@ -139,7 +175,7 @@ impl Graph {
         f: &Form,
         depth: usize,
         l: ConversionLimits,
-        c: &ExecutionControl,
+        c: &Budget,
     ) -> Result<u32, EvalError> {
         let key = (f.nodes().as_ptr() as usize, f.id().0);
         if let Some(id) = self.memo.get(&key) {
@@ -173,15 +209,15 @@ impl Graph {
         }
         let span = f.span();
         let source = span.source();
-        let source_index = if let Some(i) = self.sources.iter().position(|&(s, n)| {
-            self.bytes[s as usize..(s + n) as usize] == *source.text().as_bytes()
-        }) {
-            i
+        let source_index = if let Some(i) = self.source_ids.get(&source.id()) {
+            *i
         } else {
+            c.bytes(source.text().len())?;
             let i = self.sources.len();
             self.sources
                 .push((self.bytes.len() as u32, source.text().len() as u32));
             self.bytes.extend(source.text().as_bytes());
+            self.source_ids.insert(source.id(), i);
             i
         };
         let occurrence = self.originals.len() as i32;
@@ -199,13 +235,13 @@ impl Graph {
     pub fn arguments(
         forms: &[super::Stored],
         limits: ConversionLimits,
-        c: &ExecutionControl,
+        c: &Budget,
     ) -> Result<Self, EvalError> {
         let mut g = Self::default();
         for form in forms {
             let id = match form {
-                super::Stored::Form(f) => g.form(f, 1, limits, c)?,
-                super::Stored::Data(d) => g.datum(d, 1, limits, c)?,
+                super::Stored::Form(f, _) => g.form(f, 1, limits, c)?,
+                super::Stored::Data(d, _) => g.datum(d, 1, limits, c)?,
                 _ => return Err(bad()),
             };
             g.roots.push(id);
@@ -252,11 +288,7 @@ impl Graph {
         }
         Ok(out)
     }
-    pub fn decode(
-        bytes: &[u8],
-        limits: ConversionLimits,
-        c: &ExecutionControl,
-    ) -> Result<Self, EvalError> {
+    pub fn decode(bytes: &[u8], limits: ConversionLimits, c: &Budget) -> Result<Self, EvalError> {
         c.check()?;
         if bytes.len() < 32 || bytes.len() > MAX_BYTES || &bytes[..4] != b"GFB1" {
             return Err(bad());
@@ -321,6 +353,8 @@ impl Graph {
                 || n.fields[4] >= nodes as i32
                 || n.fields[6] < -1
                 || n.fields[6] >= sources as i32
+                || n.fields[5] < -1
+                || (n.tag == 4 || n.tag == 5) && n.fields[3] < -1
                 || n.tag == 1 && n.number != 0. && n.number != 1.
             {
                 return Err(bad());
@@ -339,6 +373,12 @@ impl Graph {
             if n.fields[4] >= 0 && g.nodes[n.fields[4] as usize].tag != 8 {
                 return Err(bad());
             }
+            if n.fields[6] >= 0 {
+                let (_, len) = g.sources[n.fields[6] as usize];
+                if n.fields[7] < 0 || n.fields[8] < n.fields[7] || n.fields[8] as u32 > len {
+                    return Err(bad());
+                }
+            }
         }
         if g.children
             .iter()
@@ -348,7 +388,59 @@ impl Graph {
             return Err(bad());
         }
         for &(s, n) in &g.sources {
-            g.segment(&g.bytes, s as i32, n as i32)?;
+            c.bytes(n as usize)?;
+            std::str::from_utf8(g.segment(&g.bytes, s as i32, n as i32)?).map_err(|_| bad())?;
+        }
+        let mut states = vec![0u8; nodes];
+        let mut heights = vec![0usize; nodes];
+        for root in 0..nodes {
+            if states[root] == 2 {
+                continue;
+            }
+            let mut stack = vec![(root, 0usize)];
+            while let Some((id, next)) = stack.last_mut() {
+                c.check()?;
+                let id = *id;
+                let node = &g.nodes[id];
+                states[id] = 1;
+                let children = if node.tag >= 6 {
+                    g.segment(&g.children, node.fields[0], node.fields[1])?
+                } else {
+                    &[]
+                };
+                let count = children.len() + usize::from(node.fields[4] >= 0);
+                if *next < count {
+                    let child = if *next < children.len() {
+                        children[*next] as usize
+                    } else {
+                        node.fields[4] as usize
+                    };
+                    *next += 1;
+                    if states[child] == 1 {
+                        return Err(bad());
+                    }
+                    if states[child] == 0 {
+                        if stack.len() >= limits.depth {
+                            return Err(bad());
+                        }
+                        stack.push((child, 0));
+                    }
+                } else {
+                    let mut height = 1;
+                    for &child in children {
+                        height = height.max(heights[child as usize] + 1);
+                    }
+                    if node.fields[4] >= 0 {
+                        height = height.max(heights[node.fields[4] as usize] + 1);
+                    }
+                    if height > limits.depth {
+                        return Err(bad());
+                    }
+                    heights[id] = height;
+                    states[id] = 2;
+                    stack.pop();
+                }
+            }
         }
         Ok(g)
     }
@@ -370,7 +462,7 @@ impl Graph {
         origin: ExpansionOrigin,
         originals: &HashMap<i32, Form>,
         limits: ConversionLimits,
-        c: &ExecutionControl,
+        c: &Budget,
     ) -> Result<Form, EvalError> {
         struct Decode<'a> {
             g: &'a Graph,
@@ -379,7 +471,7 @@ impl Graph {
             originals: &'a HashMap<i32, Form>,
             reuse: HashMap<usize, Form>,
             limits: ConversionLimits,
-            c: &'a ExecutionControl,
+            c: &'a Budget,
             visits: usize,
         }
         impl Decode<'_> {
@@ -412,8 +504,12 @@ impl Graph {
                             DatumKind::Double(n.number)
                         }
                     }
-                    3 => DatumKind::String(self.g.segment(&self.g.units, f[0], f[1])?.into()),
+                    3 => {
+                        self.c.bytes(f[1] as usize * 2)?;
+                        DatumKind::String(self.g.segment(&self.g.units, f[0], f[1])?.into())
+                    }
                     4 | 5 => {
+                        self.c.bytes((f[1] as usize + f[3].max(0) as usize) * 2)?;
                         let ns = if f[3] < 0 {
                             None
                         } else {
@@ -453,7 +549,22 @@ impl Graph {
                     if !d.value_eq(&original.data()) {
                         return Err(bad());
                     }
+                    let span = original.span();
+                    if f[6] < 0
+                        || f[7] as usize != span.bytes().start
+                        || f[8] as usize != span.bytes().end
+                    {
+                        return Err(bad());
+                    }
+                    let (start, len) = self.g.sources[f[6] as usize];
+                    if self.g.segment(&self.g.bytes, start as i32, len as i32)?
+                        != span.source().text().as_bytes()
+                    {
+                        return Err(bad());
+                    }
                     self.reuse.insert(d.identity(), original.clone());
+                } else if f[5] >= 0 {
+                    return Err(bad());
                 }
                 self.states[id] = 2;
                 self.memo[id] = Some(d.clone());
@@ -472,5 +583,59 @@ impl Graph {
         };
         let data = d.visit(self.roots[0] as usize, 1)?;
         Ok(Form::from_bridge_expansion(data, call, origin, &d.reuse))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn goose_compiler_bridge_rejects_truncations_and_unreachable_cycles() {
+        let source = crate::compiler_data::Source::new("graph.cljs", "nil");
+        let form = Form::from_data(
+            Datum::new(DatumKind::Nil),
+            source.span(0..3).unwrap(),
+            crate::compiler_data::Origin::Source,
+        );
+        let control = ExecutionControl::new(&Default::default()).unwrap();
+        let limits = ConversionLimits::default();
+        let mut graph = Graph::arguments(
+            &[super::super::Stored::Form(form, limits)],
+            limits,
+            &Budget::new(limits.nodes, control.clone()),
+        )
+        .unwrap();
+        let bytes = graph.encode().unwrap();
+        for end in 0..bytes.len() {
+            assert!(
+                Graph::decode(
+                    &bytes[..end],
+                    limits,
+                    &Budget::new(limits.nodes, control.clone())
+                )
+                .is_err(),
+                "prefix {end}"
+            );
+        }
+        assert!(Graph::decode(&bytes, limits, &Budget::new(limits.nodes, control.clone())).is_ok());
+        let id = graph.nodes.len() as u32;
+        let start = graph.children.len() as i32;
+        graph.children.push(id);
+        let mut node = Node {
+            tag: 7,
+            ..Default::default()
+        };
+        node.fields[0] = start;
+        node.fields[1] = 1;
+        graph.nodes.push(node);
+        assert!(
+            Graph::decode(
+                &graph.encode().unwrap(),
+                limits,
+                &Budget::new(limits.nodes, control)
+            )
+            .is_err(),
+            "unreachable cycle must be rejected"
+        );
     }
 }

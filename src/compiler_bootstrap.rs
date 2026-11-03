@@ -1629,16 +1629,23 @@ impl MacroHost {
         #[cfg(feature = "goose-macros")]
         let goose = self.engine.goose.clone();
         #[cfg(feature = "goose-macros")]
-        let engine = goose.as_deref().map(|e| e as &dyn crate::evaluator::MacroEvaluator).or(engine);
+        let engine = goose
+            .as_deref()
+            .map(|e| e as &dyn crate::evaluator::MacroEvaluator)
+            .or(engine);
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
         let environment_keys = source_environment_keys(&program).map(std::sync::Arc::from);
         let unit = crate::emitter::emit_deferred_unit(&program);
         #[cfg(feature = "bbp-macros")]
         let unit = if bootstrap.evaluator.native_forms() || {
             #[cfg(feature = "goose-macros")]
-            { engine.source_only() }
+            {
+                engine.source_only()
+            }
             #[cfg(not(feature = "goose-macros"))]
-            { false }
+            {
+                false
+            }
         } {
             let replaced = self
                 .session_handle()
@@ -1786,7 +1793,17 @@ impl MacroHost {
             session.prepare_goose(goose)?;
         }
         #[cfg(feature = "goose-macros")]
-        let engine = goose.as_deref().map(|e| e as &dyn crate::evaluator::MacroEvaluator).or(engine);
+        if let (Some(goose), Some(worker)) = (
+            &goose,
+            self.engine.worker.as_ref().and_then(std::rc::Weak::upgrade),
+        ) {
+            worker.prepare_goose(goose)?;
+        }
+        #[cfg(feature = "goose-macros")]
+        let engine = goose
+            .as_deref()
+            .map(|e| e as &dyn crate::evaluator::MacroEvaluator)
+            .or(engine);
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
         let function = declaration.function(engine, &self.engine)?;
         let reader_view;

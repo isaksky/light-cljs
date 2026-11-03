@@ -77,6 +77,9 @@ fn supported(op: Opcode) -> bool {
             | Jump
             | JumpIfFalse
             | Return
+            | PushCatch
+            | PopCatch
+            | Throw
             | NewObject
             | NewObjectLiteral
             | Function
@@ -457,15 +460,15 @@ mod tests {
     }
     #[test]
     fn parsed_but_unsupported_dead_nested_function_is_rejected() {
-        let source = "function dormant() { throw 42; } 1;";
+        let source = "function dormant() { return new Date(); } 1;";
         assert!(crate::frontend::parse_script(source).is_ok());
         let e = export_source("dead.js", source).unwrap_err();
         assert_eq!(e.kind, SyntaxErrorKind::Unsupported);
         assert!(
-            e.message.contains("throw") && e.message.contains("dormant"),
+            e.message.contains("new") && e.message.contains("dormant"),
             "{e}"
         );
-        assert!(source[e.span.start..e.span.end].contains("throw"));
+        assert!(source[e.span.start..e.span.end].contains("new"));
     }
     #[test]
     fn operator_provenance_uses_utf8_bytes_of_the_exact_source() {
@@ -595,10 +598,10 @@ mod serial_tests {
             };
             assert_eq!(actual, expected, "{name}");
         }
-        // Throw/try and direct const writes are outside the frozen export
+        // Constructors and direct const writes are outside the frozen export
         // surface: explicit positioned errors rather than Goose semantics.
         for source in [
-            "function f() { throw 1; }",
+            "function f() { return new Date(); }",
             "function f() { const x=1; x=2; return x; }",
         ] {
             assert_eq!(

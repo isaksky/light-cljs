@@ -92,10 +92,11 @@ fn code_valid<T>(s: const T&, c: Control&) -> bool {
             if pop < 0 || push < 0 { return reject(c, Error.Code); }
             if op.depth >= 0 {
                 if op.depth < pop || op.depth - pop + push > 65536 { return reject(c, Error.Code); }
-                if op.code != 15 {
-                    for edge in (if op.code == 14 { 2 } else { 1 }) {
-                        let target = if (op.code == 13 || op.code == 14) && edge == 0 { op.arg } else { pc + 1 };
-                        if !range(target - f.start, 1, f.count) || s.ops[target].depth != op.depth - pop + push { return reject(c, Error.Code); }
+                if op.code != 15 && op.code != 55 {
+                    for edge in (if op.code == 14 || op.code == 56 { 2 } else { 1 }) {
+                        let target = if (op.code == 13 || op.code == 14 || op.code == 56) && edge == 0 { op.arg } else { pc + 1 };
+                        let extra = if op.code == 56 && edge == 0 { 1 } else { 0 };
+                        if !range(target - f.start, 1, f.count) || s.ops[target].depth != op.depth - pop + push + extra { return reject(c, Error.Code); }
                     }
                 }
             }
@@ -150,8 +151,14 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     for v, i in s.constants {
         if !poll(c) { return false; }
         var original = s.code_constants[i]; if original.tag == 4 { original.session = s.header.base; }
-        // Compare bits, preserving NaNs and signed zero.
-        if !value(s, v) || bytes_of([v]) != bytes_of([original]) { return reject(c, Error.Link); }
+        if !value(s, v) { return reject(c, Error.Link); }
+        // Live compiler sessions append code after runtime strings exist.
+        // String constants keep exact UTF-16 contents, but their runtime range
+        // need not have the same offset as the immutable code's string pool.
+        if original.tag == 4 {
+            if !poll(c, v.b) { return false; }
+            if v.tag != 4 || v.b != original.b || s.units[v.a..(v.a + v.b)] != s.code_units[original.a..(original.a + original.b)] { return reject(c, Error.Link); }
+        } else if bytes_of([v]) != bytes_of([original]) { return reject(c, Error.Link); }
     }
     for p, i in s.properties {
         if !poll(c) { return false; }
@@ -166,7 +173,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if n.source >= 0 && (n.span_start < 0 || n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
         if n.kind == 2 && (!range(n.function, 1, s.functions.len) || n.count != s.functions[n.function].captures) { return reject(c, Error.Link); }
         if n.kind == 2 || n.kind >= 5 && n.kind <= 8 || n.kind == 12 { if !range(n.start, n.count, s.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); } }
-        if n.kind == 4 && (n.function < 0 || n.function > 8) { return reject(c, Error.Unsupported); }
+        if n.kind == 4 && (n.function < 0 || n.function > 13 || n.function == 9) { return reject(c, Error.Unsupported); }
         if (n.kind == 9 || n.kind == 10) && (n.value.tag != 4 || n.namespace_value.tag != 1 && n.namespace_value.tag != 4) || n.kind == 11 && n.value.tag > 4 { return reject(c, Error.Link); }
         if n.metadata.tag != 0 && n.metadata.tag != 1 && (n.metadata.tag != 5 || s.nodes[n.metadata.a].kind != 7) { return reject(c, Error.Link); }
     }

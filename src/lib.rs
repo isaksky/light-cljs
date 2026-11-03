@@ -35,8 +35,6 @@ mod compiler_destructuring;
 mod compiler_libraries;
 pub mod compiler_names;
 pub mod compiler_reader;
-#[cfg(feature = "goose-macros")]
-pub mod goose_evaluator;
 pub mod config_file;
 pub mod core_operations;
 pub mod defines;
@@ -52,6 +50,8 @@ pub mod eval_session;
 pub mod evaluator;
 pub mod folding;
 pub mod generated_names;
+#[cfg(feature = "goose-macros")]
+pub mod goose_evaluator;
 pub mod inference;
 pub mod inlining;
 mod js_syntax;

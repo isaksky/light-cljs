@@ -41,12 +41,15 @@ root struct Heap {
 }
 struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, input: Value = Value {}, output: Value = Value {}, index: i64 = 0 }
 struct Write { object: Value, key: Value, value: Value }
+struct Handler { frame: i64, pc: i64, operands: i64, locals: i64 }
 root struct Job {
     heap:            Heap&, frames: Frame[>..<] = [], locals: Value[>..<] = [], operands: Value[>..<] = [],
     writes:          Write[>..]                 = [], status: tiny::Status = tiny::Status.Ready, result: Value = Value {},
+    handlers:        Handler[>..<]              = [],
     fault:           Fault                      = Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1,
     steps:           i64                        = 0, claimed: bool = false, registered: bool = false,
     effects_enabled: bool                       = false, effect_pending: bool = false, effect_kind: i64 = -1,
+    helpers_enabled: bool                       = false,
     effect_args:     Value[8]                   = [Value {}; 8], effect_count: i64 = 0, effect_frame: Frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value {}, receiver: Value {} },
 }
 fn number(n: f64) -> Value { return Value { tag: 3, number: n }; }
@@ -56,14 +59,14 @@ fn stack_effect(code: const Code&, f: Function, op: Op) -> i64, i64 {
     let n = op.arg;
     match op.code {
         1, 2, 3, 16, 45, 46, 47, 84, 86, 87, 105, 106, 107, 145, 197, 198 => { return 0, 1; },
-        4, 5, 14, 15, 139 => { return 1, 0; },
+        4, 5, 14, 15, 55, 139 => { return 1, 0; },
         6 => { return 1, 2; },
         7, 8, 9, 10, 11, 21, 22, 25, 26, 33, 34, 38, 39, 40, 41, 73, 74, 75, 76, 77, 80, 81, 88, 90, 151 => { return 2, 1; },
         12, 20, 27, 35, 36, 49, 78, 79, 85, 108, 112, 113, 114, 137, 138, 150, 161 => { return 1, 1; },
         23, 24, 91, 152 => { return 3, 1; },
         37 => { return 2, 2; },
         48, 50 => { return 2, 0; },
-        13, 109, 110, 140, 141, 143, 144 => { return 0, 0; },
+        13, 56, 58, 109, 110, 140, 141, 143, 144 => { return 0, 0; },
         18, 191, 192, 195 => { return n, 1; },
         19, 193 => { return n * 2, 1; },
         194 => { return export_form_arity(n), 1; },
@@ -106,7 +109,7 @@ fn load(code: Code&, image: const program::Image&) -> bool {
         for i in f.start..(f.start + f.count) {
             let op = code.ops[i]; let pop, push = stack_effect(code, f, op);
             if pop < 0 || push < 0 { return reject(code, tiny::LoadError.Unknown, i); }
-            if op.code == 13 || op.code == 14 { code.ops[i].arg = target(code, f, op.arg); }
+            if op.code == 13 || op.code == 14 || op.code == 56 { code.ops[i].arg = target(code, f, op.arg); }
         }
         var work: i64[>..<] = [f.start]; code.ops[f.start].depth = 0;
         while work.len > 0 {
@@ -114,13 +117,14 @@ fn load(code: Code&, image: const program::Image&) -> bool {
             if op.depth < pop { return reject(code, tiny::LoadError.Underflow, pc); }
             let after = op.depth - pop + push;
             if after > 65536 { return reject(code, tiny::LoadError.Limits, pc); }
-            if op.code == 15 { continue; }
-            for edge in (if op.code == 14 { 2 } else { 1 }) {
-                let next = if (op.code == 13 || op.code == 14) && edge == 0 { op.arg } else { pc + 1 };
+            if op.code == 15 || op.code == 55 { continue; }
+            for edge in (if op.code == 14 || op.code == 56 { 2 } else { 1 }) {
+                let next = if (op.code == 13 || op.code == 14 || op.code == 56) && edge == 0 { op.arg } else { pc + 1 };
+                let expected = after + (if op.code == 56 && edge == 0 { 1 } else { 0 });
                 if next < f.start || next >= f.start + f.count { return reject(code, tiny::LoadError.Fallthrough, pc); }
                 let depth = code.ops[next].depth;
-                if depth >= 0 && depth != after { return reject(code, tiny::LoadError.Join, next); }
-                if depth < 0 { code.ops[next].depth = after; work.push(next); }
+                if depth >= 0 && depth != expected { return reject(code, tiny::LoadError.Join, next); }
+                if depth < 0 { code.ops[next].depth = expected; work.push(next); }
             }
         }
     }
@@ -139,7 +143,7 @@ fn append_code(out: Code&, other: const Code&) -> i64 {
     let functions = out.functions.len; let ops = out.ops.len; let constants = out.constants.len;
     let children = out.children.len; let units = out.units.len; let bytes = out.source_bytes.len;
     for f in other.functions { var n = f; n.start += ops; n.constants += constants; n.children += children; out.functions.push(n); }
-    for op in other.ops { var n = op; n.start += bytes; n.end += bytes; if n.code == 13 || n.code == 14 { n.arg += ops; } out.ops.push(n); }
+    for op in other.ops { var n = op; n.start += bytes; n.end += bytes; if n.code == 13 || n.code == 14 || n.code == 56 { n.arg += ops; } out.ops.push(n); }
     for v in other.constants { var n = v; if n.tag == 4 { n.a += units; } out.constants.push(n); }
     for id in other.children { out.children.push(functions + id); }
     out.units.append(other.units); out.source_bytes.append(other.source_bytes); out.valid = true;
@@ -275,7 +279,21 @@ fn closure(heap: Heap&, function: i64, captures: const Value[:]) -> Value {
     let start = heap.values.len; heap.values.append(captures);
     return allocate(heap, Node { kind: 2, function: function, start: start, count: captures.len });
 }
-fn fail(job: Job&, fault: Fault, frame: Frame) { job.heap.fault = Fault.None; job.status = tiny::Status.Failed; job.fault = fault; job.fault_function = frame.function; job.fault_pc = frame.pc; }
+fn fail(job: Job&, fault: Fault, frame: Frame) {
+    job.heap.fault = Fault.None;
+    if (fault == Fault.TypeError || fault == Fault.ReferenceError || fault == Fault.HostEffect) && job.handlers.len > 0 {
+        let handler = job.handlers.pop();
+        job.frames.resize(handler.frame + 1); job.locals.resize(handler.locals); job.operands.resize(handler.operands);
+        job.frames[handler.frame].pc = handler.pc; job.operands.push(nil()); return;
+    }
+    job.status = tiny::Status.Failed; job.fault = fault; job.fault_function = frame.function; job.fault_pc = frame.pc;
+}
+fn raise(job: Job&, value: Value, frame: Frame) {
+    if job.handlers.len == 0 { fail(job, Fault.HostEffect, frame); return; }
+    let handler = job.handlers.pop();
+    job.frames.resize(handler.frame + 1); job.locals.resize(handler.locals); job.operands.resize(handler.operands);
+    job.frames[handler.frame].pc = handler.pc; job.operands.push(value);
+}
 fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -> bool {
     let heap .= job.heap;
     if !valid(heap, callee) || !valid(heap, receiver) { return false; }
@@ -551,10 +569,21 @@ fn boot_runtime(heap: Heap&) -> Value {
     // Gensym is serviced only by an explicitly enabled coordinator contract.
     // Other shared-state leaves are installed explicitly by the compiler.
     install_field(heap, core, "gensym", builtin(heap, 5));
+    install_field(heap, rt, "vectorFromArray", builtin(heap, 10));
+    install_field(heap, rt, "listFromArray", builtin(heap, 11));
+    install_field(heap, rt, "mapFromArray", builtin(heap, 12));
+    install_field(heap, rt, "setFromArray", builtin(heap, 13));
     if heap.fault == Fault.None { heap.boot_count += 1; }
     return rt;
 }
 fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
+    if id >= 10 && id <= 13 && args.len == 1 {
+        let array = args[0];
+        if !valid(heap, array) || array.tag != 5 || heap.nodes[array.a].kind != 1 { heap.fault = Fault.TypeError; return Value {}; }
+        var values: Value[>..] = [];
+        for i in heap.nodes[array.a].length { values.push(get(heap, array, key(heap, number(i)))); }
+        return form_collection(heap, if id == 10 { 6 } else if id == 11 { 5 } else if id == 12 { 7 } else { 8 }, values);
+    }
     if id == 0 && args.len == 1 { return args[0]; }
     if id == 1 && args.len == 1 { return number(numeric(heap, args[0]) + 1); }
     if id == 3 && args.len == 1 {
@@ -631,10 +660,14 @@ fn step(job: Job&) {
         13 => { job.frames[job.frames.len - 1].pc = op.arg; },
         14 => { let v = job.operands.pop(); if !truthy(v) { job.frames[job.frames.len - 1].pc = op.arg; } },
         15 => {
+            while job.handlers.len > 0 && job.handlers[job.handlers.len - 1].frame >= job.frames.len - 1 { job.handlers.pop(); }
             let v = job.operands.pop(); job.frames.pop(); job.locals.resize(frame.local_base); job.operands.resize(frame.operand_base);
             if job.frames.len == 0 { job.result = v; job.status = tiny::Status.Complete; } else { job.operands.push(v); }
         },
         16, 84, 87 => { let v = allocate(heap, Node { kind: if op.code == 87 { 1 } else { 0 } }); job.operands.push(v); },
+        56 => { job.handlers.push(Handler { frame: job.frames.len - 1, pc: op.arg, operands: job.operands.len, locals: job.locals.len }); },
+        55 => { let value = job.operands.pop(); raise(job, value, frame); },
+        58 => { if job.handlers.len == 0 || job.handlers[job.handlers.len - 1].frame != job.frames.len - 1 { heap.fault = Fault.InvalidState; } else { job.handlers.pop(); } },
         35, 36, 112, 113, 114 => { let v = job.operands.pop(); let n = numeric(heap, v); job.operands.push(number(if op.code == 35 { -n } else if op.code == 113 { n + 1 } else if op.code == 114 { n - 1 } else { n })); },
         37 => { let b = job.operands.pop(); let a = job.operands.pop(); let x = numeric(heap, a); let y = numeric(heap, b); job.operands.push(number(x)); job.operands.push(number(y)); },
         43 => {
@@ -718,7 +751,7 @@ fn step(job: Job&) {
             // intrinsic-call continuation. Sealed-plan users retain the
             // explicit DependencyNeed failure from form_op below.
             var waiting = false;
-            if op.arg == 82 && job.effects_enabled {
+            if op.arg == 82 && job.helpers_enabled {
                 let args = job.operands[base..];
                 if valid(heap, args[0]) && args[0].tag == 5 && heap.nodes[args[0].a].kind == 0 && args[1].tag <= 1 && args[2].tag == 4 {
                     let value, found = own_property(heap, args[0], args[2]);

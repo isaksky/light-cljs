@@ -906,3 +906,43 @@ Returned forms own their data, occurrences and source spans independently of
 Goose jobs and the session. The pipeline test compares forms, provenance,
 deterministic emitted application JavaScript and application output against a
 separate V8 compilation of the original `.cljs` corpus.
+
+The runner uses one input thread, one coordinator and at most the explicitly
+selected 1–8 execution threads. A dependency wait copies the complete private
+heap/code and explicit VM frames, locals, operands, handlers and mutation trace
+into a flat continuation, retires the VM owner, and joins its execution thread
+before sending `NEED`. Reentrant helper analysis can then submit another macro
+at one execution worker. `RESUME` restores the saved continuation; it never
+re-evaluates the earlier body. The `reentrant.cljs` fixture retains a local
+mutable object across a delayed callback and checks unchanged write counts.
+Shared compile-time effects remain outside this bounded adapter's surface.
+
+The real compiler supplies helper identities and code in its saved declaration
+context. A helper's finite immutable form result is executed/validated once and
+retained by that exact unit identity, then imported into each consumer. Function
+or other non-form helper results fail explicitly. Request files are unique,
+helper replies publish atomically, command/event queues are bounded, and the
+coordinator caps cumulative retained continuations/helper data at 64 MiB. Each
+VM also keeps its existing bounded instruction/heap/work controls. Evaluator
+views share the compilation's terminal deadline/poll control; nested form
+conversions share their outer call's conversion budget. The caught-limit test
+first succeeds standalone at the same limit, fails during nested conversion,
+runs the emitted catch handler, and still rejects the compilation. A fresh
+compilation succeeds.
+
+`SessionStats` reports one subprocess/base initialization, Rust spawn/export/
+bridge nanoseconds, native base load/boot/snapshot nanoseconds, native job load/
+bridge nanoseconds, transferred form bytes and total elapsed session time.
+These are diagnostic inclusive phase costs, with filesystem form transfer in
+Rust bridge costs and flat checkpoint transport in elapsed time. They are not a
+VM-only performance claim. `START/NEED/PRODUCE/PRODUCED/RESUME/FINISH/DONE` traces
+prove physical overlap, once production and no pre-wait mutation replay. The
+compiler command checks both debug-native and optimized-native Goose runners.
+
+GCS1 control messages are newline-delimited ASCII records with numeric request
+IDs; GSP2/GFB1 payloads are owned flat files in a private session directory. EOF,
+malformed control/form replies, failed jobs, cancellation and deadlines retire
+the compilation, reap the process and its threads, join Rust transport readers,
+and remove the directory. Handles carry distinct evaluator/session ownership
+and non-reused logical slot versions. Compiler-owned forms, nested metadata,
+source occurrences and rendered diagnostics survive complete session teardown.

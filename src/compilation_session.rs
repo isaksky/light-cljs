@@ -2783,15 +2783,23 @@ impl CompilationSession {
         self.install_registrations(end, |_| Ok(()))
     }
     #[cfg(feature = "goose-macros")]
-    pub(crate) fn prepare_goose(self: &Rc<Self>, evaluator: &crate::goose_evaluator::GooseEvaluator) -> Result<(), String> {
+    pub(crate) fn prepare_goose(
+        self: &Rc<Self>,
+        evaluator: &crate::goose_evaluator::GooseEvaluator,
+    ) -> Result<(), String> {
         let session = Rc::downgrade(self);
         evaluator.install_helper(Rc::new(move |active, id| {
-            session.upgrade().ok_or("compilation session expired")?.compile_unit(active, id)
+            session
+                .upgrade()
+                .ok_or("compilation session expired")?
+                .compile_unit(active, id)
         }));
         self.with_journal(|journal| {
             for registration in journal.registrations.iter() {
                 if let Registration::Root(name, unit, test, once, location) = registration {
-                    evaluator.register_compiler_root(name, *unit, *once, location, *test).map_err(|e| e.to_string())?;
+                    evaluator
+                        .register_compiler_root(name, *unit, *once, location, *test)
+                        .map_err(|e| e.to_string())?;
                 }
             }
             Ok(())
@@ -4364,6 +4372,34 @@ pub(crate) struct WorkerView {
 }
 #[cfg_attr(not(test), allow(dead_code))]
 impl WorkerView {
+    #[cfg(feature = "goose-macros")]
+    pub(crate) fn prepare_goose(
+        self: &Rc<Self>,
+        evaluator: &crate::goose_evaluator::GooseEvaluator,
+    ) -> Result<(), String> {
+        let view = Rc::downgrade(self);
+        evaluator.install_helper(Rc::new(move |active, id| {
+            view.upgrade()
+                .ok_or("compiler worker expired")?
+                .compile_unit(active, id)
+        }));
+        let registrations: Vec<_> = self
+            .shared
+            .lock()
+            .journal
+            .registrations
+            .iter()
+            .cloned()
+            .collect();
+        for registration in registrations {
+            if let Registration::Root(name, unit, test, once, location) = registration {
+                evaluator
+                    .register_compiler_root(&name, unit, once, &location, test)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
     /// A view of `shared` for this thread, which analyzes in frames of
     /// `host`. If the host has an engine, the engine reaches the view
     /// through its services.
