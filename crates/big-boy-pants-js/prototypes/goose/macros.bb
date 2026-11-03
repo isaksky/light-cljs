@@ -3,7 +3,7 @@
 (import '[java.nio ByteBuffer ByteOrder])
 (def directory (fs/parent (fs/canonicalize *file*)))
 (def goose (or (System/getenv "GOOSE") "goose"))
-(assert (#{[] ["--measure"]} (vec *command-line-args*)) "Usage: bb macros.bb [--measure]")
+(assert (#{[] ["--measure"] ["--profile"]} (vec *command-line-args*)) "Usage: bb macros.bb [--measure|--profile]")
 (defn run! [& args] (:out (apply p/shell {:dir (str directory) :out :string} args)))
 (def tags {:nil 0 :boolean 1 :integer 2 :double 2 :string 3 :symbol 4 :keyword 5 :list 6 :vector 7 :map 8 :set 9})
 (def origin-tags {"Source" 0 "Metadata" 1 "SuppliedData" 2 "Quote" 3 "SyntaxQuote" 4 "Unquote" 5 "UnquoteSplicing" 6 "Deref" 7 "VarQuote" 8 "AnonymousFunction" 9 "AnonymousArgument" 10})
@@ -127,19 +127,54 @@
             (when (= name "context") (assert-context-aliases! actual))))
         (let [boot (edn/read-string (first (str/split-lines output)))]
           (assert (= 1 (:boot-count boot))) (assert (= (count definitions) (:initializers boot))) (assert (= (count helpers) (:producers boot))))
-        (when (and (= name "churn") (= ["--measure"] (vec *command-line-args*)))
-          (doseq [sample (range 5)]
-            (let [started (System/nanoTime) output (apply run! executable (str temporary) arguments) wall (- (System/nanoTime) started)]
-              (doseq [[i packet] (map-indexed vector (concat packets packets))]
-                (let [actual (decode (fs/read-all-bytes (fs/path temporary (str i ".gfb")))) expected (:expected packet)]
-                  (assert (= (semantic expected (first (:roots expected)) true) (semantic actual (first (:roots actual)) true)))))
-              (println "diagnostic goose" (inc sample) (str/trim output) "process-wall-ns" wall)
-              (let [[boot & rows] (map edn/read-string (str/split-lines output))]
-                (println "sample" :goose (inc sample) (+ (:load-ns boot) (:boot-ns boot)) (reduce + (map :import-ns rows)) (reduce + (map :invoke-ns rows)) (reduce + (map :export-ns rows)) wall)))
-            (let [started (System/nanoTime) output (run! "node" "-e" reference-js request-path (str (fs/path directory "../../../../src/js_runtime.js")) (str temporary)) wall (- (System/nanoTime) started)
-                  measured (json/parse-string output true)]
-              (assert (= (:values reference) (:values measured)))
-              (println "diagnostic node-v8" (inc sample) (dissoc measured :values) "process-wall-ns" wall)
-              (println "sample" :node-v8 (inc sample) (:boot_ns measured) (reduce + (map :import_ns (:rows measured))) (reduce + (map :invoke_ns (:rows measured))) (reduce + (map :export_ns (:rows measured))) wall))))
+        (when (and (= name "churn") (#{["--measure"] ["--profile"]} (vec *command-line-args*)))
+          (let [repository (str (fs/canonicalize (fs/path directory "../../../..")))
+                environment (assoc (into {} (System/getenv)) "CARGO_BUILD_JOBS" "3" "LIGHT_CLJS_V8_CACHE" "require" "CARGO_TARGET_DIR" (str (fs/path repository "target")))
+                build (:out (p/shell {:dir repository :env environment :out :string} "cargo" "test" "--release" "--locked" "--lib" "--features" "bbp-macros" "serial_macro_reference" "--no-run" "--message-format=json"))
+                binary (some #(let [v (json/parse-string % true)] (when (and (= "compiler-artifact" (:reason v)) (get-in v [:profile :test]) (:executable v)) (:executable v))) (str/split-lines build))
+                _ (assert binary "Missing reference test executable")
+                inputs (vec (concat packets packets packets))
+                goose-args (concat images ["--helpers"] helpers ["--warmup"] (map :path packets) ["--jobs"] (map :path (concat packets packets)))
+                verify! (fn [] (doseq [[i packet] (map-indexed vector inputs)]
+                                  (let [actual (decode (fs/read-all-bytes (fs/path temporary (str i ".gfb")))) expected (:expected packet)]
+                                    (assert (= (semantic expected (first (:roots expected)) true) (semantic actual (first (:roots actual)) true))))))
+                reference! (fn [engine]
+                             (let [target (str (fs/path temporary (str engine ".edn"))) started (System/nanoTime)]
+                               (p/shell {:dir repository :env (assoc environment "GOOSE_SERIAL_ENGINE" (clojure.core/name engine) "GOOSE_SERIAL_OUTPUT" target) :out :string}
+                                        binary "compiler_bootstrap::goose_capture::serial_macro_reference" "--ignored" "--exact" "--test-threads=1")
+                               {:engine engine :process-wall-ns (- (System/nanoTime) started) :rows (mapv edn/read-string (str/split-lines (slurp target)))}))
+                goose! (fn [diagnostic?]
+                         (let [started (System/nanoTime) output (apply run! executable (str temporary) (concat goose-args (when diagnostic? ["--diagnostic"]))) wall (- (System/nanoTime) started)]
+                           (verify!) {:engine :goose :process-wall-ns wall :rows (mapv edn/read-string (str/split-lines output))}))]
+            (println "Protocol: one execution worker, one complete 0/16/100 warmup batch, then two reused-session batches. Fresh process/session per round. Correctness preflight precedes timing; no profiling in clean runs.")
+            (when (= ["--measure"] (vec *command-line-args*))
+              (goose! false) (reference! :v8) (reference! :pants)
+            ;; Rotate first engine, reverse on odd rounds: no engine always follows itself.
+            (doseq [round (range 5) engine (nth [[:goose :v8 :pants] [:pants :v8 :goose] [:v8 :goose :pants] [:pants :goose :v8] [:goose :pants :v8]] round)]
+              (println "serial-sample" (pr-str (assoc (if (= engine :goose) (goose! false) (reference! engine)) :round (inc round))))))
+            ;; A separate native build counts explicit record copies/comparisons.
+            ;; Clean executable/source and timing rounds contain no such increments.
+            (when (= ["--profile"] (vec *command-line-args*))
+            (let [probe (fs/path temporary "profile") _ (fs/create-dirs probe)
+                  _ (doseq [path (fs/glob directory "*.goose")] (fs/copy path (fs/path probe (fs/file-name path))))
+                  vm-path (str (fs/path probe "source_vm.goose"))
+                  runner-path (str (fs/path probe "macro_run.goose"))
+                  replace! (fn [text from to] (assert (str/includes? text from) (str "Profile anchor changed: " from)) (str/replace text from to))
+                  vm (-> (slurp vm-path)
+                         (replace! "heap.values.append(children); return allocate" "profile_heap_values += children.len; heap.values.append(children); return allocate")
+                         (replace! "return form_collection(heap, kind, values, template);" "profile_scratch_values += values.len; return form_collection(heap, kind, values, template);")
+                         (replace! "recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool {" "recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool { profile_equal += 1;")
+                         (replace! "for i in (n.count / 2) { if form_equal" "for i in (n.count / 2) { profile_map_keys += 1; if form_equal"))
+                  runner (-> (slurp runner-path)
+                             (replace! "let result, steps = invoke" "source::profile_reset(); let result, steps = invoke")
+                             (replace! "let visits_before = c.visits;" "source::profile_report(index); let visits_before = c.visits;"))
+                  profile-bin (str (fs/path probe "macro-profile"))]
+              (spit vm-path (str vm "\nvar profile_heap_values: i64 = 0; var profile_scratch_values: i64 = 0; var profile_equal: i64 = 0; var profile_map_keys: i64 = 0;\nfn profile_reset() { profile_heap_values = 0; profile_scratch_values = 0; profile_equal = 0; profile_map_keys = 0; }\nfn profile_report(id: i64) { print(\"{:phase :copies :id \", id, \" :heap-values \", profile_heap_values, \" :scratch-values \", profile_scratch_values, \" :equal-calls \", profile_equal, \" :map-key-probes \", profile_map_keys, \"}\"); }\n"))
+              (spit runner-path runner)
+              (run! goose "check" runner-path)
+              (run! goose "build" runner-path "-o" profile-bin)
+              (let [output (apply run! profile-bin (str temporary) (concat goose-args ["--diagnostic"]))]
+                (verify!)
+                (println "serial-profile" (pr-str {:engine :goose :rows (mapv edn/read-string (str/split-lines output))})))))))
         (println name "compiler-captured reference expansion/provenance and reused session passed")))
     (finally (fs/delete-tree temporary))))

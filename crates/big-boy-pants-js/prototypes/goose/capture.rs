@@ -533,3 +533,131 @@ fn runtime_slice(
         format!("const runtime = {source}; console.log(typeof runtime.macroReaderFunction);");
     assert_eq!(output(&probe), "function\n");
 }
+
+// Driven by macros.bb so timing binaries are built before any measured round.
+// The compiler capture is input preparation, outside all reported engine phases.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "serial source-derived macro diagnostic; run macros.bb --measure"]
+fn serial_macro_reference() {
+    use crate::evaluator::{EvaluatorOptions, MacroEvaluator};
+    use std::time::Instant;
+    let engine = std::env::var("GOOSE_SERIAL_ENGINE").unwrap();
+    assert!(matches!(engine.as_str(), "pants" | "v8"));
+    let destination = std::env::var("GOOSE_SERIAL_OUTPUT").unwrap();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("crates/big-boy-pants-js/prototypes/goose/corpus");
+    let source = std::fs::read_to_string(root.join("churn.cljs")).unwrap();
+    let prepared = Instant::now();
+    let mut host = MacroHost::new();
+    if engine == "pants" {
+        host.use_native_macros();
+    }
+    let _names = crate::generated_names::enter_namespace(0);
+    REQUESTS.with_borrow_mut(|r| *r = Some(Vec::new()));
+    crate::analyzer::analyze_named_with_macro_warnings(
+        "churn.cljs",
+        &source,
+        &crate::parse(&source).unwrap(),
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let requests = REQUESTS
+        .with_borrow_mut(|r| r.take().unwrap())
+        .into_iter()
+        .filter(|r| {
+            r.origin
+                .macro_name
+                .namespace()
+                .is_some_and(|ns| ns == "cljs.user".encode_utf16().collect::<Vec<_>>())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 3);
+    let declaration = &host.tables.javascript_macros["cljs.user/churn"];
+    let MacroFunction::Ready(_, Some(code)) = &declaration.function else {
+        panic!("source macro required")
+    };
+    let factory = format!("rt => rt.core.macroReaderFunction(({})(rt))", code.unit);
+    assert_eq!(
+        factory,
+        std::fs::read_to_string(root.join(format!("churn-churn.{engine}.js"))).unwrap()
+    );
+    let export_started = Instant::now();
+    let image_name = format!("churn-churn.{engine}.js");
+    let image = big_boy_pants_js::frontend::goose::export_source(&image_name, &factory).unwrap();
+    assert_eq!(
+        image.bytes,
+        std::fs::read(root.join(format!("churn-churn.{engine}.gsp"))).unwrap()
+    );
+    let source_export_ns = export_started.elapsed().as_nanos();
+    let prepared_ns = prepared.elapsed().as_nanos();
+    drop(host);
+    let begin = Instant::now();
+    let options = EvaluatorOptions::default();
+    let evaluator: Box<dyn MacroEvaluator> = if engine == "pants" {
+        Box::new(crate::bbp_evaluator::BbpEvaluator::new(options).unwrap())
+    } else {
+        Box::new(crate::v8_evaluator::V8Evaluator::new(options).unwrap())
+    };
+    let boot_ns = begin.elapsed().as_nanos();
+    let begin = Instant::now();
+    let function = evaluator.evaluate_unit(&factory).unwrap();
+    let load_ns = begin.elapsed().as_nanos();
+    let mut rows = format!(
+        "{{:phase :boot :engine :{engine} :prepare-ns {prepared_ns} :gsp-export-ns {source_export_ns} :boot-ns {boot_ns} :load-ns {load_ns} :boot-count 1 :initializers 1 :producers 0}}\n"
+    );
+    let limits = crate::form_bridge::ConversionLimits::default();
+    // One full 0/16/100 warmup, then two matching batches on the same session.
+    for batch in 0..3 {
+        for (index, request) in requests.iter().enumerate() {
+            let begin = Instant::now();
+            let form = evaluator.import_macro_form(&request.call, limits).unwrap();
+            let env = evaluator
+                .import_environment(&request.environment, limits)
+                .unwrap();
+            let arguments = evaluator
+                .macro_arguments(form, &request.call, limits)
+                .unwrap();
+            let mut params = vec![form, env];
+            params.extend(arguments.iter().copied());
+            let import_ns = begin.elapsed().as_nanos();
+            let begin = Instant::now();
+            let value = evaluator.call(function, &params).unwrap();
+            let invoke_ns = begin.elapsed().as_nanos();
+            let begin = Instant::now();
+            let output = evaluator
+                .export_form(value, &request.call, request.origin.clone(), limits)
+                .unwrap();
+            let export_ns = begin.elapsed().as_nanos();
+            let begin = Instant::now();
+            for id in params.into_iter().chain([value]) {
+                evaluator.release(id).unwrap();
+            }
+            let cleanup_ns = begin.elapsed().as_nanos();
+            // Compare complete owned records after handle release, outside timing.
+            let mut expected_sources = Sources::default();
+            let mut expected_data = Data::default();
+            let mut actual_sources = Sources::default();
+            let mut actual_data = Data::default();
+            assert_eq!(
+                forms(&request.expanded, &mut expected_sources, &mut expected_data),
+                forms(&output, &mut actual_sources, &mut actual_data)
+            );
+            assert_eq!(expected_sources.text(), actual_sources.text());
+            // JS Number exports can differ from reader integer storage; value_eq
+            // follows the compiler's cross-engine numeric equality contract.
+            assert!(request.expanded.data().value_eq(&output.data()));
+            rows.push_str(&format!("{{:phase :job :warmup {} :id {} :case {} :import-ns {import_ns} :invoke-ns {invoke_ns} :export-ns {export_ns} :cleanup-ns {cleanup_ns}}}\n", batch == 0, batch * requests.len() + index, [0,16,100][index]));
+        }
+    }
+    evaluator.release(function).unwrap();
+    let begin = Instant::now();
+    drop(evaluator);
+    rows.push_str(&format!(
+        "{{:phase :teardown :cleanup-ns {}}}\n",
+        begin.elapsed().as_nanos()
+    ));
+    std::fs::write(destination, rows).unwrap();
+}

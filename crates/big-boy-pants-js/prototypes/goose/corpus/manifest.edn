@@ -6,7 +6,7 @@
  "bb crates/big-boy-pants-js/prototypes/goose/regenerate.bb",
  :source-sha256
  {"crates/big-boy-pants-js/prototypes/goose/capture.rs"
-  "6c1d6091b186471fc28c5a3587a53a2127fc267ad82efa1b65d9a2c355493139",
+  "a51a9461f37e822c3470659db871bf4cc5c3d39287041e0d93807282829c2881",
   "crates/big-boy-pants-js/prototypes/goose/export.rs"
   "0b9ac064d515082f795203a6fecbef3747abcc1ee6438eff1d1c75e3ab82fbdd",
   "crates/big-boy-pants-js/prototypes/goose/regenerate.bb"
