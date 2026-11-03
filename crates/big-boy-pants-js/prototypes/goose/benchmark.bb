@@ -6,12 +6,14 @@
 (def repository (fs/canonicalize (fs/path directory "../../../..")))
 (def mode (or (first *command-line-args*) "--measure"))
 (def initialization? (#{"--initialization-comparison" "--initialization-allocations"} mode))
-(def timing? (#{"--measure" "--initialization-comparison"} mode))
-(def allocations? (#{"--allocations" "--initialization-allocations"} mode))
+(def dispatch? (#{"--dispatch-comparison" "--dispatch-allocations"} mode))
+(def focused? (or initialization? dispatch?))
+(def timing? (#{"--measure" "--initialization-comparison" "--dispatch-comparison"} mode))
+(def allocations? (#{"--allocations" "--initialization-allocations" "--dispatch-allocations"} mode))
 (def native-flags (when (= "1" (System/getenv "GOOSE_BENCH_DEBUG")) ["--debug"]))
 (assert (or (empty? native-flags) (= mode "--check")) "Debug native builds are correctness-only")
-(assert (#{"--check" "--measure" "--allocations" "--summarize" "--initialization-comparison" "--initialization-allocations"} mode) "Unknown benchmark mode")
-(def sample-path (fs/path directory (case mode "--initialization-comparison" "initialization-samples.edn" "--initialization-allocations" "initialization-allocations.edn" "--allocations" "branch-allocations.edn" "--check" ".benchmark-check-samples.edn" "branch-samples.edn")))
+(assert (#{"--check" "--measure" "--allocations" "--summarize" "--dispatch-comparison" "--dispatch-allocations" "--initialization-comparison" "--initialization-allocations"} mode) "Unknown benchmark mode")
+(def sample-path (fs/path directory (case mode "--dispatch-comparison" "dispatch-samples.edn" "--dispatch-allocations" "dispatch-allocations.edn" "--initialization-comparison" "initialization-samples.edn" "--initialization-allocations" "initialization-allocations.edn" "--allocations" "branch-allocations.edn" "--check" ".benchmark-check-samples.edn" "branch-samples.edn")))
 (def environment (assoc (into {} (System/getenv)) "CARGO_BUILD_JOBS" "3" "LIGHT_CLJS_V8_CACHE" "require" "CARGO_TARGET_DIR" (str (fs/path repository "target"))))
 (def thread-observations (atom {}))
 (def diagnostics (atom ""))
@@ -57,7 +59,7 @@
             {:id :deep :work 32 :fanout 4 :shape :deep :depth 12}
             {:id :plain :work 32 :fanout 4 :shape :plain :width 32}
             {:id :decoded :work 32 :fanout 4 :shape :decoded :width 32}])
-(when initialization? (alter-var-root #'cases #(subvec % 0 3)))
+(when focused? (alter-var-root #'cases #(subvec % 0 3)))
 ;; Adapted from corpus/churn.cljs, originating in benchmarks/native-macros-k.bb.
 (def macro-source "(defmacro work [n x] (loop [i 0 v [] m {}] (if (= i n) (loop [s (seq v) total 0] (if s (recur (next s) (+ total (first s) (get m 1 0) (count (rest [1 2 3])))) (list 'quote [total x]))) (recur (+ i 1) (conj v i) (assoc m (count v) (count m))))))\n")
 (defn payload [{:keys [shape width depth]}]
@@ -112,13 +114,13 @@
           features (str "goose-macros" (when allocations? ",count-allocations"))
           build (command environment "cargo" "test" "--release" "--locked" "--features" features "--lib" "final_benchmark" "--no-run" "--message-format=json")
           binary (some #(let [row (json/parse-string % true)] (when (and (= "compiler-artifact" (:reason row)) (get-in row [:profile :test]) (:executable row)) (:executable row))) (str/split-lines build))
-          predecessor-binary (when (and initialization? timing?) (System/getenv "GOOSE_PREDECESSOR_BINARY"))
-          predecessor-native (when (and initialization? timing?) (System/getenv "GOOSE_PREDECESSOR_RUNNER"))
-          predecessor-root (when (and initialization? timing?) (System/getenv "GOOSE_PREDECESSOR_ROOT"))
+          predecessor-binary (when (and focused? timing?) (System/getenv "GOOSE_PREDECESSOR_BINARY"))
+          predecessor-native (when (and focused? timing?) (System/getenv "GOOSE_PREDECESSOR_RUNNER"))
+          predecessor-root (when (and focused? timing?) (System/getenv "GOOSE_PREDECESSOR_ROOT"))
           predecessor-revision (when predecessor-root (str/trim (command environment "git" "-C" predecessor-root "rev-parse" "HEAD")))
-          _ (when (and initialization? timing?) (assert (and (fs/exists? predecessor-binary) (fs/exists? predecessor-native)) "Build exact predecessor and set GOOSE_PREDECESSOR_BINARY/RUNNER"))
-          _ (when (and initialization? timing?)
-              (assert (= "f29175c4496a25ca77812dcad4a10eb0aff4263e" predecessor-revision) "Expected exact initialization predecessor")
+          _ (when (and focused? timing?) (assert (and (fs/exists? predecessor-binary) (fs/exists? predecessor-native)) "Build exact predecessor and set GOOSE_PREDECESSOR_BINARY/RUNNER"))
+          _ (when (and focused? timing?)
+              (assert (= (if dispatch? "64d0ae87d0655f9446b252fb1d4afb8b2f9dcf80" "f29175c4496a25ca77812dcad4a10eb0aff4263e") predecessor-revision) "Expected exact comparison predecessor")
               (command environment "git" "-C" predecessor-root "diff" "--exit-code" "HEAD"))
           env (cond-> (assoc environment "GOOSE_COMPILER_RUNNER" native)
                 allocations? (assoc "LIGHT_V8_STATS" "1" "GOOSE_COMPILER_RUNNER" (str wrapper) "GOOSE_NATIVE_BINARY" native))
@@ -185,8 +187,8 @@
         (let [rebuilt (command env "node" (str (fs/path (:directory c) "reference-rebuild.js")))]
           (assert (= (application-values rebuilt) (application-values (slurp (str (fs/path (:directory c) "reference.stdout"))))) "Rebuilt jobs must perform the same application work as the reused compilation")
           (spit (str (fs/path (:directory c) "reference-rebuild.stdout")) rebuilt)))
-      (let [scopes (if initialization? [:compiler] [:vm :compiler]) rounds (if (or (= mode "--check") allocations?) 1 5)
-            revisions (fn [round] (if (and initialization? timing?) (if (even? round) [:predecessor :initialized] [:initialized :predecessor]) [nil]))]
+      (let [scopes (if focused? [:compiler] [:vm :compiler]) rounds (if (or (= mode "--check") allocations?) 1 5)
+            revisions (fn [round] (if (and focused? timing?) (if (even? round) [:predecessor (if dispatch? :drained :initialized)] [(if dispatch? :drained :initialized) :predecessor]) [nil]))]
         (doseq [c prepared scope scopes]
           (let [active cells]
             (println "Measure" (:id c) scope "cells" (count active) "rounds" rounds) (flush)
@@ -197,7 +199,7 @@
               (let [row (assoc (invoke c scope cell) :kind (if allocations? :allocation :sample) :round (inc round))]
                 (when (= scope :compiler) (assert (= (slurp (str (fs/path (:directory c) (if (= :rebuild (:control cell)) "reference-rebuild.stdout" "reference.stdout")))) (command env "node" (str (fs/path (:directory c) "actual.js")))) "Application output differs"))
                 (spit (str sample-path) (str (pr-str row) "\n") :append true))))))
-      (doseq [round (range (if initialization? 0 5)) :let [c (first prepared)]]
+      (doseq [round (range (if focused? 0 5)) :let [c (first prepared)]]
         (command (merge env {"GOOSE_BENCH_DIRECTORY" (:directory c) "GOOSE_BENCH_SCOPE" "vm" "GOOSE_BENCH_ENGINE" "storage" "GOOSE_BENCH_WORKERS" "1" "GOOSE_BENCH_CONTROL" "branch"}) binary "compiler_bootstrap::goose_capture::benchmark::final_benchmark" "--ignored" "--exact" "--test-threads=1")
         (spit (str sample-path) (str (pr-str {:kind :storage :round (inc round) :data (edn/read-string (slurp (str (fs/path (:directory c) "storage.edn"))))}) "\n") :append true))
       (spit (str sample-path) (str (pr-str {:kind :environment-after :load (str/trim (command environment "uptime")) :processes (str/split-lines (command environment "ps" "-axo" "pid,ppid,%cpu,comm"))}) "\n") :append true)

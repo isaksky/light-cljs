@@ -24,7 +24,7 @@ struct Saved {
 }
 struct Command { id: i64 }
 struct Event { id: i64, kind: i64, saved: Saved = Saved {}, sequence: i64 = 0, key: i64 = -1, name: u8[] = [], data: u8[] = [], steps: i64 = 0, writes: i64 = 0, metrics: u8[] = [] }
-struct Running { id: i64, thread: i64, key: i64 = -1 }
+struct Running { id: i64, thread: i64, key: i64 = -1, checkpoint: i64 = 0 }
 struct Waiting { id: i64, name: u8[], saved: Saved, key: i64 = -2, active: bool = true }
 struct Produced { key: i64, data: u8[] }
 struct Prepared { key: i64, heap: snapshot::Snapshot }
@@ -53,10 +53,11 @@ fn prepare(base: const snapshot::Snapshot&, directory: const u8[:], id: i64, key
     let result = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: function }], sc); assert(sc.error == snapshot::Error.None);
     print("PREPARED ", id, " ", key); print("COST ", id, " ", clock_ns() - started, " 0"); flush_stdout(); return copy(result), true;
 }
-thread_fn input() {
+thread_fn input(directory: u8[], deterministic: bool) {
+    var count: i64 = 0;
     loop { var line: u8[>..] = []; if !read_line(line) { assert(qput(Command { id: 0 })); return; }
         let id, ok = parse_int(line); if !ok || id < 0 { assert(qput(Command { id: -1 })); return; }
-        while !qput(Command { id: id }) { sleep_ms(1); } if id == 0 { return; }
+        while !qput(Command { id: id }) { sleep_ms(1); } count += 1; if deterministic && count == 8 { assert(write_file(str(directory, "/commands-ready"), "ready")); } if id == 0 { return; }
     }
 }
 fn load(code: source::Code&, path: const u8[:]) -> i64 {
@@ -88,7 +89,9 @@ fn fail(id: i64, heap: source::Heap&, job: source::Job&) {
     let text = str(job.fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end, " writes=", job.writes.len);
     assert(qput(Event { id: id, kind: 3, name: copy(text) }));
 }
-thread_fn worker(saved: Saved, directory: u8[>..], id: i64, identity: i64, mode: i64, helper: u8[], key: i64, checkpoint: i64) {
+thread_fn worker(saved: Saved, directory: u8[>..], id: i64, identity: i64, mode: i64, helper: u8[], key: i64, checkpoint: i64, deterministic: bool) {
+    // Test-only completion barrier: publish the real event before acknowledging.
+    defer { if deterministic { assert(write_file(str(directory, "/ready-", checkpoint), "ready")); } }
     let worker_started = clock_ns();
     var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
     assert(snapshot::restore(saved.heap, code, heap, bindings, identity, sc)); let rt = bindings[0].value;
@@ -186,31 +189,42 @@ fn main() {
         var restored_code = source::Code {}; var restored_heap = source::Heap { code: restored_code }; var bindings: snapshot::Binding[>..] = []; var restore = snapshot::Control {}; assert(snapshot::restore(base, restored_code, restored_heap, bindings, source::reserve_identity(), restore));
         print("{:snapshot-bytes ", snapshot::footprint(base), " :capture-copy-bytes ", sc.copied_bytes, " :capture-ns ", sc.capture_ns, " :raw-copy-repeats 1000 :raw-copy-ns ", copy_ns, " :raw-barrier-only-ns ", barrier_ns, " :raw-copy-payload-bytes ", snapshot::payload_bytes(base) * 1000, " :validation-ns ", validation_ns, " :validation-visits ", validation.visited, " :validation-peak-bytes ", validation.validation_peak, " :restore-ns ", restore.restore_ns, " :restore-copy-bytes ", restore.copied_bytes, " :peak-rss-native ", peak_memory(), " :checksum ", checksum, "}"); return;
     }
-    qlimit<Command>(128); qlimit<Event>(16); let reader = thread_spawn(input); var running: Running[>..] = []; var queue: i64[>..] = []; var received: i64 = 0; var waiting: Waiting[>..] = []; var produced: Produced[>..] = []; var prepared: Prepared[>..] = []; var closing = false; var retained: i64 = 0; var sleep_ns: i64 = 0;
+    let deterministic = arguments.len == 4 && arguments[3] == "dispatch-test"; let tracing = instrumented || deterministic;
+    qlimit<Command>(128); qlimit<Event>(16); let reader = thread_spawn(input, copy(directory), deterministic); var running: Running[>..] = []; var queue: i64[>..] = []; var received: i64 = 0; var waiting: Waiting[>..] = []; var produced: Produced[>..] = []; var prepared: Prepared[>..] = []; var closing = false; var retained: i64 = 0; var sleep_ns: i64 = 0; var turns: i64 = 0; var progress_turns: i64 = 0; var backoffs: i64 = 0; var created: i64 = 2; var joined: i64 = 0; var peak: i64 = 2; var commands: i64 = 0; var events: i64 = 0; var max_commands: i64 = 0; var max_events: i64 = 0;
     print("READY 1 ", heap.boot_count, " ", loaded - beginning, " ", booted - loaded, " ", clock_ns() - booted); flush_stdout();
+    // The deterministic fixture queues a complete batch before the first turn.
+    if deterministic { var bytes: u8[>..] = []; while !read_file(str(directory, "/commands-ready"), bytes) { sleep_ms(1); } }
     while !closing || running.len > 0 {
-        let command, available = qpoll<Command>(); if available { if command.id <= 0 { closing = true; } else { assert(queue.len < 1024); queue.push(command.id); } }
-        if !closing && received < queue.len && running.len < limit { let id = queue[received]; received += 1; let key = definition(directory, id); var index: i64 = -1;
+        var progress = false; var command_count: i64 = 0; var event_count: i64 = 0;
+        loop { let command, available = qpoll<Command>(); if !available { break; } progress = true; command_count += 1; commands += 1; if command.id <= 0 { closing = true; } else { assert(queue.len < 1024); queue.push(command.id); } }
+        while !closing && received < queue.len && running.len < limit { progress = true; let id = queue[received]; received += 1; let key = definition(directory, id); var index: i64 = -1;
             for p, i in prepared { if p.key == key { index = i; break; } }
             if index < 0 { let checkpoint, ok = prepare(base, directory, id, key); if !ok { continue; } let bytes = snapshot::footprint(checkpoint); if prepared.len >= 1024 || bytes > 67108864 - retained { print("ERROR ", id, " definition-budget"); flush_stdout(); continue; } retained += bytes; index = prepared.len; prepared.push(Prepared { key: key, heap: copy(checkpoint) }); }
-            for p in prepared { if p.key != key { continue; } let initial = Saved { heap: copy(p.heap), protected: base.nodes.len, storage: instrumented }; let t = thread_spawn(worker, copy(initial), copy(directory), id, identity(initial), 0, [], -1, source::reserve_identity()); running.push(Running { id: id, thread: t }); print("START ", id); flush_stdout(); break; } }
-        let event, present = qpoll<Event>(); if present {
-            join(running, event.id); let bytes = if event.kind == 1 { snapshot::footprint(event.saved.heap) + bytes_of(event.saved.frames).len + bytes_of(event.saved.locals).len + bytes_of(event.saved.operands).len + bytes_of(event.saved.writes).len + bytes_of(event.saved.handlers).len } else { event.data.len }; if bytes > 67108864 - retained { print("ERROR ", event.id, " retained-budget"); flush_stdout(); continue; } retained += bytes; if event.metrics.len > 0 { print("METRIC ", event.id, " ", event.metrics, " ", sleep_ns, " ", clock_ns() - beginning); } if event.kind == 2 || event.kind == 5 { print("COST ", event.id, " ", event.name); }
+            for p in prepared { if p.key != key { continue; } let initial = Saved { heap: copy(p.heap), protected: base.nodes.len, storage: instrumented }; let checkpoint = source::reserve_identity(); let t = thread_spawn(worker, copy(initial), copy(directory), id, identity(initial), 0, [], -1, checkpoint, deterministic); running.push(Running { id: id, thread: t, checkpoint: checkpoint }); created += 1; peak = max(peak, running.len + 2); print("START ", id); flush_stdout(); break; } }
+        // Test mode waits for this bounded batch's real events, ensuring the
+        // multi-completion drain is exercised independently of OS scheduling.
+        if deterministic { for r in running { var ready: u8[>..] = []; while !read_file(str(directory, "/ready-", r.checkpoint), ready) { sleep_ms(1); } } }
+        loop { let event, present = qpoll<Event>(); if !present { break; } progress = true; event_count += 1; events += 1;
+            join(running, event.id); joined += 1; let bytes = if event.kind == 1 { snapshot::footprint(event.saved.heap) + bytes_of(event.saved.frames).len + bytes_of(event.saved.locals).len + bytes_of(event.saved.operands).len + bytes_of(event.saved.writes).len + bytes_of(event.saved.handlers).len } else { event.data.len }; if bytes > 67108864 - retained { print("ERROR ", event.id, " retained-budget"); flush_stdout(); continue; } retained += bytes; if event.metrics.len > 0 { print("METRIC ", event.id, " ", event.metrics, " ", sleep_ns, " ", clock_ns() - beginning); } if event.kind == 2 || event.kind == 5 { print("COST ", event.id, " ", event.name); }
             if event.kind == 1 { assert(waiting.len < 128); waiting.push(Waiting { id: event.id, name: copy(event.name), saved: copy(event.saved) }); print("NEED ", event.id, " ", event.saved.sequence, " ", event.name, " ", event.steps, " ", event.saved.writes.len); }
             else if event.kind == 5 { produced.push(Produced { key: event.key, data: copy(event.data) }); print("PRODUCED ", event.id, " ", event.key); }
             else if event.kind == 2 { print("FINISH ", event.id, " ", event.steps, " ", event.writes); print("DONE ", event.id); }
             else { print("ERROR ", event.id, " ", event.name); }
             flush_stdout();
         }
-        if !closing && running.len < limit { for w in waiting { if !w.active { continue; }
+        if !closing { for w in waiting { if running.len >= limit { break; } if !w.active { continue; }
             if w.key == -2 { var bytes: u8[>..] = []; if !read_file(str(directory, "/", w.id, "-", w.saved.sequence, ".key"), bytes) { continue; } let key, ok = parse_int(bytes); assert(ok && key >= -1); w.key = key; }
-            let key = w.key; if key == -1 { let t = thread_spawn(worker, copy(w.saved), copy(directory), w.id, identity(w.saved), 3, [], -1, source::reserve_identity()); running.push(Running { id: w.id, thread: t }); print("RESUME ", w.id); flush_stdout(); w.active = false; break; } var found = false;
-            for p in produced { if p.key == key { let t = thread_spawn(worker, copy(w.saved), copy(directory), w.id, identity(w.saved), 1, copy(p.data), key, source::reserve_identity()); running.push(Running { id: w.id, thread: t }); print("RESUME ", w.id); flush_stdout(); w.active = false; found = true; break; } }
-            if found { break; }
+            let key = w.key; if key == -1 { let checkpoint = source::reserve_identity(); let t = thread_spawn(worker, copy(w.saved), copy(directory), w.id, identity(w.saved), 3, [], -1, checkpoint, deterministic); running.push(Running { id: w.id, thread: t, checkpoint: checkpoint }); created += 1; peak = max(peak, running.len + 2); print("RESUME ", w.id); flush_stdout(); w.active = false; progress = true; continue; } var found = false;
+            for p in produced { if p.key == key { let checkpoint = source::reserve_identity(); let t = thread_spawn(worker, copy(w.saved), copy(directory), w.id, identity(w.saved), 1, copy(p.data), key, checkpoint, deterministic); running.push(Running { id: w.id, thread: t, checkpoint: checkpoint }); created += 1; peak = max(peak, running.len + 2); print("RESUME ", w.id); flush_stdout(); w.active = false; progress = true; found = true; break; } }
+            if found { continue; }
             var producing = false; for r in running { if r.key == key { producing = true; } }
-            if !producing { let initial = Saved { heap: copy(base), sequence: w.saved.sequence, protected: base.nodes.len, storage: instrumented }; let t = thread_spawn(worker, copy(initial), copy(directory), w.id, identity(initial), 2, [], key, source::reserve_identity()); running.push(Running { id: w.id, thread: t, key: key }); print("PRODUCE ", w.id, " ", key); flush_stdout(); break; }
+            if !producing { let initial = Saved { heap: copy(base), sequence: w.saved.sequence, protected: base.nodes.len, storage: instrumented }; let checkpoint = source::reserve_identity(); let t = thread_spawn(worker, copy(initial), copy(directory), w.id, identity(initial), 2, [], key, checkpoint, deterministic); running.push(Running { id: w.id, thread: t, key: key, checkpoint: checkpoint }); created += 1; peak = max(peak, running.len + 2); print("PRODUCE ", w.id, " ", key); flush_stdout(); progress = true; }
         } }
-        let sleeping = clock_ns(); sleep_ms(1); sleep_ns += clock_ns() - sleeping;
+        turns += 1; max_commands = max(max_commands, command_count); max_events = max(max_events, event_count);
+        // A progress turn immediately re-polls all sources. Backoff belongs
+        // only to a stable idle point, including unavailable callback files.
+        if progress { progress_turns += 1; } else { let sleeping = clock_ns(); sleep_ms(1); sleep_ns += clock_ns() - sleeping; backoffs += 1; }
+        if tracing { print("SCHED 0 ", turns, " ", progress_turns, " ", backoffs, " ", sleep_ns, " ", created, " ", peak, " ", joined, " ", commands, " ", events, " ", max_commands, " ", max_events); flush_stdout(); }
     }
-    assert(thread_wait(reader)); print("CLOSED 1"); flush_stdout();
+    assert(thread_wait(reader)); if tracing { print("THREADS 0 ", created, " ", peak, " ", joined + 1); } print("CLOSED 1"); flush_stdout();
 }

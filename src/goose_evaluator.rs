@@ -87,6 +87,13 @@ pub struct SessionStats {
 }
 impl GooseSession {
     pub fn start(executable: &Path, workers: usize) -> Result<Arc<Self>, EvalError> {
+        Self::start_mode(executable, workers, None)
+    }
+    fn start_mode(
+        executable: &Path,
+        workers: usize,
+        mode: Option<&str>,
+    ) -> Result<Arc<Self>, EvalError> {
         let started = Instant::now();
         if !(1..=8).contains(&workers) {
             return Err(error("worker count must be 1..8"));
@@ -100,8 +107,11 @@ impl GooseSession {
         std::fs::write(directory.join("base.gsp"), base.bytes).map_err(error)?;
         let mut command = Command::new(executable);
         command.arg(&directory).arg(workers.to_string());
+        if let Some(mode) = mode {
+            command.arg(mode);
+        }
         #[cfg(test)]
-        {
+        if mode.is_none() {
             let serial = std::env::var("GOOSE_BENCH_CONTROL").is_ok_and(|v| v == "serial");
             if cfg!(feature = "count-allocations") {
                 command.arg(if serial {
@@ -168,6 +178,13 @@ impl GooseSession {
                         "PREPARED" if parts.len() == 3 && parts[2].parse::<u64>().is_ok() => {
                             Event::Resumed
                         }
+                        "SCHED" | "THREADS"
+                            if id == 0
+                                && parts.len() == (if kind == "SCHED" { 13 } else { 5 })
+                                && parts[2..].iter().all(|s| s.parse::<u64>().is_ok()) =>
+                        {
+                            Event::Resumed
+                        }
                         "CLOSED" if parts == ["CLOSED", "1"] => return Some((0, Event::Resumed)),
                         "RESUME" if parts.len() == 2 => Event::Resumed,
                         "PRODUCE" if parts.len() == 3 && parts[2].parse::<u64>().is_ok() => {
@@ -225,7 +242,7 @@ impl GooseSession {
                         let boxes = mailboxes.lock().unwrap();
                         if let Some(tx) = boxes.get(&id) {
                             let _ = tx.send(event);
-                        } else if parts[0] != "CLOSED" {
+                        } else if !matches!(parts[0], "CLOSED" | "SCHED" | "THREADS") {
                             for tx in boxes.values() {
                                 let _ =
                                     tx.send(Event::Failure("uncorrelated subprocess reply".into()));

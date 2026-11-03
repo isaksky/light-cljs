@@ -554,3 +554,115 @@ fn goose_compiler_injected_worker_abort_cleans_entire_session() {
         );
     }
 }
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_drains_ready_batches_without_progress_backoff() {
+    for workers in [1, 2, 4, 8] {
+        let session = GooseSession::start_mode(&runner(), workers, Some("dispatch-test")).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let (_, args, call) = inputs(&e, "rt => (form, env) => 0");
+        let values = args
+            .iter()
+            .map(|&id| e.get(id).unwrap())
+            .collect::<Vec<_>>();
+        let limits = ConversionLimits::default();
+        let budget = bridge::Budget::new(limits.nodes, e.control.clone());
+        let graph = bridge::Graph::arguments(&values, limits, &budget).unwrap();
+        let bytes = graph.encode().unwrap();
+        session.export(&session.directory.join("definition-1.gsp"),
+            "rt => { let state = {n: 0}; return (form, env) => { state.n = state.n + 1; let value = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value'); return state.n + value; }; }").unwrap();
+        let mut replies = Vec::new();
+        for id in 1..=8 {
+            std::fs::write(session.directory.join(format!("{id}.definition")), "1").unwrap();
+            std::fs::write(session.directory.join(format!("{id}.gfb")), &bytes).unwrap();
+            // Real emitted helper, with all keys available before dispatch.
+            // Concurrent waiters must still elect exactly one producer.
+            session
+                .export(
+                    &session.directory.join(format!("{id}-0.helper")),
+                    "rt => 41",
+                )
+                .unwrap();
+            session.answer_key(id, 0, "9").unwrap();
+            let (tx, rx) = mpsc::channel();
+            session.pending.lock().unwrap().insert(id, tx);
+            replies.push(rx);
+        }
+        {
+            let mut process = session.process.lock().unwrap();
+            let input = &mut process.as_mut().unwrap().input;
+            for id in 1..=8 {
+                writeln!(input, "{id}").unwrap();
+            }
+            input.flush().unwrap();
+        }
+        for (index, rx) in replies.into_iter().enumerate() {
+            loop {
+                match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                    Event::Done => break,
+                    Event::Start | Event::Resumed | Event::Produced | Event::Need(_, _) => {}
+                    other => panic!("unexpected reply: {other:?}"),
+                }
+            }
+            let bytes =
+                std::fs::read(session.directory.join(format!("{}.out", index + 1))).unwrap();
+            let output = bridge::Graph::decode(&bytes, limits, &budget)
+                .unwrap()
+                .expansion(&call, origin(&call), &graph.originals, limits, &budget)
+                .unwrap();
+            assert!(
+                output.data().value_eq(&Datum::new(DatumKind::Integer(42))),
+                "continuation replayed mutation"
+            );
+        }
+        session.close();
+        cleaned(&session);
+        let trace = session.trace();
+        assert_eq!(
+            trace.iter().filter(|s| s.starts_with("PREPARED ")).count(),
+            1
+        );
+        assert_eq!(
+            trace.iter().filter(|s| s.starts_with("PRODUCED ")).count(),
+            1
+        );
+        assert_eq!(trace.iter().filter(|s| s.starts_with("START ")).count(), 8);
+        assert_eq!(trace.iter().filter(|s| s.starts_with("RESUME ")).count(), 8);
+        let mut previous = [0; 11];
+        let mut observed = 0;
+        for line in trace.iter().filter(|s| s.starts_with("SCHED ")) {
+            let values = line
+                .split_whitespace()
+                .skip(2)
+                .map(|s| s.parse::<u64>().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(values[0], previous[0] + 1);
+            if values[1] > previous[1] {
+                assert_eq!(values[2], previous[2], "progress must not back off: {line}");
+                assert_eq!(values[3], previous[3], "progress must not sleep: {line}");
+            } else {
+                assert_eq!(values[2], previous[2] + 1);
+            }
+            previous.copy_from_slice(&values);
+            observed += 1;
+        }
+        assert!(observed > 0);
+        assert_eq!(previous[9], 8, "queued input drains in one turn");
+        assert_eq!(
+            previous[10], workers as u64,
+            "simultaneous ready completions drain in one turn"
+        );
+        assert_eq!(
+            previous[8], 17,
+            "eight waits, one helper, eight completed bodies"
+        );
+        assert_eq!(previous[7], 9, "eight queued requests and shutdown");
+        let threads = trace.iter().find(|s| s.starts_with("THREADS ")).unwrap();
+        assert_eq!(
+            threads,
+            &format!("THREADS 0 19 {} 18", workers + 2),
+            "coordinator + input + 17 execution chunks; all spawned threads joined"
+        );
+    }
+}
