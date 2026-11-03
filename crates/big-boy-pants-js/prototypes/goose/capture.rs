@@ -37,14 +37,13 @@ thread_local! {
 }
 pub(crate) fn record(call: &Form, environment: &Datum, expanded: &Form, origin: &ExpansionOrigin) {
     #[cfg(feature = "goose-macros")]
-    if let Some(forms) = CONCURRENT_FORMS.lock().unwrap().as_mut() {
-        if origin
+    if let Some(forms) = CONCURRENT_FORMS.lock().unwrap().as_mut()
+        && origin
             .macro_name
             .namespace()
             .is_some_and(|n| n == "macros".encode_utf16().collect::<Vec<_>>())
-        {
-            forms.push((call.clone(), expanded.clone()));
-        }
+    {
+        forms.push((call.clone(), expanded.clone()));
     }
     #[cfg(feature = "goose-macros")]
     benchmark::record_batch(call, origin);

@@ -899,13 +899,27 @@ and their demanded helper factories in Goose. The compiler's existing core
 syntax/bootstrap service still compiles those declarations; it is not a port of
 the full canonical runtime. Unsupported source jobs fail without another engine.
 
-The compiler emits fresh GSP2 code and GFB1 structured form arguments. GCS1
+The compiler exports each definition's GSP2 code once per compilation and emits
+fresh GFB1 structured form arguments for every call. The cache uses the compiler's
+resolved `CodeIdentity`, with separate anonymous and helper-unit identities;
+equal source text does not merge distinct definitions. An identity/source
+conflict is terminal. The declaring evaluator and foreign worker views use the
+same definition identity. GCS1
 correlates requests, dependency demands and results over one long-lived native
 process. Compiler callbacks resolve helpers from the real declaration catalog.
 Returned forms own their data, occurrences and source spans independently of
 Goose jobs and the session. The pipeline test compares forms, provenance,
 deterministic emitted application JavaScript and application output against a
 separate V8 compilation of the original `.cljs` corpus.
+
+On first demand, the coordinator restores the booted base, loads and executes
+the emitted factory, validates its callable and captures the initialized runtime
+and function. Later calls restore that checkpoint into private heaps and execute
+the real body with fresh inputs. Captured mutable objects/cells therefore start
+from the initialized definition on every call. Preparation admits no compiler
+callbacks or shared effects; body/helper demand still uses the resumable protocol
+below. Prepared checkpoints remain scoped to one compilation and count against
+the existing 64 MiB retention budget; at most 1,024 definitions are exported.
 
 The runner uses one input thread, one coordinator and at most the explicitly
 selected 1–8 execution threads. A dependency wait copies the complete private
@@ -922,7 +936,7 @@ context. A helper's finite immutable form result is executed/validated once and
 retained by that exact unit identity, then imported into each consumer. Function
 or other non-form helper results fail explicitly. Request files are unique,
 helper replies publish atomically, command/event queues are bounded, and the
-coordinator caps cumulative retained continuations/helper data at 64 MiB. Each
+coordinator caps cumulative retained checkpoints/continuations/helper data at 64 MiB. Each
 VM also keeps its existing bounded instruction/heap/work controls. Evaluator
 views share the compilation's terminal deadline/poll control; nested form
 conversions share their outer call's conversion budget. The caught-limit test
@@ -939,12 +953,16 @@ opaque objects, and allocation failure while creating one remains terminal.
 Macro and helper factory failures report the failing job's function, PC and
 emitted-source span before any form export can replace that diagnostic.
 
-`SessionStats` reports one subprocess/base initialization, Rust spawn/export/
+`SessionStats` separately reports exported definitions and initialized macro
+preparations, as well as one subprocess/base initialization, Rust spawn/export/
 bridge nanoseconds, native base load/boot/snapshot nanoseconds, native job load/
 bridge nanoseconds, transferred form bytes and total elapsed session time.
 These are diagnostic inclusive phase costs, with filesystem form transfer in
 Rust bridge costs and flat checkpoint transport in elapsed time. They are not a
-VM-only performance claim. `START/NEED/PRODUCE/PRODUCED/RESUME/FINISH/DONE` traces
+VM-only performance claim. The native job-load counter includes complete
+once-only definition preparation (restore/load/factory/capture) plus helper load;
+it is not a pure loader comparison with earlier measurements.
+`PREPARED/START/NEED/PRODUCE/PRODUCED/RESUME/FINISH/DONE` traces
 prove physical overlap, once production and no pre-wait mutation replay. The
 compiler command checks both debug-native and optimized-native Goose runners.
 

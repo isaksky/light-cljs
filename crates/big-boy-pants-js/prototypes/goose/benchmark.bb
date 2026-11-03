@@ -45,6 +45,11 @@
     (assert (not (re-find #"(?m)\s(?:rustc|cargo|goose|compiler-session)\s*$" processes)) "Competing build/measurement process")
     {:kind :quiet :time (str (java.time.Instant/now)) :idle-percent idle :top snapshot}))
 (def seed 24301)
+;; The actual compiler drains a namespace after six later top-level passes
+;; (analyzer::DRAIN_LAG). Requiring batch0 directly can overlap both batches.
+;; This ordinary source dependency chain makes the existing batch-order
+;; assertion deterministic, including on the unmodified predecessor binary.
+(def batch-barriers 6)
 (def cases [{:id :small :work 8 :fanout 1 :shape :wide :width 8}
             {:id :medium :work 32 :fanout 4 :shape :wide :width 32}
             {:id :larger :work 100 :fanout 8 :shape :wide :width 100}
@@ -126,15 +131,18 @@
                              (spit (str (fs/path dir "input.cljs")) cljs)
                              (spit (str (fs/path dir "macros.cljs")) (str "(ns macros) (def shared [11 22])\n" (str/replace macro-source "[total x]" "[total x shared]")))
                              (spit (str (fs/path dir "main.cljs")) main)
+                             (doseq [stage (range batch-barriers)]
+                               (spit (str (fs/path dir (str "gate" stage ".cljs")))
+                                     (str "(ns gate" stage " (:require [" (if (zero? stage) "batch0" (str "gate" (dec stage))) "]))\n")))
                              (doseq [batch [0 1]] (spit (str (fs/path dir (str "batch" batch ".cljs")))
-                               (str "(ns batch" batch " (:require " (when (= batch 1) "[batch0] ") "[macros :refer [work]]))\n" definitions "\n")))
+                               (str "(ns batch" batch " (:require " (when (= batch 1) (str "[gate" (dec batch-barriers) "] ")) "[macros :refer [work]]))\n" definitions "\n")))
                              (doseq [[index call] (map-indexed vector calls)]
                                (let [job (fs/path dir (str "job-" index))] (fs/create-dirs job)
                                  (fs/copy (fs/path dir "macros.cljs") (fs/path job "macros.cljs"))
                                  (spit (str (fs/path job "main.cljs")) (str "(ns main (:require [macros :refer [work]]))\n(def result " call ")\n(js/console.log (pr-str [result]))\n"))))
                              (assoc c :directory (str dir) :input-bytes (count (.getBytes cljs "UTF-8")) :payload-nodes (inc (or (:width c) (:depth c))) :payload-utf16-units (case (:shape c) :short (* 2 (:width c)) (:plain :decoded) (* 4 (:width c)) 0) :source-sha256 (hash-file (fs/path dir "input.cljs"))
                                     :compiler-source-hashes (into {} (for [path (sort (concat (fs/glob dir "*.cljs") (fs/glob dir "job-*/*.cljs")))] [(str (fs/relativize dir path)) (hash-file path)]))
-                                    :compiler-source-bytes (reduce + (for [file ["macros.cljs" "batch0.cljs" "batch1.cljs" "main.cljs"]] (fs/size (fs/path dir file))))
+                                    :compiler-source-bytes (reduce + (map fs/size (fs/glob dir "*.cljs")))
                                     :compiler-rebuild-source-bytes-per-batch (reduce + (map fs/size (fs/glob dir "job-*/*.cljs")))))) cases)
           invoke (fn [c scope cell]
                    (let [predecessor? (= :predecessor (:revision cell))
@@ -159,7 +167,7 @@
                                 (and (= scope :vm) (= :goose (:engine cell)) (= :rebuild (:control cell)))
                                 (assoc :rebuild-adapter-stats (mapv #(edn/read-string (slurp (str %))) (sort (fs/glob (:directory c) "rebuild-*.edn")))))))))]
       (assert binary)
-      (spit (str sample-path) (str (pr-str {:kind :manifest :version 2 :seed seed :rounds (if (or (= mode "--check") allocations?) 1 5) :warmup (if timing? :one-complete-cell-process-per-revision :none) :compiler-batches :two-dependent-namespaces-in-one-compilation :compiler-rebuild :fresh-whole-compilation-per-source-job :native-debug (boolean (seq native-flags)) :cases (mapv #(dissoc % :directory) prepared) :cells cells
+      (spit (str sample-path) (str (pr-str {:kind :manifest :version 2 :seed seed :rounds (if (or (= mode "--check") allocations?) 1 5) :warmup (if timing? :one-complete-cell-process-per-revision :none) :compiler-batches :two-dependent-namespaces-in-one-compilation :compiler-batch-drain-barriers batch-barriers :compiler-rebuild :fresh-whole-compilation-per-source-job :native-debug (boolean (seq native-flags)) :cases (mapv #(dissoc % :directory) prepared) :cells cells
                                          :predecessor (when predecessor-binary {:revision predecessor-revision :binary-sha256 (hash-file predecessor-binary) :native-sha256 (hash-file predecessor-native)
                                                                                :native-source-sha256 (hash-file (fs/path predecessor-root "crates/big-boy-pants-js/prototypes/goose/compiler_session.goose"))
                                                                                :rust-adapter-sha256 (hash-file (fs/path predecessor-root "src/goose_evaluator.rs"))})
