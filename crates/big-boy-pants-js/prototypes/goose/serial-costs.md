@@ -165,7 +165,7 @@ pending branch copy-size and larger real compiler evidence.
 ### Direct persistent ranges (739)
 
 Baseline `8fd8611b3f2d0c4042799bdd2d4813817b98b235` and changed implementation
-`bfc09d5a` were built with the same Goose version and default native flags above.
+`250f43598be5f123faab7681bd1fdfbde8fd7ad3` were built with the same Goose version and default native flags above.
 Before edits, the baseline's Goose sources and native `macro_run` executable were
 preserved inside this worktree. `macros.bb` now accepts `GOOSE_SERIAL_BASELINE`
 as an optional native executable. With `--measure` it adds five actual revision
@@ -200,18 +200,18 @@ source bytes and export visits. Instrumentation setup is recorded in the raw dat
 
 | Phase | Baseline | Direct slice append |
 | --- | --- | --- |
-| Cold load | .074 [.071,.079] | .076 [.067,.081] |
-| Cold boot | .009 [.007,.010] | .008 [.006,.009] |
-| Six imports | .101 [.097,.111] | .112 [.101,.136] |
-| Six invocations | .578 [.550,.598] | .565 [.556,.585] |
-| Six exports | .009 [.007,.010] | .009 [.008,.010] |
-| Six file writes | .267 [.253,.309] | .278 [.272,.362] |
-| Process wall | 4.755 [4.689,5.090] | 4.758 [4.604,5.508] |
+| Cold load | .078 [.071,.080] | .077 [.073,.082] |
+| Cold boot | .008 [.008,.010] | .008 [.008,.010] |
+| Six imports | .108 [.097,.142] | .105 [.098,.118] |
+| Six invocations | .588 [.565,.625] | .586 [.533,.591] |
+| Six exports | .008 [.007,.012] | .009 [.007,.013] |
+| Six file writes | .262 [.258,.397] | .277 [.266,.330] |
+| Process wall | 4.971 [4.580,5.410] | 5.303 [4.588,5.442] |
 | churn(0) invocation | .001 [.001,.002] | .001 [.001,.002] |
-| churn(16) invocation | .027 [.026,.035] | .029 [.025,.033] |
-| churn(100) invocation | .258 [.243,.270] | .252 [.243,.267] |
+| churn(16) invocation | .027 [.026,.042] | .030 [.026,.035] |
+| churn(100) invocation | .2625 [.251,.286] | .2555 [.227,.273] |
 
-Session cleanup was below 1 us resolution in all final pairs. Load, boot, import,
+Session cleanup medians were zero at 1 us resolution (changed maximum: 1 us). Load, boot, import,
 invoke, export, file-write and process-wall scopes are the same as above; packet
 preparation/export/native builds remain outside them. These are source-derived
 one-worker timings, with no live compiler adapter or end-to-end speedup claim.
