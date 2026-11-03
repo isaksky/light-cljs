@@ -23,6 +23,11 @@ bb crates/big-boy-pants-js/prototypes/goose/smoke.bb
 locations and also work from the engine package as `prototypes/goose/...`.
 Validated Goose: `v2026.3-267-g369c7a2c (runtime 3025e5810379)`.
 
+[Runtime design decisions](runtime-design.md) trace the captured closure and
+persistent-form requirements through QuickJS/Pants and explain the indexed
+storage choices. The smoke command includes `layout_probe.goose`, a bounded
+layout/lifetime probe; it does not execute macros or measure performance.
+
 ## Corpus and coverage
 
 `capture.rs` runs the actual compiler with test-only hooks at deferred/native
