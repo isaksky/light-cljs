@@ -176,11 +176,17 @@
                   replace! (fn [text from to] (assert (str/includes? text from) (str "Profile anchor changed: " from)) (str/replace text from to))
                   source (slurp vm-path)
                   updates (subs source (str/index-of source "fn form_assoc(") (str/index-of source "fn form_get("))
-                  ;; Every retained write in these two functions must be an
-                  ;; individually counted push; reject unaccounted copy paths.
-                  _ (assert (not (re-find #"Value\[|\.append\(|\.resize\(|form_collection\(" updates)) "Unexpected assoc/conj scratch or bulk-copy path")
-                  _ (assert (= 6 (count (re-seq #"heap\.values\.push\(" updates))) "Direct-fill write anchors changed")
-                  counted-updates (str/replace updates "heap.values.push(" "profile_heap_values += 1; profile_direct_values += 1; heap.values.push(")
+                  ;; Count each push and every element of each direct append.
+                  ;; Reject scratch construction and unknown retained writes.
+                  _ (assert (not (re-find #"Value\[|\.resize\(|form_collection\(|copy\(" updates)) "Unexpected assoc/conj scratch path")
+                  _ (assert (= 5 (count (re-seq #"heap\.values\.push\(" updates))) "Direct-fill push anchors changed")
+                  _ (assert (= 4 (count (re-seq #"\.append\(" updates))) "Direct-fill append anchors changed")
+                  counted-updates (reduce (fn [text [anchor count]]
+                                            (replace! text anchor (str "profile_heap_values += " count "; profile_direct_values += " count "; " anchor)))
+                                          (str/replace updates "heap.values.push(" "profile_heap_values += 1; profile_direct_values += 1; heap.values.push(")
+                                          [["heap.values.append(heap.values[n.start..(n.start + at)]);" "at"]
+                                           ["heap.values.append(heap.values[(n.start + at + 1)..(n.start + n.count)]);" "n.count - at - 1"]
+                                           ["heap.values.append(heap.values[n.start..(n.start + n.count)]);" "n.count"]])
                   vm (-> source
                          (replace! updates counted-updates)
                          (replace! "heap.values.append(children); return allocate" "profile_heap_values += children.len; heap.values.append(children); return allocate")
@@ -194,8 +200,17 @@
               (spit runner-path runner)
               (run! goose "check" runner-path)
               (run! goose "build" runner-path "-o" profile-bin)
-              (let [output (apply run! profile-bin (str temporary) (concat goose-args ["--diagnostic"]))]
+              (let [output (apply run! profile-bin (str temporary) (concat goose-args ["--diagnostic"]))
+                    rows (mapv edn/read-string (str/split-lines output))
+                    copies (filterv #(= :copies (:phase %)) rows)
+                    diagnostics (filterv #(= :diagnostic (:phase %)) rows)]
                 (verify!)
-                (println "serial-profile" (pr-str {:engine :goose :rows (mapv edn/read-string (str/split-lines output))})))))))
+                (assert (= 9 (count copies) (count diagnostics)))
+                (doseq [[copy diagnostic] (map vector copies diagnostics)]
+                  (let [input (mod (:id copy) 3)]
+                    (assert (= (:heap-values copy) (:new-values diagnostic) (nth [0 456 15450] input)))
+                    (assert (= (:direct-values copy) (nth [0 408 15150] input)))
+                    (assert (zero? (:scratch-values copy)))))
+                (println "serial-profile" (pr-str {:engine :goose :rows rows})))))))
         (println name "compiler-captured reference expansion/provenance and reused session passed")))
     (finally (fs/delete-tree temporary))))
