@@ -9,6 +9,7 @@
 (def sample-path (fs/path directory (case mode "--allocations" "branch-allocations.edn" "--check" ".benchmark-check-samples.edn" "branch-samples.edn")))
 (def environment (assoc (into {} (System/getenv)) "CARGO_BUILD_JOBS" "3" "LIGHT_CLJS_V8_CACHE" "require" "CARGO_TARGET_DIR" (str (fs/path repository "target"))))
 (def thread-observations (atom {}))
+(def diagnostics (atom ""))
 (defn command [env & args]
   (let [options {:dir (str repository) :env env :out :string :err :string :continue true}
         result (if (and (= mode "--allocations") (get env "GOOSE_BENCH_DIRECTORY") (not= "storage" (get env "GOOSE_BENCH_ENGINE")))
@@ -25,6 +26,7 @@
                        (let [value (deref proc 10 ::waiting)] (if (= value ::waiting) (recur) value)))
                      (finally (doseq [child @owned :when (.isAlive child)] (.destroyForcibly child)))))
                  (apply p/shell options args))]
+    (when (get env "GOOSE_BENCH_DIRECTORY") (reset! diagnostics (:err result)))
     (assert (zero? (:exit result)) (str "Command failed: " args "\n" (:err result) "\n" (:out result))) (:out result)))
 (defn hash-bytes [bytes] (apply str (map #(format "%02x" (bit-and 255 %)) (.digest (MessageDigest/getInstance "SHA-256") bytes))))
 (defn hash-file [path] (hash-bytes (fs/read-all-bytes path)))
@@ -92,7 +94,7 @@
     (let [features (str "goose-macros" (when (= mode "--allocations") ",count-allocations"))
           build (command environment "cargo" "test" "--release" "--locked" "--features" features "--lib" "final_benchmark" "--no-run" "--message-format=json")
           binary (some #(let [row (json/parse-string % true)] (when (and (= "compiler-artifact" (:reason row)) (get-in row [:profile :test]) (:executable row)) (:executable row))) (str/split-lines build))
-          env (assoc environment "GOOSE_COMPILER_RUNNER" native)
+          env (cond-> (assoc environment "GOOSE_COMPILER_RUNNER" native) (= mode "--allocations") (assoc "LIGHT_V8_STATS" "1"))
           prepared (mapv (fn [c]
                            (let [dir (fs/path temporary (name (:id c))) _ (fs/create-dirs dir)
                                  calls (mapv #(str "(work " (+ (:work c) (mod % 2)) " " (payload c) ")") (range (:fanout c)))
@@ -116,12 +118,14 @@
                          (if (fs/exists? reference) (assert (= actual (hash-file reference)) (str "Compiler JS mismatch " (:id c) " " cell))
                            (do (assert (= :v8 (:engine cell))) (fs/copy (fs/path (:directory c) "actual.js") reference)))))
                      (merge cell {:scope scope :case (:id c) :process-wall-ns wall :rust-peak-rss-bytes peak :rows rows}
-                            (when (= mode "--allocations") {:observed-thread-peaks @thread-observations :allocation-counts (edn/read-string (slurp (str (fs/path (:directory c) "allocations.edn"))))}))))]
+                            (when (= mode "--allocations") {:storage-diagnostics @diagnostics :observed-thread-peaks @thread-observations :allocation-counts (edn/read-string (slurp (str (fs/path (:directory c) "allocations.edn"))))}))))]
       (assert binary)
       (spit (str sample-path) (str (pr-str {:kind :manifest :version 1 :seed seed :rounds (if (#{"--check" "--allocations"} mode) 1 5) :warmup (if (= mode "--measure") :one-complete-cell-process :none) :cases (mapv #(dissoc % :directory) prepared) :cells cells
                                          :revision (str/trim (command environment "git" "rev-parse" "HEAD")) :tracked-diff-sha256 (hash-bytes (.getBytes (command environment "git" "diff") "UTF-8")) :rust-tree (hash-file (fs/path directory "benchmark.rs")) :native-source-sha256 (hash-file (fs/path directory "compiler_session.goose")) :native-adapter-sha256 (hash-file (fs/path directory "measurement.h"))
                                          :goose (str/trim (command environment "goose" "version")) :bb (str/trim (command environment "bb" "--version")) :rust (str/trim (command environment "rustc" "-Vv"))
                                          :clang (str/trim (command environment "cc" "--version")) :machine (str/trim (command environment "sysctl" "-n" "machdep.cpu.brand_string" "hw.ncpu" "hw.memsize")) :os (str/trim (command environment "sw_vers"))
+                                         :native-command (command environment "goose" "build" (str (fs/path directory "compiler_session.goose")) "--dry-run" "-o" native)
+                                         :build-environment (select-keys environment ["RUSTFLAGS" "CARGO_ENCODED_RUSTFLAGS" "GOOSE_CC" "LIGHT_V8_FLAGS" "LIGHT_CLJS_REPLAY_BOOT" "LIGHT_V8_STATS" "CARGO_BUILD_JOBS" "LIGHT_CLJS_V8_CACHE"])
                                          :before-load (str/trim (command environment "uptime")) :before-processes (str/split-lines (command environment "ps" "-axo" "pid,ppid,%cpu,comm")) :binary-sha256 (hash-file binary) :native-sha256 (hash-file native)}) "\n"))
       ;; Independent V8 emitted JS and application-output oracle before timing.
       (doseq [c prepared]
