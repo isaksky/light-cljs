@@ -59,6 +59,13 @@ Macros do not yet execute in Goose; the scalar adapter explicitly rejects them
 without fallback. The exporter accepts source alone and cannot evaluate jobs
 or compute expansions. Reference generation supplies separate expectations.
 
+The captured syntax surface includes arrow/ordinary function expressions,
+closures, lexical bindings, labeled while/continue, if/ternary/nullish and logical
+branches, assignments/comma expressions, member/index reads, ordinary/method
+calls, arrays and scalar/string literals. Native form constructors and form
+selectors lower directly. Per-factory inventories enumerate the resulting
+operations and full function/instruction counts.
+
 ## Runtime and native boundaries
 
 `runtime.edn` records conservative roots found mechanically in compiled string
@@ -143,8 +150,10 @@ Each `*.jobs.edn` is a version-2 metadata owner containing:
   compiler-gensym authority requirement. The original branch source declares
   the producer definitions and the consumer that reads them.
 
-`regenerate.bb` validates all references/ranges, source boundaries and UTF-16
-values. Metadata budgets are 100,000 datum nodes, depth 128 and 1,048,576 child
+`regenerate.bb` validates references/ranges, acyclic bounded form/data graphs,
+scalar types, argument occurrence IDs, source boundaries and UTF-16 values.
+Negative cases reject cycles, unknown tags and overflow before narrowing.
+Metadata budgets are 100,000 datum nodes, depth 128 and 1,048,576 child
 IDs/code units. Records are compiler-owned independently of any evaluator or
 Goose session. The manifest pins the starting compiler revision and content
 hashes; current Git HEAD is deliberately excluded so committing regeneration
