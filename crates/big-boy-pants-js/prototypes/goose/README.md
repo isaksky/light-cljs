@@ -273,15 +273,88 @@ permit. `serial_tests.goose` compares all frame PCs, operands, locals, results,
 ordered writes, heap tables and allocator cursors at every instruction cut
 against single-step execution, including zero budgets and calls/branches.
 
-The **checkpoint boundary** for later heap copying is admission with no live
-job: after initialization, or after the preceding terminal job's owner has left
-scope. Initialized helper closures and reachable heap values remain live. Copy
-all heap pools, their lengths/session identity, limits and cumulative work;
-share only immutable decoded code through its owner. Coordinator admission
-identity authority is excluded. This does not implement or promise copying an
-arbitrary suspended stack. Sliced execution retains one job's explicit state
-in place and is independently covered by the original synthetic exactly-once
-effect tests and the source mutation tests.
+The **checkpoint boundary** is admission with no live job: after initialization,
+or after every preceding job has been explicitly retired with `source::retire`.
+`start` registers the owner; terminal execution retains its diagnostic state
+until retirement. Goose scope exit has no VM destructor hook, so a forgotten
+retirement conservatively blocks capture. Retiring a suspended job abandons it
+with a terminal `InvalidState`; retiring a claimed job fails. Initialized helper
+closures and retained heap values remain live. Sliced execution retains one
+job's explicit state in place. Snapshots reject even an operand-only object
+across a yield, preserving every saved frame/local/operand and the heap.
+
+## Initialized private snapshots
+
+`snapshot.goose` captures a version-1 flat `Snapshot`: owned component arrays
+containing code bytes/functions/constants/children/instructions/UTF-16, every
+heap node/capture/property/UTF-16/constant/source-byte/source-range pool, and a
+sorted definition/root table of `(id, generation, value)`. Occurrence origins,
+source spans, namespaces, metadata, captured cells, object cycles, aliases,
+initialization/producer counters, limits and cumulative work survive. Private
+mutable objects are valid. This does not apply the immutable-publication check.
+
+Allocator version 1 is the existing append-only arena. All fourteen end cursors
+must exactly match component lengths. There is no slot or span free list to
+serialize and no per-slot recycling. Appending after restore starts at the saved
+end. Whole-arena scope exit releases storage; the next arena has a fresh session
+identity, so reused object slots and string spans cannot be authorized by stale
+handles or retained definition entries. Cell immutability is initialized anew.
+The serial identity allocator fails at exhaustion instead of wrapping.
+
+Capture validates the borrowing source view before allocating its copy. Restore
+validates every pool and code/graph link before touching empty destination
+owners. It checks version, allocator/cursors, generations, code stack flow,
+property-chain termination, ranges, source UTF-8/spans, limits, and budgets.
+Arbitrary object cycles use integer links and need no recursive copy. Code and
+form pools are independently owned in every restored worker. A worker receives
+one fresh session ID reserved **on the coordinator** with `reserve_identity`;
+restore relocates every private value to it, while definition IDs/generations
+and the base/checkpoint identity remain distinct. Workers never call the serial
+allocator. Producer claims, waiters, shared-effect authority and publication or
+import-cache authority have no fields in this schema. Restore invokes no code.
+
+The optional `encode`/`decode` codec uses Goose's checked flat-array framing,
+followed by the same semantic validator. This local image is tied to the
+installed compiler's packed record ABI; it is not a portable transport format.
+Malformed lengths/tags/framing, truncations and invalid semantic fields are
+typed failures. Failed capture/restore installs no partial snapshot or heap.
+
+`Control` records snapshot bytes, copied snapshot-component bytes, validator
+scratch peak, capture/restore nanoseconds and validation work. Component copying
+counts capture once, the explicit full record temporary plus serialization in
+`encode`, both the decoded owner and returned copy in `decode`, and each restored
+pool. Scalar field accesses and unrelated form conversion are outside that copy
+counter. Native worker reports add both full spawn copies: the compiler builds
+the packet, then the runtime copies it into worker-owned storage; the finished
+array entry thunk views that packet. There is no hidden third array copy.
+
+The finite `snapshot_workers.goose` probe reserves private bytes and execution
+slots before spawn and releases them after join. It runs 32 jobs in batches of
+two native workers (one coordinator plus two execution threads), with bounded
+heap pools, work/steps, frames/operands/locals, output conversion and result queue.
+Reservations include both spawn packets, restored code/definitions, maximum
+heap pools, the validation bitmap and a conservative scratch/output allowance.
+Reports include actual retained component bytes, nodes/work, copy bytes, times
+and peak reservations. These are logical storage bounds, excluding Goose's
+reserved virtual stack address space and process RSS. Per-job private owners die
+before the report is queued; `thread_wait` releases worker/packet storage before
+the admission reservation is returned. Queue capacity covers every admitted
+report; joins precede nonblocking receives, so a contained failure cannot strand
+a receive. Exhaustion is explicit. This is an isolation/lifetime probe, not the
+later execution scheduler or immutable artifact publication.
+
+`smoke.bb` formats/checks the snapshot sources, runs serial snapshot tests in
+debug/native modes, and builds/runs the threaded probe both with native
+`--debug` and normal native compilation. It checks divergent parents, sibling
+mutation/allocation, closure-only values, cyclic objects, retired producer
+results, exact form/source ownership, malformed metadata, every codec truncation,
+operand/local yield rejection, stale reset handles/classifications, identity
+exhaustion, bounded repeated jobs and cleanup. Historical lifetime obligations
+adapt `158f0cb7`/`d87ac453:tests/gc.rs` and `8e0e6219:src/heap/mod.rs` without
+introducing their shared heap, collector or weak-reference API. The real emitted
+churn/closure macros and two helper producers initialize once before branching;
+every copy retains boot=1, initializers=2, producers=2. Printed timings are
+diagnostic correctness-run measurements, not a performance comparison.
 
 ## Early native source diagnostic
 

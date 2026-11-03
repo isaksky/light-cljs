@@ -37,6 +37,7 @@ root struct Heap {
     units:        u16[>..]                   = [], constants: Value[>..] = [], work: i64 = 0,
     source_bytes: u8[>..]                    = [], source_ranges: SourceRange[>..] = [],
     fault:        Fault                      = Fault.None, global: Value = Value {}, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
+    live_jobs:    i64                        = 0,
 }
 struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, input: Value = Value {}, output: Value = Value {}, index: i64 = 0 }
 struct Write { object: Value, key: Value, value: Value }
@@ -44,7 +45,7 @@ root struct Job {
     heap:   Heap&, frames: Frame[>..<] = [], locals: Value[>..<] = [], operands: Value[>..<] = [],
     writes: Write[>..]                 = [], status: tiny::Status = tiny::Status.Ready, result: Value = Value {},
     fault:  Fault                      = Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1,
-    steps:  i64                        = 0, claimed: bool = false,
+    steps:  i64                        = 0, claimed: bool = false, registered: bool = false,
 }
 fn number(n: f64) -> Value { return Value { tag: 3, number: n }; }
 fn boolean(b: bool) -> Value { return Value { tag: 2, a: if b { 1 } else { 0 } }; }
@@ -169,8 +170,8 @@ fn text(heap: Heap&, bytes: const u8[:]) -> Value {
 }
 fn initialize(heap: Heap&) -> bool {
     if !heap.code.valid || heap.identity != 0 || heap.nodes.len != 0 || heap.units.len != 0 || heap.constants.len != 0 { heap.fault = Fault.InvalidState; return false; }
-    if next_identity > 2147483647 { return memory(heap); }
-    heap.identity = next_identity; next_identity += 1;
+    heap.identity = reserve_identity();
+    if heap.identity == 0 { return memory(heap); }
     if heap.code.units.len > heap.limits.units || heap.code.constants.len > heap.limits.values { return memory(heap); }
     if !charge(heap, heap.code.units.len + heap.code.constants.len) { return false; }
     heap.units.append(heap.code.units);
@@ -178,6 +179,12 @@ fn initialize(heap: Heap&) -> bool {
     heap.global = allocate(heap, Node { kind: 0 });
     let global_name = text(heap, "globalThis");
     return put(heap, heap.global, global_name, heap.global);
+}
+// Call only on the serial coordinator, including before native worker spawn.
+// Workers receive one fresh private identity, never this admission authority.
+fn reserve_identity() -> i64 {
+    if next_identity > 2147483647 { return 0; }
+    let result = next_identity; next_identity += 1; return result;
 }
 fn truthy(v: Value) -> bool { return match v.tag { 0, 1 => false, 2 => v.a != 0, 3 => v.number != 0 && v.number == v.number, 4 => v.b != 0, _ => true }; }
 fn equal(heap: Heap&, a: Value, b: Value) -> bool {
@@ -282,7 +289,16 @@ fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -
 }
 fn start(job: Job&, callee: Value, arguments: const Value[:], receiver: Value = Value {}) -> bool {
     assert(job.frames.len == 0 && job.locals.len == 0 && job.operands.len == 0 && job.steps == 0);
-    if !enter(job, callee, receiver, arguments) { job.fault = job.heap.fault; job.heap.fault = Fault.None; job.status = tiny::Status.Failed; return false; } return true;
+    if !enter(job, callee, receiver, arguments) { job.fault = job.heap.fault; job.heap.fault = Fault.None; job.status = tiny::Status.Failed; return false; }
+    job.heap.live_jobs += 1; job.registered = true; return true;
+}
+// Explicitly retire a terminal owner or abandon a suspended job. Scope exit
+// alone is not observable by the VM; a forgotten owner keeps capture closed.
+fn retire(job: Job&) -> bool {
+    if job.claimed { return false; }
+    if job.registered { assert(job.heap.live_jobs > 0); job.heap.live_jobs -= 1; job.registered = false; }
+    if job.status == tiny::Status.Ready { job.status = tiny::Status.Failed; job.fault = Fault.InvalidState; }
+    return true;
 }
 fn record(job: Job&, object: Value, k: Value, value: Value) {
     if job.writes.len >= job.heap.limits.properties { memory(job.heap); return; }

@@ -7,7 +7,7 @@ import .vm;
 
 extern fn exit(status: i32) = "exit";
 fn invoke(heap: source::Heap&, callee: source::Value, args: const source::Value[:]) -> source::Value, i64 {
-    var job = source::Job { heap: heap }; source::start(job, callee, args);
+    var job = source::Job { heap: heap }; defer { source::retire(job); } source::start(job, callee, args);
     if source::run(job, -1) != tiny::Outcome.Complete { print("exception:", job.fault, ":function=", job.fault_function, ":pc=", job.fault_pc); exit(1); }
     return job.result, job.steps;
 }

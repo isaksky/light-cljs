@@ -30,6 +30,7 @@ fn main() {
     for i in (repetitions + warmup) {
         if i == warmup { warmed = clock_ns(); }
         var job = source::Job { heap: heap };
+        defer { source::retire(job); }
         if !source::start(job, entry, []) { print("start:", job.fault); error(); return; }
         let outcome = source::run(job, -1);
         if outcome != tiny::Outcome.Complete {
