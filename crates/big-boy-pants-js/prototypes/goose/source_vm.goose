@@ -156,7 +156,9 @@ fn initialize(heap: Heap&) -> bool {
     if !charge(heap, heap.code.units.len + heap.code.constants.len) { return false; }
     heap.units.append(heap.code.units);
     for constant in heap.code.constants { var v = constant; if v.tag == 4 { v.session = heap.identity; } heap.constants.push(v); }
-    heap.global = allocate(heap, Node { kind: 0 }); return heap.fault == Fault.None;
+    heap.global = allocate(heap, Node { kind: 0 });
+    let global_name = text(heap, "globalThis");
+    return put(heap, heap.global, global_name, heap.global);
 }
 fn truthy(v: Value) -> bool { return match v.tag { 0, 1 => false, 2 => v.a != 0, 3 => v.number != 0 && v.number == v.number, 4 => v.b != 0, _ => true }; }
 fn equal(heap: Heap&, a: Value, b: Value) -> bool {
@@ -188,6 +190,17 @@ fn index(heap: Heap&, k: Value) -> i64 {
     for i in k.b { let c = heap.units[k.a + i]; if c < 48 || c > 57 || (i == 0 && c == 48 && k.b > 1) { return -1; } n = n * 10 + (c - 48); }
     return if n < 4294967295 { n } else { -1 };
 }
+// Return presence separately: an own property's value can be undefined.
+fn own_property(heap: Heap&, object: Value, k: Value) -> Value, bool {
+    var id = heap.nodes[object.a].head;
+    while id >= 0 {
+        if !charge(heap) { return Value {}, false; }
+        let property = heap.properties[id];
+        if equal(heap, property.key, k) { return property.value, true; }
+        id = property.next;
+    }
+    return Value {}, false;
+}
 fn get(heap: Heap&, object: Value, k: Value) -> Value {
     if !valid(heap, object) || !valid(heap, k) { return Value {}; }
     if k.tag != 4 { heap.fault = Fault.InvalidState; return Value {}; }
@@ -200,11 +213,8 @@ fn get(heap: Heap&, object: Value, k: Value) -> Value {
     let node = heap.nodes[object.a];
     if node.kind == 1 && key_is(heap, k, "length") { return number(node.length); }
     if node.kind >= 2 { heap.fault = Fault.UnsupportedOperand; return Value {}; }
-    var id = node.head;
-    while id >= 0 {
-        if !charge(heap) { return Value {}; }
-        let property = heap.properties[id]; if equal(heap, property.key, k) { return property.value; } id = property.next;
-    }
+    let value, found = own_property(heap, object, k);
+    if found { return value; }
     if heap.fault != Fault.None { return Value {}; }
     if node.kind == 1 && index(heap, k) < 0 { heap.fault = Fault.UnsupportedOperand; return Value {}; }
     // Prototype-dependent behavior is deliberately unsupported. A missing own
@@ -362,8 +372,13 @@ fn step(job: Job&) {
         105 => { job.operands.push(heap.global); },
         106, 107 => {
             let k = heap.constants[f.constants + op.arg];
-            if key_is(heap, k, "globalThis") { job.operands.push(heap.global); }
-            else { let v = get(heap, heap.global, k); if v.tag == 0 && op.code == 106 && heap.fault == Fault.None { heap.fault = Fault.ReferenceError; } job.operands.push(v); }
+            let v, found = own_property(heap, heap.global, k);
+            if !found {
+                // Keep prototype-dependent reads explicitly unsupported.
+                get(heap, heap.global, k);
+                if op.code == 106 && heap.fault == Fault.None { heap.fault = Fault.ReferenceError; }
+            }
+            job.operands.push(v);
         },
         // Runtime/form leaves and global declaration semantics are explicit
         // admission boundaries for the next runtime/bridge slice.

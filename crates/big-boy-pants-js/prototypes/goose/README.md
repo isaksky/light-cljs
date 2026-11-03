@@ -228,6 +228,12 @@ versions, branch boundaries and transactional image installation. New execution
 validation independently checks child capture arities, stack underflow/joins,
 fallthrough and per-function stack limits before any execution.
 
+Global reads distinguish a missing binding from an own property whose value is
+`undefined`. Initialization installs `globalThis` as an own data property of
+the global object; property reads, identifier reads and replacement through an
+alias observe that same property. Exported source regressions check these
+cases against Node/V8 and Pants, including the missing-binding error.
+
 Every captured macro/helper image also passes source flow validation and native
 entry execution to instantiate its factory closure. The actual captured Pants
 helper factory executes nested source calls up to `NewFormVector`, where it
@@ -301,26 +307,26 @@ this run overlapped these samples. All numbers below are raw nanoseconds.
 
 | Source | Engine | Sample | Load/boot | Warmup | Execute/dispose | Internal total | Process wall |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| arithmetic | goose | 1 | 74000 | 49000 | 412000 | 542000 | 3543208 |
-| arithmetic | goose | 2 | 44000 | 43000 | 370000 | 463000 | 2685583 |
-| arithmetic | goose | 3 | 44000 | 43000 | 359000 | 454000 | 2697917 |
-| arithmetic | goose | 4 | 45000 | 43000 | 399000 | 495000 | 2707500 |
-| arithmetic | goose | 5 | 41000 | 44000 | 383000 | 473000 | 2531417 |
-| arithmetic | v8 | 1 | 124750 | 9041 | 121125 | 1886500 | 49789500 |
-| arithmetic | v8 | 2 | 122334 | 8666 | 116584 | 1965709 | 50092042 |
-| arithmetic | v8 | 3 | 121042 | 8916 | 117125 | 1842208 | 50854167 |
-| arithmetic | v8 | 4 | 140917 | 9833 | 119417 | 2196417 | 51738625 |
-| arithmetic | v8 | 5 | 119208 | 8792 | 129875 | 2040292 | 50635167 |
-| control_flow | goose | 1 | 58000 | 546000 | 5185000 | 5802000 | 8694708 |
-| control_flow | goose | 2 | 51000 | 519000 | 5309000 | 5885000 | 8294291 |
-| control_flow | goose | 3 | 49000 | 499000 | 5192000 | 5748000 | 8104167 |
-| control_flow | goose | 4 | 49000 | 563000 | 5077000 | 5702000 | 8079167 |
-| control_flow | goose | 5 | 45000 | 540000 | 5448000 | 6041000 | 8529166 |
-| control_flow | v8 | 1 | 133583 | 72875 | 146125 | 2029625 | 49022375 |
-| control_flow | v8 | 2 | 142333 | 75208 | 206792 | 2178541 | 49544750 |
-| control_flow | v8 | 3 | 130250 | 76584 | 143708 | 1910334 | 50711334 |
-| control_flow | v8 | 4 | 124792 | 71875 | 162791 | 2053917 | 49709583 |
-| control_flow | v8 | 5 | 131541 | 69959 | 146083 | 2027958 | 48620292 |
+| arithmetic | goose | 1 | 74000 | 48000 | 426000 | 556000 | 3487250 |
+| arithmetic | goose | 2 | 51000 | 46000 | 408000 | 515000 | 3077459 |
+| arithmetic | goose | 3 | 48000 | 43000 | 395000 | 494000 | 2904750 |
+| arithmetic | goose | 4 | 43000 | 43000 | 381000 | 473000 | 2596583 |
+| arithmetic | goose | 5 | 45000 | 43000 | 370000 | 464000 | 2540333 |
+| arithmetic | v8 | 1 | 194583 | 10334 | 148416 | 2103958 | 49514166 |
+| arithmetic | v8 | 2 | 135625 | 11125 | 113625 | 1845541 | 49440959 |
+| arithmetic | v8 | 3 | 135000 | 8917 | 117333 | 1898375 | 48759333 |
+| arithmetic | v8 | 4 | 148459 | 8833 | 119583 | 1854417 | 51186583 |
+| arithmetic | v8 | 5 | 119125 | 8542 | 116375 | 2033917 | 48847667 |
+| control_flow | goose | 1 | 55000 | 511000 | 5478000 | 6055000 | 8637167 |
+| control_flow | goose | 2 | 52000 | 501000 | 5138000 | 5698000 | 8591000 |
+| control_flow | goose | 3 | 53000 | 497000 | 4991000 | 5549000 | 7946125 |
+| control_flow | goose | 4 | 44000 | 496000 | 5049000 | 5602000 | 7825583 |
+| control_flow | goose | 5 | 47000 | 496000 | 5265000 | 5816000 | 8165375 |
+| control_flow | v8 | 1 | 133166 | 73500 | 131375 | 1888750 | 49411583 |
+| control_flow | v8 | 2 | 124000 | 74417 | 154500 | 1889083 | 48026000 |
+| control_flow | v8 | 3 | 137042 | 83208 | 141792 | 1967750 | 49390375 |
+| control_flow | v8 | 4 | 127292 | 73375 | 159291 | 1943458 | 48618209 |
+| control_flow | v8 | 5 | 128083 | 73875 | 142292 | 1910291 | 48385041 |
 
 Verification on this slice: `regenerate.bb --check` passes (compiler capture,
 independent Node/Pants references, exporter tests, manifest checks, format,

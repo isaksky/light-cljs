@@ -537,6 +537,9 @@ mod serial_tests {
             ("control", "boolean:true"),
             ("numbers", "boolean:true"),
             ("strings", "boolean:true"),
+            ("global-undefined", "undefined:undefined"),
+            ("global-this", "boolean:true"),
+            ("global-missing", "exception:ReferenceError"),
             ("negative-zero", "number:-0"),
             ("nan", "number:NaN"),
             ("tdz", "exception:ReferenceError"),
@@ -574,6 +577,7 @@ mod serial_tests {
             let executable = crate::frontend::compile_function(&source).unwrap();
             let actual = match rt.spawn(&executable, &[]).unwrap().run().unwrap() {
                 RunOutcome::Complete(value) => match value.view() {
+                    ValueView::Undefined => "undefined:undefined".into(),
                     ValueView::Bool(b) => format!("boolean:{b}"),
                     ValueView::Number(n) if n == 0.0 && n.is_sign_negative() => "number:-0".into(),
                     ValueView::Number(n) => format!("number:{n}"),

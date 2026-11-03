@@ -39,11 +39,11 @@
       (run! executable)
       (run! goose "check" runner)
       (run! goose "build" runner "-o" executable)
-      (doseq [name ["serial/calls" "serial/captures" "serial/mutations" "synthetic/control_flow" "synthetic/unicode" "closure-captured.pants"]]
+      (doseq [name ["serial/calls" "serial/captures" "serial/mutations" "serial/global-undefined" "serial/global-this" "synthetic/control_flow" "synthetic/unicode" "closure-captured.pants"]]
         (run! executable (str (fs/path directory "corpus" (str name ".gsp")))))
       (doseq [image (sort (fs/glob (fs/path directory "corpus") "*.gsp"))]
         (run! executable (str image)))
-      (doseq [name ["serial/tdz" "serial/type-error" "serial/not-callable" "serial/loop"]]
+      (doseq [name ["serial/tdz" "serial/type-error" "serial/not-callable" "serial/global-missing" "serial/loop"]]
         (let [result (process/shell {:continue true :out :string :err :string}
                                     executable (str (fs/path directory "corpus" (str name ".gsp"))))]
           (assert (= 1 (:exit result)) (str "Expected nonzero bounded diagnostic: " name))

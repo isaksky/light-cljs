@@ -37,6 +37,7 @@ fn check(bytes: const u8[:], expected: const u8[:], fault: source::Fault = sourc
         // Two differential executions of one logical session image.
         h2.identity = h1.identity; h2.global.session = h1.identity;
         for &v in h2.constants { if v.tag == 4 { v.session = h1.identity; } }
+        for &p in h2.properties { p.key.session = h1.identity; p.value.session = h1.identity; }
         let e1 = source::closure(h1, 0, []); let e2 = source::closure(h2, 0, []);
         var a = source::Job { heap: h1 }; var b = source::Job { heap: h2 };
         assert(source::start(a, e1, []) && source::start(b, e2, []));
@@ -58,6 +59,16 @@ fn check(bytes: const u8[:], expected: const u8[:], fault: source::Fault = sourc
 }
 fn limits(bytes: const u8[:]) {
     var code = source::Code {}; decode(code, bytes);
+    // The globalThis own property participates in all initialization budgets.
+    for kind in 3 {
+        var limit = source::Limits {};
+        if kind == 0 { limit.properties = 0; }
+        if kind == 1 { limit.units = code.units.len; }
+        if kind == 2 { limit.work = code.units.len + code.constants.len + 1; }
+        var heap = source::Heap { code: code, limits: limit };
+        assert(!source::initialize(heap));
+        assert(heap.fault == (if kind == 2 { source::Fault.WorkLimit } else { source::Fault.MemoryLimit }));
+    }
     for kind in 6 {
         var limit = source::Limits {};
         if kind == 0 { limit.steps = 1; }
@@ -65,9 +76,9 @@ fn limits(bytes: const u8[:]) {
         if kind == 2 { limit.stack = 1; }
         if kind == 3 { limit.nodes = 2; }
         if kind == 4 { limit.values = 0; }
-        if kind == 5 { limit.work = code.units.len + code.constants.len + 3; }
         var heap = source::Heap { code: code, limits: limit };
         if !source::initialize(heap) { assert(heap.fault == source::Fault.MemoryLimit); continue; }
+        if kind == 5 { heap.limits.work = heap.work + 2; }
         let entry = source::closure(heap, 0, []);
         var job = source::Job { heap: heap };
         source::start(job, entry, []); source::run(job, -1);
@@ -115,6 +126,9 @@ fn main() {
     check(embed_file("corpus/serial/control.gsp"), "boolean:true");
     check(embed_file("corpus/serial/numbers.gsp"), "boolean:true");
     check(embed_file("corpus/serial/strings.gsp"), "boolean:true");
+    check(embed_file("corpus/serial/global-undefined.gsp"), "undefined");
+    check(embed_file("corpus/serial/global-this.gsp"), "boolean:true");
+    check(embed_file("corpus/serial/global-missing.gsp"), "", source::Fault.ReferenceError);
     check(embed_file("corpus/serial/negative-zero.gsp"), "number:-0");
     check(embed_file("corpus/serial/nan.gsp"), "number:NaN");
     check(embed_file("corpus/serial/tdz.gsp"), "", source::Fault.ReferenceError);
