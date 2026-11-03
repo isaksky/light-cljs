@@ -69,6 +69,19 @@ fn goose_compiler_handles_are_owner_scoped() {
     let z = c.import_form(&form(), Default::default()).unwrap();
     assert_eq!(z.index, x.index);
     assert!(c.release(x).is_err());
+    assert!(a.release(x).unwrap_err().0.contains("released"));
+    let mut owner = crate::MacroHost::new();
+    owner.use_goose_source_macros(session.clone()).unwrap();
+    assert!(
+        crate::MacroHost::new()
+            .use_goose_source_macros(session.clone())
+            .is_err()
+    );
+    crate::compile_with_macros("(defmacro m [] 1) (m)", &mut owner).unwrap();
+    assert!(
+        crate::compile_with_macros("(defmacro m [] 2) (m)", &mut owner).is_err(),
+        "a new compilation must not reuse old unit identities"
+    );
     session.close();
     assert!(a.import_form(&form(), Default::default()).is_err());
     b.release(y).unwrap();
@@ -83,6 +96,7 @@ fn goose_compiler_exit_and_malformed_replies_cleanup() {
     for (body, malformed_graph) in [
         ("read id\nexit 0", false),
         ("read id\nprintf 'malformed\\n'\nread stop", false),
+        ("read id\nprintf 'DONE 999\\n'\nread stop", false),
         (
             "read id\nprintf x > \"$1/$id.out\"\nprintf 'DONE %s\\n' \"$id\"\nread stop",
             true,
@@ -199,4 +213,44 @@ fn goose_compiler_cancel_and_deadline_cleanup() {
         );
         cleaned(&session);
     }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_rejects_shared_writes_before_mutation() {
+    for source in [
+        "(defmacro effect [] (js* \"(globalThis.gooseForbidden = 1)\") 1) (effect)",
+        "(defmacro effect [] (js* \"(typeof globalThis.Array === 'undefined' ? 1 : 2)\")) (effect)",
+    ] {
+        let session = GooseSession::start(&runner(), 1).unwrap();
+        let mut host = crate::MacroHost::new();
+        host.use_goose_source_macros(session.clone()).unwrap();
+        let error = crate::compile_with_macros(source, &mut host)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("NativeBoundary") && error.contains("writes=0"),
+            "{error}"
+        );
+        cleaned(&session);
+        assert!(
+            crate::compile_with_macros(source, &mut crate::MacroHost::new()).is_ok(),
+            "V8 separately supports this explicitly rejected Goose job"
+        );
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_rejects_root_reads_that_bypass_the_compiler_intrinsic() {
+    let source = "(def value 1) (defmacro bypass [] (js* \"globalThis.__lightCompilerRoots['cljs.user/value']\")) (bypass)";
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let mut host = crate::MacroHost::new();
+    host.use_goose_source_macros(session.clone()).unwrap();
+    let error = crate::compile_with_macros(source, &mut host)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("DependencyNeed"), "{error}");
+    cleaned(&session);
+    assert!(crate::compile_with_macros(source, &mut crate::MacroHost::new()).is_ok());
 }

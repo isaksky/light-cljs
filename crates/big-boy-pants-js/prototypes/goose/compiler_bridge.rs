@@ -65,9 +65,71 @@ pub(super) struct Graph {
     sources: Vec<(u32, u32)>,
     bytes: Vec<u8>,
     roots: Vec<u32>,
-    pub originals: HashMap<i32, Form>,
+    pub originals: HashMap<i32, Input>,
     memo: HashMap<(usize, usize), u32>,
     source_ids: HashMap<crate::compiler_data::SourceId, usize>,
+}
+#[derive(Clone)]
+pub(super) struct Input {
+    data: Datum,
+    form: Option<Form>,
+}
+fn compatible(
+    a: &Datum,
+    b: &Datum,
+    c: &Budget,
+    depth: usize,
+    limits: ConversionLimits,
+) -> Result<bool, EvalError> {
+    c.check()?;
+    if depth > limits.depth {
+        return Err(EvalError("Goose conversion limit exceeded".into()));
+    }
+    use DatumKind::*;
+    let same = match (a.kind(), b.kind()) {
+        (Integer(a), Integer(b)) => a == b,
+        (Double(a), Double(b)) => a.to_bits() == b.to_bits(),
+        (Integer(a), Double(b)) | (Double(b), Integer(a)) => (*a as f64).to_bits() == b.to_bits(),
+        (Nil, Nil) => true,
+        (Boolean(a), Boolean(b)) => a == b,
+        (String(a), String(b)) => {
+            c.bytes((a.len() + b.len()) * 2)?;
+            a == b
+        }
+        (Symbol(a), Symbol(b)) | (Keyword(a), Keyword(b)) => a == b,
+        (
+            Collection {
+                kind: a,
+                children: ac,
+            },
+            Collection {
+                kind: b,
+                children: bc,
+            },
+        ) => {
+            if a != b || ac.len() != bc.len() {
+                false
+            } else {
+                let mut same = true;
+                for (a, b) in ac.iter().zip(bc) {
+                    if !compatible(a, b, c, depth + 1, limits)? {
+                        same = false;
+                        break;
+                    }
+                }
+                same
+            }
+        }
+        _ => false,
+    };
+    if !same {
+        return Ok(false);
+    }
+    match (a.metadata(), b.metadata()) {
+        (None, None) => Ok(true),
+        (Some(a), Some(b)) => compatible(&a, &b, c, depth + 1, limits),
+        _ => Ok(false),
+    }
 }
 fn tag(d: &Datum) -> Result<u32, EvalError> {
     Ok(match d.kind() {
@@ -166,6 +228,15 @@ impl Graph {
             n.fields[4] = self.datum(&meta, depth + 1, limits, c)? as i32;
         }
         self.charge(depth, limits, c)?;
+        let occurrence = self.originals.len() as i32;
+        self.originals.insert(
+            occurrence,
+            Input {
+                data: d.clone(),
+                form: None,
+            },
+        );
+        n.fields[5] = occurrence;
         let id = self.nodes.len() as u32;
         self.nodes.push(n);
         Ok(id)
@@ -221,7 +292,13 @@ impl Graph {
             i
         };
         let occurrence = self.originals.len() as i32;
-        self.originals.insert(occurrence, f.clone());
+        self.originals.insert(
+            occurrence,
+            Input {
+                data: f.data(),
+                form: Some(f.clone()),
+            },
+        );
         n.fields[5] = occurrence;
         n.fields[6] = source_index as i32;
         n.fields[7] = span.bytes().start as i32;
@@ -460,7 +537,7 @@ impl Graph {
         &self,
         call: &Form,
         origin: ExpansionOrigin,
-        originals: &HashMap<i32, Form>,
+        originals: &HashMap<i32, Input>,
         limits: ConversionLimits,
         c: &Budget,
     ) -> Result<Form, EvalError> {
@@ -468,7 +545,7 @@ impl Graph {
             g: &'a Graph,
             states: Vec<u8>,
             memo: Vec<Option<Datum>>,
-            originals: &'a HashMap<i32, Form>,
+            originals: &'a HashMap<i32, Input>,
             reuse: HashMap<usize, Form>,
             limits: ConversionLimits,
             c: &'a Budget,
@@ -493,17 +570,10 @@ impl Graph {
                 let value = match n.tag {
                     0 => DatumKind::Nil,
                     1 => DatumKind::Boolean(n.number != 0.),
-                    2 => {
-                        if n.number.is_finite()
-                            && n.number.fract() == 0.
-                            && n.number >= i64::MIN as f64
-                            && n.number < i64::MAX as f64
-                        {
-                            DatumKind::Integer(n.number as i64)
-                        } else {
-                            DatumKind::Double(n.number)
-                        }
-                    }
+                    // The executable runtime's scalar is an ECMAScript
+                    // Number, as in the V8 bridge: preserve its exact f64 bits,
+                    // including negative zero, rather than narrowing integers.
+                    2 => DatumKind::Double(n.number),
                     3 => {
                         self.c.bytes(f[1] as usize * 2)?;
                         DatumKind::String(self.g.segment(&self.g.units, f[0], f[1])?.into())
@@ -546,23 +616,36 @@ impl Graph {
                     d = d.with_metadata(self.visit(f[4] as usize, depth + 1)?);
                 }
                 if let Some(original) = self.originals.get(&f[5]) {
-                    if !d.value_eq(&original.data()) {
+                    if !compatible(&d, &original.data, self.c, depth, self.limits)? {
                         return Err(bad());
                     }
-                    let span = original.span();
-                    if f[6] < 0
-                        || f[7] as usize != span.bytes().start
-                        || f[8] as usize != span.bytes().end
-                    {
+                    // Restore reader scalar spelling/flavour while retaining
+                    // a distinct Datum identity for each wire occurrence.
+                    if let DatumKind::Integer(value) = original.data.kind() {
+                        let meta = d.metadata();
+                        d = Datum::new(DatumKind::Integer(*value));
+                        if let Some(meta) = meta {
+                            d = d.with_metadata(meta);
+                        }
+                    }
+                    if let Some(form) = &original.form {
+                        let span = form.span();
+                        if f[6] < 0
+                            || f[7] as usize != span.bytes().start
+                            || f[8] as usize != span.bytes().end
+                        {
+                            return Err(bad());
+                        }
+                        let (start, len) = self.g.sources[f[6] as usize];
+                        if self.g.segment(&self.g.bytes, start as i32, len as i32)?
+                            != span.source().text().as_bytes()
+                        {
+                            return Err(bad());
+                        }
+                        self.reuse.insert(d.identity(), form.clone());
+                    } else if f[6] != -1 {
                         return Err(bad());
                     }
-                    let (start, len) = self.g.sources[f[6] as usize];
-                    if self.g.segment(&self.g.bytes, start as i32, len as i32)?
-                        != span.source().text().as_bytes()
-                    {
-                        return Err(bad());
-                    }
-                    self.reuse.insert(d.identity(), original.clone());
                 } else if f[5] >= 0 {
                     return Err(bad());
                 }
@@ -637,5 +720,59 @@ mod tests {
             .is_err(),
             "unreachable cycle must be rejected"
         );
+    }
+    #[test]
+    fn goose_compiler_bridge_preserves_number_bits_and_borrowed_flavours() {
+        let source = crate::compiler_data::Source::new("numbers.cljs", "nil");
+        let call = Form::from_data(
+            Datum::new(DatumKind::Nil),
+            source.span(0..3).unwrap(),
+            crate::compiler_data::Origin::Source,
+        );
+        let origin = || ExpansionOrigin {
+            macro_name: Name::new(None, "wire"),
+            call: call.span(),
+            definition: None,
+            helpers: vec![],
+        };
+        let limits = ConversionLimits::default();
+        for number in [-0.0, 1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let control = ExecutionControl::new(&Default::default()).unwrap();
+            let budget = Budget::new(limits.nodes, control);
+            let graph = Graph {
+                nodes: vec![Node {
+                    tag: 2,
+                    number,
+                    ..Default::default()
+                }],
+                roots: vec![0],
+                ..Default::default()
+            };
+            let decoded = Graph::decode(&graph.encode().unwrap(), limits, &budget).unwrap();
+            let form = decoded
+                .expansion(&call, origin(), &HashMap::new(), limits, &budget)
+                .unwrap();
+            let data = form.data();
+            let DatumKind::Double(value) = data.kind() else {
+                panic!("computed JS Number was narrowed")
+            };
+            assert_eq!(value.to_bits(), number.to_bits());
+        }
+        let control = ExecutionControl::new(&Default::default()).unwrap();
+        let budget = Budget::new(limits.nodes, control);
+        let graph = Graph::arguments(
+            &[super::super::Stored::Data(
+                Datum::new(DatumKind::Integer(7)),
+                limits,
+            )],
+            limits,
+            &budget,
+        )
+        .unwrap();
+        let decoded = Graph::decode(&graph.encode().unwrap(), limits, &budget).unwrap();
+        let form = decoded
+            .expansion(&call, origin(), &graph.originals, limits, &budget)
+            .unwrap();
+        assert!(matches!(form.data().kind(), DatumKind::Integer(7)));
     }
 }

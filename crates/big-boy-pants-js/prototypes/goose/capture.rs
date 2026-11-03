@@ -780,6 +780,11 @@ fn goose_compiler_pipeline() {
                     a.data().value_eq(&b.data()),
                     "{case} nested data and metadata"
                 );
+                assert_eq!(
+                    std::mem::discriminant(a.data().kind()),
+                    std::mem::discriminant(b.data().kind()),
+                    "{case} canonical datum kinds"
+                );
                 assert_eq!(a.node().origin, b.node().origin, "{case} origin");
             }
         }

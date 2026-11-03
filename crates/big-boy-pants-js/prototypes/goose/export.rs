@@ -465,7 +465,7 @@ mod tests {
         let e = export_source("dead.js", source).unwrap_err();
         assert_eq!(e.kind, SyntaxErrorKind::Unsupported);
         assert!(
-            e.message.contains("new") && e.message.contains("dormant"),
+            e.message.contains("construct") && e.message.contains("dormant"),
             "{e}"
         );
         assert!(source[e.span.start..e.span.end].contains("new"));

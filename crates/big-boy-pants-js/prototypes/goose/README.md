@@ -939,6 +939,13 @@ VM-only performance claim. `START/NEED/PRODUCE/PRODUCED/RESUME/FINISH/DONE` trac
 prove physical overlap, once production and no pre-wait mutation replay. The
 compiler command checks both debug-native and optimized-native Goose runners.
 
+Canonical comparisons include datum kinds as well as values. Unchanged input
+occurrences restore their reader numeric flavour after checked structural and
+metadata comparison; computed ECMAScript Numbers retain their f64 bits,
+including negative zero and NaNs. The input registry keeps occurrence identities
+independent of value equality, and retains environment data without inventing
+source locations for it.
+
 GCS1 control messages are newline-delimited ASCII records with numeric request
 IDs; GSP2/GFB1 payloads are owned flat files in a private session directory. EOF,
 malformed control/form replies, failed jobs, cancellation and deadlines retire
@@ -946,3 +953,14 @@ the compilation, reap the process and its threads, join Rust transport readers,
 and remove the directory. Handles carry distinct evaluator/session ownership
 and non-reused logical slot versions. Compiler-owned forms, nested metadata,
 source occurrences and rendered diagnostics survive complete session teardown.
+Attach a fresh session for each new compilation, including when reusing a host.
+
+The existing root verification limitations still apply: default/QuickJS strict
+Clippy reports `program_fragment::{published,expr,append_published}` dead code and
+`analyzer.rs` items after a test module; the full default suite's playground wasm
+lint encounters those same unchanged dead-code errors. Feature-enabled strict
+Clippy also encounters the existing engine deprecated/chunk/byte-string lints
+and `namespace_publication.rs` single-element loop. Command-line allowances for
+those existing diagnostics permit a separate audit of the adapter; source lint
+suppressions were not added. Existing root rustfmt differences remain outside
+the changed code.

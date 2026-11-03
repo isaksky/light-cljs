@@ -50,6 +50,8 @@ root struct Job {
     steps:           i64                        = 0, claimed: bool = false, registered: bool = false,
     effects_enabled: bool                       = false, effect_pending: bool = false, effect_kind: i64 = -1,
     helpers_enabled: bool                       = false,
+    protected_nodes: i64                        = 0,
+    root_receiver:   Value                      = Value {},
     effect_args:     Value[8]                   = [Value {}; 8], effect_count: i64 = 0, effect_frame: Frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value {}, receiver: Value {} },
 }
 fn number(n: f64) -> Value { return Value { tag: 3, number: n }; }
@@ -582,7 +584,7 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
         if !valid(heap, array) || array.tag != 5 || heap.nodes[array.a].kind != 1 { heap.fault = Fault.TypeError; return Value {}; }
         var values: Value[>..] = [];
         for i in heap.nodes[array.a].length { values.push(get(heap, array, key(heap, number(i)))); }
-        return form_collection(heap, if id == 10 { 6 } else if id == 11 { 5 } else if id == 12 { 7 } else { 8 }, values);
+        return form_construct(heap, if id == 10 { 6 } else if id == 11 { 5 } else if id == 12 { 7 } else { 8 }, values);
     }
     if id == 0 && args.len == 1 { return args[0]; }
     if id == 1 && args.len == 1 { return number(numeric(heap, args[0]) + 1); }
@@ -711,7 +713,17 @@ fn step(job: Job&) {
         },
         79, 90 => {
             let k = if op.code == 90 { let v = job.operands.pop(); key(heap, v) } else { heap.constants[f.constants + op.arg] };
-            let object = job.operands.pop(); let value = get(heap, object, k); job.operands.push(value);
+            let object = job.operands.pop();
+            if job.root_receiver.tag == 5 && object.tag == 5 && object.session == job.root_receiver.session && object.a == job.root_receiver.a {
+                let value, found = own_property(heap, object, k);
+                // Only the compiler root intrinsic may suspend and demand a
+                // definition. A raw JS bypass must not observe stale undefined.
+                if !found { heap.fault = Fault.DependencyNeed; } job.operands.push(value);
+            } else if object.tag == 5 && object.a >= 0 && object.a < job.protected_nodes {
+                let value, found = own_property(heap, object, k);
+                let optional = object.a == heap.global.a && (key_is(heap, k, "__lightCompilerRootReceiver") || key_is(heap, k, "__lightCompilerRootContext"));
+                if !found && !optional { heap.fault = Fault.NativeBoundary; } job.operands.push(value);
+            } else { let value = get(heap, object, k); job.operands.push(value); }
         },
         80, 81, 91, 151, 152, 88 => {
             let value = job.operands.pop();
@@ -719,7 +731,9 @@ fn step(job: Job&) {
                 let object = job.operands[job.operands.len - 1];
                 if valid(heap, object) && object.tag == 5 && heap.nodes[object.a].kind == 1 { key(heap, number(heap.nodes[object.a].length)) } else { heap.fault = Fault.TypeError; Value {} }
             } else { heap.constants[f.constants + op.arg] };
-            let object = job.operands.pop(); if put(heap, object, k, value) { record(job, object, k, value); }
+            let object = job.operands.pop();
+            if object.tag == 5 && object.a >= 0 && object.a < job.protected_nodes { heap.fault = Fault.NativeBoundary; }
+            else if put(heap, object, k, value) { record(job, object, k, value); }
             job.operands.push(if op.code == 81 || op.code == 88 { object } else { value });
         },
         161 => { let value = job.operands.pop(); if valid(heap, value) && value.tag == 5 && heap.nodes[value.a].kind == 3 { heap.fault = Fault.UnsupportedOperand; } job.operands.push(value); },
@@ -734,6 +748,7 @@ fn step(job: Job&) {
             let k = heap.constants[f.constants + op.arg];
             let v, found = own_property(heap, heap.global, k);
             if !found {
+                if job.protected_nodes > 0 { heap.fault = Fault.NativeBoundary; }
                 // Keep prototype-dependent reads explicitly unsupported.
                 get(heap, heap.global, k);
                 if op.code == 106 && heap.fault == Fault.None { heap.fault = Fault.ReferenceError; }

@@ -58,6 +58,7 @@ pub struct GooseSession {
     bridge_ns: AtomicU64,
     control: Mutex<Option<ExecutionControl>>,
     trace: Arc<Mutex<Vec<String>>>,
+    costs: Arc<Mutex<[u64; 5]>>,
     stderr: Arc<Mutex<Vec<u8>>>,
     terminal: Mutex<Option<EvalError>>,
     claimed: AtomicBool,
@@ -116,15 +117,21 @@ impl GooseSession {
         let mailboxes = pending.clone();
         let trace = Arc::new(Mutex::new(Vec::new()));
         let traces = trace.clone();
+        let costs = Arc::new(Mutex::new([0u64; 5]));
+        let measured = costs.clone();
         let reader = thread::spawn(move || {
             let mut output = BufReader::new(output);
             let mut line = String::new();
+            let mut terminal_reason = "subprocess exited";
             loop {
                 line.clear();
                 match (&mut output).take(65537).read_line(&mut line) {
                     Ok(0) => break,
                     Ok(_) if line.len() <= 65536 => {}
-                    _ => break,
+                    _ => {
+                        terminal_reason = "malformed subprocess reply";
+                        break;
+                    }
                 }
                 let parts = line.split_whitespace().collect::<Vec<_>>();
                 let parsed = (|| {
@@ -141,7 +148,9 @@ impl GooseSession {
                         "START" if parts.len() == 2 => Event::Start,
                         "CLOSED" if parts == ["CLOSED", "1"] => return Some((0, Event::Resumed)),
                         "RESUME" if parts.len() == 2 => Event::Resumed,
-                        "PRODUCE" if parts.len() == 3 => Event::Resumed,
+                        "PRODUCE" if parts.len() == 3 && parts[2].parse::<u64>().is_ok() => {
+                            Event::Resumed
+                        }
                         "COST" | "FINISH"
                             if parts.len() == 4
                                 && parts[2..].iter().all(|s| s.parse::<u64>().is_ok()) =>
@@ -149,10 +158,15 @@ impl GooseSession {
                             Event::Resumed
                         }
                         "DONE" if parts.len() == 2 => Event::Done,
-                        "NEED" if parts.len() >= 4 => {
+                        "NEED"
+                            if parts.len() == 6
+                                && parts[4..].iter().all(|s| s.parse::<u64>().is_ok()) =>
+                        {
                             Event::Need(parts[2].parse().ok()?, parts[3].to_owned())
                         }
-                        "PRODUCED" if parts.len() == 3 => Event::Produced,
+                        "PRODUCED" if parts.len() == 3 && parts[2].parse::<u64>().is_ok() => {
+                            Event::Produced
+                        }
                         "ERROR" | "FAULT" => Event::Failure(line.trim().to_owned()),
                         _ => return None,
                     };
@@ -160,12 +174,32 @@ impl GooseSession {
                 })();
                 match parsed {
                     Some((id, event)) => {
+                        let mut costs = measured.lock().unwrap();
+                        if parts[0] == "READY" && parts.len() == 6 {
+                            for i in 0..3 {
+                                costs[i] = parts[i + 3].parse().unwrap();
+                            }
+                        }
+                        if parts[0] == "COST" {
+                            for i in 0..2 {
+                                costs[i + 3] = costs[i + 3]
+                                    .saturating_add(parts[i + 2].parse::<u64>().unwrap());
+                            }
+                        }
+                        drop(costs);
                         let mut trace = traces.lock().unwrap();
                         if trace.len() < 4096 {
                             trace.push(line.trim().to_owned());
                         }
-                        if let Some(tx) = mailboxes.lock().unwrap().get(&id) {
+                        let boxes = mailboxes.lock().unwrap();
+                        if let Some(tx) = boxes.get(&id) {
                             let _ = tx.send(event);
+                        } else if parts[0] != "CLOSED" {
+                            for tx in boxes.values() {
+                                let _ =
+                                    tx.send(Event::Failure("uncorrelated subprocess reply".into()));
+                            }
+                            break;
                         }
                     }
                     None => {
@@ -177,7 +211,7 @@ impl GooseSession {
                 }
             }
             for tx in mailboxes.lock().unwrap().values() {
-                let _ = tx.send(Event::Failure("subprocess exited".into()));
+                let _ = tx.send(Event::Failure(terminal_reason.into()));
             }
         });
         // Drain stderr so a failed native worker cannot block on a full pipe.
@@ -211,6 +245,7 @@ impl GooseSession {
             bridge_ns: AtomicU64::new(0),
             control: Mutex::new(None),
             trace,
+            costs,
             stderr: errors,
             terminal: Mutex::new(None),
             claimed: AtomicBool::new(false),
@@ -228,20 +263,7 @@ impl GooseSession {
         }
     }
     pub fn stats(&self) -> SessionStats {
-        let trace = self.trace();
-        let mut costs = [0u64; 5];
-        for line in trace {
-            let fields = line.split_whitespace().collect::<Vec<_>>();
-            if fields[0] == "READY" && fields.len() == 6 {
-                for i in 0..3 {
-                    costs[i] = fields[i + 3].parse().unwrap();
-                }
-            }
-            if fields[0] == "COST" && fields.len() == 4 {
-                costs[3] += fields[2].parse::<u64>().unwrap();
-                costs[4] += fields[3].parse::<u64>().unwrap();
-            }
-        }
+        let costs = *self.costs.lock().unwrap();
         SessionStats {
             subprocesses: 1,
             initializations: 1,
@@ -430,7 +452,11 @@ enum Stored {
     Source(String),
     Form(Form, ConversionLimits),
     Data(Datum, ConversionLimits),
-    Result(Vec<u8>, Arc<HashMap<i32, Form>>, Rc<bridge::Budget>),
+    Result(
+        Vec<u8>,
+        Arc<HashMap<i32, bridge::Input>>,
+        Rc<bridge::Budget>,
+    ),
 }
 type HelperService = Rc<dyn Fn(&dyn MacroEvaluator, usize) -> Result<String, String>>;
 /// A thread-local compiler view with session/version-scoped, non-reused handles.

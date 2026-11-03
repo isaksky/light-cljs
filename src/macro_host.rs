@@ -2198,7 +2198,9 @@ impl MacroHost {
     pub(crate) fn begin_compilation(&mut self) {
         if !self.tables.bootstrap_seed {
             #[cfg(feature = "goose-macros")]
-            if let Some(goose) = &self.engine.goose { goose.session().begin_compilation(); }
+            if let Some(goose) = &self.engine.goose {
+                goose.session().begin_compilation();
+            }
             let mut readers = self.engine.data_readers.borrow_mut();
             readers.evaluator = None;
             readers.functions.clear();

@@ -191,15 +191,17 @@ fn borrow(heap: const source::Heap&, bindings: const Binding[:], checkpoint: i64
         nodes: heap.nodes, values: heap.values, properties: heap.properties, units: heap.units, constants: heap.constants, bytes: heap.source_bytes, sources: heap.source_ranges, bindings: bindings };
     v.header.ends = ends(v); return v;
 }
-fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&) -> Snapshot {
+fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&, checkpoint: i64 = 0) -> Snapshot {
     let started = clock_ns(); defer { c.capture_ns += clock_ns() - started; }
     if heap.live_jobs != 0 || heap.fault != source::Fault.None || !heap.code.valid { reject(c, Error.Boundary); return Snapshot {}; }
     var s = borrow(heap, bindings, if heap.identity == 1 { 2 } else { 1 });
     if !validate(s, c) { return Snapshot {}; }
     // Snapshot identities and private arena identities share the coordinator's
     // non-reusing namespace. The authority itself is never in the image.
-    s.header.checkpoint = source::reserve_identity();
-    if s.header.checkpoint == 0 { reject(c, Error.Identity); return Snapshot {}; }
+    // A live compiler worker receives its checkpoint from the serial admission
+    // authority. Its copied global counter must never allocate session IDs.
+    s.header.checkpoint = if checkpoint == 0 { source::reserve_identity() } else { checkpoint };
+    if s.header.checkpoint <= 0 || s.header.checkpoint > 2147483647 || s.header.checkpoint == heap.identity { reject(c, Error.Identity); return Snapshot {}; }
     c.copied_bytes += footprint(s);
     return Snapshot { header: s.header, code_bytes: s.code_bytes, functions: s.functions, code_constants: s.code_constants, children: s.children, ops: s.ops, code_units: s.code_units,
         nodes: s.nodes, values: s.values, properties: s.properties, units: s.units, constants: s.constants, bytes: s.bytes, sources: s.sources, bindings: s.bindings };

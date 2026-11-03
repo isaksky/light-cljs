@@ -6,9 +6,9 @@
  "bb crates/big-boy-pants-js/prototypes/goose/regenerate.bb",
  :source-sha256
  {"crates/big-boy-pants-js/prototypes/goose/capture.rs"
-  "a51a9461f37e822c3470659db871bf4cc5c3d39287041e0d93807282829c2881",
+  "be510d8cc2f23c196ebe6c4a2200f135be24e914d8f73870c0a0b0e2d68d7e34",
   "crates/big-boy-pants-js/prototypes/goose/export.rs"
-  "0b9ac064d515082f795203a6fecbef3747abcc1ee6438eff1d1c75e3ab82fbdd",
+  "6e474c2172bc0113f7812ed4ddf03a8dd4d2b0845193b04cf436b9248a5d07db",
   "crates/big-boy-pants-js/prototypes/goose/regenerate.bb"
   "c41765f4f449dc11046801ca305bf3c5296549a619474b98bf22a653c0faea83",
   "crates/big-boy-pants-js/src/frontend.rs"
@@ -22,13 +22,13 @@
   "src/bbp_runtime.js"
   "1b9fff5b96a9e6bfc2882344de0212f6f009006837c52e8ebc1a149235df36bb",
   "src/compiler_bootstrap.rs"
-  "9b466b5c98d167bdfe5a485008b31aaea20be1e60eec7e717f8d83a435ea1b9a",
+  "1db8cc06dfd6ab4871cc4d2d5534aa83bb4146c121a3f49d38c828f0373582a1",
   "src/emitter.rs"
   "0b7cbc9a31d9b137644ee6351d5e6ed9d8bb6453ab8df69c97e11eced2198b41",
   "src/js_runtime.js"
   "4880ad4634be21f1c05b5b63c74775442f1028ae31a859718a6424dc0bf6d1d7",
   "src/macro_host.rs"
-  "8201b59c6148b0bad40e14be54ce43a13bac3f6df4c9b02664d3d4c6d24045b0"},
+  "d15505fe9032f700ea14990279bfaa4aa94f25beaa221f7e8846e302e914a7fd"},
  :artifact-sha256
  {"corpus/branches-consume.pants.gsp"
   "79591f786f72d32f10941be1704df0ca63e6dd32126714aa7cb3fb3386ef679c",
@@ -98,6 +98,8 @@
   "9e0e49ad7a003ea0cd0aee9807d8cb63fc4621e3583ff3ca79436631900c3ed9",
   "corpus/branches.v8.jobs.edn"
   "b773e33432f5a8cebec583373985fabab23171a0da96a92a2e8bc69d73b958dd",
+  "corpus/catch.cljs"
+  "abdc96794a6ce3efa21e62c82e7359e246f537865d1196267bac2a932520c553",
   "corpus/churn-churn.pants.gsp"
   "980dce005663da40919133869148cb15a3b49683c46febf975e5468271431614",
   "corpus/churn-churn.pants.inventory.edn"
@@ -178,6 +180,8 @@
   "40d4294db32031e401c94fe906094af1cce3f596b35fa49e52550e519cfd2cb4",
   "corpus/effect.v8.jobs.edn"
   "31c98b1f03fe8d9a2b1c7c10768f86554e0ff88a12ed373fbfc12725c2a27493",
+  "corpus/reentrant.cljs"
+  "bae5d4db9949e73166086e456b9e491c188c3c7f1a3cedc249da4691abfcbfcb",
   "corpus/runtime.edn"
   "e42c0d4520b4485a95b472c705e9999371ee8dde0dcb3a639a3c77ca4453da9c",
   "corpus/runtime.js"
