@@ -36,9 +36,9 @@ fn append(code: source::Code&, heap: source::Heap&, path: const u8[:]) -> i64 {
     for c in code.constants[first..] { var value = c; if c.tag == 4 { value = source::string(heap, code.units[c.a..(c.a + c.b)]); } heap.constants.push(value); }
     return entry;
 }
-fn leaf(heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64) -> source::Value {
+fn leaf(id: i64, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64) -> source::Value, bool {
     let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")); var job = source::Job { heap: heap, protected_nodes: protected, root_receiver: roots }; defer { source::retire(job); }
-    source::start(job, callee, args); if source::run(job, -1) != tiny::Outcome.Complete { heap.fault = job.fault; return source::Value {}; } return job.result;
+    source::start(job, callee, args); if source::run(job, -1) != tiny::Outcome.Complete { fail(id, heap, job); return source::Value {}, false; } return job.result, true;
 }
 fn relocated(f: source::Frame, identity: i64) -> source::Frame {
     var out = f; out.callee = snapshot::relocated(f.callee, identity); out.receiver = snapshot::relocated(f.receiver, identity); out.input = snapshot::relocated(f.input, identity); out.output = snapshot::relocated(f.output, identity); return out;
@@ -63,7 +63,8 @@ thread_fn worker(saved: Saved, directory: u8[>..], id: i64, identity: i64, mode:
         if mode == 0 { let importing = clock_ns();
             var bytes: u8[>..] = []; assert(read_file(str(directory, "/", id, ".gfb"), bytes)); var graph = bridge::Graph {}; assert(bridge::decode(graph, bytes, control)); assert(bridge::import_graph(heap, graph, args, control)); assert(args.len >= 2); call = args[0]; costs[1] += clock_ns() - importing;
         }
-        let factory = leaf(heap, source::closure(heap, entry, []), [], saved.protected); function = leaf(heap, factory, [rt], saved.protected);
+        let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], saved.protected); if !loaded { return; }
+        let value, initialized = leaf(id, heap, factory, [rt], saved.protected); if !initialized { return; } function = value;
         if mode == 2 { let exporting = clock_ns();
             var graph = bridge::Graph {}; var bytes: u8[>..] = []; if !bridge::export_graph(heap, [function], graph, control) || !bridge::encode(graph, bytes, control) { assert(qput(Event { id: id, kind: 3, name: str("helper-", heap.fault, "-", control.error) })); return; } costs[1] += clock_ns() - exporting; assert(qput(Event { id: id, kind: 5, key: key, name: str(costs[0], " ", costs[1]), data: copy(bytes) })); return;
         }

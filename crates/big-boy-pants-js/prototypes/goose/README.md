@@ -930,6 +930,15 @@ first succeeds standalone at the same limit, fails during nested conversion,
 runs the emitted catch handler, and still rejects the compilation. A fresh
 compilation succeeds.
 
+Caught `TypeError`, `ReferenceError` and compiler callback failures bind an
+opaque object with its own identity, so null comparisons and truthiness retain
+JavaScript semantics. Explicit `throw` values remain unchanged. Error property
+inspection/coercion and error form transport fail explicitly; the adapter does
+not implement Error prototypes, messages or stacks. Snapshots preserve these
+opaque objects, and allocation failure while creating one remains terminal.
+Macro and helper factory failures report the failing job's function, PC and
+emitted-source span before any form export can replace that diagnostic.
+
 `SessionStats` reports one subprocess/base initialization, Rust spawn/export/
 bridge nanoseconds, native base load/boot/snapshot nanoseconds, native job load/
 bridge nanoseconds, transferred form bytes and total elapsed session time.

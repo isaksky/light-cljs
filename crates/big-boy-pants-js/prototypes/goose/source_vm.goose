@@ -26,7 +26,9 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // kind: plain=0, array=1, closure=2, cell=3. Captures and cell values never
 // reference frame scratch. Property chains are indices, not Goose references.
 // Runtime additions: builtin=4, list/vector/map/set=5/6/7/8,
-// symbol/keyword=9/10, scalar occurrence=11, sequence cursor=12.
+// symbol/keyword=9/10, scalar occurrence=11, sequence cursor=12,
+// opaque caught runtime error=13. Errors preserve object identity/truthiness;
+// property access/coercion and form transport reject unsupported inspection.
 // Metadata/origin belong to the occurrence, independently of value equality.
 struct Node { kind: i64, function: i64 = 0, start: i64 = 0, count: i64 = 0, head: i64 = -1, length: i64 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value {}, namespace_value: Value = Value { tag: 1 }, metadata: Value = Value {}, origin: i64 = -1, source: i64 = -1, span_start: i64 = 0, span_end: i64 = 0 }
 struct SourceRange { start: i64, count: i64 }
@@ -283,12 +285,17 @@ fn closure(heap: Heap&, function: i64, captures: const Value[:]) -> Value {
 }
 fn fail(job: Job&, fault: Fault, frame: Frame) {
     job.heap.fault = Fault.None;
+    var reported = fault;
     if (fault == Fault.TypeError || fault == Fault.ReferenceError || fault == Fault.HostEffect) && job.handlers.len > 0 {
-        let handler = job.handlers.pop();
-        job.frames.resize(handler.frame + 1); job.locals.resize(handler.locals); job.operands.resize(handler.operands);
-        job.frames[handler.frame].pc = handler.pc; job.operands.push(nil()); return;
+        let error = allocate(job.heap, Node { kind: 13 });
+        if job.heap.fault == Fault.None {
+            let handler = job.handlers.pop();
+            job.frames.resize(handler.frame + 1); job.locals.resize(handler.locals); job.operands.resize(handler.operands);
+            job.frames[handler.frame].pc = handler.pc; job.operands.push(error); return;
+        }
+        reported = job.heap.fault; job.heap.fault = Fault.None;
     }
-    job.status = tiny::Status.Failed; job.fault = fault; job.fault_function = frame.function; job.fault_pc = frame.pc;
+    job.status = tiny::Status.Failed; job.fault = reported; job.fault_function = frame.function; job.fault_pc = frame.pc;
 }
 fn raise(job: Job&, value: Value, frame: Frame) {
     if job.handlers.len == 0 { fail(job, Fault.HostEffect, frame); return; }
@@ -413,7 +420,7 @@ recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool
     if x.tag != y.tag { return false; }
     if x.tag != 5 { return equal(heap, x, y); }
     let n = heap.nodes[x.a]; let m = heap.nodes[y.a];
-    if n.kind < 5 || m.kind < 5 { return x.a == y.a; }
+    if n.kind < 5 || m.kind < 5 || n.kind == 13 || m.kind == 13 { return x.a == y.a; }
     if n.kind != m.kind && !((n.kind == 5 || n.kind == 6 || n.kind == 12) && (m.kind == 5 || m.kind == 6 || m.kind == 12)) { return false; }
     if n.kind == 9 || n.kind == 10 { return equal(heap, n.value, m.value) && equal(heap, n.namespace_value, m.namespace_value); }
     if n.count != m.count { return false; }

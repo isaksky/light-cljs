@@ -117,7 +117,38 @@ fn main() {
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var entries: i64[>..] = []; prepare(code, heap, roots, entries);
     var sc = snapshot::Control {}; let base = snapshot::capture(heap, roots, sc); assert(sc.error == snapshot::Error.None);
     let arguments = args(); if arguments.len == 2 && arguments[1] == "--measure" { measure(base, entries); return; }
-    counters(base, entries); failures(base, entries); duplicates(); emitted(base, entries); suspension(base, entries); contracts(base, entries); result_failure(base, entries); native_callbacks(base, entries); prefix_rejections(base, entries);
+    counters(base, entries); failures(base, entries); duplicates(); emitted(base, entries); suspension(base, entries); contracts(base, entries); result_failure(base, entries); native_callbacks(base, entries); prefix_rejections(base, entries); caught_errors();
+}
+
+// Synthetic fault injection into the same handler used by emitted catches.
+// Covers all three runtime-error routes separately from explicit JS throws.
+fn caught_errors() {
+    for fault in [source::Fault.TypeError, source::Fault.ReferenceError, source::Fault.HostEffect] { for limited in [false, true] {
+        var code = source::Code {}; code.constants.push(source::nil());
+        code.functions.push(source::Function { start: 0, count: 7, constants: 0, children: 0, params: 0, locals: 1, captures: 0, strict: true });
+        var offset: i64 = 0;
+        for op, i in [2, 15, 4, 3, 1, 11, 15] { code.ops.push(source::Op { code: op, arg: 0, offset: offset, start: 0, end: 0, depth: [0, 1, 1, 0, 1, 2, 1][i] }); offset += 1 + (export_descriptor(op) >> 16); } code.valid = true;
+        var heap = source::Heap { code: code }; assert(source::initialize(heap));
+        var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
+        job.handlers.push(source::Handler { frame: 0, pc: 2, operands: 0, locals: 1 });
+        if limited { heap.limits.nodes = heap.nodes.len; }
+        source::fail(job, fault, job.frames[0]);
+        if limited { assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.MemoryLimit && job.fault_function == 0 && job.fault_pc == 0); }
+        else {
+            let error = job.operands[0]; assert(error.tag == 5 && source::truthy(error) && source::equal(heap, error, error));
+            let other = source::allocate(heap, source::Node { kind: 13 }); assert(!source::equal(heap, error, other) && !source::form_equal(heap, error, other) && source::form_equal(heap, error, error));
+            assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.tag == 2 && job.result.a == 0);
+            assert(source::retire(job));
+            var sc = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 1, generation: 1, value: error }], sc); assert(sc.error == snapshot::Error.None);
+            var restored_code = source::Code {}; var restored = source::Heap { code: restored_code }; var roots: snapshot::Binding[>..] = [];
+            assert(snapshot::restore(saved, restored_code, restored, roots, source::reserve_identity(), sc));
+            assert(source::truthy(roots[0].value) && !source::equal(restored, roots[0].value, source::nil()));
+            var graph = bridge::Graph {}; var bc = bridge::Control {}; assert(!bridge::export_graph(restored, [roots[0].value], graph, bc) && bc.error == bridge::Error.Unsupported);
+            source::get(restored, roots[0].value, source::text(restored, "name")); assert(restored.fault == source::Fault.UnsupportedOperand);
+        }
+        assert(source::retire(job));
+    } }
+    print("caught TypeError/ReferenceError/HostEffect identity, false nil equality, snapshot retention, explicit property boundary and terminal allocation failure passed");
 }
 
 // The compiler may await a prerequisite before delivering a suspended request.

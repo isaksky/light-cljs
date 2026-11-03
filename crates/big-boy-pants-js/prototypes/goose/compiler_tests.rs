@@ -167,6 +167,81 @@ fn goose_compiler_worker_failure_and_owned_diagnostic() {
 }
 #[test]
 #[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_helper_failure_keeps_instruction_context() {
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let mut host = crate::MacroHost::new();
+    host.use_goose_source_macros(session.clone()).unwrap();
+    let source = "(def broken (nth [1] 10))\n(defmacro bad [] broken)\n(bad)";
+    let error = crate::analyzer::analyze_named_with_macro_warnings(
+        "helper-negative.cljs",
+        source,
+        &crate::parse(source).unwrap(),
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+    )
+    .unwrap_err();
+    session.close();
+    drop(host);
+    cleaned(&session);
+    let message = error.to_string();
+    assert!(message.contains("helper-negative.cljs:3:1"), "{message}");
+    assert!(
+        message.contains("definition helper-negative.cljs:2:1"),
+        "{message}"
+    );
+    assert!(message.contains("TypeError function="), "{message}");
+    for field in ["function=", "pc=", "emitted-span="] {
+        let value = message.split_once(field).expect(&message).1;
+        assert!(value.starts_with(|c: char| c.is_ascii_digit()), "{message}");
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_caught_runtime_errors_preserve_identity() {
+    for body in ["null.x;", "let x = 1; x();"] {
+        let source = format!(
+            "(defmacro caught [] (js* \"(() => {{try {{{body}}} catch(e) {{return e === null;}}}})()\")) (caught)"
+        );
+        let reference = crate::compile_with_macros(&source, &mut crate::MacroHost::new()).unwrap();
+        assert!(reference.contains("false"), "{reference}");
+        let session = GooseSession::start(&runner(), 1).unwrap();
+        let mut host = crate::MacroHost::new();
+        host.use_goose_source_macros(session.clone()).unwrap();
+        assert_eq!(
+            crate::compile_with_macros(&source, &mut host).unwrap(),
+            reference
+        );
+        session.close();
+        cleaned(&session);
+    }
+    // Explicitly thrown primitive values keep their ordinary JS semantics.
+    let source = "(defmacro caught [] (js* \"(() => {try {throw null;} catch(e) {return e === null;}})()\")) (caught)";
+    let reference = crate::compile_with_macros(source, &mut crate::MacroHost::new()).unwrap();
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let mut host = crate::MacroHost::new();
+    host.use_goose_source_macros(session.clone()).unwrap();
+    assert_eq!(
+        crate::compile_with_macros(source, &mut host).unwrap(),
+        reference
+    );
+    session.close();
+    cleaned(&session);
+    // Error properties/prototypes are explicitly outside the bounded surface.
+    let source = "(defmacro caught [] (js* \"(() => {try {null.x;} catch(e) {return e.name;}})()\")) (caught)";
+    assert!(crate::compile_with_macros(source, &mut crate::MacroHost::new()).is_ok());
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let mut host = crate::MacroHost::new();
+    host.use_goose_source_macros(session.clone()).unwrap();
+    let error = crate::compile_with_macros(source, &mut host)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("UnsupportedOperand"), "{error}");
+    cleaned(&session);
+}
+#[test]
+#[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_cancel_and_deadline_cleanup() {
     for cancel in [false, true] {
         let session = GooseSession::start(&runner(), 1).unwrap();
