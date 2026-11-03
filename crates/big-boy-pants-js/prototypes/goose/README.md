@@ -487,3 +487,14 @@ file passes standalone rustfmt. No lint suppression or unrelated formatting
 was added. Full compiler/engine suites were not run: production execution paths
 are unchanged; focused compiler capture/export and native bridge/runtime checks
 cover the changed boundary.
+
+## Bounded serial cost investigation
+
+`macros.bb --measure` now compares current embedded V8 and Pants with native
+Goose at one execution worker, with explicit warmup and five alternating rounds.
+It separates binary form conversion from result file writing. `macros.bb
+--profile` builds a separate native counter probe; its timings are excluded from
+the clean comparison. See [serial-costs.md](serial-costs.md) for the two measured
+costs, scope limits, decisions and commands, and [serial-samples.edn](serial-samples.edn)
+for raw phase samples and counters. Earlier Node-only tables above retain their
+original diagnostic scope and protocol and are not reused for this comparison.
