@@ -113,7 +113,7 @@
                          _ (reset! thread-observations {})
                          _ (when (= mode "--allocations") (doseq [path (fs/glob (:directory c) "native-memory-*.txt")] (fs/delete path)))
                          started (System/nanoTime)
-                         _ (apply command env (concat (when (not= mode "--measure") ["/usr/bin/time" "-l" "-o" (str (fs/path (:directory c) "resources.txt"))]) [binary "compiler_bootstrap::goose_capture::benchmark::final_benchmark" "--ignored" "--exact" "--test-threads=1"]))
+                         _ (apply command env (concat (when (not= mode "--measure") ["/usr/bin/time" "-l" "-o" (str (fs/path (:directory c) "resources.txt"))]) [binary "compiler_bootstrap::goose_capture::benchmark::final_benchmark" "--ignored" "--exact" "--test-threads=1"] (when (= mode "--allocations") ["--nocapture"])))
                          wall (- (System/nanoTime) started)
                          rows (when (fs/exists? (fs/path (:directory c) "rows.edn")) (read-rows (fs/path (:directory c) "rows.edn")))
                          resource (if (= mode "--measure") "" (slurp (str (fs/path (:directory c) "resources.txt"))))
