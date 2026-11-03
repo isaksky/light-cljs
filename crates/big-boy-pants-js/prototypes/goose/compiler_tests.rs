@@ -102,7 +102,8 @@ fn goose_compiler_prepared_definition_keeps_live_helper_contexts() {
         for unit in [41, 42] {
             let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
             let (_, args, call) = inputs(&e, "rt => (form, env) => 0");
-            let f = e.source_macro_function(777, "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')").unwrap();
+            let source = "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')";
+            let f = e.source_macro_function(777, source).unwrap();
             e.register_compiler_root("fixture/value", Some(unit), true, "fixture.cljs", None)
                 .unwrap();
             let callbacks = Rc::new(Cell::new(0));
@@ -118,8 +119,18 @@ fn goose_compiler_prepared_definition_keeps_live_helper_contexts() {
                     format!("rt => ({} + 1)", unit - 1)
                 })
             }));
-            for _ in 0..2 {
-                let result = e.call(f, &args).unwrap();
+            for invocation in 0..3 {
+                // Bootstrap ownership can release a declaring view's handle
+                // while another published declaration still holds its code.
+                let function = if invocation == 2 {
+                    e.release(f).unwrap();
+                    assert!(e.cached_source_macro_function(777).is_none());
+                    assert!(e.call(f, &args).unwrap_err().0.contains("released"));
+                    e.source_macro_function(777, source).unwrap()
+                } else {
+                    f
+                };
+                let result = e.call(function, &args).unwrap();
                 let result = e
                     .export_form(result, &call, origin(&call), Default::default())
                     .unwrap();
@@ -131,13 +142,13 @@ fn goose_compiler_prepared_definition_keeps_live_helper_contexts() {
             }
             assert_eq!(
                 callbacks.get(),
-                2,
+                3,
                 "callbacks stay live on every real body call"
             );
         }
         assert_eq!(session.stats().exports, 3, "macro and two contextual units");
         assert_eq!(session.stats().preparations, 1);
-        assert_eq!(session.stats().jobs, 4);
+        assert_eq!(session.stats().jobs, 6);
         assert_eq!(
             session
                 .trace()

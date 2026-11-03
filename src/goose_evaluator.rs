@@ -759,7 +759,9 @@ impl MacroEvaluator for GooseEvaluator {
         result
     }
     fn release(&self, id: ValueId) -> Result<(), EvalError> {
-        self.get(id)?;
+        if let Stored::Source(DefinitionKey::Compiler(identity), _) = self.get(id)? {
+            self.functions.borrow_mut().remove(&identity);
+        }
         self.slots.borrow_mut().remove(&id.index);
         Ok(())
     }
