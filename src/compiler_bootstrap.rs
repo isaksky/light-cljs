@@ -2684,3 +2684,7 @@ mod doseq_timing {
         }
     }
 }
+
+#[cfg(all(test, feature = "bbp-macros", light_v8))]
+#[path = "../crates/big-boy-pants-js/prototypes/goose/capture.rs"]
+pub(crate) mod goose_capture;

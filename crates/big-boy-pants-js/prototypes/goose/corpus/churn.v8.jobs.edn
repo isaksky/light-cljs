@@ -1,0 +1,137 @@
+{:version 2 :sources [{:name "churn.cljs" :utf8 [59, 59, 32, 65, 100, 97, 112, 116, 101, 100, 32, 102, 114, 111, 109, 32, 98, 101, 110, 99, 104, 109, 97, 114, 107, 115, 47, 110, 97, 116, 105, 118, 101, 45, 109, 97, 99, 114, 111, 115, 45, 107, 46, 98, 98, 39, 115, 32, 111, 114, 105, 103, 105, 110, 97, 108, 32, 99, 104, 117, 114, 110, 32, 119, 111, 114, 107, 108, 111, 97, 100, 46, 10, 40, 100, 101, 102, 109, 97, 99, 114, 111, 32, 99, 104, 117, 114, 110, 32, 91, 110, 93, 10, 32, 32, 40, 108, 111, 111, 112, 32, 91, 105, 32, 48, 32, 118, 32, 91, 93, 32, 109, 32, 123, 125, 93, 10, 32, 32, 32, 32, 40, 105, 102, 32, 40, 61, 32, 105, 32, 110, 41, 10, 32, 32, 32, 32, 32, 32, 40, 108, 111, 111, 112, 32, 91, 115, 32, 40, 115, 101, 113, 32, 118, 41, 32, 116, 111, 116, 97, 108, 32, 48, 93, 10, 32, 32, 32, 32, 32, 32, 32, 32, 40, 105, 102, 32, 115, 10, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 40, 114, 101, 99, 117, 114, 32, 40, 110, 101, 120, 116, 32, 115, 41, 32, 40, 43, 32, 116, 111, 116, 97, 108, 32, 40, 102, 105, 114, 115, 116, 32, 115, 41, 32, 40, 103, 101, 116, 32, 109, 32, 49, 32, 48, 41, 32, 40, 99, 111, 117, 110, 116, 32, 40, 114, 101, 115, 116, 32, 91, 49, 32, 50, 32, 51, 93, 41, 41, 41, 41, 10, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 116, 111, 116, 97, 108, 41, 41, 10, 32, 32, 32, 32, 32, 32, 40, 114, 101, 99, 117, 114, 32, 40, 43, 32, 105, 32, 49, 41, 32, 40, 99, 111, 110, 106, 32, 118, 32, 105, 41, 32, 40, 97, 115, 115, 111, 99, 32, 109, 32, 40, 99, 111, 117, 110, 116, 32, 118, 41, 32, 40, 99, 111, 117, 110, 116, 32, 109, 41, 41, 41, 41, 41, 41, 10, 40, 106, 115, 47, 99, 111, 110, 115, 111, 108, 101, 46, 108, 111, 103, 32, 40, 99, 104, 117, 114, 110, 32, 48, 41, 32, 40, 99, 104, 117, 114, 110, 32, 49, 54, 41, 32, 40, 99, 104, 117, 114, 110, 32, 49, 48, 48, 41, 41, 10]}] :data {:nodes [{:tag :symbol :namespace nil :name [0 5] :metadata nil}
+{:tag :integer :value 0 :metadata nil}
+{:tag :collection :kind :list :children [0 2] :metadata nil}
+{:tag :keyword :namespace nil :name [5 2] :metadata nil}
+{:tag :keyword :namespace nil :name [7 4] :metadata nil}
+{:tag :symbol :namespace nil :name [11 9] :metadata nil}
+{:tag :keyword :namespace nil :name [20 3] :metadata nil}
+{:tag :nil :metadata nil}
+{:tag :keyword :namespace nil :name [23 8] :metadata nil}
+{:tag :collection :kind :map :children [2 0] :metadata nil}
+{:tag :keyword :namespace nil :name [31 7] :metadata nil}
+{:tag :collection :kind :map :children [2 0] :metadata nil}
+{:tag :keyword :namespace nil :name [38 4] :metadata nil}
+{:tag :collection :kind :map :children [2 0] :metadata nil}
+{:tag :keyword :namespace nil :name [42 14] :metadata nil}
+{:tag :collection :kind :map :children [2 0] :metadata nil}
+{:tag :keyword :namespace nil :name [56 10] :metadata nil}
+{:tag :collection :kind :map :children [2 0] :metadata nil}
+{:tag :collection :kind :map :children [2 14] :metadata nil}
+{:tag :keyword :namespace [80 10] :name [66 14] :metadata nil}
+{:tag :keyword :namespace nil :name [90 6] :metadata nil}
+{:tag :collection :kind :vector :children [16 0] :metadata nil}
+{:tag :keyword :namespace nil :name [96 8] :metadata nil}
+{:tag :collection :kind :vector :children [16 0] :metadata nil}
+{:tag :keyword :namespace nil :name [104 8] :metadata nil}
+{:tag :keyword :namespace nil :name [112 10] :metadata nil}
+{:tag :integer :value 1 :metadata nil}
+{:tag :keyword :namespace nil :name [122 4] :metadata nil}
+{:tag :integer :value 0 :metadata nil}
+{:tag :keyword :namespace nil :name [126 5] :metadata nil}
+{:tag :collection :kind :vector :children [16 0] :metadata nil}
+{:tag :collection :kind :map :children [16 6] :metadata nil}
+{:tag :keyword :namespace nil :name [131 7] :metadata nil}
+{:tag :integer :value 0 :metadata nil}
+{:tag :keyword :namespace nil :name [138 8] :metadata nil}
+{:tag :string :units [146 5] :metadata nil}
+{:tag :collection :kind :vector :children [22 1] :metadata nil}
+{:tag :collection :kind :map :children [23 10] :metadata nil}
+{:tag :collection :kind :map :children [33 4] :metadata nil}
+{:tag :integer :value 0 :metadata nil}
+{:tag :symbol :namespace nil :name [151 5] :metadata nil}
+{:tag :integer :value 0 :metadata nil}
+{:tag :integer :value 0 :metadata nil}
+{:tag :symbol :namespace nil :name [170 5] :metadata nil}
+{:tag :integer :value 16 :metadata nil}
+{:tag :collection :kind :list :children [37 2] :metadata nil}
+{:tag :keyword :namespace nil :name [175 2] :metadata nil}
+{:tag :keyword :namespace nil :name [177 4] :metadata nil}
+{:tag :symbol :namespace nil :name [181 9] :metadata nil}
+{:tag :keyword :namespace nil :name [190 3] :metadata nil}
+{:tag :nil :metadata nil}
+{:tag :keyword :namespace nil :name [193 8] :metadata nil}
+{:tag :collection :kind :map :children [39 0] :metadata nil}
+{:tag :keyword :namespace nil :name [201 7] :metadata nil}
+{:tag :collection :kind :map :children [39 0] :metadata nil}
+{:tag :keyword :namespace nil :name [208 4] :metadata nil}
+{:tag :collection :kind :map :children [39 0] :metadata nil}
+{:tag :keyword :namespace nil :name [212 14] :metadata nil}
+{:tag :collection :kind :map :children [39 0] :metadata nil}
+{:tag :keyword :namespace nil :name [226 10] :metadata nil}
+{:tag :collection :kind :map :children [39 0] :metadata nil}
+{:tag :collection :kind :map :children [39 14] :metadata nil}
+{:tag :keyword :namespace [250 10] :name [236 14] :metadata nil}
+{:tag :keyword :namespace nil :name [260 6] :metadata nil}
+{:tag :collection :kind :vector :children [53 0] :metadata nil}
+{:tag :keyword :namespace nil :name [266 8] :metadata nil}
+{:tag :collection :kind :vector :children [53 0] :metadata nil}
+{:tag :keyword :namespace nil :name [274 8] :metadata nil}
+{:tag :keyword :namespace nil :name [282 10] :metadata nil}
+{:tag :integer :value 1 :metadata nil}
+{:tag :keyword :namespace nil :name [292 4] :metadata nil}
+{:tag :integer :value 0 :metadata nil}
+{:tag :keyword :namespace nil :name [296 5] :metadata nil}
+{:tag :collection :kind :vector :children [53 0] :metadata nil}
+{:tag :collection :kind :map :children [53 6] :metadata nil}
+{:tag :keyword :namespace nil :name [301 7] :metadata nil}
+{:tag :integer :value 0 :metadata nil}
+{:tag :keyword :namespace nil :name [308 8] :metadata nil}
+{:tag :string :units [316 5] :metadata nil}
+{:tag :collection :kind :vector :children [59 1] :metadata nil}
+{:tag :collection :kind :map :children [60 10] :metadata nil}
+{:tag :collection :kind :map :children [70 4] :metadata nil}
+{:tag :double :bits 4640114991075164160N :metadata nil}
+{:tag :symbol :namespace nil :name [321 5] :metadata nil}
+{:tag :integer :value 16 :metadata nil}
+{:tag :double :bits 4640114991075164160N :metadata nil}
+{:tag :symbol :namespace nil :name [340 5] :metadata nil}
+{:tag :integer :value 100 :metadata nil}
+{:tag :collection :kind :list :children [74 2] :metadata nil}
+{:tag :keyword :namespace nil :name [345 2] :metadata nil}
+{:tag :keyword :namespace nil :name [347 4] :metadata nil}
+{:tag :symbol :namespace nil :name [351 9] :metadata nil}
+{:tag :keyword :namespace nil :name [360 3] :metadata nil}
+{:tag :nil :metadata nil}
+{:tag :keyword :namespace nil :name [363 8] :metadata nil}
+{:tag :collection :kind :map :children [76 0] :metadata nil}
+{:tag :keyword :namespace nil :name [371 7] :metadata nil}
+{:tag :collection :kind :map :children [76 0] :metadata nil}
+{:tag :keyword :namespace nil :name [378 4] :metadata nil}
+{:tag :collection :kind :map :children [76 0] :metadata nil}
+{:tag :keyword :namespace nil :name [382 14] :metadata nil}
+{:tag :collection :kind :map :children [76 0] :metadata nil}
+{:tag :keyword :namespace nil :name [396 10] :metadata nil}
+{:tag :collection :kind :map :children [76 0] :metadata nil}
+{:tag :collection :kind :map :children [76 14] :metadata nil}
+{:tag :keyword :namespace [420 10] :name [406 14] :metadata nil}
+{:tag :keyword :namespace nil :name [430 6] :metadata nil}
+{:tag :collection :kind :vector :children [90 0] :metadata nil}
+{:tag :keyword :namespace nil :name [436 8] :metadata nil}
+{:tag :collection :kind :vector :children [90 0] :metadata nil}
+{:tag :keyword :namespace nil :name [444 8] :metadata nil}
+{:tag :keyword :namespace nil :name [452 10] :metadata nil}
+{:tag :integer :value 1 :metadata nil}
+{:tag :keyword :namespace nil :name [462 4] :metadata nil}
+{:tag :integer :value 0 :metadata nil}
+{:tag :keyword :namespace nil :name [466 5] :metadata nil}
+{:tag :collection :kind :vector :children [90 0] :metadata nil}
+{:tag :collection :kind :map :children [90 6] :metadata nil}
+{:tag :keyword :namespace nil :name [471 7] :metadata nil}
+{:tag :integer :value 0 :metadata nil}
+{:tag :keyword :namespace nil :name [478 8] :metadata nil}
+{:tag :string :units [486 5] :metadata nil}
+{:tag :collection :kind :vector :children [96 1] :metadata nil}
+{:tag :collection :kind :map :children [97 10] :metadata nil}
+{:tag :collection :kind :map :children [107 4] :metadata nil}
+{:tag :double :bits 4662494450746916864N :metadata nil}
+{:tag :symbol :namespace nil :name [491 5] :metadata nil}
+{:tag :integer :value 100 :metadata nil}
+{:tag :double :bits 4662494450746916864N :metadata nil}] :children [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 25, 26, 27, 28, 29, 30, 35, 20, 21, 22, 23, 24, 31, 32, 33, 34, 36, 3, 18, 19, 37, 43, 44, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 68, 69, 70, 71, 72, 73, 78, 63, 64, 65, 66, 67, 74, 75, 76, 77, 79, 46, 61, 62, 80, 86, 87, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 111, 112, 113, 114, 115, 116, 121, 106, 107, 108, 109, 110, 117, 118, 119, 120, 122, 89, 104, 105, 123] :units [99, 104, 117, 114, 110, 110, 115, 110, 97, 109, 101, 99, 108, 106, 115, 46, 117, 115, 101, 114, 100, 111, 99, 114, 101, 113, 117, 105, 114, 101, 115, 105, 109, 112, 111, 114, 116, 115, 117, 115, 101, 115, 114, 101, 113, 117, 105, 114, 101, 45, 109, 97, 99, 114, 111, 115, 117, 115, 101, 45, 109, 97, 99, 114, 111, 115, 114, 101, 97, 100, 101, 114, 45, 99, 111, 110, 116, 101, 120, 116, 108, 105, 103, 104, 116, 45, 99, 108, 106, 115, 114, 101, 102, 101, 114, 115, 101, 120, 99, 108, 117, 100, 101, 115, 100, 101, 99, 108, 97, 114, 101, 100, 103, 101, 110, 101, 114, 97, 116, 105, 111, 110, 102, 114, 111, 109, 110, 97, 109, 101, 115, 118, 105, 115, 105, 98, 108, 101, 98, 105, 110, 100, 105, 110, 103, 115, 99, 104, 117, 114, 110, 99, 104, 117, 114, 110, 99, 104, 117, 114, 110, 99, 108, 106, 115, 46, 117, 115, 101, 114, 99, 104, 117, 114, 110, 110, 115, 110, 97, 109, 101, 99, 108, 106, 115, 46, 117, 115, 101, 114, 100, 111, 99, 114, 101, 113, 117, 105, 114, 101, 115, 105, 109, 112, 111, 114, 116, 115, 117, 115, 101, 115, 114, 101, 113, 117, 105, 114, 101, 45, 109, 97, 99, 114, 111, 115, 117, 115, 101, 45, 109, 97, 99, 114, 111, 115, 114, 101, 97, 100, 101, 114, 45, 99, 111, 110, 116, 101, 120, 116, 108, 105, 103, 104, 116, 45, 99, 108, 106, 115, 114, 101, 102, 101, 114, 115, 101, 120, 99, 108, 117, 100, 101, 115, 100, 101, 99, 108, 97, 114, 101, 100, 103, 101, 110, 101, 114, 97, 116, 105, 111, 110, 102, 114, 111, 109, 110, 97, 109, 101, 115, 118, 105, 115, 105, 98, 108, 101, 98, 105, 110, 100, 105, 110, 103, 115, 99, 104, 117, 114, 110, 99, 104, 117, 114, 110, 99, 104, 117, 114, 110, 99, 108, 106, 115, 46, 117, 115, 101, 114, 99, 104, 117, 114, 110, 110, 115, 110, 97, 109, 101, 99, 108, 106, 115, 46, 117, 115, 101, 114, 100, 111, 99, 114, 101, 113, 117, 105, 114, 101, 115, 105, 109, 112, 111, 114, 116, 115, 117, 115, 101, 115, 114, 101, 113, 117, 105, 114, 101, 45, 109, 97, 99, 114, 111, 115, 117, 115, 101, 45, 109, 97, 99, 114, 111, 115, 114, 101, 97, 100, 101, 114, 45, 99, 111, 110, 116, 101, 120, 116, 108, 105, 103, 104, 116, 45, 99, 108, 106, 115, 114, 101, 102, 101, 114, 115, 101, 120, 99, 108, 117, 100, 101, 115, 100, 101, 99, 108, 97, 114, 101, 100, 103, 101, 110, 101, 114, 97, 116, 105, 111, 110, 102, 114, 111, 109, 110, 97, 109, 101, 115, 118, 105, 115, 105, 98, 108, 101, 98, 105, 110, 100, 105, 110, 103, 115, 99, 104, 117, 114, 110, 99, 104, 117, 114, 110, 99, 104, 117, 114, 110, 99, 108, 106, 115, 46, 117, 115, 101, 114]} :definitions [{:name "cljs.user/churn" :generation 1 :source 0 :span [73 344] :factory "churn-churn.v8.js"}] :jobs [{:id 0 :kind :macro-call :macro {:namespace [161 9] :name [156 5]} :call 2 :arguments [1] :environment 38 :abi :form-env-input-form-ids :expected-expansion 39 :input-forms {:root 2 :nodes [{:kind :scalar :datum 40 :source 0 :span [362 367] :metadata nil :payload nil :origin "Source"}
+{:kind :scalar :datum 41 :source 0 :span [368 369] :metadata nil :payload nil :origin "Source"}
+{:kind :list :children [0 2] :source 0 :span [361 370] :metadata nil :payload nil :origin "Source"}] :children [0, 1]} :expected-output-forms {:root 0 :nodes [{:kind :scalar :datum 42 :source 0 :span [368 369] :metadata nil :payload nil :origin "Source"}] :children []}}
+{:id 1 :kind :macro-call :macro {:namespace [331 9] :name [326 5]} :call 45 :arguments [1] :environment 81 :abi :form-env-input-form-ids :expected-expansion 82 :input-forms {:root 2 :nodes [{:kind :scalar :datum 83 :source 0 :span [372 377] :metadata nil :payload nil :origin "Source"}
+{:kind :scalar :datum 84 :source 0 :span [378 380] :metadata nil :payload nil :origin "Source"}
+{:kind :list :children [0 2] :source 0 :span [371 381] :metadata nil :payload nil :origin "Source"}] :children [0, 1]} :expected-output-forms {:root 0 :nodes [{:kind :scalar :datum 85 :source 0 :span [371 381] :metadata nil :payload nil :origin "MacroExpansion(Name { namespace: Some([99, 108, 106, 115, 46, 117, 115, 101, 114]), name: [99, 104, 117, 114, 110] })"}] :children []}}
+{:id 2 :kind :macro-call :macro {:namespace [501 9] :name [496 5]} :call 88 :arguments [1] :environment 124 :abi :form-env-input-form-ids :expected-expansion 125 :input-forms {:root 2 :nodes [{:kind :scalar :datum 126 :source 0 :span [383 388] :metadata nil :payload nil :origin "Source"}
+{:kind :scalar :datum 127 :source 0 :span [389 392] :metadata nil :payload nil :origin "Source"}
+{:kind :list :children [0 2] :source 0 :span [382 393] :metadata nil :payload nil :origin "Source"}] :children [0, 1]} :expected-output-forms {:root 0 :nodes [{:kind :scalar :datum 128 :source 0 :span [382 393] :metadata nil :payload nil :origin "MacroExpansion(Name { namespace: Some([99, 108, 106, 115, 46, 117, 115, 101, 114]), name: [99, 104, 117, 114, 110] })"}] :children []}}] :helper-factories 0 :definition-uses [] :producer-executions 0 :declared-effects []}

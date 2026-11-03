@@ -4,7 +4,7 @@ namespace tiny;
 
 // Fixed-size tagged values: object identity never contains a Goose reference.
 enum Value { Undefined, Null, Bool { value: bool }, Number { value: f64 }, Object { id: i64 } }
-enum LoadError { None, Limits, Empty, Unknown, Truncated, Constant, Local, Branch, Underflow, Join, Fallthrough, ConstantType }
+enum LoadError { None, Limits, Empty, Unknown, Truncated, Constant, Local, Branch, Underflow, Join, Fallthrough, ConstantType, Version }
 enum Status { Ready, Complete, Failed }
 enum Fault { None, UnsupportedOperand, ObjectLimit, InvalidState }
 enum Outcome { Yielded, Complete, Failed, Busy }
@@ -33,14 +33,17 @@ root struct Job {
 }
 struct Session { next_object: i64 = 1 }
 
-fn width(op: u8) -> i64 { if op == 1 || op == 3 || op == 4 || op == 13 || op == 14 { 2 } else { 1 } }
+fn width(op: u8) -> i64 { if op == 1 || op == 3 || op == 4 || op == 13 || op == 14 { if op == 13 || op == 14 { 5 } else { 3 } } else { 1 } }
+fn known(op: i64) -> bool { return (op >= 1 && op <= 17) || (op >= 33 && op <= 40) || (op >= 73 && op <= 77) || op == 112; }
 fn pops(op: u8) -> i64 {
-    if op >= 7 && op <= 11 { return 2; }
+    if (op >= 7 && op <= 11) || op == 33 || op == 34 || (op >= 37 && op <= 40) || (op >= 73 && op <= 77) { return 2; }
+    if op == 35 || op == 36 || op == 112 { return 1; }
     if op == 4 || op == 5 || op == 6 || op == 12 || op == 14 || op == 15 || op == 17 { return 1; }
     return 0;
 }
 fn pushes(op: u8) -> i64 {
-    if op == 6 { return 2; }
+    if op == 6 || op == 37 { return 2; }
+    if (op >= 33 && op <= 40) || (op >= 73 && op <= 77) || op == 112 { return 1; }
     if op == 1 || op == 2 || op == 3 || (op >= 7 && op <= 12) || op == 16 || op == 17 { return 1; }
     return 0;
 }
@@ -48,33 +51,36 @@ fn reject(p: Program&, error: LoadError, offset: i64) -> bool {
     p.error = error; p.error_offset = offset; return false;
 }
 
-// All limits are checked as i64 BEFORE conversion to the one-byte encoding.
+// Version 2: u16 indices and u32 absolute byte addresses; check before narrowing.
 fn emit(code: u8[>..]&, op: i64, arg: i64 = 0) -> bool {
-    if op < 1 || op > 17 || arg < 0 || arg > 255 { return false; }
+    if !known(op) || arg < 0 || arg > (if op == 13 || op == 14 { 4294967295 } else { 65535 }) { return false; }
     let byte = op as u8;
-    if code.len + width(byte) > 256 { return false; }
+    if width(byte) == 1 && arg != 0 { return false; }
+    if code.len + width(byte) > 16777216 { return false; }
     code.push(byte);
-    if width(byte) == 2 { code.push(arg as u8); }
+    for i in (width(byte) - 1) { code.push(((arg >> (8 * i)) & 255) as u8); }
     return true;
 }
 
 // Load into a fresh owner. The caller must keep it immutable while jobs borrow it.
-fn load(p: Program&, code: const u8[:], constants: const Value[:], locals: i64) -> bool {
+fn load(p: Program&, code: const u8[:], constants: const Value[:], locals: i64, version: i64 = 2) -> bool {
     assert(p.instructions.len == 0 && p.constants.len == 0 && !p.valid);
-    if code.len > 256 || constants.len > 256 || locals < 0 || locals > 256 { return reject(p, LoadError.Limits, 0); }
+    if version != 2 { return reject(p, LoadError.Version, 0); }
+    if code.len > 16777216 || constants.len > 65536 || locals < 0 || locals > 65536 { return reject(p, LoadError.Limits, 0); }
     if code.len == 0 { return reject(p, LoadError.Empty, 0); }
     for value in constants {
         if match value { Object => true, _ => false } { return reject(p, LoadError.ConstantType, 0); }
     }
     p.constants.append(constants); p.locals = locals;
-    var starts: i64[256] = [-1; 256];
+    var starts: i64[>..] = []; starts.resize(code.len, -1);
     var pos = 0;
     while pos < code.len {
         let op = code[pos];
-        if op < 1 || op > 17 { return reject(p, LoadError.Unknown, pos); }
+        if !known(op) { return reject(p, LoadError.Unknown, pos); }
         let size = width(op);
         if pos + size > code.len { return reject(p, LoadError.Truncated, pos); }
-        let arg = if size == 2 { code[pos + 1] as i64 } else { 0 };
+        var arg: i64 = 0;
+        for i in (size - 1) { arg |= (code[pos + 1 + i] as i64) << (8 * i); }
         if op == 1 && arg >= constants.len { return reject(p, LoadError.Constant, pos); }
         if (op == 3 || op == 4) && arg >= locals { return reject(p, LoadError.Local, pos); }
         starts[pos] = p.instructions.len;
@@ -151,15 +157,20 @@ fn step(session: Session&, job: Job&) {
         4 => { job.locals[ins.arg] = job.operands.pop(); },
         5 => { job.operands.pop(); },
         6 => { let v = job.operands[job.operands.len - 1]; job.operands.push(v); },
-        7, 8, 9, 10 => {
+        7, 8, 9, 10, 33, 34, 38, 39, 40, 73, 74, 75, 76, 77 => {
             let b = job.operands.pop(); let a = job.operands.pop();
             match a {
                 Number x => match b {
                     Number y => {
                         let v: Value = match ins.op {
-                            7 => Value.Number { value: x.value + y.value },
+                            7, 73 => Value.Number { value: x.value + y.value },
                             8 => Value.Number { value: x.value - y.value },
                             9 => Value.Number { value: x.value * y.value },
+                            33 => Value.Number { value: x.value / y.value },
+                            34 => Value.Number { value: x.value % y.value },
+                            38, 75 => Value.Bool { value: x.value > y.value },
+                            39, 76 => Value.Bool { value: x.value <= y.value },
+                            40, 77 => Value.Bool { value: x.value >= y.value },
                             _ => Value.Bool { value: x.value < y.value },
                         };
                         job.operands.push(v);
@@ -168,6 +179,14 @@ fn step(session: Session&, job: Job&) {
                 },
                 _ => { fail(job, Fault.UnsupportedOperand); },
             }
+        },
+        35, 36, 112 => {
+            let v = job.operands.pop();
+            match v { Number n => { job.operands.push(Value.Number { value: if ins.op == 35 { -n.value } else { n.value } }); }, _ => { fail(job, Fault.UnsupportedOperand); } }
+        },
+        37 => {
+            let b = job.operands.pop(); let a = job.operands.pop();
+            if (match a { Number => true, _ => false }) && (match b { Number => true, _ => false }) { job.operands.push(a); job.operands.push(b); } else { fail(job, Fault.UnsupportedOperand); }
         },
         11 => { let b = job.operands.pop(); let a = job.operands.pop(); job.operands.push(Value.Bool { value: equal(a, b) }); },
         12 => { let v = job.operands.pop(); job.operands.push(Value.Bool { value: !truthy(v) }); },

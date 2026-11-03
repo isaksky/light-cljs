@@ -1,0 +1,1 @@
+{:parsed true :exported true :goose-executed false :functions 3 :instructions 18 :operations ["call", "const", "function", "get_capture", "get_local", "new_form_vector", "return", "set_local", "undefined"]}

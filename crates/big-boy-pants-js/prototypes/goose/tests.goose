@@ -1,5 +1,6 @@
 import std;
 import .vm;
+import .encoding;
 
 // All programs here are synthetic, hand-assembled fixtures, not emitted JS.
 fn num(n: f64) -> tiny::Value { tiny::Value.Number { value: n } }
@@ -26,71 +27,70 @@ fn validation() {
     rejected([], [], 0, tiny::LoadError.Empty, 0);
     rejected([0], [], 0, tiny::LoadError.Unknown, 0);
     rejected([2, 255], [], 0, tiny::LoadError.Unknown, 1);
-    // Every operand family, and malformed unreachable bytes too.
     for op in [1, 3, 4, 13, 14] {
-        var code: u8[>..] = []; code.push(op as u8);
-        rejected(code, [], 0, tiny::LoadError.Truncated, 0);
+        for length in (tiny::width(op as u8) - 1) {
+            var code: u8[>..] = []; code.push(op as u8);
+            code.resize(length + 1, 0);
+            rejected(code, [], 0, tiny::LoadError.Truncated, 0);
+        }
     }
-    rejected([1, 0, 15], [], 0, tiny::LoadError.Constant, 0);
-    rejected([1, 1, 15], [num(1)], 0, tiny::LoadError.Constant, 0);
-    rejected([3, 1, 15], [], 1, tiny::LoadError.Local, 0);
-    rejected([2, 4, 1, 2, 15], [], 1, tiny::LoadError.Local, 1);
-    rejected([13, 1, 2, 15], [], 0, tiny::LoadError.Branch, 0);
-    rejected([13, 4, 2, 15], [], 0, tiny::LoadError.Branch, 0);
-    rejected([13, 255, 2, 15], [], 0, tiny::LoadError.Branch, 0);
+    rejected([1, 0, 0, 15], [], 0, tiny::LoadError.Constant, 0);
+    rejected([1, 1, 0, 15], [num(1)], 0, tiny::LoadError.Constant, 0);
+    rejected([3, 1, 0, 15], [], 1, tiny::LoadError.Local, 0);
+    rejected([2, 4, 1, 0, 2, 15], [], 1, tiny::LoadError.Local, 1);
+    for target in [1, 7, 4294967295] {
+        var code: u8[>..] = [];
+        assert(tiny::emit(code, 13, target)); code.append([2, 15]);
+        rejected(code, [], 0, tiny::LoadError.Branch, 0);
+    }
     rejected([15], [], 0, tiny::LoadError.Underflow, 0);
     rejected([2, 7, 15], [], 0, tiny::LoadError.Underflow, 1);
     rejected([2], [], 0, tiny::LoadError.Fallthrough, 0);
-    rejected([2, 14, 0], [], 0, tiny::LoadError.Fallthrough, 1);
-    // Both branches reach offset 4 with depths 0 and 1.
-    rejected([2, 14, 4, 2, 2, 15], [], 0, tiny::LoadError.Join, 4);
-    let object_constants: tiny::Value[1] = [tiny::Value.Object { id: 1 }];
-    rejected([1, 0, 15], object_constants, 0, tiny::LoadError.ConstantType, 0);
+    rejected([2, 14, 0, 0, 0, 0], [], 0, tiny::LoadError.Fallthrough, 1);
+    rejected([2, 14, 7, 0, 0, 0, 2, 2, 15], [], 0, tiny::LoadError.Join, 7);
+    let objects: tiny::Value[1] = [tiny::Value.Object { id: 1 }];
+    rejected([1, 0, 0, 15], objects, 0, tiny::LoadError.ConstantType, 0);
     rejected([2, 15], [], -1, tiny::LoadError.Limits, 0);
-    rejected([2, 15], [], 257, tiny::LoadError.Limits, 0);
+    rejected([2, 15], [], 65537, tiny::LoadError.Limits, 0);
+    var obsolete = tiny::Program {};
+    assert(!tiny::load(obsolete, [2, 15], [], 0, 1) && obsolete.error == tiny::LoadError.Version);
 
-    var constants: tiny::Value[>..] = []; constants.resize(256, num(42));
+    var constants: tiny::Value[>..] = []; constants.resize(65536, num(42));
+    var code:      u8[>..]          = [];
+    assert(tiny::emit(code, 1, 65535)); assert(tiny::emit(code, 4, 65535));
+    assert(tiny::emit(code, 3, 65535)); assert(tiny::emit(code, 15));
     var p = tiny::Program {};
-    // Highest constant and local indices both execute correctly.
-    assert(tiny::load(p, [1, 255, 4, 255, 3, 255, 15], constants, 256));
+    assert(tiny::load(p, code, constants, 65536));
     var job = tiny::Job { program: p }; tiny::initialize(job, []);
     var session = tiny::Session {};
     assert(tiny::run(session, job, -1) == tiny::Outcome.Complete && number(job.result) == 42);
     constants.push(num(43));
     rejected([2, 15], constants, 0, tiny::LoadError.Limits, 0);
 
-    var code: u8[>..] = [2, 13, 255];
-    while code.len < 255 { code.push(2); }
-    code.push(15);
-    var max_address = tiny::Program {};
-    assert(tiny::load(max_address, code, [], 0));
-    var at_max = tiny::Job { program: max_address }; tiny::initialize(at_max, []);
-    assert(tiny::run(session, at_max, -1) == tiny::Outcome.Complete);
-    assert(at_max.pc == max_address.instructions.len);
-    code.push(2);
-    rejected(code, [], 0, tiny::LoadError.Limits, 0);
+    var wide: u8[>..] = [2]; assert(tiny::emit(wide, 13, 1024));
+    while wide.len < 1024 { wide.push(2); } wide.push(15);
+    var address = tiny::Program {}; assert(tiny::load(address, wide, [], 0));
+    var branch = tiny::Job { program: address }; tiny::initialize(branch, []);
+    assert(tiny::run(session, branch, -1) == tiny::Outcome.Complete && branch.pc == address.instructions.len);
     var encoded: u8[>..] = [];
-    assert(tiny::emit(encoded, 1, 255));
+    assert(tiny::emit(encoded, 1, 65535)); assert(tiny::emit(encoded, 13, 4294967295));
     let saved = copy(encoded);
-    assert(!tiny::emit(encoded, 1, 256) && same(encoded[..], saved[..]));
-    assert(!tiny::emit(encoded, 3, 256) && same(encoded[..], saved[..]));
-    assert(!tiny::emit(encoded, 13, 256) && same(encoded[..], saved[..]));
-    assert(!tiny::emit(encoded, 1, -1) && same(encoded[..], saved[..]));
-    assert(!tiny::emit(encoded, 256) && same(encoded[..], saved[..]));
-    while encoded.len < 256 { assert(tiny::emit(encoded, 2)); }
-    assert(!tiny::emit(encoded, 2) && encoded.len == 256);
-    print("validation: malformed encoding, control flow, and 255/256 boundaries passed");
+    for op in [1, 3, 4] { assert(!tiny::emit(encoded, op, 65536)); }
+    assert(!tiny::emit(encoded, 13, 4294967296));
+    assert(!tiny::emit(encoded, 1, -1) && !tiny::emit(encoded, 256));
+    assert(same(encoded[..], saved[..]));
+    print("validation: v2 u16 indices, u32 branches, truncation, overflow, >256-byte code passed");
 }
 fn scalar_operations() {
     var p = tiny::Program {};
     // (6 - 2) + (6 - 2) * 2 = 12; includes dup and all numeric arithmetic.
-    assert(tiny::load(p, [1, 0, 1, 1, 8, 6, 1, 1, 9, 7, 15], [num(6), num(2)], 0));
+    assert(load8(p, [1, 0, 1, 1, 8, 6, 1, 1, 9, 7, 15], [num(6), num(2)], 0));
     var job = tiny::Job { program: p }; tiny::initialize(job, []);
     var session = tiny::Session {};
     assert(tiny::run(session, job, -1) == tiny::Outcome.Complete && number(job.result) == 12);
     var boolean = tiny::Program {};
     let bool_constants: tiny::Value[1] = [tiny::Value.Bool { value: true }];
-    assert(tiny::load(boolean, [2, 12, 1, 0, 11, 6, 5, 15], bool_constants, 0));
+    assert(load8(boolean, [2, 12, 1, 0, 11, 6, 5, 15], bool_constants, 0));
     var b = tiny::Job { program: boolean }; tiny::initialize(b, []);
     assert(tiny::run(session, b, -1) == tiny::Outcome.Complete);
     assert(tiny::equal(b.result, tiny::Value.Bool { value: true }));
@@ -99,7 +99,7 @@ fn scalar_operations() {
     assert(!tiny::truthy(tiny::Value.Null) && !tiny::truthy(num(0)) && tiny::truthy(num(-1)));
     var numeric_loop = tiny::Program {};
     // i=0; sum=0; while(i<10) { sum=sum+i; i=i+1; } return sum;
-    assert(tiny::load(numeric_loop,
+    assert(load8(numeric_loop,
         [1, 0, 4, 0, 1, 0, 4, 1, 3, 0, 1, 2, 10, 14, 31, 3, 1, 3, 0, 7, 4, 1, 3, 0, 1, 1, 7, 4, 0, 13, 8, 3, 1, 15],
         [num(0), num(1), num(10)], 2));
     var sum = tiny::Job { program: numeric_loop }; tiny::initialize(sum, []);
@@ -110,7 +110,7 @@ fn scalar_operations() {
 fn identity() {
     var session = tiny::Session {};
     var p = tiny::Program {};
-    assert(tiny::load(p, [16, 4, 0, 3, 0, 15], [], 1));
+    assert(load8(p, [16, 4, 0, 3, 0, 15], [], 1));
     var retained: tiny::Value = tiny::Value.Undefined;
     {
         var job = tiny::Job { program: p }; tiny::initialize(job, []);
@@ -126,14 +126,14 @@ fn identity() {
     assert(tiny::equal(retained, tiny::Value.Object { id: 1 }));
     assert(session.next_object == 3);
     var compare = tiny::Program {};
-    assert(tiny::load(compare, [16, 6, 11, 16, 16, 11, 12, 11, 15], [], 0));
+    assert(load8(compare, [16, 6, 11, 16, 16, 11, 12, 11, 15], [], 0));
     var c = tiny::Job { program: compare }; tiny::initialize(c, []);
     assert(tiny::run(session, c, -1) == tiny::Outcome.Complete && tiny::equal(c.result, tiny::Value.Bool { value: true }));
     print("identity: round trip, fresh IDs, and retained result after job disposal passed");
 }
 fn load_loop(p: tiny::Program&) {
     // i=0; last=undefined; while(i<n) { last=counter(i); i=i+1; } return last;
-    assert(tiny::load(p, [1, 0, 4, 1, 2, 4, 2, 3, 1, 3, 0, 10, 14, 28, 3, 1, 17, 4, 2, 3, 1, 1, 1, 7, 4, 1, 13, 7, 3, 2, 15], [num(0), num(1)], 3));
+    assert(load8(p, [1, 0, 4, 1, 2, 4, 2, 3, 1, 3, 0, 10, 14, 28, 3, 1, 17, 4, 2, 3, 1, 1, 1, 7, 4, 1, 13, 7, 3, 2, 15], [num(0), num(1)], 3));
 }
 fn unchanged_at_zero(session: tiny::Session&, job: tiny::Job&) {
     let pc = job.pc; let status = job.status; let result = job.result;
@@ -172,7 +172,7 @@ fn round_robin(budget: i64) {
 }
 fn failures_and_claims() {
     var p = tiny::Program {};
-    assert(tiny::load(p, [2, 1, 0, 7, 15], [num(1)], 0));
+    assert(load8(p, [2, 1, 0, 7, 15], [num(1)], 0));
     var job = tiny::Job { program: p }; tiny::initialize(job, []);
     var session = tiny::Session {};
     assert(tiny::claim(job) && !tiny::claim(job));
@@ -182,14 +182,14 @@ fn failures_and_claims() {
     let pc = job.pc;
     assert(tiny::run(session, job, -1) == tiny::Outcome.Failed && job.pc == pc && !tiny::claim(job));
     var effect = tiny::Program {};
-    assert(tiny::load(effect, [16, 17, 15], [], 0));
+    assert(load8(effect, [16, 17, 15], [], 0));
     var bad_effect = tiny::Job { program: effect }; tiny::initialize(bad_effect, []);
     assert(tiny::run(session, bad_effect, -1) == tiny::Outcome.Failed && bad_effect.effects.len == 0 && !bad_effect.claimed);
     var good = tiny::Program {};
-    assert(tiny::load(good, [1, 0, 15], [num(99)], 0));
+    assert(load8(good, [1, 0, 15], [num(99)], 0));
     var survivor = tiny::Job { program: good }; tiny::initialize(survivor, []);
     assert(tiny::run(session, survivor, -1) == tiny::Outcome.Complete && number(survivor.result) == 99 && !survivor.claimed);
-    var object = tiny::Program {}; assert(tiny::load(object, [16, 15], [], 0));
+    var object = tiny::Program {}; assert(load8(object, [16, 15], [], 0));
     session.next_object = 2147483647;
     var last = tiny::Job { program: object }; tiny::initialize(last, []);
     assert(tiny::run(session, last, -1) == tiny::Outcome.Complete);

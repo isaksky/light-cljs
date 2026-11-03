@@ -1,0 +1,1 @@
+{:parsed true :exported true :goose-executed false :functions 4 :instructions 40 :operations ["append_element", "call", "call_method", "const", "dup", "function", "get_capture", "get_field", "get_local", "jump_if_false", "loose_eq", "new_array", "not", "pop", "return", "set_local", "strict_eq", "undefined"]}

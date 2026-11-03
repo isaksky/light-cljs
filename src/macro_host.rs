@@ -1207,6 +1207,8 @@ impl MacroHost {
             }
         }
         let expanded = expanded.map_err(|e| expansion_failure(&origin, e))?;
+        #[cfg(all(test, feature = "bbp-macros", light_v8))]
+        crate::compiler_bootstrap::goose_capture::record(call, environment, &expanded, &origin);
         record_script_expansion(expanded.nodes().len(), || origin.call.bytes());
         self.engine.generated_nodes.set(
             self.engine

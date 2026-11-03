@@ -1,0 +1,1 @@
+function unicode() { return '😀\ud800'; }

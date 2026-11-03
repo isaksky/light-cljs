@@ -244,7 +244,10 @@ pub(crate) fn emit_deferred_unit(program: &Program) -> String {
         deferred: true,
         ..Default::default()
     };
-    emit_unit_parts(program, true, Some(&mut registration))
+    let source = emit_unit_parts(program, true, Some(&mut registration));
+    #[cfg(all(test, feature = "bbp-macros", light_v8))]
+    crate::compiler_bootstrap::goose_capture::unit(&source, false);
+    source
 }
 
 /// Native input scalars retain occurrence identity in form operations, and
@@ -259,7 +262,7 @@ pub(crate) fn emit_native_macro_unit(
         deferred,
         ..Default::default()
     };
-    emit_js_mode(
+    let source = emit_js_mode(
         program,
         Some(UNIT_RUNTIME),
         deferred,
@@ -271,7 +274,10 @@ pub(crate) fn emit_native_macro_unit(
         true,
         replaced,
     )
-    .0
+    .0;
+    #[cfg(all(test, feature = "bbp-macros", light_v8))]
+    crate::compiler_bootstrap::goose_capture::unit(&source, true);
+    source
 }
 
 /// The statements registering the namespaces of `tables` that `plan`

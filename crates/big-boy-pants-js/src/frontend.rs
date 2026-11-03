@@ -405,3 +405,7 @@ pub(crate) fn line_columns(source: &str, offsets: &[usize]) -> Vec<(u32, u32)> {
     }
     out
 }
+
+/// Experimental bounded, source-derived export; no execution or VM heap lives here.
+#[path = "../prototypes/goose/export.rs"]
+pub mod goose;
