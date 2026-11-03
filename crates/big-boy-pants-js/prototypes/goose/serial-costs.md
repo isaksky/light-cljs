@@ -3,9 +3,9 @@
 The bounded serial evidence supports proceeding with the snapshot experiment.
 It does not require Goose to match V8, and does not establish a compiler speedup.
 Two costs are selected: persistent collection copying/scans during invocation,
-and the fixture runner's per-job file transport. Keep the flat persistent layout
-for the experiment, test removing redundant temporary copies in light-cljs-739,
-and leave live transport to the existing compiler adapter task (733).
+and the fixture runner's per-job file transport. Light-cljs-739 removes the
+redundant temporary copies while keeping the flat persistent layout; its paired
+revision results are below. Live transport stays with the compiler adapter (733).
 
 ## Reproduce and scope
 
@@ -115,7 +115,7 @@ end-to-end costs are absent here.
 
 ## Cost 1: persistent collection payload work
 
-`source_vm.goose::form_conj` and `form_assoc` copy all current children into a
+At the measured 738 baseline, `source_vm.goose::form_conj` and `form_assoc` copy all current children into a
 scratch `Value` array, then `form_collection` copies that array into the append-only
 heap. Map assoc/get also linearly probe keys through `form_equal`. The separate
 `--profile` command copies the existing Goose sources to its temporary build
@@ -158,12 +158,96 @@ until that promotion. This explains a representation alternative, not evidence
 that porting either full trie would improve this bounded Goose workload.
 
 **Decision:** retain the simple flat representation for the snapshot experiment.
-Light-cljs-739 tests direct filling of a fresh immutable range to remove the
-measured redundant scratch copies, preserving budgets, metadata, old versions and
-occurrence identity. It must measure baseline/change with the same real corpus;
-no speedup is assumed. A trie, hash index, general builder or collector is not
-justified here. Map key scans remain an explicit limitation pending branch
-copy-size and larger real compiler evidence.
+Light-cljs-739's direct-fill result follows. A trie, hash index, general builder
+or collector is not justified here. Map key scans remain an explicit limitation
+pending branch copy-size and larger real compiler evidence.
+
+### Direct persistent ranges (739)
+
+Baseline `8fd8611b3f2d0c4042799bdd2d4813817b98b235` and changed implementation
+`bfc09d5a` were built with the same Goose version and default native flags above.
+Before edits, the baseline's Goose sources and native `macro_run` executable were
+preserved inside this worktree. `macros.bb` now accepts `GOOSE_SERIAL_BASELINE`
+as an optional native executable. With `--measure` it adds five actual revision
+pairs, alternating B/C, C/B, B/C, C/B, B/C, after the existing three-engine rounds.
+Both revisions consume identical already prepared 0/16/100 packets. Each process
+has one warmup batch and two reused batches; additional preflight sessions are
+excluded. Every owned expansion/provenance is checked against compiler captures;
+both revisions also pass closure/branches/context checks including occurrence
+aliases. No counter build is used for timing. No concurrent build/test from this
+run was active during collection; machine isolation and JIT saturation remain
+unclaimed.
+
+Reproduce from a repository checkout containing both revisions (temporary source
+export and native builds are outside the measured phases):
+
+```sh
+baseline_dir="$(mktemp -d)"
+git archive 8fd8611b crates/big-boy-pants-js/prototypes/goose | tar -xf - -C "$baseline_dir"
+goose build "$baseline_dir/crates/big-boy-pants-js/prototypes/goose/macro_run.goose" -o "$baseline_dir/macro-run"
+GOOSE_SERIAL_BASELINE="$baseline_dir/macro-run" bb crates/big-boy-pants-js/prototypes/goose/macros.bb --measure
+rm -rf "$baseline_dir"
+bb crates/big-boy-pants-js/prototypes/goose/macros.bb --profile
+```
+
+All numbers are **milliseconds: median [min, max]**, five sessions per revision;
+individual invocations have ten observations. Raw warmups, per-job phases, session
+cleanup, process walls, fresh reference rounds and separate counter rows are in
+`:direct-fill` in `serial-samples.edn`. The baseline profile used the original
+738 counter insertions with the preserved baseline VM source. Baseline and changed
+diagnostic rows are identical, including steps, charged work, new/retained pools,
+source bytes and export visits. Instrumentation setup is recorded in the raw data.
+
+| Phase | Baseline | Direct slice append |
+| --- | --- | --- |
+| Cold load | .074 [.071,.079] | .076 [.067,.081] |
+| Cold boot | .009 [.007,.010] | .008 [.006,.009] |
+| Six imports | .101 [.097,.111] | .112 [.101,.136] |
+| Six invocations | .578 [.550,.598] | .565 [.556,.585] |
+| Six exports | .009 [.007,.010] | .009 [.008,.010] |
+| Six file writes | .267 [.253,.309] | .278 [.272,.362] |
+| Process wall | 4.755 [4.689,5.090] | 4.758 [4.604,5.508] |
+| churn(0) invocation | .001 [.001,.002] | .001 [.001,.002] |
+| churn(16) invocation | .027 [.026,.035] | .029 [.025,.033] |
+| churn(100) invocation | .258 [.243,.270] | .252 [.243,.267] |
+
+Session cleanup was below 1 us resolution in all final pairs. Load, boot, import,
+invoke, export, file-write and process-wall scopes are the same as above; packet
+preparation/export/native builds remain outside them. These are source-derived
+one-worker timings, with no live compiler adapter or end-to-end speedup claim.
+
+The initial direct fill used a push for each child (`f59734b9`): churn(100)
+medians were .2455 ms baseline versus .260 ms changed, approximately 6% slower.
+Its raw five revision pairs are retained in `:direct-fill-push-trial`. Direct
+slice appends replaced that loop, including separate prefix/suffix slices for
+replacement, while retaining a validation pass. Final spreads overlap baseline;
+the experiment supports retaining the scratch reduction, **not a timing win**.
+
+`form_assoc`/`form_conj` now validate the resulting children and capacity, then
+allocate the new container (including its final work charge) before any child
+append. All following writes target the fresh range. Metadata/source spans and
+untouched occurrence IDs are copied; origin is cleared as before. Old ranges stay
+immutable, first-equal map-key replacement and list prepend/vector append remain
+unchanged. Successful work charges are unchanged. A failure on the final
+allocation work unit now leaves no orphan child range; this is a deliberate
+improvement restricted to these two paths, without changing `form_collection`'s
+historical rollback behavior elsewhere.
+
+The profile instruments all five direct push sites and four direct append sites,
+counting every appended element. It rejects missing anchors/scratch paths and
+asserts nine rows of unchanged persistent sizes and zero scratch copies. Per
+0/16/100 call, persistent writes remain 0/456/15,450; direct update writes are
+0/408/15,150, and scratch writes are zero. Churn(100) removes 606,000 logical
+scratch payload bytes, leaving 618,000 persistent payload bytes; peak memory,
+RSS and physical bus traffic remain unmeasured. Retained heap sizes are unchanged.
+
+Final format/check/debug/native smoke, focused bridge checks, macro correctness,
+separate profiles and all paired comparisons pass. New bridge assertions cover
+exact work/node/value limits (including the last allocation unit), stale inserted
+and retained children before publication, replacement of an omitted stale child,
+duplicate equal keys, old aliases, prepend/append and metadata. No Rust, bridge
+transport or emitted corpus inputs changed; full Rust suites/Clippy were not
+rerun for this Goose/script/documentation-only delta. No follow-up was created.
 
 ## Cost 2: fixture transport, not the provenance walk
 
