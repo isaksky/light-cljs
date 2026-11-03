@@ -28,6 +28,84 @@ persistent-form requirements through QuickJS/Pants and explain the indexed
 storage choices. The smoke command includes `layout_probe.goose`, a bounded
 layout/lifetime probe; it does not execute macros or measure performance.
 
+## Intent retrospective and demonstration (2026-11-03)
+
+The [original conversation](codex://threads/01a19f3b-37e9-79e3-8799-4751884be0f0)
+proposed a small replacement design after Pants failed its performance goal:
+initialize a representative macro environment once, branch into private local
+VMs, reconnect immutable results, and compare complete costs with one-thread V8.
+The experiment now exercises that bounded design through the actual compiler,
+but branching still loses on the measured corpus. This is evidence about this
+implementation and workload, not a conclusive rejection of Goose designs.
+
+The lean branch/worktree and indexed storage follow that intent. light-cljs
+still reads/resolves CLJS, emits JavaScript, orchestrates macro expansion and
+analyzes results. The existing Rust JS frontend exports code; Goose executes
+the selected emitted macro/helper bodies and owns their VM heaps. Compiler core
+syntax/bootstrap services remain in the compiler. Closures, collection/form
+construction and traversal, contextual metadata/provenance, and actual helper
+fan-in are demonstrated. Returned forms survive session teardown. Explicit
+snapshots copy allocator/state tables into isolated heaps; immutable publication
+relocates IDs rather than merging arbitrary private mutations. See the
+[live adapter](#live-compiler-source-macro-adapter) and
+[artifact boundary](#immutable-branch-artifacts) for exact contracts.
+
+The earlier completion summary was too confident: isolated mechanism tests did
+not establish that initialized-definition reuse and progress-aware scheduling
+had reached the live compiler path. The intent audit found both gaps:
+
+- The adapter captured a booted empty base but re-exported, loaded and executed
+  each macro factory on every call. `initializations == 1` counted base boot,
+  not factory reuse. The [definition reuse follow-up](branching-results.md#initialized-definition-reuse)
+  now exports each exact compiler-owned definition and prepares each macro once
+  per compilation, including concurrent demand. Each call restores the
+  initialized callable into a private heap and executes its real body; contexts,
+  captured mutation and fresh sessions remain isolated.
+- The live coordinator slept after useful progress and admitted work one turn
+  at a time, unlike the isolated scheduler. The [dispatch follow-up](branching-results.md#ready-work-drain-in-the-live-compiler-session-2026-11-03)
+  drains ready commands/completions, fills bounded execution slots and backs off
+  only when idle. It retains one native thread per execution chunk. Reentrant
+  helper demand saves explicit continuation state and joins the execution owner
+  before the callback, allowing one-worker nested calls without replay.
+
+The latest paired larger/eight-slot compiler wall improves from **143.48 to
+114.05 ms**, versus **53.63 ms V8** and **95.70 ms Pants at eight slots**;
+retained one-heap Goose serial takes **61.26 ms**. These are complete process
+medians from the dispatch report, including setup and cleanup. Each follow-up
+retains 450 measured comparisons in revision pairs and a separate 45-cell
+allocation run. The corrected two-batch fixture includes six namespace drain
+barriers; its timings must not be spliced into the initial branching matrix.
+Historical reports/raw samples remain intact, phase costs overlap, and
+coordinator sleep cannot be subtracted from wall time. No engine win is promised.
+
+For a practical demo, from the repository root with Babashka, the validated
+Goose compiler, Rust/C toolchain, Node and the required patched V8 cache:
+
+```sh
+bb crates/big-boy-pants-js/prototypes/goose/compiler.bb
+```
+
+This builds debug/native runners and executes the 19 focused tests per mode:
+actual corpus expansion against V8, deterministic application JS/output,
+provenance, reuse/isolation, one-worker reentrancy, 1/2/4/8 execution slots and
+failure/cleanup checks. Read the [committed results](branching-results.md) for
+performance; the full quiet benchmark matrix is unnecessary for this demo.
+This remains an opt-in finite JS/runtime subset: unsupported selected jobs fail
+explicitly; callable helper publication, live shared compile-time effects,
+complete ECMAScript/cljs.core, general tracing GC and production migration are
+outside its surface. Isolated effect/artifact tests do not extend that surface.
+Prior strict-lint/root-format and full-suite wasm limitations remain documented
+in the report; this documentation change reuses the existing execution evidence.
+
+The protected original-checkout note at
+`/Users/admin/src/light-cljs/crates/big-boy-pants-js/docs/goose-prototype.md`
+was absent for an unknown reason. It was restored using exclusive creation from
+the recovered assistant response the user said they copied verbatim in the
+linked conversation. Byte equality with that recovered text was verified; the
+note remains untracked, with original `master` HEAD and all other status
+unchanged. This establishes recovery from the conversation, not an independent
+proof of the missing file's historical bytes.
+
 ## Corpus and coverage
 
 `capture.rs` runs the actual compiler with test-only hooks at deferred/native
