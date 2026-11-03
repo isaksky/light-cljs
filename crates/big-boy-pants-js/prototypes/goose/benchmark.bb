@@ -24,7 +24,9 @@
                    (try
                      (loop []
                        (with-open [descendants (.descendants handle)]
-                         (doseq [child (.toArray descendants)]
+                         ;; Include the compiler/test coordinator itself, not
+                         ;; only its native runner and resource wrapper.
+                         (doseq [child (into [handle] (.toArray descendants))]
                            (swap! owned conj child)
                            (let [role (str (fs/file-name (.orElse (.command (.info child)) "unknown")))
                                  text (:out (p/shell {:out :string :err :string :continue true} "ps" "-M" "-p" (str (.pid child))))
