@@ -57,7 +57,7 @@ fn shape(a: const Artifact&, n: source::Node, base: const snapshot::Snapshot&, c
     if n.kind == 0 || n.kind == 1 || n.kind == 3 && (!n.immutable || !n.initialized) { return reject(c, Error.Mutable); }
     if n.kind < 2 || n.kind > 12 || n.head != -1 || n.length < 0 { return reject(c, Error.Link); }
     if has_values(n) && !snapshot::range(n.start, n.count, a.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); }
-    if n.kind == 2 && (!snapshot::range(n.function, 1, base.functions.len) || n.count != base.functions[n.function].captures) || n.kind == 4 && (n.function < 0 || n.function > 5) { return reject(c, Error.Link); }
+    if n.kind == 2 && (!snapshot::range(n.function, 1, base.functions.len) || n.count != base.functions[n.function].captures) || n.kind == 4 && (n.function < 0 || n.function > 8) { return reject(c, Error.Link); }
     if !valid_value(a, n.value) || !valid_value(a, n.namespace_value) || !valid_value(a, n.metadata) { return reject(c, Error.Link); }
     if n.metadata.tag > 1 && (n.metadata.tag != 5 || a.nodes[n.metadata.a].kind != 7) { return reject(c, Error.Link); }
     if (n.kind == 9 || n.kind == 10) && (n.value.tag != 4 || n.namespace_value.tag != 1 && n.namespace_value.tag != 4) || n.kind == 11 && n.value.tag > 4 { return reject(c, Error.Link); }

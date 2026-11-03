@@ -45,7 +45,7 @@ separately checks application output.
 | `closure.cljs` | `mapv` invokes a helper closure capturing a computed offset; `[[1 11] [2 12] [3 13]]` | Source callbacks execute with explicit native iterator continuations |
 | `branches.cljs` | Independent expansions initialize two definitions; a consumer demands both; exactly two producer factories execute | All three macro bodies and both helper factories execute in one native session |
 | `context.cljs` | `&form`, `&env :ns :name`, metadata, nested symbols/keywords/maps, distinct equal scalar occurrences | Native expansion/provenance matches references; returned input and metadata aliases checked |
-| `effect.cljs` | One declared compiler-gensym effect; result proves it returned a symbol in references | Goose rejects before gensym mutates anything; coordinator effect authority remains unsupported |
+| `effect.cljs` | One declared compiler-gensym effect; result proves it returned a symbol in references | Serial calls reject without authority; declared coordinator execution returns `(quote [7 true])` |
 | Historical arithmetic/control source | Results 27.5 and 7307 | Source-derived entries execute debug/native |
 | Generated wide source | 300 constants/locals, code and branch addresses above 255; result 299 | Executes debug/native |
 | Generated Unicode source | UTF-8 emoji and a lone UTF-16 surrogate | Exact UTF-16 source execution and owned form round-trip |
@@ -88,8 +88,9 @@ refer to the hashed `src/js_runtime.js`. Native counterparts are retained in the
 The Pants profile uses explicit form-operation leaves (listed in `runtime.edn`)
 in place of JavaScript private stores/brands. Remaining core calls, including
 `mapv`, `inc`, `into`, `vec`, `gensym`, symbol testing and the reader wrapper,
-are identified by selected core bindings. Dynamic reader services, unresolved
-definition demand and gensym authority remain explicit boundaries. The serial
+are identified by selected core bindings. Dynamic reader services and unresolved
+definition demand remain explicit boundaries; gensym requires the declared
+coordinator contract described below. The serial
 slice below supports already-resolved roots and owned source provenance.
 No host evaluates a Goose job.
 Selected runtime source is reference material, **not executable Goose export**;
@@ -552,6 +553,124 @@ reports actual coordinator/worker/admitted counts and asserts cleanup within a
 30-second correctness bound. These are correctness runs with deliberate delays;
 they do not supply worker-scaling or compiler end-to-end performance evidence.
 
+## Declared shared effects
+
+The compiler marks effect-connected `Spec.ordered` jobs and supplies `Plan.effects`
+in source order. Each `effects::Grant` names a unique logical occurrence ID,
+owner request ID, zero-based per-owner occurrence sequence, native operation
+and logical resource ID. Plan job order is the compiler's source order; grants
+for an owner must be contiguous in that order. Malformed grants reject before
+claims, queues or threads. Grants describe an exact executed effect trace;
+conditional or dynamic effect counts need a compiler plan that resolves those
+choices before admission. Unconsumed declarations fail the job explicitly.
+
+The coordinator executes ordered jobs one at a time, alongside the existing
+bounded pool of pure workers. Each ordered job still restores a private heap;
+the sole `effects::Authority` owns sixteen scalar counter resources and a
+logical-ID receipt log for the sealed plan. Neither shared values nor authority
+enter the initialized snapshot, input artifacts or worker messages. A subsequent
+ordered job waits for prior ordered jobs to succeed; a failure suppresses its
+effects, while unrelated pure jobs continue. Arbitrary mutable heaps are never
+merged. Private JS allocations and mutation remain permitted, and transitive
+artifact validation rejects mutable captures with `Error.Mutable` and a node
+path. Native operation handles carry no counter state: reading through one in
+a pure job still requires authority and cannot read a stale snapshot value.
+
+Supported leaves are gensym (native ID 5), scalar counter increment (6), and
+scalar counter read (7). The compiler installs counter capabilities explicitly;
+`boot_runtime` continues to install gensym. Counter leaves take no arguments.
+Gensym accepts zero arguments or an unqualified UTF-16 prefix up to 128 units,
+appends the resource's monotonic integer, and returns an immutable symbol. Its
+default prefix is `G__`. Counters stop at the largest exact JS integer. This is
+a narrow fresh naming resource, excluding compiler initializer naming scopes,
+collision registries, prefix coercion and namespace-bearing prefixes; the live
+compiler adapter must provide those services before admitting such jobs.
+External effects (test leaf 8) and unknown leaves remain explicit failures.
+No file, process or network operation is implemented. Declarations and IDs
+currently belong to one sealed dispatch; the live adapter remains responsible
+for a compilation's longer-lived naming and request identity.
+
+An enabled `source::Job` saves a pending request at the call continuation,
+returns `Yielded`, and releases its execution claim before the host handles it.
+While pending, run calls consume no instructions or heap work and cannot claim
+the job. `effects::service` requires released ownership, checks operation, owner
+and sequence, then commits through the authority. Exact duplicate logical IDs
+return the original receipt, including errors; conflicting or out-of-order
+delivery changes no state. `source::deliver_effect` consumes the continuation
+once. A delivery error, including local result allocation failure after an
+effect commits, makes the job terminal. There is no restart/replay. Without an
+enabled host contract the serial runtime retains its `NativeBoundary` error.
+
+The suspension API permits the compiler to defer a response while a prerequisite
+is pending and service correlated helper jobs after the parent's claim releases.
+It has no blanket host nonreentry ban. The sealed scheduler still resolves its
+prerequisites before admission and rejects undeclared dynamic `cljReadRoot`
+requests; this change does not add name resolution or a live compiler transport.
+The lower-level regression drives actual dependency cells during a suspended
+response, both successful and failed, without replaying the preceding effect.
+
+`effects_tests.goose` adapts the instruction-budget/ownership obligations from
+`99d4f9fb:tests/resumable.rs` and `1ddd5633:src/task.rs`. It checks 1/2/4/8 workers,
+small instruction quanta, every cut in the three-effect fixture, duplicate and
+conflicting delivery, pure read/write rejection, unsupported external effects,
+source-ordered failure suppression, host errors, nested helper work, native
+mapv callback suspension and mutable-capture rejection. The counter fixture is
+synthetic protocol evidence. Separately, the unchanged emitted `effect.cljs`
+macro executes with a declared gensym and produces `(quote [7 true])`, matching
+its captured V8/Pants expectations. Smoke includes native debug and optimized
+effect checks; no Rust compiler/production backend path changes.
+
+The optional native diagnostic measures serialized effect work separately:
+
+```sh
+goose build crates/big-boy-pants-js/prototypes/goose/effects_tests.goose -o .goose-effects
+./.goose-effects --measure
+rm .goose-effects
+```
+
+Each worker limit gets one unreported warmup and five raw samples. A sample
+executes sixteen ordered three-effect counter jobs and 48 independent private
+mutation jobs from the unchanged JS `serial/mutations` corpus; it checks every
+terminal result and the 48 receipts/counter total 32. `ordered-ns` includes
+private restore/import/execute/publication for serialized jobs; `service-ns` is
+its authority-delivery subset. `pure-worker-sum-ns` sums restore/import/execute/
+publication time across execution threads and is not wall time. Dispatch wall
+includes thread creation, queued work, result validation, stops and joins. The
+separate final row also includes authority/result cleanup (and the sample's
+reporting). Source preparation, initial boot/checkpoint capture, native build
+and process launch/teardown are excluded. These are diagnostic workload timings,
+not macro scaling, live compiler or cross-engine speedup evidence.
+
+Raw native nanoseconds, 2026-11-03 UTC, macOS 15.7.3 ARM64 on Apple M3
+Ultra (Virtual), Goose v2026.3-267-g369c7a2c/runtime 3025e5810379. No other
+build/test processes were active during sampling; no allocation profiling.
+Short subphases have microsecond clock resolution. The worker sum is reported
+separately from serial authority work; thread/queue overhead dominates this
+small workload's dispatch wall, and these samples show no wall-time scaling.
+
+| Workers | Sample | Ordered | Service subset | Pure worker sum | Dispatch through join | With cleanup/report |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1 | 127000 | 14000 | 808000 | 98287000 | 98330000 |
+| 1 | 2 | 113000 | 10000 | 765000 | 95442000 | 95470000 |
+| 1 | 3 | 117000 | 12000 | 757000 | 95885000 | 95912000 |
+| 1 | 4 | 115000 | 11000 | 737000 | 94796000 | 94821000 |
+| 1 | 5 | 115000 | 12000 | 750000 | 90600000 | 90626000 |
+| 2 | 1 | 122000 | 8000 | 941000 | 101131000 | 101160000 |
+| 2 | 2 | 116000 | 14000 | 1037000 | 94012000 | 94083000 |
+| 2 | 3 | 173000 | 14000 | 1366000 | 98680000 | 98746000 |
+| 2 | 4 | 260000 | 20000 | 2664000 | 93945000 | 94011000 |
+| 2 | 5 | 223000 | 21000 | 2375000 | 94836000 | 94954000 |
+| 4 | 1 | 301000 | 21000 | 6522000 | 85466000 | 85563000 |
+| 4 | 2 | 317000 | 23000 | 4253000 | 92884000 | 92992000 |
+| 4 | 3 | 395000 | 31000 | 6016000 | 81734000 | 81836000 |
+| 4 | 4 | 373000 | 26000 | 4749000 | 92948000 | 93056000 |
+| 4 | 5 | 392000 | 30000 | 5218000 | 94897000 | 94963000 |
+| 8 | 1 | 140000 | 12000 | 2656000 | 111604000 | 111670000 |
+| 8 | 2 | 174000 | 14000 | 3417000 | 107159000 | 107211000 |
+| 8 | 3 | 240000 | 20000 | 5511000 | 109566000 | 109672000 |
+| 8 | 4 | 320000 | 25000 | 4414000 | 107107000 | 107169000 |
+| 8 | 5 | 264000 | 26000 | 4038000 | 102617000 | 102703000 |
+
 ## Early native source diagnostic
 
 Run `bb crates/big-boy-pants-js/prototypes/goose/measure.bb` from the repository
@@ -654,7 +773,8 @@ The selected native surface is deliberately small:
 | `CljReadRoot` | Already-resolved own data properties; nonempty dynamic root contexts reject |
 | Runtime `inc`, `mapv`, `vec`, `into` | Native collection operations; `mapv` invokes original source callbacks through explicit resumable frames |
 | Runtime `macroReaderFunction` | Identity adapter for this corpus's directly emitted form ABI; dynamic reader/namespace services are not admitted |
-| Runtime `gensym` and every unlisted form operation | Explicit `NativeBoundary` failure; no effect, replay or foreign evaluation fallback |
+| Runtime `gensym` | Declared coordinator authority below; serial/pure jobs reject before mutation |
+| Every unlisted form operation | Explicit `NativeBoundary` failure; no effect, replay or foreign evaluation fallback |
 
 Flat persistent containers copy child handles on update. This implements the
 layout decision in `runtime-design.md`; it does not reproduce the historical
@@ -663,8 +783,8 @@ trie. Historical `0881cf65:tests/collections.rs` and
 assoc-boundary and failure checks. The selected runtime uses no mutable
 collection builder, transient or freeze operation: none can be imported or
 exported as an immutable form. General builders, lazy realization, protocol
-callbacks, dynamic helper requests, effect authority and production runtime
-coverage remain explicit boundaries.
+callbacks, dynamic helper requests and production runtime coverage remain explicit
+boundaries; the declared coordinator contract below supports narrow effects.
 
 `form_bridge.goose` owns flat graph nodes, child IDs, UTF-16 units, source byte
 owners/ranges and root IDs. GFB1 has a 32-byte header (magic/version and six

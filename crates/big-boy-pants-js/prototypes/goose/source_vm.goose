@@ -20,7 +20,7 @@ root struct Code {
     ops:          Op[>..]         = [], units: u16[>..] = [], valid: bool = false,
     error:        tiny::LoadError = tiny::LoadError.None, error_pc: i64 = -1,
 }
-enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed }
+enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed, EffectContract, HostEffect }
 struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576, properties: i64 = 1048576, work: i64 = 10000000, steps: i64 = 1000000, frames: i64 = 256, stack: i64 = 65536 }
 // All heap tables append until session teardown; IDs are never recycled.
 // kind: plain=0, array=1, closure=2, cell=3. Captures and cell values never
@@ -42,10 +42,12 @@ root struct Heap {
 struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, input: Value = Value {}, output: Value = Value {}, index: i64 = 0 }
 struct Write { object: Value, key: Value, value: Value }
 root struct Job {
-    heap:   Heap&, frames: Frame[>..<] = [], locals: Value[>..<] = [], operands: Value[>..<] = [],
-    writes: Write[>..]                 = [], status: tiny::Status = tiny::Status.Ready, result: Value = Value {},
-    fault:  Fault                      = Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1,
-    steps:  i64                        = 0, claimed: bool = false, registered: bool = false,
+    heap:            Heap&, frames: Frame[>..<] = [], locals: Value[>..<] = [], operands: Value[>..<] = [],
+    writes:          Write[>..]                 = [], status: tiny::Status = tiny::Status.Ready, result: Value = Value {},
+    fault:           Fault                      = Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1,
+    steps:           i64                        = 0, claimed: bool = false, registered: bool = false,
+    effects_enabled: bool                       = false, effect_pending: bool = false, effect_kind: i64 = -1,
+    effect_args:     Value[8]                   = [Value {}; 8], effect_count: i64 = 0, effect_frame: Frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value {}, receiver: Value {} },
 }
 fn number(n: f64) -> Value { return Value { tag: 3, number: n }; }
 fn boolean(b: bool) -> Value { return Value { tag: 2, a: if b { 1 } else { 0 } }; }
@@ -546,8 +548,8 @@ fn boot_runtime(heap: Heap&) -> Value {
     install_field(heap, core, "macroReaderFunction", builtin(heap, 0));
     install_field(heap, core, "inc", builtin(heap, 1)); install_field(heap, core, "mapv", builtin(heap, 2));
     install_field(heap, core, "vec", builtin(heap, 3)); install_field(heap, core, "into", builtin(heap, 4));
-    // Effects require the later coordinator authority; fail before gensym can
-    // mutate anything. A missing leaf never falls back to a foreign engine.
+    // Gensym is serviced only by an explicitly enabled coordinator contract.
+    // Other shared-state leaves are installed explicitly by the compiler.
     install_field(heap, core, "gensym", builtin(heap, 5));
     if heap.fault == Fault.None { heap.boot_count += 1; }
     return rt;
@@ -567,6 +569,20 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
     heap.fault = Fault.NativeBoundary; return Value {};
 }
 
+// Save the request at the call continuation. No host runs under the claim.
+fn request_effect(job: Job&, id: i64, args: const Value[:], frame: Frame) {
+    if !job.effects_enabled { job.heap.fault = Fault.NativeBoundary; return; }
+    if args.len > 8 { job.heap.fault = Fault.EffectContract; return; }
+    job.effect_pending = true; job.effect_kind = id; job.effect_count = args.len; job.effect_frame = frame;
+    for value, i in args { job.effect_args[i] = value; }
+}
+fn deliver_effect(job: Job&, value: Value, fault: Fault = Fault.None) -> bool {
+    if job.claimed || !job.effect_pending || job.status != tiny::Status.Ready { return false; }
+    job.effect_pending = false;
+    if fault != Fault.None { fail(job, fault, job.effect_frame); return true; }
+    if !valid(job.heap, value) { fail(job, job.heap.fault, job.effect_frame); return true; }
+    job.operands.push(value); return true;
+}
 fn step(job: Job&) {
     let heap .= job.heap; let code .= heap.code;
     if job.frames.len == 0 { fail(job, Fault.InvalidState, Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value {}, receiver: Value {} }); return; }
@@ -587,7 +603,9 @@ fn step(job: Job&) {
             let arg = form_nth(heap, frame.input, frame.index);
             job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 1;
             if frame.callee.tag == 5 && heap.nodes[frame.callee.a].kind == 4 {
-                let v = native_value(heap, heap.nodes[frame.callee.a].function, [arg]); job.operands.push(v);
+                let id = heap.nodes[frame.callee.a].function;
+                if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
+                else { let v = native_value(heap, id, [arg]); job.operands.push(v); }
             } else { enter(job, frame.callee, Value {}, [arg]); }
         }
         if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -638,7 +656,8 @@ fn step(job: Job&) {
                         job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: callback, receiver: Value {}, input: input, output: out });
                         job.operands.resize(base);
                     }
-                } else { let value = native_value(heap, id, args); job.operands.resize(base); job.operands.push(value); }
+                } else if id >= 5 && id <= 8 { request_effect(job, id, args, frame); job.operands.resize(base); }
+                else { let value = native_value(heap, id, args); job.operands.resize(base); job.operands.push(value); }
             } else if enter(job, callee, receiver, job.operands[(job.operands.len - op.arg)..]) { job.frames[job.frames.len - 1].operand_base = base; job.operands.resize(base); }
         },
         45 => { job.operands.push(frame.callee); },
@@ -699,16 +718,17 @@ fn step(job: Job&) {
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
 }
-fn claim(job: Job&) -> bool { if job.claimed || job.status != tiny::Status.Ready { return false; } job.claimed = true; return true; }
+fn claim(job: Job&) -> bool { if job.claimed || job.effect_pending || job.status != tiny::Status.Ready { return false; } job.claimed = true; return true; }
 fn run_claimed(job: Job&, budget: i64) -> tiny::Outcome {
     if !job.claimed { return tiny::Outcome.Busy; }
     defer { job.claimed = false; }
     var used: i64 = 0;
-    while job.status == tiny::Status.Ready && (budget < 0 || used < budget) { step(job); used += 1; }
+    while job.status == tiny::Status.Ready && !job.effect_pending && (budget < 0 || used < budget) { step(job); used += 1; }
     return match job.status { Ready => tiny::Outcome.Yielded, Complete => tiny::Outcome.Complete, Failed => tiny::Outcome.Failed };
 }
 fn run(job: Job&, budget: i64) -> tiny::Outcome {
     if job.claimed { return tiny::Outcome.Busy; }
+    if job.effect_pending { return tiny::Outcome.Yielded; }
     if job.status == tiny::Status.Complete { return tiny::Outcome.Complete; }
     if job.status == tiny::Status.Failed { return tiny::Outcome.Failed; }
     assert(claim(job)); return run_claimed(job, budget);
