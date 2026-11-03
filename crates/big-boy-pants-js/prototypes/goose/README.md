@@ -184,3 +184,155 @@ checks cover all fields and the allocator. Round-robin runs preserve exactly-onc
 effects and terminal-failure isolation. Session object IDs are monotonic and
 meaningful only in their originating session. This slice has no collector,
 snapshot publication, cross-session identity, concurrent jobs or macro timing claim.
+
+## Serial source VM
+
+The GSP reader now feeds `source_vm.goose`, extending the bootstrap's execution
+model with explicit frames and flat indexed storage. Numeric operations share
+`vm.goose`'s primitive dispatch; terminal outcomes and the single-owner claim
+protocol retain the bootstrap contract. `scalar.goose` remains the narrow legacy
+adapter, and all original saved-state/ordered-effect tests still run.
+
+Build and run a native command from this directory:
+
+```sh
+goose build execute.goose -o .execute
+./.execute corpus/serial/mutations.gsp
+./.execute corpus/synthetic/unicode.gsp
+rm .execute
+```
+
+Output is typed and deterministic: `boolean:true`, `number:27.5`,
+`number:-0`, `number:NaN`, `utf16:[55357,56832,55296]`, or
+`identity:SESSION:INDEX:KIND`. Ordinary finite numbers use Goose's round-trip
+binary64 decimal rendering. Object identities are meaningful only in their
+session; this output is a diagnostic, not a form bridge. Exceptions produce
+exit status 1 with a typed fault, function/instruction ID and exact source-byte
+span. Bad framing/version and flow errors also exit 1. `smoke.bb` exercises the
+native command, error exit status and bounded output, alongside debug/native
+execution of `serial_tests.goose` and every earlier regression. It reports a
+missing Goose compiler explicitly; `GOOSE` can select its executable.
+
+`corpus/serial/*.js` are original small JavaScript tests, not emitted macros.
+The existing Rust parser/lowerer exports their complete function trees. The
+exporter test independently checks their expected values/errors in Node/V8 and
+Pants; `regenerate.bb` regenerates/checks their images and the manifest. Goose
+executes nested ordinary/receiver calls, immutable and shared mutable captures,
+cell TDZ reads, left-to-right mutation, arrays/own data properties, numeric
+NaN/signed-zero/remainder/truth behavior, operand-returning short circuiting and
+exact UTF-16 strings. A synthetic `NewFixedCell` opcode variation verifies
+immutable-cell writes; direct const writes and throw/try remain positioned
+export errors. Recursion is not required by this corpus. Existing source
+inspection tests retain exhaustive truncations, bad indices/descriptors,
+versions, branch boundaries and transactional image installation. New execution
+validation independently checks child capture arities, stack underflow/joins,
+fallthrough and per-function stack limits before any execution.
+
+Every captured macro/helper image also passes source flow validation and native
+entry execution to instantiate its factory closure. The actual captured Pants
+helper factory executes nested source calls up to `NewFormVector`, where it
+fails with `NativeBoundary`. Macro bodies and real form operations **do not yet
+execute**: reserved form/collection leaves are the next runtime slice. Globals
+requiring declarations, prototype/native methods, string-to-number coercion,
+object coercion, catches/throws, constructors and other unsupported semantics
+fail explicitly. Export/inspection support is still wider than execution;
+there is no foreign evaluation fallback. C `exit` supplies only CLI exit status.
+
+`Code` owns the decoded source bytes, UTF-16 literals, functions, child IDs and
+operations after the input image dies. A `Heap` owns fixed-stride node,
+property, capture-value, constant-value and UTF-16 pools. Plain mutable JS
+objects/arrays are separate from the future persistent form model. Closures
+copy capture values/IDs into their own range; cells own initialization,
+immutability and payload state. Frame return reclaims operands and locals but
+retains all reachable captured values. Property chains contain integer indices.
+Heap indices append until whole-session scope exit: no slot recycling, rewind
+or collector. A serial admission authority assigns monotonically increasing
+session IDs and rejects exhaustion; every external string/object value checks
+its session and range, so an old ID cannot name a replacement in a new session.
+The authority is outside snapshot state.
+
+Default cumulative session limits are 100,000 nodes, 1,048,576 properties,
+1,048,576 capture values, 1,048,576 constants, 1,048,576 UTF-16 units and
+10,000,000 work units. Instructions, allocations, local/argument initialization,
+string copying/comparison and property/index scans charge work. A job has at
+most 1,000,000 instructions, 256 frames, 65,536 live locals and 65,536 operands;
+its diagnostic write trace also has a property-count bound. Program decoding
+retains GSP's separate framing limits. Limit failures are terminal and never
+replayed. A failed job retains its explicit frame/fault state for inspection;
+its scratch disappears at job scope exit. Earlier heap writes/allocations and
+cumulative charges remain. The next job can run on the same session if budgets
+permit. `serial_tests.goose` compares all frame PCs, operands, locals, results,
+ordered writes, heap tables and allocator cursors at every instruction cut
+against single-step execution, including zero budgets and calls/branches.
+
+The **checkpoint boundary** for later heap copying is admission with no live
+job: after initialization, or after the preceding terminal job's owner has left
+scope. Initialized helper closures and reachable heap values remain live. Copy
+all heap pools, their lengths/session identity, limits and cumulative work;
+share only immutable decoded code through its owner. Coordinator admission
+identity authority is excluded. This does not implement or promise copying an
+arbitrary suspended stack. Sliced execution retains one job's explicit state
+in place and is independently covered by the original synthetic exactly-once
+effect tests and the source mutation tests.
+
+## Early native source diagnostic
+
+Run `bb crates/big-boy-pants-js/prototypes/goose/measure.bb` from the repository
+root. It checks tools, builds in a temporary directory inside the checkout and
+removes it on every exit. It compares the unchanged historical arithmetic and
+control-flow function sources with their exported images: one execution thread,
+100 warmup calls, then 1,000 checked calls, five fresh-process samples per
+engine/workload. The checksums are 27,500 and 7,307,000. Goose includes job
+creation/disposal and budget checks; V8 can optimize these tiny pure functions.
+The load/boot column includes file I/O and binary validation/decoding for Goose,
+and file I/O plus parsing/compilation for V8. Export and native compilation are
+excluded. Process wall time additionally includes launch, output and session
+teardown; it cannot isolate VM speed. No allocation instrumentation is enabled.
+
+This is a diagnostic on source execution, **not macro performance**, compiler
+end-to-end performance, snapshot copying or worker scaling. The initial V8
+comparison uses Node's V8, not light-cljs's embedded V8 build. Different runtime
+surfaces and process boot costs must remain visible in later comparisons.
+
+Samples taken 2026-11-03 UTC on macOS 15.7.3, ARM64 Apple M3 Ultra
+(Virtual), Goose v2026.3-267-g369c7a2c/runtime 3025e5810379, Babashka
+1.12.218, Node v26.12.1/V8 14.6.202.34-node.40. No other builds/tests from
+this run overlapped these samples. All numbers below are raw nanoseconds.
+
+| Source | Engine | Sample | Load/boot | Warmup | Execute/dispose | Internal total | Process wall |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| arithmetic | goose | 1 | 74000 | 49000 | 412000 | 542000 | 3543208 |
+| arithmetic | goose | 2 | 44000 | 43000 | 370000 | 463000 | 2685583 |
+| arithmetic | goose | 3 | 44000 | 43000 | 359000 | 454000 | 2697917 |
+| arithmetic | goose | 4 | 45000 | 43000 | 399000 | 495000 | 2707500 |
+| arithmetic | goose | 5 | 41000 | 44000 | 383000 | 473000 | 2531417 |
+| arithmetic | v8 | 1 | 124750 | 9041 | 121125 | 1886500 | 49789500 |
+| arithmetic | v8 | 2 | 122334 | 8666 | 116584 | 1965709 | 50092042 |
+| arithmetic | v8 | 3 | 121042 | 8916 | 117125 | 1842208 | 50854167 |
+| arithmetic | v8 | 4 | 140917 | 9833 | 119417 | 2196417 | 51738625 |
+| arithmetic | v8 | 5 | 119208 | 8792 | 129875 | 2040292 | 50635167 |
+| control_flow | goose | 1 | 58000 | 546000 | 5185000 | 5802000 | 8694708 |
+| control_flow | goose | 2 | 51000 | 519000 | 5309000 | 5885000 | 8294291 |
+| control_flow | goose | 3 | 49000 | 499000 | 5192000 | 5748000 | 8104167 |
+| control_flow | goose | 4 | 49000 | 563000 | 5077000 | 5702000 | 8079167 |
+| control_flow | goose | 5 | 45000 | 540000 | 5448000 | 6041000 | 8529166 |
+| control_flow | v8 | 1 | 133583 | 72875 | 146125 | 2029625 | 49022375 |
+| control_flow | v8 | 2 | 142333 | 75208 | 206792 | 2178541 | 49544750 |
+| control_flow | v8 | 3 | 130250 | 76584 | 143708 | 1910334 | 50711334 |
+| control_flow | v8 | 4 | 124792 | 71875 | 162791 | 2053917 | 49709583 |
+| control_flow | v8 | 5 | 131541 | 69959 | 146083 | 2027958 | 48620292 |
+
+Verification on this slice: `regenerate.bb --check` passes (compiler capture,
+independent Node/Pants references, exporter tests, manifest checks, format,
+Goose checks/debug/native smoke). `cargo build --locked -p big-boy-pants-js
+--all-targets` passes with `CARGO_BUILD_JOBS=3`, Rust 1.99.1. Strict engine
+Clippy retains 11 existing diagnostics: deprecated atomic fetch_update,
+chunks_exact, byte_char_slices, mutable_key_type and unused Wakeups. Engine
+`cargo fmt -- --check` retains existing formatting differences in src/job.rs,
+lib.rs, object/array.rs, object/map.rs, object/weak_map.rs, object.rs, runtime.rs,
+task.rs, vm/frames.rs, vm/proxy.rs and tests/gc_roots.rs. These paths are byte
+identical to d64d9045; no lint suppression or unrelated formatting was added.
+The changed exporter passes standalone rustfmt; `git diff --check` passes.
+Full compiler/engine suites were not run: the production evaluator and engine
+dispatch are unchanged, and this slice uses focused exporter/capture and native
+Goose verification.

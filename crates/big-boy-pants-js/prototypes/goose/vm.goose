@@ -144,6 +144,20 @@ fn claim(job: Job&) -> bool {
 fn fail(job: Job&, fault: Fault) {
     job.fault = fault; job.fault_pc = job.pc - 1; job.status = Status.Failed;
 }
+// Shared primitive arithmetic for bootstrap and source-derived frames.
+fn number_binary(op: i64, x: f64, y: f64) -> Value {
+    return match op {
+        7, 73 => Value.Number { value: x + y },
+        8 => Value.Number { value: x - y },
+        9 => Value.Number { value: x * y },
+        33 => Value.Number { value: x / y },
+        34 => Value.Number { value: x % y },
+        38, 75 => Value.Bool { value: x > y },
+        39, 76 => Value.Bool { value: x <= y },
+        40, 77 => Value.Bool { value: x >= y },
+        _ => Value.Bool { value: x < y },
+    };
+}
 fn step(session: Session&, job: Job&) {
     let p .= job.program;
     if !p.valid || job.pc < 0 || job.pc >= p.instructions.len || job.locals.len != p.locals { fail(job, Fault.InvalidState); return; }
@@ -162,17 +176,7 @@ fn step(session: Session&, job: Job&) {
             match a {
                 Number x => match b {
                     Number y => {
-                        let v: Value = match ins.op {
-                            7, 73 => Value.Number { value: x.value + y.value },
-                            8 => Value.Number { value: x.value - y.value },
-                            9 => Value.Number { value: x.value * y.value },
-                            33 => Value.Number { value: x.value / y.value },
-                            34 => Value.Number { value: x.value % y.value },
-                            38, 75 => Value.Bool { value: x.value > y.value },
-                            39, 76 => Value.Bool { value: x.value <= y.value },
-                            40, 77 => Value.Bool { value: x.value >= y.value },
-                            _ => Value.Bool { value: x.value < y.value },
-                        };
+                        let v = number_binary(ins.op, x.value, y.value);
                         job.operands.push(v);
                     },
                     _ => { fail(job, Fault.UnsupportedOperand); },

@@ -108,6 +108,8 @@ fn supported(op: Opcode) -> bool {
             | NewArray
             | AppendElement
             | GetThis
+            | GetRawThis
+            | ResolveThis
             | GetGlobalObject
             | GetGlobal
             | GetGlobalOrUndefined
@@ -499,5 +501,106 @@ mod tests {
             export_source("large.js", &source).unwrap_err().kind,
             SyntaxErrorKind::TooLarge
         );
+    }
+}
+
+#[cfg(test)]
+mod serial_tests {
+    use super::*;
+
+    // Independent Node/V8 and Pants expectations for original small source
+    // cases. They exercise language execution, not macro expansion coverage.
+    #[test]
+    fn source_cases_export_and_match_reference_engines() {
+        use crate::{RunOutcome, Runtime, ValueView, VmErrorKind};
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("prototypes/goose/corpus/serial");
+        let regenerate = std::env::var_os("GOOSE_REGENERATE").is_some();
+        let schema = root
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("export_schema.goose");
+        if regenerate {
+            std::fs::write(&schema, inspection_schema()).unwrap();
+        } else {
+            assert_eq!(
+                std::fs::read_to_string(&schema).unwrap(),
+                inspection_schema()
+            );
+        }
+        for (name, expected) in [
+            ("calls", "boolean:true"),
+            ("captures", "boolean:true"),
+            ("mutations", "boolean:true"),
+            ("control", "boolean:true"),
+            ("numbers", "boolean:true"),
+            ("strings", "boolean:true"),
+            ("negative-zero", "number:-0"),
+            ("nan", "number:NaN"),
+            ("tdz", "exception:ReferenceError"),
+            ("type-error", "exception:TypeError"),
+            ("not-callable", "exception:TypeError"),
+            ("unsupported-coercion", "number:3"),
+            ("unsupported-prototype", "string:[object Object]"),
+            ("loop", "limit"),
+        ] {
+            let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
+            let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));
+            let path = root.join(format!("{name}.gsp"));
+            if regenerate {
+                std::fs::write(path, &export.bytes).unwrap();
+            } else {
+                assert_eq!(std::fs::read(path).unwrap(), export.bytes, "{name}");
+            }
+            if name == "loop" {
+                continue;
+            }
+            let js = format!(
+                "try {{ const value = ({source})(); console.log(typeof value === 'number' ? 'number:' + (Object.is(value, -0) ? '-0' : String(value)) : typeof value + ':' + String(value)); }} catch(e) {{ console.log('exception:' + e.name); }}"
+            );
+            let output = std::process::Command::new("node")
+                .args(["-e", &js])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap().trim(),
+                expected,
+                "{name}"
+            );
+            let rt = Runtime::new();
+            let executable = crate::frontend::compile_function(&source).unwrap();
+            let actual = match rt.spawn(&executable, &[]).unwrap().run().unwrap() {
+                RunOutcome::Complete(value) => match value.view() {
+                    ValueView::Bool(b) => format!("boolean:{b}"),
+                    ValueView::Number(n) if n == 0.0 && n.is_sign_negative() => "number:-0".into(),
+                    ValueView::Number(n) => format!("number:{n}"),
+                    ValueView::String => {
+                        format!("string:{}", value.string().unwrap().to_string_lossy())
+                    }
+                    other => panic!("unexpected {other:?}"),
+                },
+                RunOutcome::Failed(error) => match error.kind() {
+                    VmErrorKind::ReferenceError => "exception:ReferenceError".into(),
+                    VmErrorKind::TypeError => "exception:TypeError".into(),
+                    other => panic!("unexpected {other:?}"),
+                },
+                other => panic!("unexpected {other:?}"),
+            };
+            assert_eq!(actual, expected, "{name}");
+        }
+        // Throw/try and direct const writes are outside the frozen export
+        // surface: explicit positioned errors rather than Goose semantics.
+        for source in [
+            "function f() { throw 1; }",
+            "function f() { const x=1; x=2; return x; }",
+        ] {
+            assert_eq!(
+                export_function(source).unwrap_err().kind,
+                SyntaxErrorKind::Unsupported
+            );
+        }
     }
 }
