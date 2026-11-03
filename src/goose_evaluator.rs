@@ -375,10 +375,19 @@ impl GooseSession {
     fn definition(&self, key: DefinitionKey, source: &str) -> Result<u64, EvalError> {
         let mut definitions = self.definitions.lock().unwrap();
         if let Some((id, previous)) = definitions.get(&key) {
-            return if previous == source {
+            // A catalog unit has an immutable resolved request/context. Its
+            // equivalent emitted text can change when application IR is drained
+            // into DeferredUnit (canonical vs native emission). Keep the first
+            // supported export by unit identity, as the once-only producer does.
+            // Still service every compiler callback before reaching this cache.
+            return if matches!(key, DefinitionKey::Helper(_)) || previous == source {
                 Ok(*id)
             } else {
-                Err(error("definition identity/source conflict"))
+                Err(error(format!(
+                    "definition identity/source conflict for {key:?}: {} vs {} bytes",
+                    previous.len(),
+                    source.len()
+                )))
             };
         }
         if definitions.len() >= 1024 {
@@ -774,7 +783,19 @@ mod tests {
             std::fs::write(root.join("macros.cljs"),"(ns macros) (def shared [11 22]) (defmacro work [n] (loop [i 0] (if (= i n) (list 'quote shared) (recur (+ i 1)))))").unwrap();
             std::fs::write(root.join("main.cljs"),"(ns main (:require [macros :refer [work]])) (def shared [99]) (def a (work 20000)) (def b (work 20000)) (def c (work 20000)) (def d (work 20000)) (js/console.log (pr-str [a b c d]))").unwrap();
             std::fs::write(root.join("batch0.cljs"), "(ns batch0 (:require [macros :refer [work]])) (def a (work 20000)) (def b (work 20001)) (def c (work 20002)) (def d (work 20003))").unwrap();
-            std::fs::write(root.join("main.cljs"), "(ns main (:require [batch0 :as b0] [macros :refer [work]])) (def a (work 20004)) (def b (work 20005)) (def c (work 20006)) (def d (work 20007)) (js/console.log (pr-str [b0/a b0/b b0/c b0/d a b c d]))").unwrap();
+            for stage in 0..crate::analyzer::DRAIN_LAG {
+                let dependency = if stage == 0 {
+                    "batch0".to_owned()
+                } else {
+                    format!("gate{}", stage - 1)
+                };
+                std::fs::write(
+                    root.join(format!("gate{stage}.cljs")),
+                    format!("(ns gate{stage} (:require [{dependency}]))"),
+                )
+                .unwrap();
+            }
+            std::fs::write(root.join("main.cljs"), "(ns main (:require [gate5] [batch0 :as b0] [macros :refer [work]])) (def a (work 20004)) (def b (work 20005)) (def c (work 20006)) (def d (work 20007)) (js/console.log (pr-str [b0/a b0/b b0/c b0/d a b c d]))").unwrap();
             let mut builds = Vec::new();
             let mut expansions = Vec::new();
             for goose in [false, true] {

@@ -96,6 +96,62 @@ fn goose_compiler_preparation_identity_and_private_calls() {
 }
 #[test]
 #[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_prepared_definition_keeps_live_helper_contexts() {
+    for workers in [1, 2, 4, 8] {
+        let session = GooseSession::start(&runner(), workers).unwrap();
+        for unit in [41, 42] {
+            let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+            let (_, args, call) = inputs(&e, "rt => (form, env) => 0");
+            let f = e.source_macro_function(777, "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')").unwrap();
+            e.register_compiler_root("fixture/value", Some(unit), true, "fixture.cljs", None)
+                .unwrap();
+            let callbacks = Rc::new(Cell::new(0));
+            let calls = callbacks.clone();
+            e.install_helper(Rc::new(move |_, requested| {
+                assert_eq!(requested, unit);
+                calls.set(calls.get() + 1);
+                // The real compiler likewise has equivalent native/canonical
+                // emissions before/after releasing one catalog unit's IR.
+                Ok(if calls.get() == 1 {
+                    format!("rt => {unit}")
+                } else {
+                    format!("rt => ({} + 1)", unit - 1)
+                })
+            }));
+            for _ in 0..2 {
+                let result = e.call(f, &args).unwrap();
+                let result = e
+                    .export_form(result, &call, origin(&call), Default::default())
+                    .unwrap();
+                assert!(
+                    result
+                        .data()
+                        .value_eq(&Datum::new(DatumKind::Integer(unit as i64)))
+                );
+            }
+            assert_eq!(
+                callbacks.get(),
+                2,
+                "callbacks stay live on every real body call"
+            );
+        }
+        assert_eq!(session.stats().exports, 3, "macro and two contextual units");
+        assert_eq!(session.stats().preparations, 1);
+        assert_eq!(session.stats().jobs, 4);
+        assert_eq!(
+            session
+                .trace()
+                .iter()
+                .filter(|s| s.starts_with("PRODUCED "))
+                .count(),
+            2
+        );
+        session.close();
+        cleaned(&session);
+    }
+}
+#[test]
+#[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_preparation_failure_cleanup() {
     for source in [
         "rt => 42",

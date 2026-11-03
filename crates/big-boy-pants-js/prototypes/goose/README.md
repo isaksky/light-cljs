@@ -902,8 +902,11 @@ the full canonical runtime. Unsupported source jobs fail without another engine.
 The compiler exports each definition's GSP2 code once per compilation and emits
 fresh GFB1 structured form arguments for every call. The cache uses the compiler's
 resolved `CodeIdentity`, with separate anonymous and helper-unit identities;
-equal source text does not merge distinct definitions. An identity/source
-conflict is terminal. The declaring evaluator and foreign worker views use the
+equal source text does not merge distinct definitions. Conflicting source under
+one macro code identity is terminal. A helper's immutable catalog unit includes
+its resolved declaration context: equivalent native/canonical emission before
+and after application IR release reuses its first export. Compiler callbacks
+still run on every demand before that reuse. The declaring evaluator and foreign worker views use the
 same definition identity. GCS1
 correlates requests, dependency demands and results over one long-lived native
 process. Compiler callbacks resolve helpers from the real declaration catalog.
