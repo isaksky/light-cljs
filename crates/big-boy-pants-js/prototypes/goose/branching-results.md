@@ -1,19 +1,20 @@
 # Bounded Goose branching comparison
 
-**No-go for a compiler speedup from this prototype at the measured scope.** On
-2026-11-03, the Goose prototype's single-worker compiler wall time was
-1.40/1.91/2.23 times the V8 build for the small/medium/larger cases. Increasing
-the execution limit to eight did not close the gap. The larger compiler case
-was 45.06 ms [44.49, 45.67] for V8 and 100.46 ms [98.48, 105.23] for Goose at
-one worker. This is a completed performance loss, not evidence about whole
-projects or a reason to extend this experiment into an engine rewrite.
+**No-go for a compiler speedup at this measured scope.** The complete two-batch
+compiler experiment at `0c39f9efe0ae97a4d1593ef228de73a726da61ed` takes
+54.24 ms [53.53,57.42] for the one-worker V8 build on the larger case. The
+Goose prototype takes 170.78 ms [161.78,171.54] at one worker, and its best
+branching result is 136.51 ms [135.24,139.83] at four workers: 1.25 times its
+own one-worker speed, but still 2.52 times V8's wall time. The one-worker
+small/medium/larger deficits are 1.70/2.52/3.15 times V8. These results describe
+the finite inputs below, with actual compiler/helper work, and do not predict
+whole-project performance or justify an engine rewrite.
 
-The source-derived VM experiment does benefit from sharing initialization:
-Goose's larger fresh-process two-batch wall falls from 312.35 ms when rebuilding
-per job to 190.85 ms with one initialized process, then 163.01 ms at two workers.
-That is 1.17 times its single-worker branch speed, but still 1.70 times V8's
-96.00 ms. Serial execution without branching takes 153.66 ms. Avoided setup and
-fast primitives therefore do not establish viability.
+The source-derived VM experiment also loses. Its larger two-batch wall is
+190.02 ms at one Goose worker, 165.43 ms at four workers (1.15 times its own
+speed, still 1.63 times V8), 156.57 ms without branching, and 312.41 ms when
+rebuilding a runtime for each job. Sharing setup helps; branching does not
+beat the retained serial control in this envelope.
 
 ## Reproduce and evidence
 
@@ -21,45 +22,59 @@ From the repository root:
 
 ```sh
 bb crates/big-boy-pants-js/prototypes/goose/benchmark.bb --check
+GOOSE_BENCH_DEBUG=1 bb crates/big-boy-pants-js/prototypes/goose/benchmark.bb --check
 bb crates/big-boy-pants-js/prototypes/goose/benchmark.bb --measure
 bb crates/big-boy-pants-js/prototypes/goose/benchmark.bb --allocations
 bb crates/big-boy-pants-js/prototypes/goose/benchmark.bb --summarize
 ```
 
-The final clean run is revision `9e5da298b3781893a447a072922343b067bb1f36`.
-The storage run includes the subsequent allocation-only `--nocapture` fix at
-`11dacc2a`; clean timing behavior is unchanged by that fix. Sources, executables,
-input SHA-256s, native commands, toolchain and environment are in each manifest.
-Documentation and the explanatory source comment follow those runs.
-
-- [Raw clean samples](branch-samples.edn.gz): 840 samples, 168 cells, exactly
-  five rounds per cell, plus 14 quiet snapshots and five separate copy probes.
+- [Clean timing samples](branch-samples.edn.gz): **1,050 samples, 210 cells,
+  exactly five rounds each**, 14 quiet-machine gates and five separate copy
+  probes. The manifest records source revision `0c39f9ef`, an empty tracked diff
+  at invocation start, exact source/input/executable hashes and native commands.
 - [All-cell medians, ranges, ratios and phase summaries](branch-summary.edn).
-- [Separate allocation/storage samples](branch-allocations.edn.gz): one
-  instrumented invocation per cell, with complete process RSS, sampled thread
-  counts, allocator requests, retained-storage counters and native traces.
-- [Earlier complete timing run](branch-samples-before-barrier.edn.gz): retained
-  to expose repeat variation; its preliminary copy probe lacked the opaque
-  consumption barrier and is excluded from copy conclusions. The primary tables
-  use only the final run, not the best of two runs.
+- [Separate allocation/storage samples](branch-allocations.edn.gz): 210
+  instrumented cells, allocator requests, process RSS, native storage/copy
+  counters and sampled thread counts. These are not clean timing samples.
 
-Gzip contains newline-delimited EDN without rounding. Re-running measurement
-commands replaces their corresponding current samples; `--check` writes a
-separate hidden correctness file. The existing [serial evidence](serial-costs.md)
-and [serial samples](serial-samples.edn), including 738/739's revisions, scopes
-and paired copy-removal diagnostics, remain unchanged. None supplies a new row
-in this experiment. The methodology follows `7149c2a9:benchmarks/README.md` and
-`db6f7f07:benchmarks/parser.md`, not their historical throughput targets.
+Gzip contains newline-delimited EDN without rounding. Reproduction overwrites
+its corresponding current artifact; `--check` writes a separate hidden file.
+The compiler workload and output checks were strengthened for this revision;
+all current cells were rerun. The Rust allocation and timing executables differ;
+the same native executable selects instrumentation with an explicit runtime
+flag. Both manifests record their executable hashes.
 
-## Finite supported inputs
+Historical evidence remains available without being substituted for this run:
+[one-batch compiler timing samples](branch-samples-one-compiler-batch.edn.gz)
+at `9e5da298b3781893a447a072922343b067bb1f36`, and
+[their allocation samples](branch-allocations-one-compiler-batch.edn.gz) with
+`11dacc2a`'s allocation-only output fix. That experiment measured compiler
+branch cells with one application batch; its serial/rebuild and reused-batch
+controls covered source-derived VM calls only. Its form check compared value
+equality, form topology and source provenance but omitted the serialized
+scalar datum pools; it did not establish exact scalar metadata or numeric
+representation equality. Current checks compare those complete pools as well,
+and regression tests reject both integer-versus-double and scalar metadata
+changes that the older checks admitted. The old timing values remain historical
+measurements under those weaker checks, not new correctness evidence.
 
-Seed 24301; no random search or adaptive selection. The actual emitted `work`
-macro adapts `corpus/churn.cljs` / `benchmarks/native-macros-k.bb`: it constructs
-and persistently updates a vector and map, traverses them, and returns a quoted
-vector containing the computed total and its original form argument. Calls
-alternate work `n` and `n+1`. Numeric payload element `i` is `(24301+17*i) mod 101`.
+The [earlier complete timing run](branch-samples-before-barrier.edn.gz) also
+remains historical: its copy probe lacked the opaque consumption barrier and
+is excluded from copy conclusions. The existing [serial evidence](serial-costs.md)
+and [samples](serial-samples.edn), including 738/739's revisions and paired
+copy-removal diagnostics, remain unchanged. Methodology follows
+`7149c2a9:benchmarks/README.md` and `db6f7f07:benchmarks/parser.md`, not their
+historical performance targets.
 
-| Case | Work n | Fan-out | VM source bytes | Payload | Payload nodes per call |
+## Finite supported inputs and checks
+
+Seed 24301; no adaptive selection. The actual emitted `work` macro adapts
+`corpus/churn.cljs` / `benchmarks/native-macros-k.bb`: it persistently constructs
+a vector and map, traverses them, and returns a quoted vector containing the
+computed total and its original form argument. Calls alternate work `n` and
+`n+1`. Numeric payload element `i` is `(24301+17*i) mod 101`.
+
+| Case | Work n | Jobs per batch | VM source bytes | Payload | Payload nodes per call |
 | --- | ---: | ---: | ---: | --- | ---: |
 | small | 8 | 1 | 308 | vector of 8 numbers | 9 |
 | medium | 32 | 4 | 705 | vector of 32 numbers | 33 |
@@ -69,223 +84,278 @@ alternate work `n` and `n+1`. Numeric payload element `i` is `(24301+17*i) mod 1
 | plain | 32 | 4 | 1345 | vector of 32 plain café strings | 33 |
 | decoded | 32 | 4 | 1857 | same strings using a Unicode escape | 33 |
 
-The last two have the same 128 UTF-16 payload units per call. Their source byte
-counts differ. Manifests record exact source bytes, payload nodes/units, source
-hashes and generation parameters; nodes here are payload nodes, not every parser
-node or metadata occurrence. Wider work/fan-out and shape controls are bounded;
-there is no arithmetic-only replacement or extrapolation beyond this manifest.
+Plain and decoded have the same 128 UTF-16 payload units per call despite
+different source byte counts. Manifests record exact source hashes, bytes,
+payload nodes/units and compiler source bytes for both normal and rebuild
+controls. Node counts above describe payloads, not all parser/metadata nodes.
 
-The compiler experiment loads actual `macros.cljs` and `main.cljs` namespaces,
-uses compiler worker slots, analyzes returned forms and emits the application.
-Its macro also demands the shared helper `[11 22]`, once, after constructing the
-collections. Independent branches consume that immutable publication and join
-in the application's result vector. Goose asserts one producer for every
-compilation. Every compiler sample checks byte-identical emitted JS and actual
-Node application output against a separate V8 reference. VM samples freshly
-capture independent V8 expected forms and selected-engine emitted factories,
-then compare complete returned forms, metadata/origins and source bytes/spans
-after releasing job handles. Unsupported inputs fail; no cell is skipped.
+The compiler reads actual `macros.cljs`, `batch0.cljs`, `batch1.cljs` and
+`main.cljs`. Each batch contains the listed jobs; batch1 requires batch0, and
+the application joins both sets of results. The macro demands the actual shared
+helper `[11 22]` after collection construction. Each ordinary compilation uses
+one adapter session and asserts one initialization, exactly twice the listed
+job count, and exactly one helper producer. The second batch uses that same
+session, emitted macro and helper publication. No fresh-compilation/session
+lifetime guard is bypassed and no macro result is precomputed.
+
+Each compiler sample checks byte-identical emitted JS against a separate V8
+reference for its control, then executes it with Node and checks application
+output. Rebuild emits one isolated application per source job; its result lines
+are normalized and independently required to equal the ordinary application's
+complete result vector. VM samples freshly capture V8 expected forms and the
+selected engine's emitted factory, then check all returned form nodes,
+metadata/origins, scalar datum/UTF-16 pools and source bytes/spans after releasing
+job handles. Unsupported inputs fail; no comparison cell is skipped.
 
 ## Intervals, controls and threads
 
-Each cell has one complete discarded process warmup, then five measured rounds.
-Cell order rotates and reverses on alternate rounds. Every process is fresh;
-filesystem caches are warm and no JIT saturation or cold-disk claim is made.
-VM batch 0 is the first execution batch and batch 1 reuses the same initialized
-runtime/session. Rebuild controls deliberately create a fresh runtime/process
-for each job in both batches. Serial controls retain one evaluator/heap without
-per-job branches; V8's ordinary one-worker path is already serial.
+Every cell has one complete discarded process warmup, followed by five measured
+rounds. Cell order rotates and reverses on alternate rounds. Every cell process
+is fresh; filesystem caches are warm, with no cold-disk or JIT-saturation claim.
 
-Primary wall time surrounds process launch through exit. It includes source
-load/parse, macro compilation/emission/export, runtime/process load and boot,
-capture, transport copies, restore/relocation, queueing, execution, helper
-publication/import, form conversion, emitted artifact writing, handle release,
-worker joins, session-file removal and final process disposal. Compiler timing
-uses the real namespace API; CLI argument parsing and application execution
-are outside it. Benchmark input generation, independent compiler oracle setup,
-result-file comparison and final benchmark-directory deletion are outside.
-No precomputed expansion is used by a timed compiler invocation.
+Compiler cold/reused measurements are **batches within one compilation**.
+A test-only expansion observer marks completion of the last `work` expansion
+in each dependent namespace. The cold interval starts before host/session setup
+and includes preparation up to the first batch's completion. The reused interval
+runs from that boundary through the second batch's completion. Source discovery
+may prepare both namespaces during the cold interval; namespace settling and
+other compiler work between expansions remain in these intervals. They are
+observed compiler intervals, not isolated VM timers or separate compilations.
+Emission, final writing and disposal after the second boundary remain in the
+primary process wall.
 
-The VM primary wall additionally includes its two fresh reference/source-capture
-compilations. It is a checked source-derived VM experiment, not a compiler
-speedup measurement. Diagnostic batch clocks omit subsequent result comparison
-and owned-result disposal; primary wall includes them. Export/import counters
-and worker sums can overlap compiler analysis and coordinator sleep. They must
-not be added together or presented as an exclusive wall-time decomposition.
+The compiler serial controls use one slot. V8 and Pants use their ordinary
+serial compiler paths, so these are intentional repeats of their one-slot
+ordinary path. Goose retains one heap and runs synchronously, with no snapshot
+capture/restore or execution threads. It still asks the real compiler for the
+shared helper and evaluates that emitted helper in Goose. This finite pure
+helper needs no nested macro job while its source is being prepared; the serial
+measurement control does not admit that additional behavior. The normal
+branching adapter's nested/reentrant behavior is unchanged and remains tested.
 
-One optimized test executable contains all three selections. V8 build and Pants
-build denote the corresponding current MacroHost/MacroEvaluator path here;
+The compiler rebuild control creates and disposes a **fresh whole compiler
+host and runtime for every source job**, in each of two batches. All engines
+perform the same macro inputs and helper demand. Thus it deliberately repeats
+source reading, macro preparation and compiler work as well as engine setup;
+its difference from reuse is not a pure copying cost. The benchmark process
+persists, including process-wide V8 platform and immutable engine/bootstrap
+caches. There are no cached expansions or reused compilation sessions in this
+control. Each fresh Goose compilation asserts its own one helper producer.
+
+VM batch 0 is the first execution batch and batch 1 reuses the same runtime.
+VM serial retains one evaluator/heap, while VM rebuild creates a fresh runtime
+(and a fresh Goose subprocess) per job. These scopes differ from the compiler's
+whole-source-compilation rebuild control.
+
+Primary wall surrounds process launch through exit: source load/parse,
+macro compilation/emission/export, runtime/process load and boot, capture,
+transport copies, restore/relocation, queueing, execution, helper publication,
+artifact/form conversion, JS writing, handle release, worker joins, session
+file removal and final disposal. CLI argument parsing and Node application
+execution are outside. Benchmark input generation, independent oracle setup,
+external file comparisons and final benchmark-directory deletion are outside.
+VM primary wall additionally includes its fresh independent reference/source
+capture compilations. It is a checked source-derived VM experiment, not a
+compiler speedup measurement. VM batch clocks exclude subsequent comparisons
+and owned-result disposal; primary wall includes them.
+
+Export/import/worker sums overlap compiler analysis and coordinator sleep;
+they must not be added and called wall time. Compiler rebuild summaries sum
+sequential per-compilation phase counters, retaining each raw session row.
+Serial native invocation clocks include synchronous helper-source wait/load;
+branch execution chunks stop at helper demand. Those counters are not identical
+CPU-time scopes across controls.
+
+One optimized Rust test executable contains all three selections. V8 build and
+Pants build name the corresponding current MacroHost/MacroEvaluator paths here;
 standalone feature-only CLI binaries are outside this comparison. V8 executes
-canonical JS runtime calls; Pants and Goose execute compiler-emitted form
-intrinsics with their respective native leaves. Inputs and checked outcomes
-match, while their internal work differs. Goose's initialized base is its bounded
-runtime; each job adds its emitted factory and helpers publish once.
+canonical JS runtime calls; Pants and Goose execute emitted native form
+intrinsics with their respective native leaves. Inputs and outcomes match;
+internal work differs.
 
-V8 has one macro execution worker, an auto-sized V8 background pool
-(`new_default_platform(0,false)`, `--no-concurrent-osr`) and one interrupt
-scheduler. Compiler slots include the coordinator, so Pants uses N-1 additional
-compiler execution threads for N slots. Source-VM Pants uses N explicit execution
-threads and one waiting coordinator. Goose uses one native coordinator, one
-input thread and at most N execution threads, shared across all Rust submitters;
-its Rust side also has two transport-reader threads and the compiler/source-VM
-submitters. There is no N-by-N nested execution pool. Reference preparation and
-compiler syntax bootstrap can leave V8 background threads in the other selections.
-Instrumented `ps -M` observations are lower bounds from polling, not exact peaks
-or a claim that all N workers were simultaneously busy.
+V8 has one execution worker, an auto-sized background pool
+(`new_default_platform(0,false)`, `--no-concurrent-osr`) and an interrupt
+scheduler. Compiler slots include the coordinator; Pants uses N-1 additional
+compiler threads for N slots. VM Pants uses N explicit execution threads plus
+a waiting coordinator. Branching Goose uses one native coordinator, one input
+thread and at most N execution threads across all Rust submitters, plus two
+Rust transport-reader threads and the compiler/VM submitters. Serial Goose uses
+one native thread for input, coordination and execution. Rebuild jobs are
+sequential with a one-worker limit. There is no N-by-N execution pool. Reference
+preparation/compiler syntax bootstrap can leave V8 background threads in other
+selections. Instrumented thread polling records lower bounds, not exact peaks.
 
 ## Setup-inclusive results
 
-Milliseconds: median [minimum, maximum], five samples per cell. All seven cases,
-all controls, phase ranges, ratios to one-worker V8 and speedups against each
-engine's own one-worker branch appear in `branch-summary.edn`.
+Milliseconds: median [minimum,maximum], five samples per cell. All seven shapes,
+all controls and phase ranges are in `branch-summary.edn`. Both scopes below
+perform two batches; the compiler helper is included only in compiler rows.
 
-| Build / execution limit | Compiler small | Compiler medium | Compiler larger | VM larger, two batches |
+| Build / execution limit | Compiler small | Compiler medium | Compiler larger | VM larger |
 | --- | ---: | ---: | ---: | ---: |
-| V8 build / 1 | 35.13 [32.66,36.08] | 38.78 [38.03,40.42] | 45.06 [44.49,45.67] | 96.00 [93.91,106.47] |
-| Pants build / 1 | 80.01 [78.31,89.89] | 81.34 [80.86,82.76] | 85.91 [85.20,90.85] | 141.99 [139.89,143.71] |
-| Pants build / 2 | 81.88 [79.60,83.41] | 82.79 [81.49,84.58] | 87.08 [84.05,91.46] | 137.60 [136.31,148.89] |
-| Pants build / 4 | 80.79 [79.43,83.41] | 82.61 [80.73,83.92] | 84.94 [83.53,87.66] | 137.90 [136.02,144.18] |
-| Pants build / 8 | 80.45 [79.98,82.39] | 82.06 [81.48,85.25] | 88.55 [87.61,90.75] | 137.78 [137.11,141.28] |
-| Goose prototype / 1 | 49.00 [47.44,51.04] | 74.13 [71.75,75.43] | 100.46 [98.48,105.23] | 190.85 [187.14,194.56] |
-| Goose prototype / 2 | 73.16 [71.95,73.91] | 96.89 [96.01,97.58] | 129.60 [123.88,135.74] | 163.01 [159.17,167.01] |
-| Goose prototype / 4 | 87.81 [82.92,89.27] | 87.33 [86.85,89.44] | 104.02 [101.02,106.10] | 163.19 [161.76,166.33] |
-| Goose prototype / 8 | 88.18 [85.36,91.61] | 97.09 [91.32,99.33] | 107.86 [102.12,111.00] | 167.36 [165.41,172.20] |
+| V8 build / 1 | 34.99 [34.77,36.64] | 41.86 [40.37,42.89] | 54.24 [53.53,57.42] | 101.51 [95.82,103.82] |
+| Pants build / 1 | 82.57 [81.27,84.10] | 86.19 [83.74,89.07] | 93.85 [92.46,96.37] | 142.84 [142.60,143.51] |
+| Pants build / 2 | 83.28 [80.80,89.22] | 86.09 [83.57,87.47] | 92.00 [91.13,94.63] | 139.00 [138.07,144.77] |
+| Pants build / 4 | 82.17 [81.70,87.65] | 85.48 [83.81,88.09] | 90.10 [88.74,93.93] | 140.98 [136.18,142.62] |
+| Pants build / 8 | 83.08 [81.52,85.46] | 87.51 [86.99,90.84] | 91.95 [91.27,92.12] | 143.49 [142.42,156.43] |
+| Goose prototype / 1 | 59.64 [57.15,60.44] | 105.69 [105.43,107.95] | 170.78 [161.78,171.54] | 190.02 [187.85,195.10] |
+| Goose prototype / 2 | 83.78 [81.08,86.25] | 131.53 [128.87,133.36] | 191.71 [189.69,196.78] | 168.57 [164.67,169.09] |
+| Goose prototype / 4 | 109.11 [104.04,112.67] | 104.42 [100.73,107.52] | 136.51 [135.24,139.83] | 165.43 [165.15,168.65] |
+| Goose prototype / 8 | 108.42 [105.63,109.84] | 117.42 [102.64,121.87] | 137.83 [132.99,145.95] | 168.57 [166.04,170.57] |
 
-Goose's larger compiler speedup at 2/4/8 workers is 0.78/0.97/0.93, so these are
-slowdowns. Its best larger VM speedup is 1.17, with a remaining 1.70 times V8
-deficit. The other shapes also lose; plain-versus-decoded differences overlap
-run variation and do not demonstrate a decoding or per-form speed advantage.
+Larger one-worker controls below separate cold and reused batch medians. Full
+walls include all final cleanup. Batch spreads are in the summary. Rebuild's
+second batch remains rebuild-per-job; it is not a reused runtime.
 
-The larger one-worker controls below separate first and reused batches. These
-are diagnostic batch medians in ms; full walls and every batch range are in the
-summary. Rebuild's second batch remains rebuild-per-job, not a reused session.
-
-| Build / control | First batch | Second batch | Complete fresh process |
+| Scope / build / control | First batch ms | Second batch ms | Complete process ms [min,max] |
 | --- | ---: | ---: | ---: |
-| V8 / serial ordinary path | 11.52 | 5.16 | 96.00 |
-| V8 / rebuild each job | 96.73 | 95.21 | 261.78 |
-| Pants / branch | 11.70 | 8.28 | 141.99 |
-| Pants / serial no branch | 3.72 | 3.42 | 137.17 |
-| Pants / rebuild each job | 38.08 | 39.09 | 201.48 |
-| Goose / branch | 29.30 | 29.16 | 190.85 |
-| Goose / serial no branch | 12.31 | 11.95 | 153.66 |
-| Goose / rebuild each job | 92.52 | 93.33 | 312.35 |
+| Compiler / V8 / ordinary | 38.78 | 6.70 | 54.24 [53.53,57.42] |
+| Compiler / V8 / serial | 38.41 | 6.61 | 53.37 [52.47,54.81] |
+| Compiler / V8 / rebuild source job | 151.90 | 133.49 | 292.97 [284.70,299.43] |
+| Compiler / Pants / ordinary | 78.24 | 5.43 | 93.85 [92.46,96.37] |
+| Compiler / Pants / serial | 80.04 | 5.53 | 96.49 [93.68,98.54] |
+| Compiler / Pants / rebuild source job | 136.87 | 69.89 | 214.97 [213.43,221.06] |
+| Compiler / Goose / branch | 94.21 | 62.20 | 170.78 [161.78,171.54] |
+| Compiler / Goose / serial no branch | 46.23 | 13.59 | 69.77 [66.80,74.19] |
+| Compiler / Goose / rebuild source job | 264.03 | 253.10 | 524.94 [521.37,533.98] |
+| VM / V8 / ordinary serial | 11.50 | 5.22 | 101.51 [95.82,103.82] |
+| VM / V8 / rebuild runtime | 97.19 | 99.22 | 268.31 [256.82,273.31] |
+| VM / Pants / branch | 11.61 | 8.32 | 142.84 [142.60,143.51] |
+| VM / Pants / serial no branch | 3.82 | 3.50 | 139.49 [135.34,143.96] |
+| VM / Pants / rebuild runtime | 38.80 | 38.92 | 206.19 [198.72,213.53] |
+| VM / Goose / branch | 28.83 | 28.65 | 190.02 [187.85,195.10] |
+| VM / Goose / serial no branch | 13.54 | 12.56 | 156.57 [154.36,161.59] |
+| VM / Goose / rebuild runtime | 93.75 | 94.81 | 312.41 [312.00,318.11] |
+
+There is no observed copying break-even at which branching wins over the
+retained serial control or V8. Larger compiler Goose saves setup relative to
+524.94 ms of source-job rebuilds, but its serial retained heap is faster still
+at 69.77 ms; that remains 1.29 times V8's ordinary wall. These controls change
+compiler preparation, heap lifetime, dispatch and synchronization as well as
+copying. Their differences cannot be attributed entirely to byte copies.
+Plain-versus-decoded shapes do not establish a per-form or decoding advantage;
+all measured ranges, bytes and nodes remain available in the raw manifest.
 
 ## Attribution, copying and storage
 
-For larger Goose VM at one worker, clean medians are 114.31 ms reference/source
-preparation, 2.23 ms runtime setup, 29.30/29.16 ms batches and 4.75 ms final
-session disposal. Native execution totals 5.20 ms across both batches and
-restore totals 0.40 ms. The native coordinator accumulates 59.35 ms asleep over
-its 59.86 ms observed interval. Sleep overlaps worker execution and time awaiting
-Rust submissions; it is not 59.35 ms of removable exclusive overhead. The
-worker-active measurements leave 82% of one-worker capacity idle or unmeasured;
-at eight workers the corresponding upper bound is 96%. These bounds include
-unobserved queue/spawn activity and are not exact CPU-utilization measurements.
+For larger one-worker compiler Goose, the 170.78 ms primary wall contains
+155.81 ms inclusive analysis, 0.36 ms emission, 1.94 ms host/session setup and
+4.42 ms compiler/session cleanup. Rust GSP export sums to 11.70 ms, form bridge
+to 2.88 ms, native restore to 2.89 ms and native execution chunks to 7.99 ms.
+These overlap analysis. The native coordinator sleeps 151.08 ms over a
+155.02 ms observed interval; compiler preparation, callbacks, transport and
+workers overlap that sleep. The worker-active measurements leave an upper
+bound of 90% idle or uninstrumented capacity at one worker and 97% at four;
+they are not exact CPU-utilization measurements. Four workers reduce inclusive
+analysis to 123.54 ms, while the complete wall is still 136.51 ms. Raw copying
+primitives do not remove the dominant compiler/demand/dispatch path.
 
-For the larger actual compiler at one worker, its 100.46 ms wall contains
-88.24 ms inclusive analysis, 0.23 ms emission and 3.95 ms cleanup. Goose reports
-5.89 ms Rust GSP export, 1.43 ms Rust form bridge, 1.47 ms native restore and
-3.83 ms native execution/wait chunks. The coordinator sleeps 85.70 ms while
-compiler preparation, callbacks, transport and workers overlap. Its append-only
-continuations retain the collections built before the helper demand. The
-complete compiler's setup/serialized demand/transport path dominates; raw copy
-speed alone does not remove the observed deficit.
+For larger one-worker VM Goose, the primary wall includes 116.06 ms of
+reference/source preparation, 2.41 ms runtime setup, 28.83/28.65 ms batches and
+4.48 ms final disposal. Native execution sums to 5.03 ms and restore to 0.42 ms;
+the coordinator sleeps 58.15 ms over 58.77 ms observed wall. This explicitly
+bounds how much faster copying alone could affect the setup-inclusive result.
 
 Copy probes use an opaque non-inlined C consumption barrier for every nonempty
-payload component. An assembly check retained 14 call sites for that barrier. Five
-fresh probes separately measure flat copies, barrier-only consumption, semantic
-validation, capture and validated restore/relocation. Gross flat-copy time is
-reported with its barrier control, not silently subtracted. The small initialized
-base is 5,338 bytes including its record header and 5,002 payload bytes. This
-cache-resident primitive cannot predict a larger live continuation's cost.
+payload component. Five fresh probes separately measure raw flat copies,
+barrier-only consumption, semantic validation, capture and validated
+restore/relocation. Gross copy time includes its barrier; it is not silently
+subtracted. The initialized base is 5,338 bytes including its record header
+and 5,002 payload bytes, so this cache-resident primitive cannot predict a
+large live continuation's cost. Storage results below come from the separate
+instrumented invocation, not the clean wall-time cells.
 
-In the separate storage run, 1,000 base copies take 97 us [95,105],
-with a 31 us [27,33] barrier-only control. Semantic validation takes
-2 us [1,2], capture 6 us [5,6], and validated restore/relocation 15 us [12,18].
-Validation visits 198 records and uses an 8-byte validation bitmap. These scopes
-are inclusive and different; their medians are not subtracted to invent an
-exclusive relocation time. No copying break-even is observed in the measured
-work/fan-out envelope: sharing a process beats rebuilding, while removing both
-branches and thread/coordinator hops beats branching. The controls change more
-than a byte copy, so that difference is not attributed entirely to copying.
+The separate run's 1,000 raw base copies take 104 us [95,106], with a
+30 us [29,31] barrier-only control. Validation takes 3 us [2,3], capture
+5 us [5,6], and validated restore/relocation 17 us [12,18]. Validation visits
+198 records using an 8-byte bitmap. Capture accounts for 5,338 bytes including
+the header; restore copies 5,002 payload bytes. These different inclusive
+scopes are not subtracted to invent exclusive relocation time.
 
-The larger two-batch VM restores exactly 80,032 payload bytes from a 5,338-byte
-base, transfers 296,736 structured form bytes, and reaches 776,417 logical
-private-heap bytes in a branch. The actual compiler restores 6,383,898 bytes
-across its worker/continuation stages; snapshots range from 5,338 to 799,321
-bytes. Its shared helper publishes only 188 bytes once. This large difference
-between initialized base, retained private continuation and newly published
-artifact is visible in the raw mode-tagged native traces.
+Larger one-worker VM branching restores 80,032 payload bytes, transfers
+296,736 structured form bytes in both directions, and peaks at 776,417 logical
+private-heap bytes. The larger two-batch actual compiler restores 12,765,554
+bytes across worker/continuation stages, with snapshot sizes 5,338–799,752
+bytes. Its shared helper publishes 188 bytes once, versus 3,008 bytes across
+16 fresh per-job compilations in the rebuild control. This separates copying
+initialized base data, retaining collection-heavy continuations, and transferring
+new immutable artifacts. The serial compiler has zero snapshot/restore bytes,
+but retains 12,418,038 logical heap bytes across the session; its append-only
+heap and source pools also increase structured bridge traffic to 647,004 bytes
+versus 334,992 for branching. Retention has a measurable storage cost.
 
-The table below is the larger case at one execution worker. All values come
-from the separate instrumented run. Requested bytes are cumulative Rust allocator
-requests, not live bytes. RSS columns are decimal MB for the Rust process and
-the native Goose child separately; their independent peaks are not a measured
-simultaneous sum. The profile adds resource-wrapper processes and thread polling.
+Larger one-worker accounting below comes only from the separate instrumented
+run. Requested bytes are cumulative Rust allocator requests, not live memory.
+RSS is decimal MB; Rust and native Goose peaks are independent and are not
+added as if measured simultaneously. Rebuild's native column is the largest
+individual child-process peak, not their sum.
 
-| Scope / build | Rust allocations | Reallocations | Requested bytes | Rust RSS MB | Goose RSS MB |
+| Scope / build / control | Rust allocations | Reallocations | Requested bytes | Rust RSS MB | Goose RSS MB |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| VM / V8 | 235,381 | 33,620 | 52,989,058 | 71.14 | n/a |
-| VM / Pants | 752,685 | 158,884 | 149,535,468 | 82.38 | n/a |
-| VM / Goose | 636,443 | 154,046 | 132,547,633 | 72.43 | 3.96 |
-| Compiler / V8 | 160,282 | 23,252 | 42,708,769 | 55.69 | n/a |
-| Compiler / Pants | 423,857 | 122,094 | 88,679,383 | 41.76 | n/a |
-| Compiler / Goose | 171,040 | 27,525 | 45,585,442 | 41.58 | 16.66 |
+| VM / V8 / ordinary | 235,501 | 33,715 | 53,781,130 | 69.32 | n/a |
+| VM / Pants / branch | 752,794 | 158,981 | 150,327,308 | 85.18 | n/a |
+| VM / Goose / branch | 636,571 | 154,140 | 133,339,666 | 77.30 | 3.92 |
+| Compiler / V8 / ordinary | 182,603 | 25,607 | 46,661,277 | 61.10 | n/a |
+| Compiler / Pants / ordinary | 473,596 | 125,730 | 98,057,221 | 49.74 | n/a |
+| Compiler / Goose / branch | 204,053 | 34,112 | 52,393,734 | 41.96 | 22.87 |
+| Compiler / Goose / serial | 200,218 | 33,003 | 53,054,996 | 40.63 | 15.14 |
+| Compiler / Goose / rebuild | 285,226 | 45,300 | 196,495,588 | 74.02 | 7.63 |
 
-Rust counts include the complete run, source/reference preparation, result
-checks, profiling output and Rust/Pants allocations. They exclude V8 C++ malloc
-and Goose native data-stack allocations. V8 diagnostic heap statistics and
-forced final GC occur only in this invocation. The VM V8 macro context reports
-3,022,264 used bytes and 6,815,744 heap-capacity bytes before that GC. The VM
-Pants runtime reports 5,998,058 managed bytes, a 20,743,126-byte managed peak
-and 37,501,014 cumulative admitted bytes; these accounting quantities differ
-from RSS and allocator requested bytes. V8 and the other selections retain
-background service threads: the VM one-worker samples observe 19/20/22 Rust
-threads for V8/Pants/Goose. With the V8 harness waiter, execution thread and
-interrupt scheduler accounted for, 16 remaining threads are background threads.
-Native worker lifetimes can be shorter than the observer interval; sampled
-thread counts are explicitly lower bounds.
+Rust counts include complete preparation, checking, profiling output and Rust/
+Pants allocations; they exclude V8 C++ malloc and Goose native data-stack
+allocations. Instrumented V8 diagnostics and final forced GC are absent from
+clean timing. The VM macro context reports 2,995,168 used bytes and 6,815,744
+heap-capacity bytes before that GC; compiler V8 reports 4,011,572 used and
+8,126,464 heap-capacity bytes. VM Pants reports 5,998,058 managed bytes,
+20,743,126 peak-managed bytes and 37,501,014 cumulative admitted bytes. These
+accounting values differ from allocator requests, RSS and flat retained payloads.
+The one-worker VM process observations see 19/20/22 Rust threads for V8/Pants/
+Goose, including background services. Short native worker lifetimes can evade
+polling; thread observations remain lower bounds.
 
-
-Snapshot counters report logical bytes copied by capture/restore, not every
-compiler/runtime transport copy or explicit continuation-stack/message framing.
-Fresh dispatch also copies the flat Saved
-packet into spawn storage and worker-owned storage; resumed continuations and
-queue messages add transfers. Complete wall and process RSS include these costs.
-Native published helper payload bytes are reported separately from initialized
-base and continuation copying. Form wire bytes count structured bridge transport,
-not all source-image or allocator traffic. Allocation requests, cumulative bytes,
-logical retained bytes, capacity/accounting bytes and physical RSS are distinct.
-Goose array capacity is not directly exposed and is not inferred from retained
-payload bytes or RSS. No comparison of flat IDs against another tree layout, or
-scratch-capacity-reuse ablation, is claimed.
+Snapshot counters count logical capture/restore bytes, not every transport
+copy or continuation-stack/message frame. Fresh dispatch copies the flat Saved
+packet into spawn and worker-owned storage; resumes/messages add transfers.
+Complete wall/RSS includes those costs. Published helper payload bytes are
+separate from initialized base and continuation copying; bridge bytes describe
+structured forms, not all source-image traffic. Goose array capacity is not
+exposed and is not inferred from payload or RSS. No flat-ID-versus-tree layout
+comparison or scratch-capacity-reuse ablation is claimed.
 
 ## Machine and verification
 
 Apple M3 Ultra **Virtual**, 24 visible CPUs, 32 GiB RAM; macOS 15.7.3 (24G419),
 ARM64. Goose v2026.3-267-g369c7a2c/runtime 3025e5810379, Babashka 1.12.218,
 Rust 1.99.1 (58cf8f9c3)/LLVM 23.1.3, V8 crate 152.2.0; Node v26.12.1 supplies
-the separate application-output checks. Native Goose uses
-`/usr/bin/cc -O2` (Apple clang 21.0.0), `-lm -pthread`, no debug checks; Cargo
-uses release optimization, thin LTO and one codegen unit. No custom RUSTFLAGS,
+application-output checks. Goose native compilation uses `/usr/bin/cc -O2`
+(Apple clang 21.0.0), `-lm -pthread`, without debug checks in timing. Cargo uses
+release optimization, thin LTO and one codegen unit. No custom RUSTFLAGS,
 CPU affinity or native-CPU override. Build parallelism is three, outside timing.
-The clean run records 14 gates requiring at least 90% overall CPU idle and no
-competing Cargo/Goose process. Recorded idle is 93.22–98.15%; before/after process/load
-snapshots are in the manifest and quiet rows. These are VM measurements without
-CPU-frequency control or a confidence-interval claim.
+The clean run's 14 gates require at least 90% overall idle and no competing
+Cargo/Goose build or measurement. Recorded idle is 93.90–98.20%; manifests and
+quiet rows retain process/load observations. These are VM-host measurements
+without CPU-frequency control or a confidence-interval claim.
 
-Verification on the measured implementation: all 840 timing samples across 168 cells and
-168 storage invocations checked outputs; `compiler.bb` passed 15 tests in each
-of debug/native modes; prototype format/check/debug/native smoke passed. The
-default library suite passed 367 tests. Feature-enabled library suites reproduced
-exact documented baseline failures: default 543 passed / 2 failed (native engine
-required in namespace publication; process-order capture metadata), QuickJS
-498 passed / 1 failed (same namespace test). QuickJS bridge tests passed 3/3.
-Strict Clippy fails on the unchanged engine deprecated/chunk/byte-string
-categories and namespace test's single-element loop; audits allowing only those
-baseline categories pass for default, QuickJS and allocation-feature all targets.
-Root rustfmt has the existing unrelated differences; changed Rust/Goose files
-are formatted. The full compiler suite's existing wasm dead-code blocker is
-unchanged and was not rerun. The pinned research checkout was linked only for
-all-target checks and removed afterward.
+The current implementation passed all 1,050 clean timing comparisons and 210
+separate allocation/storage cells. All 210 cells also passed with both ordinary
+and debug native runners; the scalar metadata/representation negative regression
+passed. `compiler.bb` passed 15 adapter tests in each of debug/native modes,
+including concurrent helper production, nested callbacks, failures and cleanup;
+Goose format/check/debug/native smoke passed. Changed Rust is formatted and
+`git diff --check` passes.
+
+Strict Clippy still stops at the same eight existing engine deprecated-atomic,
+constant-chunk and byte-string diagnostics. The focused
+`--features goose-macros --lib --tests` audit, also repeated with
+`count-allocations`, passes with only those baseline categories and the existing
+namespace test's single-element loop permitted. The pinned research checkout
+was linked only for those checks and removed afterward. No production Rust
+compiler/adapter implementation, dependency or build configuration changed in
+this revision; broader default/QuickJS suite and all-target lint results from
+`124c6910` are reused on that basis. They retain the documented limits: default
+library 367 passed; feature-enabled default library 543 passed with two matching
+baseline failures (namespace publication requires a native engine; process-order
+capture metadata), QuickJS 498 passed with the matching namespace failure,
+QuickJS bridge 3/3 passed, baseline-allowed all-target Clippy passed. Root
+rustfmt has existing unrelated differences, and the full compiler suite's
+existing wasm dead-code blocker remains; neither is represented as passing.
