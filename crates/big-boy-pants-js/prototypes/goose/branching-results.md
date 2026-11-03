@@ -537,3 +537,167 @@ reproduced the eight existing engine diagnostics and the three existing
 root rustfmt still differs in unrelated files. The prior full-suite wasm
 dead-code blocker remains, so a full-suite pass is not claimed. Unaffected VM
 shape-matrix evidence is reused; the affected actual compiler cells were rerun.
+
+## Ready-work drain in the live compiler session (2026-11-03)
+
+This separate experiment measures source revision
+`86af8057f53835431f0cf0d44468a98cfebcb8c8` against its exact initialized-definition
+predecessor `64d0ae87d0655f9446b252fb1d4afb8b2f9dcf80`. The preceding reports and
+all historical samples remain unchanged. The live coordinator now drains ready
+commands and completion events, fills available execution slots, and immediately
+re-polls after progress. It sleeps only after an idle turn. Bounded queues,
+correlated calls, once-only preparation/helper publication and private resumable
+continuations retain their prior ownership rules. Execution still uses one
+native thread per initial/helper/resume chunk; this change does not introduce a
+persistent pool or a new scheduling framework.
+
+### Paired measurement
+
+`benchmark.bb --dispatch-comparison` reuses the same finite actual-compiler
+matrix and six namespace drain barriers described in the initialization section:
+small/medium/larger, work 8/32/100, fan-out 1/4/8 in each of two dependent batches,
+V8 at one slot, Pants/Goose at 1/2/4/8, and all three engines' one-slot serial and
+fresh-compilation rebuild controls. There are 45 logical cells, five adjacent
+revision pairs per cell, alternating revision order, plus one complete warmup
+per revision/cell: **450/450 successful measured comparisons**. Both revisions
+receive identical source files. The unchanged strict batch-order assertion,
+complete expansion/scalar/metadata/provenance comparisons, deterministic JS
+comparison and execution against the V8/Node oracle all pass.
+
+The release/native toolchains and build settings match the preceding section:
+Goose `v2026.3-267-g369c7a2c` / runtime `3025e5810379`, Apple clang 21.0.0,
+Rust 1.99.1, locked thin-LTO release builds, three Cargo build jobs and the
+required V8 cache. `GOOSE_HOME` and Cargo outputs were inside the owned worktree
+(`target/goose` for Goose intermediates); the exact predecessor was built in a
+separate owned, clean detached worktree. Builds, fixture generation, warmups and
+Node oracle execution are outside process wall timings. Each measured process
+includes source reading, compiler/engine setup, preparation, both batches,
+emission, session close, host/program disposal and process teardown. The quiet
+gates recorded 97.90%, 96.83% and 96.20% idle with no competing build/measurement.
+Both manifests record the empty tracked-diff hash, exact revision/binary/source
+hashes, toolchain, machine, fixture hashes and process/load observations.
+
+Raw evidence is [paired timings](dispatch-samples.edn.gz) and the separate
+[45/45 allocation/storage/thread observations](dispatch-allocations.edn.gz).
+The latter uses `benchmark.bb --dispatch-allocations` and is not timing evidence.
+To reproduce the pairing, build the exact predecessor's native runner and locked
+release `final_benchmark` test executable, then set `GOOSE_PREDECESSOR_ROOT`,
+`GOOSE_PREDECESSOR_RUNNER` and `GOOSE_PREDECESSOR_BINARY` when invoking the command.
+The harness verifies the predecessor revision and clean tracked content.
+
+Median complete compiler process walls, milliseconds; each entry has five
+samples per revision:
+
+| Case | Goose slots | Predecessor | Ready drain | V8 one slot, current |
+| --- | ---: | ---: | ---: | ---: |
+| small | 1 | 57.94 | 55.79 | 35.94 |
+| small | 2 | 82.32 | 81.86 | 35.94 |
+| small | 4 | 108.16 | 108.25 | 35.94 |
+| small | 8 | 109.01 | 106.17 | 35.94 |
+| medium | 1 | 103.07 | 104.58 | 42.82 |
+| medium | 2 | 133.33 | 127.11 | 42.82 |
+| medium | 4 | 109.58 | 99.69 | 42.82 |
+| medium | 8 | 120.16 | 109.31 | 42.82 |
+| larger | 1 | 167.92 | 165.12 | 53.63 |
+| larger | 2 | 189.88 | 187.90 | 53.63 |
+| larger | 4 | 139.04 | 120.66 | 53.63 |
+| larger | 8 | 143.48 | 114.05 | 53.63 |
+
+The largest branching cell improves at eight slots, but remains 2.13 times the
+current V8 wall. This remains a measured loss for branching. The retained
+one-heap Goose serial control is also faster than branching (61.26 ms larger;
+predecessor 61.03 ms). Current Pants branch walls at 1/2/4/8 are
+94.62/95.16/93.50/95.70 ms larger, against predecessor
+93.74/96.48/94.40/96.39 ms. The full raw matrix retains all serial/rebuild controls;
+no best-worker result replaces the individual cells.
+
+For the larger case, the cold/reused batch intervals and cleanup are:
+
+| Engine / slots | Cold before → after ms | Reused before → after ms | Cleanup before → after ms |
+| --- | ---: | ---: | ---: |
+| Goose branch / 1 | 92.79 → 93.03 | 62.23 → 62.82 | 6.44 → 2.17 |
+| Goose branch / 2 | 117.82 → 116.34 | 61.51 → 62.56 | 4.55 → 2.80 |
+| Goose branch / 4 | 91.08 → 85.56 | 35.79 → 26.07 | 4.44 → 2.30 |
+| Goose branch / 8 | 93.77 → 78.86 | 34.44 → 22.69 | 5.72 → 4.38 |
+| Goose retained serial / 1 | 42.21 → 42.22 | 9.25 → 9.83 | 2.47 → 2.49 |
+| V8 / 1 | 38.94 → 38.73 | 6.91 → 6.94 | 0.75 → 0.85 |
+
+These are medians of separate intervals, not components that must sum to the
+median process wall. Coordinator sleep overlaps compiler preparation, active
+workers, callbacks and transport. For example, quiet larger/eight-slot median
+observed sleep changes from 121.49 to 83.58 ms while process wall changes from
+143.48 to 114.05 ms. Sleep is never subtracted from wall or treated as an exact
+recoverable speedup. Idle polling remains substantial; no speedup requirement or
+new optimization scope is inferred from these observations.
+
+### Deterministic dispatch and thread accounting
+
+The native lifecycle fixture queues eight real calls before the first drain and
+uses test-only completion acknowledgements after workers publish their real
+flat events. It therefore places exactly 1/2/4/8 completions in the available
+event queue without timing assertions. All eight queued requests drain in one
+turn; shared helper production occurs once; all results are 42 after a private
+pre-wait mutation, proving that resumption does not replay the body. Existing
+actual compiler tests also retain the one-worker nested callback and compare
+saved/final writes. The hook is an explicit `dispatch-test` runner mode and is
+absent from measured dispatch behavior.
+
+Instrumented `SCHED 0` rows expose cumulative turns, progress turns, idle
+backoffs, sleep nanoseconds, native thread entries, peak owned thread handles,
+joined execution chunks, commands, completions and maximum command/event batch
+sizes. Every observed progress turn retains the previous backoff and sleep
+counters; the deterministic test checks each transition. The separate compiler
+instrumentation checks the same invariant across all twelve Goose branch
+size/worker cells. Quiet timing omits per-turn tracing and storage observation.
+
+Native lifetime thread entries are **7/19/35** for the small/medium/larger reused
+compilations, respectively: one process coordinator, one input thread, one
+initial and one resumed execution chunk per call, plus one shared helper chunk.
+They are counts of actual entered/spawned roles, not the configured worker
+limit. The larger instrumented traces record 33 execution chunks joined before
+teardown; the coordinator also joins the input thread at shutdown. In the
+controlled eight-call fixture, `THREADS 0 19 N 18` verifies all 18 spawned threads
+were joined, with peak owned handles `N = workers + 2`; the coordinator itself
+is reaped with its process.
+
+The larger separate instrumented compiler runs recorded:
+
+| Slots | Progress turns | Idle backoffs | Peak owned native handles | Sampled native OS threads | Sampled compiler OS threads |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 65 | 84 | 3 | 3 | 21 |
+| 2 | 65 | 103 | 3 | 2 | 23 |
+| 4 | 28 | 68 | 5 | 4 | 25 |
+| 8 | 22 | 61 | 9 | 3 | 29 |
+
+Owned handles include the native coordinator/input and completed workers not
+yet joined; they are not exact simultaneous active-thread maxima. OS observations
+include each compiler process itself as well as its descendant native runner
+and resource wrapper. They are sampled high-water observations, not exact
+concurrency maxima: short chunks can begin/end between samples. The compiler
+counts include its coordinator, test harness, compiler pool, transport readers
+and engine background threads. A slot count is not the total system thread
+count. These observations are separate from both exact lifetime creation/join
+counts and deterministic execution-worker bounds.
+
+### Verification and limits
+
+At source `86af8057` (tree `ae6164458e266ede5e8c28e63ccfb9707c655393`),
+`compiler.bb` passes **19/19 debug and 19/19 native** tests, including actual
+compiler operation at 1/2/4/8, deterministic draining, initialized-definition
+isolation, live callbacks, private continuation mutation, once-only helpers,
+cancellation/deadline, preparation/producer/worker failures, injected native
+abort, shutdown and owned-process/reader cleanup. Full Goose format/check/debug/
+native and source/decode smoke passes. Changed Rust formatting and
+`git diff --check` pass. Goose library/tests Clippy passes with and without
+`count-allocations`, allowing only the existing deprecated/chunk/byte-string
+categories and existing single-element-loop lint. The pinned ClojureScript
+research checkout (`a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`) was linked only
+for these checks and removed afterward.
+
+Strict Clippy reproduces the same eight unchanged engine diagnostics. Default
+and QuickJS library/all-target results from the initialized-definition revision
+are reused: this change is gated behind Goose and changes no default/QuickJS,
+VM, bridge, snapshot or production scheduler implementation. Existing unrelated
+root formatting and strict default/QuickJS lint differences, and the documented
+full-suite wasm dead-code blocker, remain explicit limitations. No full-suite
+pass, exact sampled concurrency claim or branching win is claimed.
