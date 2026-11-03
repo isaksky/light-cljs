@@ -159,4 +159,56 @@ fn budgets() {
     assert(!bridge::export_graph(heap, roots, cycle_out, cycle_control, roots[0]) && cycle_control.error == bridge::Error.Depth && cycle_out.nodes.len == 0);
     heap.nodes[roots[0].a].metadata = saved;
 }
-fn main() { roundtrip(); positional_map_equality(); number_bits(); unsupported_values(); primitive_fallback(); budgets(); print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
+fn update_case(heap: source::Heap&, operation: i64, old: source::Value, key: source::Value, value: source::Value) -> source::Value {
+    if operation <= 3 { return source::form_assoc(heap, old, if operation == 0 { source::number(0) } else if operation == 1 { source::number(2) } else if operation == 2 { key } else { source::number(8) }, value); }
+    return source::form_conj(heap, if operation == 6 { source::nil() } else { old }, value);
+}
+fn direct_update_boundaries() {
+    var code = source::Code {}; code_init(code);
+    for operation in 7 {
+        var cost: i64 = 0;
+        for mode in 8 {
+            var heap = source::Heap { code: code }; assert(source::initialize(heap));
+            let key = source::allocate(heap, source::Node { kind: 11, value: source::number(7) });
+            let equal_key = source::allocate(heap, source::Node { kind: 11, value: source::number(7) });
+            let metadata = source::form_collection(heap, 7, []);
+            let old = if operation == 2 || operation == 3 { source::form_collection(heap, 7, [key, source::number(1), equal_key, source::number(2)]) } else { source::form_collection(heap, if operation == 4 { 5 } else { 6 }, [key, equal_key]) };
+            heap.nodes[old.a].metadata = metadata; heap.nodes[old.a].origin = 17; heap.nodes[old.a].source = 3; heap.nodes[old.a].span_start = 11; heap.nodes[old.a].span_end = 22;
+            let n = heap.nodes[old.a]; let nodes = heap.nodes.len; let values = heap.values.len; let work = heap.work;
+            let count: i64 = if operation == 0 { 2 } else if operation == 1 { 3 } else if operation == 2 { 4 } else if operation == 3 { 6 } else if operation == 6 { 1 } else { 3 };
+            if mode == 1 { heap.limits.work = work + cost; heap.limits.nodes = nodes + 1; heap.limits.values = values + count; }
+            if mode == 2 || mode == 3 { heap.limits.work = work + cost - (mode - 1); }
+            if mode == 4 { heap.limits.nodes = nodes; }
+            if mode == 5 { heap.limits.values = values + count - 1; }
+            var value = key;
+            if mode == 6 { value.session += 1; }
+            if mode == 7 {
+                if operation == 6 { continue; }
+                heap.values[n.start + n.count - 1] = source::Value { tag: 5, a: nodes, session: heap.identity };
+            }
+            let result = update_case(heap, operation, old, equal_key, value);
+            if mode == 0 || mode == 1 {
+                assert(heap.fault == source::Fault.None && heap.nodes.len == nodes + 1 && heap.values.len == values + count);
+                if mode == 0 { cost = heap.work - work; }
+                let updated = heap.nodes[result.a]; assert(updated.start == values && updated.count == count && updated.origin == -1);
+                if operation != 6 { assert(updated.metadata.a == metadata.a && updated.source == 3 && updated.span_start == 11 && updated.span_end == 22); }
+                assert(heap.nodes[old.a].start == n.start && heap.nodes[old.a].origin == 17 && heap.values[n.start].a == key.a);
+                if operation == 0 { assert(heap.values[updated.start].a == key.a && heap.values[updated.start + 1].a == equal_key.a); }
+                if operation == 1 || operation == 5 { assert(heap.values[updated.start + 2].a == key.a && heap.values[updated.start + 1].a == equal_key.a); }
+                if operation == 2 { assert(heap.values[updated.start].a == key.a && heap.values[updated.start + 1].a == key.a && heap.values[updated.start + 2].a == equal_key.a && heap.values[updated.start + 3].number == 2); }
+                if operation == 3 { assert(heap.values[updated.start + 4].number == 8 && heap.values[updated.start + 5].a == key.a); }
+                if operation == 4 { assert(heap.values[updated.start].a == key.a && heap.values[updated.start + 1].a == key.a && heap.values[updated.start + 2].a == equal_key.a); }
+            } else {
+                assert(heap.nodes.len == nodes && heap.values.len == values);
+                assert(heap.fault == (if mode == 2 || mode == 3 { source::Fault.WorkLimit } else if mode == 4 || mode == 5 { source::Fault.MemoryLimit } else { source::Fault.StaleID }));
+            }
+        }
+    }
+    // A replaced child is not part of the resulting range and was never
+    // validated by form_collection. Keep that existing replacement behavior.
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let old = source::form_collection(heap, 6, [source::number(1)]); heap.values[heap.nodes[old.a].start] = source::Value { tag: 5, a: heap.nodes.len, session: heap.identity };
+    let fixed = source::form_assoc(heap, old, source::number(0), source::number(2)); assert(heap.fault == source::Fault.None && source::form_nth(heap, fixed, 0).number == 2);
+    print("direct persistent updates: exact work/node/value limits, final allocation charge, stale children, duplicate keys, aliases and metadata passed");
+}
+fn main() { roundtrip(); positional_map_equality(); direct_update_boundaries(); number_bits(); unsupported_values(); primitive_fallback(); budgets(); print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }

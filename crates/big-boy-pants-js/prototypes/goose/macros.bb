@@ -3,6 +3,7 @@
 (import '[java.nio ByteBuffer ByteOrder])
 (def directory (fs/parent (fs/canonicalize *file*)))
 (def goose (or (System/getenv "GOOSE") "goose"))
+(def baseline (System/getenv "GOOSE_SERIAL_BASELINE"))
 (assert (#{[] ["--measure"] ["--profile"]} (vec *command-line-args*)) "Usage: bb macros.bb [--measure|--profile]")
 (defn run! [& args] (:out (apply p/shell {:dir (str directory) :out :string} args)))
 (def tags {:nil 0 :boolean 1 :integer 2 :double 2 :string 3 :symbol 4 :keyword 5 :list 6 :vector 7 :map 8 :set 9})
@@ -114,6 +115,12 @@
             helpers (mapv #(str (fs/path directory "corpus" (str name "-helper-" % ".pants.gsp"))) (range (:helper-factories capture)))
             ;; Repeated packets run on the same initialized session/closures.
             arguments (concat images ["--helpers"] helpers ["--jobs"] (map :path packets) (map :path packets))
+            _ (when baseline
+                (apply run! baseline (str temporary) arguments)
+                (doseq [[i packet] (map-indexed vector (concat packets packets))]
+                  (let [actual (decode (fs/read-all-bytes (fs/path temporary (str i ".gfb")))) expected (:expected packet)]
+                    (assert (= (semantic expected (first (:roots expected)) true) (semantic actual (first (:roots actual)) true)) "Baseline expansion/provenance differs")
+                    (when (= name "context") (assert-context-aliases! actual)))))
             output (apply run! executable (str temporary) arguments)
             request-path (str (fs/path temporary (str name ".json")))
             _ (spit request-path (json/generate-string {:images (mapv #(str/replace % #"\.pants\.gsp$" ".v8.js") images) :helpers (mapv #(str/replace % #"\.pants\.gsp$" ".v8.js") helpers) :inputs (mapv :input (concat packets packets))}))
@@ -143,15 +150,22 @@
                                (p/shell {:dir repository :env (assoc environment "GOOSE_SERIAL_ENGINE" (clojure.core/name engine) "GOOSE_SERIAL_OUTPUT" target) :out :string}
                                         binary "compiler_bootstrap::goose_capture::serial_macro_reference" "--ignored" "--exact" "--test-threads=1")
                                {:engine engine :process-wall-ns (- (System/nanoTime) started) :rows (mapv edn/read-string (str/split-lines (slurp target)))}))
-                goose! (fn [diagnostic?]
-                         (let [started (System/nanoTime) output (apply run! executable (str temporary) (concat goose-args (when diagnostic? ["--diagnostic"]))) wall (- (System/nanoTime) started)]
+                goose! (fn [binary diagnostic?]
+                         (let [started (System/nanoTime) output (apply run! binary (str temporary) (concat goose-args (when diagnostic? ["--diagnostic"]))) wall (- (System/nanoTime) started)]
                            (verify!) {:engine :goose :process-wall-ns wall :rows (mapv edn/read-string (str/split-lines output))}))]
             (println "Protocol: one execution worker, one complete 0/16/100 warmup batch, then two reused-session batches. Fresh process/session per round. Correctness preflight precedes timing; no profiling in clean runs.")
             (when (= ["--measure"] (vec *command-line-args*))
-              (goose! false) (reference! :v8) (reference! :pants)
+              (goose! executable false) (reference! :v8) (reference! :pants)
             ;; Rotate first engine, reverse on odd rounds: no engine always follows itself.
             (doseq [round (range 5) engine (nth [[:goose :v8 :pants] [:pants :v8 :goose] [:v8 :goose :pants] [:pants :goose :v8] [:goose :pants :v8]] round)]
-              (println "serial-sample" (pr-str (assoc (if (= engine :goose) (goose! false) (reference! engine)) :round (inc round))))))
+              (println "serial-sample" (pr-str (assoc (if (= engine :goose) (goose! executable false) (reference! engine)) :round (inc round)))))
+              (when baseline
+                (goose! baseline false) (goose! executable false)
+                ;; Actual revisions alternate on identical already prepared packets.
+                ;; Each fresh session still has its own warmup and two reused batches.
+                (doseq [round (range 5) revision (if (even? round) [:baseline :changed] [:changed :baseline])]
+                  (println "serial-pair" (pr-str (assoc (goose! (if (= revision :baseline) baseline executable) false)
+                                                       :round (inc round) :revision revision))))))
             ;; A separate native build counts explicit record copies/comparisons.
             ;; Clean executable/source and timing rounds contain no such increments.
             (when (= ["--profile"] (vec *command-line-args*))
@@ -160,16 +174,23 @@
                   vm-path (str (fs/path probe "source_vm.goose"))
                   runner-path (str (fs/path probe "macro_run.goose"))
                   replace! (fn [text from to] (assert (str/includes? text from) (str "Profile anchor changed: " from)) (str/replace text from to))
-                  vm (-> (slurp vm-path)
+                  source (slurp vm-path)
+                  updates (subs source (str/index-of source "fn form_assoc(") (str/index-of source "fn form_get("))
+                  ;; Every retained write in these two functions must be an
+                  ;; individually counted push; reject unaccounted copy paths.
+                  _ (assert (not (re-find #"Value\[|\.append\(|\.resize\(|form_collection\(" updates)) "Unexpected assoc/conj scratch or bulk-copy path")
+                  _ (assert (= 6 (count (re-seq #"heap\.values\.push\(" updates))) "Direct-fill write anchors changed")
+                  counted-updates (str/replace updates "heap.values.push(" "profile_heap_values += 1; profile_direct_values += 1; heap.values.push(")
+                  vm (-> source
+                         (replace! updates counted-updates)
                          (replace! "heap.values.append(children); return allocate" "profile_heap_values += children.len; heap.values.append(children); return allocate")
-                         (replace! "return form_collection(heap, kind, values, template);" "profile_scratch_values += values.len; return form_collection(heap, kind, values, template);")
                          (replace! "recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool {" "recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool { profile_equal += 1;")
                          (replace! "for i in (n.count / 2) { if form_equal" "for i in (n.count / 2) { profile_map_keys += 1; if form_equal"))
                   runner (-> (slurp runner-path)
                              (replace! "let result, steps = invoke" "source::profile_reset(); let result, steps = invoke")
                              (replace! "let visits_before = c.visits;" "source::profile_report(index); let visits_before = c.visits;"))
                   profile-bin (str (fs/path probe "macro-profile"))]
-              (spit vm-path (str vm "\nvar profile_heap_values: i64 = 0; var profile_scratch_values: i64 = 0; var profile_equal: i64 = 0; var profile_map_keys: i64 = 0;\nfn profile_reset() { profile_heap_values = 0; profile_scratch_values = 0; profile_equal = 0; profile_map_keys = 0; }\nfn profile_report(id: i64) { print(\"{:phase :copies :id \", id, \" :heap-values \", profile_heap_values, \" :scratch-values \", profile_scratch_values, \" :equal-calls \", profile_equal, \" :map-key-probes \", profile_map_keys, \"}\"); }\n"))
+              (spit vm-path (str vm "\nvar profile_heap_values: i64 = 0; var profile_direct_values: i64 = 0; var profile_equal: i64 = 0; var profile_map_keys: i64 = 0;\nfn profile_reset() { profile_heap_values = 0; profile_direct_values = 0; profile_equal = 0; profile_map_keys = 0; }\nfn profile_report(id: i64) { print(\"{:phase :copies :id \", id, \" :heap-values \", profile_heap_values, \" :direct-values \", profile_direct_values, \" :scratch-values 0 :equal-calls \", profile_equal, \" :map-key-probes \", profile_map_keys, \"}\"); }\n"))
               (spit runner-path runner)
               (run! goose "check" runner-path)
               (run! goose "build" runner-path "-o" profile-bin)

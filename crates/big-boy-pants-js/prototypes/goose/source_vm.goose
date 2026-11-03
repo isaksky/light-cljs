@@ -408,23 +408,40 @@ fn form_assoc(heap: Heap&, v: Value, k: Value, value: Value) -> Value {
     } else {
         for i in (n.count / 2) { if form_equal(heap, heap.values[n.start + i * 2], k) { at = i * 2 + 1; break; } }
     }
-    var values: Value[>..] = [];
     if !charge(heap, n.count + 2) { return Value {}; }
-    values.append(heap.values[n.start..(n.start + n.count)]);
-    if at >= 0 && at < values.len { values[at] = value; }
-    else { if kind == 7 { values.push(k); } values.push(value); }
-    var template = n; template.origin = -1;
-    return form_collection(heap, kind, values, template);
+    let replacing = at >= 0 && at < n.count;
+    let count = n.count + (if replacing { 0 } else if kind == 7 { 2 } else { 1 });
+    if count > heap.limits.values - heap.values.len || heap.nodes.len >= heap.limits.nodes { memory(heap); return Value {}; }
+    if !charge(heap, count) { return Value {}; }
+    // Validate exactly the resulting children, including only retained old
+    // slots. A replaced stale value is absent from the new range.
+    for i in n.count { let child = if i == at { value } else { heap.values[n.start + i] }; if !valid(heap, child) { return Value {}; } }
+    if !replacing { if kind == 7 && !valid(heap, k) { return Value {}; } if !valid(heap, value) { return Value {}; } }
+    var node = n; node.origin = -1; node.start = heap.values.len; node.count = count;
+    // allocate charges the final work unit before any child append. Nothing
+    // below can fail; old ranges and occurrence/metadata handles stay intact.
+    let result = allocate(heap, node); if heap.fault != Fault.None { return Value {}; }
+    for i in n.count { let child = if i == at { value } else { heap.values[n.start + i] }; heap.values.push(child); }
+    if !replacing { if kind == 7 { heap.values.push(k); } heap.values.push(value); }
+    return result;
 }
 fn form_conj(heap: Heap&, v: Value, value: Value) -> Value {
     let x = form_value(heap, v); let kind = if x.tag <= 1 { 5 } else { form_kind(heap, x) };
     if kind != 5 && kind != 6 { heap.fault = Fault.TypeError; return Value {}; }
     let n = if x.tag <= 1 { Node { kind: 5 } } else { heap.nodes[x.a] };
     if !charge(heap, n.count + 1) { return Value {}; }
-    var values: Value[>..] = [];
-    if kind == 5 { values.push(value); } values.append(heap.values[n.start..(n.start + n.count)]); if kind == 6 { values.push(value); }
-    var template = n; template.origin = -1;
-    return form_collection(heap, kind, values, template);
+    let count = n.count + 1;
+    if count > heap.limits.values - heap.values.len || heap.nodes.len >= heap.limits.nodes { memory(heap); return Value {}; }
+    if !charge(heap, count) { return Value {}; }
+    if kind == 5 && !valid(heap, value) { return Value {}; }
+    for i in n.count { if !valid(heap, heap.values[n.start + i]) { return Value {}; } }
+    if kind == 6 && !valid(heap, value) { return Value {}; }
+    var node = n; node.origin = -1; node.start = heap.values.len; node.count = count;
+    let result = allocate(heap, node); if heap.fault != Fault.None { return Value {}; }
+    if kind == 5 { heap.values.push(value); }
+    for i in n.count { let child = heap.values[n.start + i]; heap.values.push(child); }
+    if kind == 6 { heap.values.push(value); }
+    return result;
 }
 fn form_get(heap: Heap&, v: Value, k: Value, fallback: Value) -> Value {
     let x = form_value(heap, v); let kind = form_kind(heap, x);
