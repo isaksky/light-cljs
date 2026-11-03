@@ -48,13 +48,13 @@
 (defn forms! [{:keys [root nodes children]} sources data]
   (assert (and (<= (count nodes) 100000) (<= (count children) 1048576)))
   (id! root (count nodes))
+  (doseq [id children] (id! id (count nodes)))
   (doseq [node nodes]
     (span! sources (:source node) (:span node))
     (doseq [key [:metadata :payload] :let [id (key node)] :when (some? id)] (id! id (count nodes)))
     (assert (#{:scalar :list :vector :map :set :anonymousfn} (:kind node)) "Unknown form kind")
     (if (= :scalar (:kind node)) (id! (:datum node) (count (:nodes data)))
-        (let [[start len :as r] (:children node)] (range! r (count children))
-          (doseq [id (subvec children start (+ start len))] (id! id (count nodes))))))
+        (range! (:children node) (count children))))
   (graph! (edges nodes children)))
 (defn jobs! [input]
   (let [{:keys [version sources data definitions jobs helper-factories declared-effects]} input
@@ -64,6 +64,7 @@
                  (<= (reduce + (map #(count (:utf8 %)) sources)) 8388608)))
     (doseq [source sources] (utf8! (:utf8 source)))
     (doseq [unit units] (assert (and (integer? unit) (<= 0 unit 65535))))
+    (doseq [id children] (id! id (count nodes)))
     (doseq [node nodes]
       (assert (#{:nil :boolean :integer :double :ratio :character :string :symbol :keyword :collection :compiler-literal} (:tag node)) "Unknown datum kind")
       (case (:tag node)
@@ -84,8 +85,7 @@
         nil)
       (doseq [key [:metadata :payload] :let [id (key node)] :when (some? id)] (id! id (count nodes)))
       (doseq [key [:units :name :namespace] :let [r (key node)] :when r] (range! r (count units)))
-      (when-let [[start len :as r] (:children node)]
-        (range! r (count children)) (doseq [id (subvec children start (+ start len))] (id! id (count nodes)))))
+      (when-let [r (:children node)] (range! r (count children))))
     (graph! (edges nodes children))
     (doseq [definition definitions]
       (span! sources (:source definition) (:span definition))
@@ -109,10 +109,13 @@
 (doseq [path (sort (fs/glob (fs/path directory "corpus") "*.jobs.edn"))]
   (let [input (edn/read-string (slurp (str path)))]
     (jobs! input)
-    (doseq [bad [(assoc-in input [:data :nodes 0 :metadata] 0)
+    (doseq [bad (concat [(assoc-in input [:data :nodes 0 :metadata] 0)
                  (assoc-in input [:data :nodes 0 :tag] :unsupported)
                  (assoc-in input [:data :units 0] 65536)
-                 (assoc-in input [:sources 0 :utf8 0] 256)]]
+                 (assoc-in input [:sources 0 :utf8 0] 256)]
+                (for [path [[:data] [:jobs 0 :input-forms] [:jobs 0 :expected-output-forms]]
+                      id [-1 (count (:nodes (get-in input path))) 4294967295 4294967296]]
+                  (update-in input (conj path :children) conj id)))]
       (assert (try (jobs! bad) false (catch Throwable _ true)) "Malformed companion metadata accepted"))))
 (let [paths (sort-by str (remove #(= "manifest.edn" (str (fs/file-name %)))
                                (fs/glob (fs/path directory "corpus") "**" {:hidden true})))

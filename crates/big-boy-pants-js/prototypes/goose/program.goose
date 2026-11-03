@@ -58,6 +58,8 @@ fn validate(bytes: const u8[:]) -> Error {
         if tag == 2 && (a > 1 || b != 0) { return Error.Operation; }
         if tag == 4 && !range(a, b, nu) { return Error.Reference; }
     }
+    // Pool entries can be outside all function ranges; validate those IDs too.
+    for i in nch { if word(bytes, l.children + i * 4) >= nf { return Error.Reference; } }
     var used:       bool[>..] = []; used.resize(ni, false);
     var child_used: bool[>..] = []; child_used.resize(nf, false); child_used[0] = true;
     var depths:     i64[>..]  = []; depths.resize(nf, 0);

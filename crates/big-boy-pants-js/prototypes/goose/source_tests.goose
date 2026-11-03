@@ -65,6 +65,18 @@ fn main() {
     depth_limit(257, program::Error.None); depth_limit(258, program::Error.Limits);
     bad.push(0); assert(program::validate(bad) == program::Error.Trailing);
     assert(image.valid && image.bytes[..] == original[..]);
+    // Even child records outside every function range must contain valid IDs.
+    assert(program::word(arithmetic, 20) == 0);
+    let arithmetic_layout = program::layout(arithmetic);
+    var orphan: u8[>..] = []; orphan.append(arithmetic[..arithmetic_layout.children]);
+    push_word(orphan, 4294967295); orphan.append(arithmetic[arithmetic_layout.instructions..]);
+    set_word(orphan[..], 20, 1);
+    for target in [program::word(arithmetic, 12), 4294967295] {
+        set_word(orphan[..], arithmetic_layout.children, target);
+        assert(program::validate(orphan) == program::Error.Reference);
+        assert(program::install(image, orphan) == program::Error.Reference);
+        assert(image.valid && image.bytes[..] == original[..]);
+    }
     print("source export: arithmetic=27.5, control=7307, wide=299; macro inspection; malformed/truncation/transaction checks passed");
 }
 
