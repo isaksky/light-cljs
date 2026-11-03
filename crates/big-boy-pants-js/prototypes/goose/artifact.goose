@@ -66,7 +66,8 @@ fn shape(a: const Artifact&, n: source::Node, base: const snapshot::Snapshot&, c
     return true;
 }
 struct Cursor { id: i64, next: i64 = 0 }
-// Iterative DFS: each node and edge once, except a bounded explicit cycle scan.
+// Iterative Tarjan DFS: each node and edge once. The component stack retains
+// completed DFS siblings until their entire strongly connected component ends.
 // Path stores artifact node IDs from root to the offending node.
 fn validate(a: const Artifact&, base: const snapshot::Snapshot&, c: Control&) -> bool {
     let nodes_before = c.nodes;
@@ -92,26 +93,48 @@ fn validate(a: const Artifact&, base: const snapshot::Snapshot&, c: Control&) ->
     if !poll(c, order.len * levels) { return false; }
     sort(order) { x, y => a.keys[x].arena < a.keys[y].arena || a.keys[x].arena == a.keys[y].arena && a.keys[x].slot < a.keys[y].slot };
     for i in 1..order.len { let x = a.keys[order[i - 1]]; let y = a.keys[order[i]]; if x.arena == y.arena && x.slot == y.slot { return reject(c, Error.Link); } }
-    var color: i64[>..] = []; color.resize(a.nodes.len, 0); var stack: Cursor[>..<] = [];
+    var color:     i64[>..]  = []; color.resize(a.nodes.len, 0);
+    var index:     i64[>..]  = []; index.resize(a.nodes.len, -1); var low: i64[>..] = []; low.resize(a.nodes.len, -1);
+    var parent:    i64[>..]  = []; parent.resize(a.nodes.len, -1);
+    var component: i64[>..<] = []; var stack: Cursor[>..<] = [];
     if a.root.tag == 5 { stack.push(Cursor { id: a.root.a }); }
     while stack.len > 0 {
         let id = stack[stack.len - 1].id;
         if color[id] == 0 {
-            c.path.push(id); if !poll(c) || !shape(a, a.nodes[id], base, c) { return false; } color[id] = 1; c.nodes += 1;
+            c.path.push(id); if !poll(c) || !shape(a, a.nodes[id], base, c) { return false; }
+            color[id] = 1; index[id] = c.nodes - nodes_before; low[id] = index[id]; c.nodes += 1; component.push(id);
         }
         let n = a.nodes[id]; let i = stack[stack.len - 1].next;
-        if i == edge_count(n) { color[id] = 2; stack.pop(); c.path.pop(); continue; }
+        if i == edge_count(n) {
+            if low[id] == index[id] {
+                var count: i64 = 0; var forbidden: i64 = -1;
+                loop {
+                    if !poll(c) { return false; }
+                    let member = component[component.len - 1]; component.pop(); color[member] = 2; count += 1;
+                    if a.nodes[member].kind != 2 && a.nodes[member].kind != 3 { forbidden = member; }
+                    if member == id { break; }
+                }
+                if count > 1 && forbidden >= 0 {
+                    // Recover the root-to-form DFS path even when the form's
+                    // frame finished before the SCC's closing cross edge.
+                    c.path.clear(); var reversed: i64[>..] = []; var at = forbidden;
+                    while at >= 0 { if !poll(c) { return false; } reversed.push(at); at = parent[at]; }
+                    for j in reversed.len { c.path.push(reversed[reversed.len - j - 1]); }
+                    return reject(c, Error.Cycle);
+                }
+            }
+            stack.pop(); c.path.pop();
+            if stack.len > 0 { let previous = stack[stack.len - 1].id; low[previous] = min(low[previous], low[id]); }
+            continue;
+        }
         stack[stack.len - 1].next += 1;
         if !poll(c) { return false; } c.edges += 1;
         let v = edge(a, n, i); if !valid_value(a, v) { return reject(c, Error.Link); }
         if v.tag != 5 || color[v.a] == 2 { continue; }
         if color[v.a] == 1 {
-            var inside = false;
-            for frame in stack {
-                if !poll(c) { return false; } if frame.id == v.a { inside = true; }
-                if inside && a.nodes[frame.id].kind != 2 && a.nodes[frame.id].kind != 3 { c.path.push(v.a); return reject(c, Error.Cycle); }
-            }
-        } else { stack.push(Cursor { id: v.a }); }
+            if v.a == id && n.kind != 2 && n.kind != 3 { c.path.push(id); return reject(c, Error.Cycle); }
+            low[id] = min(low[id], index[v.a]);
+        } else { parent[v.a] = id; stack.push(Cursor { id: v.a }); }
     }
     if c.nodes - nodes_before != a.nodes.len { return reject(c, Error.Link); } return true;
 }
@@ -173,20 +196,29 @@ fn export_graph(heap: const source::Heap&, base: const snapshot::Snapshot&, impo
 }
 // Exact canonical per-node bytes use provenance targets, independent of local
 // artifact order/pool offsets. Never hash equal occurrences into one identity.
-fn signature_value(a: const Artifact&, v: source::Value, out: u8[>..]&) {
+fn signature_bytes<T>(values: const T[:], out: u8[>..]&, c: Control&) -> bool {
+    // to_bytes writes a ULEB payload-byte-count followed by bytes_of(values).
+    // Charge both before serializing: shared strings can expand a compact
+    // artifact into many copies of the same range in its exact signature.
+    let payload = bytes_of(values).len; var size = payload + 1; var remaining = payload;
+    while remaining >= 128 { remaining /= 128; size += 1; }
+    if size > c.bytes - out.len { return reject(c, Error.Bytes); }
+    if !poll(c, size) { return false; }
+    to_bytes(values, out); c.staged_bytes += size; return true;
+}
+fn signature_value(a: const Artifact&, v: source::Value, out: u8[>..]&, c: Control&) -> bool {
     var n = v;
     if v.tag == 5 { n.a = a.keys[v.a].slot; n.session = a.keys[v.a].arena; }
     if v.tag == 4 { n.a = 0; }
-    to_bytes([n], out); if v.tag == 4 { to_bytes(a.units[v.a..(v.a + v.b)], out); }
+    if !signature_bytes([n], out, c) { return false; }
+    return v.tag != 4 || signature_bytes(a.units[v.a..(v.a + v.b)], out, c);
 }
 fn signature(a: const Artifact&, id: i64, out: u8[>..]&, c: Control&) -> bool {
-    let before = out.len;
     var n = a.nodes[id]; n.start = 0; n.value = source::Value {}; n.namespace_value = source::Value {}; n.metadata = source::Value {}; n.source = if n.source < 0 { -1 } else { 0 };
-    to_bytes([n], out); let original = a.nodes[id];
-    for i in edge_count(original) { if !poll(c) { return false; } signature_value(a, edge(a, original, i), out); }
-    if original.source >= 0 { let r = a.sources[original.source]; to_bytes(a.bytes[r.start..(r.start + r.count)], out); }
-    c.staged_bytes += out.len - before;
-    if out.len > c.bytes { return reject(c, Error.Bytes); } return poll(c, out.len - before);
+    if !signature_bytes([n], out, c) { return false; } let original = a.nodes[id];
+    for i in edge_count(original) { if !poll(c) || !signature_value(a, edge(a, original, i), out, c) { return false; } }
+    if original.source >= 0 { let r = a.sources[original.source]; if !signature_bytes(a.bytes[r.start..(r.start + r.count)], out, c) { return false; } }
+    return true;
 }
 fn relocated(v: source::Value, mapping: const i64[:], unit_start: i64, session: i64) -> source::Value {
     var out = v; if v.tag >= 4 { out.session = session; if v.tag == 5 { out.a = mapping[v.a]; } else { out.a += unit_start; } } return out;
@@ -194,27 +226,27 @@ fn relocated(v: source::Value, mapping: const i64[:], unit_start: i64, session: 
 // The base map is implicit and checked against both the frozen snapshot and
 // the destination. This examines one record's edges, never rewalks its DAG.
 fn base_signature<T>(s: const T&, slot: i64, checkpoint: i64, out: u8[>..]&, c: Control&) -> bool {
-    let before = out.len;
     let original = s.nodes[slot]; var n = original;
     n.start = 0; n.value = source::Value {}; n.namespace_value = source::Value {}; n.metadata = source::Value {}; n.source = if n.source < 0 { -1 } else { 0 };
-    to_bytes([n], out);
+    if !signature_bytes([n], out, c) { return false; }
     if has_values(original) && !snapshot::range(original.start, original.count, s.values.len) { return reject(c, Error.Link); }
     for i in edge_count(original) {
         if !poll(c) { return false; } let v = edge(s, original, i); var normalized = v;
         if v.tag >= 4 && v.session != s.header.base { return reject(c, Error.Link); }
         if v.tag == 5 { normalized.session = checkpoint; }
         if v.tag == 4 { normalized.a = 0; normalized.session = 0; }
-        to_bytes([normalized], out);
+        if !signature_bytes([normalized], out, c) { return false; }
         if v.tag == 4 {
-            if !snapshot::range(v.a, v.b, s.units.len) { return reject(c, Error.Link); } to_bytes(s.units[v.a..(v.a + v.b)], out);
+            if !snapshot::range(v.a, v.b, s.units.len) { return reject(c, Error.Link); }
+            if !signature_bytes(s.units[v.a..(v.a + v.b)], out, c) { return false; }
         }
     }
     if original.source >= 0 {
         if !snapshot::range(original.source, 1, s.sources.len) { return reject(c, Error.Link); } let r = s.sources[original.source];
-        if !snapshot::range(r.start, r.count, s.bytes.len) { return reject(c, Error.Link); } to_bytes(s.bytes[r.start..(r.start + r.count)], out);
+        if !snapshot::range(r.start, r.count, s.bytes.len) { return reject(c, Error.Link); }
+        if !signature_bytes(s.bytes[r.start..(r.start + r.count)], out, c) { return false; }
     }
-    c.staged_bytes += out.len - before;
-    if out.len > c.bytes { return reject(c, Error.Bytes); } return poll(c, out.len - before);
+    return true;
 }
 fn import_graph(a: const Artifact&, base: const snapshot::Snapshot&, heap: source::Heap&, imports: Imports&, c: Control&) -> source::Value {
     let started = clock_ns(); defer { c.import_ns += clock_ns() - started; }

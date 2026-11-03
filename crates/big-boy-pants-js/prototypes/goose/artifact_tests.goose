@@ -231,6 +231,85 @@ fn graphs(base: const snapshot::Snapshot&) {
     var bad = copy(bytes); bad[0] = 255; var bc = artifact::Control {}; let no = artifact::decode(bad, base, bc); assert(no.len == 0 && bc.error != artifact::Error.None);
     print("artifact callable cycles/40-level shared diamond/codec truncations passed, nodes=", dc.nodes, " edges=", dc.edges, " work=", dc.visited);
 }
+fn overlapping_cycles(base: const snapshot::Snapshot&) {
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
+    var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
+    let b = source::allocate(heap, source::Node { kind: 3, initialized: true, immutable: true });
+    let c = source::allocate(heap, source::Node { kind: 3, initialized: true, immutable: true });
+    let d = source::allocate(heap, source::Node { kind: 3, initialized: true, immutable: true, value: b });
+    let a = source::closure(heap, roots[4].value.number as i64 + 1, [b, c]); heap.nodes[b.a].value = a; heap.nodes[c.a].value = d;
+    // B's DFS frame finishes before C -> D -> B. All four nodes still
+    // belong to the same callable SCC, including that completed sibling.
+    var ec = artifact::Control {}; let callable = artifact::export_graph(heap, base, imports, a, 43, 1, ec);
+    assert(ec.error == artifact::Error.None && callable.nodes.len == 4);
+    var ic = artifact::Control {}; let imported = artifact::import_graph(callable, base, heap, imports, ic);
+    assert(ic.error == artifact::Error.None && snapshot_test::invoke(heap, imported, []).a == imported.a);
+    let outside = source::form_collection(heap, 6, [a]); var outside_control = artifact::Control {};
+    artifact::export_graph(heap, base, imports, outside, 44, 1, outside_control); assert(outside_control.error == artifact::Error.None);
+    // Replace D with V, a vector containing B: A captures B,C; B -> A;
+    // C -> V -> B. V belongs to the larger cycle and must reject.
+    var bad = copy(callable); bad.definition = 45;
+    assert(bad.nodes[0].kind == 2 && bad.nodes[1].value.a == 0 && bad.nodes[2].value.a == 3);
+    bad.nodes[3] = source::Node { kind: 6, start: bad.nodes[0].start, count: 1 };
+    let before = state(heap, imports); var rejected_import = artifact::Control {};
+    artifact::import_graph(bad, base, heap, imports, rejected_import);
+    assert(rejected_import.error == artifact::Error.Cycle && rejected_import.path[..] == [0, 2, 3] && state(heap, imports) == before);
+    let start = heap.values.len; heap.values.push(b); heap.nodes[d.a] = source::Node { kind: 6, start: start, count: 1 };
+    let current = state(heap, imports); var rejected_export = artifact::Control {};
+    let no = artifact::export_graph(heap, base, imports, a, 46, 1, rejected_export);
+    assert(rejected_export.error == artifact::Error.Cycle && no.nodes.len == 0 && rejected_export.path[..] == [a.a, c.a, d.a] && state(heap, imports) == current);
+    print("artifact overlapping callable SCC/form-cycle rejection/path/atomicity passed");
+}
+fn signature_budgets(base: const snapshot::Snapshot&) {
+    // Compact input shares one UTF16 range across every vector element.
+    // Its exact signature expands that range each time, beyond payload size.
+    var units:  u16[>..]           = []; units.resize(256, 'x');
+    var values: source::Value[>..] = []; values.resize(16, source::Value { tag: 4, b: units.len });
+    let nodes:   source::Node[]        = [source::Node { kind: 6, count: values.len, source: 0, span_end: 3 }];
+    let keys:    artifact::Key[]       = [artifact::Key { arena: source::reserve_identity(), slot: 0 }];
+    let sources: source::SourceRange[] = [source::SourceRange { start: 0, count: 3 }];
+    let a = artifact::Artifact { base: base.header.checkpoint, definition: 47, root: source::Value { tag: 5 }, keys: keys[..], nodes: nodes[..], values: values[..], units: units[..], bytes: "src", sources: sources[..] };
+    // The frozen/destination base signature takes the same checked path.
+    let s = snapshot::Snapshot { nodes: nodes[..], values: values[..], units: units[..], bytes: "src", sources: sources[..] };
+    var expected: u8[>..] = []; var success = artifact::Control {};
+    assert(artifact::signature(a, 0, expected, success) && expected.len > artifact::payload(a));
+    for from_base in 2 {
+        var whole: u8[>..] = []; var complete = artifact::Control {};
+        assert(if from_base == 0 { artifact::signature(a, 0, whole, complete) } else { artifact::base_signature(s, 0, a.base, whole, complete) });
+        assert(whole == expected && complete.staged_bytes == whole.len);
+        // Every byte/work cut rejects before any append can exceed its limit.
+        for cut in whole.len {
+            var out: u8[>..] = []; var small = artifact::Control { bytes: cut };
+            let ok = if from_base == 0 { artifact::signature(a, 0, out, small) } else { artifact::base_signature(s, 0, a.base, out, small) };
+            assert(!ok && small.error == artifact::Error.Bytes && out.len <= cut && small.staged_bytes == out.len);
+        }
+        for cut in complete.visited {
+            var out: u8[>..] = []; var small = artifact::Control { work: cut };
+            let ok = if from_base == 0 { artifact::signature(a, 0, out, small) } else { artifact::base_signature(s, 0, a.base, out, small) };
+            assert(!ok && small.error == artifact::Error.Work && out.len <= small.visited && small.visited <= cut && small.staged_bytes == out.len);
+        }
+        var exact_out: u8[>..] = []; var exact = artifact::Control { bytes: whole.len, work: complete.visited };
+        assert(if from_base == 0 { artifact::signature(a, 0, exact_out, exact) } else { artifact::base_signature(s, 0, a.base, exact_out, exact) });
+        assert(exact_out == whole && exact.visited == complete.visited && exact.staged_bytes == whole.len);
+        // Existing staged records consume the byte allowance too.
+        var prefixed: u8[>..] = [123]; var no_room = artifact::Control { bytes: whole.len };
+        assert(!(if from_base == 0 { artifact::signature(a, 0, prefixed, no_room) } else { artifact::base_signature(s, 0, a.base, prefixed, no_room) }));
+        assert(no_room.error == artifact::Error.Bytes && prefixed.len <= no_room.bytes && prefixed[0] == 123);
+    }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
+    var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; let before = state(heap, imports);
+    var byte_limit = artifact::Control { bytes: artifact::footprint(a) + 16 };
+    artifact::import_graph(a, base, heap, imports, byte_limit);
+    assert(byte_limit.error == artifact::Error.Bytes && byte_limit.copied_nodes == 0 && byte_limit.copied_bytes == 0 && state(heap, imports) == before);
+    var valid = artifact::Control {}; artifact::validate(a, base, valid); assert(valid.error == artifact::Error.None);
+    var empty:    artifact::Control = artifact::Control {}; assert(artifact::context(heap, base, imports, empty));
+    var delivery: u8[>..]           = []; to_bytes([a], delivery);
+    var work_limit = artifact::Control { work: valid.visited + empty.visited + delivery.len + 128 };
+    artifact::import_graph(a, base, heap, imports, work_limit);
+    assert(work_limit.error == artifact::Error.Work && work_limit.copied_nodes == 0 && work_limit.copied_bytes == 0 && state(heap, imports) == before);
+    var repaired = artifact::Control {}; artifact::import_graph(a, base, heap, imports, repaired); assert(repaired.error == artifact::Error.None);
+    print("artifact shared-string signature byte/work cuts/exact limits/atomic rejection passed");
+}
 fn main() {
     var code = source::Code {}; var heap = source::Heap { code: code };
     let left = snapshot_test::append(code, embed_file("corpus/branches-helper-0.pants.gsp"));
@@ -240,9 +319,10 @@ fn main() {
     // unchanged compiler-emitted producer/consumer bodies above.
     var getter = source::Code {}; getter.functions.push(source::Function { start: 0, count: 3, constants: 0, children: 0, params: 0, locals: 0, captures: 1, strict: true });
     for op, i in [46, 49, 15] { getter.ops.push(source::Op { code: op, arg: 0, offset: [0, 3, 4][i], start: 0, end: 0, depth: [0, 1, 1][i] }); } getter.valid = true; let read = source::append_code(code, getter);
+    getter.functions[0].captures = 2; assert(source::append_code(code, getter) == read + 1);
     assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let shared = source::allocate(heap, source::Node { kind: 11, value: source::number(9), origin: 90 });
     let bindings: snapshot::Binding[] = [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: source::number(left) }, snapshot::Binding { id: 2, generation: 1, value: source::number(right) }, snapshot::Binding { id: 3, generation: 1, value: source::number(consumer) }, snapshot::Binding { id: 4, generation: 1, value: source::number(read) }, snapshot::Binding { id: 5, generation: 1, value: shared }];
     var c = snapshot::Control {}; let base = snapshot::capture(heap, bindings, c); assert(c.error == snapshot::Error.None);
     var ca = artifact::Control {}; var cb = artifact::Control {}; let a = produce(base, 1, ca); let b = produce(base, 2, cb);
-    joins(base, a, b); diamond_delivery(base, a); invalid(base, a); graphs(base); provenance(base); scalars(base); work_cuts(base, a);
+    joins(base, a, b); diamond_delivery(base, a); invalid(base, a); graphs(base); overlapping_cycles(base); signature_budgets(base); provenance(base); scalars(base); work_cuts(base, a);
 }

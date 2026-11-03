@@ -388,9 +388,12 @@ key/value and capture edge is checked. Plain JS objects/arrays and mutable or
 uninitialized cells reject, including inside immutable containers. Callable
 closure/cell cycles are supported; cycles involving compiler-form containers
 reject. A failed walk returns a typed error plus node IDs along the offending
-path: source heap IDs for export, artifact IDs for import. Iterative DFS colors every distinct reachable node and visits
-every edge once; provenance sorting, bounded table scans and callable-cycle
-checks additionally consume the work budget. Node/pool/byte/work limits bound
+path: source heap IDs for export, artifact IDs for import. Iterative Tarjan DFS
+visits each distinct reachable node and edge once, retaining completed DFS
+siblings until their full strongly connected component is classified. Any
+cyclic component containing a form rejects; a form may contain a callable cycle
+without belonging to it. Provenance sorting and bounded table scans also
+consume the work budget. Node/pool/byte/work limits bound
 validation and installation. There is no shared mutable reference exception.
 
 `Imports` is external to snapshots and is bound to exactly one base checkpoint
@@ -401,7 +404,9 @@ definition entry and update import caches. A failed operation changes none of
 those owners, including when an earlier graph sibling was valid. There is no
 positive classification cache, waiter state or scheduling/effect authority in
 this module. Duplicate delivery preserves the original root and installs zero
-records; validation and private serialization staging still have a cost.
+records; validation and private serialization staging still have a cost. Exact
+artifact and base signatures check and charge each framed record or text/source
+slice before appending it, including repeated references to one shared string.
 
 The normal `smoke.bb` command checks, debug-runs and natively executes
 `artifact_tests.goose`. It forks from a base containing the unchanged emitted
@@ -412,7 +417,10 @@ Further cases cover independent relay diamonds and direct/duplicate delivery,
 immutable captured closures and cycles, equal distinct occurrences, source
 provenance/metadata/namespace/UTF-16 ownership after producer and consumer
 teardown, invalid graphs and every import work cut through the exact successful
-budget. A 40-level shared diamond has 41 nodes and 203 graph edges, rather than
+budget. Overlapping cycles cover a form reached through a completed callable
+sibling. Compact shared-string graphs exercise every signature byte/work cut,
+exact successful limits and unchanged heap/caches after rejection. A 40-level
+shared diamond has 41 nodes and 203 graph edges, rather than
 exponentially many path visits. Publication rules follow the invariants in
 `629899ae:src/value/share.rs` and `tests/publication.rs`, with explicit copies.
 
@@ -440,11 +448,11 @@ and cache effects are visible rather than averaged into a throughput claim.
 
 | Process | A-then-B import | B-then-A import | First diamond import | Second diamond import |
 | --- | --- | --- | --- | --- |
-| 1 | 31000 | 4000 | 6000 | 3000 |
-| 2 | 15000 | 4000 | 9000 | 3000 |
-| 3 | 14000 | 3000 | 6000 | 3000 |
-| 4 | 14000 | 3000 | 6000 | 3000 |
-| 5 | 12000 | 3000 | 6000 | 3000 |
+| 1 | 24000 | 4000 | 7000 | 3000 |
+| 2 | 13000 | 3000 | 7000 | 3000 |
+| 3 | 13000 | 2000 | 8000 | 3000 |
+| 4 | 11000 | 4000 | 8000 | 3000 |
+| 5 | 11000 | 4000 | 8000 | 3000 |
 
 Reproduce from the prototype directory (each execution includes all artifact
 assertions; run the executable five times for the table above):
