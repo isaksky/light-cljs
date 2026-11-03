@@ -1049,3 +1049,17 @@ Rust 1.99.1 stops at eight existing engine deprecated-atomic, constant-chunk and
 byte-string diagnostics; root formatting still differs in unrelated files.
 These broad checks are limitations, not successful correctness layers or skipped
 comparison rows. The bounded command uses the explicit focused checks above.
+
+## Final bounded branching comparison
+
+Run `bb crates/big-boy-pants-js/prototypes/goose/benchmark.bb --check`, then
+`--measure` on a quiet machine; `--allocations` is a separate instrumented
+invocation and `--summarize` prints all-cell medians/ranges and phase summaries.
+The driver compares source-derived VM calls and actual namespace compilation,
+with V8 at one execution worker and Pants/Goose at 1/2/4/8, serial and rebuild
+controls, seven fixed work/form shapes and five alternating rounds per cell.
+
+The [measured report](branching-results.md) records a no-go for a compiler
+speedup at this scope. It links the raw samples, storage/allocation invocation,
+copy/validation controls, setup-inclusive ratios, thread/load observations and
+limitations. The earlier [serial diagnostics](serial-costs.md) remain preserved.

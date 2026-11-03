@@ -46,6 +46,7 @@
             {:id :deep :work 32 :fanout 4 :shape :deep :depth 12}
             {:id :plain :work 32 :fanout 4 :shape :plain :width 32}
             {:id :decoded :work 32 :fanout 4 :shape :decoded :width 32}])
+;; Adapted from corpus/churn.cljs, originating in benchmarks/native-macros-k.bb.
 (def macro-source "(defmacro work [n x] (loop [i 0 v [] m {}] (if (= i n) (loop [s (seq v) total 0] (if s (recur (next s) (+ total (first s) (get m 1 0) (count (rest [1 2 3])))) (list 'quote [total x]))) (recur (+ i 1) (conj v i) (assoc m (count v) (count m))))))\n")
 (defn payload [{:keys [shape width depth]}]
   (case shape :wide (str "[" (str/join " " (map #(mod (+ seed (* 17 %)) 101) (range width))) "]")
