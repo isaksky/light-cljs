@@ -358,6 +358,102 @@ churn/closure macros and two helper producers initialize once before branching;
 every copy retains boot=1, initializers=2, producers=2. Printed timings are
 diagnostic correctness-run measurements, not a performance comparison.
 
+## Immutable branch artifacts
+
+`artifact.goose` implements a separate publication boundary over the initialized
+private snapshots. `Artifact` schema 1 owns flat node, capture/child, exact UTF-16
+and source-byte/range arrays. Links inside the artifact are zero-session local
+indices. Definition ID and positive version identify one immutable delivery in
+one base checkpoint. A changed version or changed payload for an installed
+definition is an explicit conflict; installing a newer generation requires a
+new base/import context. The local `to_bytes`/`from_bytes` codec is checked and
+compiler-ABI-specific, like the snapshot codec, rather than a wire standard.
+
+Each node also carries `(arena, slot)` provenance. Original snapshot slots use
+the checkpoint identity; new branch slots use the fresh worker identity. An
+import map binds those keys to consumer slots, and re-export preserves imported
+keys across further branches. Equal occurrences keep different keys. Base keys
+map to existing restored slots only after their complete record and edges match
+both the frozen base and destination. Other reused keys require exact canonical
+record signatures with provenance links, text and source bytes. Thus signatures
+ignore relocated table offsets without interning by value. The current bounded
+contract requires identical preloaded code in every worker; code growth is a
+context error and function IDs do not require a second relocation scheme.
+
+Supported values are primitives, persistent forms and metadata, namespace/name
+strings, scalar occurrences, sequence cursors, native function leaves, closures
+and initialized immutable capture cells. Every value, namespace, metadata, map
+key/value and capture edge is checked. Plain JS objects/arrays and mutable or
+uninitialized cells reject, including inside immutable containers. Callable
+closure/cell cycles are supported; cycles involving compiler-form containers
+reject. A failed walk returns a typed error plus artifact node IDs along the
+offending path. Iterative DFS colors every distinct reachable node and visits
+every edge once; provenance sorting, bounded table scans and callable-cycle
+checks additionally consume the work budget. Node/pool/byte/work limits bound
+validation and installation. There is no shared mutable reference exception.
+
+`Imports` is external to snapshots and is bound to exactly one base checkpoint
+and consumer session. Import first validates the complete graph, stages all
+links and exact signatures, detects definition/provenance conflicts and checks
+pool/cache budgets. Only then does it append heap records, publish the local
+definition entry and update import caches. A failed operation changes none of
+those owners, including when an earlier graph sibling was valid. There is no
+positive classification cache, waiter state or scheduling/effect authority in
+this module. Duplicate delivery preserves the original root and installs zero
+records; validation and private serialization staging still have a cost.
+
+The normal `smoke.bb` command checks, debug-runs and natively executes
+`artifact_tests.goose`. It forks from a base containing the unchanged emitted
+branch helper/consumer code. Independent A/B helpers deliberately allocate
+colliding slots; C imports both and invokes the original consumer to obtain
+`(quote [2 3 9 16])`. Both import orders produce identical compiler-form output.
+Further cases cover independent relay diamonds and direct/duplicate delivery,
+immutable captured closures and cycles, equal distinct occurrences, source
+provenance/metadata/namespace/UTF-16 ownership after producer and consumer
+teardown, invalid graphs and every import work cut through the exact successful
+budget. A 40-level shared diamond has 41 nodes and 203 graph edges, rather than
+exponentially many path visits. Publication rules follow the invariants in
+`629899ae:src/value/share.rs` and `tests/publication.rs`, with explicit copies.
+
+Import reports `copied_nodes`, `copied_bytes`, `staged_bytes` and `import_ns`.
+Copied bytes count installed heap pools, source owners and cache records; reused
+nodes are excluded. Staged bytes count the delivery owner/serialization and
+canonical-signature payloads constructed privately. These are explicit logical
+payload writes, excluding allocator capacity/metadata and implicit scalar
+temporaries; they are not peak RSS or whole-process allocation measurements.
+Unused value/text ranges appended for reused nodes remain charged. Elapsed
+time includes context/graph validation, staging, comparisons and installation;
+it excludes source preparation, snapshot restore, producer/consumer execution
+and codec/file I/O. Native test output prints raw per-order samples and diamond
+import costs. Microsecond clock granularity and cold first-call work make these
+diagnostic measurements, not speedup or worker-scaling evidence.
+
+Five fresh native processes on 2026-11-03 UTC, macOS 15.7.3 ARM64, Goose
+v2026.3-267-g369c7a2c/runtime 3025e5810379 and Babashka 1.12.218, with no other
+build/test from this run active, produced these raw nanoseconds. Every process
+runs A-then-B first, then B-then-A, with no additional warmup. Each join installs
+12 branch nodes and 13,052 heap/cache bytes, constructing 14,556 private staging
+bytes. The subsequent same-consumer diamond import installs 10,583 bytes,
+including charged redundant pool ranges for already known nodes. These order
+and cache effects are visible rather than averaged into a throughput claim.
+
+| Process | A-then-B import | B-then-A import | First diamond import | Second diamond import |
+| --- | --- | --- | --- | --- |
+| 1 | 30000 | 3000 | 7000 | 2000 |
+| 2 | 17000 | 3000 | 6000 | 3000 |
+| 3 | 15000 | 4000 | 6000 | 3000 |
+| 4 | 14000 | 4000 | 7000 | 3000 |
+| 5 | 15000 | 4000 | 6000 | 3000 |
+
+Reproduce from the prototype directory (each execution includes all artifact
+assertions; run the executable five times for the table above):
+
+```sh
+goose build artifact_tests.goose -o .artifact-tests
+./.artifact-tests
+rm .artifact-tests
+```
+
 ## Early native source diagnostic
 
 Run `bb crates/big-boy-pants-js/prototypes/goose/measure.bb` from the repository
