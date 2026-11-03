@@ -9,11 +9,11 @@ fn code_init(code: source::Code&) {
 fn graph_init(g: bridge::Graph&) {
     // Empty/non-ASCII/supplementary/lone-surrogate UTF-16 is transported as
     // code units. Two equal leaves are distinct occurrences, with one reused.
-    g.units.append([233, 55357, 56832, 55296]); g.bytes.append("one two"); g.sources.push(source::SourceRange { start: 0, count: 7 });
+    g.units.append([233, 55357, 56832, 55296]); g.bytes.append("one two"); g.sources.push(source::SourceRange { start: 0, count: 7 }); g.sources.push(source::SourceRange { start: 0, count: 7 });
     g.nodes.push(bridge::Form { tag: 3, count: 0 });
     g.nodes.push(bridge::Form { tag: 3, start: 0, count: 4 });
     g.nodes.push(bridge::Form { tag: 2, number: 1, origin: 2, source: 0, span_start: 0, span_end: 3 });
-    g.nodes.push(bridge::Form { tag: 2, number: 1, origin: 3, source: 0, span_start: 4, span_end: 7 });
+    g.nodes.push(bridge::Form { tag: 2, number: 1, origin: 3, source: 1, span_start: 4, span_end: 7 });
     g.nodes.push(bridge::Form { tag: 4, start: 0, count: 1, ns_start: 1, ns_count: 3 });
     g.nodes.push(bridge::Form { tag: 5, start: 0, count: 1 });
     g.children.append([5, 1]); g.nodes.push(bridge::Form { tag: 8, start: 0, count: 2 });
@@ -34,6 +34,9 @@ fn roundtrip() {
         let with_meta = source::form_op(heap, 34, [old, source::nil()]); assert(source::form_op(heap, 33, [with_meta]).tag == 1 && source::form_op(heap, 33, [old]).a == meta.a);
         let map = source::form_assoc(heap, meta, a, old); let map2 = source::form_assoc(heap, map, b, append);
         assert(source::form_count(heap, map) == 2 && source::form_count(heap, map2) == 2 && source::form_get(heap, map, b, source::nil()).a == old.a && source::form_get(heap, map2, a, source::nil()).a == append.a);
+        let constructed = source::form_construct(heap, 7, [a, old, b, append]); let set = source::form_construct(heap, 8, [a, b]);
+        assert(source::form_count(heap, constructed) == 1 && source::form_get(heap, constructed, a, source::nil()).a == append.a);
+        assert(heap.values[heap.nodes[constructed.a].start].a == a.a && source::form_count(heap, set) == 1 && heap.values[heap.nodes[set.a].start].a == a.a);
         assert(bridge::export_graph(heap, [old, changed, append], output, c));
         // assoc outside [0,count] fails, and the preceding persistent values
         // remain valid after the failure is acknowledged.
@@ -45,6 +48,7 @@ fn roundtrip() {
     let root = decoded.nodes[decoded.roots[0]]; assert(root.metadata >= 0 && root.count == 7);
     let first = decoded.children[root.start]; let second = decoded.children[root.start + 1]; assert(first != second && first == decoded.children[root.start + 2]);
     assert(decoded.nodes[first].span_start == 0 && decoded.nodes[second].span_start == 4);
+    assert(decoded.nodes[first].source != decoded.nodes[second].source && decoded.sources.len == 2);
     let unicode = decoded.nodes[decoded.children[root.start + 4]]; assert(decoded.units[unicode.start..(unicode.start + unicode.count)] == [233 as u16, 55357, 56832, 55296]);
     assert(decoded.bytes[..] == "one two");
 }
@@ -54,6 +58,40 @@ fn number_bits() {
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); var roots: source::Value[>..] = []; var c = bridge::Control {}; assert(bridge::import_graph(heap, g, roots, c));
     var out = bridge::Graph {}; assert(bridge::export_graph(heap, roots, out, c)); var bytes: u8[>..] = []; assert(bridge::encode(out, bytes, c)); var restored = bridge::Graph {}; assert(bridge::decode(restored, bytes, c));
     for i in 4 { assert(to_bytes([g.nodes[i].number]) == to_bytes([restored.nodes[restored.roots[i]].number])); }
+    assert(source::form_equal(heap, source::nil(), source::Value {}));
+    assert(source::form_equal(heap, source::number(-0.0), source::number(0.0)));
+    assert(!source::form_equal(heap, source::number(0.0 / 0.0), source::number(0.0 / 0.0)));
+    assert(source::form_equal(heap, roots[1], roots[1]));
+}
+fn unsupported_values() {
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let ns = source::text(heap, "a/b"); let name = source::text(heap, "x");
+    source::form_op(heap, 1, [ns, name]); assert(heap.fault == source::Fault.NativeBoundary); heap.fault = source::Fault.None;
+    let keyword = source::form_op(heap, 0, [source::nil(), name]); source::form_op(heap, 34, [keyword, source::nil()]); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
+    let vector = source::form_collection(heap, 6, [source::number(1)]);
+    for index in [0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0, 1e100] {
+        assert(source::form_get(heap, vector, source::number(index), source::number(99)).number == 99 && heap.fault == source::Fault.None);
+        source::form_assoc(heap, vector, source::number(index), source::nil()); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
+        source::form_op(heap, 25, [vector, source::number(index)]); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
+    }
+    let object = source::allocate(heap, source::Node { kind: 0 }); let container = source::form_collection(heap, 6, [object]);
+    var c = bridge::Control {}; var out = bridge::Graph {}; assert(!bridge::export_graph(heap, [container], out, c) && c.error == bridge::Error.Unsupported && out.nodes.len == 0);
+    var g = bridge::Graph {}; g.units.append([97, 47, 98]); g.nodes.push(bridge::Form { tag: 4, start: 0, count: 3 }); g.roots.push(0);
+    var bad = bridge::Control {}; var roots: source::Value[>..] = []; let before = heap.nodes.len;
+    assert(!bridge::import_graph(heap, g, roots, bad) && bad.error == bridge::Error.Unsupported && roots.len == 0 && heap.nodes.len == before);
+}
+fn primitive_fallback() {
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    heap.source_bytes.append("one two"); heap.source_ranges.push(source::SourceRange { start: 0, count: 7 });
+    let text = source::string(heap, [233, 55357, 56832, 55296]);
+    let argument = source::allocate(heap, source::Node { kind: 11, value: text, origin: 0, source: 0, span_start: 0, span_end: 3 });
+    let annotation = source::allocate(heap, source::Node { kind: 11, value: text, origin: 0, source: 0, span_start: 4, span_end: 7 });
+    let metadata = source::form_collection(heap, 7, [source::number(1), annotation]);
+    let call = source::form_collection(heap, 5, [source::nil(), argument]); heap.nodes[call.a].metadata = metadata;
+    var c = bridge::Control {}; var out = bridge::Graph {}; assert(bridge::export_graph(heap, [text], out, c, call));
+    // Bare primitive compatibility starts from arguments, not &form metadata.
+    assert(out.nodes[out.roots[0]].span_start == 0 && out.nodes[out.roots[0]].origin == 0);
+    for cut in c.visits { var cancelled = bridge::Control { cancel_after: cut }; var untouched = bridge::Graph {}; assert(!bridge::export_graph(heap, [text], untouched, cancelled, call) && cancelled.error == bridge::Error.Cancelled && untouched.nodes.len == 0); }
 }
 fn budgets() {
     var code = source::Code {}; code_init(code); var g = bridge::Graph {}; graph_init(g); var full = bridge::Control {}; assert(bridge::validate(g, full));
@@ -98,4 +136,4 @@ fn budgets() {
     assert(!bridge::export_graph(heap, roots, cycle_out, cycle_control, roots[0]) && cycle_control.error == bridge::Error.Depth && cycle_out.nodes.len == 0);
     heap.nodes[roots[0].a].metadata = saved;
 }
-fn main() { roundtrip(); number_bits(); budgets(); print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
+fn main() { roundtrip(); number_bits(); unsupported_values(); primitive_fallback(); budgets(); print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }

@@ -3,6 +3,7 @@
 (import '[java.nio ByteBuffer ByteOrder])
 (def directory (fs/parent (fs/canonicalize *file*)))
 (def goose (or (System/getenv "GOOSE") "goose"))
+(assert (#{[] ["--measure"]} (vec *command-line-args*)) "Usage: bb macros.bb [--measure]")
 (defn run! [& args] (:out (apply p/shell {:dir (str directory) :out :string} args)))
 (def tags {:nil 0 :boolean 1 :integer 2 :double 2 :string 3 :symbol 4 :keyword 5 :list 6 :vector 7 :map 8 :set 9})
 (def origin-tags {"Source" 0 "Metadata" 1 "SuppliedData" 2 "Quote" 3 "SyntaxQuote" 4 "Unquote" 5 "UnquoteSplicing" 6 "Deref" 7 "VarQuote" 8 "AnonymousFunction" 9 "AnonymousArgument" 10})
@@ -78,7 +79,7 @@
      "const text=(g,s,n)=>String.fromCharCode(...g.units.slice(s,s+n)),units=s=>Array.from({length:s.length},(_,i)=>s.charCodeAt(i));"
      "function input(g,id,memo){if(memo.has(id))return memo.get(id);const n=g.nodes[id],children=()=>g.children.slice(n.start,n.start+n.count).map(i=>input(g,i,memo));let v;switch(n.tag){case 0:v=null;break;case 1:v=!!n.number;break;case 2:v=n.number;break;case 3:v=text(g,n.start,n.count);break;case 4:case 5:v=rt[n.tag===4?'symbol':'keyword'](n['ns-count']<0?null:text(g,n['ns-start'],n['ns-count']),text(g,n.start,n.count));break;case 6:v=rt.listFromArray(children());break;case 7:v=rt.vectorFromArray(children());break;case 8:v=rt.mapFromArray(children());break;case 9:v=rt.setFromArray(children());break;default:throw Error('unsupported input');}if(n.metadata>=0)v=rt.core.withMeta(v,input(g,n.metadata,memo));memo.set(id,v);return v;}"
      "function output(v){const n=rt.inspect(v);let tag,value;if(v===null){tag=0;value=null;}else if(typeof v==='boolean'){tag=1;value=v;}else if(typeof v==='number'){tag=2;value=v;}else if(typeof v==='string'){tag=3;value=units(v);}else if(n?.kind==='symbol'||n?.kind==='keyword'){tag=n.kind==='symbol'?4:5;value=[n.namespace===null?null:units(n.namespace),units(n.name)];}else if(n?.kind==='map'){tag=8;value=n.entries.flat().map(output);}else if(n?.items){tag=n.kind==='vector'?7:n.kind==='set'?9:6;value=n.items.map(output);}else throw Error('unsupported result');const m=rt.core.meta(v);return [tag,value,m===null?null:output(m)];}"
-     "for(const g of request.inputs){const begin=now(),memo=new Map(),args=g.roots.map(i=>input(g,i,memo)),ready=now();const result=macros[args[3]](args[0],args[1],...rt.inspect(args[2]).items),invoked=now();values.push(output(result));rows.push({import_ns:ready-begin,invoke_ns:invoked-ready,export_ns:now()-invoked});}"
+     "for(const [index,g] of request.inputs.entries()){const begin=now(),memo=new Map(),args=g.roots.map(i=>input(g,i,memo)),ready=now();const result=macros[args[3]](args[0],args[1],...rt.inspect(args[2]).items),invoked=now();const value=output(result);fs.writeFileSync(process.argv[3]+'/'+index+'.json',JSON.stringify(value));values.push(value);rows.push({import_ns:ready-begin,invoke_ns:invoked-ready,export_ns:now()-invoked});}"
      "console.log(JSON.stringify({boot_ns:booted-begin,rows,values}));"]))
 
 (defn assert-context-aliases! [g]
@@ -116,7 +117,7 @@
             output (apply run! executable (str temporary) arguments)
             request-path (str (fs/path temporary (str name ".json")))
             _ (spit request-path (json/generate-string {:images (mapv #(str/replace % #"\.pants\.gsp$" ".v8.js") images) :helpers (mapv #(str/replace % #"\.pants\.gsp$" ".v8.js") helpers) :inputs (mapv :input (concat packets packets))}))
-            reference (json/parse-string (run! "node" "-e" reference-js request-path (str (fs/path directory "../../../../src/js_runtime.js"))) true)]
+            reference (json/parse-string (run! "node" "-e" reference-js request-path (str (fs/path directory "../../../../src/js_runtime.js")) (str temporary)) true)]
         (println name (str/trim output))
         (doseq [[i p] (map-indexed vector (concat packets packets))]
           (let [actual (decode (fs/read-all-bytes (fs/path temporary (str i ".gfb")))) expected (:expected p)]
@@ -129,10 +130,16 @@
         (when (and (= name "churn") (= ["--measure"] (vec *command-line-args*)))
           (doseq [sample (range 5)]
             (let [started (System/nanoTime) output (apply run! executable (str temporary) arguments) wall (- (System/nanoTime) started)]
-              (println "diagnostic goose" (inc sample) (str/trim output) "process-wall-ns" wall))
-            (let [started (System/nanoTime) output (run! "node" "-e" reference-js request-path (str (fs/path directory "../../../../src/js_runtime.js"))) wall (- (System/nanoTime) started)
+              (doseq [[i packet] (map-indexed vector (concat packets packets))]
+                (let [actual (decode (fs/read-all-bytes (fs/path temporary (str i ".gfb")))) expected (:expected packet)]
+                  (assert (= (semantic expected (first (:roots expected)) true) (semantic actual (first (:roots actual)) true)))))
+              (println "diagnostic goose" (inc sample) (str/trim output) "process-wall-ns" wall)
+              (let [[boot & rows] (map edn/read-string (str/split-lines output))]
+                (println "sample" :goose (inc sample) (+ (:load-ns boot) (:boot-ns boot)) (reduce + (map :import-ns rows)) (reduce + (map :invoke-ns rows)) (reduce + (map :export-ns rows)) wall)))
+            (let [started (System/nanoTime) output (run! "node" "-e" reference-js request-path (str (fs/path directory "../../../../src/js_runtime.js")) (str temporary)) wall (- (System/nanoTime) started)
                   measured (json/parse-string output true)]
               (assert (= (:values reference) (:values measured)))
-              (println "diagnostic node-v8" (inc sample) (dissoc measured :values) "process-wall-ns" wall))))
+              (println "diagnostic node-v8" (inc sample) (dissoc measured :values) "process-wall-ns" wall)
+              (println "sample" :node-v8 (inc sample) (:boot_ns measured) (reduce + (map :import_ns (:rows measured))) (reduce + (map :invoke_ns (:rows measured))) (reduce + (map :export_ns (:rows measured))) wall))))
         (println name "compiler-captured reference expansion/provenance and reused session passed")))
     (finally (fs/delete-tree temporary))))

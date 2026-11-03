@@ -41,13 +41,14 @@ separately checks application output.
 
 | Source | Reference work | Goose coverage |
 | --- | --- | --- |
-| `churn.cljs` | Collection-heavy `benchmarks/native-macros-k.bb` loop at 0/16/100: vector conj, map assoc/get, seq traversal, rest/count; `0 168 5250` | Every emitted function exported and inspected |
-| `closure.cljs` | `mapv` invokes a helper closure capturing a computed offset; `[[1 11] [2 12] [3 13]]` | Functions/captures exported and inspected |
-| `branches.cljs` | Independent expansions initialize two definitions; a consumer demands both; exactly two producer factories execute | Macro and helper factories exported and inspected |
-| `effect.cljs` | One declared compiler-gensym effect; result proves it returned a symbol | Source inspected; effect authority declared |
+| `churn.cljs` | Collection-heavy `benchmarks/native-macros-k.bb` loop at 0/16/100: vector conj, map assoc/get, seq traversal, rest/count; `0 168 5250` | Unchanged emitted Pants bodies execute natively across reused calls |
+| `closure.cljs` | `mapv` invokes a helper closure capturing a computed offset; `[[1 11] [2 12] [3 13]]` | Source callbacks execute with explicit native iterator continuations |
+| `branches.cljs` | Independent expansions initialize two definitions; a consumer demands both; exactly two producer factories execute | All three macro bodies and both helper factories execute in one native session |
+| `context.cljs` | `&form`, `&env :ns :name`, metadata, nested symbols/keywords/maps, distinct equal scalar occurrences | Native expansion/provenance matches references; returned input and metadata aliases checked |
+| `effect.cljs` | One declared compiler-gensym effect; result proves it returned a symbol in references | Goose rejects before gensym mutates anything; coordinator effect authority remains unsupported |
 | Historical arithmetic/control source | Results 27.5 and 7307 | Source-derived entries execute debug/native |
 | Generated wide source | 300 constants/locals, code and branch addresses above 255; result 299 | Executes debug/native |
-| Generated Unicode source | UTF-8 emoji and a lone UTF-16 surrogate | Inspected; strings excluded from scalar execution |
+| Generated Unicode source | UTF-8 emoji and a lone UTF-16 surrogate | Exact UTF-16 source execution and owned form round-trip |
 
 Historical scripts are copied unchanged from
 `7ba4bd6f:tests/fixtures/js/{arithmetic,control_flow}.js`, retaining their
@@ -60,9 +61,11 @@ here proves entry-body execution only. Bootstrap invariants adapt `cc764dbe`,
 parsed/exported true and Goose-executed false. Export walks every function,
 including dead functions: a parsed but unsupported operation, such as a throw
 in an unused function, is a positioned error naming its operation and function.
-Macros do not yet execute in Goose; the scalar adapter explicitly rejects them
-without fallback. The exporter accepts source alone and cannot evaluate jobs
-or compute expansions. Reference generation supplies separate expectations.
+These flags describe the export stage. `macros.bb` separately executes the
+supported Pants macro images and compares structured results. The legacy scalar
+adapter still rejects them. The exporter accepts source alone and cannot
+evaluate jobs or compute expansions. Reference generation supplies independent
+expectations.
 
 The captured syntax surface includes arrow/ordinary function expressions,
 closures, lexical bindings, labeled while/continue, if/ternary/nullish and logical
@@ -85,9 +88,10 @@ refer to the hashed `src/js_runtime.js`. Native counterparts are retained in the
 The Pants profile uses explicit form-operation leaves (listed in `runtime.edn`)
 in place of JavaScript private stores/brands. Remaining core calls, including
 `mapv`, `inc`, `into`, `vec`, `gensym`, symbol testing and the reader wrapper,
-are identified by selected core bindings. Compiler reader context, definition
-demand/`cljReadRoot`, source provenance and gensym authority are declared
-boundaries for later Goose implementations. No host evaluates a Goose job.
+are identified by selected core bindings. Dynamic reader services, unresolved
+definition demand and gensym authority remain explicit boundaries. The serial
+slice below supports already-resolved roots and owned source provenance.
+No host evaluates a Goose job.
 Selected runtime source is reference material, **not executable Goose export**;
 its classes, private stores, protocol/reader machinery and host hooks are outside
 the scalar VM. Complete ECMAScript/cljs.core are excluded.
@@ -235,10 +239,8 @@ alias observe that same property. Exported source regressions check these
 cases against Node/V8 and Pants, including the missing-binding error.
 
 Every captured macro/helper image also passes source flow validation and native
-entry execution to instantiate its factory closure. The actual captured Pants
-helper factory executes nested source calls up to `NewFormVector`, where it
-fails with `NativeBoundary`. Macro bodies and real form operations **do not yet
-execute**: reserved form/collection leaves are the next runtime slice. Globals
+entry execution to instantiate its factory closure. Supported Pants macro bodies,
+form operations and helper factories execute through the serial runtime below. Globals
 requiring declarations, prototype/native methods, string-to-number coercion,
 object coercion, catches/throws, constructors and other unsupported semantics
 fail explicitly. Export/inspection support is still wider than execution;
@@ -247,7 +249,7 @@ there is no foreign evaluation fallback. C `exit` supplies only CLI exit status.
 `Code` owns the decoded source bytes, UTF-16 literals, functions, child IDs and
 operations after the input image dies. A `Heap` owns fixed-stride node,
 property, capture-value, constant-value and UTF-16 pools. Plain mutable JS
-objects/arrays are separate from the future persistent form model. Closures
+objects/arrays are separate from persistent form nodes. Closures
 copy capture values/IDs into their own range; cells own initialization,
 immutability and payload state. Frame return reclaims operands and locals but
 retains all reachable captured values. Property chains contain integer indices.
@@ -342,3 +344,146 @@ The changed exporter passes standalone rustfmt; `git diff --check` passes.
 Full compiler/engine suites were not run: the production evaluator and engine
 dispatch are unchanged, and this slice uses focused exporter/capture and native
 Goose verification.
+
+## Serial macro environment and compiler forms
+
+Run `bb crates/big-boy-pants-js/prototypes/goose/macros.bb` from the repository
+root. It builds the native `macro_run.goose` runner inside this checkout, imports
+compiler-captured forms/environments from the existing `.jobs.edn` files through
+GFB1 binary packets, and removes temporary files on every exit. Each corpus case
+uses one heap and one boot. Every emitted macro factory executes once; both
+branch helper producers execute once before their consumer is admitted. The
+entire job sequence then repeats on those same closures. Counters assert one
+boot, one initializer per definition and exactly two branch producer calls.
+The runner executes complete source bodies, not precomputed expansions or
+Goose translations of macros. Production evaluator selection is unchanged;
+this is the compiler capture/fixture adapter, not a live compilation service.
+
+The Rust capture test now compiles the original `context.cljs` fixture in both
+reference hosts, preserving the same emitted factories and compiler-owned form
+records as earlier corpus cases. Its two inputs exercise metadata on `&form`
+and an unchanged nested argument, `&env` namespace/name lookup, symbols,
+keywords, maps and equal numbers at different positions. `macros.bb` compares
+all supported expansion values, ordered children, metadata, origin tokens and
+source bytes/spans with the captured references, and separately checks live
+Node/V8 values. It explicitly checks that returned `x` is the same output node
+as `&form`'s argument, that returned metadata aliases `&form`'s metadata, and
+that equal leaves retain distinct occurrence IDs. Outputs are compiler-owned
+Babashka values after the native process/session has exited.
+
+The selected native surface is deliberately small:
+
+| Leaf | Supported semantics |
+| --- | --- |
+| `NewFormList/Vector/Map/Set` | Immutable ordered child ranges; ordinary maps keep the first equal key and last value, sets keep the first equal member; plain mutable JS arrays/objects remain separate |
+| `Keyword`, `Symbol`, `Kind`, `Value` | Exact UTF-16 names and scalar occurrence unwrapping; ambiguous names reject |
+| `Count/CljCount`, `Nth/CljNth/CljNthOr`, `Get/CljGet/CljGet2` | Bounded vector/list/string/nil access and ordered map lookup; invalid kinds/bounds reject where required |
+| `Assoc/CljAssoc`, `Conj/CljConj` | Vector assoc in `[0,count]`, ordered map assoc, vector append/list prepend; old versions and untouched child handles survive |
+| `Equals`, `CljTruth` | Structural Clojure form equality, sequential list/vector equality, nil/undefined equivalence, numeric NaN/signed-zero behavior, metadata-independent equality; occurrence identity remains separate |
+| `Meta/CljMeta`, `WithMeta/CljWithMeta` | Metadata maps or nil; unsupported receivers reject; namespace components are separate from metadata |
+| `CljSeq/First/Rest/Next`, `LiteralMap`, `ReaderCollection` | Immutable range cursors over selected sequential forms; ordered positional map operands |
+| `CljReadRoot` | Already-resolved own data properties; nonempty dynamic root contexts reject |
+| Runtime `inc`, `mapv`, `vec`, `into` | Native collection operations; `mapv` invokes original source callbacks through explicit resumable frames |
+| Runtime `macroReaderFunction` | Identity adapter for this corpus's directly emitted form ABI; dynamic reader/namespace services are not admitted |
+| Runtime `gensym` and every unlisted form operation | Explicit `NativeBoundary` failure; no effect, replay or foreign evaluation fallback |
+
+Flat persistent containers copy child handles on update. This implements the
+layout decision in `runtime-design.md`; it does not reproduce the historical
+trie. Historical `0881cf65:tests/collections.rs` and
+`7c7f314a/15cbfbde:tests/collection_intrinsics.rs` informed the alias, occurrence,
+assoc-boundary and failure checks. The selected runtime uses no mutable
+collection builder, transient or freeze operation: none can be imported or
+exported as an immutable form. General builders, lazy realization, protocol
+callbacks, dynamic helper requests, effect authority and production runtime
+coverage remain explicit boundaries.
+
+`form_bridge.goose` owns flat graph nodes, child IDs, UTF-16 units, source byte
+owners/ranges and root IDs. GFB1 has a 32-byte header (magic/version and six
+pool counts), 48-byte tagged node records, 32-bit child/root IDs, 16-bit code
+units and source ranges/bytes, all little endian with IEEE binary64 Numbers.
+Node records retain ordered child/text ranges, optional namespace, metadata
+edge, opaque compiler origin token, source index and byte span. `-1` denotes a
+new expansion origin, resolved by the caller's current macro identity; imported
+origin tokens are copied without value-based interning. Reader integer spelling
+is separate from runtime Number payloads. Nil, booleans, Numbers, strings,
+symbols, keywords, lists, vectors, maps and sets are supported; compiler literal
+payloads and mutable/executable objects reject explicitly.
+
+Import prevalidates every node/metadata edge, all ranges and IDs, cycles,
+longest DAG paths, node/depth/byte/work limits and cancellation before changing
+any heap pool or installing a root. The append-only heap owns copied source
+bytes as well as runtime data. Export bounds its retention walk (including
+shared edges and metadata), constructs a private graph, validates it and only
+then commits an independently owned result. Encode/decode also commit only on
+success. Default conversion limits are 100,000 nodes, depth 128, 16 MiB and
+10,000,000 work units. Cancellation is a sticky typed outcome, independently
+of stdout. Failed conversions install/publish nothing. The compiler's current
+compatibility rule for newly computed bare primitives can recover the latest
+argument span by value; explicit occurrence handles bypass that fallback, so
+unchanged equal scalars keep their own identities and spans.
+
+`smoke.bb` now checks/runs `bridge_tests.goose` and `macro_tests.goose` in debug
+and native modes. These cover complete graph ownership after heap teardown,
+exact empty/non-ASCII/supplementary/lone-surrogate strings and named components,
+Number bits for signed zero/NaN/infinities, metadata and child order, persistent
+aliases and assoc boundaries, every callback instruction cut, callback failures
+followed by reuse, and rejected effectful source. The bridge tests exhaust every
+cancellation work cut and binary truncation for the small structured fixture,
+including retention and metadata walks, and test transactional node/depth/byte/
+work limits, malformed IDs/names and cycles. Existing serial tests continue to
+cover private mutation, returned object aliases, exact saved state and errors.
+
+## First native macro diagnostic
+
+Run `bb crates/big-boy-pants-js/prototypes/goose/macros.bb --measure`. It first
+runs the correctness comparisons, then records five fresh-process samples of
+the unchanged emitted churn macro at `0,16,100,0,16,100` after one initialization.
+There is one execution thread, no allocation profiler, no extra warmup and no
+worker scaling. Every sample checks the six results and native provenance;
+repeated calls expose reuse explicitly. The checksum is 10,836. Each job emits
+separate import/invocation/export rows; the table sums those phases over six
+calls. Boot/factory/helper counters remain observable in the raw command output.
+
+Goose load/boot includes GSP file I/O, validation, relocation, heap boot and
+source factory invocation. Import includes GFB file I/O, decode, validation and
+heap installation. Export includes the bounded provenance walk, graph copying,
+validation, binary encoding and file write. Node/V8 uses the actual V8-emitted
+macro with the full `src/js_runtime.js`, imports structured values and writes
+structured JSON results; boot includes source parsing/initialization and request
+JSON parsing. V8 has its full JS collection runtime; Goose implements the
+selected native leaves above. Node's conversion lacks Goose's explicit source
+occurrence payloads, and the wire formats differ. These are matched expansion
+jobs with visible runtime/transport differences, not equal internal work.
+Process wall includes launch, output and teardown. Compiler source preparation,
+export and native compilation are excluded. This is not embedded-V8, live
+compiler end-to-end, snapshot, parallel or whole-project performance evidence.
+
+Raw nanoseconds on 2026-11-03 UTC, macOS 15.7.3 ARM64 Apple M3 Ultra (Virtual),
+Goose v2026.3-267-g369c7a2c/runtime 3025e5810379, Babashka 1.12.218 and
+Node v26.12.1/V8 14.6.202.34-node.40. No other builds/tests from this run
+were active during these samples. Short native phases have microsecond clock
+resolution; zeros in individual raw rows are not zero-cost claims.
+
+| Engine | Sample | Load/boot | Import | Invoke | Export/write | Process wall |
+| --- | --- | --- | --- | --- | --- | --- |
+| Goose | 1 | 77000 | 148000 | 605000 | 467000 | 4244583 |
+| Node/V8 | 1 | 8998458 | 768460 | 4772916 | 708833 | 65375792 |
+| Goose | 2 | 78000 | 150000 | 604000 | 354000 | 4577417 |
+| Node/V8 | 2 | 9152792 | 858332 | 4840669 | 705666 | 67403583 |
+| Goose | 3 | 77000 | 134000 | 568000 | 376000 | 4557792 |
+| Node/V8 | 3 | 8651875 | 763417 | 4885042 | 748666 | 66950375 |
+| Goose | 4 | 92000 | 132000 | 584000 | 393000 | 4748500 |
+| Node/V8 | 4 | 8996875 | 809126 | 5042374 | 813668 | 66234875 |
+| Goose | 5 | 81000 | 146000 | 595000 | 427000 | 4605750 |
+| Node/V8 | 5 | 8754750 | 787000 | 4862375 | 770417 | 65917959 |
+
+Source capture/export regeneration and native/reference commands pass on this
+slice. Strict root Clippy (Rust 1.99.1, default and QuickJS-only, all targets)
+retains dead-code diagnostics for `program_fragment::{published,expr,
+append_published}` and `items_after_test_module` in `analyzer.rs`. Root formatting
+retains differences in unchanged `src/js_syntax.rs` and the engine files listed
+above. These paths are byte-identical to the base `b38e840f`; the changed capture
+file passes standalone rustfmt. No lint suppression or unrelated formatting
+was added. Full compiler/engine suites were not run: production execution paths
+are unchanged; focused compiler capture/export and native bridge/runtime checks
+cover the changed boundary.

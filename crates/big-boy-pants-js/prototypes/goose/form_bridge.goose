@@ -22,7 +22,17 @@ fn reject(c: Control&, error: Error = Error.Malformed) -> bool { if c.error == E
 fn range(start: i64, count: i64, len: i64) -> bool { return start >= 0 && count >= 0 && start <= len && count <= len - start; }
 fn footprint(g: const Graph&) -> i64 { return 32 + g.nodes.len * 48 + g.children.len * 4 + g.units.len * 2 + g.sources.len * 8 + g.bytes.len + g.roots.len * 4; }
 struct Edge { value: source::Value, parent: i64, field: i64 }
-struct Retain { value: source::Value, depth: i64 }
+struct Retain { value: source::Value, depth: i64, argument: bool = false }
+fn scalar_equal(heap: source::Heap&, a: source::Value, b: source::Value, c: Control&) -> bool {
+    if !source::valid(heap, a) || !source::valid(heap, b) { heap.fault = source::Fault.None; reject(c, Error.Heap); return false; }
+    if a.tag != b.tag { return false; }
+    match a.tag {
+        0, 1 => { return true; }, 2 => { return a.a == b.a; },
+        3 => { return a.number == b.number && (a.number != 0 || 1.0 / a.number == 1.0 / b.number) || a.number != a.number && b.number != b.number; },
+        4 => { if !poll(c, a.b + b.b) { return false; } return heap.units[a.a..(a.a + a.b)] == heap.units[b.a..(b.a + b.b)]; },
+        _ => { return false; },
+    }
+}
 struct Walk { id: i64, edge: i64 = -1 }
 // Validate every node, including unreachable metadata and shared subgraphs.
 // Explicit postorder computes longest path without an unbudgeted retain walk.
@@ -170,11 +180,11 @@ fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&,
         if n.kind == 9 || n.kind == 10 { retained_bytes += n.value.b * 2 + (if n.namespace_value.tag == 4 { n.namespace_value.b * 2 } else { 0 }); }
         if n.kind >= 5 && n.kind <= 8 || n.kind == 12 { retained_bytes += n.count * 4; }
         if retained_bytes > c.bytes { return reject(c, Error.Bytes); }
-        if n.kind == 11 && n.origin >= 0 { origins.push(v); }
-        if n.metadata.tag != 0 { pending.push(Retain { value: n.metadata, depth: retained.depth + 1 }); }
+        if n.kind == 11 && n.origin >= 0 && retained.argument { origins.push(v); }
+        if n.metadata.tag != 0 { pending.push(Retain { value: n.metadata, depth: retained.depth + 1, argument: retained.argument }); }
         if n.kind >= 5 && n.kind <= 8 || n.kind == 12 {
             if !range(n.start, n.count, heap.values.len) || !poll(c, n.count) { return reject(c); }
-            for i in n.count { pending.push(Retain { value: heap.values[n.start + n.count - i - 1], depth: retained.depth + 1 }); }
+            for i in n.count { let at = n.count - i - 1; pending.push(Retain { value: heap.values[n.start + at], depth: retained.depth + 1, argument: retained.argument || retained.depth == 1 && at >= 1 }); }
         }
     }
     for v in roots { g.roots.push(-1); }
@@ -196,7 +206,8 @@ fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&,
                 for original in origins {
                     if !poll(c) { return false; }
                     let candidate = heap.nodes[original.a]; let x = candidate.value;
-                    let same = if x.tag == 3 && v.tag == 3 { x.number == v.number && (x.number != 0 || 1.0 / x.number == 1.0 / v.number) || x.number != x.number && v.number != v.number } else { source::equal(heap, x, v) };
+                    let same = scalar_equal(heap, x, v, c);
+                    if c.error != Error.None { return false; }
                     if same { node = candidate; }
                 }
             }

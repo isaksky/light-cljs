@@ -36,12 +36,14 @@ fn main() {
     for path, index in packets {
         let started = clock_ns(); var input = bridge::Graph {}; var bytes: u8[>..] = []; assert(read_file(path, bytes)); var c = bridge::Control {};
         if !bridge::decode(input, bytes, c) { print("bridge input:", c.error); exit(1); }
-        var imported: source::Value[>..] = []; assert(bridge::import_graph(heap, input, imported, c)); assert(imported.len == 4);
-        let call = imported[0]; let env = imported[1]; let argv = imported[2]; let which = source::form_value(heap, imported[3]); assert(which.tag == 3 && which.number >= 0 && which.number < macros.len);
+        if input.roots.len != 4 { print("bridge input:MalformedRoots"); exit(1); }
+        var imported: source::Value[>..] = []; if !bridge::import_graph(heap, input, imported, c) { print("bridge import:", c.error); exit(1); }
+        let call = imported[0]; let env = imported[1]; let argv = imported[2]; let which = source::form_value(heap, imported[3]);
+        if which.tag != 3 || !(which.number >= 0 && which.number < macros.len) || which.number != (which.number as i64) || source::form_kind(heap, argv) != 6 { print("bridge input:MalformedArguments"); exit(1); }
         var params: source::Value[>..] = [call, env]; for i in source::form_count(heap, argv) { params.push(source::form_nth(heap, argv, i)); }
         let ready = clock_ns(); let result = invoke(heap, macros[which.number as i64], params); let invoked = clock_ns();
         var output = bridge::Graph {}; var out: u8[>..] = [];
-        assert(bridge::export_graph(heap, [result], output, c, call)); assert(bridge::encode(output, out, c));
+        if !bridge::export_graph(heap, [result], output, c, call) || !bridge::encode(output, out, c) { print("bridge export:", c.error); exit(1); }
         let target = str(arguments[1], "/", index, ".gfb"); assert(write_file(target, out));
         let exported = clock_ns();
         print("{:phase :job :id ", index, " :import-ns ", ready - started, " :invoke-ns ", invoked - ready, " :export-ns ", exported - invoked, " :nodes ", output.nodes.len, " :bytes ", out.len, "}");

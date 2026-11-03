@@ -333,6 +333,23 @@ fn form_collection(heap: Heap&, kind: i64, children: const Value[:], template: N
     var node = template; node.kind = kind; node.start = heap.values.len; node.count = children.len;
     heap.values.append(children); return allocate(heap, node);
 }
+// Ordinary constructors normalize equal keys/members. LiteralMap and the
+// compiler occurrence bridge deliberately retain positional source operands.
+fn form_construct(heap: Heap&, kind: i64, children: const Value[:]) -> Value {
+    if kind != 7 && kind != 8 { return form_collection(heap, kind, children); }
+    let stride: i64 = if kind == 7 { 2 } else { 1 };
+    if children.len % stride != 0 { heap.fault = Fault.TypeError; return Value {}; }
+    if !charge(heap, children.len) { return Value {}; }
+    var normalized: Value[>..] = [];
+    for i in (children.len / stride) {
+        let key = children[i * stride]; var found: i64 = -1;
+        for j in (normalized.len / stride) { if form_equal(heap, normalized[j * stride], key) { found = j * stride; break; } }
+        if heap.fault != Fault.None { return Value {}; }
+        if found >= 0 { if kind == 7 { normalized[found + 1] = children[i * stride + 1]; } }
+        else { normalized.push(key); if kind == 7 { normalized.push(children[i * stride + 1]); } }
+    }
+    return form_collection(heap, kind, normalized);
+}
 fn form_count(heap: Heap&, v: Value) -> i64 {
     let x = form_value(heap, v);
     if x.tag <= 1 { return 0; }
@@ -383,7 +400,7 @@ fn form_assoc(heap: Heap&, v: Value, k: Value, value: Value) -> Value {
     let n = heap.nodes[x.a]; var at: i64 = -1;
     if kind == 6 {
         let i = form_value(heap, k);
-        if i.tag != 3 || i.number < 0 || i.number > n.count || i.number != (i.number as i64) { heap.fault = Fault.TypeError; return Value {}; }
+        if i.tag != 3 || !(i.number >= 0 && i.number <= n.count) || i.number != (i.number as i64) { heap.fault = Fault.TypeError; return Value {}; }
         at = i.number as i64;
     } else {
         for i in (n.count / 2) { if form_equal(heap, heap.values[n.start + i * 2], k) { at = i * 2 + 1; break; } }
@@ -410,7 +427,7 @@ fn form_get(heap: Heap&, v: Value, k: Value, fallback: Value) -> Value {
     let x = form_value(heap, v); let kind = form_kind(heap, x);
     if x.tag <= 1 { return fallback; }
     if kind == 6 || x.tag == 4 {
-        let i = form_value(heap, k); if i.tag != 3 || i.number < 0 || i.number >= form_count(heap, x) || i.number != (i.number as i64) { return fallback; }
+        let i = form_value(heap, k); if i.tag != 3 || !(i.number >= 0 && i.number < form_count(heap, x)) || i.number != (i.number as i64) { return fallback; }
         return form_nth(heap, x, i.number as i64, fallback);
     }
     if kind != 7 { heap.fault = Fault.TypeError; return Value {}; }
@@ -443,7 +460,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         },
         2 => { let kind = form_kind(heap, a); return match kind { 5, 12 => text(heap, "list"), 6 => text(heap, "vector"), 7 => text(heap, "map"), 8 => text(heap, "set"), 9 => text(heap, "symbol"), 10 => text(heap, "keyword"), _ => nil() }; },
         5, 19 => { return number(form_count(heap, a)); },
-        6, 25, 26 => { let i = form_value(heap, args[1]); if i.tag != 3 || i.number < -2147483648.0 || i.number > 2147483647.0 || i.number != (i.number as i64) || (op != 26 && (i.number < 0 || i.number >= form_count(heap, a))) { heap.fault = Fault.TypeError; return Value {}; } return form_nth(heap, a, i.number as i64, if op == 26 { args[2] } else { nil() }); },
+        6, 25, 26 => { let i = form_value(heap, args[1]); if i.tag != 3 || !(i.number >= -2147483648.0 && i.number <= 2147483647.0) || i.number != (i.number as i64) || (op != 26 && (i.number < 0 || i.number >= form_count(heap, a))) { heap.fault = Fault.TypeError; return Value {}; } return form_nth(heap, a, i.number as i64, if op == 26 { args[2] } else { nil() }); },
         7, 27 => { return form_get(heap, a, args[1], args[2]); },
         72 => { return form_get(heap, a, args[1], nil()); },
         8, 29 => { return form_assoc(heap, a, args[1], args[2]); },
@@ -618,7 +635,7 @@ fn step(job: Job&) {
         191, 192, 193, 195 => {
             let count = if op.code == 193 { op.arg * 2 } else { op.arg }; let base = job.operands.len - count;
             let kind: i64 = if op.code == 191 { 5 } else if op.code == 192 { 6 } else if op.code == 193 { 7 } else { 8 };
-            let value = form_collection(heap, kind, job.operands[base..]); job.operands.resize(base); job.operands.push(value);
+            let value = form_construct(heap, kind, job.operands[base..]); job.operands.resize(base); job.operands.push(value);
         },
         194 => { let base = job.operands.len - export_form_arity(op.arg); let value = form_op(heap, op.arg, job.operands[base..]); job.operands.resize(base); job.operands.push(value); },
         // Other runtime/global declaration semantics remain explicit boundaries.
