@@ -245,6 +245,7 @@ fn source_corpus() {
             "[[2 3] [9 16] [2 3 9 16]]\n",
         ),
         ("effect", &["announce"][..], "[7 true]\n"),
+        ("context", &["context"][..], "4 4\n"),
     ] {
         let source = std::fs::read_to_string(root.join(format!("{case}.cljs"))).unwrap();
         let mut references = Vec::new();

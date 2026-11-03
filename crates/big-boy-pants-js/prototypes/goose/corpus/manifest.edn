@@ -6,7 +6,7 @@
  "bb crates/big-boy-pants-js/prototypes/goose/regenerate.bb",
  :source-sha256
  {"crates/big-boy-pants-js/prototypes/goose/capture.rs"
-  "afb5281c2ad23b01e42bce42eb857bdc330c208c6ad0939b6a0744b94bf100c1",
+  "6c1d6091b186471fc28c5a3587a53a2127fc267ad82efa1b65d9a2c355493139",
   "crates/big-boy-pants-js/prototypes/goose/export.rs"
   "0b9ac064d515082f795203a6fecbef3747abcc1ee6438eff1d1c75e3ab82fbdd",
   "crates/big-boy-pants-js/prototypes/goose/regenerate.bb"
@@ -138,6 +138,26 @@
   "0636458db37cc6c71b6f6bd76b8bfa18c73cf2fe6d097083364f8acc21e04489",
   "corpus/closure.v8.jobs.edn"
   "78d5301e196a9d3e56a68ac8396b28e42c62ff0cf2b28047ecae1f6f39cc1a3a",
+  "corpus/context-context.pants.gsp"
+  "a3d02bf0a9fee0ceb6b979ff3d872c46b5b731683eb674e64aaefc6e07020ea0",
+  "corpus/context-context.pants.inventory.edn"
+  "c070db112f6eab5f235f4137f090f2735b1d085b49f4b541c68c2ce01509cfc6",
+  "corpus/context-context.pants.js"
+  "ff6e449b78698d0da2993a87f4fb26c1b69f5f97bc96cf028609ae0107a6dbfa",
+  "corpus/context-context.v8.gsp"
+  "f918f8f9f03a4482526be0e59204c01504a4b1c25b9c54a8ab4389eb65860e32",
+  "corpus/context-context.v8.inventory.edn"
+  "2f8f61ee5d85fe6f12c719ec587af986716805e4224dca3f64c88cebfd469556",
+  "corpus/context-context.v8.js"
+  "8f4214d4cd26a724ebc8b00a7badf0923fa2c1624e7805096c50846c902e11f0",
+  "corpus/context.cljs"
+  "703d8d0c8dd428196dc1b7fc342364001f9345962882b03cca971b4a22e8cac1",
+  "corpus/context.pants.jobs.edn"
+  "6b61c0f053e8deb162b5bc8dcde309503a47996db9f0ede1b4778a054c05dcf5",
+  "corpus/context.stdout"
+  "c74ca9fbdc8f2a3d035d2dabe6e476e33e61bb7741f94b8c4d947186c36d866f",
+  "corpus/context.v8.jobs.edn"
+  "3a2130ec50d36ea434365b9c1ae274575a6410e4e698d38dae1855f4f5ae5e8b",
   "corpus/effect-announce.pants.gsp"
   "a222ec985ed9d60b62f9628747432571de83d6ba3fb14b86aad7be75449b110c",
   "corpus/effect-announce.pants.inventory.edn"
@@ -159,9 +179,9 @@
   "corpus/effect.v8.jobs.edn"
   "31c98b1f03fe8d9a2b1c7c10768f86554e0ff88a12ed373fbfc12725c2a27493",
   "corpus/runtime.edn"
-  "173e4067738d4040edc1ebfcf015af55a770ff0255722b19feab3848f93638eb",
+  "e42c0d4520b4485a95b472c705e9999371ee8dde0dcb3a639a3c77ca4453da9c",
   "corpus/runtime.js"
-  "a1cb2c1bb724227f695686e9cc02a5d3b3b1e1b1d2564f6a40f3900565b16185",
+  "0b4304b3ae4074640c6020013a17afbeb589efbaa43accfd393662fb20d83f56",
   "corpus/serial/calls.gsp"
   "fc85b8724f49dcc317c7a17e9b65dbbc3c5891715b0d7ac03bdedbefcc553eea",
   "corpus/serial/calls.js"

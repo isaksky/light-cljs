@@ -28,13 +28,15 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // Runtime additions: builtin=4, list/vector/map/set=5/6/7/8,
 // symbol/keyword=9/10, scalar occurrence=11, sequence cursor=12.
 // Metadata/origin belong to the occurrence, independently of value equality.
-struct Node { kind: i64, function: i64 = 0, start: i64 = 0, count: i64 = 0, head: i64 = -1, length: i64 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value {}, metadata: Value = Value {}, origin: i64 = -1, source: i64 = -1, span_start: i64 = 0, span_end: i64 = 0 }
+struct Node { kind: i64, function: i64 = 0, start: i64 = 0, count: i64 = 0, head: i64 = -1, length: i64 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value {}, namespace_value: Value = Value { tag: 1 }, metadata: Value = Value {}, origin: i64 = -1, source: i64 = -1, span_start: i64 = 0, span_end: i64 = 0 }
+struct SourceRange { start: i64, count: i64 }
 struct Property { key: Value, value: Value, next: i64 }
 root struct Heap {
-    code:  const Code&, identity: i64 = 0, limits: Limits = Limits {},
-    nodes: Node[>..]                  = [], values: Value[>..] = [], properties: Property[>..] = [],
-    units: u16[>..]                   = [], constants: Value[>..] = [], work: i64 = 0,
-    fault: Fault                      = Fault.None, global: Value = Value {}, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
+    code:         const Code&, identity: i64 = 0, limits: Limits = Limits {},
+    nodes:        Node[>..]                  = [], values: Value[>..] = [], properties: Property[>..] = [],
+    units:        u16[>..]                   = [], constants: Value[>..] = [], work: i64 = 0,
+    source_bytes: u8[>..]                    = [], source_ranges: SourceRange[>..] = [],
+    fault:        Fault                      = Fault.None, global: Value = Value {}, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
 }
 struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, input: Value = Value {}, output: Value = Value {}, index: i64 = 0 }
 struct Write { object: Value, key: Value, value: Value }
@@ -125,6 +127,20 @@ fn charge(heap: Heap&, count: i64 = 1) -> bool {
     if heap.fault != Fault.None { return false; }
     if count < 0 || count > heap.limits.work - heap.work { heap.fault = Fault.WorkLimit; return false; }
     heap.work += count; return true;
+}
+// Merge independently validated immutable function trees before admission.
+// Function/capture/constant references relocate; source byte spans stay exact
+// within the concatenated source owner. No executable work happens here.
+fn append_code(out: Code&, other: const Code&) -> i64 {
+    assert(other.valid);
+    let functions = out.functions.len; let ops = out.ops.len; let constants = out.constants.len;
+    let children = out.children.len; let units = out.units.len; let bytes = out.source_bytes.len;
+    for f in other.functions { var n = f; n.start += ops; n.constants += constants; n.children += children; out.functions.push(n); }
+    for op in other.ops { var n = op; n.start += bytes; n.end += bytes; if n.code == 13 || n.code == 14 { n.arg += ops; } out.ops.push(n); }
+    for v in other.constants { var n = v; if n.tag == 4 { n.a += units; } out.constants.push(n); }
+    for id in other.children { out.children.push(functions + id); }
+    out.units.append(other.units); out.source_bytes.append(other.source_bytes); out.valid = true;
+    return functions;
 }
 fn memory(heap: Heap&) -> bool { heap.fault = Fault.MemoryLimit; return false; }
 fn valid(heap: Heap&, v: Value) -> bool {
@@ -334,13 +350,16 @@ fn form_nth(heap: Heap&, v: Value, i: i64, fallback: Value = Value { tag: 1 }) -
 recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool {
     if !charge(heap) { return false; }
     if depth >= 128 { heap.fault = Fault.StackLimit; return false; }
+    if !valid(heap, a) || !valid(heap, b) { return false; }
+    if a.tag == 5 && b.tag == 5 && a.a == b.a { return true; }
     let x = form_value(heap, a); let y = form_value(heap, b);
+    if x.tag <= 1 && y.tag <= 1 { return true; }
     if x.tag != y.tag { return false; }
     if x.tag != 5 { return equal(heap, x, y); }
     let n = heap.nodes[x.a]; let m = heap.nodes[y.a];
     if n.kind < 5 || m.kind < 5 { return x.a == y.a; }
     if n.kind != m.kind && !((n.kind == 5 || n.kind == 6 || n.kind == 12) && (m.kind == 5 || m.kind == 6 || m.kind == 12)) { return false; }
-    if n.kind == 9 || n.kind == 10 { return equal(heap, n.value, m.value) && equal(heap, n.metadata, m.metadata); }
+    if n.kind == 9 || n.kind == 10 { return equal(heap, n.value, m.value) && equal(heap, n.namespace_value, m.namespace_value); }
     if n.count != m.count { return false; }
     if n.kind == 7 || n.kind == 8 {
         let stride: i64 = if n.kind == 7 { 2 } else { 1 };
@@ -407,24 +426,38 @@ fn form_sequence(heap: Heap&, v: Value, skip: i64, empty_nil: bool) -> Value {
     if kind != 5 && kind != 6 && kind != 12 { heap.fault = Fault.NativeBoundary; return Value {}; }
     let n = heap.nodes[x.a]; return allocate(heap, Node { kind: 12, start: n.start + skip, count: n.count - skip });
 }
+fn named_supported(heap: Heap&, ns: Value, name: Value) -> bool {
+    if !charge(heap, name.b + (if ns.tag == 4 { ns.b } else { 0 })) { return false; }
+    if ns.tag == 4 { for i in ns.b { if heap.units[ns.a + i] == 47 { return false; } } if ns.b == 0 && name.b == 0 { return false; } }
+    else { for i in name.b { if heap.units[name.a + i] == 47 && name.b != 1 { return false; } } }
+    return true;
+}
 fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
     for v in args { if !valid(heap, v) { return Value {}; } }
     let a = args[0];
     match op {
-        0, 1 => { if (a.tag != 1 && a.tag != 4) || args[1].tag != 4 { heap.fault = Fault.TypeError; return Value {}; } return allocate(heap, Node { kind: if op == 0 { 10 } else { 9 }, value: args[1], metadata: a }); },
+        0, 1 => {
+            if (a.tag > 1 && a.tag != 4) || args[1].tag != 4 { heap.fault = Fault.TypeError; return Value {}; }
+            if !named_supported(heap, a, args[1]) { if heap.fault == Fault.None { heap.fault = Fault.NativeBoundary; } return Value {}; }
+            return allocate(heap, Node { kind: if op == 0 { 10 } else { 9 }, value: args[1], namespace_value: if a.tag <= 1 { nil() } else { a } });
+        },
         2 => { let kind = form_kind(heap, a); return match kind { 5, 12 => text(heap, "list"), 6 => text(heap, "vector"), 7 => text(heap, "map"), 8 => text(heap, "set"), 9 => text(heap, "symbol"), 10 => text(heap, "keyword"), _ => nil() }; },
         5, 19 => { return number(form_count(heap, a)); },
-        6, 25, 26 => { let i = form_value(heap, args[1]); if i.tag != 3 || i.number != (i.number as i64) { heap.fault = Fault.TypeError; return Value {}; } return form_nth(heap, a, i.number as i64, if op == 26 { args[2] } else { nil() }); },
+        6, 25, 26 => { let i = form_value(heap, args[1]); if i.tag != 3 || i.number < -2147483648.0 || i.number > 2147483647.0 || i.number != (i.number as i64) || (op != 26 && (i.number < 0 || i.number >= form_count(heap, a))) { heap.fault = Fault.TypeError; return Value {}; } return form_nth(heap, a, i.number as i64, if op == 26 { args[2] } else { nil() }); },
         7, 27 => { return form_get(heap, a, args[1], args[2]); },
+        72 => { return form_get(heap, a, args[1], nil()); },
         8, 29 => { return form_assoc(heap, a, args[1], args[2]); },
         10, 31 => { return form_conj(heap, a, args[1]); },
         11 => { return boolean(form_equal(heap, a, args[1])); },
+        13, 33 => { return if a.tag == 5 && heap.nodes[a.a].metadata.tag != 0 { heap.nodes[a.a].metadata } else { nil() }; },
+        14, 34 => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= 5 && kind <= 9 || kind == 12) || (meta.tag > 1 && form_kind(heap, meta) != 7) { heap.fault = Fault.TypeError; return Value {}; } var n = heap.nodes[a.a]; n.metadata = if meta.tag <= 1 { Value {} } else { args[1] }; n.origin = -1; return allocate(heap, n); },
         15 => { return form_value(heap, a); },
         18 => { let v = form_value(heap, a); return boolean(v.tag > 1 && !(v.tag == 2 && v.a == 0)); },
         20, 22, 23 => { return form_sequence(heap, a, if op == 20 { 0 } else { 1 }, op != 22); },
         21 => { return form_nth(heap, a, 0); },
         65 => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != 5 && kind != 6 { heap.fault = Fault.TypeError; return Value {}; } let n = heap.nodes[v.a]; return form_collection(heap, 7, heap.values[n.start..(n.start + n.count)]); },
         69 => { if form_kind(heap, a) != 7 && form_kind(heap, a) != 8 { heap.fault = Fault.TypeError; return Value {}; } return a; },
+        82 => { if a.tag != 5 || heap.nodes[a.a].kind != 0 || args[1].tag > 1 { heap.fault = Fault.NativeBoundary; return Value {}; } return get(heap, a, args[2]); },
         _ => { heap.fault = Fault.NativeBoundary; return Value {}; },
     }
 }
@@ -440,6 +473,9 @@ fn boot_runtime(heap: Heap&) -> Value {
     install_field(heap, core, "macroReaderFunction", builtin(heap, 0));
     install_field(heap, core, "inc", builtin(heap, 1)); install_field(heap, core, "mapv", builtin(heap, 2));
     install_field(heap, core, "vec", builtin(heap, 3)); install_field(heap, core, "into", builtin(heap, 4));
+    // Effects require the later coordinator authority; fail before gensym can
+    // mutate anything. A missing leaf never falls back to a foreign engine.
+    install_field(heap, core, "gensym", builtin(heap, 5));
     if heap.fault == Fault.None { heap.boot_count += 1; }
     return rt;
 }

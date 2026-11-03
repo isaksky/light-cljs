@@ -11,15 +11,18 @@
 ["inc" "inc"]
 ["into" "into"]
 ["isSymbol" "isSymbol"]
+["keyword" "keywordCore"]
 ["list" "list"]
 ["macroReaderFunction" "macroReaderFunction"]
 ["mapv" "mapv"]
+["meta" "meta"]
 ["multiply" "multiply"]
+["name" "name"]
 ["next" "next"]
 ["rest" "rest"]
 ["seq" "seq"]
 ["symbol" "symbolCore"]
-["vec" "vec"]] :exports ["PersistentArrayMapValue", "PersistentVectorValue", "add", "assoc", "conj", "count", "equal", "first", "gensym", "get", "inc", "into", "isSymbol", "list", "macroReaderFunction", "mapv", "multiply", "next", "rest", "seq", "symbolCore", "vec", "vectorFromArray"] :units [{:name "keywords" :source "src/js_runtime.js" :span [199 375]}
+["vec" "vec"]] :exports ["PersistentArrayMapValue", "PersistentVectorValue", "add", "assoc", "conj", "count", "equal", "first", "gensym", "get", "inc", "into", "isSymbol", "keywordCore", "list", "macroReaderFunction", "mapv", "meta", "multiply", "name", "next", "rest", "seq", "symbolCore", "vec", "vectorFromArray"] :units [{:name "keywords" :source "src/js_runtime.js" :span [199 375]}
 {:name "internedKeywords" :source "src/js_runtime.js" :span [402 440]}
 {:name "vectors" :source "src/js_runtime.js" :span [458 1233]}
 {:name "symbols" :source "src/js_runtime.js" :span [1251 1284]}
@@ -314,6 +317,7 @@
 {:name "vectorAssoc" :source "src/js_runtime.js" :span [195322 195710]}
 {:name "vector" :source "src/js_runtime.js" :span [197079 197144]}
 {:name "vectorFromArray" :source "src/js_runtime.js" :span [197191 197415]}
+{:name "keywordCore" :source "src/js_runtime.js" :span [197506 198673]}
 {:name "name" :source "src/js_runtime.js" :span [198753 199218]}
 {:name "count" :source "src/js_runtime.js" :span [200281 202077]}
 {:name "count.branches" :source "src/js_runtime.js" :span [202441 202752]}
@@ -569,4 +573,4 @@
 {:name "conjProtocol" :source "src/js_runtime.js" :span [576212 576296]}
 {:name "iteratorProtocol" :source "src/js_runtime.js" :span [577312 577404]}
 {:name "namespaces.cljsUser" :source "src/js_runtime.js" :span [636796 636857]}
-{:name "namespaces.cljsCore" :source "src/js_runtime.js" :span [636946 636985]}] :native-form-leaves ["CljAssoc", "CljConj", "CljCount", "CljFirst", "CljGet", "CljNext", "CljReadRoot", "CljRest", "CljSeq", "CljTruth", "Equals", "Kind", "LiteralMap", "ReaderCollection", "Symbol", "Value"] :runtime-source-exported false :goose-executed false}
+{:name "namespaces.cljsCore" :source "src/js_runtime.js" :span [636946 636985]}] :native-form-leaves ["CljAssoc", "CljConj", "CljCount", "CljFirst", "CljGet", "CljGet2", "CljMeta", "CljNext", "CljReadRoot", "CljRest", "CljSeq", "CljTruth", "Equals", "Keyword", "Kind", "LiteralMap", "ReaderCollection", "Symbol", "Value"] :runtime-source-exported false :goose-executed false}

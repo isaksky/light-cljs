@@ -1752,6 +1752,33 @@
     return makeVector(Array.from(items));
   }
 
+  function keywordCore(namespace, name) {
+    switch (arguments.length) {
+      case 1: {
+        if (keywords.has(namespace)) return namespace;
+        const sym = symbols.get(namespace);
+        if (sym) return makeKeyword(sym.namespace, sym.name, sym.spelling);
+        if (typeof namespace !== "string") return null;
+        if (namespace === "/") return freshKeyword(null, namespace);
+        const parts = namespace.split("/");
+        return makeKeyword(parts.length === 2 ? parts[0] : null,
+          parts.length === 2 ? parts[1] : parts[0], namespace);
+      }
+      case 2: {
+        const nsKeyword = keywords.get(namespace) || symbols.get(namespace);
+        const nameKeyword = keywords.get(name) || symbols.get(name);
+        if (nsKeyword) namespace = nsKeyword.name;
+        if (nameKeyword) name = nameKeyword.name;
+        if ((namespace != null && typeof namespace !== "string") ||
+            typeof name !== "string") {
+          throw new Error("keyword expects strings or keywords and an optional nil namespace");
+        }
+        return freshKeyword(namespace, name);
+      }
+      default: return invalidArity(arguments.length);
+    }
+  }
+
   function name(value) {
     if (multiFns.has(value)) return name(value.name);
     const method = protocolHooks.implements?.(methodKeys[36], value) ? protocolHooks.builtin?.(value, methodKeys[37], 1) : null;
@@ -3322,5 +3349,5 @@
   const iteratorProtocol = coreMethod("IIterable/-iterator", [1], iterator, iterableValue);
   coreCells.currentNs = createNs(symbol(null, "cljs.user"));
   createNs(symbol(null, "cljs.core"));
-  return Object.freeze({PersistentArrayMapValue, PersistentVectorValue, add, assoc, conj, count, equal, first, gensym, get, inc, into, isSymbol, list, macroReaderFunction, mapv, multiply, next, rest, seq, symbolCore, vec, vectorFromArray});
+  return Object.freeze({PersistentArrayMapValue, PersistentVectorValue, add, assoc, conj, count, equal, first, gensym, get, inc, into, isSymbol, keywordCore, list, macroReaderFunction, mapv, meta, multiply, name, next, rest, seq, symbolCore, vec, vectorFromArray});
 })()
