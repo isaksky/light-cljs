@@ -1,0 +1,476 @@
+//! GFB1 compiler-owned form transport. No engine pointers or printed forms.
+use crate::CollectionKind;
+use crate::compiler_data::{Datum, DatumKind, ExpansionOrigin, Form, Name};
+use crate::evaluator::{EvalError, ExecutionControl};
+use crate::form_bridge::ConversionLimits;
+use std::collections::HashMap;
+
+const MAX_BYTES: usize = 16 * 1024 * 1024;
+fn bad() -> EvalError {
+    EvalError("Goose malformed or unsupported form graph".into())
+}
+#[derive(Clone)]
+struct Node {
+    tag: u32,
+    number: f64,
+    fields: [i32; 9],
+}
+impl Default for Node {
+    fn default() -> Self {
+        Self {
+            tag: 0,
+            number: 0.,
+            fields: [0, 0, 0, -1, -1, -1, -1, 0, 0],
+        }
+    }
+}
+#[derive(Default)]
+pub(super) struct Graph {
+    nodes: Vec<Node>,
+    children: Vec<u32>,
+    units: Vec<u16>,
+    sources: Vec<(u32, u32)>,
+    bytes: Vec<u8>,
+    roots: Vec<u32>,
+    pub originals: HashMap<i32, Form>,
+    memo: HashMap<(usize, usize), u32>,
+}
+fn tag(d: &Datum) -> Result<u32, EvalError> {
+    Ok(match d.kind() {
+        DatumKind::Nil => 0,
+        DatumKind::Boolean(_) => 1,
+        DatumKind::Integer(_) | DatumKind::Double(_) => 2,
+        DatumKind::String(_) => 3,
+        DatumKind::Symbol(_) => 4,
+        DatumKind::Keyword(_) => 5,
+        DatumKind::Collection { kind, .. } => match kind {
+            CollectionKind::List => 6,
+            CollectionKind::Vector => 7,
+            CollectionKind::Map => 8,
+            CollectionKind::Set => 9,
+            _ => return Err(bad()),
+        },
+        _ => return Err(bad()),
+    })
+}
+impl Graph {
+    fn charge(
+        &self,
+        depth: usize,
+        limits: ConversionLimits,
+        control: &ExecutionControl,
+    ) -> Result<(), EvalError> {
+        control.check()?;
+        if depth > limits.depth || self.nodes.len() >= limits.nodes || self.size() > MAX_BYTES {
+            return Err(EvalError("Goose conversion limit exceeded".into()));
+        }
+        Ok(())
+    }
+    fn size(&self) -> usize {
+        32 + self.nodes.len() * 48
+            + self.children.len() * 4
+            + self.units.len() * 2
+            + self.sources.len() * 8
+            + self.bytes.len()
+            + self.roots.len() * 4
+    }
+    fn text(&mut self, text: &[u16]) -> (i32, i32) {
+        let start = self.units.len() as i32;
+        self.units.extend(text);
+        (start, text.len() as i32)
+    }
+    fn datum(
+        &mut self,
+        d: &Datum,
+        depth: usize,
+        limits: ConversionLimits,
+        c: &ExecutionControl,
+    ) -> Result<u32, EvalError> {
+        self.charge(depth, limits, c)?;
+        let mut n = Node {
+            tag: tag(d)?,
+            ..Default::default()
+        };
+        match d.kind() {
+            DatumKind::Boolean(v) => n.number = if *v { 1. } else { 0. },
+            DatumKind::Integer(v) => {
+                if (*v as f64) as i64 != *v {
+                    return Err(bad());
+                }
+                n.number = *v as f64;
+            }
+            DatumKind::Double(v) => n.number = *v,
+            DatumKind::String(v) => {
+                let (s, l) = self.text(v);
+                n.fields[0] = s;
+                n.fields[1] = l;
+            }
+            DatumKind::Symbol(v) | DatumKind::Keyword(v) => {
+                let (s, l) = self.text(v.name());
+                n.fields[0] = s;
+                n.fields[1] = l;
+                if let Some(ns) = v.namespace() {
+                    let (s, l) = self.text(ns);
+                    n.fields[2] = s;
+                    n.fields[3] = l;
+                }
+            }
+            DatumKind::Collection { children, .. } => {
+                let ids = children
+                    .iter()
+                    .map(|d| self.datum(d, depth + 1, limits, c))
+                    .collect::<Result<Vec<_>, _>>()?;
+                n.fields[0] = self.children.len() as i32;
+                n.fields[1] = ids.len() as i32;
+                self.children.extend(ids);
+            }
+            _ => {}
+        }
+        if let Some(meta) = d.metadata() {
+            n.fields[4] = self.datum(&meta, depth + 1, limits, c)? as i32;
+        }
+        self.charge(depth, limits, c)?;
+        let id = self.nodes.len() as u32;
+        self.nodes.push(n);
+        Ok(id)
+    }
+    fn form(
+        &mut self,
+        f: &Form,
+        depth: usize,
+        l: ConversionLimits,
+        c: &ExecutionControl,
+    ) -> Result<u32, EvalError> {
+        let key = (f.nodes().as_ptr() as usize, f.id().0);
+        if let Some(id) = self.memo.get(&key) {
+            return Ok(*id);
+        }
+        self.charge(depth, l, c)?;
+        if f.node().compiler_payload.is_some() {
+            return Err(bad());
+        }
+        let d = f.data();
+        let mut n = Node {
+            tag: tag(&d)?,
+            ..Default::default()
+        };
+        if n.tag >= 6 {
+            let ids = f
+                .children()
+                .iter()
+                .map(|f| self.form(f, depth + 1, l, c))
+                .collect::<Result<Vec<_>, _>>()?;
+            n.fields[0] = self.children.len() as i32;
+            n.fields[1] = ids.len() as i32;
+            self.children.extend(ids);
+        } else {
+            let id = self.datum(&d, depth, l, c)?;
+            n = self.nodes[id as usize].clone();
+            self.nodes.pop();
+        }
+        if let Some(meta) = f.metadata() {
+            n.fields[4] = self.form(&meta, depth + 1, l, c)? as i32;
+        }
+        let span = f.span();
+        let source = span.source();
+        let source_index = if let Some(i) = self.sources.iter().position(|&(s, n)| {
+            self.bytes[s as usize..(s + n) as usize] == *source.text().as_bytes()
+        }) {
+            i
+        } else {
+            let i = self.sources.len();
+            self.sources
+                .push((self.bytes.len() as u32, source.text().len() as u32));
+            self.bytes.extend(source.text().as_bytes());
+            i
+        };
+        let occurrence = self.originals.len() as i32;
+        self.originals.insert(occurrence, f.clone());
+        n.fields[5] = occurrence;
+        n.fields[6] = source_index as i32;
+        n.fields[7] = span.bytes().start as i32;
+        n.fields[8] = span.bytes().end as i32;
+        self.charge(depth, l, c)?;
+        let id = self.nodes.len() as u32;
+        self.nodes.push(n);
+        self.memo.insert(key, id);
+        Ok(id)
+    }
+    pub fn arguments(
+        forms: &[super::Stored],
+        limits: ConversionLimits,
+        c: &ExecutionControl,
+    ) -> Result<Self, EvalError> {
+        let mut g = Self::default();
+        for form in forms {
+            let id = match form {
+                super::Stored::Form(f) => g.form(f, 1, limits, c)?,
+                super::Stored::Data(d) => g.datum(d, 1, limits, c)?,
+                _ => return Err(bad()),
+            };
+            g.roots.push(id);
+        }
+        Ok(g)
+    }
+    pub fn encode(&self) -> Result<Vec<u8>, EvalError> {
+        if self.size() > MAX_BYTES {
+            return Err(bad());
+        }
+        let mut out = Vec::with_capacity(self.size());
+        out.extend(b"GFB1");
+        out.extend(1u32.to_le_bytes());
+        for n in [
+            self.nodes.len(),
+            self.children.len(),
+            self.units.len(),
+            self.sources.len(),
+            self.bytes.len(),
+            self.roots.len(),
+        ] {
+            out.extend((n as u32).to_le_bytes());
+        }
+        for n in &self.nodes {
+            out.extend(n.tag.to_le_bytes());
+            out.extend(n.number.to_le_bytes());
+            for f in n.fields {
+                out.extend(f.to_le_bytes());
+            }
+        }
+        for id in &self.children {
+            out.extend(id.to_le_bytes());
+        }
+        for u in &self.units {
+            out.extend(u.to_le_bytes());
+        }
+        for (s, n) in &self.sources {
+            out.extend(s.to_le_bytes());
+            out.extend(n.to_le_bytes());
+        }
+        out.extend(&self.bytes);
+        for id in &self.roots {
+            out.extend(id.to_le_bytes());
+        }
+        Ok(out)
+    }
+    pub fn decode(
+        bytes: &[u8],
+        limits: ConversionLimits,
+        c: &ExecutionControl,
+    ) -> Result<Self, EvalError> {
+        c.check()?;
+        if bytes.len() < 32 || bytes.len() > MAX_BYTES || &bytes[..4] != b"GFB1" {
+            return Err(bad());
+        }
+        let mut at = 4;
+        let word = |at: &mut usize| {
+            let n = u32::from_le_bytes(bytes[*at..*at + 4].try_into().unwrap());
+            *at += 4;
+            n
+        };
+        if word(&mut at) != 1 {
+            return Err(bad());
+        }
+        let counts: [usize; 6] = std::array::from_fn(|_| word(&mut at) as usize);
+        let [nodes, children, units, sources, text, roots] = counts;
+        if nodes > limits.nodes
+            || roots != 1
+            || 32u64
+                + nodes as u64 * 48
+                + children as u64 * 4
+                + units as u64 * 2
+                + sources as u64 * 8
+                + text as u64
+                + roots as u64 * 4
+                != bytes.len() as u64
+        {
+            return Err(bad());
+        }
+        let mut g = Self::default();
+        for _ in 0..nodes {
+            c.check()?;
+            let tag = word(&mut at);
+            let number = f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+            at += 8;
+            let fields = std::array::from_fn(|_| word(&mut at) as i32);
+            g.nodes.push(Node {
+                tag,
+                number,
+                fields,
+            });
+        }
+        for _ in 0..children {
+            g.children.push(word(&mut at));
+        }
+        for _ in 0..units {
+            g.units
+                .push(u16::from_le_bytes(bytes[at..at + 2].try_into().unwrap()));
+            at += 2;
+        }
+        for _ in 0..sources {
+            g.sources.push((word(&mut at), word(&mut at)));
+        }
+        g.bytes.extend(&bytes[at..at + text]);
+        at += text;
+        for _ in 0..roots {
+            g.roots.push(word(&mut at));
+        }
+        // Validate every edge, including unreachable nodes, before recursive conversion.
+        for n in &g.nodes {
+            if n.tag > 9
+                || n.fields[4] < -1
+                || n.fields[4] >= nodes as i32
+                || n.fields[6] < -1
+                || n.fields[6] >= sources as i32
+                || n.tag == 1 && n.number != 0. && n.number != 1.
+            {
+                return Err(bad());
+            }
+            if n.tag >= 6 {
+                g.segment(&g.children, n.fields[0], n.fields[1])?;
+            } else if n.tag >= 3 {
+                g.segment(&g.units, n.fields[0], n.fields[1])?;
+                if n.tag >= 4 && n.fields[3] != -1 {
+                    g.segment(&g.units, n.fields[2], n.fields[3])?;
+                }
+            }
+            if n.tag == 8 && n.fields[1] % 2 != 0 {
+                return Err(bad());
+            }
+            if n.fields[4] >= 0 && g.nodes[n.fields[4] as usize].tag != 8 {
+                return Err(bad());
+            }
+        }
+        if g.children
+            .iter()
+            .chain(&g.roots)
+            .any(|&id| id as usize >= nodes)
+        {
+            return Err(bad());
+        }
+        for &(s, n) in &g.sources {
+            g.segment(&g.bytes, s as i32, n as i32)?;
+        }
+        Ok(g)
+    }
+    fn segment<'a, T>(&self, v: &'a [T], start: i32, count: i32) -> Result<&'a [T], EvalError> {
+        if start < 0 || count < 0 {
+            return Err(bad());
+        }
+        v.get(
+            start as usize
+                ..(start as usize)
+                    .checked_add(count as usize)
+                    .ok_or_else(bad)?,
+        )
+        .ok_or_else(bad)
+    }
+    pub fn expansion(
+        &self,
+        call: &Form,
+        origin: ExpansionOrigin,
+        originals: &HashMap<i32, Form>,
+        limits: ConversionLimits,
+        c: &ExecutionControl,
+    ) -> Result<Form, EvalError> {
+        struct Decode<'a> {
+            g: &'a Graph,
+            states: Vec<u8>,
+            memo: Vec<Option<Datum>>,
+            originals: &'a HashMap<i32, Form>,
+            reuse: HashMap<usize, Form>,
+            limits: ConversionLimits,
+            c: &'a ExecutionControl,
+            visits: usize,
+        }
+        impl Decode<'_> {
+            fn visit(&mut self, id: usize, depth: usize) -> Result<Datum, EvalError> {
+                self.c.check()?;
+                self.visits += 1;
+                if depth > self.limits.depth || self.visits > self.limits.nodes {
+                    return Err(EvalError("Goose conversion limit exceeded".into()));
+                }
+                if self.states[id] == 1 {
+                    return Err(bad());
+                }
+                if let Some(d) = &self.memo[id] {
+                    return Ok(d.clone());
+                }
+                self.states[id] = 1;
+                let n = &self.g.nodes[id];
+                let f = n.fields;
+                let value = match n.tag {
+                    0 => DatumKind::Nil,
+                    1 => DatumKind::Boolean(n.number != 0.),
+                    2 => {
+                        if n.number.is_finite()
+                            && n.number.fract() == 0.
+                            && n.number >= i64::MIN as f64
+                            && n.number < i64::MAX as f64
+                        {
+                            DatumKind::Integer(n.number as i64)
+                        } else {
+                            DatumKind::Double(n.number)
+                        }
+                    }
+                    3 => DatumKind::String(self.g.segment(&self.g.units, f[0], f[1])?.into()),
+                    4 | 5 => {
+                        let ns = if f[3] < 0 {
+                            None
+                        } else {
+                            Some(self.g.segment(&self.g.units, f[2], f[3])?)
+                        };
+                        let name = Name::from_utf16(ns, self.g.segment(&self.g.units, f[0], f[1])?);
+                        if n.tag == 4 {
+                            DatumKind::Symbol(name)
+                        } else {
+                            DatumKind::Keyword(name)
+                        }
+                    }
+                    6..=9 => {
+                        let children = self
+                            .g
+                            .segment(&self.g.children, f[0], f[1])?
+                            .iter()
+                            .map(|&id| self.visit(id as usize, depth + 1))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        DatumKind::Collection {
+                            kind: match n.tag {
+                                6 => CollectionKind::List,
+                                7 => CollectionKind::Vector,
+                                8 => CollectionKind::Map,
+                                _ => CollectionKind::Set,
+                            },
+                            children: children.into(),
+                        }
+                    }
+                    _ => return Err(bad()),
+                };
+                let mut d = Datum::new(value);
+                if f[4] >= 0 {
+                    d = d.with_metadata(self.visit(f[4] as usize, depth + 1)?);
+                }
+                if let Some(original) = self.originals.get(&f[5]) {
+                    if !d.value_eq(&original.data()) {
+                        return Err(bad());
+                    }
+                    self.reuse.insert(d.identity(), original.clone());
+                }
+                self.states[id] = 2;
+                self.memo[id] = Some(d.clone());
+                Ok(d)
+            }
+        }
+        let mut d = Decode {
+            g: self,
+            states: vec![0; self.nodes.len()],
+            memo: vec![None; self.nodes.len()],
+            originals,
+            reuse: HashMap::new(),
+            limits,
+            c,
+            visits: 0,
+        };
+        let data = d.visit(self.roots[0] as usize, 1)?;
+        Ok(Form::from_bridge_expansion(data, call, origin, &d.reuse))
+    }
+}

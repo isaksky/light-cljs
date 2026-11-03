@@ -712,7 +712,22 @@ fn step(job: Job&) {
             let kind: i64 = if op.code == 191 { 5 } else if op.code == 192 { 6 } else if op.code == 193 { 7 } else { 8 };
             let value = form_construct(heap, kind, job.operands[base..]); job.operands.resize(base); job.operands.push(value);
         },
-        194 => { let base = job.operands.len - export_form_arity(op.arg); let value = form_op(heap, op.arg, job.operands[base..]); job.operands.resize(base); job.operands.push(value); },
+        194 => {
+            let base = job.operands.len - export_form_arity(op.arg);
+            // The live compiler adapter opts into a demand at the exact saved
+            // intrinsic-call continuation. Sealed-plan users retain the
+            // explicit DependencyNeed failure from form_op below.
+            var waiting = false;
+            if op.arg == 82 && job.effects_enabled {
+                let args = job.operands[base..];
+                if valid(heap, args[0]) && args[0].tag == 5 && heap.nodes[args[0].a].kind == 0 && args[1].tag <= 1 && args[2].tag == 4 {
+                    let value, found = own_property(heap, args[0], args[2]);
+                    if !found && heap.fault == Fault.None { request_effect(job, 9, args, frame); waiting = true; }
+                }
+            }
+            if waiting { job.operands.resize(base); }
+            else { let value = form_op(heap, op.arg, job.operands[base..]); job.operands.resize(base); job.operands.push(value); }
+        },
         // Other runtime/global declaration semantics remain explicit boundaries.
         _ => { heap.fault = if (op.code >= 18 && op.code <= 27) || (op.code >= 191 && op.code <= 195) { Fault.NativeBoundary } else { Fault.UnsupportedOperand }; },
     }

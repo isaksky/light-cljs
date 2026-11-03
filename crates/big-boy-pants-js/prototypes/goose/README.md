@@ -887,3 +887,22 @@ the clean comparison. See [serial-costs.md](serial-costs.md) for the two measure
 costs, scope limits, decisions and commands, and [serial-samples.edn](serial-samples.edn)
 for raw phase samples and counters. Earlier Node-only tables above retain their
 original diagnostic scope and protocol and are not reused for this comparison.
+
+### Live compiler source-macro adapter
+
+`bb crates/big-boy-pants-js/prototypes/goose/compiler.bb` builds the native
+`compiler_session.goose` runner and runs the ignored `goose_compiler` tests with
+`--features goose-macros`. The feature is opt-in. An embedder explicitly creates
+`GooseSession` and calls `MacroHost::use_goose_source_macros`; ordinary engine
+selection is unchanged. This bounded adapter executes user source declarations
+and their demanded helper factories in Goose. The compiler's existing core
+syntax/bootstrap service still compiles those declarations; it is not a port of
+the full canonical runtime. Unsupported source jobs fail without another engine.
+
+The compiler emits fresh GSP2 code and GFB1 structured form arguments. GCS1
+correlates requests, dependency demands and results over one long-lived native
+process. Compiler callbacks resolve helpers from the real declaration catalog.
+Returned forms own their data, occurrences and source spans independently of
+Goose jobs and the session. The pipeline test compares forms, provenance,
+deterministic emitted application JavaScript and application output against a
+separate V8 compilation of the original `.cljs` corpus.

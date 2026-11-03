@@ -1102,6 +1102,8 @@ impl MacroHost {
         env: &Datum,
         engine: Option<&dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<Form, String> {
+        #[cfg(feature = "goose-macros")]
+        let engine = engine.filter(|engine| !engine.source_only());
         crate::macro_host::forbid_engine_entry(name);
         self.ensure_bootstrap(name)?;
         #[cfg(feature = "bbp-macros")]
@@ -1624,11 +1626,20 @@ impl MacroHost {
         let (mut program, _) =
             crate::analyzer::analyze_deferred_form(&function, &mut frame, &snapshot, engine)
                 .map_err(|e| e.to_string())?;
+        #[cfg(feature = "goose-macros")]
+        let goose = self.engine.goose.clone();
+        #[cfg(feature = "goose-macros")]
+        let engine = goose.as_deref().map(|e| e as &dyn crate::evaluator::MacroEvaluator).or(engine);
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
         let environment_keys = source_environment_keys(&program).map(std::sync::Arc::from);
         let unit = crate::emitter::emit_deferred_unit(&program);
         #[cfg(feature = "bbp-macros")]
-        let unit = if bootstrap.evaluator.native_forms() {
+        let unit = if bootstrap.evaluator.native_forms() || {
+            #[cfg(feature = "goose-macros")]
+            { engine.source_only() }
+            #[cfg(not(feature = "goose-macros"))]
+            { false }
+        } {
             let replaced = self
                 .session_handle()
                 .map_or_else(Vec::new, |session| session.shared().native_replaced_core());
@@ -1768,6 +1779,14 @@ impl MacroHost {
             .ok_or("macro session failed")?
             .clone();
         let (ns, name) = key.split_once('/').unwrap();
+        #[cfg(feature = "goose-macros")]
+        let goose = self.engine.goose.clone();
+        #[cfg(feature = "goose-macros")]
+        if let (Some(goose), Some(session)) = (&goose, self.session_handle()) {
+            session.prepare_goose(goose)?;
+        }
+        #[cfg(feature = "goose-macros")]
+        let engine = goose.as_deref().map(|e| e as &dyn crate::evaluator::MacroEvaluator).or(engine);
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
         let function = declaration.function(engine, &self.engine)?;
         let reader_view;

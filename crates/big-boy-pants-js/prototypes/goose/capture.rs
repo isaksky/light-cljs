@@ -661,3 +661,31 @@ fn serial_macro_reference() {
     ));
     std::fs::write(destination, rows).unwrap();
 }
+
+#[cfg(feature = "goose-macros")]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_pipeline() {
+    let runner = std::path::PathBuf::from(std::env::var_os("GOOSE_COMPILER_RUNNER").expect("run bb prototypes/goose/compiler.bb"));
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("crates/big-boy-pants-js/prototypes/goose/corpus");
+    for case in ["churn", "closure", "branches", "context"] {
+        let source=std::fs::read_to_string(root.join(format!("{case}.cljs"))).unwrap();
+        let mut builds=Vec::new();
+        for goose in [false,true] {
+            let mut host=MacroHost::new();
+            let session=goose.then(||crate::goose_evaluator::GooseSession::start(&runner,4).unwrap());
+            if let Some(session)=&session{host.use_goose_source_macros(session.clone()).unwrap();}
+            let _names=crate::generated_names::enter_namespace(0);
+            REQUESTS.with_borrow_mut(|r|*r=Some(Vec::new()));
+            let program=crate::analyzer::analyze_named_with_macro_warnings(&format!("{case}.cljs"),&source,&crate::parse(&source).unwrap(),&mut host,Default::default(),&mut Vec::new()).unwrap_or_else(|e|panic!("{case}, Goose={goose}: {e}"));
+            let requests=REQUESTS.with_borrow_mut(|r|r.take().unwrap()).into_iter().filter(|r|r.origin.macro_name.namespace().is_some_and(|ns| ns=="cljs.user".encode_utf16().collect::<Vec<_>>())).collect::<Vec<_>>();
+            if let Some(session)=session {let stats=session.stats();assert_eq!(stats.initializations,1);assert_eq!(stats.jobs,requests.len() as u64);eprintln!("{case}: {stats:?}");session.close();}
+            drop(host);
+            // Emission, returned form inspection and analysis happen after full process teardown.
+            for request in &requests {crate::analyzer::analyze_compiler_form(&request.expanded).unwrap();}
+            let js=crate::emit_js(&program);builds.push((output(&js),js,requests));
+        }
+        let(a,b)=(&builds[0],&builds[1]);assert_eq!(a.0,b.0,"{case} application output");assert_eq!(a.1,b.1,"{case} deterministic JS");assert_eq!(a.2.len(),b.2.len());
+        for(a,b)in a.2.iter().zip(&b.2){assert!(a.expanded.data().value_eq(&b.expanded.data()),"{case} canonical form");assert_eq!(a.expanded.nodes().len(),b.expanded.nodes().len());for id in 0..a.expanded.nodes().len(){let(a,b)=(a.expanded.at(crate::compiler_data::FormId(id)).unwrap(),b.expanded.at(crate::compiler_data::FormId(id)).unwrap());assert_eq!(a.span().bytes(),b.span().bytes(),"{case} source spans");assert_eq!(a.node().origin,b.node().origin,"{case} origin");}}
+    }
+}

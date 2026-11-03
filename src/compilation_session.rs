@@ -2782,6 +2782,21 @@ impl CompilationSession {
         let end = self.with_journal(|journal| journal.registrations.len());
         self.install_registrations(end, |_| Ok(()))
     }
+    #[cfg(feature = "goose-macros")]
+    pub(crate) fn prepare_goose(self: &Rc<Self>, evaluator: &crate::goose_evaluator::GooseEvaluator) -> Result<(), String> {
+        let session = Rc::downgrade(self);
+        evaluator.install_helper(Rc::new(move |active, id| {
+            session.upgrade().ok_or("compilation session expired")?.compile_unit(active, id)
+        }));
+        self.with_journal(|journal| {
+            for registration in journal.registrations.iter() {
+                if let Registration::Root(name, unit, test, once, location) = registration {
+                    evaluator.register_compiler_root(name, *unit, *once, location, *test).map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(())
+        })
+    }
     pub fn compilation_uses(&self) -> Vec<crate::analyzer::CompilationUse> {
         self.shared
             .lock()

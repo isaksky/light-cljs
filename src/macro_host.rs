@@ -694,6 +694,8 @@ pub(crate) struct MacroTables {
 /// thread.
 #[derive(Default)]
 pub(crate) struct EngineBinding {
+    #[cfg(feature = "goose-macros")]
+    pub(crate) goose: Option<std::rc::Rc<crate::goose_evaluator::GooseEvaluator>>,
     native_macro_calls:
         std::rc::Rc<std::cell::RefCell<Vec<crate::compile_stats::NativeBridgeCall>>>,
     /// The data-reader engine and the reader functions evaluated in it.
@@ -783,6 +785,8 @@ impl EngineBinding {
     /// reaches weakly.
     pub(crate) fn frame(&self) -> Self {
         Self {
+            #[cfg(feature = "goose-macros")]
+            goose: self.goose.clone(),
             native_macro_calls: self.native_macro_calls.clone(),
             data_readers: self.data_readers.clone(),
             interactive_control: self.interactive_control.clone(),
@@ -1224,6 +1228,13 @@ impl MacroHost {
 
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Execute compiler-emitted user source macros in one experimental Goose
+    /// session. Core syntax expansion remains the compiler's bootstrap service.
+    #[cfg(feature = "goose-macros")]
+    pub fn use_goose_source_macros(&mut self, session: std::sync::Arc<crate::goose_evaluator::GooseSession>) -> Result<(), crate::evaluator::EvalError> {
+        self.engine.goose = Some(std::rc::Rc::new(crate::goose_evaluator::GooseEvaluator::new(session, &self.evaluator_options)?));
+        Ok(())
     }
     /// One entry per expansion executed by the native backend, in call order.
     pub fn native_macro_calls(&self) -> Vec<crate::compile_stats::NativeBridgeCall> {

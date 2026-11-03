@@ -35,6 +35,8 @@ mod compiler_destructuring;
 mod compiler_libraries;
 pub mod compiler_names;
 pub mod compiler_reader;
+#[cfg(feature = "goose-macros")]
+pub mod goose_evaluator;
 pub mod config_file;
 pub mod core_operations;
 pub mod defines;

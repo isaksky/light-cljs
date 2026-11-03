@@ -1461,6 +1461,10 @@ pub enum EnvironmentExtensions {
 pub type EnvironmentTracking = std::rc::Rc<std::cell::Cell<EnvironmentExtensions>>;
 /// Common macro operations at either an outer boundary or an active callback.
 pub trait MacroEvaluator {
+    /// The bounded Goose adapter executes user source declarations only.
+    /// Compiler bootstrap syntax macros keep their ordinary compiler engine.
+    #[cfg(feature = "goose-macros")]
+    fn source_only(&self) -> bool { false }
     /// The native evaluator, including an active helper producer.
     #[cfg(feature = "bbp-macros")]
     fn native_shell(&self) -> Option<&crate::bbp_evaluator::BbpEvaluator> {

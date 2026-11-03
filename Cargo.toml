@@ -37,6 +37,8 @@ cc = "=1.7.0"
 default = ["v8-macros", "quickjs"]
 quickjs = ["dep:rquickjs"]
 bbp-macros = ["dep:big-boy-pants-js"]
+# Bounded source-macro experiment; requires an explicitly built Goose runner.
+goose-macros = ["bbp-macros"]
 # Test-only scheduler perturbation in optimized builds of large projects.
 # Ordinary release builds omit it; no engine or production default changes.
 scheduling-stress = []
