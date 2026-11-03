@@ -25,15 +25,18 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // All heap tables append until session teardown; IDs are never recycled.
 // kind: plain=0, array=1, closure=2, cell=3. Captures and cell values never
 // reference frame scratch. Property chains are indices, not Goose references.
-struct Node { kind: i64, function: i64 = 0, start: i64 = 0, count: i64 = 0, head: i64 = -1, length: i64 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value {} }
+// Runtime additions: builtin=4, list/vector/map/set=5/6/7/8,
+// symbol/keyword=9/10, scalar occurrence=11, sequence cursor=12.
+// Metadata/origin belong to the occurrence, independently of value equality.
+struct Node { kind: i64, function: i64 = 0, start: i64 = 0, count: i64 = 0, head: i64 = -1, length: i64 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value {}, metadata: Value = Value {}, origin: i64 = -1, source: i64 = -1, span_start: i64 = 0, span_end: i64 = 0 }
 struct Property { key: Value, value: Value, next: i64 }
 root struct Heap {
     code:  const Code&, identity: i64 = 0, limits: Limits = Limits {},
     nodes: Node[>..]                  = [], values: Value[>..] = [], properties: Property[>..] = [],
     units: u16[>..]                   = [], constants: Value[>..] = [], work: i64 = 0,
-    fault: Fault                      = Fault.None, global: Value = Value {},
+    fault: Fault                      = Fault.None, global: Value = Value {}, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
 }
-struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value }
+struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, input: Value = Value {}, output: Value = Value {}, index: i64 = 0 }
 struct Write { object: Value, key: Value, value: Value }
 root struct Job {
     heap:   Heap&, frames: Frame[>..<] = [], locals: Value[>..<] = [], operands: Value[>..<] = [],
@@ -171,7 +174,8 @@ fn equal(heap: Heap&, a: Value, b: Value) -> bool {
 }
 fn numeric(heap: Heap&, v: Value) -> f64 {
     if !valid(heap, v) { return 0; }
-    return match v.tag { 0 => 0.0 / 0.0, 1 => 0.0, 2 => v.a, 3 => v.number, _ => { heap.fault = Fault.UnsupportedOperand; 0.0 } };
+    let x = form_value(heap, v);
+    return match x.tag { 0 => 0.0 / 0.0, 1 => 0.0, 2 => x.a, 3 => x.number, _ => { heap.fault = Fault.UnsupportedOperand; 0.0 } };
 }
 fn key(heap: Heap&, value: Value) -> Value {
     if !valid(heap, value) { return Value {}; }
@@ -294,10 +298,193 @@ fn binary_value(heap: Heap&, op: i64, a: Value, b: Value) -> Value {
     };
 }
 
+// Bounded persistent flat ranges. Updates copy only the changed container's
+// child IDs; input occurrences and untouched subtrees retain exact identity.
+fn nil() -> Value { return Value { tag: 1 }; }
+fn form_value(heap: Heap&, v: Value) -> Value {
+    if !valid(heap, v) { return Value {}; }
+    return if v.tag == 5 && heap.nodes[v.a].kind == 11 { heap.nodes[v.a].value } else { v };
+}
+fn form_kind(heap: Heap&, v: Value) -> i64 {
+    let x = form_value(heap, v);
+    return if x.tag == 5 { heap.nodes[x.a].kind } else { -1 };
+}
+fn form_collection(heap: Heap&, kind: i64, children: const Value[:], template: Node = Node { kind: 0 }) -> Value {
+    if kind < 5 || kind > 8 || (kind == 7 && children.len % 2 != 0) { heap.fault = Fault.TypeError; return Value {}; }
+    if children.len > heap.limits.values - heap.values.len || heap.nodes.len >= heap.limits.nodes { memory(heap); return Value {}; }
+    if !charge(heap, children.len) { return Value {}; }
+    for child in children { if !valid(heap, child) { return Value {}; } }
+    var node = template; node.kind = kind; node.start = heap.values.len; node.count = children.len;
+    heap.values.append(children); return allocate(heap, node);
+}
+fn form_count(heap: Heap&, v: Value) -> i64 {
+    let x = form_value(heap, v);
+    if x.tag <= 1 { return 0; }
+    if x.tag == 4 { return x.b; }
+    if x.tag == 5 { let n = heap.nodes[x.a]; if n.kind >= 5 && n.kind <= 8 || n.kind == 12 { return if n.kind == 7 { n.count / 2 } else { n.count }; } }
+    heap.fault = Fault.TypeError; return 0;
+}
+fn form_nth(heap: Heap&, v: Value, i: i64, fallback: Value = Value { tag: 1 }) -> Value {
+    let x = form_value(heap, v);
+    if x.tag <= 1 { return fallback; }
+    if x.tag == 4 { return if i >= 0 && i < x.b { string(heap, [heap.units[x.a + i]]) } else { fallback }; }
+    if x.tag == 5 { let n = heap.nodes[x.a]; if n.kind == 5 || n.kind == 6 || n.kind == 12 { return if i >= 0 && i < n.count { heap.values[n.start + i] } else { fallback }; } }
+    heap.fault = Fault.TypeError; return Value {};
+}
+recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool {
+    if !charge(heap) { return false; }
+    if depth >= 128 { heap.fault = Fault.StackLimit; return false; }
+    let x = form_value(heap, a); let y = form_value(heap, b);
+    if x.tag != y.tag { return false; }
+    if x.tag != 5 { return equal(heap, x, y); }
+    let n = heap.nodes[x.a]; let m = heap.nodes[y.a];
+    if n.kind < 5 || m.kind < 5 { return x.a == y.a; }
+    if n.kind != m.kind && !((n.kind == 5 || n.kind == 6 || n.kind == 12) && (m.kind == 5 || m.kind == 6 || m.kind == 12)) { return false; }
+    if n.kind == 9 || n.kind == 10 { return equal(heap, n.value, m.value) && equal(heap, n.metadata, m.metadata); }
+    if n.count != m.count { return false; }
+    if n.kind == 7 || n.kind == 8 {
+        let stride: i64 = if n.kind == 7 { 2 } else { 1 };
+        for i in (n.count / stride) {
+            var found = false;
+            for j in (m.count / stride) {
+                if form_equal(heap, heap.values[n.start + i * stride], heap.values[m.start + j * stride], depth + 1) {
+                    if stride == 1 || form_equal(heap, heap.values[n.start + i * stride + 1], heap.values[m.start + j * stride + 1], depth + 1) { found = true; break; }
+                }
+            }
+            if !found { return false; }
+        }
+        return true;
+    }
+    for i in n.count { if !form_equal(heap, heap.values[n.start + i], heap.values[m.start + i], depth + 1) { return false; } }
+    return true;
+}
+fn form_assoc(heap: Heap&, v: Value, k: Value, value: Value) -> Value {
+    let x = form_value(heap, v); let kind = form_kind(heap, x);
+    if kind != 6 && kind != 7 { heap.fault = Fault.TypeError; return Value {}; }
+    let n = heap.nodes[x.a]; var at: i64 = -1;
+    if kind == 6 {
+        let i = form_value(heap, k);
+        if i.tag != 3 || i.number < 0 || i.number > n.count || i.number != (i.number as i64) { heap.fault = Fault.TypeError; return Value {}; }
+        at = i.number as i64;
+    } else {
+        for i in (n.count / 2) { if form_equal(heap, heap.values[n.start + i * 2], k) { at = i * 2 + 1; break; } }
+    }
+    var values: Value[>..] = [];
+    if !charge(heap, n.count + 2) { return Value {}; }
+    values.append(heap.values[n.start..(n.start + n.count)]);
+    if at >= 0 && at < values.len { values[at] = value; }
+    else { if kind == 7 { values.push(k); } values.push(value); }
+    var template = n; template.origin = -1;
+    return form_collection(heap, kind, values, template);
+}
+fn form_conj(heap: Heap&, v: Value, value: Value) -> Value {
+    let x = form_value(heap, v); let kind = if x.tag <= 1 { 5 } else { form_kind(heap, x) };
+    if kind != 5 && kind != 6 { heap.fault = Fault.TypeError; return Value {}; }
+    let n = if x.tag <= 1 { Node { kind: 5 } } else { heap.nodes[x.a] };
+    if !charge(heap, n.count + 1) { return Value {}; }
+    var values: Value[>..] = [];
+    if kind == 5 { values.push(value); } values.append(heap.values[n.start..(n.start + n.count)]); if kind == 6 { values.push(value); }
+    var template = n; template.origin = -1;
+    return form_collection(heap, kind, values, template);
+}
+fn form_get(heap: Heap&, v: Value, k: Value, fallback: Value) -> Value {
+    let x = form_value(heap, v); let kind = form_kind(heap, x);
+    if x.tag <= 1 { return fallback; }
+    if kind == 6 || x.tag == 4 {
+        let i = form_value(heap, k); if i.tag != 3 || i.number < 0 || i.number >= form_count(heap, x) || i.number != (i.number as i64) { return fallback; }
+        return form_nth(heap, x, i.number as i64, fallback);
+    }
+    if kind != 7 { heap.fault = Fault.TypeError; return Value {}; }
+    let n = heap.nodes[x.a];
+    for i in (n.count / 2) { if form_equal(heap, heap.values[n.start + i * 2], k) { return heap.values[n.start + i * 2 + 1]; } }
+    return fallback;
+}
+fn form_sequence(heap: Heap&, v: Value, skip: i64, empty_nil: bool) -> Value {
+    let x = form_value(heap, v); let count = form_count(heap, x);
+    if heap.fault != Fault.None { return Value {}; }
+    if count <= skip { return if empty_nil { nil() } else { form_collection(heap, 5, []) }; }
+    let kind = form_kind(heap, x);
+    if kind != 5 && kind != 6 && kind != 12 { heap.fault = Fault.NativeBoundary; return Value {}; }
+    let n = heap.nodes[x.a]; return allocate(heap, Node { kind: 12, start: n.start + skip, count: n.count - skip });
+}
+fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
+    for v in args { if !valid(heap, v) { return Value {}; } }
+    let a = args[0];
+    match op {
+        0, 1 => { if (a.tag != 1 && a.tag != 4) || args[1].tag != 4 { heap.fault = Fault.TypeError; return Value {}; } return allocate(heap, Node { kind: if op == 0 { 10 } else { 9 }, value: args[1], metadata: a }); },
+        2 => { let kind = form_kind(heap, a); return match kind { 5, 12 => text(heap, "list"), 6 => text(heap, "vector"), 7 => text(heap, "map"), 8 => text(heap, "set"), 9 => text(heap, "symbol"), 10 => text(heap, "keyword"), _ => nil() }; },
+        5, 19 => { return number(form_count(heap, a)); },
+        6, 25, 26 => { let i = form_value(heap, args[1]); if i.tag != 3 || i.number != (i.number as i64) { heap.fault = Fault.TypeError; return Value {}; } return form_nth(heap, a, i.number as i64, if op == 26 { args[2] } else { nil() }); },
+        7, 27 => { return form_get(heap, a, args[1], args[2]); },
+        8, 29 => { return form_assoc(heap, a, args[1], args[2]); },
+        10, 31 => { return form_conj(heap, a, args[1]); },
+        11 => { return boolean(form_equal(heap, a, args[1])); },
+        15 => { return form_value(heap, a); },
+        18 => { let v = form_value(heap, a); return boolean(v.tag > 1 && !(v.tag == 2 && v.a == 0)); },
+        20, 22, 23 => { return form_sequence(heap, a, if op == 20 { 0 } else { 1 }, op != 22); },
+        21 => { return form_nth(heap, a, 0); },
+        65 => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != 5 && kind != 6 { heap.fault = Fault.TypeError; return Value {}; } let n = heap.nodes[v.a]; return form_collection(heap, 7, heap.values[n.start..(n.start + n.count)]); },
+        69 => { if form_kind(heap, a) != 7 && form_kind(heap, a) != 8 { heap.fault = Fault.TypeError; return Value {}; } return a; },
+        _ => { heap.fault = Fault.NativeBoundary; return Value {}; },
+    }
+}
+// Enumerated native runtime leaves: 0 macroReaderFunction (Pants uses
+// occurrence-aware leaves directly), 1 inc, 2 mapv, 3 vec, 4 into.
+fn builtin(heap: Heap&, id: i64) -> Value { return allocate(heap, Node { kind: 4, function: id }); }
+fn install_field(heap: Heap&, object: Value, name: const u8[:], value: Value) -> bool { let k = text(heap, name); return put(heap, object, k, value); }
+fn boot_runtime(heap: Heap&) -> Value {
+    if heap.boot_count != 0 { heap.fault = Fault.InvalidState; return Value {}; }
+    let rt = allocate(heap, Node { kind: 0 }); let core = allocate(heap, Node { kind: 0 });
+    install_field(heap, rt, "core", core);
+    install_field(heap, heap.global, "__lightNativeRuntime", rt);
+    install_field(heap, core, "macroReaderFunction", builtin(heap, 0));
+    install_field(heap, core, "inc", builtin(heap, 1)); install_field(heap, core, "mapv", builtin(heap, 2));
+    install_field(heap, core, "vec", builtin(heap, 3)); install_field(heap, core, "into", builtin(heap, 4));
+    if heap.fault == Fault.None { heap.boot_count += 1; }
+    return rt;
+}
+fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
+    if id == 0 && args.len == 1 { return args[0]; }
+    if id == 1 && args.len == 1 { return number(numeric(heap, args[0]) + 1); }
+    if id == 3 && args.len == 1 {
+        let kind = form_kind(heap, args[0]); if kind == 6 { return args[0]; }
+        if kind == 5 || kind == 12 { let n = heap.nodes[args[0].a]; return form_collection(heap, 6, heap.values[n.start..(n.start + n.count)]); }
+    }
+    if id == 4 && args.len == 2 {
+        var out = args[0]; let count = form_count(heap, args[1]);
+        for i in count { out = form_conj(heap, out, form_nth(heap, args[1], i)); if heap.fault != Fault.None { break; } }
+        return out;
+    }
+    heap.fault = Fault.NativeBoundary; return Value {};
+}
+
 fn step(job: Job&) {
     let heap .= job.heap; let code .= heap.code;
     if job.frames.len == 0 { fail(job, Fault.InvalidState, Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value {}, receiver: Value {} }); return; }
-    let frame = job.frames[job.frames.len - 1]; let f = code.functions[frame.function];
+    let frame = job.frames[job.frames.len - 1];
+    // mapv is a native collection iterator, with source callback calls saved
+    // explicitly. A budget cut never replays a callback or loses its capture.
+    if frame.function == -1 {
+        if !charge(heap) { fail(job, heap.fault, frame); return; }
+        if job.steps >= heap.limits.steps { fail(job, Fault.InstructionLimit, frame); return; }
+        job.steps += 1;
+        if frame.pc == 1 {
+            let value = job.operands.pop(); let out = form_conj(heap, frame.output, value);
+            job.frames[job.frames.len - 1].output = out; job.frames[job.frames.len - 1].pc = 0;
+        } else if frame.index >= form_count(heap, frame.input) {
+            job.frames.pop(); job.operands.resize(frame.operand_base);
+            if job.frames.len == 0 { job.result = frame.output; job.status = tiny::Status.Complete; } else { job.operands.push(frame.output); }
+        } else {
+            let arg = form_nth(heap, frame.input, frame.index);
+            job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 1;
+            if frame.callee.tag == 5 && heap.nodes[frame.callee.a].kind == 4 {
+                let v = native_value(heap, heap.nodes[frame.callee.a].function, [arg]); job.operands.push(v);
+            } else { enter(job, frame.callee, Value {}, [arg]); }
+        }
+        if heap.fault != Fault.None { fail(job, heap.fault, frame); }
+        return;
+    }
+    let f = code.functions[frame.function];
     if frame.pc < f.start || frame.pc >= f.start + f.count { fail(job, Fault.InvalidState, frame); return; }
     if job.steps >= heap.limits.steps { fail(job, Fault.InstructionLimit, frame); return; }
     if !charge(heap) { fail(job, heap.fault, frame); return; }
@@ -331,7 +518,19 @@ fn step(job: Job&) {
             let base = job.operands.len - op.arg - (if op.code == 83 { 2 } else { 1 });
             let callee = job.operands[base + (if op.code == 83 { 1 } else { 0 })];
             let receiver = if op.code == 83 { job.operands[base] } else { Value {} };
-            if enter(job, callee, receiver, job.operands[(job.operands.len - op.arg)..]) { job.frames[job.frames.len - 1].operand_base = base; job.operands.resize(base); }
+            if valid(heap, callee) && callee.tag == 5 && heap.nodes[callee.a].kind == 4 {
+                let id = heap.nodes[callee.a].function;
+                let args = job.operands[(job.operands.len - op.arg)..];
+                if id == 2 && args.len == 2 {
+                    if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; }
+                    else {
+                        let input = args[1]; let callback = args[0]; let out = form_collection(heap, 6, []);
+                        form_count(heap, input);
+                        job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: callback, receiver: Value {}, input: input, output: out });
+                        job.operands.resize(base);
+                    }
+                } else { let value = native_value(heap, id, args); job.operands.resize(base); job.operands.push(value); }
+            } else if enter(job, callee, receiver, job.operands[(job.operands.len - op.arg)..]) { job.frames[job.frames.len - 1].operand_base = base; job.operands.resize(base); }
         },
         45 => { job.operands.push(frame.callee); },
         46 => { let node = heap.nodes[frame.callee.a]; job.operands.push(heap.values[node.start + op.arg]); },
@@ -380,8 +579,13 @@ fn step(job: Job&) {
             }
             job.operands.push(v);
         },
-        // Runtime/form leaves and global declaration semantics are explicit
-        // admission boundaries for the next runtime/bridge slice.
+        191, 192, 193, 195 => {
+            let count = if op.code == 193 { op.arg * 2 } else { op.arg }; let base = job.operands.len - count;
+            let kind: i64 = if op.code == 191 { 5 } else if op.code == 192 { 6 } else if op.code == 193 { 7 } else { 8 };
+            let value = form_collection(heap, kind, job.operands[base..]); job.operands.resize(base); job.operands.push(value);
+        },
+        194 => { let base = job.operands.len - export_form_arity(op.arg); let value = form_op(heap, op.arg, job.operands[base..]); job.operands.resize(base); job.operands.push(value); },
+        // Other runtime/global declaration semantics remain explicit boundaries.
         _ => { heap.fault = if (op.code >= 18 && op.code <= 27) || (op.code >= 191 && op.code <= 195) { Fault.NativeBoundary } else { Fault.UnsupportedOperand }; },
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }

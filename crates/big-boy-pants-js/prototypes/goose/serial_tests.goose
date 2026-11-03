@@ -211,6 +211,7 @@ fn runtime_boundary(bytes: const u8[:]) {
     let entry = source::closure(heap, 0, []); var factory_job = source::Job { heap: heap }; assert(source::start(factory_job, entry, []));
     assert(source::run(factory_job, -1) == tiny::Outcome.Complete);
     var job = source::Job { heap: heap }; assert(source::start(job, factory_job.result, [source::Value {}]));
-    assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.NativeBoundary);
-    assert(job.fault_function > 0 && code.ops[job.fault_pc].code == 192);
+    assert(source::run(job, -1) == tiny::Outcome.Complete);
+    assert(source::form_kind(heap, job.result) == 6 && source::form_count(heap, job.result) == 2);
+    assert(source::form_nth(heap, job.result, 0).number == 2 && source::form_nth(heap, job.result, 1).number == 3);
 }
