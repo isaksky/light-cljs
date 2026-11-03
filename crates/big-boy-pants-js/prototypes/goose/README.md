@@ -1058,6 +1058,13 @@ invocation and `--summarize` prints all-cell medians/ranges and phase summaries.
 The driver compares source-derived VM calls and actual namespace compilation,
 with V8 at one execution worker and Pants/Goose at 1/2/4/8, serial and rebuild
 controls, seven fixed work/form shapes and five alternating rounds per cell.
+The compiler path runs two dependent source namespaces in one compilation:
+the second batch reuses the same macro/helper session. Its rebuild control
+uses a fresh whole compilation per source job, including helper demand and
+cleanup. The one-slot V8/Pants serial controls use their ordinary serial
+compiler paths; Goose's serial control retains one heap without snapshots.
+`GOOSE_BENCH_DEBUG=1` with `--check` also verifies all cells in a debug native
+build. Form checks include the complete scalar datum and UTF-16 pools.
 
 The [measured report](branching-results.md) records a no-go for a compiler
 speedup at this scope. It links the raw samples, storage/allocation invocation,

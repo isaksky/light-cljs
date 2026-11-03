@@ -17,6 +17,8 @@ thread_local! {
     static UNITS: std::cell::RefCell<Option<BTreeSet<(bool, String)>>> = const { std::cell::RefCell::new(None) };
 }
 pub(crate) fn record(call: &Form, environment: &Datum, expanded: &Form, origin: &ExpansionOrigin) {
+    #[cfg(feature = "goose-macros")]
+    benchmark::record_batch(call, origin);
     REQUESTS.with_borrow_mut(|requests| {
         if let Some(requests) = requests {
             requests.push(Request {

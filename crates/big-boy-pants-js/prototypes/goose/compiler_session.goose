@@ -106,13 +106,37 @@ fn storage(saved: const Saved&, heap: const source::Heap&, sc: snapshot::Control
 fn join(running: Running[>..]&, id: i64) { for r, i in running { if r.id == id { var reason: u8[>..] = []; assert(thread_wait(r.thread, reason)); running.swap_remove(i); return; } } assert(false); }
 fn identity(saved: const Saved&) -> i64 { var id = source::reserve_identity(); while id == saved.heap.header.base || id == saved.heap.header.checkpoint { id = source::reserve_identity(); } return id; }
 // Measurement control: a single retained heap, no snapshots or execution
-// threads. Only independent pure requests are admitted; no helper fallback.
+// threads. The bounded benchmark's pure shared helper is emitted on demand by
+// the actual compiler, then evaluated and retained in this heap. This control
+// does not admit nested macro jobs while waiting for that helper's source.
+fn serial_call(directory: const u8[:], id: i64, code: source::Code&, heap: source::Heap&, rt: source::Value, function: source::Value, args: const source::Value[:]) -> source::Value {
+    let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots"));
+    var job = source::Job { heap: heap, effects_enabled: true, helpers_enabled: true, root_receiver: roots }; defer { source::retire(job); }
+    assert(source::start(job, function, args)); var sequence: i64 = 0;
+    loop {
+        let outcome = source::run(job, 10000); if outcome == tiny::Outcome.Complete { return job.result; }
+        assert(outcome != tiny::Outcome.Failed);
+        if !job.effect_pending { continue; }
+        assert(job.effect_kind == 9 && job.effect_count == 3);
+        let name = job.effect_args[2]; assert(name.tag == 4); var text: u8[>..] = [];
+        for u in heap.units[name.a..(name.a + name.b)] { assert(u > 32 && u <= 127); text.push(u as u8); }
+        print("NEED ", id, " ", sequence, " ", text, " ", job.steps, " ", job.writes.len); flush_stdout();
+        var bytes: u8[>..] = []; while !read_file(str(directory, "/", id, "-", sequence, ".key"), bytes) { sleep_ms(1); }
+        let key, ok = parse_int(bytes); assert(ok && key >= -1);
+        if key == -1 { assert(source::deliver_effect(job, source::Value {}, source::Fault.HostEffect)); sequence += 1; continue; }
+        let entry = append(code, heap, str(directory, "/", id, "-", sequence, ".helper")); assert(entry >= 0);
+        let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], 0); assert(loaded);
+        let value, done = leaf(id, heap, factory, [rt], 0); assert(done);
+        source::put(heap, job.effect_args[0], job.effect_args[2], value); assert(source::deliver_effect(job, value));
+        print("PRODUCED ", id, " ", key); print("RESUME ", id); flush_stdout(); sequence += 1;
+    }
+}
 fn serial(directory: const u8[:], code: source::Code&, heap: source::Heap&, rt: source::Value, instrumented: bool) {
     loop {
         var line: u8[>..] = []; assert(read_line(line)); let id, ok = parse_int(line); assert(ok && id >= 0); if id == 0 { break; }
         print("START ", id); flush_stdout(); let started = clock_ns(); let entry = append(code, heap, str(directory, "/", id, ".gsp")); assert(entry >= 0); let loaded = clock_ns();
         var data: u8[>..] = []; assert(read_file(str(directory, "/", id, ".gfb"), data)); var graph = bridge::Graph {}; var c = bridge::Control {}; assert(bridge::decode(graph, data, c)); var args: source::Value[>..] = []; assert(bridge::import_graph(heap, graph, args, c));
-        let factory, a = leaf(id, heap, source::closure(heap, entry, []), [], 0); assert(a); let function, b = leaf(id, heap, factory, [rt], 0); assert(b); let ready = clock_ns(); let value, done = leaf(id, heap, function, args, 0); assert(done); let invoked = clock_ns();
+        let factory, a = leaf(id, heap, source::closure(heap, entry, []), [], 0); assert(a); let function, b = leaf(id, heap, factory, [rt], 0); assert(b); let ready = clock_ns(); let value = serial_call(directory, id, code, heap, rt, function, args); let invoked = clock_ns();
         var output = bridge::Graph {}; var bytes: u8[>..] = []; assert(bridge::export_graph(heap, [value], output, c, args[0]) && bridge::encode(output, bytes, c)); assert(write_file(str(directory, "/", id, ".out"), bytes));
         let empty = Saved { storage: instrumented }; print("METRIC ", id, " 0 ", invoked - ready, " ", clock_ns() - started, " ", storage(empty, heap, snapshot::Control {}, bytes.len), " 0");
         print("COST ", id, " ", loaded - started, " ", ready - loaded + clock_ns() - invoked); print("FINISH ", id, " 0 0"); print("DONE ", id); flush_stdout();

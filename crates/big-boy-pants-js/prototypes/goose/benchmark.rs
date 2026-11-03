@@ -19,7 +19,70 @@ fn compare(a: &Form, b: &Form) {
         Data::default(),
     );
     assert_eq!(forms(a, &mut sa, &mut da), forms(b, &mut sb, &mut db));
+    assert_eq!(da.text(), db.text());
     assert_eq!(sa.text(), sb.text());
+}
+
+#[test]
+fn complete_form_comparison_rejects_scalar_changes() {
+    use crate::compiler_data::{DatumKind, FormKind, FormNode, Origin, Source};
+    let source = Source::new("scalar.cljs", "1");
+    let make = |datum| {
+        Form::from_parts(
+            vec![FormNode {
+                kind: FormKind::Scalar,
+                metadata: None,
+                compiler_payload: None,
+                origin: Origin::Source,
+            }],
+            vec![datum],
+            vec![source.span(0..1).unwrap()],
+            crate::compiler_data::FormId(0),
+        )
+    };
+    let integer = make(Datum::new(DatumKind::Integer(1)));
+    let double = make(Datum::new(DatumKind::Double(1.0)));
+    let metadata =
+        make(Datum::new(DatumKind::Integer(1)).with_metadata(Datum::new(DatumKind::Boolean(true))));
+    compare(&integer, &integer);
+    assert!(std::panic::catch_unwind(|| compare(&integer, &double)).is_err());
+    assert!(std::panic::catch_unwind(|| compare(&integer, &metadata)).is_err());
+}
+
+struct BatchClock {
+    previous: Instant,
+    expected: usize,
+    completed: [usize; 2],
+    rows: String,
+}
+static BATCH_CLOCK: std::sync::Mutex<Option<BatchClock>> = std::sync::Mutex::new(None);
+
+// The existing test-only expansion hook observes real compiler calls, including
+// calls on worker threads. Namespace dependencies order the two batches.
+pub(super) fn record_batch(call: &Form, origin: &ExpansionOrigin) {
+    if origin.macro_name.name() != "work".encode_utf16().collect::<Vec<_>>() {
+        return;
+    }
+    let Some(batch) = ["batch0.cljs", "batch1.cljs"]
+        .iter()
+        .position(|name| call.span().source().name().ends_with(name))
+    else {
+        return;
+    };
+    let mut clock = BATCH_CLOCK.lock().unwrap();
+    if let Some(c) = clock.as_mut() {
+        c.completed[batch] += 1;
+        if c.completed[batch] == c.expected {
+            assert!(batch == 0 || c.completed[0] == c.expected);
+            let now = Instant::now();
+            c.rows.push_str(&format!(
+                "{{:phase :batch :batch {batch} :wall-ns {} :checked {}}}\n",
+                now.duration_since(c.previous).as_nanos(),
+                c.expected
+            ));
+            c.previous = now;
+        }
+    }
 }
 fn evaluator(
     engine: &str,
@@ -86,6 +149,72 @@ fn stats(session: &crate::goose_evaluator::GooseSession) -> String {
         session.trace()
     )
 }
+fn compile(
+    directory: &Path,
+    engine: &str,
+    workers: usize,
+    options: &EvaluatorOptions,
+    runner: &Path,
+    rows: &mut String,
+    expected_jobs: usize,
+) -> String {
+    let setup = Instant::now();
+    let mut host = MacroHost::new();
+    host.evaluator_options = options.clone();
+    if engine == "pants" {
+        host.use_native_macros();
+    }
+    let session = (engine == "goose")
+        .then(|| crate::goose_evaluator::GooseSession::start(runner, workers).unwrap());
+    if let Some(s) = &session {
+        host.use_goose_source_macros(s.clone()).unwrap();
+    }
+    rows.push_str(&format!(
+        "{{:phase :runtime :ns {}}}\n",
+        setup.elapsed().as_nanos()
+    ));
+    let begun = Instant::now();
+    let (program, _) = crate::compiler::analyze_namespace_entry_recorded(
+        "main",
+        &[directory.to_path_buf()],
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+        crate::compiler::EntryRecorders {
+            slots: crate::scheduler::Slots::new(workers).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let analyzed = begun.elapsed().as_nanos();
+    let begun = Instant::now();
+    let js = crate::emit_js(&program);
+    let emitted = begun.elapsed().as_nanos();
+    if let Some(s) = &session {
+        assert_eq!(s.stats().initializations, 1);
+        assert_eq!(s.stats().jobs as usize, expected_jobs);
+        assert_eq!(
+            s.trace()
+                .iter()
+                .filter(|line| line.starts_with("PRODUCED "))
+                .count(),
+            1,
+            "one compiler-owned shared helper producer per fresh compilation"
+        );
+        rows.push_str(&format!("{{:phase :adapter :stats {}}}\n", stats(s)));
+    }
+    let begun = Instant::now();
+    if let Some(s) = session {
+        s.close();
+    }
+    drop(host);
+    drop(program);
+    rows.push_str(&format!(
+        "{{:phase :compiler :analyze-ns {analyzed} :emit-ns {emitted} :cleanup-ns {}}}\n",
+        begun.elapsed().as_nanos()
+    ));
+    js
+}
 fn run() {
     let directory = PathBuf::from(std::env::var_os("GOOSE_BENCH_DIRECTORY").unwrap());
     let engine = std::env::var("GOOSE_BENCH_ENGINE").unwrap();
@@ -125,55 +254,45 @@ fn run() {
     let _names = crate::generated_names::enter_namespace(0);
     let mut rows = String::new();
     if scope == "compiler" {
-        let mut host = MacroHost::new();
-        host.evaluator_options = options.clone();
-        if engine == "pants" {
-            host.use_native_macros();
-        }
-        let session = (engine == "goose")
-            .then(|| crate::goose_evaluator::GooseSession::start(&runner, workers).unwrap());
-        if let Some(s) = &session {
-            host.use_goose_source_macros(s.clone()).unwrap();
-        }
-        let begun = Instant::now();
-        let (program, _) = crate::compiler::analyze_namespace_entry_recorded(
-            "main",
-            std::slice::from_ref(&directory),
-            &mut host,
-            Default::default(),
-            &mut Vec::new(),
-            crate::compiler::EntryRecorders {
-                slots: crate::scheduler::Slots::new(workers).unwrap(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let analyzed = begun.elapsed().as_nanos();
-        let begun = Instant::now();
-        let js = crate::emit_js(&program);
-        let emitted = begun.elapsed().as_nanos();
-        std::fs::write(directory.join("actual.js"), js).unwrap();
-        if let Some(s) = &session {
-            assert_eq!(
-                s.trace()
-                    .iter()
-                    .filter(|line| line.starts_with("PRODUCED "))
-                    .count(),
-                1,
-                "one compiler-owned shared helper producer"
+        let fanout: usize = std::env::var("GOOSE_BENCH_FANOUT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut js = String::new();
+        if control == "rebuild" {
+            for batch in 0..2 {
+                let begun = Instant::now();
+                for index in 0..fanout {
+                    let job = directory.join(format!("job-{index}"));
+                    let result = compile(&job, &engine, 1, &options, &runner, &mut rows, 1);
+                    js.push_str(&format!("(function(){{\n{result}\n}})();\n"));
+                }
+                rows.push_str(&format!(
+                    "{{:phase :batch :batch {batch} :wall-ns {} :checked {fanout}}}\n",
+                    begun.elapsed().as_nanos()
+                ));
+            }
+        } else {
+            *BATCH_CLOCK.lock().unwrap() = Some(BatchClock {
+                previous: overall,
+                expected: fanout,
+                completed: [0; 2],
+                rows: String::new(),
+            });
+            js = compile(
+                &directory,
+                &engine,
+                workers,
+                &options,
+                &runner,
+                &mut rows,
+                2 * fanout,
             );
-            rows.push_str(&format!("{{:phase :adapter :stats {}}}\n", stats(s)));
+            let clock = BATCH_CLOCK.lock().unwrap().take().unwrap();
+            assert_eq!(clock.completed, [fanout; 2]);
+            rows.push_str(&clock.rows);
         }
-        let begun = Instant::now();
-        if let Some(s) = session {
-            s.close();
-        }
-        drop(host);
-        drop(program);
-        rows.push_str(&format!(
-            "{{:phase :compiler :analyze-ns {analyzed} :emit-ns {emitted} :cleanup-ns {}}}\n",
-            begun.elapsed().as_nanos()
-        ));
+        std::fs::write(directory.join("actual.js"), js).unwrap();
     } else {
         assert_eq!(scope, "vm");
         // Fresh actual compiler emission/independent expected forms each process.
