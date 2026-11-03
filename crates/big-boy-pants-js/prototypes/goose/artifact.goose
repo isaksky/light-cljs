@@ -130,9 +130,11 @@ fn export_value(heap: const source::Heap&, v: source::Value, ids: i64[>..]&, slo
 fn export_graph(heap: const source::Heap&, base: const snapshot::Snapshot&, imports: const Imports&, root: source::Value, definition: i64, version: i64, c: Control&) -> Artifact {
     let started = clock_ns(); defer { c.export_ns += clock_ns() - started; }
     if !context(heap, base, imports, c) || !poll(c, heap.nodes.len) { return Artifact {}; }
-    if heap.nodes.len > 100000 { reject(c, Error.Bytes); return Artifact {}; }
-    var ids:   i64[>..]          = []; ids.resize(heap.nodes.len, -1); var slots: i64[>..] = [];
-    var nodes: source::Node[>..] = []; var keys: Key[>..] = []; var values: source::Value[>..] = []; var units: u16[>..] = []; var bytes: u8[>..] = []; var sources: source::SourceRange[>..] = [];
+    if heap.nodes.len > 100000 || heap.source_ranges.len > 1048576 { reject(c, Error.Bytes); return Artifact {}; }
+    var ids: i64[>..] = []; ids.resize(heap.nodes.len, -1); var slots: i64[>..] = [];
+    if !poll(c, heap.source_ranges.len) { return Artifact {}; }
+    var source_ids: i64[>..]          = []; source_ids.resize(heap.source_ranges.len, -1);
+    var nodes:      source::Node[>..] = []; var keys: Key[>..] = []; var values: source::Value[>..] = []; var units: u16[>..] = []; var bytes: u8[>..] = []; var sources: source::SourceRange[>..] = [];
     let result = export_value(heap, root, ids, slots, units, c); var cursor: i64 = 0;
     while cursor < slots.len && c.error == Error.None {
         if !poll(c) { break; } let slot = slots[cursor]; var n = heap.nodes[slot];
@@ -145,9 +147,15 @@ fn export_graph(heap: const source::Heap&, base: const snapshot::Snapshot&, impo
             for i in n.count { let v = export_value(heap, heap.values[old + i], ids, slots, units, c); values.push(v); }
         }
         if n.source >= 0 {
-            if !snapshot::range(n.source, 1, heap.source_ranges.len) { reject(c, Error.Link); break; } let r = heap.source_ranges[n.source];
-            if !snapshot::range(r.start, r.count, heap.source_bytes.len) || !poll(c, r.count) { reject(c, Error.Link); break; }
-            n.source = sources.len; sources.push(source::SourceRange { start: bytes.len, count: r.count }); bytes.append(heap.source_bytes[r.start..(r.start + r.count)]);
+            if !snapshot::range(n.source, 1, heap.source_ranges.len) { reject(c, Error.Link); break; }
+            let original_source = n.source;
+            if source_ids[original_source] < 0 {
+                let r = heap.source_ranges[original_source];
+                if !snapshot::range(r.start, r.count, heap.source_bytes.len) || !poll(c, r.count) { reject(c, Error.Link); break; }
+                source_ids[original_source] = sources.len;
+                sources.push(source::SourceRange { start: bytes.len, count: r.count }); bytes.append(heap.source_bytes[r.start..(r.start + r.count)]);
+            }
+            n.source = source_ids[original_source];
         }
         nodes.push(n); cursor += 1;
         if bytes_of(nodes).len + bytes_of(keys).len + bytes_of(values).len + bytes_of(units).len + bytes.len + bytes_of(sources).len > c.bytes { reject(c, Error.Bytes); }
@@ -155,7 +163,13 @@ fn export_graph(heap: const source::Heap&, base: const snapshot::Snapshot&, impo
     if c.error != Error.None { return Artifact {}; }
     var a = Artifact { base: base.header.checkpoint, definition: definition, version: version, root: result, keys: keys[..], nodes: nodes[..], values: values[..], units: units[..], bytes: bytes[..], sources: sources[..] };
     // Validation owns its visitation counters; exported graphs are independently checked on import.
-    if !validate(a, base, c) { return Artifact {}; } c.copied_bytes += 2 * payload(a); return a;
+    if !validate(a, base, c) {
+        // No artifact escapes on failure. Report IDs in the caller's source
+        // heap so its offending path is inspectable after staging disappears.
+        for &id in c.path { id = slots[id]; }
+        return Artifact {};
+    }
+    c.copied_bytes += 2 * payload(a); return a;
 }
 // Exact canonical per-node bytes use provenance targets, independent of local
 // artifact order/pool offsets. Never hash equal occurrences into one identity.

@@ -131,6 +131,7 @@ fn invalid(base: const snapshot::Snapshot&, a: const artifact::Artifact&) {
     let map = source::form_collection(heap, 7, [source::number(1), nested]);
     var c = artifact::Control {}; let rejected = artifact::export_graph(heap, base, imports, map, 30, 1, c);
     assert(c.error == artifact::Error.Mutable && c.path.len == 3 && rejected.nodes.len == 0 && imports.definitions.len == 1);
+    assert(c.path[..] == [map.a, nested.a, mutable.a]);
     let map_key = source::form_collection(heap, 7, [nested, source::number(1)]); var kc = artifact::Control {}; artifact::export_graph(heap, base, imports, map_key, 31, 1, kc); assert(kc.error == artifact::Error.Mutable && kc.path.len == 3);
     let closure = source::closure(heap, roots[4].value.number as i64, [mutable]); var cc = artifact::Control {}; artifact::export_graph(heap, base, imports, closure, 32, 1, cc); assert(cc.error == artifact::Error.Mutable && cc.path.len == 2);
     // An occurrence is scalar-only, but its metadata still participates.
@@ -187,6 +188,7 @@ fn provenance(base: const snapshot::Snapshot&) {
         let x = source::form_nth(heap, v, 0); let y = source::form_nth(heap, v, 1);
         assert(x.a != y.a && x.a == source::form_nth(heap, v, 2).a && source::form_equal(heap, x, y));
         assert(heap.nodes[x.a].origin == 10 && heap.nodes[y.a].origin == 11 && heap.nodes[y.a].span_start == 4);
+        assert(heap.nodes[x.a].source == heap.nodes[y.a].source);
         let text = source::form_value(heap, source::form_nth(heap, v, 3)); assert(heap.units[text.a..(text.a + text.b)] == [0xD83D as u16, 0xDE00, 0xD800]);
         let name = heap.nodes[source::form_nth(heap, v, 4).a]; assert(heap.nodes[name.metadata.a].kind == 7 && heap.units[name.namespace_value.a..(name.namespace_value.a + name.namespace_value.b)] == ['n' as u16, 's']);
         var bc = bridge::Control {}; assert(bridge::export_graph(heap, [v], result, bc));
@@ -234,6 +236,8 @@ fn main() {
     let left = snapshot_test::append(code, embed_file("corpus/branches-helper-0.pants.gsp"));
     let right = snapshot_test::append(code, embed_file("corpus/branches-helper-1.pants.gsp"));
     let consumer = snapshot_test::append(code, embed_file("corpus/branches-consume.pants.gsp"));
+    // Synthetic capture getter tests relocation/cycles separately from the
+    // unchanged compiler-emitted producer/consumer bodies above.
     var getter = source::Code {}; getter.functions.push(source::Function { start: 0, count: 3, constants: 0, children: 0, params: 0, locals: 0, captures: 1, strict: true });
     for op, i in [46, 49, 15] { getter.ops.push(source::Op { code: op, arg: 0, offset: [0, 3, 4][i], start: 0, end: 0, depth: [0, 1, 1][i] }); } getter.valid = true; let read = source::append_code(code, getter);
     assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let shared = source::allocate(heap, source::Node { kind: 11, value: source::number(9), origin: 90 });

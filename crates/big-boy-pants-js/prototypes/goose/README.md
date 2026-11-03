@@ -363,7 +363,8 @@ diagnostic correctness-run measurements, not a performance comparison.
 `artifact.goose` implements a separate publication boundary over the initialized
 private snapshots. `Artifact` schema 1 owns flat node, capture/child, exact UTF-16
 and source-byte/range arrays. Links inside the artifact are zero-session local
-indices. Definition ID and positive version identify one immutable delivery in
+indices. A source-index map retains a single owner for occurrences from the
+same source. Definition ID and positive version identify one immutable delivery in
 one base checkpoint. A changed version or changed payload for an installed
 definition is an explicit conflict; installing a newer generation requires a
 new base/import context. The local `to_bytes`/`from_bytes` codec is checked and
@@ -386,8 +387,8 @@ and initialized immutable capture cells. Every value, namespace, metadata, map
 key/value and capture edge is checked. Plain JS objects/arrays and mutable or
 uninitialized cells reject, including inside immutable containers. Callable
 closure/cell cycles are supported; cycles involving compiler-form containers
-reject. A failed walk returns a typed error plus artifact node IDs along the
-offending path. Iterative DFS colors every distinct reachable node and visits
+reject. A failed walk returns a typed error plus node IDs along the offending
+path: source heap IDs for export, artifact IDs for import. Iterative DFS colors every distinct reachable node and visits
 every edge once; provenance sorting, bounded table scans and callable-cycle
 checks additionally consume the work budget. Node/pool/byte/work limits bound
 validation and installation. There is no shared mutable reference exception.
@@ -439,11 +440,11 @@ and cache effects are visible rather than averaged into a throughput claim.
 
 | Process | A-then-B import | B-then-A import | First diamond import | Second diamond import |
 | --- | --- | --- | --- | --- |
-| 1 | 30000 | 3000 | 7000 | 2000 |
-| 2 | 17000 | 3000 | 6000 | 3000 |
-| 3 | 15000 | 4000 | 6000 | 3000 |
-| 4 | 14000 | 4000 | 7000 | 3000 |
-| 5 | 15000 | 4000 | 6000 | 3000 |
+| 1 | 31000 | 4000 | 6000 | 3000 |
+| 2 | 15000 | 4000 | 9000 | 3000 |
+| 3 | 14000 | 3000 | 6000 | 3000 |
+| 4 | 14000 | 3000 | 6000 | 3000 |
+| 5 | 12000 | 3000 | 6000 | 3000 |
 
 Reproduce from the prototype directory (each execution includes all artifact
 assertions; run the executable five times for the table above):
