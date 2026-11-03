@@ -423,7 +423,7 @@ fn form_assoc(heap: Heap&, v: Value, k: Value, value: Value) -> Value {
         for child in heap.values[n.start..(n.start + n.count)] { if !valid(heap, child) { return Value {}; } }
         if kind == 7 && !valid(heap, k) { return Value {}; } if !valid(heap, value) { return Value {}; }
     }
-    var node = n; node.origin = -1; node.start = heap.values.len; node.count = count;
+    var node = n; node.kind = kind; node.origin = -1; node.start = heap.values.len; node.count = count;
     // allocate charges the final work unit before any child append. Nothing
     // below can fail; old ranges and occurrence/metadata handles stay intact.
     let result = allocate(heap, node); if heap.fault != Fault.None { return Value {}; }
@@ -447,7 +447,7 @@ fn form_conj(heap: Heap&, v: Value, value: Value) -> Value {
     if kind == 5 && !valid(heap, value) { return Value {}; }
     for child in heap.values[n.start..(n.start + n.count)] { if !valid(heap, child) { return Value {}; } }
     if kind == 6 && !valid(heap, value) { return Value {}; }
-    var node = n; node.origin = -1; node.start = heap.values.len; node.count = count;
+    var node = n; node.kind = kind; node.origin = -1; node.start = heap.values.len; node.count = count;
     let result = allocate(heap, node); if heap.fault != Fault.None { return Value {}; }
     if kind == 5 { heap.values.push(value); }
     heap.values.append(heap.values[n.start..(n.start + n.count)]);
