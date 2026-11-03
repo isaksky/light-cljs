@@ -205,9 +205,9 @@ fn exported(
 ) -> big_boy_pants_js::frontend::goose::Export {
     let path = root.join(filename);
     artifact(&path, source.as_bytes(), regenerate);
-    let export =
-        big_boy_pants_js::frontend::goose::export_source(filename, &format!("({source});"))
-            .unwrap_or_else(|error| panic!("{filename}: {error}"));
+    let export = big_boy_pants_js::frontend::goose::export_source(filename, source)
+        .unwrap_or_else(|error| panic!("{filename}: {error}"));
+    assert_eq!(&export.bytes[32..32 + source.len()], source.as_bytes());
     artifact(&path.with_extension("gsp"), &export.bytes, regenerate);
     let inventory = format!(
         "{{:parsed true :exported true :goose-executed false :functions {} :instructions {} :operations {:?}}}\n",
