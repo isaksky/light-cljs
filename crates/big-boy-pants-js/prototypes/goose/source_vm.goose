@@ -48,7 +48,7 @@ root struct Job {
     heap:            Heap&, frames: Frame[>..<] = [], locals: Value[>..<] = [], operands: Value[>..<] = [],
     writes:          Write[>..]                 = [], status: tiny::Status = tiny::Status.Ready, result: Value = Value {},
     handlers:        Handler[>..<]              = [],
-    fault:           Fault                      = Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1,
+    fault:           Fault                      = Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1, thrown: bool = false,
     steps:           i64                        = 0, claimed: bool = false, registered: bool = false,
     effects_enabled: bool                       = false, effect_pending: bool = false, effect_kind: i64 = -1,
     helpers_enabled: bool                       = false,
@@ -298,7 +298,7 @@ fn fail(job: Job&, fault: Fault, frame: Frame) {
     job.status = tiny::Status.Failed; job.fault = reported; job.fault_function = frame.function; job.fault_pc = frame.pc;
 }
 fn raise(job: Job&, value: Value, frame: Frame) {
-    if job.handlers.len == 0 { fail(job, Fault.HostEffect, frame); return; }
+    if job.handlers.len == 0 { job.result = value; job.thrown = true; fail(job, Fault.HostEffect, frame); return; }
     let handler = job.handlers.pop();
     job.frames.resize(handler.frame + 1); job.locals.resize(handler.locals); job.operands.resize(handler.operands);
     job.frames[handler.frame].pc = handler.pc; job.operands.push(value);

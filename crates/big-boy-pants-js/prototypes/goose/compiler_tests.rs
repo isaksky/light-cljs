@@ -329,3 +329,58 @@ fn goose_compiler_rejects_root_reads_that_bypass_the_compiler_intrinsic() {
     cleaned(&session);
     assert!(crate::compile_with_macros(source, &mut crate::MacroHost::new()).is_ok());
 }
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_injected_worker_abort_cleans_entire_session() {
+    // A deliberately truncated real worker packet causes a native assertion,
+    // distinct from a user-program TypeError. No fake protocol process here.
+    for workers in [1, 2, 4, 8] {
+        let session = GooseSession::start(&runner(), workers).unwrap();
+        session
+            .export(&session.directory.join("1.gsp"), "rt => (form, env) => 1")
+            .unwrap();
+        std::fs::write(session.directory.join("1.gfb"), b"GFB1").unwrap();
+        let (tx, rx) = mpsc::channel();
+        session.pending.lock().unwrap().insert(1, tx);
+        {
+            let mut process = session.process.lock().unwrap();
+            let input = &mut process.as_mut().unwrap().input;
+            writeln!(input, "1").unwrap();
+            input.flush().unwrap();
+        }
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            match rx.recv_timeout(Duration::from_millis(2)) {
+                Ok(Event::Failure(message)) => {
+                    assert!(message.contains("exited"), "{message}");
+                    break;
+                }
+                Ok(Event::Start | Event::Resumed) => {}
+                // The runtime may leave its input thread blocked after a
+                // worker abort. The host's deadline retires the whole process;
+                // it must never be reported as a thrown-program outcome.
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if String::from_utf8_lossy(&session.stderr.lock().unwrap())
+                        .contains("assert failed")
+                    {
+                        break;
+                    }
+                    assert!(
+                        Instant::now() < until,
+                        "native worker did not report the injected abort"
+                    );
+                }
+                other => panic!("native abort must be an infrastructure failure: {other:?}"),
+            }
+        }
+        session.close();
+        cleaned(&session);
+        let stderr = session.stderr.lock().unwrap();
+        let stderr = String::from_utf8_lossy(&stderr);
+        assert!(
+            stderr.contains("assert failed"),
+            "worker abort was not injected: {stderr}"
+        );
+    }
+}

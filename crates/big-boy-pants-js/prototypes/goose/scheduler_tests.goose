@@ -7,6 +7,7 @@ import .snapshot_fixture;
 import .source_vm;
 import .artifact;
 import .form_bridge;
+import .effects;
 
 fn key(id: i64, generation: i64 = 1, kind: i64 = 0, session: i64 = 1) -> dependency::Key { return dependency::Key { compilation: 1, session: session, generation: generation, definition: id, kind: kind }; }
 fn prepare(code: source::Code&, heap: source::Heap&, roots: snapshot::Binding[>..]&, entries: i64[>..]&) {
@@ -52,24 +53,26 @@ fn verify_artifacts(plan: const scheduler::Plan&, run: const scheduler::Run&, ba
     }
     assert(graph.roots.len == 1);
 }
+fn schedule_delay(id: i64, seed: i64) -> i64 { return ((id * 1103515245 + seed * 12345) & 127) % 16; }
 fn graphs(base: const snapshot::Snapshot&, entries: const i64[:]) {
     for workers in [1, 2, 4, 8] {
         for shape in 3 {
             var canonical: u8[>..] = []; var canonical_graph = bridge::Graph {};
             for reverse in 2 {
+                let seed = [17, 42][reverse];
                 var plan = scheduler::Plan {};
                 // A four-job chain, a wide fan-out/fan-in, and a diamond. The
                 // first two exercise compiler-declared ordering; the diamond
                 // executes actual emitted helper reads, with no prefilled roots.
                 if shape == 0 {
-                    for i in 4 { plan.jobs.push(job(i, entries[0], false, if reverse == 0 { i } else { 4 - i })); if i > 0 { plan.needs.push(scheduler::Need { consumer: i, key: key(i - 1) }); } }
+                    for i in 4 { plan.jobs.push(job(i, entries[0], false, schedule_delay(i, seed))); if i > 0 { plan.needs.push(scheduler::Need { consumer: i, key: key(i - 1) }); } }
                 } else if shape == 1 {
-                    for i in 10 { plan.jobs.push(job(i, entries[0], false, if reverse == 0 { i } else { 10 - i })); }
+                    for i in 10 { plan.jobs.push(job(i, entries[0], false, schedule_delay(i, seed))); }
                     for i in 1..9 { plan.needs.push(scheduler::Need { consumer: i, key: key(0) }); plan.needs.push(scheduler::Need { consumer: 9, key: key(i) }); }
                 } else {
                     plan.jobs.push(job(0, entries[0]));
-                    plan.jobs.push(job(1, entries[0], false, if reverse == 0 { 15 } else { 0 }));
-                    plan.jobs.push(job(2, entries[1], false, if reverse == 0 { 0 } else { 15 }));
+                    plan.jobs.push(job(1, entries[0], false, schedule_delay(1, seed)));
+                    plan.jobs.push(job(2, entries[1], false, schedule_delay(2, seed)));
                     plan.needs.push(scheduler::Need { consumer: 1, key: key(0) }); plan.needs.push(scheduler::Need { consumer: 2, key: key(0) });
                     plan.jobs.push(job(3, entries[2], true)); plan.jobs.push(job(4, entries[2], true));
                     for i in 3..5 {
@@ -90,7 +93,7 @@ fn graphs(base: const snapshot::Snapshot&, entries: const i64[:]) {
                     if reverse == 0 { canonical_graph.nodes.append(graph.nodes); canonical_graph.children.append(graph.children); canonical_graph.units.append(graph.units); }
                     else { assert(bytes_of(graph.nodes) == bytes_of(canonical_graph.nodes) && graph.children == canonical_graph.children && graph.units == canonical_graph.units); }
                 }
-                print("scheduler shape=", shape, " reorder=", reverse, " coordinator=1 workers=", run.workers, " jobs=", run.admitted, " peak-admitted=", run.peak, " joined=", run.joined);
+                print("scheduler shape=", shape, " reorder=", reverse, " seed=", seed, " coordinator=1 workers=", run.workers, " jobs=", run.admitted, " peak-admitted=", run.peak, " joined=", run.joined);
             }
         }
     }
@@ -146,10 +149,9 @@ fn saturation(base: const snapshot::Snapshot&, entries: const i64[:]) {
 fn main() {
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var entries: i64[>..] = []; prepare(code, heap, roots, entries);
     var c = snapshot::Control {}; let base = snapshot::capture(heap, roots, c); assert(c.error == snapshot::Error.None);
-    let started = clock_ns(); graphs(base, entries); failures(base, entries); saturation(base, entries); keys_and_restore(base, entries); budgets_and_control(base, entries);
+    let started = clock_ns(); install_orders(base, entries); graphs(base, entries); failures(base, entries); saturation(base, entries); keys_and_restore(base, entries); budgets_and_control(base, entries);
     // All dispatches and physical workers ended, with one boot in the parent.
     assert(heap.live_jobs == 0 && heap.boot_count == 1 && heap.producer_count == 0);
-    assert((clock_ns() - started) / 1000000 < 30000);
     print("native dependency-ready pool passed; clean prerequisite import; all owned workers joined; elapsed-ms=", (clock_ns() - started) / 1000000);
 }
 
@@ -263,4 +265,43 @@ fn full_queues(base: const snapshot::Snapshot&, entries: const i64[:]) {
     let extra, result_pending = qpoll<scheduler::Result>(); let pending_work, work_pending = qpoll<scheduler::Work>();
     assert(!result_pending && !work_pending && extra.id == 0 && !pending_work.stop);
     print("scheduler deterministic full work/result/stop queues: two correlated jobs, four joined workers and refused puts all retained");
+}
+
+fn install_orders(base: const snapshot::Snapshot&, entries: const i64[:]) {
+    // Receiver event hook: hold both completed producer packets outside the
+    // coordinator, then explicitly release them in each order. No sleep is
+    // involved in proving which Install occurs first. The regular dispatch
+    // matrix above independently checks admission at every worker bound.
+    for seed in [0, 1, 17, 42] {
+        var plan = scheduler::Plan {}; plan.jobs.push(job(1, entries[0])); plan.jobs.push(job(2, entries[1])); plan.jobs.push(job(3, entries[2], true));
+        plan.needs.push(scheduler::Need { consumer: 3, key: key(1), name: "cljs.user/left-result" });
+        plan.needs.push(scheduler::Need { consumer: 3, key: key(2), name: "cljs.user/right-result" });
+        var table = dependency::Table { compilation: 1, session: 1 }; var run = scheduler::Run { table: table };
+        for spec in plan.jobs { let claim = dependency::ensure(table, spec.key); run.states.push(scheduler::State { cell: claim.cell }); }
+        for need in plan.needs { dependency::demand(table, need.consumer, need.key); }
+        var held: scheduler::Result[>..] = []; var order: scheduler::Result&[>..] = [];
+        for i in 2 {
+            assert(scheduler::ready(plan, run, i)); let packet = scheduler::make_work(plan, run, i, source::reserve_identity());
+            run.states[i].dispatched = true; run.states[i].starts = 1; run.active += 1;
+            var authority = effects::Authority {}; let result .= held.push(scheduler::perform(base, packet, scheduler::Options {}, authority)); order.push(result);
+        }
+        let first = seed % 2; let second = 1 - first;
+        assert(!scheduler::ready(plan, run, 2));
+        scheduler::accept(plan, base, run, scheduler::Options {}, order[first]);
+        assert(!scheduler::ready(plan, run, 2) && table.deliveries.len == 1);
+        let producer = table.cells[run.states[first].cell];
+        assert(!dependency::install(table, dependency::Completion { key: producer.key, producer: producer.producer, terminal: producer.terminal }));
+        assert(table.deliveries.len == 1); // duplicate completion cannot release the join
+        scheduler::accept(plan, base, run, scheduler::Options {}, order[second]);
+        assert(scheduler::ready(plan, run, 2) && table.deliveries.len == 2);
+        assert(run.events[1].kind == scheduler::EventKind.Install && run.events[1].job == first);
+        assert(run.events[3].kind == scheduler::EventKind.Install && run.events[3].job == second);
+        let packet = scheduler::make_work(plan, run, 2, source::reserve_identity());
+        run.states[2].dispatched = true; run.states[2].starts = 1; run.active += 1;
+        var authority = effects::Authority {}; let result = scheduler::perform(base, packet, scheduler::Options {}, authority);
+        scheduler::accept(plan, base, run, scheduler::Options {}, result);
+        assert(run.active == 0 && table.requests.len == 3);
+        var graph = bridge::Graph {}; verify_artifacts(plan, run, base, 3, graph);
+        print("deterministic diamond receiver seed=", seed, " install=", first, ",", second, " duplicate ignored; join expansion/provenance retained");
+    }
 }

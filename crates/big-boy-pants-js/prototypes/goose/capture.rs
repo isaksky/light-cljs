@@ -681,10 +681,21 @@ fn goose_compiler_pipeline() {
     ] {
         let source = std::fs::read_to_string(root.join(format!("{case}.cljs"))).unwrap();
         let mut builds = Vec::new();
-        for goose in [false, true] {
+        for (engine, workers) in [
+            ("v8", 1),
+            ("pants", 1),
+            ("goose", 1),
+            ("goose", 2),
+            ("goose", 4),
+            ("goose", 8),
+        ] {
+            let goose = engine == "goose";
             let mut host = MacroHost::new();
-            let session =
-                goose.then(|| crate::goose_evaluator::GooseSession::start(&runner, 1).unwrap());
+            if engine == "pants" {
+                host.use_native_macros();
+            }
+            let session = goose
+                .then(|| crate::goose_evaluator::GooseSession::start(&runner, workers).unwrap());
             if let Some(session) = &session {
                 host.use_goose_source_macros(session.clone()).unwrap();
                 if case == "reentrant" {
@@ -719,9 +730,23 @@ fn goose_compiler_pipeline() {
                 .collect::<Vec<_>>();
             if let Some(session) = session {
                 let stats = session.stats();
+                assert_eq!(stats.subprocesses, 1);
                 assert_eq!(stats.initializations, 1);
                 assert_eq!(stats.jobs, requests.len() as u64);
                 let trace = session.trace();
+                let producers = match case {
+                    "branches" => 2,
+                    "reentrant" => 1,
+                    _ => 0,
+                };
+                assert_eq!(
+                    trace
+                        .iter()
+                        .filter(|line| line.starts_with("PRODUCED "))
+                        .count(),
+                    producers,
+                    "{case} producer count, workers={workers}"
+                );
                 if case == "reentrant" {
                     let need = trace.iter().find(|line| line.starts_with("NEED ")).unwrap();
                     assert!(
@@ -755,37 +780,49 @@ fn goose_compiler_pipeline() {
             let js = crate::emit_js(&program);
             builds.push((output(&js), js, requests));
         }
-        let (a, b) = (&builds[0], &builds[1]);
-        assert_eq!(a.0, b.0, "{case} application output");
-        assert_eq!(a.1, b.1, "{case} deterministic JS");
-        assert_eq!(a.2.len(), b.2.len());
-        for (a, b) in a.2.iter().zip(&b.2) {
-            assert!(
-                a.expanded.data().value_eq(&b.expanded.data()),
-                "{case} canonical form"
-            );
-            assert_eq!(a.expanded.nodes().len(), b.expanded.nodes().len());
-            for id in 0..a.expanded.nodes().len() {
-                let (a, b) = (
-                    a.expanded.at(crate::compiler_data::FormId(id)).unwrap(),
-                    b.expanded.at(crate::compiler_data::FormId(id)).unwrap(),
-                );
-                assert_eq!(a.span().bytes(), b.span().bytes(), "{case} source spans");
-                assert_eq!(
-                    a.node().metadata,
-                    b.node().metadata,
-                    "{case} metadata edges"
-                );
+        for b in &builds[1..] {
+            let a = &builds[0];
+            assert_eq!(a.0, b.0, "{case} application output");
+            assert_eq!(a.1, b.1, "{case} deterministic JS");
+            assert_eq!(a.2.len(), b.2.len());
+            for (a, b) in a.2.iter().zip(&b.2) {
                 assert!(
-                    a.data().value_eq(&b.data()),
-                    "{case} nested data and metadata"
+                    a.expanded.data().value_eq(&b.expanded.data()),
+                    "{case} canonical form"
                 );
-                assert_eq!(
-                    std::mem::discriminant(a.data().kind()),
-                    std::mem::discriminant(b.data().kind()),
-                    "{case} canonical datum kinds"
-                );
-                assert_eq!(a.node().origin, b.node().origin, "{case} origin");
+                assert_eq!(a.expanded.nodes().len(), b.expanded.nodes().len());
+                for id in 0..a.expanded.nodes().len() {
+                    let (a, b) = (
+                        a.expanded.at(crate::compiler_data::FormId(id)).unwrap(),
+                        b.expanded.at(crate::compiler_data::FormId(id)).unwrap(),
+                    );
+                    assert_eq!(a.span().bytes(), b.span().bytes(), "{case} source spans");
+                    assert_eq!(
+                        a.span().source().text(),
+                        b.span().source().text(),
+                        "{case} source ownership"
+                    );
+                    assert_eq!(
+                        a.node().kind,
+                        b.node().kind,
+                        "{case} logical child occurrence IDs"
+                    );
+                    assert_eq!(
+                        a.node().metadata,
+                        b.node().metadata,
+                        "{case} metadata edges"
+                    );
+                    assert!(
+                        a.data().value_eq(&b.data()),
+                        "{case} nested data and metadata"
+                    );
+                    assert_eq!(
+                        std::mem::discriminant(a.data().kind()),
+                        std::mem::discriminant(b.data().kind()),
+                        "{case} canonical datum kinds"
+                    );
+                    assert_eq!(a.node().origin, b.node().origin, "{case} origin");
+                }
             }
         }
     }

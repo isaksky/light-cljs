@@ -451,8 +451,17 @@ impl Graph {
                 return Err(bad());
             }
             if n.fields[6] >= 0 {
-                let (_, len) = g.sources[n.fields[6] as usize];
+                let (start, len) = g.sources[n.fields[6] as usize];
                 if n.fields[7] < 0 || n.fields[8] < n.fields[7] || n.fields[8] as u32 > len {
+                    return Err(bad());
+                }
+                let text = g.segment(&g.bytes, start as i32, len as i32)?;
+                // Sources are UTF-8 validated once below. Checking only the
+                // boundary bytes here avoids rescanning a source per node.
+                if [n.fields[7], n.fields[8]].iter().any(|&offset| {
+                    text.get(offset as usize)
+                        .is_some_and(|byte| byte & 0xc0 == 0x80)
+                }) {
                     return Err(bad());
                 }
             }
@@ -672,6 +681,55 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn goose_compiler_bridge_source_bytes_and_runtime_units_are_distinct() {
+        let source = crate::compiler_data::Source::new("unicode.cljs", "é😀");
+        let form = Form::from_data(
+            Datum::new(DatumKind::String(
+                vec![0x00e9, 0xd83d, 0xde00, 0xd800].into(),
+            )),
+            source.span(0..6).unwrap(),
+            crate::compiler_data::Origin::Source,
+        );
+        let limits = ConversionLimits::default();
+        let control = ExecutionControl::new(&Default::default()).unwrap();
+        let mut graph = Graph::arguments(
+            &[super::super::Stored::Form(form.clone(), limits)],
+            limits,
+            &Budget::new(limits.nodes, control.clone()),
+        )
+        .unwrap();
+        for offset in [1, 3, 4, 5] {
+            graph.nodes[0].fields[7] = offset;
+            assert!(
+                Graph::decode(
+                    &graph.encode().unwrap(),
+                    limits,
+                    &Budget::new(limits.nodes, control.clone())
+                )
+                .is_err()
+            );
+            assert_eq!(form.span().bytes(), 0..6);
+            assert!(
+                matches!(form.data().kind(), DatumKind::String(units) if units.last() == Some(&0xd800))
+            );
+        }
+        graph.nodes[0].fields[7] = 0;
+        let good = graph.encode().unwrap();
+        let decoded =
+            Graph::decode(&good, limits, &Budget::new(limits.nodes, control.clone())).unwrap();
+        assert_eq!(decoded.units, [0x00e9, 0xd83d, 0xde00, 0xd800]);
+        graph.bytes[0] = 255;
+        assert!(
+            Graph::decode(
+                &graph.encode().unwrap(),
+                limits,
+                &Budget::new(limits.nodes, control)
+            )
+            .is_err()
+        );
+        assert_eq!(form.span().source().text(), "é😀");
+    }
     #[test]
     fn goose_compiler_bridge_rejects_truncations_and_unreachable_cycles() {
         let source = crate::compiler_data::Source::new("graph.cljs", "nil");

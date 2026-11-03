@@ -2,6 +2,7 @@ import std;
 import os;
 import .source_vm;
 import .snapshot;
+import .program;
 
 namespace artifact;
 
@@ -63,6 +64,10 @@ fn shape(a: const Artifact&, n: source::Node, base: const snapshot::Snapshot&, c
     if (n.kind == 9 || n.kind == 10) && (n.value.tag != 4 || n.namespace_value.tag != 1 && n.namespace_value.tag != 4) || n.kind == 11 && n.value.tag > 4 { return reject(c, Error.Link); }
     if n.source < -1 || n.source >= a.sources.len || n.origin < -1 { return reject(c, Error.Link); }
     if n.source >= 0 && (n.span_start < 0 || n.span_end < n.span_start || !snapshot::range(n.span_start, n.span_end - n.span_start, a.sources[n.source].count)) { return reject(c, Error.Link); }
+    if n.source >= 0 {
+        let r = a.sources[n.source]; let text = a.bytes[r.start..(r.start + r.count)];
+        if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c, Error.Link); }
+    }
     return true;
 }
 struct Cursor { id: i64, next: i64 = 0 }

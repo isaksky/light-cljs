@@ -7,11 +7,26 @@ import .vm;
 // Exit status only; all loading, evaluation and heap operations are Goose.
 extern fn process_exit(status: i32) = "exit";
 fn error() { flush_stdout(); process_exit(1); }
+// Machine-readable semantic record. Program diagnostics are distinct from
+// loader/protocol/unsupported failures, which still exit nonzero.
+fn typed_outcome(heap: source::Heap&, job: source::Job&) {
+    if job.fault != source::Fault.None && !job.thrown && job.fault != source::Fault.TypeError && job.fault != source::Fault.ReferenceError { print("infrastructure:", job.fault); error(); return; }
+    var value: u8[>..] = [];
+    if job.fault == source::Fault.None || job.thrown { source::canonical(heap, job.result, value); }
+    else { format(value, "error:", if job.fault == source::Fault.TypeError { "TypeError" } else { "ReferenceError" }); }
+    if job.result.tag == 5 && (job.fault == source::Fault.None || job.thrown) { print("infrastructure:unsupported outcome identity"); error(); return; }
+    var out: u8[>..] = []; format(out, "{:status :", if job.fault == source::Fault.None { "returned" } else { "thrown" }, " :value \"", value, "\" :effects [");
+    for write in job.writes {
+        if source::key_is(heap, write.key, "observed") { var effect: u8[>..] = []; source::canonical(heap, write.value, effect); format(out, "\"", effect, "\" "); }
+    }
+    out.append("] :stdout \"\"}"); print(out);
+}
 fn main() {
     let arguments = args();
     if arguments.len < 2 || arguments.len > 3 { print("usage: execute PROGRAM.gsp [REPETITIONS=1, max=10000]"); error(); return; }
     var repetitions: i64 = 1;
-    if arguments.len == 3 { let count, ok = parse_int(arguments[2]); if !ok || count < 1 || count > 10000 { print("error: invalid repetition limit"); error(); return; } repetitions = count; }
+    let typed = arguments.len == 3 && arguments[2] == "--outcome";
+    if arguments.len == 3 && !typed { let count, ok = parse_int(arguments[2]); if !ok || count < 1 || count > 10000 { print("error: invalid repetition limit"); error(); return; } repetitions = count; }
     let beginning = clock_ns();
     var bytes: u8[>..] = [];
     if !read_file(arguments[1], bytes) { print("error: cannot read program"); error(); return; }
@@ -33,6 +48,7 @@ fn main() {
         defer { source::retire(job); }
         if !source::start(job, entry, []) { print("start:", job.fault); error(); return; }
         let outcome = source::run(job, -1);
+        if typed { typed_outcome(heap, job); return; }
         if outcome != tiny::Outcome.Complete {
             print("exception:", job.fault, ":function=", job.fault_function, ":pc=", job.fault_pc);
             if job.fault_pc >= 0 { let op = code.ops[job.fault_pc]; print("source-bytes:", op.start, "..", op.end); }

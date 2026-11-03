@@ -514,6 +514,26 @@ mod serial_tests {
     // Independent Node/V8 and Pants expectations for original small source
     // cases. They exercise language execution, not macro expansion coverage.
     #[test]
+    #[ignore = "bounded Babashka generator inputs supplied by correctness.bb"]
+    fn generated_sources_for_goose() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("GOOSE_CORRECTNESS_INPUTS").expect("run correctness.bb"),
+        );
+        let mut inputs = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|e| e == "js"))
+            .collect::<Vec<_>>();
+        inputs.sort();
+        assert_eq!(inputs.len(), 45, "the v1 bounded manifest must be complete");
+        for path in inputs {
+            let source = std::fs::read_to_string(&path).unwrap();
+            let export = export_function(&source)
+                .unwrap_or_else(|error| panic!("{}: {error}\n{source}", path.display()));
+            std::fs::write(path.with_extension("gsp"), export.bytes).unwrap();
+        }
+    }
+    #[test]
     fn source_cases_export_and_match_reference_engines() {
         use crate::{RunOutcome, Runtime, ValueView, VmErrorKind};
         let root =

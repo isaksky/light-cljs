@@ -58,6 +58,8 @@ fn malformed() {
             23 => { bad.header.limits.nodes = -1; }, 24 => { bad.nodes[0].metadata = bad.bindings[5].value; }, 25 => { bad.properties[0].next = 9223372036854775807; }, _ => { abort("unexpected mode"); },
         }
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
+        var wire: u8[>..] = []; to_bytes([bad], wire); var decode = snapshot::Control {};
+        let rejected = snapshot::decode(wire, decode); assert(rejected.len == 0 && decode.error != snapshot::Error.None);
         assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), check));
         assert(check.error != snapshot::Error.None && !dest.valid && dest.ops.len == 0 && target.identity == 0 && target.nodes.len == 0 && roots.len == 0);
     }
@@ -135,4 +137,23 @@ fn stale_classification() {
     assert(source::valid(fresh, replacement) && source::install_field(fresh, replacement, "writable", source::number(2)));
     print("snapshot reset: stale object/string/definition handles cannot authorize replacements or inherit immutability");
 }
-fn main() { isolation(); malformed(); stale_classification(); live_boundary(); }
+fn main() { source_spans(); isolation(); malformed(); stale_classification(); live_boundary(); }
+
+fn source_spans() {
+    var code = source::Code {}; snapshot_test::append(code, embed_file("corpus/serial/calls.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var graph = bridge::Graph {}; graph.bytes.append("é😀"); graph.sources.push(source::SourceRange { start: 0, count: 6 });
+    graph.nodes.push(bridge::Form { tag: 2, number: 7, source: 0, span_start: 0, span_end: 6 }); graph.roots.push(0);
+    var bc = bridge::Control {}; var values: source::Value[>..] = []; assert(bridge::import_graph(heap, graph, values, bc));
+    var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: values[0] }], c); assert(c.error == snapshot::Error.None);
+    let id = values[0].a;
+    for offset in [1, 3, 4, 5] { for end in [false, true] {
+        var bad = copy(saved); if end { bad.nodes[id].span_end = offset; } else { bad.nodes[id].span_start = offset; }
+        var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
+        assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), check) && check.error == snapshot::Error.Link && roots.len == 0 && target.nodes.len == 0 && !dest.valid);
+        var valid = snapshot::Control {}; assert(snapshot::validate(saved, valid));
+    } }
+    var invalid = copy(saved); invalid.bytes[0] = 255; var check = snapshot::Control {}; assert(!snapshot::validate(invalid, check) && check.error == snapshot::Error.Link);
+    assert(source::form_value(heap, values[0]).number == 7 && heap.live_jobs == 0);
+    print("snapshot multibyte source start/end corruption and invalid UTF8 rejected transactionally; prior snapshot/heap preserved");
+}

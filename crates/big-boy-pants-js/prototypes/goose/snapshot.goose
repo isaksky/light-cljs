@@ -165,12 +165,20 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // put prepends a new record; backward links guarantee termination.
         if p.next < -1 || p.next >= i || !value(s, p.key) || p.key.tag != 4 || !value(s, p.value) { return reject(c, Error.Link); }
     }
-    for r in s.sources { if !poll(c) { return false; } if !range(r.start, r.count, s.bytes.len) { return reject(c, Error.Link); } }
+    for r in s.sources {
+        if !range(r.start, r.count, s.bytes.len) { return reject(c, Error.Link); }
+        if !poll(c, r.count + 1) { return false; }
+        if !utf8(s.bytes[r.start..(r.start + r.count)]) { return reject(c, Error.Link); }
+    }
     for n in s.nodes {
         if !poll(c) { return false; }
         if n.kind < 0 || n.kind > 13 { return reject(c, Error.Unsupported); }
         if n.head < -1 || n.head >= s.properties.len || n.length < 0 || !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source < -1 || n.source >= s.sources.len || n.origin < -1 { return reject(c, Error.Link); }
         if n.source >= 0 && (n.span_start < 0 || n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
+        if n.source >= 0 {
+            let r = s.sources[n.source]; let text = s.bytes[r.start..(r.start + r.count)];
+            if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c, Error.Link); }
+        }
         if n.kind == 2 && (!range(n.function, 1, s.functions.len) || n.count != s.functions[n.function].captures) { return reject(c, Error.Link); }
         if n.kind == 2 || n.kind >= 5 && n.kind <= 8 || n.kind == 12 { if !range(n.start, n.count, s.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); } }
         if n.kind == 4 && (n.function < 0 || n.function > 13 || n.function == 9) { return reject(c, Error.Unsupported); }

@@ -9,7 +9,7 @@ fn decode(code: source::Code&, bytes: const u8[:]) {
 }
 fn same_state(a: source::Job&, b: source::Job&) {
     // Byte comparisons preserve NaNs and signed zero in every explicit field.
-    assert(a.status == b.status && a.steps == b.steps && a.claimed == b.claimed && a.fault == b.fault && a.fault_pc == b.fault_pc && a.fault_function == b.fault_function);
+    assert(a.thrown == b.thrown && a.status == b.status && a.steps == b.steps && a.claimed == b.claimed && a.fault == b.fault && a.fault_pc == b.fault_pc && a.fault_function == b.fault_function);
     assert(a.registered == b.registered && a.heap.live_jobs == b.heap.live_jobs);
     assert(to_bytes([a.result]) == to_bytes([b.result]));
     assert(to_bytes(a.frames) == to_bytes(b.frames));

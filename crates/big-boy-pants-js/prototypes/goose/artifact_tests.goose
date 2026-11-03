@@ -113,6 +113,12 @@ fn invalid(base: const snapshot::Snapshot&, a: const artifact::Artifact&) {
             12 => { bad.nodes[0].count -= 1; bad.values[bad.nodes[0].start + bad.nodes[0].count] = source::Value { tag: 5, a: bad.nodes.len }; },
             _ => {},
         }
+        var wire: u8[>..] = []; to_bytes([bad], wire); var decode = artifact::Control {};
+        let rejected = artifact::decode(wire, base, decode);
+        // A well-shaped colliding provenance key is rejected by the import
+        // cache below; the stateless decoder cannot know prior publications.
+        if mode == 10 { assert(rejected.len == 1 && decode.error == artifact::Error.None); }
+        else { assert(rejected.len == 0 && decode.error != artifact::Error.None); }
         reject_import(bad, base, heap, imports, match mode { 2 => artifact::Error.Mutable, 3 => artifact::Error.Cycle, 4, 11 => artifact::Error.Version, 10 => artifact::Error.Conflict, _ => artifact::Error.Link });
     }
     // A rejection must not positively classify any earlier visited sibling.
@@ -324,5 +330,21 @@ fn main() {
     let bindings: snapshot::Binding[] = [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: source::number(left) }, snapshot::Binding { id: 2, generation: 1, value: source::number(right) }, snapshot::Binding { id: 3, generation: 1, value: source::number(consumer) }, snapshot::Binding { id: 4, generation: 1, value: source::number(read) }, snapshot::Binding { id: 5, generation: 1, value: shared }];
     var c = snapshot::Control {}; let base = snapshot::capture(heap, bindings, c); assert(c.error == snapshot::Error.None);
     var ca = artifact::Control {}; var cb = artifact::Control {}; let a = produce(base, 1, ca); let b = produce(base, 2, cb);
-    joins(base, a, b); diamond_delivery(base, a); invalid(base, a); graphs(base); overlapping_cycles(base); signature_budgets(base); provenance(base); scalars(base); work_cuts(base, a);
+    joins(base, a, b); diamond_delivery(base, a); invalid(base, a); graphs(base); overlapping_cycles(base); signature_budgets(base); source_spans(base); provenance(base); scalars(base); work_cuts(base, a);
+}
+
+fn source_spans(base: const snapshot::Snapshot&) {
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
+    var graph = bridge::Graph {}; graph.bytes.append("é😀"); graph.sources.push(source::SourceRange { start: 0, count: 6 });
+    graph.nodes.push(bridge::Form { tag: 2, number: 7, source: 0, span_start: 0, span_end: 6 }); graph.roots.push(0);
+    var bc = bridge::Control {}; var values: source::Value[>..] = []; assert(bridge::import_graph(heap, graph, values, bc));
+    var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
+    let saved = artifact::export_graph(heap, base, imports, values[0], 701, 1, c); assert(c.error == artifact::Error.None);
+    var committed = artifact::Control {}; let result = artifact::import_graph(saved, base, heap, imports, committed); assert(committed.error == artifact::Error.None);
+    for offset in [1, 3, 4, 5] { for end in [false, true] {
+        var bad = copy(saved); for &n in bad.nodes { if n.source >= 0 { if end { n.span_end = offset; } else { n.span_start = offset; } } }
+        reject_import(bad, base, heap, imports, artifact::Error.Link);
+        assert(source::form_value(heap, result).number == 7);
+    } }
+    print("artifact multibyte source span starts/ends reject before relocation; committed identity/value/cache preserved");
 }

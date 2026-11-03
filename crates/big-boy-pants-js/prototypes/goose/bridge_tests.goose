@@ -211,4 +211,47 @@ fn direct_update_boundaries() {
     let fixed = source::form_assoc(heap, old, source::number(0), source::number(2)); assert(heap.fault == source::Fault.None && source::form_nth(heap, fixed, 0).number == 2);
     print("direct persistent updates: exact work/node/value limits, final allocation charge, stale children, duplicate keys, aliases and metadata passed");
 }
-fn main() { roundtrip(); positional_map_equality(); direct_update_boundaries(); number_bits(); unsupported_values(); primitive_fallback(); budgets(); print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
+fn main() { adversarial_forms(); roundtrip(); positional_map_equality(); direct_update_boundaries(); number_bits(); unsupported_values(); primitive_fallback(); budgets(); print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
+
+fn adversarial_forms() {
+    // db6f7f07:tests/parser.rs's independent breadth/depth/decoded-text
+    // budgets, translated to owned GFB1 graphs rather than another parser.
+    var g = bridge::Graph {}; g.bytes.append("é😀"); g.sources.push(source::SourceRange { start: 0, count: g.bytes.len });
+    g.units.append([233 as u16, 55357, 56832, 55296]);
+    g.nodes.push(bridge::Form { tag: 3, count: 4, source: 0, span_start: 0, span_end: g.bytes.len }); g.roots.push(0);
+    var complete = bridge::Control {}; var bytes: u8[>..] = []; assert(bridge::encode(g, bytes, complete));
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var roots: source::Value[>..] = []; var committed = bridge::Control {}; assert(bridge::import_graph(heap, g, roots, committed));
+    let original_nodes = copy(heap.nodes); let original_units = copy(heap.units); let original_work = heap.work;
+    for mode in 13 {
+        var bad = copy(bytes);
+        let at = [8, 12, 16, 20, 24, 28, 32, 44, 48, 68, 72, 76, bytes.len - 4][mode];
+        for i in 4 { bad[at + i] = ((2147483647 >> (i * 8)) & 255) as u8; }
+        var c = bridge::Control {}; var graph = bridge::Graph {}; assert(!bridge::decode(graph, bad, c) && graph.nodes.len == 0);
+        assert(bytes_of(heap.nodes) == bytes_of(original_nodes) && heap.units == original_units && heap.work == original_work);
+    }
+    // Valid UTF-8 source spans cannot split either multibyte code point;
+    // runtime UTF-16 can still retain an unpaired surrogate unchanged.
+    for start in [1, 3, 4, 5] {
+        g.nodes[0].span_start = start; var c = bridge::Control {}; var no: source::Value[>..] = [];
+        assert(!bridge::import_graph(heap, g, no, c) && c.error == bridge::Error.Malformed && no.len == 0);
+        assert(heap.nodes.len == original_nodes.len && heap.units == original_units && heap.work == original_work);
+    }
+    g.nodes[0].span_start = 0; g.bytes[0] = 255;
+    var invalid = bridge::Control {}; assert(!bridge::validate(g, invalid));
+    for width in [1, 256] {
+        var wide = bridge::Graph {}; wide.nodes.push(bridge::Form { tag: 3, start: 0, count: 4 }); wide.units.append([233 as u16, 55357, 56832, 55296]);
+        for i in width { wide.children.push(0); }
+        wide.nodes.push(bridge::Form { tag: 7, count: width }); wide.roots.push(1);
+        var c = bridge::Control { nodes: 2, depth: 2 }; assert(bridge::validate(wide, c));
+        var shallow = bridge::Control { depth: 1 }; assert(!bridge::validate(wide, shallow) && shallow.error == bridge::Error.Depth);
+        var nodes = bridge::Control { nodes: 1, depth: 1024 }; assert(!bridge::validate(wide, nodes) && nodes.error == bridge::Error.Nodes);
+        var text = bridge::Control { depth: 1024, bytes: bridge::footprint(wide) - 1 }; assert(!bridge::validate(wide, text) && text.error == bridge::Error.Bytes);
+    }
+    var deep = bridge::Graph {}; deep.nodes.push(bridge::Form { tag: 0 });
+    for i in 256 { deep.children.push(i); deep.nodes.push(bridge::Form { tag: 7, start: i, count: 1 }); } deep.roots.push(256);
+    var limit = bridge::Control { depth: 128 }; assert(!bridge::validate(deep, limit) && limit.error == bridge::Error.Depth);
+    var enough = bridge::Control { depth: 257 }; assert(bridge::validate(deep, enough));
+    var nodes = bridge::Control { nodes: 256, depth: 257 }; assert(!bridge::validate(deep, nodes) && nodes.error == bridge::Error.Nodes);
+    print("adversarial forms: corrupt fields/UTF8 spans preserve committed heap; width=256/depth=257/text/node budgets independent; lone surrogate legal");
+}

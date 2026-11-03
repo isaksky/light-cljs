@@ -59,7 +59,7 @@ here proves entry-body execution only. Bootstrap invariants adapt `cc764dbe`,
 
 **Parsed, exported and executed are distinct.** Per-factory inventories mark
 parsed/exported true and Goose-executed false. Export walks every function,
-including dead functions: a parsed but unsupported operation, such as a throw
+including dead functions: a parsed but unsupported operation, such as a constructor
 in an unused function, is a positioned error naming its operation and function.
 These flags describe the export stage. `macros.bb` separately executes the
 supported Pants macro images and compares structured results. The legacy scalar
@@ -973,3 +973,79 @@ and `namespace_publication.rs` single-element loop. Command-line allowances for
 those existing diagnostics permit a separate audit of the adapter; source lint
 suppressions were not added. Existing root rustfmt differences remain outside
 the changed code.
+
+## Bounded correctness manifest
+
+Run `bb crates/big-boy-pants-js/prototypes/goose/correctness.bb` from any working
+directory. It requires Babashka, Goose, Cargo/the installed V8 cache, and Node;
+a missing tool fails before execution. It runs these separate layers without
+benchmark or allocation-profile flags:
+
+- `regenerate.bb --check`: actual source capture and independent V8/Pants
+  expectations, exporter checks, then synthetic validator/VM, source-derived
+  execution, and snapshot/artifact/dependency/scheduler/effect tests. Every
+  semantic driver runs debug and native; threaded drivers use native builds in
+  both modes. Existing historical fixture attribution remains in the tests.
+- Generated source v1: eight seeds `0 1 17 42 99 255 1024 24301`, each with
+  original/alpha-renamed/single-evaluation identity variants. The scope-aware
+  generator uses distinct binding IDs, depth at most three and at most forty
+  expression nodes (closed numeric literals, addition, conditionals, lexical
+  arrow bindings and ordered observations). Twenty-one additional typed rows
+  make 45 V8/Goose comparisons per debug/native mode. These include returned
+  and thrown primitives, signed zero, NaN/infinities, empty/escaped/unescaped
+  multibyte strings and lone UTF-16 surrogates, and effects preceding errors.
+  Comparator self-checks reject missing/duplicate/reordered IDs, changed status
+  or value, reordered effects, extra stdout, and malformed protocol records.
+- `macros.bb`: serial emitted macro execution, owned expansion/provenance,
+  distinct equal occurrences, aliases, initialization and producer counts.
+- `compiler.bb`: six actual `.cljs` cases (`churn`, `closure`, `branches`,
+  `context`, `reentrant`, `catch`) compare V8, Pants and Goose at 1/2/4/8
+  execution workers, separately checking expansion data, metadata/origins/spans,
+  emitted JavaScript and application stdout after session teardown. Concurrent
+  compiler jobs also check exactly one helper producer, bounded execution
+  concurrency, saved writes without replay and correlated completion. Lifecycle
+  tests cover worker/producer errors, injected native worker abort, cancellation,
+  deadline, malformed replies and repeated sessions. The Rust form bridge is
+  additionally checked in the QuickJS build.
+
+Scheduler perturbation seeds are `17` and `42`, with at most sixteen jobs per
+shape and queue capacity one. A separate deterministic receiver hook holds
+completed source-derived producer packets and explicitly installs both diamond
+orders using seeds `0 1 17 42`; the consumer remains blocked after the first
+install and duplicate completion. Queue saturation uses refusal acknowledgments
+before draining. Sleeps supplement coverage; they are not evidence that a
+critical ordering occurred. Each dispatch verifies all owned workers joined;
+compiler cleanup verifies the process, readers, pending calls and directory are
+gone. Repeated sessions check that queues and identities do not leak.
+
+Program/snapshot/form codecs test every byte truncation of a valid fixture.
+Corrupt lengths/tags/IDs/source spans, deep values (257 levels), wide shallow
+values (256 children), independent node/depth/byte/work budgets and invalid UTF-8
+source text reject before installation, preserving committed graphs/caches.
+Source spans must end at UTF-8 boundaries; runtime UTF-16 remains a distinct
+payload. Explicit uncaught primitive throws retain their value in the terminal
+job; host/VM infrastructure faults are never converted to passing thrown rows.
+Unsupported surface tests expect explicit rejection and are not supported
+comparison rows.
+
+The watchdog bounds each generated execution to 10 seconds, each build or
+focused Rust command to 180/300 seconds, and each composite capture/compiler
+stage to 900 seconds. Individual compiler abort tests have a five-second guard;
+the host closes a native process whose worker abort leaves its input thread
+waiting. These are termination bounds, with no performance assertions. The
+entry point records descendant process handles while running and kills/waits
+for owned survivors on every exit path. On a failed comparison it retains the
+exact version/seed/source and exported inputs in the printed
+`.goose-correctness-*` directory, removing the native executable. Successful
+runs remove that directory. All generated builds stay in this worktree.
+
+The broader `--lib --features goose-macros -- --test-threads=3` check also
+encounters two existing failures on the starting `925c964f` tree: namespace
+publication reports `namespace writer needs a native engine`, and the capture
+fixture's environment `generation` is `215` rather than `1` when run after unrelated
+compiler tests. The filtered capture command above passes. QuickJS-only library
+checks retain the namespace-publication failure. Strict all-target Clippy on
+Rust 1.99.1 stops at eight existing engine deprecated-atomic, constant-chunk and
+byte-string diagnostics; root formatting still differs in unrelated files.
+These broad checks are limitations, not successful correctness layers or skipped
+comparison rows. The bounded command uses the explicit focused checks above.

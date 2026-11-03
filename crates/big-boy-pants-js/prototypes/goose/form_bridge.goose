@@ -1,6 +1,8 @@
 import std;
 import binary;
 import .source_vm;
+import .snapshot;
+import .program;
 
 namespace bridge;
 
@@ -42,12 +44,20 @@ fn validate(g: const Graph&, c: Control&) -> bool {
     var states: i64[>..] = []; var heights: i64[>..] = [];
     if !poll(c, g.nodes.len + g.children.len + g.units.len + g.sources.len + g.bytes.len + g.roots.len) { return false; }
     states.resize(g.nodes.len, 0); heights.resize(g.nodes.len, 0);
-    for s in g.sources { if !range(s.start, s.count, g.bytes.len) { return reject(c); } }
+    for s in g.sources {
+        if !range(s.start, s.count, g.bytes.len) { return reject(c); }
+        if !poll(c, s.count) { return false; }
+        if !snapshot::utf8(g.bytes[s.start..(s.start + s.count)]) { return reject(c); }
+    }
     for id in g.roots { if id < 0 || id >= g.nodes.len { return reject(c); } }
     for n in g.nodes {
         if !poll(c) { return false; }
         if n.tag < 0 || n.tag > 9 || n.metadata < -1 || n.metadata >= g.nodes.len || n.source < -1 || n.source >= g.sources.len || n.origin < -1 { return reject(c); }
         if n.source >= 0 && !range(n.span_start, n.span_end - n.span_start, g.sources[n.source].count) { return reject(c); }
+        if n.source >= 0 {
+            let s = g.sources[n.source]; let text = g.bytes[s.start..(s.start + s.count)];
+            if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c); }
+        }
         if n.tag == 1 && n.number != 0 && n.number != 1 { return reject(c); }
         if n.tag >= 3 && n.tag <= 5 && !range(n.start, n.count, g.units.len) { return reject(c); }
         if (n.tag == 4 || n.tag == 5) && (n.ns_count < -1 || n.ns_count != -1 && !range(n.ns_start, n.ns_count, g.units.len)) { return reject(c); }
