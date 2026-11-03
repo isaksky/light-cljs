@@ -827,3 +827,7 @@ fn goose_compiler_pipeline() {
         }
     }
 }
+
+#[cfg(feature = "goose-macros")]
+#[path = "benchmark.rs"]
+mod benchmark;

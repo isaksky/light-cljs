@@ -94,9 +94,22 @@ impl GooseSession {
         let base = big_boy_pants_js::frontend::goose::export_source("goose-base.js", "rt => null")
             .map_err(error)?;
         std::fs::write(directory.join("base.gsp"), base.bytes).map_err(error)?;
-        let mut child = match Command::new(executable)
-            .arg(&directory)
-            .arg(workers.to_string())
+        let mut command = Command::new(executable);
+        command.arg(&directory).arg(workers.to_string());
+        #[cfg(test)]
+        {
+            let serial = std::env::var("GOOSE_BENCH_CONTROL").is_ok_and(|v| v == "serial");
+            if cfg!(feature = "count-allocations") {
+                command.arg(if serial {
+                    "serial-instrumented"
+                } else {
+                    "instrumented"
+                });
+            } else if serial {
+                command.arg("serial");
+            }
+        }
+        let mut child = match command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -153,6 +166,12 @@ impl GooseSession {
                         }
                         "COST" | "FINISH"
                             if parts.len() == 4
+                                && parts[2..].iter().all(|s| s.parse::<u64>().is_ok()) =>
+                        {
+                            Event::Resumed
+                        }
+                        "METRIC"
+                            if matches!(parts.len(), 13 | 15)
                                 && parts[2..].iter().all(|s| s.parse::<u64>().is_ok()) =>
                         {
                             Event::Resumed
