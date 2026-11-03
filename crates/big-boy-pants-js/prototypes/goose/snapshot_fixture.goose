@@ -35,6 +35,10 @@ fn prepare(code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding
     bindings.push(snapshot::Binding { id: 2, generation: 9, value: factory(heap, closure, rt) }); heap.initializer_count += 1;
     bindings.push(snapshot::Binding { id: 3, generation: 2, value: factory(heap, left, rt) }); heap.producer_count += 1;
     bindings.push(snapshot::Binding { id: 4, generation: 3, value: factory(heap, right, rt) }); heap.producer_count += 1;
+    let definitions = source::allocate(heap, source::Node { kind: 0 });
+    assert(source::install_field(heap, heap.global, "__lightCompilerRoots", definitions));
+    assert(source::install_field(heap, definitions, "cljs.user/left-result", bindings[2].value));
+    assert(source::install_field(heap, definitions, "cljs.user/right-result", bindings[3].value));
     let cell = source::allocate(heap, source::Node { kind: 3, initialized: true, value: source::number(40) });
     bindings.push(snapshot::Binding { id: 5, generation: 1, value: source::closure(heap, setter, [cell]) });
     bindings.push(snapshot::Binding { id: 6, generation: 1, value: cell });
@@ -82,6 +86,9 @@ fn verify(heap: source::Heap&, bindings: const snapshot::Binding[:], n: i64) -> 
     assert(source::form_nth(heap, source::form_nth(heap, out, 0), 1).number == n + 4);
     // Results of producer jobs are still present after their Job owners died.
     assert(source::form_count(heap, bindings[2].value) == 2 && source::form_count(heap, bindings[3].value) == 2);
+    let definitions = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots"));
+    assert(source::get(heap, definitions, source::text(heap, "cljs.user/left-result")).a == bindings[2].value.a);
+    assert(source::get(heap, definitions, source::text(heap, "cljs.user/right-result")).a == bindings[3].value.a);
     let form = bindings[7].value; let x = source::form_nth(heap, form, 0); let y = source::form_nth(heap, form, 1);
     assert(x.a == source::form_nth(heap, form, 2).a && x.a != y.a && source::form_equal(heap, x, y));
     assert(heap.nodes[x.a].origin == 10 && heap.nodes[y.a].span_start == 4 && heap.source_bytes[..] == "one two");

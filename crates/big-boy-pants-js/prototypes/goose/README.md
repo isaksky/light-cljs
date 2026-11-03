@@ -309,7 +309,9 @@ Arbitrary object cycles use integer links and need no recursive copy. Code and
 form pools are independently owned in every restored worker. A worker receives
 one fresh session ID reserved **on the coordinator** with `reserve_identity`;
 restore relocates every private value to it, while definition IDs/generations
-and the base/checkpoint identity remain distinct. Workers never call the serial
+and the base/checkpoint identity remain distinct. Capture reserves a unique
+checkpoint ID from the same non-reusing coordinator namespace after validation.
+Workers never call the serial
 allocator. Producer claims, waiters, shared-effect authority and publication or
 import-cache authority have no fields in this schema. Restore invokes no code.
 

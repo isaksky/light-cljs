@@ -71,6 +71,10 @@ fn malformed() {
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
         assert(!snapshot::restore(original, dest, target, roots, identity, check) && check.error == snapshot::Error.Identity && target.identity == 0 && !dest.valid);
     }
+    let before_nodes = heap.nodes.len; let before_work = heap.work; let before_identity = heap.identity;
+    var occupied = snapshot::Control {};
+    assert(!snapshot::restore(original, code, heap, bindings, source::reserve_identity(), occupied) && occupied.error == snapshot::Error.Destination);
+    assert(heap.nodes.len == before_nodes && heap.work == before_work && heap.identity == before_identity && code.valid);
     print("snapshot malformed version/length/link/generation/allocator/code and atomic budget rejection passed");
 }
 fn live_boundary() {
@@ -99,6 +103,7 @@ fn live_boundary() {
     assert(done.error == snapshot::Error.None && saved.nodes.len == heap.nodes.len);
     assert(source::valid(heap, result));
     var abandoned = source::Job { heap: heap }; assert(source::start(abandoned, entry, [])); assert(source::retire(abandoned) && heap.live_jobs == 0 && abandoned.status == tiny::Status.Failed);
+    assert(!source::start(abandoned, entry, []) && heap.live_jobs == 0);
     // The serial authority fails before wrapping; restored snapshots never
     // carry or alter it. Keep this last in the process.
     source::next_identity = 2147483647;

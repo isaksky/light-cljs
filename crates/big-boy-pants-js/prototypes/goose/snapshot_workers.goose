@@ -69,7 +69,7 @@ fn main() {
     qlimit<Report>(2);
     // Parent diverges after capture. All workers still see the old cell=40.
     parent.nodes[roots[5].value.a].value = source::number(900);
-    var copied: i64 = c.copied_bytes; var restore_ns: i64 = 0; var max_nodes: i64 = 0;
+    var copied: i64 = c.copied_bytes; var restore_ns: i64 = 0; var max_nodes: i64 = 0; var max_private: i64 = 0; var max_work: i64 = 0;
     for batch in 16 {
         assert(snapshot::reserve(resources, reserved)); let first = thread_spawn_contained(worker, copy(saved), Request { id: batch * 2 + 1, identity: source::reserve_identity() });
         assert(snapshot::reserve(resources, reserved)); let second = thread_spawn_contained(worker, copy(saved), Request { id: batch * 2 + 2, identity: source::reserve_identity(), exhaust: batch == 15 });
@@ -87,6 +87,7 @@ fn main() {
             if batch == 15 && report.id == 32 { assert(report.fault == source::Fault.MemoryLimit); }
             else { assert(report.fault == source::Fault.None && report.checksum == report.id + 4); }
             copied += report.copied; restore_ns += report.restore_ns; max_nodes = max(max_nodes, report.nodes);
+            max_private = max(max_private, report.heap_bytes); max_work = max(max_work, report.work);
         }
         assert(seen == 3 && resources.active == 0 && resources.retained == 0 && reason.len == 0);
         assert(parent.nodes[roots[5].value.a].value.number == 900 && parent.boot_count == 1 && parent.producer_count == 2);
@@ -97,4 +98,5 @@ fn main() {
     let extra, pending = qpoll<Report>(); assert(!pending && extra.id == 0);
     print("native snapshot workers: 32 jobs, 2 workers, parent/sibling/capture/cycle/form isolation, exhaustion and release passed");
     print("snapshot-bytes=", c.snapshot_bytes, " snapshot-copy-bytes=", copied, " capture-ns=", c.capture_ns, " restore-ns=", restore_ns, " private-reservation-peak=", resources.peak, " max-nodes=", max_nodes, " retained=", resources.retained);
+    print("max-private-component-bytes=", max_private, " validator-scratch-bytes=", c.validation_peak, " max-work=", max_work);
 }

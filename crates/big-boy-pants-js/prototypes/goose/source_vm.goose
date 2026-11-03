@@ -288,6 +288,7 @@ fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -
     return true;
 }
 fn start(job: Job&, callee: Value, arguments: const Value[:], receiver: Value = Value {}) -> bool {
+    if job.registered || job.status != tiny::Status.Ready { return false; }
     assert(job.frames.len == 0 && job.locals.len == 0 && job.operands.len == 0 && job.steps == 0);
     if !enter(job, callee, receiver, arguments) { job.fault = job.heap.fault; job.heap.fault = Fault.None; job.status = tiny::Status.Failed; return false; }
     job.heap.live_jobs += 1; job.registered = true; return true;
