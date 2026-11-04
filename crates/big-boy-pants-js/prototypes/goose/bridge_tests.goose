@@ -247,6 +247,14 @@ fn assembly() {
             assert(heap.values.len == values && heap.nodes.len == nodes);
             heap.fault = source::Fault.None; heap.limits = source::Limits {};
         }
+        let before = heap.work; source::form_concat(heap, [left, right]); let required = heap.work - before;
+        for cut in required {
+            let values = heap.values.len; let nodes = heap.nodes.len;
+            heap.limits.work = heap.work + cut;
+            source::form_concat(heap, [left, right]);
+            assert(heap.fault == source::Fault.WorkLimit && heap.values.len == values && heap.nodes.len == nodes);
+            heap.fault = source::Fault.None; heap.limits = source::Limits {};
+        }
         source::form_concat(heap, [map]); assert(heap.fault == source::Fault.UnsupportedOperand);
     }
     // Occurrence metadata/provenance/aliases remain usable after heap teardown.

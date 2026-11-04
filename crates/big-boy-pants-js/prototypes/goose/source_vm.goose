@@ -279,10 +279,12 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
     if object.tag != 5 || k.tag != 4 || heap.nodes[object.a].kind >= 2 { heap.fault = if object.tag == 5 { Fault.UnsupportedOperand } else { Fault.TypeError }; return false; }
     if key_is(heap, k, "__proto__") { heap.fault = Fault.UnsupportedOperand; return false; }
     if heap.nodes[object.a].kind == 1 && key_is(heap, k, "length") { return array_length(heap, object, value); }
+    var array_index: i64 = -1;
     if heap.nodes[object.a].kind == 1 {
-        let i = index(heap, k);
-        if i < 0 { heap.fault = Fault.UnsupportedOperand; return false; }
-        if i >= heap.limits.values { return memory(heap); }
+        array_index = index(heap, k);
+        if heap.fault != Fault.None { return false; }
+        if array_index < 0 { heap.fault = Fault.UnsupportedOperand; return false; }
+        if array_index >= heap.limits.values { return memory(heap); }
     }
     var id = heap.nodes[object.a].head;
     while id >= 0 {
@@ -293,7 +295,7 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
     if heap.properties.len >= heap.limits.properties { return memory(heap); }
     let previous = heap.nodes[object.a].head; let next = heap.properties.len;
     heap.properties.push(Property { key: k, value: value, next: previous }); heap.nodes[object.a].head = next;
-    if heap.nodes[object.a].kind == 1 { let i = index(heap, k); if i >= heap.nodes[object.a].length { heap.nodes[object.a].length = i + 1; } }
+    if array_index >= heap.nodes[object.a].length { heap.nodes[object.a].length = array_index + 1; }
     return heap.fault == Fault.None;
 }
 // Bounded numeric length writes only. Removed property records remain charged
@@ -307,8 +309,9 @@ fn array_length(heap: Heap&, object: Value, value: Value) -> bool {
         var id = heap.nodes[object.a].head;
         while id >= 0 {
             if !charge(heap, 2 + heap.properties[id].key.b) { return false; }
-            index(heap, heap.properties[id].key);
+            let i = index(heap, heap.properties[id].key);
             if heap.fault != Fault.None { return false; }
+            if i < 0 { heap.fault = Fault.UnsupportedOperand; return false; }
             id = heap.properties[id].next;
         }
         var previous: i64 = -1; id = heap.nodes[object.a].head;

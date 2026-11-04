@@ -185,6 +185,18 @@ fn array_lengths() {
     assert(source::put(heap, array, length, source::number(0)));
     assert(!source::put(heap, array, source::key(heap, source::number(0)), source::number(1)) && heap.fault == source::Fault.MemoryLimit);
     assert(heap.properties.len == retained && heap.nodes[array.a].length == 0);
+    // Exercise every work boundary through the two-pass property unlink,
+    // including its final charge, against exactly the same array contents.
+    for cut in 40 {
+        var h = source::Heap { code: code }; assert(source::initialize(h));
+        let a = source::allocate(h, source::Node { kind: 1 }); let k = source::text(h, "length");
+        for i in 4 { assert(source::put(h, a, source::key(h, source::number(i)), source::number(i))); }
+        let nodes = copy(h.nodes); let properties = copy(h.properties);
+        h.limits.work = h.work + cut;
+        let ok = source::put(h, a, k, source::number(2));
+        if !ok { assert(h.fault == source::Fault.WorkLimit && to_bytes(h.nodes) == to_bytes(nodes) && to_bytes(h.properties) == to_bytes(properties)); }
+        else { assert(h.nodes[a.a].length == 2); }
+    }
     print("temporary arrays: shorter/zero/extension/deleted holes, numeric bounds, atomic work and retained-property rejection passed");
 }
 fn argument_limits(bytes: const u8[:]) {
