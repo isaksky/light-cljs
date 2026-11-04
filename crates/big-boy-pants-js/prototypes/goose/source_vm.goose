@@ -330,6 +330,18 @@ fn retire(job: Job&) -> bool {
     if job.status == tiny::Status.Ready { job.status = tiny::Status.Failed; job.fault = Fault.InvalidState; }
     return true;
 }
+// Only a retired, unclaimed job can release its logical tables. Values are
+// integer handles, so no Goose references into these arrays escape the job.
+// Data-stack pages remain available for the next dispatch until thread exit.
+fn reset(job: Job&) -> bool {
+    if job.claimed || job.registered || job.heap.live_jobs != 0 { return false; }
+    job.frames.clear(); job.locals.clear(); job.operands.clear(); job.writes.clear(); job.handlers.clear();
+    job.status = tiny::Status.Ready; job.result = Value {}; job.fault = Fault.None; job.fault_pc = -1; job.fault_function = -1; job.thrown = false;
+    job.steps = 0; job.effects_enabled = false; job.helpers_enabled = false; job.effect_pending = false; job.effect_kind = -1;
+    job.protected_nodes = 0; job.root_receiver = Value {}; job.effect_args = [Value {}; 8]; job.effect_count = 0;
+    job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value {}, receiver: Value {} };
+    return true;
+}
 fn record(job: Job&, object: Value, k: Value, value: Value) {
     if job.writes.len >= job.heap.limits.properties { memory(job.heap); return; }
     job.writes.push(Write { object: object, key: k, value: value });

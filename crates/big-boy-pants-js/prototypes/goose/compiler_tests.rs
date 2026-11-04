@@ -38,6 +38,44 @@ fn cleaned(s: &GooseSession) {
     assert!(s.pending.lock().unwrap().is_empty());
     assert!(!s.directory.exists());
 }
+pub(super) fn assert_pool(trace: &[String], workers: usize, chunks: u64) {
+    let pools = trace
+        .iter()
+        .filter(|s| s.starts_with("POOL "))
+        .map(|s| {
+            s.split_whitespace()
+                .skip(2)
+                .map(|n| n.parse::<u64>().unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pools.len(),
+        workers,
+        "one private storage owner per execution worker: {trace:?}"
+    );
+    assert_eq!(pools.iter().map(|p| p[1]).sum::<u64>(), chunks);
+    assert!(pools.iter().all(|p| p[1] == p[2]), "every dispatch reset");
+    assert!(
+        pools.iter().map(|p| p[5]).sum::<u64>() > 0,
+        "reused table addresses"
+    );
+    assert!(pools.iter().all(|p| p[6] > 0 && p[3] <= 536_870_912));
+    assert!(pools.iter().all(|p| p[3] == p[8..12].iter().sum::<u64>()));
+    assert!(
+        pools.iter().all(|p| p[4] <= 27 * 4),
+        "finite high water despite repeated jobs"
+    );
+    assert_eq!(
+        trace.iter().find(|s| s.starts_with("THREADS ")).unwrap(),
+        &format!(
+            "THREADS 0 {} {} {}",
+            workers * 2 + 2,
+            workers * 2 + 2,
+            workers * 2 + 1
+        )
+    );
+}
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_preparation_identity_and_private_calls() {
@@ -45,7 +83,8 @@ fn goose_compiler_preparation_identity_and_private_calls() {
     for workers in [1, 2, 4, 8] {
         // Identical compiler identity in a new session must prepare afresh.
         for _ in 0..2 {
-            let session = GooseSession::start(&runner(), workers).unwrap();
+            let session =
+                GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
             thread::scope(|scope| {
                 let handles = (0..8)
                     .map(|_| {
@@ -91,6 +130,7 @@ fn goose_compiler_preparation_identity_and_private_calls() {
                     .contains("identity/source conflict")
             );
             cleaned(&session);
+            assert_pool(&session.trace(), workers, 17);
         }
     }
 }
@@ -503,6 +543,8 @@ fn goose_compiler_injected_worker_abort_cleans_entire_session() {
     // distinct from a user-program TypeError. No fake protocol process here.
     for workers in [1, 2, 4, 8] {
         let session = GooseSession::start(&runner(), workers).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let (function, args, _) = inputs(&e, "rt => (form, env) => 42");
         session
             .export(
                 &session.directory.join("definition-2.gsp"),
@@ -523,19 +565,11 @@ fn goose_compiler_injected_worker_abort_cleans_entire_session() {
         loop {
             match rx.recv_timeout(Duration::from_millis(2)) {
                 Ok(Event::Failure(message)) => {
-                    assert!(message.contains("exited"), "{message}");
+                    assert!(message.contains("worker-abort"), "{message}");
                     break;
                 }
                 Ok(Event::Start | Event::Resumed) => {}
-                // The runtime may leave its input thread blocked after a
-                // worker abort. The host's deadline retires the whole process;
-                // it must never be reported as a thrown-program outcome.
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if String::from_utf8_lossy(&session.stderr.lock().unwrap())
-                        .contains("assert failed")
-                    {
-                        break;
-                    }
                     assert!(
                         Instant::now() < until,
                         "native worker did not report the injected abort"
@@ -544,14 +578,35 @@ fn goose_compiler_injected_worker_abort_cleans_entire_session() {
                 other => panic!("native abort must be an infrastructure failure: {other:?}"),
             }
         }
+        assert!(
+            e.call(function, &args)
+                .unwrap_err()
+                .0
+                .contains("worker-abort")
+        );
         session.close();
         cleaned(&session);
-        let stderr = session.stderr.lock().unwrap();
-        let stderr = String::from_utf8_lossy(&stderr);
         assert!(
-            stderr.contains("assert failed"),
-            "worker abort was not injected: {stderr}"
+            session
+                .trace()
+                .iter()
+                .any(|s| s.contains("worker-abort") && s.contains("assert failed")),
+            "contained worker diagnostic must reach the owning request: {:?}",
+            session.trace()
         );
+        assert!(session.trace().iter().any(|s| s == "CLOSED 1"));
+        let fresh = GooseSession::start(&runner(), workers).unwrap();
+        let e = GooseEvaluator::new(fresh.clone(), &Default::default()).unwrap();
+        let (function, args, call) = inputs(&e, "rt => (form, env) => 42");
+        let result = e.call(function, &args).unwrap();
+        assert!(
+            e.export_form(result, &call, origin(&call), Default::default())
+                .unwrap()
+                .data()
+                .value_eq(&Datum::new(DatumKind::Integer(42)))
+        );
+        fresh.close();
+        cleaned(&fresh);
     }
 }
 
@@ -661,9 +716,15 @@ fn goose_compiler_drains_ready_batches_without_progress_backoff() {
         let threads = trace.iter().find(|s| s.starts_with("THREADS ")).unwrap();
         assert_eq!(
             threads,
-            &format!("THREADS 0 19 {} 18", workers + 2),
-            "coordinator + input + 17 execution chunks; all spawned threads joined"
+            &format!(
+                "THREADS 0 {} {} {}",
+                workers * 2 + 2,
+                workers * 2 + 2,
+                workers * 2 + 1
+            ),
+            "coordinator + input + configured execution workers and join-only supervisors"
         );
+        assert_pool(&trace, workers, 17);
     }
 }
 
@@ -783,8 +844,8 @@ fn goose_compiler_readiness_delayed_helper_and_idle_close_cancel() {
 
 #[test]
 #[ignore = "build native runner with compiler.bb"]
-fn goose_compiler_waiter_limit_rejects_without_native_abort() {
-    let session = GooseSession::start(&runner(), 1).unwrap();
+fn goose_compiler_reclaims_inactive_waiters_between_batches() {
+    let session = GooseSession::start_mode(&runner(), 1, Some("readiness-test")).unwrap();
     let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
     let (function, args, _) = inputs(
         &e,
@@ -793,19 +854,166 @@ fn goose_compiler_waiter_limit_rejects_without_native_abort() {
     e.register_compiler_root("fixture/value", Some(41), true, "fixture.cljs", None)
         .unwrap();
     e.install_helper(Rc::new(|_, _| Ok("rt => 41".into())));
-    for _ in 0..128 {
-        e.call(function, &args).unwrap();
+    for _ in 0..256 {
+        let result = e.call(function, &args).unwrap();
+        assert!(
+            e.export_form(result, &form(), origin(&form()), Default::default())
+                .unwrap()
+                .data()
+                .value_eq(&Datum::new(DatumKind::Integer(41)))
+        );
+        e.release(result).unwrap();
     }
-    assert!(
-        e.call(function, &args)
-            .unwrap_err()
-            .0
-            .contains("waiter-budget")
-    );
+    session.close();
     cleaned(&session);
+    assert_pool(&session.trace(), 1, 513);
     assert!(
         session.trace().iter().any(|s| s == "CLOSED 1"),
         "bounded failure closes natively"
     );
     assert!(!String::from_utf8_lossy(&session.stderr.lock().unwrap()).contains("assert failed"));
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_active_waiter_limit_stays_bounded() {
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+    let (_, args, _) = inputs(&e, "rt => (form, env) => 0");
+    let values = args
+        .iter()
+        .map(|&id| e.get(id).unwrap())
+        .collect::<Vec<_>>();
+    let limits = ConversionLimits::default();
+    let budget = bridge::Budget::new(limits.nodes, e.control.clone());
+    let bytes = bridge::Graph::arguments(&values, limits, &budget)
+        .unwrap()
+        .encode()
+        .unwrap();
+    session.export(&session.directory.join("definition-1.gsp"), "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')").unwrap();
+    let mut replies = Vec::new();
+    for id in 1..=129 {
+        std::fs::write(session.directory.join(format!("{id}.definition")), "1").unwrap();
+        std::fs::write(session.directory.join(format!("{id}.gfb")), &bytes).unwrap();
+        let (tx, rx) = mpsc::channel();
+        session.pending.lock().unwrap().insert(id, tx);
+        replies.push(rx);
+    }
+    {
+        let mut process = session.process.lock().unwrap();
+        let input = &mut process.as_mut().unwrap().input;
+        for id in 1..=129 {
+            writeln!(input, "{id}").unwrap();
+        }
+        input.flush().unwrap();
+    }
+    for (index, rx) in replies.into_iter().enumerate() {
+        loop {
+            match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                Event::Start | Event::Resumed => {}
+                Event::Need(_, _) if index < 128 => break,
+                Event::Failure(message) if index == 128 => {
+                    assert!(message.contains("waiter-budget"), "{message}");
+                    break;
+                }
+                other => panic!("unexpected admission outcome for {}: {other:?}", index + 1),
+            }
+        }
+    }
+    session.close();
+    cleaned(&session);
+    assert!(session.trace().iter().any(|s| s == "CLOSED 1"));
+    assert!(!String::from_utf8_lossy(&session.stderr.lock().unwrap()).contains("assert failed"));
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_pool_alternates_payloads_and_keeps_owned_forms() {
+    use crate::parser::CollectionKind;
+    let mut retained = Vec::new();
+    for workers in [1, 2, 4, 8] {
+        let session = GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let (_, args, call) = inputs(&e, "rt => (form, env) => 0");
+        let functions = [0, 100].map(|base| e.source_macro_function(777 + base,
+            &format!("rt => {{ let state = {{n: {base}}}; return (form, env, x) => {{ state.n = state.n + 1; return __rt.formVector(x, state.n); }}; }}")).unwrap());
+        for iteration in 0..24 {
+            let size = [1, 32, 256, 1][iteration % 4];
+            let input = Datum::new(DatumKind::Collection {
+                kind: CollectionKind::Vector,
+                children: (0..size)
+                    .map(|n| Datum::new(DatumKind::Integer(n)))
+                    .collect(),
+            });
+            let payload = e.import_data(&input, Default::default()).unwrap();
+            let result = e
+                .call(functions[iteration % 2], &[args[0], args[1], payload])
+                .unwrap();
+            let output = e
+                .export_form(result, &call, origin(&call), Default::default())
+                .unwrap();
+            let expected = Datum::new(DatumKind::Collection {
+                kind: CollectionKind::Vector,
+                children: vec![
+                    input,
+                    Datum::new(DatumKind::Integer(if iteration % 2 == 0 { 1 } else { 101 })),
+                ]
+                .into(),
+            });
+            assert!(output.data().value_eq(&expected));
+            retained.push((output, expected));
+            e.release(payload).unwrap();
+            e.release(result).unwrap();
+        }
+        session.close();
+        cleaned(&session);
+        assert_eq!(session.stats().preparations, 2);
+        assert_pool(&session.trace(), workers, 24);
+    }
+    for (output, expected) in retained {
+        assert!(
+            output.data().value_eq(&expected),
+            "form remains owned after worker reuse and teardown"
+        );
+        assert_eq!(output.span().source().name(), "retained.cljs");
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cancel_reaps_persistent_execution_workers() {
+    for workers in [1, 2, 4, 8] {
+        let session = GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let (function, args, _) = inputs(&e, "rt => (form, env) => { while (true) {} }");
+        let s = session.clone();
+        let control = e.control();
+        let cancelling = thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(10);
+            while !s.trace().iter().any(|s| s.starts_with("START ")) {
+                assert!(Instant::now() < until, "job was never admitted");
+                thread::yield_now();
+            }
+            control.cancel();
+            s.close();
+        });
+        assert!(e.call(function, &args).is_err());
+        cancelling.join().unwrap();
+        cleaned(&session);
+        let trace = session.trace();
+        assert!(trace.iter().any(|s| s.contains("cancelled")), "{trace:?}");
+        assert!(
+            trace.iter().any(|s| s == "CLOSED 1"),
+            "native shutdown joined the pool: {trace:?}"
+        );
+        assert_eq!(
+            trace.iter().find(|s| s.starts_with("THREADS ")).unwrap(),
+            &format!(
+                "THREADS 0 {} {} {}",
+                workers * 2 + 2,
+                workers * 2 + 2,
+                workers * 2 + 1
+            )
+        );
+    }
 }

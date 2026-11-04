@@ -215,6 +215,19 @@ fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&, c
         nodes: s.nodes, values: s.values, properties: s.properties, units: s.units, constants: s.constants, bytes: s.bytes, sources: s.sources, bindings: s.bindings };
 }
 fn relocated(v: source::Value, identity: i64) -> source::Value { var out = v; if out.tag >= 4 { out.session = identity; } return out; }
+// Reset only after the dispatch's job has retired. This reestablishes every
+// restore destination invariant; restore still validates the entire image and
+// requires a fresh identity. No references/roots may cross this boundary.
+fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> bool {
+    if !(heap.code .== code) || heap.live_jobs != 0 { return false; }
+    bindings.clear();
+    heap.nodes.clear(); heap.values.clear(); heap.properties.clear(); heap.units.clear(); heap.constants.clear(); heap.source_bytes.clear(); heap.source_ranges.clear();
+    code.source_bytes.clear(); code.functions.clear(); code.constants.clear(); code.children.clear(); code.ops.clear(); code.units.clear();
+    code.valid = false; code.error = tiny::LoadError.None; code.error_pc = -1;
+    heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value {};
+    heap.boot_count = 0; heap.initializer_count = 0; heap.producer_count = 0;
+    return true;
+}
 fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&, identity: i64, c: Control&) -> bool {
     let started = clock_ns(); defer { c.restore_ns += clock_ns() - started; }
     if !(heap.code .== code) || heap.identity != 0 || heap.live_jobs != 0 || heap.nodes.len != 0 || heap.values.len != 0 || heap.properties.len != 0 || heap.units.len != 0 || heap.constants.len != 0 || heap.source_bytes.len != 0 || heap.source_ranges.len != 0 || code.valid || code.source_bytes.len != 0 || code.functions.len != 0 || code.constants.len != 0 || code.children.len != 0 || code.ops.len != 0 || code.units.len != 0 || bindings.len != 0 { return reject(c, Error.Destination); }

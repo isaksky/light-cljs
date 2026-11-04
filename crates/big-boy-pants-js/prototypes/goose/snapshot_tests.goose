@@ -137,7 +137,34 @@ fn stale_classification() {
     assert(source::valid(fresh, replacement) && source::install_field(fresh, replacement, "writable", source::number(2)));
     print("snapshot reset: stale object/string/definition handles cannot authorize replacements or inherit immutability");
 }
-fn main() { source_spans(); isolation(); malformed(); stale_classification(); live_boundary(); }
+fn reused_destination() {
+    var parent_code = source::Code {}; var parent = source::Heap { code: parent_code }; var original: snapshot::Binding[>..] = []; snapshot_test::prepare(parent_code, parent, original);
+    var capture = snapshot::Control {}; let saved = snapshot::capture(parent, original, capture); assert(capture.error == snapshot::Error.None);
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var job = source::Job { heap: heap };
+    var stale = source::Value {};
+    for n in [3, 20, 1, 50, 3, 20] {
+        var restore = snapshot::Control {}; assert(snapshot::restore(saved, code, heap, roots, source::reserve_identity(), restore));
+        if stale.tag != 0 { assert(!source::valid(heap, stale) && heap.fault == source::Fault.StaleID); heap.fault = source::Fault.None; }
+        stale = heap.global;
+        assert(source::start(job, roots[0].value, [source::nil(), source::nil(), source::number(n)]));
+        assert(!source::reset(job) && !snapshot::reset(code, heap, roots));
+        assert(source::claim(job) && !source::reset(job));
+        assert(source::run_claimed(job, -1) == tiny::Outcome.Complete && !job.claimed);
+        assert(!source::reset(job) && !snapshot::reset(code, heap, roots));
+        assert(source::retire(job) && source::reset(job));
+        assert(job.frames.len == 0 && job.locals.len == 0 && job.operands.len == 0 && job.writes.len == 0 && job.handlers.len == 0);
+        assert(job.result.tag == 0 && job.steps == 0 && job.status == tiny::Status.Ready && !job.registered && !job.effect_pending && job.effect_count == 0);
+        assert(snapshot::reset(code, heap, roots));
+        assert(heap.identity == 0 && heap.global.tag == 0 && heap.live_jobs == 0 && heap.nodes.len == 0 && heap.work == 0 && roots.len == 0 && !code.valid && code.ops.len == 0);
+        var wrong = snapshot::Control {}; assert(!snapshot::restore(saved, code, heap, roots, saved.header.base, wrong) && wrong.error == snapshot::Error.Identity && heap.identity == 0);
+    }
+    var corrupt = copy(saved); corrupt.nodes[0].kind = 999; var invalid = snapshot::Control {};
+    assert(!snapshot::restore(corrupt, code, heap, roots, source::reserve_identity(), invalid) && heap.identity == 0 && roots.len == 0 && !code.valid);
+    var restored = snapshot::Control {}; assert(snapshot::restore(saved, code, heap, roots, source::reserve_identity(), restored));
+    snapshot_test::verify(heap, roots, 7);
+    print("reused code/heap/job destination: live/claimed/terminal guards, fresh IDs, alternating payloads, complete reset and transactional validation passed");
+}
+fn main() { source_spans(); isolation(); malformed(); stale_classification(); reused_destination(); live_boundary(); }
 
 fn source_spans() {
     var code = source::Code {}; snapshot_test::append(code, embed_file("corpus/serial/calls.gsp"));

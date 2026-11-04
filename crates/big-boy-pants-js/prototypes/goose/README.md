@@ -28,6 +28,55 @@ persistent-form requirements through QuickJS/Pants and explain the indexed
 storage choices. The smoke command includes `layout_probe.goose`, a bounded
 layout/lifetime probe; it does not execute macros or measure performance.
 
+## Persistent live compiler workers
+
+The live `compiler_session.goose` now starts exactly the configured 1/2/4/8
+execution workers once. Each has a join-only supervisor to detect contained
+aborts without polling: total native threads are `2 + 2 * workers`, including
+coordinator and input. Every idle execution worker consumes the same bounded
+eight-entry `Work` queue. Ready continuations/helpers have admission priority;
+new jobs fill remaining slots. A suspension publishes a flat owned continuation
+and releases the slot, so nested helper production/reentry progresses at one
+worker without replaying the suspended body's mutations.
+
+Each worker owns one Code, Heap, Job, bridge graph, bindings, arguments and byte
+scratch for its lifetime. After all references into the dispatch have died,
+retirement and explicit reset clear logical tables, faults, claims, effects,
+handlers, roots and counters. Snapshot restore still requires an empty invalid
+destination, validates the full image and relocates every handle to a fresh
+coordinator-issued identity. No mutable heap or root crosses a thread boundary.
+Inactive waiter records and their retained-byte charges are reclaimed after
+dispatch; the ceiling remains 128 **active** continuations.
+
+Retention is session scoped: Goose v2026.3-267/runtime 3025e5810379 rewinds array
+tops on clear and retains the data-stack mappings/pages until explicit trimming
+or thread teardown. This path retains each table's high water and joins every
+worker at close; it does not trim every job. Existing VM node/value/property/
+string/work/step/stack budgets, 64 MiB snapshot and coordinator retained-state
+budgets, 16 MiB bridge budget, 128 active waiters and 1024 queued requests/cached
+definitions bound live and retained data. Table maxima can occur in different
+jobs; their sum, page rounding and transient validation/transport copies mean
+logical high-water bytes are not RSS or a strict process-memory ceiling.
+
+`POOL` diagnostics record worker ID, dispatches, resets, sum of table byte
+maxima, growths of those maxima, reused nonempty table addresses, reserved
+indexed data-stack regions, reset nanoseconds, and code/heap/continuation/scratch
+byte maxima separately. Read-only native address/region observations verify
+actual reuse with the installed runtime; growths are not malloc counts. Queued
+snapshot/continuation copies, relocation and transactional bridge-export scratch
+remain. Clean timing builds omit these address/capacity observations.
+
+A contained worker abort poisons the whole session: its supervisor joins it,
+reports an owned diagnostic, and the coordinator stops admission, cancels
+survivors between bounded VM slices, sends stop messages and joins supervisors.
+No failed worker is replaced and no effectful job is replayed. Normal close and
+cancellation also stop/join the pool; the Rust process watchdog remains the
+backstop for failures outside Goose's containment contract.
+
+See [expanded results](expanded-results.md) for exact predecessor comparisons
+and the unchanged actual compiler fixture. The older results below describe
+the earlier per-chunk execution implementation.
+
 ## Intent retrospective and demonstration (2026-11-03)
 
 The [original conversation](codex://threads/01a19f3b-37e9-79e3-8799-4751884be0f0)

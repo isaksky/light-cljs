@@ -212,6 +212,7 @@
         (doseq [cell (active-cells c)] (invoke c cell)))
       (doseq [round (range rounds) cell (if (even? round) (active-cells c) (reverse (active-cells c)))]
         (println "Run" (:id c) (inc round) (:engine cell) (:control cell) (:workers cell)) (flush)
+        (when (= mode "--measure") (spit (str samples) (str (pr-str (assoc (quiet!) :kind :quiet :case (:id c) :round (inc round) :cell cell)) "\n") :append true))
         (let [sample (assoc (invoke c cell) :kind :sample :round (inc round))]
           (spit (str samples) (str (pr-str sample) "\n") :append true))))
     (when (= mode "--measure") (command env "gzip" "-n" (str samples)))

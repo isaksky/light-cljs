@@ -46,6 +46,7 @@ static void goose_bench_queue(gs_i64 now, gs_i64 queued, gs_i64 running,
       (replace-required "let tracing = instrumented || deterministic || (arguments.len == 4 && arguments[3] == \"readiness-test\");" "let tracing = true;")
       (replace-required "assert(outcome != tiny::Outcome.Failed);" "if outcome == tiny::Outcome.Failed { print(\"ERROR \", id, \" serial-\", job.fault, \" work=\", heap.work, \" nodes=\", heap.nodes.len, \" values=\", heap.values.len, \" steps=\", job.steps); flush_stdout(); } assert(outcome != tiny::Outcome.Failed);")
       (replace-required "let worker_started = clock_ns();" "let worker_started = clock_ns(); defer { interval(id, checkpoint, mode, 0, worker_started, clock_ns()); }")
+      (replace-required "reset_ns += clock_ns() - resetting;" "reset_ns += clock_ns() - resetting; interval(work.id, work.checkpoint, work.mode, 4, resetting, clock_ns());")
       (replace-required "assert(snapshot::restore(saved.heap, code, heap, bindings, identity, sc)); let rt = bindings[0].value;" "assert(snapshot::restore(saved.heap, code, heap, bindings, identity, sc)); interval(id, checkpoint, mode, 2, worker_started, clock_ns()); let rt = bindings[0].value;")
       (replace-required "let state = save(job, rt, call, control," "interval(id, checkpoint, mode, 1, execution_started, clock_ns()); let saving = clock_ns(); let state = save(job, rt, call, control,")
       (replace-required "state.storage = saved.storage;" "state.storage = saved.storage; interval(id, checkpoint, mode, 3, saving, clock_ns());")

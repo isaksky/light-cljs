@@ -12,3 +12,10 @@ goose_measure_observe(r_u8 bytes, gs_i64 count) {
     __asm__ __volatile__("" : : "r"(bytes), "r"(count) : "memory");
     return count + bytes[count - 1];
 }
+
+/* Read-only, compiler-specific diagnostics for the separate storage run.
+   Neither function changes allocator metadata or accesses discarded elements. */
+static gs_i64 goose_measure_address(r_u8 bytes) {
+    return (gs_i64)(uintptr_t)bytes;
+}
+static gs_i64 goose_measure_regions(void) { return (gs_i64)gs_nstks; }

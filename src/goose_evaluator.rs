@@ -62,7 +62,7 @@ pub struct GooseSession {
     costs: Arc<Mutex<[u64; 5]>>,
     definitions: Mutex<HashMap<DefinitionKey, (u64, String)>>,
     stderr: Arc<Mutex<Vec<u8>>>,
-    terminal: Mutex<Option<EvalError>>,
+    terminal: Arc<Mutex<Option<EvalError>>>,
     claimed: AtomicBool,
     compiling: AtomicBool,
 }
@@ -148,6 +148,8 @@ impl GooseSession {
         let measured = costs.clone();
         let preparations = Arc::new(AtomicU64::new(0));
         let prepared = preparations.clone();
+        let terminal = Arc::new(Mutex::new(None));
+        let failures = terminal.clone();
         let reader = thread::spawn(move || {
             let mut output = BufReader::new(output);
             let mut line = String::new();
@@ -178,12 +180,13 @@ impl GooseSession {
                         "PREPARED" if parts.len() == 3 && parts[2].parse::<u64>().is_ok() => {
                             Event::Resumed
                         }
-                        "SCHED" | "THREADS" | "PARK"
+                        "SCHED" | "THREADS" | "PARK" | "POOL"
                             if id == 0
                                 && parts.len()
                                     == (match kind {
                                         "SCHED" => 13,
                                         "THREADS" => 5,
+                                        "POOL" => 14,
                                         _ => 3,
                                     })
                                 && parts[2..].iter().all(|s| s.parse::<u64>().is_ok()) =>
@@ -241,13 +244,26 @@ impl GooseSession {
                         }
                         drop(costs);
                         let mut trace = traces.lock().unwrap();
+                        if trace.len() == 4096
+                            && matches!(parts[0], "POOL" | "THREADS" | "CLOSED" | "FAULT")
+                        {
+                            trace.remove(0);
+                        }
                         if trace.len() < 4096 {
                             trace.push(line.trim().to_owned());
                         }
                         let boxes = mailboxes.lock().unwrap();
-                        if let Some(tx) = boxes.get(&id) {
+                        if parts[0] == "FAULT" && id == 0 {
+                            *failures.lock().unwrap() = Some(error(line.trim()));
+                            for tx in boxes.values() {
+                                let _ = tx.send(Event::Failure(line.trim().to_owned()));
+                            }
+                        } else if let Some(tx) = boxes.get(&id) {
                             let _ = tx.send(event);
-                        } else if !matches!(parts[0], "CLOSED" | "SCHED" | "THREADS" | "PARK") {
+                        } else if !matches!(
+                            parts[0],
+                            "CLOSED" | "SCHED" | "THREADS" | "PARK" | "POOL"
+                        ) {
                             for tx in boxes.values() {
                                 let _ =
                                     tx.send(Event::Failure("uncorrelated subprocess reply".into()));
@@ -302,7 +318,7 @@ impl GooseSession {
             costs,
             definitions: Mutex::new(HashMap::new()),
             stderr: errors,
-            terminal: Mutex::new(None),
+            terminal,
             claimed: AtomicBool::new(false),
             compiling: AtomicBool::new(false),
         });
@@ -811,7 +827,8 @@ mod tests {
     #[ignore = "build native runner with compiler.bb"]
     fn goose_compiler_concurrent_helper_once() {
         for workers in [1, 2, 4, 8] {
-            let session = GooseSession::start(&runner(), workers).unwrap();
+            let session =
+                GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
             let root = session.directory.join("sources");
             std::fs::create_dir(&root).unwrap();
             std::fs::write(root.join("macros.cljs"),"(ns macros) (def shared [11 22]) (defmacro work [n] (loop [i 0] (if (= i n) (list 'quote shared) (recur (+ i 1)))))").unwrap();
@@ -913,6 +930,7 @@ mod tests {
             }
             session.close();
             assert!(!session.directory.exists());
+            super::lifecycle_tests::assert_pool(&session.trace(), workers, 17);
         }
     }
     #[test]
