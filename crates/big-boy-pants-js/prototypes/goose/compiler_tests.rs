@@ -121,6 +121,53 @@ fn goose_compiler_arguments_across_helper_suspension() {
 
 #[test]
 #[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_arguments_identity() {
+    // Equal contents do not make arguments objects equal. Prepared aliases
+    // retain their identity after snapshot restore and repeated worker calls.
+    let source = r#"rt => {
+        function f() { return arguments; }
+        const saved=f(1,2); const alias=saved;
+        return (form,env) => {
+            const a=f(); const b=f(); const c=f(1,2); const d=f(1,2);
+            const map=__rt.formMap(a,1,b,2,a,3);
+            const updated=__rt.formAssoc(map,b,4);
+            const set=__rt.formSet(a,b,a);
+            return a!==b && c!==d
+                && !__rt.formEquals(a,b) && !__rt.formEquals(c,d)
+                && __rt.formEquals(a,a) && __rt.formEquals(saved,alias)
+                && !__rt.formEquals(saved,c) && !__rt.formEquals(c,saved)
+                && !__rt.formEquals(c,__rt.formVector(1,2))
+                && !__rt.formEquals(__rt.formVector(1,2),c)
+                && !__rt.formEquals(__rt.formVector(a),__rt.formVector(b))
+                && __rt.formEquals(__rt.formVector(saved),__rt.formVector(alias))
+                && __rt.formCount(map)===2 && __rt.formGet(map,a,null)===3
+                && __rt.formGet(map,b,null)===2 && __rt.formGet(map,f(),null)===null
+                && __rt.formCount(updated)===2 && __rt.formGet(updated,a,null)===3
+                && __rt.formGet(updated,b,null)===4 && __rt.formCount(set)===2;
+        };
+    }"#;
+    for workers in [1, 2] {
+        let s = GooseSession::start(&runner(), workers).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let (f, args, call) = inputs(&e, source);
+        for _ in 0..3 {
+            let result = e.call(f, &args).unwrap();
+            let result = e
+                .export_form(result, &call, origin(&call), Default::default())
+                .unwrap();
+            assert!(
+                result
+                    .data()
+                    .value_eq(&Datum::new(DatumKind::Boolean(true)))
+            );
+        }
+        s.close();
+        cleaned(&s);
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_wrapper_conventions_and_boundaries() {
     for (body, expected) in [
         ("return rt.core.inc.call(null,40)===41;", None),

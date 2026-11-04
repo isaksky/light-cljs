@@ -32,6 +32,8 @@ copies them to an independently owned, read-only unmapped object; `Rest` builds
 a fresh ordinary array. Indexed reads and `length` work; arguments mutation,
 `callee`, and prototype inspection fail explicitly. Export uses the frontend's
 strict mode, so mapped sloppy arguments are outside this subset.
+Arguments objects compare by identity, including as form map keys/set members;
+separate calls with the same arguments remain distinct.
 
 Callable `.call` forwards the exact receiver, including omitted `undefined`
 and explicit `null`, to ordinary source functions and the supported runtime

@@ -447,7 +447,7 @@ recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool
     if x.tag != y.tag { return false; }
     if x.tag != 5 { return equal(heap, x, y); }
     let n = heap.nodes[x.a]; let m = heap.nodes[y.a];
-    if n.kind < 5 || m.kind < 5 || n.kind == 13 || m.kind == 13 { return x.a == y.a; }
+    if n.kind < 5 || m.kind < 5 || n.kind == 13 || m.kind == 13 || n.kind == 14 || m.kind == 14 { return x.a == y.a; }
     if n.kind != m.kind && !((n.kind == 5 || n.kind == 6 || n.kind == 12) && (m.kind == 5 || m.kind == 6 || m.kind == 12)) { return false; }
     if n.kind == 9 || n.kind == 10 { return equal(heap, n.value, m.value) && equal(heap, n.namespace_value, m.namespace_value); }
     if n.count != m.count { return false; }
