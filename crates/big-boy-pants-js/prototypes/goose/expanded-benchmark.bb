@@ -167,7 +167,7 @@
             text (str (:out result) (:err result))
             fault (re-find #"serial-([A-Za-z.]+) work=(\d+) nodes=(\d+) values=(\d+) steps=(\d+)" text)]
         (assert (and (not (zero? (:exit result))) fault) (str "Expected a precise serial quota failure: " text))
-        (spit (str samples) (str (pr-str {:kind :unsupported :case :heavier :engine :goose :workers 1 :control :serial :fault (second fault) :work (parse-long (nth fault 2)) :nodes (parse-long (nth fault 3)) :values (parse-long (nth fault 4)) :steps (parse-long (nth fault 5)) :result result}) "\n") :append true)
+        (spit (str samples) (str (pr-str {:kind :unsupported :case :heavier :engine :goose :workers 1 :control :serial :fault (second fault) :work (parse-long (nth fault 2)) :nodes (parse-long (nth fault 3)) :values (parse-long (nth fault 4)) :steps (parse-long (nth fault 5)) :result (select-keys result [:exit :out :err])}) "\n") :append true)
         (println "Confirmed retained serial limit:" (second fault))
         (System/exit 0)))
     (doseq [c prepared]
