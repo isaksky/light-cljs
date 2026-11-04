@@ -2,6 +2,15 @@
 (require '[babashka.fs :as fs] '[babashka.process :as p] '[clojure.edn :as edn]
          '[clojure.string :as str] '[cheshire.core :as json])
 (import '[java.security MessageDigest])
+(when-let [expanded-mode ({"--expanded-check" "--check"
+                          "--expanded-measure" "--measure"
+                          "--expanded-instrument" "--instrument"
+                          "--expanded-limits" "--limits"
+                          "--expanded-summarize" "--summarize"}
+                         (first *command-line-args*))]
+  (binding [*command-line-args* (cons expanded-mode (rest *command-line-args*))]
+    (load-file (str (fs/path (fs/parent (fs/canonicalize *file*)) "expanded-benchmark.bb"))))
+  (System/exit 0))
 (def directory (fs/parent (fs/canonicalize *file*)))
 (def repository (fs/canonicalize (fs/path directory "../../../..")))
 (def mode (or (first *command-line-args*) "--measure"))

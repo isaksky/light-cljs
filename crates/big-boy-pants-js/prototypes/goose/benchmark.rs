@@ -51,8 +51,8 @@ fn complete_form_comparison_rejects_scalar_changes() {
 
 struct BatchClock {
     previous: Instant,
-    expected: usize,
-    completed: [usize; 2],
+    expected: Vec<usize>,
+    completed: Vec<usize>,
     rows: String,
 }
 static BATCH_CLOCK: std::sync::Mutex<Option<BatchClock>> = std::sync::Mutex::new(None);
@@ -63,22 +63,31 @@ pub(super) fn record_batch(call: &Form, origin: &ExpansionOrigin) {
     if origin.macro_name.name() != "work".encode_utf16().collect::<Vec<_>>() {
         return;
     }
-    let Some(batch) = ["batch0.cljs", "batch1.cljs"]
-        .iter()
-        .position(|name| call.span().source().name().ends_with(name))
-    else {
+    let span = call.span();
+    let name = span.source().name();
+    let batch = if name.contains("wave0_") {
+        0
+    } else if name.ends_with("join.cljs") {
+        1
+    } else if name.contains("wave1_") {
+        2
+    } else if name.ends_with("batch0.cljs") {
+        0
+    } else if name.ends_with("batch1.cljs") {
+        1
+    } else {
         return;
     };
     let mut clock = BATCH_CLOCK.lock().unwrap();
     if let Some(c) = clock.as_mut() {
         c.completed[batch] += 1;
-        if c.completed[batch] == c.expected {
-            assert!(batch == 0 || c.completed[0] == c.expected);
+        if c.completed[batch] == c.expected[batch] {
+            assert!((0..batch).all(|i| c.completed[i] == c.expected[i]));
             let now = Instant::now();
             c.rows.push_str(&format!(
                 "{{:phase :batch :batch {batch} :wall-ns {} :checked {}}}\n",
                 now.duration_since(c.previous).as_nanos(),
-                c.expected
+                c.expected[batch]
             ));
             c.previous = now;
         }
@@ -175,6 +184,10 @@ fn compile(
         "{{:phase :runtime :ns {}}}\n",
         setup.elapsed().as_nanos()
     ));
+    let instrumented = std::env::var_os("GOOSE_BENCH_INSTRUMENT").is_some();
+    if instrumented {
+        crate::wait_timeline::start_from_environment();
+    }
     let begun = Instant::now();
     let (program, _) = crate::compiler::analyze_namespace_entry_recorded(
         "main",
@@ -209,13 +222,20 @@ fn compile(
         rows.push_str(&format!("{{:phase :adapter :stats {}}}\n", stats(s)));
     }
     let begun = Instant::now();
-    if let Some(s) = session {
+    if let Some(s) = &session {
         s.close();
+    }
+    let closed = begun.elapsed().as_nanos();
+    if let Some(s) = &session {
+        rows.push_str(&format!("{{:phase :adapter-closed :stats {}}}\n", stats(s)));
+    }
+    if instrumented {
+        crate::wait_timeline::finish().unwrap();
     }
     drop(host);
     drop(program);
     rows.push_str(&format!(
-        "{{:phase :compiler :analyze-ns {analyzed} :emit-ns {emitted} :cleanup-ns {}}}\n",
+        "{{:phase :compiler :analyze-ns {analyzed} :emit-ns {emitted} :session-close-ns {closed} :cleanup-ns {}}}\n",
         begun.elapsed().as_nanos()
     ));
     js
@@ -278,10 +298,17 @@ fn run() {
                 ));
             }
         } else {
+            let expected = std::env::var("GOOSE_BENCH_PHASE_COUNTS")
+                .map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<usize>().unwrap())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|_| vec![fanout; 2]);
             *BATCH_CLOCK.lock().unwrap() = Some(BatchClock {
                 previous: overall,
-                expected: fanout,
-                completed: [0; 2],
+                expected: expected.clone(),
+                completed: vec![0; expected.len()],
                 rows: String::new(),
             });
             js = compile(
@@ -291,10 +318,10 @@ fn run() {
                 &options,
                 &runner,
                 &mut rows,
-                2 * fanout,
+                expected.iter().sum(),
             );
             let clock = BATCH_CLOCK.lock().unwrap().take().unwrap();
-            assert_eq!(clock.completed, [fanout; 2]);
+            assert_eq!(clock.completed, expected);
             rows.push_str(&clock.rows);
         }
         std::fs::write(directory.join("actual.js"), js).unwrap();
