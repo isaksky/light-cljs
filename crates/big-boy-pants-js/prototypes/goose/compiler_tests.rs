@@ -123,6 +123,11 @@ fn goose_compiler_arguments_across_helper_suspension() {
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_wrapper_conventions_and_boundaries() {
     for (body, expected) in [
+        ("return rt.core.inc.call(null,40)===41;", None),
+        (
+            "const call=(function(){}).call; return call();",
+            Some("Fault.TypeError"),
+        ),
         (
             "const f=__rt.fnApplyNull(function(...args){return args.length;}); return __rt.fnApplyReceiver(f)===null && f.call(null,1,2,3)===3;",
             None,
