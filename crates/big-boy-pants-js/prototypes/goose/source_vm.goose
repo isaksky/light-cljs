@@ -688,6 +688,30 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         21 => { return form_nth(heap, a, 0); },
         65 => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != 5 && kind != 6 { heap.fault = Fault.TypeError; return Value {}; } let n = heap.nodes[v.a]; return form_collection(heap, 7, heap.values[n.start..(n.start + n.count)]); },
         69 => { if form_kind(heap, a) != 7 && form_kind(heap, a) != 8 { heap.fault = Fault.TypeError; return Value {}; } return a; },
+        80 => { let kind = form_kind(heap, a); return boolean(kind == 6 || kind == 7 || kind == 8 || kind == 9 || kind == 10); },
+        81 => {
+            let value = form_value(heap, a);
+            if value.tag == 5 && (heap.nodes[value.a].kind == 2 || heap.nodes[value.a].kind == 4) { return heap.call_method; }
+            heap.fault = Fault.NativeBoundary; return Value {};
+        },
+        60 => {
+            let arity = args[3]; let kind = form_kind(heap, a);
+            if arity.tag != 3 || (arity.number != 1 && arity.number != 2) { heap.fault = Fault.UnsupportedOperand; return Value {}; }
+            if kind == 9 || kind == 10 { return form_get(heap, args[1], a, args[2]); }
+            if kind == 7 { return form_get(heap, a, args[1], args[2]); }
+            if kind == 8 {
+                let n = heap.nodes[a.a];
+                for i in n.count { if !charge(heap) { return Value {}; } let v = heap.values[n.start + i]; if form_equal(heap, v, args[1]) { return v; } if heap.fault != Fault.None { return Value {}; } }
+                return args[2];
+            }
+            if kind == 6 {
+                let i = form_value(heap, args[1]);
+                if i.tag != 3 || !(i.number >= 0 && i.number < form_count(heap, a)) { heap.fault = Fault.UnsupportedOperand; return Value {}; }
+                // Legacy vector calls truncate after bounds validation.
+                return form_nth(heap, a, i.number as! i64);
+            }
+            heap.fault = Fault.NativeBoundary; return Value {};
+        },
         82 => {
             if a.tag != 5 || heap.nodes[a.a].kind != 0 || args[1].tag > 1 { heap.fault = Fault.NativeBoundary; return Value {}; }
             if args[2].tag != 4 { heap.fault = Fault.TypeError; return Value {}; }
@@ -720,6 +744,11 @@ fn boot_runtime(heap: Heap&) -> Value {
     install_field(heap, core, "vec", builtin(heap, 3)); install_field(heap, core, "into", builtin(heap, 4));
     install_field(heap, core, "sequence", builtin(heap, 16));
     install_field(heap, core, "mapSeq", builtin(heap, 17));
+    install_field(heap, core, "list", builtin(heap, 18));
+    install_field(heap, rt, "symbol", builtin(heap, 19));
+    // The emitted call classifier compares against this constructor identity.
+    // Executing regular expressions remains an explicit native boundary.
+    install_field(heap, rt, "intrinsicRegExp", builtin(heap, 20));
     // Gensym is serviced only by an explicitly enabled coordinator contract.
     // Other shared-state leaves are installed explicitly by the compiler.
     install_field(heap, core, "gensym", builtin(heap, 5));
@@ -732,6 +761,8 @@ fn boot_runtime(heap: Heap&) -> Value {
     return rt;
 }
 fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
+    if id == 18 { return form_construct(heap, 5, args); }
+    if id == 19 && args.len == 2 { return form_op(heap, 1, args); }
     if id == 17 && args.len == 2 {
         // The generated target maps a nonchunked finite rest list. Vectors,
         // transducers, multiple sources and nested lazy inputs have different

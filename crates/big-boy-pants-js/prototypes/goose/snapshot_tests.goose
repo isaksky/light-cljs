@@ -4,6 +4,7 @@ import .snapshot_fixture;
 import .source_vm;
 import .form_bridge;
 import .vm;
+import .callable;
 
 fn isolation() {
     var code = source::Code {}; var parent = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, parent, bindings);
@@ -165,7 +166,7 @@ fn reused_destination() {
     snapshot_test::verify(heap, roots, 7);
     print("reused code/heap/job destination: live/claimed/terminal guards, fresh IDs, alternating payloads, complete reset and transactional validation passed");
 }
-fn main() { finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); live_boundary(); }
+fn main() { callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); live_boundary(); }
 
 fn finite_map_ownership() {
     var code = source::Code {}; snapshot_test::append(code, embed_file("corpus/serial/calls.gsp"));
@@ -323,4 +324,90 @@ fn source_spans() {
     var invalid = copy(saved); invalid.bytes[0] = 255; var check = snapshot::Control {}; assert(!snapshot::validate(invalid, check) && check.error == snapshot::Error.Link);
     assert(source::form_value(heap, values[0]).number == 7 && heap.live_jobs == 0);
     print("snapshot multibyte source start/end corruption and invalid UTF8 rejected transactionally; prior snapshot/heap preserved");
+}
+
+fn callable_publication() {
+    var base_code = source::Code {}; snapshot_test::append(base_code, embed_file("corpus/serial/calls.gsp"));
+    var base_heap = source::Heap { code: base_code }; assert(source::initialize(base_heap)); let runtime = source::boot_runtime(base_heap);
+    var capture = snapshot::Control {}; let base = snapshot::capture(base_heap, [snapshot::Binding { id: 0, generation: 1, value: runtime }], capture); assert(capture.error == snapshot::Error.None);
+    var code = source::Code {}; var producer = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
+    assert(snapshot::restore(base, code, producer, bindings, source::reserve_identity(), restore));
+    // A closure/cell graph with a runtime capture, a form DAG, two equal
+    // distinct occurrences and a repeated alias. Code is deliberately absent
+    // from the base and the consumer appends other code before import.
+    var extra = source::Code {}; extra.source_bytes.append("\n");
+    extra.functions.push(source::Function { start: 0, count: 3, constants: 0, children: 0, params: 0, locals: 0, captures: 2, strict: true });
+    for op, i in [46, 49, 15] { extra.ops.push(source::Op { code: op, arg: if i == 0 { 1 } else { 0 }, offset: [0, 3, 4][i], start: 0, end: 1, depth: [0, 1, 1][i] }); }
+    // A second unreachable function must still be validated on publication.
+    extra.functions.push(source::Function { start: 3, count: 2, constants: 0, children: 0, params: 0, locals: 0, captures: 0, strict: true });
+    for op, i in [2, 15] { extra.ops.push(source::Op { code: op, arg: 0, offset: i, start: 0, end: 1, depth: i }); } extra.valid = true;
+    let entry = source::append_code(code, extra);
+    let rt_cell = source::allocate(producer, source::Node { kind: 3, initialized: true, immutable: true, value: bindings[0].value });
+    producer.source_bytes.append("a b"); producer.source_ranges.push(source::SourceRange { start: 0, count: 3 });
+    let one = source::allocate(producer, source::Node { kind: 11, value: source::number(7), origin: 1, source: 0, span_start: 0, span_end: 1 });
+    let two = source::allocate(producer, source::Node { kind: 11, value: source::number(7), origin: 2, source: 0, span_start: 2, span_end: 3 });
+    let marked = source::form_op(producer, 0, [source::nil(), source::text(producer, "marked")]);
+    let metadata = source::form_collection(producer, 7, [marked, source::boolean(true)]); producer.nodes[one.a].metadata = metadata; producer.nodes[two.a].metadata = metadata;
+    let forms = source::form_collection(producer, 6, [one, two, one]);
+    let cell = source::allocate(producer, source::Node { kind: 3, initialized: true, immutable: true, value: forms });
+    let function = source::closure(producer, entry, [rt_cell, cell]);
+    producer.nodes[function.a].immutable = true;
+    var encoding = snapshot::Control {}; var wire: u8[>..] = []; assert(callable::encode(producer, base, function, wire, encoding, source::reserve_identity()));
+    for cut in [0, 1, wire.len / 2, wire.len - 1] {
+        var target_code = source::Code {}; var target = source::Heap { code: target_code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
+        assert(snapshot::restore(base, target_code, target, roots, source::reserve_identity(), sc));
+        var check = snapshot::Control {}; callable::decode_install(wire[..cut], base.header, target_code, target, check);
+        assert(check.error != snapshot::Error.None && target.nodes.len == base.nodes.len && target_code.functions.len == base.functions.len);
+    }
+    let records, parsed = from_bytes<callable::Publication[>..]>(wire); assert(parsed && records.len == 1);
+    for original in records {
+        for mode in -1..16 {
+            var target_code = source::Code {}; var target = source::Heap { code: target_code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
+            assert(snapshot::restore(base, target_code, target, roots, source::reserve_identity(), sc)); source::append_code(target_code, extra);
+            // extra has no constants, so heap/code constant counts still agree.
+            var bad = copy(original);
+            match mode {
+                0 => { bad.version += 1; }, 1 => { bad.base.checkpoint += 1; },
+                2 => { bad.image.ops[bad.image.ops.len - 1].arg = 1; }, // unreachable return operand
+                3 => { bad.image.nodes[cell.a].immutable = false; },
+                4 => { bad.image.nodes[cell.a].kind = 0; },
+                5 => { bad.image.values[bad.image.nodes[forms.a].start] = bad.image.bindings[0].value; }, // form cycle
+                6 => { bad.image.nodes[function.a].function = bad.image.functions.len; },
+                7 => { bad.image.nodes[rt_cell.a].value = bad.image.header.global; },
+                8 => { bad.image.units[0] = 255; },
+                9 => { bad.image.nodes[two.a].span_start = 4; },
+                10 => { bad.image.functions[entry].start = 0; },
+                11 => { bad.image.nodes[forms.a].metadata = bad.image.bindings[0].value; },
+                12 => { bad.image.nodes[function.a].count += 1; },
+                13 => { bad.image.nodes[rt_cell.a].initialized = false; },
+                14 => { bad.image.code_bytes[0] = 32; },
+                15 => { bad.image.nodes[bindings[0].value.a].length += 1; }, _ => {},
+            }
+            let before = snapshot::capture(target, roots, sc); assert(sc.error == snapshot::Error.None);
+            var encoded: u8[>..] = []; to_bytes([bad], encoded);
+            var check = snapshot::Control {}; let imported = callable::decode_install(encoded, base.header, target_code, target, check);
+            if mode >= 0 {
+                assert(check.error != snapshot::Error.None);
+                var after = snapshot::Control {}; var unchanged = snapshot::capture(target, roots, after); unchanged.header.checkpoint = before.header.checkpoint; assert(after.error == snapshot::Error.None);
+                var left: u8[>..] = []; var right: u8[>..] = []; to_bytes([before], left); to_bytes([unchanged], right); assert(left == right);
+            } else {
+                assert(check.error == snapshot::Error.None && imported.tag == 5);
+                assert(target.nodes[imported.a].function == entry + extra.functions.len && target.nodes[imported.a].immutable);
+                let n = target.nodes[imported.a]; let captured = target.nodes[target.values[n.start].a].value;
+                assert(captured.a == roots[0].value.a && captured.session == target.identity);
+                let result = snapshot_test::invoke(target, imported, []); let x = source::form_nth(target, result, 0); let y = source::form_nth(target, result, 1);
+                assert(x.a != y.a && x.a == source::form_nth(target, result, 2).a && source::form_equal(target, x, y));
+                assert(target.nodes[x.a].span_start == 0 && target.nodes[y.a].span_start == 2);
+                assert(target.nodes[x.a].metadata.a == target.nodes[y.a].metadata.a && target.nodes[target.nodes[x.a].metadata.a].kind == 7);
+                var valid = snapshot::Control {}; let finished = snapshot::capture(target, roots, valid); assert(valid.error == snapshot::Error.None);
+            }
+        }
+        for limit in 2 {
+            var target_code = source::Code {}; var target = source::Heap { code: target_code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
+            assert(snapshot::restore(base, target_code, target, roots, source::reserve_identity(), sc));
+            var check = snapshot::Control {}; if limit == 0 { check.bytes = wire.len; } else { check.work = 1; }
+            callable::install(original, base.header, target_code, target, check); assert(check.error != snapshot::Error.None && target.nodes.len == base.nodes.len && target_code.functions.len == base.functions.len);
+        }
+    }
+    print("callable code/capture relocation, runtime reconnection, occurrence aliases and transactional malformed/limited publication passed");
 }

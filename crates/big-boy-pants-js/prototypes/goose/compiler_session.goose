@@ -6,6 +6,7 @@ import .snapshot;
 import .form_bridge;
 import .vm;
 import .readiness;
+import .callable;
 
 // Process high-water RSS, in native getrusage units; see measurement.h.
 extern fn peak_memory() -> i64 = "goose_measure_peak_rss";
@@ -23,19 +24,19 @@ struct Saved {
     heap:    snapshot::Snapshot = snapshot::Snapshot {}, frames: source::Frame[] = [], locals: source::Value[] = [], operands: source::Value[] = [], writes: source::Write[] = [], handlers: source::Handler[] = [],
     steps:   i64                = 0, args: source::Value[8] = [source::Value {}; 8], frame: source::Frame = source::Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: source::Value {}, receiver: source::Value {} },
     bridge:  bridge::Control    = bridge::Control {}, sequence: i64 = 0, costs: i64[2] = [0; 2], protected: i64 = 0,
-    storage: bool               = false,
+    storage: bool               = false, base: snapshot::Header = snapshot::Header {},
 }
 struct Command { id: i64 }
 struct Cancel {}
 // A single retained token is a session-wide cancellation flag. Active jobs
 // inspect it only between bounded VM slices; idle workers block on Work.
 fn cancelled() -> bool { let token, present = qpoll<Cancel>(); if present { assert(qput(token)); } return present; }
-struct Event { id: i64, kind: i64, saved: Saved = Saved {}, sequence: i64 = 0, key: i64 = -1, name: u8[] = [], data: u8[] = [], steps: i64 = 0, writes: i64 = 0, metrics: u8[] = [] }
+struct Event { id: i64, kind: i64, saved: Saved = Saved {}, sequence: i64 = 0, key: i64 = -1, name: u8[] = [], data: u8[] = [], steps: i64 = 0, writes: i64 = 0, metrics: u8[] = [], callable: bool = false }
 fn publish(event: Event) { assert(qput(event)); readiness::notify(); }
-struct Work { saved: Saved = Saved {}, id: i64 = 0, identity: i64 = 0, mode: i64 = 0, helper: u8[] = [], key: i64 = -1, checkpoint: i64 = 0 }
+struct Work { saved: Saved = Saved {}, id: i64 = 0, identity: i64 = 0, mode: i64 = 0, helper: u8[] = [], key: i64 = -1, checkpoint: i64 = 0, callable: bool = false }
 struct Running { id: i64, worker: i64 = -1, key: i64 = -1, checkpoint: i64 = 0 }
 struct Waiting { id: i64, name: u8[], saved: Saved, key: i64 = -2, active: bool = true }
-struct Produced { key: i64, data: u8[] }
+struct Produced { key: i64, data: u8[], callable: bool = false }
 struct Prepared { key: i64, heap: snapshot::Snapshot }
 struct SerialDefinition { key: i64, function: source::Value }
 fn definition(directory: const u8[:], id: i64) -> i64 {
@@ -132,7 +133,7 @@ thread_fn worker(slot: i64, directory: u8[], deterministic: bool, tracing: bool,
         // its claim notice, so shutdown must also tolerate in-transit claims.
         if cleanup_test && work.id == 2 { assert(write_file(str(directory, "/claim-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/claim-release"), gate) { sleep_ms(1); } }
         publish(Event { id: work.id, kind: 7, key: slot });
-        execute(work.saved, directory, work.id, work.identity, work.mode, work.helper, work.key, work.checkpoint, deterministic, code, heap, bindings, job, args, graph, bytes);
+        execute(work.saved, directory, work.id, work.identity, work.mode, work.helper, work.key, work.checkpoint, work.callable, deterministic, code, heap, bindings, job, args, graph, bytes);
         // Publish the real terminal result, then abort while cleanup still owns
         // this worker. The host queues a replacement before releasing the gate.
         if cleanup_test && work.id == 1 { assert(write_file(str(directory, "/cleanup-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/cleanup-abort"), gate) { sleep_ms(1); } assert(false); }
@@ -142,7 +143,7 @@ thread_fn worker(slot: i64, directory: u8[], deterministic: bool, tracing: bool,
     }
     if tracing { var high: i64[4] = [0; 4]; for n, i in c.peaks { high[if i < 6 { 0 } else if i < 13 { 1 } else if i < 18 { 2 } else { 3 }] += n; } publish(Event { id: 0, kind: 8, metrics: str(slot, " ", count, " ", count, " ", high[0] + high[1] + high[2] + high[3], " ", c.growths, " ", c.reuses, " ", regions(), " ", reset_ns, " ", high[0], " ", high[1], " ", high[2], " ", high[3]) }); }
 }
-fn execute(saved: const Saved&, directory: const u8[:], id: i64, identity: i64, mode: i64, helper: const u8[:], key: i64, checkpoint: i64, deterministic: bool, code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding[>..]&, job: source::Job&, args: source::Value[>..]&, graph: bridge::Graph&, bytes: u8[>..]&) {
+fn execute(saved: const Saved&, directory: const u8[:], id: i64, identity: i64, mode: i64, helper: const u8[:], key: i64, checkpoint: i64, is_callable: bool, deterministic: bool, code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding[>..]&, job: source::Job&, args: source::Value[>..]&, graph: bridge::Graph&, bytes: u8[>..]&) {
     // Test-only completion barrier: publish the real event before acknowledging.
     defer { if deterministic { assert(write_file(str(directory, "/ready-", checkpoint), "ready")); } }
     let worker_started = clock_ns();
@@ -157,15 +158,36 @@ fn execute(saved: const Saved&, directory: const u8[:], id: i64, identity: i64, 
         let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], saved.protected); if !loaded { return; }
         let value, initialized = leaf(id, heap, factory, [rt], saved.protected); if !initialized { return; } function = value;
         if mode == 2 { let exporting = clock_ns();
-            if !bridge::export_graph(heap, [function], graph, control) || !bridge::encode(graph, bytes, control) { publish(Event { id: id, kind: 3, name: str("helper-", heap.fault, "-", control.error) }); return; } costs[1] += clock_ns() - exporting; publish(Event { id: id, kind: 5, key: key, name: str(costs[0], " ", costs[1]), data: copy(bytes), metrics: str(sc.restore_ns, " 0 ", clock_ns() - worker_started, " ", storage(saved, heap, sc, bytes.len), " ", mode) }); return;
+            let closure = function.tag == 5 && heap.nodes[function.a].kind == 2;
+            var publication = snapshot::Control {};
+            let ok = if closure { callable::encode(heap, saved.heap, function, bytes, publication, checkpoint) } else { bridge::export_graph(heap, [function], graph, control) && bridge::encode(graph, bytes, control) };
+            if !ok {
+                let function_id = if closure { heap.nodes[function.a].function } else { entry }; let pc = code.functions[function_id].start; let op = code.ops[pc];
+                publish(Event { id: id, kind: 3, name: str("helper-", heap.fault, "-", control.error, "-", publication.error, " function=", function_id, " pc=", pc, " emitted-span=", op.start, ":", op.end) }); return;
+            } costs[1] += clock_ns() - exporting; publish(Event { id: id, kind: 5, key: key, name: str(costs[0], " ", costs[1]), data: copy(bytes), metrics: str(sc.restore_ns, " 0 ", clock_ns() - worker_started, " ", storage(saved, heap, sc, bytes.len), " ", mode), callable: closure }); return;
         }
     } else { call = bindings[1].value; }
+    // Import before re-registering the suspended job; failed publication is
+    // transactional and delivered at the original effect instruction.
+    var imported = source::Value {}; var import_ok = false;
+    if mode == 1 && is_callable {
+        let importing = clock_ns();
+        let cache = source::get(heap, heap.global, source::text(heap, "__lightPublishedHelpers")); let name = source::text(heap, str(key));
+        let prior, found = source::own_property(heap, cache, name);
+        if found { imported = prior; import_ok = true; } else {
+            var publication = snapshot::Control {}; imported = callable::decode_install(helper, saved.base, code, heap, publication);
+            import_ok = publication.error == snapshot::Error.None;
+            if import_ok { import_ok = source::put(heap, cache, name, imported); }
+        }
+        costs[1] += clock_ns() - importing;
+    }
     let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")); job.effects_enabled = true; job.helpers_enabled = true; job.protected_nodes = saved.protected; job.root_receiver = roots; defer { source::retire(job); }
     if mode == 0 { source::start(job, function, args); } else {
         for f in saved.frames { job.frames.push(relocated(f, identity)); } for v in saved.locals { job.locals.push(snapshot::relocated(v, identity)); } for v in saved.operands { job.operands.push(snapshot::relocated(v, identity)); }
         for w in saved.writes { job.writes.push(source::Write { object: snapshot::relocated(w.object, identity), key: snapshot::relocated(w.key, identity), value: snapshot::relocated(w.value, identity) }); }
         for h in saved.handlers { job.handlers.push(h); } job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = 9; job.effect_count = 3; job.effect_frame = relocated(saved.frame, identity); for v, i in saved.args { job.effect_args[i] = snapshot::relocated(v, identity); }
-        if mode == 3 || !bridge::decode(graph, helper, control) || !bridge::import_graph(heap, graph, args, control) || args.len != 1 { source::deliver_effect(job, source::Value {}, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], args[0]); assert(source::deliver_effect(job, args[0])); }
+        if mode == 1 && !is_callable { import_ok = bridge::decode(graph, helper, control) && bridge::import_graph(heap, graph, args, control) && args.len == 1; if import_ok { imported = args[0]; } }
+        if !import_ok { source::deliver_effect(job, source::Value {}, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], imported); assert(source::deliver_effect(job, imported)); }
     }
     let execution_started = clock_ns();
     loop {
@@ -175,7 +197,7 @@ fn execute(saved: const Saved&, directory: const u8[:], id: i64, identity: i64, 
         if job.effect_kind != 9 || job.effect_count != 3 { source::deliver_effect(job, source::Value {}, source::Fault.NativeBoundary); continue; }
         let v = job.effect_args[2]; var name: u8[>..] = []; if v.tag != 4 { source::deliver_effect(job, source::Value {}, source::Fault.TypeError); continue; }
         for u in heap.units[v.a..(v.a + v.b)] { if u <= 32 || u > 127 { source::deliver_effect(job, source::Value {}, source::Fault.NativeBoundary); break; } name.push(u as u8); } if !job.effect_pending { continue; }
-        let state = save(job, rt, call, control, if mode == 0 { 0 } else { saved.sequence + 1 }, costs, checkpoint); state.storage = saved.storage; publish(Event { id: id, kind: 1, saved: copy(state), name: copy(name), steps: job.steps, metrics: str(sc.restore_ns, " ", clock_ns() - execution_started, " ", clock_ns() - worker_started, " ", storage(saved, heap, sc, 0), " ", mode) }); return;
+        let state = save(job, rt, call, control, if mode == 0 { 0 } else { saved.sequence + 1 }, costs, checkpoint); state.storage = saved.storage; state.base = saved.base; publish(Event { id: id, kind: 1, saved: copy(state), name: copy(name), steps: job.steps, metrics: str(sc.restore_ns, " ", clock_ns() - execution_started, " ", clock_ns() - worker_started, " ", storage(saved, heap, sc, 0), " ", mode) }); return;
     }
     let exporting = clock_ns(); let execution_ns = exporting - execution_started; let result = job.result; let steps = job.steps; assert(source::retire(job)); reset(graph); bytes.clear();
     if !bridge::export_graph(heap, [result], graph, control, call) || !bridge::encode(graph, bytes, control) { publish(Event { id: id, kind: 3, name: str("bridge-", control.error) }); return; }
@@ -235,6 +257,7 @@ fn serial(directory: const u8[:], code: source::Code&, heap: source::Heap&, rt: 
 fn main() {
     let arguments = args(); assert(arguments.len == 3 || arguments.len == 4); var directory: u8[>..] = []; directory.append(arguments[1]); let limit, valid = parse_int(arguments[2]); assert(valid && limit >= 1 && limit <= 8);
     let beginning = clock_ns(); var code = source::Code {}; assert(load(code, str(directory, "/base.gsp")) >= 0); let loaded = clock_ns(); var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let roots = source::allocate(heap, source::Node { kind: 0 }); assert(source::install_field(heap, heap.global, "__lightCompilerRoots", roots));
+    let published = source::allocate(heap, source::Node { kind: 0 }); assert(source::install_field(heap, heap.global, "__lightPublishedHelpers", published));
     let instrumented = arguments.len == 4 && (arguments[3] == "instrumented" || arguments[3] == "serial-instrumented");
     let booted = clock_ns(); if arguments.len == 4 && (arguments[3] == "serial" || arguments[3] == "serial-instrumented") { assert(limit == 1); print("READY 1 ", heap.boot_count, " ", loaded - beginning, " ", booted - loaded, " 0"); flush_stdout(); serial(directory, code, heap, rt, instrumented); return; }
     var sc = snapshot::Control {}; let base = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }], sc); assert(sc.error == snapshot::Error.None);
@@ -273,7 +296,7 @@ fn main() {
             if event.kind == 8 { print("POOL 0 ", event.metrics); flush_stdout(); continue; }
             event_count += 1; events += 1; release(running, event.id); if poisoned { continue; } let bytes = if event.kind == 1 { snapshot::footprint(event.saved.heap) + bytes_of(event.saved.frames).len + bytes_of(event.saved.locals).len + bytes_of(event.saved.operands).len + bytes_of(event.saved.writes).len + bytes_of(event.saved.handlers).len } else { event.data.len }; if bytes > 67108864 - retained { print("ERROR ", event.id, " retained-budget"); flush_stdout(); continue; } retained += bytes; if event.metrics.len > 0 { print("METRIC ", event.id, " ", event.metrics, " ", sleep_ns, " ", clock_ns() - beginning); } if event.kind == 2 || event.kind == 5 { print("COST ", event.id, " ", event.name); }
             if event.kind == 1 { if waiting.len >= 128 { print("ERROR ", event.id, " waiter-budget"); } else { waiting.push(Waiting { id: event.id, name: copy(event.name), saved: copy(event.saved) }); print("NEED ", event.id, " ", event.saved.sequence, " ", event.name, " ", event.steps, " ", event.saved.writes.len); } }
-            else if event.kind == 5 { produced.push(Produced { key: event.key, data: copy(event.data) }); print("PRODUCED ", event.id, " ", event.key); }
+            else if event.kind == 5 { produced.push(Produced { key: event.key, data: copy(event.data), callable: event.callable }); print("PRODUCED ", event.id, " ", event.key); }
             else if event.kind == 2 { print("FINISH ", event.id, " ", event.steps, " ", event.writes); print("DONE ", event.id); }
             else { print("ERROR ", event.id, " ", event.name); }
             flush_stdout();
@@ -282,16 +305,16 @@ fn main() {
         if !closing { for w in waiting { if running.len >= limit { break; } if !w.active { continue; }
             if w.key == -2 { var bytes: u8[>..] = []; if !read_file(str(directory, "/", w.id, "-", w.saved.sequence, ".key"), bytes) { continue; } let key, ok = parse_int(bytes); assert(ok && key >= -1); w.key = key; }
             let key = w.key; if key == -1 { let checkpoint = source::reserve_identity(); assert(qput(Work { saved: copy(w.saved), id: w.id, identity: identity(w.saved), mode: 3, helper: [], key: -1, checkpoint: checkpoint })); running.push(Running { id: w.id, checkpoint: checkpoint }); print("RESUME ", w.id); flush_stdout(); w.active = false; progress = true; continue; } var found = false;
-            for p in produced { if p.key == key { let checkpoint = source::reserve_identity(); assert(qput(Work { saved: copy(w.saved), id: w.id, identity: identity(w.saved), mode: 1, helper: copy(p.data), key: key, checkpoint: checkpoint })); running.push(Running { id: w.id, checkpoint: checkpoint }); print("RESUME ", w.id); flush_stdout(); w.active = false; progress = true; found = true; break; } }
+            for p in produced { if p.key == key { let checkpoint = source::reserve_identity(); assert(qput(Work { saved: copy(w.saved), id: w.id, identity: identity(w.saved), mode: 1, helper: copy(p.data), key: key, checkpoint: checkpoint, callable: p.callable })); running.push(Running { id: w.id, checkpoint: checkpoint }); print("RESUME ", w.id); flush_stdout(); w.active = false; progress = true; found = true; break; } }
             if found { continue; }
             var producing = false; for r in running { if r.key == key { producing = true; } }
-            if !producing { let initial = Saved { heap: copy(base), sequence: w.saved.sequence, protected: base.nodes.len, storage: instrumented }; let checkpoint = source::reserve_identity(); assert(qput(Work { saved: copy(initial), id: w.id, identity: identity(initial), mode: 2, helper: [], key: key, checkpoint: checkpoint })); running.push(Running { id: w.id, key: key, checkpoint: checkpoint }); print("PRODUCE ", w.id, " ", key); flush_stdout(); progress = true; }
+            if !producing { let initial = Saved { heap: copy(base), base: base.header, sequence: w.saved.sequence, protected: base.nodes.len, storage: instrumented }; let checkpoint = source::reserve_identity(); assert(qput(Work { saved: copy(initial), id: w.id, identity: identity(initial), mode: 2, helper: [], key: key, checkpoint: checkpoint })); running.push(Running { id: w.id, key: key, checkpoint: checkpoint }); print("PRODUCE ", w.id, " ", key); flush_stdout(); progress = true; }
         } }
         // Ready continuations/helpers get first refusal; new jobs fill every remaining slot.
         while !closing && received < queue.len && running.len < limit { progress = true; let id = queue[received]; received += 1; let key = definition(directory, id); var index: i64 = -1;
             for p, i in prepared { if p.key == key { index = i; break; } }
             if index < 0 { let checkpoint, ok = prepare(base, directory, id, key); if !ok { continue; } let bytes = snapshot::footprint(checkpoint); if prepared.len >= 1024 || bytes > 67108864 - retained { print("ERROR ", id, " definition-budget"); flush_stdout(); continue; } retained += bytes; index = prepared.len; prepared.push(Prepared { key: key, heap: copy(checkpoint) }); }
-            for p in prepared { if p.key != key { continue; } let initial = Saved { heap: copy(p.heap), protected: base.nodes.len, storage: instrumented }; let checkpoint = source::reserve_identity(); assert(qput(Work { saved: copy(initial), id: id, identity: identity(initial), mode: 0, helper: [], key: -1, checkpoint: checkpoint })); running.push(Running { id: id, checkpoint: checkpoint }); print("START ", id); flush_stdout(); break; } }
+            for p in prepared { if p.key != key { continue; } let initial = Saved { heap: copy(p.heap), base: base.header, protected: base.nodes.len, storage: instrumented }; let checkpoint = source::reserve_identity(); assert(qput(Work { saved: copy(initial), id: id, identity: identity(initial), mode: 0, helper: [], key: -1, checkpoint: checkpoint })); running.push(Running { id: id, checkpoint: checkpoint }); print("START ", id); flush_stdout(); break; } }
         // Release inactive continuation owners and their budget after dispatch.
         { var inactive: i64 = 0; for w in waiting { if !w.active { inactive += 1; retained -= footprint(w.saved); } } if inactive == waiting.len { waiting.clear(); } else if inactive > 0 { var active: Waiting[>..] = []; for w in waiting { if w.active { active.push(copy(w)); } } waiting = copy(active); } }
         if received == queue.len { queue.clear(); received = 0; }

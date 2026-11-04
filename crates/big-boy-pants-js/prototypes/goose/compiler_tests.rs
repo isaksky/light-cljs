@@ -81,6 +81,11 @@ fn goose_compiler_generated_assembly() {
         .unwrap()
     };
     let cases = [
+        ("zalstok", "sample [x]", "{}"),
+        ("zalstok", "sample [x] x", "{}"),
+        ("zalstok", "sample [x] x (+ x 1)", "{}"),
+        ("zalstok", "sample [x] ^:marked x", "{}"),
+        ("zalstok", "sample [x] `(tag ~x)", "{}"),
         ("kalvas", "[2 3] 4", "{}"),
         ("dukdos", "7", "{}"),
         ("dukdos", "^:marked x", "{}"),
@@ -159,6 +164,30 @@ fn goose_compiler_generated_assembly() {
         drop(host);
         if let Some(s) = session {
             assert_eq!(s.stats().jobs, cases.len() as u64 + 2);
+            let trace = s.trace();
+            assert_eq!(
+                trace.iter().filter(|s| s.starts_with("PRODUCED ")).count(),
+                1
+            );
+            // The prepared branch exports canonical source with its captured
+            // runtime. Inspect the actual transported compiler artifact; no
+            // rewritten helper body is supplied by this test.
+            let helpers = std::fs::read_dir(&s.directory)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| p.extension().is_some_and(|e| e == "gsp"))
+                .map(|p| String::from_utf8_lossy(&std::fs::read(p).unwrap()).into_owned())
+                .filter(|s| s.contains("rt.core.list") && s.contains("workload.common"))
+                .collect::<Vec<_>>();
+            assert_eq!(helpers.len(), 1);
+            let source = &helpers[0];
+            for emitted in ["rt.core.list", "rt.symbol", "workload.common", "norm"] {
+                assert!(
+                    source.contains(emitted),
+                    "missing canonical helper {emitted}"
+                );
+            }
+            eprintln!("generated callable workers={workers}: {trace:?}");
             s.close();
             cleaned(&s);
         }
@@ -571,6 +600,23 @@ fn goose_compiler_arguments_identity() {
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_wrapper_conventions_and_boundaries() {
     for (body, expected) in [
+        (
+            "const f=function(x){return this===null && x===form;}; return __rt.cljCallable(f)===false && __rt.cljCallMember(f,null)===f.call && __rt.call(f,__rt.cljCallMember(f,null),null,form);",
+            None,
+        ),
+        (
+            "const k=__rt.formKeyword(null,'k');const m=__rt.formMap(k,form);const v=__rt.formVector(form);const s=__rt.formSet(k); return __rt.cljCallable(k) && __rt.cljCallable(m) && __rt.cljCallable(v) && __rt.cljCallable(s) && __rt.cljInvoke(k,m,null,1)===form && __rt.cljInvoke(m,k,null,1)===form && __rt.cljInvoke(v,0.5,null,1)===form && __rt.cljInvoke(s,k,null,1)===k;",
+            None,
+        ),
+        (
+            "return __rt.cljCallMember({},null);",
+            Some("Fault.NativeBoundary"),
+        ),
+        (
+            "return __rt.cljInvoke(()=>1,null,null,1);",
+            Some("Fault.NativeBoundary"),
+        ),
+        ("return rt.intrinsicRegExp();", Some("Fault.NativeBoundary")),
         ("return rt.core.inc.call(null,40)===41;", None),
         (
             "const call=(function(){}).call; return call();",
@@ -1299,118 +1345,130 @@ fn goose_compiler_cleanup_abort_reclaims_queued_and_in_transit_work() {
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_drains_ready_batches_without_progress_backoff() {
-    for workers in [1, 2, 4, 8] {
-        let session = GooseSession::start_mode(&runner(), workers, Some("dispatch-test")).unwrap();
-        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
-        let (_, args, call) = inputs(&e, "rt => (form, env) => 0");
-        let values = args
-            .iter()
-            .map(|&id| e.get(id).unwrap())
-            .collect::<Vec<_>>();
-        let limits = ConversionLimits::default();
-        let budget = bridge::Budget::new(limits.nodes, e.control.clone());
-        let graph = bridge::Graph::arguments(&values, limits, &budget).unwrap();
-        let bytes = graph.encode().unwrap();
-        session.export(&session.directory.join("definition-1.gsp"),
-            "rt => { let state = {n: 0}; return (form, env) => { state.n = state.n + 1; let value = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value'); return state.n + value; }; }").unwrap();
-        let mut replies = Vec::new();
-        for id in 1..=8 {
-            std::fs::write(session.directory.join(format!("{id}.definition")), "1").unwrap();
-            std::fs::write(session.directory.join(format!("{id}.gfb")), &bytes).unwrap();
-            // Real emitted helper, with all keys available before dispatch.
-            // Concurrent waiters must still elect exactly one producer.
-            session
-                .export(
-                    &session.directory.join(format!("{id}-0.helper")),
-                    "rt => 41",
-                )
-                .unwrap();
-            session.answer_key(id, 0, "9").unwrap();
-            let (tx, rx) = mpsc::channel();
-            session.pending.lock().unwrap().insert(id, tx);
-            replies.push(rx);
-        }
-        {
-            let mut process = session.process.lock().unwrap();
-            let input = &mut process.as_mut().unwrap().input;
-            for id in 1..=8 {
-                writeln!(input, "{id}").unwrap();
-            }
-            input.flush().unwrap();
-        }
-        for (index, rx) in replies.into_iter().enumerate() {
-            loop {
-                match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
-                    Event::Done => break,
-                    Event::Start | Event::Resumed | Event::Produced | Event::Need(_, _) => {}
-                    other => panic!("unexpected reply: {other:?}"),
-                }
-            }
-            let bytes =
-                std::fs::read(session.directory.join(format!("{}.out", index + 1))).unwrap();
-            let output = bridge::Graph::decode(&bytes, limits, &budget)
-                .unwrap()
-                .expansion(&call, origin(&call), &graph.originals, limits, &budget)
-                .unwrap();
-            assert!(
-                output.data().value_eq(&Datum::new(DatumKind::Integer(42))),
-                "continuation replayed mutation"
-            );
-        }
-        session.close();
-        cleaned(&session);
-        let trace = session.trace();
-        assert_eq!(
-            trace.iter().filter(|s| s.starts_with("PREPARED ")).count(),
-            1
-        );
-        assert_eq!(
-            trace.iter().filter(|s| s.starts_with("PRODUCED ")).count(),
-            1
-        );
-        assert_eq!(trace.iter().filter(|s| s.starts_with("START ")).count(), 8);
-        assert_eq!(trace.iter().filter(|s| s.starts_with("RESUME ")).count(), 8);
-        let mut previous = [0; 11];
-        let mut observed = 0;
-        for line in trace.iter().filter(|s| s.starts_with("SCHED ")) {
-            let values = line
-                .split_whitespace()
-                .skip(2)
-                .map(|s| s.parse::<u64>().unwrap())
+    for callable in [false, true] {
+        for workers in [1, 2, 4, 8] {
+            let session =
+                GooseSession::start_mode(&runner(), workers, Some("dispatch-test")).unwrap();
+            let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+            let (_, args, call) = inputs(&e, "rt => (form, env) => 0");
+            let values = args
+                .iter()
+                .map(|&id| e.get(id).unwrap())
                 .collect::<Vec<_>>();
-            assert_eq!(values[0], previous[0] + 1);
-            if values[1] > previous[1] {
-                assert_eq!(values[2], previous[2], "progress must not back off: {line}");
-                assert_eq!(values[3], previous[3], "progress must not sleep: {line}");
+            let limits = ConversionLimits::default();
+            let budget = bridge::Budget::new(limits.nodes, e.control.clone());
+            let graph = bridge::Graph::arguments(&values, limits, &budget).unwrap();
+            let bytes = graph.encode().unwrap();
+            let result = if callable {
+                "value.call(null)"
             } else {
-                assert_eq!(values[2], previous[2] + 1);
+                "value"
+            };
+            session.export(&session.directory.join("definition-1.gsp"),
+            &format!("rt => {{ let state = {{n: 0}}; return (form, env) => {{ state.n = state.n + 1; let value = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value'); return state.n + {result}; }}; }}")).unwrap();
+            let mut replies = Vec::new();
+            for id in 1..=8 {
+                std::fs::write(session.directory.join(format!("{id}.definition")), "1").unwrap();
+                std::fs::write(session.directory.join(format!("{id}.gfb")), &bytes).unwrap();
+                // Real emitted helper, with all keys available before dispatch.
+                // Concurrent waiters must still elect exactly one producer.
+                session
+                    .export(
+                        &session.directory.join(format!("{id}-0.helper")),
+                        if callable {
+                            "rt => {const result=41; return function(){return result;};}"
+                        } else {
+                            "rt => 41"
+                        },
+                    )
+                    .unwrap();
+                session.answer_key(id, 0, "9").unwrap();
+                let (tx, rx) = mpsc::channel();
+                session.pending.lock().unwrap().insert(id, tx);
+                replies.push(rx);
             }
-            previous.copy_from_slice(&values);
-            observed += 1;
+            {
+                let mut process = session.process.lock().unwrap();
+                let input = &mut process.as_mut().unwrap().input;
+                for id in 1..=8 {
+                    writeln!(input, "{id}").unwrap();
+                }
+                input.flush().unwrap();
+            }
+            for (index, rx) in replies.into_iter().enumerate() {
+                loop {
+                    match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                        Event::Done => break,
+                        Event::Start | Event::Resumed | Event::Produced | Event::Need(_, _) => {}
+                        other => panic!("unexpected reply: {other:?}"),
+                    }
+                }
+                let bytes =
+                    std::fs::read(session.directory.join(format!("{}.out", index + 1))).unwrap();
+                let output = bridge::Graph::decode(&bytes, limits, &budget)
+                    .unwrap()
+                    .expansion(&call, origin(&call), &graph.originals, limits, &budget)
+                    .unwrap();
+                assert!(
+                    output.data().value_eq(&Datum::new(DatumKind::Integer(42))),
+                    "continuation replayed mutation"
+                );
+            }
+            session.close();
+            cleaned(&session);
+            let trace = session.trace();
+            assert_eq!(
+                trace.iter().filter(|s| s.starts_with("PREPARED ")).count(),
+                1
+            );
+            assert_eq!(
+                trace.iter().filter(|s| s.starts_with("PRODUCED ")).count(),
+                1
+            );
+            assert_eq!(trace.iter().filter(|s| s.starts_with("START ")).count(), 8);
+            assert_eq!(trace.iter().filter(|s| s.starts_with("RESUME ")).count(), 8);
+            let mut previous = [0; 11];
+            let mut observed = 0;
+            for line in trace.iter().filter(|s| s.starts_with("SCHED ")) {
+                let values = line
+                    .split_whitespace()
+                    .skip(2)
+                    .map(|s| s.parse::<u64>().unwrap())
+                    .collect::<Vec<_>>();
+                assert_eq!(values[0], previous[0] + 1);
+                if values[1] > previous[1] {
+                    assert_eq!(values[2], previous[2], "progress must not back off: {line}");
+                    assert_eq!(values[3], previous[3], "progress must not sleep: {line}");
+                } else {
+                    assert_eq!(values[2], previous[2] + 1);
+                }
+                previous.copy_from_slice(&values);
+                observed += 1;
+            }
+            assert!(observed > 0);
+            assert_eq!(previous[9], 8, "queued input drains in one turn");
+            assert_eq!(
+                previous[10], workers as u64,
+                "simultaneous ready completions drain in one turn"
+            );
+            assert_eq!(
+                previous[8], 17,
+                "eight waits, one helper, eight completed bodies"
+            );
+            assert_eq!(previous[7], 9, "eight queued requests and shutdown");
+            let threads = trace.iter().find(|s| s.starts_with("THREADS ")).unwrap();
+            assert_eq!(
+                threads,
+                &format!(
+                    "THREADS 0 {} {} {}",
+                    workers * 2 + 2,
+                    workers * 2 + 2,
+                    workers * 2 + 1
+                ),
+                "coordinator + input + configured execution workers and join-only supervisors"
+            );
+            assert_pool(&trace, workers, 17);
         }
-        assert!(observed > 0);
-        assert_eq!(previous[9], 8, "queued input drains in one turn");
-        assert_eq!(
-            previous[10], workers as u64,
-            "simultaneous ready completions drain in one turn"
-        );
-        assert_eq!(
-            previous[8], 17,
-            "eight waits, one helper, eight completed bodies"
-        );
-        assert_eq!(previous[7], 9, "eight queued requests and shutdown");
-        let threads = trace.iter().find(|s| s.starts_with("THREADS ")).unwrap();
-        assert_eq!(
-            threads,
-            &format!(
-                "THREADS 0 {} {} {}",
-                workers * 2 + 2,
-                workers * 2 + 2,
-                workers * 2 + 1
-            ),
-            "coordinator + input + configured execution workers and join-only supervisors"
-        );
-        assert_pool(&trace, workers, 17);
     }
 }
 
@@ -1671,17 +1729,26 @@ fn goose_compiler_cancel_reaps_persistent_execution_workers() {
     for source in [
         "rt => (form, env) => { while (true) {} }",
         "rt => (form, env) => __rt.cljCount(rt.core.mapSeq(()=>{while(true){}},__rt.formList(1)))",
+        "rt => (form, env) => {const f=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/infinite');return f.call(null);}",
     ] {
         for workers in [1, 2, 4, 8] {
             let session =
                 GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
             let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
             let (function, args, _) = inputs(&e, source);
+            e.register_compiler_root("fixture/infinite", Some(42), true, "cancel.cljs", None)
+                .unwrap();
+            e.install_helper(Rc::new(|_, _| Ok("rt => function(){while(true){}}".into())));
+            let gate = if source.contains("fixture/infinite") {
+                "RESUME "
+            } else {
+                "START "
+            };
             let s = session.clone();
             let control = e.control();
             let cancelling = thread::spawn(move || {
                 let until = Instant::now() + Duration::from_secs(10);
-                while !s.trace().iter().any(|s| s.starts_with("START ")) {
+                while !s.trace().iter().any(|s| s.starts_with(gate)) {
                     assert!(Instant::now() < until, "job was never admitted");
                     thread::yield_now();
                 }
@@ -1706,6 +1773,118 @@ fn goose_compiler_cancel_reaps_persistent_execution_workers() {
                     workers * 2 + 1
                 )
             );
+        }
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_callable_nested_demand_aliases_and_no_replay() {
+    for workers in [1, 2, 4, 8] {
+        let s = GooseSession::start(&runner(), workers).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let (f, args, call) = inputs(
+            &e,
+            r#"rt => {const state={n:0};return (form,env) => {
+            state.n++;
+            const f=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/function');
+            const alias=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/alias');
+            const result=f.call(null,state);
+            return state.n===2 && f===alias && result===43;
+        };}"#,
+        );
+        for (name, unit) in [
+            ("fixture/function", 42),
+            ("fixture/alias", 42),
+            ("fixture/number", 43),
+        ] {
+            e.register_compiler_root(name, Some(unit), true, "callable.cljs", None)
+                .unwrap();
+        }
+        let callbacks = Rc::new(Cell::new(0));
+        let count = callbacks.clone();
+        e.install_helper(Rc::new(move |_, unit| {
+            count.set(count.get()+1);
+            Ok(if unit == 42 {
+                "rt => function(state){state.n++; const n=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/number'); return this===null ? n+state.n : -100;}".into()
+            } else { assert_eq!(unit,43); "rt => 41".into() })
+        }));
+        for _ in 0..3 {
+            let result = e.call(f, &args).unwrap();
+            let output = e
+                .export_form(result, &call, origin(&call), Default::default())
+                .unwrap();
+            assert!(
+                output
+                    .data()
+                    .value_eq(&Datum::new(DatumKind::Boolean(true)))
+            );
+        }
+        assert_eq!(
+            callbacks.get(),
+            9,
+            "every demand reaches the compiler root service"
+        );
+        let trace = s.trace();
+        assert_eq!(
+            trace.iter().filter(|s| s.starts_with("PRODUCED ")).count(),
+            2
+        );
+        assert_eq!(trace.iter().filter(|s| s.starts_with("RESUME ")).count(), 9);
+        eprintln!("callable nested workers={workers}: {trace:?}");
+        s.close();
+        cleaned(&s);
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_callable_throw_and_publication_errors() {
+    for workers in [1, 2, 4, 8] {
+        for (helper, caught, expected) in [
+            ("rt => function(x){throw x;}", true, None),
+            (
+                "rt => function(x){throw x;}",
+                false,
+                Some("HostEffect function="),
+            ),
+            (
+                "rt => {let n=0;return function(){n++;return n;};}",
+                false,
+                Some("Error.Unsupported"),
+            ),
+            (
+                "rt => {const x={n:1};return function(){return x.n;};}",
+                false,
+                Some("Error.Unsupported"),
+            ),
+        ] {
+            let s = GooseSession::start(&runner(), workers).unwrap();
+            let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+            let body = if caught {
+                "let n=0;n++;const f=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/throw');try{f.call(null,form);}catch(x){if(n!==1)return false;return x;}"
+            } else {
+                "const f=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/throw');return f.call(null,form);"
+            };
+            let (f, args, call) = inputs(&e, &format!("rt => (form,env) => {{{body}}}"));
+            e.register_compiler_root("fixture/throw", Some(42), true, "throw.cljs", None)
+                .unwrap();
+            e.install_helper(Rc::new(move |_, _| Ok(helper.into())));
+            let result = e.call(f, &args);
+            if let Some(expected) = expected {
+                let message = result.unwrap_err().to_string();
+                assert!(message.contains(expected), "{message}");
+                assert!(message.contains("emitted-span="), "{message}");
+            } else {
+                let output = e
+                    .export_form(result.unwrap(), &call, origin(&call), Default::default())
+                    .unwrap();
+                assert!(output.data().value_eq(&call.data()));
+                assert_eq!(output.span().bytes(), call.span().bytes());
+                assert_eq!(output.span().source().name(), call.span().source().name());
+            }
+            s.close();
+            cleaned(&s);
         }
     }
 }

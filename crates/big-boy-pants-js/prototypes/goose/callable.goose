@@ -1,0 +1,164 @@
+import std;
+import .source_vm;
+import .snapshot;
+
+namespace callable;
+
+// Local compiler-ABI transport. Full producer code is validated, including
+// unreachable nested functions. Only reachable immutable captures are installed;
+// frozen base handles reconnect to the consumer's own runtime, never its sender.
+struct Publication { version: i64 = 1, base: snapshot::Header, image: snapshot::Snapshot }
+struct Visit { id: i64, next: i64 = 0 }
+fn fail(c: snapshot::Control&, e: snapshot::Error = snapshot::Error.Unsupported) -> bool { return snapshot::reject(c, e); }
+fn normalized(v: source::Value) -> source::Value { var out = v; out.session = 0; return out; }
+fn same(a: source::Value, b: source::Value) -> bool { return bytes_of([normalized(a)]) == bytes_of([normalized(b)]); }
+fn same(a: source::Node, b: source::Node) -> bool {
+    var x = a; var y = b;
+    x.value = normalized(x.value); x.namespace_value = normalized(x.namespace_value); x.metadata = normalized(x.metadata);
+    y.value = normalized(y.value); y.namespace_value = normalized(y.namespace_value); y.metadata = normalized(y.metadata);
+    return bytes_of([x]) == bytes_of([y]);
+}
+fn code_prefix(p: const Publication&, code: const source::Code&, c: snapshot::Control&) -> bool {
+    let s .= p.image; let e = p.base.ends;
+    let lengths:     i64[6] = [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len];
+    let destination: i64[6] = [code.source_bytes.len, code.functions.len, code.constants.len, code.children.len, code.ops.len, code.units.len];
+    for i in 6 { if !snapshot::range(0, e[i], lengths[i]) || !snapshot::range(0, e[i], destination[i]) { return fail(c, snapshot::Error.Code); } }
+    if !snapshot::poll(c, e[0] + e[1] + e[2] + e[3] + e[4] + e[5]) { return false; }
+    if s.code_bytes[..e[0]] != code.source_bytes[..e[0]] || bytes_of(s.functions[..e[1]]) != bytes_of(code.functions[..e[1]]) || bytes_of(s.code_constants[..e[2]]) != bytes_of(code.constants[..e[2]]) || s.children[..e[3]] != code.children[..e[3]] || bytes_of(s.ops[..e[4]]) != bytes_of(code.ops[..e[4]]) || s.code_units[..e[5]] != code.units[..e[5]] { return fail(c, snapshot::Error.Code); }
+    // Suffix owners are independently appendable; cross-owner ranges would
+    // otherwise change meaning when the consumer already has macro/helper code.
+    for f in s.functions[e[1]..] { if !snapshot::poll(c) { return false; } if f.start < e[4] || f.constants < e[2] || f.children < e[3] { return fail(c, snapshot::Error.Code); } }
+    for op in s.ops[e[4]..] { if !snapshot::poll(c) { return false; } if op.start < e[0] { return fail(c, snapshot::Error.Code); } }
+    for v in s.code_constants[e[2]..] { if !snapshot::poll(c) { return false; } if v.tag == 4 && v.a < e[5] { return fail(c, snapshot::Error.Code); } }
+    return true;
+}
+fn base_node(p: const Publication&, heap: const source::Heap&, id: i64, c: snapshot::Control&) -> bool {
+    let s .= p.image; let n = s.nodes[id];
+    if id >= heap.nodes.len || !same(n, heap.nodes[id]) { return fail(c, snapshot::Error.Link); }
+    // Base ranges and property indices retain their original locations. Check
+    // both values and text, and follow referenced base nodes in graph().
+    if snapshot::has_values(n.kind) {
+        if !snapshot::range(n.start, n.count, heap.values.len) { return fail(c, snapshot::Error.Link); }
+        for i in n.count { if !snapshot::poll(c) { return false; } if !same(s.values[n.start + i], heap.values[n.start + i]) { return fail(c, snapshot::Error.Link); } }
+    }
+    var at = n.head;
+    while at >= 0 {
+        if !snapshot::poll(c) { return false; }
+        if at >= heap.properties.len { return fail(c, snapshot::Error.Link); }
+        let a = s.properties[at]; let b = heap.properties[at];
+        if a.next != b.next || !same(a.key, b.key) || !same(a.value, b.value) { return fail(c, snapshot::Error.Link); } at = a.next;
+    }
+    return true;
+}
+fn edge_count(s: const snapshot::Snapshot&, n: source::Node, c: snapshot::Control&) -> i64 {
+    var count = 3 + (if snapshot::has_values(n.kind) { n.count } else { 0 });
+    var at = n.head; while at >= 0 { if !snapshot::poll(c) { return -1; } count += 2; at = s.properties[at].next; } return count;
+}
+fn edge(s: const snapshot::Snapshot&, n: source::Node, i: i64, c: snapshot::Control&) -> source::Value {
+    if i < 3 { return match i { 0 => n.value, 1 => n.namespace_value, _ => n.metadata }; }
+    var rest = i - 3;
+    if snapshot::has_values(n.kind) { if rest < n.count { return s.values[n.start + rest]; } rest -= n.count; }
+    var at = n.head; while rest >= 2 { if !snapshot::poll(c) { return source::Value {}; } at = s.properties[at].next; rest -= 2; }
+    return if rest == 0 { s.properties[at].key } else { s.properties[at].value };
+}
+fn graph(p: const Publication&, expected: snapshot::Header, heap: const source::Heap&, ids: i64[>..]&, slots: i64[>..]&, c: snapshot::Control&) -> bool {
+    if p.version != 1 || bytes_of([p.base]) != bytes_of([expected]) { return fail(c, snapshot::Error.Version); }
+    let s .= p.image; let base = expected.ends[6];
+    if base < 0 || base > s.nodes.len || s.bindings.len != 1 || s.bindings[0].value.tag != 5 || s.nodes[s.bindings[0].value.a].kind != 2 { return fail(c, snapshot::Error.Link); }
+    if !code_prefix(p, heap.code, c) { return false; }
+    if !snapshot::range(0, expected.ends[9], s.units.len) || !snapshot::range(0, expected.ends[9], heap.units.len) || !snapshot::poll(c, expected.ends[9]) { return fail(c, snapshot::Error.Link); }
+    if s.units[..expected.ends[9]] != heap.units[..expected.ends[9]] { return fail(c, snapshot::Error.Link); }
+    if !snapshot::poll(c, s.nodes.len * 2) { return false; }
+    ids.resize(s.nodes.len, -1); var colors: u8[>..] = []; colors.resize(s.nodes.len, 0);
+    var stack: Visit[>..<] = [Visit { id: s.bindings[0].value.a }];
+    while stack.len > 0 {
+        if !snapshot::poll(c) { return false; }
+        let id = stack[stack.len - 1].id; let n = s.nodes[id];
+        if colors[id] == 0 {
+            colors[id] = 1;
+            if id < base {
+                if n.kind == 1 || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
+                if !base_node(p, heap, id, c) { return false; } ids[id] = id;
+            } else {
+                if n.kind == 0 || n.kind == 1 || n.kind > 12 || n.head != -1 || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
+                ids[id] = heap.nodes.len + slots.len; slots.push(id);
+            }
+        }
+        let i = stack[stack.len - 1].next;
+        let edges = edge_count(s, n, c); if c.error != snapshot::Error.None { return false; }
+        if i == edges { colors[id] = 2; stack.pop(); continue; }
+        stack[stack.len - 1].next += 1;
+        let v = edge(s, n, i, c); if c.error != snapshot::Error.None { return false; }
+        if v.tag != 5 { continue; }
+        // A frozen base graph must not capture any producer-private object.
+        if id < base && v.a >= base { return fail(c, snapshot::Error.Link); }
+        if colors[v.a] == 1 {
+            var inside = false;
+            for f in stack { if !snapshot::poll(c) { return false; } if f.id == v.a { inside = true; } if inside && s.nodes[f.id].kind != 2 && s.nodes[f.id].kind != 3 { return fail(c); } }
+        } else if colors[v.a] == 0 { stack.push(Visit { id: v.a }); }
+    }
+    return true;
+}
+fn encode(heap: const source::Heap&, base: const snapshot::Snapshot&, root: source::Value, out: u8[>..]&, c: snapshot::Control&, checkpoint: i64) -> bool {
+    let bindings = [snapshot::Binding { id: 0, generation: 1, value: root }];
+    let view = snapshot::borrow(heap, bindings, checkpoint);
+    if 5 * snapshot::footprint(view) + 2 * snapshot::footprint(base) > c.bytes { return fail(c, snapshot::Error.Bytes); }
+    let image = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: root }], c, checkpoint);
+    if c.error != snapshot::Error.None { return false; }
+    let p = Publication { base: base.header, image: copy(image) };
+    // Verify against the actual frozen base, not the producer's own claims.
+    var code = source::Code {}; var original = source::Heap { code: code };
+    // No restore/initialization/identity allocation is needed for comparison.
+    code.source_bytes.append(base.code_bytes); code.functions.append(base.functions); code.constants.append(base.code_constants); code.children.append(base.children); code.ops.append(base.ops); code.units.append(base.code_units); code.valid = true;
+    original.nodes.append(base.nodes); original.values.append(base.values); original.properties.append(base.properties); original.units.append(base.units);
+    var ids: i64[>..] = []; var slots: i64[>..] = [];
+    if !graph(p, base.header, original, ids, slots, c) { return false; }
+    var bytes: u8[>..] = []; to_bytes([p], bytes);
+    if bytes.len > c.bytes || !snapshot::poll(c, bytes.len) { return fail(c, snapshot::Error.Bytes); }
+    out.append(bytes); return true;
+}
+fn relocated(v: source::Value, ids: const i64[:], units: i64, identity: i64) -> source::Value {
+    var out = v; if v.tag >= 4 { out.session = identity; if v.tag == 5 { out.a = ids[v.a]; } else { out.a += units; } } return out;
+}
+fn shifted(n: i64, base: i64, delta: i64) -> i64 { return if n < base { n } else { n + delta }; }
+fn install(p: const Publication&, expected: snapshot::Header, code: source::Code&, heap: source::Heap&, c: snapshot::Control&) -> source::Value {
+    if !(heap.code .== code) || !code.valid || heap.fault != source::Fault.None || heap.live_jobs != 0 { fail(c, snapshot::Error.Boundary); return source::Value {}; }
+    if !snapshot::validate(p.image, c) { return source::Value {}; }
+    var ids: i64[>..] = []; var slots: i64[>..] = [];
+    if !graph(p, expected, heap, ids, slots, c) { return source::Value {}; }
+    let s .= p.image; let e = expected.ends;
+    let delta:   i64[6] = [code.source_bytes.len - e[0], code.functions.len - e[1], code.constants.len - e[2], code.children.len - e[3], code.ops.len - e[4], code.units.len - e[5]];
+    let lengths: i64[6] = [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len];
+    for i in 6 { if lengths[i] + delta[i] > 8388608 { fail(c, snapshot::Error.Bytes); return source::Value {}; } }
+    var count: i64 = 0; for id in slots { if snapshot::has_values(s.nodes[id].kind) { count += s.nodes[id].count; } }
+    if slots.len > heap.limits.nodes - heap.nodes.len || count > heap.limits.values - heap.values.len || s.units.len > heap.limits.units - heap.units.len || s.code_constants.len - e[2] > heap.limits.values - heap.constants.len || s.bytes.len > 8388608 - heap.source_bytes.len || s.sources.len > 1048576 - heap.source_ranges.len || s.functions.len + delta[1] > 65536 || s.code_bytes.len + delta[0] > 8388608 { fail(c, snapshot::Error.Bytes); return source::Value {}; }
+    // Cover existing destination + full decoded image + staging/mapping work.
+    let empty: snapshot::Binding[] = []; let view = snapshot::borrow(heap, empty, expected.checkpoint);
+    let cost = snapshot::footprint(view) + 2 * snapshot::footprint(s) + bytes_of(ids).len + bytes_of(slots).len;
+    if cost > c.bytes || !snapshot::poll(c, snapshot::payload_bytes(s) + count + slots.len) { fail(c, snapshot::Error.Bytes); return source::Value {}; }
+    let units = heap.units.len; let sources = heap.source_ranges.len; let bytes = heap.source_bytes.len;
+    // Commit only after complete code/graph/context validation and all budgets.
+    for f in s.functions[e[1]..] { var n = f; n.start += delta[4]; n.constants += delta[2]; n.children += delta[3]; code.functions.push(n); }
+    for op in s.ops[e[4]..] { var n = op; n.start += delta[0]; n.end += delta[0]; if n.code == 13 || n.code == 14 || n.code == 56 { n.arg += delta[4]; } code.ops.push(n); }
+    for v in s.code_constants[e[2]..] { var n = v; if n.tag == 4 { n.a += delta[5]; } code.constants.push(n); }
+    for id in s.children[e[3]..] { code.children.push(shifted(id, e[1], delta[1])); }
+    code.units.append(s.code_units[e[5]..]); code.source_bytes.append(s.code_bytes[e[0]..]);
+    // Constants carry heap strings, not offsets into the separate Code owner.
+    for v in s.constants[e[2]..] { heap.constants.push(relocated(v, ids, units, heap.identity)); }
+    heap.units.append(s.units); heap.source_bytes.append(s.bytes);
+    for r in s.sources { heap.source_ranges.push(source::SourceRange { start: bytes + r.start, count: r.count }); }
+    for id in slots {
+        var n = s.nodes[id]; n.value = relocated(n.value, ids, units, heap.identity); n.namespace_value = relocated(n.namespace_value, ids, units, heap.identity); n.metadata = relocated(n.metadata, ids, units, heap.identity);
+        if n.kind == 2 { n.function = shifted(n.function, e[1], delta[1]); }
+        if snapshot::has_values(n.kind) { n.start = heap.values.len; for v in s.values[s.nodes[id].start..(s.nodes[id].start + n.count)] { heap.values.push(relocated(v, ids, units, heap.identity)); } }
+        if n.source >= 0 { n.source += sources; } heap.nodes.push(n);
+    }
+    c.copied_bytes += snapshot::payload_bytes(s); return relocated(s.bindings[0].value, ids, units, heap.identity);
+}
+fn decode_install(bytes: const u8[:], base: snapshot::Header, code: source::Code&, heap: source::Heap&, c: snapshot::Control&) -> source::Value {
+    if bytes.len > c.bytes || !snapshot::poll(c, bytes.len) { fail(c, snapshot::Error.Bytes); return source::Value {}; }
+    let records, ok = from_bytes<Publication[>..]>(bytes);
+    if !ok || records.len != 1 { fail(c, snapshot::Error.Length); return source::Value {}; }
+    for p in records { return install(p, base, code, heap, c); }
+    return source::Value {};
+}

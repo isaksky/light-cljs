@@ -41,7 +41,7 @@ leaves. Each heap owns one immutable call method identity, relocated by the
 version-2 snapshot header. Function property writes and other prototype behavior
 remain unsupported. `fnApplyNull` copies a closure with its immutable Clojure
 apply receiver convention; `fnApplyReceiver` observes that convention. These
-operations do not add general `apply` or callable-helper transport support.
+operations do not add general `apply` support.
 
 Syntax-quote assembly supports bounded eager `cljConcat`/`cljConcatAll` over
 nil, lists, vectors and existing sequence cursors. Copies retain child
@@ -81,6 +81,51 @@ existing reference limitation: V8's value-based scalar provenance assigns all
 equal numbers the last input span. Goose retains each occurrence's original
 span; the test checks those exact spans and complete equality across Goose
 worker counts instead of normalizing away their identities.
+
+The same regression now executes the actual `zalstok`/`favoukstun` callable
+path with zero, one and several body forms, metadata and nested syntax quote.
+Its cached preparation exports the canonical helper unchanged, including its
+captured runtime, `rt.core.list`, `rt.symbol` and `.call`. Goose executes both
+the factory and returned function; the retained compiler bootstrap service
+continues to supply code and resolution. Complete V8 forms are compared after
+teardown at 1/2/4/8 workers. The concurrent compiler fixture covers both form
+and callable helpers, retaining one producer for eight consumers.
+
+`callable.goose` uses the checked snapshot codec for a versioned local callable
+publication. It validates the entire producer code/heap image, including dead
+nested functions, checks the frozen base code and reachable runtime records,
+and appends the complete helper code suffix with relocated function, constant,
+child, instruction and source indices. It installs only reachable immutable
+closure/cell/form records. Runtime handles reconnect to the consumer's own
+checked base; occurrence, metadata and capture aliases remain distinct where
+required. Plain private objects/arrays, mutable or uninitialized cells, lazy
+maps and cycles through forms reject before installation. Closure/cell cycles
+are admitted. String/source pools are copied, including unused ranges; this is
+bounded copying, not a compacting collector. The full publication is retained
+once by the coordinator under its existing 64 MiB budget. Validation and staged
+copies use the existing ten-million-work and 64 MiB byte controls; no quota
+was increased.
+
+Each private heap caches an imported callable by the authoritative helper unit
+key. A second root name retains the same function identity, including after
+another helper suspension. Import runs no JavaScript and does not replay the
+producer. Tests preserve mutations across nested helper frames, caught throws
+and repeated private calls, and check cancellation and full pool teardown.
+Callable classification covers ordinary closures and the existing finite
+keyword/symbol/vector/map/set forms; ordinary functions retain `.call` receiver
+semantics. Regex, protocol and multimethod invocation remain explicit native
+boundaries with emitted instruction context.
+
+Validated with Goose `v2026.3-267-g369c7a2c` / runtime `3025e5810379`,
+Rust 1.99.1, Node 26.12.1 and Babashka 1.12.218 using `correctness.bb`
+(including `regenerate.bb --check`, smoke, 45 typed rows per mode, 35 compiler
+tests per mode and three QuickJS bridge tests). The final compiler command
+also covers callable import accounting. Engine all-target and default/QuickJS
+Goose feature checks pass. Strict Clippy still rejects unchanged engine/root
+code, including three additional engine test diagnostics (`mutable_key_type`,
+`chunks_exact_to_as_chunks`, unused `dep::Wakeups`); the existing root formatter
+differences remain. The full compiler/engine suites and full 200k build are
+separate from this bounded callable check.
 
 [Runtime design decisions](runtime-design.md) trace the captured closure and
 persistent-form requirements through QuickJS/Pants and explain the indexed
@@ -200,13 +245,13 @@ Goose compiler, Rust/C toolchain, Node and the required patched V8 cache:
 bb crates/big-boy-pants-js/prototypes/goose/compiler.bb
 ```
 
-This builds debug/native runners and executes the 19 focused tests per mode:
+This builds debug/native runners and executes the 35 focused tests per mode:
 actual corpus expansion against V8, deterministic application JS/output,
 provenance, reuse/isolation, one-worker reentrancy, 1/2/4/8 execution slots and
 failure/cleanup checks. Read the [committed results](branching-results.md) for
 performance; the full quiet benchmark matrix is unnecessary for this demo.
 This remains an opt-in finite JS/runtime subset: unsupported selected jobs fail
-explicitly; callable helper publication, live shared compile-time effects,
+explicitly; live shared compile-time effects,
 complete ECMAScript/cljs.core, general tracing GC and production migration are
 outside its surface. Isolated effect/artifact tests do not extend that surface.
 Prior strict-lint/root-format and full-suite wasm limitations remain documented
@@ -1134,9 +1179,9 @@ mutable object across a delayed callback and checks unchanged write counts.
 Shared compile-time effects remain outside this bounded adapter's surface.
 
 The real compiler supplies helper identities and code in its saved declaration
-context. A helper's finite immutable form result is executed/validated once and
-retained by that exact unit identity, then imported into each consumer. Function
-or other non-form helper results fail explicitly. Request files are unique,
+context. A helper's finite immutable form result or supported callable is
+executed/validated once and retained by that exact unit identity, then imported
+into each consumer. Other non-form results fail explicitly. Request files are unique,
 helper replies publish atomically, command/event queues are bounded, and the
 coordinator caps cumulative retained checkpoints/continuations/helper data at 64 MiB. Each
 VM also keeps its existing bounded instruction/heap/work controls. Evaluator

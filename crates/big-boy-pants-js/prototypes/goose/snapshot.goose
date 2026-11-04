@@ -216,7 +216,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
             let input = n.namespace_value;
             if input.tag > 1 && (input.tag != 5 || (s.nodes[input.a].kind != 5 && s.nodes[input.a].kind != 12) || s.nodes[input.a].count != n.count) || input.tag <= 1 && n.count != 0 { return reject(c, Error.Link); }
         }
-        if n.kind == 4 && (n.function < 0 || n.function > 17 || n.function == 9) { return reject(c, Error.Unsupported); }
+        if n.kind == 4 && (n.function < 0 || n.function > 20 || n.function == 9) { return reject(c, Error.Unsupported); }
         if (n.kind == 9 || n.kind == 10) && (n.value.tag != 4 || n.namespace_value.tag != 1 && n.namespace_value.tag != 4) || n.kind == 11 && n.value.tag > 4 { return reject(c, Error.Link); }
         if n.metadata.tag != 0 && n.metadata.tag != 1 && (n.metadata.tag != 5 || s.nodes[n.metadata.a].kind != 7) { return reject(c, Error.Link); }
     }

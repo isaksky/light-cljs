@@ -826,111 +826,118 @@ mod tests {
     #[test]
     #[ignore = "build native runner with compiler.bb"]
     fn goose_compiler_concurrent_helper_once() {
-        for workers in [1, 2, 4, 8] {
-            let session =
-                GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
-            let root = session.directory.join("sources");
-            std::fs::create_dir(&root).unwrap();
-            std::fs::write(root.join("macros.cljs"),"(ns macros) (def shared [11 22]) (defmacro work [n] (loop [i 0] (if (= i n) (list 'quote shared) (recur (+ i 1)))))").unwrap();
-            std::fs::write(root.join("main.cljs"),"(ns main (:require [macros :refer [work]])) (def shared [99]) (def a (work 20000)) (def b (work 20000)) (def c (work 20000)) (def d (work 20000)) (js/console.log (pr-str [a b c d]))").unwrap();
-            std::fs::write(root.join("batch0.cljs"), "(ns batch0 (:require [macros :refer [work]])) (def a (work 20000)) (def b (work 20001)) (def c (work 20002)) (def d (work 20003))").unwrap();
-            for stage in 0..crate::analyzer::DRAIN_LAG {
-                let dependency = if stage == 0 {
-                    "batch0".to_owned()
+        for callable in [false, true] {
+            for workers in [1, 2, 4, 8] {
+                let session =
+                    GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
+                let root = session.directory.join("sources");
+                std::fs::create_dir(&root).unwrap();
+                let macros = if callable {
+                    "(ns macros) (defn shared [form] (list 'quote form)) (defmacro work [n] (loop [i 0] (if (= i n) (shared [11 22]) (recur (+ i 1)))))"
                 } else {
-                    format!("gate{}", stage - 1)
+                    "(ns macros) (def shared [11 22]) (defmacro work [n] (loop [i 0] (if (= i n) (list 'quote shared) (recur (+ i 1)))))"
                 };
-                std::fs::write(
-                    root.join(format!("gate{stage}.cljs")),
-                    format!("(ns gate{stage} (:require [{dependency}]))"),
-                )
-                .unwrap();
-            }
-            std::fs::write(root.join("main.cljs"), "(ns main (:require [gate5] [batch0 :as b0] [macros :refer [work]])) (def a (work 20004)) (def b (work 20005)) (def c (work 20006)) (def d (work 20007)) (js/console.log (pr-str [b0/a b0/b b0/c b0/d a b c d]))").unwrap();
-            let mut builds = Vec::new();
-            let mut expansions = Vec::new();
-            for goose in [false, true] {
-                *crate::compiler_bootstrap::goose_capture::CONCURRENT_FORMS
-                    .lock()
-                    .unwrap() = Some(Vec::new());
-                let mut host = crate::MacroHost::new();
-                host.evaluator_options.memory_limit = 512 << 20;
-                if goose {
-                    host.use_goose_source_macros(session.clone()).unwrap();
-                }
-                let _names = crate::generated_names::enter_namespace(0);
-                let (program, _) = crate::compiler::analyze_namespace_entry_recorded(
-                    "main",
-                    std::slice::from_ref(&root),
-                    &mut host,
-                    Default::default(),
-                    &mut Vec::new(),
-                    crate::compiler::EntryRecorders {
-                        slots: crate::scheduler::Slots::new(4).unwrap(),
-                        ..Default::default()
-                    },
-                )
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "workers={workers} Goose={goose}: {e} trace={:?}",
-                        session.trace()
+                std::fs::write(root.join("macros.cljs"), macros).unwrap();
+                std::fs::write(root.join("main.cljs"),"(ns main (:require [macros :refer [work]])) (def shared [99]) (def a (work 20000)) (def b (work 20000)) (def c (work 20000)) (def d (work 20000)) (js/console.log (pr-str [a b c d]))").unwrap();
+                std::fs::write(root.join("batch0.cljs"), "(ns batch0 (:require [macros :refer [work]])) (def a (work 20000)) (def b (work 20001)) (def c (work 20002)) (def d (work 20003))").unwrap();
+                for stage in 0..crate::analyzer::DRAIN_LAG {
+                    let dependency = if stage == 0 {
+                        "batch0".to_owned()
+                    } else {
+                        format!("gate{}", stage - 1)
+                    };
+                    std::fs::write(
+                        root.join(format!("gate{stage}.cljs")),
+                        format!("(ns gate{stage} (:require [{dependency}]))"),
                     )
-                });
-                builds.push(crate::emit_js(&program));
-                expansions.push(
-                    crate::compiler_bootstrap::goose_capture::CONCURRENT_FORMS
-                        .lock()
-                        .unwrap()
-                        .take()
-                        .unwrap(),
-                );
-            }
-            assert_eq!(expansions[0].len(), 8);
-            crate::compiler_bootstrap::goose_capture::compare_concurrent_forms(
-                expansions.remove(0),
-                expansions.remove(0),
-            );
-            assert_eq!(builds[0], builds[1], "deterministic compiler output");
-            let trace = session.trace();
-            let stats = session.stats();
-            assert_eq!(stats.initializations, 1);
-            assert_eq!(stats.jobs, 8);
-            assert_eq!(stats.preparations, 1, "one initialized macro checkpoint");
-            assert_eq!(stats.definitions, 2, "macro and shared helper");
-            assert_eq!(stats.exports, 2, "export each definition once");
-            eprintln!("workers={workers}: {trace:?}");
-            assert_eq!(
-                trace
-                    .iter()
-                    .filter(|line| line.starts_with("PRODUCED "))
-                    .count(),
-                1,
-                "one actual helper producer"
-            );
-            let (mut active, mut peak) = (0i32, 0i32);
-            for line in &trace {
-                let kind = line.split_whitespace().next().unwrap();
-                match kind {
-                    "START" | "RESUME" | "PRODUCE" => {
-                        active += 1;
-                        peak = peak.max(active);
-                    }
-                    "NEED" | "DONE" | "PRODUCED" => active -= 1,
-                    _ => {}
+                    .unwrap();
                 }
-                assert!(active >= 0, "{trace:?}");
-            }
-            assert_eq!(active, 0);
-            assert!(peak <= workers as i32);
-            if workers > 1 {
-                assert!(
-                    peak >= 2,
-                    "two real compiler macro jobs must overlap: {trace:?}"
+                std::fs::write(root.join("main.cljs"), "(ns main (:require [gate5] [batch0 :as b0] [macros :refer [work]])) (def a (work 20004)) (def b (work 20005)) (def c (work 20006)) (def d (work 20007)) (js/console.log (pr-str [b0/a b0/b b0/c b0/d a b c d]))").unwrap();
+                let mut builds = Vec::new();
+                let mut expansions = Vec::new();
+                for goose in [false, true] {
+                    *crate::compiler_bootstrap::goose_capture::CONCURRENT_FORMS
+                        .lock()
+                        .unwrap() = Some(Vec::new());
+                    let mut host = crate::MacroHost::new();
+                    host.evaluator_options.memory_limit = 512 << 20;
+                    if goose {
+                        host.use_goose_source_macros(session.clone()).unwrap();
+                    }
+                    let _names = crate::generated_names::enter_namespace(0);
+                    let (program, _) = crate::compiler::analyze_namespace_entry_recorded(
+                        "main",
+                        std::slice::from_ref(&root),
+                        &mut host,
+                        Default::default(),
+                        &mut Vec::new(),
+                        crate::compiler::EntryRecorders {
+                            slots: crate::scheduler::Slots::new(4).unwrap(),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "workers={workers} Goose={goose}: {e} trace={:?}",
+                            session.trace()
+                        )
+                    });
+                    builds.push(crate::emit_js(&program));
+                    expansions.push(
+                        crate::compiler_bootstrap::goose_capture::CONCURRENT_FORMS
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .unwrap(),
+                    );
+                }
+                assert_eq!(expansions[0].len(), 8);
+                crate::compiler_bootstrap::goose_capture::compare_concurrent_forms(
+                    expansions.remove(0),
+                    expansions.remove(0),
                 );
+                assert_eq!(builds[0], builds[1], "deterministic compiler output");
+                let trace = session.trace();
+                let stats = session.stats();
+                assert_eq!(stats.initializations, 1);
+                assert_eq!(stats.jobs, 8);
+                assert_eq!(stats.preparations, 1, "one initialized macro checkpoint");
+                assert_eq!(stats.definitions, 2, "macro and shared helper");
+                assert_eq!(stats.exports, 2, "export each definition once");
+                eprintln!("callable={callable} workers={workers}: {trace:?}");
+                assert_eq!(
+                    trace
+                        .iter()
+                        .filter(|line| line.starts_with("PRODUCED "))
+                        .count(),
+                    1,
+                    "one actual helper producer"
+                );
+                let (mut active, mut peak) = (0i32, 0i32);
+                for line in &trace {
+                    let kind = line.split_whitespace().next().unwrap();
+                    match kind {
+                        "START" | "RESUME" | "PRODUCE" => {
+                            active += 1;
+                            peak = peak.max(active);
+                        }
+                        "NEED" | "DONE" | "PRODUCED" => active -= 1,
+                        _ => {}
+                    }
+                    assert!(active >= 0, "{trace:?}");
+                }
+                assert_eq!(active, 0);
+                assert!(peak <= workers as i32);
+                if workers > 1 {
+                    assert!(
+                        peak >= 2,
+                        "two real compiler macro jobs must overlap: {trace:?}"
+                    );
+                }
+                session.close();
+                assert!(!session.directory.exists());
+                super::lifecycle_tests::assert_pool(&session.trace(), workers, 17);
             }
-            session.close();
-            assert!(!session.directory.exists());
-            super::lifecycle_tests::assert_pool(&session.trace(), workers, 17);
         }
     }
     #[test]
