@@ -259,6 +259,7 @@
                          err (:err r)
                          number #(some-> (re-find % err) second parse-double)
                          sample (merge cell {:kind (if warmup? :warmup :sample) :round round :phase phase :command command
+                                             :compiler-slots (:workers cell) :execution-workers (:workers cell)
                                              :leaf-edit *leaf-edit*
                                              :wall-ns wall :exit (:exit r) :output output :stderr (str (fs/file-name log))
                                              :user-s (number #"([0-9.]+) user") :system-s (number #"([0-9.]+) sys")
