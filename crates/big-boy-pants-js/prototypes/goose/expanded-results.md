@@ -463,3 +463,100 @@ above, using fresh output paths. Committed evidence: [five clean pairs](pool-pai
 [debug correctness](pool-check-debug-samples.edn.gz), and
 [optimized correctness](pool-check-native-samples.edn.gz). Historical datasets and
 reports remain intact.
+
+### Review repair: abort after terminal publication
+
+Independent review found that a terminal result can release coordinator capacity
+before its worker finishes resetting. At one worker, the coordinator could queue
+a replacement, then receive the cleanup abort with no surviving consumer. The
+replacement still had `Running.worker = -1`, so removing only entries attributed
+to the failed slot stranded shutdown. The earlier injected abort test failed
+before terminal publication and did not cover this case.
+
+Source `74ef35a38e05881333523dd42f54abeffaecacac` cancels immediately on poison
+and drains queued `Work`, releasing exactly the entries it atomically dequeues.
+A racing worker that already dequeued work retains responsibility for publishing
+its claim and terminal cancellation/failure. Its claim may arrive after poison;
+that entry remains live until the terminal event or its supervisor's abort.
+No dispatch is replayed. This preserves both the queue/dequeue race and the
+existing terminal-publication-before-cleanup protocol.
+
+The deterministic regression publishes a real result, holds cleanup, queues a
+replacement and only then aborts. At limit 1 the replacement remains queued; at
+2/4/8 it is held after dequeue and before claim publication, then released only
+after poison. It asserts no replacement output or completion, all worker and
+supervisor joins, and native `CLOSED` **before** host `close` can use its kill
+fallback. Against the previous poison logic plus the same hooks, limit 1 fails
+at the bounded guard with `DONE 1`, `START 2`, `FAULT ... worker-abort`, followed
+by a park and no `CLOSED`. The repaired native debug and optimized suites each
+pass **25 compiler tests**, including the regression at all four limits.
+
+The unchanged heavier fixture passes fresh debug and optimized correctness at
+1/2/4/8 with full emitted-JS, Node-output and independent-oracle checks. The
+default all-target Clippy audit passes with only the previously documented
+baseline categories allowed; changed Rust/Goose formatting, Goose check,
+diff check and the process-tree watchdog pass. Shared VM, snapshot, bridge,
+export and macro semantics are unchanged from the previously verified source,
+so its 45-row differential suites, source macros, smoke, QuickJS bridge and
+engine/adapter results remain applicable. The strict-Clippy, whole-tree format
+and broad-suite baseline limitations above remain explicit; they are not fresh
+successful full-suite runs.
+
+#### Final-source clean comparison
+
+The following refresh supersedes the earlier pool timing for the delivered
+native source. The original datasets above remain historical evidence. Five
+alternating adjacent exact-743/current Goose-8 pairs and five contemporaneous
+V8-1 processes used the same 15 substantive namespaces, 120 calls, 8192-read
+fixture, seed 24301 and unchanged source hashes. Every process matched the full
+JS hash `1f4ea5cbde9fc56f74ae08a7c0eeb8ee18216d48b80196b75445fbc8e91a5c75`,
+exact Node stdout and independent oracle. Complete-process warmups preceded
+the samples; 16 separate quiet gates recorded **91.56–97.83% idle**, with no
+competing builds. Milliseconds, median [minimum, maximum]; CPU is user/system:
+
+| Revision / engine | Setup-inclusive wall | CPU | Test invocation RSS MiB |
+| --- | ---: | ---: | ---: |
+| Historical V8 1 | 910.511625 | 980 / 30 | 68.8 |
+| Historical Goose 8 | 482.540292 | 1720 / 590 | 86.3 |
+| Exact predecessor `d85c5ea8`, Goose 8 | 424.551250 [414.765084, 454.344083] | 1720 / 510 | 84.796875 |
+| Repaired pool `74ef35a3`, Goose 8 | **357.319458 [353.668208, 367.840667]** | 1740 / 240 | 84.656250 |
+| Fresh V8 1 | 912.226417 [901.913833, 917.691083] | 990 / 30 | 68.859375 |
+
+The five predecessor→current pairs were 433.571000→367.840667,
+414.765084→358.538583, 416.705333→354.864334, 424.551250→357.319458 and
+454.344083→353.668208 ms. The current median is **15.84% below its fresh
+predecessor**, **25.95% below historical Goose 8**, and **2.55× faster than
+fresh V8 1** on this exact fixture. The change from the earlier pool measurement
+is not an isolated measurement of the cleanup fix. Aggregate Goose CPU still
+exceeds single-worker V8; this is not a whole-application speedup claim.
+
+| Engine/revision | Cold | Join | Reuse | Session close | Cleanup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| V8 1 | 439.304083 | 59.586125 | 397.587125 | 0 | 2.023458 |
+| Predecessor Goose 8 | 207.955792 | 36.117833 | 170.011167 | 1.545834 | 2.165875 |
+| Repaired pool Goose 8 | 181.286584 | 31.009916 | 126.507791 | 5.157083 | 5.794166 |
+
+Cleanup contains close. These overlapping checkpoints are not summed. Separate
+instrumentation confirms 241 chunks and resets, eight execution workers plus
+eight join-only supervisors (18 native threads including coordinator/input,
+17 joined), 5455 reused nonempty table addresses and 328 reserved indexed
+execution regions. Sampled private-table high-water sums total 1,567,798 bytes;
+the existing bounded retention policy is unchanged. Restore copies still total
+22,143,332 bytes; native RSS was 36.234375→20.390625 MiB in this separate
+diagnostic. Summed reset intervals were 0.170 ms and overlap other workers.
+READY's base-capture/pool-startup field was 0.035→1.866 ms; clean timings include
+startup and shutdown. None of these instrumented times enters the clean dataset.
+
+Measurement source is the clean `74ef35a3` commit; later changes only record
+this evidence. The preserved predecessor source/native/release binaries are
+the same exact `d85c5ea8` artifacts used above. Toolchain/runtime and fixture
+are unchanged. Final clean native SHA-256 is
+`b3f56c308a29fa753328cbbe82fba88599c28c6befbeaa4eb34bba4e762823fa`;
+the release test binary (including the added regression) is
+`2ec9c80a51612528d5d0428654539d1bb0a224924392fb1b4af1074a4500a1f4`.
+Reproduce with the focused commands above and fresh sample paths. Raw manifests
+retain source/binary hashes, warmups, quiet gates, order, phases and resources:
+[final clean pairs](pool-cleanup-paired-samples.edn.gz),
+[separate instrumentation](pool-cleanup-instrument-samples.edn.gz),
+[debug correctness](pool-cleanup-check-debug-samples.edn.gz), and
+[optimized correctness](pool-cleanup-check-native-samples.edn.gz).
