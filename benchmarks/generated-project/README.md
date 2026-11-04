@@ -134,8 +134,11 @@ compiler slots (equal to execution workers here). Unsupported work fails
 without fallback. `instrument` adds inclusive macro/bootstrap/helper-demand
 intervals, compiler trace/DAG diagnostics, and Goose session costs. Instrumented
 runs also require identical qualified source-macro entry counts to V8; intervals
-overlap and must not be summed. Helper-demand counts describe producer entries,
-not every invocation of an already-published callable.
+overlap and must not be summed. Helper-demand counts describe compiler callbacks,
+not producer compilations or every invocation of a published callable. The native
+diagnostic mode also records per-worker capacity/reset counts and verifies all
+spawned threads join. Its 4,096-row protocol trace is bounded; final worker/thread
+rows survive truncation, and session cost counters cover the whole build.
 
 V8 `--phase cached --runs 1` populates a dedicated cache, then checks a
 no-change rebuild. `--phase leaf --leaf src/workload/jourklijo.cljs --runs 2`

@@ -2,6 +2,8 @@
 
 The [generated 200k target](generated-200k.md) pins the next application-scale
 acceptance workload, its execution boundary and currently reproduced gaps.
+The [full-project baseline and reusable comparison command](generated-200k-baseline.md)
+record exact V8/Goose 1/2/4/8 application checks and the quiet V8 reference.
 
 From the repository root, run:
 

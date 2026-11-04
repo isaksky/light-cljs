@@ -4,6 +4,9 @@ Inventory at `c7c0b1938a15ef101111995c905f0193387ec6aa`, November 4, 2026.
 This pins an experiment, **not a successful Goose build or a speed claim**.
 The [bounded probe recipe and observed failures](generated-200k-probes.md)
 are executable evidence. Pellets owns implementation ordering.
+The later [full-project baseline](generated-200k-baseline.md) records the
+implemented comparison harness and passing V8/Goose application checks; the
+inventory observations below retain their original revision and scope.
 
 ## Immutable input and build contract
 

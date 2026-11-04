@@ -236,7 +236,7 @@
     (assert (= (str (+ 1 (* 2 workers))) joined) "Native Goose spawned threads did not all join")
     (assert (= workers (count pools)) "Missing private worker diagnostics")
     {:native-thread-total (parse-long created) :spawned-threads-joined (parse-long joined) :workers pools
-     :trace-scope "first 4096 protocol rows; final POOL/THREADS/CLOSED always retained; session cost counters cover all jobs"}))
+     :trace-scope "bounded early protocol prefix (4096 rows); final POOL/THREADS/CLOSED replace prefix rows; session cost counters cover all jobs"}))
 
 (defn macro-main [{:keys [dir light runner backend workers phase runs timeout-ms leaf] :as opts}]
   (assert (#{"v8" "goose" "all"} backend))
