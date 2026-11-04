@@ -95,6 +95,56 @@ bb benchmarks/generated-project/compare.bb /tmp/cljs-200k --light "$LIGHT" --run
 
 ## How a project is made
 
+The pinned Goose comparison extends the same `compare.bb` command. It requires
+the exact seed-42/200k manifest, including every source and shim, and checks
+all five input/iteration pairs in the
+[target contract](../../crates/big-boy-pants-js/prototypes/goose/generated-200k.md).
+Build both executables outside measurement:
+
+```sh
+export CARGO_TARGET_DIR="$PWD/target" GOOSE_HOME="$PWD/target/goose"
+export CARGO_BUILD_JOBS=3 LIGHT_CLJS_V8_CACHE=require
+cargo build --release --locked --features goose-macros --bin light-cljs
+goose build crates/big-boy-pants-js/prototypes/goose/compiler_session.goose -o target/generated-200k-runner
+bb benchmarks/generated-project/generate.bb target/generated-200k --seed 42 --lines 200k
+bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs --backend all --runner target/generated-200k-runner --phase check --runs 1
+bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs --backend v8 --phase measure --runs 5
+bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs --backend all --runner target/generated-200k-runner --phase instrument --runs 1
+```
+
+Each phase preserves `macro-PHASE/samples.edn` and refuses to overwrite it.
+Every cell has an explicit warmup; measured rounds alternate the cell order.
+`--backend goose --workers 1,2,4,8` uses a reference produced by a prior V8
+check. Every completed build must match its complete emitted JavaScript bytes,
+all five independent oracle outputs (including final newlines), and the strict
+waste check. Sources/configuration are hashed before and after each build.
+`--timeout-ms` bounds each compiler process tree (default one hour); validation
+commands have a separate three-minute watchdog. Interrupts kill owned children.
+macOS `--phase measure` requires at least five rounds, >=90% CPU idle before
+each run, and no competing compiler/build process. Generation, binary building
+and output/oracle checks are outside the measured command.
+
+Selection uses the feature-gated `LIGHT_CLJS_GOOSE_RUNNER` and
+`LIGHT_CLJS_GOOSE_WORKERS` embedding. It executes emitted user macros/helpers
+in Goose with retained V8 core/bootstrap; it preserves the release/advanced
+compiler pipeline and production defaults. `--jobs` is separately recorded as
+compiler slots (equal to execution workers here). Unsupported work fails
+without fallback. `instrument` adds inclusive macro/bootstrap/helper-demand
+intervals, compiler trace/DAG diagnostics, and Goose session costs; intervals
+overlap and must not be summed. Helper-demand counts describe producer entries,
+not every invocation of an already-published callable.
+
+V8 `--phase cached --runs 1` populates a dedicated cache, then checks a
+no-change rebuild. `--phase leaf --leaf src/workload/jourklijo.cljs --runs 2`
+uses that cache, appends a distinct inert function per round, checks each output,
+then restores exact source bytes, including on signals. These two phases include
+stats/probe instrumentation to disclose executed/skipped macros and are separate
+from clean timings. Goose cached installation is explicitly rejected until
+validated. `samples.edn` records raw toolchain, source and executable hashes,
+commands, stdout, CPU times and memory scope; stderr/rusage and trace files sit
+beside it. Historical Shadow measurements and the older comparison mode remain
+available through the original options.
+
 The generator first builds a **model**: seeded expression trees plus the
 protocols, records, types, multimethods, dynamic vars and macros they use. It
 then renders the model to ClojureScript, choosing among equivalent spellings

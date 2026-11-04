@@ -4273,6 +4273,8 @@ fn compile_unit_in(
     id: usize,
     analyze: impl FnOnce() -> Result<(Arc<Program>, Vec<AnalysisWarning>), String>,
 ) -> Result<String, String> {
+    #[cfg(feature = "goose-macros")]
+    let _probe = crate::compiler_probe::scope(|| format!("helper-demand/{}", shared.unit_name(id)));
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     if let Some(perturbation) = shared.perturbation.get()
         && let Some(name) = &perturbation.panic_in

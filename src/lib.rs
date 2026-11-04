@@ -27,6 +27,9 @@ pub mod chunks;
 mod compilation_session;
 pub mod compile_cache;
 pub mod compile_stats;
+#[cfg(feature = "goose-macros")]
+#[path = "../crates/big-boy-pants-js/prototypes/goose/compiler_probe.rs"]
+pub mod compiler_probe;
 pub mod compile_trace;
 pub mod compiler;
 mod compiler_binding_macros;

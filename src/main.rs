@@ -618,6 +618,10 @@ fn run_namespace(
     build_namespace(namespace, options, flags)
 }
 
+#[cfg(feature = "goose-macros")]
+#[path = "../crates/big-boy-pants-js/prototypes/goose/compiler_cli.rs"]
+mod goose_cli;
+
 /// Compile the namespace build `namespace` and `flags` describe: what
 /// `--compile --entry` runs once its arguments are read, and what the
 /// `compile` and `release` commands run for each build.
@@ -678,11 +682,18 @@ fn build_namespace(
     };
     let cache = flags.cache();
     let mut outputs = None;
+    let mut host = flags.host();
+    #[cfg(feature = "goose-macros")]
+    let _goose = goose_cli::Backend::install(&mut host, cache.is_some())?;
+    #[cfg(not(feature = "goose-macros"))]
+    if std::env::var_os("LIGHT_CLJS_GOOSE_RUNNER").is_some() {
+        return Err("Goose selection requires a binary built with --features goose-macros".into());
+    }
     let program = match &cache {
         Some(cache) => light_cljs::compiler::analyze_namespace_entry_cached_output(
             &entry,
             &roots,
-            &mut flags.host(),
+            &mut host,
             options,
             &mut warnings,
             cache,
@@ -696,7 +707,7 @@ fn build_namespace(
         None => analyze_entry_on(
             &entry,
             &roots,
-            &mut flags.host(),
+            &mut host,
             options,
             &mut warnings,
             stats.as_mut(),
@@ -706,6 +717,7 @@ fn build_namespace(
             &flags.cache_blockers,
         ),
     };
+    drop(host);
     if options.warning_mode {
         print_warnings(&warnings);
     }
@@ -1337,7 +1349,13 @@ fn run() -> Result<(), Box<dyn Error>> {
 }
 
 fn main() -> ExitCode {
-    match run() {
+    let result = run();
+    #[cfg(feature = "goose-macros")]
+    if let Err(error) = light_cljs::compiler_probe::write() {
+        eprintln!("macro probe: {error}");
+        return ExitCode::FAILURE;
+    }
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         // A command's errors name the command themselves.
         Err(error) if error.is::<config_cli::CommandError>() => {

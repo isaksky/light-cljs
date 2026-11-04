@@ -239,5 +239,43 @@
                 (check-waste-at manifest (fs/path dir (if (= mode "compile") "out/shadow-dev" "out/shadow.js"))
                                 (= mode "release"))))))))))
 
+(deftest macro-comparison-options-and-watchdog
+  (let [opts (compare/parse-options ["fixture" "--light" "compiler" "--backend" "goose"
+                                     "--runner" "runner" "--workers" "1,2,4,8" "--phase" "check"])]
+    (is (= [1 2 4 8] (:workers opts)))
+    (is (= "goose" (:backend opts))))
+  (let [environment (into {} (System/getenv))
+        result (compare/bounded-run "." environment 3000 ["sh" "-c" "printf expected; exit 7"])]
+    (is (= 7 (:exit result)))
+    (is (= "expected" (:out result))))
+  (let [marker (fs/create-temp-file {:prefix "generated-watchdog-"})
+        environment (assoc (into {} (System/getenv)) "WATCHDOG_CHILD_PID" (str marker))]
+    (try
+      (is (thrown-with-msg? clojure.lang.ExceptionInfo #"watchdog expired"
+                            (compare/bounded-run "." environment 200
+                              ["sh" "-c" "sleep 60 & echo $! > \"$WATCHDOG_CHILD_PID\"; wait"])))
+      (let [pid (parse-long (str/trim (slurp (str marker))))
+            child (java.lang.ProcessHandle/of pid)]
+        (is (or (not (.isPresent child)) (not (.isAlive (.get child))))))
+      (finally (fs/delete-if-exists marker)))))
+
+(deftest macro-comparison-checks-complete-output-and-exact-stdout
+  (let [dir (fs/create-temp-dir {:prefix "generated-output-"})
+        output (fs/path dir "out/light/workload.main.js")
+        reference (fs/path dir "reference.js")
+        expected (vec (repeat 5 "42\n"))]
+    (try
+      (fs/create-dirs (fs/parent output))
+      (spit (str output) "original JS")
+      (with-redefs [compare/checked (fn [_ _ cmd] (if (= "node" (first cmd)) "42\n" "waste ok"))]
+        (is (= 11 (:bytes (compare/verify-macro-output (str dir) {} expected reference))))
+        (spit (str output) "different JS with the same checksum")
+        (is (thrown-with-msg? AssertionError #"Complete emitted JS differs"
+                             (compare/verify-macro-output (str dir) {} expected reference))))
+      (with-redefs [compare/checked (fn [_ _ _] "42")]
+        (is (thrown-with-msg? AssertionError #"Oracle mismatch"
+                             (compare/verify-macro-output (str dir) {} expected reference))))
+      (finally (fs/delete-tree dir)))))
+
 (let [{:keys [fail error]} (run-tests 'generated-project.test)]
   (System/exit (if (zero? (+ fail error)) 0 1)))

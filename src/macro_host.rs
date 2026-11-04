@@ -971,6 +971,8 @@ impl MacroHost {
         std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
         crate::evaluator::EvalError,
     > {
+        #[cfg(feature = "goose-macros")]
+        let _probe = crate::compiler_probe::scope(|| "bootstrap/new-compiler-evaluator".into());
         #[cfg(feature = "bbp-macros")]
         if self.native_macro_backend() {
             let evaluator = match self.session_handle() {
@@ -1117,6 +1119,14 @@ impl MacroHost {
         environment: &crate::compiler_data::Datum,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
+        #[cfg(feature = "goose-macros")]
+        let _probe = crate::compiler_probe::scope(|| {
+            format!(
+                "expanded/{}/{}",
+                String::from_utf16_lossy(origin.macro_name.namespace().unwrap_or_default()),
+                String::from_utf16_lossy(origin.macro_name.name())
+            )
+        });
         let native_before = evaluator.native_bridge_stats();
         if self.engine.expansions.get() >= self.limits.expansions {
             return Err("compiler macro expansion limit exceeded".into());
@@ -2190,10 +2200,7 @@ impl MacroHost {
         self.engine.session_handle()
     }
     pub(crate) fn has_source_value(&self, namespace: &str, name: &str) -> bool {
-        self.tables
-            .source_bindings
-            .get_parts(namespace, name)
-            == Some(&SourceBindingKind::Value)
+        self.tables.source_bindings.get_parts(namespace, name) == Some(&SourceBindingKind::Value)
     }
     pub(crate) fn begin_compilation(&mut self) {
         if !self.tables.bootstrap_seed {

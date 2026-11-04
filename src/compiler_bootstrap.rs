@@ -625,6 +625,8 @@ fn definition_span(name: &str) -> Result<crate::compiler_data::SourceSpan, Strin
         .ok_or_else(|| format!("missing bootstrap declaration {declared}"))
 }
 fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> Result<(), String> {
+    #[cfg(feature = "goose-macros")]
+    let _probe = crate::compiler_probe::scope(|| format!("bootstrap/install/{}", names.join(",")));
     let definitions = definitions(names)?;
     let e = &bootstrap.evaluator;
     let values = e.evaluate_unit(unit).map_err(|e| e.to_string())?;
@@ -710,6 +712,13 @@ fn build_in(
     evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
     cache: bool,
 ) -> Result<Bootstrap, String> {
+    #[cfg(feature = "goose-macros")]
+    let _probe = crate::compiler_probe::scope(|| {
+        format!(
+            "bootstrap/build-in/cached={}",
+            cache && UNITS.get().is_some()
+        )
+    });
     if evaluator.native_forms() {
         return Ok(Bootstrap {
             evaluator,
@@ -737,6 +746,8 @@ fn build_in(
     let core = match cached {
         Some(units) => &units[0],
         None => {
+            #[cfg(feature = "goose-macros")]
+            let _probe = crate::compiler_probe::scope(|| "bootstrap/compile-core".into());
             compiled_core = control.exempt(|| compile(&core_source(), &mut host))?;
             &compiled_core
         }
@@ -751,6 +762,8 @@ fn build_in(
     let sequence = match cached {
         Some(units) => &units[1],
         None => {
+            #[cfg(feature = "goose-macros")]
+            let _probe = crate::compiler_probe::scope(|| "bootstrap/compile-sequences".into());
             compiled_sequence = control.exempt(|| {
                 compile(
                     &format!("{SEQUENCES}\n{{\"for\" sequence-for \"doseq\" sequence-doseq}}"),
@@ -1102,6 +1115,8 @@ impl MacroHost {
         env: &Datum,
         engine: Option<&dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<Form, String> {
+        #[cfg(feature = "goose-macros")]
+        let _probe = crate::compiler_probe::scope(|| format!("core/cljs.core/{name}"));
         #[cfg(feature = "goose-macros")]
         let engine = engine.filter(|engine| !engine.source_only());
         crate::macro_host::forbid_engine_entry(name);
