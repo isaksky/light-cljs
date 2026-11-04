@@ -275,6 +275,15 @@
       (with-redefs [compare/checked (fn [_ _ _] "42")]
         (is (thrown-with-msg? AssertionError #"Oracle mismatch"
                              (compare/verify-macro-output (str dir) {} expected reference))))
+      (let [counts (fs/path dir "counts.tsv")]
+        (spit (str counts) "expanded/workload.macros/m\t2\t30\nbootstrap/setup\t1\t40\n")
+        (is (= {"expanded/workload.macros/m" 2}
+               (compare/verify-macro-counts (str dir) "v8" counts)))
+        (is (= {"expanded/workload.macros/m" 2}
+               (compare/verify-macro-counts (str dir) "goose" counts)))
+        (spit (str counts) "expanded/workload.macros/m\t1\t30\n")
+        (is (thrown-with-msg? AssertionError #"identities/counts differ"
+                             (compare/verify-macro-counts (str dir) "goose" counts))))
       (finally (fs/delete-tree dir)))))
 
 (let [{:keys [fail error]} (run-tests 'generated-project.test)]

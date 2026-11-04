@@ -206,6 +206,23 @@
       (fs/copy output reference))
     {:sha256 hash :bytes (fs/size output) :stdout got :waste waste}))
 
+(defn source-macro-counts [path]
+  (into (sorted-map)
+        (for [line (str/split-lines (slurp (str path)))
+              :when (str/starts-with? line "expanded/workload.")
+              :let [[identity calls _] (str/split line #"\t")]]
+          [identity (parse-long calls)])))
+
+(defn verify-macro-counts [dir backend path]
+  (let [counts (source-macro-counts path)
+        reference (fs/path dir "macro-v8-counts.edn")]
+    (assert (seq counts) "Instrumented build executed no generated source macros")
+    (if (and (= backend "v8") (not (fs/exists? reference)))
+      (spit (str reference) (pr-str counts))
+      (assert (= (clojure.edn/read-string (slurp (str reference))) counts)
+              "Executed source-macro identities/counts differ from V8"))
+    counts))
+
 (defn macro-main [{:keys [dir light runner backend workers phase runs timeout-ms leaf] :as opts}]
   (assert (#{"v8" "goose" "all"} backend))
   (assert (#{"check" "measure" "instrument" "cached" "leaf"} phase))
@@ -256,11 +273,15 @@
                          wall (- (System/nanoTime) started)
                          _ (spit (str log) (:err r))
                          output (when (zero? (:exit r)) (verify-macro-output dir environment expected reference))
+                         macro-counts (when (and (= "instrument" phase) (zero? (:exit r)))
+                                        (verify-macro-counts dir (:backend cell)
+                                          (fs/path results (str stem ".macros.tsv"))))
                          err (:err r)
                          number #(some-> (re-find % err) second parse-double)
                          sample (merge cell {:kind (if warmup? :warmup :sample) :round round :phase phase :command command
                                              :compiler-slots (:workers cell) :execution-workers (:workers cell)
                                              :leaf-edit *leaf-edit*
+                                             :executed-source-macros macro-counts
                                              :wall-ns wall :exit (:exit r) :output output :stderr (str (fs/file-name log))
                                              :user-s (number #"([0-9.]+) user") :system-s (number #"([0-9.]+) sys")
                                              :max-rss-bytes (number #"([0-9]+)  maximum resident set size") :quiet quiet})]

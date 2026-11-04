@@ -115,7 +115,8 @@ bb benchmarks/generated-project/compare.bb target/generated-200k --light target/
 Each phase preserves `macro-PHASE/samples.edn` and refuses to overwrite it.
 Every cell has an explicit warmup; measured rounds alternate the cell order.
 `--backend goose --workers 1,2,4,8` uses a reference produced by a prior V8
-check. Every completed build must match its complete emitted JavaScript bytes,
+check; Goose-only instrumentation also requires a prior V8 instrument run.
+Every completed build must match its complete emitted JavaScript bytes,
 all five independent oracle outputs (including final newlines), and the strict
 waste check. Sources/configuration are hashed before and after each build.
 `--timeout-ms` bounds each compiler process tree (default one hour); validation
@@ -131,7 +132,8 @@ in Goose with retained V8 core/bootstrap; it preserves the release/advanced
 compiler pipeline and production defaults. `--jobs` is separately recorded as
 compiler slots (equal to execution workers here). Unsupported work fails
 without fallback. `instrument` adds inclusive macro/bootstrap/helper-demand
-intervals, compiler trace/DAG diagnostics, and Goose session costs; intervals
+intervals, compiler trace/DAG diagnostics, and Goose session costs. Instrumented
+runs also require identical qualified source-macro entry counts to V8; intervals
 overlap and must not be summed. Helper-demand counts describe producer entries,
 not every invocation of an already-published callable.
 
