@@ -1,5 +1,8 @@
 # Goose source export experiment
 
+The [generated 200k target](generated-200k.md) pins the next application-scale
+acceptance workload, its execution boundary and currently reproduced gaps.
+
 From the repository root, run:
 
 ```sh
