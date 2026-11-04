@@ -1,11 +1,15 @@
 # Generated 200k end-to-end performance
 
-November 4, 2026 UTC. **V8 wins every full-project cell.** The best Goose
-configuration is four execution workers: **11.532 s versus V8's 6.211 s**,
-1.86× the wall time and 5.04× the aggregate CPU. Goose8 takes 18.692 s, 3.01× V8.
-This is successful supported compilation, with an unfavorable performance result.
+November 4, 2026 UTC. **The integrated bridge optimization improves Goose wall
+and CPU time; V8 still wins every full-project cell.** The final five-round
+comparison gives Goose4 **9.516 s versus V8's 6.319 s**, 1.51× the wall time
+and 3.71× the aggregate CPU. Goose8 takes 9.916 s, with 47.0% less wall time
+and 69.9% less CPU than its historical pre-coalescing result. This completes
+the finite bridge investigation with supported compilation and a useful
+optimization, while retaining the unfavorable comparison with V8. See the
+[final integrated measurement](#final-integrated-five-round-measurement).
 
-## Clean primary comparison
+## Historical clean primary comparison, before coalescing
 
 The unchanged [pinned target](generated-200k.md) has 199,129 nonblank lines,
 450 worker namespaces, 57 macro namespaces and 653 canonical files/shims.
@@ -545,3 +549,207 @@ instrument phase separately. The complete-form test can also be invoked through
 `cargo test --release --locked --features goose-macros --lib generated_200k_complete_forms -- --include-ignored --nocapture --test-threads=1`
 with each `GOOSE_COMPILER_RUNNER`. The archived verification command records the
 exact prebuilt Rust test-binary hash used here.
+
+## Final integrated five-round measurement
+
+Pellet 758 measures production source `2209df6f7f3d06395dbe04c97ed9eed65064c135`,
+tree `2c1152f345202971c9ef75f8806300731e712e5c`, after independent review of
+757. No runtime, generator, budget, cache, fixture or comparison-harness source
+changed. A fresh seed42/200k generation matches all **653 canonical files/shims**,
+199,129 nonblank lines and 450 worker namespaces; manifest SHA-256 remains
+`6a4da9ff2d8682c3e524d86abb36a1628131cae16bcbb0220797b4f85c131907`.
+All source/configuration/tooling hashes are checked before and after every build.
+
+The existing `compare.bb --backend all --phase measure --runs 5` ran one
+excluded warmup per cell followed by five forward/reverse interleaved rounds.
+All **30 builds** passed, with no failed/discarded samples or rejected gates;
+every pre-command gate admitted **91.81–97.80% idle**. No competing build/test
+ran. Every command is a fresh process, release/advanced, `--no-cache`, with
+compiler slots equal to the execution limit. Whole-namespace mode stays **off**;
+the 450 generated worker namespaces are source population. These cells vary
+compiler and Goose capacity together and do not isolate VM scaling.
+
+Seconds, median [minimum, maximum]; RSS is decimal GB of command rusage.
+Aggregate CPU is user+system including waited children; command RSS is
+**not a simultaneous sum of compiler/native memory**.
+
+| Engine / execution limit | Compiler slots | Wall | Aggregate CPU | Command RSS |
+| --- | ---: | ---: | ---: | ---: |
+| V8 / 1 | 1 | 6.319 [6.240, 6.381] | 6.85 [6.79, 6.94] | 1.041 [1.033, 1.054] |
+| Goose / 1 | 1 | 18.786 [18.684, 18.987] | 18.52 [18.47, 18.69] | 0.965 [0.961, 0.966] |
+| Goose / 2 | 2 | 13.431 [13.288, 13.607] | 21.64 [21.46, 21.93] | 1.041 [1.030, 1.060] |
+| Goose / 4 | 4 | 9.516 [9.445, 9.695] | 25.41 [25.39, 25.71] | 1.144 [1.128, 1.155] |
+| Goose / 8 | 8 | 9.916 [9.802, 9.948] | 28.45 [28.35, 28.66] | 1.277 [1.257, 1.287] |
+
+Relative to the historical 750 five-round table, Goose1/2/4/8 wall decreases
+6.3% / 5.6% / 17.5% / 47.0%; CPU decreases 6.3% / 6.8% / 25.6% / 69.9%.
+V8 is 1.7% slower in this later run. Hardware, toolchain, generator, optimization,
+budgets and native binary match, but these are separately built compiler
+binaries at different times and revisions. The contemporaneous 757 before/after
+control above gives the stronger causal comparison: Goose1/4/8 wall
+20.573→18.752 / 11.590→9.505 / 18.749→9.901 s and CPU
+20.28→18.46 / 34.50→25.50 / 95.31→28.43 s. The present five-round results
+agree with that improvement. They do not equate a historical timing difference
+with an isolated measurement of the changed instructions.
+
+Goose2/4/8 whole-build speedups over Goose1 are 1.40× / 1.97× / 1.89×;
+four workers are fastest. Even this best cell takes 1.51× V8 wall and 3.71×
+V8 CPU. The bounded optimization removes the eight-worker collapse and yields
+useful full-build savings, but does not make Goose preferable to V8 for this
+target. This finite investigation is complete; no speculative optimization or
+planning pellets were created.
+
+### Separate phase, concurrency and memory diagnostics
+
+One warmup and one repeat in each V8/Goose1/2/4/8 cell used the existing
+`phase750.bb` native instrument, full protocol, inner native rusage and owned
+process-tree sampler. All ten outputs passed. Each native session confirms
+**5,226 source jobs, 615 preparations, 672 exports**, 529 resumptions and 57
+helper producers: 5,812 distinct dispatches, including 5,755 body intervals.
+Every qualified macro identity/count table equals V8. All workers execute/reset
+work; total native threads are 4/6/10/18 and all 3/5/9/17 spawned threads join.
+The unchanged supported source-job boundary has no fallback or pre-expansion.
+
+Repeat-run aggregate elapsed intervals, milliseconds, **not CPU or exclusive
+wall components**. They overlap across workers; do not sum them into wall,
+subtract waits, or infer idle CPU from their difference.
+
+| Goose limit | Restore | Argument/helper import | VM slices | Continuation save | Native export | Rust bridge |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 151.1 | 2425.5 | 71.6 | 72.1 | 590.2 | 3836.2 |
+| 2 | 150.5 | 2496.8 | 73.0 | 75.6 | 715.8 | 4314.4 |
+| 4 | 157.3 | 2575.0 | 75.5 | 79.8 | 821.4 | 5120.8 |
+| 8 | 162.0 | 2629.2 | 78.3 | 81.4 | 862.8 | 5437.9 |
+
+Restore includes validation/relocation and **995,474,716 copied payload bytes**
+per session. Import includes input read/decode and helper installation; native
+export includes graph conversion/writes. Whole command CPU charges the remaining
+queue/file/protocol copying. Rust bridge excludes the explicit native wait but
+its concurrent intervals remain elapsed timers. Source-macro service totals
+11.903/13.047/15.422/16.358 s are inclusive and overlap too. Native-only CPU is
+5.26/5.27/5.57/5.70 s; VM slices remain a small measured component.
+
+Body-overlap warmup/repeat peaks are **1/1, 2/2, 2/3, 2/3** at 1/2/4/8.
+Repeat body interval medians are 13/13/13/14 microseconds. These are elapsed
+lifetimes, not simultaneous instructions; this does not demonstrate eight-way
+VM saturation. The compiler still owns reading/resolution, core expansion,
+orchestration, analysis and emission, with dependency-ordered namespaces and
+deferred unit concurrency. Additional worker capacity does not lengthen the
+short source bodies.
+
+Charged setup/cleanup remains explicit: Rust export/lowering/write 521–635 ms;
+session spawn 0.45–0.53 ms, base load 0.061–0.084 ms, boot 0.003–0.004 ms,
+base capture/pool readiness 0.296/0.627/0.800/2.900 ms, prepared load totals
+43.7–48.9 ms, helper factories 0.161–0.196 ms, and close/join/readers/directory
+cleanup 37.7/40.2/45.0/53.1 ms. Pool readiness includes worker setup; these
+are overlapping charged boundaries rather than an additive startup partition.
+
+V8's diagnostic source-macro service is **1.144 s**, approximately 17.4% of
+its 6.560 s measured instrumented command. This inclusive boundary share is
+not the whole replaceable fraction. V8 cold bootstrap costs 11.108 ms and
+evaluator/prelude creation 8.448 ms, with overlap. Goose retains V8 core/bootstrap
+installation counts 1/3/5/9 and no target `expand_core_javascript` calls.
+This remains **Goose source-macro execution with V8 core/bootstrap**; all its
+costs remain in command timing.
+
+| Diagnostic repeat | Sampled owned-tree RSS peak, GB | Full native-process RSS peak, MB |
+| --- | ---: | ---: |
+| V8 1 | 1.095 | n/a |
+| Goose 1 | 1.131 | 140.1 |
+| Goose 2 | 1.226 | 173.1 |
+| Goose 4 | 1.359 | 205.2 |
+| Goose 8 | 1.559 | 274.6 |
+
+Tree RSS is sampled roughly every 100 ms plus `ps` overhead, includes wrappers,
+counts shared pages in each process and can miss peaks. Native RSS is inner
+command rusage for the complete instrumented native process, including probe
+storage. These are separate scopes/runs; do not add maxima or call them clean
+memory measurements. The earlier exact-native safety/retention evidence remains
+valid; no retention quota or heap lifetime policy changed.
+
+### Bounded shared-poll confirmation
+
+A separate fresh Rust counter binary, using 757's unchanged reversible
+`instrument757.bb instrument` patch, ran a Goose8 warmup and repeat with the
+production native runner. Both passed. In the repeat, all **5,226 budgets** pay
+exactly their node/work plus byte checks: **83,898,311 logical polls through
+661,086 nonzero shared debits**, 0.788% of the original per-check debit count.
+Warmup independently pays 83,898,026 polls through 661,091 debits. No fuel,
+deadline or cancellation bypass is used.
+
+Repeat argument-conversion thread CPU is **5.808 s**, versus 757's 5.728 s and
+756's unchanged shared-control baseline 74.468 s at eight workers. This is a
+bounded confirmation of the identified hotspot reduction, separate from clean
+timing; it is not a fresh statistical profile. Roughly 30.56 million argument
+nodes and the full environment are still transported. Small scheduling-dependent
+volume differences remain visible rather than removing input work. Native VM
+source/binary, accounting semantics, 128-check debit cadence, settlement
+boundaries and the maximum 127 pending polls are unchanged from reviewed 757.
+
+### Reproduction, evidence reuse and remaining limits
+
+The [integrated raw archive](generated-200k-integrated.edn.gz) preserves the
+existing EDN `:files`/UTF-8-text/SHA-256 layout: all samples, gates, commands,
+stdout/oracle/waste records, stderr/rusage, complete protocol, native phase
+records, process-tree samples, scripts/patches, canonical sources/shims,
+generator, independent model/oracle, configuration and manifests. Every embedded
+digest is reread after assembly (**847 embedded files**). No failed build or
+favorable-sample selection is hidden. All **42 successful builds** (30 clean,
+ten phase diagnostics, two
+counter diagnostics) match every one of the **3,449,022 JS bytes**, SHA-256
+`18335556dd4672f2f63b901b68fcad3c447cf5676f457a08fda61f366cc9f3ec`,
+all five independent oracle pairs including newlines, and strict waste checks.
+
+The clean CLI hash is
+`8a08b23cb3599f5d9f12dce45580b65cac3eea47fb1046f06dba4f7e05dce3e2`;
+native production remains
+`92140b1a31ba1fe42beadc3caae59fb6ea0916e4a3204e5caff10ef7146688e0`;
+phase-native remains
+`688de47c75b97e112361adc04c99ce48c002a7cda3220c79c6a599a65f6cc60d`.
+The archive records the separate Rust counter binary, executable toolchain
+digests and versions, 580 execution/build/source hashes, source tree, environment
+and absence of inherited build overrides. Hardware remains M3 Ultra Virtual,
+24 logical CPUs, 32 GiB, macOS arm64; Goose267/runtime3025e5810379, Rust1.99.1,
+Node26.12.1, bb1.12.218 and clang21 match the preceding runs. The research
+checkout is still `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`.
+
+All **580 source hashes match 757**, with the identical production native binary,
+toolchain and relevant build configuration. Its reviewed full-form/provenance
+verification is reused: native optimized/debug 1/2/4/8, 5,226 expansions across
+615 identities after teardown, complete forms/scalars/UTF-16/metadata/provenance,
+and exactly the existing 82 narrowly audited V8 span ambiguities. The 43 raw /
+22 common compiler-input / 65 returned anonymous-parameter checks and five
+equal-scalar occurrence checks remain unchanged. The archive identifies the
+actual prebuilt Rust full-form test binary, not this fresh CLI. Native debug
+and optimized compiler, settlement/limit/failure/cleanup tests, default/QuickJS
+eight-test bridge runs and all 20 expanded-control cells per native mode are
+also reused. The seed24301/15-namespace/120-call/8192-read control has no new
+timing claim. No source changed that would invalidate those checks.
+
+No new cached or leaf matrix is run: cache implementation/source is unchanged,
+and Goose cached installation remains explicitly unsupported. Historical V8
+cached/no-change, cached-leaf and separately labeled uncached-leaf evidence
+above remains historical; skipped macro execution is never a Goose speedup.
+Generator/comparator regression passes **12 tests / 369 assertions** and
+`git diff --check` passes. No fresh broad-suite, root-format or strict-Clippy
+pass is claimed. The matching 757 default/QuickJS library namespace-publication
+failure, default capture generation mismatch (isolated capture passes), eight
+engine/three root strict-Clippy diagnostics, unrelated root formatting and
+earlier analyzer/playground limits remain explicit; full nextest was not rerun.
+
+Use the ordinary fresh-checkout build/generate recipe above, then:
+
+```sh
+cp target/release/light-cljs target/light-production
+bb benchmarks/generated-project/compare.bb target/generated-200k --light target/light-production --backend all --runner target/generated-200k-runner --phase measure --runs 5
+```
+
+Extract `target/phase750.bb`, `target/instrument757.bb`, `target/summary756.bb`,
+`target/summarize758.bb` and `target/archive758.bb` from the integrated archive.
+Run the native phase builder and comparator instrument command separately, then
+the Rust probe with **`instrument` only** and its Goose8 comparison. Exact
+commands/moves are in archive `:commands`; the builders restore source in
+`finally`. The archived bypass implementations from 756 are diagnostic history
+and never enter these production measurements. Run summaries/archive assembly
+after timing. All useful raw evidence is committed; ignored build products and
+extracted copies contain no unique evidence needed before worktree retirement.
