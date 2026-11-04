@@ -15,6 +15,27 @@ mod temp_dir;
 use temp_dir::TempDir;
 
 #[test]
+fn experimental_goose_selection_never_silently_uses_the_single_form_engine() {
+    for key in ["LIGHT_CLJS_GOOSE_RUNNER", "LIGHT_CLJS_GOOSE_WORKERS"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .env_remove("LIGHT_CLJS_GOOSE_RUNNER")
+            .env_remove("LIGHT_CLJS_GOOSE_WORKERS")
+            .env(key, "1")
+            .args(["--compile", "--text", "(+ 1 2)"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let expected = if cfg!(feature = "goose-macros") {
+            "requires a release build command"
+        } else {
+            "requires a binary built with --features goose-macros"
+        };
+        assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
+    }
+}
+
+#[test]
 fn prints_example() {
     let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
         .args(["--text", "(+ 1 2)"])

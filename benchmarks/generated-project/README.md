@@ -124,6 +124,7 @@ macOS `--phase measure` requires at least five rounds, >=90% CPU idle before
 each run, and no competing compiler/build process. Generation, binary building
 and output/oracle checks are outside the measured command.
 
+Selection is restricted to release build commands; other entry points reject it.
 Selection uses the feature-gated `LIGHT_CLJS_GOOSE_RUNNER` and
 `LIGHT_CLJS_GOOSE_WORKERS` embedding. It executes emitted user macros/helpers
 in Goose with retained V8 core/bootstrap; it preserves the release/advanced

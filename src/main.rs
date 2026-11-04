@@ -1128,6 +1128,20 @@ fn report_stats(
 fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let mut first = args.next();
+    if env::var_os("LIGHT_CLJS_GOOSE_RUNNER").is_some()
+        || env::var_os("LIGHT_CLJS_GOOSE_WORKERS").is_some()
+    {
+        if !cfg!(feature = "goose-macros") {
+            return Err(
+                "Goose selection requires a binary built with --features goose-macros".into(),
+            );
+        }
+        if first.as_deref().and_then(|arg| arg.to_str()) != Some("release") {
+            return Err(
+                "experimental Goose selection currently requires a release build command".into(),
+            );
+        }
+    }
     // `compile`, `watch` and `release` run builds of light-cljs.edn, and
     // `cljs-repl` connects to a running watch of one; a command that starts
     // with a flag never reads it, and a FILE of that name is read as
