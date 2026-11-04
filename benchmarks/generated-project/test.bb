@@ -259,6 +259,11 @@
         (is (or (not (.isPresent child)) (not (.isAlive (.get child))))))
       (finally (fs/delete-if-exists marker)))))
 
+(deftest process-tree-sampling-excludes-unrelated-processes
+  (let [text " 10 1 20 /bin/time\n 11 10 100 compiler\n 12 11 50 native\n 13 1 999 unrelated\n"]
+    (is (= [10 11 12] (mapv :pid (compare/process-tree 10 text))))
+    (is (= 170 (reduce + (map :rss-kib (compare/process-tree 10 text)))))))
+
 (deftest macro-comparison-checks-complete-output-and-exact-stdout
   (let [dir (fs/create-temp-dir {:prefix "generated-output-"})
         output (fs/path dir "out/light/workload.main.js")

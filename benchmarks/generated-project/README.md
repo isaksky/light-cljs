@@ -108,7 +108,7 @@ cargo build --release --locked --features goose-macros --bin light-cljs
 goose build crates/big-boy-pants-js/prototypes/goose/compiler_session.goose -o target/generated-200k-runner
 bb benchmarks/generated-project/generate.bb target/generated-200k --seed 42 --lines 200k
 bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs --backend all --runner target/generated-200k-runner --phase check --runs 1
-bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs --backend v8 --phase measure --runs 5
+bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs --backend all --runner target/generated-200k-runner --phase measure --runs 5
 bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs --backend all --runner target/generated-200k-runner --phase instrument --runs 1
 ```
 
@@ -139,6 +139,12 @@ not producer compilations or every invocation of a published callable. The nativ
 diagnostic mode also records per-worker capacity/reset counts and verifies all
 spawned threads join. Its 4,096-row protocol trace is bounded; final worker/thread
 rows survive truncation, and session cost counters cover the whole build.
+The instrument phase also preserves the complete native protocol through `tee`,
+native-only `/usr/bin/time -l` rusage, and 100 ms RSS samples of the owned command
+process tree. Its sampled RSS sums count shared resident pages per process and
+can miss between-sample peaks; they are neither PSS nor clean timing results.
+Optional `phase-*.edn` sidebands written by a diagnostic runner are copied before
+session-directory teardown. These measurements add wrapper/sampler overhead.
 
 V8 `--phase cached --runs 1` populates a dedicated cache, then checks a
 no-change rebuild. `--phase leaf --leaf src/workload/jourklijo.cljs --runs 2`

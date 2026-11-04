@@ -148,9 +148,30 @@
     (when (some #(.isAlive %) (conj children parent))
       (throw (ex-info "Owned process survived cleanup" {})))))
 
+(defn process-tree [root text]
+  (let [rows (vec (for [line (str/split-lines text)
+                       :let [[_ pid parent rss command] (re-matches #"\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)" line)]
+                       :when pid]
+                   {:pid (parse-long pid) :parent (parse-long parent)
+                    :rss-kib (parse-long rss) :command command}))]
+    (loop [ids #{root}]
+      (let [expanded (into ids (keep #(when (ids (:parent %)) (:pid %)) rows))]
+        (if (= ids expanded) (filterv #(ids (:pid %)) rows) (recur expanded))))))
+
 (defn bounded-run [dir environment timeout-ms cmd]
   (let [proc (process/process cmd {:dir dir :env environment :out :string :err :string :continue true})
-        hook (Thread. ^Runnable #(stop-tree! proc))]
+        hook (Thread. ^Runnable #(stop-tree! proc))
+        sampler (when-let [file (get environment "GENERATED_COMPARE_TREE")]
+                  (future
+                    (spit file (str (pr-str {:kind :scope :root (.pid (:proc proc))
+                                             :interval-ms 100 :rss-unit :kib
+                                             :scope "sampled sum of resident pages in owned command tree; shared pages counted per process; not PSS or a continuous peak"}) "\n"))
+                    (while (.isAlive (:proc proc))
+                      (let [r (process/sh "ps" "-axo" "pid=,ppid=,rss=,comm=")]
+                        (assert (zero? (:exit r)) "Process-tree sampling failed")
+                        (spit file (str (pr-str {:at-ns (System/nanoTime)
+                                                :processes (process-tree (.pid (:proc proc)) (:out r))}) "\n") :append true))
+                      (Thread/sleep 100))))]
     (.addShutdownHook (Runtime/getRuntime) hook)
     (try
       (let [result (deref proc timeout-ms ::timeout)]
@@ -159,7 +180,11 @@
           (select-keys result [:exit :out :err])))
       (finally
         (when (.isAlive (:proc proc)) (stop-tree! proc))
-        (try (.removeShutdownHook (Runtime/getRuntime) hook) (catch IllegalStateException _))))))
+        (try (.removeShutdownHook (Runtime/getRuntime) hook) (catch IllegalStateException _))
+        (when sampler
+          (when (= ::timeout (deref sampler 5000 ::timeout))
+            (future-cancel sampler)
+            (throw (ex-info "Process-tree sampler did not stop" {}))))))))
 
 (defn checked [dir environment cmd]
   (let [r (bounded-run dir environment 180000 cmd)]
@@ -256,6 +281,7 @@
   (let [environment (apply dissoc (into {} (System/getenv))
                            ["LIGHT_CLJS_GOOSE_RUNNER" "LIGHT_CLJS_GOOSE_WORKERS" "LIGHT_CLJS_GOOSE_REPORT"
                             "LIGHT_CLJS_MACRO_PROBE" "GOOSE_BENCH_INSTRUMENT" "LIGHT_V8_STATS"
+                            "GENERATED_COMPARE_TREE" "GOOSE_GENERATED_USAGE" "GOOSE_GENERATED_PROTOCOL"
                             "LIGHT_CLJS_NAMESPACE_WORKERS" "LIGHT_CLJS_FRESH_UNIT_ISOLATES" "LIGHT_CLJS_WAIT_TIMELINE"])
         results (fs/path dir (str "macro-" phase))
         _ (fs/create-dirs results)
@@ -264,7 +290,7 @@
         diagnostic-runner (fs/path results "goose-instrumented.sh")
         _ (when (and runner (= "instrument" phase))
             ;; Existing native session diagnostic mode, excluded from clean runs.
-            (spit (str diagnostic-runner) "#!/bin/sh\nexec \"$GOOSE_GENERATED_NATIVE\" \"$@\" instrumented\n")
+            (spit (str diagnostic-runner) "#!/bin/bash\nset -o pipefail\n/usr/bin/time -l -o \"$GOOSE_GENERATED_USAGE\" \"$GOOSE_GENERATED_NATIVE\" \"$@\" instrumented | tee \"$GOOSE_GENERATED_PROTOCOL\"\nstatus=$?\nfor file in \"$1\"/phase-*.edn; do\n  if [ -f \"$file\" ]; then cp \"$file\" \"$GOOSE_GENERATED_PROTOCOL.${file##*/}\" || exit 1; fi\ndone\nexit \"$status\"\n")
             (checked dir environment ["chmod" "700" (str diagnostic-runner)]))
         write! #(spit (str evidence) (str (pr-str %) "\n") :append true)
         fixed (pinned! dir)
@@ -280,10 +306,14 @@
                    (let [stem (str (:backend cell) (:workers cell) "-" (if warmup? "warmup" round))
                          log (fs/path results (str stem ".stderr"))
                          trace (fs/path results (str stem ".trace.tsv"))
+                         tree (fs/path results (str stem ".tree.edn"))
                          env (cond-> environment
                                (= "goose" (:backend cell)) (assoc "LIGHT_CLJS_GOOSE_RUNNER" (if (= "instrument" phase) (str diagnostic-runner) runner)
                                                                   "GOOSE_GENERATED_NATIVE" runner
+                                                                  "GOOSE_GENERATED_USAGE" (str (fs/path results (str stem ".native-rusage")))
+                                                                  "GOOSE_GENERATED_PROTOCOL" (str (fs/path results (str stem ".protocol")))
                                                                   "LIGHT_CLJS_GOOSE_WORKERS" (str (:workers cell)))
+                               (= "instrument" phase) (assoc "GENERATED_COMPARE_TREE" (str tree))
                                (#{"instrument" "cached" "leaf"} phase) (assoc "LIGHT_CLJS_MACRO_PROBE" (str (fs/path results (str stem ".macros.tsv")))
                                                               "LIGHT_CLJS_GOOSE_REPORT" (str (fs/path results (str stem ".goose.txt")))))
                          command (cond-> (cmd cell) (#{"instrument" "cached" "leaf"} phase) (into ["--stats-file" (str trace)]))
@@ -307,6 +337,7 @@
                                              :leaf-edit *leaf-edit*
                                              :executed-source-macros macro-counts
                                              :native native
+                                             :process-tree (when (= "instrument" phase) (str (fs/file-name tree)))
                                              :wall-ns wall :exit (:exit r) :output output :stderr (str (fs/file-name log))
                                              :user-s (number #"([0-9.]+) user") :system-s (number #"([0-9.]+) sys")
                                              :max-rss-bytes (number #"([0-9]+)  maximum resident set size") :quiet quiet})]
@@ -321,7 +352,7 @@
       (assert (str/includes? (System/getProperty "os.name") "Mac") "Quiet/rusage measurement currently requires macOS"))
     (write! {:kind :manifest :phase phase :options opts :fixed fixed :inputs oracle-inputs :expected expected
              :harness-sha256 (sha256 (fs/path kit "compare.bb"))
-             :native-diagnostic-mode (when (= "instrument" phase) "compiler_session instrumented; native wrapper execs the pinned runner")
+             :native-diagnostic-mode (when (= "instrument" phase) "compiler_session instrumented; tee preserves full protocol; inner time records native rusage; 100ms owned-tree RSS sampling")
              :compiler-sha256 (sha256 light) :runner-sha256 (when runner (sha256 runner))
              :git (checked (str repository) environment ["git" "rev-parse" "HEAD"])
              :source-hashes (into (sorted-map)
