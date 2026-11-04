@@ -165,7 +165,38 @@ fn reused_destination() {
     snapshot_test::verify(heap, roots, 7);
     print("reused code/heap/job destination: live/claimed/terminal guards, fresh IDs, alternating payloads, complete reset and transactional validation passed");
 }
-fn main() { source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); live_boundary(); }
+fn main() { assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); live_boundary(); }
+
+fn assembly_ownership() {
+    var code = source::Code {}; snapshot_test::append(code, embed_file("corpus/serial/calls.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap)); source::boot_runtime(heap);
+    let a = source::allocate(heap, source::Node { kind: 11, value: source::number(7), origin: 2 });
+    let b = source::allocate(heap, source::Node { kind: 11, value: source::number(7), origin: 3 });
+    let left = source::form_collection(heap, 6, [a, b, a]); let joined = source::form_concat(heap, [left, left]);
+    let array = source::allocate(heap, source::Node { kind: 1 });
+    let length = source::text(heap, "length");
+    for i in 3 { assert(source::put(heap, array, source::key(heap, source::number(i)), if i == 1 { b } else { a })); }
+    assert(source::put(heap, array, length, source::number(1)));
+    let roots = [snapshot::Binding { id: 0, generation: 1, value: array }, snapshot::Binding { id: 1, generation: 1, value: array }, snapshot::Binding { id: 2, generation: 1, value: joined }];
+    var c = snapshot::Control {}; let saved = snapshot::capture(heap, roots, c); assert(c.error == snapshot::Error.None);
+    for i in 2 {
+        var restored_code = source::Code {}; var restored = source::Heap { code: restored_code }; var bindings: snapshot::Binding[>..] = []; var control = snapshot::Control {};
+        assert(snapshot::restore(saved, restored_code, restored, bindings, source::reserve_identity(), control));
+        assert(bindings[0].value.a == bindings[1].value.a && bindings[0].value.session == restored.identity);
+        let rarray = bindings[0].value; let rjoined = bindings[2].value;
+        assert(source::native_value(restored, 16, [rjoined]).a == rjoined.a);
+        assert(source::form_nth(restored, rjoined, 0).a == source::form_nth(restored, rjoined, 3).a);
+        assert(source::form_nth(restored, rjoined, 0).a != source::form_nth(restored, rjoined, 1).a);
+        assert(source::put(restored, rarray, source::text(restored, "length"), source::number(3)));
+        assert(source::get(restored, rarray, source::key(restored, source::number(0))).a == a.a);
+        for j in 1..3 { assert(source::get(restored, rarray, source::key(restored, source::number(j))).tag == 0); }
+        assert(source::put(restored, rarray, source::key(restored, source::number(2)), source::number(i + 10)));
+    }
+    assert(heap.nodes[array.a].length == 1 && source::get(heap, array, source::key(heap, source::number(2))).tag == 0);
+    var bad = copy(saved); bad.nodes[array.a].length = bad.header.limits.values + 1;
+    var control = snapshot::Control {}; assert(!snapshot::validate(bad, control) && control.error == snapshot::Error.Allocator);
+    print("snapshot assembly: sequence builtin, concatenated aliases and truncated-array holes restore into isolated private heaps");
+}
 
 fn argument_ownership() {
     var code = source::Code {}; snapshot_test::append(code, embed_file("corpus/serial/arguments.gsp"));

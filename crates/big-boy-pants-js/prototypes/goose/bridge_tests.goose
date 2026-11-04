@@ -211,7 +211,54 @@ fn direct_update_boundaries() {
     let fixed = source::form_assoc(heap, old, source::number(0), source::number(2)); assert(heap.fault == source::Fault.None && source::form_nth(heap, fixed, 0).number == 2);
     print("direct persistent updates: exact work/node/value limits, final allocation charge, stale children, duplicate keys, aliases and metadata passed");
 }
-fn main() { adversarial_forms(); roundtrip(); positional_map_equality(); direct_update_boundaries(); number_bits(); unsupported_values(); primitive_fallback(); budgets(); print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
+fn main() { assembly(); adversarial_forms(); roundtrip(); positional_map_equality(); direct_update_boundaries(); number_bits(); unsupported_values(); primitive_fallback(); budgets(); print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
+
+fn assembly() {
+    var code = source::Code {}; code_init(code); var out = bridge::Graph {};
+    {
+        var heap = source::Heap { code: code }; assert(source::initialize(heap));
+        var graph = bridge::Graph {}; graph_init(graph);
+        var roots: source::Value[>..] = []; var c = bridge::Control {}; assert(bridge::import_graph(heap, graph, roots, c));
+        let old = roots[0]; let a = source::form_nth(heap, old, 0); let b = source::form_nth(heap, old, 1);
+        let left = source::form_collection(heap, 5, [a, b, a]);
+        let right = source::form_collection(heap, 6, [b]);
+        let joined = source::form_op(heap, 35, [left, right]);
+        let nested = source::form_op(heap, 36, [source::form_collection(heap, 5, [source::nil(), joined, source::form_collection(heap, 5, []), right])]);
+        assert(source::form_count(heap, nested) == 5 && source::form_count(heap, left) == 3 && source::form_count(heap, right) == 1);
+        for i in 5 { assert(source::form_nth(heap, nested, i).a == (if i == 0 || i == 2 { a.a } else { b.a })); }
+        let empty = source::form_op(heap, 35, [source::nil(), source::form_collection(heap, 5, [])]);
+        assert(source::form_count(heap, empty) == 0 && source::form_op(heap, 20, [empty]).tag == 1);
+        assert(source::native_value(heap, 16, [nested]).a == nested.a);
+        assert(source::native_value(heap, 16, [left]).a == left.a);
+        assert(source::form_count(heap, source::native_value(heap, 16, [source::nil()])) == 0);
+        let map = source::form_collection(heap, 7, [a, source::boolean(false), source::number(8), source::nil()]);
+        assert(source::form_contains(heap, map, b) && source::form_contains(heap, map, source::number(8)) && !source::form_contains(heap, map, source::number(9)));
+        let set = source::form_collection(heap, 8, [a]); assert(source::form_contains(heap, set, b));
+        assert(source::form_contains(heap, right, source::number(0)) && !source::form_contains(heap, right, source::number(1)) && !source::form_contains(heap, source::nil(), a));
+        assert(bridge::export_graph(heap, [nested, old], out, c));
+        // Every limit is checked before publishing a partial concatenation.
+        for mode in 3 {
+            let values = heap.values.len; let nodes = heap.nodes.len; let work = heap.work;
+            if mode == 0 { heap.limits.values = values + 3; }
+            if mode == 1 { heap.limits.nodes = nodes; }
+            if mode == 2 { heap.limits.work = work + 3; }
+            source::form_concat(heap, [left, right]);
+            assert(heap.fault == (if mode == 2 { source::Fault.WorkLimit } else { source::Fault.MemoryLimit }));
+            assert(heap.values.len == values && heap.nodes.len == nodes);
+            heap.fault = source::Fault.None; heap.limits = source::Limits {};
+        }
+        source::form_concat(heap, [map]); assert(heap.fault == source::Fault.UnsupportedOperand);
+    }
+    // Occurrence metadata/provenance/aliases remain usable after heap teardown.
+    var c = bridge::Control {}; assert(bridge::validate(out, c));
+    let joined = out.nodes[out.roots[0]]; let original = out.nodes[out.roots[1]];
+    assert(joined.count == 5 && original.metadata >= 0);
+    let a = out.children[joined.start]; let b = out.children[joined.start + 1];
+    assert(a != b && a == out.children[joined.start + 2] && b == out.children[joined.start + 4]);
+    assert(a == out.children[original.start] && b == out.children[original.start + 1]);
+    assert(out.nodes[a].span_start == 0 && out.nodes[b].span_start == 4 && out.nodes[a].source != out.nodes[b].source);
+    print("assembly: nested/nil/empty concat, presence, immutable occurrence aliases, teardown provenance and work/retention rejection passed");
+}
 
 fn adversarial_forms() {
     // db6f7f07:tests/parser.rs's independent breadth/depth/decoded-text

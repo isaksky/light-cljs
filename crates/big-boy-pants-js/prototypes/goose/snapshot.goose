@@ -174,6 +174,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     for n in s.nodes {
         if !poll(c) { return false; }
         if n.kind < 0 || n.kind > 14 { return reject(c, Error.Unsupported); }
+        if n.kind == 1 && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
         if n.head < -1 || n.head >= s.properties.len || n.length < 0 || !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source < -1 || n.source >= s.sources.len || n.origin < -1 { return reject(c, Error.Link); }
         if n.source >= 0 && (n.span_start < 0 || n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
         if n.source >= 0 {
@@ -182,7 +183,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         }
         if n.kind == 2 && (!range(n.function, 1, s.functions.len) || n.count != s.functions[n.function].captures) { return reject(c, Error.Link); }
         if n.kind == 2 || n.kind >= 5 && n.kind <= 8 || n.kind == 12 || n.kind == 14 { if !range(n.start, n.count, s.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); } }
-        if n.kind == 4 && (n.function < 0 || n.function > 15 || n.function == 9) { return reject(c, Error.Unsupported); }
+        if n.kind == 4 && (n.function < 0 || n.function > 16 || n.function == 9) { return reject(c, Error.Unsupported); }
         if (n.kind == 9 || n.kind == 10) && (n.value.tag != 4 || n.namespace_value.tag != 1 && n.namespace_value.tag != 4) || n.kind == 11 && n.value.tag > 4 { return reject(c, Error.Link); }
         if n.metadata.tag != 0 && n.metadata.tag != 1 && (n.metadata.tag != 5 || s.nodes[n.metadata.a].kind != 7) { return reject(c, Error.Link); }
     }

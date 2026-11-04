@@ -43,6 +43,31 @@ remain unsupported. `fnApplyNull` copies a closure with its immutable Clojure
 apply receiver convention; `fnApplyReceiver` observes that convention. These
 operations do not add general `apply` or callable-helper transport support.
 
+Syntax-quote assembly supports bounded eager `cljConcat`/`cljConcatAll` over
+nil, lists, vectors and existing sequence cursors. Copies retain child
+occurrence handles and leave inputs immutable. The one-argument `core.sequence`
+leaf preserves list/cursor identity and converts vectors or nil through the
+existing sequence implementation. Map/set membership tests keys independently
+of their false/nil values; vector/string membership tests integral indices.
+Other collection categories fail explicitly.
+
+Temporary JS arrays support numeric integral `length` writes, bounded by both
+the JS uint32 range and the heap value limit. Shrinking unlinks indexed own
+properties; extension creates undefined holes and never revives removed values.
+Removed records remain charged to the property limit until teardown. A work
+rejection during truncation leaves the array unchanged. Coercing nonnumeric
+lengths and invalid lengths fail `UnsupportedOperand`; lengths above the heap
+bound fail `MemoryLimit`. Snapshot version 2 retains the same layout, validates
+array bounds and admits the `sequence` builtin.
+
+The compiler regression loads the unchanged pinned generated macro namespace
+and compares complete kalvas/dukdos/dougri/joktol expansion forms against V8
+after teardown at 1/2/4/8 workers. Its additional repeated-number case pins an
+existing reference limitation: V8's value-based scalar provenance assigns all
+equal numbers the last input span. Goose retains each occurrence's original
+span; the test checks those exact spans and complete equality across Goose
+worker counts instead of normalizing away their identities.
+
 [Runtime design decisions](runtime-design.md) trace the captured closure and
 persistent-form requirements through QuickJS/Pants and explain the indexed
 storage choices. The smoke command includes `layout_probe.goose`, a bounded

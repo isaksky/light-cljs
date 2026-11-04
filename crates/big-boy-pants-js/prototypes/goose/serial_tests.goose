@@ -117,6 +117,7 @@ fn factory(bytes: const u8[:]) {
     assert(heap.nodes[job.result.a].kind == 2);
 }
 fn main() {
+    array_lengths();
     check(embed_file("corpus/synthetic/arithmetic.gsp"), "number:27.5");
     check(embed_file("corpus/synthetic/control_flow.gsp"), "number:7307.0");
     check(embed_file("corpus/synthetic/wide.gsp"), "number:299.0");
@@ -152,6 +153,39 @@ fn main() {
     let entry = source::closure(heap, 0, []); var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
     assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.InstructionLimit && job.steps == 100);
     print("serial source VM: calls/captures/cells/properties/truth/UTF16/errors, exact slices and limits passed");
+}
+fn array_lengths() {
+    var code = source::Code {}; decode(code, embed_file("corpus/serial/mutations.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let array = source::allocate(heap, source::Node { kind: 1 }); let length = source::text(heap, "length");
+    for i in 4 { assert(source::put(heap, array, source::key(heap, source::number(i)), source::number(i + 10))); }
+    assert(source::put(heap, array, length, source::number(2)));
+    assert(source::get(heap, array, source::key(heap, source::number(1))).number == 11);
+    assert(source::get(heap, array, source::key(heap, source::number(2))).tag == 0);
+    assert(source::put(heap, array, length, source::number(4)));
+    assert(source::get(heap, array, source::key(heap, source::number(3))).tag == 0);
+    assert(source::put(heap, array, source::key(heap, source::number(2)), source::number(99)));
+    assert(source::get(heap, array, source::key(heap, source::number(2))).number == 99);
+    assert(source::put(heap, array, length, source::number(0)) && heap.nodes[array.a].head == -1);
+    assert(source::put(heap, array, length, source::number(3)));
+    for i in 3 { assert(source::get(heap, array, source::key(heap, source::number(i))).tag == 0); }
+    for n in [-1.0, 1.5, 0.0 / 0.0, 1.0 / 0.0, 4294967296.0] {
+        assert(!source::put(heap, array, length, source::number(n)) && heap.fault == source::Fault.UnsupportedOperand);
+        heap.fault = source::Fault.None; assert(heap.nodes[array.a].length == 3);
+    }
+    assert(!source::put(heap, array, length, source::number(heap.limits.values + 1)) && heap.fault == source::Fault.MemoryLimit);
+    heap.fault = source::Fault.None;
+    assert(source::put(heap, array, source::key(heap, source::number(1)), source::number(7)));
+    let before = copy(heap.properties); let head = heap.nodes[array.a].head;
+    heap.limits.work = heap.work + 8;
+    assert(!source::put(heap, array, length, source::number(0)) && heap.fault == source::Fault.WorkLimit);
+    assert(heap.nodes[array.a].length == 3 && heap.nodes[array.a].head == head && to_bytes(heap.properties) == to_bytes(before));
+    heap.fault = source::Fault.None; heap.limits = source::Limits {};
+    let retained = heap.properties.len; heap.limits.properties = retained;
+    assert(source::put(heap, array, length, source::number(0)));
+    assert(!source::put(heap, array, source::key(heap, source::number(0)), source::number(1)) && heap.fault == source::Fault.MemoryLimit);
+    assert(heap.properties.len == retained && heap.nodes[array.a].length == 0);
+    print("temporary arrays: shorter/zero/extension/deleted holes, numeric bounds, atomic work and retained-property rejection passed");
 }
 fn argument_limits(bytes: const u8[:]) {
     var code = source::Code {}; decode(code, bytes);

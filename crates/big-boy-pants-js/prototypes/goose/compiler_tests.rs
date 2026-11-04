@@ -38,6 +38,240 @@ fn cleaned(s: &GooseSession) {
     assert!(s.pending.lock().unwrap().is_empty());
     assert!(!s.directory.exists());
 }
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_generated_assembly() {
+    // Load the exact generated source with the actual namespace compiler.
+    // The temporary full project is an input fixture, never pre-expanded JS.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let generated = root.join("target").join(format!(
+        "generated-assembly-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    struct Remove(PathBuf);
+    impl Drop for Remove {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _remove = Remove(generated.clone());
+    assert!(
+        std::process::Command::new("bb")
+            .current_dir(&root)
+            .arg("benchmarks/generated-project/generate.bb")
+            .arg(&generated)
+            .args(["--seed", "42", "--lines", "200k"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(
+        std::fs::read(generated.join("manifest.edn")).unwrap(),
+        include_bytes!("generated-200k-manifest.edn")
+    );
+    let read = |text: &str| {
+        let source = Source::new("generated-assembly.cljs", text);
+        crate::compiler_reader::read_form(
+            &source,
+            &crate::compiler_reader::NamespaceView::new("workload.fonam", &source),
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let cases = [
+        ("kalvas", "[2 3] 4", "{}"),
+        ("dukdos", "7", "{}"),
+        ("dukdos", "^:marked x", "{}"),
+        ("dougri", "^:marked mm", "{}"),
+        ("joktol", "^:marked x 99", "{:locals {x {}}}"),
+        ("joktol", "x 99", "{:locals {x false}}"),
+        ("joktol", "x 99", "{:locals {x nil}}"),
+        ("joktol", "x 99", "{:locals {}}"),
+        ("joktol", "x 99", "{:locals nil}"),
+    ];
+    let mut expected: Option<Vec<(Form, Form)>> = None;
+    let mut repeated_value: Option<Datum> = None;
+    let mut repeated_goose: Option<(Form, Form)> = None;
+    for workers in [0, 1, 2, 4, 8] {
+        let _names = crate::generated_names::enter_namespace(0);
+        let mut host = crate::macro_host::MacroHost::new();
+        let session = (workers != 0).then(|| GooseSession::start(&runner(), workers).unwrap());
+        if let Some(s) = &session {
+            host.use_goose_source_macros(s.clone()).unwrap();
+        }
+        crate::compiler::analyze_namespace_entry_recorded(
+            "workload.fonam",
+            &[generated.join("src"), generated.join("macros")],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            crate::compiler::EntryRecorders {
+                slots: crate::scheduler::Slots::new(1).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let forms = cases
+            .iter()
+            .map(|(name, args, env)| {
+                let call = read(&format!("({name} {args})"));
+                let expanded = host
+                    .expand_source_javascript(
+                        "workload.fonam",
+                        name,
+                        &call,
+                        &read(env).data(),
+                        None,
+                    )
+                    .unwrap_or_else(|e| panic!("{name} workers={workers}: {e}"));
+                (call, expanded)
+            })
+            .collect::<Vec<_>>();
+        let repeated_call = read("(kalvas [2 2] 2)");
+        let repeated = host
+            .expand_source_javascript(
+                "workload.fonam",
+                "kalvas",
+                &repeated_call,
+                &read("{}").data(),
+                None,
+            )
+            .unwrap();
+        drop(host);
+        if let Some(s) = session {
+            assert_eq!(s.stats().jobs, cases.len() as u64 + 1);
+            s.close();
+            cleaned(&s);
+        }
+        // Includes every form/scalar pool, metadata, source span and origin,
+        // after the host, jobs and native session have all been destroyed.
+        if let Some(reference) = &expected {
+            crate::compiler_bootstrap::goose_capture::compare_concurrent_forms(
+                reference.clone(),
+                forms,
+            );
+        } else {
+            expected = Some(forms);
+        }
+        let spans = (0..repeated.nodes().len())
+            .filter_map(|i| {
+                let form = repeated.at(crate::compiler_data::FormId(i)).unwrap();
+                form.data()
+                    .value_eq(&Datum::new(DatumKind::Integer(2)))
+                    .then(|| {
+                        assert_eq!(form.node().origin, Origin::Source);
+                        form.span().bytes()
+                    })
+            })
+            .collect::<Vec<_>>();
+        if workers == 0 {
+            // The reference bridge explicitly keeps scalar provenance by
+            // value (form_bridge.rs). Equal JS numbers get the last input
+            // span. Pin that limitation; never erase Goose occurrence IDs
+            // or normalize its more precise result to match this ambiguity.
+            assert_eq!(spans, vec![14..15, 14..15, 14..15]);
+            repeated_value = Some(repeated.data());
+        } else {
+            assert!(repeated_value.as_ref().unwrap().value_eq(&repeated.data()));
+            assert_eq!(spans, vec![9..10, 11..12, 14..15]);
+            if let Some(reference) = &repeated_goose {
+                crate::compiler_bootstrap::goose_capture::compare_concurrent_forms(
+                    vec![reference.clone()],
+                    vec![(repeated_call, repeated)],
+                );
+            } else {
+                repeated_goose = Some((repeated_call, repeated));
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_assembly_leaf_boundaries() {
+    let body = r#"rt => {
+        const a=[1,2,3]; a.length=1; a.length=3;
+        const sequence=rt.core.sequence;
+        return (form,env) => {
+            const alias=a;
+            const before=a[0]===1 && a[1]===undefined && a[2]===undefined;
+            alias.length=0; alias.length=4; alias[2]=7;
+            const xs=__rt.formList(1,2);
+            const joined=__rt.cljConcatAll(__rt.formList(null,xs,__rt.cljConcat(xs,__rt.formVector(3))));
+            return before && a===alias && a.length===4 && a[0]===undefined && a[1]===undefined && a[2]===7 && a[3]===undefined
+                && sequence.call(null,xs)===xs && __rt.cljCount(sequence(null))===0
+                && __rt.cljCount(sequence(__rt.formVector(1,2)))===2
+                && __rt.cljCount(joined)===5 && __rt.cljNth(joined,4)===3
+                && __rt.cljCount(xs)===2 && __rt.cljCount(__rt.cljConcat(null,null))===0
+                && __rt.cljContains(__rt.formMap(1,false,2,null),1)
+                && __rt.cljContains(__rt.formMap(1,false,2,null),2)
+                && !__rt.cljContains(__rt.formMap(1,false,2,null),3)
+                && __rt.cljContains(__rt.formSet(false,null),false)
+                && __rt.cljContains(__rt.formSet(false,null),null)
+                && !__rt.cljContains(__rt.formVector(3),1.5);
+        };
+    }"#;
+    let s = GooseSession::start(&runner(), 2).unwrap();
+    let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+    let (f, args, call) = inputs(&e, body);
+    for _ in 0..3 {
+        let value = e.call(f, &args).unwrap();
+        let form = e
+            .export_form(value, &call, origin(&call), Default::default())
+            .unwrap();
+        assert!(form.data().value_eq(&Datum::new(DatumKind::Boolean(true))));
+    }
+    s.close();
+    cleaned(&s);
+    for (body, fault) in [
+        (
+            "const a=[];a.length=-1;return a;",
+            "Fault.UnsupportedOperand",
+        ),
+        (
+            "const a=[];a.length=1.5;return a;",
+            "Fault.UnsupportedOperand",
+        ),
+        (
+            "const a=[];a.length=0/0;return a;",
+            "Fault.UnsupportedOperand",
+        ),
+        (
+            "const a=[];a.length=1/0;return a;",
+            "Fault.UnsupportedOperand",
+        ),
+        (
+            "const a=[];a.length='2';return a;",
+            "Fault.UnsupportedOperand",
+        ),
+        (
+            "const a=[];a.length=4294967296;return a;",
+            "Fault.UnsupportedOperand",
+        ),
+        ("const a=[];a.length=1048577;return a;", "Fault.MemoryLimit"),
+        (
+            "return rt.core.sequence(null,null);",
+            "Fault.NativeBoundary",
+        ),
+        (
+            "return __rt.cljConcat(__rt.formMap(1,2),null);",
+            "Fault.UnsupportedOperand",
+        ),
+    ] {
+        let s = GooseSession::start(&runner(), 1).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let (f, args, _) = inputs(&e, &format!("rt => (form,env) => {{ {body} }}"));
+        let error = e.call(f, &args).unwrap_err();
+        assert!(
+            error.0.contains(fault) && error.0.contains("emitted-span="),
+            "{body}: {error}"
+        );
+        s.close();
+        cleaned(&s);
+    }
+}
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_variadic_wrappers() {

@@ -1,5 +1,6 @@
 import std;
 import binary;
+import math;
 import .program;
 import .vm;
 import .export_schema;
@@ -277,7 +278,12 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
     if !valid(heap, object) || !valid(heap, k) || !valid(heap, value) { return false; }
     if object.tag != 5 || k.tag != 4 || heap.nodes[object.a].kind >= 2 { heap.fault = if object.tag == 5 { Fault.UnsupportedOperand } else { Fault.TypeError }; return false; }
     if key_is(heap, k, "__proto__") { heap.fault = Fault.UnsupportedOperand; return false; }
-    if heap.nodes[object.a].kind == 1 && key_is(heap, k, "length") { heap.fault = Fault.UnsupportedOperand; return false; }
+    if heap.nodes[object.a].kind == 1 && key_is(heap, k, "length") { return array_length(heap, object, value); }
+    if heap.nodes[object.a].kind == 1 {
+        let i = index(heap, k);
+        if i < 0 { heap.fault = Fault.UnsupportedOperand; return false; }
+        if i >= heap.limits.values { return memory(heap); }
+    }
     var id = heap.nodes[object.a].head;
     while id >= 0 {
         if !charge(heap) { return false; }
@@ -289,6 +295,37 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
     heap.properties.push(Property { key: k, value: value, next: previous }); heap.nodes[object.a].head = next;
     if heap.nodes[object.a].kind == 1 { let i = index(heap, k); if i >= heap.nodes[object.a].length { heap.nodes[object.a].length = i + 1; } }
     return heap.fault == Fault.None;
+}
+// Bounded numeric length writes only. Removed property records remain charged
+// until teardown, but no longer participate in lookup or later extension.
+// Preflight the full walk before mutation so a work rejection is atomic.
+fn array_length(heap: Heap&, object: Value, value: Value) -> bool {
+    if value.tag != 3 || !(value.number >= 0 && value.number <= 4294967295.0) || value.number != trunc(value.number) { heap.fault = Fault.UnsupportedOperand; return false; }
+    let length = value.number as i64;
+    if length > heap.limits.values { return memory(heap); }
+    if length < heap.nodes[object.a].length {
+        var id = heap.nodes[object.a].head;
+        while id >= 0 {
+            if !charge(heap, 2 + heap.properties[id].key.b) { return false; }
+            index(heap, heap.properties[id].key);
+            if heap.fault != Fault.None { return false; }
+            id = heap.properties[id].next;
+        }
+        var previous: i64 = -1; id = heap.nodes[object.a].head;
+        while id >= 0 {
+            let p = heap.properties[id];
+            // put admitted canonical indices. The preflight charged this
+            // second decode, so mutation below has no remaining failure point.
+            var i: i64 = 0;
+            for at in p.key.b { i = i * 10 + (heap.units[p.key.a + at] - 48); }
+            if i >= length {
+                if previous < 0 { heap.nodes[object.a].head = p.next; }
+                else { heap.properties[previous].next = p.next; }
+            } else { previous = id; }
+            id = p.next;
+        }
+    }
+    heap.nodes[object.a].length = length; return true;
 }
 fn closure(heap: Heap&, function: i64, captures: const Value[:]) -> Value {
     if function < 0 || function >= heap.code.functions.len || captures.len != heap.code.functions[function].captures { heap.fault = Fault.InvalidState; return Value {}; }
@@ -539,6 +576,48 @@ fn form_get(heap: Heap&, v: Value, k: Value, fallback: Value) -> Value {
     for i in (n.count / 2) { if form_equal(heap, heap.values[n.start + i * 2], k) { return heap.values[n.start + i * 2 + 1]; } }
     return fallback;
 }
+fn form_contains(heap: Heap&, v: Value, k: Value) -> bool {
+    let x = form_value(heap, v); let kind = form_kind(heap, x);
+    if x.tag <= 1 { return false; }
+    if kind == 6 || x.tag == 4 {
+        let i = form_value(heap, k);
+        return i.tag == 3 && i.number >= 0 && i.number < form_count(heap, x) && i.number == trunc(i.number);
+    }
+    if kind == 7 || kind == 8 {
+        let n = heap.nodes[x.a]; let stride: i64 = if kind == 7 { 2 } else { 1 };
+        for i in (n.count / stride) { if form_equal(heap, heap.values[n.start + i * stride], k) { return true; } if heap.fault != Fault.None { return false; } }
+        return false;
+    }
+    heap.fault = Fault.UnsupportedOperand; return false;
+}
+// Eager bounded syntax-quote assembly. Only sequential form ranges and nil
+// are admitted; arbitrary lazy/JS/protocol collections remain unsupported.
+// Children keep their occurrence identity, metadata and source provenance.
+fn form_concat(heap: Heap&, colls: const Value[:]) -> Value {
+    var count: i64 = 0;
+    for coll in colls {
+        if !charge(heap, 2) { return Value {}; }
+        let x = form_value(heap, coll); if heap.fault != Fault.None { return Value {}; }
+        if x.tag <= 1 { continue; }
+        let kind = form_kind(heap, x);
+        if kind != 5 && kind != 6 && kind != 12 { heap.fault = Fault.UnsupportedOperand; return Value {}; }
+        let n = heap.nodes[x.a];
+        if n.count > heap.limits.values - heap.values.len - count { memory(heap); return Value {}; }
+        if !charge(heap, n.count * 2) { return Value {}; }
+        for child in heap.values[n.start..(n.start + n.count)] { if !valid(heap, child) { return Value {}; } }
+        count += n.count;
+    }
+    let start = heap.values.len;
+    let result = allocate(heap, Node { kind: 12, start: start, count: count });
+    if heap.fault != Fault.None { return Value {}; }
+    // Preflight above accounted both validation and copying. Append only
+    // after every failure point; the inputs are immutable stable ranges.
+    for coll in colls {
+        let x = form_value(heap, coll); if x.tag <= 1 { continue; }
+        let n = heap.nodes[x.a]; heap.values.append(heap.values[n.start..(n.start + n.count)]);
+    }
+    return result;
+}
 fn form_sequence(heap: Heap&, v: Value, skip: i64, empty_nil: bool) -> Value {
     let x = form_value(heap, v); let count = form_count(heap, x);
     if heap.fault != Fault.None { return Value {}; }
@@ -567,6 +646,14 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         6, 25, 26 => { let i = form_value(heap, args[1]); if i.tag != 3 || !(i.number >= -2147483648.0 && i.number <= 2147483647.0) || i.number != (i.number as i64) || (op != 26 && (i.number < 0 || i.number >= form_count(heap, a))) { heap.fault = Fault.TypeError; return Value {}; } return form_nth(heap, a, i.number as i64, if op == 26 { args[2] } else { nil() }); },
         7, 27 => { return form_get(heap, a, args[1], args[2]); },
         72 => { return form_get(heap, a, args[1], nil()); },
+        28 => { return boolean(form_contains(heap, a, args[1])); },
+        35 => { return form_concat(heap, args); },
+        36 => {
+            let x = form_value(heap, a); if x.tag <= 1 { return form_concat(heap, []); }
+            let kind = form_kind(heap, x);
+            if kind != 5 && kind != 6 && kind != 12 { heap.fault = Fault.UnsupportedOperand; return Value {}; }
+            let n = heap.nodes[x.a]; return form_concat(heap, heap.values[n.start..(n.start + n.count)]);
+        },
         8, 29 => { return form_assoc(heap, a, args[1], args[2]); },
         10, 31 => { return form_conj(heap, a, args[1]); },
         11 => { return boolean(form_equal(heap, a, args[1])); },
@@ -597,7 +684,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
     }
 }
 // Enumerated native runtime leaves: 0 macroReaderFunction (Pants uses
-// occurrence-aware leaves directly), 1 inc, 2 mapv, 3 vec, 4 into.
+// occurrence-aware leaves directly), 1 inc, 2 mapv, 3 vec, 4 into, 16 sequence.
 fn builtin(heap: Heap&, id: i64) -> Value { return allocate(heap, Node { kind: 4, function: id }); }
 fn install_field(heap: Heap&, object: Value, name: const u8[:], value: Value) -> bool { let k = text(heap, name); return put(heap, object, k, value); }
 fn boot_runtime(heap: Heap&) -> Value {
@@ -608,6 +695,7 @@ fn boot_runtime(heap: Heap&) -> Value {
     install_field(heap, core, "macroReaderFunction", builtin(heap, 0));
     install_field(heap, core, "inc", builtin(heap, 1)); install_field(heap, core, "mapv", builtin(heap, 2));
     install_field(heap, core, "vec", builtin(heap, 3)); install_field(heap, core, "into", builtin(heap, 4));
+    install_field(heap, core, "sequence", builtin(heap, 16));
     // Gensym is serviced only by an explicitly enabled coordinator contract.
     // Other shared-state leaves are installed explicitly by the compiler.
     install_field(heap, core, "gensym", builtin(heap, 5));
@@ -620,6 +708,11 @@ fn boot_runtime(heap: Heap&) -> Value {
     return rt;
 }
 fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
+    if id == 16 && args.len == 1 {
+        let kind = form_kind(heap, args[0]); if heap.fault != Fault.None { return Value {}; }
+        if kind == 5 || kind == 12 { return args[0]; }
+        return form_sequence(heap, args[0], 0, false);
+    }
     if id == 15 && args.len == 2 {
         let object = args[0]; let skip = args[1];
         if !valid(heap, object) || object.tag != 5 || heap.nodes[object.a].kind != 14 || skip.tag != 3 || !(skip.number >= 0 && skip.number <= 65535) || skip.number != (skip.number as i64) { heap.fault = Fault.UnsupportedOperand; return Value {}; }
@@ -629,8 +722,11 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
     if id >= 10 && id <= 13 && args.len == 1 {
         let array = args[0];
         if !valid(heap, array) || array.tag != 5 || heap.nodes[array.a].kind != 1 { heap.fault = Fault.TypeError; return Value {}; }
+        let count = heap.nodes[array.a].length;
+        if count > heap.limits.values - heap.values.len { memory(heap); return Value {}; }
+        if !charge(heap, count) { return Value {}; }
         var values: Value[>..] = [];
-        for i in heap.nodes[array.a].length { values.push(get(heap, array, key(heap, number(i)))); }
+        for i in count { values.push(get(heap, array, key(heap, number(i)))); if heap.fault != Fault.None { return Value {}; } }
         return form_construct(heap, if id == 10 { 6 } else if id == 11 { 5 } else if id == 12 { 7 } else { 8 }, values);
     }
     if id == 0 && args.len == 1 { return args[0]; }
