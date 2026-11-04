@@ -822,8 +822,8 @@ impl MacroEvaluator for GooseEvaluator {
     }
 }
 
-#[cfg(all(test, light_v8))]
-mod tests {
+#[cfg(test)]
+mod bridge_control_tests {
     use super::*;
     fn runner() -> PathBuf {
         std::env::var_os("GOOSE_COMPILER_RUNNER")
@@ -889,6 +889,16 @@ mod tests {
             session.close();
             assert!(!session.directory.exists());
         }
+    }
+}
+
+#[cfg(all(test, light_v8))]
+mod tests {
+    use super::*;
+    fn runner() -> PathBuf {
+        std::env::var_os("GOOSE_COMPILER_RUNNER")
+            .expect("run compiler.bb")
+            .into()
     }
     #[test]
     #[ignore = "build native runner with compiler.bb"]
