@@ -13,6 +13,9 @@ struct Request {
     origin: ExpansionOrigin,
 }
 #[cfg(feature = "goose-macros")]
+pub(crate) static GENERATED_FORMS: std::sync::Mutex<Option<Vec<(Name, Form, Form)>>> =
+    std::sync::Mutex::new(None);
+#[cfg(feature = "goose-macros")]
 pub(crate) static CONCURRENT_FORMS: std::sync::Mutex<Option<Vec<(Form, Form)>>> =
     std::sync::Mutex::new(None);
 #[cfg(feature = "goose-macros")]
@@ -31,11 +34,490 @@ pub(crate) fn compare_concurrent_forms(mut a: Vec<(Form, Form)>, mut b: Vec<(For
         benchmark::compare(a, b);
     }
 }
+#[cfg(feature = "goose-macros")]
+fn anonymous_argument_index(token: &str) -> Option<i64> {
+    match token {
+        "%" => Some(1),
+        "%&" => Some(-1),
+        _ => token.strip_prefix('%')?.parse().ok(),
+    }
+}
+#[cfg(feature = "goose-macros")]
+pub(crate) fn validate_generated_scalar_cases(call: &Form, output: &Form) -> usize {
+    fn at(form: &Form, path: &[usize]) -> Form {
+        path.iter()
+            .fold(form.clone(), |f, &i| f.children()[i].clone())
+    }
+    fn occurrence(input: Form, output: Form) {
+        assert_eq!(input.node(), output.node());
+        assert_eq!(input.span().source().name(), output.span().source().name());
+        assert_eq!(input.span().source().text(), output.span().source().text());
+        assert_eq!(
+            input.span().bytes(),
+            output.span().bytes(),
+            "independent scalar occurrence"
+        );
+        let (mut a, mut b) = (Data::default(), Data::default());
+        a.add(&input.data(), 0);
+        b.add(&output.data(), 0);
+        assert_eq!(a.text(), b.text());
+    }
+    let span = call.span();
+    if span.source().name().ends_with("/workload/pleistum.cljs") && span.bytes() == (6865..6909) {
+        // Actual doubled declaration: `(let [~sym (norm (* 2 ~init))] ~@body).
+        // The initializer and body are two independently located integer 9s.
+        occurrence(at(call, &[1, 1]), at(output, &[1, 1, 1, 2]));
+        occurrence(at(call, &[2]), at(output, &[2]));
+        2
+    } else if span.source().name().ends_with("/workload/storhouher.cljs")
+        && span.bytes() == (18455..18625)
+    {
+        // Actual sum-all maps each x to `(* 19 ~x), inside `(norm (+ ...)).
+        // Preserve each argument's position, including both integer 313s.
+        for (i, input) in call.children().into_iter().skip(1).enumerate() {
+            occurrence(input, at(output, &[1, i + 1, 2]));
+        }
+        3
+    } else {
+        0
+    }
+}
+#[cfg(feature = "goose-macros")]
+pub(crate) fn validate_generated_anonymous(
+    input: &Form,
+    reference: &Form,
+    output: &Form,
+) -> (usize, usize, usize) {
+    use crate::compiler_data::{DatumKind, FormId, Origin};
+    struct Anonymous {
+        form: Form,
+        param: Form,
+        index: i64,
+        body: Vec<std::ops::Range<usize>>,
+    }
+    fn functions(root: &Form) -> Vec<Anonymous> {
+        fn walk(f: &Form, ids: &mut std::collections::HashSet<FormId>, result: &mut Vec<Form>) {
+            if !ids.insert(f.id()) {
+                return;
+            }
+            result.push(f.clone());
+            for child in f.children() {
+                walk(&child, ids, result);
+            }
+            if let Some(meta) = f.metadata() {
+                walk(&meta, ids, result);
+            }
+            if let Some(payload) = f.node().compiler_payload.and_then(|id| f.at(id)) {
+                walk(&payload, ids, result);
+            }
+        }
+        let mut forms = Vec::new();
+        walk(root, &mut Default::default(), &mut forms);
+        let mut result = Vec::new();
+        for f in forms {
+            if f.node().origin != Origin::AnonymousFunction {
+                continue;
+            }
+            let children = f.children();
+            if children.len() != 3
+                || !matches!(children[0].data().kind(), DatumKind::Symbol(n) if n.name() == "fn*".encode_utf16().collect::<Vec<_>>())
+            {
+                continue;
+            }
+            let params = children[1].children();
+            if params.is_empty() {
+                continue;
+            }
+            fn uses(f: &Form, param: &Datum, result: &mut Vec<std::ops::Range<usize>>) {
+                if f.node().origin == Origin::AnonymousArgument && f.data().value_eq(param) {
+                    result.push(f.span().bytes());
+                }
+                for child in f.children() {
+                    uses(&child, param, result);
+                }
+                if let Some(meta) = f.metadata() {
+                    uses(&meta, param, result);
+                }
+            }
+            let (mut positional, mut rest) = (0, false);
+            for param in params {
+                assert_eq!(param.node().origin, Origin::AnonymousArgument);
+                if matches!(param.data().kind(), DatumKind::Symbol(n) if n == &Name::new(None, "&"))
+                {
+                    assert_eq!(param.span().bytes(), f.span().bytes());
+                    rest = true;
+                    continue;
+                }
+                let index = if rest {
+                    -1
+                } else {
+                    positional += 1;
+                    positional
+                };
+                let mut body = Vec::new();
+                uses(&children[2], &param.data(), &mut body);
+                result.push(Anonymous {
+                    form: f.clone(),
+                    param,
+                    index,
+                    body,
+                });
+            }
+        }
+        result
+    }
+    let same = |a: &Anonymous, b: &Anonymous| {
+        a.form.span().source().name() == b.form.span().source().name()
+            && a.form.span().source().text() == b.form.span().source().text()
+            && a.form.span().bytes() == b.form.span().bytes()
+            && a.param.data().value_eq(&b.param.data())
+    };
+    let (inputs, references, outputs) = (functions(input), functions(reference), functions(output));
+    let (mut raw, mut inherited) = (0, 0);
+    for f in &inputs {
+        let span = f.form.span();
+        let tree = crate::parse(span.source().text()).unwrap();
+        assert!(tree.nodes.iter().any(|n| n.span == span.bytes()
+            && matches!(
+                n.kind,
+                crate::NodeKind::Collection {
+                    kind: crate::CollectionKind::AnonymousFn,
+                    ..
+                }
+            )));
+        let expected = tree
+            .nodes
+            .iter()
+            .filter(|n| {
+                matches!(n.kind, crate::NodeKind::Argument { .. })
+                    && span.bytes().contains(&n.span.start)
+                    && n.span.end <= span.bytes().end
+                    && anonymous_argument_index(&span.source().text()[n.span.clone()])
+                        == Some(f.index)
+            })
+            .map(|n| n.span.clone())
+            .collect::<Vec<_>>();
+        if f.param.span().bytes() == span.bytes() && f.body == expected {
+            raw += 1;
+            continue;
+        }
+        // Rust pure expansion deliberately keeps the last occurrence of a
+        // shared Datum (compiler_data's existing pure-expansion regression).
+        // This must already be present, identically, in both compiler inputs;
+        // Goose may never introduce it while returning an originally precise fn.
+        let last = expected.last();
+        assert!(
+            last.is_some_and(|last| f.param.span().bytes() == *last
+                && f.body == vec![last.clone(); expected.len()]
+                && references.iter().any(|r| same(f, r)
+                    && r.param.span().bytes() == f.param.span().bytes()
+                    && r.body == f.body)),
+            "unclassified compiler input occurrences: {} {:?} binder={:?} body={:?}",
+            span.source().name(),
+            span.bytes(),
+            f.param.span().bytes(),
+            f.body
+        );
+        eprintln!(
+            "common compiler anonymous alias: source={} function={:?} last={last:?}",
+            span.source().name(),
+            span.bytes()
+        );
+        inherited += 1;
+    }
+    for f in &outputs {
+        let original = inputs
+            .iter()
+            .find(|i| same(i, f))
+            .expect("returned anonymous function must come from this job's input");
+        assert_eq!(
+            f.param.span().bytes(),
+            original.param.span().bytes(),
+            "Goose must preserve the input binder occurrence: {} {:?}",
+            f.form.span().source().name(),
+            f.form.span().bytes()
+        );
+        assert_eq!(
+            f.body, original.body,
+            "Goose must preserve every ordered input body occurrence"
+        );
+    }
+    (raw, inherited, outputs.len())
+}
+#[cfg(feature = "goose-macros")]
+pub(crate) fn compare_generated_reference(call: &Form, v8: &Form, goose: &Form) -> usize {
+    use crate::compiler_data::{DatumKind, Origin};
+    assert_eq!(v8.id(), goose.id());
+    assert_eq!(v8.nodes(), goose.nodes());
+    let (mut sa, mut sb, mut da, mut db) = (
+        Sources::default(),
+        Sources::default(),
+        Data::default(),
+        Data::default(),
+    );
+    forms(v8, &mut sa, &mut da);
+    forms(goose, &mut sb, &mut db);
+    assert_eq!(da.text(), db.text());
+    assert_eq!(sa.text(), sb.text());
+    benchmark::compare_origins(v8, goose);
+    let mut originals = Vec::new();
+    fn collect(f: Form, originals: &mut Vec<Form>) {
+        originals.push(f.clone());
+        for child in f.children() {
+            collect(child, originals);
+        }
+        if let Some(meta) = f.metadata() {
+            collect(meta, originals);
+        }
+        if let Some(payload) = f.node().compiler_payload.and_then(|id| f.at(id)) {
+            collect(payload, originals);
+        }
+    }
+    collect(call.clone(), &mut originals);
+    let mut aliases = 0;
+    for id in 0..v8.nodes().len() {
+        let a = v8.at(crate::compiler_data::FormId(id)).unwrap();
+        let b = goose.at(crate::compiler_data::FormId(id)).unwrap();
+        assert_eq!(a.span().source().name(), b.span().source().name());
+        assert_eq!(a.span().source().text(), b.span().source().text());
+        if a.span().bytes() == b.span().bytes() {
+            continue;
+        }
+        // Reader-created anonymous parameter/binder uses can share a Datum.
+        // V8's retain() overwrites that identity's earlier Form with its last
+        // occurrence. Goose's bridge validates and retains each wire occurrence.
+        // Accept only this independently identifiable reference ambiguity;
+        // Goose-to-Goose comparisons remain completely exact.
+        let input = originals.iter().find(|f| {
+            f.node().origin == Origin::AnonymousArgument
+                && f.span().bytes() == b.span().bytes()
+                && f.span().source().name() == b.span().source().name()
+                && f.data().value_eq(&b.data())
+        });
+        let latest = input.and_then(|input| {
+            originals
+                .iter()
+                .rev()
+                .find(|f| f.data().identity() == input.data().identity())
+        });
+        // A later call can retain an earlier expansion's whole arena, including
+        // anonymous parameters outside its reachable subtree. Check the exact
+        // #() binder and last matching placeholder in the immutable source.
+        let parameter = match b.data().kind() {
+            DatumKind::Symbol(name)
+                if name.namespace().is_none() && name.name().last() == Some(&u16::from(b'#')) =>
+            {
+                let text = String::from_utf16_lossy(name.name());
+                text.split_once("__").and_then(|(prefix, _)| {
+                    if prefix == "rest" {
+                        Some(-1)
+                    } else {
+                        prefix.strip_prefix('p')?.parse::<i64>().ok()
+                    }
+                })
+            }
+            _ => None,
+        };
+        let source_alias = if let Some(parameter) = parameter {
+            let span = b.span();
+            let tree = crate::parse(span.source().text()).unwrap();
+            tree.nodes.iter().any(|node| {
+                if !matches!(
+                    node.kind,
+                    crate::NodeKind::Collection {
+                        kind: crate::CollectionKind::AnonymousFn,
+                        ..
+                    }
+                ) || !node.span.contains(&span.bytes().start)
+                    || span.bytes().end > node.span.end
+                {
+                    return false;
+                }
+                let uses = tree
+                    .nodes
+                    .iter()
+                    .filter(|n| {
+                        matches!(n.kind, crate::NodeKind::Argument { .. })
+                            && node.span.contains(&n.span.start)
+                            && n.span.end <= node.span.end
+                            && anonymous_argument_index(&span.source().text()[n.span.clone()])
+                                == Some(parameter)
+                    })
+                    .map(|n| n.span.clone())
+                    .collect::<Vec<_>>();
+                (span.bytes() == node.span || uses.contains(&span.bytes()))
+                    && uses.last().is_some_and(|last| *last == a.span().bytes())
+            })
+        } else {
+            false
+        };
+        let scalar_case = b.node().origin == Origin::Source
+            && match (
+                call.span().source().name(),
+                call.span().bytes(),
+                a.span().bytes(),
+                b.span().bytes(),
+                b.data().kind(),
+            ) {
+                (name, call, v8, goose, DatumKind::Integer(9))
+                    if name.ends_with("/workload/pleistum.cljs") =>
+                {
+                    call == (6865..6909) && v8 == (6907..6908) && goose == (6904..6905)
+                }
+                (name, call, v8, goose, DatumKind::Integer(313))
+                    if name.ends_with("/workload/storhouher.cljs") =>
+                {
+                    call == (18455..18625) && v8 == (18621..18624) && goose == (18579..18582)
+                }
+                _ => false,
+            };
+        assert!(
+            scalar_case
+                || (matches!(b.data().kind(), DatumKind::Symbol(_))
+                    && b.node().origin == Origin::AnonymousArgument
+                    && (latest.is_some_and(|f| f.span().bytes() == a.span().bytes()
+                        && f.node().origin == a.node().origin)
+                        || source_alias)),
+            "unclassified reference provenance: node={id} v8={:?} Goose={:?} data={:?} call={:?}",
+            a.span().bytes(),
+            b.span().bytes(),
+            b.data(),
+            call.span()
+        );
+        eprintln!(
+            "reference alias: source={} node={id} v8={:?} Goose={:?}",
+            b.span().source().name(),
+            a.span().bytes(),
+            b.span().bytes()
+        );
+        aliases += 1;
+    }
+    aliases
+}
+#[cfg(feature = "goose-macros")]
+#[test]
+fn generated_reference_ambiguity_requires_original_alias() {
+    use crate::compiler_data::{DatumKind, FormId, FormKind, FormNode, Origin, Source};
+    let source = Source::new("alias.cljs", "#(% )");
+    let shared = Datum::new(DatumKind::Symbol(Name::new(None, "p1")));
+    let make = |first, second, shared_identity| {
+        let other = if shared_identity {
+            shared.clone()
+        } else {
+            Datum::new(DatumKind::Symbol(Name::new(None, "p1")))
+        };
+        Form::from_parts(
+            vec![
+                FormNode {
+                    kind: FormKind::Scalar,
+                    metadata: None,
+                    compiler_payload: None,
+                    origin: Origin::AnonymousArgument,
+                },
+                FormNode {
+                    kind: FormKind::Scalar,
+                    metadata: None,
+                    compiler_payload: None,
+                    origin: Origin::AnonymousArgument,
+                },
+                FormNode {
+                    kind: FormKind::Collection {
+                        kind: crate::parser::CollectionKind::Vector,
+                        children: vec![FormId(0), FormId(1)].into(),
+                    },
+                    metadata: None,
+                    compiler_payload: None,
+                    origin: Origin::AnonymousFunction,
+                },
+            ],
+            vec![
+                shared.clone(),
+                other.clone(),
+                Datum::new(DatumKind::Collection {
+                    kind: crate::parser::CollectionKind::Vector,
+                    children: vec![shared.clone(), other].into(),
+                }),
+            ],
+            vec![
+                source.span(first).unwrap(),
+                source.span(second).unwrap(),
+                source.span(0..5).unwrap(),
+            ],
+            FormId(2),
+        )
+    };
+    let call = make(0..5, 2..3, true);
+    let v8 = make(2..3, 2..3, true);
+    assert_eq!(compare_generated_reference(&call, &v8, &call), 1);
+    for (call, v8, goose) in [
+        (call.clone(), v8.clone(), make(1..2, 2..3, true)),
+        (call.clone(), make(1..2, 2..3, true), call.clone()),
+        (make(0..5, 2..3, false), v8, call),
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| compare_generated_reference(&call, &v8, &goose)).is_err()
+        );
+    }
+    let call = crate::compiler_reader::read_form(
+        &source,
+        &crate::compiler_reader::NamespaceView::new("fixture", &source),
+    )
+    .unwrap()
+    .unwrap();
+    let v8 = Form::from_parts(
+        call.nodes().to_vec(),
+        (0..call.nodes().len())
+            .map(|i| call.at(FormId(i)).unwrap().data())
+            .collect(),
+        (0..call.nodes().len())
+            .map(|i| {
+                let f = call.at(FormId(i)).unwrap();
+                if f.node().origin == Origin::AnonymousArgument {
+                    source.span(2..3).unwrap()
+                } else {
+                    f.span()
+                }
+            })
+            .collect(),
+        call.id(),
+    );
+    let unrelated = Form::from_data(
+        Datum::new(DatumKind::Nil),
+        source.span(0..1).unwrap(),
+        Origin::Source,
+    );
+    assert_eq!(compare_generated_reference(&unrelated, &v8, &call), 1);
+    assert_eq!(validate_generated_anonymous(&call, &call, &call), (1, 0, 1));
+    assert!(std::panic::catch_unwind(|| validate_generated_anonymous(&call, &v8, &v8)).is_err());
+    assert_eq!(validate_generated_anonymous(&v8, &v8, &v8), (0, 1, 1));
+    for (text, parameters) in [("#(+ %1 %2)", 2), ("#(identity %2)", 2), ("#(count %&)", 1)] {
+        let source = Source::new("arguments.cljs", text);
+        let call = crate::compiler_reader::read_form(
+            &source,
+            &crate::compiler_reader::NamespaceView::new("fixture", &source),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            validate_generated_anonymous(&call, &call, &call),
+            (parameters, 0, parameters)
+        );
+    }
+}
 thread_local! {
     static REQUESTS: std::cell::RefCell<Option<Vec<Request>>> = const { std::cell::RefCell::new(None) };
     static UNITS: std::cell::RefCell<Option<BTreeSet<(bool, String)>>> = const { std::cell::RefCell::new(None) };
 }
 pub(crate) fn record(call: &Form, environment: &Datum, expanded: &Form, origin: &ExpansionOrigin) {
+    #[cfg(feature = "goose-macros")]
+    if let Some(requests) = GENERATED_FORMS.lock().unwrap().as_mut()
+        && origin
+            .macro_name
+            .namespace()
+            .is_some_and(|n| String::from_utf16_lossy(n).starts_with("workload."))
+    {
+        requests.push((origin.macro_name.clone(), call.clone(), expanded.clone()));
+    }
     #[cfg(feature = "goose-macros")]
     if let Some(forms) = CONCURRENT_FORMS.lock().unwrap().as_mut()
         && origin

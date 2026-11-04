@@ -684,3 +684,136 @@ maximum cumulative sum is the overlap. Require exactly 5,755 spans, modes
 `{0 5226, 1 529}`, and a final sum of zero. Keep this instrumentation out of
 clean timing binaries. Remove both temporary helpers, their runners and
 measurement files after preserving any needed local evidence.
+
+## Complete-project forms and teardown verification
+
+November 4, 2026, on `b74740caa2928dfb57d6d452418ccbd8acf9613c` plus
+this test-only verification change. No production Rust/Goose runtime, generator,
+workload, budget or macro declaration changed. Fresh release/advanced CLI builds
+at V8 one slot and Goose 1/2/4/8, one warmup and one check per cell, all matched
+**3,449,022 bytes**, SHA-256
+`18335556dd4672f2f63b901b68fcad3c447cf5676f457a08fda61f366cc9f3ec`,
+all five frozen oracle outputs and strict waste checks. No normalization was used.
+The comparison command checked the complete frozen source/shim/configuration
+manifest before and after every build. This is correctness work, not the quiet
+five-round performance matrix.
+
+The new explicitly ignored `generated_200k_complete_forms` test analyzes the
+entire unmodified `workload.main` through the actual namespace compiler. A
+test-only cross-thread hook retains every generated source-macro call/result.
+Each of V8 and Goose 1/2/4/8 records **5,226 expansions across 615 qualified
+identities**, with identical per-identity count maps. Each Goose session has
+5,226 jobs, 615 preparations and 672 exports. All jobs, programs and macro hosts
+are destroyed and the native session closes **before** comparison. The test
+requires native thread accounting 4/6/10/18 total with 3/5/9/17 spawned threads
+joined, no process, no reader handles, no pending mailboxes and no session files.
+The complete audit passes in both optimized-native and `--debug` native Goose
+at all four worker limits, using the same optimized Rust test executable.
+No Goose full-project debug budget was exceeded. An exploratory unoptimized
+Rust run was stopped after roughly three minutes in V8 reference analysis,
+before any Goose result; it is not counted as a pass.
+
+Goose 1/2/4/8 results match one another strictly, including complete call/result
+arenas, roots, ordered child IDs, scalar datum/UTF-16 pools, scalar flavours,
+metadata, compiler payloads, source names/text/spans, node origins and expansion
+history. The complete-form comparator now also checks every expansion's macro
+name, call, definition span and ordered helper identities. Negative controls
+reject changed integer/double flavour, metadata, definition provenance and
+helper provenance. Source identity numbers remain process-local; the existing
+comparator compares source names and complete UTF-8 text.
+
+### Reference ambiguities and independent checks
+
+The V8 comparison has exactly **82 span differences per Goose cell**, all
+explicitly checked. Its scalar pools, types, values, structure, metadata, node
+origins and expansion history otherwise match exactly. These differences are
+reported individually by the test; they are not erased from Goose forms:
+
+- **80 anonymous-argument aliases**, including inherited nodes in a later call's
+  larger borrowed arena. The reader can reuse one Datum for a `#()` parameter
+  and its body placeholders. V8's `retain` table keeps the last Form for that
+  identity. The audit requires the exact original identity alias or independently
+  parses the immutable source's anonymous function and last matching `%`, `%1`,
+  `%2`, etc. No arbitrary symbol-span difference is permitted.
+- **Two equal-integer occurrences** affected by V8's documented latest-by-value
+  scalar provenance. The pinned exceptions are only the two span pairs below.
+  Independent assertions follow the original macro declarations' output
+  positions and check all five argument occurrences, including each equal value.
+
+| Canonical source / call span | Original macro behavior | Goose occurrence / V8 occurrence |
+| --- | --- | --- |
+| `workload/pleistum.cljs`, `6865..6909` | `dreiplofail`: the initializer and body in `(… [gubrar 9] 9)` remain separate | `6904..6905` / `6907..6908` |
+| `workload/storhouher.cljs`, `18455..18625` | `pleissilnim`: each `sum-all` argument remains in its own `(* 19 argument)` term | `18579..18582` / `18621..18624` |
+
+The anonymous-parameter audit independently checks **43 reader-precise input
+parameters**, **22 already-collapsed compiler-input parameters**, and **65
+returned parameters** in each Goose cell. These count occurrences across macro
+requests, not distinct functions. It handles numbered placeholders, unused
+positional parameters and rest placeholders. Rust's pre-existing pure expansion
+intentionally retains the last occurrence of a shared Datum, pinned by
+`compiler_data::tests::pure_expansion_preserves_last_occurrence_within_its_input_subtree`.
+An inherited collapse is accepted only if it already occurs identically in V8's
+input and follows the source's last-placeholder rule. Every returned Goose
+binder and ordered body occurrence must exactly preserve **its actual job
+input**. A negative control proves that a new Goose collapse fails even if V8
+would agree. The independent rooted check covers the graph sent to Goose;
+complete arena comparisons also retain earlier unreachable compiler nodes.
+The actual generated-assembly regression additionally pins parameter/body spans
+`20..28` and `24..25` for `(zalstok sample [x] #(+ % 1))`, while recording V8's
+`24..25`/`24..25` observation. The earlier equal-number representative checks
+remain unchanged.
+
+### Reproduce and evidence reuse
+
+From a fresh isolated checkout, set the private target/Goose home, build-job cap
+and required V8 cache as in the baseline recipe, then run:
+
+```sh
+cargo build --release --locked --features goose-macros --bin light-cljs
+bb benchmarks/generated-project/generate.bb target/generated-200k --seed 42 --lines 200k
+goose build crates/big-boy-pants-js/prototypes/goose/compiler_session.goose -o target/generated-200k-runner
+bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs --backend all --runner target/generated-200k-runner --phase check --runs 1
+GOOSE_COMPILER_RUNNER="$PWD/target/generated-200k-runner" cargo test --release --locked --features goose-macros --lib generated_200k_complete_forms -- --include-ignored --nocapture --test-threads=1
+goose build crates/big-boy-pants-js/prototypes/goose/compiler_session.goose --debug -o target/generated-200k-debug-runner
+GOOSE_COMPILER_RUNNER="$PWD/target/generated-200k-debug-runner" cargo test --release --locked --features goose-macros --lib generated_200k_complete_forms -- --include-ignored --nocapture --test-threads=1
+bb crates/big-boy-pants-js/prototypes/goose/compiler.bb
+cargo test --locked --features goose-macros --lib complete_form_comparison -- --test-threads=1
+cargo test --locked --features goose-macros --lib generated_reference_ambiguity_requires_original_alias -- --test-threads=1
+cargo test --locked --features goose-macros --lib pure_expansion_preserves_last_occurrence_within_its_input_subtree -- --test-threads=1
+GOOSE_EXPANDED_FOCUS=heavier GOOSE_EXPANDED_SAMPLES="$PWD/target/expanded-check-native.edn" bb crates/big-boy-pants-js/prototypes/goose/benchmark.bb --expanded-check
+GOOSE_EXPANDED_FOCUS=heavier GOOSE_BENCH_DEBUG=1 GOOSE_EXPANDED_SAMPLES="$PWD/target/expanded-check-debug.edn" bb crates/big-boy-pants-js/prototypes/goose/benchmark.bb --expanded-check
+```
+
+Current optimized native runner hash is unchanged from the baseline:
+`92140b1a31ba1fe42beadc3caae59fb6ea0916e4a3204e5caff10ef7146688e0`.
+The current release CLI hash is
+`b39a3644a301108844ce516eea56319cc0d675f528e64b9f6a043aac76609515`.
+Toolchains remain Goose `v2026.3-267-g369c7a2c` / runtime `3025e5810379`,
+Rust 1.99.1, Node 26.12.1 and Babashka 1.12.218. The research checkout remains
+`a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`.
+
+All 97 baseline archive file digests were reverified. Of 392 archived execution
+input hashes, 389 still match; only the three test/capture/comparator files
+changed. This justifies reusing the reviewed 741-factory identity/no-fallback
+boundary audit and full-session safety counters above. The unchanged 128-waiter,
+1,024-definition/request and 64 MiB retention quotas remain sufficient; the
+measured ~20.8 MB peak charge and up-to-281 MB native RSS are different scopes.
+No quota was raised, and no eight-way CPU-saturation claim is made.
+
+Fresh focused compiler coverage is 36 tests per native mode, plus the extended
+generated-assembly test in both modes. It includes repeated fresh sessions,
+owned handles/forms, helper progress/no replay, malformed packets, bridge limits,
+cancellation/deadlines, poison/queued cleanup and large-continuation reclamation.
+The heavier seed-24301/15-namespace/120-call/8,192-read control passes V8 and
+Goose 1/2/4/8 with both optimized and debug runners, including its complete output
+and independent oracle. Unchanged VM/snapshot/45-row/QuickJS layers are reused;
+this change does not modify those execution paths.
+
+Changed Rust formatting and `git diff --check` pass. Fresh strict Clippy stops on
+the same eight engine diagnostics; allowing those known categories exposes only
+the existing namespace-publication single-element loop, and allowing that
+category passes the lib/tests audit. Root formatting reports 24 unchanged files.
+The known broad CLI playground/lint failures and lack of a current successful
+full-suite run remain limitations, not passes. The boundary remains **Goose
+source-macro execution with retained V8 core/bootstrap**, as charged and described
+in the baseline; cached Goose installation remains explicitly unsupported.

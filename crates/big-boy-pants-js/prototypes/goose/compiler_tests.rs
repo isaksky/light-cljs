@@ -168,9 +168,19 @@ fn goose_compiler_generated_assembly() {
                 None,
             )
             .unwrap();
+        let anonymous_call = read("(zalstok sample [x] #(+ % 1))");
+        let anonymous = host
+            .expand_source_javascript(
+                "workload.fonam",
+                "zalstok",
+                &anonymous_call,
+                &read("{}").data(),
+                None,
+            )
+            .unwrap();
         drop(host);
         if let Some(s) = session {
-            assert_eq!(s.stats().jobs, cases.len() as u64 + 2);
+            assert_eq!(s.stats().jobs, cases.len() as u64 + 3);
             let trace = s.trace();
             assert_eq!(
                 trace.iter().filter(|s| s.starts_with("PRODUCED ")).count(),
@@ -208,6 +218,20 @@ fn goose_compiler_generated_assembly() {
         } else {
             expected = Some(forms);
         }
+        let anonymous_spans = (0..anonymous.nodes().len())
+            .filter_map(|i| {
+                let f = anonymous.at(crate::compiler_data::FormId(i)).unwrap();
+                (f.node().origin == Origin::AnonymousArgument).then(|| f.span().bytes())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            anonymous_spans,
+            if workers == 0 {
+                vec![24..25, 24..25]
+            } else {
+                vec![20..28, 24..25]
+            }
+        );
         let spans = (0..repeated.nodes().len())
             .filter_map(|i| {
                 let form = repeated.at(crate::compiler_data::FormId(i)).unwrap();
@@ -1961,5 +1985,144 @@ fn goose_compiler_callable_throw_and_publication_errors() {
             s.close();
             cleaned(&s);
         }
+    }
+}
+
+#[cfg(light_v8)]
+#[test]
+#[ignore = "full pinned target; build native runner and run explicitly"]
+fn generated_200k_complete_forms() {
+    use crate::compiler_bootstrap::goose_capture::{
+        GENERATED_FORMS, compare_concurrent_forms, compare_generated_reference,
+        validate_generated_anonymous, validate_generated_scalar_cases,
+    };
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let generated = root.join("target/generated-200k");
+    assert_eq!(
+        std::fs::read(generated.join("manifest.edn")).unwrap(),
+        include_bytes!("generated-200k-manifest.edn")
+    );
+    let runner = PathBuf::from(std::env::var_os("GOOSE_COMPILER_RUNNER").unwrap());
+    let mut reference: Option<Vec<(Name, Form, Form)>> = None;
+    let mut goose_reference: Option<Vec<(Name, Form, Form)>> = None;
+    let mut reference_counts = None;
+    for workers in [0, 1, 2, 4, 8] {
+        eprintln!("begin complete generated forms workers={workers}");
+        let _names = crate::generated_names::enter_namespace(0);
+        let mut host = crate::MacroHost::new();
+        host.limits.expansions = 10_000_000;
+        host.limits.generated_nodes = 1_000_000_000;
+        host.evaluator_options.timeout = std::time::Duration::from_secs(3600);
+        host.evaluator_options.memory_limit = 2_147_483_648;
+        host.evaluator_options.poll_budget = 100_000_000_000;
+        let session = (workers != 0)
+            .then(|| GooseSession::start_mode(&runner, workers, Some("readiness-test")).unwrap());
+        if let Some(s) = &session {
+            host.use_goose_source_macros(s.clone()).unwrap();
+        }
+        *GENERATED_FORMS.lock().unwrap() = Some(Vec::new());
+        let program = crate::compiler::analyze_namespace_entry_recorded(
+            "workload.main",
+            &[generated.join("src"), generated.join("macros")],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            crate::compiler::EntryRecorders {
+                slots: crate::scheduler::Slots::new(workers.max(1)).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("workers={workers}: {e}"));
+        let mut requests = GENERATED_FORMS.lock().unwrap().take().unwrap();
+        requests.sort_by_key(|r| {
+            (
+                r.1.span().source().name().to_owned(),
+                r.1.span().bytes().start,
+                format!("{:?}", r.0),
+                r.1.nodes().len(),
+            )
+        });
+        assert_eq!(requests.len(), 5226);
+        let mut counts = std::collections::BTreeMap::new();
+        for r in &requests {
+            *counts.entry(format!("{:?}", r.0)).or_insert(0) += 1;
+        }
+        assert_eq!(counts.len(), 615);
+        if let Some(expected) = &reference_counts {
+            assert_eq!(expected, &counts, "qualified macro entry counts");
+        } else {
+            reference_counts = Some(counts);
+        }
+        drop(program);
+        drop(host);
+        if let Some(s) = session {
+            let stats = s.stats();
+            assert_eq!(
+                (stats.jobs, stats.preparations, stats.exports),
+                (5226, 615, 672)
+            );
+            s.close();
+            assert!(s.process.lock().unwrap().is_none());
+            assert!(s.readers.lock().unwrap().is_empty());
+            assert!(s.pending.lock().unwrap().is_empty());
+            assert!(!s.directory.exists());
+            assert!(s.trace().iter().any(|r| r
+                == &format!(
+                    "THREADS 0 {} {} {}",
+                    workers * 2 + 2,
+                    workers * 2 + 2,
+                    workers * 2 + 1
+                )));
+        }
+        let mut aliases = 0;
+        let mut anonymous = 0;
+        let mut inherited = 0;
+        let mut returned = 0;
+        let mut scalars = 0;
+        let mut comparison_failures = 0;
+        if let Some(expected) = &reference {
+            for (a, b) in expected.iter().zip(&requests) {
+                assert_eq!(a.0, b.0);
+                let (raw, prior, output) = validate_generated_anonymous(&b.1, &a.1, &b.2);
+                anonymous += raw;
+                inherited += prior;
+                returned += output;
+                scalars += validate_generated_scalar_cases(&b.1, &b.2);
+                match std::panic::catch_unwind(|| {
+                    compare_generated_reference(&b.1, &a.1, &b.1)
+                        + compare_generated_reference(&b.1, &a.2, &b.2)
+                }) {
+                    Ok(count) => aliases += count,
+                    Err(_) => {
+                        comparison_failures += 1;
+                        eprintln!("unclassified expansion {:?} {:?}", b.0, b.1.span());
+                    }
+                }
+            }
+            assert_eq!(
+                comparison_failures, 0,
+                "every reference difference must be classified"
+            );
+            assert_eq!(scalars, 5, "both repeated-scalar calls were reached");
+            if let Some(expected) = &goose_reference {
+                compare_concurrent_forms(
+                    expected
+                        .iter()
+                        .map(|r| (r.1.clone(), r.2.clone()))
+                        .collect(),
+                    requests
+                        .iter()
+                        .map(|r| (r.1.clone(), r.2.clone()))
+                        .collect(),
+                );
+            } else {
+                goose_reference = Some(requests);
+            }
+        } else {
+            reference = Some(requests);
+        }
+        eprintln!(
+            "complete generated forms workers={workers}: 5226 expansions, 615 identities, {aliases} reference alias ambiguities, {anonymous} raw input/{inherited} common compiler input/{returned} returned anonymous-parameter checks, {scalars} scalar occurrence checks, closed"
+        );
     }
 }

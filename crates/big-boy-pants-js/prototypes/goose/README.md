@@ -8,6 +8,9 @@ The [execution-support recheck](generated-200k-probes.md#execution-support-reche
 maps the eleven reached macro families to current implementation and tests.
 The [full-session safety recheck](generated-200k-probes.md#full-session-safety-and-lifetime-recheck)
 measures retention, native memory, actual execution overlap and lifecycle bounds.
+The [complete-project form audit](generated-200k-probes.md#complete-project-forms-and-teardown-verification)
+checks every expansion after teardown in both native modes at 1/2/4/8,
+with explicit V8 provenance ambiguities and independent Goose occurrence checks.
 
 From the repository root, run:
 

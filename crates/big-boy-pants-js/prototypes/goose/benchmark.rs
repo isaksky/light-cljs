@@ -21,6 +21,26 @@ pub(super) fn compare(a: &Form, b: &Form) {
     assert_eq!(forms(a, &mut sa, &mut da), forms(b, &mut sb, &mut db));
     assert_eq!(da.text(), db.text());
     assert_eq!(sa.text(), sb.text());
+    compare_origins(a, b);
+}
+pub(super) fn compare_origins(a: &Form, b: &Form) {
+    assert_eq!(a.expansions().len(), b.expansions().len());
+    let span = |s: &crate::compiler_data::SourceSpan| {
+        (
+            s.source().name().to_owned(),
+            s.source().text().to_owned(),
+            s.bytes(),
+        )
+    };
+    for (a, b) in a.expansions().iter().zip(b.expansions()) {
+        assert_eq!(a.macro_name, b.macro_name);
+        assert_eq!(span(&a.call), span(&b.call));
+        assert_eq!(
+            a.definition.as_ref().map(span),
+            b.definition.as_ref().map(span)
+        );
+        assert_eq!(a.helpers, b.helpers);
+    }
 }
 
 #[test]
@@ -47,6 +67,39 @@ fn complete_form_comparison_rejects_scalar_changes() {
     compare(&integer, &integer);
     assert!(std::panic::catch_unwind(|| compare(&integer, &double)).is_err());
     assert!(std::panic::catch_unwind(|| compare(&integer, &metadata)).is_err());
+}
+
+#[test]
+fn complete_form_comparison_rejects_expansion_changes() {
+    use crate::compiler_data::{DatumKind, Origin, Source};
+    let source = Source::new("origin.cljs", "12");
+    let input = Form::from_data(
+        Datum::new(DatumKind::Integer(1)),
+        source.span(0..1).unwrap(),
+        Origin::Source,
+    );
+    let origin = ExpansionOrigin {
+        macro_name: Name::new(Some("fixture"), "macro"),
+        call: input.span(),
+        definition: Some(source.span(0..1).unwrap()),
+        helpers: vec![Name::new(Some("fixture"), "helper")],
+    };
+    let make = |origin| {
+        Form::from_bridge_expansion(
+            input.data(),
+            &input,
+            origin,
+            &std::collections::HashMap::<usize, Form>::new(),
+        )
+    };
+    let expected = make(origin.clone());
+    compare(&expected, &make(origin.clone()));
+    let mut changed = origin.clone();
+    changed.definition = Some(source.span(1..2).unwrap());
+    assert!(std::panic::catch_unwind(|| compare(&expected, &make(changed))).is_err());
+    let mut changed = origin;
+    changed.helpers.clear();
+    assert!(std::panic::catch_unwind(|| compare(&expected, &make(changed))).is_err());
 }
 
 struct BatchClock {
