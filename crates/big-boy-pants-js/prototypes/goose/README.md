@@ -1,9 +1,11 @@
 # Goose source export experiment
 
-The [generated 200k target](generated-200k.md) pins the next application-scale
-acceptance workload, its execution boundary and currently reproduced gaps.
+The [generated 200k target](generated-200k.md) pins the application-scale
+acceptance workload, its execution boundary and original gap inventory.
 The [full-project baseline and reusable comparison command](generated-200k-baseline.md)
 record exact V8/Goose 1/2/4/8 application checks and the quiet V8 reference.
+The [execution-support recheck](generated-200k-probes.md#execution-support-recheck)
+maps the eleven reached macro families to current implementation and tests.
 
 From the repository root, run:
 
@@ -77,8 +79,9 @@ bound fail `MemoryLimit`. Snapshot version 2 retains the same layout, validates
 array bounds and admits the `sequence` builtin.
 
 The compiler regression loads the unchanged pinned generated macro namespace
-and compares complete kalvas/dukdos/dougri/joktol expansion forms against V8
-after teardown at 1/2/4/8 workers. Its additional repeated-number case pins an
+and compares 26 calls across all eleven macro families against V8, including
+metadata and returned protocol/record forms, after teardown at 1/2/4/8 workers.
+Its additional repeated-number cases pin an
 existing reference limitation: V8's value-based scalar provenance assigns all
 equal numbers the last input span. Goose retains each occurrence's original
 span; the test checks those exact spans and complete equality across Goose

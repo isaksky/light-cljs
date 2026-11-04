@@ -1,9 +1,10 @@
 # Generated 200k inventory: reproducible probes
 
 These bounded diagnostic inputs accompany [the target](generated-200k.md).
-They are documentation, not a second build/comparison harness. Run them only in
-a disposable checkout of the inventory revision; they temporarily add test-only
-hooks and must be removed afterward. They neither change the generated project
+They are documentation, not a second build/comparison harness. The original
+observations below describe the inventory revision; the later recheck has its
+own revision and results. Run the temporary hooks only in a disposable checkout
+and remove them afterward. They neither change the generated project
 nor bypass an unsupported execution operation. The inspector parses/lowerings
 all functions and inventories rejected opcodes without admitting them to Goose.
 
@@ -35,6 +36,125 @@ or timing was attempted here. Generator tests passed 9 tests / 353 assertions;
 full-target repeat generation matched every source/shim. No production Rust or
 Goose changes remain. Existing broad-suite and strict-lint limitations were not
 retested or represented as passes.
+
+## Execution-support recheck
+
+November 4, 2026, on `8509a79c9e1040f2c49af1ccfb3c3ec442daf4ca` plus the
+seven additional cases in `goose_compiler_generated_assembly`. No production
+code changed. The wrapper (`b41aeccc`), assembly (`d7442b06`), deferred map
+(`988e557f`) and callable publication (`c8c8b4b7`) changes cover the verified
+target execution gaps. **No further execution-support child is justified.**
+
+Fresh actual-compiler probes reproduce the original generation and inspect all
+741 emitted declaration factories, including their nested/dead functions:
+**741 exports, zero rejected opcodes**. The 37-opcode and 19-form-operation
+unions are unchanged from the original inventory. The sorted factory hash
+manifest remains `0de90e6c1a6ada95c28c54780010d54d167bd208b9a66c86781b70edec2a937f`;
+the original macro emission has not been replaced to make it execute. The
+original first-worker probe now reports `Ok("success")` for both V8 and native
+Goose on unchanged `workload.jokoum`, including the former line-7 failure.
+
+The [baseline archive](generated-200k-baseline.edn.gz) was independently reread:
+all 97 embedded file digests match; 391 of its 392 instrument-phase source
+hashes match this tree, with only the extended compiler test differing.
+The fresh full generated manifest matches the pinned manifest byte-for-byte.
+Every qualified source-entry count matches V8 at Goose 1/2/4/8. Joining those
+615 identities to the freshly generated `model.edn` gives:
+
+| Family / `workload.fonam` representative | Full-build source entries | Bounded actual-compiler coverage |
+| --- | ---: | --- |
+| blend / kalvas | 835 | Destructured vector, nested syntax quote, separate equal-number occurrences |
+| twice / dukdos | 425 | Auto-symbols, local binding, metadata |
+| chain / graidamha | 1,211 | Empty/nonempty rest and returned recursive call; the full-build count includes recursive entries |
+| argc / gaikmenfeik | 392 | Original `&form`, zero/one/several arguments |
+| or-local / joktol | 387 | `&env :locals`, present false/nil versus absent, original symbol/metadata |
+| sum-all / buvaiskum | 424 | Empty/one/several rest elements, deferred callback, nested forms and metadata |
+| doubled / gakzoultrei-grekvavus | 412 | Vector destructuring and body splicing |
+| defcalc / zalstok | 529 | Real demanded callable, zero/one/several body forms and nested quote |
+| defproto / stipopi | 286 | Returned protocol form and method signature |
+| defshape / marore-jaipla | 215 | Returned record form and fields |
+| defdispatch / dougri | 110 | Returned multimethod form and auto-symbols |
+| **Total** | **5,226** | **All eleven reached families** |
+
+These are dynamic source entries, not the older 4,314 static sites. The
+57 helper identities and 672 exports remain distinct from 529 Goose helper
+callbacks: a callback requests code, not a fresh producer. The separate
+concurrent-helper regression asserts one producer for eight consumers and
+one-worker progress; the bounded callable regression asserts two producers
+across nine demands, preserving aliases and mutations without replay.
+
+### Coverage and ownership
+
+| Layer | Concrete implementation / evidence | Finite boundary |
+| --- | --- | --- |
+| Lowering/export | `export.rs::supported` and `export_source`; fresh 741-factory probe | Rust frontend parses/lowers only; nested unsupported operations still reject |
+| VM/wrappers | `source_vm.goose`; `goose_compiler_variadic_wrappers`, `arguments_across_helper_suspension`, `wrapper_conventions_and_boundaries` | Actual arguments, rest arrays, receiver, captures, numeric/control operations; no general JS prototype model |
+| Native leaves/collections | `source_vm.goose::form_concat`, `form_contains`, `form_sequence`, `form_op`, `native_value`; `assembly_leaf_boundaries` | Finite forms/cursors and bounded temporary arrays; invalid lengths/types/arity fail explicitly |
+| Deferred closures | `source_vm.goose` mapSeq continuation/memo; `mapseq_demand_and_throw`, `mapseq_helper_no_replay` | One finite rest-list source, full demand; partial/chunked/multiple-source lazy protocols are not reached |
+| Callable helper/interop | `callable.goose::encode`/`install`, `compiler_session.goose`; generated zalstok and `callable_nested_demand_aliases_and_no_replay` | Captured canonical `rt.core.list`, `rt.symbol`, `.call`; immutable code/captures relocate, mutable publication rejects |
+| Strings and forms | `compiler_bridge.rs`, `form_bridge.goose`, `snapshot.goose`; `generated_assembly`, `goose_compiler_pipeline` | Exact UTF-16, ordered children, scalar pools, metadata and provenance; generated symbols/keywords are forms, not arbitrary JS interop |
+| Nested expansion/effects | `compilation_session.rs::compile_unit_in`, `prepare_goose`; `goose_compiler_concurrent_helper_once`, pipeline `reentrant` | Compiler resolves/compiles nested jobs; suspended Goose capacity is released; producer authority is outside snapshots |
+| Explicit failures | `worker_failure_and_owned_diagnostic`, `helper_failure_keeps_instruction_context`, shared-write/root-bypass rejection tests | Native function/pc/emitted span plus macro call/definition context; tests separately show V8 accepts rejected Goose jobs |
+
+The test names without prefixes above are `goose_compiler_*` in
+`compiler_tests.rs`; concurrent-helper coverage is in `src/goose_evaluator.rs`,
+and the actual compiler pipeline/complete comparator is in `capture.rs` and
+`benchmark.rs`. Fresh `compiler.bb` passes **35 tests in native debug and
+35 optimized**, plus readiness checks in both modes. The expanded assembly
+test compares 26 calls covering all families at V8 and Goose 1/2/4/8 **after
+host/session teardown**. Two additional repeated-number cases retain exact
+Goose spans and the documented V8 value-based last-occurrence limitation;
+they do not normalize away that discrepancy.
+
+The execution-boundary audit follows `MacroHost::use_goose_source_macros` to
+`compiler_bootstrap.rs::expand_source_javascript`: a present Goose evaluator
+takes precedence, and all preparation/call errors propagate. `GooseSession`
+exports source through the Rust frontend and sends it to the native process;
+`GooseEvaluator::call` has no reference-engine retry. The helper callback's
+`compile_unit_in` returns emitted JavaScript, including already-prepared code,
+never a precomputed user result. Canonical helper captures are inspected by
+the generated assembly test before the session directory is removed.
+
+`expand_core_javascript` deliberately filters out the source-only evaluator;
+`build_in` compiles/installs core and sequence bootstrap units in V8. This is
+the declared retained compiler service, charged to every fresh baseline build.
+The archived target trace has no later core-JavaScript expansion entries;
+Rust handles its reached core shapes. Protocol/record/multimethod forms returned
+by user macros are subsequently analyzed by light-cljs; application runtime
+code executes in Node. Their application operations are not missing Goose
+macro-VM requirements. Cached Goose installation rejects explicitly. Thus the
+claim remains **Goose source-macro execution with V8 core/bootstrap**.
+
+### Reproduce and limits
+
+Run `compiler.bb` with the private target/GOOSE_HOME and cached-V8 environment
+in the recipe below. For the fresh emitted inventory, use its temporary
+blocks and run `generated_745_inventory`, then
+`generated_745_complete_frontend_inventory` and `generated_745_real_worker`
+with an optimized native runner. The historical test names are retained for
+reproducibility. Check 741 `OK` rows and an empty final rejected-opcode set in
+every `complete.tsv` row. Restore all temporary hooks afterward. The
+first-worker probe prints outcomes; require both success lines, not merely a
+successful test-process exit.
+
+For the archived count reconciliation, decompress the EDN, verify each
+`:files` text against its matching `:sha256` digest, then read
+`macro-instrument/{v81,goose1,goose2,goose4,goose8}-0.macros.tsv`. Select
+`expanded/workload.*` keys, compare their call-count maps exactly, and join
+the suffix `[namespace name]` to `target/generated-200k/model.edn :macros`.
+No timing or trace normalization is needed.
+
+Full 200k builds are reused from the reviewed baseline, not rerun or newly
+claimed here. Application byte equality does not prove every expansion's
+provenance. Full-target form verification, scale/retention/failure budgets,
+and clean five-round Goose measurements remain separate acceptance work.
+The original and current source chats were retrieved by exact ID; original
+message turns were paginated to their end, current milestone/authorization
+turns read. This is not the final conversation audit.
+
+Changed Rust formatting and `git diff --check` pass. Strict Clippy retains the
+unchanged engine diagnostics documented in the baseline; unrelated root format,
+playground and full-suite limitations remain. No broad-suite success is claimed.
 
 ## Repeat in an isolated checkout
 

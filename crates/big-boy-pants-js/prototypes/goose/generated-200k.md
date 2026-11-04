@@ -7,6 +7,9 @@ are executable evidence. Pellets owns implementation ordering.
 The later [full-project baseline](generated-200k-baseline.md) records the
 implemented comparison harness and passing V8/Goose application checks; the
 inventory observations below retain their original revision and scope.
+The later [execution-support recheck](generated-200k-probes.md#execution-support-recheck)
+finds no remaining target execution gap after the four support changes; it
+does not replace full-scale safety, complete-form verification or measurement.
 
 ## Immutable input and build contract
 
