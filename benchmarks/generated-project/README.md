@@ -93,7 +93,7 @@ and writes `compare-result.edn` into the project
 bb benchmarks/generated-project/compare.bb /tmp/cljs-200k --light "$LIGHT" --runs 3 --warm-jvm 4
 ```
 
-## How a project is made
+## Pinned source-macro comparison
 
 The pinned Goose comparison extends the same `compare.bb` command. It requires
 the exact seed-42/200k manifest, including every source and shim, and checks
@@ -144,6 +144,8 @@ validated. `samples.edn` records raw toolchain, source and executable hashes,
 commands, stdout, CPU times and memory scope; stderr/rusage and trace files sit
 beside it. Historical Shadow measurements and the older comparison mode remain
 available through the original options.
+
+## How a project is made
 
 The generator first builds a **model**: seeded expression trees plus the
 protocols, records, types, multimethods, dynamic vars and macros they use. It

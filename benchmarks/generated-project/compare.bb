@@ -267,7 +267,7 @@
                      (println (select-keys sample [:backend :workers :kind :round :exit :wall-ns]))
                      (when (and (= "instrument" phase) (zero? (:exit r)))
                        (spit (str (fs/path results (str stem ".dag.txt")))
-                             (checked (str repository) environment ["bb" "benchmarks/concurrency/dag.bb" (str trace) "--workers" "1,2,4,8"])))
+                             (checked (str repository) environment ["bb" "benchmarks/concurrency/dag.bb" (str trace) "--workers" "2,4,8"])))
                      sample))]
     (when (= phase "measure")
       (assert (str/includes? (System/getProperty "os.name") "Mac") "Quiet/rusage measurement currently requires macOS"))
