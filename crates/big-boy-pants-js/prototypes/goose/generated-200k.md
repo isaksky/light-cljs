@@ -10,6 +10,8 @@ inventory observations below retain their original revision and scope.
 The later [execution-support recheck](generated-200k-probes.md#execution-support-recheck)
 finds no remaining target execution gap after the four support changes; it
 does not replace full-scale safety, complete-form verification or measurement.
+The [final conversation audit](#final-conversation-audit) below records the
+completed milestone, its unfavorable performance result and remaining limits.
 
 ## Immutable input and build contract
 
@@ -227,3 +229,139 @@ Scope was checked against the latest milestone/authorization turns in
 [the orchestration chat](codex://threads/01a19f89-4ab0-7142-93f1-421889ec10b7)
 and every message turn in [the original discussion](codex://threads/01a19f3b-37e9-79e3-8799-4751884be0f0),
 paginated to its end. This inventory does not replace the final conversation audit.
+
+## Final conversation audit
+
+November 4, 2026, audited delivery through
+`b67fabbb430579fe5291f4e0d76081fad5f3f5c0` (tree
+`138372cf4cce008474b960df3c714375f05b7cb2`). **The delivered milestone is faithful
+within the agreed experimental scope. No unresolved material omission warrants
+another implementation pellet.** The unchanged 200k target compiles correctly
+through Goose at 1/2/4/8, but the practical performance hypothesis loses here:
+V8 takes 6.211 s, versus Goose 20.053/14.234/11.532/18.692 s. Four workers are
+best for Goose; even that cell takes 1.86 times V8's wall and 5.04 times its CPU.
+This conclusion does not promote Goose to a production backend.
+
+### Sources and adopted promises
+
+Both exact source chats were retrieved with `read_thread` and paginated to
+`hasMore=false`: 17 turns in [the current orchestration chat](codex://threads/01a19f89-4ab0-7142-93f1-421889ec10b7)
+and 14 in [the original discussion](codex://threads/01a19f3b-37e9-79e3-8799-4751884be0f0).
+User messages and final responses were read, not inferred from titles or
+summaries. The current orchestration turn was still active during this audit;
+no required conversation was unavailable.
+
+- Original turns `01a19f41-9a3e-7021-b2b2-d99148083d57` and
+  `01a19f43-9985-7c90-9bd9-cb66f1d6ecde` establish the performance motivation
+  and explicit private snapshots, dependency publication and authoritative effects.
+  Turn `01a19f48-7d7e-72b0-8732-a572f7e532f9` clarifies that light-cljs owns
+  macro expansion; subsequent storage/provenance and worktree instructions apply.
+- Current turn `01a1a474-24b5-7282-9bf0-94c74095d893` moves acceptance to the
+  existing generated 200k project and preserves the smaller regression workload.
+  The seven-stage proposal in `01a1a476-aa4f-7a82-ade3-10a8c85b62aa` explicitly
+  makes successful compilation and trustworthy measurement the completion test;
+  a speedup is desired, not required. The user adopted it in
+  `01a1a477-7270-71b1-bdec-6b6e2137b1a2` and authorized execution in
+  `01a1a49d-8fef-76e2-8cd3-c28651b32d68`.
+- That proposal adopts Astra/xhigh planning and audit, Sol 6.1/high implementation,
+  actual Pellets attributes, finite implementation children, one active agent,
+  independent reviews and final gap closure. Earlier authorization preserves the
+  original checkout, permits local reviewed landings and forbids push/deploy.
+  The earlier request to resolve routine choices autonomously still applies.
+
+### Promise versus delivered evidence
+
+| Obligation | Evidence and audit finding |
+| --- | --- |
+| Preserve the existing target | Generator/oracle/waste sources are unchanged from the milestone base `c7c0b193`. Fresh audit generation reproduces the pinned manifest and all 653 source/shim hashes: 199,129 nonblank lines, 450 worker namespaces, 57 macro namespaces. No reduced target, macro rewrite or pre-expansion. |
+| Execute actual emitted source jobs in Goose | [Execution recheck](generated-200k-probes.md#execution-support-recheck) inventories all 741 unchanged factories and covers all eleven reached families. Full builds execute 5,226 entries across 615 identities and 57 helper producers. `MacroHost::use_goose_source_macros`, the exporter and `compiler_session.goose::worker` connect actual emission to private Goose VM execution. Unsupported selected jobs propagate errors; they do not fall back. |
+| Retain compiler and effect ownership | Rust still reads, resolves, orchestrates expansion, analyzes returned forms and emits application JS. The source-only boundary retains V8 core/bootstrap, separately counted and charged in the [performance report](generated-200k-performance.md). Producer authority stays outside copied heaps; reviewed one-worker helper and callback tests prove suspension without replay. This is source-macro execution with V8 core/bootstrap, not an all-Goose compiler. |
+| Preserve outputs and durable provenance | Complete JS bytes and five independent oracle outputs match, with strict waste checks. [Full-form verification](generated-200k-probes.md#complete-project-forms-and-teardown-verification) checks all 5,226 expansions, scalar/UTF-16 pools, metadata, origins and history after teardown in debug/optimized native modes at 1/2/4/8. Goose cells match strictly. The 82 V8 span ambiguities are narrowly checked against original aliases/source; they are not blanket normalization. The 22 inherited Rust input collapses remain an explicit reference limitation. |
+| Make scale/lifecycle safe | [Safety evidence](generated-200k-probes.md#full-session-safety-and-lifetime-recheck) retains existing quotas: about 20.8 MB peak charged state, 17,773,294 bytes at close, zero final waiters, all spawned native threads joined. The 1,058-suspension stress checks reclamation beyond target demand. Native RSS reaches about 281 MB; the 64 MiB charge is not a process-memory ceiling. Existing cancellation, poison, queue, malformed snapshot, stale identity and fresh-session tests remain valid. |
+| Compare fair complete builds | [Performance evidence](generated-200k-performance.md) has one excluded warmup and five quiet interleaved samples for every V8-one/Goose1/2/4/8 cell. Optimization, target and observable work match; wall includes startup through cleanup. Compiler slots vary with the native limit and are named separately. Achieved repeat VM-body overlap is 1/2/2/3, not eight-way saturation. |
+| Account for all relevant costs | Whole-command CPU and memory, sampled process-tree RSS, full native RSS and separate phase probes have explicit scopes. Overlapping phase lifetimes are never added into wall or treated as CPU. Native VM slices total only 68–76 ms; compiler transport/conversion grows sharply. A specific allocation/locking root cause remains unproven. |
+| Separate cache/edit behavior and preserve the control | V8 cache/no-change and cached leaf each have five measured diagnostic samples with executed/skipped work disclosed. Goose cached installation rejects explicitly; the uncached edited-leaf V8/Goose4 diagnostic succeeds. The original proposal required separation of skipped-work scenarios, not new incremental-backend support. This audit accepts that bounded interpretation; Goose cache support remains undelivered. The 15-namespace/120-call/8192-read control passes both native modes at all limits, with historical reports and the later one-worker raw dataset preserved. |
+
+### Completed work and review
+
+Every pre-audit pellet below is closed and landed. These terminal commits include
+their intermediate implementation commits; Pellets remains the queue of record.
+The audit read all twelve independent reviewer verdicts directly through their
+exact chat IDs, including both repair reviews. They report the following final
+heads with no outstanding findings:
+
+| Pellet | Delivered work | Terminal commit / independent review |
+| --- | --- | --- |
+| 745 | Pinned target and four evidenced support gaps | `d9980e65` / [pass](codex://threads/01a1a4b9-f56f-7263-9b89-2a779df57dff) |
+| 752 | Variadic arguments/rest/receiver conventions and identity repair | `b41aeccc` / [pass](codex://threads/01a1a4d6-4685-7253-acfa-012ac3d1fab2) |
+| 753 | Bounded syntax-quote assembly, membership and array lengths | `d7442b06` / [pass](codex://threads/01a1a4e3-d169-7230-a67c-d7dac220b6ce) |
+| 754 | Deferred map callbacks and exclusive writable snapshot ranges | `988e557f` / [pass](codex://threads/01a1a4fc-1bac-7f01-8c47-b94bed441f81) |
+| 755 | Emitted callable helper publication and relocation | `c8c8b4b7` / [pass](codex://threads/01a1a517-685b-75e2-ba2b-94c45e5e4659) |
+| 746 | Actual CLI comparison, baseline and cache scenarios | `8509a79c` / [pass](codex://threads/01a1a541-030b-7070-8278-0a24c4aa8847) |
+| 747 | All-family execution and boundary recheck | `730a4c70` / [pass](codex://threads/01a1a54f-5e4c-7623-a0ad-639797abb230) |
+| 748 | Full-session safety/headroom and continuation stress | `b74740ca` / [pass](codex://threads/01a1a56e-cc42-70a0-88ff-51951f0f0eb5) |
+| 749 | Complete-project output/forms/provenance and teardown | `6bf69b39` / [pass](codex://threads/01a1a5b3-5080-7583-af89-5d3135278e36) |
+| 750 | Quiet full-build matrix, phase accounting and raw archive | `b67fabbb` / [pass](codex://threads/01a1a5da-29b8-7c60-b440-0693f0553702) |
+
+Independent review found and fixed two substantive issues before landing:
+arguments objects erroneously compared structurally (752), and a writable map
+memo could overlap immutable snapshot storage (754). Each used its second and
+final allowed attempt, with a passing focused review afterward. No duplicate
+pellet bypassed those limits. Planners 747/748 had no evidenced implementation
+gap and correctly created no speculative children.
+
+The source chat's native agent events show at most one active child throughout
+this run: each worker/reviewer finished before the next started. The run record
+orders each reviewed fast-forward before the next worker. Actual Pellets
+attributes match the requested model/effort split. Dispatch model/effort and
+`fork_turns=none` are recorded in the orchestration schedule; the thread API
+exposes agent identity/order but not complete invocation-model receipts, so
+that part relies on the run record rather than an independent API attestation.
+This audit's own independent review/landing remains the orchestrator's final gate.
+
+### Verification, limitations and workflow recommendations
+
+On the audited tree, this audit reran `bb benchmarks/generated-project/test.bb`:
+**12 tests, 369 assertions, zero failures/errors**. Fresh full generation matched
+the manifest byte-for-byte and all 653 hashes. Babashka checks reread all **97
+baseline + 262 performance archive digests**, matched all **580 performance
+execution-input hashes** to the current files, and reconciled all **56 successful
+build records**, exact output/oracle results, quiet gates, per-cell sample counts
+and reported primary medians. Git confirms execution/compiler sources are
+unchanged since `6bf69b39`; generator/oracle and the earlier control/report are
+unchanged since `c7c0b193`. Tool versions remain Goose267/runtime3025e5810379,
+Rust1.99.1, Node26.12.1 and bb1.12.218.
+
+This documentation-only audit reuses the reviewed runtime/form/lifecycle checks:
+36 compiler tests per native mode, full-target forms and heavier-control checks,
+plus the preceding VM/snapshot/45-row/QuickJS coverage. It does not claim fresh
+native compilation or a current full-suite/strict-lint pass. Existing engine/root
+Clippy, root formatting, namespace-publication and playground baseline failures
+remain explicit limitations. The supported JS surface is finite; general GC,
+full ECMAScript, watch/REPL, cached Goose and production migration remain outside
+the completed target. A performance loss does not reopen correctness work.
+
+One preservation failure deserves a concrete workflow correction. The optional
+external backup of 745's ignored raw probe directory failed with a Babashka parse
+error before that finished worktree was retired. Those original raw files are
+unavailable; this audit does not claim they were preserved. The committed full
+manifest/probe recipes, independent original review, later 741-factory recheck,
+and successful full-project archives still support the delivered target. This
+historical loss does not require rerunning obsolete failure probes as current
+acceptance work. Future retirement should wait for any intended backup to finish
+and its hashes to verify. Retained `evidence752`–`755`, `evidence747`–`749` and
+both committed archives remain available; keep the safety/provenance raw logs.
+The run record and retained directories are under
+`/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-goose-200k-20261104/`.
+
+The integration editor caches are still intact in this run's
+`editor-cache-backup`; restoring them and checking original/unrelated checkout
+preservation remain the orchestrator's final cleanup responsibilities. This
+audit changed only its own worktree. No push/deploy is part of the delivery.
+
+Retain independent review and focused verification reuse. Include actual model
+settings in future handoffs, and favor meaningful milestone updates over repeated
+unchanged-status messages. For further performance work, first profile the
+measured compiler bridge boundary; choose cache support separately if incremental
+use matters. No optimization catalog or additional implementation pellets were
+created merely because the full-project result is slow.

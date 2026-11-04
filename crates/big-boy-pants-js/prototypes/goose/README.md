@@ -15,6 +15,9 @@ The [full-project performance report](generated-200k-performance.md) records the
 five-round V8/Goose matrix, complete phase/concurrency diagnostics, memory scopes
 and separately labelled cache/leaf behavior. Goose4 is the best Goose cell but
 remains slower than V8 on the pinned 200k project.
+The [final conversation audit](generated-200k.md#final-conversation-audit)
+maps the delivered milestone to both source conversations, reviewed commits,
+verification evidence, remaining limitations and workflow recommendations.
 
 From the repository root, run:
 
