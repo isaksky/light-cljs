@@ -397,3 +397,151 @@ No runtime changes remain, so the exact-source 749 full-form/debug/native/teardo
 and expanded-control evidence remains valid. The probes are positive-workload
 causal evidence, not new proofs of failure behavior. No fresh full-suite or
 strict-Clippy pass is claimed; the previously disclosed baseline limits remain.
+
+## Bounded shared-control coalescing
+
+Pellet 757 implements the bounded fix at `b521b299`: bridge budgets accumulate
+actual logical polls locally, debit the shared session control every 128 checks,
+and settle the final tail before VM use or compiler-owned result publication.
+The existing `poll()` remains a one-poll debit for other engine/control paths.
+There are no reserved credits, refunds, locks or per-worker allowances. Successful
+conversion charges exactly the original number of node/work and byte checks.
+Nested callbacks reuse their existing budget; distinct budgets share the same
+session allowance. Error exits settle their actual tails, including final drop.
+A failed aggregate debit sets the existing sticky exhaustion state without
+underflow; a caught error cannot make another result publishable.
+
+At most 127 polls per live conversion budget can be unpaid between checkpoints.
+Cancellation/deadline checks occur at the start, every 128 logical checks, and
+all settlement boundaries. This bounds additional pure conversion work, rather
+than promising a wall-clock latency for one scalar copy/comparison. The existing
+100,000-node/default-depth-128 limits, 16 MiB graph limit and 64 MiB aggregate
+byte/work allowance remain unchanged. No unpaid graph reaches the VM, and no
+unpaid returned form is accepted. No quota, environment representation, protocol,
+Goose runtime or heap-sharing policy changed.
+
+### Clean before/after target measurements
+
+Both Rust CLIs were built in the same private worktree with release optimization,
+jobs=3 and the required V8 cache: before `c21a03cc`, after the implementation
+above. The unmodified seed42/200k generator produced the pinned 199,129 nonblank
+lines, 450 worker namespaces and 653 source files. Compiler slots and execution
+workers both equal the table's worker count. The native runner remains
+`92140b1a31ba1fe42beadc3caae59fb6ea0916e4a3204e5caff10ef7146688e0`.
+The archive records all source, fixture, native/Rust binary and toolchain hashes.
+
+One warmup per cell preceded three alternating-order measured rounds. The quiet
+gate admitted every command (minimum 90.63% idle); no builds or other tests ran
+during this series. All **28 builds** (including four V8 controls) matched the
+complete emitted JS hash `18335556dd4672f2f63b901b68fcad3c447cf5676f457a08fda61f366cc9f3ec`,
+all five independent oracle pairs, and strict waste checks. Every Goose run
+retained 5,226 jobs, 672 exports and 615 preparations.
+
+Median seconds, clean uncached full target:
+
+| Goose workers | Before wall | After wall | Before aggregate CPU | After aggregate CPU |
+|---|---:|---:|---:|---:|
+| 1 | 20.573 | 18.752 | 20.28 | 18.46 |
+| 4 | 11.590 | 9.505 | 34.50 | 25.50 |
+| 8 | 18.749 | 9.901 | 95.31 | 28.43 |
+
+After wall ranges were 18.734–18.889 / 9.502–9.514 / 9.871–9.970 seconds.
+The V8 control median was 6.374 seconds, so V8 remains faster. This finite
+three-round implementation validation does not replace 758's final five-round
+V8/Goose1/2/4/8 matrix. CPU is macOS compiler-command rusage including waited
+native children; peak RSS is not an additive process-tree peak. No overlapping
+phase intervals are added or subtracted.
+
+### Separate control and argument evidence
+
+The same graph counters and thread-CPU instrumentation used in 756 were applied
+separately, with additional counters for actual aggregate debits. Both warmup
+and measured instrumented builds passed complete output/oracle/waste validation.
+The prior counter measurements are reused by execution-source identity:
+`6bf69b39..c21a03cc` changes only documentation/archives in `src` and the engine,
+and the native runner hash is identical. These are diagnostic measurements,
+separate from clean wall timings.
+
+| Workers | Prior argument thread CPU (s) | After argument thread CPU (s) | Logical bridge polls paid | Nonzero aggregate debits |
+|---|---:|---:|---:|---:|
+| 1 | 5.679 | 3.828 | 83,786,909 | 660,198 |
+| 4 | 13.984 | 5.261 | 83,851,130 | 660,714 |
+| 8 | 74.468 | 5.728 | 83,898,527 | 661,096 |
+
+Each of the 5,226 budgets' charged count equals its node/work plus byte checks;
+the summary also verifies this independently in aggregate. At eight workers,
+nonzero shared debits are 0.788% of the original per-check debit count. About
+30.5 million argument nodes are still built, with the full environment still
+dominating the volume. Small volume differences between worker counts follow
+the compiler's concurrent environment schedule; no input family was removed.
+This confirms the identified shared-control work decreased without a fuel or
+clock bypass.
+
+### Correctness, limits and reproduction
+
+Focused deterministic tests cover exact shared boundaries at 1/2/4/8 consumers,
+aggregate charging, sticky exhaustion without wraparound, distinct and reentrant
+nested budgets, failed-tail cleanup, cancellation/deadline interruption during
+large graph construction, and unpaid-tail rejection before execution/publication.
+Fresh-session compilation succeeds after these failures. Existing malformed,
+truncation, UTF-16, number-bit, borrowed-flavour, identity and caught nested-limit
+coverage remains enabled.
+
+`compiler.bb` passed native debug and optimized modes (40/41 Rust tests; one
+additional Rust graph test was added between modes and is covered by the final
+focused runs). `generated_200k_complete_forms` passed with optimized and debug
+native runners at 1/2/4/8 after teardown: all 5,226 forms, 615 identities, and the
+existing 82 narrowly audited V8 reference alias ambiguities, 43 raw/22 common
+compiler-input/65 returned anonymous-parameter checks and five scalar occurrence
+checks remain unchanged. Optimized/debug complete audits took 123.50/184.55
+seconds; these are correctness runs, not timing cells.
+
+The final focused default and QuickJS runs both pass all eight bridge/control
+tests, including native tail-payment rejection and fresh compilation. Test-only
+commit `242dc995` removes the new native test's V8 gate; production behavior is
+unchanged, so the completed full-form and timing layers are reused by relevant
+source identity. The earlier feature-enabled library runs have 550 default and
+502 QuickJS passes, with the exact documented namespace-publication failure
+(`namespace writer needs a native engine`) in both. Default also reproduces the
+capture fixture's generation mismatch: only data nodes 26/69/112 differ, expected
+1 versus actual 215. The isolated `source_corpus` passes. Relevant failure sources
+and fixtures are unchanged; neither library run is represented as a full pass.
+
+Expanded seed24301 controls pass in native optimized and debug modes: each runs
+all 20 existing supported cells, including the 120-call/8192-read branch control
+at 1/2/4/8 workers. The existing declared heavier retained-serial budget failure
+remains outside that matrix. The first debug invocation stopped at the existing
+output-preservation guard; the tracked debug archive was moved aside, restored
+unchanged, and the fresh debug run passed. Both fresh sample sets are retained.
+
+Changed-file rustfmt and `git diff --check` pass. Repository-wide rustfmt still
+reports unchanged files beginning with `src/js_syntax.rs`. Strict all-target
+Clippy with Goose enabled in default and QuickJS modes stops at the same eight
+engine diagnostics described above. Additional strict `--no-deps` runs expose
+the pre-existing `compiler_bootstrap.rs:822/878` byte-character-slice lints and
+`namespace_publication.rs:251` single-element loop; both modes reproduce these
+exact diagnostics after temporarily restoring all three changed Rust files from
+`c21a03cc`, then restoring the final source. No source lint allowances were added.
+Full nextest/integration suites were not rerun; the prior broader dead-code,
+analyzer and playground-lint limitations remain limitations, not passing checks.
+
+[Coalescing raw evidence](generated-200k-coalescing.edn.gz) preserves the existing
+EDN `:files`/UTF-8-text/SHA-256 format: clean commands/samples and quiet gates,
+complete validation results, separate graph/control/native instruments, source
+patches, compiler/form/control logs, binaries' hashes and toolchains.
+All 170 embedded file digests were reread and verified after assembly. The initial
+verification wrapper failed before starting a test because a command vector was
+passed to `shell` as one argument; its failure is retained separately and the
+corrected wrapper uses `apply`. No target failure is hidden by that repair.
+
+To reproduce, build the before/after CLIs and both native runner modes with the
+ordinary environment above, generate the pinned fixture, then extract the
+archive's `target/series757.bb`, `target/instrument757.bb` and verification files.
+Run the series with no competing build/test. `series757.bb --resume` validates
+binary/fixture/harness identities before resuming any missing successful cells.
+`instrument757.bb instrument` temporarily instruments the current source and
+restores it in `finally`; preserve its patch, and run the existing comparator's
+instrument phase separately. The complete-form test can also be invoked through
+`cargo test --release --locked --features goose-macros --lib generated_200k_complete_forms -- --include-ignored --nocapture --test-threads=1`
+with each `GOOSE_COMPILER_RUNNER`. The archived verification command records the
+exact prebuilt Rust test-binary hash used here.
