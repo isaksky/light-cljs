@@ -8,18 +8,44 @@ use std::{cell::Cell, collections::HashMap};
 pub(super) struct Budget {
     remaining: Cell<usize>,
     bytes: Cell<usize>,
+    pending: Cell<u64>,
     control: ExecutionControl,
 }
+// No fuel is reserved. At most 127 logical checks per active Budget can be
+// unpaid between checkpoints; all are paid before VM use/publication. Thus
+// concurrent/nested conversions cannot strand credits or exhaust on somebody
+// else's unused reservation. A checkpoint observes cancellation/deadline every
+// 128 node/work/scalar checks, in addition to all transport boundaries. Existing
+// node/depth/64MiB byte-work limits still bound the individual operations.
+const POLL_BATCH: u64 = 128;
 impl Budget {
     pub fn new(nodes: usize, control: ExecutionControl) -> Self {
         Self {
             remaining: Cell::new(nodes),
             bytes: Cell::new(MAX_BYTES * 4),
+            pending: Cell::new(0),
             control,
         }
     }
+    fn poll(&self) -> Result<(), EvalError> {
+        let pending = self.pending.get();
+        if pending == 0 {
+            self.control.poll_many(0)?;
+        }
+        self.pending.set(pending + 1);
+        if pending + 1 == POLL_BATCH {
+            self.finish()?;
+        }
+        Ok(())
+    }
+    pub fn finish(&self) -> Result<(), EvalError> {
+        self.control.poll_many(self.pending.replace(0))
+    }
+    pub fn settle<T>(&self, result: Result<T, EvalError>) -> Result<T, EvalError> {
+        self.finish().and(result)
+    }
     fn check(&self) -> Result<(), EvalError> {
-        self.control.poll()?;
+        self.poll()?;
         let Some(next) = self.remaining.get().checked_sub(1) else {
             return Err(EvalError("Goose conversion limit exceeded".into()));
         };
@@ -27,7 +53,7 @@ impl Budget {
         Ok(())
     }
     fn bytes(&self, count: usize) -> Result<(), EvalError> {
-        self.control.poll()?;
+        self.poll()?;
         let Some(left) = self.bytes.get().checked_sub(count) else {
             return Err(EvalError(
                 "Goose conversion byte/work limit exceeded".into(),
@@ -35,6 +61,13 @@ impl Budget {
         };
         self.bytes.set(left);
         Ok(())
+    }
+}
+impl Drop for Budget {
+    fn drop(&mut self) {
+        // Error exits may abandon a partial graph. Charge the actual tail too;
+        // a failed debit leaves the shared terminal state sticky.
+        let _ = self.finish();
     }
 }
 
@@ -681,6 +714,173 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evaluator::EvaluatorOptions;
+    use std::sync::{Arc, Barrier};
+
+    fn control(polls: u64) -> ExecutionControl {
+        ExecutionControl::new(&EvaluatorOptions {
+            poll_budget: polls,
+            timeout: std::time::Duration::from_secs(60),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn goose_compiler_bridge_shared_exact_debits_and_exhaustion() {
+        const COST: u64 = POLL_BATCH * 3 + 17;
+        for consumers in [1, 2, 4, 8] {
+            for shortage in [0, 1] {
+                let c = control(COST * consumers - shortage);
+                let barrier = Arc::new(Barrier::new(consumers as usize));
+                let outcomes = std::thread::scope(|scope| {
+                    (0..consumers)
+                        .map(|_| {
+                            let c = c.clone();
+                            let barrier = barrier.clone();
+                            scope.spawn(move || {
+                                let budget = Budget::new(COST as usize, c);
+                                barrier.wait();
+                                let result = (|| {
+                                    for _ in 0..COST {
+                                        budget.check()?;
+                                    }
+                                    Ok(())
+                                })();
+                                budget.settle(result)
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .map(|thread| thread.join().unwrap())
+                        .collect::<Vec<_>>()
+                });
+                if shortage == 0 {
+                    assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
+                    assert_eq!(c.remaining_polls(), 0);
+                    assert!(c.poll_many(0).is_ok(), "zero fuel permits no-cost checks");
+                    assert!(c.poll().unwrap_err().0.contains("budget exhausted"));
+                    assert_eq!(c.remaining_polls(), 0);
+                } else {
+                    assert!(outcomes.iter().any(Result::is_err));
+                    assert!(c.remaining_polls() < COST, "no underflow/wraparound");
+                }
+                assert!(c.poll_many(0).unwrap_err().0.contains("budget exhausted"));
+                assert!(c.check().is_err(), "caught exhaustion remains terminal");
+            }
+        }
+    }
+
+    #[test]
+    fn goose_compiler_bridge_nested_tails_and_error_cleanup() {
+        let reentrant = control(3);
+        let shared = Budget::new(1000, reentrant.clone());
+        shared.check().unwrap();
+        let nested_result = shared.bytes(1);
+        shared.settle(nested_result).unwrap();
+        assert_eq!(reentrant.remaining_polls(), 1);
+        shared.check().unwrap();
+        shared.finish().unwrap();
+        assert_eq!(reentrant.remaining_polls(), 0);
+
+        let c = control(POLL_BATCH + 2);
+        let outer = Budget::new(1000, c.clone());
+        outer.check().unwrap();
+        // A nested converter takes only its actual cost; the outer's unpaid
+        // tail holds no reservation and does not cause premature exhaustion.
+        let nested = Budget::new(1000, c.clone());
+        for _ in 0..POLL_BATCH {
+            nested.check().unwrap();
+        }
+        nested.finish().unwrap();
+        assert_eq!(c.remaining_polls(), 2);
+        outer.finish().unwrap();
+        assert_eq!(c.remaining_polls(), 1);
+        // Failed immutable work is charged even if its error is caught.
+        let failed = Budget::new(0, c.clone());
+        assert!(failed.check().is_err());
+        drop(failed);
+        assert_eq!(c.remaining_polls(), 0);
+        assert!(c.poll_many(0).is_ok());
+        outer.check().unwrap();
+        assert!(outer.finish().unwrap_err().0.contains("budget exhausted"));
+        assert!(outer.finish().is_err());
+        assert!(control(1).poll().is_ok(), "fresh session recovers");
+    }
+
+    #[test]
+    fn goose_compiler_bridge_terminal_observation_is_bounded() {
+        for cancel in [false, true] {
+            let c = control(1_000_000);
+            let budget = Budget::new(1_000_000, c.clone());
+            for _ in 0..POLL_BATCH - 1 {
+                budget.check().unwrap();
+            }
+            if cancel {
+                c.cancel();
+            } else {
+                c.expire_for_test();
+            }
+            let expected = if cancel { "cancelled" } else { "deadline" };
+            assert!(budget.check().unwrap_err().0.contains(expected));
+            assert!(budget.finish().unwrap_err().0.contains(expected));
+            assert!(c.poll().unwrap_err().0.contains(expected));
+            assert!(c.check().is_err(), "caught terminal failure stays sticky");
+            assert!(control(1).poll().is_ok());
+        }
+        // Publication checks the terminal state even for a one-check tail.
+        let c = control(100);
+        let budget = Budget::new(100, c.clone());
+        budget.bytes(1).unwrap();
+        c.cancel();
+        assert!(budget.settle(Ok(())).unwrap_err().0.contains("cancelled"));
+    }
+
+    #[test]
+    fn goose_compiler_bridge_large_graph_charges_and_interrupts() {
+        let limits = ConversionLimits::default();
+        let nil = Datum::new(DatumKind::Nil);
+        // A scalar datum costs its entry and final node/work check. Exercise
+        // actual graph construction, including the non-multiple-of-128 tail.
+        let c = control(20_002);
+        let budget = Budget::new(limits.nodes, c.clone());
+        let mut graph = Graph::default();
+        for _ in 0..10_001 {
+            graph.datum(&nil, 1, limits, &budget).unwrap();
+        }
+        budget.finish().unwrap();
+        assert_eq!(graph.nodes.len(), 10_001);
+        assert_eq!(c.remaining_polls(), 0);
+        for cancel in [false, true] {
+            let c = control(100_000);
+            let budget = Budget::new(limits.nodes, c.clone());
+            let mut graph = Graph::default();
+            for _ in 0..5000 {
+                graph.datum(&nil, 1, limits, &budget).unwrap();
+            }
+            if cancel {
+                c.cancel();
+            } else {
+                c.expire_for_test();
+            }
+            let failure = loop {
+                match graph.datum(&nil, 1, limits, &budget) {
+                    Ok(_) => assert!(graph.nodes.len() < 5000 + POLL_BATCH as usize),
+                    Err(error) => break error,
+                }
+            };
+            assert!(
+                failure
+                    .0
+                    .contains(if cancel { "cancelled" } else { "deadline" })
+            );
+            assert!(
+                budget.settle(Ok(graph)).is_err(),
+                "partial graph stays private"
+            );
+            assert!(c.poll_many(0).is_err());
+        }
+    }
     #[test]
     fn goose_compiler_bridge_source_bytes_and_runtime_units_are_distinct() {
         let source = crate::compiler_data::Source::new("unicode.cljs", "é😀");

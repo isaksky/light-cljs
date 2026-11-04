@@ -747,6 +747,7 @@ impl MacroEvaluator for GooseEvaluator {
         let result = (|| {
             let bridged = Instant::now();
             let graph = bridge::Graph::arguments(&values, limits, &budget)?;
+            budget.finish()?;
             self.session
                 .bridge_ns
                 .fetch_add(bridged.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -767,8 +768,13 @@ impl MacroEvaluator for GooseEvaluator {
                             .map(|source| (unit, source))
                             .map_err(error)
                     })?;
-            Ok(self.store(Stored::Result(bytes, Arc::new(graph.originals), budget)))
+            Ok(self.store(Stored::Result(
+                bytes,
+                Arc::new(graph.originals),
+                budget.clone(),
+            )))
         })();
+        let result = budget.settle(result);
         *self.budget.borrow_mut() = previous.clone();
         if result.is_err() && previous.is_none() {
             self.control.cancel();
@@ -797,6 +803,7 @@ impl MacroEvaluator for GooseEvaluator {
         let bridged = Instant::now();
         let result = bridge::Graph::decode(&bytes, limits, &budget)
             .and_then(|graph| graph.expansion(call, origin, &originals, limits, &budget));
+        let result = budget.settle(result);
         self.session
             .bridge_ns
             .fetch_add(bridged.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -822,6 +829,66 @@ mod tests {
         std::env::var_os("GOOSE_COMPILER_RUNNER")
             .expect("run compiler.bb")
             .into()
+    }
+    #[test]
+    #[ignore = "build native runner with compiler.bb"]
+    fn goose_compiler_bridge_tails_are_paid_before_execution_and_publication() {
+        for workers in [1, 2, 4, 8] {
+            for output in [false, true] {
+                let session = GooseSession::start(&runner(), workers).unwrap();
+                let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+                let function = e.evaluate_unit("rt => (form, env) => form").unwrap();
+                let data = e
+                    .import_data(
+                        &Datum::new(crate::compiler_data::DatumKind::Nil),
+                        Default::default(),
+                    )
+                    .unwrap();
+                let result = if output {
+                    Some(e.call(function, &[data, data]).unwrap())
+                } else {
+                    None
+                };
+                let c = e.control();
+                c.poll_many(c.remaining_polls() - if output { 1 } else { 2 })
+                    .unwrap();
+                let error = if let Some(result) = result {
+                    let source = crate::compiler_data::Source::new("tail.cljs", "nil");
+                    let call = Form::from_data(
+                        Datum::new(crate::compiler_data::DatumKind::Nil),
+                        source.span(0..3).unwrap(),
+                        crate::compiler_data::Origin::Source,
+                    );
+                    e.export_form(
+                        result,
+                        &call,
+                        ExpansionOrigin {
+                            macro_name: crate::compiler_data::Name::new(None, "tail"),
+                            call: call.span(),
+                            definition: None,
+                            helpers: vec![],
+                        },
+                        Default::default(),
+                    )
+                    .unwrap_err()
+                } else {
+                    e.call(function, &[data, data]).unwrap_err()
+                };
+                assert!(error.0.contains("budget exhausted"), "{error}");
+                if !output {
+                    assert!(!session.trace().iter().any(|s| s.starts_with("START ")));
+                }
+                assert!(c.check().is_err(), "catch cannot clear a failed tail debit");
+                assert!(session.process.lock().unwrap().is_none());
+                assert!(!session.directory.exists());
+            }
+            let session = GooseSession::start(&runner(), workers).unwrap();
+            let mut host = crate::MacroHost::new();
+            host.use_goose_source_macros(session.clone()).unwrap();
+            crate::compile_with_macros("(defmacro fresh [] 42) (fresh)", &mut host).unwrap();
+            session.close();
+            assert!(!session.directory.exists());
+        }
     }
     #[test]
     #[ignore = "build native runner with compiler.bb"]

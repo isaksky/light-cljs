@@ -294,8 +294,15 @@ impl ExecutionControl {
     pub fn cancel_after_checks(&self, checks: u64) {
         self.0.checks_left.store(checks, Ordering::Relaxed);
     }
-    #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
     pub fn poll(&self) -> Result<(), EvalError> {
+        self.poll_many(1)
+    }
+    /// Charge actual, already performed immutable bridge work together. This
+    /// reserves no allowance: a caller must settle its complete debit before
+    /// publishing a result or allowing an engine to use it. Zero checks the
+    /// deadline and sticky state without consuming fuel.
+    #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
+    pub(crate) fn poll_many(&self, polls: u64) -> Result<(), EvalError> {
         let build = if self.0.build.is_some() {
             self.build_cause()
         } else {
@@ -309,11 +316,14 @@ impl ExecutionControl {
             2
         } else if build != 0 {
             build
-        } else if self
-            .0
-            .remaining
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
-            .is_err()
+        } else if polls != 0
+            && self
+                .0
+                .remaining
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                    n.checked_sub(polls)
+                })
+                .is_err()
         {
             3
         } else {
