@@ -165,7 +165,37 @@ fn reused_destination() {
     snapshot_test::verify(heap, roots, 7);
     print("reused code/heap/job destination: live/claimed/terminal guards, fresh IDs, alternating payloads, complete reset and transactional validation passed");
 }
-fn main() { assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); live_boundary(); }
+fn main() { finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); live_boundary(); }
+
+fn finite_map_ownership() {
+    var code = source::Code {}; snapshot_test::append(code, embed_file("corpus/serial/calls.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let input = source::form_collection(heap, 5, [source::number(1), source::number(2)]);
+    let mapped = source::native_value(heap, 17, [source::builtin(heap, 1), input]);
+    var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: mapped }, snapshot::Binding { id: 1, generation: 1, value: mapped }], c);
+    assert(c.error == snapshot::Error.None);
+    for i in 2 {
+        var dest = source::Code {}; var worker = source::Heap { code: dest }; var bindings: snapshot::Binding[>..] = []; var control = snapshot::Control {};
+        assert(snapshot::restore(saved, dest, worker, bindings, source::reserve_identity(), control));
+        let value = bindings[0].value; assert(value.a == bindings[1].value.a && value.session == worker.identity);
+        assert(worker.nodes[value.a].length == 0 && worker.nodes[value.a].value.session == worker.identity);
+        var job = source::Job { heap: worker }; assert(source::start(job, source::closure(worker, 0, []), []));
+        assert(source::demand_map(job, value));
+        while job.frames.len > 1 { assert(source::run(job, 1) == tiny::Outcome.Yielded); }
+        assert(source::form_nth(worker, value, 0).number == 2 && source::form_nth(worker, bindings[1].value, 1).number == 3);
+        source::retire(job);
+    }
+    assert(heap.nodes[mapped.a].kind == 15 && heap.nodes[mapped.a].length == 0);
+    for mode in 4 {
+        var bad = copy(saved);
+        if mode == 0 { bad.nodes[mapped.a].length = 3; }
+        if mode == 1 { bad.nodes[mapped.a].start = bad.values.len; }
+        if mode == 2 { bad.nodes[mapped.a].namespace_value = mapped; }
+        if mode == 3 { bad.nodes[mapped.a].namespace_value.session += 1; }
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    }
+    print("finite mapSeq snapshots: aliases, memo/callback/input relocation, isolation and malformed ranges passed");
+}
 
 fn assembly_ownership() {
     var code = source::Code {}; snapshot_test::append(code, embed_file("corpus/serial/calls.gsp"));

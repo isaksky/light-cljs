@@ -90,10 +90,17 @@ fn goose_compiler_generated_assembly() {
         ("joktol", "x 99", "{:locals {x nil}}"),
         ("joktol", "x 99", "{:locals {}}"),
         ("joktol", "x 99", "{:locals nil}"),
+        ("buvaiskum", "", "{}"),
+        ("buvaiskum", "1", "{}"),
+        ("buvaiskum", "1 2 3", "{}"),
+        ("buvaiskum", "^:marked x y", "{}"),
+        ("buvaiskum", "[1 ^:marked x] {:k 2} 3", "{}"),
     ];
     let mut expected: Option<Vec<(Form, Form)>> = None;
     let mut repeated_value: Option<Datum> = None;
     let mut repeated_goose: Option<(Form, Form)> = None;
+    let mut mapped_value: Option<Datum> = None;
+    let mut mapped_goose: Option<(Form, Form)> = None;
     for workers in [0, 1, 2, 4, 8] {
         let _names = crate::generated_names::enter_namespace(0);
         let mut host = crate::macro_host::MacroHost::new();
@@ -139,9 +146,19 @@ fn goose_compiler_generated_assembly() {
                 None,
             )
             .unwrap();
+        let mapped_call = read("(buvaiskum 2 2 2)");
+        let mapped = host
+            .expand_source_javascript(
+                "workload.fonam",
+                "buvaiskum",
+                &mapped_call,
+                &read("{}").data(),
+                None,
+            )
+            .unwrap();
         drop(host);
         if let Some(s) = session {
-            assert_eq!(s.stats().jobs, cases.len() as u64 + 1);
+            assert_eq!(s.stats().jobs, cases.len() as u64 + 2);
             s.close();
             cleaned(&s);
         }
@@ -185,6 +202,127 @@ fn goose_compiler_generated_assembly() {
                 repeated_goose = Some((repeated_call, repeated));
             }
         }
+        let spans = (0..mapped.nodes().len())
+            .filter_map(|i| {
+                let form = mapped.at(crate::compiler_data::FormId(i)).unwrap();
+                form.data()
+                    .value_eq(&Datum::new(DatumKind::Integer(2)))
+                    .then(|| {
+                        assert_eq!(form.node().origin, Origin::Source);
+                        form.span().bytes()
+                    })
+            })
+            .collect::<Vec<_>>();
+        if workers == 0 {
+            assert_eq!(spans, vec![15..16, 15..16, 15..16]);
+            mapped_value = Some(mapped.data());
+        } else {
+            assert!(mapped_value.as_ref().unwrap().value_eq(&mapped.data()));
+            assert_eq!(spans, vec![11..12, 13..14, 15..16]);
+            if let Some(reference) = &mapped_goose {
+                crate::compiler_bootstrap::goose_capture::compare_concurrent_forms(
+                    vec![reference.clone()],
+                    vec![(mapped_call, mapped)],
+                );
+            } else {
+                mapped_goose = Some((mapped_call, mapped));
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_mapseq_demand_and_throw() {
+    for workers in [1, 2, 4, 8] {
+        let s = GooseSession::start(&runner(), workers).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let source = r#"rt => (form,env) => {
+            let calls=0; let order=0; let throws=0;
+            const input=__rt.formList(1,2,3);
+            const xs=rt.core.mapSeq(x=>{calls++;order=order*10+x;return __rt.formVector(x,x);},input);
+            const alias=xs;
+            if(calls!==0 || rt.core.sequence(xs)!==xs) return false;
+            const a=__rt.cljConcat(__rt.formList(0),xs);
+            const b=__rt.cljConcatAll(__rt.formList(xs,alias));
+            if(calls!==3 || order!==123 || xs!==alias || __rt.cljCount(a)!==4 || __rt.cljCount(b)!==6) return false;
+            if(__rt.cljNth(a,1)!==__rt.cljNth(b,0) || __rt.cljNth(b,0)!==__rt.cljNth(b,3)) return false;
+            const ys=rt.core.mapSeq(x=>{if(x===2 && throws===0){throws++;throw 17;} calls++;return x;},input);
+            try { __rt.cljCount(ys); return false; } catch(e) { if(e!==17 || calls!==4) return false; }
+            if(__rt.cljCount(ys)!==3 || calls!==6 || throws!==1) return false;
+            const empty=rt.core.mapSeq(()=>{calls++;throw 99;},null);
+            const zs=rt.core.mapSeq(x=>x,input);
+            const vector=rt.core.vec.call(null,zs);
+            const more=rt.core.into.call(null,__rt.formVector(),rt.core.mapSeq(x=>x,input));
+            return __rt.cljCount(empty)===0 && calls===6 && __rt.cljCount(vector)===3 && __rt.cljCount(more)===3 && __rt.cljCount(rt.core.mapv(x=>x+1,input))===3;
+        }"#;
+        let (f, args, call) = inputs(&e, source);
+        for _ in 0..3 {
+            let value = e.call(f, &args).unwrap();
+            let output = e
+                .export_form(value, &call, origin(&call), Default::default())
+                .unwrap();
+            assert!(
+                output
+                    .data()
+                    .value_eq(&Datum::new(DatumKind::Boolean(true)))
+            );
+        }
+        s.close();
+        cleaned(&s);
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_mapseq_helper_no_replay() {
+    // A real emitted helper factory executes on the released worker. A
+    // demand in the second callback snapshots the first memo and its writes.
+    for workers in [1, 2, 4, 8] {
+        let s = GooseSession::start(&runner(), workers).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let source = r#"rt => (form,env) => {
+            let calls=0;let order=0;
+            const xs=rt.core.mapSeq(x=>{
+                calls++;order=order*10+x;
+                if(x===2) return __rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/mapseq');
+                return x;
+            },__rt.formList(1,2,3));
+            const alias=xs;
+            const first=__rt.cljConcat(null,xs);
+            const second=__rt.cljConcatAll(__rt.formList(alias,xs));
+            return calls===3 && order===123 && __rt.cljCount(second)===6 && __rt.formValue(__rt.cljNth(first,1))===40;
+        }"#;
+        let (f, args, call) = inputs(&e, source);
+        e.register_compiler_root("fixture/mapseq", Some(42), true, "mapseq.cljs", None)
+            .unwrap();
+        let called = Rc::new(Cell::new(0));
+        let counter = called.clone();
+        e.install_helper(Rc::new(move |_, _| {
+            counter.set(counter.get() + 1);
+            Ok("rt => {let x=0;for(let i=0;i<40;i++)x++;return x;}".into())
+        }));
+        for _ in 0..3 {
+            let result = e.call(f, &args).unwrap();
+            let result = e
+                .export_form(result, &call, origin(&call), Default::default())
+                .unwrap();
+            assert!(
+                result
+                    .data()
+                    .value_eq(&Datum::new(DatumKind::Boolean(true)))
+            );
+        }
+        assert_eq!(called.get(), 3);
+        assert_eq!(
+            s.trace()
+                .iter()
+                .filter(|line| line.starts_with("PRODUCED "))
+                .count(),
+            1
+        );
+        s.close();
+        cleaned(&s);
     }
 }
 
@@ -258,6 +396,35 @@ fn goose_compiler_assembly_leaf_boundaries() {
         (
             "return __rt.cljConcat(__rt.formMap(1,2),null);",
             "Fault.UnsupportedOperand",
+        ),
+        ("return rt.core.mapSeq(x=>x);", "Fault.NativeBoundary"),
+        (
+            "return __rt.cljCount(rt.core.mapSeq(()=>{throw 17;},__rt.formList(1)));",
+            "Fault.HostEffect",
+        ),
+        (
+            "return __rt.cljCount(rt.core.mapSeq(()=>null.x,__rt.formList(1)));",
+            "Fault.TypeError",
+        ),
+        (
+            "return rt.core.mapSeq(x=>x,__rt.formVector(1));",
+            "Fault.NativeBoundary",
+        ),
+        (
+            "return rt.core.mapSeq(x=>x,__rt.formList(1),__rt.formList(2));",
+            "Fault.NativeBoundary",
+        ),
+        (
+            "return __rt.cljFirst(rt.core.mapSeq(x=>x,__rt.formList(1)));",
+            "Fault.NativeBoundary",
+        ),
+        (
+            "return rt.core.mapSeq(x=>x,rt.core.mapSeq(x=>x,__rt.formList(1)));",
+            "Fault.NativeBoundary",
+        ),
+        (
+            "let xs;xs=rt.core.mapSeq(()=>__rt.cljCount(xs),__rt.formList(1));return __rt.cljCount(xs);",
+            "Fault.NativeBoundary",
         ),
     ] {
         let s = GooseSession::start(&runner(), 1).unwrap();
@@ -868,50 +1035,52 @@ fn goose_compiler_caught_runtime_errors_preserve_identity() {
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_cancel_and_deadline_cleanup() {
-    for cancel in [false, true] {
-        let session = GooseSession::start(&runner(), 1).unwrap();
-        let options = EvaluatorOptions {
-            timeout: if cancel {
-                Duration::from_secs(2)
-            } else {
-                Duration::from_millis(30)
-            },
-            ..Default::default()
-        };
-        let evaluator = GooseEvaluator::new(session.clone(), &options).unwrap();
-        let (function, args, _) = inputs(
-            &evaluator,
-            "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')",
-        );
-        evaluator
-            .register_compiler_root("fixture/value", Some(0), true, "fixture.cljs", None)
-            .unwrap();
-        evaluator.install_helper(Rc::new(|_, _| {
-            thread::sleep(Duration::from_millis(60));
-            Ok("rt => __rt.formVector(1)".into())
-        }));
-        let control = evaluator.control();
-        let s = session.clone();
-        let cancelling = cancel.then(|| {
-            thread::spawn(move || {
-                let until = Instant::now() + Duration::from_secs(1);
-                while !s.trace().iter().any(|line| line.starts_with("NEED "))
-                    && Instant::now() < until
-                {
-                    thread::sleep(Duration::from_millis(1));
-                }
-                control.cancel();
-            })
-        });
-        let error = evaluator.call(function, &args).unwrap_err().to_string();
-        if let Some(t) = cancelling {
-            t.join().unwrap();
+    for source in [
+        "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')",
+        "rt => (form, env) => __rt.cljCount(rt.core.mapSeq(x=>__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/value'),__rt.formList(1,2)))",
+    ] {
+        for cancel in [false, true] {
+            let session = GooseSession::start(&runner(), 1).unwrap();
+            let options = EvaluatorOptions {
+                timeout: if cancel {
+                    Duration::from_secs(2)
+                } else {
+                    Duration::from_millis(30)
+                },
+                ..Default::default()
+            };
+            let evaluator = GooseEvaluator::new(session.clone(), &options).unwrap();
+            let (function, args, _) = inputs(&evaluator, source);
+            evaluator
+                .register_compiler_root("fixture/value", Some(0), true, "fixture.cljs", None)
+                .unwrap();
+            evaluator.install_helper(Rc::new(|_, _| {
+                thread::sleep(Duration::from_millis(60));
+                Ok("rt => __rt.formVector(1)".into())
+            }));
+            let control = evaluator.control();
+            let s = session.clone();
+            let cancelling = cancel.then(|| {
+                thread::spawn(move || {
+                    let until = Instant::now() + Duration::from_secs(1);
+                    while !s.trace().iter().any(|line| line.starts_with("NEED "))
+                        && Instant::now() < until
+                    {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    control.cancel();
+                })
+            });
+            let error = evaluator.call(function, &args).unwrap_err().to_string();
+            if let Some(t) = cancelling {
+                t.join().unwrap();
+            }
+            assert!(
+                error.contains(if cancel { "cancelled" } else { "deadline" }),
+                "{error}"
+            );
+            cleaned(&session);
         }
-        assert!(
-            error.contains(if cancel { "cancelled" } else { "deadline" }),
-            "{error}"
-        );
-        cleaned(&session);
     }
 }
 
@@ -1499,38 +1668,44 @@ fn goose_compiler_pool_alternates_payloads_and_keeps_owned_forms() {
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_cancel_reaps_persistent_execution_workers() {
-    for workers in [1, 2, 4, 8] {
-        let session = GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
-        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
-        let (function, args, _) = inputs(&e, "rt => (form, env) => { while (true) {} }");
-        let s = session.clone();
-        let control = e.control();
-        let cancelling = thread::spawn(move || {
-            let until = Instant::now() + Duration::from_secs(10);
-            while !s.trace().iter().any(|s| s.starts_with("START ")) {
-                assert!(Instant::now() < until, "job was never admitted");
-                thread::yield_now();
-            }
-            control.cancel();
-            s.close();
-        });
-        assert!(e.call(function, &args).is_err());
-        cancelling.join().unwrap();
-        cleaned(&session);
-        let trace = session.trace();
-        assert!(trace.iter().any(|s| s.contains("cancelled")), "{trace:?}");
-        assert!(
-            trace.iter().any(|s| s == "CLOSED 1"),
-            "native shutdown joined the pool: {trace:?}"
-        );
-        assert_eq!(
-            trace.iter().find(|s| s.starts_with("THREADS ")).unwrap(),
-            &format!(
-                "THREADS 0 {} {} {}",
-                workers * 2 + 2,
-                workers * 2 + 2,
-                workers * 2 + 1
-            )
-        );
+    for source in [
+        "rt => (form, env) => { while (true) {} }",
+        "rt => (form, env) => __rt.cljCount(rt.core.mapSeq(()=>{while(true){}},__rt.formList(1)))",
+    ] {
+        for workers in [1, 2, 4, 8] {
+            let session =
+                GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
+            let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+            let (function, args, _) = inputs(&e, source);
+            let s = session.clone();
+            let control = e.control();
+            let cancelling = thread::spawn(move || {
+                let until = Instant::now() + Duration::from_secs(10);
+                while !s.trace().iter().any(|s| s.starts_with("START ")) {
+                    assert!(Instant::now() < until, "job was never admitted");
+                    thread::yield_now();
+                }
+                control.cancel();
+                s.close();
+            });
+            assert!(e.call(function, &args).is_err());
+            cancelling.join().unwrap();
+            cleaned(&session);
+            let trace = session.trace();
+            assert!(trace.iter().any(|s| s.contains("cancelled")), "{trace:?}");
+            assert!(
+                trace.iter().any(|s| s == "CLOSED 1"),
+                "native shutdown joined the pool: {trace:?}"
+            );
+            assert_eq!(
+                trace.iter().find(|s| s.starts_with("THREADS ")).unwrap(),
+                &format!(
+                    "THREADS 0 {} {} {}",
+                    workers * 2 + 2,
+                    workers * 2 + 2,
+                    workers * 2 + 1
+                )
+            );
+        }
     }
 }

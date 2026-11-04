@@ -28,7 +28,9 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // reference frame scratch. Property chains are indices, not Goose references.
 // Runtime additions: builtin=4, list/vector/map/set=5/6/7/8,
 // symbol/keyword=9/10, scalar occurrence=11, sequence cursor=12,
-// opaque caught runtime error=13, read-only unmapped arguments=14.
+// opaque caught runtime error=13, read-only unmapped arguments=14,
+// finite deferred map=15 (value=callback, namespace_value=input,
+// start/count=reserved memo range, length=completed callbacks).
 // Closure immutable marks fnApplyNull's immutable receiver convention.
 // Errors preserve object identity/truthiness;
 // property access/coercion and form transport reject unsupported inspection.
@@ -337,6 +339,11 @@ fn closure(heap: Heap&, function: i64, captures: const Value[:]) -> Value {
     let start = heap.values.len; heap.values.append(captures);
     return allocate(heap, Node { kind: 2, function: function, start: start, count: captures.len });
 }
+fn unwind_maps(job: Job&, keep: i64) {
+    for i in keep..job.frames.len {
+        let f = job.frames[i]; if f.function == -2 { job.heap.nodes[f.input.a].initialized = false; }
+    }
+}
 fn fail(job: Job&, fault: Fault, frame: Frame) {
     job.heap.fault = Fault.None;
     var reported = fault;
@@ -344,16 +351,19 @@ fn fail(job: Job&, fault: Fault, frame: Frame) {
         let error = allocate(job.heap, Node { kind: 13 });
         if job.heap.fault == Fault.None {
             let handler = job.handlers.pop();
+            unwind_maps(job, handler.frame + 1);
             job.frames.resize(handler.frame + 1); job.locals.resize(handler.locals); job.operands.resize(handler.operands);
             job.frames[handler.frame].pc = handler.pc; job.operands.push(error); return;
         }
         reported = job.heap.fault; job.heap.fault = Fault.None;
     }
+    unwind_maps(job, 0);
     job.status = tiny::Status.Failed; job.fault = reported; job.fault_function = frame.function; job.fault_pc = frame.pc;
 }
 fn raise(job: Job&, value: Value, frame: Frame) {
     if job.handlers.len == 0 { job.result = value; job.thrown = true; fail(job, Fault.HostEffect, frame); return; }
     let handler = job.handlers.pop();
+    unwind_maps(job, handler.frame + 1);
     job.frames.resize(handler.frame + 1); job.locals.resize(handler.locals); job.operands.resize(handler.operands);
     job.frames[handler.frame].pc = handler.pc; job.operands.push(value);
 }
@@ -377,10 +387,14 @@ fn start(job: Job&, callee: Value, arguments: const Value[:], receiver: Value = 
     if !enter(job, callee, receiver, arguments) { job.fault = job.heap.fault; job.heap.fault = Fault.None; job.status = tiny::Status.Failed; return false; }
     job.heap.live_jobs += 1; job.registered = true; return true;
 }
-// Explicitly retire a terminal owner or abandon a suspended job. Scope exit
-// alone is not observable by the VM; a forgotten owner keeps capture closed.
-fn retire(job: Job&) -> bool {
+// Explicitly retire a terminal owner or abandon a suspended job. Snapshot
+// capture of a helper continuation preserves active iterators for relocation;
+// ordinary abandonment releases their realization markers for later retry.
+// Scope exit alone is not observable; a forgotten owner keeps capture closed.
+fn retire(job: Job&, suspending: bool = false) -> bool {
     if job.claimed { return false; }
+    if suspending && (!job.effect_pending || job.status != tiny::Status.Ready) { return false; }
+    if !suspending { unwind_maps(job, 0); }
     if job.registered { assert(job.heap.live_jobs > 0); job.heap.live_jobs -= 1; job.registered = false; }
     if job.status == tiny::Status.Ready { job.status = tiny::Status.Failed; job.fault = Fault.InvalidState; }
     return true;
@@ -487,6 +501,7 @@ recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool
     if x.tag != y.tag { return false; }
     if x.tag != 5 { return equal(heap, x, y); }
     let n = heap.nodes[x.a]; let m = heap.nodes[y.a];
+    if n.kind == 15 || m.kind == 15 { heap.fault = Fault.NativeBoundary; return false; }
     if n.kind < 5 || m.kind < 5 || n.kind == 13 || m.kind == 13 || n.kind == 14 || m.kind == 14 { return x.a == y.a; }
     if n.kind != m.kind && !((n.kind == 5 || n.kind == 6 || n.kind == 12) && (m.kind == 5 || m.kind == 6 || m.kind == 12)) { return false; }
     if n.kind == 9 || n.kind == 10 { return equal(heap, n.value, m.value) && equal(heap, n.namespace_value, m.namespace_value); }
@@ -636,7 +651,12 @@ fn named_supported(heap: Heap&, ns: Value, name: Value) -> bool {
     return true;
 }
 fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
-    for v in args { if !valid(heap, v) { return Value {}; } }
+    for v in args {
+        if !valid(heap, v) { return Value {}; }
+        // Partial/lazy protocol operations are outside this full-demand
+        // target slice. Never inspect an uninitialized memo as a form.
+        if v.tag == 5 && heap.nodes[v.a].kind == 15 { heap.fault = Fault.NativeBoundary; return Value {}; }
+    }
     let a = args[0];
     match op {
         0, 1 => {
@@ -699,6 +719,7 @@ fn boot_runtime(heap: Heap&) -> Value {
     install_field(heap, core, "inc", builtin(heap, 1)); install_field(heap, core, "mapv", builtin(heap, 2));
     install_field(heap, core, "vec", builtin(heap, 3)); install_field(heap, core, "into", builtin(heap, 4));
     install_field(heap, core, "sequence", builtin(heap, 16));
+    install_field(heap, core, "mapSeq", builtin(heap, 17));
     // Gensym is serviced only by an explicitly enabled coordinator contract.
     // Other shared-state leaves are installed explicitly by the compiler.
     install_field(heap, core, "gensym", builtin(heap, 5));
@@ -711,9 +732,22 @@ fn boot_runtime(heap: Heap&) -> Value {
     return rt;
 }
 fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
+    if id == 17 && args.len == 2 {
+        // The generated target maps a nonchunked finite rest list. Vectors,
+        // transducers, multiple sources and nested lazy inputs have different
+        // demand/chunk semantics and remain explicit boundaries.
+        let input = args[1]; let kind = form_kind(heap, input);
+        if input.tag > 1 && kind != 5 && kind != 12 { heap.fault = Fault.NativeBoundary; return Value {}; }
+        let count = form_count(heap, input);
+        if heap.fault != Fault.None { return Value {}; }
+        if count > heap.limits.values - heap.values.len || heap.nodes.len >= heap.limits.nodes { memory(heap); return Value {}; }
+        if !charge(heap, count) { return Value {}; }
+        let start = heap.values.len; heap.values.resize(start + count, Value {});
+        return allocate(heap, Node { kind: 15, start: start, count: count, value: args[0], namespace_value: input });
+    }
     if id == 16 && args.len == 1 {
         let kind = form_kind(heap, args[0]); if heap.fault != Fault.None { return Value {}; }
-        if kind == 5 || kind == 12 { return args[0]; }
+        if kind == 5 || kind == 12 || kind == 15 { return args[0]; }
         return form_sequence(heap, args[0], 0, false);
     }
     if id == 15 && args.len == 2 {
@@ -760,10 +794,67 @@ fn deliver_effect(job: Job&, value: Value, fault: Fault = Fault.None) -> bool {
     if !valid(job.heap, value) { fail(job, job.heap.fault, job.effect_frame); return true; }
     job.operands.push(value); return true;
 }
+// Full-demand consumers run callbacks before touching their operands. The
+// consumer instruction stays at its saved PC; only this iterator advances.
+// Thus suspension, budget cuts and retry after a caught callback throw retain
+// completed elements without repeating their effects. No host evaluates JS.
+fn demand_map(job: Job&, value: Value) -> bool {
+    let heap .= job.heap;
+    if !charge(heap) { return false; }
+    if !valid(heap, value) || value.tag != 5 || heap.nodes[value.a].kind != 15 { return false; }
+    if heap.nodes[value.a].initialized { heap.fault = Fault.NativeBoundary; return false; }
+    if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return false; }
+    let node = heap.nodes[value.a];
+    heap.nodes[value.a].initialized = true;
+    job.frames.push(Frame { function: -2, pc: 0, local_base: job.locals.len, operand_base: job.operands.len, callee: node.value, receiver: nil(), input: value, index: node.length });
+    return true;
+}
+fn demand_maps(job: Job&, values: const Value[:], nested: bool = false) -> bool {
+    for value in values {
+        if demand_map(job, value) { return true; }
+        if job.heap.fault != Fault.None { return false; }
+        if nested && value.tag == 5 {
+            let n = job.heap.nodes[value.a];
+            if n.kind == 5 || n.kind == 6 || n.kind == 12 {
+                for i in n.count { if demand_map(job, job.heap.values[n.start + i]) { return true; } if job.heap.fault != Fault.None { return false; } }
+            }
+        }
+    }
+    return false;
+}
 fn step(job: Job&) {
     let heap .= job.heap; let code .= heap.code;
     if job.frames.len == 0 { fail(job, Fault.InvalidState, Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value {}, receiver: Value {} }); return; }
     let frame = job.frames[job.frames.len - 1];
+    if frame.function == -2 {
+        if !charge(heap) { fail(job, heap.fault, frame); return; }
+        if job.steps >= heap.limits.steps { fail(job, Fault.InstructionLimit, frame); return; }
+        job.steps += 1;
+        let node = heap.nodes[frame.input.a];
+        if frame.pc == 1 {
+            let value = job.operands.pop(); heap.values[node.start + frame.index] = value;
+            heap.nodes[frame.input.a].length += 1;
+            job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 0;
+        } else if frame.index == node.count {
+            // Completed maps become ordinary cursors without copying or
+            // replacing their identity; all aliases see the same memo range.
+            heap.nodes[frame.input.a].kind = 12;
+            heap.nodes[frame.input.a].initialized = false;
+            heap.nodes[frame.input.a].value = Value {}; heap.nodes[frame.input.a].namespace_value = nil();
+            job.frames.pop();
+        } else {
+            if job.operands.len >= heap.limits.stack { fail(job, Fault.StackLimit, frame); return; }
+            let arg = form_nth(heap, node.namespace_value, frame.index);
+            job.frames[job.frames.len - 1].pc = 1;
+            if frame.callee.tag == 5 && heap.nodes[frame.callee.a].kind == 4 {
+                let id = heap.nodes[frame.callee.a].function;
+                if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
+                else { job.operands.push(native_value(heap, id, [arg])); }
+            } else { enter(job, frame.callee, nil(), [arg]); }
+        }
+        if heap.fault != Fault.None { fail(job, heap.fault, frame); }
+        return;
+    }
     // mapv is a native collection iterator, with source callback calls saved
     // explicitly. A budget cut never replays a callback or loses its capture.
     if frame.function == -1 {
@@ -795,6 +886,23 @@ fn step(job: Job&) {
     let op = code.ops[frame.pc]; let pop, push = stack_effect(code, f, op);
     if job.operands.len - frame.operand_base < pop { fail(job, Fault.InvalidState, frame); return; }
     if push - pop > heap.limits.stack - job.operands.len { fail(job, Fault.StackLimit, frame); return; }
+    var demanded = false;
+    if op.code == 194 && (op.arg == 5 || op.arg == 19 || op.arg == 35 || op.arg == 36) {
+        demanded = demand_maps(job, job.operands[(job.operands.len - pop)..], op.arg == 36);
+    } else if op.code == 44 || op.code == 83 {
+        let base = job.operands.len - op.arg - (if op.code == 83 { 2 } else { 1 });
+        var callee = job.operands[base + (if op.code == 83 { 1 } else { 0 })];
+        var first = job.operands.len - op.arg;
+        if valid(heap, callee) && callee.tag == 5 && heap.nodes[callee.a].kind == 4 && heap.nodes[callee.a].function == 14 && op.code == 83 {
+            callee = job.operands[base]; if first < job.operands.len { first += 1; }
+        }
+        if valid(heap, callee) && callee.tag == 5 && heap.nodes[callee.a].kind == 4 {
+            let id = heap.nodes[callee.a].function;
+            if id == 3 || id == 4 { demanded = demand_maps(job, job.operands[first..]); }
+        }
+    }
+    if heap.fault != Fault.None { fail(job, heap.fault, frame); return; }
+    if demanded { return; }
     job.steps += 1; job.frames[job.frames.len - 1].pc += 1;
     match op.code {
         1 => { job.operands.push(heap.constants[f.constants + op.arg]); },

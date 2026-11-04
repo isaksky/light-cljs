@@ -51,6 +51,20 @@ existing sequence implementation. Map/set membership tests keys independently
 of their false/nil values; vector/string membership tests integral indices.
 Other collection categories fail explicitly.
 
+`core.mapSeq(callback, input)` defers callbacks for one finite nonchunked list,
+cursor or nil input, the shape of the generated sum-all rest argument. It
+reserves at most the remaining heap value budget (default 1,048,576 slots).
+`cljConcat`, `cljConcatAll`, count, vec and into fully realize it in source order;
+`sequence` preserves its identity without demand. Successful callbacks are
+memoized, including across a caught throw and retry. Completed aliases share
+the same cursor and child occurrences. Callback frames and the memo range
+survive helper suspension and private snapshot relocation; work, instruction,
+frame, memory and cancellation bounds apply throughout. Partial lazy protocol
+operations, chunked/vector sources, multiple sources, nested lazy sources and
+transducers are explicit boundaries. Returning an unrealized map directly
+through the forms bridge is also unsupported. This is a finite full-demand
+slice for syntax-quote assembly, rather than a general lazy-sequence runtime.
+
 Temporary JS arrays support numeric integral `length` writes, bounded by both
 the JS uint32 range and the heap value limit. Shrinking unlinks indexed own
 properties; extension creates undefined holes and never revives removed values.

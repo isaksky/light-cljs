@@ -35,7 +35,56 @@ fn closure() {
     }
     print("real emitted captured closure/mapv passed");
 }
-fn main() { churn(); closure(); bridge_smoke(); callbacks_and_failures(); unsupported_effect(); }
+fn main() { churn(); closure(); bridge_smoke(); callbacks_and_failures(); finite_maps(); unsupported_effect(); }
+
+fn finite_maps() {
+    var code = source::Code {}; decode(code, embed_file("corpus/closure-captured.pants.gsp"));
+    for cut in 8 {
+        var heap = source::Heap { code: code }; assert(source::initialize(heap));
+        let callback = source::builtin(heap, 1);
+        let input = source::form_collection(heap, 5, [source::number(1), source::number(2), source::number(3)]);
+        let mapped = source::native_value(heap, 17, [callback, input]);
+        assert(heap.nodes[mapped.a].kind == 15 && heap.nodes[mapped.a].length == 0);
+        var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
+        assert(source::demand_map(job, mapped)); source::run(job, cut);
+        while job.frames.len > 1 { assert(source::run(job, 1) == tiny::Outcome.Yielded); }
+        assert(job.steps == 7 && heap.nodes[mapped.a].kind == 12 && heap.nodes[mapped.a].length == 3);
+        for i in 3 { assert(source::form_nth(heap, mapped, i).number == i + 2); }
+        assert(!source::demand_map(job, mapped)); source::retire(job);
+    }
+    for mode in 6 {
+        var heap = source::Heap { code: code }; assert(source::initialize(heap));
+        let callback = source::builtin(heap, 1); let input = source::form_collection(heap, 5, [source::number(1), source::number(2)]);
+        let values = heap.values.len;
+        if mode == 0 { heap.limits.values = values + 1; }
+        if mode == 1 { heap.limits.work = heap.work + 1; }
+        let mapped = source::native_value(heap, 17, [callback, input]);
+        if mode < 2 { assert(heap.fault == (if mode == 0 { source::Fault.MemoryLimit } else { source::Fault.WorkLimit }) && heap.values.len == values); continue; }
+        var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
+        if mode == 2 { heap.limits.frames = 1; assert(!source::demand_map(job, mapped) && heap.fault == source::Fault.StackLimit); }
+        else {
+            assert(source::demand_map(job, mapped));
+            if mode == 3 { heap.limits.work = heap.work + 1; } else if mode == 4 { heap.limits.steps = 1; } else { heap.limits.stack = 0; }
+            assert(source::run(job, -1) == tiny::Outcome.Failed);
+            assert(job.fault == (if mode == 3 { source::Fault.WorkLimit } else if mode == 4 { source::Fault.InstructionLimit } else { source::Fault.StackLimit }));
+        }
+        source::retire(job);
+    }
+    {
+        var heap = source::Heap { code: code }; assert(source::initialize(heap));
+        let input = source::form_collection(heap, 5, [source::number(1), source::number(2), source::number(3)]);
+        let mapped = source::native_value(heap, 17, [source::builtin(heap, 1), input]);
+        let entry = source::closure(heap, 0, []); var job = source::Job { heap: heap };
+        assert(source::start(job, entry, []) && source::demand_map(job, mapped));
+        source::run(job, 2); assert(heap.nodes[mapped.a].length == 1 && heap.nodes[mapped.a].initialized);
+        assert(source::retire(job) && !heap.nodes[mapped.a].initialized && source::reset(job));
+        assert(source::start(job, entry, []) && source::demand_map(job, mapped));
+        while job.frames.len > 1 { source::run(job, 1); }
+        assert(job.steps == 5 && source::form_nth(heap, mapped, 2).number == 4);
+        source::retire(job);
+    }
+    print("finite mapSeq: deferred memo, all budget cuts, value/work/frame/instruction limits passed");
+}
 
 fn bridge_smoke() {
     var code = source::Code {}; decode(code, embed_file("corpus/closure-captured.pants.gsp"));
