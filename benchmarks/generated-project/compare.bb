@@ -231,9 +231,11 @@
                               :code-bytes :heap-bytes :job-bytes :bridge-bytes]
                              (map parse-long (drop 2 (str/split line #" "))))))]
     (assert (str/includes? text "CLOSED 1") "Native Goose session did not close")
-    (assert (= (str (+ 2 (* 2 workers))) created peak joined) "Native Goose threads did not all join")
+    (assert (= (str (+ 2 (* 2 workers))) created peak) "Native Goose thread total differs")
+    ;; Native total includes its coordinator; every other thread is joined.
+    (assert (= (str (+ 1 (* 2 workers))) joined) "Native Goose spawned threads did not all join")
     (assert (= workers (count pools)) "Missing private worker diagnostics")
-    {:threads-created (parse-long created) :threads-joined (parse-long joined) :workers pools
+    {:native-thread-total (parse-long created) :spawned-threads-joined (parse-long joined) :workers pools
      :trace-scope "first 4096 protocol rows; final POOL/THREADS/CLOSED always retained; session cost counters cover all jobs"}))
 
 (defn macro-main [{:keys [dir light runner backend workers phase runs timeout-ms leaf] :as opts}]

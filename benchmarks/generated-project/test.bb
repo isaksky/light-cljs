@@ -284,6 +284,13 @@
         (spit (str counts) "expanded/workload.macros/m\t1\t30\n")
         (is (thrown-with-msg? AssertionError #"identities/counts differ"
                              (compare/verify-macro-counts (str dir) "goose" counts))))
+      (let [native (fs/path dir "native.txt")]
+        (spit (str native) "POOL 0 0 5 5 256 1 4 4 10 64 64 64 64\nTHREADS 0 4 4 3\nCLOSED 1\n")
+        (is (= [4 3] ((juxt :native-thread-total :spawned-threads-joined)
+                      (compare/goose-diagnostics native 1))))
+        (spit (str native) "POOL 0 0 5 5 256 1 4 4 10 64 64 64 64\nTHREADS 0 4 4 2\nCLOSED 1\n")
+        (is (thrown-with-msg? AssertionError #"spawned threads did not all join"
+                             (compare/goose-diagnostics native 1))))
       (finally (fs/delete-tree dir)))))
 
 (let [{:keys [fail error]} (run-tests 'generated-project.test)]
