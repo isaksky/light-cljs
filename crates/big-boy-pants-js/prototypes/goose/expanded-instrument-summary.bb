@@ -19,6 +19,19 @@
         queue (filter #(= :native-queue (:kind %)) (:activity r))
         trace (get-in (some #(when (= :adapter-closed (:phase %)) %) (:rows r)) [:stats :trace])
         threads (last (filter #(str/starts-with? % "THREADS ") trace))
+        scheduler (mapv #(mapv parse-long (drop 2 (str/split % #"\s+"))) (filter #(str/starts-with? % "SCHED ") trace))
+        _ (assert (= (count queue) (count scheduler)))
+        idle (frequencies
+               (keep-indexed
+                 (fn [i q]
+                   (when (> (nth (nth scheduler i) 2) (if (zero? i) 0 (nth (nth scheduler (dec i)) 2)))
+                     (cond
+                       (or (pos? (:queued q)) (pos? (:ready-waiting q))) :native-capacity
+                       (pos? (:running-macros q)) :macro-worker
+                       (pos? (:running q)) :helper-worker
+                       (pos? (:waiting q)) :compiler-helper-key
+                       :else :input)))
+                 (vec queue)))
         timeline (keep (fn [l] (let [p (str/split l #"\t")] (when (and (= 6 (count p)) (= "14" (nth p 3))) (mapv parse-long [(nth p 4) (nth p 5)])))) (str/split-lines (:timeline r)))
         duration (fn [iv] (map #(- (:end-ns %) (:start-ns %)) iv))]
     ;; Exact chunk counts and identities catch lost/partial append records.
@@ -34,6 +47,7 @@
        :native-queued-peak (apply max (map :queued queue))
        :native-eligible-including-running-peak (apply max (map #(+ (:queued %) (:ready-waiting %) (:running-macros %)) queue))
        :native-waiting-peak (apply max (map :waiting queue))
+       :idle-turn-reasons idle
        :compiler-runnable-peak (apply max (map first timeline)) :compiler-backlog-peak (apply max (map second timeline))
        :initial-vm (distribution (duration (filter #(zero? (:mode %)) vm)))
        :restore (distribution (duration restore)) :body (distribution (duration body))

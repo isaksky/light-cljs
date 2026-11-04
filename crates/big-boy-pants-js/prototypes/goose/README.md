@@ -1170,6 +1170,17 @@ speedup at this scope. It links the raw samples, storage/allocation invocation,
 copy/validation controls, setup-inclusive ratios, thread/load observations and
 limitations. The earlier [serial diagnostics](serial-costs.md) remain preserved.
 
+### Expanded actual compiler scaling fixture
+
+`benchmark.bb --expanded-check` verifies 15 substantive macro-using namespaces
+and 120 consumed results, with independent waves, a downstream join and reuse.
+`--expanded-measure` runs five quiet alternating rounds; `--expanded-instrument`
+records readiness and actual worker/VM intervals separately, and
+`--expanded-limits` diagnoses the heavier retained serial quota failure.
+The [expanded report](expanded-results.md) includes results, runtime ceilings,
+raw samples and repeat commands. Historical modes and datasets above remain
+the small overhead diagnostic.
+
 ### Initialized definition comparison
 
 `benchmark.bb --initialization-comparison` limits the actual compiler comparison
