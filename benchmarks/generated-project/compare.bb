@@ -259,6 +259,7 @@
                          err (:err r)
                          number #(some-> (re-find % err) second parse-double)
                          sample (merge cell {:kind (if warmup? :warmup :sample) :round round :phase phase :command command
+                                             :leaf-edit *leaf-edit*
                                              :wall-ns wall :exit (:exit r) :output output :stderr (str (fs/file-name log))
                                              :user-s (number #"([0-9.]+) user") :system-s (number #"([0-9.]+) sys")
                                              :max-rss-bytes (number #"([0-9]+)  maximum resident set size") :quiet quiet})]
@@ -272,6 +273,7 @@
     (when (= phase "measure")
       (assert (str/includes? (System/getProperty "os.name") "Mac") "Quiet/rusage measurement currently requires macOS"))
     (write! {:kind :manifest :phase phase :options opts :fixed fixed :inputs oracle-inputs :expected expected
+             :harness-sha256 (sha256 (fs/path kit "compare.bb"))
              :compiler-sha256 (sha256 light) :runner-sha256 (when runner (sha256 runner))
              :git (checked (str repository) environment ["git" "rev-parse" "HEAD"])
              :source-hashes (into (sorted-map)
