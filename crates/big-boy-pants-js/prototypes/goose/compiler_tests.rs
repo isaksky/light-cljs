@@ -720,11 +720,11 @@ fn goose_compiler_readiness_delayed_helper_and_idle_close_cancel() {
             let until = Instant::now() + Duration::from_secs(10);
             loop {
                 let trace = s.trace();
-                if let Some(need) = trace.iter().rposition(|s| s.starts_with("NEED ")) {
-                    if trace[need + 1..].iter().any(|s| s.starts_with("PARK ")) {
-                        release.send(()).unwrap();
-                        return;
-                    }
+                if let Some(need) = trace.iter().rposition(|s| s.starts_with("NEED "))
+                    && trace[need + 1..].iter().any(|s| s.starts_with("PARK "))
+                {
+                    release.send(()).unwrap();
+                    return;
                 }
                 assert!(
                     Instant::now() < until,

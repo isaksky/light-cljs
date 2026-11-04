@@ -128,3 +128,147 @@ successful benchmark execution or the measured dataset. From the repository root
 `bb crates/big-boy-pants-js/prototypes/goose/expanded-watchdog-test.bb` verifies that
 a timed-out owned parent and child both terminate, and that an expected nonzero
 exit preserves diagnostic output.
+
+## Event-driven readiness: light-cljs-743
+
+2026-11-03, same virtual M3 Ultra/macOS toolchain. The existing **heavier**
+fixture remains unchanged: 15 substantive namespaces, 120 consumed calls,
+8192/8193 collection reads, seed 24301, and 29 loaded namespaces. Only this
+workload was timed. Its complete emitted-JS hash was
+`1f4ea5cbde9fc56f74ae08a7c0eeb8ee18216d48b80196b75445fbc8e91a5c75`
+in every warmup and measured process; Node output and the independent oracle
+also matched. The unsupported retained-serial heavier control was not rerun.
+
+Five fresh processes per cell, setup/cleanup included; milliseconds,
+median [minimum, maximum]:
+
+| Revision / execution engine | Wall | User / system CPU | Test invocation RSS MiB |
+| --- | ---: | ---: | ---: |
+| Historical baseline, V8 1 | 910.511625 | 980 / 30 | 68.8 |
+| Historical baseline, Goose 8 | 482.540292 | 1720 / 590 | 86.3 |
+| Exact predecessor `eef06bf3`, Goose 8 | 489.974958 [477.477416, 511.894875] | 1720 / 620 | 85.69 |
+| Readiness `dbbc94a7`, Goose 8 | 415.312375 [401.275334, 426.868333] | 1710 / 480 | 85.16 |
+| Contemporaneous V8 1 | 918.948000 [890.945500, 954.877875] | 990 / 30 | 69.55 |
+
+The new Goose median is **15.24% lower than its fresh paired predecessor** and
+**2.21× faster than contemporaneous V8** on this fixture. All five adjacent pairs
+favored the readiness implementation. Goose still spends more CPU than V8.
+Historical timings are context, not substitutes for the new predecessor pairs.
+One full-process warmup per cell preceded measurement. Orders were
+V8/predecessor/current, current/predecessor/V8, alternating for five rounds.
+The quiet gate measured **96.75% idle**, with no competing compiler/build.
+User/system CPU retains Darwin's coarse waited-process accounting. RSS is the
+test invocation's high-water statistic, not total simultaneous process-tree RSS.
+
+Cold/join/reuse/cleanup checkpoint medians were **233.61/41.28/199.58/3.80 ms**
+for the predecessor and **201.82/34.62/163.42/2.08 ms** for readiness. The V8
+checkpoints were **443.76/59.74/401.90/2.06 ms**. These retain the original phase
+definitions and do not replace the setup-inclusive process wall measurement.
+
+### Protocol and separate instrumentation
+
+Commands, terminal/suspend worker events and helper-file publications all leave
+a token in a **one-slot coalescing wake queue**, after publishing their payload.
+A refused wake enqueue means a token already exists. The coordinator clears
+tokens **before** draining/rechecking every payload source; at a stable idle
+point it performs an atomic blocking receive. A publication after any source
+scan therefore either leaves a token or finds one already pending. Repeated or
+stale tokens only trigger another source scan. Normal progress has no timed
+receive, fixed sleep, helper-file polling thread or global request/reply lock.
+
+The input reader blocks on credits reserving the 128 command slots, including
+close/EOF; consumption returns a credit. Worker events have 16 slots for at most
+eight active workers, each publishing exactly one event before joining. Helper
+payloads retain atomic file publication; Rust sends `-2` through the framed input
+pipe only after renaming the key. Cancellation uses the same close notification;
+host deadlines retain bounded process kill/reap as failure handling. Per-chunk
+threads remain unchanged; this change does not implement the persistent pool.
+
+Separate instrumented predecessor/current runs validate all **241 chunks**, 120
+initial bodies, 120 continuations and one helper producer. Both show eight
+overlapping worker/VM intervals, eight eligible jobs and `THREADS 0 243 10 242`:
+coordinator/input plus 241 execution chunks, peak ten native threads, every
+spawned thread joined. The predecessor recorded **259 timed idle backoffs**;
+readiness recorded **126 blocking parks/wake returns**, each with a `PARK` hook.
+Their elapsed wait totals were **348.733/278.861 ms**, overlapping worker work;
+they are never subtracted from wall or added to other elapsed intervals.
+Native instrumented RSS was **36.81/39.13 MiB**, a separate-run high-water that
+must not be added to the table above. Initial VM medians were **12.582/12.588 ms**;
+restore medians were **0.284/0.129 ms**. Single instrumented samples cannot isolate
+the cause of that restore difference. Instrumented times are outside clean data.
+
+The earlier `b59de932` diagnostic used two dependent eight-call batches,
+work 100/101 and width 100. Removing only idle sleep changed one-worker wall
+138.50→89.77 ms and eight-worker wall 120.25→114.40 ms. Native user/system CPU
+rose from 10/20→70/20 ms and 10/60→90/70 ms respectively. This was a busy-poll
+diagnostic with wrapper overhead and overlapping eight-worker ranges, not a
+solution or a general application performance claim. The current coordinator
+blocks instead; its fresh clean system CPU decreased rather than substituting
+that diagnostic spin.
+
+### Verification, reproduction and limits
+
+`compiler.bb` passed **21 focused tests** with native debug and optimized builds,
+including correlated requests, full forms/metadata/provenance, helper/initializer
+once, private mutation and one-worker nested reentry without replay, at 1/2/4/8.
+The native readiness driver deterministically covers notices before scans,
+during transition and racing atomic receive, repeated/spurious notices, a full
+wake/payload queue and exhausted admission credits. Actual compiler tests gate
+delayed helper publication on the `PARK` hook, exercise 256 repeated notices,
+idle close/cancel and unchanged failure/diagnostic ownership assertions.
+
+The original **128 retained waiter limit remains**. The 129th suspended call now
+returns `waiter-budget`, rather than asserting while the input reader holds
+stdio state. A focused actual native test completes 128 waits, rejects the next,
+observes graceful `CLOSED 1` and verifies no native assertion. This fixes the
+specific oversized-fixture rejection documented above without raising quotas.
+Malformed native packets can still abort the runtime; existing injection tests
+at 1/2/4/8 prove host cleanup kills/reaps the session. The watchdog test passes.
+
+Heavy expanded correctness passes in native **debug and optimized** modes at
+1/2/4/8, with exact output checks. `smoke.bb` passes format/check/debug/native
+VM, source, bridge, snapshot, artifact, dependency, scheduler and effect cases.
+QuickJS-only `goose_compiler_bridge` passes three tests, the measured release
+compiler's full-form scalar-corruption comparator passes, and the engine's
+`cargo check --locked -p big-boy-pants-js --all-targets` passes with existing
+warnings. Changed-file rustfmt,
+Goose formatting/checking and `git diff --check` pass. Strict all-target default
+and QuickJS Clippy stop at the same eight existing engine deprecated-atomic,
+constant-chunk and byte-string diagnostics. Audits allowing only documented
+existing lint categories pass both configurations; no source suppressions were
+added. Root formatting still differs in unchanged files. Broad full suites were
+not rerun: the documented namespace-publication, order-dependent capture and
+playground wasm lint failures remain limitations. No shared VM, bridge value or
+export semantics changed; unchanged broad differential layers are not claimed
+as newly executed checks.
+
+Measured source is `dbbc94a73aa381d45509c2ebe8aa0e4488250cba`, with empty tracked
+diff at measurement. Final follow-on changes only collapse a test conditional
+for Clippy and add this evidence; production/native/fixture content is identical.
+Predecessor source, optimized native and release compiler binary were preserved
+before implementation, using the same Goose v2026.3-267/runtime 3025e5810379,
+Rust 1.99.1, Node 26.12.1 and own `target/goose`. The raw manifests retain both
+native and Rust binary hashes and source revision/hashes. The predecessor Rust
+binary hash is `132014734613e8c6bd751f73c989218ba8da0790169678fd42ceafbe368dca13`;
+current is `b92a153e6ca065f6304a17376ca366abd6243c7f3aedac5d004d44213cf90a8a`.
+
+For a new comparison, preserve the immediate predecessor under an owned target
+directory before editing: `git archive` its prototype and `src/goose_evaluator.rs`,
+build its native `compiler_session.goose` and release `final_benchmark` test
+binary, and copy them as `compiler-session`/`compiler-binary`. Put the full SHA in
+`revision.txt` and copy its `compiler_session.goose` beside them. Keep the archived
+source hierarchy for the predecessor's own instrumentation transform. Then:
+
+```sh
+GOOSE_EXPANDED_FOCUS=heavier GOOSE_EXPANDED_PREDECESSOR="$PWD/target/predecessor" GOOSE_EXPANDED_SAMPLES="$PWD/target/readiness-pairs.edn" bb crates/big-boy-pants-js/prototypes/goose/benchmark.bb --expanded-measure
+GOOSE_EXPANDED_FOCUS=heavier GOOSE_EXPANDED_PREDECESSOR="$PWD/target/predecessor" GOOSE_EXPANDED_SAMPLES="$PWD/target/readiness-instrument.edn" bb crates/big-boy-pants-js/prototypes/goose/benchmark.bb --expanded-instrument
+GOOSE_EXPANDED_FOCUS=heavier GOOSE_BENCH_DEBUG=1 GOOSE_EXPANDED_SAMPLES="$PWD/target/readiness-debug.edn" bb crates/big-boy-pants-js/prototypes/goose/benchmark.bb --expanded-check
+```
+
+Omit `GOOSE_BENCH_DEBUG` for optimized correctness. Focused checks retain 1/2/4/8;
+focused instrumentation/measurement use Goose 8 and V8 1. Without focus/pair
+options the historical fixture/matrix defaults remain intact. Fresh output paths
+preserve historical datasets. Raw evidence: [paired clean samples](readiness-paired-samples.edn.gz),
+[separate paired instrumentation](readiness-instrument-samples.edn.gz),
+[debug correctness](readiness-check-debug-samples.edn.gz), and
+[optimized correctness](readiness-check-native-samples.edn.gz).
