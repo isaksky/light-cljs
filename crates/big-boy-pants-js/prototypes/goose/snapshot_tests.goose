@@ -42,10 +42,10 @@ fn isolation() {
 fn malformed() {
     var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, heap, bindings);
     var c = snapshot::Control {}; let original = snapshot::capture(heap, bindings, c); assert(c.error == snapshot::Error.None);
-    for mode in 26 {
+    for mode in 28 {
         var bad = copy(original);
         match mode {
-            0 => { bad.header.version = 2; }, 1 => { bad.header.allocator = 0; }, 2 => { bad.header.ends[6] -= 1; },
+            0 => { bad.header.version = 1; }, 1 => { bad.header.allocator = 0; }, 2 => { bad.header.ends[6] -= 1; },
             3 => { bad.header.base = 0; }, 4 => { bad.bindings[0].generation = 0; }, 5 => { bad.bindings[1].id = bad.bindings[0].id; },
             6 => { bad.values[0].session += 1; }, 7 => { bad.nodes[bad.bindings[4].value.a].function = bad.functions.len; },
             8 => { bad.properties[0].next = 0; }, 9 => { bad.properties[0].value.a = bad.nodes.len; },
@@ -55,7 +55,8 @@ fn malformed() {
             17 => { bad.header.base = 2147483648; },
             18 => { bad.code_bytes[0] = 255; }, 19 => { bad.nodes[bad.bindings[7].value.a].span_start = -9223372036854775807; bad.nodes[bad.bindings[7].value.a].source = 0; },
             20 => { bad.ops[0].arg = 9223372036854775807; }, 21 => { bad.values[0].tag = 6; }, 22 => { bad.header.checkpoint = 0; },
-            23 => { bad.header.limits.nodes = -1; }, 24 => { bad.nodes[0].metadata = bad.bindings[5].value; }, 25 => { bad.properties[0].next = 9223372036854775807; }, _ => { abort("unexpected mode"); },
+            23 => { bad.header.limits.nodes = -1; }, 24 => { bad.nodes[0].metadata = bad.bindings[5].value; }, 25 => { bad.properties[0].next = 9223372036854775807; },
+            26 => { bad.header.call_method.session += 1; }, 27 => { bad.header.call_method = bad.header.global; }, _ => { abort("unexpected mode"); },
         }
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
         var wire: u8[>..] = []; to_bytes([bad], wire); var decode = snapshot::Control {};
@@ -164,7 +165,40 @@ fn reused_destination() {
     snapshot_test::verify(heap, roots, 7);
     print("reused code/heap/job destination: live/claimed/terminal guards, fresh IDs, alternating payloads, complete reset and transactional validation passed");
 }
-fn main() { source_spans(); isolation(); malformed(); stale_classification(); reused_destination(); live_boundary(); }
+fn main() { source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); live_boundary(); }
+
+fn argument_ownership() {
+    var code = source::Code {}; snapshot_test::append(code, embed_file("corpus/serial/arguments.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var keeper: i64 = -1;
+    for f, id in code.functions {
+        var args = false; var closure = false;
+        for op in code.ops[f.start..(f.start + f.count)] { args = args || op.code == 101; closure = closure || op.code == 43; }
+        if f.captures == 0 && args && closure { keeper = id; break; }
+    }
+    assert(keeper >= 0);
+    let object = source::allocate(heap, source::Node { kind: 0 }); assert(source::install_field(heap, object, "n", source::number(7)));
+    let maker = source::closure(heap, keeper, []);
+    let getter = snapshot_test::invoke(heap, maker, [object, object]);
+    let arguments = snapshot_test::invoke(heap, getter, []); assert(heap.nodes[arguments.a].kind == 14);
+    var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: getter }, snapshot::Binding { id: 1, generation: 1, value: arguments }, snapshot::Binding { id: 2, generation: 1, value: object }], c); assert(c.error == snapshot::Error.None);
+    assert(source::install_field(heap, object, "n", source::number(99)));
+    snapshot_test::invoke(heap, maker, [source::number(123)]);
+    for n in [8, 9] {
+        var worker_code = source::Code {}; var worker = source::Heap { code: worker_code }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
+        assert(snapshot::restore(saved, worker_code, worker, roots, source::reserve_identity(), restore));
+        let args = snapshot_test::invoke(worker, roots[0].value, []); assert(source::equal(worker, args, roots[1].value));
+        let left = source::get(worker, args, source::text(worker, "0")); let right = source::get(worker, args, source::text(worker, "1"));
+        assert(source::equal(worker, left, right) && source::equal(worker, left, roots[2].value));
+        assert(source::get(worker, left, source::text(worker, "n")).number == 7);
+        assert(source::install_field(worker, left, "n", source::number(n)));
+        assert(source::get(worker, right, source::text(worker, "n")).number == n);
+        assert(source::equal(worker, source::get(worker, roots[0].value, source::text(worker, "call")), worker.call_method));
+    }
+    var bad = copy(saved); bad.nodes[arguments.a].start = bad.values.len + 1;
+    var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+    print("snapshot arguments: escaped ownership, aliases, repeated calls, isolated restore and invalid range passed");
+}
 
 fn source_spans() {
     var code = source::Code {}; snapshot_test::append(code, embed_file("corpus/serial/calls.gsp"));

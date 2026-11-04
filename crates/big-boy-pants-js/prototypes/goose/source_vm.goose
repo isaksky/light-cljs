@@ -27,7 +27,9 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // reference frame scratch. Property chains are indices, not Goose references.
 // Runtime additions: builtin=4, list/vector/map/set=5/6/7/8,
 // symbol/keyword=9/10, scalar occurrence=11, sequence cursor=12,
-// opaque caught runtime error=13. Errors preserve object identity/truthiness;
+// opaque caught runtime error=13, read-only unmapped arguments=14.
+// Closure immutable marks fnApplyNull's immutable receiver convention.
+// Errors preserve object identity/truthiness;
 // property access/coercion and form transport reject unsupported inspection.
 // Metadata/origin belong to the occurrence, independently of value equality.
 struct Node { kind: i64, function: i64 = 0, start: i64 = 0, count: i64 = 0, head: i64 = -1, length: i64 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value {}, namespace_value: Value = Value { tag: 1 }, metadata: Value = Value {}, origin: i64 = -1, source: i64 = -1, span_start: i64 = 0, span_end: i64 = 0 }
@@ -38,10 +40,12 @@ root struct Heap {
     nodes:        Node[>..]                  = [], values: Value[>..] = [], properties: Property[>..] = [],
     units:        u16[>..]                   = [], constants: Value[>..] = [], work: i64 = 0,
     source_bytes: u8[>..]                    = [], source_ranges: SourceRange[>..] = [],
-    fault:        Fault                      = Fault.None, global: Value = Value {}, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
+    fault:        Fault                      = Fault.None, global: Value = Value {}, call_method: Value = Value {}, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
     live_jobs:    i64                        = 0,
 }
-struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, input: Value = Value {}, output: Value = Value {}, index: i64 = 0 }
+// Actual arguments occupy bounded job-local scratch after declared locals.
+// Copies live across yields/helper suspension and disappear on frame unwind.
+struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, argument_count: i64 = 0, input: Value = Value {}, output: Value = Value {}, index: i64 = 0 }
 struct Write { object: Value, key: Value, value: Value }
 struct Handler { frame: i64, pc: i64, operands: i64, locals: i64 }
 root struct Job {
@@ -62,7 +66,7 @@ fn reject(code: Code&, error: tiny::LoadError, pc: i64) -> bool { code.error = e
 fn stack_effect(code: const Code&, f: Function, op: Op) -> i64, i64 {
     let n = op.arg;
     match op.code {
-        1, 2, 3, 16, 45, 46, 47, 84, 86, 87, 105, 106, 107, 145, 197, 198 => { return 0, 1; },
+        1, 2, 3, 16, 45, 46, 47, 84, 86, 87, 101, 105, 106, 107, 145, 179, 197, 198 => { return 0, 1; },
         4, 5, 14, 15, 55, 139 => { return 1, 0; },
         6 => { return 1, 2; },
         7, 8, 9, 10, 11, 21, 22, 25, 26, 33, 34, 38, 39, 40, 41, 73, 74, 75, 76, 77, 80, 81, 88, 90, 151 => { return 2, 1; },
@@ -187,6 +191,7 @@ fn initialize(heap: Heap&) -> bool {
     heap.units.append(heap.code.units);
     for constant in heap.code.constants { var v = constant; if v.tag == 4 { v.session = heap.identity; } heap.constants.push(v); }
     heap.global = allocate(heap, Node { kind: 0 });
+    heap.call_method = builtin(heap, 14);
     let global_name = text(heap, "globalThis");
     return put(heap, heap.global, global_name, heap.global);
 }
@@ -248,6 +253,15 @@ fn get(heap: Heap&, object: Value, k: Value) -> Value {
     }
     if object.tag != 5 { heap.fault = if object.tag <= 1 { Fault.TypeError } else { Fault.UnsupportedOperand }; return Value {}; }
     let node = heap.nodes[object.a];
+    if (node.kind == 2 || node.kind == 4) && key_is(heap, k, "call") { return heap.call_method; }
+    // Unmapped, read-only arguments subset. Mutation, callee and prototypes
+    // fail explicitly; no frame slot or parameter alias escapes to the heap.
+    if node.kind == 14 {
+        if key_is(heap, k, "length") { return number(node.count); }
+        let i = index(heap, k);
+        if i >= 0 { return if i < node.count { heap.values[node.start + i] } else { Value {} }; }
+        heap.fault = Fault.UnsupportedOperand; return Value {};
+    }
     if node.kind == 1 && key_is(heap, k, "length") { return number(node.length); }
     if node.kind >= 2 { heap.fault = Fault.UnsupportedOperand; return Value {}; }
     let value, found = own_property(heap, object, k);
@@ -308,12 +322,13 @@ fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -
     if !valid(heap, callee) || !valid(heap, receiver) { return false; }
     if callee.tag != 5 || heap.nodes[callee.a].kind != 2 { heap.fault = Fault.TypeError; return false; }
     let id = heap.nodes[callee.a].function; let f = heap.code.functions[id];
-    if job.frames.len >= heap.limits.frames || f.locals > heap.limits.stack - job.locals.len { heap.fault = Fault.StackLimit; return false; }
+    if job.frames.len >= heap.limits.frames || f.locals > heap.limits.stack - job.locals.len || arguments.len > heap.limits.stack - job.locals.len - f.locals { heap.fault = Fault.StackLimit; return false; }
     if !charge(heap, f.locals + arguments.len) { return false; }
     for v in arguments { if !valid(heap, v) { return false; } }
     let base = job.locals.len; job.locals.resize(base + f.locals, Value {});
     for value, i in arguments { if i < f.params { job.locals[base + i] = value; } }
-    job.frames.push(Frame { function: id, pc: f.start, local_base: base, operand_base: job.operands.len, callee: callee, receiver: receiver });
+    job.locals.append(arguments);
+    job.frames.push(Frame { function: id, pc: f.start, local_base: base, operand_base: job.operands.len, callee: callee, receiver: receiver, argument_count: arguments.len });
     return true;
 }
 fn start(job: Job&, callee: Value, arguments: const Value[:], receiver: Value = Value {}) -> bool {
@@ -572,6 +587,12 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             // is supported: prerequisites must be resolved before admission.
             if !found && heap.fault == Fault.None { heap.fault = Fault.DependencyNeed; } return value;
         },
+        92 => {
+            if a.tag != 5 || heap.nodes[a.a].kind != 2 { heap.fault = Fault.TypeError; return Value {}; }
+            var node = heap.nodes[a.a]; node.immutable = true;
+            return allocate(heap, node);
+        },
+        93 => { return if a.tag == 5 && heap.nodes[a.a].kind == 2 && heap.nodes[a.a].immutable { nil() } else { a }; },
         _ => { heap.fault = Fault.NativeBoundary; return Value {}; },
     }
 }
@@ -594,10 +615,17 @@ fn boot_runtime(heap: Heap&) -> Value {
     install_field(heap, rt, "listFromArray", builtin(heap, 11));
     install_field(heap, rt, "mapFromArray", builtin(heap, 12));
     install_field(heap, rt, "setFromArray", builtin(heap, 13));
+    install_field(heap, rt, "fnRest", builtin(heap, 15));
     if heap.fault == Fault.None { heap.boot_count += 1; }
     return rt;
 }
 fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
+    if id == 15 && args.len == 2 {
+        let object = args[0]; let skip = args[1];
+        if !valid(heap, object) || object.tag != 5 || heap.nodes[object.a].kind != 14 || skip.tag != 3 || !(skip.number >= 0 && skip.number <= 65535) || skip.number != (skip.number as i64) { heap.fault = Fault.UnsupportedOperand; return Value {}; }
+        let node = heap.nodes[object.a]; let offset = min(node.count, skip.number as i64);
+        return form_collection(heap, 5, heap.values[(node.start + offset)..(node.start + node.count)]);
+    }
     if id >= 10 && id <= 13 && args.len == 1 {
         let array = args[0];
         if !valid(heap, array) || array.tag != 5 || heap.nodes[array.a].kind != 1 { heap.fault = Fault.TypeError; return Value {}; }
@@ -697,11 +725,18 @@ fn step(job: Job&) {
         },
         44, 83 => {
             let base = job.operands.len - op.arg - (if op.code == 83 { 2 } else { 1 });
-            let callee = job.operands[base + (if op.code == 83 { 1 } else { 0 })];
-            let receiver = if op.code == 83 { job.operands[base] } else { Value {} };
+            var callee = job.operands[base + (if op.code == 83 { 1 } else { 0 })];
+            var receiver = if op.code == 83 { job.operands[base] } else { Value {} };
+            var first = job.operands.len - op.arg;
+            // Function.prototype.call forwards its method receiver as callee.
+            // Detached calls fail; missing thisArg is exactly undefined.
+            if valid(heap, callee) && callee.tag == 5 && heap.nodes[callee.a].kind == 4 && heap.nodes[callee.a].function == 14 {
+                callee = receiver; receiver = if first < job.operands.len { job.operands[first] } else { Value {} };
+                if first < job.operands.len { first += 1; }
+            }
             if valid(heap, callee) && callee.tag == 5 && heap.nodes[callee.a].kind == 4 {
                 let id = heap.nodes[callee.a].function;
-                let args = job.operands[(job.operands.len - op.arg)..];
+                let args = job.operands[first..];
                 if id == 2 && args.len == 2 {
                     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; }
                     else {
@@ -712,7 +747,23 @@ fn step(job: Job&) {
                     }
                 } else if id >= 5 && id <= 8 { request_effect(job, id, args, frame); job.operands.resize(base); }
                 else { let value = native_value(heap, id, args); job.operands.resize(base); job.operands.push(value); }
-            } else if enter(job, callee, receiver, job.operands[(job.operands.len - op.arg)..]) { job.frames[job.frames.len - 1].operand_base = base; job.operands.resize(base); }
+            } else if enter(job, callee, receiver, job.operands[first..]) { job.frames[job.frames.len - 1].operand_base = base; job.operands.resize(base); }
+        },
+        101, 179 => {
+            let start = frame.local_base + f.locals;
+            let skip = if op.code == 179 { min(op.arg, frame.argument_count) } else { 0 };
+            let args = job.locals[(start + skip)..(start + frame.argument_count)];
+            if op.code == 101 {
+                if args.len > heap.limits.values - heap.values.len || heap.nodes.len >= heap.limits.nodes { memory(heap); }
+                else if charge(heap, args.len) {
+                    let offset = heap.values.len; heap.values.append(args);
+                    job.operands.push(allocate(heap, Node { kind: 14, start: offset, count: args.len }));
+                }
+            } else {
+                let array = allocate(heap, Node { kind: 1 });
+                for value, i in args { if !put(heap, array, key(heap, number(i)), value) { break; } }
+                job.operands.push(array);
+            }
         },
         45 => { job.operands.push(frame.callee); },
         46 => { let node = heap.nodes[frame.callee.a]; job.operands.push(heap.values[node.start + op.arg]); },
@@ -738,6 +789,8 @@ fn step(job: Job&) {
                 // Only the compiler root intrinsic may suspend and demand a
                 // definition. A raw JS bypass must not observe stale undefined.
                 if !found { heap.fault = Fault.DependencyNeed; } job.operands.push(value);
+            } else if valid(heap, object) && object.tag == 5 && (heap.nodes[object.a].kind == 2 || heap.nodes[object.a].kind == 4) && key_is(heap, k, "call") {
+                job.operands.push(get(heap, object, k));
             } else if object.tag == 5 && object.a >= 0 && object.a < job.protected_nodes {
                 let value, found = own_property(heap, object, k);
                 let optional = object.a == heap.global.a && (key_is(heap, k, "__lightCompilerRootReceiver") || key_is(heap, k, "__lightCompilerRootContext"));

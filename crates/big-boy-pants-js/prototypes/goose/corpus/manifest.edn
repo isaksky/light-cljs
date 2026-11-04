@@ -8,7 +8,7 @@
  {"crates/big-boy-pants-js/prototypes/goose/capture.rs"
   "d76ae33127d14d1bdf3504431cc1585514682c96643862f20e2ef51d48e15ec2",
   "crates/big-boy-pants-js/prototypes/goose/export.rs"
-  "c7e133b0619616ea9c0c964fe70b9f4c9fc1fee8742c9f918608443f9187f257",
+  "3332fe80a0f694037b29c486515ec81e3991b9bf56f0fd3c16786802753d02ad",
   "crates/big-boy-pants-js/prototypes/goose/regenerate.bb"
   "c41765f4f449dc11046801ca305bf3c5296549a619474b98bf22a653c0faea83",
   "crates/big-boy-pants-js/src/frontend.rs"
@@ -186,6 +186,10 @@
   "e42c0d4520b4485a95b472c705e9999371ee8dde0dcb3a639a3c77ca4453da9c",
   "corpus/runtime.js"
   "0b4304b3ae4074640c6020013a17afbeb589efbaa43accfd393662fb20d83f56",
+  "corpus/serial/arguments.gsp"
+  "c8e0a6eded2411b258442433fe7c797bc477bd1b8ba5bf81a0e8134763e27430",
+  "corpus/serial/arguments.js"
+  "6fea401a26e9378d7300bcd637ccfabd476977a2fb51a872caa80e94bb84f8e9",
   "corpus/serial/calls.gsp"
   "fc85b8724f49dcc317c7a17e9b65dbbc3c5891715b0d7ac03bdedbefcc553eea",
   "corpus/serial/calls.js"

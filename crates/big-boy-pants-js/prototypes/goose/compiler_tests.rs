@@ -38,6 +38,139 @@ fn cleaned(s: &GooseSession) {
     assert!(s.pending.lock().unwrap().is_empty());
     assert!(!s.directory.exists());
 }
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_variadic_wrappers() {
+    // Exercise the actual compiler, including &form and its variadic dispatch.
+    // This declaration is verbatim from seed42/200k workload.fonam.
+    let source = "(defmacro gaikmenfeik [& _]\n  (+ 165 (count &form)))\n(js/console.log (pr-str [(gaikmenfeik) (gaikmenfeik 1) (gaikmenfeik 1 2 3)]))";
+    let mut expected = None;
+    for goose in [false, true] {
+        let _names = crate::generated_names::enter_namespace(0);
+        let mut host = crate::macro_host::MacroHost::new();
+        let session = goose.then(|| GooseSession::start(&runner(), 1).unwrap());
+        if let Some(s) = &session {
+            host.use_goose_source_macros(s.clone()).unwrap();
+        }
+        let program = crate::analyzer::analyze_named_with_macro_warnings(
+            "generated-wrapper.cljs",
+            source,
+            &crate::parse(source).unwrap(),
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let js = crate::emit_js(&program);
+        let output = std::process::Command::new("node")
+            .args(["-e", &js])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output);
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "[166 167 169]\n");
+        if goose {
+            assert_eq!(Some(&js), expected.as_ref());
+            let s = session.unwrap();
+            assert_eq!(s.stats().jobs, 3);
+            assert_eq!(s.stats().preparations, 1);
+            s.close();
+            cleaned(&s);
+        } else {
+            expected = Some(js);
+        }
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_arguments_across_helper_suspension() {
+    // The demanded scalar suspends inside nested rest/call frames; live
+    // actuals and an escaped arguments object must both relocate privately.
+    for workers in [1, 2] {
+        let s = GooseSession::start(&runner(), workers).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let source = "rt => { function keep(a) { return () => arguments; } const prepared=keep(17,18); return (form,env) => { const saved=keep(7,8); function inner(a,...rest) { const value=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/wrapped'); return value+arguments.length+arguments[0]+rest[0]+saved()[1]; } const wrapped=__rt.fnApplyNull(inner); const result=wrapped.call(null,2,3,4); return result+prepared()[0]+(__rt.fnApplyReceiver(wrapped)===null?0:1000); }; }";
+        let (f, args, call) = inputs(&e, source);
+        e.register_compiler_root("fixture/wrapped", Some(42), true, "wrapper.cljs", None)
+            .unwrap();
+        let called = Rc::new(Cell::new(0));
+        let counter = called.clone();
+        e.install_helper(Rc::new(move |_, _| {
+            counter.set(counter.get() + 1);
+            Ok("rt => 40".into())
+        }));
+        for _ in 0..3 {
+            let result = e.call(f, &args).unwrap();
+            let result = e
+                .export_form(result, &call, origin(&call), Default::default())
+                .unwrap();
+            assert!(result.data().value_eq(&Datum::new(DatumKind::Integer(73))));
+        }
+        assert_eq!(called.get(), 3);
+        assert_eq!(
+            s.trace()
+                .iter()
+                .filter(|line| line.starts_with("PRODUCED "))
+                .count(),
+            1
+        );
+        s.close();
+        cleaned(&s);
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_wrapper_conventions_and_boundaries() {
+    for (body, expected) in [
+        (
+            "const f=__rt.fnApplyNull(function(...args){return args.length;}); return __rt.fnApplyReceiver(f)===null && f.call(null,1,2,3)===3;",
+            None,
+        ),
+        (
+            "const f=function(){return this;}; return __rt.fnApplyReceiver(f)===f && f.call()===undefined && f.call(null)===null && f.call(7)===7;",
+            None,
+        ),
+        (
+            "function f(a){arguments[0]=3; return a;} return f(1);",
+            Some("Fault.UnsupportedOperand"),
+        ),
+        (
+            "function f(){return arguments.callee;} return f();",
+            Some("Fault.UnsupportedOperand"),
+        ),
+        (
+            "function f(){return arguments.__proto__;} return f();",
+            Some("Fault.UnsupportedOperand"),
+        ),
+        (
+            "const f=__rt.fnApplyNull(7); return f;",
+            Some("Fault.TypeError"),
+        ),
+    ] {
+        let s = GooseSession::start(&runner(), 1).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let (f, args, call) = inputs(&e, &format!("rt => (form,env) => {{ {body} }}"));
+        let result = e.call(f, &args);
+        if let Some(expected) = expected {
+            let error = result.unwrap_err();
+            assert!(
+                error.0.contains(expected) && error.0.contains("emitted-span="),
+                "{body}: {error}"
+            );
+        } else {
+            let value = e
+                .export_form(result.unwrap(), &call, origin(&call), Default::default())
+                .unwrap();
+            assert!(
+                value.data().value_eq(&Datum::new(DatumKind::Boolean(true))),
+                "{body}"
+            );
+        }
+        s.close();
+        cleaned(&s);
+    }
+}
 pub(super) fn assert_pool(trace: &[String], workers: usize, chunks: u64) {
     let pools = trace
         .iter()

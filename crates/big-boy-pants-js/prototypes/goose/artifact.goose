@@ -35,7 +35,7 @@ fn payload(a: const Artifact&) -> i64 { return bytes_of(a.keys).len + bytes_of(a
 fn footprint(a: const Artifact&) -> i64 { let empty: Artifact[] = [Artifact {}]; return bytes_of(empty).len + payload(a); }
 fn context(heap: const source::Heap&, base: const snapshot::Snapshot&, imports: const Imports&, c: Control&) -> bool {
     if heap.live_jobs != 0 || heap.fault != source::Fault.None { return reject(c, Error.Boundary); }
-    if base.header.version != 1 || base.header.checkpoint <= 0 || heap.identity <= 0 || heap.nodes.len < base.nodes.len || imports.base != base.header.checkpoint || imports.session != heap.identity { return reject(c, Error.Context); }
+    if base.header.version != 2 || base.header.checkpoint <= 0 || heap.identity <= 0 || heap.nodes.len < base.nodes.len || imports.base != base.header.checkpoint || imports.session != heap.identity { return reject(c, Error.Context); }
     let code .= heap.code;
     if !poll(c, base.code_bytes.len + base.ops.len + base.functions.len + base.code_constants.len + base.children.len + base.code_units.len) { return false; }
     if !code.valid || code.source_bytes != base.code_bytes || bytes_of(code.functions) != bytes_of(base.functions) || bytes_of(code.constants) != bytes_of(base.code_constants) || code.children != base.children || bytes_of(code.ops) != bytes_of(base.ops) || code.units != base.code_units { return reject(c, Error.Context); }

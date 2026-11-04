@@ -301,3 +301,30 @@ filename, for the 741 `workload.*.js` declaration factories. Helpers are separat
 Final diagnostic runs: six tests completed in each native mode, with the
 intentional failure signatures above. No performance inference uses their
 elapsed times.
+
+## Variadic wrapper regression
+
+After the wrapper implementation, repeating the recipe above on the unchanged
+seed42/200k sources exports all **741/741** factories successfully. This includes
+the nested `function(_, ...args)` adapter. Check this explicitly after the
+inventory command:
+
+```sh
+bb -e '(require (quote [clojure.string :as s])) (let [rows (s/split-lines (slurp "target/745-inventory/inventory.tsv"))] (assert (= 741 (count rows))) (assert (every? #(s/includes? % "\tOK\t") rows)))'
+```
+
+The actual `workload.fonam/gaikmenfeik 1 2 3` returns `169` in V8 and both
+native Goose modes. The permanent `goose_compiler_variadic_wrappers` test also
+executes its original declaration for zero, one and three arguments and checks
+`[166 167 169]`, identical emitted application JS, three real Goose jobs and
+one preparation. Argument/rest/call receiver cases, every serial budget cut,
+resource rejection, private preparation snapshots and helper suspension are
+covered by `serial_tests.goose` and the compiler wrapper tests.
+
+The real first worker still succeeds in V8. Both native Goose modes now reach
+`Fault.NativeBoundary` at `workload.jokoum:7:1`, macro
+`workload.fonam/stipopi`, definition `fonam.cljc:34:1`, function 8, pc 55,
+emitted span `562:563`, writes 5. Subtracting the ten-byte `rt => null` base
+source locates factory span `552:553`, the `cljConcatAll(...)` call. This is the
+separately scoped collection operation, after wrapper execution. It is not a
+successful first-worker or full-target build, and no timing claim follows.

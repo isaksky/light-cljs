@@ -12,9 +12,9 @@ namespace snapshot;
 // fourteen end cursors. There are deliberately no fictional free lists.
 struct Binding { id: i64, generation: i64, value: source::Value }
 struct Header {
-    version: i64     = 1, allocator: i64 = 1, base: i64 = 0, checkpoint: i64 = 1,
+    version: i64     = 2, allocator: i64 = 1, base: i64 = 0, checkpoint: i64 = 1,
     ends:    i64[14] = [0; 14], limits: source::Limits = source::Limits {},
-    work:    i64     = 0, global: source::Value = source::Value {},
+    work:    i64     = 0, global: source::Value = source::Value {}, call_method: source::Value = source::Value {},
     boot:    i64     = 0, initializers: i64 = 0, producers: i64 = 0,
 }
 struct Snapshot {
@@ -133,7 +133,7 @@ fn effect<T>(s: const T&, f: source::Function, op: source::Op) -> i64, i64 {
 }
 fn validate<T>(s: const T&, c: Control&) -> bool {
     if !poll(c) { return false; }
-    if s.header.version != 1 { return reject(c, Error.Version); }
+    if s.header.version != 2 { return reject(c, Error.Version); }
     if s.header.allocator != 1 { return reject(c, Error.Allocator); }
     if s.header.base <= 0 || s.header.base > 2147483647 || s.header.checkpoint <= 0 || s.header.checkpoint > 2147483647 || s.header.checkpoint == s.header.base { return reject(c, Error.Identity); }
     let lengths = ends(s);
@@ -146,6 +146,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     if l.nodes < 0 || l.values < 0 || l.units < 0 || l.properties < 0 || l.work < 0 || l.steps < 0 || l.frames < 0 || l.stack < 0 || s.header.work < 0 || s.header.work > l.work || s.nodes.len > l.nodes || s.values.len > l.values || s.units.len > l.units || s.constants.len > l.values || s.properties.len > l.properties || s.header.boot < 0 || s.header.boot > 1 || s.header.initializers < 0 || s.header.producers < 0 { return reject(c, Error.Allocator); }
     if !code_valid(s, c) { return false; }
     if !value(s, s.header.global) || s.header.global.tag != 5 || s.nodes[s.header.global.a].kind != 0 { return reject(c, Error.Link); }
+    if !value(s, s.header.call_method) || s.header.call_method.tag != 5 || s.nodes[s.header.call_method.a].kind != 4 || s.nodes[s.header.call_method.a].function != 14 { return reject(c, Error.Link); }
     for v in s.values { if !poll(c) { return false; } if !value(s, v) { return reject(c, Error.Link); } }
     if s.constants.len != s.code_constants.len { return reject(c, Error.Length); }
     for v, i in s.constants {
@@ -172,7 +173,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     }
     for n in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < 0 || n.kind > 13 { return reject(c, Error.Unsupported); }
+        if n.kind < 0 || n.kind > 14 { return reject(c, Error.Unsupported); }
         if n.head < -1 || n.head >= s.properties.len || n.length < 0 || !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source < -1 || n.source >= s.sources.len || n.origin < -1 { return reject(c, Error.Link); }
         if n.source >= 0 && (n.span_start < 0 || n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
         if n.source >= 0 {
@@ -180,8 +181,8 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
             if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c, Error.Link); }
         }
         if n.kind == 2 && (!range(n.function, 1, s.functions.len) || n.count != s.functions[n.function].captures) { return reject(c, Error.Link); }
-        if n.kind == 2 || n.kind >= 5 && n.kind <= 8 || n.kind == 12 { if !range(n.start, n.count, s.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); } }
-        if n.kind == 4 && (n.function < 0 || n.function > 13 || n.function == 9) { return reject(c, Error.Unsupported); }
+        if n.kind == 2 || n.kind >= 5 && n.kind <= 8 || n.kind == 12 || n.kind == 14 { if !range(n.start, n.count, s.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); } }
+        if n.kind == 4 && (n.function < 0 || n.function > 15 || n.function == 9) { return reject(c, Error.Unsupported); }
         if (n.kind == 9 || n.kind == 10) && (n.value.tag != 4 || n.namespace_value.tag != 1 && n.namespace_value.tag != 4) || n.kind == 11 && n.value.tag > 4 { return reject(c, Error.Link); }
         if n.metadata.tag != 0 && n.metadata.tag != 1 && (n.metadata.tag != 5 || s.nodes[n.metadata.a].kind != 7) { return reject(c, Error.Link); }
     }
@@ -194,7 +195,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
 }
 fn borrow(heap: const source::Heap&, bindings: const Binding[:], checkpoint: i64) -> View {
     let code .= heap.code;
-    var v = View { header: Header { base: heap.identity, checkpoint: checkpoint, limits: heap.limits, work: heap.work, global: heap.global, boot: heap.boot_count, initializers: heap.initializer_count, producers: heap.producer_count },
+    var v = View { header: Header { base: heap.identity, checkpoint: checkpoint, limits: heap.limits, work: heap.work, global: heap.global, call_method: heap.call_method, boot: heap.boot_count, initializers: heap.initializer_count, producers: heap.producer_count },
         code_bytes: code.source_bytes, functions: code.functions, code_constants: code.constants, children: code.children, ops: code.ops, code_units: code.units,
         nodes: heap.nodes, values: heap.values, properties: heap.properties, units: heap.units, constants: heap.constants, bytes: heap.source_bytes, sources: heap.source_ranges, bindings: bindings };
     v.header.ends = ends(v); return v;
@@ -224,7 +225,7 @@ fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> b
     heap.nodes.clear(); heap.values.clear(); heap.properties.clear(); heap.units.clear(); heap.constants.clear(); heap.source_bytes.clear(); heap.source_ranges.clear();
     code.source_bytes.clear(); code.functions.clear(); code.constants.clear(); code.children.clear(); code.ops.clear(); code.units.clear();
     code.valid = false; code.error = tiny::LoadError.None; code.error_pc = -1;
-    heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value {};
+    heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value {}; heap.call_method = source::Value {};
     heap.boot_count = 0; heap.initializer_count = 0; heap.producer_count = 0;
     return true;
 }
@@ -235,7 +236,7 @@ fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, binding
     if !validate(s, c) { return false; }
     // No initialization, producer, publication cache, claim or waiter code.
     code.source_bytes.append(s.code_bytes); code.functions.append(s.functions); code.constants.append(s.code_constants); code.children.append(s.children); code.ops.append(s.ops); code.units.append(s.code_units); code.valid = true;
-    heap.identity = identity; heap.limits = s.header.limits; heap.work = s.header.work; heap.global = relocated(s.header.global, identity);
+    heap.identity = identity; heap.limits = s.header.limits; heap.work = s.header.work; heap.global = relocated(s.header.global, identity); heap.call_method = relocated(s.header.call_method, identity);
     heap.boot_count = s.header.boot; heap.initializer_count = s.header.initializers; heap.producer_count = s.header.producers;
     for n in s.nodes { var out = n; out.value = relocated(n.value, identity); out.namespace_value = relocated(n.namespace_value, identity); out.metadata = relocated(n.metadata, identity); heap.nodes.push(out); }
     for v in s.values { heap.values.push(relocated(v, identity)); }

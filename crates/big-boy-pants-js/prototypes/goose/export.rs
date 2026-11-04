@@ -109,6 +109,8 @@ fn supported(op: Opcode) -> bool {
             | PutElem
             | PutElemStrict
             | NewArray
+            | NewArguments
+            | Rest
             | AppendElement
             | GetThis
             | GetRawThis
@@ -555,6 +557,7 @@ mod serial_tests {
         }
         for (name, expected) in [
             ("calls", "boolean:true"),
+            ("arguments", "boolean:true"),
             ("captures", "boolean:true"),
             ("mutations", "boolean:true"),
             ("control", "boolean:true"),

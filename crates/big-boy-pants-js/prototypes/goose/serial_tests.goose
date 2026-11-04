@@ -36,7 +36,7 @@ fn check(bytes: const u8[:], expected: const u8[:], fault: source::Fault = sourc
         var h1 = source::Heap { code: code }; assert(source::initialize(h1));
         var h2 = source::Heap { code: code }; assert(source::initialize(h2));
         // Two differential executions of one logical session image.
-        h2.identity = h1.identity; h2.global.session = h1.identity;
+        h2.identity = h1.identity; h2.global.session = h1.identity; h2.call_method.session = h1.identity;
         for &v in h2.constants { if v.tag == 4 { v.session = h1.identity; } }
         for &p in h2.properties { p.key.session = h1.identity; p.value.session = h1.identity; }
         let e1 = source::closure(h1, 0, []); let e2 = source::closure(h2, 0, []);
@@ -122,6 +122,8 @@ fn main() {
     check(embed_file("corpus/synthetic/wide.gsp"), "number:299.0");
     check(embed_file("corpus/synthetic/unicode.gsp"), "utf16:[55357,56832,55296]");
     check(embed_file("corpus/serial/calls.gsp"), "boolean:true");
+    check(embed_file("corpus/serial/arguments.gsp"), "boolean:true");
+    argument_limits(embed_file("corpus/serial/arguments.gsp"));
     check(embed_file("corpus/serial/captures.gsp"), "boolean:true");
     check(embed_file("corpus/serial/mutations.gsp"), "boolean:true");
     check(embed_file("corpus/serial/control.gsp"), "boolean:true");
@@ -150,6 +152,34 @@ fn main() {
     let entry = source::closure(heap, 0, []); var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
     assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.InstructionLimit && job.steps == 100);
     print("serial source VM: calls/captures/cells/properties/truth/UTF16/errors, exact slices and limits passed");
+}
+fn argument_limits(bytes: const u8[:]) {
+    var code = source::Code {}; decode(code, bytes);
+    for op in [101, 179] {
+        var function: i64 = -1;
+        for f, i in code.functions {
+            if f.captures != 0 { continue; }
+            for instruction in code.ops[f.start..(f.start + f.count)] { if instruction.code == op { function = i; break; } }
+            if function >= 0 { break; }
+        }
+        assert(function >= 0);
+        for limit in 4 {
+            var heap = source::Heap { code: code }; assert(source::initialize(heap));
+            let entry = source::closure(heap, function, []);
+            if limit == 0 { heap.limits.stack = code.functions[function].locals + 2; }
+            if limit == 1 { heap.limits.nodes = heap.nodes.len; }
+            if limit == 2 {
+                if op == 101 { heap.limits.values = heap.values.len + 2; }
+                else { heap.limits.properties = heap.properties.len; }
+            }
+            if limit == 3 { heap.limits.work = heap.work + code.functions[function].locals + 3; }
+            var job = source::Job { heap: heap };
+            source::start(job, entry, [source::number(1), source::number(2), source::number(3)]);
+            assert(source::run(job, -1) == tiny::Outcome.Failed);
+            assert(job.fault == (if limit == 0 { source::Fault.StackLimit } else if limit == 3 { source::Fault.WorkLimit } else { source::Fault.MemoryLimit }));
+            assert(source::retire(job) && source::reset(job) && job.locals.len == 0);
+        }
+    }
 }
 
 fn fixed_cells(bytes: const u8[:]) {

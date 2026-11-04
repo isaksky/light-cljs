@@ -26,6 +26,21 @@ bb crates/big-boy-pants-js/prototypes/goose/smoke.bb
 locations and also work from the engine package as `prototypes/goose/...`.
 Validated Goose: `v2026.3-267-g369c7a2c (runtime 3025e5810379)`.
 
+The wrapper subset retains all actual arguments in bounded job-local storage,
+including excess arguments, through yields and helper suspension. `NewArguments`
+copies them to an independently owned, read-only unmapped object; `Rest` builds
+a fresh ordinary array. Indexed reads and `length` work; arguments mutation,
+`callee`, and prototype inspection fail explicitly. Export uses the frontend's
+strict mode, so mapped sloppy arguments are outside this subset.
+
+Callable `.call` forwards the exact receiver, including omitted `undefined`
+and explicit `null`, to ordinary source functions and the supported runtime
+leaves. Each heap owns one immutable call method identity, relocated by the
+version-2 snapshot header. Function property writes and other prototype behavior
+remain unsupported. `fnApplyNull` copies a closure with its immutable Clojure
+apply receiver convention; `fnApplyReceiver` observes that convention. These
+operations do not add general `apply` or callable-helper transport support.
+
 [Runtime design decisions](runtime-design.md) trace the captured closure and
 persistent-form requirements through QuickJS/Pants and explain the indexed
 storage choices. The smoke command includes `layout_probe.goose`, a bounded
@@ -423,7 +438,7 @@ across a yield, preserving every saved frame/local/operand and the heap.
 
 ## Initialized private snapshots
 
-`snapshot.goose` captures a version-1 flat `Snapshot`: owned component arrays
+`snapshot.goose` captures a version-2 flat `Snapshot`: owned component arrays
 containing code bytes/functions/constants/children/instructions/UTF-16, every
 heap node/capture/property/UTF-16/constant/source-byte/source-range pool, and a
 sorted definition/root table of `(id, generation, value)`. Occurrence origins,
