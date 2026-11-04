@@ -121,3 +121,10 @@ Raw evidence: [clean timings](expanded-measure-samples.edn.gz), [separate instru
 V8 handles compiler bootstrap/core syntax on the Goose compiler path; Goose executes the emitted user macro and shared helper. Pants uses its supported native-form core. These engines implement matching observable collection work with different internal runtime surfaces. This is one virtual macOS machine, no affinity or machine isolation, one instrumentation pass per cell, and a bounded supported corpus. Two-worker scaling is weak; no scheduling cause is inferred from wall timings alone.
 
 This work establishes the expanded fixture/baseline portion of light-cljs-743. It does not implement event-driven notifications or persistent workers, and does not complete either optimization pellet. Light-cljs-743 should compare its exact predecessor/current on this same fixture; light-cljs-744 should reuse the fixture after the wakeup change. Both remain open.
+
+A post-measurement review correction makes the expected-failure `--expanded-limits`
+path use the same process-tree watchdog as ordinary commands. It does not change
+successful benchmark execution or the measured dataset. From the repository root,
+`bb crates/big-boy-pants-js/prototypes/goose/expanded-watchdog-test.bb` verifies that
+a timed-out owned parent and child both terminate, and that an expected nonzero
+exit preserves diagnostic output.

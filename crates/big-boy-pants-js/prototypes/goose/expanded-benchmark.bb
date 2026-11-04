@@ -16,15 +16,18 @@
              (dissoc "LIGHT_CLJS_NAMESPACE_WORKERS" "LIGHT_CLJS_FRESH_UNIT_ISOLATES" "LIGHT_V8_STATS" "LIGHT_CLJS_WAIT_TIMELINE" "GOOSE_BENCH_INSTRUMENT")
              (assoc "CARGO_BUILD_JOBS" "3" "LIGHT_CLJS_V8_CACHE" "require"
                     "CARGO_TARGET_DIR" (str (fs/path repository "target")) "GOOSE_HOME" (str (fs/path repository "target/goose")))))
-(defn command [environment & args]
-  (let [proc (p/process (vec args) {:dir (str repository) :env environment :out :string :err :string :continue true})
-        result (deref proc (if (get environment "GOOSE_BENCH_DIRECTORY") 180000 900000) ::timeout)]
+(defn await-command [proc timeout-ms args]
+  (let [result (deref proc timeout-ms ::timeout)]
     (when (= result ::timeout)
       (let [handle (.toHandle (:proc proc))]
         (with-open [children (.descendants handle)]
           (doseq [child (.toArray children)] (.destroyForcibly child)))
         (.destroyForcibly handle))
       (throw (ex-info "Command watchdog expired; stopped owned process tree" {:command args})))
+    result))
+(defn command [environment & args]
+  (let [proc (p/process (vec args) {:dir (str repository) :env environment :out :string :err :string :continue true})
+        result (await-command proc (if (get environment "GOOSE_BENCH_DIRECTORY") 180000 900000) args)]
     (assert (zero? (:exit result)) (str "Command failed: " args "\n" (:err result) "\n" (:out result))) (:out result)))
 (defn hash-bytes [bytes] (apply str (map #(format "%02x" (bit-and 255 %)) (.digest (MessageDigest/getInstance "SHA-256") bytes))))
 (defn hash-file [path] (hash-bytes (fs/read-all-bytes path)))
@@ -161,9 +164,7 @@
       (let [c (last prepared)
             e (merge env {"GOOSE_COMPILER_RUNNER" native "GOOSE_BENCH_DIRECTORY" (:directory c) "GOOSE_BENCH_SCOPE" "compiler" "GOOSE_BENCH_FANOUT" "56" "GOOSE_BENCH_PHASE_COUNTS" (str/join "," phase-counts) "GOOSE_BENCH_ENGINE" "goose" "GOOSE_BENCH_WORKERS" "1" "GOOSE_BENCH_CONTROL" "serial"})
             proc (p/process [binary "compiler_bootstrap::goose_capture::benchmark::final_benchmark" "--ignored" "--exact" "--test-threads=1"] {:dir (str repository) :env e :out :string :err :string :continue true})
-            result (deref proc 180000 ::timeout)
-            _ (when (= result ::timeout) (.destroyForcibly (.toHandle (:proc proc))))
-            _ (assert (not= result ::timeout) "Limit diagnosis timed out")
+            result (await-command proc 180000 [binary :limit-diagnosis])
             text (str (:out result) (:err result))
             fault (re-find #"serial-([A-Za-z.]+) work=(\d+) nodes=(\d+) values=(\d+) steps=(\d+)" text)]
         (assert (and (not (zero? (:exit result))) fault) (str "Expected a precise serial quota failure: " text))
