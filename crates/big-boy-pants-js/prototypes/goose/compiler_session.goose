@@ -116,20 +116,26 @@ fn capacity(c: Capacity&, code: const source::Code&, heap: const source::Heap&, 
 // Supervisors only join/reap. They never execute VM work, own a VM heap, or
 // replace a poisoned worker. A contained abort terminates the whole session:
 // no surviving worker receives the failed job and effects are never replayed.
-thread_fn supervise(slot: i64, directory: u8[], deterministic: bool, tracing: bool) {
-    let thread = thread_spawn_contained(worker, slot, copy(directory), deterministic, tracing);
+thread_fn supervise(slot: i64, directory: u8[], deterministic: bool, tracing: bool, cleanup_test: bool) {
+    let thread = thread_spawn_contained(worker, slot, copy(directory), deterministic, tracing, cleanup_test);
     var reason: u8[>..] = []; let ok = thread_wait(thread, reason);
     publish(Event { id: 0, kind: 6, key: slot, name: if ok { str("stopped") } else { copy(reason) } });
 }
-thread_fn worker(slot: i64, directory: u8[], deterministic: bool, tracing: bool) {
+thread_fn worker(slot: i64, directory: u8[], deterministic: bool, tracing: bool, cleanup_test: bool) {
     var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = [];
     var job = source::Job { heap: heap }; var args: source::Value[>..] = []; var graph = bridge::Graph {}; var bytes: u8[>..] = [];
     var c = Capacity {}; var count: i64 = 0; var reset_ns: i64 = 0;
     publish(Event { id: 0, kind: 9, key: slot });
     loop {
         let work = qget<Work>(); if work.id == 0 { break; }
+        // Deterministic poison regression: hold a dequeued replacement before
+        // its claim notice, so shutdown must also tolerate in-transit claims.
+        if cleanup_test && work.id == 2 { assert(write_file(str(directory, "/claim-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/claim-release"), gate) { sleep_ms(1); } }
         publish(Event { id: work.id, kind: 7, key: slot });
         execute(work.saved, directory, work.id, work.identity, work.mode, work.helper, work.key, work.checkpoint, deterministic, code, heap, bindings, job, args, graph, bytes);
+        // Publish the real terminal result, then abort while cleanup still owns
+        // this worker. The host queues a replacement before releasing the gate.
+        if cleanup_test && work.id == 1 { assert(write_file(str(directory, "/cleanup-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/cleanup-abort"), gate) { sleep_ms(1); } assert(false); }
         count += 1;
         if tracing { capacity(c, code, heap, job, bindings, args, graph, bytes); }
         let resetting = clock_ns(); assert(source::retire(job)); assert(source::reset(job)); args.clear(); reset(graph); bytes.clear(); assert(snapshot::reset(code, heap, bindings)); reset_ns += clock_ns() - resetting;
@@ -239,9 +245,9 @@ fn main() {
         var restored_code = source::Code {}; var restored_heap = source::Heap { code: restored_code }; var bindings: snapshot::Binding[>..] = []; var restore = snapshot::Control {}; assert(snapshot::restore(base, restored_code, restored_heap, bindings, source::reserve_identity(), restore));
         print("{:snapshot-bytes ", snapshot::footprint(base), " :capture-copy-bytes ", sc.copied_bytes, " :capture-ns ", sc.capture_ns, " :raw-copy-repeats 1000 :raw-copy-ns ", copy_ns, " :raw-barrier-only-ns ", barrier_ns, " :raw-copy-payload-bytes ", snapshot::payload_bytes(base) * 1000, " :validation-ns ", validation_ns, " :validation-visits ", validation.visited, " :validation-peak-bytes ", validation.validation_peak, " :restore-ns ", restore.restore_ns, " :restore-copy-bytes ", restore.copied_bytes, " :peak-rss-native ", peak_memory(), " :checksum ", checksum, "}"); return;
     }
-    let deterministic = arguments.len == 4 && arguments[3] == "dispatch-test"; let tracing = instrumented || deterministic || (arguments.len == 4 && arguments[3] == "readiness-test");
+    let deterministic = arguments.len == 4 && arguments[3] == "dispatch-test"; let cleanup_test = arguments.len == 4 && arguments[3] == "cleanup-abort-test"; let tracing = instrumented || deterministic || cleanup_test || (arguments.len == 4 && arguments[3] == "readiness-test");
     qlimit<Command>(128); qlimit<readiness::InputCredit>(128); for i in 128 { assert(qput(readiness::InputCredit {})); } qlimit<Event>(32); qlimit<Work>(8); qlimit<Cancel>(1); qlimit<readiness::Wake>(1); let reader = thread_spawn(input, copy(directory), deterministic); var running: Running[>..] = []; var queue: i64[>..] = []; var received: i64 = 0; var waiting: Waiting[>..] = []; var produced: Produced[>..] = []; var prepared: Prepared[>..] = []; var closing = false; var cancelling = false; var poisoned = false; var retained: i64 = 0; var sleep_ns: i64 = 0; var turns: i64 = 0; var progress_turns: i64 = 0; var backoffs: i64 = 0; var created: i64 = 2 + limit * 2; var joined: i64 = 0; var peak: i64 = 2 + limit * 2; var commands: i64 = 0; var events: i64 = 0; var max_commands: i64 = 0; var max_events: i64 = 0;
-    var pool: i64[>..] = []; for slot in limit { pool.push(thread_spawn(supervise, slot, copy(directory), deterministic, tracing)); } var alive = limit;
+    var pool: i64[>..] = []; for slot in limit { pool.push(thread_spawn(supervise, slot, copy(directory), deterministic, tracing, cleanup_test)); } var alive = limit;
     for slot in limit { let event = qget<Event>(); assert(event.kind == 9); }
     print("READY 1 ", heap.boot_count, " ", loaded - beginning, " ", booted - loaded, " ", clock_ns() - booted); flush_stdout();
     // The deterministic fixture queues a complete batch before the first turn.
@@ -255,7 +261,15 @@ fn main() {
         if deterministic { for r in running { var ready: u8[>..] = []; while !read_file(str(directory, "/ready-", r.checkpoint), ready) { sleep_ms(1); } } }
         loop { let event, present = qpoll<Event>(); if !present { break; } progress = true;
             if event.kind == 7 { for &r in running { if r.id == event.id { r.worker = event.key; break; } } continue; }
-            if event.kind == 6 { alive -= 1; var reason: u8[>..] = []; for b in event.name { if reason.len >= 1024 { break; } reason.push(if b < 32 { ' ' } else { b }); } for r, i in running { if r.worker == event.key { running.swap_remove(i); break; } } closing = true; poisoned = true; print("FAULT 0 worker-abort ", reason); flush_stdout(); continue; }
+            if event.kind == 6 { alive -= 1; var reason: u8[>..] = []; for b in event.name { if reason.len >= 1024 { break; } reason.push(if b < 32 { ' ' } else { b }); } for r, i in running { if r.worker == event.key { running.swap_remove(i); break; } } closing = true; poisoned = true;
+                if !cancelling { assert(qput(Cancel {})); cancelling = true; }
+                // A terminal publication releases coordinator capacity before
+                // worker cleanup. An abort can therefore leave queued Work
+                // with no live consumer. Atomically reclaim only messages we
+                // dequeue: a racing worker owns anything it already took and
+                // will publish its claim then cancellation/terminal (or abort).
+                loop { let abandoned, present = qpoll<Work>(); if !present { break; } release(running, abandoned.id); }
+                print("FAULT 0 worker-abort ", reason); flush_stdout(); continue; }
             if event.kind == 8 { print("POOL 0 ", event.metrics); flush_stdout(); continue; }
             event_count += 1; events += 1; release(running, event.id); if poisoned { continue; } let bytes = if event.kind == 1 { snapshot::footprint(event.saved.heap) + bytes_of(event.saved.frames).len + bytes_of(event.saved.locals).len + bytes_of(event.saved.operands).len + bytes_of(event.saved.writes).len + bytes_of(event.saved.handlers).len } else { event.data.len }; if bytes > 67108864 - retained { print("ERROR ", event.id, " retained-budget"); flush_stdout(); continue; } retained += bytes; if event.metrics.len > 0 { print("METRIC ", event.id, " ", event.metrics, " ", sleep_ns, " ", clock_ns() - beginning); } if event.kind == 2 || event.kind == 5 { print("COST ", event.id, " ", event.name); }
             if event.kind == 1 { if waiting.len >= 128 { print("ERROR ", event.id, " waiter-budget"); } else { waiting.push(Waiting { id: event.id, name: copy(event.name), saved: copy(event.saved) }); print("NEED ", event.id, " ", event.saved.sequence, " ", event.name, " ", event.steps, " ", event.saved.writes.len); } }

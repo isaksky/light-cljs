@@ -71,7 +71,11 @@ remain. Clean timing builds omit these address/capacity observations.
 
 A contained worker abort poisons the whole session: its supervisor joins it,
 reports an owned diagnostic, and the coordinator stops admission, cancels
-survivors between bounded VM slices, sends stop messages and joins supervisors.
+survivors between bounded VM slices, reclaims queued dispatches, sends stop
+messages and joins supervisors. A worker may still be resetting after its
+terminal result releases coordinator capacity. Poison drains only dispatches
+the coordinator can dequeue; a racing worker that already dequeued one must
+report its claim and cancellation/failure, even if the claim arrives after poison.
 No failed worker is replaced and no effectful job is replayed. Normal close and
 cancellation also stop/join the pool; the Rust process watchdog remains the
 backstop for failures outside Goose's containment contract.

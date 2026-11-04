@@ -612,6 +612,104 @@ fn goose_compiler_injected_worker_abort_cleans_entire_session() {
 
 #[test]
 #[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cleanup_abort_reclaims_queued_and_in_transit_work() {
+    for workers in [1, 2, 4, 8] {
+        let session =
+            GooseSession::start_mode(&runner(), workers, Some("cleanup-abort-test")).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let (_, args, _) = inputs(&e, "rt => (form, env) => 42");
+        let values = args
+            .iter()
+            .map(|&id| e.get(id).unwrap())
+            .collect::<Vec<_>>();
+        let limits = ConversionLimits::default();
+        let budget = bridge::Budget::new(limits.nodes, e.control.clone());
+        let bytes = bridge::Graph::arguments(&values, limits, &budget)
+            .unwrap()
+            .encode()
+            .unwrap();
+        session
+            .export(
+                &session.directory.join("definition-1.gsp"),
+                "rt => (form, env) => 42",
+            )
+            .unwrap();
+        let send = |id| {
+            std::fs::write(session.directory.join(format!("{id}.definition")), "1").unwrap();
+            std::fs::write(session.directory.join(format!("{id}.gfb")), &bytes).unwrap();
+            let (tx, rx) = mpsc::channel();
+            session.pending.lock().unwrap().insert(id, tx);
+            let mut process = session.process.lock().unwrap();
+            let input = &mut process.as_mut().unwrap().input;
+            writeln!(input, "{id}").unwrap();
+            input.flush().unwrap();
+            rx
+        };
+        let wait = |ready: &dyn Fn() -> bool| {
+            let until = Instant::now() + Duration::from_secs(5);
+            while !ready() {
+                assert!(
+                    Instant::now() < until,
+                    "native cleanup stalled: {:?}",
+                    session.trace()
+                );
+                thread::yield_now();
+            }
+        };
+        let first = send(1);
+        loop {
+            match first.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Event::Done => break,
+                Event::Start | Event::Resumed => {}
+                other => panic!("unexpected first result: {other:?}"),
+            }
+        }
+        wait(&|| session.directory.join("cleanup-ready").exists());
+        // Worker 1 has published its result but still owns cleanup. At limit 1
+        // this replacement stays queued; with peers it is held between dequeue
+        // and claim publication. Neither case may be forgotten by poison.
+        let replacement = send(2);
+        wait(&|| session.trace().iter().any(|s| s == "START 2"));
+        if workers > 1 {
+            wait(&|| session.directory.join("claim-ready").exists());
+        }
+        std::fs::write(session.directory.join("cleanup-abort"), "abort").unwrap();
+        loop {
+            match replacement.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Event::Failure(message) => {
+                    assert!(message.contains("worker-abort"), "{message}");
+                    break;
+                }
+                Event::Start | Event::Resumed => {}
+                other => panic!("replacement must fail without execution: {other:?}"),
+            }
+        }
+        std::fs::write(session.directory.join("claim-release"), "release").unwrap();
+        {
+            let mut process = session.process.lock().unwrap();
+            let input = &mut process.as_mut().unwrap().input;
+            writeln!(input, "0").unwrap();
+            input.flush().unwrap();
+        }
+        // Observe native closure before calling close: the host's 100 ms kill
+        // fallback must not turn a deadlocked native shutdown into a pass.
+        wait(&|| session.trace().iter().any(|s| s == "CLOSED 1"));
+        assert!(!session.directory.join("2.out").exists());
+        assert!(!session.trace().iter().any(|s| s == "DONE 2"));
+        assert!(session.trace().iter().any(|s| s
+            == &format!(
+                "THREADS 0 {} {} {}",
+                workers * 2 + 2,
+                workers * 2 + 2,
+                workers * 2 + 1
+            )));
+        session.close();
+        cleaned(&session);
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_drains_ready_batches_without_progress_backoff() {
     for workers in [1, 2, 4, 8] {
         let session = GooseSession::start_mode(&runner(), workers, Some("dispatch-test")).unwrap();
