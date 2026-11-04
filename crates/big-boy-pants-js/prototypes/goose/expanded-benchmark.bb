@@ -134,7 +134,10 @@
         prepared (mapv fixture! cases)
         _ (when (= mode "--instrument")
             (let [wrapper (fs/path target "native-instrument-resources")]
-              (spit (str wrapper) "#!/bin/sh\nexec /usr/bin/time -l -o \"$GOOSE_BENCH_DIRECTORY/native-resources.txt\" \"$GOOSE_BENCH_NATIVE\" \"$@\"\n")
+              ;; The regular release binary lacks count-allocations. Enable
+              ;; native copy/storage counters explicitly in this separate run,
+              ;; including preserved predecessor binaries with the same CLI.
+              (spit (str wrapper) "#!/bin/sh\nif [ \"$#\" -eq 2 ]; then set -- \"$@\" instrumented; elif [ \"$#\" -eq 3 ] && [ \"$3\" = serial ]; then set -- \"$1\" \"$2\" serial-instrumented; fi\nexec /usr/bin/time -l -o \"$GOOSE_BENCH_DIRECTORY/native-resources.txt\" \"$GOOSE_BENCH_NATIVE\" \"$@\"\n")
               (.setExecutable (fs/file wrapper) true)))
         predecessor-binary (when predecessor (str (fs/path predecessor "compiler-binary")))
         predecessor-native (when predecessor

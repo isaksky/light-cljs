@@ -58,11 +58,14 @@ definitions bound live and retained data. Table maxima can occur in different
 jobs; their sum, page rounding and transient validation/transport copies mean
 logical high-water bytes are not RSS or a strict process-memory ceiling.
 
-`POOL` diagnostics record worker ID, dispatches, resets, sum of table byte
-maxima, growths of those maxima, reused nonempty table addresses, reserved
+`POOL` diagnostics sample table sizes after each dispatch. They record worker
+ID, dispatches, resets, sum of sampled table byte maxima, growths of those maxima,
+reused nonempty table addresses, reserved
 indexed data-stack regions, reset nanoseconds, and code/heap/continuation/scratch
 byte maxima separately. Read-only native address/region observations verify
-actual reuse with the installed runtime; growths are not malloc counts. Queued
+actual reuse with the installed runtime; growths are not malloc counts. These
+samples exclude transient peaks inside execution/export and stack frames that
+have already unwound; native RSS is reported separately. Queued
 snapshot/continuation copies, relocation and transactional bridge-export scratch
 remain. Clean timing builds omit these address/capacity observations.
 
