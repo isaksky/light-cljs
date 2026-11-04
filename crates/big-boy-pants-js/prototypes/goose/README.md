@@ -499,6 +499,12 @@ Capture validates the borrowing source view before allocating its copy. Restore
 validates every pool and code/graph link before touching empty destination
 owners. It checks version, allocator/cursors, generations, code stack flow,
 property-chain termination, ranges, source UTF-8/spans, limits, and budgets.
+An unrealized mapSeq memo's writable value range must be disjoint from every
+other memo, collection, cursor, argument and closure-capture range. Immutable
+ranges may alias each other. This uses one byte per value slot only when a
+nonempty memo exists, with initialization and range visits charged to validation
+work and scratch charged against the byte budget. The code and value bitmaps
+have separate lifetimes, so validator scratch peaks at their maximum size.
 Arbitrary object cycles use integer links and need no recursive copy. Code and
 form pools are independently owned in every restored worker. A worker receives
 one fresh session ID reserved **on the coordinator** with `reserve_identity`;

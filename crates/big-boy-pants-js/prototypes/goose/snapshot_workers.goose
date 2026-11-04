@@ -29,7 +29,7 @@ fn charge(s: const snapshot::Snapshot&) -> i64 {
     // Include both packets, restored code/bindings/heap maximum, validator
     // bitmap, bounded Job locals/operands/frames/writes, and export allowance.
     let code = bytes_of(s.code_bytes).len + bytes_of(s.functions).len + bytes_of(s.code_constants).len + bytes_of(s.children).len + bytes_of(s.ops).len + bytes_of(s.code_units).len + bytes_of(s.bindings).len;
-    return 2 * (snapshot::footprint(s) + bytes_of([Request { id: 0, identity: 1 }]).len) + code + heap_ceiling(s) + s.ops.len + 1048576;
+    return 2 * (snapshot::footprint(s) + bytes_of([Request { id: 0, identity: 1 }]).len) + code + heap_ceiling(s) + max(s.ops.len, s.values.len) + 1048576;
 }
 thread_fn worker(s: snapshot::Snapshot, request: Request) {
     var artifact = bridge::Graph {};

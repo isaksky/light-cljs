@@ -44,6 +44,32 @@ fn poll(c: Control&, n: i64 = 1) -> bool {
     c.visited += n; return true;
 }
 fn range(start: i64, count: i64, len: i64) -> bool { return start >= 0 && count >= 0 && start <= len && count <= len - start; }
+fn has_values(kind: i64) -> bool { return kind == 2 || kind >= 5 && kind <= 8 || kind == 12 || kind == 14 || kind == 15; }
+// All ranges have already passed bounds validation. Immutable views may share
+// slots, but an unrealized map owns its entire writable memo exclusively,
+// including the completed prefix. Charge both scratch initialization and each
+// range visit; overlapping immutable views cannot hide unbounded scan work.
+fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
+    if s.values.len > c.bytes - footprint(s) { return reject(c, Error.Bytes); }
+    if !poll(c, s.values.len) { return false; }
+    c.validation_peak = max(c.validation_peak, s.values.len);
+    var used: u8[>..] = []; used.resize(s.values.len, 0);
+    for n in s.nodes {
+        if !poll(c) { return false; }
+        if !has_values(n.kind) { continue; }
+        if !poll(c, n.count) { return false; }
+        for slot in n.start..(n.start + n.count) {
+            if n.kind == 15 {
+                if used[slot] != 0 { return reject(c, Error.Link); }
+                used[slot] = 2;
+            } else {
+                if used[slot] == 2 { return reject(c, Error.Link); }
+                used[slot] = 1;
+            }
+        }
+    }
+    return true;
+}
 fn ends<T>(s: const T&) -> i64[14] {
     return [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len,
             s.nodes.len, s.values.len, s.properties.len, s.units.len, s.constants.len, s.bytes.len, s.sources.len, s.bindings.len];
@@ -171,6 +197,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if !poll(c, r.count + 1) { return false; }
         if !utf8(s.bytes[r.start..(r.start + r.count)]) { return reject(c, Error.Link); }
     }
+    var has_memo = false;
     for n in s.nodes {
         if !poll(c) { return false; }
         if n.kind < 0 || n.kind > 15 { return reject(c, Error.Unsupported); }
@@ -182,8 +209,9 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
             if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c, Error.Link); }
         }
         if n.kind == 2 && (!range(n.function, 1, s.functions.len) || n.count != s.functions[n.function].captures) { return reject(c, Error.Link); }
-        if n.kind == 2 || n.kind >= 5 && n.kind <= 8 || n.kind == 12 || n.kind == 14 || n.kind == 15 { if !range(n.start, n.count, s.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); } }
+        if has_values(n.kind) { if !range(n.start, n.count, s.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); } }
         if n.kind == 15 {
+            has_memo = has_memo || n.count > 0;
             if n.length > n.count { return reject(c, Error.Link); }
             let input = n.namespace_value;
             if input.tag > 1 && (input.tag != 5 || (s.nodes[input.a].kind != 5 && s.nodes[input.a].kind != 12) || s.nodes[input.a].count != n.count) || input.tag <= 1 && n.count != 0 { return reject(c, Error.Link); }
@@ -192,6 +220,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if (n.kind == 9 || n.kind == 10) && (n.value.tag != 4 || n.namespace_value.tag != 1 && n.namespace_value.tag != 4) || n.kind == 11 && n.value.tag > 4 { return reject(c, Error.Link); }
         if n.metadata.tag != 0 && n.metadata.tag != 1 && (n.metadata.tag != 5 || s.nodes[n.metadata.a].kind != 7) { return reject(c, Error.Link); }
     }
+    if has_memo && !memo_ranges(s, c) { return false; }
     var previous: i64 = -1;
     for b in s.bindings {
         if !poll(c) { return false; }

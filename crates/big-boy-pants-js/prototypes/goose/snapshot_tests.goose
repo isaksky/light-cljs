@@ -169,9 +169,20 @@ fn main() { finite_map_ownership(); assembly_ownership(); source_spans(); argume
 
 fn finite_map_ownership() {
     var code = source::Code {}; snapshot_test::append(code, embed_file("corpus/serial/calls.gsp"));
+    snapshot_test::append(code, embed_file("corpus/serial/captures.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let input = source::form_collection(heap, 5, [source::number(1), source::number(2)]);
+    let tail = source::form_sequence(heap, input, 1, false);
     let mapped = source::native_value(heap, 17, [source::builtin(heap, 1), input]);
+    var captured: i64 = -1;
+    for f, id in code.functions { if f.captures > 0 { captured = id; break; } }
+    assert(captured >= 0);
+    var captures: source::Value[>..] = []; captures.resize(code.functions[captured].captures, source::number(99));
+    let callback = source::closure(heap, captured, captures);
+    let alias = source::allocate(heap, heap.nodes[callback.a]);
+    let other = source::native_value(heap, 17, [source::builtin(heap, 1), input]);
+    // These immutable views overlap legitimately, on both sides of memo nodes.
+    let later_tail = source::form_sequence(heap, input, 1, false);
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: mapped }, snapshot::Binding { id: 1, generation: 1, value: mapped }], c);
     assert(c.error == snapshot::Error.None);
     for i in 2 {
@@ -183,18 +194,52 @@ fn finite_map_ownership() {
         assert(source::demand_map(job, value));
         while job.frames.len > 1 { assert(source::run(job, 1) == tiny::Outcome.Yielded); }
         assert(source::form_nth(worker, value, 0).number == 2 && source::form_nth(worker, bindings[1].value, 1).number == 3);
+        assert(source::form_nth(worker, snapshot::relocated(input, worker.identity), 0).number == 1);
+        assert(source::form_nth(worker, snapshot::relocated(tail, worker.identity), 0).number == 2);
+        assert(source::form_nth(worker, snapshot::relocated(later_tail, worker.identity), 0).number == 2);
+        assert(worker.values[worker.nodes[callback.a].start].number == 99 && worker.nodes[alias.a].start == worker.nodes[callback.a].start);
+        assert(worker.nodes[other.a].kind == 15 && worker.nodes[other.a].length == 0);
+        assert(source::demand_map(job, snapshot::relocated(other, worker.identity)));
+        while job.frames.len > 1 { assert(source::run(job, 1) == tiny::Outcome.Yielded); }
+        assert(source::form_nth(worker, snapshot::relocated(other, worker.identity), 1).number == 3);
         source::retire(job);
     }
     assert(heap.nodes[mapped.a].kind == 15 && heap.nodes[mapped.a].length == 0);
-    for mode in 4 {
+    for mode in 12 {
         var bad = copy(saved);
         if mode == 0 { bad.nodes[mapped.a].length = 3; }
         if mode == 1 { bad.nodes[mapped.a].start = bad.values.len; }
         if mode == 2 { bad.nodes[mapped.a].namespace_value = mapped; }
         if mode == 3 { bad.nodes[mapped.a].namespace_value.session += 1; }
+        if mode == 4 { bad.nodes[mapped.a].start = bad.nodes[input.a].start; }
+        if mode == 5 { bad.nodes[mapped.a].start = bad.nodes[input.a].start + 1; }
+        if mode == 6 { bad.nodes[callback.a].start = bad.nodes[mapped.a].start; }
+        if mode == 7 { bad.nodes[mapped.a].start = bad.nodes[callback.a].start; }
+        if mode == 8 { bad.nodes[other.a].start = bad.nodes[mapped.a].start; }
+        if mode == 9 { bad.nodes[other.a].start = bad.nodes[mapped.a].start + 1; }
+        if mode == 10 { bad.nodes[later_tail.a].start = bad.nodes[mapped.a].start; }
+        if mode == 11 { bad.nodes[mapped.a].start = bad.nodes[other.a].start - 1; }
         var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+        var encoded: u8[>..] = []; var encode = snapshot::Control {};
+        assert(!snapshot::encode(bad, encoded, encode) && encoded.len == 0 && encode.error == snapshot::Error.Link);
+        var wire: u8[>..] = []; to_bytes([bad], wire); var decode = snapshot::Control {};
+        assert(snapshot::decode(wire, decode).len == 0 && decode.error == snapshot::Error.Link);
+        var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
+        assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), restore) && restore.error == snapshot::Error.Link && restore.copied_bytes == 0);
+        let empty = snapshot::borrow(target, roots, 1);
+        assert(snapshot::ends(empty) == [0; 14] && target.identity == 0 && !dest.valid && target.fault == source::Fault.None);
+        var retry = snapshot::Control {}; assert(snapshot::restore(saved, dest, target, roots, source::reserve_identity(), retry));
     }
-    print("finite mapSeq snapshots: aliases, memo/callback/input relocation, isolation and malformed ranges passed");
+    // The scratch bitmap and aliased-range scans obey their own byte/work cuts.
+    var tight_bytes = snapshot::Control { bytes: snapshot::footprint(saved) + saved.values.len - 1 };
+    assert(!snapshot::memo_ranges(saved, tight_bytes) && tight_bytes.error == snapshot::Error.Bytes && tight_bytes.validation_peak == 0);
+    var exact = snapshot::Control {}; assert(snapshot::memo_ranges(saved, exact));
+    assert(exact.validation_peak == saved.values.len);
+    for cut in [saved.values.len - 1, exact.visited - 1] {
+        var tight_work = snapshot::Control { work: cut };
+        assert(!snapshot::memo_ranges(saved, tight_work) && tight_work.error == snapshot::Error.Work && tight_work.visited <= cut);
+    }
+    print("finite mapSeq snapshots: immutable aliases, exclusive memo/capture/input ranges, bounded validation and transactional malformed restores passed");
 }
 
 fn assembly_ownership() {
