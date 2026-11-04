@@ -448,3 +448,239 @@ emitted span `562:563`, writes 5. Subtracting the ten-byte `rt => null` base
 source locates factory span `552:553`, the `cljConcatAll(...)` call. This is the
 separately scoped collection operation, after wrapper execution. It is not a
 successful first-worker or full-target build, and no timing claim follows.
+
+## Full-session safety and lifetime recheck
+
+November 4, 2026, runtime source `730a4c70afc18b5505746826df56621e9d9e345e`.
+The frozen 200k project completes with the existing limits. No production budget,
+admission rule, or retention policy changed, and no additional safety fix is
+justified by these probes. The new regression is
+`goose_compiler_large_continuations_reclaim_across_batches`.
+
+The existing comparison command ran one warmup and one diagnostic full build
+at V8 one slot and Goose 1/2/4/8. Every run matched the complete 3,449,022-byte
+V8 output, all five oracle answers, the strict waste check and every qualified
+source-macro entry count. This is safety evidence, not a clean timing matrix.
+Counter-only temporary native hooks below observe the full session, avoiding
+the existing 4,096-row protocol prefix. The original native source was restored
+before compiler runs; the only retained source change is the regression.
+
+### Measured bounds
+
+All eight Goose sessions had 5,226 macro jobs, 5,812 dispatches and resets,
+615 prepared macros, **57 actual helper publications**, 529 suspensions,
+and zero final waiters. Thus the 529 compiler callbacks are not 529 producers.
+Each session copied 843,816,693 continuation bytes cumulatively; the largest
+continuation was 3,084,085 bytes, including VM frames/locals/operands/writes/
+handlers. The largest prepared checkpoint was 42,813 bytes. The base snapshot
+was 7,746 bytes. These are logical serialized/table footprints, not allocator
+or RSS measurements.
+
+| Goose execution limit / compiler slots | Peak admitted chunks, warmup / repeat | Peak pending new requests, warmup / repeat | Peak charged retention, bytes | Full-session native peak RSS range, bytes | Repeat private table high-water sum, bytes |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1 / 1 | 1 / 1 | 20,786,974 | 114,606,080–117,637,120 | 5,303,554 |
+| 2 | 2 / 2 | 2 / 2 | 20,708,571 | 156,286,976–161,447,936 | 10,568,762 |
+| 4 | 4 / 4 | 3 / 3 | 20,786,974 | 194,527,232–202,162,176 | 20,941,311 |
+| 8 | 8 / 6 | 6 / 5 | 20,786,974 | 273,907,712–280,756,224 | 41,587,049 |
+
+An admitted chunk can be queued, restoring/importing, executing or publishing;
+this column does not assert simultaneous VM instructions. Every slot did work.
+The compiler's separate DAG trace still has 13,477 deferred units, depth 11,
+ready width median 28/p90 33/max 37 and macro-free width max 35. Those units
+include analysis without a source-macro call and are not a Goose ready queue.
+The single active waiter peak in every run reflects this target's demand pattern,
+not the 128-waiter ceiling or serial admission of all source work.
+
+A separate bounded interval probe on Goose8 records the wall-clock region from
+immediately before the first `source::run` slice through return from the last
+slice of each body chunk. It excludes queue wait, restore, argument/helper
+import, output conversion and helper factory execution. Both full builds again
+passed complete JS/oracle/waste checks and recorded all **5,755** body intervals
+(5,226 initial + 529 resumed). Peak overlap was **4** in the warmup and **3** in
+the repeat, not eight. Intervals include OS descheduling; this is overlapping VM
+execution phases, not proof of simultaneous CPU instructions. The full target
+exposes parallel source execution, but does not establish eight-way body
+saturation. No missing admission mechanism was demonstrated. Clean scaling
+results must keep configured workers and achieved overlap distinct.
+
+One four-way witness, in the native monotonic clock's nanoseconds, is:
+
+```edn
+;; [job slot begin end]; all four cover t=4774183403246000
+[[1372 7 4774183403246000 4774183403258000]
+ [1371 4 4774183403239000 4774183403263000]
+ [1368 2 4774183403240000 4774183403249000]
+ [1370 5 4774183403229000 4774183403248000]]
+```
+
+At successful close, charged retained state was exactly **17,773,294 bytes**:
+17,155,744 bytes of prepared checkpoints plus 617,550 bytes of helper publications.
+The largest live charge is 31.0% of 64 MiB; 672 Rust exported identities use
+65.6% of the 1,024-definition cap. No consumed continuation remains in this sum.
+The 1,024 request guard is a bounded coordinator queue, not a cumulative job cap;
+its consumed prefix is cleared once drained. Work has eight entries, command
+credits 128, events 32, and the coalesced wake/cancel queues one each. Credit
+acquisition precedes command enqueue, so input saturation blocks the reader
+instead of dropping work. At most the execution limit is dispatched; priority
+resumes and helper production release/reuse capacity at one worker. The existing
+poison protocol drains only work actually dequeued by the coordinator and waits
+for racing claims, then queues one stop per surviving worker.
+
+Keep the 64 MiB snapshot/coordinator budgets, 16 MiB form packets, VM limits
+(100,000 nodes; 1,048,576 values/properties/UTF-16 units; 10 million work;
+one million instructions; 256 frames; 65,536 stack entries), 128 active waiters
+and 1,024 definitions/requests. Full-target success demonstrates their current
+adequacy; this does not promise headroom for larger generated targets. The pinned
+compiler configuration already permits 100 billion session polls and a one-hour
+deadline. These compiler controls are separate from per-VM/per-packet bounds.
+
+Retention remains compilation scoped: prepared definitions and immutable
+publications live until close, inactive continuations are reclaimed after
+dispatch, and each private worker clears logical tables while retaining its
+allocator high water. All spawned native threads join: 3/5/9/17, with total
+native threads 4/6/10/18 = coordinator + input + W execution + W join-only
+supervisors. Rust additionally owns the CLI thread, two Goose pipe readers,
+unit-pool coordinator/workers, parse-pool workers and V8 platform background
+threads. Those roles are not counted in the native total; 450 generated worker
+namespaces are not threads. Normal completion removes the session directory and
+all request files; the same cleanup follows terminal failures.
+
+Full-session native RSS is materially higher than the baseline's explicitly
+prefix-only 14–33 MB observations. Logical retention and private table maxima
+exclude temporary relocation/validation buffers, base state, queued copies,
+allocator page retention/rounding and other runtime memory; they must not be
+advertised as a 64 MiB process ceiling. Queued messages use owned copies; the
+installed Goose runtime allocates/copies before queue admission and frees the
+message after receive. Snapshot and input/output copies remain real costs.
+Process-wide RSS and compiler/native memory must not be added as synchronized
+peaks. Keep session teardown as the reclamation boundary; no per-job trimming,
+collector or quota increase is warranted for this fixed compilation.
+
+### Stress and failure coverage
+
+The new one-worker test carries a 14,000-element scalar vector through **1,058 helper
+suspensions**, twice this project's count, in two batches with one definition
+and one producer. Its 3,399,414-byte continuation is slightly larger than the
+largest target continuation. It validates every returned count/helper form,
+constant live Rust handle count, one preparation/two exports, 2,117 dispatches
+and resets, complete native joins, directory removal, and owned forms after
+both evaluator and session drop. Separate counters measured 3,596,580,012 bytes
+of cumulative continuations, peak charged retention 3,409,759 bytes, final charge
+10,345 bytes (10,261 checkpoint + 84 publication), zero waiters and 76,218,368
+bytes native peak RSS. This rejects cumulative-snapshot retention as an
+explanation of the memory footprint; it is not a general allocator-leak proof.
+The finite 100-million-poll/120-second test budget covers repeated transport
+visits while remaining below the generated project's poll budget. No production
+limit changes. Returning the entire large vector would consume an additional
+conversion walk; this fixture tests continuation lifetime with a small result.
+
+The existing 35 compiler tests passed with debug-native and optimized-native
+runners; the new large-continuation test passed separately in both modes and
+with the counter-only runner. Existing coverage includes:
+
+- Delayed producer/idle wake and eight consumers sharing one producer, with
+  one-worker progress; actual reentrant compiler analysis and captured writes
+  remain unchanged across suspension.
+- Inactive waiter reclamation, explicit rejection of the 129th active waiter,
+  deterministic ready-batch drain, and alternating payload/private-state reset.
+- Failed preparation/helper publication, malformed transport, contained abort
+  before publication, and post-publication abort with queued/in-transit work;
+  the latter observes native `CLOSED` before the host's kill fallback.
+- Cancellation/deadline during ordinary execution, deferred callbacks and
+  published callable invocation; fresh-session recovery after poison.
+- Owner-scoped/stale IDs, fresh restore identities, durable metadata/spans/forms
+  after teardown, and transactional malformed-snapshot rejection. Smoke tests
+  also cover byte/work/graph limits, memo-range exclusivity and immutable aliases.
+
+`smoke.bb` passed. Changed-file formatting and `git diff --check` passed.
+Strict Clippy reproduced the same eight engine diagnostics; with those known
+categories allowed it exposed only the existing namespace-publication
+single-element loop, and with that category allowed the lib/tests audit passed.
+Root formatting retains its unrelated baseline differences. No full-suite or
+strict-lint success is claimed. The full-form/provenance gate and quiet
+performance matrix remain separate acceptance work.
+
+### Reproduce the counter-only probe
+
+Use a disposable checkout, the documented private Cargo/Goose build environment,
+and the unchanged generated target. Save this block as `target/safety748.bb`,
+run it from the repository root, then run the existing comparison command with
+`--runner target/safety748-runner --backend all --phase instrument --runs 1`.
+The helper restores `compiler_session.goose` in `finally`; measurements are flat
+`target/safety748-W-TIME.edn` files, written only at native close. `retained-peak`
+is sampled after each charge, queue peak after command drain before dispatch,
+waiter peak on insertion, and running peak after dispatch. RSS is native
+`getrusage` high water observed throughout and at close. No admission or
+execution behavior is replaced, and no protocol fields are added.
+
+The diagnostic release compiler SHA-256 was
+`85fe647503b4d4edf8a1e02d58b65a98dabf762b3075c3c01a69c755425e17e4`;
+the counter-runner SHA-256 was
+`ef8d949fa04b2279da8f306adcabb388ef1b78f8f3e311dde5bf5a1c8e085ce0`.
+Compiler/native source remains the above base; the helper embeds its output
+path, so a different checkout need not yield an identical runner binary.
+Both source conversations were read by exact ID through their final pages;
+this safety check does not replace the final conversation audit.
+
+```clojure
+(require '[clojure.string :as s] '[babashka.process :as p])
+(def file "crates/big-boy-pants-js/prototypes/goose/compiler_session.goose")
+(def original (slurp file))
+(defn replace-once [text from to]
+  (assert (= 1 (count (re-seq (re-pattern (java.util.regex.Pattern/quote from)) text))) from)
+  (s/replace text from to))
+(def patched
+  (reduce (fn [text [from to]] (replace-once text from to)) original
+    [["var pool: i64[>..] = [];" "var peak_retained: i64 = 0; var peak_waiting: i64 = 0; var peak_queue: i64 = 0; var peak_running: i64 = 0; var checkpoint_bytes: i64 = 0; var helper_bytes: i64 = 0; var max_checkpoint: i64 = 0; var max_saved: i64 = 0; var saved_bytes: i64 = 0; var suspensions: i64 = 0; var peak_rss: i64 = 0;\n    var pool: i64[>..] = [];" ]
+     ["// Test mode waits for this bounded batch's real events," "peak_queue = max(peak_queue, queue.len - received);\n        // Test mode waits for this bounded batch's real events,"]
+     ["retained += bytes; if event.metrics.len" "retained += bytes; peak_retained = max(peak_retained, retained); if event.kind == 1 { suspensions += 1; saved_bytes += bytes; max_saved = max(max_saved, bytes); } else if event.kind == 5 { helper_bytes += bytes; } if event.metrics.len"]
+     ["print(\"NEED \", event.id" "peak_waiting = max(peak_waiting, waiting.len); print(\"NEED \", event.id"]
+     ["retained += bytes; index = prepared.len;" "retained += bytes; checkpoint_bytes += bytes; max_checkpoint = max(max_checkpoint, bytes); peak_retained = max(peak_retained, retained); index = prepared.len;"]
+     ["// Release inactive continuation owners and their budget after dispatch." "peak_running = max(peak_running, running.len); peak_rss = max(peak_rss, peak_memory());\n        // Release inactive continuation owners and their budget after dispatch."]
+     ["assert(thread_wait(reader)); if tracing" (str "assert(write_file(str(\"" (System/getProperty "user.dir") "/target/safety748-\", limit, \"-\", clock_ns(), \".edn\"), str(\"{:workers \", limit, \" :prepared \", prepared.len, \" :producers \", produced.len, \" :base-bytes \", snapshot::footprint(base), \" :checkpoint-bytes \", checkpoint_bytes, \" :helper-bytes \", helper_bytes, \" :max-checkpoint \", max_checkpoint, \" :retained-final \", retained, \" :retained-peak \", peak_retained, \" :waiters-final \", waiting.len, \" :waiters-peak \", peak_waiting, \" :queue-peak \", peak_queue, \" :running-peak \", peak_running, \" :suspensions \", suspensions, \" :saved-bytes-total \", saved_bytes, \" :max-saved \", max_saved, \" :native-rss \", max(peak_rss, peak_memory()), \"}\\n\")));\n    assert(thread_wait(reader)); if tracing")]]))
+(try
+  (spit file patched)
+  (p/shell "goose" "check" file)
+  (p/shell "goose" "build" file "-o" "target/safety748-runner")
+  (finally (spit file original)))
+```
+
+For the separate execution-overlap observation, save the following helper as
+`target/overlap748.bb` and run it from the root. With the V8 reference above
+present, use the same comparison command with `--backend goose --workers 8
+--runner target/overlap748-runner --phase check --runs 1`. Both runs remain
+diagnostic despite the harness phase name. Each worker records bounded private
+flat spans, written only at close. The instrumentation adds clock reads and
+private records, without new protocol events, locks, VM programs or admission
+rules. The runner hash was
+`e09b968ec9d300fec039e72c17dc70d8f9cc0359fd6a2ffbc848b404fc511679`.
+
+```clojure
+(require '[clojure.string :as s] '[babashka.process :as p])
+(def file "crates/big-boy-pants-js/prototypes/goose/compiler_session.goose")
+(def original (slurp file))
+(defn replace-once [text from to]
+  (assert (= 1 (count (re-seq (re-pattern (java.util.regex.Pattern/quote from)) text))) from)
+  (s/replace text from to))
+(def patched
+  (reduce (fn [text [from to]] (replace-once text from to)) original
+    [["var c = Capacity {}; var count:" "var spans: i64[>..] = []; var span: i64[2] = [0; 2]; var c = Capacity {}; var count:"]
+     ["graph, bytes);\n        // Publish" "graph, bytes, span);\n        if span[0] > 0 && span[1] > span[0] { assert(spans.len < 8192 * 4); spans.append([work.id, work.mode, span[0], span[1]]); } span = [0; 2];\n        // Publish"]
+     ["graph: bridge::Graph&, bytes: u8[>..]&) {" "graph: bridge::Graph&, bytes: u8[>..]&, span: i64[2]&) {"]
+     ["let execution_started = clock_ns();" "let execution_started = clock_ns(); span[0] = execution_started;"]
+     ["let outcome = source::run(job, 10000); if outcome == tiny::Outcome.Complete { break; }" "let outcome = source::run(job, 10000); span[1] = clock_ns(); if outcome == tiny::Outcome.Complete { break; }"]
+     ["if tracing { var high: i64[4]" (str "var out: u8[>..] = []; format(out, \"[\"); for n in spans { format(out, n, \" \"); } format(out, \"]\\n\"); assert(write_file(str(\"" (System/getProperty "user.dir") "/target/overlap748-\", slot, \"-\", clock_ns(), \".edn\"), out));\n    if tracing { var high: i64[4]")]]))
+(try
+  (spit file patched)
+  (p/shell "goose" "check" file)
+  (p/shell "goose" "build" file "-o" "target/overlap748-runner")
+  (finally (spit file original)))
+```
+
+Each file holds flat `[job mode begin end ...]` records. Group the eight files
+from each completed session (their timestamps precede the next session), then
+sort starts as +1 and ends as -1 by timestamp, with ends first on ties. The
+maximum cumulative sum is the overlap. Require exactly 5,755 spans, modes
+`{0 5226, 1 529}`, and a final sum of zero. Keep this instrumentation out of
+clean timing binaries. Remove both temporary helpers, their runners and
+measurement files after preserving any needed local evidence.

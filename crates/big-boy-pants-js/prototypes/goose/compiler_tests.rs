@@ -1627,6 +1627,74 @@ fn goose_compiler_reclaims_inactive_waiters_between_batches() {
 
 #[test]
 #[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_large_continuations_reclaim_across_batches() {
+    use crate::parser::CollectionKind;
+    // The pinned build suspends 529 times, with a largest saved continuation
+    // just over 3 MB. Repeat a similarly sized transported argument twice as
+    // often in one session: cumulative copying must not consume retention.
+    let session = GooseSession::start_mode(&runner(), 1, Some("readiness-test")).unwrap();
+    // Transport visits alone exceed the default one-million session polls.
+    // Keep a finite test budget, below the generated project's 100 billion.
+    let options = EvaluatorOptions {
+        poll_budget: 100_000_000,
+        timeout: Duration::from_secs(120),
+        ..Default::default()
+    };
+    let e = GooseEvaluator::new(session.clone(), &options).unwrap();
+    let (function, args, call) = inputs(
+        &e,
+        "rt => (form, env, x) => { const shared = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value'); return __rt.formVector(__rt.cljCount(x), shared); }",
+    );
+    e.register_compiler_root("fixture/value", Some(41), true, "fixture.cljs", None)
+        .unwrap();
+    e.install_helper(Rc::new(|_, _| Ok("rt => 41".into())));
+    let payload = Datum::new(DatumKind::Collection {
+        kind: CollectionKind::Vector,
+        children: (0..14_000)
+            .map(|n| Datum::new(DatumKind::Integer(n)))
+            .collect(),
+    });
+    let input = e.import_data(&payload, Default::default()).unwrap();
+    let expected = Datum::new(DatumKind::Collection {
+        kind: CollectionKind::Vector,
+        children: vec![
+            Datum::new(DatumKind::Integer(14_000)),
+            Datum::new(DatumKind::Integer(41)),
+        ]
+        .into(),
+    });
+    let mut retained = Vec::new();
+    for batch in 0..2 {
+        for iteration in 0..529 {
+            let result = e.call(function, &[args[0], args[1], input]).unwrap();
+            let output = e
+                .export_form(result, &call, origin(&call), Default::default())
+                .unwrap();
+            assert!(output.data().value_eq(&expected));
+            if iteration == 528 {
+                retained.push(output);
+            }
+            e.release(result).unwrap();
+        }
+        assert_eq!(session.stats().jobs, (batch + 1) * 529);
+        assert_eq!(session.stats().preparations, 1);
+        assert_eq!(session.stats().exports, 2);
+        assert_eq!(e.slots.borrow().len(), 4);
+    }
+    e.release(input).unwrap();
+    session.close();
+    cleaned(&session);
+    assert_pool(&session.trace(), 1, 2 * 1058 + 1);
+    drop(e);
+    drop(session);
+    for output in retained {
+        assert!(output.data().value_eq(&expected));
+        assert_eq!(output.span().source().name(), "retained.cljs");
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_active_waiter_limit_stays_bounded() {
     let session = GooseSession::start(&runner(), 1).unwrap();
     let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();

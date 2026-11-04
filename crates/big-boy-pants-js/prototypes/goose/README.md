@@ -6,6 +6,8 @@ The [full-project baseline and reusable comparison command](generated-200k-basel
 record exact V8/Goose 1/2/4/8 application checks and the quiet V8 reference.
 The [execution-support recheck](generated-200k-probes.md#execution-support-recheck)
 maps the eleven reached macro families to current implementation and tests.
+The [full-session safety recheck](generated-200k-probes.md#full-session-safety-and-lifetime-recheck)
+measures retention, native memory, actual execution overlap and lifecycle bounds.
 
 From the repository root, run:
 
