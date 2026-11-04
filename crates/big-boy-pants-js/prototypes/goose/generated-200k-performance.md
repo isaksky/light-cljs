@@ -209,3 +209,191 @@ mode, complete-project form audit and control checks are reused. No fresh broad
 suite or strict-Clippy pass is claimed: the previously documented engine/root
 lint, formatting and playground failures remain. Independent review and the
 final conversation audit remain separate acceptance steps.
+
+## Compiler bridge causal investigation
+
+November 4, 2026, investigation at `324afa5400dff552f7084d63f9c3dcd7847cb1cc`.
+The new user request authorizes a finite optimization follow-up; the preceding
+milestone and clean five-round table remain historical results. **The leading
+scaling cause is contention on the compiler's session-wide poll fuel counter,
+amplified by roughly 82 million argument-conversion polls per build.** No
+production optimization is included in this investigation.
+
+`GooseEvaluator::new` in `src/goose_evaluator.rs` gives every evaluator the same
+session `ExecutionControl`. `compiler_bridge.rs::Budget::{check,bytes}` calls
+`ExecutionControl::poll` for every graph-node/work and scalar-byte check. Its
+`remaining.fetch_update` is a compare-and-swap retry loop on one shared atomic.
+The control's clock origin and deadline also occupy the surrounding storage.
+This is distinct from the Pants-specific conversion mutex in pellet 579.
+
+### Sampling and volume
+
+Two full-build sampling runs per V8/Goose1/4/8 cell used macOS `sample` at 5 ms,
+bounded to 35 seconds or process exit, on both compiler and native processes.
+Sampling, native protocol tracing and counters are excluded from clean timing.
+The repeat compiler profiles contain the following stack observations after
+excluding explicit read/condition/semaphore/mutex waits; these percentages are
+**sampled stacks, not a CPU-time partition**:
+
+| Goose workers | Non-waiting observations | In `ExecutionControl::poll` | Poll within bridge observations |
+| ---: | ---: | ---: | ---: |
+| 1 | 2,504 | 456 (18.2%) | 448 / 757 (59.2%) |
+| 4 | 4,828 | 1,755 (36.4%) | 1,740 / 2,325 (74.8%) |
+| 8 | 13,768 | 9,818 (71.3%) | 9,750 / 10,848 (89.9%) |
+
+At eight workers, 5,744 self observations land immediately after the atomic CAS
+(`poll+388` in the archived disassembly), with another 566 at adjacent
+counter-loop instructions. Clock reads also appear frequently under `poll`.
+V8 has six poll observations out of 1,108 non-waiting observations. Native
+profiles show graph import/validation, file I/O and waiting rather than a
+growing VM body hotspot, consistent with the earlier native CPU measurements.
+
+A separate reversible counter build measured thread CPU with macOS
+`CLOCK_THREAD_CPUTIME_ID` and elapsed intervals. Repeat aggregate **thread CPU**
+seconds (argument counts/sets and log output add diagnostic overhead):
+
+| Phase | Goose1 | Goose4 | Goose8 |
+| --- | ---: | ---: | ---: |
+| Argument graph construction | 5.679 | 13.984 | 74.468 |
+| Encoding | 0.272 | 0.264 | 0.275 |
+| Input file write | 0.547 | 0.645 | 0.665 |
+| Result file read | 0.141 | 0.168 | 0.170 |
+| Decode and validation | 0.055 | 0.138 | 0.843 |
+| Expansion reconstruction, inclusive of final form build | 0.257 | 0.457 | 1.219 |
+| Result handle clone | 0.005 | 0.005 | 0.005 |
+| Stored-handle release | 0.356 | 0.919 | 1.042 |
+| Input/output file deletion | 0.544 | 0.710 | 0.724 |
+
+Argument elapsed sums are 5.696/14.028/74.541 seconds: the growth is CPU work,
+not merely overlapping blocked intervals. These are separate scoped operations,
+not an exhaustive additive whole-build partition. Final form construction is
+nested within expansion (0.021/0.027/0.026 CPU seconds); do not add it again.
+Release includes all 28,656 released handles, not just the 5,226 result handles.
+
+At one worker, 5,226 argument graphs contain 30,519,098 nodes and 2,088,147,692
+wire bytes; returned graphs add 127,734,100 bytes. The `&env` root contributes
+30,324,634 nodes (99.36%) and 1,961,646,056 bytes (93.94% of input bytes).
+Argument construction makes 61,295,008 node/work polls and 20,462,370 byte
+polls. Four/eight workers change environment inventory volume slightly, by less
+than 0.13%, while argument CPU grows thirteenfold. This is not thirteenfold
+additional useful graph work.
+
+The **whole borrowed arena hypothesis is ruled out for this path**: form
+traversal visits 194,464 reachable occurrences, against 330,270 nodes summed
+over the input arenas. `Form::clone` retains an `Arc`; it does not copy the
+arena. Argument roots after `&form` and `&env` reuse the existing form memo.
+Within each argument graph, datum traversal has 30,453,040 visits versus
+30,421,943 distinct datum identities (sums across calls); only 0.10% is duplicate
+within-call traversal. These counts do not claim global distinctness across
+calls. The compiler constructs/caches environment components in
+`MacroHost::compiler_environment`, but Goose transports the full environment
+afresh. Result provenance checks compare 4,012,284,232 source-text bytes over
+182,039 occurrences; their measured reconstruction cost is small beside input
+construction. Source payload itself is 114,253,902 input bytes, not the bulk of
+the two-gigabyte transport volume.
+
+### Reversible interventions and follow-up decision
+
+Three measured rounds per cell followed one excluded warmup, alternating
+forward/reverse order over the same binaries. These runs have no sampling or
+graph counters. They are **causal interventions, not production improvements**.
+All 52 builds match complete JS, the five independent oracles and waste checks;
+every Goose run has 5,226 jobs, 615 preparations and 672 exports. All admitted
+pre-run quiet gates passed (minimum 90.64% idle). One gate rejected 88.35% idle
+before starting a command; its event/log is retained and only the remaining
+cells resumed after a passing gate. No completed timing sample was discarded.
+
+Median wall / aggregate CPU, seconds; raw samples and spreads are archived:
+
+| Diagnostic binary | Goose1 | Goose4 | Goose8 |
+| --- | ---: | ---: | ---: |
+| Unchanged control | 20.736 / 20.49 | 11.846 / 35.20 | 19.170 / 97.67 |
+| Bridge fuel debit bypassed; clocks retained | 21.026 / 20.85 | 10.006 / 27.62 | 10.471 / 30.70 |
+| Bridge clock read bypassed; fuel retained | 18.886 / 18.67 | 9.977 / 27.22 | 12.590 / 49.43 |
+| Fuel field isolated in a 128-byte aligned wrapper; checks retained | 20.879 / 20.64 | 11.681 / 34.94 | 18.727 / 93.72 |
+
+Contemporaneous unchanged V8 is 6.415 / 6.98 seconds. The shared fuel intervention
+removes 68.6% of eight-worker aggregate CPU and 45.4% of wall, without improving
+one-worker wall. Clock-read removal also helps, but padding alone does not remove
+the scaling collapse. This establishes a material shared-control cost; it does
+not prove a universal hardware cost model or that a safe fix will achieve the
+bypass's performance. Both bypasses intentionally weaken one control and are
+unsuitable production code. All probe changes were restored after each build.
+
+**Follow-ups are finite and ordered:** light-cljs-757 implements coalesced bridge
+polling or an equally small proven accounting approach, preserving one shared
+allowance, exact logical charges for successful conversions, sticky failures,
+bounded cancellation/deadline observation, nested conversion, cleanup and
+full-form/provenance checks. Light-cljs-758 then measures the actual integrated
+V8/Goose1/2/4/8 result with at least five quiet interleaved rounds. Both are in
+`goose-generated-200k` with actual `model=gpt-6.1-sol`, `reasoning_effort=high`,
+and independent review before landing. A remaining loss is acceptable; neither
+pellet authorizes recursive optimization planning.
+
+Searches included all statuses across the project and relevant groups. Open
+579 concerns Pants' build-wide lock, not this control. Deferred 576's engine
+form views and 445/458's environment omission/cache-history work are related
+representation ideas, not fixes for this shared counter. Closed 733 establishes
+the adapter and shared nested controls; 738 concerns the earlier serial VM;
+750/751 establish the baseline and completed milestone. No duplicate was found
+for the measured shared-control cause. Full `&env` retransmission is substantial,
+but omission, cross-call caching, a new graph representation and file-protocol
+replacement remain separate design questions with semantic/identity/budget
+obligations. Within-call memoization, whole-arena copying and result rebuilding
+do not explain the measured growth. No speculative children were filed for them.
+
+### Reproduce and preservation
+
+[Investigation archive](generated-200k-bridge.edn.gz) uses the existing EDN
+`:files`/UTF-8-text/SHA-256 archive format. It preserves raw profiles, counters,
+all comparator/intervention samples, commands, logs, source patches, disassembly,
+analysis/build scripts and fixture/toolchain/binary identities; all **324**
+embedded digests were reread and verified. The profile
+parser independently reconstructs leaf weights and checks them against every
+entry in `sample`'s collapsed self table (**845 entries across 14 profiles**).
+An initial sampling wrapper lost its
+background child's stdin: three Goose attempts failed before target execution.
+The wrapper was fixed with explicit stdin inheritance; those failures and the
+two passing V8 setup controls are preserved, separate from the 68 successful
+post-repair builds. All 70 successful builds validated the full output hash
+`18335556dd4672f2f63b901b68fcad3c447cf5676f457a08fda61f366cc9f3ec`.
+
+Use a fresh checkout of `324afa54` and the ordinary private build environment
+above. Build the original CLI/native runner and generate `target/generated-200k`;
+copy the CLI to `target/light-baseline`. Extract the archive's top-level `.bb`
+and `.sh` files into `target/`, then:
+
+```sh
+chmod 700 target/light-sampled.sh target/native-sampled.sh
+bb benchmarks/generated-project/compare.bb target/generated-200k --light target/light-sampled.sh --backend all --workers 1,4,8 --runner target/native-sampled.sh --phase instrument --runs 1
+mv target/generated-200k/macro-instrument target/generated-200k/sampled-baseline
+bb target/probe756.bb instrument
+bb benchmarks/generated-project/compare.bb target/generated-200k --light target/light-instrument --backend all --workers 1,4,8 --runner target/generated-200k-runner --phase instrument --runs 1
+bb target/summary756.bb profiles target/generated-200k/sampled-baseline
+bb target/summary756.bb counters target/generated-200k/macro-instrument
+bb target/probe756.bb no-fuel
+bb target/probe756.bb no-clock
+bb target/probe756.bb padding
+bb target/interventions756.bb
+```
+
+`probe756.bb` builds an isolated diagnostic binary and restores source in
+`finally`; never use its bypasses for acceptance. If a pre-command quiet gate
+stops the series, `interventions756.bb --resume` verifies binary/fixture/harness
+identities and skips only already completed successful cells. Do not run builds
+or profile analysis concurrently with quiet measurements. Archive assembly is
+separate and expects the recorded evidence filenames; the native runner's hash
+is unchanged from 750, `92140b1a31ba1fe42beadc3caae59fb6ea0916e4a3204e5caff10ef7146688e0`.
+The rebuilt unchanged Rust CLI hash is
+`aa73779aa6111adc6358d46f54df714779bd809dc411deeb7c523f7727483ed5`;
+source changes since verified `6bf69b39` are documentation/harness only, and
+execution source hashes remain equal. Machine/toolchain match the earlier run.
+
+The latest authorizing user turn and the original architecture discussion were
+retrieved directly; the prior conversation audit is reused rather than repeated.
+Generator/comparator regression passes **12 tests / 369 assertions** and
+`git diff --check` passes. All four diagnostic Rust variants build successfully.
+No runtime changes remain, so the exact-source 749 full-form/debug/native/teardown
+and expanded-control evidence remains valid. The probes are positive-workload
+causal evidence, not new proofs of failure behavior. No fresh full-suite or
+strict-Clippy pass is claimed; the previously disclosed baseline limits remain.
