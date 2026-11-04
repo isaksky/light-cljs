@@ -6,6 +6,9 @@ Every completed full build below matched all five independent oracle outputs,
 the strict waste check, and **all 3,449,022 emitted JavaScript bytes**. No output
 normalization was used. This establishes the harness and V8 reference baseline;
 it is not the final full-form/safety audit or a Goose performance matrix.
+The later [full-project performance report](generated-200k-performance.md)
+contains the complete five-round Goose/V8 comparison; the historical observations
+below retain their original scope.
 
 ## Reproduce
 

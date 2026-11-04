@@ -11,6 +11,10 @@ measures retention, native memory, actual execution overlap and lifecycle bounds
 The [complete-project form audit](generated-200k-probes.md#complete-project-forms-and-teardown-verification)
 checks every expansion after teardown in both native modes at 1/2/4/8,
 with explicit V8 provenance ambiguities and independent Goose occurrence checks.
+The [full-project performance report](generated-200k-performance.md) records the
+five-round V8/Goose matrix, complete phase/concurrency diagnostics, memory scopes
+and separately labelled cache/leaf behavior. Goose4 is the best Goose cell but
+remains slower than V8 on the pinned 200k project.
 
 From the repository root, run:
 
