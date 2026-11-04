@@ -272,3 +272,194 @@ preserve historical datasets. Raw evidence: [paired clean samples](readiness-pai
 [separate paired instrumentation](readiness-instrument-samples.edn.gz),
 [debug correctness](readiness-check-debug-samples.edn.gz), and
 [optimized correctness](readiness-check-native-samples.edn.gz).
+
+## Persistent live workers and private storage: light-cljs-744
+
+2026-11-03, same local virtual M3 Ultra/macOS toolchain and unchanged **heavier**
+fixture: 15 substantive namespaces, 120 consumed results, 29 loaded namespaces,
+8192/8193 collection reads and seed 24301. All source hashes match the preceding
+readiness dataset. Every invocation checked the complete emitted JS hash
+`1f4ea5cbde9fc56f74ae08a7c0eeb8ee18216d48b80196b75445fbc8e91a5c75`,
+exact Node stdout and the independent numeric/data oracle. The final comparison
+reference stdout SHA-256 is
+`cf32864fd81fa9da251b27e147372f46779889d7b464c6b582d13a6f9b87f3e1`.
+Only this workload was timed; the unsupported retained-serial heavier case was
+not rerun. Other worker counts were correctness checks.
+
+### Clean setup-inclusive comparison
+
+Five alternating adjacent exact-predecessor/current Goose-8 pairs, plus five
+contemporaneous V8-1 processes. Each cell had a complete process warmup. A
+separate >=90% idle/no-competing-build gate preceded warmup and **each measured
+process**; the 16 recorded gates were 94.31–98.50% idle. Milliseconds, median
+[minimum, maximum]; CPU is `/usr/bin/time -l` user/system:
+
+| Revision / execution engine | Wall | User / system CPU | Test invocation RSS MiB |
+| --- | ---: | ---: | ---: |
+| Historical baseline, V8 1 | 910.511625 | 980 / 30 | 68.8 |
+| Historical baseline, Goose 8 | 482.540292 | 1720 / 590 | 86.3 |
+| Readiness's previous paired result, Goose 8 | 415.312375 | 1710 / 480 | 85.16 |
+| Exact predecessor `d85c5ea8`, Goose 8 | 415.624833 [408.734333, 435.809167] | 1720 / 480 | 83.34375 |
+| Persistent pool `e9f7bbe0`, Goose 8 | **363.881125 [356.631750, 367.828417]** | 1750 / 260 | 86.46875 |
+| Contemporaneous V8 1 | 911.269042 [892.123958, 941.760667] | 990 / 30 | 69.546875 |
+
+All five pairs favored the pool: predecessor→current walls were
+415.624833→363.881125, 409.247792→365.716084, 435.809167→356.970625,
+419.145458→356.631750 and 408.734333→367.828417 ms. The current median is
+**12.45% below its fresh predecessor**, **24.59% below historical Goose 8**, and
+**2.50× faster than fresh V8 1** on this exact fixture. Historical V8 1 and fresh
+V8 1 are effectively unchanged. Goose still uses about twice V8's aggregate
+CPU; these are eight execution workers versus one, not a whole-application or
+language speedup claim.
+
+Cold/join/reuse checkpoints and cleanup medians, milliseconds:
+
+| Engine/revision | Cold 56 calls | Join 8 calls | Reuse 56 calls | Session close | Cleanup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| V8 1 | 435.947291 | 60.334750 | 401.037083 | 0 | 2.100625 |
+| Predecessor Goose 8 | 201.129042 | 35.821375 | 163.778625 | 1.866375 | 2.487834 |
+| Pool Goose 8 | 182.741292 | 30.722666 | 130.463083 | 5.892667 | 6.621375 |
+
+Cleanup **contains** session close. These checkpoints/medians must not be added
+as disjoint wall components. The final pool join moves work into close, while
+setup-inclusive wall still improves. Pool initialization completes before READY;
+its separate diagnostic READY capture/startup field rose 0.047→1.591 ms because
+it now includes starting and readying all persistent workers/supervisors, rather
+than only capturing the base snapshot.
+
+### Separate lifecycle, copy and capacity observations
+
+A separate paired instrumented process per Goose revision checks the same full
+outputs. Instrumented times are excluded from the clean dataset above. Both
+runs execute **241 chunks**: 120 initial calls, one helper producer and 120
+resumptions. Both show eight overlapping initial VM intervals and reordered
+completion IDs; this is elapsed overlap, not physical CPU occupancy.
+
+The predecessor creates 241 execution threads plus coordinator/input (243 total,
+242 joined). The pool creates **eight execution threads**, **eight join-only
+supervisors**, coordinator and input (**18 total, 17 joined**). Supervisors only
+wait/reap; they neither run VM bodies nor hold execution slots. Eight shared
+queue consumers are work conserving: ready continuations/helpers are admitted
+before fresh jobs fill remaining slots. Suspension returns owned flat state and
+releases its execution slot, including at a one-worker limit.
+
+The eight POOL records total **241 dispatches and 241 successful resets**,
+**5455 reused nonempty table-address observations** and 402 increases in sampled
+logical byte maxima. Every reused table retains its original backing address.
+Their sampled maxima total 1,567,628 bytes: code 160,688, heap 1,173,046,
+continuation 14,640 and bridge/binding/argument/byte scratch 219,254. Sampling is
+after dispatch; it excludes already-unwound frames and transient validation or
+export peaks. These are **not** malloc counts, total allocated bytes, physical
+capacity or a process RSS bound.
+
+Each worker reports 41 reserved indexed data-stack regions, **328 total**;
+join-only supervisors add 16 indexed regions separately. This matches the
+installed compiler's generated `gs_stack_block(41)` worker entry. The old entry
+reserves 40 indexed regions plus one growable-directory-argument region per
+chunk, so its generated-code count is 241×41=9881 execution-region reservations.
+These are virtual data-stack reservation counts, not committed-page counts or
+an attribution to particular syscalls. Goose rewinds array tops on reset and
+keeps the mappings/pages available until explicit trim or worker teardown.
+The pool owns its Code/Heap/Job/bridge scratch outside the dispatch loop, rather
+than reconstructing a full owner set for every job. The bounded session-scope
+retention/disposal contract is documented in the README.
+
+Restores still copy **22,144,356→22,144,100 payload bytes** in these diagnostic
+processes, with explicit validation and fresh-identity relocation. Full restored
+snapshot footprints are 22,225,332→22,225,076 bytes; that footprint is not an
+additional independent copy counter. Encoded outputs total 402,612 bytes in both
+runs; Rust's bridge transport counts about 1.39 MB. Copies into queue messages,
+continuation capture, prepared snapshots, relocation and transactional bridge
+export/validation scratch remain. This does not introduce immutable code sharing
+or claim allocation-free execution.
+
+Summed diagnostic elapsed intervals, milliseconds, predecessor→pool:
+restore **58.065→5.530**, continuation save **11.702→3.664**, VM execution
+**1487.469→1522.861**. The pool reset interval hook totals **0.204 ms** across
+241 chunks. These concurrent intervals overlap, include scheduling and
+instrumentation, and are not CPU attribution or additive wall components.
+The coarse per-worker reset counters and interval hook have different overhead;
+neither is an allocator-cycle measurement. Native `/usr/bin/time -l` user/system
+is 1520/450→1540/170 ms in this one diagnostic pair. Native-process high-water
+RSS is **37.625→22.125 MiB**. The clean test invocation's RSS increased instead;
+these different process scopes and noncontemporaneous peaks must not be summed.
+The evidence supports reduced thread/region lifecycle and restore overhead, not
+a claim identifying individual allocation or VM syscalls.
+
+The same diagnostic records 107→162 coordinator parks and 286→549 turns. The
+pool's worker-start notices add readiness events; coalescing and OS ordering
+also affect these counts. The recorded parked intervals are not a wall component
+to subtract, and this change does not claim fewer parks.
+
+The earlier `b59de932` profiling report used a different, smaller two-batch
+100/101-read, width-100 fixture. Its summed restore intervals rose 3.26→16.34 ms
+from one to eight workers; post-event joins rose 0.22→9.89 ms, native system CPU
+20→60 ms, and validation across restore/capture was 1.59–2.29 ms. Those overlapping
+intervals motivated this experiment and are preserved here as prior diagnostics,
+not reused as timing samples or spliced into the current 8192-read comparison.
+
+### Reset, failure and verification
+
+Every dispatch retires the previous job, clears code/heap/continuation/scratch
+logical contents and all job faults/effect/root/handler state, then restores
+through the unchanged empty-destination and full-image validation. Fresh heap
+identities reject old handles. A contained worker abort poisons the entire
+session through a global terminal notice, even if it occurs after publishing a
+result. No replacement/replay occurs. Survivors observe cancellation between
+bounded VM slices; stop messages and supervisor joins reclaim all owned threads.
+Compiler forms stay independently owned after reuse and teardown.
+
+Inactive waiter owners and retained-byte charges are reclaimed after dispatch.
+The previous test intentionally changes from rejecting the 129th lifetime wait
+to successfully completing 256 sequential waits; a separate native test still
+rejects **129 simultaneously active waits** under the unchanged 128-active limit,
+with graceful close. The 120-call performance fixture and all other quotas stay
+unchanged.
+
+`correctness.bb` passes end-to-end on the final native/Rust source: regeneration
+and artifact/reference checks, 45 generated/metamorphic/typed rows in debug and
+optimized modes, source macros, **24 compiler tests in each native mode**, and
+three QuickJS bridge tests. Actual compiler batches at 1/2/4/8 assert exact pool
+creation/reset counts and compare full forms/scalar pools/metadata/provenance.
+Tests also cover private mutation, alternating contexts/payload sizes, two fresh
+sessions, stale references, durable forms, one-worker helper reentry without
+replay, delayed/failing producers, active cancellation, poison rejection and a
+healthy fresh session after poison. Expanded heavier correctness passes debug
+and optimized at 1/2/4/8, with identical JS/Node/oracle checks. Smoke,
+engine all-target check, comparator and watchdog checks pass.
+
+Strict default/QuickJS all-target Clippy retains the same eight existing engine
+deprecated-atomic/chunk/byte-string failures. Audits allowing only documented
+baseline categories pass both configurations; no source suppressions were added.
+Changed-file Rust/Goose formatting and diff checks pass. Whole-tree formatting
+retains unchanged files. Broad full-suite namespace-publication, order-dependent
+capture and playground wasm lint limitations are reused from the documented
+unchanged baseline, not claimed as fresh successful full-suite runs. Regeneration
+refreshed only two previously stale source hashes in the corpus manifest; no
+artifact hashes or fixture data changed.
+
+Clean measured source is `e9f7bbe04a08ced68394173f1a848f10d961cc7f`, tree
+`4b288ce820639b855e78d220f84830909adc0a56`, with empty tracked diff. The exact
+predecessor `d85c5ea8fdc68f77508ba9fa56f2c1f8092e36d0` source/native/release compiler
+were rebuilt and preserved before editing with matching Goose/runtime, Rust
+1.99.1, Node 26.12.1, Babashka 1.12.218 and own `target/goose`. Raw manifests retain
+source, native and Rust binary hashes, resources, phases, quiet gates and order.
+Current native SHA-256 is
+`97c3a4ea0d7d94329e64ef5379b5ce3e67079c5fd03074df29fc13660919b55d`;
+current release compiler is
+`542595118d0270cbc32c8771097278128f930a88e74910654955cbefd3ac03f7`.
+
+The follow-on `b7f39914` changes only instrumentation's mode routing and clarifies
+sampled-capacity scope. It explicitly enables the native `instrumented` CLI for
+both revisions because the normal release compiler lacks `count-allocations`;
+otherwise the existing copy/storage metrics silently remain zero. The final
+separate storage diagnostic above uses this fix and verifies 241 nonzero copy
+records per revision. Clean measurement behavior and native/Rust executables
+are unchanged; no timing was taken from the instrumented run.
+
+Reproduce with the same predecessor preservation procedure and focused commands
+above, using fresh output paths. Committed evidence: [five clean pairs](pool-paired-samples.edn.gz),
+[separate storage/lifecycle instrumentation](pool-instrument-samples.edn.gz),
+[debug correctness](pool-check-debug-samples.edn.gz), and
+[optimized correctness](pool-check-native-samples.edn.gz). Historical datasets and
+reports remain intact.
