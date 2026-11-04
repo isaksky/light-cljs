@@ -223,6 +223,19 @@
               "Executed source-macro identities/counts differ from V8"))
     counts))
 
+(defn goose-diagnostics [path workers]
+  (let [text (slurp (str path))
+        [_ created peak joined] (re-find #"(?m)^THREADS 0 (\d+) (\d+) (\d+)$" text)
+        pools (vec (for [line (str/split-lines text) :when (str/starts-with? line "POOL 0 ")]
+                     (zipmap [:slot :chunks :resets :capacity-bytes :growths :reuses :regions :reset-ns
+                              :code-bytes :heap-bytes :job-bytes :bridge-bytes]
+                             (map parse-long (drop 2 (str/split line #" "))))))]
+    (assert (str/includes? text "CLOSED 1") "Native Goose session did not close")
+    (assert (= (str (+ 2 (* 2 workers))) created peak joined) "Native Goose threads did not all join")
+    (assert (= workers (count pools)) "Missing private worker diagnostics")
+    {:threads-created (parse-long created) :threads-joined (parse-long joined) :workers pools
+     :trace-scope "first 4096 protocol rows; final POOL/THREADS/CLOSED always retained; session cost counters cover all jobs"}))
+
 (defn macro-main [{:keys [dir light runner backend workers phase runs timeout-ms leaf] :as opts}]
   (assert (#{"v8" "goose" "all"} backend))
   (assert (#{"check" "measure" "instrument" "cached" "leaf"} phase))
@@ -246,6 +259,11 @@
         _ (fs/create-dirs results)
         evidence (fs/path results "samples.edn")
         _ (assert (not (fs/exists? evidence)) (str "Preserve existing samples: " evidence))
+        diagnostic-runner (fs/path results "goose-instrumented.sh")
+        _ (when (and runner (= "instrument" phase))
+            ;; Existing native session diagnostic mode, excluded from clean runs.
+            (spit (str diagnostic-runner) "#!/bin/sh\nexec \"$GOOSE_GENERATED_NATIVE\" \"$@\" instrumented\n")
+            (checked dir environment ["chmod" "700" (str diagnostic-runner)]))
         write! #(spit (str evidence) (str (pr-str %) "\n") :append true)
         fixed (pinned! dir)
         reference (fs/path dir "macro-v8-reference.js")
@@ -261,7 +279,9 @@
                          log (fs/path results (str stem ".stderr"))
                          trace (fs/path results (str stem ".trace.tsv"))
                          env (cond-> environment
-                               (= "goose" (:backend cell)) (assoc "LIGHT_CLJS_GOOSE_RUNNER" runner "LIGHT_CLJS_GOOSE_WORKERS" (str (:workers cell)))
+                               (= "goose" (:backend cell)) (assoc "LIGHT_CLJS_GOOSE_RUNNER" (if (= "instrument" phase) (str diagnostic-runner) runner)
+                                                                  "GOOSE_GENERATED_NATIVE" runner
+                                                                  "LIGHT_CLJS_GOOSE_WORKERS" (str (:workers cell)))
                                (#{"instrument" "cached" "leaf"} phase) (assoc "LIGHT_CLJS_MACRO_PROBE" (str (fs/path results (str stem ".macros.tsv")))
                                                               "LIGHT_CLJS_GOOSE_REPORT" (str (fs/path results (str stem ".goose.txt")))))
                          command (cond-> (cmd cell) (#{"instrument" "cached" "leaf"} phase) (into ["--stats-file" (str trace)]))
@@ -276,12 +296,15 @@
                          macro-counts (when (and (= "instrument" phase) (zero? (:exit r)))
                                         (verify-macro-counts dir (:backend cell)
                                           (fs/path results (str stem ".macros.tsv"))))
+                         native (when (and (= "instrument" phase) (= "goose" (:backend cell)) (zero? (:exit r)))
+                                  (goose-diagnostics (fs/path results (str stem ".goose.txt")) (:workers cell)))
                          err (:err r)
                          number #(some-> (re-find % err) second parse-double)
                          sample (merge cell {:kind (if warmup? :warmup :sample) :round round :phase phase :command command
                                              :compiler-slots (:workers cell) :execution-workers (:workers cell)
                                              :leaf-edit *leaf-edit*
                                              :executed-source-macros macro-counts
+                                             :native native
                                              :wall-ns wall :exit (:exit r) :output output :stderr (str (fs/file-name log))
                                              :user-s (number #"([0-9.]+) user") :system-s (number #"([0-9.]+) sys")
                                              :max-rss-bytes (number #"([0-9]+)  maximum resident set size") :quiet quiet})]
@@ -296,6 +319,7 @@
       (assert (str/includes? (System/getProperty "os.name") "Mac") "Quiet/rusage measurement currently requires macOS"))
     (write! {:kind :manifest :phase phase :options opts :fixed fixed :inputs oracle-inputs :expected expected
              :harness-sha256 (sha256 (fs/path kit "compare.bb"))
+             :native-diagnostic-mode (when (= "instrument" phase) "compiler_session instrumented; native wrapper execs the pinned runner")
              :compiler-sha256 (sha256 light) :runner-sha256 (when runner (sha256 runner))
              :git (checked (str repository) environment ["git" "rev-parse" "HEAD"])
              :source-hashes (into (sorted-map)
