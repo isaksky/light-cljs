@@ -177,8 +177,8 @@
     (assert (= (set (map :path (:files manifest)))
                (set (for [file (fs/glob dir "**.{cljs,cljc}")]
                       (str (fs/relativize dir file))))) "Source population differs")
-    (doseq [{:keys [path sha256] expected :sha256} (:files manifest)]
-      (assert (= (if (= path (:path *leaf-edit*)) (:sha256 *leaf-edit*) expected) (generated-project.compare/sha256 (fs/path dir path))) (str "Source differs: " path)))
+    (doseq [{:keys [path] expected :sha256} (:files manifest)]
+      (assert (= (if (= path (:path *leaf-edit*)) (:sha256 *leaf-edit*) expected) (sha256 (fs/path dir path))) (str "Source differs: " path)))
     (doseq [[path hash] (:generator-sha256 manifest)]
       (assert (= hash (sha256 (fs/path kit path))) (str "Generator differs: " path)))
     {:manifest-sha256 (sha256 frozen)
@@ -326,7 +326,7 @@
              :git (checked (str repository) environment ["git" "rev-parse" "HEAD"])
              :source-hashes (into (sorted-map)
                                   (for [path (str/split-lines (checked (str repository) environment ["git" "ls-files" "src" "crates/big-boy-pants-js" "Cargo.toml" "Cargo.lock" "build.rs"]))
-                                        :when (or (re-find #"\.(rs|goose)$" path) (#{"Cargo.toml" "Cargo.lock" "build.rs"} path))]
+                                        :when (or (re-find #"\.(rs|goose|js|cljs|cljc|c|h|build|tsv|toml|lock)$" path) (#{"Cargo.toml" "Cargo.lock" "build.rs"} path))]
                                     [path (sha256 (fs/path repository path))]))
              :source-diff (checked (str repository) environment ["git" "diff" "--binary"])
              :toolchains (into {} (for [c [["rustc" "--version"] ["goose" "version"] ["bb" "--version"] ["node" "--version"] ["clang" "--version"] ["uname" "-a"]]]
