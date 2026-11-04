@@ -265,7 +265,7 @@
 
 (defn macro-main [{:keys [dir light runner backend workers phase runs timeout-ms leaf] :as opts}]
   (assert (#{"v8" "goose" "all"} backend))
-  (assert (#{"check" "measure" "instrument" "cached" "leaf"} phase))
+  (assert (#{"check" "measure" "instrument" "cached" "leaf" "leaf-uncached"} phase))
   (assert (and (pos? runs) (or (not= phase "measure") (>= runs 5))))
   (assert (and (seq workers) (= (count workers) (count (distinct workers)))
                (every? #{1 2 4 8} workers)))
@@ -273,7 +273,7 @@
   (assert (or (= "v8" backend) runner) "Goose requires --runner optimized-native-binary")
   (assert (or (not (#{"cached" "leaf"} phase)) (= "v8" backend))
           "Goose cached artifact installation is not validated; use --backend v8 for these scenarios")
-  (assert (or (not= "leaf" phase) leaf) "leaf scenario requires --leaf relative/path.cljs")
+  (assert (or (not (#{"leaf" "leaf-uncached"} phase)) leaf) "leaf scenario requires --leaf relative/path.cljs")
   (when leaf
     (assert (some #(and (= leaf (:path %)) (= :worker (:role %)))
                   (:files (clojure.edn/read-string (slurp (str (fs/path dir "manifest.edn"))))))
@@ -314,9 +314,9 @@
                                                                   "GOOSE_GENERATED_PROTOCOL" (str (fs/path results (str stem ".protocol")))
                                                                   "LIGHT_CLJS_GOOSE_WORKERS" (str (:workers cell)))
                                (= "instrument" phase) (assoc "GENERATED_COMPARE_TREE" (str tree))
-                               (#{"instrument" "cached" "leaf"} phase) (assoc "LIGHT_CLJS_MACRO_PROBE" (str (fs/path results (str stem ".macros.tsv")))
+                               (#{"instrument" "cached" "leaf" "leaf-uncached"} phase) (assoc "LIGHT_CLJS_MACRO_PROBE" (str (fs/path results (str stem ".macros.tsv")))
                                                               "LIGHT_CLJS_GOOSE_REPORT" (str (fs/path results (str stem ".goose.txt")))))
-                         command (cond-> (cmd cell) (#{"instrument" "cached" "leaf"} phase) (into ["--stats-file" (str trace)]))
+                         command (cond-> (cmd cell) (#{"instrument" "cached" "leaf" "leaf-uncached"} phase) (into ["--stats-file" (str trace)]))
                          _ (fs/delete-tree (fs/path dir "out/light"))
                          quiet (when (= "measure" phase) (quiet! environment))
                          started (System/nanoTime)
@@ -325,7 +325,7 @@
                          wall (- (System/nanoTime) started)
                          _ (spit (str log) (:err r))
                          output (when (zero? (:exit r)) (verify-macro-output dir environment expected reference))
-                         macro-counts (when (and (= "instrument" phase) (zero? (:exit r)))
+                         macro-counts (when (and (#{"instrument" "leaf-uncached"} phase) (zero? (:exit r)))
                                         (verify-macro-counts dir (:backend cell)
                                           (fs/path results (str stem ".macros.tsv"))))
                          native (when (and (= "instrument" phase) (= "goose" (:backend cell)) (zero? (:exit r)))
@@ -368,18 +368,18 @@
           viable (mapv first (filter #(zero? (:exit (second %))) (map vector cells warmups)))
           run-rounds #(doall (for [round (range runs) cell (if (even? round) viable (reverse viable))]
                                (run-cell cell round false)))
-          samples (if (= phase "leaf")
+          samples (if (#{"leaf" "leaf-uncached"} phase)
                     (with-restored (fs/path dir leaf)
                       (fn [original]
                         ;; Each round appends a distinct inert definition, as the existing compare leaf scenario does.
                         (doall (for [round (range runs)]
                                  (do (spit (str (fs/path dir leaf)) (str original "\n(defn compare-leaf-edit-" round " [] " round ")\n"))
                                      (binding [*leaf-edit* {:path leaf :sha256 (sha256 (fs/path dir leaf))}]
-                                       (run-cell (first viable) round false)))))))
+                                       (mapv #(run-cell % round false) (if (even? round) viable (reverse viable)))))))))
                     (run-rounds))]
       (pinned! dir)
-      (write! {:kind :complete :success (every? #(zero? (:exit %)) (concat warmups samples))})
-      (when-not (every? #(zero? (:exit %)) (concat warmups samples))
+      (write! {:kind :complete :success (every? #(zero? (:exit %)) (concat warmups (flatten samples)))})
+      (when-not (every? #(zero? (:exit %)) (concat warmups (flatten samples)))
         (throw (ex-info "One or more selected compiler cells failed; see preserved diagnostics (no fallback)" {:samples (str evidence)})))
       (println "Wrote" (str evidence)))))
 

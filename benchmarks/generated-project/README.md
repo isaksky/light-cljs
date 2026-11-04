@@ -157,6 +157,14 @@ commands, stdout, CPU times and memory scope; stderr/rusage and trace files sit
 beside it. Historical Shadow measurements and the older comparison mode remain
 available through the original options.
 
+For an explicitly uncached edited-source diagnostic, use `--phase leaf-uncached
+--leaf src/workload/jourklijo.cljs --backend all --workers 4 --runs 1` with the
+same binary/runner options. It checks a warmup and the edited build in both V8
+and Goose, requires the full source-macro identity/count table, and restores the
+source. It passes `--no-cache`; it does not implement Goose cached installation.
+The [full performance report](../../crates/big-boy-pants-js/prototypes/goose/generated-200k-performance.md)
+keeps these scenarios and the 200k clean matrix separate.
+
 ## How a project is made
 
 The generator first builds a **model**: seeded expression trees plus the
