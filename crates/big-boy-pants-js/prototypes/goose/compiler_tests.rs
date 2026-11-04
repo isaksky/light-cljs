@@ -666,3 +666,146 @@ fn goose_compiler_drains_ready_batches_without_progress_backoff() {
         );
     }
 }
+
+// PARK is emitted immediately before the atomic native receive, after all
+// payload sources were rechecked. This hook gates publication, never elapsed
+// latency. The deadline only bounds a broken protocol.
+fn await_park(session: &GooseSession, after: usize) {
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        if session
+            .trace()
+            .iter()
+            .filter(|s| s.starts_with("PARK "))
+            .count()
+            > after
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < until,
+            "coordinator did not park: {:?}",
+            session.trace()
+        );
+        thread::yield_now();
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_readiness_delayed_helper_and_idle_close_cancel() {
+    for workers in [1, 2, 4, 8] {
+        let session = GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
+        await_park(&session, 0);
+        // Repeated/spurious file notices contain no job and cannot produce a
+        // terminal reply. Wake is coalesced even while the input pipe drains.
+        {
+            let mut process = session.process.lock().unwrap();
+            let input = &mut process.as_mut().unwrap().input;
+            for _ in 0..256 {
+                writeln!(input, "-2").unwrap();
+            }
+            input.flush().unwrap();
+        }
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let (function, args, call) = inputs(
+            &e,
+            "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')",
+        );
+        e.register_compiler_root("fixture/value", Some(41), true, "fixture.cljs", None)
+            .unwrap();
+        let s = session.clone();
+        let (release, delayed) = mpsc::channel();
+        let publishing = thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(10);
+            loop {
+                let trace = s.trace();
+                if let Some(need) = trace.iter().rposition(|s| s.starts_with("NEED ")) {
+                    if trace[need + 1..].iter().any(|s| s.starts_with("PARK ")) {
+                        release.send(()).unwrap();
+                        return;
+                    }
+                }
+                assert!(
+                    Instant::now() < until,
+                    "helper wait never parked: {trace:?}"
+                );
+                thread::yield_now();
+            }
+        });
+        e.install_helper(Rc::new(move |_, unit| {
+            assert_eq!(unit, 41);
+            delayed.recv_timeout(Duration::from_secs(10)).unwrap();
+            Ok("rt => 41".into())
+        }));
+        let result = e.call(function, &args).unwrap();
+        publishing.join().unwrap();
+        let output = e
+            .export_form(result, &call, origin(&call), Default::default())
+            .unwrap();
+        assert!(output.data().value_eq(&Datum::new(DatumKind::Integer(41))));
+        assert_eq!(
+            session
+                .trace()
+                .iter()
+                .filter(|s| s.starts_with("DONE "))
+                .count(),
+            1
+        );
+        assert_eq!(
+            session
+                .trace()
+                .iter()
+                .filter(|s| s.starts_with("PRODUCED "))
+                .count(),
+            1
+        );
+        session.close();
+        cleaned(&session);
+        assert!(
+            session.trace().iter().any(|s| s == "CLOSED 1"),
+            "graceful idle close"
+        );
+
+        let session = GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let (function, args, _) = inputs(&e, "rt => (form, env) => 1");
+        await_park(&session, 0);
+        e.control().cancel();
+        assert!(e.call(function, &args).unwrap_err().0.contains("cancelled"));
+        cleaned(&session);
+        assert!(
+            session.trace().iter().any(|s| s == "CLOSED 1"),
+            "idle cancellation wakes close"
+        );
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_waiter_limit_rejects_without_native_abort() {
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+    let (function, args, _) = inputs(
+        &e,
+        "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')",
+    );
+    e.register_compiler_root("fixture/value", Some(41), true, "fixture.cljs", None)
+        .unwrap();
+    e.install_helper(Rc::new(|_, _| Ok("rt => 41".into())));
+    for _ in 0..128 {
+        e.call(function, &args).unwrap();
+    }
+    assert!(
+        e.call(function, &args)
+            .unwrap_err()
+            .0
+            .contains("waiter-budget")
+    );
+    cleaned(&session);
+    assert!(
+        session.trace().iter().any(|s| s == "CLOSED 1"),
+        "bounded failure closes natively"
+    );
+    assert!(!String::from_utf8_lossy(&session.stderr.lock().unwrap()).contains("assert failed"));
+}

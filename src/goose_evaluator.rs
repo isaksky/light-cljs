@@ -178,9 +178,14 @@ impl GooseSession {
                         "PREPARED" if parts.len() == 3 && parts[2].parse::<u64>().is_ok() => {
                             Event::Resumed
                         }
-                        "SCHED" | "THREADS"
+                        "SCHED" | "THREADS" | "PARK"
                             if id == 0
-                                && parts.len() == (if kind == "SCHED" { 13 } else { 5 })
+                                && parts.len()
+                                    == (match kind {
+                                        "SCHED" => 13,
+                                        "THREADS" => 5,
+                                        _ => 3,
+                                    })
                                 && parts[2..].iter().all(|s| s.parse::<u64>().is_ok()) =>
                         {
                             Event::Resumed
@@ -242,7 +247,7 @@ impl GooseSession {
                         let boxes = mailboxes.lock().unwrap();
                         if let Some(tx) = boxes.get(&id) {
                             let _ = tx.send(event);
-                        } else if !matches!(parts[0], "CLOSED" | "SCHED" | "THREADS") {
+                        } else if !matches!(parts[0], "CLOSED" | "SCHED" | "THREADS" | "PARK") {
                             for tx in boxes.values() {
                                 let _ =
                                     tx.send(Event::Failure("uncorrelated subprocess reply".into()));
@@ -384,7 +389,17 @@ impl GooseSession {
             temporary,
             self.directory.join(format!("{id}-{sequence}.key")),
         )
-        .map_err(error)
+        .map_err(error)?;
+        // Publish the file before readiness. The native input thread folds
+        // this notice into its bounded wake protocol; payloads remain keyed
+        // by request and sequence. This lock only frames one pipe write.
+        let mut process = self.process.lock().unwrap();
+        let input = &mut process
+            .as_mut()
+            .ok_or_else(|| error("session is closed"))?
+            .input;
+        writeln!(input, "-2").map_err(error)?;
+        input.flush().map_err(error)
     }
     // Compiler CodeIdentity includes the resolved declaration context. Never
     // merge equal source text from distinct definitions or compilation sessions.

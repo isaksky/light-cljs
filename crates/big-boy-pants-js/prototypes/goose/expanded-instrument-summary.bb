@@ -42,7 +42,7 @@
     (assert (seq queue)) (assert threads) (assert (seq timeline))
     (let [[_ _ created _ joined] (str/split threads #"\s+")]
       (assert (= (parse-long created) (inc (parse-long joined)) (+ 3 (* 2 jobs)))))
-    (println (pr-str (merge (select-keys r [:case :workers])
+    (println (pr-str (merge (select-keys r [:case :workers :revision-label])
       {:worker-body-peak (peak body) :vm-interval-peak (peak vm)
        :native-queued-peak (apply max (map :queued queue))
        :native-eligible-including-running-peak (apply max (map #(+ (:queued %) (:ready-waiting %) (:running-macros %)) queue))

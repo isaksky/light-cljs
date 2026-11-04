@@ -9,6 +9,11 @@
   (p/shell {:dir (str repository)} "goose" "format" "--check" (str (fs/path directory "compiler_session.goose")))
   (p/shell {:dir (str repository)} "goose" "check" (str (fs/path directory "compiler_session.goose")))
   (doseq [mode [["--debug"] []]]
+    (doseq [source ["readiness.goose" "readiness_tests.goose"]]
+      (p/shell {:dir (str repository)} "goose" "format" "--check" (str (fs/path directory source))))
+    (p/shell {:dir (str repository)} "goose" "check" (str (fs/path directory "readiness_tests.goose")))
+    (apply p/shell {:dir (str repository)} (concat ["goose" "build" (str (fs/path directory "readiness_tests.goose"))] mode ["-o" executable]))
+    (p/shell executable)
     (apply p/shell {:dir (str repository)} (concat ["goose" "build" (str (fs/path directory "compiler_session.goose"))] mode ["-o" executable]))
     (p/shell {:dir (str repository) :env (assoc (into {} (System/getenv)) "GOOSE_COMPILER_RUNNER" executable "CARGO_BUILD_JOBS" "3" "LIGHT_CLJS_V8_CACHE" "require")}
              "cargo" "test" "--locked" "--features" "goose-macros" "--lib" "goose_compiler" "--" "--include-ignored" "--nocapture" "--test-threads=1"))

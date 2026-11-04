@@ -33,11 +33,23 @@
 (defn hash-file [path] (hash-bytes (fs/read-all-bytes path)))
 (defn read-rows [path] (mapv edn/read-string (str/split-lines (slurp (str path)))))
 (defn median [xs] (nth (vec (sort xs)) (quot (count xs) 2)))
-(def cases [{:id :light :work 16} {:id :medium :work 256} {:id :heavier :work 8192}])
-(def cells (vec (concat [{:engine :v8 :workers 1 :control :branch}
+(def focus (System/getenv "GOOSE_EXPANDED_FOCUS"))
+(assert (or (nil? focus) (= "heavier" focus)))
+(def predecessor (some-> (System/getenv "GOOSE_EXPANDED_PREDECESSOR") fs/path))
+(assert (or (nil? predecessor) (and (= "heavier" focus) (#{"--measure" "--instrument"} mode))))
+(def cases (cond->> [{:id :light :work 16} {:id :medium :work 256} {:id :heavier :work 8192}]
+             focus (filterv #(= :heavier (:id %)))))
+(def cells (if predecessor
+             [{:engine :v8 :workers 1 :control :branch :revision-label :current}
+              {:engine :goose :workers 8 :control :branch :revision-label :predecessor}
+              {:engine :goose :workers 8 :control :branch :revision-label :current}]
+             (if focus
+               (vec (cons {:engine :v8 :workers 1 :control :branch}
+                          (for [n (if (= mode "--check") [1 2 4 8] [8])] {:engine :goose :workers n :control :branch})))
+               (vec (concat [{:engine :v8 :workers 1 :control :branch}
                          {:engine :pants :workers 1 :control :branch}
                          {:engine :goose :workers 1 :control :serial}]
-                       (for [n [1 2 4 8]] {:engine :goose :workers n :control :branch}))))
+                       (for [n [1 2 4 8]] {:engine :goose :workers n :control :branch}))))))
 (defn unsupported? [c cell]
   (and (= :heavier (:id c)) (= :goose (:engine cell)) (= :serial (:control cell))))
 (defn active-cells [c] (remove #(unsupported? c %) cells))
@@ -101,7 +113,7 @@
 (defn summary! [path]
   (let [rows (if (fs/exists? path) (read-rows path) (mapv edn/read-string (str/split-lines (command env "gzip" "-cd" (str path ".gz")))))
         samples (filter #(= :sample (:kind %)) rows)]
-    (doseq [[cell rs] (sort-by (comp pr-str key) (group-by #(select-keys % [:case :engine :workers :control]) samples))]
+    (doseq [[cell rs] (sort-by (comp pr-str key) (group-by #(select-keys % [:case :engine :workers :control :revision-label]) samples))]
       (let [metrics (fn [key] (let [xs (keep key rs)] (when (seq xs) {:median (median xs) :min (apply min xs) :max (apply max xs)})))
             phase (fn [phase n key scale] (metrics #(some (fn [r] (when (and (= phase (:phase r)) (or (nil? n) (= n (:batch r)))) (/ (get r key) scale))) (:rows %))))]
         (println (pr-str (merge cell {:rounds (count rs) :wall-ms (metrics #(/ (:process-wall-ns %) 1e6)) :user-ms (metrics :user-ms) :system-ms (metrics :system-ms) :test-process-peak-rss-bytes (metrics :test-process-peak-rss-bytes)
@@ -124,13 +136,29 @@
             (let [wrapper (fs/path target "native-instrument-resources")]
               (spit (str wrapper) "#!/bin/sh\nexec /usr/bin/time -l -o \"$GOOSE_BENCH_DIRECTORY/native-resources.txt\" \"$GOOSE_BENCH_NATIVE\" \"$@\"\n")
               (.setExecutable (fs/file wrapper) true)))
+        predecessor-binary (when predecessor (str (fs/path predecessor "compiler-binary")))
+        predecessor-native (when predecessor
+                             (if (= mode "--instrument")
+                               (let [old-directory (fs/path predecessor "crates/big-boy-pants-js/prototypes/goose")
+                                     old-target (fs/path target "predecessor")
+                                     executable (str (fs/path old-target "compiler-session-instrumented"))]
+                                 ;; Instrument the preserved predecessor with its own
+                                 ;; matching source transform, never today's anchors.
+                                 (with-redefs [directory old-directory target old-target]
+                                   (load-file (str (fs/path old-directory "expanded-instrument.bb"))))
+                                 (command env "goose" "build" (str (fs/path old-target "instrumented/compiler_session.goose")) "-o" executable)
+                                 executable)
+                               (str (fs/path predecessor "compiler-session"))))
         invoke (fn [c cell]
-                 (let [dir (:directory c)
-                       e (merge env {"GOOSE_COMPILER_RUNNER" native "GOOSE_BENCH_DIRECTORY" dir "GOOSE_BENCH_SCOPE" "compiler" "GOOSE_BENCH_FANOUT" "56" "GOOSE_BENCH_PHASE_COUNTS" (str/join "," phase-counts) "GOOSE_BENCH_ENGINE" (name (:engine cell)) "GOOSE_BENCH_WORKERS" (str (:workers cell)) "GOOSE_BENCH_CONTROL" (name (:control cell))}
-                                (when (= mode "--instrument") {"GOOSE_BENCH_INSTRUMENT" "1" "LIGHT_CLJS_WAIT_TIMELINE" (str (fs/path dir "timeline.tsv")) "GOOSE_BENCH_ACTIVITY" (str (fs/path dir "activity.edn")) "GOOSE_BENCH_NATIVE" native "GOOSE_COMPILER_RUNNER" (str (fs/path target "native-instrument-resources"))}))
+                 (let [old? (= :predecessor (:revision-label cell))
+                       executable (if old? predecessor-binary binary)
+                       runner (if old? predecessor-native native)
+                       dir (:directory c)
+                       e (merge env {"GOOSE_COMPILER_RUNNER" runner "GOOSE_BENCH_DIRECTORY" dir "GOOSE_BENCH_SCOPE" "compiler" "GOOSE_BENCH_FANOUT" "56" "GOOSE_BENCH_PHASE_COUNTS" (str/join "," phase-counts) "GOOSE_BENCH_ENGINE" (name (:engine cell)) "GOOSE_BENCH_WORKERS" (str (:workers cell)) "GOOSE_BENCH_CONTROL" (name (:control cell))}
+                                (when (= mode "--instrument") {"GOOSE_BENCH_INSTRUMENT" "1" "LIGHT_CLJS_WAIT_TIMELINE" (str (fs/path dir "timeline.tsv")) "GOOSE_BENCH_ACTIVITY" (str (fs/path dir "activity.edn")) "GOOSE_BENCH_NATIVE" runner "GOOSE_COMPILER_RUNNER" (str (fs/path target "native-instrument-resources"))}))
                        _ (when (= mode "--instrument") (spit (str (fs/path dir "activity.edn")) ""))
                        started (System/nanoTime)
-                       _ (command e "/usr/bin/time" "-l" "-o" (str (fs/path dir "resources.txt")) binary "compiler_bootstrap::goose_capture::benchmark::final_benchmark" "--ignored" "--exact" "--test-threads=1")
+                       _ (command e "/usr/bin/time" "-l" "-o" (str (fs/path dir "resources.txt")) executable "compiler_bootstrap::goose_capture::benchmark::final_benchmark" "--ignored" "--exact" "--test-threads=1")
                        wall (- (System/nanoTime) started)
                        resources (slurp (str (fs/path dir "resources.txt")))
                        [_ _ user system] (re-find #"([0-9.]+) real\s+([0-9.]+) user\s+([0-9.]+) sys" resources)
@@ -153,7 +181,12 @@
                                     :phase-counts phase-counts :drain-lag drain-lag :cases (mapv #(dissoc % :directory) prepared) :cells cells
                                     :macro-timeout-seconds 120 :vm-limits {:nodes 100000 :values 1048576 :work 10000000 :steps-per-job 1000000}
                                     :unsupported-cells [{:case :heavier :engine :goose :workers 1 :control :serial :reason :retained-session-budget-exceeded}]
-                                    :rounds rounds :warmup (if (= mode "--measure") :one-complete-process-per-cell :none)
+                                    :rounds rounds :warmup (if (= mode "--measure") :one-complete-process-per-cell :none) :focus focus
+                                    :pair-order (when predecessor :alternating-adjacent-predecessor-current)
+                                    :predecessor (when predecessor {:revision (str/trim (slurp (str (fs/path predecessor "revision.txt"))))
+                                                                    :binary-sha256 (hash-file predecessor-binary) :native-sha256 (hash-file predecessor-native)
+                                                                    :native-source-sha256 (hash-file (fs/path predecessor "compiler_session.goose"))
+                                                                    :adapter-source-sha256 (hash-file (fs/path predecessor "src/goose_evaluator.rs"))})
                                     :debug debug? :revision (str/trim (command env "git" "rev-parse" "HEAD")) :diff-sha256 (hash-bytes (.getBytes (command env "git" "diff") "UTF-8"))
                                     :benchmark-source-sha256 (hash-file (fs/path directory "expanded-benchmark.bb")) :rust-source-sha256 (hash-file (fs/path directory "benchmark.rs")) :native-source-sha256 (hash-file native-source)
                                     :instrument-source-sha256 (when (= mode "--instrument") (hash-file (fs/path directory "expanded-instrument.bb")))
