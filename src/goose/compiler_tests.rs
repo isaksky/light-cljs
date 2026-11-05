@@ -880,7 +880,7 @@ pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
         .skip(2)
         .map(|n| n.parse::<u64>().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(n.len(), 18, "{line}");
+    assert_eq!(n.len(), 22, "{line}");
     JobsLine {
         retention: n[0],
         spawned: n[1],

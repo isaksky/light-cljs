@@ -334,7 +334,8 @@ November 5, 2026 (light-cljs-792). Does one fresh job worker per job
 (light-cljs-784) isolate more state than light-cljs needs? **Yes.** Every job
 must start from the clean image, but nothing needs a new thread program per
 job, which is what costs 5,283 sets of region setup a 200k session. This
-section amends decision 3; light-cljs-795 and -796 implement it, -785, -787,
+section amends decision 3; light-cljs-795 implements it (-796 measured its
+optional caches and declined them), -785, -787,
 -788, -790 and -791 carry "Amended by light-cljs-792" notes, and -786, -789
 and -794 (one image per thread program) stand as written. light-cljs-797
 revisited it without byte-identical output across worker counts, which the
@@ -482,7 +483,9 @@ moving allocation tops, and links are plain row IDs):
   the roots and helper-cache objects in their initial state). Prepared
   definitions and installed helpers may stay loaded in a worker if they are
   keyed by definition or unit key, out of JavaScript's reach, and added
-  between jobs; light-cljs-796 measures whether that pays. Extended prefixes
+  between jobs; light-cljs-796 measured that it does not pay on the 200k
+  project (below, "Measured (light-cljs-796)"), so today the image is all
+  that persists. If a later workload makes it pay: extended prefixes
   differ between workers, so a cache hit charges the job the rows and work
   its installation recorded (limit outcomes match a cold install), and a
   saved continuation carries every row above the coordinator's image it
@@ -587,8 +590,9 @@ light-cljs-799 builds the cells, light-cljs-798 the runtime `gensym`.
   a restored definition, an installed helper) faults with `NativeBoundary`
   before it mutates, as writes into the realm do today, instead of being
   undone silently by the reset. No 200k job makes one.
-- Unchanged: 795's reuse and retirement, 796's caches and their cold and
-  warm equality (requirement 2), root reads at the cursor, `gensym` as the
+- Unchanged: 795's reuse and retirement, the conditions on 796's caches
+  should they ever be built, among them cold and warm equality
+  (requirement 2), root reads at the cursor, `gensym` as the
   compiler's (the runtime leaf numbers in the expansion's generated-name
   scope, as V8's native mode does). Cell effects follow scheduling; the
   owner is where effect lanes (light-cljs-480) could order them if that is
@@ -641,6 +645,40 @@ job workers".
   routing by job address, cancellation, the input and readiness protocol,
   `supervise` (a contained abort still ends the session), root reads in every
   job. The `JOBS` line adds jobs run, workers retired and reset nanoseconds.
+
+**Measured (light-cljs-796, November 5, 2026): no per-worker definition or
+helper cache.** The cache would let a reused worker keep the prepared
+definitions it restored and the helpers it installed, so a later job skips
+`snapshot::extend` or `callable::decode_install`. light-cljs-796 set the bar
+before building it: if the two together take under 3% of Goose wall at one
+worker on the 200k check gate, record the figures and leave the runtime
+alone. The `JOBS` line gained four fields for this (the workers' snapshot
+installs above the image, their helper installs and their count, and the
+coordinator's time copying a prepared definition into a job and queueing
+it). On the 200k project, traced sessions at the default cap (evidence,
+"Definition and helper installs in reused workers"):
+
+| Workers | Snapshot installs (5,283) | Helper installs (529) | Coordinator hand-off | Share of Goose wall |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 78.0 ms (14.8 µs each) | 3.8 ms (7.3 µs each) | 43.9 ms | 0.52% (0.80% with the hand-off) |
+| 8 | 110.5 ms across the workers | 4.5 ms | 73.2 ms | hand-off 0.94%, on the coordinator |
+
+Together they are 0.08 s of 15.8 s at one worker, under a fifth of the 3% bar
+(0.46 s), so the cache is not built. A perfect cache saves at most the two
+worker-side columns: the hand-off stays unless jobs are routed to the worker
+that holds their definition, which the one `Work` queue deliberately does
+not do. Against that saving the cache costs the conditions above (limit
+charges recorded at the first install, saved continuations carrying cached
+rows and bindings between workers, cold and warm equality tests) and makes a
+worker's tables depend on its history. The larger per-job cost left is the
+queue-to-first-instruction latency, mostly the spawns of retired workers'
+successors (0.31 s summed at one worker, 0.93 s at eight; their joins, 0.34 s
+and 2.46 s, are off the critical path), which is light-cljs-791's.
+light-cljs-792's premise of 155.9 MB of spawn arguments and 153.9 MB of
+restores a session was a worker per job; with 795's reuse they are 131.8 MB
+(1,282 base images and the jobs' snapshots) and 102.6 MB (only rows above
+the image). Revisit only if a workload's definitions are much larger than
+the 200k project's (19 KB of restore a job).
 
 ### Runtime gensym in the compiler's scopes (light-cljs-798, November 5, 2026)
 

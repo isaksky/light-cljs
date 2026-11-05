@@ -278,10 +278,13 @@
         [_ created peak joined] (map #(some-> % parse-long) (re-find #"(?m)^THREADS 0 (\d+) (\d+) (\d+)$" text))
         ;; Reused contained job workers (light-cljs-795); the JOBS fields are
         ;; compiler_session.goose's `Jobs` totals: :spawned workers ran :jobs
-        ;; jobs, :retired of them at the table-byte cap, resetting for :reset-ns.
+        ;; jobs, :retired of them at the table-byte cap, resetting for :reset-ns;
+        ;; then the workers' snapshot and helper installs and the coordinator's
+        ;; definition hand-off (light-cljs-796).
         jobs (some->> (re-find #"(?m)^JOBS 0 ([\d ]+)$" text) second (#(str/split % #" ")) (map parse-long)
                       (zipmap [:retention :spawned :finals :spawn-ns :start-ns :join-ns :argument-bytes :restore-bytes
-                               :peak-live :peak-blocked :waits :saves :answers :live :blocked :jobs :retired :reset-ns]))
+                               :peak-live :peak-blocked :waits :saves :answers :live :blocked :jobs :retired :reset-ns
+                               :restore-ns :install-ns :installs :handoff-ns]))
         reapers (+ workers (:retention jobs 0))]
     (assert (str/includes? text "CLOSED 1") "Native Goose session did not close")
     (assert jobs "Missing job worker diagnostics")

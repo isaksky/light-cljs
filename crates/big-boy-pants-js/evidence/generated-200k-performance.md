@@ -1372,3 +1372,44 @@ $C --backend all --runner RUNNER --phase check --runs 1
 BBP_WORKER_TABLE_BYTES=16777216 $C --backend all --runner RUNNER --phase check --runs 1
 BBP_WORKER_TABLE_BYTES=0 $C --backend all --runner RUNNER --phase check --runs 1
 ```
+
+## Definition and helper installs in reused workers
+
+November 5, 2026 (light-cljs-796; decision in
+[javascript-coverage.md](../docs/javascript-coverage.md), "Measured
+(light-cljs-796)"). How much of a 200k session goes to installing prepared
+definitions and helpers in reused job workers, the work a per-worker cache
+would save. **Under 1% of Goose wall at one worker, against the pellet's 3%
+bar, so no cache was built.** The `JOBS` line now ends with the workers'
+snapshot-install nanoseconds (`snapshot::extend`), their helper-install
+nanoseconds and count (`callable::decode_install` on a helper-cache miss, or
+a bridge import), and the coordinator's hand-off nanoseconds (copying a
+prepared definition into a job and queueing it, spawns excluded).
+
+Binaries: light-cljs `--release --locked --features goose-macros` at this
+branch (SHA-256 `da7a41e8…`), runner `compiler_session.goose` at this branch
+(`e1fb35ce…`), master at `31d329fd`, default cap (1.25 MiB). Samples and the
+traced `JOBS` lines: `generated-200k-worker-installs.edn.gz`.
+
+**Check gate**, `compare.bb --backend all --phase check --runs 1`, one
+sample after one warmup a cell: passes, byte-identical with its five
+oracles. Goose 1/2/4/8 15.497 / 10.419 / 7.101 / 7.483 s, V8 5.688 s
+(light-cljs-795: 15.422 / 10.561 / 7.254 / 7.700 s; the runner only adds
+counters).
+
+**Traced sessions** (the runner in `readiness-test` mode with
+`BBP_RESET_CHECK=0` through a scratch wrapper set as `--runner`, `--backend
+goose`; Goose 1/2/4/8 15.788 / 10.746 / 7.319 / 7.778 s), the sample
+session's `JOBS` line:
+
+| Workers | Snapshot installs | Helper installs | Hand-off | Queue to first instruction | Joins | Spawn arguments | Restore copies |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 78.0 ms | 3.8 ms (529) | 43.9 ms | 311 ms | 335 ms | 131.8 MB | 102.6 MB |
+| 2 | 79.9 ms | 4.0 ms (529) | 46.3 ms | 336 ms | 432 ms | 131.8 MB | 102.6 MB |
+| 4 | 85.1 ms | 4.4 ms (529) | 54.1 ms | 451 ms | 790 ms | 131.8 MB | 102.6 MB |
+| 8 | 110.5 ms | 4.5 ms (529) | 73.2 ms | 926 ms | 2,457 ms | 131.8 MB | 102.6 MB |
+
+Every session ran 5,283 jobs, 5,283 snapshot installs (14.8 µs each at one
+worker) and 529 helper installs (7.3 µs each). The worker-side installs,
+what a cache could remove, are 81.8 ms, 0.52% of 15.788 s; with the
+hand-off, 0.80%. The warmup sessions agree within 8 ms.
