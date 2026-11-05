@@ -186,6 +186,11 @@ and Goose has no unions to box into.
 
 **Decision.** Memory is reclaimed by thread program.
 
+*Amended by light-cljs-792:* a job worker now serves many jobs and is reset
+to the image before each one; see
+[State isolation](#state-isolation-comparison-with-shadow-cljs). The bullets
+below describe the one-worker-per-job design that light-cljs-784 built.
+
 - A **session worker** owns the session image: the realm (decision 6), loaded
   namespaces and their initialized definitions, in its tables. They only grow
   for the session's life. (The memory pellet may instead give this role to
@@ -293,10 +298,169 @@ session image, so the memory pellet measures image size and spawn cost on the
 
 **Rejected.** *Long-lived workers that reset between jobs*: index-typed
 tables cannot shrink (fact 3), so a reset is impossible without raw IDs.
+(Withdrawn by light-cljs-792: a reset rewrites rows and moves an allocation
+top back, and nothing shrinks.)
 *A per-session append-only heap shared by all jobs*: jobs would see each
 other's mutations. *Copy-on-write of realm objects into a job overlay*: two
 kinds of object link and a lookup on every access. *Reference counting or a
 tracing collector over the tables*: ruled out by the user.
+
+## State isolation: comparison with shadow-cljs
+
+November 5, 2026 (light-cljs-792). Does one fresh job worker per job
+(light-cljs-784) isolate more state than light-cljs needs? **Yes.** Every job
+must start from the clean image, but nothing needs a new thread program per
+job, which is what costs 5,283 sets of region setup a 200k session. This
+section amends decision 3; light-cljs-795 and -796 implement it, and -785,
+-787, -788, -790 and -791 carry "Amended by light-cljs-792" notes.
+
+### What shadow-cljs shares
+
+Paths are under `research/shadow-cljs/src/main/shadow/` (3.5.5) unless named.
+
+- **Macro namespaces load once per process.** `build/macros.clj`
+  `load-macros` (86-121) requires each macro namespace under one global
+  `require-lock` (84), only if it is not yet in the process-wide
+  `active-macros-ref` (20): "since we can't isolate macros they will be
+  reloaded for all builds" (13-19). Watch mode reloads a changed macro file
+  once for every build (`cljs/devtools/server/reload_classpath.clj` 66-108).
+- **Macro state survives everything.** Expansion calls the macro's var in
+  the one heap of the Java virtual machine (`research/clojurescript/src/main/
+  clojure/cljs/analyzer.cljc`, `macroexpand-1*`, 4293-4309), so
+  macro-namespace vars, atoms and `defonce` values persist across calls,
+  namespaces and builds. `gensym` is the process-wide counter `RT.nextID`
+  (`research/clojure/src/clj/clojure/core.clj` 607-614,
+  `src/jvm/clojure/lang/RT.java` 274 and 500); shadow's `reify` type names
+  use it (`build/cljs_hacks.cljc` 784).
+- **One compiler environment per build, shared by threads.**
+  `with-compiler-env` binds one atom (`build/cljs_bridge.clj` 123-142);
+  `par-compile-cljs-sources` (`build/compiler.clj` 1278-1361) gives one task
+  per namespace to a pool of `availableProcessors` threads
+  (`cljs/devtools/server/common.clj` 76-83), conveying that atom with
+  `bound-fn` (1338); a task polls every 5 ms for its requires (1239-1262).
+  Per namespace only thread-bound analyzer variables are rebound
+  (`do-compile-cljs-resource`, 731-775: `*file-defs*`, warnings, and
+  `*unchecked-if*` "so it is thread bound, since the analyzer may set! it").
+- **Determinism is partial.** Outputs are reassembled by resource
+  (1352-1360) and warnings kept per namespace, but nothing orders macro side
+  effects or the gensym counter across threads. Namespaces that rely on macro
+  side effects, and their direct dependents, skip the cache
+  (`:cache-blockers`, default `clara.rules` and `clara.macros`: `build/api.clj`
+  110-117, `build/compiler.clj` 933-942). Upstream ClojureScript's
+  `:parallel-build` also shares one environment, with a global `load-mutex`
+  (`cljs/analyzer.cljc` 639, `cljs/closure.clj` 1048-1100).
+
+So shadow-cljs has no clean world per namespace, still less per macro call:
+one world per process for macro code and state, one compiler environment per
+build, and a thread pool over namespaces.
+
+### What light-cljs requires
+
+1. **Byte-identical output at every worker and slot count**, which
+   shadow-cljs does not promise. A job's result may depend only on the
+   session image, its arguments and the helpers resolved for it, never on
+   which worker ran it or what ran there before
+   (`docs/compiler-concurrency.md`, "Semantics and determinism"). The V8 path
+   kept persistent isolates and declared a macro's compile-time side effects
+   visible only in the isolate that made them (light-cljs-429), which keeps
+   output identical only for pure macros. Goose today keeps it for every
+   macro, because no job sees another's writes; the effects that must be
+   shared (gensym, counters) are owned and ordered by the coordinator
+   (`src/effects.goose`).
+2. **Root visibility as V8 had it** (light-cljs-776). The compiler resolves
+   `__lightCompilerRoots[name]` at the job's visibility cursor and the job
+   writes the answer into the roots object. A world reused across jobs may
+   cache a helper by its unit key, never by name.
+3. **Contained failures.** A VM fault, a limit or a cancellation ends one
+   job; a contained Goose abort ends the session (`supervise` in
+   `src/compiler_session.goose`).
+
+The minimum is therefore: **every job starts from the pristine image, and
+nothing it writes or allocates is reachable from a later job.** Nothing in
+light-cljs requires a fresh thread program for that.
+
+### What Goose's memory model requires
+
+- No collector: garbage goes only when a scope ends. A 200k job leaves 98.7%
+  of its nodes unreachable (median 5,841 rows; evidence, "One job worker per
+  job"), so a world never reset grows without bound; the retained serial
+  control exhausted its work quota on the heavier expanded workload
+  (`evidence/expanded-results.md`).
+- An index type names only a global array (P13), which never shrinks (P4,
+  P14), so a nested Goose scope cannot free a job's rows; a thread program's
+  exit can, and so can rewriting them in place later (P14).
+- Every growable array a thread program reaches, global tables included, is
+  a data-stack region mapped and unmapped at each spawn and exit (P12, P15);
+  making the tables globals (light-cljs-785) keeps the region count.
+
+A fresh thread program per job is a design choice. Decision 3 rejected
+long-lived workers because "a reset is impossible without raw IDs", but a
+reset needs only rewritten rows and an allocation point moved back.
+
+### Options
+
+Costs on the 200k project: 5,283 dispatches a session (5,226 macro starts and
+57 helper productions) from light-cljs-784's JOBS lines, and per job from
+P16 (native build, 1,000 jobs, workers of 44 to 48 regions).
+
+| Option | Persists across jobs | Determinism and failures | Spawns a session | Isolation cost a job |
+| --- | --- | --- | --- | --- |
+| (a) a fresh worker per job (784) | nothing | by construction; exit frees all | 5,283 | 361 µs at 1 worker (132 spawn to first instruction + 229 last publication to join), 2.7 ms at 8; P16 388-397 µs |
+| (a') (a) with fewer regions (791) | nothing | as (a) | 5,283 | about 7.5 µs a region and at least one region a table (P15): no route far below 300 µs inside bbp |
+| (b) a long-lived worker per slot, job tables in a nested scope | the image | needs the image rows restored | at most limit + retention | P16's truncated control: 6-24 µs; but index types cannot name local tables (P13), so links become raw integer IDs, which decision 2 excludes |
+| (c) a worker per namespace or batch | the image and the batch's garbage | carrying state across a namespace's jobs is deterministic only if they all run in order in one worker, which the scheduler does not promise (deferred units, helper productions); with a reset it is (d) with more spawns | about 500 (199,129 lines at the generator's 400 a namespace) | a tenth of (a), plus garbage that grows with the batch |
+| **(d) a reused worker with a job arena** | the image | the image is restored before every job, so each job sees what a fresh worker would, at the same rows; a VM fault's state goes at the next reset; an abort ends the session as now | at most limit + retention (784 measured peak live workers 2/3/8/16), plus retirements | P16: 13 µs (the queue round trip), plus the prefix restore (about 17 µs for a 1.28 MB image); pages reused |
+| (e) one shared world without reset (shadow-cljs) | everything | macro state differs between workers and with history; garbage unbounded | at most limit | none, but it breaks requirement 1 and memory |
+
+The 784 regression (+1.945/+1.419/+0.664/+1.366 s at 1/2/4/8 workers; system
+CPU 3.03 to 5.76 s at one worker and 4.88 to 22.14 s at eight) is the cost in
+row (a). Under (d) the projected isolation cost is about 5,283 × 15 µs,
+roughly 0.1 s a session, against about 1.9 s; light-cljs-795 measures it.
+
+### Decision
+
+Decision 3 is amended. The thread program still owns an image and frees its
+tables when it exits, but a job worker serves many jobs, and **a job is
+reclaimed by resetting a job arena**:
+
+- The coordinator, the image owner, spawns contained job workers on demand,
+  at most `limit + retention` live, and gives each job to an idle one. Its VM
+  tables do not change after `READY`, so every worker, whenever spawned,
+  inherits the same image (P10, P11).
+- A worker copies its image prefix (each table's rows up to the image
+  length, and one worker-global VM state struct) into local pristine twins
+  once. Before each job it restores both from the twins and sets every
+  table's allocation top back to the image length; the job appends at the
+  top, overwriting rows a previous job left (P14, P16), and within a job
+  nothing is reused. Frames, operands, bindings and bridge buffers are
+  locals of the per-job function and go when it returns.
+- Limits count the rows a job added above its starting tops. A worker retires
+  after a job once its tables exceed a byte cap, and the coordinator spawns a
+  successor from its unchanged image. A cap of zero retires a worker after
+  every job, which is (a) and serves as the differential control.
+- This is reclamation by the job's scope, not a heap allocator: the top is a
+  bump pointer reset when the job ends, like a Goose data stack; no free
+  list, per-object reuse or sweep, and links stay index types. A job's rows
+  start at the image length in every worker, so its heap layout is a fresh
+  worker's, and a saved continuation restores into any reset worker without
+  rebasing (its checking conversion validates links against the tops).
+- **What may persist:** the image only (the realm, the runtime leaves, and
+  the roots and helper-cache objects in their initial state). Prepared
+  definitions and installed helpers may stay loaded in a worker if they are
+  keyed by definition or unit key, out of JavaScript's reach, and added
+  between jobs; light-cljs-796 measures whether that pays. Nothing keyed by
+  root name, no write a job made to image rows and no row a job added
+  survives the job.
+- **Rules for the representation pellets** (light-cljs-785, -787, -788,
+  -790): every piece of VM state a job can change is a table row, a field of
+  the one worker-global state struct, or job-local; no lookup structure
+  (interned keys, shape transitions) keeps a job's additions anywhere the
+  prefix restore does not cover; the VM reads tops, not physical table
+  lengths. In tests a reset check compares the prefix and the struct with the
+  twins after every reset (light-cljs-795).
+
+Unchanged: light-cljs-794 (its premise, one image per thread program for its
+whole life, holds), -786 and -789 (they assume nothing about worker lifetime).
 
 ## Decision 4: control flow
 
@@ -531,7 +695,12 @@ Parts that still resemble a conventional heap, and why they stay:
   so a `WeakRef` target never dies and a `FinalizationRegistry` callback
   never runs during one. The specification permits this, but tests that
   expect collection will differ; light-cljs-769 owns the classification.
-- **Per-spawn image copies** grow with the session image. If it reaches
+- **The job arena reset** (light-cljs-792). Any VM state the reset misses
+  would leak one job's writes into the next on the same worker. The reset
+  restores whole table prefixes and one state struct rather than logging
+  writes, and a reset check compares them with their pristine twins in tests.
+- **Per-spawn image copies** grow with the session image (since
+  light-cljs-792 once per worker, with a prefix restore per job). If it reaches
   hundreds of megabytes, the copy dominates job cost; static data and a
   measured image budget are the mitigations.
 - **Process-wide typed queues** need routing of answers to the right job
@@ -592,3 +761,27 @@ checked and the result.
   340 to 351 microseconds for one with 44 (200 cycles, three rounds, native
   build). With `--stack-reserve 64M` the 44-stack worker still took 278
   microseconds, so the cost is per region, not per reserved byte.
+- **P13** (light-cljs-792). An index type over a local array is rejected:
+  "the array of an index type must be a global variable; a local or
+  parameter has no name where a type is declared (§3.11)". A job heap in a
+  nested scope cannot be linked by index types.
+- **P14** (light-cljs-792). `clear()` and `pop()` on an index-typed global
+  table are rejected ("cannot clear objects: an index type names objects, so
+  its length never goes down (§3.11)"), but rows can be overwritten: three
+  jobs each wrote image rows, linked one to the row they appended, and
+  restoring the two image rows from a pristine local copy before each job
+  undid every write, while the table kept all five rows.
+- **P15** (light-cljs-792). `goose check --stacks` on a worker that reaches
+  20 global growable tables and keeps 24 job-local arrays: "24 data stacks +
+  20 argument and global stacks = 44 regions". A global table costs a region
+  per worker, as a local array does.
+- **P16** (light-cljs-792). 1,000 jobs of 64-byte rows, native build, three
+  rounds; microseconds a job, including the queue round trip. A fresh
+  contained 44-region worker per job: 388-397 with no rows, 410-414 appending
+  6,000 rows (384 KB), 470-510 appending 18,000 (1.15 MB), 481-490 with a
+  1.28 MB image. One 48-region worker reused, restoring a 28-row image prefix
+  before each job and letting rows accumulate: 13.3-13.5, 41, 102-126. The
+  same with a job arena (allocation tops reset to the image length, rows
+  overwritten, in an index-typed table): 13.0-13.3, 22.5-22.9, 51-52, and
+  28.7-33.2 restoring a 1.28 MB prefix. Tables without index types truncated
+  after each job, option (b): 5.6-6.0, 10.7-12.9, 20.9-24.2.
