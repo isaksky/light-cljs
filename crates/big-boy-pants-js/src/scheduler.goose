@@ -91,14 +91,41 @@ fn perform(base: const snapshot::Snapshot&, work: const Work&, options: Options,
     }
     return copy(result);
 }
+// One VM heap per thread program (light-cljs-794): a pool worker builds no
+// heap; each job's restored heap lives in a `serve` program it spawns and
+// joins before taking the next job.
 thread_fn worker(base: snapshot::Snapshot, options: Options) {
     loop {
         let work = qget<Work>(); if work.stop { break; }
         if work.spec.delay_ms > 0 { sleep_ms(work.spec.delay_ms); }
-        var pure = effects::Authority {}; let started = clock_ns();
-        var result = perform(base, work, options, pure); result.execution_ns = clock_ns() - started;
-        while !qput(result) { if result.result_retries == 0 { assert(qput(Pressure { id: result.id })); } result.result_retries += 1; sleep_ms(1); }
+        assert(thread_wait(thread_spawn(serve, copy(base), copy(work), options)));
     }
+}
+thread_fn serve(base: snapshot::Snapshot, work: Work, options: Options) {
+    var pure = effects::Authority {}; let started = clock_ns();
+    var result = perform(base, work, options, pure); result.execution_ns = clock_ns() - started;
+    while !qput(result) { if result.result_retries == 0 { assert(qput(Pressure { id: result.id })); } result.result_retries += 1; sleep_ms(1); }
+}
+// The effect authority's flat twin. An ordered job runs in its own program
+// while the coordinator waits for it; the coordinator lends its authority for
+// exactly that span and adopts the returned state, so one authority exists at
+// any time and it never enters a VM snapshot.
+struct Lent { grants: effects::Grant[] = [], receipts: effects::Receipt[] = [], counters: i64[16] = [0; 16], next: i64 = 0, fail_id: i64 = -1, service_ns: i64 = 0 }
+fn lend(a: const effects::Authority&) -> Lent { return Lent { grants: copy(a.grants), receipts: copy(a.receipts), counters: a.counters, next: a.next, fail_id: a.fail_id, service_ns: a.service_ns }; }
+fn adopt(a: effects::Authority&, l: const Lent&) {
+    a.grants.clear(); a.grants.append(l.grants); a.receipts.clear(); a.receipts.append(l.receipts);
+    a.counters = l.counters; a.next = l.next; a.fail_id = l.fail_id; a.service_ns = l.service_ns;
+}
+struct Performed { result: Result, authority: Lent }
+thread_fn performer(base: snapshot::Snapshot, work: Work, options: Options, lent: Lent) {
+    var authority = effects::Authority {}; adopt(authority, lent);
+    let result = perform(base, work, options, authority);
+    assert(qput(Performed { result: copy(result), authority: lend(authority) }));
+}
+// perform, with the job's heap in a thread program of its own.
+fn perform_isolated(base: const snapshot::Snapshot&, work: const Work&, options: Options, authority: effects::Authority&) -> Result {
+    assert(thread_wait(thread_spawn(performer, copy(base), copy(work), options, lend(authority))));
+    let done = qget<Performed>(); adopt(authority, done.authority); return copy(done.result);
 }
 fn position(plan: const Plan&, id: i64) -> i64 { for spec, i in plan.jobs { if spec.id == id { return i; } } return -1; }
 fn terminal(run: const Run&, i: i64) -> dependency::Terminal { return run.table.cells[run.states[i].cell].terminal; }
@@ -219,7 +246,7 @@ fn dispatch(plan: const Plan&, base: const snapshot::Snapshot&, run: Run&, optio
                     if spec.ordered {
                         run.states[i].dispatched = true; run.states[i].starts += 1; run.admitted += 1; run.active += 1; run.peak = max(run.peak, run.active);
                         run.events.push(Event { kind: EventKind.Start, job: i, cell: run.states[i].cell });
-                        let started = clock_ns(); let result = perform(base, work, effective, authority); run.ordered_ns += clock_ns() - started;
+                        let started = clock_ns(); let result = perform_isolated(base, work, effective, authority); run.ordered_ns += clock_ns() - started;
                         accept(plan, base, run, effective, result); progress = true;
                         if options.cancel_after >= 0 && run.admitted >= options.cancel_after { run.cancelled = true; break; }
                     } else if qput(work) {

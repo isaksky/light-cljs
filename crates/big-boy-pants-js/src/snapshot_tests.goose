@@ -5,8 +5,48 @@ import .source_vm;
 import .form_bridge;
 import .vm;
 import .callable;
+import .heap_program;
 
+// Messages between the heap-free main and the thread programs that each own
+// one heap (light-cljs-794). A parent captures and publishes; each restore
+// runs in a program of its own.
+struct Saved { image: snapshot::Snapshot, identity: i64 = 0 }
+struct Handle { value: source::Value }
 fn isolation() {
+    heap_program::join(thread_spawn(isolation_parent)); let saved = qget<Saved>();
+    for n in [10, 20] {
+        heap_program::join(thread_spawn(isolation_worker, copy(saved.image), saved.identity, n)); let global = qget<Handle>();
+        heap_program::join(thread_spawn(isolation_reset, copy(saved.image), global.value));
+    }
+}
+thread_fn isolation_worker(saved: snapshot::Snapshot, parent: i64, n: i64) {
+    defer { heap_program::finish(); }
+    var artifact = bridge::Graph {};
+    {
+        var worker_code = source::Code {}; var heap = source::Heap { code: worker_code }; var roots: snapshot::Binding[>..] = [];
+        var r = snapshot::Control {}; assert(snapshot::restore(saved, worker_code, heap, roots, source::reserve_identity(), r));
+        assert(r.copied_bytes == snapshot::payload_bytes(saved) && heap.identity != parent);
+        let result = snapshot_test::verify(heap, roots, n);
+        let own, found = source::own_property(heap, roots[6].value, source::text(heap, "parentOnly")); assert(!found && own.tag == 0);
+        if n == 10 { var b = bridge::Control {}; assert(bridge::export_graph(heap, [result], artifact, b)); }
+        assert(qput(Handle { value: heap.global }));
+    }
+    // The exported form outlives the heap that produced it.
+    if n == 10 { var b = bridge::Control {}; assert(bridge::validate(artifact, b) && artifact.nodes.len > 0); }
+}
+// A reset is a fresh arena/identity; the old handle cannot authorize
+// replacement slot zero or carry cell immutability into a new object.
+thread_fn isolation_reset(saved: snapshot::Snapshot, old: source::Value) {
+    defer { heap_program::finish(); }
+    // The worker's code exactly as restore installs it, without its heap.
+    var worker_code = source::Code {};
+    worker_code.source_bytes.append(saved.code_bytes); worker_code.functions.append(saved.functions); worker_code.constants.append(saved.code_constants); worker_code.children.append(saved.children); worker_code.ops.append(saved.ops); worker_code.units.append(saved.code_units); source::decode(worker_code); worker_code.valid = true;
+    var reset = source::Heap { code: worker_code }; assert(source::initialize(reset));
+    assert(reset.global.a == 0 && !reset.nodes[0].immutable);
+    assert(!source::valid(reset, old) && reset.fault == source::Fault.StaleID);
+}
+thread_fn isolation_parent() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; var parent = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, parent, bindings);
     var c = snapshot::Control {}; let saved = snapshot::capture(parent, bindings, c);
     assert(c.error == snapshot::Error.None && c.snapshot_bytes == snapshot::footprint(saved) && c.copied_bytes == c.snapshot_bytes);
@@ -15,22 +55,8 @@ fn isolation() {
     parent.nodes[bindings[5].value.a].value = source::number(900);
     assert(source::install_field(parent, bindings[6].value, "parentOnly", source::number(99)));
     source::allocate(parent, source::Node { kind: 0 }); code.source_bytes.append(" ");
-    var artifact = bridge::Graph {};
-    for n in [10, 20] {
-        var worker_code = source::Code {}; var heap = source::Heap { code: worker_code }; var roots: snapshot::Binding[>..] = [];
-        var r = snapshot::Control {}; assert(snapshot::restore(saved, worker_code, heap, roots, source::reserve_identity(), r));
-        assert(r.copied_bytes == snapshot::payload_bytes(saved) && heap.identity != parent.identity);
-        let result = snapshot_test::verify(heap, roots, n);
-        let own, found = source::own_property(heap, roots[6].value, source::text(heap, "parentOnly")); assert(!found && own.tag == 0);
-        if n == 10 { var b = bridge::Control {}; assert(bridge::export_graph(heap, [result], artifact, b)); }
-        // A reset is a fresh arena/identity; the old handle cannot authorize
-        // replacement slot zero or carry cell immutability into a new object.
-        var reset = source::Heap { code: worker_code }; assert(source::initialize(reset));
-        assert(reset.global.a == 0 && !reset.nodes[0].immutable);
-        assert(!source::valid(reset, heap.global) && reset.fault == source::Fault.StaleID);
-    }
+    assert(qput(Saved { image: copy(saved), identity: parent.identity }));
     assert(parent.nodes[bindings[5].value.a].value.number == 900);
-    var b = bridge::Control {}; assert(bridge::validate(artifact, b) && artifact.nodes.len > 0);
     var encoded: u8[>..] = []; var enc = snapshot::Control {}; assert(snapshot::encode(saved, encoded, enc));
     assert(enc.copied_bytes == snapshot::footprint(saved) + encoded.len);
     var dec = snapshot::Control {}; let restored = snapshot::decode(encoded, dec); assert(dec.error == snapshot::Error.None && restored.len == 1);
@@ -41,9 +67,26 @@ fn isolation() {
     print("snapshot serial isolation/code/form ownership/codec cuts passed: bytes=", c.snapshot_bytes, " capture-ns=", c.capture_ns);
 }
 fn malformed() {
+    heap_program::join(thread_spawn(malformed_parent)); let saved = qget<Saved>(); let original .= saved.image;
+    for mode in 28 { heap_program::join(thread_spawn(malformed_target, copy(original), mode)); }
+    for mode in 2 { heap_program::join(thread_spawn(malformed_budget, copy(original), mode)); }
+    for identity in [0, original.header.base, original.header.checkpoint, 2147483648] { heap_program::join(thread_spawn(malformed_identity, copy(original), identity)); }
+    print("snapshot malformed version/length/link/generation/allocator/code and atomic budget rejection passed");
+}
+// The occupied source heap refuses a restore without changing.
+thread_fn malformed_parent() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, heap, bindings);
     var c = snapshot::Control {}; let original = snapshot::capture(heap, bindings, c); assert(c.error == snapshot::Error.None);
-    for mode in 28 {
+    assert(qput(Saved { image: copy(original) }));
+    let before_nodes = heap.nodes.len; let before_work = heap.work; let before_identity = heap.identity;
+    var occupied = snapshot::Control {};
+    assert(!snapshot::restore(original, code, heap, bindings, source::reserve_identity(), occupied) && occupied.error == snapshot::Error.Destination);
+    assert(heap.nodes.len == before_nodes && heap.work == before_work && heap.identity == before_identity && code.valid);
+}
+thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
+    defer { heap_program::finish(); }
+    {
         var bad = copy(original);
         match mode {
             0 => { bad.header.version = 1; }, 1 => { bad.header.allocator = 0; }, 2 => { bad.header.ends[6] -= 1; },
@@ -65,23 +108,23 @@ fn malformed() {
         assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), check));
         assert(check.error != snapshot::Error.None && !dest.valid && dest.ops.len == 0 && target.identity == 0 && target.nodes.len == 0 && roots.len == 0);
     }
-    for mode in 2 {
+}
+thread_fn malformed_budget(original: snapshot::Snapshot, mode: i64) {
+    defer { heap_program::finish(); }
+    {
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
         if mode == 0 { check.bytes = snapshot::footprint(original) - 1; } else { check.work = 1; }
         assert(!snapshot::restore(original, dest, target, roots, source::reserve_identity(), check));
         assert(check.error == (if mode == 0 { snapshot::Error.Bytes } else { snapshot::Error.Work }) && target.nodes.len == 0 && !dest.valid);
     }
-    for identity in [0, original.header.base, original.header.checkpoint, 2147483648] {
-        var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
-        assert(!snapshot::restore(original, dest, target, roots, identity, check) && check.error == snapshot::Error.Identity && target.identity == 0 && !dest.valid);
-    }
-    let before_nodes = heap.nodes.len; let before_work = heap.work; let before_identity = heap.identity;
-    var occupied = snapshot::Control {};
-    assert(!snapshot::restore(original, code, heap, bindings, source::reserve_identity(), occupied) && occupied.error == snapshot::Error.Destination);
-    assert(heap.nodes.len == before_nodes && heap.work == before_work && heap.identity == before_identity && code.valid);
-    print("snapshot malformed version/length/link/generation/allocator/code and atomic budget rejection passed");
 }
-fn live_boundary() {
+thread_fn malformed_identity(original: snapshot::Snapshot, identity: i64) {
+    defer { heap_program::finish(); }
+    var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
+    assert(!snapshot::restore(original, dest, target, roots, identity, check) && check.error == snapshot::Error.Identity && target.identity == 0 && !dest.valid);
+}
+thread_fn live_boundary() {
+    defer { heap_program::finish(); }
     // Adapted lifetime obligations from 158f0cb7/d87ac453:tests/gc.rs:
     // frame-local and operand-only objects survive yields in the existing Job;
     // our checkpoint boundary explicitly refuses to copy any live Job.
@@ -116,10 +159,16 @@ fn live_boundary() {
     assert(exhausted.error == snapshot::Error.Identity && exhausted.copied_bytes == 0 && no.nodes.len == 0);
     print("snapshot live operands/locals and terminal-owner rejection, retirement and identity exhaustion passed");
 }
+// Arena-reset translation of 8e0e6219:src/heap/mod.rs's stale
+// shareability/generation tests. There is no publication/import cache yet;
+// stale retained definition entries must fail the same handle validation.
+struct Stale { stale: source::Value, stale_text: source::Value, old_binding: snapshot::Binding }
 fn stale_classification() {
-    // Arena-reset translation of 8e0e6219:src/heap/mod.rs's stale
-    // shareability/generation tests. There is no publication/import cache yet;
-    // stale retained definition entries must fail the same handle validation.
+    heap_program::join(thread_spawn(stale_old)); let old = qget<Stale>();
+    heap_program::join(thread_spawn(stale_fresh, old));
+}
+thread_fn stale_old() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/calls.gsp"));
     var stale = source::Value {}; var stale_text = source::Value {};
     var old_binding = snapshot::Binding { id: 1, generation: 3, value: source::Value {} };
@@ -130,6 +179,12 @@ fn stale_classification() {
         for i in 64 { source::allocate(old, source::Node { kind: 0 }); }
         assert(source::valid(old, stale) && old.nodes[stale.a].immutable);
     }
+    assert(qput(Stale { stale: stale, stale_text: stale_text, old_binding: old_binding }));
+}
+thread_fn stale_fresh(old: Stale) {
+    defer { heap_program::finish(); }
+    let stale = old.stale; let stale_text = old.stale_text; let old_binding = old.old_binding;
+    var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/calls.gsp"));
     var fresh = source::Heap { code: code }; assert(source::initialize(fresh));
     let replacement = source::allocate(fresh, source::Node { kind: 0 }); let new_text = source::text(fresh, "new");
     assert(replacement.a == stale.a && new_text.a == stale_text.a && replacement.session != stale.session && !fresh.nodes[replacement.a].immutable);
@@ -141,7 +196,13 @@ fn stale_classification() {
 }
 // Symbol and BigInt constants on dead paths carry no session: capture,
 // restore and recapture keep them unchanged, and the restored code runs.
+struct Dormant { image: snapshot::Snapshot, constants: source::Value[], entry: i64 }
 fn dormant_constants() {
+    heap_program::join(thread_spawn(dormant_capture)); let saved = qget<Dormant>();
+    heap_program::join(thread_spawn(dormant_restore, copy(saved)));
+}
+thread_fn dormant_capture() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; let entry = snapshot_test::append(code, embed_file("../corpus/serial/dormant-constants.gsp"));
     var symbol: i64 = -1; var bigints: i64 = 0;
     for v, i in code.constants { if v.tag == 7 { bigints += 1; if symbol < 0 { symbol = i; } } }
@@ -150,16 +211,31 @@ fn dormant_constants() {
     code.constants[symbol] = source::Value { tag: 6, a: 7 };
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     var first = snapshot::Control {}; let saved = snapshot::capture(heap, [], first); assert(first.error == snapshot::Error.None);
+    assert(qput(Dormant { image: copy(saved), constants: copy(code.constants), entry: entry }));
+}
+thread_fn dormant_restore(dormant: Dormant) {
+    defer { heap_program::finish(); }
+    let saved .= dormant.image; let entry = dormant.entry;
     var restored_code = source::Code {}; var restored = source::Heap { code: restored_code }; var roots: snapshot::Binding[>..] = [];
     var restore = snapshot::Control {}; assert(snapshot::restore(saved, restored_code, restored, roots, source::reserve_identity(), restore));
-    for v, i in restored.constants { if v.tag >= 6 { assert(v.session == 0 && to_bytes([v]) == to_bytes([code.constants[i]])); } }
+    for v, i in restored.constants { if v.tag >= 6 { assert(v.session == 0 && to_bytes([v]) == to_bytes([dormant.constants[i]])); } }
     var second = snapshot::Control {}; snapshot::capture(restored, [], second); assert(second.error == snapshot::Error.None);
     let result = snapshot_test::invoke(restored, source::closure(restored, entry, []), []); assert(result.tag == 3 && result.number == 7);
     print("snapshot: dormant Symbol/BigInt constants survive capture, restore and recapture");
 }
 fn reused_destination() {
+    heap_program::join(thread_spawn(reused_parent)); let saved = qget<Saved>();
+    heap_program::join(thread_spawn(reused_target, copy(saved.image)));
+}
+thread_fn reused_parent() {
+    defer { heap_program::finish(); }
     var parent_code = source::Code {}; var parent = source::Heap { code: parent_code }; var original: snapshot::Binding[>..] = []; snapshot_test::prepare(parent_code, parent, original);
     var capture = snapshot::Control {}; let saved = snapshot::capture(parent, original, capture); assert(capture.error == snapshot::Error.None);
+    assert(qput(Saved { image: copy(saved) }));
+}
+// One destination heap, reset and reused for every restore.
+thread_fn reused_target(saved: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var job = source::Job { heap: heap };
     var stale = source::Value {};
     for n in [3, 20, 1, 50, 3, 20] {
@@ -184,9 +260,19 @@ fn reused_destination() {
     snapshot_test::verify(heap, roots, 7);
     print("reused code/heap/job destination: live/claimed/terminal guards, fresh IDs, alternating payloads, complete reset and transactional validation passed");
 }
-fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); live_boundary(); }
+// main builds no heap; every heap is its own thread program.
+fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); heap_program::join(thread_spawn(live_boundary)); }
 
+// The finite map's parent handles that restored heaps look up by index.
+struct FiniteMap { image: snapshot::Snapshot, input: source::Value, tail: source::Value, mapped: source::Value, callback: source::Value, alias: source::Value, other: source::Value, later_tail: source::Value }
 fn finite_map_ownership() {
+    heap_program::join(thread_spawn(finite_map_parent)); let parent = qget<FiniteMap>();
+    for i in 2 { heap_program::join(thread_spawn(finite_map_worker, copy(parent))); }
+    for mode in 12 { heap_program::join(thread_spawn(finite_map_malformed, copy(parent), mode)); }
+    print("finite mapSeq snapshots: immutable aliases, exclusive memo/capture/input ranges, bounded validation and transactional malformed restores passed");
+}
+thread_fn finite_map_parent() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/calls.gsp"));
     snapshot_test::append(code, embed_file("../corpus/serial/captures.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
@@ -204,7 +290,22 @@ fn finite_map_ownership() {
     let later_tail = source::form_sequence(heap, input, 1, false);
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: mapped }, snapshot::Binding { id: 1, generation: 1, value: mapped }], c);
     assert(c.error == snapshot::Error.None);
-    for i in 2 {
+    assert(qput(FiniteMap { image: copy(saved), input: input, tail: tail, mapped: mapped, callback: callback, alias: alias, other: other, later_tail: later_tail }));
+    assert(heap.nodes[mapped.a].kind == 15 && heap.nodes[mapped.a].length == 0);
+    // The scratch bitmap and aliased-range scans obey their own byte/work cuts.
+    var tight_bytes = snapshot::Control { bytes: snapshot::footprint(saved) + saved.values.len - 1 };
+    assert(!snapshot::memo_ranges(saved, tight_bytes) && tight_bytes.error == snapshot::Error.Bytes && tight_bytes.validation_peak == 0);
+    var exact = snapshot::Control {}; assert(snapshot::memo_ranges(saved, exact));
+    assert(exact.validation_peak == saved.values.len);
+    for cut in [saved.values.len - 1, exact.visited - 1] {
+        var tight_work = snapshot::Control { work: cut };
+        assert(!snapshot::memo_ranges(saved, tight_work) && tight_work.error == snapshot::Error.Work && tight_work.visited <= cut);
+    }
+}
+thread_fn finite_map_worker(parent: FiniteMap) {
+    defer { heap_program::finish(); }
+    let saved .= parent.image; let input = parent.input; let tail = parent.tail; let callback = parent.callback; let alias = parent.alias; let other = parent.other; let later_tail = parent.later_tail;
+    {
         var dest = source::Code {}; var worker = source::Heap { code: dest }; var bindings: snapshot::Binding[>..] = []; var control = snapshot::Control {};
         assert(snapshot::restore(saved, dest, worker, bindings, source::reserve_identity(), control));
         let value = bindings[0].value; assert(value.a == bindings[1].value.a && value.session == worker.identity);
@@ -223,8 +324,11 @@ fn finite_map_ownership() {
         assert(source::form_nth(worker, snapshot::relocated(other, worker.identity), 1).number == 3);
         source::retire(job);
     }
-    assert(heap.nodes[mapped.a].kind == 15 && heap.nodes[mapped.a].length == 0);
-    for mode in 12 {
+}
+thread_fn finite_map_malformed(parent: FiniteMap, mode: i64) {
+    defer { heap_program::finish(); }
+    let saved .= parent.image; let input = parent.input; let mapped = parent.mapped; let callback = parent.callback; let other = parent.other; let later_tail = parent.later_tail;
+    {
         var bad = copy(saved);
         if mode == 0 { bad.nodes[mapped.a].length = 3; }
         if mode == 1 { bad.nodes[mapped.a].start = bad.values.len; }
@@ -249,19 +353,16 @@ fn finite_map_ownership() {
         assert(snapshot::ends(empty) == [0; 14] && target.identity == 0 && !dest.valid && target.fault == source::Fault.None);
         var retry = snapshot::Control {}; assert(snapshot::restore(saved, dest, target, roots, source::reserve_identity(), retry));
     }
-    // The scratch bitmap and aliased-range scans obey their own byte/work cuts.
-    var tight_bytes = snapshot::Control { bytes: snapshot::footprint(saved) + saved.values.len - 1 };
-    assert(!snapshot::memo_ranges(saved, tight_bytes) && tight_bytes.error == snapshot::Error.Bytes && tight_bytes.validation_peak == 0);
-    var exact = snapshot::Control {}; assert(snapshot::memo_ranges(saved, exact));
-    assert(exact.validation_peak == saved.values.len);
-    for cut in [saved.values.len - 1, exact.visited - 1] {
-        var tight_work = snapshot::Control { work: cut };
-        assert(!snapshot::memo_ranges(saved, tight_work) && tight_work.error == snapshot::Error.Work && tight_work.visited <= cut);
-    }
-    print("finite mapSeq snapshots: immutable aliases, exclusive memo/capture/input ranges, bounded validation and transactional malformed restores passed");
 }
 
+struct Assembly { image: snapshot::Snapshot, a: source::Value }
 fn assembly_ownership() {
+    heap_program::join(thread_spawn(assembly_parent)); let parent = qget<Assembly>();
+    for i in 2 { heap_program::join(thread_spawn(assembly_restore, copy(parent), i)); }
+    print("snapshot assembly: sequence builtin, concatenated aliases and truncated-array holes restore into isolated private heaps");
+}
+thread_fn assembly_parent() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/calls.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); source::boot_runtime(heap);
     let a = source::allocate(heap, source::Node { kind: 11, value: source::number(7), origin: 2 });
@@ -280,7 +381,15 @@ fn assembly_ownership() {
     { var check = snapshot::Control {}; let image = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: grown }], check); assert(check.error == snapshot::Error.None && image.nodes.len == heap.nodes.len); }
     let roots = [snapshot::Binding { id: 0, generation: 1, value: array }, snapshot::Binding { id: 1, generation: 1, value: array }, snapshot::Binding { id: 2, generation: 1, value: joined }];
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, roots, c); assert(c.error == snapshot::Error.None);
-    for i in 2 {
+    assert(qput(Assembly { image: copy(saved), a: a }));
+    assert(heap.nodes[array.a].length == 1 && source::get(heap, array, source::key(heap, source::number(2))).tag == 0);
+    var bad = copy(saved); bad.nodes[array.a].length = bad.header.limits.values + 1;
+    var control = snapshot::Control {}; assert(!snapshot::validate(bad, control) && control.error == snapshot::Error.Allocator);
+}
+thread_fn assembly_restore(parent: Assembly, i: i64) {
+    defer { heap_program::finish(); }
+    let saved .= parent.image; let a = parent.a;
+    {
         var restored_code = source::Code {}; var restored = source::Heap { code: restored_code }; var bindings: snapshot::Binding[>..] = []; var control = snapshot::Control {};
         assert(snapshot::restore(saved, restored_code, restored, bindings, source::reserve_identity(), control));
         assert(bindings[0].value.a == bindings[1].value.a && bindings[0].value.session == restored.identity);
@@ -293,13 +402,15 @@ fn assembly_ownership() {
         for j in 1..3 { assert(source::get(restored, rarray, source::key(restored, source::number(j))).tag == 0); }
         assert(source::put(restored, rarray, source::key(restored, source::number(2)), source::number(i + 10)));
     }
-    assert(heap.nodes[array.a].length == 1 && source::get(heap, array, source::key(heap, source::number(2))).tag == 0);
-    var bad = copy(saved); bad.nodes[array.a].length = bad.header.limits.values + 1;
-    var control = snapshot::Control {}; assert(!snapshot::validate(bad, control) && control.error == snapshot::Error.Allocator);
-    print("snapshot assembly: sequence builtin, concatenated aliases and truncated-array holes restore into isolated private heaps");
 }
 
 fn argument_ownership() {
+    heap_program::join(thread_spawn(argument_parent)); let saved = qget<Saved>();
+    for n in [8, 9] { heap_program::join(thread_spawn(argument_restore, copy(saved.image), n)); }
+    print("snapshot arguments: escaped ownership, aliases, repeated calls, isolated restore and invalid range passed");
+}
+thread_fn argument_parent() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/arguments.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     var keeper: i64 = -1;
@@ -316,7 +427,13 @@ fn argument_ownership() {
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: getter }, snapshot::Binding { id: 1, generation: 1, value: arguments }, snapshot::Binding { id: 2, generation: 1, value: object }], c); assert(c.error == snapshot::Error.None);
     assert(source::install_field(heap, object, "n", source::number(99)));
     snapshot_test::invoke(heap, maker, [source::number(123)]);
-    for n in [8, 9] {
+    assert(qput(Saved { image: copy(saved) }));
+    var bad = copy(saved); bad.nodes[arguments.a].start = bad.values.len + 1;
+    var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+}
+thread_fn argument_restore(saved: snapshot::Snapshot, n: i64) {
+    defer { heap_program::finish(); }
+    {
         var worker_code = source::Code {}; var worker = source::Heap { code: worker_code }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
         assert(snapshot::restore(saved, worker_code, worker, roots, source::reserve_identity(), restore));
         let args = snapshot_test::invoke(worker, roots[0].value, []); assert(source::equal(worker, args, roots[1].value));
@@ -327,45 +444,72 @@ fn argument_ownership() {
         assert(source::get(worker, right, source::text(worker, "n")).number == n);
         assert(source::equal(worker, source::get(worker, roots[0].value, source::text(worker, "call")), worker.call_method));
     }
-    var bad = copy(saved); bad.nodes[arguments.a].start = bad.values.len + 1;
-    var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
-    print("snapshot arguments: escaped ownership, aliases, repeated calls, isolated restore and invalid range passed");
 }
 
 fn source_spans() {
+    heap_program::join(thread_spawn(source_span_parent)); let saved = qget<Saved>(); let id = qget<Handle>().value.a;
+    for offset in [1, 3, 4, 5] { for end in [false, true] { heap_program::join(thread_spawn(source_span_target, copy(saved.image), id, offset, end)); } }
+    print("snapshot multibyte source start/end corruption and invalid UTF8 rejected transactionally; prior snapshot/heap preserved");
+}
+thread_fn source_span_target(saved: snapshot::Snapshot, id: i64, offset: i64, end: bool) {
+    defer { heap_program::finish(); }
+    {
+        var bad = copy(saved); if end { bad.nodes[id].span_end = offset; } else { bad.nodes[id].span_start = offset; }
+        var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
+        assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), check) && check.error == snapshot::Error.Link && roots.len == 0 && target.nodes.len == 0 && !dest.valid);
+        var valid = snapshot::Control {}; assert(snapshot::validate(saved, valid));
+    }
+}
+thread_fn source_span_parent() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/calls.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     var graph = bridge::Graph {}; graph.bytes.append("é😀"); graph.sources.push(source::SourceRange { start: 0, count: 6 });
     graph.nodes.push(bridge::Form { tag: 2, number: 7, source: 0, span_start: 0, span_end: 6 }); graph.roots.push(0);
     var bc = bridge::Control {}; var values: source::Value[>..] = []; assert(bridge::import_graph(heap, graph, values, bc));
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: values[0] }], c); assert(c.error == snapshot::Error.None);
-    let id = values[0].a;
-    for offset in [1, 3, 4, 5] { for end in [false, true] {
-        var bad = copy(saved); if end { bad.nodes[id].span_end = offset; } else { bad.nodes[id].span_start = offset; }
-        var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
-        assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), check) && check.error == snapshot::Error.Link && roots.len == 0 && target.nodes.len == 0 && !dest.valid);
-        var valid = snapshot::Control {}; assert(snapshot::validate(saved, valid));
-    } }
+    assert(qput(Saved { image: copy(saved) })); assert(qput(Handle { value: values[0] }));
     var invalid = copy(saved); invalid.bytes[0] = 255; var check = snapshot::Control {}; assert(!snapshot::validate(invalid, check) && check.error == snapshot::Error.Link);
     assert(source::form_value(heap, values[0]).number == 7 && heap.live_jobs == 0);
-    print("snapshot multibyte source start/end corruption and invalid UTF8 rejected transactionally; prior snapshot/heap preserved");
 }
 
-fn callable_publication() {
-    var base_code = source::Code {}; snapshot_test::append(base_code, embed_file("../corpus/serial/calls.gsp"));
-    var base_heap = source::Heap { code: base_code }; assert(source::initialize(base_heap)); let runtime = source::boot_runtime(base_heap);
-    var capture = snapshot::Control {}; let base = snapshot::capture(base_heap, [snapshot::Binding { id: 0, generation: 1, value: runtime }], capture); assert(capture.error == snapshot::Error.None);
-    var code = source::Code {}; var producer = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
-    assert(snapshot::restore(base, code, producer, bindings, source::reserve_identity(), restore));
-    // A closure/cell graph with a runtime capture, a form DAG, two equal
-    // distinct occurrences and a repeated alias. Code is deliberately absent
-    // from the base and the consumer appends other code before import.
-    var extra = source::Code {}; extra.source_bytes.append("\n");
+// The producer's publication and the producer-side handles the consumers'
+// corruptions address.
+struct Published { wire: u8[], entry: i64, runtime: source::Value, rt_cell: source::Value, two: source::Value, forms: source::Value, cell: source::Value, function: source::Value }
+// A closure/cell graph with a runtime capture, a form DAG, two equal
+// distinct occurrences and a repeated alias. Code is deliberately absent
+// from the base and the consumer appends other code before import.
+fn extra_code(extra: source::Code&) {
+    extra.source_bytes.append("\n");
     extra.functions.push(source::Function { start: 0, count: 3, constants: 0, children: 0, params: 0, locals: 0, captures: 2, strict: true });
     for op, i in [46, 49, 15] { extra.ops.push(source::Op { code: op, arg: if i == 0 { 1 } else { 0 }, offset: [0, 3, 4][i], start: 0, end: 1, depth: [0, 1, 1][i] }); }
     // A second unreachable function must still be validated on publication.
     extra.functions.push(source::Function { start: 3, count: 2, constants: 0, children: 0, params: 0, locals: 0, captures: 0, strict: true });
     for op, i in [2, 15] { extra.ops.push(source::Op { code: op, arg: 0, offset: i, start: 0, end: 1, depth: i }); } extra.valid = true;
+}
+fn callable_publication() {
+    heap_program::join(thread_spawn(callable_base)); let saved = qget<Saved>(); let base .= saved.image;
+    heap_program::join(thread_spawn(callable_producer, copy(base))); let p = qget<Published>(); let wire .= p.wire;
+    for cut in [0, 1, wire.len / 2, wire.len - 1] { heap_program::join(thread_spawn(callable_cut, copy(base), str(wire[..cut]))); }
+    let records, parsed = from_bytes<callable::Publication[>..]>(wire); assert(parsed && records.len == 1);
+    for original in records {
+        for mode in -1..16 { heap_program::join(thread_spawn(callable_mode, copy(base), copy(original), copy(p), mode)); }
+        for limit in 2 { heap_program::join(thread_spawn(callable_limit, copy(base), copy(original), wire.len, limit)); }
+    }
+    print("callable code/capture relocation, runtime reconnection, occurrence aliases and transactional malformed/limited publication passed");
+}
+thread_fn callable_base() {
+    defer { heap_program::finish(); }
+    var base_code = source::Code {}; snapshot_test::append(base_code, embed_file("../corpus/serial/calls.gsp"));
+    var base_heap = source::Heap { code: base_code }; assert(source::initialize(base_heap)); let runtime = source::boot_runtime(base_heap);
+    var capture = snapshot::Control {}; let base = snapshot::capture(base_heap, [snapshot::Binding { id: 0, generation: 1, value: runtime }], capture); assert(capture.error == snapshot::Error.None);
+    assert(qput(Saved { image: copy(base) }));
+}
+thread_fn callable_producer(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var producer = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
+    assert(snapshot::restore(base, code, producer, bindings, source::reserve_identity(), restore));
+    var extra = source::Code {}; extra_code(extra);
     let entry = source::append_code(code, extra);
     let rt_cell = source::allocate(producer, source::Node { kind: 3, initialized: true, immutable: true, value: bindings[0].value });
     producer.source_bytes.append("a b"); producer.source_ranges.push(source::SourceRange { start: 0, count: 3 });
@@ -378,61 +522,66 @@ fn callable_publication() {
     let function = source::closure(producer, entry, [rt_cell, cell]);
     producer.nodes[function.a].immutable = true;
     var encoding = snapshot::Control {}; var wire: u8[>..] = []; assert(callable::encode(producer, base, function, wire, encoding, source::reserve_identity()));
-    for cut in [0, 1, wire.len / 2, wire.len - 1] {
+    assert(qput(Published { wire: copy(wire), entry: entry, runtime: bindings[0].value, rt_cell: rt_cell, two: two, forms: forms, cell: cell, function: function }));
+}
+// A truncated publication installs nothing into a fresh consumer.
+thread_fn callable_cut(base: snapshot::Snapshot, wire: u8[]) {
+    defer { heap_program::finish(); }
+    var target_code = source::Code {}; var target = source::Heap { code: target_code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
+    assert(snapshot::restore(base, target_code, target, roots, source::reserve_identity(), sc));
+    var check = snapshot::Control {}; callable::decode_install(wire, base.header, target_code, target, check);
+    assert(check.error != snapshot::Error.None && target.nodes.len == base.nodes.len && target_code.functions.len == base.functions.len);
+}
+thread_fn callable_mode(base: snapshot::Snapshot, original: callable::Publication, p: Published, mode: i64) {
+    defer { heap_program::finish(); }
+    let entry = p.entry; let rt_cell = p.rt_cell; let two = p.two; let forms = p.forms; let cell = p.cell; let function = p.function;
+    var extra = source::Code {}; extra_code(extra);
+    {
         var target_code = source::Code {}; var target = source::Heap { code: target_code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
-        assert(snapshot::restore(base, target_code, target, roots, source::reserve_identity(), sc));
-        var check = snapshot::Control {}; callable::decode_install(wire[..cut], base.header, target_code, target, check);
-        assert(check.error != snapshot::Error.None && target.nodes.len == base.nodes.len && target_code.functions.len == base.functions.len);
-    }
-    let records, parsed = from_bytes<callable::Publication[>..]>(wire); assert(parsed && records.len == 1);
-    for original in records {
-        for mode in -1..16 {
-            var target_code = source::Code {}; var target = source::Heap { code: target_code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
-            assert(snapshot::restore(base, target_code, target, roots, source::reserve_identity(), sc)); source::append_code(target_code, extra);
-            // extra has no constants, so heap/code constant counts still agree.
-            var bad = copy(original);
-            match mode {
-                0 => { bad.version += 1; }, 1 => { bad.base.checkpoint += 1; },
-                2 => { bad.image.ops[bad.image.ops.len - 1].arg = 1; }, // unreachable return operand
-                3 => { bad.image.nodes[cell.a].immutable = false; },
-                4 => { bad.image.nodes[cell.a].kind = 0; },
-                5 => { bad.image.values[bad.image.nodes[forms.a].start] = bad.image.bindings[0].value; }, // form cycle
-                6 => { bad.image.nodes[function.a].function = bad.image.functions.len; },
-                7 => { bad.image.nodes[rt_cell.a].value = bad.image.header.global; },
-                8 => { bad.image.units[0] = 255; },
-                9 => { bad.image.nodes[two.a].span_start = 4; },
-                10 => { bad.image.functions[entry].start = 0; },
-                11 => { bad.image.nodes[forms.a].metadata = bad.image.bindings[0].value; },
-                12 => { bad.image.nodes[function.a].count += 1; },
-                13 => { bad.image.nodes[rt_cell.a].initialized = false; },
-                14 => { bad.image.code_bytes[0] = 32; },
-                15 => { bad.image.nodes[bindings[0].value.a].length += 1; }, _ => {},
-            }
-            let before = snapshot::capture(target, roots, sc); assert(sc.error == snapshot::Error.None);
-            var encoded: u8[>..] = []; to_bytes([bad], encoded);
-            var check = snapshot::Control {}; let imported = callable::decode_install(encoded, base.header, target_code, target, check);
-            if mode >= 0 {
-                assert(check.error != snapshot::Error.None);
-                var after = snapshot::Control {}; var unchanged = snapshot::capture(target, roots, after); unchanged.header.checkpoint = before.header.checkpoint; assert(after.error == snapshot::Error.None);
-                var left: u8[>..] = []; var right: u8[>..] = []; to_bytes([before], left); to_bytes([unchanged], right); assert(left == right);
-            } else {
-                assert(check.error == snapshot::Error.None && imported.tag == 5);
-                assert(target.nodes[imported.a].function == entry + extra.functions.len && target.nodes[imported.a].immutable);
-                let n = target.nodes[imported.a]; let captured = target.nodes[target.values[n.start].a].value;
-                assert(captured.a == roots[0].value.a && captured.session == target.identity);
-                let result = snapshot_test::invoke(target, imported, []); let x = source::form_nth(target, result, 0); let y = source::form_nth(target, result, 1);
-                assert(x.a != y.a && x.a == source::form_nth(target, result, 2).a && source::form_equal(target, x, y));
-                assert(target.nodes[x.a].span_start == 0 && target.nodes[y.a].span_start == 2);
-                assert(target.nodes[x.a].metadata.a == target.nodes[y.a].metadata.a && target.nodes[target.nodes[x.a].metadata.a].kind == 7);
-                var valid = snapshot::Control {}; let finished = snapshot::capture(target, roots, valid); assert(valid.error == snapshot::Error.None);
-            }
+        assert(snapshot::restore(base, target_code, target, roots, source::reserve_identity(), sc)); source::append_code(target_code, extra);
+        // extra has no constants, so heap/code constant counts still agree.
+        var bad = copy(original);
+        match mode {
+            0 => { bad.version += 1; }, 1 => { bad.base.checkpoint += 1; },
+            2 => { bad.image.ops[bad.image.ops.len - 1].arg = 1; }, // unreachable return operand
+            3 => { bad.image.nodes[cell.a].immutable = false; },
+            4 => { bad.image.nodes[cell.a].kind = 0; },
+            5 => { bad.image.values[bad.image.nodes[forms.a].start] = bad.image.bindings[0].value; }, // form cycle
+            6 => { bad.image.nodes[function.a].function = bad.image.functions.len; },
+            7 => { bad.image.nodes[rt_cell.a].value = bad.image.header.global; },
+            8 => { bad.image.units[0] = 255; },
+            9 => { bad.image.nodes[two.a].span_start = 4; },
+            10 => { bad.image.functions[entry].start = 0; },
+            11 => { bad.image.nodes[forms.a].metadata = bad.image.bindings[0].value; },
+            12 => { bad.image.nodes[function.a].count += 1; },
+            13 => { bad.image.nodes[rt_cell.a].initialized = false; },
+            14 => { bad.image.code_bytes[0] = 32; },
+            15 => { bad.image.nodes[p.runtime.a].length += 1; }, _ => {},
         }
-        for limit in 2 {
-            var target_code = source::Code {}; var target = source::Heap { code: target_code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
-            assert(snapshot::restore(base, target_code, target, roots, source::reserve_identity(), sc));
-            var check = snapshot::Control {}; if limit == 0 { check.bytes = wire.len; } else { check.work = 1; }
-            callable::install(original, base.header, target_code, target, check); assert(check.error != snapshot::Error.None && target.nodes.len == base.nodes.len && target_code.functions.len == base.functions.len);
+        let before = snapshot::capture(target, roots, sc); assert(sc.error == snapshot::Error.None);
+        var encoded: u8[>..] = []; to_bytes([bad], encoded);
+        var check = snapshot::Control {}; let imported = callable::decode_install(encoded, base.header, target_code, target, check);
+        if mode >= 0 {
+            assert(check.error != snapshot::Error.None);
+            var after = snapshot::Control {}; var unchanged = snapshot::capture(target, roots, after); unchanged.header.checkpoint = before.header.checkpoint; assert(after.error == snapshot::Error.None);
+            var left: u8[>..] = []; var right: u8[>..] = []; to_bytes([before], left); to_bytes([unchanged], right); assert(left == right);
+        } else {
+            assert(check.error == snapshot::Error.None && imported.tag == 5);
+            assert(target.nodes[imported.a].function == entry + extra.functions.len && target.nodes[imported.a].immutable);
+            let n = target.nodes[imported.a]; let captured = target.nodes[target.values[n.start].a].value;
+            assert(captured.a == roots[0].value.a && captured.session == target.identity);
+            let result = snapshot_test::invoke(target, imported, []); let x = source::form_nth(target, result, 0); let y = source::form_nth(target, result, 1);
+            assert(x.a != y.a && x.a == source::form_nth(target, result, 2).a && source::form_equal(target, x, y));
+            assert(target.nodes[x.a].span_start == 0 && target.nodes[y.a].span_start == 2);
+            assert(target.nodes[x.a].metadata.a == target.nodes[y.a].metadata.a && target.nodes[target.nodes[x.a].metadata.a].kind == 7);
+            var valid = snapshot::Control {}; let finished = snapshot::capture(target, roots, valid); assert(valid.error == snapshot::Error.None);
         }
     }
-    print("callable code/capture relocation, runtime reconnection, occurrence aliases and transactional malformed/limited publication passed");
+}
+thread_fn callable_limit(base: snapshot::Snapshot, original: callable::Publication, wire_bytes: i64, limit: i64) {
+    defer { heap_program::finish(); }
+    var target_code = source::Code {}; var target = source::Heap { code: target_code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
+    assert(snapshot::restore(base, target_code, target, roots, source::reserve_identity(), sc));
+    var check = snapshot::Control {}; if limit == 0 { check.bytes = wire_bytes; } else { check.work = 1; }
+    callable::install(original, base.header, target_code, target, check); assert(check.error != snapshot::Error.None && target.nodes.len == base.nodes.len && target_code.functions.len == base.functions.len);
 }

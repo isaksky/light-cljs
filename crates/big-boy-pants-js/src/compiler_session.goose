@@ -74,27 +74,42 @@ struct SerialDefinition { key: i64, function: source::Value }
 fn definition(directory: const u8[:], id: i64) -> i64 {
     var bytes: u8[>..] = []; assert(read_file(str(directory, "/", id, ".definition"), bytes)); let key, ok = parse_int(bytes); assert(ok && key > 0); return key;
 }
-// Preparation runs once in the coordinator, before admission. It cannot invoke
-// compiler callbacks: those remain body effects in private resumable jobs.
-fn initialize(id: i64, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64) -> source::Value, bool {
+// Preparation runs before admission, in a thread program the coordinator
+// spawns and joins (light-cljs-794: the coordinator's base image is its only
+// heap). It cannot invoke compiler callbacks: those remain body effects in
+// private resumable jobs. A failure's ERROR line goes to report.
+fn initialize(id: i64, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64, report: u8[>..]&) -> source::Value, bool {
     var job = source::Job { heap: heap, protected_nodes: protected }; defer { source::retire(job); }
     if !source::start(job, callee, args) || source::run(job, -1) != tiny::Outcome.Complete {
         let pc = job.fault_pc; let start = if pc >= 0 && pc < heap.code.ops.len { heap.code.ops[pc].start } else { -1 }; let end = if pc >= 0 && pc < heap.code.ops.len { heap.code.ops[pc].end } else { -1 };
         var fault: u8[>..] = []; source::describe_fault(fault, heap.code, job);
-        print("ERROR ", id, " preparation-", fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end); flush_stdout(); return source::Value {}, false;
+        format(report, "ERROR ", id, " preparation-", fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end); return source::Value {}, false;
     }
     return job.result, true;
 }
-fn prepare(base: const snapshot::Snapshot&, directory: const u8[:], id: i64, key: i64) -> snapshot::Snapshot, bool {
-    let started = clock_ns(); var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
-    assert(snapshot::restore(base, code, heap, bindings, source::reserve_identity(), sc)); let rt = bindings[0].value;
+fn initialize(id: i64, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64) -> source::Value, bool {
+    var report: u8[>..] = []; let value, ok = initialize(id, heap, callee, args, protected, report); if !ok { print(report); flush_stdout(); } return value, ok;
+}
+// The prepared definition snapshot, or the ERROR line that refused it.
+struct Preparation { ok: bool = false, image: snapshot::Snapshot = snapshot::Snapshot {}, report: u8[] = [] }
+thread_fn preparer(base: snapshot::Snapshot, directory: u8[], id: i64, key: i64, identity: i64) {
+    var report: u8[>..] = [];
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, bindings, identity, sc)); let rt = bindings[0].value;
     let entry = append(code, heap, str(directory, "/definition-", key, ".gsp")); assert(entry >= 0);
-    let factory, loaded = initialize(id, heap, source::closure(heap, entry, []), [], base.nodes.len); if !loaded { return snapshot::Snapshot {}, false; }
-    let function, ready = initialize(id, heap, factory, [rt], base.nodes.len); if !ready { return snapshot::Snapshot {}, false; }
-    if !source::valid(heap, function) || function.tag != 5 || heap.nodes[function.a].kind != 2 { print("ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); flush_stdout(); return snapshot::Snapshot {}, false; }
+    let factory, loaded = initialize(id, heap, source::closure(heap, entry, []), [], base.nodes.len, report); if !loaded { assert(qput(Preparation { report: copy(report) })); return; }
+    let function, ready = initialize(id, heap, factory, [rt], base.nodes.len, report); if !ready { assert(qput(Preparation { report: copy(report) })); return; }
+    if !source::valid(heap, function) || function.tag != 5 || heap.nodes[function.a].kind != 2 { format(report, "ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
     heap.initializer_count += 1;
     let result = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: function }], sc); assert(sc.error == snapshot::Error.None);
-    print("PREPARED ", id, " ", key); print("COST ", id, " ", clock_ns() - started, " 0"); flush_stdout(); return copy(result), true;
+    assert(qput(Preparation { ok: true, image: copy(result) }));
+}
+// COST covers the preparer's spawn, base copy and join as well as its work.
+fn prepare(base: const snapshot::Snapshot&, directory: const u8[:], id: i64, key: i64) -> snapshot::Snapshot, bool {
+    let started = clock_ns();
+    assert(thread_wait(thread_spawn(preparer, copy(base), str(directory), id, key, source::reserve_identity())));
+    let p = qget<Preparation>(); if !p.ok { print(p.report); flush_stdout(); return snapshot::Snapshot {}, false; }
+    print("PREPARED ", id, " ", key); print("COST ", id, " ", clock_ns() - started, " 0"); flush_stdout(); return copy(p.image), true;
 }
 thread_fn input(directory: u8[], deterministic: bool) {
     var count: i64 = 0;
@@ -374,6 +389,14 @@ fn resume(w: Waiting&, mode: i64, helper: const u8[:], key: i64, is_callable: bo
 fn unblock(waiting: Waiting[>..]&, address: i64, thread: i64, counts: Counts&) {
     for w in waiting { if w.active && w.address != 0 && (w.address == address || w.thread == thread) { w.active = false; counts.blocked -= 1; } }
 }
+// The profile mode's restore, in a thread program of its own.
+struct Restored { restore_ns: i64, copied_bytes: i64 }
+thread_fn profile_restore(base: snapshot::Snapshot, identity: i64) {
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, bindings, identity, restore)); assert(qput(Restored { restore_ns: restore.restore_ns, copied_bytes: restore.copied_bytes }));
+}
+// The coordinator builds the base image and no other heap; preparation and
+// every job run in thread programs it spawns.
 fn main() {
     let arguments = args(); assert(arguments.len == 3 || arguments.len == 4); var directory: u8[>..] = []; directory.append(arguments[1]); let limit, valid = parse_int(arguments[2]); assert(valid && limit >= 1 && limit <= 8);
     let beginning = clock_ns(); var code = source::Code {}; assert(load(code, str(directory, "/base.gsp")) >= 0); let loaded = clock_ns(); var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let roots = source::allocate(heap, source::Node { kind: 0 }); assert(source::install_field(heap, heap.global, "__lightCompilerRoots", roots));
@@ -385,7 +408,7 @@ fn main() {
         var checksum: i64 = 0; let barrier_started = clock_ns(); for i in 1000 { checksum += consume(base); } let barrier_ns = clock_ns() - barrier_started; let started = clock_ns();
         for i in 1000 { var copied = copy(base); copied.header.work += i; checksum += consume(copied); }
         let copy_ns = clock_ns() - started; let validating = clock_ns(); var validation = snapshot::Control {}; assert(snapshot::validate(base, validation)); let validation_ns = clock_ns() - validating;
-        var restored_code = source::Code {}; var restored_heap = source::Heap { code: restored_code }; var bindings: snapshot::Binding[>..] = []; var restore = snapshot::Control {}; assert(snapshot::restore(base, restored_code, restored_heap, bindings, source::reserve_identity(), restore));
+        assert(thread_wait(thread_spawn(profile_restore, copy(base), source::reserve_identity()))); let restore = qget<Restored>();
         print("{:snapshot-bytes ", snapshot::footprint(base), " :capture-copy-bytes ", sc.copied_bytes, " :capture-ns ", sc.capture_ns, " :raw-copy-repeats 1000 :raw-copy-ns ", copy_ns, " :raw-barrier-only-ns ", barrier_ns, " :raw-copy-payload-bytes ", snapshot::payload_bytes(base) * 1000, " :validation-ns ", validation_ns, " :validation-visits ", validation.visited, " :validation-peak-bytes ", validation.validation_peak, " :restore-ns ", restore.restore_ns, " :restore-copy-bytes ", restore.copied_bytes, " :peak-rss-native ", peak_memory(), " :checksum ", checksum, "}"); return;
     }
     let deterministic = arguments.len == 4 && arguments[3] == "dispatch-test"; let cleanup_test = arguments.len == 4 && arguments[3] == "cleanup-abort-test"; let tracing = instrumented || deterministic || cleanup_test || (arguments.len == 4 && arguments[3] == "readiness-test");

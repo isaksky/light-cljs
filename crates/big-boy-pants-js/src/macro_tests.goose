@@ -3,6 +3,7 @@ import .program;
 import .source_vm;
 import .vm;
 import .form_bridge;
+import .heap_program;
 
 fn decode(code: source::Code&, bytes: const u8[:]) {
     var image = program::Image {}; assert(program::install(image, bytes) == program::Error.None); assert(source::load(code, image));
@@ -17,14 +18,16 @@ fn macro_factory(heap: source::Heap&, rt: source::Value) -> source::Value {
     let factory = invoke(heap, source::closure(heap, 0, []), []);
     let result = invoke(heap, factory, [rt]); heap.initializer_count += 1; return result;
 }
-fn churn() {
+thread_fn churn() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, embed_file("../corpus/churn-churn.pants.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap);
     let macro = macro_factory(heap, rt);
     for n in [0, 16, 100] { let result = invoke(heap, macro, [source::nil(), source::nil(), source::number(n)]); assert(result.tag == 3 && result.number == (if n == 0 { 0 } else if n == 16 { 168 } else { 5250 })); }
     assert(heap.boot_count == 1 && heap.initializer_count == 1); print("real emitted churn: 0/16/100 passed, boot=1 initializer=1");
 }
-fn closure() {
+thread_fn closure() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, embed_file("../corpus/closure-captured.pants.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let macro = macro_factory(heap, rt);
     let input = source::form_collection(heap, 6, [source::number(1), source::number(2), source::number(3)]);
@@ -35,11 +38,22 @@ fn closure() {
     }
     print("real emitted captured closure/mapv passed");
 }
-fn main() { churn(); closure(); bridge_smoke(); callbacks_and_failures(); finite_maps(); unsupported_effect(); }
+// main builds no heap; each heap-building test is its own thread program.
+fn main() {
+    heap_program::join(thread_spawn(churn)); heap_program::join(thread_spawn(closure)); heap_program::join(thread_spawn(bridge_smoke)); heap_program::join(thread_spawn(callbacks_and_failures));
+    finite_maps(); heap_program::join(thread_spawn(unsupported_effect));
+}
 
 fn finite_maps() {
+    for cut in 8 { heap_program::join(thread_spawn(finite_map_cut, cut)); }
+    for mode in 6 { heap_program::join(thread_spawn(finite_map_limit, mode)); }
+    heap_program::join(thread_spawn(finite_map_reset));
+    print("finite mapSeq: deferred memo, all budget cuts, value/work/frame/instruction limits passed");
+}
+thread_fn finite_map_cut(cut: i64) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, embed_file("../corpus/closure-captured.pants.gsp"));
-    for cut in 8 {
+    {
         var heap = source::Heap { code: code }; assert(source::initialize(heap));
         let callback = source::builtin(heap, 1);
         let input = source::form_collection(heap, 5, [source::number(1), source::number(2), source::number(3)]);
@@ -52,14 +66,18 @@ fn finite_maps() {
         for i in 3 { assert(source::form_nth(heap, mapped, i).number == i + 2); }
         assert(!source::demand_map(job, mapped)); source::retire(job);
     }
-    for mode in 6 {
+}
+thread_fn finite_map_limit(mode: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, embed_file("../corpus/closure-captured.pants.gsp"));
+    {
         var heap = source::Heap { code: code }; assert(source::initialize(heap));
         let callback = source::builtin(heap, 1); let input = source::form_collection(heap, 5, [source::number(1), source::number(2)]);
         let values = heap.values.len;
         if mode == 0 { heap.limits.values = values + 1; }
         if mode == 1 { heap.limits.work = heap.work + 1; }
         let mapped = source::native_value(heap, 17, [callback, input]);
-        if mode < 2 { assert(heap.fault == (if mode == 0 { source::Fault.MemoryLimit } else { source::Fault.WorkLimit }) && heap.values.len == values); continue; }
+        if mode < 2 { assert(heap.fault == (if mode == 0 { source::Fault.MemoryLimit } else { source::Fault.WorkLimit }) && heap.values.len == values); return; }
         var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
         if mode == 2 { heap.limits.frames = 1; assert(!source::demand_map(job, mapped) && heap.fault == source::Fault.StackLimit); }
         else {
@@ -70,6 +88,10 @@ fn finite_maps() {
         }
         source::retire(job);
     }
+}
+thread_fn finite_map_reset() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, embed_file("../corpus/closure-captured.pants.gsp"));
     {
         var heap = source::Heap { code: code }; assert(source::initialize(heap));
         let input = source::form_collection(heap, 5, [source::number(1), source::number(2), source::number(3)]);
@@ -83,10 +105,10 @@ fn finite_maps() {
         assert(job.steps == 5 && source::form_nth(heap, mapped, 2).number == 4);
         source::retire(job);
     }
-    print("finite mapSeq: deferred memo, all budget cuts, value/work/frame/instruction limits passed");
 }
 
-fn bridge_smoke() {
+thread_fn bridge_smoke() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, embed_file("../corpus/closure-captured.pants.gsp"));
     var output = bridge::Graph {};
     {
@@ -109,7 +131,8 @@ fn bridge_smoke() {
     print("structured compiler forms: equal distinct occurrences/repeated aliases and independent output passed");
 }
 
-fn callbacks_and_failures() {
+thread_fn callbacks_and_failures() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, embed_file("../corpus/closure-captured.pants.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let macro = macro_factory(heap, rt);
     let a = source::allocate(heap, source::Node { kind: 11, value: source::number(1), origin: 0, span_start: 0, span_end: 1 });
@@ -128,7 +151,8 @@ fn callbacks_and_failures() {
     source::boot_runtime(heap); assert(heap.fault == source::Fault.InvalidState && heap.boot_count == 1); heap.fault = source::Fault.None;
     print("native mapv: every slice preserves callback allocations and distinct scalar occurrences; error/reuse passed");
 }
-fn unsupported_effect() {
+thread_fn unsupported_effect() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, embed_file("../corpus/effect-announce.pants.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let macro = macro_factory(heap, rt);
     var job = source::Job { heap: heap }; assert(source::start(job, macro, [source::nil(), source::nil(), source::number(7)]));

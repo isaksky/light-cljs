@@ -18,13 +18,13 @@ fn same(a: source::Node, b: source::Node) -> bool {
     y.value = normalized(y.value); y.namespace_value = normalized(y.namespace_value); y.metadata = normalized(y.metadata);
     return bytes_of([x]) == bytes_of([y]);
 }
-fn code_prefix(p: const Publication&, code: const source::Code&, c: snapshot::Control&) -> bool {
+fn code_prefix(p: const Publication&, bytes: const u8[:], functions: const source::Function[:], constants: const source::Value[:], children: const i64[:], ops: const source::Op[:], units: const u16[:], c: snapshot::Control&) -> bool {
     let s .= p.image; let e = p.base.ends;
     let lengths:     i64[6] = [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len];
-    let destination: i64[6] = [code.source_bytes.len, code.functions.len, code.constants.len, code.children.len, code.ops.len, code.units.len];
+    let destination: i64[6] = [bytes.len, functions.len, constants.len, children.len, ops.len, units.len];
     for i in 6 { if !snapshot::range(0, e[i], lengths[i]) || !snapshot::range(0, e[i], destination[i]) { return fail(c, snapshot::Error.Code); } }
     if !snapshot::poll(c, e[0] + e[1] + e[2] + e[3] + e[4] + e[5]) { return false; }
-    if s.code_bytes[..e[0]] != code.source_bytes[..e[0]] || bytes_of(s.functions[..e[1]]) != bytes_of(code.functions[..e[1]]) || bytes_of(s.code_constants[..e[2]]) != bytes_of(code.constants[..e[2]]) || s.children[..e[3]] != code.children[..e[3]] || bytes_of(s.ops[..e[4]]) != bytes_of(code.ops[..e[4]]) || s.code_units[..e[5]] != code.units[..e[5]] { return fail(c, snapshot::Error.Code); }
+    if s.code_bytes[..e[0]] != bytes[..e[0]] || bytes_of(s.functions[..e[1]]) != bytes_of(functions[..e[1]]) || bytes_of(s.code_constants[..e[2]]) != bytes_of(constants[..e[2]]) || s.children[..e[3]] != children[..e[3]] || bytes_of(s.ops[..e[4]]) != bytes_of(ops[..e[4]]) || s.code_units[..e[5]] != units[..e[5]] { return fail(c, snapshot::Error.Code); }
     // Suffix owners are independently appendable; cross-owner ranges would
     // otherwise change meaning when the consumer already has macro/helper code.
     for f in s.functions[e[1]..] { if !snapshot::poll(c) { return false; } if f.start < e[4] || f.constants < e[2] || f.children < e[3] { return fail(c, snapshot::Error.Code); } }
@@ -32,7 +32,14 @@ fn code_prefix(p: const Publication&, code: const source::Code&, c: snapshot::Co
     for v in s.code_constants[e[2]..] { if !snapshot::poll(c) { return false; } if v.tag == 4 && v.a < e[5] { return fail(c, snapshot::Error.Code); } }
     return true;
 }
-fn base_node(p: const Publication&, heap: const source::Heap&, id: i64, c: snapshot::Control&) -> bool {
+// The prior image a publication is checked against: a consumer's heap and its
+// code, or the frozen base snapshot itself (encode), so a producer's
+// self-check builds no second heap (light-cljs-794).
+fn code_matches(p: const Publication&, heap: const source::Heap&, c: snapshot::Control&) -> bool {
+    let code .= heap.code; return code_prefix(p, code.source_bytes, code.functions, code.constants, code.children, code.ops, code.units, c);
+}
+fn code_matches(p: const Publication&, s: const snapshot::Snapshot&, c: snapshot::Control&) -> bool { return code_prefix(p, s.code_bytes, s.functions, s.code_constants, s.children, s.ops, s.code_units, c); }
+fn base_node<H>(p: const Publication&, heap: const H&, id: i64, c: snapshot::Control&) -> bool {
     let s .= p.image; let n = s.nodes[id];
     if id >= heap.nodes.len || !same(n, heap.nodes[id]) { return fail(c, snapshot::Error.Link); }
     // Base ranges and property indices retain their original locations. Check
@@ -61,11 +68,11 @@ fn edge(s: const snapshot::Snapshot&, n: source::Node, i: i64, c: snapshot::Cont
     var at = n.head; while rest >= 2 { if !snapshot::poll(c) { return source::Value {}; } at = s.properties[at].next; rest -= 2; }
     return if rest == 0 { s.properties[at].key } else { s.properties[at].value };
 }
-fn graph(p: const Publication&, expected: snapshot::Header, heap: const source::Heap&, ids: i64[>..]&, slots: i64[>..]&, c: snapshot::Control&) -> bool {
+fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, ids: i64[>..]&, slots: i64[>..]&, c: snapshot::Control&) -> bool {
     if p.version != 1 || bytes_of([p.base]) != bytes_of([expected]) { return fail(c, snapshot::Error.Version); }
     let s .= p.image; let base = expected.ends[6];
     if base < 0 || base > s.nodes.len || s.bindings.len != 1 || s.bindings[0].value.tag != 5 || s.nodes[s.bindings[0].value.a].kind != 2 { return fail(c, snapshot::Error.Link); }
-    if !code_prefix(p, heap.code, c) { return false; }
+    if !code_matches(p, heap, c) { return false; }
     if !snapshot::range(0, expected.ends[9], s.units.len) || !snapshot::range(0, expected.ends[9], heap.units.len) || !snapshot::poll(c, expected.ends[9]) { return fail(c, snapshot::Error.Link); }
     if s.units[..expected.ends[9]] != heap.units[..expected.ends[9]] { return fail(c, snapshot::Error.Link); }
     if !snapshot::poll(c, s.nodes.len * 2) { return false; }
@@ -107,12 +114,9 @@ fn encode(heap: const source::Heap&, base: const snapshot::Snapshot&, root: sour
     if c.error != snapshot::Error.None { return false; }
     let p = Publication { base: base.header, image: copy(image) };
     // Verify against the actual frozen base, not the producer's own claims.
-    var code = source::Code {}; var original = source::Heap { code: code };
     // No restore/initialization/identity allocation is needed for comparison.
-    code.source_bytes.append(base.code_bytes); code.functions.append(base.functions); code.constants.append(base.code_constants); code.children.append(base.children); code.ops.append(base.ops); code.units.append(base.code_units); code.valid = true;
-    original.nodes.append(base.nodes); original.values.append(base.values); original.properties.append(base.properties); original.units.append(base.units);
     var ids: i64[>..] = []; var slots: i64[>..] = [];
-    if !graph(p, base.header, original, ids, slots, c) { return false; }
+    if !graph(p, base.header, base, ids, slots, c) { return false; }
     var bytes: u8[>..] = []; to_bytes([p], bytes);
     if bytes.len > c.bytes || !snapshot::poll(c, bytes.len) { return fail(c, snapshot::Error.Bytes); }
     out.append(bytes); return true;

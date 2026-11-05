@@ -4,6 +4,7 @@ import .snapshot;
 import .snapshot_fixture;
 import .source_vm;
 import .form_bridge;
+import .heap_program;
 
 fn restored(base: const snapshot::Snapshot&, code: source::Code&, heap: source::Heap&, roots: snapshot::Binding[>..]&) {
     var c = snapshot::Control {}; assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), c));
@@ -28,10 +29,24 @@ fn reject_import(a: const artifact::Artifact&, base: const snapshot::Snapshot&, 
     let before = state(heap, imports); var c = artifact::Control {}; artifact::import_graph(a, base, heap, imports, c);
     if c.error != error { print("wrong error ", c.error, " expected ", error); } assert(c.error == error && state(heap, imports) == before);
 }
+// Messages between the heap-free main and the thread programs that each own
+// one heap (light-cljs-794).
+struct Base { image: snapshot::Snapshot }
+struct Published { artifact: artifact::Artifact }
+struct Visits { count: i64 }
+// The first join order's expansion, compared against the second order's.
+struct Canonical { nodes: bridge::Form[], children: i64[], units: u16[] }
+thread_fn producer(base: snapshot::Snapshot, which: i64) {
+    defer { heap_program::finish(); }
+    var c = artifact::Control {}; assert(qput(Published { artifact: produce(base, which, c) }));
+}
 fn joins(base: const snapshot::Snapshot&, a: const artifact::Artifact&, b: const artifact::Artifact&) {
     assert(a.keys[0].slot == b.keys[0].slot && a.keys[0].arena != b.keys[0].arena);
-    var canonical = bridge::Graph {};
-    for reverse in 2 {
+    for reverse in 2 { heap_program::join(thread_spawn(join_order, copy(base), copy(a), copy(b), reverse)); }
+}
+thread_fn join_order(base: snapshot::Snapshot, a: artifact::Artifact, b: artifact::Artifact, reverse: i64) {
+    defer { heap_program::finish(); }
+    {
         var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
         var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
         var ca = artifact::Control {}; var cb = artifact::Control {}; var left = source::Value {}; var right = source::Value {};
@@ -52,8 +67,8 @@ fn joins(base: const snapshot::Snapshot&, a: const artifact::Artifact&, b: const
         let expansion = source::form_nth(heap, result, 1); assert(source::form_count(heap, expansion) == 4);
         for expected, i in [2, 3, 9, 16] { assert(source::form_nth(heap, expansion, i).number == expected); }
         var graph = bridge::Graph {}; var control = bridge::Control {}; assert(bridge::export_graph(heap, [result], graph, control));
-        if reverse == 0 { canonical.nodes.append(graph.nodes); canonical.children.append(graph.children); canonical.units.append(graph.units); canonical.bytes.append(graph.bytes); canonical.sources.append(graph.sources); canonical.roots.append(graph.roots); }
-        else { assert(bytes_of(graph.nodes) == bytes_of(canonical.nodes) && graph.children == canonical.children && graph.units == canonical.units); }
+        if reverse == 0 { assert(qput(Canonical { nodes: copy(graph.nodes), children: copy(graph.children), units: copy(graph.units) })); }
+        else { let canonical = qget<Canonical>(); assert(bytes_of(graph.nodes) == bytes_of(canonical.nodes) && graph.children == canonical.children && graph.units == canonical.units); }
         // Diamond: each new branch publishes a form referring to the imported A.
         let top = source::form_collection(heap, 6, [left, right, left]); var ec = artifact::Control {};
         let diamond = artifact::export_graph(heap, base, imports, top, 20 + reverse, 1, ec); assert(ec.error == artifact::Error.None);
@@ -74,9 +89,19 @@ fn relay(base: const snapshot::Snapshot&, a: const artifact::Artifact&, definiti
     var export_control = artifact::Control {}; let result = artifact::export_graph(heap, base, imports, root, definition, 1, export_control);
     assert(export_control.error == artifact::Error.None); return copy(result);
 }
+thread_fn relayer(base: snapshot::Snapshot, a: artifact::Artifact, definition: i64) {
+    defer { heap_program::finish(); }
+    assert(qput(Published { artifact: relay(base, a, definition) }));
+}
 fn diamond_delivery(base: const snapshot::Snapshot&, a: const artifact::Artifact&) {
-    let left = relay(base, a, 51); let right = relay(base, a, 52);
-    for reverse in 2 {
+    heap_program::join(thread_spawn(relayer, copy(base), copy(a), 51)); let published_left = qget<Published>(); let left .= published_left.artifact;
+    heap_program::join(thread_spawn(relayer, copy(base), copy(a), 52)); let published_right = qget<Published>(); let right .= published_right.artifact;
+    for reverse in 2 { heap_program::join(thread_spawn(diamond_order, copy(base), copy(a), copy(left), copy(right), reverse)); }
+    print("artifact two independent relays/diamond identity/direct and duplicate delivery passed");
+}
+thread_fn diamond_order(base: snapshot::Snapshot, a: artifact::Artifact, left: artifact::Artifact, right: artifact::Artifact, reverse: i64) {
+    defer { heap_program::finish(); }
+    {
         var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
         var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
         var lc = artifact::Control {}; var rc = artifact::Control {}; var l = source::Value {}; var r = source::Value {};
@@ -90,9 +115,9 @@ fn diamond_delivery(base: const snapshot::Snapshot&, a: const artifact::Artifact
         var duplicate = artifact::Control {}; let again = artifact::import_graph(right, base, heap, imports, duplicate);
         assert(duplicate.error == artifact::Error.None && again.a == r.a && heap.nodes.len == nodes);
     }
-    print("artifact two independent relays/diamond identity/direct and duplicate delivery passed");
 }
-fn invalid(base: const snapshot::Snapshot&, a: const artifact::Artifact&) {
+thread_fn invalid(base: snapshot::Snapshot, a: artifact::Artifact) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
     for mode in 13 {
@@ -160,17 +185,26 @@ fn invalid(base: const snapshot::Snapshot&, a: const artifact::Artifact&) {
     print("artifact malformed/mutable paths/cycle/conflict/atomic-budget rejection passed");
 }
 fn work_cuts(base: const snapshot::Snapshot&, a: const artifact::Artifact&) {
+    heap_program::join(thread_spawn(work_measure, copy(base), copy(a))); let visited = qget<Visits>().count;
+    heap_program::join(thread_spawn(work_target, copy(base), copy(a), visited));
+}
+thread_fn work_measure(base: snapshot::Snapshot, a: artifact::Artifact) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var success = artifact::Control {};
     artifact::import_graph(a, base, heap, imports, success); assert(success.error == artifact::Error.None);
+    assert(qput(Visits { count: success.visited }));
+}
+thread_fn work_target(base: snapshot::Snapshot, a: artifact::Artifact, visited: i64) {
+    defer { heap_program::finish(); }
     var target_code = source::Code {}; var target = source::Heap { code: target_code }; var target_roots: snapshot::Binding[>..] = []; restored(base, target_code, target, target_roots);
     var cache = artifact::Imports { base: base.header.checkpoint, session: target.identity }; let before = state(target, cache);
-    for cut in success.visited {
+    for cut in visited {
         var failure = artifact::Control { work: cut }; artifact::import_graph(a, base, target, cache, failure);
         assert(failure.error == artifact::Error.Work && failure.copied_nodes == 0 && failure.copied_bytes == 0 && state(target, cache) == before);
     }
-    var exact = artifact::Control { work: success.visited }; artifact::import_graph(a, base, target, cache, exact); assert(exact.error == artifact::Error.None && exact.visited == success.visited);
-    print("artifact every import work cut/unchanged heap and caches/exact budget passed: ", success.visited);
+    var exact = artifact::Control { work: visited }; artifact::import_graph(a, base, target, cache, exact); assert(exact.error == artifact::Error.None && exact.visited == visited);
+    print("artifact every import work cut/unchanged heap and caches/exact budget passed: ", visited);
 }
 fn provenance_artifact(base: const snapshot::Snapshot&) -> artifact::Artifact {
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
@@ -185,8 +219,17 @@ fn provenance_artifact(base: const snapshot::Snapshot&) -> artifact::Artifact {
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
     let a = artifact::export_graph(heap, base, imports, values[0], 60, 1, c); assert(c.error == artifact::Error.None); return copy(a);
 }
+thread_fn provenance_producer(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    assert(qput(Published { artifact: provenance_artifact(base) }));
+}
 fn provenance(base: const snapshot::Snapshot&) {
-    let a = provenance_artifact(base); var result = bridge::Graph {};
+    heap_program::join(thread_spawn(provenance_producer, copy(base))); let published_a = qget<Published>(); let a .= published_a.artifact;
+    heap_program::join(thread_spawn(provenance_consumer, copy(base), copy(a)));
+}
+thread_fn provenance_consumer(base: snapshot::Snapshot, a: artifact::Artifact) {
+    defer { heap_program::finish(); }
+    var result = bridge::Graph {};
     {
         var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
         var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
@@ -204,7 +247,8 @@ fn provenance(base: const snapshot::Snapshot&) {
     assert(result.bytes[r.start..(r.start + r.count)] == "one two");
     print("artifact owned UTF16/namespace/metadata/source spans/occurrences survive producer and consumer teardown");
 }
-fn scalars(base: const snapshot::Snapshot&) {
+thread_fn scalars(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
     let values: source::Value[] = [source::Value {}, source::nil(), source::boolean(true), source::number(-0.0), source::number(0.0 / 0.0), source::text(heap, "unicode 😀")];
@@ -218,7 +262,8 @@ fn scalars(base: const snapshot::Snapshot&) {
     }
     print("artifact primitive/NaN/signed-zero/string roots and reusable controls passed");
 }
-fn graphs(base: const snapshot::Snapshot&) {
+thread_fn graphs(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
     let cell = source::allocate(heap, source::Node { kind: 3, initialized: true, immutable: true }); let closure = source::closure(heap, roots[4].value.number as i64, [cell]); heap.nodes[cell.a].value = closure;
@@ -237,7 +282,8 @@ fn graphs(base: const snapshot::Snapshot&) {
     var bad = copy(bytes); bad[0] = 255; var bc = artifact::Control {}; let no = artifact::decode(bad, base, bc); assert(no.len == 0 && bc.error != artifact::Error.None);
     print("artifact callable cycles/40-level shared diamond/codec truncations passed, nodes=", dc.nodes, " edges=", dc.edges, " work=", dc.visited);
 }
-fn overlapping_cycles(base: const snapshot::Snapshot&) {
+thread_fn overlapping_cycles(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
     let b = source::allocate(heap, source::Node { kind: 3, initialized: true, immutable: true });
@@ -266,7 +312,8 @@ fn overlapping_cycles(base: const snapshot::Snapshot&) {
     assert(rejected_export.error == artifact::Error.Cycle && no.nodes.len == 0 && rejected_export.path[..] == [a.a, c.a, d.a] && state(heap, imports) == current);
     print("artifact overlapping callable SCC/form-cycle rejection/path/atomicity passed");
 }
-fn signature_budgets(base: const snapshot::Snapshot&) {
+thread_fn signature_budgets(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
     // Compact input shares one UTF16 range across every vector element.
     // Its exact signature expands that range each time, beyond payload size.
     var units:  u16[>..]           = []; units.resize(256, 'x');
@@ -316,7 +363,9 @@ fn signature_budgets(base: const snapshot::Snapshot&) {
     var repaired = artifact::Control {}; artifact::import_graph(a, base, heap, imports, repaired); assert(repaired.error == artifact::Error.None);
     print("artifact shared-string signature byte/work cuts/exact limits/atomic rejection passed");
 }
-fn main() {
+// The base image's own thread program: builds and captures it.
+thread_fn base_image() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code };
     let left = snapshot_test::append(code, embed_file("../corpus/branches-helper-0.pants.gsp"));
     let right = snapshot_test::append(code, embed_file("../corpus/branches-helper-1.pants.gsp"));
@@ -329,11 +378,19 @@ fn main() {
     assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let shared = source::allocate(heap, source::Node { kind: 11, value: source::number(9), origin: 90 });
     let bindings: snapshot::Binding[] = [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: source::number(left) }, snapshot::Binding { id: 2, generation: 1, value: source::number(right) }, snapshot::Binding { id: 3, generation: 1, value: source::number(consumer) }, snapshot::Binding { id: 4, generation: 1, value: source::number(read) }, snapshot::Binding { id: 5, generation: 1, value: shared }];
     var c = snapshot::Control {}; let base = snapshot::capture(heap, bindings, c); assert(c.error == snapshot::Error.None);
-    var ca = artifact::Control {}; var cb = artifact::Control {}; let a = produce(base, 1, ca); let b = produce(base, 2, cb);
-    joins(base, a, b); diamond_delivery(base, a); invalid(base, a); graphs(base); overlapping_cycles(base); signature_budgets(base); source_spans(base); provenance(base); scalars(base); work_cuts(base, a);
+    assert(qput(Base { image: copy(base) }));
+}
+// main builds no heap; every heap is its own thread program.
+fn main() {
+    heap_program::join(thread_spawn(base_image)); let message = qget<Base>(); let base .= message.image;
+    heap_program::join(thread_spawn(producer, copy(base), 1)); let published_a = qget<Published>(); let a .= published_a.artifact;
+    heap_program::join(thread_spawn(producer, copy(base), 2)); let published_b = qget<Published>(); let b .= published_b.artifact;
+    joins(base, a, b); diamond_delivery(base, a); heap_program::join(thread_spawn(invalid, copy(base), copy(a))); heap_program::join(thread_spawn(graphs, copy(base))); heap_program::join(thread_spawn(overlapping_cycles, copy(base)));
+    heap_program::join(thread_spawn(signature_budgets, copy(base))); heap_program::join(thread_spawn(source_spans, copy(base))); provenance(base); heap_program::join(thread_spawn(scalars, copy(base))); work_cuts(base, a);
 }
 
-fn source_spans(base: const snapshot::Snapshot&) {
+thread_fn source_spans(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
     var graph = bridge::Graph {}; graph.bytes.append("é😀"); graph.sources.push(source::SourceRange { start: 0, count: 6 });
     graph.nodes.push(bridge::Form { tag: 2, number: 7, source: 0, span_start: 0, span_end: 6 }); graph.roots.push(0);

@@ -2,26 +2,44 @@ import std;
 import .program;
 import .source_vm;
 import .vm;
+import .heap_program;
 
 fn decode(code: source::Code&, bytes: const u8[:]) {
     var image = program::Image {}; assert(program::install(image, bytes) == program::Error.None);
     assert(source::load(code, image));
 }
-fn same_state(a: source::Job&, b: source::Job&) {
+// Everything same_state compares, flattened so the two differential sides of
+// one logical session image can run in separate thread programs, each with
+// its own heap (light-cljs-794).
+struct State {
+    thrown:     bool = false, status: tiny::Status = tiny::Status.Ready, steps: i64 = 0, claimed: bool = false, fault: source::Fault = source::Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1,
+    registered: bool = false, live_jobs: i64 = 0, result: u8[] = [], frames: u8[] = [], locals: u8[] = [], operands: u8[] = [], writes: u8[] = [],
+    nodes:      u8[] = [], values: u8[] = [], properties: u8[] = [], units: u16[] = [], identity: i64 = 0, work: i64 = 0, heap_fault: source::Fault = source::Fault.None,
+}
+fn state(a: source::Job&) -> State {
+    return State {
+        thrown:     a.thrown, status: a.status, steps: a.steps, claimed: a.claimed, fault: a.fault, fault_pc: a.fault_pc, fault_function: a.fault_function,
+        registered: a.registered, live_jobs: a.heap.live_jobs, result: to_bytes([a.result]), frames: to_bytes(a.frames), locals: to_bytes(a.locals), operands: to_bytes(a.operands), writes: to_bytes(a.writes),
+        nodes:      to_bytes(a.heap.nodes), values: to_bytes(a.heap.values), properties: to_bytes(a.heap.properties), units: copy(a.heap.units), identity: a.heap.identity, work: a.heap.work, heap_fault: a.heap.fault,
+    };
+}
+fn same_state(a: const State&, b: const State&) {
     // Byte comparisons preserve NaNs and signed zero in every explicit field.
     assert(a.thrown == b.thrown && a.status == b.status && a.steps == b.steps && a.claimed == b.claimed && a.fault == b.fault && a.fault_pc == b.fault_pc && a.fault_function == b.fault_function);
-    assert(a.registered == b.registered && a.heap.live_jobs == b.heap.live_jobs);
-    assert(to_bytes([a.result]) == to_bytes([b.result]));
-    assert(to_bytes(a.frames) == to_bytes(b.frames));
-    assert(to_bytes(a.locals) == to_bytes(b.locals));
-    assert(to_bytes(a.operands) == to_bytes(b.operands));
-    assert(to_bytes(a.writes) == to_bytes(b.writes));
-    assert(to_bytes(a.heap.nodes) == to_bytes(b.heap.nodes));
-    assert(to_bytes(a.heap.values) == to_bytes(b.heap.values));
-    assert(to_bytes(a.heap.properties) == to_bytes(b.heap.properties));
-    assert(a.heap.units[..] == b.heap.units[..] && a.heap.identity == b.heap.identity && a.heap.work == b.heap.work && a.heap.fault == b.heap.fault);
+    assert(a.registered == b.registered && a.live_jobs == b.live_jobs);
+    assert(a.result == b.result);
+    assert(a.frames == b.frames);
+    assert(a.locals == b.locals);
+    assert(a.operands == b.operands);
+    assert(a.writes == b.writes);
+    assert(a.nodes == b.nodes);
+    assert(a.values == b.values);
+    assert(a.properties == b.properties);
+    assert(a.units[..] == b.units[..] && a.identity == b.identity && a.work == b.work && a.heap_fault == b.heap_fault);
 }
-fn check(bytes: const u8[:], expected: const u8[:], fault: source::Fault = source::Fault.None) {
+struct Run { status: tiny::Status, steps: i64 }
+thread_fn check_run(bytes: u8[], expected: u8[], fault: source::Fault) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let entry = source::closure(heap, 0, []);
@@ -35,37 +53,66 @@ fn check(bytes: const u8[:], expected: const u8[:], fault: source::Fault = sourc
         var text: u8[>..] = []; source::describe_fault(text, code, job); assert(text[..] == expected);
         assert(job.fault_opcode == code.ops[job.fault_pc].code && !job.thrown);
     }
-    let steps = job.steps;
-    for cut in (steps + 1) {
-        var h1 = source::Heap { code: code }; assert(source::initialize(h1));
-        var h2 = source::Heap { code: code }; assert(source::initialize(h2));
-        // Two differential executions of one logical session image.
-        h2.identity = h1.identity; h2.global.session = h1.identity; h2.call_method.session = h1.identity;
-        for &v in h2.constants { if v.tag == 4 { v.session = h1.identity; } }
-        for &p in h2.properties { p.key.session = h1.identity; p.value.session = h1.identity; }
-        let e1 = source::closure(h1, 0, []); let e2 = source::closure(h2, 0, []);
-        var a = source::Job { heap: h1 }; var b = source::Job { heap: h2 };
-        assert(source::start(a, e1, []) && source::start(b, e2, []));
-        let before = h1.work;
-        assert(source::run(a, 0) == tiny::Outcome.Yielded && a.steps == 0 && h1.work == before);
-        same_state(a, b);
-        source::run(a, cut);
-        for i in cut { source::run(b, 1); }
-        same_state(a, b);
-        assert(source::claim(a) == (a.status == tiny::Status.Ready));
-        if a.claimed {
-            assert(source::run(a, 1) == tiny::Outcome.Busy);
-            source::run_claimed(a, 0);
-        }
-        source::run(a, -1); source::run(b, -1); same_state(a, b);
-        assert(a.status == job.status && a.fault == fault && a.steps == steps);
-        let stable = a.steps; source::run(a, -1); assert(a.steps == stable);
+    assert(qput(Run { status: job.status, steps: job.steps }));
+}
+// Side a of one cut: publishes its state at the three comparison points.
+thread_fn check_cut(bytes: u8[], cut: i64, run: Run, fault: source::Fault) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var h1 = source::Heap { code: code }; assert(source::initialize(h1));
+    let e1 = source::closure(h1, 0, []);
+    var a = source::Job { heap: h1 };
+    assert(source::start(a, e1, []));
+    let before = h1.work;
+    assert(source::run(a, 0) == tiny::Outcome.Yielded && a.steps == 0 && h1.work == before);
+    assert(qput(state(a)));
+    source::run(a, cut);
+    assert(qput(state(a)));
+    assert(source::claim(a) == (a.status == tiny::Status.Ready));
+    if a.claimed {
+        assert(source::run(a, 1) == tiny::Outcome.Busy);
+        source::run_claimed(a, 0);
+    }
+    source::run(a, -1); assert(qput(state(a)));
+    assert(a.status == run.status && a.fault == fault && a.steps == run.steps);
+    let stable = a.steps; source::run(a, -1); assert(a.steps == stable);
+}
+// Side b of the same cut, one instruction per slice, against side a's states.
+thread_fn check_steps(bytes: u8[], cut: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    let first = qget<State>();
+    var h2 = source::Heap { code: code }; assert(source::initialize(h2));
+    // Two differential executions of one logical session image.
+    h2.identity = first.identity; h2.global.session = first.identity; h2.call_method.session = first.identity;
+    for &v in h2.constants { if v.tag == 4 { v.session = first.identity; } }
+    for &p in h2.properties { p.key.session = first.identity; p.value.session = first.identity; }
+    let e2 = source::closure(h2, 0, []);
+    var b = source::Job { heap: h2 };
+    assert(source::start(b, e2, []));
+    let started = state(b); same_state(first, started);
+    for i in cut { source::run(b, 1); }
+    let cut_a = qget<State>(); let cut_b = state(b); same_state(cut_a, cut_b);
+    source::run(b, -1); let done_a = qget<State>(); let done_b = state(b); same_state(done_a, done_b);
+}
+fn check(bytes: const u8[:], expected: const u8[:], fault: source::Fault = source::Fault.None) {
+    heap_program::join(thread_spawn(check_run, str(bytes), str(expected), fault)); let run = qget<Run>();
+    for cut in (run.steps + 1) {
+        heap_program::join(thread_spawn(check_cut, str(bytes), cut, run, fault));
+        heap_program::join(thread_spawn(check_steps, str(bytes), cut));
     }
 }
 fn limits(bytes: const u8[:]) {
+    for kind in 3 { heap_program::join(thread_spawn(initialization_limit, str(bytes), kind)); }
+    for kind in 6 { heap_program::join(thread_spawn(execution_limit, str(bytes), kind)); }
+    heap_program::join(thread_spawn(stale_owner, str(bytes))); let object = qget<Stale>();
+    heap_program::join(thread_spawn(stale_other, str(bytes), object.value));
+}
+thread_fn initialization_limit(bytes: u8[], kind: i64) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
     // The globalThis own property participates in all initialization budgets.
-    for kind in 3 {
+    {
         var limit = source::Limits {};
         if kind == 0 { limit.properties = 0; }
         if kind == 1 { limit.units = code.units.len; }
@@ -74,7 +121,11 @@ fn limits(bytes: const u8[:]) {
         assert(!source::initialize(heap));
         assert(heap.fault == (if kind == 2 { source::Fault.WorkLimit } else { source::Fault.MemoryLimit }));
     }
-    for kind in 6 {
+}
+thread_fn execution_limit(bytes: u8[], kind: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    {
         var limit = source::Limits {};
         if kind == 0 { limit.steps = 1; }
         if kind == 1 { limit.frames = 1; }
@@ -82,7 +133,7 @@ fn limits(bytes: const u8[:]) {
         if kind == 3 { limit.nodes = 2; }
         if kind == 4 { limit.values = 0; }
         var heap = source::Heap { code: code, limits: limit };
-        if !source::initialize(heap) { assert(heap.fault == source::Fault.MemoryLimit); continue; }
+        if !source::initialize(heap) { assert(heap.fault == source::Fault.MemoryLimit); return; }
         if kind == 5 { heap.limits.work = heap.work + 2; }
         let entry = source::closure(heap, 0, []);
         var job = source::Job { heap: heap };
@@ -90,14 +141,25 @@ fn limits(bytes: const u8[:]) {
         assert(job.status == tiny::Status.Failed);
         assert(job.fault == (if kind == 0 { source::Fault.InstructionLimit } else if kind == 1 || kind == 2 { source::Fault.StackLimit } else if kind == 5 { source::Fault.WorkLimit } else { source::Fault.MemoryLimit }));
     }
+}
+// A handle from one session's heap is stale in another session's heap.
+struct Stale { value: source::Value }
+thread_fn stale_owner(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let object = source::allocate(heap, source::Node { kind: 0 });
     for i in 200 { source::allocate(heap, source::Node { kind: 0 }); }
     assert(source::valid(heap, object));
-    var other = source::Heap { code: code }; assert(source::initialize(other));
-    assert(!source::valid(other, object) && other.fault == source::Fault.StaleID);
+    assert(qput(Stale { value: object }));
     heap.fault = source::Fault.None;
     assert(!source::valid(heap, source::Value { tag: 5, a: heap.nodes.len, session: heap.identity }));
+}
+thread_fn stale_other(bytes: u8[], object: source::Value) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var other = source::Heap { code: code }; assert(source::initialize(other));
+    assert(!source::valid(other, object) && other.fault == source::Fault.StaleID);
 }
 fn malformed(bytes: const u8[:]) {
     var image = program::Image {}; assert(program::install(image, bytes) == program::Error.None);
@@ -112,7 +174,8 @@ fn malformed(bytes: const u8[:]) {
     var code = source::Code {}; assert(!source::load(code, image));
     assert(code.error == tiny::LoadError.Underflow);
 }
-fn factory(bytes: const u8[:]) {
+thread_fn factory(bytes: u8[]) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let entry = source::closure(heap, 0, []);
@@ -154,20 +217,33 @@ fn main() {
     check(embed_file("../corpus/serial/bigint-reached.gsp"), "Fault.Unsupported:const(BigInt)", source::Fault.Unsupported);
     bigint_constants(embed_file("../corpus/serial/dormant-constants.gsp"));
     fixed_cells(embed_file("../corpus/serial/mutations.gsp"));
-    failed_job_isolation(embed_file("../corpus/serial/calls.gsp"));
+    heap_program::join(thread_spawn(failed_job_isolation, str(embed_file("../corpus/serial/calls.gsp"))));
     allocation_limits(embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/strings.gsp"));
     flow_errors(embed_file("../corpus/serial/control.gsp"));
-    runtime_boundary(embed_file("../corpus/branches-helper-0.pants.gsp"));
+    heap_program::join(thread_spawn(runtime_boundary, str(embed_file("../corpus/branches-helper-0.pants.gsp"))));
     limits(embed_file("../corpus/serial/captures.gsp"));
-    factory(embed_file("../corpus/closure-captured.pants.gsp"));
+    heap_program::join(thread_spawn(factory, str(embed_file("../corpus/closure-captured.pants.gsp"))));
     malformed(embed_file("../corpus/serial/captures.gsp"));
+    heap_program::join(thread_spawn(instruction_limit));
+    print("serial source VM: calls/captures/cells/properties/truth/UTF16/errors, exact slices and limits passed");
+}
+thread_fn instruction_limit() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, embed_file("../corpus/serial/loop.gsp"));
     var heap = source::Heap { code: code, limits: source::Limits { steps: 100 } }; assert(source::initialize(heap));
     let entry = source::closure(heap, 0, []); var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
     assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.InstructionLimit && job.steps == 100);
-    print("serial source VM: calls/captures/cells/properties/truth/UTF16/errors, exact slices and limits passed");
 }
 fn array_lengths() {
+    heap_program::join(thread_spawn(array_length_bounds));
+    // Exercise every work boundary through the length cut, including its
+    // final charge, against exactly the same array contents.
+    for cut in 40 { heap_program::join(thread_spawn(array_length_cut, cut)); }
+    heap_program::join(thread_spawn(sparse_array));
+    print("temporary arrays: shorter/zero/extension/deleted holes, numeric bounds, atomic work, retained-slot rejection and sparse records passed");
+}
+thread_fn array_length_bounds() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, embed_file("../corpus/serial/mutations.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let array = source::allocate(heap, source::Node { kind: 1 }); let length = source::text(heap, "length");
@@ -200,9 +276,11 @@ fn array_lengths() {
     assert(source::put(heap, array, length, source::number(0)));
     assert(!source::put(heap, array, source::key(heap, source::number(capacity)), source::number(1)) && heap.fault == source::Fault.MemoryLimit);
     assert(heap.values.len == retained && heap.nodes[array.a].length == 0 && heap.properties.len == before.len);
-    // Exercise every work boundary through the length cut, including its
-    // final charge, against exactly the same array contents.
-    for cut in 40 {
+}
+thread_fn array_length_cut(cut: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, embed_file("../corpus/serial/mutations.gsp"));
+    {
         var h = source::Heap { code: code }; assert(source::initialize(h));
         let a = source::allocate(h, source::Node { kind: 1 }); let k = source::text(h, "length");
         for i in 4 { assert(source::put(h, a, source::key(h, source::number(i)), source::number(i))); }
@@ -212,8 +290,12 @@ fn array_lengths() {
         if !ok { assert(h.fault == source::Fault.WorkLimit && to_bytes(h.nodes) == to_bytes(nodes) && to_bytes(h.properties) == to_bytes(properties) && to_bytes(h.values) == to_bytes(values)); }
         else { assert(h.nodes[a.a].length == 2); }
     }
-    // Sparse writes far past the run use index-keyed records, so two
-    // elements near the value-slot limit still fit (Sol review, light-cljs-785).
+}
+// Sparse writes far past the run use index-keyed records, so two
+// elements near the value-slot limit still fit (Sol review, light-cljs-785).
+thread_fn sparse_array() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, embed_file("../corpus/serial/mutations.gsp"));
     {
         var h = source::Heap { code: code }; assert(source::initialize(h));
         let a = source::allocate(h, source::Node { kind: 1 }); let k = source::text(h, "length");
@@ -225,11 +307,14 @@ fn array_lengths() {
         assert(source::get(h, a, source::key(h, source::number(0))).number == 5 && source::get(h, a, source::key(h, source::number(7))).tag == 0);
         assert(source::put(h, a, k, source::number(524288)) && source::get(h, a, source::key(h, source::number(524288))).tag == 0 && source::get(h, a, source::key(h, source::number(524287))).number == 1);
     }
-    print("temporary arrays: shorter/zero/extension/deleted holes, numeric bounds, atomic work, retained-slot rejection and sparse records passed");
 }
 fn argument_limits(bytes: const u8[:]) {
+    for op in [101, 179] { for limit in 4 { heap_program::join(thread_spawn(argument_limit, str(bytes), op, limit)); } }
+}
+thread_fn argument_limit(bytes: u8[], op: i64, limit: i64) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
-    for op in [101, 179] {
+    {
         var function: i64 = -1;
         for f, i in code.functions {
             if f.captures != 0 { continue; }
@@ -237,7 +322,7 @@ fn argument_limits(bytes: const u8[:]) {
             if function >= 0 { break; }
         }
         assert(function >= 0);
-        for limit in 4 {
+        {
             var heap = source::Heap { code: code }; assert(source::initialize(heap));
             let entry = source::closure(heap, function, []);
             if limit == 0 { heap.limits.stack = code.functions[function].locals + 2; }
@@ -267,7 +352,8 @@ fn fixed_cells(bytes: const u8[:]) {
     }
     assert(changed); check(variant, "", source::Fault.ConstAssignment);
 }
-fn failed_job_isolation(bytes: const u8[:]) {
+thread_fn failed_job_isolation(bytes: u8[]) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let entry = source::closure(heap, 0, []);
@@ -281,7 +367,11 @@ fn failed_job_isolation(bytes: const u8[:]) {
     assert(source::equal(heap, good.result, source::boolean(true)));
 }
 fn allocation_limits(bytes: const u8[:], strings: const u8[:]) {
-    for mode in 3 {
+    for mode in 3 { heap_program::join(thread_spawn(allocation_limit, str(bytes), str(strings), mode)); }
+}
+thread_fn allocation_limit(bytes: u8[], strings: u8[], mode: i64) {
+    defer { heap_program::finish(); }
+    {
         // Array elements need no key strings (light-cljs-785), so the unit
         // limit is exercised by string indexing instead.
         var code = source::Code {}; decode(code, if mode == 1 { strings } else { bytes });
@@ -368,7 +458,8 @@ fn flow_errors(bytes: const u8[:]) {
     assert(changed && program::install(image, bad) == program::Error.None);
     var joined = source::Code {}; let accepted = source::load(joined, image); assert(!accepted && joined.error == tiny::LoadError.Join);
 }
-fn runtime_boundary(bytes: const u8[:]) {
+thread_fn runtime_boundary(bytes: u8[]) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let entry = source::closure(heap, 0, []); var factory_job = source::Job { heap: heap }; assert(source::start(factory_job, entry, []));

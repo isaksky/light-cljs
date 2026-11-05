@@ -65,6 +65,16 @@ are removed on success or failure. For the fast Goose-only command:
 bb crates/big-boy-pants-js/scripts/smoke.bb
 ```
 
+No thread program builds more than one `source::Heap` (light-cljs-794), so a
+VM image can later live in global index-typed tables. A test `main` that needs
+several heaps builds none: it runs each heap's function as a thread program
+(`src/heap_program.goose` carries the session-identity counter between them)
+and passes snapshots and handles between them as flat messages. Those tests
+therefore run as native `--debug` and native builds. In `compiler_session.goose`
+the coordinator's base image is its only heap; definition preparation and the
+`profile` mode's restore run in programs it spawns and joins, and the
+scheduler prototype runs each job's heap in a program of its own.
+
 `src/inspect.goose` accepts `.gsp` paths as arguments. Scripts resolve their own
 locations, so they work from any working directory.
 Validated Goose: `v2026.3-267-g369c7a2c (runtime 3025e5810379)`.

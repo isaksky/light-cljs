@@ -9,6 +9,7 @@ import .dependency;
 import .artifact;
 import .form_bridge;
 import .export_schema;
+import .heap_program;
 
 // Hand-assembled counter leaves are protocol fixtures, not emitted macros.
 // The unchanged compiler-emitted effect.cljs macro is exercised separately.
@@ -38,6 +39,8 @@ fn prepare(code: source::Code&, heap: source::Heap&, roots: snapshot::Binding[>.
 fn grant(id: i64, owner: i64, sequence: i64, kind: i64, resource: i64 = 0) -> effects::Grant { return effects::Grant { id: id, owner: owner, sequence: sequence, kind: kind, resource: resource }; }
 fn key(id: i64) -> dependency::Key { return dependency::Key { compilation: 1, session: 1, generation: 1, definition: id, kind: 0 }; }
 fn spec(id: i64, entry: i64, ordered: bool = false) -> scheduler::Spec { return scheduler::Spec { id: id, key: key(id), entry: entry, ordered: ordered }; }
+// An owned copy of the entry list for a thread program's arguments.
+fn owned(entries: const i64[:]) -> i64[>..] { var out: i64[>..] = []; out.append(entries); return out; }
 fn check(run: const scheduler::Run&) {
     assert(run.active == 0 && run.joined == run.workers && run.peak <= run.workers);
     for state in run.states { assert(state.starts <= 1 && (!state.dispatched || state.received)); }
@@ -106,24 +109,57 @@ fn emitted(base: const snapshot::Snapshot&, entries: const i64[:]) {
         var table = dependency::Table { compilation: 1, session: 1 }; var run = scheduler::Run { table: table };
         assert(scheduler::dispatch(plan, base, run, scheduler::Options { workers: workers, quantum: 1 })); check(run);
         assert(run.effect_receipts.len == 1 && run.effect_counters[0] == 1 && scheduler::terminal(run, 0).outcome == dependency::Outcome.Success);
-        var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {}; assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), sc));
-        var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
-        for packet in run.results { let result = artifact::import_graph(packet.artifact, base, heap, imports, c); assert(c.error == artifact::Error.None);
-            let expansion = source::form_nth(heap, result, 1); assert(source::form_nth(heap, expansion, 0).number == 7 && source::form_nth(heap, expansion, 1).a == 1); }
+        heap_program::join(thread_spawn(emitted_import, copy(base), copy(run.results)));
     }
     print("unchanged compiler-emitted effect.cljs expansion (quote [7 true]) with one declared gensym passed");
 }
-fn main() {
+thread_fn emitted_import(base: snapshot::Snapshot, results: scheduler::Result[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {}; assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), sc));
+    var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
+    for packet in results { let result = artifact::import_graph(packet.artifact, base, heap, imports, c); assert(c.error == artifact::Error.None);
+        let expansion = source::form_nth(heap, result, 1); assert(source::form_nth(heap, expansion, 0).number == 7 && source::form_nth(heap, expansion, 1).a == 1); }
+}
+// Messages between the heap-free main and the thread programs that each own
+// one heap (light-cljs-794).
+struct Base { image: snapshot::Snapshot, entries: i64[] }
+struct Caught { image: snapshot::Snapshot }
+thread_fn base_image() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var entries: i64[>..] = []; prepare(code, heap, roots, entries);
     var sc = snapshot::Control {}; let base = snapshot::capture(heap, roots, sc); assert(sc.error == snapshot::Error.None);
+    assert(qput(Base { image: copy(base), entries: owned(entries) }));
+}
+// main builds no heap; every heap is its own thread program.
+fn main() {
+    heap_program::join(thread_spawn(base_image)); let message = qget<Base>(); let base .= message.image; let entries .= message.entries;
     let arguments = args(); if arguments.len == 2 && arguments[1] == "--measure" { measure(base, entries); return; }
-    counters(base, entries); failures(base, entries); duplicates(); emitted(base, entries); suspension(base, entries); contracts(base, entries); result_failure(base, entries); native_callbacks(base, entries); prefix_rejections(base, entries); caught_errors();
+    counters(base, entries); failures(base, entries); duplicates(); emitted(base, entries); suspension(base, entries); contracts(base, entries);
+    heap_program::join(thread_spawn(result_failure, copy(base), owned(entries))); native_callbacks(base, entries); prefix_rejections(base, entries); caught_errors();
 }
 
 // Synthetic fault injection into the same handler used by emitted catches.
 // Covers all three runtime-error routes separately from explicit JS throws.
 fn caught_errors() {
     for fault in [source::Fault.TypeError, source::Fault.ReferenceError, source::Fault.HostEffect] { for limited in [false, true] {
+        heap_program::join(thread_spawn(caught_error, fault, limited));
+        if !limited { let caught = qget<Caught>(); heap_program::join(thread_spawn(caught_restore, copy(caught.image))); }
+    } }
+    print("caught TypeError/ReferenceError/HostEffect identity, false nil equality, snapshot retention, explicit property boundary and terminal allocation failure passed");
+}
+// The caught error's snapshot restores into a heap of its own.
+thread_fn caught_restore(saved: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    var sc = snapshot::Control {};
+    var restored_code = source::Code {}; var restored = source::Heap { code: restored_code }; var roots: snapshot::Binding[>..] = [];
+    assert(snapshot::restore(saved, restored_code, restored, roots, source::reserve_identity(), sc));
+    assert(source::truthy(roots[0].value) && !source::equal(restored, roots[0].value, source::nil()));
+    var graph = bridge::Graph {}; var bc = bridge::Control {}; assert(!bridge::export_graph(restored, [roots[0].value], graph, bc) && bc.error == bridge::Error.Unsupported);
+    source::get(restored, roots[0].value, source::text(restored, "name")); assert(restored.fault == source::Fault.UnsupportedOperand);
+}
+thread_fn caught_error(fault: source::Fault, limited: bool) {
+    defer { heap_program::finish(); }
+    {
         var code = source::Code {}; code.constants.push(source::nil());
         code.functions.push(source::Function { start: 0, count: 7, constants: 0, children: 0, params: 0, locals: 1, captures: 0, strict: true });
         var offset: i64 = 0;
@@ -140,15 +176,10 @@ fn caught_errors() {
             assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.tag == 2 && job.result.a == 0);
             assert(source::retire(job));
             var sc = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 1, generation: 1, value: error }], sc); assert(sc.error == snapshot::Error.None);
-            var restored_code = source::Code {}; var restored = source::Heap { code: restored_code }; var roots: snapshot::Binding[>..] = [];
-            assert(snapshot::restore(saved, restored_code, restored, roots, source::reserve_identity(), sc));
-            assert(source::truthy(roots[0].value) && !source::equal(restored, roots[0].value, source::nil()));
-            var graph = bridge::Graph {}; var bc = bridge::Control {}; assert(!bridge::export_graph(restored, [roots[0].value], graph, bc) && bc.error == bridge::Error.Unsupported);
-            source::get(restored, roots[0].value, source::text(restored, "name")); assert(restored.fault == source::Fault.UnsupportedOperand);
+            assert(qput(Caught { image: copy(saved) }));
         }
         assert(source::retire(job));
-    } }
-    print("caught TypeError/ReferenceError/HostEffect identity, false nil equality, snapshot retention, explicit property boundary and terminal allocation failure passed");
+    }
 }
 
 // The compiler may await a prerequisite before delivering a suspended request.
@@ -156,7 +187,12 @@ fn caught_errors() {
 // cut and effect-adjacent yield preserves the continuation; no stack/claim is
 // held while the host services a dependency or correlated nested helper.
 fn suspension(base: const snapshot::Snapshot&, entries: const i64[:]) {
-    for failed in 2 { for cut in 10 { for quantum in [1, 2, 3, 4, 9, 1000000] {
+    for failed in 2 { for cut in 10 { for quantum in [1, 2, 3, 4, 9, 1000000] { heap_program::join(thread_spawn(suspended, copy(base), owned(entries), failed, cut, quantum)); } } }
+    print("all instruction cuts/effect yields, committed effect before dependency wait/failure once, nested callback after release, overlapping-run rejection passed");
+}
+thread_fn suspended(base: snapshot::Snapshot, entries: i64[], failed: i64, cut: i64, quantum: i64) {
+    defer { heap_program::finish(); }
+    {
         var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {}; assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), sc));
         var authority = effects::Authority {}; authority.grants.append([grant(10, 1, 0, 6), grant(11, 1, 1, 6), grant(12, 1, 2, 7)]); var sequence: i64 = 0;
         var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, entries[3], []), []));
@@ -192,8 +228,7 @@ fn suspension(base: const snapshot::Snapshot&, entries: const i64[:]) {
         else { assert(job.status == tiny::Status.Failed && job.fault == source::Fault.DependencyNeed && authority.receipts.len == 1 && authority.counters[0] == 1); }
         let steps = job.steps; for i in 3 { assert(source::run(job, -1) == (if failed == 0 { tiny::Outcome.Complete } else { tiny::Outcome.Failed }) && job.steps == steps); }
         assert(source::retire(job) && heap.live_jobs == 0);
-    } } }
-    print("all instruction cuts/effect yields, committed effect before dependency wait/failure once, nested callback after release, overlapping-run rejection passed");
+    }
 }
 fn contracts(base: const snapshot::Snapshot&, entries: const i64[:]) {
     for mode in 6 {
@@ -207,14 +242,18 @@ fn contracts(base: const snapshot::Snapshot&, entries: const i64[:]) {
         var table = dependency::Table { compilation: 1, session: 1 }; var run = scheduler::Run { table: table };
         assert(!scheduler::dispatch(plan, base, run, scheduler::Options {}) && run.workers == 0 && table.cells.len == 0);
     }
-    // Publishing a branch-local mutable capture cannot merge it with another
-    // worker: the transitive path and reason survive in the artifact control.
+    heap_program::join(thread_spawn(mutable_capture, copy(base), owned(entries)));
+    print("compiler grant validation is atomic; forbidden mutable capture rejects with transitive path/reason");
+}
+// Publishing a branch-local mutable capture cannot merge it with another
+// worker: the transitive path and reason survive in the artifact control.
+thread_fn mutable_capture(base: snapshot::Snapshot, entries: i64[]) {
+    defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {}; assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), sc));
     let cell = source::allocate(heap, source::Node { kind: 3, initialized: true, value: source::number(9) });
     let value = source::form_collection(heap, 6, [source::closure(heap, entries[7], [cell])]); var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
     artifact::export_graph(heap, base, imports, value, 100, 1, c);
     assert(c.error == artifact::Error.Mutable && c.path.len == 3);
-    print("compiler grant validation is atomic; forbidden mutable capture rejects with transitive path/reason");
 }
 
 fn measure(base: const snapshot::Snapshot&, entries: const i64[:]) {
@@ -237,7 +276,8 @@ fn measure(base: const snapshot::Snapshot&, entries: const i64[:]) {
     } }
 }
 
-fn result_failure(base: const snapshot::Snapshot&, entries: const i64[:]) {
+thread_fn result_failure(base: snapshot::Snapshot, entries: i64[]) {
+    defer { heap_program::finish(); }
     // Error after the logical host effect committed (while constructing its
     // local symbol result) is terminal too; a retry cannot consume another ID.
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {}; assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), sc));
@@ -257,7 +297,12 @@ fn result_failure(base: const snapshot::Snapshot&, entries: const i64[:]) {
 }
 
 fn native_callbacks(base: const snapshot::Snapshot&, entries: const i64[:]) {
-    for quantum in [1, 2, 3, 4, 5, 16, 1000000] {
+    for quantum in [1, 2, 3, 4, 5, 16, 1000000] { heap_program::join(thread_spawn(native_callback, copy(base), owned(entries), quantum)); }
+    print("effect suspension inside native mapv callback preserves iterator continuation and exact names across quanta");
+}
+thread_fn native_callback(base: snapshot::Snapshot, entries: i64[], quantum: i64) {
+    defer { heap_program::finish(); }
+    {
         var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {}; assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), sc));
         let input = source::form_collection(heap, 6, [source::text(heap, "a"), source::text(heap, "b")]);
         var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, entries[8], []), [source::builtin(heap, 2), source::builtin(heap, 5), input]));
@@ -267,11 +312,15 @@ fn native_callbacks(base: const snapshot::Snapshot&, entries: const i64[:]) {
         for i in 2 { let symbol = heap.nodes[source::form_nth(heap, job.result, i).a]; let name = symbol.value; assert(symbol.kind == 9 && heap.units[name.a..(name.a + name.b)] == (if i == 0 { ['a' as u16, '1'] } else { ['b' as u16, '2'] })); }
         assert(source::retire(job));
     }
-    print("effect suspension inside native mapv callback preserves iterator continuation and exact names across quanta");
 }
 
 fn prefix_rejections(base: const snapshot::Snapshot&, entries: const i64[:]) {
-    for mode in 4 {
+    for mode in 4 { heap_program::join(thread_spawn(prefix_rejection, copy(base), owned(entries), mode)); }
+    print("unsupported gensym namespace/coercion/prefix length/arity reject before committing an effect");
+}
+thread_fn prefix_rejection(base: snapshot::Snapshot, entries: i64[], mode: i64) {
+    defer { heap_program::finish(); }
+    {
         var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {}; assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), sc));
         let macro = snapshot_test::factory(heap, entries[6], roots[0].value);
         var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, macro, [source::nil(), source::nil(), source::number(7)])); assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending);
@@ -282,5 +331,4 @@ fn prefix_rejections(base: const snapshot::Snapshot&, entries: const i64[:]) {
         var authority = effects::Authority {}; authority.grants.push(grant(1, 1, 0, 5)); var sequence: i64 = 0;
         assert(effects::service(authority, job, 1, sequence) && job.status == tiny::Status.Failed && job.fault == source::Fault.EffectContract && authority.receipts.len == 0 && authority.counters[0] == 0 && source::retire(job));
     }
-    print("unsupported gensym namespace/coercion/prefix length/arity reject before committing an effect");
 }

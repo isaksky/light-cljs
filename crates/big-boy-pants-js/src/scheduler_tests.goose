@@ -8,6 +8,7 @@ import .source_vm;
 import .artifact;
 import .form_bridge;
 import .effects;
+import .heap_program;
 
 fn key(id: i64, generation: i64 = 1, kind: i64 = 0, session: i64 = 1) -> dependency::Key { return dependency::Key { compilation: 1, session: session, generation: generation, definition: id, kind: kind }; }
 fn prepare(code: source::Code&, heap: source::Heap&, roots: snapshot::Binding[>..]&, entries: i64[>..]&) {
@@ -39,12 +40,23 @@ fn check_trace(plan: const scheduler::Plan&, run: const scheduler::Run&) {
     for state in run.states { assert(state.starts <= 1 && (!state.dispatched || state.received)); }
     for edge in run.table.edges { assert(edge.delivered); var count: i64 = 0; for delivery in run.table.deliveries { if delivery.cell == edge.cell && delivery.consumer == edge.consumer { count += 1; } } assert(count == 1); }
 }
+// Messages between the heap-free main and the thread programs that each own
+// one heap (light-cljs-794).
+struct Base { image: snapshot::Snapshot, entries: i64[] }
+struct Exported { nodes: bridge::Form[], children: i64[], units: u16[], sources: source::SourceRange[], bytes: u8[], roots: i64[] }
+struct Restored { identity: i64 }
 fn verify_artifacts(plan: const scheduler::Plan&, run: const scheduler::Run&, base: const snapshot::Snapshot&, consumer: i64, graph: bridge::Graph&) {
+    var results: scheduler::Result[>..] = []; for result in run.results { if result.id == consumer { results.push(copy(result)); } }
+    heap_program::join(thread_spawn(import_artifacts, copy(base), copy(results)));
+    let out = qget<Exported>(); graph.nodes.append(out.nodes); graph.children.append(out.children); graph.units.append(out.units); graph.sources.append(out.sources); graph.bytes.append(out.bytes); graph.roots.append(out.roots);
+}
+thread_fn import_artifacts(base: snapshot::Snapshot, results: scheduler::Result[]) {
+    defer { heap_program::finish(); }
+    var graph = bridge::Graph {};
     var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
     assert(snapshot::restore(base, code, heap, bindings, source::reserve_identity(), sc));
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
-    for result in run.results {
-        if result.id != consumer { continue; }
+    for result in results {
         assert(result.terminal.outcome == dependency::Outcome.Success);
         var c = artifact::Control {}; let value = artifact::import_graph(result.artifact, base, heap, imports, c); assert(c.error == artifact::Error.None);
         let expansion = source::form_nth(heap, value, 1); assert(source::form_count(heap, expansion) == 4);
@@ -52,6 +64,7 @@ fn verify_artifacts(plan: const scheduler::Plan&, run: const scheduler::Run&, ba
         var bc = bridge::Control {}; assert(bridge::export_graph(heap, [value], graph, bc));
     }
     assert(graph.roots.len == 1);
+    assert(qput(Exported { nodes: copy(graph.nodes), children: copy(graph.children), units: copy(graph.units), sources: copy(graph.sources), bytes: copy(graph.bytes), roots: copy(graph.roots) }));
 }
 fn schedule_delay(id: i64, seed: i64) -> i64 { return ((id * 1103515245 + seed * 12345) & 127) % 16; }
 fn graphs(base: const snapshot::Snapshot&, entries: const i64[:]) {
@@ -146,12 +159,19 @@ fn saturation(base: const snapshot::Snapshot&, entries: const i64[:]) {
     full_queues(base, entries);
     print("scheduler capacity=1 retained all work/results/stops; refusals=", run.work_retries, "/", run.result_retries, "/", run.stop_retries);
 }
-fn main() {
+// The parent image's own thread program. Dispatches run in other programs,
+// so they cannot reach this heap: no live job, one boot, no producer.
+thread_fn base_image() {
+    defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var entries: i64[>..] = []; prepare(code, heap, roots, entries);
     var c = snapshot::Control {}; let base = snapshot::capture(heap, roots, c); assert(c.error == snapshot::Error.None);
-    let started = clock_ns(); install_orders(base, entries); graphs(base, entries); failures(base, entries); saturation(base, entries); keys_and_restore(base, entries); budgets_and_control(base, entries);
-    // All dispatches and physical workers ended, with one boot in the parent.
     assert(heap.live_jobs == 0 && heap.boot_count == 1 && heap.producer_count == 0);
+    assert(qput(Base { image: copy(base), entries: copy(entries) }));
+}
+// main builds no heap; every heap is its own thread program.
+fn main() {
+    heap_program::join(thread_spawn(base_image)); let message = qget<Base>(); let base .= message.image; let entries .= message.entries;
+    let started = clock_ns(); install_orders(base, entries); graphs(base, entries); failures(base, entries); saturation(base, entries); keys_and_restore(base, entries); budgets_and_control(base, entries);
     print("native dependency-ready pool passed; clean prerequisite import; all owned workers joined; elapsed-ms=", (clock_ns() - started) / 1000000);
 }
 
@@ -174,22 +194,30 @@ fn keys_and_restore(base: const snapshot::Snapshot&, entries: const i64[:]) {
     var authority = dependency::Table { compilation: 1, session: 1, next_producer: 1000000 };
     let read = dependency::demand(authority, 11, key(1));
     for n in 2 {
-        var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var c = snapshot::Control {};
-        assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), c));
+        heap_program::join(thread_spawn(restore_private, copy(base))); let heap = qget<Restored>();
         assert(!dependency::install(authority, dependency::Completion { key: key(1), producer: heap.identity, terminal: dependency::Terminal { outcome: dependency::Outcome.Success } }));
         assert(dependency::demand(authority, 11, key(1)).producer == 0 && authority.requests.len == 1 && authority.edges.len == 1 && authority.deliveries.len == 0);
     }
     assert(dependency::install(authority, dependency::Completion { key: key(1), producer: read.producer, terminal: dependency::Terminal { outcome: dependency::Outcome.Success } }));
     assert(authority.deliveries.len == 1);
-    {
-        var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var c = snapshot::Control {};
-        assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), c));
-        let receiver = source::allocate(heap, source::Node { kind: 0 }); let name = source::text(heap, "root");
-        assert(source::put(heap, receiver, name, source::Value {}));
-        assert(source::form_op(heap, 82, [receiver, source::nil(), name]).tag == 0 && heap.fault == source::Fault.None);
-        source::form_op(heap, 82, [receiver, source::nil(), source::text(heap, "missing")]); assert(heap.fault == source::Fault.DependencyNeed);
-    }
+    heap_program::join(thread_spawn(root_reads, copy(base)));
     print("scheduler same-definition different version/kind imports and snapshot authority exclusion passed");
+}
+// A full private heap restored while the coordinator's claim stays pending.
+thread_fn restore_private(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var c = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), c));
+    assert(qput(Restored { identity: heap.identity }));
+}
+thread_fn root_reads(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var c = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), c));
+    let receiver = source::allocate(heap, source::Node { kind: 0 }); let name = source::text(heap, "root");
+    assert(source::put(heap, receiver, name, source::Value {}));
+    assert(source::form_op(heap, 82, [receiver, source::nil(), name]).tag == 0 && heap.fault == source::Fault.None);
+    source::form_op(heap, 82, [receiver, source::nil(), source::text(heap, "missing")]); assert(heap.fault == source::Fault.DependencyNeed);
 }
 fn budgets_and_control(base: const snapshot::Snapshot&, entries: const i64[:]) {
     for mode in 5 {
@@ -283,7 +311,7 @@ fn install_orders(base: const snapshot::Snapshot&, entries: const i64[:]) {
         for i in 2 {
             assert(scheduler::ready(plan, run, i)); let packet = scheduler::make_work(plan, run, i, source::reserve_identity());
             run.states[i].dispatched = true; run.states[i].starts = 1; run.active += 1;
-            var authority = effects::Authority {}; let result .= held.push(scheduler::perform(base, packet, scheduler::Options {}, authority)); order.push(result);
+            var authority = effects::Authority {}; let result .= held.push(scheduler::perform_isolated(base, packet, scheduler::Options {}, authority)); order.push(result);
         }
         let first = seed % 2; let second = 1 - first;
         assert(!scheduler::ready(plan, run, 2));
@@ -298,7 +326,7 @@ fn install_orders(base: const snapshot::Snapshot&, entries: const i64[:]) {
         assert(run.events[3].kind == scheduler::EventKind.Install && run.events[3].job == second);
         let packet = scheduler::make_work(plan, run, 2, source::reserve_identity());
         run.states[2].dispatched = true; run.states[2].starts = 1; run.active += 1;
-        var authority = effects::Authority {}; let result = scheduler::perform(base, packet, scheduler::Options {}, authority);
+        var authority = effects::Authority {}; let result = scheduler::perform_isolated(base, packet, scheduler::Options {}, authority);
         scheduler::accept(plan, base, run, scheduler::Options {}, result);
         assert(run.active == 0 && table.requests.len == 3);
         var graph = bridge::Graph {}; verify_artifacts(plan, run, base, 3, graph);
