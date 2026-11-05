@@ -76,6 +76,7 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
 fn key_runs<T>(s: const T&, c: Control&) -> bool {
     if s.properties.len > c.bytes - footprint(s) { return reject(c, Error.Bytes); }
     if !poll(c, s.properties.len) { return false; }
+    c.validation_peak = max(c.validation_peak, s.properties.len);
     var used: bool[>..] = []; used.resize(s.properties.len, false); var records: i64 = 0;
     for n in s.nodes {
         if !poll(c, 1 + n.key_capacity) { return false; }

@@ -72,6 +72,7 @@ fn malformed() {
     heap_program::join(thread_spawn(malformed_parent)); let saved = qget<Saved>(); let original .= saved.image;
     for mode in 30 { heap_program::join(thread_spawn(malformed_target, copy(original), mode)); }
     for mode in 2 { heap_program::join(thread_spawn(malformed_budget, copy(original), mode)); }
+    key_run_budgets(original);
     for identity in [0, original.header.base, original.header.checkpoint, 2147483648] { heap_program::join(thread_spawn(malformed_identity, copy(original), identity)); }
     print("snapshot malformed version/length/link/generation/allocator/code and atomic budget rejection passed");
 }
@@ -123,6 +124,21 @@ thread_fn malformed_budget(original: snapshot::Snapshot, mode: i64) {
         if mode == 0 { check.bytes = snapshot::footprint(original) - 1; } else { check.work = 1; }
         assert(!snapshot::restore(original, dest, target, roots, source::reserve_identity(), check));
         assert(check.error == (if mode == 0 { snapshot::Error.Bytes } else { snapshot::Error.Work }) && target.nodes.len == 0 && !dest.valid);
+    }
+}
+// The key-run ownership bitmap (one byte a property row) obeys its own byte
+// and work cuts at their exact boundaries; no heap is needed to validate it.
+fn key_run_budgets(saved: const snapshot::Snapshot&) {
+    assert(saved.properties.len > 0);
+    var tight_bytes = snapshot::Control { bytes: snapshot::footprint(saved) + saved.properties.len - 1 };
+    assert(!snapshot::key_runs(saved, tight_bytes) && tight_bytes.error == snapshot::Error.Bytes && tight_bytes.visited == 0 && tight_bytes.validation_peak == 0);
+    var exact_bytes = snapshot::Control { bytes: snapshot::footprint(saved) + saved.properties.len };
+    assert(snapshot::key_runs(saved, exact_bytes) && exact_bytes.validation_peak == saved.properties.len);
+    var exact = snapshot::Control {}; assert(snapshot::key_runs(saved, exact));
+    var at_work = snapshot::Control { work: exact.visited }; assert(snapshot::key_runs(saved, at_work) && at_work.visited == exact.visited);
+    for cut in [saved.properties.len - 1, exact.visited - 1] {
+        var tight_work = snapshot::Control { work: cut };
+        assert(!snapshot::key_runs(saved, tight_work) && tight_work.error == snapshot::Error.Work && tight_work.visited <= cut);
     }
 }
 thread_fn malformed_identity(original: snapshot::Snapshot, identity: i64) {
