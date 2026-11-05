@@ -873,3 +873,112 @@ the same comparator with `--backend all --runner target/phase750-runner
 analysis/archive scripts. The phase builder restores source in `finally`.
 `target/resume-concurrency.bb` records the exact checkpoint recovery used here;
 it skips only successful cell/round identities and retains all checks.
+
+## What the extra compiler slots actually do
+
+November 4, 2026, execution source `bbf05c0f6631cb342795b5af2d99ef0e75776fe1`.
+**Repeated compiler catalog installation is a demonstrated contributor, but this
+investigation does not establish the cause of most of the remaining CPU cost.**
+The fixed-native4 comparison uses the same seed42/200k/653-file target,
+release/advanced/no-cache settings and current batched fuel accounting. No
+runtime change or optimization is shipped.
+
+Five fresh quiet, interleaved rounds (one excluded warmup per cell) confirm the
+effect: compiler slots4/8 have median wall **9.756/10.264 s** and aggregate CPU
+**26.31/29.25 s**, differences **0.508 s wall / 2.94 s CPU**. These are a new
+paired session, not subtractions from historical measurements.
+
+The retained V8 work is inside the measured Goose build. It is not the separate
+reference backend, and it is not required by Goose itself. The prototype's
+[CLI](compiler_cli.rs) calls `use_goose_source_macros`; that
+[method](../../../../src/macro_host.rs) sets `EngineBinding.goose` alongside the
+existing `bootstrap`, rather than replacing the compiler evaluator. Consequently
+`new_compiler_evaluator` and
+[`worker_view`](../../../../src/compilation_session.rs) still construct V8.
+`MacroHost::bind` installs the cached core/sequence bootstrap definitions in each
+instance; `prepare_engine` installs `compiler_roots.js`, catalog/build services
+and runtime state. `WorkerView::analyze` calls `install`, which replays each
+worker's pending root and declaration-bundle registrations into that instance.
+`analyze_unit` also sets and restores its declaration frontier and gensym scope.
+These are real V8 operations, even when no target macro body needs that instance.
+
+Core macros first try the [Rust expansion path](../../../../src/analyzer.rs).
+The remaining [`expand_core_javascript`](../../../../src/compiler_bootstrap.rs)
+fallback explicitly excludes a `source_only` engine, so it retains the bootstrap
+V8 capability. In contrast, `expand_source_javascript` explicitly selects
+`EngineBinding.goose`; the [Goose evaluator](../../../../src/goose_evaluator.rs)
+executes those source macro/helper bodies in the native session. On this target,
+the detailed general macro-expansion counter is **5,226**, exactly the **5,226
+Goose calls**, and the prior exact-source macro probes have no `core/` entries.
+Thus the observed V8 work here is bootstrap, catalog and compiler bookkeeping;
+core fallback is a retained capability, not an observed target-body execution.
+
+A separate diagnostic uses thread-local counters and macOS thread CPU clocks
+(not elapsed waits). Four/eight slots create three/seven compiler worker views.
+The number of catalog registrations installed rises **87,552→175,056**, including
+**21,020→42,032 bundle registrations**. Each engine catches up its own catalog;
+the extra workers therefore repeat registration work. Bundle registration formats
+JavaScript and passes it through `evaluate_unit`/release. Retained V8 evaluated
+source rises **26.64→53.20 MB** across **21,056→42,100 calls**; these are largely
+registration programs, not duplicated execution of Goose macro bodies.
+
+In the detailed measured pair, catalog-install CPU is **1.110→2.037 s (+0.927 s)**.
+Foreground V8 entry CPU rises **0.736 s**, including **0.499 s** in unit
+evaluation; these scopes overlap registration and must not be added to it.
+Worker-view creation rises only **0.060 s**, including **0.020 s** more bootstrap
+installation. Aggregate command CPU rises **3.27 s** in this instrumented pair;
+native-child CPU accounts for **0.18 s**, and measured compiler-owned thread CPU
+accounts for **2.909 s**. The residual is about **0.18 s** of other/background or
+end-of-process work. It is not evidence of a large hidden background-V8 cost,
+and it cannot specifically be attributed to V8 compilation or GC. Sampled stacks
+also show more V8 activity, but their sleeping and runnable observations are not
+CPU accounting and are not used to assign the remainder.
+
+A bounded diagnostic ablation skips `WorkerView::install` on Goose-bound workers,
+while keeping their V8 instances/bootstrap, the coordinator catalog, native
+capacity and Goose source-macro execution. This intentionally incomplete
+implementation is only a probe for this target, not a generally correct fix.
+All its completed builds preserve the full output and oracles. Four warmups and
+two complete interleaved measured rounds give these **within-round slots8 minus
+slots4 CPU differences**:
+
+| Round | Unmodified CPU difference | Ablated CPU difference | Reduction |
+| ---: | ---: | ---: | ---: |
+| 0 | 2.52 s | 1.71 s | 0.81 s |
+| 1 | 2.20 s | 1.90 s | 0.30 s |
+
+Their mean reduction is **0.555 s**, about **24%** of those rounds' mean baseline
+penalty. This supports a partial causal contribution; it is not interchangeable
+with the separate instrumented **0.927 s** phase delta or a precise population
+fraction. Wall reductions have mixed signs (**+0.054 / −0.217 s**), so this probe
+does not establish an end-to-end wall improvement. The third ablation pair is
+retained, but its baseline pair never launched: the quiet gate rejected at
+**84.62%** idle, then recovery attempts at **75.71% / 13.77%** amid unrelated load.
+No completed sample was discarded or rerun; there is no balanced three-round
+estimate and no further measurement campaign.
+
+Work counts rule out a large increase in target macro execution or argument
+volume: coordinator/worker calls remain **1,140/4,086**, deferred-form analyses
+remain **14,218**, and argument nodes rise only **30.541→30.556 million** (~0.05%).
+The same-count argument conversion, result release and Goose worker-root replay
+cost **0.309 / 0.187 / 0.203 s** more CPU in the detailed pair. These identify
+where some cost is paid, not why each operation costs more. Allocation, reference
+counting/atomics, locks, cache effects and scheduling remain unproven explanations
+for that remainder. Whole-environment volume dominates conversion, but its size
+alone does not explain the slots4/8 difference. The earlier per-poll shared-fuel
+problem is already fixed and is not reintroduced or bypassed here.
+
+The [raw archive](generated-200k-slot-costs.edn.gz) retains all **40 completed
+builds** (12 clean confirmation, eight CPU diagnostics, four sampled, 14 ablation,
+two reference), interrupted records, every sampled stack, exact patches and
+restoring builders, commands, identities and analysis scripts. All builds pass
+the complete **3,449,022 output bytes**, the preceding SHA-256, all five independent
+oracles and strict waste checks. All **580 execution/build source hashes** and
+toolchain binary hashes match the preceding archive; native binary remains
+`92140b1a31ba1fe42beadc3caae59fb6ea0916e4a3204e5caff10ef7146688e0`, and this
+worktree's clean production CLI is
+`da9275674b82a54f96a095d841c9df0ad265097c323b6f82055218e35e74bcf3`.
+Diagnostic source edits are restored. Exact-source complete-form/control evidence
+and the preceding broad-suite limitations are reused; no broad tests or new
+performance assertions are added for this report-only change. The archive is
+reread with every embedded digest verified, and `git diff --check` passes.
