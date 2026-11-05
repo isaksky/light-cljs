@@ -56,15 +56,15 @@ fn valid_value(a: const Artifact&, v: source::Value) -> bool {
 }
 fn shape(a: const Artifact&, n: source::Node, base: const snapshot::Snapshot&, c: Control&) -> bool {
     if n.kind == 0 || n.kind == 1 || n.kind == 3 && (!n.immutable || !n.initialized) { return reject(c, Error.Mutable); }
-    if n.kind < 2 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.length < 0 { return reject(c, Error.Link); }
+    if n.kind < 2 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 { return reject(c, Error.Link); }
     if has_values(n) && !snapshot::range(n.start, n.count, a.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); }
-    if n.kind == 2 && (!snapshot::range(n.function, 1, base.functions.len) || n.count != base.functions[n.function].captures) || n.kind == 4 && (n.function < 0 || n.function > 13 || n.function == 9) { return reject(c, Error.Link); }
+    if n.kind == 2 && (!snapshot::range(n.function, 1, base.functions.len) || n.count != base.functions[n.function].captures) || n.kind == 4 && (n.function > 13 || n.function == 9) { return reject(c, Error.Link); }
     if !valid_value(a, n.value) || !valid_value(a, n.namespace_value) || !valid_value(a, n.metadata) { return reject(c, Error.Link); }
     if n.metadata.tag() > 1 && (n.metadata.tag() != 5 || a.nodes[n.metadata.id()].kind != 7) { return reject(c, Error.Link); }
     if (n.kind == 9 || n.kind == 10) && (n.value.tag() != 4 || n.namespace_value.tag() != 1 && n.namespace_value.tag() != 4) || n.kind == 11 && n.value.tag() > 4 { return reject(c, Error.Link); }
-    if n.source < -1 || n.source >= a.sources.len || n.origin < -1 { return reject(c, Error.Link); }
-    if n.source >= 0 && (n.span_start < 0 || n.span_end < n.span_start || !snapshot::range(n.span_start, n.span_end - n.span_start, a.sources[n.source].count)) { return reject(c, Error.Link); }
-    if n.source >= 0 {
+    if n.source != source::no_row() && n.source >= a.sources.len || n.origin < -1 { return reject(c, Error.Link); }
+    if n.source != source::no_row() && (n.span_end < n.span_start || !snapshot::range(n.span_start, n.span_end - n.span_start, a.sources[n.source].count)) { return reject(c, Error.Link); }
+    if n.source != source::no_row() {
         let r = a.sources[n.source]; let text = a.bytes[r.start..(r.start + r.count)];
         if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c, Error.Link); }
     }
@@ -154,7 +154,7 @@ fn export_value(heap: const source::Heap&, v: source::Value, ids: i64[>..]&, slo
         if ids[id] < 0 { ids[id] = slots.len; slots.push(id); } return source::object(ids[id]);
     } else if v.tag() == 4 {
         if !snapshot::range(v.sid(), 1, heap.strings.len) || !poll(c, source::str_len(heap, v)) { reject(c, Error.Link); return source::Value.Undefined; }
-        strings.push(source::Str { start: units.len, len: source::str_len(heap, v) }); units.append(source::chars(heap, v));
+        strings.push(source::Str { start: units.len as u32, len: source::str_len(heap, v) as u32 }); units.append(source::chars(heap, v));
         return source::Value.String { s: (strings.len - 1) as u32 };
     }
     return v;
@@ -169,25 +169,25 @@ fn export_graph(heap: const source::Heap&, base: const snapshot::Snapshot&, impo
     var nodes:      source::Node[>..] = []; var keys: Key[>..] = []; var values: source::Value[>..] = []; var units: u16[>..] = []; var strings: source::Str[>..] = []; var bytes: u8[>..] = []; var sources: source::SourceRange[>..] = [];
     let result = export_value(heap, root, ids, slots, units, strings, c); var cursor: i64 = 0;
     while cursor < slots.len && c.error == Error.None {
-        if !poll(c) { break; } let slot = slots[cursor]; var n = heap.nodes[slot];
+        if !poll(c) { break; } let slot = slots[cursor]; var n = source::node(heap, slot);
         // Never read private property graphs; shape() rejects their owners.
         keys.push(origin(heap, base, imports, slot, c));
         n.value = export_value(heap, n.value, ids, slots, units, strings, c); n.namespace_value = export_value(heap, n.namespace_value, ids, slots, units, strings, c); n.metadata = export_value(heap, n.metadata, ids, slots, units, strings, c);
         if has_values(n) {
             if !snapshot::range(n.start, n.count, heap.values.len) || !poll(c, n.count) { reject(c, Error.Link); break; }
-            let old = n.start; n.start = values.len;
-            for i in n.count { let v = export_value(heap, heap.values[old + i], ids, slots, units, strings, c); values.push(v); }
+            let old = n.start; n.start = values.len as u32;
+            for i in n.count { let v = export_value(heap, source::slot(heap, old + i), ids, slots, units, strings, c); values.push(v); }
         }
-        if n.source >= 0 {
+        if n.source != source::no_row() {
             if !snapshot::range(n.source, 1, heap.source_ranges.len) { reject(c, Error.Link); break; }
             let original_source = n.source;
             if source_ids[original_source] < 0 {
                 let r = heap.source_ranges[original_source];
                 if !snapshot::range(r.start, r.count, heap.source_bytes.len) || !poll(c, r.count) { reject(c, Error.Link); break; }
                 source_ids[original_source] = sources.len;
-                sources.push(source::SourceRange { start: bytes.len, count: r.count }); bytes.append(heap.source_bytes[r.start..(r.start + r.count)]);
+                sources.push(source::SourceRange { start: bytes.len as u32, count: r.count }); bytes.append(heap.source_bytes[r.start..(r.start + r.count)]);
             }
-            n.source = source_ids[original_source];
+            n.source = source_ids[original_source] as u32;
         }
         nodes.push(n); cursor += 1;
         if bytes_of(nodes).len + bytes_of(keys).len + bytes_of(values).len + bytes_of(units).len + bytes.len + bytes_of(sources).len > c.bytes { reject(c, Error.Bytes); }
@@ -220,7 +220,7 @@ fn signature_bytes<T>(values: const T[:], out: u8[>..]&, c: Control&) -> bool {
 // with bytes_of directly.
 struct ValueSig { tag: i64, number: f64 = 0, a: i64 = 0, b: i64 = 0 }
 struct NodeSig { kind: i64, function: i64, count: i64, keys: i64, key_count: i64, key_capacity: i64, length: i64, initialized: bool, immutable: bool, origin: i64, source: i64, span_start: i64, span_end: i64 }
-fn node_sig(n: source::Node) -> NodeSig { return NodeSig { kind: n.kind, function: n.function, count: n.count, keys: n.keys, key_count: n.key_count, key_capacity: n.key_capacity, length: n.length, initialized: n.initialized, immutable: n.immutable, origin: n.origin, source: if n.source < 0 { -1 } else { 0 }, span_start: n.span_start, span_end: n.span_end }; }
+fn node_sig(n: source::Node) -> NodeSig { return NodeSig { kind: n.kind, function: n.function, count: n.count, keys: n.keys, key_count: n.key_count, key_capacity: n.key_capacity, length: n.length, initialized: n.initialized, immutable: n.immutable, origin: n.origin, source: if n.source == source::no_row() { -1 } else { 0 }, span_start: n.span_start, span_end: n.span_end }; }
 fn scalar_sig(v: source::Value, length: i64) -> ValueSig { return ValueSig { tag: v.tag(), number: v.num(), a: if v.flag() { 1 } else { 0 }, b: length }; }
 fn signature_value(a: const Artifact&, v: source::Value, out: u8[>..]&, c: Control&) -> bool {
     if v.tag() == 5 { return signature_bytes([ValueSig { tag: 5, a: a.keys[v.id()].slot, b: a.keys[v.id()].arena }], out, c); }
@@ -232,7 +232,7 @@ fn signature(a: const Artifact&, id: i64, out: u8[>..]&, c: Control&) -> bool {
     let original = a.nodes[id];
     if !signature_bytes([node_sig(original)], out, c) { return false; }
     for i in edge_count(original) { if !poll(c) || !signature_value(a, edge(a, original, i), out, c) { return false; } }
-    if original.source >= 0 { let r = a.sources[original.source]; if !signature_bytes(a.bytes[r.start..(r.start + r.count)], out, c) { return false; } }
+    if original.source != source::no_row() { let r = a.sources[original.source]; if !signature_bytes(a.bytes[r.start..(r.start + r.count)], out, c) { return false; } }
     return true;
 }
 fn relocated(v: source::Value, mapping: const i64[:], string_start: i64) -> source::Value {
@@ -254,7 +254,7 @@ fn base_signature<T>(s: const T&, slot: i64, checkpoint: i64, out: u8[>..]&, c: 
             if !signature_bytes([scalar_sig(v, r.len)], out, c) || !signature_bytes(s.units[r.start..(r.start + r.len)], out, c) { return false; }
         } else if !signature_bytes([scalar_sig(v, 0)], out, c) { return false; }
     }
-    if original.source >= 0 {
+    if original.source != source::no_row() {
         if !snapshot::range(original.source, 1, s.sources.len) { return reject(c, Error.Link); } let r = s.sources[original.source];
         if !snapshot::range(r.start, r.count, s.bytes.len) { return reject(c, Error.Link); }
         if !signature_bytes(s.bytes[r.start..(r.start + r.count)], out, c) { return false; }
@@ -294,18 +294,19 @@ fn import_graph(a: const Artifact&, base: const snapshot::Snapshot&, heap: sourc
         if target < 0 { target = heap.nodes.len + new_nodes; new_nodes += 1; added.push(Entry { key: k, target: target, start: imports.signatures.len + start, count: signatures.len - start }); }
         mapping.push(target);
     }
-    if new_nodes > heap.limits.nodes - heap.nodes.len || a.values.len > heap.limits.values - heap.values.len || a.units.len > heap.limits.units - heap.units.len || a.strings.len > heap.limits.units - heap.strings.len || a.bytes.len > 8388608 - heap.source_bytes.len || a.sources.len > 1048576 - heap.source_ranges.len { reject(c, Error.Bytes); return source::Value.Undefined; }
+    if !source::nodes_fit(heap, new_nodes) || !source::values_fit(heap, a.values.len) || a.units.len > heap.limits.units - (heap.units.len - heap.image.units) || a.strings.len > heap.limits.units - (heap.strings.len - heap.image.strings) || a.bytes.len > 8388608 - heap.source_bytes.len || a.sources.len > 1048576 - heap.source_ranges.len { reject(c, Error.Bytes); return source::Value.Undefined; }
     if imports.entries.len + added.len > 100000 || imports.definitions.len >= 100000 || delivery.len > c.bytes - imports.deliveries.len || signatures.len > c.bytes - imports.signatures.len { reject(c, Error.Bytes); return source::Value.Undefined; }
     if !poll(c, a.values.len + a.units.len + a.bytes.len + a.sources.len + a.nodes.len) { return source::Value.Undefined; }
-    let unit_start = heap.units.len; let string_start = heap.strings.len; let value_start = heap.values.len; let source_start = heap.source_ranges.len; let byte_start = heap.source_bytes.len;
-    // Commit: all validation, comparison, budgets and link resolution finished.
-    heap.units.append(a.units); for r in a.strings { heap.strings.push(source::Str { start: r.start + unit_start, len: r.len }); }
-    for v in a.values { heap.values.push(relocated(v, mapping, string_start)); }
-    heap.source_bytes.append(a.bytes); for r in a.sources { heap.source_ranges.push(source::SourceRange { start: r.start + byte_start, count: r.count }); }
+    let string_start = heap.strings.len; let value_start = heap.values.len; let source_start = heap.source_ranges.len;
+    // Commit: all validation, comparison, budgets and link resolution finished;
+    // the preflight above reserved every row, so no allocation below fails.
+    let unit_start = source::add_units(heap, a.units); for r in a.strings { source::string_ref(heap, r.start + unit_start, r.len); }
+    var moved: source::Value[>..] = []; for v in a.values { moved.push(relocated(v, mapping, string_start)); } source::add_values(heap, moved);
+    let byte_start = source::add_source_bytes(heap, a.bytes); for r in a.sources { source::add_source_range(heap, source::SourceRange { start: r.start + byte_start as u32, count: r.count }); }
     for n, i in a.nodes {
         if mapping[i] < heap.nodes.len { continue; } assert(mapping[i] == heap.nodes.len);
         var out = n; out.value = relocated(n.value, mapping, string_start); out.namespace_value = relocated(n.namespace_value, mapping, string_start); out.metadata = relocated(n.metadata, mapping, string_start);
-        if has_values(n) { out.start += value_start; } if n.source >= 0 { out.source += source_start; } heap.nodes.push(out);
+        if has_values(n) { out.start += value_start as u32; } if n.source != source::no_row() { out.source += source_start as u32; } source::add_nodes(heap, [out]);
     }
     imports.signatures.append(signatures); imports.entries.append(added);
     let root = relocated(a.root, mapping, string_start); let delivery_start = imports.deliveries.len; imports.deliveries.append(delivery);

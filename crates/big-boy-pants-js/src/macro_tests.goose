@@ -58,11 +58,11 @@ thread_fn finite_map_cut(cut: i64) {
         let callback = source::builtin(heap, 1);
         let input = source::form_collection(heap, 5, [source::number(1), source::number(2), source::number(3)]);
         let mapped = source::native_value(heap, 17, [callback, input]);
-        assert(heap.nodes[mapped.id()].kind == 15 && heap.nodes[mapped.id()].length == 0);
+        assert(source::node(heap, mapped.id()).kind == 15 && source::node(heap, mapped.id()).length == 0);
         var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
         assert(source::demand_map(job, mapped)); source::run(job, cut);
         while job.frames.len > 1 { assert(source::run(job, 1) == tiny::Outcome.Yielded); }
-        assert(job.steps == 7 && heap.nodes[mapped.id()].kind == 12 && heap.nodes[mapped.id()].length == 3);
+        assert(job.steps == 7 && source::node(heap, mapped.id()).kind == 12 && source::node(heap, mapped.id()).length == 3);
         for i in 3 { assert(source::form_nth(heap, mapped, i).num() == i + 2); }
         assert(!source::demand_map(job, mapped)); source::retire(job);
     }
@@ -98,8 +98,8 @@ thread_fn finite_map_reset() {
         let mapped = source::native_value(heap, 17, [source::builtin(heap, 1), input]);
         let entry = source::closure(heap, 0, []); var job = source::Job { heap: heap };
         assert(source::start(job, entry, []) && source::demand_map(job, mapped));
-        source::run(job, 2); assert(heap.nodes[mapped.id()].length == 1 && heap.nodes[mapped.id()].initialized);
-        assert(source::retire(job) && !heap.nodes[mapped.id()].initialized && source::reset(job));
+        source::run(job, 2); assert(source::node(heap, mapped.id()).length == 1 && source::node(heap, mapped.id()).initialized);
+        assert(source::retire(job) && !source::node(heap, mapped.id()).initialized && source::reset(job));
         assert(source::start(job, entry, []) && source::demand_map(job, mapped));
         while job.frames.len > 1 { source::run(job, 1); }
         assert(job.steps == 5 && source::form_nth(heap, mapped, 2).num() == 4);

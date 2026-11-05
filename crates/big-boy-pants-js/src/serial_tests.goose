@@ -182,10 +182,40 @@ thread_fn factory(bytes: u8[]) {
     let entry = source::closure(heap, 0, []);
     var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
     assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.tag() == 5);
-    assert(heap.nodes[job.result.id()].kind == 2);
+    assert(source::node(heap, job.result.id()).kind == 2);
+}
+// Row helpers name their table (light-cljs-800): in a contained worker, a
+// row that another table holds but that is past this table fails by this
+// table's name. One case a helper family.
+struct WrongRow { family: i64 }
+thread_fn wrong_row(probe: WrongRow) {
+    var code = source::Code {}; decode(code, embed_file("../corpus/serial/calls.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap)); source::boot_runtime(heap);
+    let f = code.functions[0]; let big = heap.units.len;
+    match probe.family {
+        0 => { assert(heap.nodes.len < big); source::node(heap, heap.nodes.len); },
+        1 => { assert(heap.nodes.len < big); source::node_mut(heap, heap.nodes.len).kind = 0; },
+        2 => { assert(heap.values.len < heap.nodes.len); source::slot(heap, heap.values.len); },
+        3 => { source::run(heap, 0, heap.values.len + 1); },
+        4 => { assert(heap.properties.len < big); source::property_row(heap, heap.properties.len); },
+        5 => { assert(heap.strings.len < big); source::header(heap, heap.strings.len); },
+        6 => { assert(heap.constants.len < big); source::constant(heap, f, heap.constants.len - f.constants); },
+        7 => { assert(heap.source_ranges.len < heap.nodes.len); source::source_range(heap, heap.source_ranges.len); },
+        // A header whose run is past the units table (only a corrupted row can say so).
+        _ => { heap.strings.push(source::Str { start: big as u32, len: 1 }); source::chars(heap, source::Value.String { s: (heap.strings.len - 1) as u32 }); },
+    }
+}
+fn wrong_rows() {
+    let tables = ["table nodes", "table nodes", "table values", "table values", "table properties", "table strings", "table constants", "table source_ranges", "table units"];
+    for name, family in tables {
+        var why: u8[>..] = [];
+        assert(!thread_wait(thread_spawn_contained(wrong_row, WrongRow { family: family }), why) && find(why, name) >= 0);
+    }
+    print("serial source VM: every row helper family refuses a wrong-table row by its table name");
 }
 fn main() {
     array_lengths();
+    wrong_rows();
     check(embed_file("../corpus/synthetic/arithmetic.gsp"), "number:27.5");
     check(embed_file("../corpus/synthetic/control_flow.gsp"), "number:7307.0");
     check(embed_file("../corpus/synthetic/wide.gsp"), "number:299.0");
@@ -258,27 +288,27 @@ thread_fn array_length_bounds() {
     assert(source::get(heap, array, source::key(heap, source::number(3))).tag() == 0);
     assert(source::put(heap, array, source::key(heap, source::number(2)), source::number(99)));
     assert(source::get(heap, array, source::key(heap, source::number(2))).num() == 99);
-    assert(source::put(heap, array, length, source::number(0)) && heap.nodes[array.id()].key_count == 0);
+    assert(source::put(heap, array, length, source::number(0)) && source::node(heap, array.id()).key_count == 0);
     assert(source::put(heap, array, length, source::number(3)));
     for i in 3 { assert(source::get(heap, array, source::key(heap, source::number(i))).tag() == 0); }
     for n in [-1.0, 1.5, 0.0 / 0.0, 1.0 / 0.0, 4294967296.0] {
         assert(!source::put(heap, array, length, source::number(n)) && heap.fault == source::Fault.UnsupportedOperand);
-        heap.fault = source::Fault.None; assert(heap.nodes[array.id()].length == 3);
+        heap.fault = source::Fault.None; assert(source::node(heap, array.id()).length == 3);
     }
     assert(!source::put(heap, array, length, source::number(heap.limits.values + 1)) && heap.fault == source::Fault.MemoryLimit);
     heap.fault = source::Fault.None;
     assert(source::put(heap, array, source::key(heap, source::number(1)), source::number(7)));
-    let before = copy(heap.properties); let slots = copy(heap.values); let records = heap.nodes[array.id()].key_count;
+    let before = copy(heap.properties); let slots = copy(heap.values); let records = source::node(heap, array.id()).key_count;
     heap.limits.work = heap.work + 8;
     assert(!source::put(heap, array, length, source::number(0)) && heap.fault == source::Fault.WorkLimit);
-    assert(heap.nodes[array.id()].length == 3 && heap.nodes[array.id()].key_count == records && source::plain_rows(heap.properties) == source::plain_rows(before) && source::plain_rows(heap.values) == source::plain_rows(slots));
+    assert(source::node(heap, array.id()).length == 3 && source::node(heap, array.id()).key_count == records && source::plain_rows(heap.properties) == source::plain_rows(before) && source::plain_rows(heap.values) == source::plain_rows(slots));
     heap.fault = source::Fault.None; heap.limits = source::Limits {};
     // Elements live in the array's own value run (light-cljs-785), so the
     // value-slot limit, not the property limit, bounds a growing array.
-    let retained = heap.values.len; heap.limits.values = retained; let capacity = heap.nodes[array.id()].count;
+    let retained = heap.values.len; heap.limits.values = retained; let capacity = source::node(heap, array.id()).count;
     assert(source::put(heap, array, length, source::number(0)));
     assert(!source::put(heap, array, source::key(heap, source::number(capacity)), source::number(1)) && heap.fault == source::Fault.MemoryLimit);
-    assert(heap.values.len == retained && heap.nodes[array.id()].length == 0 && heap.properties.len == before.len);
+    assert(heap.values.len == retained && source::node(heap, array.id()).length == 0 && heap.properties.len == before.len);
 }
 thread_fn array_length_cut(cut: i64) {
     defer { heap_program::finish(); }
@@ -329,11 +359,11 @@ thread_fn argument_limit(bytes: u8[], op: i64, limit: i64) {
             var heap = source::Heap { code: code }; assert(source::initialize(heap));
             let entry = source::closure(heap, function, []);
             if limit == 0 { heap.limits.stack = code.functions[function].locals + 2; }
-            if limit == 1 { heap.limits.nodes = heap.nodes.len; }
+            if limit == 1 { heap.limits.nodes = heap.nodes.len - heap.image.nodes; }
             if limit == 2 {
-                if op == 101 { heap.limits.values = heap.values.len + 2; }
+                if op == 101 { heap.limits.values = heap.values.len - heap.image.values + 2; }
                 // A rest array keeps its elements in value slots (light-cljs-785).
-                else { heap.limits.values = heap.values.len; }
+                else { heap.limits.values = heap.values.len - heap.image.values; }
             }
             if limit == 3 { heap.limits.work = heap.work + code.functions[function].locals + 3; }
             var job = source::Job { heap: heap };
@@ -381,7 +411,7 @@ thread_fn allocation_limit(bytes: u8[], strings: u8[], mode: i64) {
         var heap = source::Heap { code: code }; assert(source::initialize(heap));
         let entry = source::closure(heap, 0, []);
         if mode == 0 { heap.limits.properties = 0; }
-        if mode == 1 { heap.limits.units = heap.units.len; }
+        if mode == 1 { heap.limits.units = heap.units.len - heap.image.units; }
         if mode == 2 { heap.limits.values = 0; }
         var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
         let outcome = source::run(job, -1); assert(outcome == tiny::Outcome.Failed && job.fault == source::Fault.MemoryLimit);

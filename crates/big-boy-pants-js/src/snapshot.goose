@@ -21,7 +21,7 @@ struct Header {
 struct Snapshot {
     header:     Header         = Header {},
     code_bytes: u8[]           = [], functions: source::Function[] = [], code_constants: source::Value[] = [],
-    children:   i64[]          = [], ops: source::Op[] = [], code_units: u16[] = [], code_strings: source::Str[] = [],
+    children:   u32[]          = [], ops: source::Op[] = [], code_units: u16[] = [], code_strings: source::Str[] = [],
     nodes:      source::Node[] = [], values: source::Value[] = [], properties: source::Property[] = [],
     units:      u16[]          = [], strings: source::Str[] = [], constants: source::Value[] = [], bytes: u8[] = [], sources: source::SourceRange[] = [], bindings: Binding[] = [],
 }
@@ -29,7 +29,7 @@ struct Snapshot {
 struct View {
     header:     Header,
     code_bytes: const u8[:], functions: const source::Function[:], code_constants: const source::Value[:],
-    children:   const i64[:], ops: const source::Op[:], code_units: const u16[:], code_strings: const source::Str[:],
+    children:   const u32[:], ops: const source::Op[:], code_units: const u16[:], code_strings: const source::Str[:],
     nodes:      const source::Node[:], values: const source::Value[:], properties: const source::Property[:],
     units:      const u16[:], strings: const source::Str[:], constants: const source::Value[:], bytes: const u8[:], sources: const source::SourceRange[:], bindings: const Binding[:],
 }
@@ -187,7 +187,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     if c.snapshot_bytes > c.bytes { return reject(c, Error.Bytes); }
     if !poll(c, s.code_bytes.len + s.code_units.len + s.units.len + s.bytes.len) { return false; }
     let l = s.header.limits;
-    if l.nodes < 0 || l.values < 0 || l.units < 0 || l.properties < 0 || l.work < 0 || l.steps < 0 || l.frames < 0 || l.stack < 0 || s.header.work < 0 || s.header.work > l.work || s.nodes.len > l.nodes || s.values.len > l.values || s.units.len > l.units || s.strings.len > l.units || s.constants.len > l.values || s.header.property_rows < 0 || s.header.property_rows > l.properties || s.header.property_rows > s.properties.len || s.header.boot < 0 || s.header.boot > 1 || s.header.initializers < 0 || s.header.producers < 0 { return reject(c, Error.Allocator); }
+    if l.nodes < 0 || l.values < 0 || l.units < 0 || l.properties < 0 || l.work < 0 || l.steps < 0 || l.frames < 0 || l.stack < 0 || s.header.work < 0 || s.header.work > l.work || s.header.property_rows < 0 || s.header.property_rows > s.properties.len || s.header.boot < 0 || s.header.boot > 1 || s.header.initializers < 0 || s.header.producers < 0 { return reject(c, Error.Allocator); }
     if !code_valid(s, c) { return false; }
     if !value(s, s.header.global) || s.header.global.tag() != 5 || s.nodes[s.header.global.id()].kind != 0 { return reject(c, Error.Link); }
     if !value(s, s.header.call_method) || s.header.call_method.tag() != 5 || s.nodes[s.header.call_method.id()].kind != 4 || s.nodes[s.header.call_method.id()].function != 14 { return reject(c, Error.Link); }
@@ -226,9 +226,9 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if !poll(c) { return false; }
         if n.kind < 0 || n.kind > 15 { return reject(c, Error.Unsupported); }
         if n.kind == 1 && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
-        if n.key_count < 0 || n.key_count > n.key_capacity || !range(n.keys, n.key_capacity, s.properties.len) || n.length < 0 || !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source < -1 || n.source >= s.sources.len || n.origin < -1 { return reject(c, Error.Link); }
-        if n.source >= 0 && (n.span_start < 0 || n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
-        if n.source >= 0 {
+        if n.key_count > n.key_capacity || !range(n.keys, n.key_capacity, s.properties.len) || !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source != source::no_row() && n.source >= s.sources.len || n.origin < -1 { return reject(c, Error.Link); }
+        if n.source != source::no_row() && (n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
+        if n.source != source::no_row() {
             let r = s.sources[n.source]; let text = s.bytes[r.start..(r.start + r.count)];
             if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c, Error.Link); }
         }
@@ -295,7 +295,7 @@ fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> b
     code.source_bytes.clear(); code.functions.clear(); code.constants.clear(); code.children.clear(); code.ops.clear(); code.units.clear(); code.strings.clear(); code.ins.clear(); code.effects.clear(); code.decoded = 0;
     code.valid = false; code.error = tiny::LoadError.None; code.error_pc = -1;
     heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value.Undefined; heap.call_method = source::Value.Undefined;
-    heap.boot_count = 0; heap.initializer_count = 0; heap.producer_count = 0; heap.property_rows = 0;
+    heap.boot_count = 0; heap.initializer_count = 0; heap.producer_count = 0; heap.property_rows = 0; heap.image = source::Tops {};
     return true;
 }
 fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&, identity: i64, c: Control&) -> bool {
@@ -307,11 +307,15 @@ fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, binding
     code.source_bytes.append(s.code_bytes); code.functions.append(s.functions); code.constants.append(s.code_constants); code.children.append(s.children); code.ops.append(s.ops); code.units.append(s.code_units); code.strings.append(s.code_strings); source::decode(code); code.valid = true;
     heap.identity = identity; heap.limits = s.header.limits; heap.work = s.header.work; heap.global = s.header.global; heap.call_method = s.header.call_method;
     heap.boot_count = s.header.boot; heap.initializer_count = s.header.initializers; heap.producer_count = s.header.producers; heap.property_rows = s.header.property_rows;
-    // Rows are copied verbatim: links count from each table's start, so the
-    // destination's empty tables give every row its captured index.
+    // The image install, not an allocation: rows are copied verbatim into
+    // empty tables (links count from each table's start, so the
+    // destination's empty tables give every row its captured index); the
+    // tables' one allocation functions (source_vm) add rows above it.
     heap.nodes.append(s.nodes); heap.values.append(s.values); heap.properties.append(s.properties);
     heap.units.append(s.units); heap.strings.append(s.strings); heap.constants.append(s.constants);
     heap.source_bytes.append(s.bytes); heap.source_ranges.append(s.sources);
+    // The restored rows are the image: table limits count rows added above it.
+    heap.image = source::Tops { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len, strings: heap.strings.len };
     bindings.append(s.bindings);
     c.copied_bytes += payload_bytes(s); return true;
 }

@@ -131,9 +131,9 @@ thread_fn invalid(base: snapshot::Snapshot, a: artifact::Artifact) {
             4 => { bad.schema = 99; },
             5 => { bad.keys[1] = bad.keys[0]; },
             6 => { bad.nodes[0].metadata = source::object(bad.nodes.len); },
-            7 => { bad.nodes[0].start = 9223372036854775807; },
-            8 => { bad.nodes[0].source = bad.sources.len; },
-            9 => { bad.nodes[0].count = 9223372036854775807; },
+            7 => { bad.nodes[0].start = 4294967295; },
+            8 => { bad.nodes[0].source = bad.sources.len as u32; },
+            9 => { bad.nodes[0].count = 4294967295; },
             10 => { bad.keys[0].arena = base.header.checkpoint; bad.keys[0].slot = 0; },
             11 => { bad.version = 0; },
             12 => { bad.nodes[0].count -= 1; bad.values[bad.nodes[0].start + bad.nodes[0].count] = source::object(bad.nodes.len); },
@@ -163,21 +163,21 @@ thread_fn invalid(base: snapshot::Snapshot, a: artifact::Artifact) {
     let map = source::form_collection(heap, 7, [source::number(1), nested]);
     var c = artifact::Control {}; let rejected = artifact::export_graph(heap, base, imports, map, 30, 1, c);
     assert(c.error == artifact::Error.Mutable && c.path.len == 3 && rejected.nodes.len == 0 && imports.definitions.len == 1);
-    assert(c.path[..] == [map.id(), nested.id(), mutable.id()]);
+    let cycle: i64[3] = [map.id(), nested.id(), mutable.id()]; assert(c.path[..] == cycle);
     let map_key = source::form_collection(heap, 7, [nested, source::number(1)]); var kc = artifact::Control {}; artifact::export_graph(heap, base, imports, map_key, 31, 1, kc); assert(kc.error == artifact::Error.Mutable && kc.path.len == 3);
     let closure = source::closure(heap, roots[4].value.num() as i64, [mutable]); var cc = artifact::Control {}; artifact::export_graph(heap, base, imports, closure, 32, 1, cc); assert(cc.error == artifact::Error.Mutable && cc.path.len == 2);
     // An occurrence is scalar-only, but its metadata still participates.
-    let metadata = source::form_collection(heap, 7, [source::number(1), mutable]); heap.nodes[wrapped.id()].metadata = metadata; var oc = artifact::Control {}; artifact::export_graph(heap, base, imports, wrapped, 33, 1, oc); assert(oc.error == artifact::Error.Mutable && oc.path.len >= 3);
-    heap.nodes[wrapped.id()].metadata = source::nil();
+    let metadata = source::form_collection(heap, 7, [source::number(1), mutable]); source::node_mut(heap, wrapped.id()).metadata = metadata; var oc = artifact::Control {}; artifact::export_graph(heap, base, imports, wrapped, 33, 1, oc); assert(oc.error == artifact::Error.Mutable && oc.path.len >= 3);
+    source::node_mut(heap, wrapped.id()).metadata = source::nil();
     {
-        heap.nodes[roots[5].value.id()].value = source::number(99);
+        source::node_mut(heap, roots[5].value.id()).value = source::number(99);
         var changed_base = copy(a); changed_base.definition = 98; reject_import(changed_base, base, heap, imports, artifact::Error.Conflict);
-        heap.nodes[roots[5].value.id()].value = source::number(9);
+        source::node_mut(heap, roots[5].value.id()).value = source::number(9);
         imports.session += 1; reject_import(a, base, heap, imports, artifact::Error.Context); imports.session -= 1;
     }
     for limit in 3 {
         let before = state(heap, imports); var small = artifact::Control {};
-        if limit == 0 { small.work = 1; } else if limit == 1 { small.bytes = artifact::payload(a) - 1; } else { heap.limits.nodes = heap.nodes.len; }
+        if limit == 0 { small.work = 1; } else if limit == 1 { small.bytes = artifact::payload(a) - 1; } else { heap.limits.nodes = heap.nodes.len - heap.image.nodes; }
         var fresh_definition = copy(a); fresh_definition.definition = 97; if limit == 2 { fresh_definition.keys[0].arena = source::reserve_identity(); }
         let current = state(heap, imports); artifact::import_graph(fresh_definition, base, heap, imports, small);
         assert(small.error == (if limit == 0 { artifact::Error.Work } else { artifact::Error.Bytes }) && state(heap, imports) == current);
@@ -237,10 +237,10 @@ thread_fn provenance_consumer(base: snapshot::Snapshot, a: artifact::Artifact) {
         let v = artifact::import_graph(a, base, heap, imports, c); assert(c.error == artifact::Error.None);
         let x = source::form_nth(heap, v, 0); let y = source::form_nth(heap, v, 1);
         assert(x.id() != y.id() && x.id() == source::form_nth(heap, v, 2).id() && source::form_equal(heap, x, y));
-        assert(heap.nodes[x.id()].origin == 10 && heap.nodes[y.id()].origin == 11 && heap.nodes[y.id()].span_start == 4);
-        assert(heap.nodes[x.id()].source == heap.nodes[y.id()].source);
+        assert(source::node(heap, x.id()).origin == 10 && source::node(heap, y.id()).origin == 11 && source::node(heap, y.id()).span_start == 4);
+        assert(source::node(heap, x.id()).source == source::node(heap, y.id()).source);
         let text = source::form_value(heap, source::form_nth(heap, v, 3)); assert(source::chars(heap, text) == [0xD83D as u16, 0xDE00, 0xD800]);
-        let name = heap.nodes[source::form_nth(heap, v, 4).id()]; assert(heap.nodes[name.metadata.id()].kind == 7 && source::chars(heap, name.namespace_value) == ['n' as u16, 's']);
+        let name = source::node(heap, source::form_nth(heap, v, 4).id()); assert(source::node(heap, name.metadata.id()).kind == 7 && source::chars(heap, name.namespace_value) == ['n' as u16, 's']);
         var bc = bridge::Control {}; assert(bridge::export_graph(heap, [v], result, bc));
     }
     var bc = bridge::Control {}; assert(bridge::validate(result, bc));
@@ -267,7 +267,7 @@ thread_fn graphs(base: snapshot::Snapshot) {
     defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
-    let cell = source::allocate(heap, source::Node { kind: 3, initialized: true, immutable: true }); let closure = source::closure(heap, roots[4].value.num() as i64, [cell]); heap.nodes[cell.id()].value = closure;
+    let cell = source::allocate(heap, source::Node { kind: 3, initialized: true, immutable: true }); let closure = source::closure(heap, roots[4].value.num() as i64, [cell]); source::node_mut(heap, cell.id()).value = closure;
     var c = artifact::Control {}; let cycle = artifact::export_graph(heap, base, imports, closure, 40, 1, c); assert(c.error == artifact::Error.None && cycle.nodes.len == 2);
     var ic = artifact::Control {}; let relocated = artifact::import_graph(cycle, base, heap, imports, ic); assert(ic.error == artifact::Error.None);
     let result = snapshot_test::invoke(heap, relocated, []); assert(result.id() == relocated.id());
@@ -290,7 +290,7 @@ thread_fn overlapping_cycles(base: snapshot::Snapshot) {
     let b = source::allocate(heap, source::Node { kind: 3, initialized: true, immutable: true });
     let c = source::allocate(heap, source::Node { kind: 3, initialized: true, immutable: true });
     let d = source::allocate(heap, source::Node { kind: 3, initialized: true, immutable: true, value: b });
-    let a = source::closure(heap, roots[4].value.num() as i64 + 1, [b, c]); heap.nodes[b.id()].value = a; heap.nodes[c.id()].value = d;
+    let a = source::closure(heap, roots[4].value.num() as i64 + 1, [b, c]); source::node_mut(heap, b.id()).value = a; source::node_mut(heap, c.id()).value = d;
     // B's DFS frame finishes before C -> D -> B. All four nodes still
     // belong to the same callable SCC, including that completed sibling.
     var ec = artifact::Control {}; let callable = artifact::export_graph(heap, base, imports, a, 43, 1, ec);
@@ -307,10 +307,11 @@ thread_fn overlapping_cycles(base: snapshot::Snapshot) {
     let before = state(heap, imports); var rejected_import = artifact::Control {};
     artifact::import_graph(bad, base, heap, imports, rejected_import);
     assert(rejected_import.error == artifact::Error.Cycle && rejected_import.path[..] == [0, 2, 3] && state(heap, imports) == before);
-    let start = heap.values.len; heap.values.push(b); heap.nodes[d.id()] = source::Node { kind: 6, start: start, count: 1 };
+    let start = heap.values.len; heap.values.push(b); source::set_node(heap, d.id(), source::Node { kind: 6, start: start as u32, count: 1 });
     let current = state(heap, imports); var rejected_export = artifact::Control {};
     let no = artifact::export_graph(heap, base, imports, a, 46, 1, rejected_export);
-    assert(rejected_export.error == artifact::Error.Cycle && no.nodes.len == 0 && rejected_export.path[..] == [a.id(), c.id(), d.id()] && state(heap, imports) == current);
+    let path: i64[3] = [a.id(), c.id(), d.id()];
+    assert(rejected_export.error == artifact::Error.Cycle && no.nodes.len == 0 && rejected_export.path[..] == path && state(heap, imports) == current);
     print("artifact overlapping callable SCC/form-cycle rejection/path/atomicity passed");
 }
 thread_fn signature_budgets(base: snapshot::Snapshot) {
@@ -319,8 +320,8 @@ thread_fn signature_budgets(base: snapshot::Snapshot) {
     // Its exact signature expands that range each time, beyond payload size.
     var units:  u16[>..]           = []; units.resize(256, 'x');
     var values: source::Value[>..] = []; values.resize(16, source::Value.String { s: 0 });
-    let strings: source::Str[]         = [source::Str { start: 0, len: units.len }];
-    let nodes:   source::Node[]        = [source::Node { kind: 6, count: values.len, source: 0, span_end: 3 }];
+    let strings: source::Str[]         = [source::Str { start: 0, len: units.len as u32 }];
+    let nodes:   source::Node[]        = [source::Node { kind: 6, count: values.len as u32, source: 0, span_end: 3 }];
     let keys:    artifact::Key[]       = [artifact::Key { arena: source::reserve_identity(), slot: 0 }];
     let sources: source::SourceRange[] = [source::SourceRange { start: 0, count: 3 }];
     let a = artifact::Artifact { base: base.header.checkpoint, definition: 47, root: source::object(0), keys: keys[..], nodes: nodes[..], values: values[..], units: units[..], strings: copy(strings), bytes: "src", sources: sources[..] };
@@ -401,7 +402,7 @@ thread_fn source_spans(base: snapshot::Snapshot) {
     let saved = artifact::export_graph(heap, base, imports, values[0], 701, 1, c); assert(c.error == artifact::Error.None);
     var committed = artifact::Control {}; let result = artifact::import_graph(saved, base, heap, imports, committed); assert(committed.error == artifact::Error.None);
     for offset in [1, 3, 4, 5] { for end in [false, true] {
-        var bad = copy(saved); for &n in bad.nodes { if n.source >= 0 { if end { n.span_end = offset; } else { n.span_start = offset; } } }
+        var bad = copy(saved); for &n in bad.nodes { if n.source != source::no_row() { if end { n.span_end = offset as u32; } else { n.span_start = offset as u32; } } }
         reject_import(bad, base, heap, imports, artifact::Error.Link);
         assert(source::form_value(heap, result).num() == 7);
     } }

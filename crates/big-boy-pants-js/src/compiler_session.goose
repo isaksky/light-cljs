@@ -99,7 +99,7 @@ thread_fn preparer(base: snapshot::Snapshot, directory: u8[], id: i64, key: i64,
     let entry = append(code, heap, str(directory, "/definition-", key, ".gsp")); assert(entry >= 0);
     let factory, loaded = initialize(id, heap, source::closure(heap, entry, []), [], base.nodes.len, report); if !loaded { assert(qput(Preparation { report: copy(report) })); return; }
     let function, ready = initialize(id, heap, factory, [rt], base.nodes.len, report); if !ready { assert(qput(Preparation { report: copy(report) })); return; }
-    if !source::valid(heap, function) || function.tag() != 5 || heap.nodes[function.id()].kind != 2 { format(report, "ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
+    if !source::valid(heap, function) || function.tag() != 5 || source::node(heap, function.id()).kind != 2 { format(report, "ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
     heap.initializer_count += 1;
     let result = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: function }], sc); assert(sc.error == snapshot::Error.None);
     assert(qput(Preparation { ok: true, image: copy(result) }));
@@ -128,7 +128,7 @@ fn load(code: source::Code&, path: const u8[:]) -> i64 {
 }
 fn append(code: source::Code&, heap: source::Heap&, path: const u8[:]) -> i64 {
     let first = code.constants.len; let entry = load(code, path); if entry < 0 { return -1; }
-    for c in code.constants[first..] { var value = c; if c.tag() == 4 { value = source::string(heap, source::code_chars(code, c)); } heap.constants.push(value); }
+    for c in code.constants[first..] { var value = c; if c.tag() == 4 { value = source::string(heap, source::code_chars(code, c)); } source::add_constants(heap, [value]); }
     return entry;
 }
 fn leaf(id: i64, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64, address: i64 = 0, timing: i64[4] = [0; 4]) -> source::Value, bool {
@@ -226,11 +226,11 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, deterministi
         let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], saved.protected, address, timing(work, started, sc)); if !loaded { return; }
         let value, initialized = leaf(id, heap, factory, [rt], saved.protected, address, timing(work, started, sc)); if !initialized { return; } function = value;
         if mode == 2 { let exporting = clock_ns();
-            let closure = function.tag() == 5 && heap.nodes[function.id()].kind == 2;
+            let closure = function.tag() == 5 && source::node(heap, function.id()).kind == 2;
             var publication = snapshot::Control {};
             let ok = if closure { callable::encode(heap, saved.heap, function, bytes, publication, checkpoint) } else { bridge::export_graph(heap, [function], graph, control) && bridge::encode(graph, bytes, control) };
             if !ok {
-                let function_id = if closure { heap.nodes[function.id()].function } else { entry }; let pc = code.functions[function_id].start; let op = code.ops[pc];
+                let function_id = if closure { source::node(heap, function.id()).function } else { entry }; let pc = code.functions[function_id].start; let op = code.ops[pc];
                 publish(Event { id: id, kind: 3, name: str("helper-", heap.fault, "-", control.error, "-", publication.error, " function=", function_id, " pc=", pc, " emitted-span=", op.start, ":", op.end), address: address, timing: timing(work, started, sc) }); return;
             } costs[1] += clock_ns() - exporting; publish(Event { id: id, kind: 5, key: key, name: str(costs[0], " ", costs[1]), data: copy(bytes), metrics: str(sc.restore_ns, " 0 ", clock_ns() - worker_started, " ", storage(saved, heap, sc, bytes.len), " ", mode), callable: closure, address: address, census: rows(work, heap, job, bindings, function), timing: timing(work, started, sc) }); return;
         }

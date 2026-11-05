@@ -15,9 +15,9 @@ import .heap_program;
 // The unchanged compiler-emitted effect.cljs macro is exercised separately.
 fn fixture(code: source::Code&, kinds: const i64[:], fail: bool = false) -> i64 {
     var part = source::Code {}; let names = ["unused", "unused", "unused", "unused", "unused", "gensym", "sharedIncrement", "sharedRead", "external", "missing"];
-    for name in names { let at = part.units.len; for byte in name { part.units.push(byte); } part.strings.push(source::Str { start: at, len: name.len }); part.constants.push(source::Value.String { s: (part.strings.len - 1) as u32 }); }
+    for name in names { let at = part.units.len; for byte in name { part.units.push(byte); } part.strings.push(source::Str { start: at as u32, len: name.len as u32 }); part.constants.push(source::Value.String { s: (part.strings.len - 1) as u32 }); }
     let count = kinds.len * 3 + (if fail { 2 } else { 0 });
-    part.functions.push(source::Function { start: 0, count: count, constants: 0, children: 0, params: 0, locals: 0, captures: 0, strict: true });
+    part.functions.push(source::Function { start: 0, count: count as u32, constants: 0, children: 0, params: 0, locals: 0, captures: 0, strict: true });
     for kind, i in kinds {
         for op, j in [106, 44, if i == kinds.len - 1 && !fail { 15 } else { 5 }] { part.ops.push(source::Op { code: op, arg: if j == 0 { kind } else { 0 }, offset: part.ops.len, start: 0, end: 0, depth: if j == 0 { 0 } else { 1 } }); }
     }
@@ -167,7 +167,7 @@ thread_fn caught_error(fault: source::Fault, limited: bool) {
         var heap = source::Heap { code: code }; assert(source::initialize(heap));
         var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
         job.handlers.push(source::Handler { frame: 0, pc: 2, operands: 0, locals: 1 });
-        if limited { heap.limits.nodes = heap.nodes.len; }
+        if limited { heap.limits.nodes = heap.nodes.len - heap.image.nodes; }
         source::fail(job, fault, job.frames[0]);
         if limited { assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.MemoryLimit && job.fault_function == 0 && job.fault_pc == 0); }
         else {
@@ -285,7 +285,7 @@ thread_fn result_failure(base: snapshot::Snapshot, entries: i64[]) {
     var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, macro, [source::nil(), source::nil(), source::number(7)]));
     assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && !job.claimed);
     var authority = effects::Authority {}; let g = grant(1, 1, 0, 5, 2); authority.grants.push(g); var sequence: i64 = 0;
-    heap.limits.nodes = heap.nodes.len;
+    heap.limits.nodes = heap.nodes.len - heap.image.nodes;
     assert(effects::service(authority, job, 1, sequence) && job.status == tiny::Status.Failed && job.fault == source::Fault.MemoryLimit);
     assert(authority.receipts.len == 1 && authority.counters[2] == 1 && authority.counters[0] == 0);
     assert(effects::commit(authority, g, authority.receipts[0].prefix[..authority.receipts[0].count]).value == 1 && authority.counters[2] == 1);
@@ -309,7 +309,7 @@ thread_fn native_callback(base: snapshot::Snapshot, entries: i64[], quantum: i64
         var authority = effects::Authority {}; authority.grants.append([grant(1, 1, 0, 5), grant(2, 1, 1, 5)]); var sequence: i64 = 0;
         while job.status == tiny::Status.Ready { source::run(job, quantum); if job.effect_pending { assert(effects::service(authority, job, 1, sequence)); } }
         assert(job.status == tiny::Status.Complete && sequence == 2 && authority.receipts.len == 2 && authority.counters[0] == 2);
-        for i in 2 { let symbol = heap.nodes[source::form_nth(heap, job.result, i).id()]; let name = symbol.value; assert(symbol.kind == 9 && source::chars(heap, name) == (if i == 0 { ['a' as u16, '1'] } else { ['b' as u16, '2'] })); }
+        for i in 2 { let symbol = source::node(heap, source::form_nth(heap, job.result, i).id()); let name = symbol.value; assert(symbol.kind == 9 && source::chars(heap, name) == (if i == 0 { ['a' as u16, '1'] } else { ['b' as u16, '2'] })); }
         assert(source::retire(job));
     }
 }

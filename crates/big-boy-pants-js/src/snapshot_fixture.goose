@@ -74,10 +74,10 @@ fn verify(heap: source::Heap&, bindings: const snapshot::Binding[:], n: i64) -> 
     assert(source::get(heap, object, source::text(heap, "cell")).id() == cell.id());
     let nan = source::get(heap, object, source::text(heap, "nan")); assert(nan.num() != nan.num());
     let zero = source::get(heap, object, source::text(heap, "negativeZero")); assert(zero.num() == 0 && 1.0 / zero.num() < 0);
-    let setter = heap.nodes[bindings[4].value.id()]; assert(heap.values[setter.start].id() == cell.id());
-    assert(heap.nodes[cell.id()].value.num() == 40);
+    let setter = source::node(heap, bindings[4].value.id()); assert(source::slot(heap, setter.start).id() == cell.id());
+    assert(source::node(heap, cell.id()).value.num() == 40);
     let nodes = heap.nodes.len; assert(invoke(heap, bindings[4].value, [source::number(n)]).num() == n);
-    assert(heap.nodes[cell.id()].value.num() == n);
+    assert(source::node(heap, cell.id()).value.num() == n);
     for i in 32 { assert(source::allocate(heap, source::Node { kind: 0 }).id() == nodes + i); }
     let a = invoke(heap, bindings[0].value, [source::nil(), source::nil(), source::number(16)]); assert(a.num() == 168);
     let input = source::form_collection(heap, 6, [source::number(1), source::number(2)]);
@@ -91,14 +91,14 @@ fn verify(heap: source::Heap&, bindings: const snapshot::Binding[:], n: i64) -> 
     assert(source::get(heap, definitions, source::text(heap, "cljs.user/right-result")).id() == bindings[3].value.id());
     let form = bindings[7].value; let x = source::form_nth(heap, form, 0); let y = source::form_nth(heap, form, 1);
     assert(x.id() == source::form_nth(heap, form, 2).id() && x.id() != y.id() && source::form_equal(heap, x, y));
-    assert(heap.nodes[x.id()].origin == 10 && heap.nodes[y.id()].span_start == 4 && heap.source_bytes[..] == "one two");
+    assert(source::node(heap, x.id()).origin == 10 && source::node(heap, y.id()).span_start == 4 && heap.source_bytes[..] == "one two");
     let text = source::form_value(heap, source::form_nth(heap, form, 3)); assert(source::chars(heap, text) == [0xD83D as u16, 0xDE00, 0xD800]);
-    let named = heap.nodes[source::form_nth(heap, form, 4).id()]; assert(named.kind == 9 && heap.nodes[named.metadata.id()].kind == 7);
+    let named = source::node(heap, source::form_nth(heap, form, 4).id()); assert(named.kind == 9 && source::node(heap, named.metadata.id()).kind == 7);
     assert(source::chars(heap, named.namespace_value) == ['n' as u16, 's']);
     assert(source::chars(heap, named.value)[0] == 'x');
-    let first = heap.nodes[bindings[8].value.id()]; let second = heap.nodes[bindings[9].value.id()];
-    assert(heap.values[first.start].id() == heap.values[second.start].id());
-    let hidden = heap.nodes[heap.values[first.start].id()].value;
+    let first = source::node(heap, bindings[8].value.id()); let second = source::node(heap, bindings[9].value.id());
+    assert(source::slot(heap, first.start).id() == source::slot(heap, second.start).id());
+    let hidden = source::node(heap, source::slot(heap, first.start).id()).value;
     assert(source::get(heap, hidden, source::text(heap, "payload")).num() == 73);
     assert(heap.boot_count == 1 && heap.initializer_count == 2 && heap.producer_count == 2);
     return expanded;

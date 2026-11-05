@@ -20,20 +20,45 @@ var next_identity: i64 = 1;
 // hole; it never leaves an array run (`valid` refuses it elsewhere).
 // tag() gives the GSP primitive tag the rest of the module compares.
 enum Value { Undefined, Null, Bool { v: bool }, Number { v: f64 }, String { s: u32 }, Symbol { s: u32 }, BigInt { b: u32 }, Object { o: u32 }, Empty }
-struct Str { start: i64, len: i64 }
+struct Str { start: u32, len: u32 }
 fn tag(v: Value) -> i64 { return match v { Undefined => 0, Null => 1, Bool => 2, Number => 3, String => 4, Object => 5, Symbol => 6, BigInt => 7, Empty => -1 }; }
-// The object row, or -1 for a non-object.
-fn id(v: Value) -> i64 { return match v { Object x => x.o, _ => -1 }; }
-// The string header, or -1 for a non-string.
-fn sid(v: Value) -> i64 { return match v { String x => x.s, _ => -1 }; }
+// Every link between VM tables is a plain u32 row ID (light-cljs-800,
+// decision 2), never a Goose index type: rows cross threads in every
+// snapshot, saved continuation and message. no_row() marks an absent link;
+// no table reaches it (snapshot::validate caps every table far below).
+fn no_row() -> u32 { return 4294967295; }
+// The object row, or no_row() for a non-object.
+fn id(v: Value) -> u32 { return match v { Object x => x.o, _ => no_row() }; }
+// The string header, or no_row() for a non-string.
+fn sid(v: Value) -> u32 { return match v { String x => x.s, _ => no_row() }; }
 fn num(v: Value) -> f64 { return match v { Number x => x.v, _ => 0 }; }
 fn flag(v: Value) -> bool { return match v { Bool x => x.v, _ => false }; }
 // A Symbol constant's well-known index.
 fn symbol_index(v: Value) -> i64 { return match v { Symbol x => x.s, _ => -1 }; }
-fn object(id: i64) -> Value { return Value.Object { o: id as u32 }; }
-fn str_start(heap: const Heap&, v: Value) -> i64 { return heap.strings[v.sid()].start; }
-fn str_len(heap: const Heap&, v: Value) -> i64 { let s = v.sid(); return if s < 0 { 0 } else { heap.strings[s].len }; }
-fn chars(heap: const Heap&, v: Value) -> const u16[:] { let s = heap.strings[v.sid()]; return heap.units[s.start..(s.start + s.len)]; }
+fn object(row: i64) -> Value { return Value.Object { o: row as u32 }; }
+// Row access names its table (light-cljs-800): a row of another table, or
+// past this one's end, fails here with the table's name. The explicit check
+// is what Goose's bounds check would do, so the read itself keeps none.
+// Readers take a const heap; *_mut and set_* write.
+fn node(heap: const Heap&, o: i64) -> const Node& { if o < 0 || o >= heap.nodes.len { abort("row is not in table nodes"); } return heap.nodes[o]; }
+fn node_mut(heap: Heap&, o: i64) -> Node& { if o < 0 || o >= heap.nodes.len { abort("row is not in table nodes"); } return heap.nodes[o]; }
+fn set_node(heap: Heap&, o: i64, n: Node) { if o < 0 || o >= heap.nodes.len { abort("row is not in table nodes"); } heap.nodes[o] = n; }
+fn slot(heap: const Heap&, row: i64) -> Value { if row < 0 || row >= heap.values.len { abort("row is not in table values"); } return heap.values[row]; }
+fn set_slot(heap: Heap&, row: i64, v: Value) { if row < 0 || row >= heap.values.len { abort("row is not in table values"); } heap.values[row] = v; }
+fn run(heap: const Heap&, start: i64, count: i64) -> const Value[:] { if start < 0 || count < 0 || start > heap.values.len || count > heap.values.len - start { abort("run is not in table values"); } return heap.values[start..(start + count)]; }
+fn property_row(heap: const Heap&, row: i64) -> const Property& { if row < 0 || row >= heap.properties.len { abort("row is not in table properties"); } return heap.properties[row]; }
+fn property_mut(heap: Heap&, row: i64) -> Property& { if row < 0 || row >= heap.properties.len { abort("row is not in table properties"); } return heap.properties[row]; }
+fn set_property_row(heap: Heap&, row: i64, p: Property) { if row < 0 || row >= heap.properties.len { abort("row is not in table properties"); } heap.properties[row] = p; }
+fn header(heap: const Heap&, s: i64) -> Str { if s < 0 || s >= heap.strings.len { abort("row is not in table strings"); } return heap.strings[s]; }
+fn constant(heap: const Heap&, f: const Function&, k: i64) -> Value { let row = f.constants + k; if row < 0 || row >= heap.constants.len { abort("row is not in table constants"); } return heap.constants[row]; }
+fn source_range(heap: const Heap&, r: i64) -> SourceRange { if r < 0 || r >= heap.source_ranges.len { abort("row is not in table source_ranges"); } return heap.source_ranges[r]; }
+fn str_start(heap: const Heap&, v: Value) -> i64 { return header(heap, v.sid()).start; }
+fn str_len(heap: const Heap&, v: Value) -> i64 { return if v.tag() != 4 { 0 } else { header(heap, v.sid()).len }; }
+fn chars(heap: const Heap&, v: Value) -> const u16[:] {
+    let s = header(heap, v.sid());
+    if s.start > heap.units.len || s.len > heap.units.len - s.start { abort("run is not in table units"); }
+    return heap.units[s.start..(s.start + s.len)];
+}
 // A string value over units already in the table (a view or a copied image
 // range); only the 16-byte header is new.
 // Plain twins: a value's or row's fully written fields, for byte-exact
@@ -62,10 +87,9 @@ fn plain_bytes(f: Frame, out: u8[>..]&) {
 fn plain_bytes(w: Write, out: u8[>..]&) { plain_bytes(w.object, out); plain_bytes(w.key, out); plain_bytes(w.value, out); }
 fn plain_bytes(p: Property, out: u8[>..]&) { plain_bytes(p.key, out); plain_bytes(p.value, out); }
 fn plain_rows<T>(rows: const T[:]) -> u8[>..] { var out: u8[>..] = []; for r in rows { plain_bytes(r, out); } return out; }
-fn string_ref(heap: Heap&, start: i64, len: i64) -> Value { heap.strings.push(Str { start: start, len: len }); return Value.String { s: (heap.strings.len - 1) as u32 }; }
 // kind: GSP constructor kind (0 none, 1 ordinary, 2 base class, 3 derived
 // class, 4 default derived class).
-struct Function { start: i64, count: i64, constants: i64, children: i64, params: i64, locals: i64, captures: i64, strict: bool, kind: i64 = 0 }
+struct Function { start: u32, count: u32, constants: u32, children: u32, params: u32, locals: u32, captures: u32, strict: bool, kind: i64 = 0 }
 struct Op { code: i64, arg: i64, offset: i64, start: i64, end: i64, depth: i64 = -1 }
 // One decoded instruction per validated `Op` row (light-cljs-785; decision 1
 // of docs/javascript-coverage.md): a fixed-mode enum dispatched by `match` in
@@ -87,7 +111,7 @@ enum Ins {
 struct Effect { pop: i32, push: i32 }
 root struct Code {
     source_bytes: u8[>..]         = [],
-    functions:    Function[>..]   = [], constants: Value[>..] = [], children: i64[>..] = [],
+    functions:    Function[>..]   = [], constants: Value[>..] = [], children: u32[>..] = [],
     ops:          Op[>..]         = [], units: u16[>..] = [], strings: Str[>..] = [], valid: bool = false,
     error:        tiny::LoadError = tiny::LoadError.None, error_pc: i64 = -1,
     ins:          Ins[>..]        = [], effects: Effect[>..] = [], decoded: i64 = 0,
@@ -96,6 +120,9 @@ root struct Code {
 // implement ran; Job.fault_opcode names it. Like every fault except the
 // TypeError, ReferenceError and HostEffect throws, JavaScript cannot catch it.
 enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed, EffectContract, HostEffect, Unsupported }
+// Table limits count the rows a heap added above its image (Heap.image),
+// not table lengths (light-cljs-792 constraint 4); each table checks its limit
+// in its one allocation function.
 struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576, properties: i64 = 1048576, work: i64 = 10000000, steps: i64 = 1000000, frames: i64 = 256, stack: i64 = 65536 }
 // All heap tables append until session teardown; IDs are never recycled.
 // kind: plain=0, array=1, closure=2, cell=3. Captures and cell values never
@@ -109,18 +136,24 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // Errors preserve object identity/truthiness;
 // property access/coercion and form transport reject unsupported inspection.
 // Metadata/origin belong to the occurrence, independently of value equality.
-struct Node { kind: i64, function: i64 = 0, start: i64 = 0, count: i64 = 0, keys: i64 = 0, key_count: i64 = 0, key_capacity: i64 = 0, length: i64 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value.Undefined, namespace_value: Value = Value.Null, metadata: Value = Value.Undefined, origin: i64 = -1, source: i64 = -1, span_start: i64 = 0, span_end: i64 = 0 }
-struct SourceRange { start: i64, count: i64 }
+// Links (function, start, keys, source) and counts are plain u32 rows;
+// source is no_row() for a node without provenance. origin is the compiler
+// occurrence the node came from, not a VM row, and stays -1 when absent.
+struct Node { kind: i64, function: u32 = 0, start: u32 = 0, count: u32 = 0, keys: u32 = 0, key_count: u32 = 0, key_capacity: u32 = 0, length: u32 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value.Undefined, namespace_value: Value = Value.Null, metadata: Value = Value.Undefined, origin: i64 = -1, source: u32 = 4294967295, span_start: u32 = 0, span_end: u32 = 0 }
+struct SourceRange { start: u32, count: u32 }
 // An own property: a row of its object's key run (light-cljs-785). An
 // object's properties are heap.properties[keys..keys + key_count], oldest
 // first, in a run of key_capacity rows; there are no linked records.
 struct Property { key: Value = Value.Undefined, value: Value = Value.Undefined }
+// Table lengths when the heap became an image (restore); 0 for a heap built
+// by initialize. Allocation limits count rows above these tops.
+struct Tops { nodes: i64 = 0, values: i64 = 0, properties: i64 = 0, units: i64 = 0, strings: i64 = 0 }
 root struct Heap {
     code:          const Code&, identity: i64 = 0, limits: Limits = Limits {},
     nodes:         Node[>..]                  = [], values: Value[>..] = [], properties: Property[>..] = [],
     units:         u16[>..]                   = [], strings: Str[>..] = [], constants: Value[>..] = [], work: i64 = 0,
     source_bytes:  u8[>..]                    = [], source_ranges: SourceRange[>..] = [],
-    property_rows: i64                        = 0,
+    property_rows: i64                        = 0, image: Tops = Tops {},
     fault:         Fault                      = Fault.None, global: Value = Value.Undefined, call_method: Value = Value.Undefined, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
     live_jobs:     i64                        = 0,
 }
@@ -217,7 +250,7 @@ fn load(code: Code&, image: const program::Image&) -> bool {
     code.source_bytes.append(bytes[l.source..l.functions]);
     for i in program::word(bytes, 12) {
         let at = l.functions + i * 52; let flags = program::word(bytes, at + 48);
-        code.functions.push(Function { start: program::word(bytes, at), count: program::word(bytes, at + 4), constants: program::word(bytes, at + 8), children: program::word(bytes, at + 16), params: program::word(bytes, at + 24), locals: program::word(bytes, at + 28), captures: program::word(bytes, at + 32), strict: (flags & 1) == 1, kind: (flags >> 8) & 255 });
+        code.functions.push(Function { start: program::word(bytes, at) as u32, count: program::word(bytes, at + 4) as u32, constants: program::word(bytes, at + 8) as u32, children: program::word(bytes, at + 16) as u32, params: program::word(bytes, at + 24) as u32, locals: program::word(bytes, at + 28) as u32, captures: program::word(bytes, at + 32) as u32, strict: (flags & 1) == 1, kind: (flags >> 8) & 255 });
     }
     for i in program::word(bytes, 16) {
         let at = l.constants + i * 12; let tag = program::word(bytes, at);
@@ -230,10 +263,10 @@ fn load(code: Code&, image: const program::Image&) -> bool {
         else if tag == 7 { value = Value.BigInt { b: 0 }; }
         else if tag == 1 { value = Value.Null; }
         else if tag == 2 { value = boolean(program::word(bytes, at + 4) != 0); }
-        else if tag == 4 { code.strings.push(Str { start: program::word(bytes, at + 4), len: program::word(bytes, at + 8) }); value = Value.String { s: (code.strings.len - 1) as u32 }; }
+        else if tag == 4 { code.strings.push(Str { start: program::word(bytes, at + 4) as u32, len: program::word(bytes, at + 8) as u32 }); value = Value.String { s: (code.strings.len - 1) as u32 }; }
         code.constants.push(value);
     }
-    for i in program::word(bytes, 20) { code.children.push(program::word(bytes, l.children + i * 4)); }
+    for i in program::word(bytes, 20) { code.children.push(program::word(bytes, l.children + i * 4) as u32); }
     for i in program::word(bytes, 24) {
         let at = l.instructions + i * 20;
         code.ops.push(Op { code: program::word(bytes, at) & 255, arg: program::word(bytes, at + 4), offset: program::word(bytes, at + 16), start: program::word(bytes, at + 8), end: program::word(bytes, at + 12) });
@@ -277,12 +310,12 @@ fn append_code(out: Code&, other: const Code&) -> i64 {
     assert(other.valid);
     let functions = out.functions.len; let ops = out.ops.len; let constants = out.constants.len;
     let children = out.children.len; let units = out.units.len; let bytes = out.source_bytes.len;
-    for f in other.functions { var n = f; n.start += ops; n.constants += constants; n.children += children; out.functions.push(n); }
+    for f in other.functions { var n = f; n.start += ops as u32; n.constants += constants as u32; n.children += children as u32; out.functions.push(n); }
     for op in other.ops { var n = op; n.start += bytes; n.end += bytes; if branches(n.code) { n.arg += ops; } out.ops.push(n); }
     let strings = out.strings.len;
-    for s in other.strings { out.strings.push(Str { start: s.start + units, len: s.len }); }
+    for s in other.strings { out.strings.push(Str { start: s.start + units as u32, len: s.len }); }
     for v in other.constants { out.constants.push(if v.tag() == 4 { Value.String { s: (v.sid() + strings) as u32 } } else { v }); }
-    for id in other.children { out.children.push(functions + id); }
+    for id in other.children { out.children.push((functions + id) as u32); }
     out.units.append(other.units); out.source_bytes.append(other.source_bytes); decode(out); out.valid = true;
     return functions;
 }
@@ -296,16 +329,58 @@ fn valid(heap: Heap&, v: Value) -> bool {
         _ => true,
     };
 }
+// One allocation function per table (light-cljs-800; light-cljs-792
+// constraints 1 and 4): only these grow a table. Each refuses, with
+// MemoryLimit and nothing appended, rows past its limit counted above the
+// heap's image tops, so a truncation to the image (light-cljs-795) needs a top
+// only here. add_properties is the property table's. Constants and source
+// provenance are installed with code by compiler services, never by a job, so
+// their tables have no job limit.
+fn room(heap: Heap&, length: i64, top: i64, limit: i64, count: i64) -> bool {
+    if count < 0 || count > limit - (length - top) { return memory(heap); }
+    return true;
+}
+// `nodes` then `extra` copies of `fill`; returns the first row, or -1.
+fn add_nodes(heap: Heap&, nodes: const Node[:], extra: i64 = 0, fill: Node = Node { kind: 0 }) -> i64 {
+    if extra < 0 || !room(heap, heap.nodes.len, heap.image.nodes, heap.limits.nodes, nodes.len + extra) { return -1; }
+    let at = heap.nodes.len; heap.nodes.append(nodes); for i in extra { heap.nodes.push(fill); }
+    return at;
+}
 fn allocate(heap: Heap&, node: Node) -> Value {
     if !charge(heap) { return Value.Undefined; }
-    if heap.nodes.len >= heap.limits.nodes { memory(heap); return Value.Undefined; }
-    let id = heap.nodes.len; heap.nodes.push(node); return object(id);
+    let at = add_nodes(heap, [node]);
+    return if at < 0 { Value.Undefined } else { object(at) };
 }
+// `values` then `extra` copies of `fill` (array spare capacity is holes);
+// returns the first row, or -1.
+fn add_values(heap: Heap&, values: const Value[:], extra: i64 = 0, fill: Value = Value.Undefined) -> i64 {
+    if extra < 0 || !room(heap, heap.values.len, heap.image.values, heap.limits.values, values.len + extra) { return -1; }
+    let at = heap.values.len; heap.values.append(values); for i in extra { heap.values.push(fill); }
+    return at;
+}
+// Whether `count` more value rows fit, for preflights that must fail before
+// any other table changes.
+fn values_fit(heap: const Heap&, count: i64) -> bool { return count >= 0 && count <= heap.limits.values - (heap.values.len - heap.image.values); }
+fn nodes_fit(heap: const Heap&, count: i64) -> bool { return count >= 0 && count <= heap.limits.nodes - (heap.nodes.len - heap.image.nodes); }
+fn add_units(heap: Heap&, units: const u16[:]) -> i64 {
+    if !room(heap, heap.units.len, heap.image.units, heap.limits.units, units.len) { return -1; }
+    let at = heap.units.len; heap.units.append(units); return at;
+}
+// The string header table's one allocation function, over units already in
+// the units table (a view, a copied image range or new units). Header rows
+// share the unit limit: an empty string still takes one.
+fn string_ref(heap: Heap&, start: i64, len: i64) -> Value {
+    if start < 0 || len < 0 || start > heap.units.len || len > heap.units.len - start { heap.fault = Fault.InvalidState; return Value.Undefined; }
+    if !room(heap, heap.strings.len, heap.image.strings, heap.limits.units, 1) { return Value.Undefined; }
+    heap.strings.push(Str { start: start as u32, len: len as u32 }); return Value.String { s: (heap.strings.len - 1) as u32 };
+}
+fn add_constants(heap: Heap&, values: const Value[:]) -> i64 { let at = heap.constants.len; heap.constants.append(values); return at; }
+fn add_source_bytes(heap: Heap&, bytes: const u8[:]) -> i64 { let at = heap.source_bytes.len; heap.source_bytes.append(bytes); return at; }
+fn add_source_range(heap: Heap&, r: SourceRange) -> i64 { heap.source_ranges.push(r); return heap.source_ranges.len - 1; }
 fn string(heap: Heap&, units: const u16[:]) -> Value {
     if !charge(heap, units.len) { return Value.Undefined; }
-    // String header rows share the unit limit: an empty string still takes one.
-    if units.len > heap.limits.units - heap.units.len || heap.strings.len >= heap.limits.units { memory(heap); return Value.Undefined; }
-    let start = heap.units.len; heap.units.append(units);
+    if units.len > heap.limits.units - (heap.units.len - heap.image.units) || heap.strings.len - heap.image.strings >= heap.limits.units { memory(heap); return Value.Undefined; }
+    let start = add_units(heap, units);
     return string_ref(heap, start, units.len);
 }
 fn text(heap: Heap&, bytes: const u8[:]) -> Value {
@@ -318,9 +393,10 @@ fn initialize(heap: Heap&) -> bool {
     if heap.identity == 0 { return memory(heap); }
     if heap.code.units.len > heap.limits.units || heap.code.strings.len > heap.limits.units || heap.code.constants.len > heap.limits.values { return memory(heap); }
     if !charge(heap, heap.code.units.len + heap.code.constants.len) { return false; }
-    heap.units.append(heap.code.units);
+    add_units(heap, heap.code.units);
     // The heap starts empty, so the code's string headers keep their indices.
-    heap.strings.append(heap.code.strings); heap.constants.append(heap.code.constants);
+    for s in heap.code.strings { string_ref(heap, s.start, s.len); }
+    add_constants(heap, heap.code.constants);
     heap.global = allocate(heap, Node { kind: 0 });
     heap.call_method = builtin(heap, 14);
     let global_name = text(heap, "globalThis");
@@ -387,10 +463,10 @@ fn number_index(v: Value) -> i64 {
     return if v.tag() == 3 && v.num() >= 0 && v.num() < 4294967295.0 && v.num() == (v.num() as i64) { v.num() as i64 } else { -1 };
 }
 fn own_element(heap: Heap&, array: Value, i: i64) -> Value, bool {
-    if heap.nodes[array.id()].initialized { let k = key(heap, number(i)); return own_record(heap, array, k); }
+    if node(heap, array.id()).initialized { let k = key(heap, number(i)); return own_record(heap, array, k); }
     // Field reads: a whole Node copy would dominate an element access.
-    if i >= heap.nodes[array.id()].length || i >= heap.nodes[array.id()].count { return Value.Undefined, false; }
-    let v = heap.values[heap.nodes[array.id()].start + i];
+    if i >= node(heap, array.id()).length || i >= node(heap, array.id()).count { return Value.Undefined, false; }
+    let v = slot(heap, node(heap, array.id()).start + i);
     if v.tag() == -1 { return Value.Undefined, false; }
     return v, true;
 }
@@ -398,27 +474,27 @@ fn own_element(heap: Heap&, array: Value, i: i64) -> Value, bool {
 fn sparse_write(count: i64, i: i64) -> bool { return i >= count && i > 2 * count + 1024; }
 fn set_element(heap: Heap&, array: Value, i: i64, value: Value) -> bool {
     if i >= heap.limits.values { return memory(heap); }
-    if !heap.nodes[array.id()].initialized && sparse_write(heap.nodes[array.id()].count, i) && !to_dictionary(heap, array) { return false; }
-    if heap.nodes[array.id()].initialized {
+    if !node(heap, array.id()).initialized && sparse_write(node(heap, array.id()).count, i) && !to_dictionary(heap, array) { return false; }
+    if node(heap, array.id()).initialized {
         let k = key(heap, number(i));
         if heap.fault != Fault.None || !put_record(heap, array, k, value) { return false; }
-        if i >= heap.nodes[array.id()].length { heap.nodes[array.id()].length = i + 1; }
+        if i >= node(heap, array.id()).length { node_mut(heap, array.id()).length = (i + 1) as u32; }
         return true;
     }
-    let count = heap.nodes[array.id()].count;
+    let count = node(heap, array.id()).count;
     if i >= count {
-        let old = heap.nodes[array.id()].start;
+        let old = node(heap, array.id()).start;
         var capacity = max(i + 1, max(count * 2, 4));
-        if capacity > heap.limits.values - heap.values.len { capacity = i + 1; }
-        if capacity > heap.limits.values - heap.values.len { return memory(heap); }
+        if !values_fit(heap, capacity) { capacity = i + 1; }
+        if !values_fit(heap, capacity) { return memory(heap); }
         if !charge(heap, capacity + count) { return false; }
-        let start = heap.values.len; heap.values.append(heap.values[old..(old + count)]); heap.values.resize(start + capacity, hole());
+        let start = add_values(heap, run(heap, old, count), capacity - count, hole());
         // No node owns the old run now: holes may live only in array runs.
-        for at in old..(old + count) { heap.values[at] = Value.Undefined; }
-        heap.nodes[array.id()].start = start; heap.nodes[array.id()].count = capacity;
+        for at in old..(old + count) { set_slot(heap, at, Value.Undefined); }
+        node_mut(heap, array.id()).start = start as u32; node_mut(heap, array.id()).count = capacity as u32;
     } else if !charge(heap) { return false; }
-    heap.values[heap.nodes[array.id()].start + i] = value;
-    if i >= heap.nodes[array.id()].length { heap.nodes[array.id()].length = i + 1; }
+    set_slot(heap, node(heap, array.id()).start + i, value);
+    if i >= node(heap, array.id()).length { node_mut(heap, array.id()).length = (i + 1) as u32; }
     return true;
 }
 // Move a dense array's elements into index-keyed property records, a new key
@@ -426,50 +502,51 @@ fn set_element(heap: Heap&, array: Value, i: i64, value: Value) -> bool {
 // a rejection leaves the array as it was (records and keys built so far stay
 // charged, unowned).
 fn to_dictionary(heap: Heap&, array: Value) -> bool {
-    let o = array.id(); let start = heap.nodes[o].start; let count = heap.nodes[o].count; let end = min(heap.nodes[o].length, count);
-    var records: i64 = 0; for i in end { if heap.values[start + i].tag() != -1 { records += 1; } }
+    let o = array.id(); let start = node(heap, o).start; let count = node(heap, o).count; let end = min(node(heap, o).length, count);
+    var records: i64 = 0; for i in end { if slot(heap, start + i).tag() != -1 { records += 1; } }
     let run = add_properties(heap, records);
     if run < 0 { return false; }
     var at = run;
     for i in end {
-        let v = heap.values[start + i];
+        let v = slot(heap, start + i);
         if v.tag() == -1 { continue; }
         let k = key(heap, number(i));
         if heap.fault != Fault.None { return false; }
-        heap.properties[at] = Property { key: k, value: v }; at += 1;
+        set_property_row(heap, at, Property { key: k, value: v }); at += 1;
     }
     if !charge(heap, count) { return false; }
-    for slot in start..(start + count) { heap.values[slot] = Value.Undefined; }
-    heap.nodes[o].keys = run; heap.nodes[o].key_count = records; heap.nodes[o].key_capacity = records; heap.nodes[o].initialized = true; heap.nodes[o].count = 0;
+    for row in start..(start + count) { set_slot(heap, row, Value.Undefined); }
+    node_mut(heap, o).keys = run as u32; node_mut(heap, o).key_count = records as u32; node_mut(heap, o).key_capacity = records as u32; node_mut(heap, o).initialized = true; node_mut(heap, o).count = 0;
     return true;
 }
 // The one allocation point of the property table: `count` cleared rows at
-// its end, charged to the rows the heap has added (limits.properties counts
-// allocated rows, spare capacity included, not live records). Returns the run's
+// its end, charged to the rows the heap has added above its image
+// (limits.properties counts allocated rows, spare capacity included, not live
+// records; property_rows is their running total for snapshot validation). Returns the run's
 // first row, or -1 with MemoryLimit.
 fn add_properties(heap: Heap&, count: i64) -> i64 {
-    if count > heap.limits.properties - heap.property_rows { memory(heap); return -1; }
+    if !room(heap, heap.properties.len, heap.image.properties, heap.limits.properties, count) { return -1; }
     let at = heap.properties.len; heap.properties.resize(at + count, Property {}); heap.property_rows += count;
     return at;
 }
 // Newest first: the order the former linked records were visited in, so a
 // lookup charges the same work.
 fn own_record(heap: Heap&, object: Value, k: Value) -> Value, bool {
-    let o = object.id(); let start = heap.nodes[o].keys; var i = heap.nodes[o].key_count;
+    let o = object.id(); let start = node(heap, o).keys; var i = node(heap, o).key_count;
     while i > 0 {
         i -= 1;
         if !charge(heap) { return Value.Undefined, false; }
-        let property = heap.properties[start + i];
+        let property = property_row(heap, start + i);
         if equal(heap, property.key, k) { return property.value, true; }
     }
     return Value.Undefined, false;
 }
 // Return presence separately: an own property's value can be undefined.
 fn own_property(heap: Heap&, object: Value, k: Value) -> Value, bool {
-    if heap.nodes[object.id()].kind == 1 {
+    if node(heap, object.id()).kind == 1 {
         let i = index(heap, k);
         if i < 0 { return Value.Undefined, false; }
-        if heap.nodes[object.id()].initialized { return own_record(heap, object, k); }
+        if node(heap, object.id()).initialized { return own_record(heap, object, k); }
         return own_element(heap, object, i);
     }
     return own_record(heap, object, k);
@@ -483,22 +560,22 @@ fn get(heap: Heap&, object: Value, k: Value) -> Value {
         heap.fault = Fault.UnsupportedOperand; return Value.Undefined;
     }
     if object.tag() != 5 { heap.fault = if object.tag() <= 1 { Fault.TypeError } else { Fault.UnsupportedOperand }; return Value.Undefined; }
-    let node = heap.nodes[object.id()];
-    if (node.kind == 2 || node.kind == 4) && key_is(heap, k, "call") { return heap.call_method; }
+    let row = node(heap, object.id());
+    if (row.kind == 2 || row.kind == 4) && key_is(heap, k, "call") { return heap.call_method; }
     // Unmapped, read-only arguments subset. Mutation, callee and prototypes
     // fail explicitly; no frame slot or parameter alias escapes to the heap.
-    if node.kind == 14 {
-        if key_is(heap, k, "length") { return number(node.count); }
+    if row.kind == 14 {
+        if key_is(heap, k, "length") { return number(row.count); }
         let i = index(heap, k);
-        if i >= 0 { return if i < node.count { heap.values[node.start + i] } else { Value.Undefined }; }
+        if i >= 0 { return if i < row.count { slot(heap, row.start + i) } else { Value.Undefined }; }
         heap.fault = Fault.UnsupportedOperand; return Value.Undefined;
     }
-    if node.kind == 1 && key_is(heap, k, "length") { return number(node.length); }
-    if node.kind >= 2 { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
+    if row.kind == 1 && key_is(heap, k, "length") { return number(row.length); }
+    if row.kind >= 2 { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
     let value, found = own_property(heap, object, k);
     if found { return value; }
     if heap.fault != Fault.None { return Value.Undefined; }
-    if node.kind == 1 && index(heap, k) < 0 { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
+    if row.kind == 1 && index(heap, k) < 0 { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
     // Prototype-dependent behavior is deliberately unsupported. A missing own
     // ordinary data property is undefined, except known prototype names.
     if key_is(heap, k, "__proto__") || key_is(heap, k, "constructor") || key_is(heap, k, "toString") || key_is(heap, k, "valueOf") || key_is(heap, k, "call") || key_is(heap, k, "apply") || key_is(heap, k, "hasOwnProperty") || key_is(heap, k, "isPrototypeOf") || key_is(heap, k, "propertyIsEnumerable") || key_is(heap, k, "toLocaleString") || key_is(heap, k, "__defineGetter__") || key_is(heap, k, "__defineSetter__") || key_is(heap, k, "__lookupGetter__") || key_is(heap, k, "__lookupSetter__") { heap.fault = Fault.UnsupportedOperand; }
@@ -506,9 +583,9 @@ fn get(heap: Heap&, object: Value, k: Value) -> Value {
 }
 fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
     if !valid(heap, object) || !valid(heap, k) || !valid(heap, value) { return false; }
-    if object.tag() != 5 || k.tag() != 4 || heap.nodes[object.id()].kind >= 2 { heap.fault = if object.tag() == 5 { Fault.UnsupportedOperand } else { Fault.TypeError }; return false; }
+    if object.tag() != 5 || k.tag() != 4 || node(heap, object.id()).kind >= 2 { heap.fault = if object.tag() == 5 { Fault.UnsupportedOperand } else { Fault.TypeError }; return false; }
     if key_is(heap, k, "__proto__") { heap.fault = Fault.UnsupportedOperand; return false; }
-    if heap.nodes[object.id()].kind == 1 {
+    if node(heap, object.id()).kind == 1 {
         if key_is(heap, k, "length") { return array_length(heap, object, value); }
         let i = index(heap, k);
         if heap.fault != Fault.None { return false; }
@@ -522,21 +599,21 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
 // included) through add_properties; the old rows are cleared and stay charged:
 // tables are append-only within a job. A rejection changes nothing.
 fn put_record(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
-    let o = object.id(); let start = heap.nodes[o].keys; let count = heap.nodes[o].key_count;
+    let o = object.id(); let start = node(heap, o).keys; let count = node(heap, o).key_count;
     var i = count;
     while i > 0 {
         i -= 1;
         if !charge(heap) { return false; }
-        if equal(heap, heap.properties[start + i].key, k) { heap.properties[start + i].value = value; return true; }
+        if equal(heap, property_row(heap, start + i).key, k) { property_mut(heap, start + i).value = value; return true; }
     }
     if heap.fault != Fault.None { return false; }
-    if count == heap.nodes[o].key_capacity {
+    if count == node(heap, o).key_capacity {
         let at = add_properties(heap, max(4, count * 2));
         if at < 0 { return false; }
-        for i in count { heap.properties[at + i] = heap.properties[start + i]; heap.properties[start + i] = Property {}; }
-        heap.nodes[o].keys = at; heap.nodes[o].key_capacity = max(4, count * 2);
+        for i in count { set_property_row(heap, at + i, property_row(heap, start + i)); set_property_row(heap, start + i, Property {}); }
+        node_mut(heap, o).keys = at as u32; node_mut(heap, o).key_capacity = max(4, count * 2);
     }
-    heap.properties[heap.nodes[o].keys + count] = Property { key: k, value: value }; heap.nodes[o].key_count = count + 1;
+    set_property_row(heap, node(heap, o).keys + count, Property { key: k, value: value }); node_mut(heap, o).key_count = count + 1;
     return heap.fault == Fault.None;
 }
 // Bounded numeric length writes only. A shorter length turns a dense array's
@@ -548,49 +625,49 @@ fn array_length(heap: Heap&, object: Value, value: Value) -> bool {
     if value.tag() != 3 || !(value.num() >= 0 && value.num() <= 4294967295.0) || value.num() != trunc(value.num()) { heap.fault = Fault.UnsupportedOperand; return false; }
     let length = value.num() as i64;
     if length > heap.limits.values { return memory(heap); }
-    if heap.nodes[object.id()].initialized { return dictionary_length(heap, object, length); }
-    let start = heap.nodes[object.id()].start; let end = min(heap.nodes[object.id()].length, heap.nodes[object.id()].count);
+    if node(heap, object.id()).initialized { return dictionary_length(heap, object, length); }
+    let start = node(heap, object.id()).start; let end = min(node(heap, object.id()).length, node(heap, object.id()).count);
     if length < end {
         if !charge(heap, end - length) { return false; }
-        for i in length..end { heap.values[start + i] = hole(); }
+        for i in length..end { set_slot(heap, start + i, hole()); }
     }
-    heap.nodes[object.id()].length = length; return true;
+    node_mut(heap, object.id()).length = length as u32; return true;
 }
 // Preflight the full walk before mutation so a work rejection is atomic.
 fn dictionary_length(heap: Heap&, object: Value, length: i64) -> bool {
-    if length < heap.nodes[object.id()].length {
-        let o = object.id(); let start = heap.nodes[o].keys; let count = heap.nodes[o].key_count;
+    if length < node(heap, object.id()).length {
+        let o = object.id(); let start = node(heap, o).keys; let count = node(heap, o).key_count;
         for row in start..(start + count) {
-            if !charge(heap, 2 + str_len(heap, heap.properties[row].key)) { return false; }
-            let i = index(heap, heap.properties[row].key);
+            if !charge(heap, 2 + str_len(heap, property_row(heap, row).key)) { return false; }
+            let i = index(heap, property_row(heap, row).key);
             if heap.fault != Fault.None { return false; }
             if i < 0 { heap.fault = Fault.UnsupportedOperand; return false; }
         }
         // Compact the kept records in order; the cut-off rows are cleared.
         var kept: i64 = 0;
         for row in start..(start + count) {
-            let p = heap.properties[row];
+            let p = property_row(heap, row);
             // set_element admitted canonical indices. The preflight charged
             // this second decode, so mutation below cannot fail.
             var i: i64 = 0;
             for c in chars(heap, p.key) { i = i * 10 + (c - 48); }
-            if i < length { heap.properties[start + kept] = p; kept += 1; }
+            if i < length { set_property_row(heap, start + kept, p); kept += 1; }
         }
-        for row in (start + kept)..(start + count) { heap.properties[row] = Property {}; }
-        heap.nodes[o].key_count = kept;
+        for row in (start + kept)..(start + count) { set_property_row(heap, row, Property {}); }
+        node_mut(heap, o).key_count = kept as u32;
     }
-    heap.nodes[object.id()].length = length; return true;
+    node_mut(heap, object.id()).length = length as u32; return true;
 }
 fn closure(heap: Heap&, function: i64, captures: const Value[:]) -> Value {
     if function < 0 || function >= heap.code.functions.len || captures.len != heap.code.functions[function].captures { heap.fault = Fault.InvalidState; return Value.Undefined; }
-    if captures.len > heap.limits.values - heap.values.len || !charge(heap, captures.len) { if heap.fault == Fault.None { memory(heap); } return Value.Undefined; }
+    if !values_fit(heap, captures.len) || !charge(heap, captures.len) { if heap.fault == Fault.None { memory(heap); } return Value.Undefined; }
     for v in captures { if !valid(heap, v) { return Value.Undefined; } }
-    let start = heap.values.len; heap.values.append(captures);
-    return allocate(heap, Node { kind: 2, function: function, start: start, count: captures.len });
+    let start = add_values(heap, captures);
+    return allocate(heap, Node { kind: 2, function: function as u32, start: start as u32, count: captures.len as u32 });
 }
 fn unwind_maps(job: Job&, keep: i64) {
     for i in keep..job.frames.len {
-        let f = job.frames[i]; if f.function == -2 { job.heap.nodes[f.input.id()].initialized = false; }
+        let f = job.frames[i]; if f.function == -2 { node_mut(job.heap, f.input.id()).initialized = false; }
     }
 }
 fn fail(job: Job&, fault: Fault, frame: Frame) {
@@ -636,8 +713,8 @@ fn raise(job: Job&, value: Value, frame: Frame) {
 fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -> bool {
     let heap .= job.heap;
     if !valid(heap, callee) || !valid(heap, receiver) { return false; }
-    if callee.tag() != 5 || heap.nodes[callee.id()].kind != 2 { heap.fault = Fault.TypeError; return false; }
-    let id = heap.nodes[callee.id()].function; let f .= heap.code.functions[id];
+    if callee.tag() != 5 || node(heap, callee.id()).kind != 2 { heap.fault = Fault.TypeError; return false; }
+    let id = node(heap, callee.id()).function; let f .= heap.code.functions[id];
     // A class constructor has no [[Call]]: calling it throws TypeError.
     if f.kind >= 2 { heap.fault = Fault.TypeError; return false; }
     if job.frames.len >= heap.limits.frames || f.locals > heap.limits.stack - job.locals.len || arguments.len > heap.limits.stack - job.locals.len - f.locals { heap.fault = Fault.StackLimit; return false; }
@@ -694,7 +771,7 @@ fn binary_value(heap: Heap&, op: i64, a: Value, b: Value) -> Value {
     }
     if op == 73 && a.tag() == 4 && b.tag() == 4 {
         if !valid(heap, a) || !valid(heap, b) { return Value.Undefined; }
-        if str_len(heap, a) + str_len(heap, b) > heap.limits.units - heap.units.len { memory(heap); return Value.Undefined; }
+        if str_len(heap, a) + str_len(heap, b) > heap.limits.units - (heap.units.len - heap.image.units) { memory(heap); return Value.Undefined; }
         var units: u16[>..] = []; units.append(chars(heap, a)); units.append(chars(heap, b)); return string(heap, units);
     }
     if op >= 74 && op <= 77 && a.tag() == 4 && b.tag() == 4 {
@@ -715,19 +792,19 @@ fn binary_value(heap: Heap&, op: i64, a: Value, b: Value) -> Value {
 fn nil() -> Value { return Value.Null; }
 fn form_value(heap: Heap&, v: Value) -> Value {
     if !valid(heap, v) { return Value.Undefined; }
-    return if v.tag() == 5 && heap.nodes[v.id()].kind == 11 { heap.nodes[v.id()].value } else { v };
+    return if v.tag() == 5 && node(heap, v.id()).kind == 11 { node(heap, v.id()).value } else { v };
 }
 fn form_kind(heap: Heap&, v: Value) -> i64 {
     let x = form_value(heap, v);
-    return if x.tag() == 5 { heap.nodes[x.id()].kind } else { -1 };
+    return if x.tag() == 5 { node(heap, x.id()).kind } else { -1 };
 }
 fn form_collection(heap: Heap&, kind: i64, children: const Value[:], template: Node = Node { kind: 0 }) -> Value {
     if kind < 5 || kind > 8 || (kind == 7 && children.len % 2 != 0) { heap.fault = Fault.TypeError; return Value.Undefined; }
-    if children.len > heap.limits.values - heap.values.len || heap.nodes.len >= heap.limits.nodes { memory(heap); return Value.Undefined; }
+    if !values_fit(heap, children.len) || !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
     if !charge(heap, children.len) { return Value.Undefined; }
     for child in children { if !valid(heap, child) { return Value.Undefined; } }
-    var node = template; node.kind = kind; node.start = heap.values.len; node.count = children.len;
-    heap.values.append(children); return allocate(heap, node);
+    var made = template; made.kind = kind; made.start = heap.values.len as u32; made.count = children.len as u32;
+    add_values(heap, children); return allocate(heap, made);
 }
 // Ordinary constructors normalize equal keys/members. LiteralMap and the
 // compiler occurrence bridge deliberately retain positional source operands.
@@ -750,14 +827,14 @@ fn form_count(heap: Heap&, v: Value) -> i64 {
     let x = form_value(heap, v);
     if x.tag() <= 1 { return 0; }
     if x.tag() == 4 { return str_len(heap, x); }
-    if x.tag() == 5 { let n = heap.nodes[x.id()]; if n.kind >= 5 && n.kind <= 8 || n.kind == 12 { return if n.kind == 7 { n.count / 2 } else { n.count }; } }
+    if x.tag() == 5 { let n = node(heap, x.id()); if n.kind >= 5 && n.kind <= 8 || n.kind == 12 { return if n.kind == 7 { n.count / 2 } else { n.count }; } }
     heap.fault = Fault.TypeError; return 0;
 }
 fn form_nth(heap: Heap&, v: Value, i: i64, fallback: Value = Value.Null) -> Value {
     let x = form_value(heap, v);
     if x.tag() <= 1 { return fallback; }
     if x.tag() == 4 { return if i >= 0 && i < str_len(heap, x) { string(heap, [heap.units[str_start(heap, x) + i]]) } else { fallback }; }
-    if x.tag() == 5 { let n = heap.nodes[x.id()]; if n.kind == 5 || n.kind == 6 || n.kind == 12 { return if i >= 0 && i < n.count { heap.values[n.start + i] } else { fallback }; } }
+    if x.tag() == 5 { let n = node(heap, x.id()); if n.kind == 5 || n.kind == 6 || n.kind == 12 { return if i >= 0 && i < n.count { slot(heap, n.start + i) } else { fallback }; } }
     heap.fault = Fault.TypeError; return Value.Undefined;
 }
 recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool {
@@ -769,7 +846,7 @@ recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool
     if x.tag() <= 1 && y.tag() <= 1 { return true; }
     if x.tag() != y.tag() { return false; }
     if x.tag() != 5 { return equal(heap, x, y); }
-    let n = heap.nodes[x.id()]; let m = heap.nodes[y.id()];
+    let n = node(heap, x.id()); let m = node(heap, y.id());
     if n.kind == 15 || m.kind == 15 { heap.fault = Fault.NativeBoundary; return false; }
     if n.kind < 5 || m.kind < 5 || n.kind == 13 || m.kind == 13 || n.kind == 14 || m.kind == 14 { return x == y; }
     if n.kind != m.kind && !((n.kind == 5 || n.kind == 6 || n.kind == 12) && (m.kind == 5 || m.kind == 6 || m.kind == 12)) { return false; }
@@ -780,10 +857,10 @@ recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool
         for i in (n.count / stride) {
             var found = false;
             for j in (m.count / stride) {
-                if form_equal(heap, heap.values[n.start + i * stride], heap.values[m.start + j * stride], depth + 1) {
+                if form_equal(heap, slot(heap, n.start + i * stride), slot(heap, m.start + j * stride), depth + 1) {
                     // Match form_get: later equal keys cannot replace the
                     // first match when its value differs.
-                    found = stride == 1 || form_equal(heap, heap.values[n.start + i * stride + 1], heap.values[m.start + j * stride + 1], depth + 1);
+                    found = stride == 1 || form_equal(heap, slot(heap, n.start + i * stride + 1), slot(heap, m.start + j * stride + 1), depth + 1);
                     break;
                 }
             }
@@ -791,64 +868,65 @@ recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool
         }
         return true;
     }
-    for i in n.count { if !form_equal(heap, heap.values[n.start + i], heap.values[m.start + i], depth + 1) { return false; } }
+    for i in n.count { if !form_equal(heap, slot(heap, n.start + i), slot(heap, m.start + i), depth + 1) { return false; } }
     return true;
 }
 fn form_assoc(heap: Heap&, v: Value, k: Value, value: Value) -> Value {
     let x = form_value(heap, v); let kind = form_kind(heap, x);
     if kind != 6 && kind != 7 { heap.fault = Fault.TypeError; return Value.Undefined; }
-    let n = heap.nodes[x.id()]; var at: i64 = -1;
+    let n = node(heap, x.id()); var at: i64 = -1;
     if kind == 6 {
         let i = form_value(heap, k);
         if i.tag() != 3 || !(i.num() >= 0 && i.num() <= n.count) || i.num() != (i.num() as i64) { heap.fault = Fault.TypeError; return Value.Undefined; }
         at = i.num() as i64;
     } else {
-        for i in (n.count / 2) { if form_equal(heap, heap.values[n.start + i * 2], k) { at = i * 2 + 1; break; } }
+        for i in (n.count / 2) { if form_equal(heap, slot(heap, n.start + i * 2), k) { at = i * 2 + 1; break; } }
     }
     if !charge(heap, n.count + 2) { return Value.Undefined; }
     let replacing = at >= 0 && at < n.count;
     let count = n.count + (if replacing { 0 } else if kind == 7 { 2 } else { 1 });
-    if count > heap.limits.values - heap.values.len || heap.nodes.len >= heap.limits.nodes { memory(heap); return Value.Undefined; }
+    if !values_fit(heap, count) || !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
     if !charge(heap, count) { return Value.Undefined; }
     // Validate exactly the resulting children, including only retained old
     // slots. A replaced stale value is absent from the new range.
     if replacing {
-        for child in heap.values[n.start..(n.start + at)] { if !valid(heap, child) { return Value.Undefined; } }
+        for child in run(heap, n.start, at) { if !valid(heap, child) { return Value.Undefined; } }
         if !valid(heap, value) { return Value.Undefined; }
-        for child in heap.values[(n.start + at + 1)..(n.start + n.count)] { if !valid(heap, child) { return Value.Undefined; } }
+        for child in run(heap, n.start + at + 1, n.count - at - 1) { if !valid(heap, child) { return Value.Undefined; } }
     } else {
-        for child in heap.values[n.start..(n.start + n.count)] { if !valid(heap, child) { return Value.Undefined; } }
+        for child in run(heap, n.start, n.count) { if !valid(heap, child) { return Value.Undefined; } }
         if kind == 7 && !valid(heap, k) { return Value.Undefined; } if !valid(heap, value) { return Value.Undefined; }
     }
-    var node = n; node.kind = kind; node.origin = -1; node.start = heap.values.len; node.count = count;
+    var made = n; made.kind = kind; made.origin = -1; made.start = heap.values.len as u32; made.count = count;
     // allocate charges the final work unit before any child append. Nothing
-    // below can fail; old ranges and occurrence/metadata handles stay intact.
-    let result = allocate(heap, node); if heap.fault != Fault.None { return Value.Undefined; }
+    // below can fail (the preflight reserved the rows); old ranges and
+    // occurrence/metadata handles stay intact.
+    let result = allocate(heap, made); if heap.fault != Fault.None { return Value.Undefined; }
     if replacing {
-        heap.values.append(heap.values[n.start..(n.start + at)]); heap.values.push(value);
-        heap.values.append(heap.values[(n.start + at + 1)..(n.start + n.count)]);
+        add_values(heap, run(heap, n.start, at)); add_values(heap, [value]);
+        add_values(heap, run(heap, n.start + at + 1, n.count - at - 1));
     } else {
-        heap.values.append(heap.values[n.start..(n.start + n.count)]);
-        if kind == 7 { heap.values.push(k); } heap.values.push(value);
+        add_values(heap, run(heap, n.start, n.count));
+        if kind == 7 { add_values(heap, [k, value]); } else { add_values(heap, [value]); }
     }
     return result;
 }
 fn form_conj(heap: Heap&, v: Value, value: Value) -> Value {
     let x = form_value(heap, v); let kind = if x.tag() <= 1 { 5 } else { form_kind(heap, x) };
     if kind != 5 && kind != 6 { heap.fault = Fault.TypeError; return Value.Undefined; }
-    let n = if x.tag() <= 1 { Node { kind: 5 } } else { heap.nodes[x.id()] };
+    let n = if x.tag() <= 1 { Node { kind: 5 } } else { node(heap, x.id()) };
     if !charge(heap, n.count + 1) { return Value.Undefined; }
     let count = n.count + 1;
-    if count > heap.limits.values - heap.values.len || heap.nodes.len >= heap.limits.nodes { memory(heap); return Value.Undefined; }
+    if !values_fit(heap, count) || !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
     if !charge(heap, count) { return Value.Undefined; }
     if kind == 5 && !valid(heap, value) { return Value.Undefined; }
-    for child in heap.values[n.start..(n.start + n.count)] { if !valid(heap, child) { return Value.Undefined; } }
+    for child in run(heap, n.start, n.count) { if !valid(heap, child) { return Value.Undefined; } }
     if kind == 6 && !valid(heap, value) { return Value.Undefined; }
-    var node = n; node.kind = kind; node.origin = -1; node.start = heap.values.len; node.count = count;
-    let result = allocate(heap, node); if heap.fault != Fault.None { return Value.Undefined; }
-    if kind == 5 { heap.values.push(value); }
-    heap.values.append(heap.values[n.start..(n.start + n.count)]);
-    if kind == 6 { heap.values.push(value); }
+    var made = n; made.kind = kind; made.origin = -1; made.start = heap.values.len as u32; made.count = count;
+    let result = allocate(heap, made); if heap.fault != Fault.None { return Value.Undefined; }
+    if kind == 5 { add_values(heap, [value]); }
+    add_values(heap, run(heap, n.start, n.count));
+    if kind == 6 { add_values(heap, [value]); }
     return result;
 }
 fn form_get(heap: Heap&, v: Value, k: Value, fallback: Value) -> Value {
@@ -859,8 +937,8 @@ fn form_get(heap: Heap&, v: Value, k: Value, fallback: Value) -> Value {
         return form_nth(heap, x, i.num() as i64, fallback);
     }
     if kind != 7 { heap.fault = Fault.TypeError; return Value.Undefined; }
-    let n = heap.nodes[x.id()];
-    for i in (n.count / 2) { if form_equal(heap, heap.values[n.start + i * 2], k) { return heap.values[n.start + i * 2 + 1]; } }
+    let n = node(heap, x.id());
+    for i in (n.count / 2) { if form_equal(heap, slot(heap, n.start + i * 2), k) { return slot(heap, n.start + i * 2 + 1); } }
     return fallback;
 }
 fn form_contains(heap: Heap&, v: Value, k: Value) -> bool {
@@ -871,8 +949,8 @@ fn form_contains(heap: Heap&, v: Value, k: Value) -> bool {
         return i.tag() == 3 && i.num() >= 0 && i.num() < form_count(heap, x) && i.num() == trunc(i.num());
     }
     if kind == 7 || kind == 8 {
-        let n = heap.nodes[x.id()]; let stride: i64 = if kind == 7 { 2 } else { 1 };
-        for i in (n.count / stride) { if form_equal(heap, heap.values[n.start + i * stride], k) { return true; } if heap.fault != Fault.None { return false; } }
+        let n = node(heap, x.id()); let stride: i64 = if kind == 7 { 2 } else { 1 };
+        for i in (n.count / stride) { if form_equal(heap, slot(heap, n.start + i * stride), k) { return true; } if heap.fault != Fault.None { return false; } }
         return false;
     }
     heap.fault = Fault.UnsupportedOperand; return false;
@@ -888,20 +966,20 @@ fn form_concat(heap: Heap&, colls: const Value[:]) -> Value {
         if x.tag() <= 1 { continue; }
         let kind = form_kind(heap, x);
         if kind != 5 && kind != 6 && kind != 12 { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
-        let n = heap.nodes[x.id()];
-        if n.count > heap.limits.values - heap.values.len - count { memory(heap); return Value.Undefined; }
+        let n = node(heap, x.id());
+        if !values_fit(heap, count + n.count) { memory(heap); return Value.Undefined; }
         if !charge(heap, n.count * 2) { return Value.Undefined; }
-        for child in heap.values[n.start..(n.start + n.count)] { if !valid(heap, child) { return Value.Undefined; } }
+        for child in run(heap, n.start, n.count) { if !valid(heap, child) { return Value.Undefined; } }
         count += n.count;
     }
     let start = heap.values.len;
-    let result = allocate(heap, Node { kind: 12, start: start, count: count });
+    let result = allocate(heap, Node { kind: 12, start: start as u32, count: count as u32 });
     if heap.fault != Fault.None { return Value.Undefined; }
     // Preflight above accounted both validation and copying. Append only
     // after every failure point; the inputs are immutable stable ranges.
     for coll in colls {
         let x = form_value(heap, coll); if x.tag() <= 1 { continue; }
-        let n = heap.nodes[x.id()]; heap.values.append(heap.values[n.start..(n.start + n.count)]);
+        let n = node(heap, x.id()); add_values(heap, run(heap, n.start, n.count));
     }
     return result;
 }
@@ -911,7 +989,7 @@ fn form_sequence(heap: Heap&, v: Value, skip: i64, empty_nil: bool) -> Value {
     if count <= skip { return if empty_nil { nil() } else { form_collection(heap, 5, []) }; }
     let kind = form_kind(heap, x);
     if kind != 5 && kind != 6 && kind != 12 { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
-    let n = heap.nodes[x.id()]; return allocate(heap, Node { kind: 12, start: n.start + skip, count: n.count - skip });
+    let n = node(heap, x.id()); return allocate(heap, Node { kind: 12, start: (n.start + skip) as u32, count: (n.count - skip) as u32 });
 }
 fn named_supported(heap: Heap&, ns: Value, name: Value) -> bool {
     let n = chars(heap, name);
@@ -925,7 +1003,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         if !valid(heap, v) { return Value.Undefined; }
         // Partial/lazy protocol operations are outside this full-demand
         // target slice. Never inspect an uninitialized memo as a form.
-        if v.tag() == 5 && heap.nodes[v.id()].kind == 15 { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+        if v.tag() == 5 && node(heap, v.id()).kind == 15 { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
     }
     let a = args[0];
     match op {
@@ -945,23 +1023,23 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             let x = form_value(heap, a); if x.tag() <= 1 { return form_concat(heap, []); }
             let kind = form_kind(heap, x);
             if kind != 5 && kind != 6 && kind != 12 { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
-            let n = heap.nodes[x.id()]; return form_concat(heap, heap.values[n.start..(n.start + n.count)]);
+            let n = node(heap, x.id()); return form_concat(heap, run(heap, n.start, n.count));
         },
         8, 29 => { return form_assoc(heap, a, args[1], args[2]); },
         10, 31 => { return form_conj(heap, a, args[1]); },
         11 => { return boolean(form_equal(heap, a, args[1])); },
-        13, 33 => { return if a.tag() == 5 && heap.nodes[a.id()].metadata.tag() != 0 { heap.nodes[a.id()].metadata } else { nil() }; },
-        14, 34 => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= 5 && kind <= 9 || kind == 12) || (meta.tag() > 1 && form_kind(heap, meta) != 7) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = heap.nodes[a.id()]; n.metadata = if meta.tag() <= 1 { Value.Undefined } else { args[1] }; n.origin = -1; return allocate(heap, n); },
+        13, 33 => { return if a.tag() == 5 && node(heap, a.id()).metadata.tag() != 0 { node(heap, a.id()).metadata } else { nil() }; },
+        14, 34 => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= 5 && kind <= 9 || kind == 12) || (meta.tag() > 1 && form_kind(heap, meta) != 7) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= 1 { Value.Undefined } else { args[1] }; n.origin = -1; return allocate(heap, n); },
         15 => { return form_value(heap, a); },
         18 => { let v = form_value(heap, a); return boolean(v.tag() > 1 && !(v.tag() == 2 && !v.flag())); },
         20, 22, 23 => { return form_sequence(heap, a, if op == 20 { 0 } else { 1 }, op != 22); },
         21 => { return form_nth(heap, a, 0); },
-        65 => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != 5 && kind != 6 { heap.fault = Fault.TypeError; return Value.Undefined; } let n = heap.nodes[v.id()]; return form_collection(heap, 7, heap.values[n.start..(n.start + n.count)]); },
+        65 => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != 5 && kind != 6 { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); return form_collection(heap, 7, run(heap, n.start, n.count)); },
         69 => { if form_kind(heap, a) != 7 && form_kind(heap, a) != 8 { heap.fault = Fault.TypeError; return Value.Undefined; } return a; },
         80 => { let kind = form_kind(heap, a); return boolean(kind == 6 || kind == 7 || kind == 8 || kind == 9 || kind == 10); },
         81 => {
             let value = form_value(heap, a);
-            if value.tag() == 5 && (heap.nodes[value.id()].kind == 2 || heap.nodes[value.id()].kind == 4) { return heap.call_method; }
+            if value.tag() == 5 && (node(heap, value.id()).kind == 2 || node(heap, value.id()).kind == 4) { return heap.call_method; }
             heap.fault = Fault.NativeBoundary; return Value.Undefined;
         },
         60 => {
@@ -970,8 +1048,8 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             if kind == 9 || kind == 10 { return form_get(heap, args[1], a, args[2]); }
             if kind == 7 { return form_get(heap, a, args[1], args[2]); }
             if kind == 8 {
-                let n = heap.nodes[a.id()];
-                for i in n.count { if !charge(heap) { return Value.Undefined; } let v = heap.values[n.start + i]; if form_equal(heap, v, args[1]) { return v; } if heap.fault != Fault.None { return Value.Undefined; } }
+                let n = node(heap, a.id());
+                for i in n.count { if !charge(heap) { return Value.Undefined; } let v = slot(heap, n.start + i); if form_equal(heap, v, args[1]) { return v; } if heap.fault != Fault.None { return Value.Undefined; } }
                 return args[2];
             }
             if kind == 6 {
@@ -983,7 +1061,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             heap.fault = Fault.NativeBoundary; return Value.Undefined;
         },
         82 => {
-            if a.tag() != 5 || heap.nodes[a.id()].kind != 0 || args[1].tag() > 1 { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+            if a.tag() != 5 || node(heap, a.id()).kind != 0 || args[1].tag() > 1 { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
             if args[2].tag() != 4 { heap.fault = Fault.TypeError; return Value.Undefined; }
             let value, found = own_property(heap, a, args[2]);
             // A compiler root read is a dependency request, even if the JS
@@ -992,17 +1070,17 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             if !found && heap.fault == Fault.None { heap.fault = Fault.DependencyNeed; } return value;
         },
         92 => {
-            if a.tag() != 5 || heap.nodes[a.id()].kind != 2 { heap.fault = Fault.TypeError; return Value.Undefined; }
-            var node = heap.nodes[a.id()]; node.immutable = true;
-            return allocate(heap, node);
+            if a.tag() != 5 || node(heap, a.id()).kind != 2 { heap.fault = Fault.TypeError; return Value.Undefined; }
+            var row = node(heap, a.id()); row.immutable = true;
+            return allocate(heap, row);
         },
-        93 => { return if a.tag() == 5 && heap.nodes[a.id()].kind == 2 && heap.nodes[a.id()].immutable { nil() } else { a }; },
+        93 => { return if a.tag() == 5 && node(heap, a.id()).kind == 2 && node(heap, a.id()).immutable { nil() } else { a }; },
         _ => { heap.fault = Fault.NativeBoundary; return Value.Undefined; },
     }
 }
 // Enumerated native runtime leaves: 0 macroReaderFunction (Pants uses
 // occurrence-aware leaves directly), 1 inc, 2 mapv, 3 vec, 4 into, 16 sequence.
-fn builtin(heap: Heap&, id: i64) -> Value { return allocate(heap, Node { kind: 4, function: id }); }
+fn builtin(heap: Heap&, id: i64) -> Value { return allocate(heap, Node { kind: 4, function: id as u32 }); }
 fn install_field(heap: Heap&, object: Value, name: const u8[:], value: Value) -> bool { let k = text(heap, name); return put(heap, object, k, value); }
 fn boot_runtime(heap: Heap&) -> Value {
     if heap.boot_count != 0 { heap.fault = Fault.InvalidState; return Value.Undefined; }
@@ -1041,10 +1119,10 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
         if input.tag() > 1 && kind != 5 && kind != 12 { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
         let count = form_count(heap, input);
         if heap.fault != Fault.None { return Value.Undefined; }
-        if count > heap.limits.values - heap.values.len || heap.nodes.len >= heap.limits.nodes { memory(heap); return Value.Undefined; }
+        if !values_fit(heap, count) || !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
         if !charge(heap, count) { return Value.Undefined; }
-        let start = heap.values.len; heap.values.resize(start + count, Value.Undefined);
-        return allocate(heap, Node { kind: 15, start: start, count: count, value: args[0], namespace_value: input });
+        let start = add_values(heap, [], count);
+        return allocate(heap, Node { kind: 15, start: start as u32, count: count as u32, value: args[0], namespace_value: input });
     }
     if id == 16 && args.len == 1 {
         let kind = form_kind(heap, args[0]); if heap.fault != Fault.None { return Value.Undefined; }
@@ -1053,15 +1131,15 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
     }
     if id == 15 && args.len == 2 {
         let object = args[0]; let skip = args[1];
-        if !valid(heap, object) || object.tag() != 5 || heap.nodes[object.id()].kind != 14 || skip.tag() != 3 || !(skip.num() >= 0 && skip.num() <= 65535) || skip.num() != (skip.num() as i64) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
-        let node = heap.nodes[object.id()]; let offset = min(node.count, skip.num() as i64);
-        return form_collection(heap, 5, heap.values[(node.start + offset)..(node.start + node.count)]);
+        if !valid(heap, object) || object.tag() != 5 || node(heap, object.id()).kind != 14 || skip.tag() != 3 || !(skip.num() >= 0 && skip.num() <= 65535) || skip.num() != (skip.num() as i64) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
+        let n = node(heap, object.id()); let offset = min(n.count as i64, skip.num() as i64);
+        return form_collection(heap, 5, run(heap, n.start + offset, n.count - offset));
     }
     if id >= 10 && id <= 13 && args.len == 1 {
         let array = args[0];
-        if !valid(heap, array) || array.tag() != 5 || heap.nodes[array.id()].kind != 1 { heap.fault = Fault.TypeError; return Value.Undefined; }
-        let count = heap.nodes[array.id()].length;
-        if count > heap.limits.values - heap.values.len { memory(heap); return Value.Undefined; }
+        if !valid(heap, array) || array.tag() != 5 || node(heap, array.id()).kind != 1 { heap.fault = Fault.TypeError; return Value.Undefined; }
+        let count = node(heap, array.id()).length;
+        if !values_fit(heap, count) { memory(heap); return Value.Undefined; }
         if !charge(heap, count) { return Value.Undefined; }
         var values: Value[>..] = [];
         for i in count { let v, found = own_element(heap, array, i); values.push(v); }
@@ -1071,7 +1149,7 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
     if id == 1 && args.len == 1 { return number(numeric(heap, args[0]) + 1); }
     if id == 3 && args.len == 1 {
         let kind = form_kind(heap, args[0]); if kind == 6 { return args[0]; }
-        if kind == 5 || kind == 12 { let n = heap.nodes[args[0].id()]; return form_collection(heap, 6, heap.values[n.start..(n.start + n.count)]); }
+        if kind == 5 || kind == 12 { let n = node(heap, args[0].id()); return form_collection(heap, 6, run(heap, n.start, n.count)); }
     }
     if id == 4 && args.len == 2 {
         var out = args[0]; let count = form_count(heap, args[1]);
@@ -1102,12 +1180,12 @@ fn deliver_effect(job: Job&, value: Value, fault: Fault = Fault.None) -> bool {
 fn demand_map(job: Job&, value: Value) -> bool {
     let heap .= job.heap;
     if !charge(heap) { return false; }
-    if !valid(heap, value) || value.tag() != 5 || heap.nodes[value.id()].kind != 15 { return false; }
-    if heap.nodes[value.id()].initialized { heap.fault = Fault.NativeBoundary; return false; }
+    if !valid(heap, value) || value.tag() != 5 || node(heap, value.id()).kind != 15 { return false; }
+    if node(heap, value.id()).initialized { heap.fault = Fault.NativeBoundary; return false; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return false; }
-    let node = heap.nodes[value.id()];
-    heap.nodes[value.id()].initialized = true;
-    job.frames.push(Frame { function: -2, pc: 0, local_base: job.locals.len, operand_base: job.operands.len, callee: node.value, receiver: nil(), input: value, index: node.length });
+    let row = node(heap, value.id());
+    node_mut(heap, value.id()).initialized = true;
+    job.frames.push(Frame { function: -2, pc: 0, local_base: job.locals.len, operand_base: job.operands.len, callee: row.value, receiver: nil(), input: value, index: row.length });
     return true;
 }
 fn demand_maps(job: Job&, values: const Value[:], nested: bool = false) -> bool {
@@ -1115,9 +1193,9 @@ fn demand_maps(job: Job&, values: const Value[:], nested: bool = false) -> bool 
         if demand_map(job, value) { return true; }
         if job.heap.fault != Fault.None { return false; }
         if nested && value.tag() == 5 {
-            let n = job.heap.nodes[value.id()];
+            let n = node(job.heap, value.id());
             if n.kind == 5 || n.kind == 6 || n.kind == 12 {
-                for i in n.count { if demand_map(job, job.heap.values[n.start + i]) { return true; } if job.heap.fault != Fault.None { return false; } }
+                for i in n.count { if demand_map(job, slot(job.heap, n.start + i)) { return true; } if job.heap.fault != Fault.None { return false; } }
             }
         }
     }
@@ -1131,24 +1209,24 @@ fn step(job: Job&) {
         if !charge(heap) { fail(job, heap.fault, frame); return; }
         if job.steps >= heap.limits.steps { fail(job, Fault.InstructionLimit, frame); return; }
         job.steps += 1;
-        let node = heap.nodes[frame.input.id()];
+        let row = node(heap, frame.input.id());
         if frame.pc == 1 {
-            let value = job.operands.pop(); heap.values[node.start + frame.index] = value;
-            heap.nodes[frame.input.id()].length += 1;
+            let value = job.operands.pop(); set_slot(heap, row.start + frame.index, value);
+            node_mut(heap, frame.input.id()).length += 1;
             job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 0;
-        } else if frame.index == node.count {
+        } else if frame.index == row.count {
             // Completed maps become ordinary cursors without copying or
             // replacing their identity; all aliases see the same memo range.
-            heap.nodes[frame.input.id()].kind = 12;
-            heap.nodes[frame.input.id()].initialized = false;
-            heap.nodes[frame.input.id()].value = Value.Undefined; heap.nodes[frame.input.id()].namespace_value = nil();
+            node_mut(heap, frame.input.id()).kind = 12;
+            node_mut(heap, frame.input.id()).initialized = false;
+            node_mut(heap, frame.input.id()).value = Value.Undefined; node_mut(heap, frame.input.id()).namespace_value = nil();
             job.frames.pop();
         } else {
             if job.operands.len >= heap.limits.stack { fail(job, Fault.StackLimit, frame); return; }
-            let arg = form_nth(heap, node.namespace_value, frame.index);
+            let arg = form_nth(heap, row.namespace_value, frame.index);
             job.frames[job.frames.len - 1].pc = 1;
-            if frame.callee.tag() == 5 && heap.nodes[frame.callee.id()].kind == 4 {
-                let id = heap.nodes[frame.callee.id()].function;
+            if frame.callee.tag() == 5 && node(heap, frame.callee.id()).kind == 4 {
+                let id = node(heap, frame.callee.id()).function;
                 if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
                 else { job.operands.push(native_value(heap, id, [arg])); }
             } else { enter(job, frame.callee, nil(), [arg]); }
@@ -1171,8 +1249,8 @@ fn step(job: Job&) {
         } else {
             let arg = form_nth(heap, frame.input, frame.index);
             job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 1;
-            if frame.callee.tag() == 5 && heap.nodes[frame.callee.id()].kind == 4 {
-                let id = heap.nodes[frame.callee.id()].function;
+            if frame.callee.tag() == 5 && node(heap, frame.callee.id()).kind == 4 {
+                let id = node(heap, frame.callee.id()).function;
                 if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
                 else { let v = native_value(heap, id, [arg]); job.operands.push(v); }
             } else { enter(job, frame.callee, Value.Undefined, [arg]); }
@@ -1233,7 +1311,7 @@ fn step(job: Job&) {
         Arguments => { arguments(job, frame, f, false, 0); },
         Rest r => { arguments(job, frame, f, true, r.skip); },
         Callee => { job.operands.push(frame.callee); },
-        Capture c => { let node = heap.nodes[frame.callee.id()]; job.operands.push(heap.values[node.start + c.slot]); },
+        Capture c => { let row = node(heap, frame.callee.id()); job.operands.push(slot(heap, row.start + c.slot)); },
         NewCell c => { let v = allocate(heap, Node { kind: 3, immutable: c.immutable }); job.operands.push(v); },
         InitCell => { cell(job, 48); },
         ReadCell => { cell(job, 49); },
@@ -1254,13 +1332,13 @@ fn step(job: Job&) {
         },
         Append => {
             let value = job.operands.pop(); let object = job.operands[job.operands.len - 1];
-            if dense(job, object) { let at = heap.nodes[object.id()].length; if valid(heap, value) && set_element(heap, object, at, value) { record(job, object, number(at), value); } }
+            if dense(job, object) { let at = node(heap, object.id()).length; if valid(heap, value) && set_element(heap, object, at, value) { record(job, object, number(at), value); } }
             else {
-                let k = if valid(heap, object) && object.tag() == 5 && heap.nodes[object.id()].kind == 1 { key(heap, number(heap.nodes[object.id()].length)) } else { heap.fault = Fault.TypeError; Value.Undefined };
+                let k = if valid(heap, object) && object.tag() == 5 && node(heap, object.id()).kind == 1 { key(heap, number(node(heap, object.id()).length)) } else { heap.fault = Fault.TypeError; Value.Undefined };
                 set_property(job, value, k, true);
             }
         },
-        CheckValue => { let value = job.operands.pop(); if valid(heap, value) && value.tag() == 5 && heap.nodes[value.id()].kind == 3 { heap.fault = Fault.UnsupportedOperand; } job.operands.push(value); },
+        CheckValue => { let value = job.operands.pop(); if valid(heap, value) && value.tag() == 5 && node(heap, value.id()).kind == 3 { heap.fault = Fault.UnsupportedOperand; } job.operands.push(value); },
         This t => {
             var receiver = frame.receiver;
             if t.sloppy && !f.strict && (receiver.tag() == 0 || receiver.tag() == 1) { receiver = heap.global; }
@@ -1291,7 +1369,7 @@ fn step(job: Job&) {
             var waiting = false;
             if op == 82 && job.helpers_enabled {
                 let args = job.operands[base..];
-                if valid(heap, args[0]) && args[0].tag() == 5 && heap.nodes[args[0].id()].kind == 0 && args[1].tag() <= 1 && args[2].tag() == 4 {
+                if valid(heap, args[0]) && args[0].tag() == 5 && node(heap, args[0].id()).kind == 0 && args[1].tag() <= 1 && args[2].tag() == 4 {
                     let value, found = own_property(heap, args[0], args[2]);
                     if !found && heap.fault == Fault.None { request_effect(job, 9, args, frame); waiting = true; }
                 }
@@ -1313,11 +1391,11 @@ fn demand_call(job: Job&, argc: i64, method: bool) -> bool {
     let base = job.operands.len - argc - (if method { 2 } else { 1 });
     var callee = job.operands[base + (if method { 1 } else { 0 })];
     var first = job.operands.len - argc;
-    if valid(heap, callee) && callee.tag() == 5 && heap.nodes[callee.id()].kind == 4 && heap.nodes[callee.id()].function == 14 && method {
+    if valid(heap, callee) && callee.tag() == 5 && node(heap, callee.id()).kind == 4 && node(heap, callee.id()).function == 14 && method {
         callee = job.operands[base]; if first < job.operands.len { first += 1; }
     }
-    if valid(heap, callee) && callee.tag() == 5 && heap.nodes[callee.id()].kind == 4 {
-        let id = heap.nodes[callee.id()].function;
+    if valid(heap, callee) && callee.tag() == 5 && node(heap, callee.id()).kind == 4 {
+        let id = node(heap, callee.id()).function;
         if id == 3 || id == 4 { return demand_maps(job, job.operands[first..]); }
     }
     return false;
@@ -1330,12 +1408,12 @@ fn call(job: Job&, frame: Frame, argc: i64, method: bool) {
     var first = job.operands.len - argc;
     // Function.prototype.call forwards its method receiver as callee.
     // Detached calls fail; missing thisArg is exactly undefined.
-    if valid(heap, callee) && callee.tag() == 5 && heap.nodes[callee.id()].kind == 4 && heap.nodes[callee.id()].function == 14 {
+    if valid(heap, callee) && callee.tag() == 5 && node(heap, callee.id()).kind == 4 && node(heap, callee.id()).function == 14 {
         callee = receiver; receiver = if first < job.operands.len { job.operands[first] } else { Value.Undefined };
         if first < job.operands.len { first += 1; }
     }
-    if valid(heap, callee) && callee.tag() == 5 && heap.nodes[callee.id()].kind == 4 {
-        let id = heap.nodes[callee.id()].function;
+    if valid(heap, callee) && callee.tag() == 5 && node(heap, callee.id()).kind == 4 {
+        let id = node(heap, callee.id()).function;
         let args = job.operands[first..];
         if id == 2 && args.len == 2 {
             if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; }
@@ -1356,10 +1434,10 @@ fn arguments(job: Job&, frame: Frame, f: const Function&, rest: bool, skip_count
     let skip = if rest { min(skip_count, frame.argument_count) } else { 0 };
     let args = job.locals[(start + skip)..(start + frame.argument_count)];
     if !rest {
-        if args.len > heap.limits.values - heap.values.len || heap.nodes.len >= heap.limits.nodes { memory(heap); }
+        if !values_fit(heap, args.len) || !nodes_fit(heap, 1) { memory(heap); }
         else if charge(heap, args.len) {
-            let offset = heap.values.len; heap.values.append(args);
-            job.operands.push(allocate(heap, Node { kind: 14, start: offset, count: args.len }));
+            let offset = add_values(heap, args);
+            job.operands.push(allocate(heap, Node { kind: 14, start: offset as u32, count: args.len as u32 }));
         }
     } else {
         let array = allocate(heap, Node { kind: 1 });
@@ -1371,15 +1449,15 @@ fn arguments(job: Job&, frame: Frame, f: const Function&, rest: bool, skip_count
 fn cell(job: Job&, op: i64) {
     let heap .= job.heap;
     let value = if op == 49 { Value.Undefined } else { job.operands.pop() }; let cell = job.operands.pop();
-    if valid(heap, cell) && cell.tag() == 5 && heap.nodes[cell.id()].kind == 3 {
-        let node = heap.nodes[cell.id()];
+    if valid(heap, cell) && cell.tag() == 5 && node(heap, cell.id()).kind == 3 {
+        let row = node(heap, cell.id());
         if op == 49 || op == 50 {
-            if !node.initialized { heap.fault = Fault.ReferenceError; }
-            else if op == 50 && node.immutable { heap.fault = Fault.ConstAssignment; }
-            else if op == 49 { job.operands.push(node.value); }
-            else { heap.nodes[cell.id()].value = value; record(job, cell, Value.Undefined, value); }
-        } else if node.initialized && node.immutable { heap.fault = Fault.ConstAssignment; }
-        else { heap.nodes[cell.id()].value = value; heap.nodes[cell.id()].initialized = true; record(job, cell, Value.Undefined, value); }
+            if !row.initialized { heap.fault = Fault.ReferenceError; }
+            else if op == 50 && row.immutable { heap.fault = Fault.ConstAssignment; }
+            else if op == 49 { job.operands.push(row.value); }
+            else { node_mut(heap, cell.id()).value = value; record(job, cell, Value.Undefined, value); }
+        } else if row.initialized && row.immutable { heap.fault = Fault.ConstAssignment; }
+        else { node_mut(heap, cell.id()).value = value; node_mut(heap, cell.id()).initialized = true; record(job, cell, Value.Undefined, value); }
     } else if heap.fault == Fault.None { heap.fault = Fault.TypeError; }
 }
 fn get_property(job: Job&, k: Value) {
@@ -1390,7 +1468,7 @@ fn get_property(job: Job&, k: Value) {
         // Only the compiler root intrinsic may suspend and demand a
         // definition. A raw JS bypass must not observe stale undefined.
         if !found { heap.fault = Fault.DependencyNeed; } job.operands.push(value);
-    } else if valid(heap, object) && object.tag() == 5 && (heap.nodes[object.id()].kind == 2 || heap.nodes[object.id()].kind == 4) && key_is(heap, k, "call") {
+    } else if valid(heap, object) && object.tag() == 5 && (node(heap, object.id()).kind == 2 || node(heap, object.id()).kind == 4) && key_is(heap, k, "call") {
         job.operands.push(get(heap, object, k));
     } else if object.tag() == 5 && object.id() < job.protected_nodes {
         let value, found = own_property(heap, object, k);
@@ -1402,7 +1480,7 @@ fn get_property(job: Job&, k: Value) {
 // read and write its run directly, without building key strings.
 fn dense(job: Job&, object: Value) -> bool {
     let heap .= job.heap;
-    if object.tag() != 5 || !valid(heap, object) || object.id() < job.protected_nodes || heap.nodes[object.id()].kind != 1 { return false; }
+    if object.tag() != 5 || !valid(heap, object) || object.id() < job.protected_nodes || node(heap, object.id()).kind != 1 { return false; }
     return !(job.root_receiver.tag() == 5 && object == job.root_receiver);
 }
 // chain: the assignment expression yields the object (81, 88), else the value.
@@ -1435,7 +1513,7 @@ fn canonical(heap: Heap&, v: Value, out: u8[>..]&) {
         0 => { out.append("undefined"); }, 1 => { out.append("null"); }, 2 => { out.append(if v.flag() { "boolean:true" } else { "boolean:false" }); },
         3 => { if v.num() != v.num() { out.append("number:NaN"); } else if v.num() == 0 && 1.0 / v.num() < 0 { out.append("number:-0"); } else { format(out, "number:", v.num()); } },
         4 => { out.append("utf16:["); for c, i in chars(heap, v) { if i > 0 { out.push(','); } format(out, c); } out.push(']'); },
-        5 => { format(out, "identity:", heap.identity, ":", v.id(), ":", heap.nodes[v.id()].kind); },
+        5 => { format(out, "identity:", heap.identity, ":", v.id(), ":", node(heap, v.id()).kind); },
         _ => { out.append("invalid:tag"); },
     }
 }

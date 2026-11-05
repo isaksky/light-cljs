@@ -38,7 +38,7 @@ thread_fn roundtrip() {
         assert(source::form_count(heap, map) == 2 && source::form_count(heap, map2) == 2 && source::form_get(heap, map, b, source::nil()).id() == old.id() && source::form_get(heap, map2, a, source::nil()).id() == append.id());
         let constructed = source::form_construct(heap, 7, [a, old, b, append]); let set = source::form_construct(heap, 8, [a, b]);
         assert(source::form_count(heap, constructed) == 1 && source::form_get(heap, constructed, a, source::nil()).id() == append.id());
-        assert(heap.values[heap.nodes[constructed.id()].start].id() == a.id() && source::form_count(heap, set) == 1 && heap.values[heap.nodes[set.id()].start].id() == a.id());
+        assert(source::slot(heap, source::node(heap, constructed.id()).start).id() == a.id() && source::form_count(heap, set) == 1 && source::slot(heap, source::node(heap, set.id()).start).id() == a.id());
         assert(bridge::export_graph(heap, [old, changed, append], output, c));
         // assoc outside [0,count] fails, and the preceding persistent values
         // remain valid after the failure is acknowledged.
@@ -116,7 +116,7 @@ thread_fn primitive_fallback() {
     let argument = source::allocate(heap, source::Node { kind: 11, value: text, origin: 0, source: 0, span_start: 0, span_end: 3 });
     let annotation = source::allocate(heap, source::Node { kind: 11, value: text, origin: 0, source: 0, span_start: 4, span_end: 7 });
     let metadata = source::form_collection(heap, 7, [source::number(1), annotation]);
-    let call = source::form_collection(heap, 5, [source::nil(), argument]); heap.nodes[call.id()].metadata = metadata;
+    let call = source::form_collection(heap, 5, [source::nil(), argument]); source::node_mut(heap, call.id()).metadata = metadata;
     var c = bridge::Control {}; var out = bridge::Graph {}; assert(bridge::export_graph(heap, [text], out, c, call));
     // Bare primitive compatibility starts from arguments, not &form metadata.
     assert(out.nodes[out.roots[0]].span_start == 0 && out.nodes[out.roots[0]].origin == 0);
@@ -138,7 +138,7 @@ thread_fn budgets() {
         assert(!bridge::import_graph(heap, g, untouched, c) && c.error == bridge::Error.Cancelled && untouched.len == 0);
         assert(heap.nodes.len == stable_nodes && heap.units.len == stable_units && heap.values.len == stable_values && heap.source_bytes.len == stable_text);
     }
-    heap.limits.nodes = heap.nodes.len; var c = bridge::Control {}; var untouched: source::Value[>..] = [];
+    heap.limits.nodes = heap.nodes.len - heap.image.nodes; var c = bridge::Control {}; var untouched: source::Value[>..] = [];
     assert(!bridge::import_graph(heap, g, untouched, c) && c.error == bridge::Error.Heap && heap.nodes.len == stable_nodes);
     var exported = bridge::Graph {}; var complete = bridge::Control {}; assert(bridge::export_graph(heap, roots, exported, complete, roots[0]));
     for mode in 5 {
@@ -161,10 +161,10 @@ thread_fn budgets() {
     g.nodes[1].metadata = 6; var bad = bridge::Control {}; assert(!bridge::validate(g, bad) && bad.error == bridge::Error.Malformed); g.nodes[1].metadata = -1;
     g.nodes[4].ns_count = -2; var bad_ns = bridge::Control {}; assert(!bridge::validate(g, bad_ns)); g.nodes[4].ns_count = 3;
     g.children[0] = g.nodes.len; var bad_id = bridge::Control {}; assert(!bridge::validate(g, bad_id));
-    let saved = heap.nodes[roots[0].id()].metadata; heap.nodes[roots[0].id()].metadata = roots[0];
+    let saved = source::node(heap, roots[0].id()).metadata; source::node_mut(heap, roots[0].id()).metadata = roots[0];
     var cycle_control = bridge::Control {}; var cycle_out = bridge::Graph {};
     assert(!bridge::export_graph(heap, roots, cycle_out, cycle_control, roots[0]) && cycle_control.error == bridge::Error.Depth && cycle_out.nodes.len == 0);
-    heap.nodes[roots[0].id()].metadata = saved;
+    source::node_mut(heap, roots[0].id()).metadata = saved;
 }
 fn update_case(heap: source::Heap&, operation: i64, old: source::Value, key: source::Value, value: source::Value) -> source::Value {
     if operation <= 3 { return source::form_assoc(heap, old, if operation == 0 { source::number(0) } else if operation == 1 { source::number(2) } else if operation == 2 { key } else { source::number(8) }, value); }
@@ -183,8 +183,8 @@ thread_fn update_boundary(operation: i64, mode: i64, cost: i64) {
             let equal_key = source::allocate(heap, source::Node { kind: 11, value: source::number(7) });
             let metadata = source::form_collection(heap, 7, []);
             let old = if operation == 2 || operation == 3 { source::form_collection(heap, 7, [key, source::number(1), equal_key, source::number(2)]) } else { source::form_collection(heap, if operation == 4 { 5 } else { 6 }, [key, equal_key]) };
-            heap.nodes[old.id()].metadata = metadata; heap.nodes[old.id()].origin = 17; heap.nodes[old.id()].source = 3; heap.nodes[old.id()].span_start = 11; heap.nodes[old.id()].span_end = 22;
-            let n = heap.nodes[old.id()]; let nodes = heap.nodes.len; let values = heap.values.len; let work = heap.work;
+            source::node_mut(heap, old.id()).metadata = metadata; source::node_mut(heap, old.id()).origin = 17; source::node_mut(heap, old.id()).source = 3; source::node_mut(heap, old.id()).span_start = 11; source::node_mut(heap, old.id()).span_end = 22;
+            let n = source::node(heap, old.id()); let nodes = heap.nodes.len; let values = heap.values.len; let work = heap.work;
             let count: i64 = if operation == 0 { 2 } else if operation == 1 { 3 } else if operation == 2 { 4 } else if operation == 3 { 6 } else if operation == 6 { 1 } else { 3 };
             if mode == 1 { heap.limits.work = work + cost; heap.limits.nodes = nodes + 1; heap.limits.values = values + count; }
             if mode == 2 || mode == 3 { heap.limits.work = work + cost - (mode - 1); }
@@ -194,20 +194,20 @@ thread_fn update_boundary(operation: i64, mode: i64, cost: i64) {
             if mode == 6 { value = source::object(nodes + 100); }
             if mode == 7 {
                 if operation == 6 { return; }
-                heap.values[n.start + n.count - 1] = source::object(nodes);
+                source::set_slot(heap, n.start + n.count - 1, source::object(nodes));
             }
             let result = update_case(heap, operation, old, equal_key, value);
             if mode == 0 || mode == 1 {
                 assert(heap.fault == source::Fault.None && heap.nodes.len == nodes + 1 && heap.values.len == values + count);
                 if mode == 0 { assert(qput(Cost { work: heap.work - work })); }
-                let updated = heap.nodes[result.id()]; assert(updated.start == values && updated.count == count && updated.origin == -1);
+                let updated = source::node(heap, result.id()); assert(updated.start == values && updated.count == count && updated.origin == -1);
                 if operation != 6 { assert(updated.metadata.id() == metadata.id() && updated.source == 3 && updated.span_start == 11 && updated.span_end == 22); }
-                assert(heap.nodes[old.id()].start == n.start && heap.nodes[old.id()].origin == 17 && heap.values[n.start].id() == key.id());
-                if operation == 0 { assert(heap.values[updated.start].id() == key.id() && heap.values[updated.start + 1].id() == equal_key.id()); }
-                if operation == 1 || operation == 5 { assert(heap.values[updated.start + 2].id() == key.id() && heap.values[updated.start + 1].id() == equal_key.id()); }
-                if operation == 2 { assert(heap.values[updated.start].id() == key.id() && heap.values[updated.start + 1].id() == key.id() && heap.values[updated.start + 2].id() == equal_key.id() && heap.values[updated.start + 3].num() == 2); }
-                if operation == 3 { assert(heap.values[updated.start + 4].num() == 8 && heap.values[updated.start + 5].id() == key.id()); }
-                if operation == 4 { assert(heap.values[updated.start].id() == key.id() && heap.values[updated.start + 1].id() == key.id() && heap.values[updated.start + 2].id() == equal_key.id()); }
+                assert(source::node(heap, old.id()).start == n.start && source::node(heap, old.id()).origin == 17 && source::slot(heap, n.start).id() == key.id());
+                if operation == 0 { assert(source::slot(heap, updated.start).id() == key.id() && source::slot(heap, updated.start + 1).id() == equal_key.id()); }
+                if operation == 1 || operation == 5 { assert(source::slot(heap, updated.start + 2).id() == key.id() && source::slot(heap, updated.start + 1).id() == equal_key.id()); }
+                if operation == 2 { assert(source::slot(heap, updated.start).id() == key.id() && source::slot(heap, updated.start + 1).id() == key.id() && source::slot(heap, updated.start + 2).id() == equal_key.id() && source::slot(heap, updated.start + 3).num() == 2); }
+                if operation == 3 { assert(source::slot(heap, updated.start + 4).num() == 8 && source::slot(heap, updated.start + 5).id() == key.id()); }
+                if operation == 4 { assert(source::slot(heap, updated.start).id() == key.id() && source::slot(heap, updated.start + 1).id() == key.id() && source::slot(heap, updated.start + 2).id() == equal_key.id()); }
             } else {
                 assert(heap.nodes.len == nodes && heap.values.len == values);
                 assert(heap.fault == (if mode == 2 || mode == 3 { source::Fault.WorkLimit } else if mode == 4 || mode == 5 { source::Fault.MemoryLimit } else { source::Fault.StaleID }));
@@ -221,7 +221,7 @@ thread_fn replaced_child() {
     defer { heap_program::finish(); }
     var code = source::Code {}; code_init(code);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
-    let old = source::form_collection(heap, 6, [source::number(1)]); heap.values[heap.nodes[old.id()].start] = source::object(heap.nodes.len);
+    let old = source::form_collection(heap, 6, [source::number(1)]); source::set_slot(heap, source::node(heap, old.id()).start, source::object(heap.nodes.len));
     let fixed = source::form_assoc(heap, old, source::number(0), source::number(2)); assert(heap.fault == source::Fault.None && source::form_nth(heap, fixed, 0).num() == 2);
 }
 fn direct_update_boundaries() {
@@ -298,7 +298,7 @@ thread_fn adversarial_forms() {
     defer { heap_program::finish(); }
     // db6f7f07:tests/parser.rs's independent breadth/depth/decoded-text
     // budgets, translated to owned GFB1 graphs rather than another parser.
-    var g = bridge::Graph {}; g.bytes.append("é😀"); g.sources.push(source::SourceRange { start: 0, count: g.bytes.len });
+    var g = bridge::Graph {}; g.bytes.append("é😀"); g.sources.push(source::SourceRange { start: 0, count: g.bytes.len as u32 });
     g.units.append([233 as u16, 55357, 56832, 55296]);
     g.nodes.push(bridge::Form { tag: 3, count: 4, source: 0, span_start: 0, span_end: g.bytes.len }); g.roots.push(0);
     var complete = bridge::Control {}; var bytes: u8[>..] = []; assert(bridge::encode(g, bytes, complete));

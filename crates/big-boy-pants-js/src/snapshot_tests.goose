@@ -94,15 +94,15 @@ thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
         match mode {
             0 => { bad.header.version = 1; }, 1 => { bad.header.allocator = 0; }, 2 => { bad.header.ends[6] -= 1; },
             3 => { bad.header.base = 0; }, 4 => { bad.bindings[0].generation = 0; }, 5 => { bad.bindings[1].id = bad.bindings[0].id; },
-            6 => { bad.values[0] = source::object(bad.nodes.len); }, 7 => { bad.nodes[bad.bindings[4].value.id()].function = bad.functions.len; },
+            6 => { bad.values[0] = source::object(bad.nodes.len); }, 7 => { bad.nodes[bad.bindings[4].value.id()].function = bad.functions.len as u32; },
             8 => { bad.nodes[bad.header.global.id()].key_count = bad.nodes[bad.header.global.id()].key_capacity + 1; }, 9 => { bad.properties[0].value = source::object(bad.nodes.len); },
             10 => { bad.nodes[bad.bindings[7].value.id()].count = 9999999; }, 11 => { bad.sources[0].count = 9999999; },
-            12 => { bad.header.work = bad.header.limits.work + 1; }, 13 => { bad.children[0] = bad.functions.len; },
+            12 => { bad.header.work = bad.header.limits.work + 1; }, 13 => { bad.children[0] = bad.functions.len as u32; },
             14 => { bad.ops[0].depth = 1; }, 15 => { bad.nodes[0].kind = 13; }, 16 => { bad.header.ends[13] += 1; },
             17 => { bad.header.base = 2147483648; },
-            18 => { bad.code_bytes[0] = 255; }, 19 => { bad.nodes[bad.bindings[7].value.id()].span_start = -9223372036854775807; bad.nodes[bad.bindings[7].value.id()].source = 0; },
+            18 => { bad.code_bytes[0] = 255; }, 19 => { bad.nodes[bad.bindings[7].value.id()].span_start = 4294967295; bad.nodes[bad.bindings[7].value.id()].source = 0; },
             20 => { bad.ops[0].arg = 9223372036854775807; }, 21 => { bad.values[0] = source::Value.Symbol { s: 0 }; }, 22 => { bad.header.checkpoint = 0; },
-            23 => { bad.header.limits.nodes = -1; }, 24 => { bad.nodes[0].metadata = bad.bindings[5].value; }, 25 => { bad.nodes[bad.header.global.id()].keys = 9223372036854775807; },
+            23 => { bad.header.limits.nodes = -1; }, 24 => { bad.nodes[0].metadata = bad.bindings[5].value; }, 25 => { bad.nodes[bad.header.global.id()].keys = 4294967295; },
             26 => { bad.header.call_method = source::object(bad.nodes.len); }, 27 => { bad.header.call_method = bad.header.global; },
             // Key runs are exclusive over their whole capacity: another node
             // claiming the global's run, even only its spare rows, is refused.
@@ -313,14 +313,14 @@ thread_fn finite_map_parent() {
     assert(captured >= 0);
     var captures: source::Value[>..] = []; captures.resize(code.functions[captured].captures, source::number(99));
     let callback = source::closure(heap, captured, captures);
-    let alias = source::allocate(heap, heap.nodes[callback.id()]);
+    let alias = source::allocate(heap, source::node(heap, callback.id()));
     let other = source::native_value(heap, 17, [source::builtin(heap, 1), input]);
     // These immutable views overlap legitimately, on both sides of memo nodes.
     let later_tail = source::form_sequence(heap, input, 1, false);
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: mapped }, snapshot::Binding { id: 1, generation: 1, value: mapped }], c);
     assert(c.error == snapshot::Error.None);
     assert(qput(FiniteMap { image: copy(saved), input: input, tail: tail, mapped: mapped, callback: callback, alias: alias, other: other, later_tail: later_tail }));
-    assert(heap.nodes[mapped.id()].kind == 15 && heap.nodes[mapped.id()].length == 0);
+    assert(source::node(heap, mapped.id()).kind == 15 && source::node(heap, mapped.id()).length == 0);
     // The scratch bitmap and aliased-range scans obey their own byte/work cuts.
     var tight_bytes = snapshot::Control { bytes: snapshot::footprint(saved) + saved.values.len - 1 };
     assert(!snapshot::memo_ranges(saved, tight_bytes) && tight_bytes.error == snapshot::Error.Bytes && tight_bytes.validation_peak == 0);
@@ -360,7 +360,7 @@ thread_fn finite_map_malformed(parent: FiniteMap, mode: i64) {
     {
         var bad = copy(saved);
         if mode == 0 { bad.nodes[mapped.id()].length = 3; }
-        if mode == 1 { bad.nodes[mapped.id()].start = bad.values.len; }
+        if mode == 1 { bad.nodes[mapped.id()].start = bad.values.len as u32; }
         if mode == 2 { bad.nodes[mapped.id()].namespace_value = mapped; }
         if mode == 3 { bad.nodes[mapped.id()].namespace_value = source::object(bad.nodes.len); }
         if mode == 4 { bad.nodes[mapped.id()].start = bad.nodes[input.id()].start; }
@@ -406,13 +406,13 @@ thread_fn assembly_parent() {
     let grown = source::allocate(heap, source::Node { kind: 1 }); let sparse = source::allocate(heap, source::Node { kind: 1 });
     assert(source::put(heap, grown, source::key(heap, source::number(1)), a) && source::put(heap, grown, source::key(heap, source::number(6)), b));
     assert(source::put(heap, sparse, source::key(heap, source::number(2)), a) && source::put(heap, sparse, source::key(heap, source::number(100000)), b));
-    assert(heap.nodes[sparse.id()].initialized && !heap.nodes[grown.id()].initialized && heap.nodes[grown.id()].count == 8);
+    assert(source::node(heap, sparse.id()).initialized && !source::node(heap, grown.id()).initialized && source::node(heap, grown.id()).count == 8);
     { var check = snapshot::Control {}; let image = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: grown }], check); assert(check.error == snapshot::Error.None && image.nodes.len == heap.nodes.len); }
     let roots = [snapshot::Binding { id: 0, generation: 1, value: array }, snapshot::Binding { id: 1, generation: 1, value: array }, snapshot::Binding { id: 2, generation: 1, value: joined }];
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, roots, c); assert(c.error == snapshot::Error.None);
     assert(qput(Assembly { image: copy(saved), a: a }));
-    assert(heap.nodes[array.id()].length == 1 && source::get(heap, array, source::key(heap, source::number(2))).tag() == 0);
-    var bad = copy(saved); bad.nodes[array.id()].length = bad.header.limits.values + 1;
+    assert(source::node(heap, array.id()).length == 1 && source::get(heap, array, source::key(heap, source::number(2))).tag() == 0);
+    var bad = copy(saved); bad.nodes[array.id()].length = (bad.header.limits.values + 1) as u32;
     var control = snapshot::Control {}; assert(!snapshot::validate(bad, control) && control.error == snapshot::Error.Allocator);
 }
 thread_fn assembly_restore(parent: Assembly, i: i64) {
@@ -452,12 +452,12 @@ thread_fn argument_parent() {
     let object = source::allocate(heap, source::Node { kind: 0 }); assert(source::install_field(heap, object, "n", source::number(7)));
     let maker = source::closure(heap, keeper, []);
     let getter = snapshot_test::invoke(heap, maker, [object, object]);
-    let arguments = snapshot_test::invoke(heap, getter, []); assert(heap.nodes[arguments.id()].kind == 14);
+    let arguments = snapshot_test::invoke(heap, getter, []); assert(source::node(heap, arguments.id()).kind == 14);
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: getter }, snapshot::Binding { id: 1, generation: 1, value: arguments }, snapshot::Binding { id: 2, generation: 1, value: object }], c); assert(c.error == snapshot::Error.None);
     assert(source::install_field(heap, object, "n", source::number(99)));
     snapshot_test::invoke(heap, maker, [source::number(123)]);
     assert(qput(Saved { image: copy(saved) }));
-    var bad = copy(saved); bad.nodes[arguments.id()].start = bad.values.len + 1;
+    var bad = copy(saved); bad.nodes[arguments.id()].start = (bad.values.len + 1) as u32;
     var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
 }
 thread_fn argument_restore(saved: snapshot::Snapshot, n: i64) {
@@ -483,7 +483,7 @@ fn source_spans() {
 thread_fn source_span_target(saved: snapshot::Snapshot, id: i64, offset: i64, end: bool) {
     defer { heap_program::finish(); }
     {
-        var bad = copy(saved); if end { bad.nodes[id].span_end = offset; } else { bad.nodes[id].span_start = offset; }
+        var bad = copy(saved); if end { bad.nodes[id].span_end = offset as u32; } else { bad.nodes[id].span_start = offset as u32; }
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
         assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), check) && check.error == snapshot::Error.Link && roots.len == 0 && target.nodes.len == 0 && !dest.valid);
         var valid = snapshot::Control {}; assert(snapshot::validate(saved, valid));
@@ -576,7 +576,7 @@ thread_fn callable_mode(base: snapshot::Snapshot, original: callable::Publicatio
             3 => { bad.image.nodes[cell.id()].immutable = false; },
             4 => { bad.image.nodes[cell.id()].kind = 0; },
             5 => { bad.image.values[bad.image.nodes[forms.id()].start] = bad.image.bindings[0].value; }, // form cycle
-            6 => { bad.image.nodes[function.id()].function = bad.image.functions.len; },
+            6 => { bad.image.nodes[function.id()].function = bad.image.functions.len as u32; },
             7 => { bad.image.nodes[rt_cell.id()].value = bad.image.header.global; },
             8 => { bad.image.units[0] = 255; },
             9 => { bad.image.nodes[two.id()].span_start = 4; },

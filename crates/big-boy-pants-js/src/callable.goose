@@ -16,7 +16,7 @@ fn same(a: source::Node, b: source::Node) -> bool {
     return a.kind == b.kind && a.function == b.function && a.start == b.start && a.count == b.count && a.keys == b.keys && a.key_count == b.key_count && a.key_capacity == b.key_capacity && a.length == b.length && a.initialized == b.initialized && a.immutable == b.immutable
         && same(a.value, b.value) && same(a.namespace_value, b.namespace_value) && same(a.metadata, b.metadata) && a.origin == b.origin && a.source == b.source && a.span_start == b.span_start && a.span_end == b.span_end;
 }
-fn code_prefix(p: const Publication&, bytes: const u8[:], functions: const source::Function[:], constants: const source::Value[:], children: const i64[:], ops: const source::Op[:], units: const u16[:], strings: const source::Str[:], c: snapshot::Control&) -> bool {
+fn code_prefix(p: const Publication&, bytes: const u8[:], functions: const source::Function[:], constants: const source::Value[:], children: const u32[:], ops: const source::Op[:], units: const u16[:], strings: const source::Str[:], c: snapshot::Control&) -> bool {
     let s .= p.image; let e = p.base.ends;
     let lengths:     i64[6] = [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len];
     let destination: i64[6] = [bytes.len, functions.len, constants.len, children.len, ops.len, units.len];
@@ -139,32 +139,33 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     let lengths: i64[6] = [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len];
     for i in 6 { if lengths[i] + delta[i] > 8388608 { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; } }
     var count: i64 = 0; for id in slots { if snapshot::has_values(s.nodes[id].kind) { count += s.nodes[id].count; } }
-    if slots.len > heap.limits.nodes - heap.nodes.len || count > heap.limits.values - heap.values.len || s.units.len > heap.limits.units - heap.units.len || s.strings.len > heap.limits.units - heap.strings.len || s.code_constants.len - e[2] > heap.limits.values - heap.constants.len || s.bytes.len > 8388608 - heap.source_bytes.len || s.sources.len > 1048576 - heap.source_ranges.len || s.functions.len + delta[1] > 65536 || s.code_bytes.len + delta[0] > 8388608 { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; }
+    if !source::nodes_fit(heap, slots.len) || !source::values_fit(heap, count) || s.units.len > heap.limits.units - (heap.units.len - heap.image.units) || s.strings.len > heap.limits.units - (heap.strings.len - heap.image.strings) || s.code_constants.len - e[2] > heap.limits.values - heap.constants.len || s.bytes.len > 8388608 - heap.source_bytes.len || s.sources.len > 1048576 - heap.source_ranges.len || s.functions.len + delta[1] > 65536 || s.code_bytes.len + delta[0] > 8388608 { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; }
     // Cover existing destination + full decoded image + staging/mapping work.
     let empty: snapshot::Binding[] = []; let view = snapshot::borrow(heap, empty, expected.checkpoint);
     let cost = snapshot::footprint(view) + 2 * snapshot::footprint(s) + bytes_of(ids).len + bytes_of(slots).len;
     if cost > c.bytes || !snapshot::poll(c, snapshot::payload_bytes(s) + count + slots.len) { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; }
-    let units = heap.units.len; let sources = heap.source_ranges.len; let bytes = heap.source_bytes.len;
+    let sources = heap.source_ranges.len;
     // Commit only after complete code/graph/context validation and all budgets.
-    for f in s.functions[e[1]..] { var n = f; n.start += delta[4]; n.constants += delta[2]; n.children += delta[3]; code.functions.push(n); }
+    for f in s.functions[e[1]..] { var n = f; n.start += delta[4] as u32; n.constants += delta[2] as u32; n.children += delta[3] as u32; code.functions.push(n); }
     for op in s.ops[e[4]..] { var n = op; n.start += delta[0]; n.end += delta[0]; if source::branches(n.code) { n.arg += delta[4]; } code.ops.push(n); }
     let code_strings = code.strings.len - e[14];
-    for r in s.code_strings[e[14]..] { code.strings.push(source::Str { start: r.start + delta[5], len: r.len }); }
+    for r in s.code_strings[e[14]..] { code.strings.push(source::Str { start: r.start + delta[5] as u32, len: r.len }); }
     for v in s.code_constants[e[2]..] { code.constants.push(if v.tag() == 4 { source::Value.String { s: (v.sid() + code_strings) as u32 } } else { v }); }
-    for id in s.children[e[3]..] { code.children.push(shifted(id, e[1], delta[1])); }
+    for id in s.children[e[3]..] { code.children.push(shifted(id, e[1], delta[1]) as u32); }
     code.units.append(s.code_units[e[5]..]); code.source_bytes.append(s.code_bytes[e[0]..]); source::decode(code);
     // Constants carry heap strings, not offsets into the separate Code owner.
     // The base prefix of strings is shared (checked in graph); the rest follow.
     let strings = heap.strings.len - expected.ends[15];
-    for r in s.strings[expected.ends[15]..] { heap.strings.push(source::Str { start: r.start + units, len: r.len }); }
-    for v in s.constants[e[2]..] { heap.constants.push(relocated(v, ids, expected.ends[15], strings)); }
-    heap.units.append(s.units); heap.source_bytes.append(s.bytes);
-    for r in s.sources { heap.source_ranges.push(source::SourceRange { start: bytes + r.start, count: r.count }); }
+    // The preflight above reserved every row, so no allocation below fails.
+    let units = source::add_units(heap, s.units); let bytes = source::add_source_bytes(heap, s.bytes);
+    for r in s.strings[expected.ends[15]..] { source::string_ref(heap, r.start + units, r.len); }
+    for v in s.constants[e[2]..] { source::add_constants(heap, [relocated(v, ids, expected.ends[15], strings)]); }
+    for r in s.sources { source::add_source_range(heap, source::SourceRange { start: (bytes + r.start) as u32, count: r.count }); }
     for id in slots {
         var n = s.nodes[id]; n.value = relocated(n.value, ids, expected.ends[15], strings); n.namespace_value = relocated(n.namespace_value, ids, expected.ends[15], strings); n.metadata = relocated(n.metadata, ids, expected.ends[15], strings);
-        if n.kind == 2 { n.function = shifted(n.function, e[1], delta[1]); }
-        if snapshot::has_values(n.kind) { n.start = heap.values.len; for v in s.values[s.nodes[id].start..(s.nodes[id].start + n.count)] { heap.values.push(relocated(v, ids, expected.ends[15], strings)); } }
-        if n.source >= 0 { n.source += sources; } heap.nodes.push(n);
+        if n.kind == 2 { n.function = shifted(n.function, e[1], delta[1]) as u32; }
+        if snapshot::has_values(n.kind) { n.start = heap.values.len as u32; for v in s.values[s.nodes[id].start..(s.nodes[id].start + n.count)] { source::add_values(heap, [relocated(v, ids, expected.ends[15], strings)]); } }
+        if n.source != source::no_row() { n.source += sources as u32; } source::add_nodes(heap, [n]);
     }
     c.copied_bytes += snapshot::payload_bytes(s); return relocated(s.bindings[0].value, ids, expected.ends[15], strings);
 }

@@ -16,7 +16,7 @@ struct Census {
 }
 fn mark(heap: const source::Heap&, v: source::Value, nodes: bool[>..]&, units: bool[>..]&, work: i64[>..<]&) {
     if v.tag() == 5 && v.id() < nodes.len && !nodes[v.id()] { nodes[v.id()] = true; work.push(v.id()); }
-    if v.tag() == 4 && v.sid() < heap.strings.len { let r = heap.strings[v.sid()]; if r.len > 0 && r.start >= 0 && r.len <= units.len - r.start { for i in r.start..(r.start + r.len) { units[i] = true; } } }
+    if v.tag() == 4 && v.sid() < heap.strings.len { let r = heap.strings[v.sid()]; if r.len > 0 && r.len <= units.len - r.start { for i in r.start..(r.start + r.len) { units[i] = true; } } }
 }
 fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
     var nodes:      bool[>..] = []; nodes.resize(heap.nodes.len, false);
@@ -28,13 +28,13 @@ fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
     for v in heap.constants { mark(heap, v, nodes, units, work); }
     mark(heap, heap.global, nodes, units, work); mark(heap, heap.call_method, nodes, units, work);
     while work.len > 0 {
-        let n = heap.nodes[work.pop()];
+        let n = source::node(heap, work.pop());
         mark(heap, n.value, nodes, units, work); mark(heap, n.namespace_value, nodes, units, work); mark(heap, n.metadata, nodes, units, work);
         if snapshot::has_values(n.kind) {
-            for slot in n.start..(n.start + n.count) { if slot >= 0 && slot < values.len { values[slot] = true; mark(heap, heap.values[slot], nodes, units, work); } }
+            for row in n.start..(n.start + n.count) { if row < values.len { values[row] = true; mark(heap, source::slot(heap, row), nodes, units, work); } }
         }
-        for p in n.keys..min(n.keys + n.key_count, properties.len) {
-            properties[p] = true; let record = heap.properties[p];
+        for p in n.keys..min((n.keys + n.key_count) as i64, properties.len) {
+            properties[p] = true; let record = source::property_row(heap, p);
             mark(heap, record.key, nodes, units, work); mark(heap, record.value, nodes, units, work);
         }
     }

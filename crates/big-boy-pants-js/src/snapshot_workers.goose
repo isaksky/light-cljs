@@ -9,11 +9,12 @@ import .vm;
 // threads, no nested workers and no worker-addressed queue assumptions.
 struct Report { id: i64, error: snapshot::Error, fault: source::Fault, copied: i64, restore_ns: i64, heap_bytes: i64, nodes: i64, work: i64, checksum: i64, boot: i64, initializers: i64, producers: i64 }
 struct Request { id: i64, identity: i64, exhaust: bool = false }
+// Table limits count the rows the worker adds above the restored image.
 fn cap(heap: source::Heap&, s: const snapshot::Snapshot&, exhaust: bool) {
-    heap.limits.nodes = min(heap.limits.nodes, s.nodes.len + (if exhaust { 0 } else { 512 }));
-    heap.limits.values = min(heap.limits.values, s.values.len + 4096);
-    heap.limits.properties = min(heap.limits.properties, s.properties.len + 128);
-    heap.limits.units = min(heap.limits.units, s.units.len + 256);
+    heap.limits.nodes = min(heap.limits.nodes, if exhaust { 0 } else { 512 });
+    heap.limits.values = min(heap.limits.values, 4096);
+    heap.limits.properties = min(heap.limits.properties, 128);
+    heap.limits.units = min(heap.limits.units, 256);
     heap.limits.work = min(heap.limits.work, heap.work + 100000);
 }
 fn heap_ceiling(s: const snapshot::Snapshot&) -> i64 {

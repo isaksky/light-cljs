@@ -116,7 +116,7 @@ fn decode(out: Graph&, bytes: const u8[:], c: Control&) -> bool {
     }
     for i in children { if !poll(c) { return false; } g.children.push(word(bytes, at)); at += 4; }
     for i in units { if !poll(c) { return false; } let u, ok = binary::read_u16le(bytes, at); assert(ok); g.units.push(u); at += 2; }
-    for i in sources { if !poll(c) { return false; } g.sources.push(source::SourceRange { start: word(bytes, at), count: word(bytes, at + 4) }); at += 8; }
+    for i in sources { if !poll(c) { return false; } g.sources.push(source::SourceRange { start: word(bytes, at) as u32, count: word(bytes, at + 4) as u32 }); at += 8; }
     for i in text { if !poll(c) { return false; } g.bytes.push(bytes[at]); at += 1; }
     for i in roots { if !poll(c) { return false; } g.roots.push(word(bytes, at)); at += 4; }
     if !validate(g, c) { return false; } append_graph(out, g); return true;
@@ -137,27 +137,31 @@ fn encode(g: const Graph&, out: u8[>..]&, c: Control&) -> bool {
     bytes.append(g.bytes); for id in g.roots { put_word(bytes, id); }
     out.append(bytes); return true;
 }
+// A VM node's provenance row as a graph source: -1 when it has none.
+fn graph_source(row: u32) -> i64 { return if row == source::no_row() { -1 } else { row }; }
 fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&, c: Control&) -> bool {
     if !validate(g, c) { return false; }
     let work = g.nodes.len + g.children.len + g.units.len + g.bytes.len + g.sources.len + g.roots.len;
     // Final cancellation and capacity checks precede any session installation.
     if !poll(c, work) { return false; }
-    if g.nodes.len > heap.limits.nodes - heap.nodes.len || g.children.len > heap.limits.values - heap.values.len || g.units.len > heap.limits.units - heap.units.len || 2 * g.nodes.len > heap.limits.units - heap.strings.len || g.bytes.len > c.bytes - heap.source_bytes.len { return reject(c, Error.Heap); }
+    if !source::nodes_fit(heap, g.nodes.len) || !source::values_fit(heap, g.children.len) || g.units.len > heap.limits.units - (heap.units.len - heap.image.units) || 2 * g.nodes.len > heap.limits.units - (heap.strings.len - heap.image.strings) || g.bytes.len > c.bytes - heap.source_bytes.len { return reject(c, Error.Heap); }
     if !source::charge(heap, work) { heap.fault = source::Fault.None; return reject(c, Error.Heap); }
-    let base = heap.nodes.len; let children = heap.values.len; let units = heap.units.len; let sources = heap.source_ranges.len; let bytes = heap.source_bytes.len;
-    heap.units.append(g.units); heap.source_bytes.append(g.bytes);
-    for s in g.sources { heap.source_ranges.push(source::SourceRange { start: bytes + s.start, count: s.count }); }
-    for n in g.nodes { heap.nodes.push(source::Node { kind: 11 }); }
-    for id in g.children { heap.values.push(source::object(base + id)); }
+    // The preflight above reserved every row, so no allocation below fails.
+    let sources = heap.source_ranges.len;
+    let units = source::add_units(heap, g.units); let bytes = source::add_source_bytes(heap, g.bytes);
+    for s in g.sources { source::add_source_range(heap, source::SourceRange { start: (bytes + s.start) as u32, count: s.count }); }
+    let base = source::add_nodes(heap, [], g.nodes.len, source::Node { kind: 11 });
+    var links: source::Value[>..] = []; for id in g.children { links.push(source::object(base + id)); }
+    let children = source::add_values(heap, links);
     for n, i in g.nodes {
-        var node = source::Node { kind: 11, origin: n.origin, source: if n.source < 0 { -1 } else { sources + n.source }, span_start: n.span_start, span_end: n.span_end };
+        var node = source::Node { kind: 11, origin: n.origin, source: if n.source < 0 { source::no_row() } else { (sources + n.source) as u32 }, span_start: n.span_start as u32, span_end: n.span_end as u32 };
         if n.metadata >= 0 { node.metadata = source::object(base + n.metadata); }
-        if n.tag >= 6 { node.kind = n.tag - 1; node.start = children + n.start; node.count = n.count; }
+        if n.tag >= 6 { node.kind = n.tag - 1; node.start = (children + n.start) as u32; node.count = n.count as u32; }
         else if n.tag == 4 || n.tag == 5 {
             node.kind = n.tag + 5; node.value = source::string_ref(heap, units + n.start, n.count);
             if n.ns_count >= 0 { node.namespace_value = source::string_ref(heap, units + n.ns_start, n.ns_count); }
         } else { node.value = if n.tag == 0 { source::nil() } else if n.tag == 1 { source::boolean(n.number != 0) } else if n.tag == 2 { source::number(n.number) } else { source::string_ref(heap, units + n.start, n.count) }; }
-        heap.nodes[base + i] = node;
+        source::set_node(heap, base + i, node);
     }
     for id in g.roots { roots.push(source::object(base + id)); }
     return true;
@@ -185,7 +189,7 @@ fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&,
         if retained.depth > c.depth { return reject(c, Error.Depth); }
         if !source::valid(heap, v) { heap.fault = source::Fault.None; return reject(c, Error.Heap); }
         if v.tag() != 5 { continue; }
-        let n = heap.nodes[v.id()];
+        let n = source::node(heap, v.id());
         if n.kind == 11 && n.value.tag() == 4 { retained_bytes += source::str_len(heap, n.value) * 2; }
         if n.kind == 9 || n.kind == 10 { retained_bytes += source::str_len(heap, n.value) * 2 + source::str_len(heap, n.namespace_value) * 2; }
         if n.kind >= 5 && n.kind <= 8 || n.kind == 12 { retained_bytes += n.count * 4; }
@@ -194,7 +198,7 @@ fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&,
         if n.metadata.tag() != 0 { pending.push(Retain { value: n.metadata, depth: retained.depth + 1, argument: retained.argument }); }
         if n.kind >= 5 && n.kind <= 8 || n.kind == 12 {
             if !range(n.start, n.count, heap.values.len) || !poll(c, n.count) { return reject(c); }
-            for i in n.count { let at = n.count - i - 1; pending.push(Retain { value: heap.values[n.start + at], depth: retained.depth + 1, argument: retained.argument || retained.depth == 1 && at >= 1 }); }
+            for i in n.count { let at = n.count - i - 1; pending.push(Retain { value: source::slot(heap, n.start + at), depth: retained.depth + 1, argument: retained.argument || retained.depth == 1 && at >= 1 }); }
         }
     }
     for v in roots { g.roots.push(-1); }
@@ -211,11 +215,11 @@ fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&,
             if g.nodes.len >= c.nodes { return reject(c, Error.Nodes); }
             id = g.nodes.len; if v.tag() == 5 { ids[v.id()] = id; }
             var n = Form {}; var node = source::Node { kind: 11, value: v };
-            if v.tag() == 5 { node = heap.nodes[v.id()]; }
+            if v.tag() == 5 { node = source::node(heap, v.id()); }
             else {
                 for original in origins {
                     if !poll(c) { return false; }
-                    let candidate = heap.nodes[original.id()]; let x = candidate.value;
+                    let candidate = source::node(heap, original.id()); let x = candidate.value;
                     let same = scalar_equal(heap, x, v, c);
                     if c.error != Error.None { return false; }
                     if same { node = candidate; }
@@ -226,7 +230,7 @@ fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&,
                 n.tag = if node.kind == 12 { 6 } else { node.kind + 1 }; n.start = g.children.len; n.count = node.count;
                 if !poll(c, node.count) { return false; }
                 if !range(node.start, node.count, heap.values.len) { return reject(c); }
-                for i in node.count { let field = g.children.len; g.children.push(-1); queue.push(Edge { value: heap.values[node.start + i], parent: id, field: field }); }
+                for i in node.count { let field = g.children.len; g.children.push(-1); queue.push(Edge { value: source::slot(heap, node.start + i), parent: id, field: field }); }
             } else {
                 if node.kind == 9 || node.kind == 10 { n.tag = node.kind - 5; x = node.value; }
                 else { n.tag = if x.tag() == 1 { 0 } else if x.tag() == 2 { 1 } else if x.tag() == 3 { 2 } else if x.tag() == 4 { 3 } else { -1 }; }
@@ -235,8 +239,8 @@ fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&,
                 if x.tag() == 4 { let units = source::chars(heap, x); if !poll(c, units.len) { return false; } n.start = g.units.len; n.count = units.len; g.units.append(units); }
                 if n.tag == 4 || n.tag == 5 { let ns = node.namespace_value; if ns.tag() == 4 { if !source::valid(heap, ns) || !poll(c, source::str_len(heap, ns)) { return reject(c); } let units = source::chars(heap, ns); n.ns_start = g.units.len; n.ns_count = units.len; g.units.append(units); } }
             }
-            n.origin = node.origin; n.source = node.source; n.span_start = node.span_start; n.span_end = node.span_end;
-            if n.origin == -1 && call.tag() == 5 && source::valid(heap, call) { let context = heap.nodes[call.id()]; n.source = context.source; n.span_start = context.span_start; n.span_end = context.span_end; }
+            n.origin = node.origin; n.source = graph_source(node.source); n.span_start = node.span_start; n.span_end = node.span_end;
+            if n.origin == -1 && call.tag() == 5 && source::valid(heap, call) { let context = source::node(heap, call.id()); n.source = graph_source(context.source); n.span_start = context.span_start; n.span_end = context.span_end; }
             g.nodes.push(n);
             if node.metadata.tag() != 0 { queue.push(Edge { value: node.metadata, parent: id, field: -1 }); }
             if footprint(g) > c.bytes { return reject(c, Error.Bytes); }
