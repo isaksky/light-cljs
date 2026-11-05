@@ -142,7 +142,7 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     for op in s.ops[e[4]..] { var n = op; n.start += delta[0]; n.end += delta[0]; if source::branches(n.code) { n.arg += delta[4]; } code.ops.push(n); }
     for v in s.code_constants[e[2]..] { var n = v; if n.tag == 4 { n.a += delta[5]; } code.constants.push(n); }
     for id in s.children[e[3]..] { code.children.push(shifted(id, e[1], delta[1])); }
-    code.units.append(s.code_units[e[5]..]); code.source_bytes.append(s.code_bytes[e[0]..]);
+    code.units.append(s.code_units[e[5]..]); code.source_bytes.append(s.code_bytes[e[0]..]); source::decode(code);
     // Constants carry heap strings, not offsets into the separate Code owner.
     for v in s.constants[e[2]..] { heap.constants.push(relocated(v, ids, units, heap.identity)); }
     heap.units.append(s.units); heap.source_bytes.append(s.bytes);

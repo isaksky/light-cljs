@@ -87,7 +87,7 @@ fn live_boundary() {
     // our checkpoint boundary explicitly refuses to copy any live Job.
     var code = source::Code {};
     code.functions.push(source::Function { start: 0, count: 4, constants: 0, children: 0, params: 0, locals: 1, captures: 0, strict: true });
-    for op, i in [16, 4, 3, 15] { code.ops.push(source::Op { code: op, arg: 0, offset: [0, 1, 4, 7][i], start: 0, end: 0, depth: [0, 1, 0, 1][i] }); } code.valid = true;
+    for op, i in [16, 4, 3, 15] { code.ops.push(source::Op { code: op, arg: 0, offset: [0, 1, 4, 7][i], start: 0, end: 0, depth: [0, 1, 0, 1][i] }); } source::decode(code); code.valid = true;
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); let entry = source::closure(heap, 0, []);
     var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
     assert(source::claim(job) && !source::retire(job) && job.registered && heap.live_jobs == 1);

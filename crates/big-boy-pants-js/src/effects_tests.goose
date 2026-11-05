@@ -127,7 +127,7 @@ fn caught_errors() {
         var code = source::Code {}; code.constants.push(source::nil());
         code.functions.push(source::Function { start: 0, count: 7, constants: 0, children: 0, params: 0, locals: 1, captures: 0, strict: true });
         var offset: i64 = 0;
-        for op, i in [2, 15, 4, 3, 1, 11, 15] { code.ops.push(source::Op { code: op, arg: 0, offset: offset, start: 0, end: 0, depth: [0, 1, 1, 0, 1, 2, 1][i] }); offset += 1 + (export_descriptor(op) >> 16); } code.valid = true;
+        for op, i in [2, 15, 4, 3, 1, 11, 15] { code.ops.push(source::Op { code: op, arg: 0, offset: offset, start: 0, end: 0, depth: [0, 1, 1, 0, 1, 2, 1][i] }); offset += 1 + (export_descriptor(op) >> 16); } source::decode(code); code.valid = true;
         var heap = source::Heap { code: code }; assert(source::initialize(heap));
         var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
         job.handlers.push(source::Handler { frame: 0, pc: 2, operands: 0, locals: 1 });

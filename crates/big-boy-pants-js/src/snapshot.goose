@@ -261,7 +261,7 @@ fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> b
     if !(heap.code .== code) || heap.live_jobs != 0 { return false; }
     bindings.clear();
     heap.nodes.clear(); heap.values.clear(); heap.properties.clear(); heap.units.clear(); heap.constants.clear(); heap.source_bytes.clear(); heap.source_ranges.clear();
-    code.source_bytes.clear(); code.functions.clear(); code.constants.clear(); code.children.clear(); code.ops.clear(); code.units.clear();
+    code.source_bytes.clear(); code.functions.clear(); code.constants.clear(); code.children.clear(); code.ops.clear(); code.units.clear(); code.ins.clear(); code.effects.clear(); code.decoded = 0;
     code.valid = false; code.error = tiny::LoadError.None; code.error_pc = -1;
     heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value {}; heap.call_method = source::Value {};
     heap.boot_count = 0; heap.initializer_count = 0; heap.producer_count = 0;
@@ -273,7 +273,7 @@ fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, binding
     if identity <= 0 || identity > 2147483647 || identity == s.header.base || identity == s.header.checkpoint { return reject(c, Error.Identity); }
     if !validate(s, c) { return false; }
     // No initialization, producer, publication cache, claim or waiter code.
-    code.source_bytes.append(s.code_bytes); code.functions.append(s.functions); code.constants.append(s.code_constants); code.children.append(s.children); code.ops.append(s.ops); code.units.append(s.code_units); code.valid = true;
+    code.source_bytes.append(s.code_bytes); code.functions.append(s.functions); code.constants.append(s.code_constants); code.children.append(s.children); code.ops.append(s.ops); code.units.append(s.code_units); source::decode(code); code.valid = true;
     heap.identity = identity; heap.limits = s.header.limits; heap.work = s.header.work; heap.global = relocated(s.header.global, identity); heap.call_method = relocated(s.header.call_method, identity);
     heap.boot_count = s.header.boot; heap.initializer_count = s.header.initializers; heap.producer_count = s.header.producers;
     for n in s.nodes { var out = n; out.value = relocated(n.value, identity); out.namespace_value = relocated(n.namespace_value, identity); out.metadata = relocated(n.metadata, identity); heap.nodes.push(out); }
