@@ -208,7 +208,13 @@ root struct Job {
     effects_enabled: bool                       = false, effect_pending: bool = false, effect_kind: i64 = -1,
     helpers_enabled: bool                       = false,
     protected_nodes: i64                        = 0,
-    root_receiver:   Value                      = Value.Undefined,
+    // The job's write boundary (light-cljs-795, decision 3): node rows below
+    // owned_nodes, and the [start, end) node ranges in foreign that
+    // publications installed during the job, are rows the job did not
+    // allocate. A JavaScript-visible write into one faults NativeBoundary
+    // before it mutates; nothing is undone silently by the worker's reset.
+    owned_nodes:   i64   = 0, foreign: u32[>..] = [],
+    root_receiver: Value = Value.Undefined,
     // The compiler generated-name scope gensym numbers in (light-cljs-798):
     // the scope prefix and the next number of its count, 0 outside a scope.
     gensym_prefix: u8[>..]  = [], gensym_next: i64 = 0,
@@ -849,7 +855,7 @@ fn reset(job: Job&) -> bool {
     job.frames.clear(); job.locals.clear(); job.operands.clear(); job.writes.clear(); job.handlers.clear();
     job.status = tiny::Status.Ready; job.result = Value.Undefined; job.fault = Fault.None; job.fault_pc = -1; job.fault_function = -1; job.thrown = false;
     job.steps = 0; job.effects_enabled = false; job.helpers_enabled = false; job.effect_pending = false; job.effect_kind = -1;
-    job.protected_nodes = 0; job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0;
+    job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0;
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
     return true;
 }
@@ -1615,7 +1621,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 SetIndexed => {
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let value = job.operands.pop(); let v = job.operands.pop(); let object = job.operands[job.operands.len - 1]; let i = number_index(v);
-                    if i >= 0 && dense(job, object) { job.operands.pop(); if valid(heap, value) { set_element(heap, object, i, value); } job.operands.push(value); }
+                    if i >= 0 && dense(job, object) && writable(job, object.id()) { job.operands.pop(); if valid(heap, value) { set_element(heap, object, i, value); } job.operands.push(value); }
                     else { let k = key(heap, v); set_property(job, value, k, false); }
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
@@ -1623,7 +1629,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Append => {
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let value = job.operands.pop(); let object = job.operands[job.operands.len - 1];
-                    if dense(job, object) { let end = node(heap, object.id()).length; if valid(heap, value) { set_element(heap, object, end, value); } }
+                    if dense(job, object) && writable(job, object.id()) { let end = node(heap, object.id()).length; if valid(heap, value) { set_element(heap, object, end, value); } }
                     else {
                         let k = if valid(heap, object) && object.tag() == 5 && node(heap, object.id()).kind == 1 { key(heap, number(node(heap, object.id()).length)) } else { heap.fault = Fault.TypeError; Value.Undefined };
                         set_property(job, value, k, true);
@@ -1792,6 +1798,8 @@ fn cell(job: Job&, op: i64) {
     let heap .= job.heap;
     let value = if op == 49 { Value.Undefined } else { job.operands.pop() }; let cell = job.operands.pop();
     if valid(heap, cell) && cell.tag() == 5 && node(heap, cell.id()).kind == 3 {
+        // A closure environment the job did not allocate is read-only.
+        if op != 49 && !writable(job, cell.id()) { heap.fault = Fault.NativeBoundary; return; }
         // The write log keeps no cell writes (light-cljs-801): nothing reads them.
         let row .= node_mut(heap, cell.id());
         if op == 49 || op == 50 {
@@ -1819,6 +1827,20 @@ fn get_property(job: Job&, k: Value) {
         if !found && !optional { heap.fault = Fault.NativeBoundary; } job.operands.push(value);
     } else { let value = get(heap, object, k); job.operands.push(value); }
 }
+// Whether the job allocated node row o (Job.owned_nodes), so JavaScript may
+// write it: not the realm, the restored image or definition, nor a
+// publication installed during the job.
+fn writable(job: const Job&, o: i64) -> bool {
+    if o < job.protected_nodes || o < job.owned_nodes { return false; }
+    var i: i64 = 0;
+    while i + 1 < job.foreign.len { if o >= job.foreign[i] && o < job.foreign[i + 1] { return false; } i += 2; }
+    return true;
+}
+// Mark the node rows a publication installed in this job, from `start` to
+// the table's end, as rows the job did not allocate.
+fn install_foreign(job: Job&, start: i64) {
+    let end = job.heap.nodes.len; if end > start { job.foreign.push(start as u32); job.foreign.push(end as u32); }
+}
 // An unprotected array other than the compiler roots object: element opcodes
 // read and write its run directly, without building key strings.
 fn dense(job: Job&, object: Value) -> bool {
@@ -1830,7 +1852,7 @@ fn dense(job: Job&, object: Value) -> bool {
 fn set_property(job: Job&, value: Value, k: Value, chain: bool) {
     let heap .= job.heap;
     let object = job.operands.pop();
-    if object.tag() == 5 && object.id() < job.protected_nodes { heap.fault = Fault.NativeBoundary; }
+    if object.tag() == 5 && !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; }
     else if put(heap, object, k, value) { record(job, object, k, value); }
     job.operands.push(if chain { object } else { value });
 }

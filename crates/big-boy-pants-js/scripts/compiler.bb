@@ -21,6 +21,6 @@
     (apply p/shell {:dir (str repository)} (concat ["goose" "build" (str (fs/path root "src/readiness_tests.goose"))] mode ["-o" executable]))
     (p/shell executable)
     (apply p/shell {:dir (str repository)} (concat ["goose" "build" (str (fs/path root "src/compiler_session.goose"))] mode ["-o" executable]))
-    (apply p/shell {:dir (str repository) :env (assoc (into {} (System/getenv)) "GOOSE_COMPILER_RUNNER" executable "CARGO_BUILD_JOBS" "3" "LIGHT_CLJS_V8_CACHE" "require")}
+    (apply p/shell {:dir (str repository) :env (assoc (into {} (System/getenv)) "GOOSE_COMPILER_RUNNER" executable "CARGO_BUILD_JOBS" "3" "LIGHT_CLJS_V8_CACHE" "require" "BBP_RESET_CHECK" "1")}
              (concat ["cargo" "test" "--locked"] features ["--lib" "goose_compiler" "--" "--include-ignored" "--nocapture" "--test-threads=1"])))
   (finally (fs/delete-tree temporary)))

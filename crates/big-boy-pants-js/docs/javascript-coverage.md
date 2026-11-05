@@ -393,8 +393,8 @@ requirement from me", November 5, 2026).
    output, as in shadow-cljs. Goose has no such state today: runtime
    `gensym` numbers in the compiler's generated-name scopes
    (light-cljs-798, below), the runtime has no atoms,
-   writes into the realm fault, and writes into a prepared definition's rows
-   vanish when the job ends (`goose_compiler_every_job_runs_in_its_own_worker`).
+   writes into the realm fault, and so, since light-cljs-795, do writes into a
+   prepared definition's rows (`goose_compiler_every_job_runs_in_its_own_worker`).
 2. **Correct output.** Deterministic projects (the 200k project, the
    expanded fixture) still match V8 byte for byte, so a pure job's result,
    steps and limit outcome may not depend on which worker ran it or what ran
@@ -593,6 +593,51 @@ light-cljs-799 builds the cells, light-cljs-798 the runtime `gensym`.
   scope, as V8's native mode does). Cell effects follow scheduling; the
   owner is where effect lanes (light-cljs-480) could order them if that is
   ever required.
+
+**Implemented (light-cljs-795, `src/compiler_session.goose`,
+`src/snapshot.goose`).** Measurements are in
+[the evidence](../evidence/generated-200k-performance.md), section "Reused
+job workers".
+
+- *The image.* light-cljs-785's coordinator-global tables did not come, so a
+  worker inherits the image as the base snapshot its spawn copies (the same
+  flat `snapshot::Snapshot` every worker gets; the coordinator never changes
+  its tables after `READY`, which checked runs assert by digest). The worker
+  restores it once and keeps the spawn argument as its pristine twin.
+- *A job* arrives on the one `Work` queue every idle worker takes from; the
+  coordinator spawns a worker only when none is idle and at most `limit +
+  retention` are live. `snapshot::extend` validates the job's snapshot (the
+  prepared definition, the base for a helper production, or a saved
+  continuation) as `restore` does and appends only its rows above the image,
+  copying the service rows (the roots object, the helper cache and their
+  image key runs) a continuation's compiler services wrote. The tables equal
+  a fresh restore's row for row, with the job's image tops at its lengths, so
+  limits count what the job adds, as before.
+- *The reset* (`snapshot::truncate`) cuts every table, code tables included,
+  to the twin's length and restores the service rows and the heap's state
+  fields from the twin: about 0.3 microseconds a job on the 200k project,
+  whose image is 28 nodes. Frames, operands and bridge buffers are locals of
+  `serve`. In the test modes and with `BBP_RESET_CHECK=1` (compiler.bb sets
+  it) every reset is compared with the twin byte for byte
+  (`snapshot::pristine`) and every installed snapshot's prefix with the image
+  (`snapshot::over_image`); a difference aborts the session.
+- *The write rule.* `Job.owned_nodes` (the node table's length when the job
+  started) and `Job.foreign` (node ranges installed from publications during
+  the job) bound the rows JavaScript may write: a property, element or
+  closure-cell store into any other row faults `NativeBoundary` before it
+  mutates (`source::writable`). A continuation carries both.
+- *Retirement.* A worker whose tables end a job above
+  `BBP_WORKER_TABLE_BYTES` (default 1.25 MiB) exits instead of resetting; 0
+  retires after every job, light-cljs-784's one worker per job, the
+  differential control. A reused worker keeps its data stacks' high water, so
+  the cap is what bounds idle workers' memory: on the 200k project it retires
+  a quarter of the workers' jobs and keeps the runner's peak memory within 5%
+  of the control; a cap no job reaches is faster by 0.4 s at one worker and
+  holds 5 MB more.
+- *Unchanged:* blocking waits within the retention budget, the `Answer`
+  routing by job address, cancellation, the input and readiness protocol,
+  `supervise` (a contained abort still ends the session), root reads in every
+  job. The `JOBS` line adds jobs run, workers retired and reset nanoseconds.
 
 ### Runtime gensym in the compiler's scopes (light-cljs-798, November 5, 2026)
 
@@ -829,6 +874,16 @@ alive at once, at most 274 with the caps, so nothing comes near
 `GS_MAX_STACKS` or the thread cap and the defaults stand. The spawn-per-job
 model does pay per region at every spawn and exit (probe P12); a smaller
 reserve saved only a fifth of that, so it does not justify a change either.
+
+With reused job workers (light-cljs-795), `goose check --stacks` on the
+runner: main 59 data stacks plus 1 global stack (60 regions), `run_worker`
+53 (the base snapshot it keeps as its twin and the job scratch of `serve`),
+`preparer` 38, `supervise` 2, `input` 2; the thread cap is 307 workers. At
+most 2 + 2 × (limit + retention) threads are alive, 274 with the caps, still
+below it. Workers are spawned on demand, so the 200k project starts 1,282
+job workers a session at the default cap instead of 5,283 (2 to 8 with a cap
+no job reaches); the region cost per spawn is unchanged and paid that much
+less often. The defaults stand.
 
 The conformance harness (light-cljs-782, decision 7) runs one Goose runner
 process per case, `src/conformance.goose`, at most `--jobs` (default 4) at

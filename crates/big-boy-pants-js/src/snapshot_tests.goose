@@ -297,8 +297,58 @@ thread_fn reused_target(saved: snapshot::Snapshot) {
     snapshot_test::verify(heap, roots, 7);
     print("reused code/heap/job destination: live/claimed/terminal guards, fresh IDs, alternating payloads, complete reset and transactional validation passed");
 }
+// A reused job worker's image (light-cljs-795): a base image restored once,
+// a derived snapshot installed over it and the tables truncated back.
+struct Derived { base: snapshot::Snapshot, derived: snapshot::Snapshot, service: i64 }
+fn truncated_image() {
+    heap_program::join(thread_spawn(truncated_parent)); let saved = qget<Derived>();
+    heap_program::join(thread_spawn(truncated_worker, copy(saved.base), copy(saved.derived), saved.service));
+}
+thread_fn truncated_parent() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var parent = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, parent, bindings);
+    let service = source::allocate(parent, source::Node { kind: 0 }); assert(source::install_field(parent, parent.global, "service", service));
+    var c = snapshot::Control {}; let base = snapshot::capture(parent, bindings, c); assert(c.error == snapshot::Error.None);
+    // The derived image: base, a definition's code and rows above it.
+    var dc = source::Code {}; var derived = source::Heap { code: dc }; var db: snapshot::Binding[>..] = []; var r = snapshot::Control {}; assert(snapshot::restore(base, dc, derived, db, source::reserve_identity(), r));
+    var extra = source::Code {}; extra_code(extra); assert(source::append_code(dc, extra) >= 0);
+    let o = source::allocate(derived, source::Node { kind: 0 }); assert(source::install_field(derived, o, "derived", source::text(derived, "row above the image")));
+    for i in 3 { assert(source::install_field(derived, o, str("k", i), source::number(i))); }
+    db.push(snapshot::Binding { id: 100, generation: 1, value: o });
+    var d = snapshot::Control {}; let image = snapshot::capture(derived, db, d); assert(d.error == snapshot::Error.None);
+    assert(qput(Derived { base: copy(base), derived: copy(image), service: service.id() }));
+}
+thread_fn truncated_worker(base: snapshot::Snapshot, derived: snapshot::Snapshot, service: i64) {
+    defer { heap_program::finish(); }
+    let identity = source::reserve_identity(); let rows: i64[1] = [service];
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, bindings, identity, r)); assert(snapshot::truncate(base, rows, identity, code, heap, bindings));
+    assert(snapshot::pristine(base, identity, code, heap, bindings) && snapshot::over_image(derived, base, rows));
+    for n in [3, 20, 1] {
+        // Installed over the image, the derived snapshot's tables are a
+        // fresh restore's, row for row.
+        let job_identity = source::reserve_identity(); var c = snapshot::Control {};
+        assert(snapshot::extend(derived, base, rows, code, heap, bindings, job_identity, c));
+        assert(snapshot::pristine(derived, job_identity, code, heap, bindings) && heap.image.nodes == derived.nodes.len);
+        assert(c.copied_bytes == snapshot::payload_bytes(derived) - snapshot::payload_bytes(base));
+        // A destination not at the image refuses another install.
+        var twice = snapshot::Control {}; assert(!snapshot::extend(derived, base, rows, code, heap, bindings, source::reserve_identity(), twice) && twice.error == snapshot::Error.Destination);
+        // A job's garbage and a compiler service's write into an image row.
+        var job = source::Job { heap: heap };
+        assert(source::start(job, bindings[0].value, [source::nil(), source::nil(), source::number(n)]));
+        assert(source::run(job, -1) == tiny::Outcome.Complete && heap.nodes.len > derived.nodes.len);
+        assert(!snapshot::truncate(base, rows, identity, code, heap, bindings));
+        assert(source::retire(job));
+        for i in 4 { assert(source::install_field(heap, source::object(service), str("s", i), source::number(i))); }
+        assert(!snapshot::pristine(base, identity, code, heap, bindings));
+        assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings));
+    }
+    // An image row other than a service row is not the image's.
+    var changed = copy(derived); changed.nodes[0].immutable = !changed.nodes[0].immutable; assert(!snapshot::over_image(changed, base, rows));
+    print("reused worker image: install over the image equals restore, truncation and service rows restore the twin");
+}
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); truncated_image(); heap_program::join(thread_spawn(live_boundary)); }
 
 // The finite map's parent handles that restored heaps look up by index.
 struct FiniteMap { image: snapshot::Snapshot, input: source::Value, tail: source::Value, mapped: source::Value, callback: source::Value, alias: source::Value, other: source::Value, later_tail: source::Value }

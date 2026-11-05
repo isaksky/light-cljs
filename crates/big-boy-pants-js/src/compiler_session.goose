@@ -17,17 +17,19 @@ fn consume<T>(values: const T[:]) -> i64 { let bytes = bytes_of(values); return 
 fn consume(s: const snapshot::Snapshot&) -> i64 { return s.header.work + consume(s.code_bytes) + consume(s.functions) + consume(s.code_constants) + consume(s.children) + consume(s.ops) + consume(s.code_units) + consume(s.nodes) + consume(s.values) + consume(s.properties) + consume(s.units) + consume(s.constants) + consume(s.bytes) + consume(s.sources) + consume(s.bindings) + consume(s.code_strings) + consume(s.strings) + consume(s.latin1); }
 fn retained(heap: const source::Heap&) -> i64 { return bytes_of(heap.nodes).len + bytes_of(heap.values).len + bytes_of(heap.properties).len + bytes_of(heap.units).len + heap.latin1.len + bytes_of(heap.constants).len + heap.source_bytes.len + bytes_of(heap.source_ranges).len; }
 
-// GCS2 (light-cljs-784; docs/javascript-coverage.md, decision 3): one input
-// thread, the coordinator, `limit + retention` reapers and one contained job
-// worker per dispatch. The coordinator owns the session image (the realm, the
-// base snapshot and the prepared definition snapshots) and is the only program
-// that spawns job workers. A job worker starts with empty VM tables, restores
-// the flat snapshot its spawn copied, and its exit frees everything the job
-// allocated in one step: nothing is reset or reused between jobs. At most
-// `limit` workers execute at once. A dependency wait releases its execution
-// slot; within the retention budget the worker blocks with its state in its
-// own thread program until an Answer arrives, otherwise it saves a flat
-// continuation and exits, and a fresh worker restores it later.
+// GCS2 (light-cljs-784, light-cljs-795; docs/javascript-coverage.md,
+// decision 3): one input thread, the coordinator, `limit + retention` reapers
+// and contained job workers that serve many jobs each. The coordinator owns
+// the session image (the realm, the base snapshot and the prepared definition
+// snapshots) and is the only program that spawns job workers, on demand, at
+// most `limit + retention` live. A job worker restores the base image once;
+// each job installs its snapshot's rows above it, and after the job the
+// worker truncates its tables back to the image (run_worker), or retires at
+// its table-byte cap. At most `limit` workers execute at once. A dependency
+// wait releases its execution slot; within the retention budget the worker
+// blocks with its state in its own thread program until an Answer arrives,
+// otherwise it saves a flat continuation and goes idle, and any worker
+// restores it later.
 struct Saved {
     heap:    snapshot::Snapshot = snapshot::Snapshot {}, frames: source::Frame[] = [], locals: source::Value[] = [], operands: source::Value[] = [], writes: source::Write[] = [], handlers: source::Handler[] = [],
     steps:   i64                = 0, args: source::Value[8] = [source::Value.Undefined; 8], frame: source::Frame = source::Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: source::Value.Undefined, receiver: source::Value.Undefined },
@@ -37,6 +39,9 @@ struct Saved {
     // number of its count, 0 outside a scope. A wait carries the count out and
     // its answer back, so helper production numbers in the demanding job's scope.
     gensym_prefix: u8[] = [], gensym_next: i64 = 0,
+    // The job's write boundary (source::Job.owned_nodes and foreign): a
+    // continuation keeps the rows its job did not allocate read-only.
+    owned: i64 = 0, foreign: u32[] = [],
 }
 struct Command { id: i64 }
 struct Cancel {}
@@ -44,20 +49,28 @@ struct Cancel {}
 // inspect it only between bounded VM slices; idle workers block on Work.
 fn cancelled() -> bool { let token, present = qpoll<Cancel>(); if present { assert(qput(token)); } return present; }
 // Event kinds: 1 saved continuation, 2 finished, 3 failed, 5 produced helper,
-// 6 reaped (key = thread; aborted with its message in name), 10 blocked wait.
-// address names the job worker (its first checkpoint). census: table rows at
+// 6 reaped (key = thread, address = worker; aborted with its message in
+// name), 7 a worker's job ended (retired: it exits, otherwise it is idle;
+// timing: reset ns, the clock, table bytes at the job's end; image: the
+// image digest in checked runs), 10 blocked wait. address names the job (its
+// first checkpoint) and worker the job worker serving it. census: table rows at
 // the worker's exit, then the restored image's rows, then unreachable rows
 // (nodes, values, properties, units of both unit tables each; instrumented
 // runs only). timing:
 // spawn-to-start latency, the clock at this publication, restore bytes and ns.
-struct Event { id: i64, kind: i64, saved: Saved = Saved {}, gensym_next: i64 = 0, sequence: i64 = 0, key: i64 = -1, name: u8[] = [], data: u8[] = [], steps: i64 = 0, writes: i64 = 0, metrics: u8[] = [], callable: bool = false, address: i64 = 0, aborted: bool = false, census: i64[12] = [-1; 12], timing: i64[4] = [0; 4] }
-fn publish(event: Event) { assert(qput(event)); readiness::notify(); }
-// A job worker's spawn arguments. blocking: the worker may wait for a dependency
-// in place; spawned: the coordinator's clock just before the spawn.
-struct Work { saved: Saved = Saved {}, id: i64 = 0, identity: i64 = 0, mode: i64 = 0, helper: u8[] = [], key: i64 = -1, checkpoint: i64 = 0, callable: bool = false, blocking: bool = false, spawned: i64 = 0 }
+struct Event { id: i64, kind: i64, saved: Saved = Saved {}, gensym_next: i64 = 0, sequence: i64 = 0, key: i64 = -1, name: u8[] = [], data: u8[] = [], steps: i64 = 0, writes: i64 = 0, metrics: u8[] = [], callable: bool = false, address: i64 = 0, aborted: bool = false, census: i64[12] = [-1; 12], timing: i64[4] = [0; 4], worker: i64 = -1, retired: bool = false, image: u64 = 0 }
+// A job worker's serial (Setup.worker), set in its own thread program's copy
+// of this global; -1 in every other program.
+var worker_serial: i64 = -1;
+fn publish(event: Event) { if event.worker < 0 { event.worker = worker_serial; } assert(qput(event)); readiness::notify(); }
+// One job, from the one Work queue every idle job worker takes from
+// (light-cljs-795). blocking: the worker may wait for a dependency in place;
+// spawned: the coordinator's clock when it queued the job; stop: the worker
+// exits instead.
+struct Work { saved: Saved = Saved {}, id: i64 = 0, identity: i64 = 0, mode: i64 = 0, helper: u8[] = [], key: i64 = -1, checkpoint: i64 = 0, callable: bool = false, blocking: bool = false, spawned: i64 = 0, stop: bool = false }
 // The coordinator's reply to a blocked worker, routed by address: mode 1
 // delivers a produced helper, 3 a missing one, 0 asks the worker to save its
-// continuation and exit, -1 to exit without a result. checkpoint is the
+// continuation and end the job, -1 to end it without a result. checkpoint is the
 // worker's next completion barrier (dispatch-test).
 struct Answer { address: i64, mode: i64 = 0, helper: u8[] = [], key: i64 = -1, callable: bool = false, checkpoint: i64 = 0, gensym_next: i64 = 0 }
 struct Reap { thread: i64, address: i64 = 0 }
@@ -72,6 +85,9 @@ struct Jobs {
     spawned:   i64 = 0, spawn_ns: i64 = 0, start_ns: i64 = 0, join_ns: i64 = 0, argument_bytes: i64 = 0, restore_bytes: i64 = 0,
     peak_live: i64 = 0, peak_blocked: i64 = 0, waits: i64 = 0, saves: i64 = 0, answers: i64 = 0,
     trims:     i64 = 0, trim_before: i64 = 0, trim_after: i64 = 0, trim_ns: i64 = 0,
+    // Jobs given to workers, workers retired at the table-byte cap, and the
+    // workers' reset time (light-cljs-795).
+    jobs: i64 = 0, retired: i64 = 0, reset_ns: i64 = 0,
 }
 struct Produced { key: i64, data: u8[], callable: bool = false }
 struct Prepared { key: i64, heap: snapshot::Snapshot }
@@ -154,7 +170,7 @@ fn leaf(id: i64, heap: source::Heap&, callee: source::Value, args: const source:
 fn save(job: source::Job&, rt: source::Value, call: source::Value, control: bridge::Control, sequence: i64, costs: i64[2], checkpoint: i64) -> Saved {
     assert(!job.claimed && job.effect_pending && job.status == tiny::Status.Ready && job.effect_kind == 9 && job.effect_count == 3);
     assert(source::retire(job, true)); var c = snapshot::Control {}; let heap = snapshot::capture(job.heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: call }], c, checkpoint); assert(c.error == snapshot::Error.None);
-    return Saved { heap: copy(heap), frames: copy(job.frames), locals: copy(job.locals), operands: copy(job.operands), writes: copy(job.writes), handlers: copy(job.handlers), steps: job.steps, args: job.effect_args, frame: job.effect_frame, bridge: control, sequence: sequence, costs: costs, protected: job.protected_nodes, gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next };
+    return Saved { heap: copy(heap), frames: copy(job.frames), locals: copy(job.locals), operands: copy(job.operands), writes: copy(job.writes), handlers: copy(job.handlers), steps: job.steps, args: job.effect_args, frame: job.effect_frame, bridge: control, sequence: sequence, costs: costs, protected: job.protected_nodes, gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next, owned: job.owned_nodes, foreign: copy(job.foreign) };
 }
 fn fail(id: i64, heap: source::Heap&, job: source::Job&, address: i64 = 0, timing: i64[4] = [0; 4]) {
     let pc = job.fault_pc; var start: i64 = -1; var end: i64 = -1;
@@ -177,19 +193,65 @@ thread_fn supervise() {
         publish(Event { id: 0, kind: 6, key: reap.thread, name: copy(reason), address: reap.address, aborted: !ok, timing: [0, clock_ns(), 0, 0] });
     }
 }
-// One dispatch per worker. Its VM tables start empty, it restores the flat
-// snapshot its spawn copied, and its exit frees the job in one step.
-thread_fn run_job(work: Work, directory: u8[], deterministic: bool, cleanup_test: bool) {
+// A reused job worker (light-cljs-795; docs/javascript-coverage.md, decision
+// 3). It restores the coordinator's base image once, from the snapshot its
+// spawn copied, which stays its pristine twin, and then serves jobs from the
+// one Work queue. A job installs its snapshot's rows above the image
+// (snapshot::extend); its frames, operands and bridge buffers are locals of
+// serve. After the job the worker truncates every table to the image and
+// restores the service rows and state fields from the twin
+// (snapshot::truncate), so the next job's tables are a fresh worker's, at the
+// same rows. A worker whose tables ended a job above `cap` bytes retires
+// instead (0: after every job, one worker per job as light-cljs-784 had it).
+// `check` (tests, BBP_RESET_CHECK=1) compares the image with the twin after
+// every reset and every installed snapshot's prefix with the image.
+// Configuration a job worker takes at spawn.
+struct Setup { worker: i64 = 0, identity: i64 = 0, deterministic: bool = false, cleanup_test: bool = false, cap: i64 = 0, check: bool = false }
+thread_fn run_worker(base: snapshot::Snapshot, directory: u8[], setup: Setup) {
+    worker_serial = setup.worker;
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, bindings, setup.identity, sc));
+    let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")); let cache = source::get(heap, heap.global, source::text(heap, "__lightPublishedHelpers"));
+    assert(roots.tag() == 5 && cache.tag() == 5 && roots.id() < base.nodes.len && cache.id() < base.nodes.len);
+    let service: i64[2] = [roots.id(), cache.id()];
+    assert(snapshot::truncate(base, service, setup.identity, code, heap, bindings));
+    let image = if setup.check { assert(snapshot::pristine(base, setup.identity, code, heap, bindings)); heap_digest(heap, bindings) } else { 0 };
+    loop {
+        let work = qget<Work>(); if work.stop { return; }
+        // Deterministic poison regression: hold a started replacement before it
+        // runs, so poison must also cancel a live worker that has not executed.
+        if setup.cleanup_test && work.id == 2 { assert(write_file(str(directory, "/claim-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/claim-release"), gate) { sleep_ms(1); } }
+        serve(work, directory, setup, base, service, code, heap, bindings);
+        // Publish the real terminal result, then abort while this worker still
+        // runs. The host starts a replacement before releasing the gate.
+        if setup.cleanup_test && work.id == 1 { assert(write_file(str(directory, "/cleanup-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/cleanup-abort"), gate) { sleep_ms(1); } assert(false); }
+        let bytes = table_bytes(code, heap);
+        // Retiring: the exit frees the tables in one step.
+        if bytes > setup.cap { publish(Event { id: 0, kind: 7, timing: [0, clock_ns(), bytes, 0], worker: setup.worker, retired: true, image: image }); return; }
+        let resetting = clock_ns(); assert(snapshot::truncate(base, service, setup.identity, code, heap, bindings));
+        if setup.check { assert(snapshot::pristine(base, setup.identity, code, heap, bindings)); }
+        let reset_ns = clock_ns() - resetting; publish(Event { id: 0, kind: 7, timing: [reset_ns, clock_ns(), bytes, 0], worker: setup.worker, image: image });
+    }
+}
+// One job: its VM scratch lives here and goes when it returns.
+fn serve(work: const Work&, directory: const u8[:], setup: const Setup&, base: const snapshot::Snapshot&, service: const i64[:], code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding[>..]&) {
     let started = clock_ns();
-    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = [];
     var job = source::Job { heap: heap }; var args: source::Value[>..] = []; var graph = bridge::Graph {}; var bytes: u8[>..] = [];
-    // Deterministic poison regression: hold a started replacement before it
-    // runs, so poison must also cancel a live worker that has not executed.
-    if cleanup_test && work.id == 2 { assert(write_file(str(directory, "/claim-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/claim-release"), gate) { sleep_ms(1); } }
-    execute(work, directory, started, deterministic, cleanup_test, code, heap, bindings, job, args, graph, bytes);
-    // Publish the real terminal result, then abort while this worker still
-    // runs. The host starts a replacement before releasing the gate.
-    if cleanup_test && work.id == 1 { assert(write_file(str(directory, "/cleanup-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/cleanup-abort"), gate) { sleep_ms(1); } assert(false); }
+    execute(work, directory, started, setup, base, service, code, heap, bindings, job, args, graph, bytes);
+}
+// The bytes a worker's VM tables hold: the retirement measure.
+fn table_bytes(code: const source::Code&, heap: const source::Heap&) -> i64 {
+    return bytes_of(code.source_bytes).len + bytes_of(code.functions).len + bytes_of(code.constants).len + bytes_of(code.children).len + bytes_of(code.ops).len + bytes_of(code.units).len + bytes_of(code.strings).len + bytes_of(code.ins).len + bytes_of(code.effects).len + bytes_of(code.heights).len
+         + retained(heap) + bytes_of(heap.strings).len;
+}
+// FNV-1a over an image's table bytes: equal images, equal digests.
+fn mix(h: u64, bytes: const u8[:]) -> u64 { var x = h; for b in bytes { x = (x ^ b) * 1099511628211; } return x; }
+fn heap_digest(heap: const source::Heap&, bindings: const snapshot::Binding[:]) -> u64 { let v = snapshot::borrow(heap, bindings, 1); return digest(v); }
+fn digest<T>(s: const T&) -> u64 {
+    var h: u64 = 14695981039346656037;
+    h = mix(h, bytes_of(s.code_bytes)); h = mix(h, bytes_of(s.functions)); h = mix(h, bytes_of(s.code_constants)); h = mix(h, bytes_of(s.children)); h = mix(h, bytes_of(s.ops)); h = mix(h, bytes_of(s.code_units)); h = mix(h, bytes_of(s.code_strings));
+    h = mix(h, bytes_of(s.nodes)); h = mix(h, bytes_of(s.values)); h = mix(h, bytes_of(s.properties)); h = mix(h, bytes_of(s.units)); h = mix(h, bytes_of(s.strings)); h = mix(h, bytes_of(s.constants)); h = mix(h, bytes_of(s.bytes)); h = mix(h, bytes_of(s.sources)); h = mix(h, bytes_of(s.latin1));
+    return h;
 }
 // A blocked worker takes answers from the one process-wide Answer queue and
 // puts back any addressed to another worker (the re-queue pattern of
@@ -225,15 +287,21 @@ fn published(helper: const u8[:], base: snapshot::Header, key: i64, code: source
     if publication.error != snapshot::Error.None { return imported, false; }
     return imported, source::put(heap, cache, name, imported);
 }
-fn execute(work: const Work&, directory: const u8[:], started: i64, deterministic: bool, cleanup_test: bool, code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding[>..]&, job: source::Job&, args: source::Value[>..]&, graph: bridge::Graph&, bytes: u8[>..]&) {
+fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const Setup&, base: const snapshot::Snapshot&, service: const i64[:], code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding[>..]&, job: source::Job&, args: source::Value[>..]&, graph: bridge::Graph&, bytes: u8[>..]&) {
     let saved .= work.saved; let id = work.id; let identity = work.identity; let mode = work.mode; let key = work.key; let checkpoint = work.checkpoint; let address = work.checkpoint;
+    let deterministic = setup.deterministic; let cleanup_test = setup.cleanup_test;
     // Test-only completion barrier: publish the real event before acknowledging.
     var barrier = checkpoint;
     defer { if deterministic { assert(write_file(str(directory, "/ready-", barrier), "ready")); } }
     let worker_started = clock_ns();
     var sc = snapshot::Control {};
     if cancelled() { publish(Event { id: id, kind: 3, name: str("cancelled"), address: address, timing: timing(work, started, sc) }); return; }
-    assert(snapshot::restore(saved.heap, code, heap, bindings, identity, sc)); let rt = bindings[0].value;
+    // The job's rows above the worker's image; the image rows are the twin's.
+    if setup.check { assert(snapshot::over_image(saved.heap, base, service)); }
+    assert(snapshot::extend(saved.heap, base, service, code, heap, bindings, identity, sc)); let rt = bindings[0].value;
+    // Rows below this are the image's and the definition's (a continuation
+    // keeps its job's boundary).
+    let owned = if mode == 1 { saved.owned } else { heap.nodes.len };
     var costs = saved.costs; var control = saved.bridge; var call = source::Value.Undefined; var function = source::Value.Undefined; var next = saved.gensym_next;
     if mode == 0 { function = bindings[1].value; let importing = clock_ns();
         assert(read_file(str(directory, "/", id, ".gfb"), bytes)); assert(bridge::decode(graph, bytes, control)); assert(bridge::import_graph(heap, graph, args, control)); assert(args.len >= 2); call = args[0]; costs[1] += clock_ns() - importing;
@@ -253,17 +321,18 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, deterministi
     } else { call = bindings[1].value; }
     // Import before re-registering the suspended job; failed publication is
     // transactional and delivered at the original effect instruction.
-    var imported = source::Value.Undefined; var import_ok = false;
+    var imported = source::Value.Undefined; var import_ok = false; let installing = heap.nodes.len;
     if mode == 1 && work.callable {
         let importing = clock_ns(); let value, ok = published(work.helper, saved.base, key, code, heap); imported = value; import_ok = ok; costs[1] += clock_ns() - importing;
     }
     let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")); job.effects_enabled = true; job.helpers_enabled = true; job.protected_nodes = saved.protected; job.root_receiver = roots; defer { source::retire(job); } scope(job, saved.gensym_prefix, next);
+    job.owned_nodes = owned; for r in saved.foreign { job.foreign.push(r); } source::install_foreign(job, installing);
     if mode == 0 { source::start(job, function, args); } else {
         // Saved rows link the restored heap's rows by index: copied verbatim.
         for f in saved.frames { job.frames.push(f); } job.locals.append(saved.locals); job.operands.append(saved.operands);
         job.writes.append(saved.writes);
         for h in saved.handlers { job.handlers.push(h); } job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = 9; job.effect_count = 3; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
-        if mode == 1 && !work.callable { import_ok = bridge::decode(graph, work.helper, control) && bridge::import_graph(heap, graph, args, control) && args.len == 1; if import_ok { imported = args[0]; } }
+        if mode == 1 && !work.callable { let start = heap.nodes.len; import_ok = bridge::decode(graph, work.helper, control) && bridge::import_graph(heap, graph, args, control) && args.len == 1; if import_ok { imported = args[0]; } source::install_foreign(job, start); }
         if !import_ok { source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], imported); assert(source::deliver_effect(job, imported)); }
     }
     let execution_started = clock_ns(); var sequence = if mode == 0 { 0 } else { saved.sequence + 1 };
@@ -291,7 +360,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, deterministi
             if answer.mode != 0 {
                 // A helper produced for this wait numbered on in the job's scope.
                 job.gensym_next = answer.gensym_next;
-                let importing = clock_ns(); var value = source::Value.Undefined; var ok = false;
+                let importing = clock_ns(); var value = source::Value.Undefined; var ok = false; let start = heap.nodes.len;
                 if answer.mode == 1 && answer.callable {
                     // Installing a publication requires no live job. The
                     // suspended job holds only values into the append-only
@@ -303,11 +372,11 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, deterministi
                     reset(graph); var helper: source::Value[>..] = [];
                     ok = bridge::decode(graph, answer.helper, control) && bridge::import_graph(heap, graph, helper, control) && helper.len == 1; if ok { for h in helper { value = h; } }
                 }
-                costs[1] += clock_ns() - importing;
+                costs[1] += clock_ns() - importing; source::install_foreign(job, start);
                 if !ok { source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], value); assert(source::deliver_effect(job, value)); }
                 sequence += 1; continue;
             }
-            // Over the retention budget: save the continuation and exit.
+            // Over the retention budget: save the continuation and end the job.
         }
         let counted = rows(work, heap, job, bindings, call);
         let state = save(job, rt, call, control, sequence, costs, checkpoint); state.storage = saved.storage; state.base = saved.base; publish(Event { id: id, kind: 1, saved: copy(state), name: copy(name), steps: job.steps, metrics: str(sc.restore_ns, " ", clock_ns() - execution_started, " ", clock_ns() - worker_started, " ", storage(saved, heap, sc, 0), " ", mode), address: address, census: counted, timing: timing(work, started, sc) }); return;
@@ -370,33 +439,56 @@ fn serial(directory: const u8[:], code: source::Code&, heap: source::Heap&, rt: 
 }
 // The executing (running) and blocked counts the coordinator admits against:
 // at most `limit` running, at most `retention` blocked, at most `reapers`
-// live (spawned and not yet reaped).
-struct Counts { live: i64 = 0, blocked: i64 = 0, reapers: i64 = 0, retention: i64 = 0 }
+// live (spawned and not yet reaped). idle: workers waiting for a job, less
+// the jobs queued for them.
+struct Counts { live: i64 = 0, blocked: i64 = 0, reapers: i64 = 0, retention: i64 = 0, idle: i64 = 0 }
 // BBP_RETAINED_WORKERS sets the retention budget: how many job workers may
 // block in place on a dependency. 0 saves every wait as a continuation.
 fn retained_workers() -> i64 {
     var text: u8[>..] = []; if !env("BBP_RETAINED_WORKERS", text) { return 32; }
     let n, ok = parse_int(text); assert(ok && n >= 0 && n <= 128); return n;
 }
-fn spawn(work: Work&, directory: const u8[:], deterministic: bool, cleanup_test: bool, counts: Counts&, stats: Jobs&) -> i64 {
-    assert(counts.live < counts.reapers);
-    stats.argument_bytes += footprint(work.saved) + work.helper.len; work.spawned = clock_ns();
-    let thread = thread_spawn_contained(run_job, copy(work), directory, deterministic, cleanup_test);
-    stats.spawn_ns += clock_ns() - work.spawned; stats.spawned += 1; counts.live += 1; stats.peak_live = max(stats.peak_live, counts.live);
-    assert(qput(Reap { thread: thread, address: work.checkpoint })); return thread;
+// BBP_WORKER_TABLE_BYTES: a job worker whose VM tables end a job above this
+// many bytes retires (0: after every job, the differential control).
+fn worker_table_bytes() -> i64 {
+    // 1.25 MiB: a reused worker keeps its data stacks' high water, so the cap
+    // bounds what idle workers hold. On the 200k project it retires a
+    // quarter of the jobs' workers and keeps the runner's peak memory within
+    // 5% of retiring after every job (evidence, "Reused job workers").
+    var text: u8[>..] = []; if !env("BBP_WORKER_TABLE_BYTES", text) { return 1310720; }
+    let n, ok = parse_int(text); assert(ok && n >= 0); return n;
+}
+// Whether a job can be given to a worker now: an idle one, or a new one.
+fn available(counts: const Counts&) -> bool { return counts.idle > 0 || counts.live < counts.reapers; }
+// The coordinator's job workers: their threads by serial, the base image they
+// all inherit and the configuration they take.
+struct Pool { setup: Setup = Setup {}, directory: u8[] = [], threads: i64[>..] = [] }
+// Give a job to an idle worker, or spawn one for it (light-cljs-795). Every
+// worker takes jobs from the one Work queue, so no job is routed: after its
+// reset any idle worker is a fresh one.
+fn dispatch(work: Work&, base: const snapshot::Snapshot&, pool: Pool&, counts: Counts&, stats: Jobs&) {
+    assert(available(counts));
+    stats.argument_bytes += footprint(work.saved) + work.helper.len; stats.jobs += 1; work.spawned = clock_ns();
+    if counts.idle == 0 {
+        var setup = pool.setup; setup.worker = pool.threads.len; setup.identity = source::reserve_identity();
+        let spawning = clock_ns(); let thread = thread_spawn_contained(run_worker, copy(base), copy(pool.directory), setup);
+        stats.spawn_ns += clock_ns() - spawning; stats.spawned += 1; stats.argument_bytes += snapshot::footprint(base); counts.live += 1; counts.idle += 1; stats.peak_live = max(stats.peak_live, counts.live);
+        pool.threads.push(thread); assert(qput(Reap { thread: thread, address: setup.worker }));
+    }
+    counts.idle -= 1; assert(qput(work));
 }
 // Resume a waiter whose dependency is answered: a blocked worker gets an
-// Answer, a saved continuation a fresh worker. False when no worker may be
-// spawned now; the waiter then stays active for a later turn.
-fn resume(w: Waiting&, mode: i64, helper: const u8[:], key: i64, is_callable: bool, running: Running[>..]&, directory: const u8[:], deterministic: bool, cleanup_test: bool, counts: Counts&, stats: Jobs&) -> bool {
+// Answer, a saved continuation a worker. False when no worker may take it
+// now; the waiter then stays active for a later turn.
+fn resume(w: Waiting&, mode: i64, helper: const u8[:], key: i64, is_callable: bool, running: Running[>..]&, base: const snapshot::Snapshot&, pool: Pool&, counts: Counts&, stats: Jobs&) -> bool {
     let checkpoint = source::reserve_identity();
     if w.address != 0 {
         assert(qput(Answer { address: w.address, mode: mode, helper: helper, key: key, callable: is_callable, checkpoint: checkpoint, gensym_next: w.saved.gensym_next }));
         running.push(Running { id: w.id, thread: w.thread, address: w.address, checkpoint: checkpoint }); counts.blocked -= 1; stats.answers += 1;
     } else {
-        if counts.live >= counts.reapers { return false; }
+        if !available(counts) { return false; }
         var work = Work { saved: copy(w.saved), id: w.id, identity: identity(w.saved), mode: mode, helper: helper, key: key, checkpoint: checkpoint, callable: is_callable, blocking: counts.retention > 0 };
-        let thread = spawn(work, directory, deterministic, cleanup_test, counts, stats); running.push(Running { id: w.id, thread: thread, address: checkpoint, checkpoint: checkpoint });
+        dispatch(work, base, pool, counts, stats); running.push(Running { id: w.id, address: checkpoint, checkpoint: checkpoint });
     }
     print("RESUME ", w.id); flush_stdout(); w.active = false; return true;
 }
@@ -429,13 +521,22 @@ fn main() {
     }
     let deterministic = arguments.len == 4 && arguments[3] == "dispatch-test"; let cleanup_test = arguments.len == 4 && arguments[3] == "cleanup-abort-test"; let tracing = instrumented || deterministic || cleanup_test || (arguments.len == 4 && arguments[3] == "readiness-test");
     let retention = retained_workers(); var counts = Counts { reapers: limit + retention, retention: retention }; var stats = Jobs {};
-    // Each live worker has at most three unconsumed events (a blocked wait,
-    // its final event, and its reaper's), and the coordinator admits no
-    // worker past the reaper count, so these limits never refuse a publish.
+    // The reset check (light-cljs-795): in the test modes and with
+    // BBP_RESET_CHECK=1, every worker compares its image with the twin after
+    // every reset, and its digest with the coordinator's tables'. A traced
+    // measurement (readiness-test mode) turns it off with BBP_RESET_CHECK=0.
+    var checking: u8[>..] = []; let configured = env("BBP_RESET_CHECK", checking);
+    let check = deterministic || cleanup_test || configured && checking == "1" || !configured && arguments.len == 4 && arguments[3] == "readiness-test";
+    var pool = Pool { setup: Setup { deterministic: deterministic, cleanup_test: cleanup_test, cap: worker_table_bytes(), check: check }, directory: copy(directory) };
+    let image = if check { heap_digest(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }]) } else { 0 };
+    // Each live worker has at most four unconsumed events (a blocked wait,
+    // its final event, the end of its job and its reaper's), and the
+    // coordinator admits no worker past the reaper count, so these limits
+    // never refuse a publish.
     // Each live worker also has at most one unconsumed Answer (a resume or,
     // over the retention budget, a save), so the re-queue never fails either.
-    qlimit<Command>(128); qlimit<readiness::InputCredit>(128); for i in 128 { assert(qput(readiness::InputCredit {})); } qlimit<Event>(4 * counts.reapers + 8); qlimit<Answer>(counts.reapers + 1); qlimit<Reap>(counts.reapers); qlimit<Cancel>(1); qlimit<readiness::Wake>(1); let reader = thread_spawn(input, copy(directory), deterministic); var running: Running[>..] = []; var queue: i64[>..] = []; var received: i64 = 0; var waiting: Waiting[>..] = []; var produced: Produced[>..] = []; var prepared: Prepared[>..] = []; var closing = false; var cancelling = false; var poisoned = false; var retained: i64 = 0; var sleep_ns: i64 = 0; var turns: i64 = 0; var progress_turns: i64 = 0; var backoffs: i64 = 0; var commands: i64 = 0; var events: i64 = 0; var max_commands: i64 = 0; var max_events: i64 = 0; var exits: Exit[>..] = []; var finals: i64 = 0; var since_trim: i64 = 0;
-    var pool: i64[>..] = []; for slot in counts.reapers { pool.push(thread_spawn(supervise)); }
+    qlimit<Command>(128); qlimit<readiness::InputCredit>(128); for i in 128 { assert(qput(readiness::InputCredit {})); } qlimit<Event>(6 * counts.reapers + 8); qlimit<Answer>(counts.reapers + 1); qlimit<Reap>(counts.reapers); qlimit<Cancel>(1); qlimit<readiness::Wake>(1); let reader = thread_spawn(input, copy(directory), deterministic); var running: Running[>..] = []; var queue: i64[>..] = []; var received: i64 = 0; var waiting: Waiting[>..] = []; var produced: Produced[>..] = []; var prepared: Prepared[>..] = []; var closing = false; var cancelling = false; var poisoned = false; var retained: i64 = 0; var sleep_ns: i64 = 0; var turns: i64 = 0; var progress_turns: i64 = 0; var backoffs: i64 = 0; var commands: i64 = 0; var events: i64 = 0; var max_commands: i64 = 0; var max_events: i64 = 0; var exits: Exit[>..] = []; var finals: i64 = 0; var since_trim: i64 = 0;
+    var reapers: i64[>..] = []; for slot in counts.reapers { reapers.push(thread_spawn(supervise)); }
     print("READY 1 ", heap.boot_count, " ", loaded - beginning, " ", booted - loaded, " ", clock_ns() - booted); flush_stdout();
     // The deterministic fixture queues a complete batch before the first turn.
     if deterministic { var bytes: u8[>..] = []; while !read_file(str(directory, "/commands-ready"), bytes) { sleep_ms(1); } }
@@ -454,8 +555,15 @@ fn main() {
                 unblock(waiting, -1, event.key, counts); closing = true; poisoned = true;
                 if !cancelling { assert(qput(Cancel {})); cancelling = true; }
                 print("FAULT 0 worker-abort ", reason); flush_stdout(); continue; }
-            if event.kind != 10 && event.timing[1] > 0 { exits.push(Exit { address: event.address, clock: event.timing[1] }); finals += 1; stats.start_ns += event.timing[0]; stats.restore_bytes += event.timing[2]; }
-            let owner, owned = release(running, event.address);
+            // A worker's job ended: it is idle, or it retired and exits.
+            if event.kind == 7 { stats.reset_ns += event.timing[0];
+                // Every worker, whenever spawned, inherits the same image.
+                if check && event.image != image { print("FAULT 0 worker-image ", event.worker); flush_stdout(); assert(false); }
+                if event.retired { stats.retired += 1; exits.push(Exit { address: event.worker, clock: event.timing[1] }); }
+                else if closing { assert(qput(Work { stop: true })); } else { counts.idle += 1; }
+                continue; }
+            if event.kind != 10 && event.timing[1] > 0 { finals += 1; stats.start_ns += event.timing[0]; stats.restore_bytes += event.timing[2]; }
+            var owner, owned = release(running, event.address); if owned && event.worker >= 0 { owner.thread = pool.threads[event.worker]; }
             // Only a blocked waiter publishes while not running: its own
             // cancellation, which is no job result.
             if !owned { unblock(waiting, event.address, -1, counts); continue; }
@@ -463,7 +571,7 @@ fn main() {
             if event.kind == 10 { stats.waits += 1;
                 if waiting.len >= 128 { print("ERROR ", event.id, " waiter-budget"); flush_stdout(); assert(qput(Answer { address: event.address, mode: -1 })); continue; }
                 if counts.blocked < retention { counts.blocked += 1; stats.peak_blocked = max(stats.peak_blocked, counts.blocked); waiting.push(Waiting { id: event.id, name: copy(event.name), saved: Saved { sequence: event.sequence, gensym_prefix: copy(event.saved.gensym_prefix), gensym_next: event.saved.gensym_next }, address: event.address, thread: owner.thread }); print("NEED ", event.id, " ", event.sequence, " ", event.name, " ", event.steps, " ", event.writes); flush_stdout(); continue; }
-                // Over the retention budget: the worker saves its continuation and exits.
+                // Over the retention budget: the worker saves its continuation and ends the job.
                 let checkpoint = source::reserve_identity(); assert(qput(Answer { address: event.address, mode: 0, checkpoint: checkpoint })); running.push(Running { id: event.id, thread: owner.thread, address: event.address, checkpoint: checkpoint }); continue;
             }
             let bytes = if event.kind == 1 { footprint(event.saved) } else { event.data.len }; if bytes > 67108864 - retained { print("ERROR ", event.id, " retained-budget"); flush_stdout(); continue; } retained += bytes; if event.metrics.len > 0 { print("METRIC ", event.id, " ", event.metrics, " ", sleep_ns, " ", clock_ns() - beginning); } if event.kind == 2 || event.kind == 5 { print("COST ", event.id, " ", event.name); }
@@ -477,25 +585,27 @@ fn main() {
             flush_stdout();
         }
         if closing && !cancelling { assert(qput(Cancel {})); cancelling = true; }
+        // Closing: every idle worker exits; busy ones get a stop when idle.
+        if closing { while counts.idle > 0 { assert(qput(Work { stop: true })); counts.idle -= 1; } }
         if !closing { for w in waiting { if running.len >= limit { break; } if !w.active { continue; }
             if w.key == -2 { var bytes: u8[>..] = []; if !read_file(str(directory, "/", w.id, "-", w.saved.sequence, ".key"), bytes) { continue; } let key, ok = parse_int(bytes); assert(ok && key >= -1); w.key = key; }
-            let key = w.key; if key == -1 { if resume(w, 3, [], -1, false, running, directory, deterministic, cleanup_test, counts, stats) { progress = true; } continue; } var found = false;
-            for p in produced { if p.key == key { found = true; if resume(w, 1, p.data, key, p.callable, running, directory, deterministic, cleanup_test, counts, stats) { progress = true; } break; } }
+            let key = w.key; if key == -1 { if resume(w, 3, [], -1, false, running, base, pool, counts, stats) { progress = true; } continue; } var found = false;
+            for p in produced { if p.key == key { found = true; if resume(w, 1, p.data, key, p.callable, running, base, pool, counts, stats) { progress = true; } break; } }
             if found { continue; }
             var producing = false; for r in running { if r.key == key { producing = true; } }
-            if !producing && counts.live < counts.reapers { let initial = Saved { heap: copy(base), base: base.header, sequence: w.saved.sequence, protected: base.nodes.len, storage: instrumented, gensym_prefix: copy(w.saved.gensym_prefix), gensym_next: w.saved.gensym_next }; let checkpoint = source::reserve_identity(); var work = Work { saved: copy(initial), id: w.id, identity: identity(initial), mode: 2, helper: [], key: key, checkpoint: checkpoint }; let thread = spawn(work, directory, deterministic, cleanup_test, counts, stats); running.push(Running { id: w.id, thread: thread, address: checkpoint, key: key, checkpoint: checkpoint }); print("PRODUCE ", w.id, " ", key); flush_stdout(); progress = true; }
+            if !producing && available(counts) { let initial = Saved { heap: copy(base), base: base.header, sequence: w.saved.sequence, protected: base.nodes.len, storage: instrumented, gensym_prefix: copy(w.saved.gensym_prefix), gensym_next: w.saved.gensym_next }; let checkpoint = source::reserve_identity(); var work = Work { saved: copy(initial), id: w.id, identity: identity(initial), mode: 2, helper: [], key: key, checkpoint: checkpoint }; dispatch(work, base, pool, counts, stats); running.push(Running { id: w.id, address: checkpoint, key: key, checkpoint: checkpoint }); print("PRODUCE ", w.id, " ", key); flush_stdout(); progress = true; }
         } }
         // Ready continuations/helpers get first refusal; new jobs fill every remaining slot.
-        while !closing && received < queue.len && running.len < limit && counts.live < counts.reapers { progress = true; let id = queue[received]; received += 1; let key, prefix, first = definition(directory, id); var next = first; var index: i64 = -1;
+        while !closing && received < queue.len && running.len < limit && available(counts) { progress = true; let id = queue[received]; received += 1; let key, prefix, first = definition(directory, id); var next = first; var index: i64 = -1;
             for p, i in prepared { if p.key == key { index = i; break; } }
             if index < 0 { let checkpoint, ok = prepare(base, directory, id, key, prefix, next); if !ok { continue; } let bytes = snapshot::footprint(checkpoint); if prepared.len >= 1024 || bytes > 67108864 - retained { print("ERROR ", id, " definition-budget"); flush_stdout(); continue; } retained += bytes; index = prepared.len; prepared.push(Prepared { key: key, heap: copy(checkpoint) }); }
-            for p in prepared { if p.key != key { continue; } let initial = Saved { heap: copy(p.heap), base: base.header, protected: base.nodes.len, storage: instrumented, gensym_prefix: copy(prefix), gensym_next: next }; let checkpoint = source::reserve_identity(); var work = Work { saved: copy(initial), id: id, identity: identity(initial), mode: 0, helper: [], key: -1, checkpoint: checkpoint, blocking: retention > 0 }; let thread = spawn(work, directory, deterministic, cleanup_test, counts, stats); running.push(Running { id: id, thread: thread, address: checkpoint, checkpoint: checkpoint }); since_trim += 1; print("START ", id); flush_stdout(); break; } }
+            for p in prepared { if p.key != key { continue; } let initial = Saved { heap: copy(p.heap), base: base.header, protected: base.nodes.len, storage: instrumented, gensym_prefix: copy(prefix), gensym_next: next }; let checkpoint = source::reserve_identity(); var work = Work { saved: copy(initial), id: id, identity: identity(initial), mode: 0, helper: [], key: -1, checkpoint: checkpoint, blocking: retention > 0 }; dispatch(work, base, pool, counts, stats); running.push(Running { id: id, address: checkpoint, checkpoint: checkpoint }); since_trim += 1; print("START ", id); flush_stdout(); break; } }
         // Release inactive continuation owners and their budget after dispatch.
         { var inactive: i64 = 0; for w in waiting { if !w.active { inactive += 1; if w.address == 0 { retained -= footprint(w.saved); } } } if inactive == waiting.len { waiting.clear(); } else if inactive > 0 { var active: Waiting[>..] = []; for w in waiting { if w.active { active.push(copy(w)); } } waiting = copy(active); } }
         if received == queue.len { queue.clear(); received = 0; }
         // Instrumented runs measure trim_memory() once the coordinator is idle
         // after a batch of jobs (light-cljs-784); other runs never call it.
-        if instrumented && since_trim > 0 && counts.live == 0 && queue.len == 0 && !closing {
+        if instrumented && since_trim > 0 && running.len == 0 && queue.len == 0 && !closing {
             let before = resident_memory(); let trimming = clock_ns(); trim_memory(); stats.trim_ns += clock_ns() - trimming; stats.trim_before += before; stats.trim_after += resident_memory(); stats.trims += 1; since_trim = 0;
         }
         turns += 1; max_commands = max(max_commands, command_count); max_events = max(max_events, event_count);
@@ -507,10 +617,14 @@ fn main() {
     }
     // Every job worker has been reaped; the reapers are idle.
     for i in counts.reapers { assert(qput(Reap { thread: -1 })); }
-    for thread in pool { assert(thread_wait(thread)); }
+    for thread in reapers { assert(thread_wait(thread)); }
     assert(thread_wait(reader));
+    // The coordinator's VM tables did not change after READY.
+    if check { assert(image == heap_digest(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }])); }
     if tracing {
-        print("JOBS 0 ", retention, " ", stats.spawned, " ", finals, " ", stats.spawn_ns, " ", stats.start_ns, " ", stats.join_ns, " ", stats.argument_bytes, " ", stats.restore_bytes, " ", stats.peak_live, " ", stats.peak_blocked, " ", stats.waits, " ", stats.saves, " ", stats.answers, " ", counts.live, " ", counts.blocked);
+        // spawned counts job workers; jobs the jobs they ran, retired the
+        // workers that left at the table-byte cap (light-cljs-795).
+        print("JOBS 0 ", retention, " ", stats.spawned, " ", finals, " ", stats.spawn_ns, " ", stats.start_ns, " ", stats.join_ns, " ", stats.argument_bytes, " ", stats.restore_bytes, " ", stats.peak_live, " ", stats.peak_blocked, " ", stats.waits, " ", stats.saves, " ", stats.answers, " ", counts.live, " ", counts.blocked, " ", stats.jobs, " ", stats.retired, " ", stats.reset_ns);
         if instrumented { print("TRIM 0 ", stats.trims, " ", stats.trim_before, " ", stats.trim_after, " ", stats.trim_ns); }
         // The coordinator, the input thread, the reapers and every job worker;
         // all but the coordinator are joined. Preparers (one per PREPARED or

@@ -140,6 +140,20 @@ impl GooseSession {
         mode: Option<&str>,
         retained: Option<usize>,
     ) -> Result<Arc<Self>, EvalError> {
+        let env = retained
+            .map(|n| ("BBP_RETAINED_WORKERS", n.to_string()))
+            .into_iter()
+            .collect::<Vec<_>>();
+        Self::start_env(executable, workers, mode, &env)
+    }
+    /// A session whose runner gets these environment variables (tests:
+    /// BBP_RETAINED_WORKERS, BBP_WORKER_TABLE_BYTES); the rest it inherits.
+    fn start_env(
+        executable: &Path,
+        workers: usize,
+        mode: Option<&str>,
+        env: &[(&str, String)],
+    ) -> Result<Arc<Self>, EvalError> {
         let started = Instant::now();
         if !(1..=8).contains(&workers) {
             return Err(error("worker count must be 1..8"));
@@ -153,8 +167,8 @@ impl GooseSession {
         std::fs::write(directory.join("base.gsp"), base.bytes).map_err(error)?;
         let mut command = Command::new(executable);
         command.arg(&directory).arg(workers.to_string());
-        if let Some(retained) = retained {
-            command.env("BBP_RETAINED_WORKERS", retained.to_string());
+        for (name, value) in env {
+            command.env(name, value);
         }
         if let Some(mode) = mode {
             command.arg(mode);
@@ -235,7 +249,7 @@ impl GooseSession {
                                     == (match kind {
                                         "SCHED" => 13,
                                         "THREADS" => 5,
-                                        "JOBS" => 17,
+                                        "JOBS" => 20,
                                         "TRIM" => 6,
                                         "CENSUS" => 16,
                                         _ => 3,

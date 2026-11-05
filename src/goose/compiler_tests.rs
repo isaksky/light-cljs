@@ -409,10 +409,12 @@ fn goose_compiler_mapseq_helper_no_replay() {
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_assembly_leaf_boundaries() {
+    // The array is the job's own: a job cannot write its definition's rows
+    // (light-cljs-795).
     let body = r#"rt => {
-        const a=[1,2,3]; a.length=1; a.length=3;
         const sequence=rt.core.sequence;
         return (form,env) => {
+            const a=[1,2,3]; a.length=1; a.length=3;
             const alias=a;
             const before=a[0]===1 && a[1]===undefined && a[2]===undefined;
             alias.length=0; alias.length=4; alias[2]=7;
@@ -862,6 +864,11 @@ pub(super) struct JobsLine {
     pub answers: u64,
     pub live: u64,
     pub blocked: u64,
+    /// Jobs given to job workers, workers retired at the table-byte cap and
+    /// the workers' total reset time (light-cljs-795).
+    pub jobs: u64,
+    pub retired: u64,
+    pub reset_ns: u64,
 }
 pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
     let line = trace
@@ -873,7 +880,7 @@ pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
         .skip(2)
         .map(|n| n.parse::<u64>().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(n.len(), 15, "{line}");
+    assert_eq!(n.len(), 18, "{line}");
     JobsLine {
         retention: n[0],
         spawned: n[1],
@@ -884,10 +891,14 @@ pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
         answers: n[12],
         live: n[13],
         blocked: n[14],
+        jobs: n[15],
+        retired: n[16],
+        reset_ns: n[17],
     }
 }
 /// Threads: the coordinator, the input thread, `workers + retention` reapers
-/// and one contained worker per job; every thread but the coordinator joined.
+/// and the contained job workers it spawned, which serve many jobs each
+/// (light-cljs-795); every thread but the coordinator joined.
 pub(super) fn assert_threads(trace: &[String], workers: usize) -> JobsLine {
     let jobs = jobs_line(trace);
     let reapers = workers as u64 + jobs.retention;
@@ -910,18 +921,23 @@ pub(super) fn assert_threads(trace: &[String], workers: usize) -> JobsLine {
     );
     jobs
 }
-/// Every dispatch (a start, a helper production or a resume) runs in a job
-/// worker spawned for it, except a resume answered to a worker blocked in
-/// place, which keeps its own job.
+/// Every dispatch (a start, a helper production or a resume) is a job given
+/// to a job worker, except a resume answered to a worker blocked in place,
+/// which keeps its own job. Workers are reused: none is spawned per job, and
+/// each retires only at the table-byte cap or ends at the session's close.
 pub(super) fn assert_jobs(trace: &[String], workers: usize, dispatches: u64) -> JobsLine {
     let jobs = assert_threads(trace, workers);
-    assert_eq!(jobs.spawned + jobs.answers, dispatches, "{jobs:?}");
+    assert_eq!(jobs.jobs + jobs.answers, dispatches, "{jobs:?}");
+    assert!(jobs.spawned <= jobs.jobs.max(1), "{jobs:?}");
+    assert!(jobs.retired <= jobs.spawned, "{jobs:?}");
     jobs
 }
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_preparation_identity_and_private_calls() {
-    let source = "rt => { let state = {n: 40}; return (form, env) => { state.n = state.n + 1; return state.n; }; }";
+    // Each call reads the definition's state into a private object: a job
+    // cannot write its definition's rows (light-cljs-795).
+    let source = "rt => { let state = {n: 40}; return (form, env) => { const mine = {n: state.n}; mine.n = mine.n + 1; return mine.n; }; }";
     for workers in [1, 2, 4, 8] {
         // Identical compiler identity in a new session must prepare afresh.
         for _ in 0..2 {
@@ -1543,27 +1559,234 @@ fn goose_compiler_cleanup_abort_cancels_a_started_replacement() {
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_every_job_runs_in_its_own_worker() {
     // Each call mutates the prepared definition's closure state: a counter,
-    // a new property and an array element. The job worker's exit discards
-    // them, so every call sees the prepared image unchanged.
+    // a new property and an array element. Those rows are the definition's,
+    // not the job's, so the first write faults NativeBoundary before it
+    // mutates (light-cljs-795, as amended by light-cljs-797) instead of
+    // being undone silently when the job ends; one worker serves every job.
     let source = "rt => { let state = {n: 40}; let list = []; return (form, env) => { state.n = state.n + 1; state.seen = (state.seen || 0) + 1; list[list.length] = 1; return state.n + state.seen + list.length; }; }";
     for workers in [1, 2, 4, 8] {
         let session = GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
         let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
-        let (_, args, call) = inputs(&e, source);
+        let (_, args, _) = inputs(&e, source);
         let f = e.source_macro_function(901, source).unwrap();
-        for _ in 0..12 {
-            let result = e.call(f, &args).unwrap();
-            let form = e
-                .export_form(result, &call, origin(&call), Default::default())
-                .unwrap();
-            assert!(form.data().value_eq(&Datum::new(DatumKind::Integer(43))));
-            e.release(result).unwrap();
-        }
+        let message = e.call(f, &args).unwrap_err().0;
+        assert!(message.contains("Fault.NativeBoundary"), "{message}");
         session.close();
         cleaned(&session);
-        let jobs = assert_jobs(&session.trace(), workers, 12);
-        assert_eq!((jobs.spawned, jobs.waits), (12, 0), "{jobs:?}");
+        let jobs = assert_jobs(&session.trace(), workers, 1);
+        assert_eq!((jobs.spawned, jobs.waits), (1, 0), "{jobs:?}");
     }
+}
+
+/// Submit raw job `id` of definition `key` with the fixture's arguments.
+fn submit_key(session: &GooseSession, bytes: &[u8], id: u64, key: u64) -> mpsc::Receiver<Event> {
+    std::fs::write(
+        session.directory.join(format!("{id}.definition")),
+        key.to_string(),
+    )
+    .unwrap();
+    std::fs::write(session.directory.join(format!("{id}.gfb")), bytes).unwrap();
+    let (tx, rx) = mpsc::channel();
+    session.pending.lock().unwrap().insert(id, tx);
+    let mut process = session.process.lock().unwrap();
+    let input = &mut process.as_mut().unwrap().input;
+    writeln!(input, "{id}").unwrap();
+    input.flush().unwrap();
+    rx
+}
+
+/// Reused job workers (light-cljs-795): the jobs of `plan` (definition keys,
+/// in order, one at a time) on a session whose workers retire above `cap`
+/// table bytes. Returns each job's outcome (its result or failure, the
+/// FINISH line with steps and writes, and the NEED lines) and the JOBS line.
+fn reuse_session(workers: usize, cap: Option<u64>, plan: &[u64]) -> (Vec<(u64, String)>, JobsLine) {
+    let definitions: [(u64, &str); 10] = [
+        // Pure: garbage in every table, a fresh object and array.
+        (
+            1,
+            "rt => (form, env) => { const o = {a: 1}; o.b = 2; const xs = []; for (let i = 0; i < 50; i++) xs[xs.length] = {k: i, o: o}; return o.a + o.b + xs.length; }",
+        ),
+        // Writes into rows the job did not allocate fault before they mutate:
+        // the definition's object, a closure environment, a global, an
+        // intrinsic.
+        (
+            2,
+            "rt => { const state = {n: 0}; return (form, env) => { state.n = state.n + 1; return state.n; }; }",
+        ),
+        (
+            3,
+            "rt => { let n = 0; return (form, env) => { n = n + 1; return n; }; }",
+        ),
+        (4, "rt => (form, env) => { globalThis.leak = 1; return 1; }"),
+        (5, "rt => (form, env) => { rt.leak = 1; return 1; }"),
+        // A limit and a VM fault.
+        (
+            6,
+            "rt => (form, env) => { let x = 0; while (true) { x = x + 1; } }",
+        ),
+        (7, "rt => (form, env) => { const o = null; return o.x; }"),
+        // Root reads write __lightCompilerRoots and the published-helper
+        // cache; every job still asks the compiler.
+        (
+            8,
+            "rt => (form, env) => { const f = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/function'); return f.call(null) + 1; }",
+        ),
+        (
+            9,
+            "rt => (form, env) => { const v = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value'); return v + 1; }",
+        ),
+        // Many rows: tables above a small cap retire the worker.
+        (
+            10,
+            "rt => (form, env) => { const xs = []; for (let i = 0; i < 20000; i++) xs[xs.length] = {i: i}; return xs.length; }",
+        ),
+    ];
+    let mut env = vec![];
+    if let Some(cap) = cap {
+        env.push(("BBP_WORKER_TABLE_BYTES", cap.to_string()));
+    }
+    let session =
+        GooseSession::start_env(&runner(), workers, Some("readiness-test"), &env).unwrap();
+    let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+    let (_, args, call) = inputs(&e, "rt => (form, env) => 0");
+    let values = args
+        .iter()
+        .map(|&id| e.get(id).unwrap())
+        .collect::<Vec<_>>();
+    let limits = ConversionLimits::default();
+    let budget = bridge::Budget::new(limits.nodes, e.control.clone());
+    let graph = bridge::Graph::arguments(&values, limits, &budget).unwrap();
+    let bytes = graph.encode().unwrap();
+    for (key, source) in definitions {
+        session
+            .export(
+                &session.directory.join(format!("definition-{key}.gsp")),
+                source,
+            )
+            .unwrap();
+    }
+    let mut outcomes = Vec::new();
+    for (index, &key) in plan.iter().enumerate() {
+        let id = index as u64 + 1;
+        if key == 8 || key == 9 {
+            let helper = if key == 8 {
+                "rt => {const result=41; return function(){return result;};}"
+            } else {
+                "rt => 41"
+            };
+            session
+                .export(&session.directory.join(format!("{id}-0.helper")), helper)
+                .unwrap();
+            session.answer_key(id, 0, &key.to_string()).unwrap();
+        }
+        let rx = submit_key(&session, &bytes, id, key);
+        let result = loop {
+            match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
+                Event::Done(_) => {
+                    let out = std::fs::read(session.directory.join(format!("{id}.out"))).unwrap();
+                    let output = bridge::Graph::decode(&out, limits, &budget)
+                        .unwrap()
+                        .expansion(&call, origin(&call), &graph.originals, limits, &budget)
+                        .unwrap();
+                    break format!("{:?}", output.data());
+                }
+                Event::Failure(message) => break message,
+                Event::Start
+                | Event::Resumed
+                | Event::Produced
+                | Event::Need(_, _)
+                | Event::Ready => {}
+            }
+        };
+        let trace = session.trace();
+        let lines = trace
+            .iter()
+            .filter(|s| {
+                s.starts_with(&format!("FINISH {id} "))
+                    || s.starts_with(&format!("NEED {id} "))
+                    || s.starts_with(&format!("ERROR {id} "))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        // Without the job id, so equal jobs compare equal.
+        let outcome = format!("{result} {lines:?}").replace(&format!(" {id} "), " # ");
+        outcomes.push((key, outcome));
+        // The worker publishes its reset after the result: let the
+        // coordinator see it idle before the next job.
+        thread::sleep(Duration::from_millis(20));
+    }
+    session.close();
+    cleaned(&session);
+    let trace = session.trace();
+    assert!(
+        !String::from_utf8_lossy(&session.stderr.lock().unwrap()).contains("assert failed"),
+        "{trace:?}"
+    );
+    // A start per job, a resume per root read and one helper production per
+    // root the session produced.
+    let reads = plan.iter().filter(|&&k| k == 8 || k == 9).count() as u64;
+    let productions = [8, 9].iter().filter(|k| plan.contains(k)).count() as u64;
+    let jobs = assert_jobs(&trace, workers, plan.len() as u64 + reads + productions);
+    (outcomes, jobs)
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_reused_workers_start_every_job_from_the_image() {
+    // Job 1 first in a fresh worker, then after every other kind of job on
+    // the same reused worker, and the whole plan once more with a cap of 0,
+    // which retires the worker after every job (a fresh worker each): every
+    // job's result, events, steps and limit outcome are the same.
+    let plan = [1, 2, 1, 3, 1, 4, 1, 5, 1, 6, 1, 7, 1, 8, 8, 1, 9, 9, 1];
+    for workers in [1, 4] {
+        let (reused, jobs) = reuse_session(workers, Some(16 << 20), &plan);
+        let (fresh, control) = reuse_session(workers, Some(0), &plan);
+        assert_eq!(reused, fresh);
+        let first = &reused[0].1;
+        assert!(first.contains("Double(53.0)"), "{first}");
+        for (key, outcome) in &reused {
+            let expected = match key {
+                1 => "Double(53.0)",
+                2..=5 => "Fault.NativeBoundary",
+                6 => "Fault.InstructionLimit",
+                7 => "Fault.TypeError",
+                _ => "Double(42.0)",
+            };
+            assert!(outcome.contains(expected), "{key}: {outcome}");
+            if *key == 1 {
+                assert_eq!(outcome, first, "job 1 after other jobs");
+            }
+            // Root reads ask the compiler in every job.
+            if *key >= 8 {
+                assert!(outcome.contains("NEED "), "{key}: {outcome}");
+            }
+        }
+        // Two workers served the whole plan (a helper production needs a second
+        // while the demanding job blocks); the control spawned one a job.
+        assert_eq!((jobs.spawned, jobs.retired), (2, 0), "{jobs:?}");
+        assert!(jobs.reset_ns > 0, "{jobs:?}");
+        assert_eq!(
+            (control.spawned, control.retired),
+            (control.jobs, control.jobs),
+            "{control:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_reused_worker_retires_at_its_table_cap() {
+    // Under a 1 MB cap the large job's tables retire its worker; the next
+    // job gets a new worker and the same result.
+    let (outcomes, jobs) = reuse_session(1, Some(1 << 20), &[1, 10, 1, 1]);
+    assert!(outcomes[1].1.contains("Double(20000.0)"), "{outcomes:?}");
+    assert_eq!(outcomes[0], outcomes[2]);
+    assert_eq!(outcomes[0], outcomes[3]);
+    assert_eq!(
+        (jobs.jobs, jobs.spawned, jobs.retired),
+        (4, 2, 1),
+        "{jobs:?}"
+    );
 }
 
 /// Submit raw job `id` of definition 1 with the fixture's arguments.
@@ -1618,7 +1841,7 @@ fn goose_compiler_blocked_waits_release_worker_and_retention() {
     let jobs = assert_threads(&session.trace(), 1);
     assert_eq!(
         (
-            jobs.spawned,
+            jobs.jobs,
             jobs.waits,
             jobs.peak_blocked,
             jobs.answers,
@@ -1628,7 +1851,8 @@ fn goose_compiler_blocked_waits_release_worker_and_retention() {
         "{jobs:?}"
     );
     // Over the budget: the first wait blocks, later ones save a continuation
-    // and their workers exit; the blocked one is cancelled at close.
+    // and their workers go idle (a later job may reuse one); the blocked one
+    // is cancelled at close.
     let (session, bytes) = fixture(1, Some("readiness-test"), Some(1));
     for id in 1..=3 {
         await_need(&submit(&session, &bytes, id));
@@ -1637,10 +1861,11 @@ fn goose_compiler_blocked_waits_release_worker_and_retention() {
     cleaned(&session);
     let jobs = assert_threads(&session.trace(), 1);
     assert_eq!(
-        (jobs.spawned, jobs.waits, jobs.peak_blocked, jobs.saves),
+        (jobs.jobs, jobs.waits, jobs.peak_blocked, jobs.saves),
         (3, 3, 1, 2),
         "{jobs:?}"
     );
+    assert!((2..=3).contains(&jobs.spawned), "{jobs:?}");
     // Saturated retention: eight simultaneous waits at limit 8 with a budget
     // of one. Jobs above 10 (cleanup-abort-test) leave their answers queued
     // until released, so seven save answers sit on the Answer queue at once.
@@ -1666,8 +1891,14 @@ fn goose_compiler_blocked_waits_release_worker_and_retention() {
     cleaned(&session);
     let jobs = assert_threads(&session.trace(), 8);
     assert_eq!(
-        (jobs.spawned, jobs.waits, jobs.peak_blocked, jobs.saves),
-        (8, 8, 1, 7),
+        (
+            jobs.jobs,
+            jobs.spawned,
+            jobs.waits,
+            jobs.peak_blocked,
+            jobs.saves
+        ),
+        (8, 8, 8, 1, 7),
         "{jobs:?}"
     );
     // A contained abort while blocked (cleanup-abort-test job 3) poisons the
@@ -1697,8 +1928,8 @@ fn goose_compiler_blocked_waits_release_worker_and_retention() {
     }
     let jobs = assert_threads(&session.trace(), 1);
     assert_eq!(
-        (jobs.spawned, jobs.waits, jobs.peak_blocked),
-        (1, 1, 1),
+        (jobs.jobs, jobs.spawned, jobs.waits, jobs.peak_blocked),
+        (1, 1, 1, 1),
         "{jobs:?}"
     );
     session.close();
@@ -1734,7 +1965,7 @@ fn goose_compiler_drains_ready_batches_without_progress_backoff() {
                 "value"
             };
             session.export(&session.directory.join("definition-1.gsp"),
-            &format!("rt => {{ let state = {{n: 0}}; return (form, env) => {{ state.n = state.n + 1; let value = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value'); return state.n + {result}; }}; }}")).unwrap();
+            &format!("rt => {{ return (form, env) => {{ let state = {{n: 0}}; state.n = state.n + 1; let value = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value'); return state.n + {result}; }}; }}")).unwrap();
             let mut replies = Vec::new();
             for id in 1..=8 {
                 std::fs::write(session.directory.join(format!("{id}.definition")), "1").unwrap();
@@ -1827,17 +2058,9 @@ fn goose_compiler_drains_ready_batches_without_progress_backoff() {
             assert_eq!(previous[7], 9, "eight queued requests and shutdown");
             let jobs = assert_jobs(&trace, workers, 17);
             if retained == Some(0) {
-                assert_eq!(
-                    (jobs.spawned, jobs.saves, jobs.waits),
-                    (17, 8, 0),
-                    "{jobs:?}"
-                );
+                assert_eq!((jobs.jobs, jobs.saves, jobs.waits), (17, 8, 0), "{jobs:?}");
             } else {
-                assert_eq!(
-                    (jobs.spawned, jobs.answers, jobs.waits),
-                    (9, 8, 8),
-                    "{jobs:?}"
-                );
+                assert_eq!((jobs.jobs, jobs.answers, jobs.waits), (9, 8, 8), "{jobs:?}");
                 assert!(jobs.peak_blocked >= 1, "{jobs:?}");
             }
         }
@@ -2126,7 +2349,7 @@ fn goose_compiler_pool_alternates_payloads_and_keeps_owned_forms() {
         let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
         let (_, args, call) = inputs(&e, "rt => (form, env) => 0");
         let functions = [0, 100].map(|base| e.source_macro_function(777 + base,
-            &format!("rt => {{ let state = {{n: {base}}}; return (form, env, x) => {{ state.n = state.n + 1; return __rt.formVector(x, state.n); }}; }}")).unwrap());
+            &format!("rt => {{ return (form, env, x) => {{ let state = {{n: {base}}}; state.n = state.n + 1; return __rt.formVector(x, state.n); }}; }}")).unwrap());
         for iteration in 0..24 {
             let size = [1, 32, 256, 1][iteration % 4];
             let input = Datum::new(DatumKind::Collection {
@@ -2223,7 +2446,7 @@ fn goose_compiler_callable_nested_demand_aliases_and_no_replay() {
         let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
         let (f, args, call) = inputs(
             &e,
-            r#"rt => {const state={n:0};return (form,env) => {
+            r#"rt => {return (form,env) => {const state={n:0};
             state.n++;
             const f=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/function');
             const alias=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/alias');

@@ -276,14 +276,16 @@
 (defn goose-diagnostics [path workers]
   (let [text (slurp (str path))
         [_ created peak joined] (map #(some-> % parse-long) (re-find #"(?m)^THREADS 0 (\d+) (\d+) (\d+)$" text))
-        ;; One contained job worker per dispatch (light-cljs-784); the JOBS
-        ;; fields are compiler_session.goose's `Jobs` totals.
+        ;; Reused contained job workers (light-cljs-795); the JOBS fields are
+        ;; compiler_session.goose's `Jobs` totals: :spawned workers ran :jobs
+        ;; jobs, :retired of them at the table-byte cap, resetting for :reset-ns.
         jobs (some->> (re-find #"(?m)^JOBS 0 ([\d ]+)$" text) second (#(str/split % #" ")) (map parse-long)
                       (zipmap [:retention :spawned :finals :spawn-ns :start-ns :join-ns :argument-bytes :restore-bytes
-                               :peak-live :peak-blocked :waits :saves :answers :live :blocked]))
+                               :peak-live :peak-blocked :waits :saves :answers :live :blocked :jobs :retired :reset-ns]))
         reapers (+ workers (:retention jobs 0))]
     (assert (str/includes? text "CLOSED 1") "Native Goose session did not close")
     (assert jobs "Missing job worker diagnostics")
+    (assert (<= (:retired jobs) (:spawned jobs) (max 1 (:jobs jobs))) "Native Goose job workers were not reused")
     (assert (= [(+ 2 reapers (:spawned jobs)) (+ 2 reapers (:peak-live jobs))] [created peak]) "Native Goose thread total differs")
     ;; Native total includes its coordinator; every other thread is joined.
     (assert (= (+ 1 reapers (:spawned jobs)) joined) "Native Goose spawned threads did not all join")

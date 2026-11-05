@@ -1271,3 +1271,104 @@ BBP_RETAINED_WORKERS=0 $C --backend all --runner RUNNER --phase check --runs 1
 $C --backend all --runner RUNNER --phase instrument --runs 1
 bb crates/big-boy-pants-js/scripts/conformance.bb --check --heap-stats
 ```
+
+## Reused job workers
+
+November 5, 2026 (light-cljs-795; design in
+[javascript-coverage.md](../docs/javascript-coverage.md), "Revisited without
+byte identity", its "Implemented (light-cljs-795)" notes and "Stack
+settings"). A job worker now serves many jobs: it restores the base image
+once, installs each job's rows above it and truncates its tables back to the
+image after the job, or retires once its tables end a job above
+`BBP_WORKER_TABLE_BYTES`. **The 200k project stays byte-identical with its
+five oracles passing at the default cap (1.25 MiB), with a cap no job
+reaches (16 MiB) and with a cap of 0 (a fresh worker per job). Goose 1/2/4/8
+take 15.422 / 10.561 / 7.254 / 7.700 s at the default, against 16.683 /
+11.540 / 7.831 / 8.640 s for light-cljs-784's worker per job (−1.261 /
+−0.979 / −0.577 / −0.940 s) and 14.738 / 10.121 / 7.167 / 7.274 s for the
+runner before it (+0.684 / +0.440 / +0.087 / +0.426 s).** With the 16 MiB cap
+they take 15.027 / 10.259 / 7.071 / 7.161 s (+0.289 / +0.138 / −0.096 /
+−0.113 s against that runner), but idle workers then keep up to 5.5 MB more of
+the runner's peak memory; the default retires a quarter of the workers' jobs
+to stay within 5% of the per-job control.
+
+Binaries: light-cljs `--release --locked --features goose-macros` at this
+branch (SHA-256 `44f3ccd5…`, every cell), runner `compiler_session.goose` at
+this branch (`1915e0b6…`); the caps are set by environment. Goose v2026.3-267,
+seed 42, 199,129 lines, release/advanced/`--no-cache`, master at `72ce6f84`
+(light-cljs-801's dispatch loop included, so the 784 and pre-784 figures,
+from the sections above, are not same-day; the cap-0 row is the same-day
+control). Samples, traced JOBS lines and runner rusage:
+`generated-200k-reused-workers.edn.gz`.
+
+**Check gate**, `compare.bb --backend all --phase check --runs 1`, one
+sample after one warmup a cell, not a timing run. Seconds of wall, then the
+compiler command's user + system CPU (the runner included) and its peak
+memory:
+
+| Cap | Goose 1 | Goose 2 | Goose 4 | Goose 8 | V8 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1.25 MiB (default) | 15.422 (11.43 + 4.02) 0.910 GB | 10.561 (12.39 + 4.48) 0.944 GB | 7.254 (13.94 + 5.82) 0.957 GB | 7.700 (15.49 + 8.90) 0.994 GB | 5.800 |
+| 16 MiB (no retirement) | 15.027 (11.29 + 3.13) 0.917 GB | 10.259 (12.12 + 3.51) 0.956 GB | 7.071 (13.79 + 4.32) 0.926 GB | 7.161 (14.91 + 5.27) 1.003 GB | 5.901 |
+| 0 (a worker per job) | 17.101 (12.02 + 6.37) 0.906 GB | 11.559 (12.89 + 7.52) 0.922 GB | 8.363 (14.94 + 12.07) 0.935 GB | 9.514 (16.00 + 26.40) 0.993 GB | 5.877 |
+
+Every cell of the three runs passed the byte-identity, oracle and waste
+checks. System CPU is where the per-job spawns went: 26.4 s at eight workers
+with a worker per job, 5.3 s without retirements (4.9 s before
+light-cljs-784).
+
+**Workers, latency, resets and the runner's memory**, from the final `JOBS`
+line of traced sessions (the runner in `readiness-test` mode, which adds
+trace lines only, with `BBP_RESET_CHECK=0`), one session each, and the
+runner process's own peak memory (`/usr/bin/time -l` around it):
+
+| Cap, workers | Job workers (retired) | Queue to first instruction | Reset | Runner peak memory |
+| --- | ---: | ---: | ---: | ---: |
+| 1.25 MiB, 1 | 1,282 (1,282) | 61 µs | 0.28 µs | 28.3 MB (−0.7%) |
+| 1.25 MiB, 2 | 1,282 (1,282) | 66 µs | 0.32 µs | 34.1 MB (−2.6%) |
+| 1.25 MiB, 4 | 1,284 (1,284) | 88 µs | 0.36 µs | 46.8 MB (−5.8%) |
+| 1.25 MiB, 8 | 1,285 (1,285) | 177 µs | 0.44 µs | 68.7 MB (+2.3%) |
+| 16 MiB, 1 | 2 (0) | 14 µs | 0.31 µs | 34.0 MB (+19.1%) |
+| 16 MiB, 2 | 3 (0) | 16 µs | 0.33 µs | 40.6 MB (+15.8%) |
+| 16 MiB, 4 | 4 (0) | 18 µs | 0.42 µs | 47.4 MB (−4.6%) |
+| 16 MiB, 8 | 8 (0) | 21 µs | 0.46 µs | 73.1 MB (+8.8%) |
+| 0, 1 | 5,283 (5,283) | 187 µs | — | 28.5 MB |
+| 0, 2 | 5,283 (5,283) | 226 µs | — | 35.0 MB |
+| 0, 4 | 5,283 (5,283) | 437 µs | — | 49.7 MB |
+| 0, 8 | 5,283 (5,283) | 1,137 µs | — | 67.2 MB |
+
+Every session ran 5,283 jobs (5,226 macro starts, 57 helper productions;
+529 waits, all blocked and answered). The queue-to-first-instruction mean is
+per job and includes the spawns of retired workers' successors; the reset is
+per reset performed (the image is 28 nodes, so truncation is cheap); the
+percentages compare with the cap-0 row. Traced runs at 2 MiB, 1.5 MiB and
+1 MiB (in the samples file) retired 0, 577 and 2,090 workers and gave the
+runner 33.9, 30.8 and 28.5 MB at one worker: a reused worker keeps its data
+stacks' high water, its largest job's tables and scratch, so only a cap that
+retires the workers of the largest jobs bounds that, and 1.25 MiB is the
+largest tried that stays within 5% at every worker count.
+
+**Isolation cost.** light-cljs-792 projected about 5,283 × 15 µs, 0.1 s a
+session, against 784's 1.9 s. Measured as the time from queuing a job to its
+first instruction: 0.073 s a session at one worker with the 16 MiB cap (0.11 s
+at eight), as projected; 0.32 s at the default (0.94 s at eight), where 1,282
+retirements each pay the region cost of a spawn (probe P12), plus their
+joins off the critical path; 0.99 s with a worker per job (6.0 s of job time
+at eight). The gap to the projection at the default is the memory bound, not
+the reset.
+
+**Stack settings** (rule 8): `goose check --stacks` gives main 60 regions,
+`run_worker` 53, `supervise` and `input` 2, a thread cap of 307 against at
+most 274 live threads; see the design document.
+
+Reproduce (the generated-project README's gate commands; `traced.bb` was a
+scratch wrapper: the runner run as `RUNNER DIR WORKERS readiness-test` under
+`/usr/bin/time -l` through `LIGHT_CLJS_GOOSE_RUNNER`, with
+`LIGHT_CLJS_GOOSE_REPORT` set):
+
+```sh
+C="bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs"
+$C --backend all --runner RUNNER --phase check --runs 1
+BBP_WORKER_TABLE_BYTES=16777216 $C --backend all --runner RUNNER --phase check --runs 1
+BBP_WORKER_TABLE_BYTES=0 $C --backend all --runner RUNNER --phase check --runs 1
+```

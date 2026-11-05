@@ -335,6 +335,85 @@ fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, binding
     bindings.append(s.bindings);
     c.copied_bytes += payload_bytes(s); return true;
 }
+// A reused job worker (light-cljs-795; docs/javascript-coverage.md, decision
+// 3) restores its image once, from the snapshot its spawn copied, and keeps
+// that snapshot as the image's pristine twin. `service` names the image's
+// node rows compiler services write (the roots object, the published-helper
+// cache); with the property rows of their image key runs they are the only
+// image rows a job changes, since JavaScript cannot write a row the job did
+// not allocate (source::writable).
+//
+// After every job, truncate cuts every table back to the twin's length and
+// restores the service rows and the heap's state fields from the twin. The
+// next job's tables are then a fresh worker's, at the same rows.
+fn truncate(twin: const Snapshot&, service: const i64[:], identity: i64, code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> bool {
+    if !(heap.code .== code) || heap.live_jobs != 0 || !code.valid || code.functions.len < twin.functions.len || heap.nodes.len < twin.nodes.len { return false; }
+    code.source_bytes.resize(twin.code_bytes.len); code.functions.resize(twin.functions.len); code.constants.resize(twin.code_constants.len); code.children.resize(twin.children.len);
+    code.ops.resize(twin.ops.len); code.units.resize(twin.code_units.len); code.strings.resize(twin.code_strings.len);
+    code.ins.resize(twin.ops.len); code.effects.resize(twin.ops.len); code.heights.resize(twin.functions.len); code.decoded = twin.functions.len;
+    heap.nodes.resize(twin.nodes.len); heap.values.resize(twin.values.len); heap.properties.resize(twin.properties.len);
+    heap.units.resize(twin.units.len); heap.latin1.resize(twin.latin1.len); heap.strings.resize(twin.strings.len); heap.constants.resize(twin.constants.len);
+    heap.source_bytes.resize(twin.bytes.len); heap.source_ranges.resize(twin.sources.len);
+    for r in service { let n = twin.nodes[r]; heap.nodes[r] = n; for k in n.keys..(n.keys + n.key_capacity) { heap.properties[k] = twin.properties[k]; } }
+    state(twin.header, identity, heap);
+    heap.image = source::Tops { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len, strings: heap.strings.len, latin1: heap.latin1.len };
+    bindings.clear(); bindings.append(twin.bindings);
+    return true;
+}
+// The heap's state fields, as a restore of this header sets them.
+fn state(h: const Header&, identity: i64, heap: source::Heap&) {
+    heap.identity = identity; heap.limits = h.limits; heap.work = h.work; heap.global = h.global; heap.call_method = h.call_method; heap.fault = source::Fault.None;
+    heap.boot_count = h.boot; heap.initializer_count = h.initializers; heap.producer_count = h.producers; heap.property_rows = h.property_rows;
+}
+fn same_rows<T>(a: const T[:], b: const T[:]) -> bool { return a.len == b.len && bytes_of(a) == bytes_of(b); }
+// The reset check: every table and state field equals the twin's, byte for
+// byte (tests and BBP_RESET_CHECK=1).
+fn pristine(twin: const Snapshot&, identity: i64, code: const source::Code&, heap: const source::Heap&, bindings: const Binding[:]) -> bool {
+    let h = twin.header;
+    if heap.identity != identity || !same_bits(heap.limits, h.limits) || heap.work != h.work || !source::same_bits(heap.global, h.global) || !source::same_bits(heap.call_method, h.call_method) || heap.fault != source::Fault.None || heap.live_jobs != 0 { return false; }
+    if heap.boot_count != h.boot || heap.initializer_count != h.initializers || heap.producer_count != h.producers || heap.property_rows != h.property_rows || code.decoded != twin.functions.len || code.heights.len != twin.functions.len || code.ins.len != twin.ops.len { return false; }
+    return same_rows(code.source_bytes, twin.code_bytes) && same_rows(code.functions, twin.functions) && same_rows(code.constants, twin.code_constants) && same_rows(code.children, twin.children) && same_rows(code.ops, twin.ops) && same_rows(code.units, twin.code_units) && same_rows(code.strings, twin.code_strings)
+        && same_rows(heap.nodes, twin.nodes) && same_rows(heap.values, twin.values) && same_rows(heap.properties, twin.properties) && same_rows(heap.units, twin.units) && same_rows(heap.latin1, twin.latin1) && same_rows(heap.strings, twin.strings) && same_rows(heap.constants, twin.constants)
+        && same_rows(heap.source_bytes, twin.bytes) && same_rows(heap.source_ranges, twin.sources) && same_rows(bindings, twin.bindings);
+}
+fn same_bits(a: source::Limits, b: source::Limits) -> bool { let x: source::Limits[] = [a]; let y: source::Limits[] = [b]; return bytes_of(x) == bytes_of(y); }
+// Whether a job snapshot's rows below the twin's lengths are the image's,
+// except the service rows (a saved continuation carries the roots and cache
+// rows its job's compiler services wrote). Tests and BBP_RESET_CHECK=1 only;
+// otherwise this holds by construction.
+fn over_image(s: const Snapshot&, twin: const Snapshot&, service: const i64[:]) -> bool {
+    let a = ends(s); let b = ends(twin); for n, i in b { if a[i] < n { return false; } }
+    var keys: i64[>..] = []; for r in service { let n = twin.nodes[r]; for k in n.keys..(n.keys + n.key_capacity) { keys.push(k); } }
+    for row, i in twin.nodes { var skip = false; for r in service { if r == i { skip = true; } } if !skip && !same_rows(s.nodes[i..(i + 1)], twin.nodes[i..(i + 1)]) { return false; } }
+    for row, i in twin.properties { var skip = false; for k in keys { if k == i { skip = true; } } if !skip && !same_rows(s.properties[i..(i + 1)], twin.properties[i..(i + 1)]) { return false; } }
+    return same_rows(s.code_bytes[..twin.code_bytes.len], twin.code_bytes) && same_rows(s.functions[..twin.functions.len], twin.functions) && same_rows(s.code_constants[..twin.code_constants.len], twin.code_constants) && same_rows(s.children[..twin.children.len], twin.children)
+        && same_rows(s.ops[..twin.ops.len], twin.ops) && same_rows(s.code_units[..twin.code_units.len], twin.code_units) && same_rows(s.code_strings[..twin.code_strings.len], twin.code_strings)
+        && same_rows(s.values[..twin.values.len], twin.values) && same_rows(s.units[..twin.units.len], twin.units) && same_rows(s.latin1[..twin.latin1.len], twin.latin1) && same_rows(s.strings[..twin.strings.len], twin.strings)
+        && same_rows(s.constants[..twin.constants.len], twin.constants) && same_rows(s.bytes[..twin.bytes.len], twin.bytes) && same_rows(s.sources[..twin.sources.len], twin.sources);
+}
+// Install a job's snapshot over the image (light-cljs-795): validate all of
+// it, as restore does, then append only its rows above the twin's lengths
+// and copy its service rows; rows below are the image's (over_image). The
+// result equals restore's into empty tables, row for row, with this
+// snapshot's state fields and the job's image tops at its lengths.
+fn extend(s: const Snapshot&, twin: const Snapshot&, service: const i64[:], code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&, identity: i64, c: Control&) -> bool {
+    let started = clock_ns(); defer { c.restore_ns += clock_ns() - started; }
+    if !(heap.code .== code) || heap.live_jobs != 0 { return reject(c, Error.Destination); }
+    let current = borrow(heap, bindings, 1); if ends(current) != twin.header.ends { return reject(c, Error.Destination); }
+    if identity <= 0 || identity > 2147483647 || identity == s.header.base || identity == s.header.checkpoint { return reject(c, Error.Identity); }
+    if !validate(s, c) { return false; }
+    let a = ends(s); let b = twin.header.ends; for n, i in b { if a[i] < n { return reject(c, Error.Destination); } }
+    code.source_bytes.append(s.code_bytes[twin.code_bytes.len..]); code.functions.append(s.functions[twin.functions.len..]); code.constants.append(s.code_constants[twin.code_constants.len..]); code.children.append(s.children[twin.children.len..]);
+    code.ops.append(s.ops[twin.ops.len..]); code.units.append(s.code_units[twin.code_units.len..]); code.strings.append(s.code_strings[twin.code_strings.len..]); source::decode(code);
+    state(s.header, identity, heap);
+    heap.nodes.append(s.nodes[twin.nodes.len..]); heap.values.append(s.values[twin.values.len..]); heap.properties.append(s.properties[twin.properties.len..]);
+    heap.units.append(s.units[twin.units.len..]); heap.latin1.append(s.latin1[twin.latin1.len..]); heap.strings.append(s.strings[twin.strings.len..]); heap.constants.append(s.constants[twin.constants.len..]);
+    heap.source_bytes.append(s.bytes[twin.bytes.len..]); heap.source_ranges.append(s.sources[twin.sources.len..]);
+    for r in service { heap.nodes[r] = s.nodes[r]; let n = twin.nodes[r]; for k in n.keys..(n.keys + n.key_capacity) { heap.properties[k] = s.properties[k]; } }
+    heap.image = source::Tops { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len, strings: heap.strings.len, latin1: heap.latin1.len };
+    bindings.clear(); bindings.append(s.bindings);
+    c.copied_bytes += payload_bytes(s) - payload_bytes(twin); return true;
+}
 // Optional local codec: Goose's checked flat image format plus our semantic
 // version/allocator checks. This is compiler-ABI-specific, not a wire standard.
 fn encode(s: const Snapshot&, out: u8[>..]&, c: Control&) -> bool {
