@@ -259,6 +259,28 @@
         (is (or (not (.isPresent child)) (not (.isAlive (.get child))))))
       (finally (fs/delete-if-exists marker)))))
 
+(deftest independent-compiler-slots-and-native-capacity
+  (let [opts (compare/parse-options ["fixture" "--light" "compiler" "--backend" "goose"
+                                     "--runner" "runner" "--workers" "4,8" "--compiler-slots" "4,8"])
+        cells (compare/comparison-cells opts)]
+    (is (= [[4 4] [4 8] [8 4] [8 8]] (mapv (juxt compare/cell-slots :workers) cells)))
+    (is (= 4 (count (distinct (map compare/cell-name cells)))))
+    (doseq [cell cells]
+      (is (= [(:light opts) "release" "bench" "--optimize" "advanced" "--jobs"
+              (str (:compiler-slots cell)) "--no-cache"]
+             (compare/macro-command (:light opts) (:dir opts) "measure" cell))))
+    (doseq [slots [[] [0] [-1] [nil] [4 4]]]
+      (is (thrown-with-msg? AssertionError #"distinct positive integers"
+                           (compare/macro-main (assoc opts :compiler-slots slots))))))
+  (testing "existing coupled cells retain their names and compiler limits"
+    (let [cells (compare/comparison-cells {:backend "all" :workers [1 2 4 8]})]
+      (is (= ["v81" "goose1" "goose2" "goose4" "goose8"] (mapv compare/cell-name cells)))
+      (is (= [1 1 2 4 8] (mapv compare/cell-slots cells)))))
+  (testing "V8 compiler slots vary independently of its single execution worker"
+    (is (= [[4 1] [8 1]]
+           (mapv (juxt compare/cell-slots :workers)
+                 (compare/comparison-cells {:backend "v8" :compiler-slots [4 8]}))))))
+
 (deftest process-tree-sampling-excludes-unrelated-processes
   (let [text " 10 1 20 /bin/time\n 11 10 100 compiler\n 12 11 50 native\n 13 1 999 unrelated\n"]
     (is (= [10 11 12] (mapv :pid (compare/process-tree 10 text))))

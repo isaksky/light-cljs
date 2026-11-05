@@ -25,6 +25,7 @@
       "--phase" (recur (rest more) (assoc options :phase (first more)))
       "--runner" (recur (rest more) (assoc options :runner (str (fs/absolutize (first more)))))
       "--workers" (recur (rest more) (assoc options :workers (mapv parse-long (str/split (first more) #","))))
+      "--compiler-slots" (recur (rest more) (assoc options :compiler-slots (mapv parse-long (str/split (or (first more) "") #","))))
       "--timeout-ms" (recur (rest more) (assoc options :timeout-ms (parse-long (first more))))
       "--light-only" (recur more (assoc options :light-only true))
       (if (or (str/starts-with? arg "-") (:dir options))
@@ -263,13 +264,32 @@
     {:native-thread-total (parse-long created) :spawned-threads-joined (parse-long joined) :workers pools
      :trace-scope "bounded early protocol prefix (4096 rows); final POOL/THREADS/CLOSED replace prefix rows; session cost counters cover all jobs"}))
 
-(defn macro-main [{:keys [dir light runner backend workers phase runs timeout-ms leaf] :as opts}]
+(defn comparison-cells [{:keys [backend workers compiler-slots]}]
+  (let [coupled (vec (concat (when (#{"v8" "all"} backend) [{:backend "v8" :workers 1}])
+                            (when (#{"goose" "all"} backend) (map #(hash-map :backend "goose" :workers %) workers))))]
+    (if compiler-slots
+      (vec (for [slots compiler-slots cell coupled] (assoc cell :compiler-slots slots)))
+      coupled)))
+
+(defn cell-slots [cell] (or (:compiler-slots cell) (:workers cell)))
+(defn cell-name [cell]
+  (str (:backend cell) (when (:compiler-slots cell) (str "-slots" (:compiler-slots cell) "-workers")) (:workers cell)))
+(defn macro-command [light dir phase cell]
+  (cond-> [light "release" "bench" "--optimize" "advanced" "--jobs" (str (cell-slots cell))]
+    (#{"cached" "leaf"} phase) (into ["--cache-dir" (str (fs/path dir "macro-v8-cache"))])
+    (not (#{"cached" "leaf"} phase)) (conj "--no-cache")))
+
+(defn macro-main [{:keys [dir light runner backend workers compiler-slots phase runs timeout-ms leaf] :as opts}]
   (assert (#{"v8" "goose" "all"} backend))
   (assert (#{"check" "measure" "instrument" "cached" "leaf" "leaf-uncached"} phase))
   (assert (and (pos? runs) (or (not= phase "measure") (>= runs 5))))
   (assert (and (seq workers) (= (count workers) (count (distinct workers)))
                (every? #{1 2 4 8} workers)))
   (assert (pos? timeout-ms))
+  (when compiler-slots
+    (assert (and (seq compiler-slots) (= (count compiler-slots) (count (distinct compiler-slots)))
+                 (every? #(and (integer? %) (pos? %)) compiler-slots))
+            "--compiler-slots requires distinct positive integers"))
   (assert (or (= "v8" backend) runner) "Goose requires --runner optimized-native-binary")
   (assert (or (not (#{"cached" "leaf"} phase)) (= "v8" backend))
           "Goose cached artifact installation is not validated; use --backend v8 for these scenarios")
@@ -283,7 +303,7 @@
                             "LIGHT_CLJS_MACRO_PROBE" "GOOSE_BENCH_INSTRUMENT" "LIGHT_V8_STATS"
                             "GENERATED_COMPARE_TREE" "GOOSE_GENERATED_USAGE" "GOOSE_GENERATED_PROTOCOL"
                             "LIGHT_CLJS_NAMESPACE_WORKERS" "LIGHT_CLJS_FRESH_UNIT_ISOLATES" "LIGHT_CLJS_WAIT_TIMELINE"])
-        results (fs/path dir (str "macro-" phase))
+        results (fs/path dir (str "macro-" phase (when compiler-slots (str "-slots-" (str/join "-" compiler-slots)))))
         _ (fs/create-dirs results)
         evidence (fs/path results "samples.edn")
         _ (assert (not (fs/exists? evidence)) (str "Preserve existing samples: " evidence))
@@ -296,14 +316,11 @@
         fixed (pinned! dir)
         reference (fs/path dir "macro-v8-reference.js")
         expected (mapv (fn [[i n]] (checked dir environment ["bb" "oracle.bb" (str i) (str n)])) oracle-inputs)
-        cells (vec (concat (when (#{"v8" "all"} backend) [{:backend "v8" :workers 1}])
-                           (when (#{"goose" "all"} backend) (map #(hash-map :backend "goose" :workers %) workers))))
+        cells (comparison-cells opts)
         _ (assert (or (not= backend "goose") (fs/exists? reference)) "Run V8 check first to establish complete JS reference")
-        cmd (fn [cell] (cond-> [light "release" "bench" "--optimize" "advanced" "--jobs" (str (:workers cell))]
-                        (#{"cached" "leaf"} phase) (into ["--cache-dir" (str (fs/path dir "macro-v8-cache"))])
-                        (not (#{"cached" "leaf"} phase)) (conj "--no-cache")))
+        cmd (partial macro-command light dir phase)
         run-cell (fn [cell round warmup?]
-                   (let [stem (str (:backend cell) (:workers cell) "-" (if warmup? "warmup" round))
+                   (let [stem (str (cell-name cell) "-" (if warmup? "warmup" round))
                          log (fs/path results (str stem ".stderr"))
                          trace (fs/path results (str stem ".trace.tsv"))
                          tree (fs/path results (str stem ".tree.edn"))
@@ -333,7 +350,8 @@
                          err (:err r)
                          number #(some-> (re-find % err) second parse-double)
                          sample (merge cell {:kind (if warmup? :warmup :sample) :round round :phase phase :command command
-                                             :compiler-slots (:workers cell) :execution-workers (:workers cell)
+                                             :compiler-slots (cell-slots cell) :execution-workers (:workers cell)
+                                             :stdout (:out r)
                                              :leaf-edit *leaf-edit*
                                              :executed-source-macros macro-counts
                                              :native native

@@ -116,6 +116,12 @@ Each phase preserves `macro-PHASE/samples.edn` and refuses to overwrite it.
 Every cell has an explicit warmup; measured rounds alternate the cell order.
 `--backend goose --workers 1,2,4,8` uses a reference produced by a prior V8
 check; Goose-only instrumentation also requires a prior V8 instrument run.
+By default each Goose worker count also sets `--jobs` to the same value.
+Add `--compiler-slots 4,8 --workers 4,8` to run the full Cartesian product of
+compiler slots and native Goose workers independently. These runs use separate
+`macro-PHASE-slots-4-8` result directories and filenames containing both limits;
+the original modes retain their filenames. V8 uses each requested compiler-slot
+count with its single execution worker.
 Every completed build must match its complete emitted JavaScript bytes,
 all five independent oracle outputs (including final newlines), and the strict
 waste check. Sources/configuration are hashed before and after each build.
@@ -130,8 +136,8 @@ Selection uses the feature-gated `LIGHT_CLJS_GOOSE_RUNNER` and
 `LIGHT_CLJS_GOOSE_WORKERS` embedding. It executes emitted user macros/helpers
 in Goose with retained V8 core/bootstrap; it preserves the release/advanced
 compiler pipeline and production defaults. `--jobs` is separately recorded as
-compiler slots (equal to execution workers here). Unsupported work fails
-without fallback. `instrument` adds inclusive macro/bootstrap/helper-demand
+compiler slots (equal to execution workers unless `--compiler-slots` is set).
+Unsupported work fails without fallback. `instrument` adds inclusive macro/bootstrap/helper-demand
 intervals, compiler trace/DAG diagnostics, and Goose session costs. Instrumented
 runs also require identical qualified source-macro entry counts to V8; intervals
 overlap and must not be summed. Helper-demand counts describe compiler callbacks,

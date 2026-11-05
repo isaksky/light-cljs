@@ -8,6 +8,9 @@ and 69.9% less CPU than its historical pre-coalescing result. This completes
 the finite bridge investigation with supported compilation and a useful
 optimization, while retaining the unfavorable comparison with V8. See the
 [final integrated measurement](#final-integrated-five-round-measurement).
+A later [factorial follow-up](#independent-compiler-slots-and-native-capacity)
+separates compiler slots from native capacity: extra compiler slots account for
+most of the replicated four-to-eight slowdown.
 
 ## Historical clean primary comparison, before coalescing
 
@@ -753,3 +756,120 @@ commands/moves are in archive `:commands`; the builders restore source in
 and never enter these production measurements. Run summaries/archive assembly
 after timing. All useful raw evidence is committed; ignored build products and
 extracted copies contain no unique evidence needed before worktree retirement.
+
+## Independent compiler slots and native capacity
+
+November 4, 2026 local / November 5 UTC, execution source
+`6c9bf60f2bddd742206881a59a53f04068a7e60e`. **Increasing compiler slots accounts
+for most of the replicated Goose4-to-Goose8 slowdown.** The preceding tables
+changed two controls together. This follow-up varies them independently;
+it includes no runtime optimization and does not replace the historical data.
+
+[`--jobs`](../../../../src/main.rs) sets compiler CPU work slots, including
+the calling thread. The [experimental CLI](compiler_cli.rs) independently reads
+`LIGHT_CLJS_GOOSE_WORKERS` when starting the shared native session. The comparator
+now accepts `--compiler-slots 4,8 --workers 4,8` for their Cartesian product;
+the original coupled defaults, filenames and existing results are preserved.
+The experimental whole-namespace worker path remains off. The workload remains
+seed42/199,129 lines/450 worker namespaces/653 files, release/advanced/uncached,
+with source macros in Goose and retained V8 core/bootstrap.
+
+Each cell has one excluded warmup and five measured samples, interleaved in
+forward/reverse round order. No competing build or test ran during timing.
+All admitted pre-run gates were **93.99–98.80% idle**. One **88.50%** gate stopped
+before launching round3's `(4,4)` command: the 19 completed builds were retained,
+and an archived recovery script ran only the five missing samples in the
+original order. No completed sample was discarded or rerun for its speed.
+
+Seconds, median [minimum, maximum]. Aggregate CPU is each command's user+system
+CPU, including waited children; it is not a sum of overlapping phase intervals.
+
+| Compiler slots | Native workers | Wall | Aggregate CPU |
+| ---: | ---: | ---: | ---: |
+| 4 | 4 | 9.923 [9.882, 9.944] | 26.59 [26.51, 26.81] |
+| 4 | 8 | 9.992 [9.841, 10.013] | 26.82 [26.53, 26.86] |
+| 8 | 4 | 10.240 [10.170, 10.420] | 29.35 [29.23, 29.76] |
+| 8 | 8 | 10.318 [10.275, 10.350] | 29.46 [29.31, 29.63] |
+
+Differences of cell medians isolate the two settings. Compiler slots4→8 adds
+**0.318/0.326 s wall** and **2.76/2.64 s CPU**, at native capacity4/8 respectively.
+Native capacity4→8 adds **0.070/0.078 s wall** and **0.23/0.11 s CPU**, at compiler
+slots4/8. The compiler-slot increase is slower in every paired round at both
+native capacities. Native-capacity wall differences have mixed signs across
+rounds and overlapping ranges; five samples do not establish a precise small
+native-worker penalty. They show no native-capacity speedup on this target.
+The full coupled difference is 0.396 s (~4.0%); the wall difference of differences
+is only 0.008 s. The archive preserves both raw samples and paired contrasts.
+
+This identifies the dominant **configuration effect**, not a specific CPU
+hotspot. Extra scheduling/coordination, retained compiler isolates, and remaining
+transport contention are mechanism hypotheses; this experiment does not assign
+their CPU shares. The original setup coupled two independent controls, so its
+four/eight comparison could not by itself attribute the loss to native VM scaling.
+Absolute times differ from the earlier session; comparisons here use this
+interleaved factorial rather than subtracting historical medians.
+
+Separate diagnostics confirm that the controls actually produce different pools:
+four/eight compiler slots create **three/seven deferred-unit pool threads**, all
+with engines and participating in work, plus the calling thread. These counts
+exclude auxiliary compiler threads. Native capacity4/8 creates **10/18 native
+threads** including its coordinator; all **9/17 spawned threads join**, and each
+private worker receives work. All source-macro identity/count tables match fresh
+V8 diagnostics at both compiler-slot counts.
+
+| Compiler slots / native workers | Body overlap peak, warmup / repeat | Repeat VM slices, aggregate elapsed ms |
+| --- | ---: | ---: |
+| 4 / 4 | 3 / 3 | 79.848 |
+| 4 / 8 | 2 / 3 | 81.871 |
+| 8 / 4 | 3 / 3 | 81.757 |
+| 8 / 8 | 3 / 3 | 82.777 |
+
+Each native diagnostic has all **5,812 distinct dispatches** (5,226 initial,
+529 resumptions, 57 helper producers) and **5,755 body intervals**. Repeat body
+medians are 14/15/14/14 µs in table order. Body lifetimes exclude restore/import,
+helper factories, save and export; their overlap is elapsed concurrency, not
+simultaneous CPU execution. VM slice sums may overlap and include descheduling;
+they are neither CPU nor an additive wall-time partition. These diagnostics
+again show short bodies and no eight-way body saturation. Their startup,
+native-only rusage, per-worker counts, compiler pool counters and owned-tree RSS
+remain in raw evidence, separate from the clean timing table.
+
+The [new raw archive](generated-200k-concurrency.edn.gz) uses the existing
+`:files`/UTF-8 text/SHA-256 layout and preserves every sample, rejection/recovery
+log, command, selected environment/build overrides, source/binary/toolchain
+identity, canonical fixture and independent model/oracle, phase/protocol records,
+process-tree samples, and reproduction/analysis scripts. Every embedded digest is
+reread and verified. All **38 builds** (24 clean, 12 phase diagnostics, two V8
+reference builds) pass the full **3,449,022 output bytes**, SHA-256
+`18335556dd4672f2f63b901b68fcad3c447cf5676f457a08fda61f366cc9f3ec`, all five
+independent oracle outputs including newlines, and strict waste checks.
+
+All **580 execution/build source hashes match 757/758 before and after**.
+Production native remains
+`92140b1a31ba1fe42beadc3caae59fb6ea0916e4a3204e5caff10ef7146688e0`, phase native
+remains `688de47c75b97e112361adc04c99ce48c002a7cda3220c79c6a599a65f6cc60d`, and the
+fresh CLI is `02e4d7fae8e254e08d00fe99fdcf4325fa5286dfa6115b2ff4a6a5176d977f6a`.
+Goose267/runtime3025e5810379, Rust1.99.1, Node26.12.1, bb1.12.218, clang21,
+hardware and research revision match the preceding run. The reviewed complete-form,
+scalar/UTF-16/metadata/provenance/teardown tests, 82 audited V8 span ambiguities,
+debug/optimized 1/2/4/8 coverage, settlement/limit/failure/cleanup checks and expanded
+control are reused by those exact identities. No new cached/leaf scenario or
+broader correctness claim is made. Generator/comparator regression passes
+**13 tests / 383 assertions**; `git diff --check` passes. The documented broad-suite,
+strict-Clippy, root-format, capture and playground limitations above remain;
+those suites were not rerun for this harness/report change.
+
+After the existing fresh-checkout build/generate recipe, reproduce the primary run:
+
+```sh
+bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs --backend v8 --phase check --runs 1
+bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs --backend goose --workers 4,8 --compiler-slots 4,8 --runner target/generated-200k-runner --phase measure --runs 5
+```
+
+Separately extract `target/phase750.bb`, `target/summarize-concurrency.bb` and
+`target/archive-concurrency.bb` from the new archive, then run the phase builder,
+the same comparator with `--backend all --runner target/phase750-runner
+--workers 4,8 --compiler-slots 4,8 --phase instrument --runs 1`, and the two
+analysis/archive scripts. The phase builder restores source in `finally`.
+`target/resume-concurrency.bb` records the exact checkpoint recovery used here;
+it skips only successful cell/round identities and retains all checks.
