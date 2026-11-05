@@ -26,7 +26,7 @@
   // (a Set, Map or WeakMap, which cannot be shared) is made on first use
   // in the reading task, never in the boot task.
   const sharedTaskDefaults = {
-    gensymCounter: 0, gensymLog: null, gensymScope: null,
+    gensymCounter: 0, gensymLog: null, gensymScope: null, gensymFrame: null,
     get gensymScopes() { return sharedTaskOwn(this, "gensymScopes", new Map()); },
     get generatedNames() { return sharedTaskOwn(this, "generatedNames", new Set()); },
     macroexpandServices: {},

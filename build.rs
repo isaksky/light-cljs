@@ -189,11 +189,16 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   (the compile-time runtime's) takes each number from the compiler's
 ///   count of the scope through `__lightGensym`, which core macros expanded
 ///   natively count from too (light-cljs-432); another (a data reader's)
-///   counts in the runtime from zero the first time the runtime sees it, as
-///   does a native one the compiler no longer knows. In a scope it skips no
+///   counts in the runtime from zero the first time the runtime sees it; a
+///   native one that has ended throws a named error (the compiler answers
+///   `!`, light-cljs-802). In a scope it skips no
 ///   `generatedNames`, so its names do not depend on what the heap decoded
 ///   before; it still logs them. Scope 0 is none, where `gensym` uses its
-///   counter (`src/generated_names.rs`, `Scope`). Once `takeGensyms` has
+///   counter (`src/generated_names.rs`, `Scope`). `gensymFrame` puts in
+///   place, or takes away with `null`, a frozen initializer scope that
+///   `gensym` numbers in ahead of every other, from one, and returns the
+///   frame it replaced (`frozen_initializer` in `src/generated_names.rs`).
+///   Once `takeGensyms` has
 ///   been called in a runtime with `__lightGensym`, it logs each name there,
 ///   so that the compiler's log keeps them in order with the names native
 ///   expansions allocate; a name with a surrogate goes as its code units.
@@ -343,14 +348,14 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
             "  const generatedNames = new Set();\n",
             "",
             concat!(
-                "  let gensymLog = null;\n  let gensymScope = null; const gensymScopes = new Map();\n",
+                "  let gensymLog = null;\n  let gensymScope = null; const gensymScopes = new Map(); let gensymFrame = null;\n",
                 "  const gensymLogName = name => { if (gensymLog === true) globalThis.__lightGensym(/[\\ud800-\\udfff]/.test(name) ? \"U\" + Array.from({length: name.length}, (_, i) => name.charCodeAt(i)).join(\",\") : \"L\" + name); else gensymLog.push(name); };\n",
             ),
         ),
         (
             "    let name; do { name = base + ++gensymCounter; } while (generatedNames.has(name));\n",
             "    let name",
-            "    if (gensymScope !== null) { const suffix = gensymScope.native ? globalThis.__lightGensym(\"g\" + gensymScope.serial) : \"\"; const name = base + (suffix || gensymScope.prefix + ++gensymScope.count); if (gensymLog !== null) gensymLogName(name); return symbolCore(name); }\n",
+            "    if (gensymFrame !== null) { const name = base + gensymFrame.prefix + ++gensymFrame.count; if (gensymLog !== null) gensymLogName(name); return symbolCore(name); }\n    if (gensymScope !== null) { const suffix = gensymScope.native ? globalThis.__lightGensym(\"g\" + gensymScope.serial) : \"\"; if (suffix === \"!\") throw new Error(\"gensym called in the generated-name scope \" + gensymScope.prefix + \" after it ended, outside every expansion and initializer\"); const name = base + (suffix || gensymScope.prefix + ++gensymScope.count); if (gensymLog !== null) gensymLogName(name); return symbolCore(name); }\n",
         ),
         (
             "    generatedNames.add(name);\n    return symbolCore(name);\n",
@@ -364,6 +369,7 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
                 "      takeGensyms: () => { const names = Array.isArray(gensymLog) ? gensymLog : []; gensymLog = typeof globalThis.__lightGensym === \"function\" ? true : []; return vectorFromArray([gensymCounter, ...names]); }, raiseGensyms: floor => { if (floor > gensymCounter) gensymCounter = floor; },\n",
                 "      takeEncodePeak: () => { const peak = encode.peak ?? 0; encode.peak = 0; return peak; },\n",
                 "      gensymScope: (serial, prefix, retired, native) => { if (retired) for (const ended of retired.split(\",\")) gensymScopes.delete(+ended); if (serial === 0) { gensymScope = null; return null; } let scope = gensymScopes.get(serial); if (scope === undefined) gensymScopes.set(serial, scope = {serial, prefix, count: 0, native: native === true && typeof globalThis.__lightGensym === \"function\"}); gensymScope = scope; return null; }, gensymScopeCount: () => gensymScopes.size,\n",
+                "      gensymFrame: frame => { const outer = gensymFrame; gensymFrame = frame; return outer; },\n",
             ),
         ),
         (
@@ -474,6 +480,7 @@ const SHARED_TASK_STATE: &[&str] = &[
     "gensymLog",
     "gensymScope",
     "gensymScopes",
+    "gensymFrame",
     // Evaluator services and the declaration journal.
     "macroexpandServices",
     "declarationJournal",
@@ -574,7 +581,7 @@ fn shared_hook(hook: &str) -> String {
     let mut text = hook
         .replace("  let gensymLog = null;\n", "")
         .replace(
-            "  let gensymScope = null; const gensymScopes = new Map();\n",
+            "  let gensymScope = null; const gensymScopes = new Map(); let gensymFrame = null;\n",
             "",
         )
         .replace(

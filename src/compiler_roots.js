@@ -39,7 +39,13 @@
       compiling++;
       const outer = reads;
       if (outer !== null) { reads = []; readEpoch++; }
+      // The macros a unit compiled now expands number in their own scopes,
+      // not in the frozen scope of an initializer that demanded it
+      // (light-cljs-802, `frozen_initializer` in generated_names.rs).
+      const forms = globalThis.__lightRuntimeForCompiler?.compilerForms;
+      const frame = forms?.gensymFrame?.(null);
       try { return compileService(unit); } finally {
+        if (frame !== undefined) forms.gensymFrame(frame);
         compiling--;
         if (outer !== null) { for (const read of reads) outer.push(read); reads = outer; readEpoch++; }
       }

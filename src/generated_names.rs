@@ -56,6 +56,7 @@
 //! | [`next_binding`] | `binding__D_0_N__auto__` | `binding__N__auto__` | per scope; window reserved |
 //! | [`next_destructure`] | `compiler_destructure__D_0_N__auto__` | `compiler_destructure__N__auto__` | per scope; window reserved |
 //! | the compile-time runtime's `gensym` | `G__D_N`, `prefixD_N` | `G__N` | per scope, counted here; counter and spellings reserved |
+//! | an initializer's `gensym` | `G__D_K_iN` | `G__N` | frozen per unit, counted in each heap (light-cljs-802); spellings reserved |
 //! | a custom data reader evaluator's `gensym` | `G__D_0_N` | `G__N` | per scope (light-cljs-350); not reserved |
 //! | `READER_GENERATION` (macro_host.rs) | a compilation's reader generation | | never spelled in output, never retained |
 //! | `NEXT_SOURCE` (compiler_data.rs) | [`crate::compiler_data::SourceId`] | | never spelled, never retained |
@@ -385,7 +386,10 @@ impl GensymWindow {
 const ENDED_BOUND: usize = 64;
 
 /// The scope with `serial` that a compile-time runtime of this thread was
-/// put in: an entered one, innermost first, or one that ended since.
+/// put in: an entered one, innermost first, or one that ended since. Only
+/// the Pants and Goose runtimes number in an ended scope ([`ENDED`]); V8's
+/// and QuickJS's fault there ([`serve_gensym`]).
+#[cfg(any(feature = "bbp-macros", feature = "goose-macros"))]
 fn installed_scope(serial: u64) -> Option<Rc<Scope>> {
     SCOPES
         .with(|scopes| {
@@ -440,21 +444,61 @@ pub(crate) fn stand_in(base: &str) -> String {
     format!("{base}{prefix}_s{number}")
 }
 
+/// What the `gensym` of an initializer appends before its own count, for
+/// the unit analyzed in the scope `unit` (`D_K`): `D_K_i`, whose `i` no
+/// count spells, so its names, `G__D_K_iN`, are never a scope's
+/// (light-cljs-802). An initializer runs once in each heap that demands its
+/// unit, and numbers from one in this frozen scope there, so a helper's
+/// initializer gives the same names whichever namespace demands it first,
+/// in whichever engine, and however many compiler slots run.
+pub(crate) fn initializer_gensym_prefix(unit: &str) -> String {
+    format!("{unit}_i")
+}
+
+/// `code`, a unit's compiled initializer (`__lightCompileUnit`), made to
+/// number its `gensym` in the frozen scope `prefix`
+/// ([`initializer_gensym_prefix`]) while it runs: the runtime's
+/// `gensymFrame` (build.rs) holds the scope until the initializer returns,
+/// and a unit compiled meanwhile puts none in place while its macros expand
+/// (`__lightCompileUnit` in compiler_roots.js). A runtime without frames
+/// runs the code as it is.
+pub(crate) fn frozen_initializer(prefix: &str, code: &str) -> String {
+    format!(
+        "(code => rt => {{ const forms = rt?.compilerForms, outer = forms?.gensymFrame?.({{prefix: \"{prefix}\", count: 0}}); if (outer === undefined) return code(rt); try {{ return code(rt); }} finally {{ forms.gensymFrame(outer); }} }})(\n{code}\n)"
+    )
+}
+
+/// [`serve_gensym`]'s answer for a scope that has ended, which no suffix
+/// spells; build.rs `compiler_runtime` throws on it.
+const ENDED_SCOPE: &str = "!";
+
 /// Answer a compile-time runtime's `gensym` (`__lightGensym`, build.rs
 /// `compiler_runtime`): `g` and a scope's serial take the next number of
 /// that scope's count, and answer what the name appends to the prefix
-/// argument, or nothing for a scope this thread no longer knows, which the
-/// runtime then counts itself, from one, as it counted every scope before
-/// light-cljs-432; `L` and a name, or `U` and its UTF-16 code units, log a
-/// name the runtime returned, while the compilation logs them.
+/// argument; `L` and a name, or `U` and its UTF-16 code units, log a name
+/// the runtime returned, while the compilation logs them.
+///
+/// Only a scope entered on this thread numbers. Code that calls `gensym`
+/// once its scope has ended, outside every expansion and initializer, gets
+/// [`ENDED_SCOPE`], on which the runtime throws a named error, as the Goose
+/// runtime faults there (light-cljs-802): its count would depend on what
+/// ran since, and counting in the runtime could repeat the scope's names.
 pub(crate) fn serve_gensym(request: &str) -> String {
     match request.split_at_checked(1) {
         Some(("g", serial)) => serial
-            .parse()
+            .parse::<u64>()
             .ok()
-            .and_then(installed_scope)
-            .map(|scope| scope.gensym_suffix())
-            .unwrap_or_default(),
+            .and_then(|serial| {
+                SCOPES.with(|scopes| {
+                    scopes
+                        .borrow()
+                        .iter()
+                        .rev()
+                        .find(|scope| scope.serial == serial)
+                        .cloned()
+                })
+            })
+            .map_or_else(|| ENDED_SCOPE.into(), |scope| scope.gensym_suffix()),
         Some(("L", name)) => {
             log(|| name.encode_utf16().collect());
             String::new()

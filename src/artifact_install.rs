@@ -1729,7 +1729,12 @@ impl Installer<'_> {
         let prepared = units
             .units
             .iter()
-            .map(|unit| self.prepared(&unit.code, &unit.view, views))
+            .map(|unit| {
+                (
+                    self.prepared(&unit.code, &unit.view, views),
+                    unit.names.as_deref().map(std::sync::Arc::from),
+                )
+            })
             .collect();
         let unit_name = |unit: UnitRef| match &units.units[unit.0 as usize].name {
             UnitName::Var(name) => name.clone(),

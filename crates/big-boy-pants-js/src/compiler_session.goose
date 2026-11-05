@@ -76,12 +76,12 @@ struct Work { saved: Saved = Saved {}, id: i64 = 0, identity: i64 = 0, mode: i64
 // delivers a produced helper, 3 a missing one, 0 asks the worker to save its
 // continuation and end the job, -1 to end it without a result. checkpoint is the
 // worker's next completion barrier (dispatch-test).
-struct Answer { address: i64, mode: i64 = 0, helper: u8[] = [], key: i64 = -1, callable: bool = false, checkpoint: i64 = 0, gensym_next: i64 = 0 }
+struct Answer { address: i64, mode: i64 = 0, helper: u8[] = [], key: i64 = -1, callable: bool = false, checkpoint: i64 = 0 }
 struct Reap { thread: i64, address: i64 = 0 }
 struct Running { id: i64, thread: i64 = -1, address: i64 = 0, key: i64 = -1, checkpoint: i64 = 0 }
 // address != 0: a blocked worker that keeps its state; otherwise saved holds
 // the flat continuation.
-struct Waiting { id: i64, name: u8[], saved: Saved, key: i64 = -2, active: bool = true, address: i64 = 0, thread: i64 = -1 }
+struct Waiting { id: i64, name: u8[], saved: Saved, key: i64 = -2, active: bool = true, address: i64 = 0, thread: i64 = -1, prefix: u8[..64] = [] }
 struct Exit { address: i64, clock: i64 }
 // Session totals for the JOBS line. Byte counts are spawn-argument copies
 // (snapshot and helper) and restore copies inside the workers.
@@ -114,6 +114,20 @@ fn definition(directory: const u8[:], id: i64) -> i64, u8[], i64 {
 }
 // Put a job in a generated-name scope; its gensym_next is the count after.
 fn scope(job: source::Job&, prefix: const u8[:], next: i64) { job.gensym_prefix.clear(); job.gensym_prefix.append(prefix); job.gensym_next = next; }
+// `{id}-{sequence}.key` holds the helper's unit, -1 for a missing one, and,
+// when the compiler registered it in a generated-name scope, what its
+// initializer's gensym appends before its own count: `key` or `key prefix`
+// (light-cljs-802). The helper is produced in that frozen scope from one,
+// whichever job demands it first; without one its gensym faults.
+fn helper_key(bytes: const u8[:]) -> i64, u8[] {
+    var space: i64 = -1; for b, i in bytes { if b == 32 { assert(space < 0); space = i; } }
+    let key, ok = parse_int(bytes[..(if space < 0 { bytes.len } else { space })]); assert(ok && key >= -1);
+    if space < 0 { return key, str(""); }
+    let prefix = bytes[(space + 1)..]; for b in prefix { assert(b == 95 || b == 105 || b >= 48 && b <= 57); } assert(prefix.len > 0 && prefix.len <= 64); return key, str(prefix);
+}
+// The scope a helper with initializer prefix `prefix` is produced in: its
+// gensym_next is 1 there, 0 (faulting) without one.
+fn helper_next(prefix: const u8[:]) -> i64 { return if prefix.len > 0 { 1 } else { 0 }; }
 // Preparation runs before admission, in a thread program the coordinator
 // spawns and joins (light-cljs-794: the coordinator's base image is its only
 // heap). It cannot invoke compiler callbacks: those remain body effects in
@@ -333,7 +347,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
             if !ok {
                 let function_id = if closure { source::node(heap, function.id()).function } else { entry }; let pc = code.functions[function_id].start; let op = code.ops[pc];
                 publish(Event { id: id, kind: 3, name: str("helper-", heap.fault, "-", control.error, "-", publication.error, " function=", function_id, " pc=", pc, " emitted-span=", op.start, ":", op.end), address: address, timing: timing(work, started, sc) }); return;
-            } costs[1] += clock_ns() - exporting; publish(Event { id: id, kind: 5, gensym_next: next, key: key, name: str(costs[0], " ", costs[1]), data: copy(bytes), metrics: str(sc.restore_ns, " 0 ", clock_ns() - worker_started, " ", storage(saved, heap, sc, bytes.len), " ", mode), callable: closure, address: address, census: rows(work, heap, job, bindings, function), timing: timing(work, started, sc) }); return;
+            } costs[1] += clock_ns() - exporting; publish(Event { id: id, kind: 5, key: key, name: str(costs[0], " ", costs[1]), data: copy(bytes), metrics: str(sc.restore_ns, " 0 ", clock_ns() - worker_started, " ", storage(saved, heap, sc, bytes.len), " ", mode), callable: closure, address: address, census: rows(work, heap, job, bindings, function), timing: timing(work, started, sc) }); return;
         }
     } else { call = bindings[1].value; }
     // Import before re-registering the suspended job; failed publication is
@@ -379,8 +393,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
             barrier = answer.checkpoint;
             if answer.mode == -1 { return; }
             if answer.mode != 0 {
-                // A helper produced for this wait numbered on in the job's scope.
-                job.gensym_next = answer.gensym_next;
+                // A helper produced for this wait numbered in its own scope.
                 let importing = clock_ns(); var value = source::Value.Undefined; var ok = false; let start = heap.nodes.len;
                 if answer.mode == 1 && answer.callable {
                     // Installing a publication requires no live job. The
@@ -451,11 +464,11 @@ fn serial_call(directory: const u8[:], id: i64, code: source::Code&, heap: sourc
         print("NEED ", id, " ", sequence, " ", text, " ", job.steps, " ", job.writes.len); flush_stdout();
         var notice: u8[>..] = []; assert(read_line(notice)); assert(notice == "-2");
         var bytes:  u8[>..] = []; assert(read_file(str(directory, "/", id, "-", sequence, ".key"), bytes));
-        let key, ok = parse_int(bytes); assert(ok && key >= -1);
+        let key, scoped = helper_key(bytes);
         if key == -1 { assert(source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect)); sequence += 1; continue; }
         let entry = append(code, heap, str(directory, "/", id, "-", sequence, ".helper")); assert(entry >= 0);
-        var produced = job.gensym_next; let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], 0, prefix, produced); assert(loaded);
-        let value, done = leaf(id, heap, factory, [rt], 0, prefix, produced); assert(done); job.gensym_next = produced;
+        var produced = helper_next(scoped); let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], 0, scoped, produced); assert(loaded);
+        let value, done = leaf(id, heap, factory, [rt], 0, scoped, produced); assert(done);
         source::put(heap, job.effect_args[0], job.effect_args[2], value); assert(source::deliver_effect(job, value));
         print("PRODUCED ", id, " ", key); print("RESUME ", id); flush_stdout(); sequence += 1;
     }
@@ -525,7 +538,7 @@ fn dispatch(work: Work&, base: const snapshot::Snapshot&, pool: Pool&, counts: C
 fn resume(w: Waiting&, mode: i64, helper: const u8[:], key: i64, is_callable: bool, running: Running[>..]&, base: const snapshot::Snapshot&, pool: Pool&, counts: Counts&, stats: Jobs&) -> bool {
     let checkpoint = source::reserve_identity();
     if w.address != 0 {
-        assert(qput(Answer { address: w.address, mode: mode, helper: helper, key: key, callable: is_callable, checkpoint: checkpoint, gensym_next: w.saved.gensym_next }));
+        assert(qput(Answer { address: w.address, mode: mode, helper: helper, key: key, callable: is_callable, checkpoint: checkpoint }));
         running.push(Running { id: w.id, thread: w.thread, address: w.address, checkpoint: checkpoint }); counts.blocked -= 1; stats.answers += 1;
     } else {
         if !available(counts) { return false; }
@@ -623,8 +636,8 @@ fn main() {
             if event.census[0] >= 0 { var text: u8[>..] = []; format(text, "CENSUS 0 ", event.id, " ", event.kind); for n in event.census { format(text, " ", n); } print(text); }
             if event.kind == 1 { stats.saves += 1; if waiting.len >= 128 { print("ERROR ", event.id, " waiter-budget"); } else { waiting.push(Waiting { id: event.id, name: copy(event.name), saved: copy(event.saved) }); print("NEED ", event.id, " ", event.saved.sequence, " ", event.name, " ", event.steps, " ", event.saved.writes.len); } }
             else if event.kind == 5 { produced.push(Produced { key: event.key, data: copy(event.data), callable: event.callable });
-                // The helper numbered in the scope of the wait it was produced for.
-                for w in waiting { if w.active && w.id == event.id && w.key == event.key { w.saved.gensym_next = event.gensym_next; } } print("PRODUCED ", event.id, " ", event.key); }
+                // The helper numbered in its own frozen scope, not the wait's.
+                print("PRODUCED ", event.id, " ", event.key); }
             else if event.kind == 2 { print("FINISH ", event.id, " ", event.steps, " ", event.writes); if event.gensym_next > 0 { print("DONE ", event.id, " ", event.gensym_next); } else { print("DONE ", event.id); } }
             else { print("ERROR ", event.id, " ", event.name); }
             flush_stdout();
@@ -642,12 +655,12 @@ fn main() {
         // for its cleanup; busy ones get a stop when idle.
         if closing && !saved_waiters(waiting) { while counts.idle > 0 { assert(qput(Work { stop: true })); counts.idle -= 1; } }
         if !closing { for w in waiting { if running.len >= limit { break; } if !w.active { continue; }
-            if w.key == -2 { var bytes: u8[>..] = []; if !read_file(str(directory, "/", w.id, "-", w.saved.sequence, ".key"), bytes) { continue; } let key, ok = parse_int(bytes); assert(ok && key >= -1); w.key = key; }
+            if w.key == -2 { var bytes: u8[>..] = []; if !read_file(str(directory, "/", w.id, "-", w.saved.sequence, ".key"), bytes) { continue; } let key, prefix = helper_key(bytes); w.key = key; w.prefix.append(prefix); }
             let key = w.key; if key == -1 { if resume(w, 3, [], -1, false, running, base, pool, counts, stats) { progress = true; } continue; } var found = false;
             for p in produced { if p.key == key { found = true; if resume(w, 1, p.data, key, p.callable, running, base, pool, counts, stats) { progress = true; } break; } }
             if found { continue; }
             var producing = false; for r in running { if r.key == key { producing = true; } }
-            if !producing && available(counts) { let initial = Saved { heap: copy(base), base: base.header, sequence: w.saved.sequence, protected: base.nodes.len, storage: instrumented, gensym_prefix: copy(w.saved.gensym_prefix), gensym_next: w.saved.gensym_next }; let checkpoint = source::reserve_identity(); var work = Work { saved: copy(initial), id: w.id, identity: identity(initial), mode: 2, helper: [], key: key, checkpoint: checkpoint }; dispatch(work, base, pool, counts, stats); running.push(Running { id: w.id, address: checkpoint, key: key, checkpoint: checkpoint }); print("PRODUCE ", w.id, " ", key); flush_stdout(); progress = true; }
+            if !producing && available(counts) { let initial = Saved { heap: copy(base), base: base.header, sequence: w.saved.sequence, protected: base.nodes.len, storage: instrumented, gensym_prefix: w.prefix[..], gensym_next: helper_next(w.prefix[..]) }; let checkpoint = source::reserve_identity(); var work = Work { saved: copy(initial), id: w.id, identity: identity(initial), mode: 2, helper: [], key: key, checkpoint: checkpoint }; dispatch(work, base, pool, counts, stats); running.push(Running { id: w.id, address: checkpoint, key: key, checkpoint: checkpoint }); print("PRODUCE ", w.id, " ", key); flush_stdout(); progress = true; }
         } }
         // Ready continuations/helpers get first refusal; new jobs fill every remaining slot.
         while !closing && received < queue.len && running.len < limit && available(counts) { progress = true; let id = queue[received]; received += 1; let key, prefix, first = definition(directory, id); var next = first; var index: i64 = -1;

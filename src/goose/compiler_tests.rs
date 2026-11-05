@@ -40,6 +40,15 @@ fn serve(
     roots: &[(&str, usize)],
     initialize: impl Fn(usize) -> Result<String, String> + 'static,
 ) {
+    serve_scoped(e, roots, None, initialize);
+}
+/// [`serve`] for helpers whose initializers number `gensym` after `prefix`.
+fn serve_scoped(
+    e: &GooseEvaluator,
+    roots: &[(&str, usize)],
+    prefix: Option<&'static str>,
+    initialize: impl Fn(usize) -> Result<String, String> + 'static,
+) {
     let roots: HashMap<String, usize> = roots
         .iter()
         .map(|&(name, unit)| (name.to_owned(), unit))
@@ -50,7 +59,7 @@ fn serve(
             let unit = *roots
                 .get(name)
                 .ok_or_else(|| format!("compiler root is not registered: {name}"))?;
-            initialize(unit).map(|code| (unit, code))
+            initialize(unit).map(|code| (unit, code, prefix.map(str::to_owned)))
         })
     });
 }
@@ -601,35 +610,41 @@ fn goose_compiler_assembly_leaf_boundaries() {
     s.close();
     cleaned(&s);
 }
-/// A helper the job demands is produced in the job's generated-name scope:
-/// its initializer's `gensym` takes the scope's next number, and the job
-/// numbers on after it, whether the job waits in place or saves its
-/// continuation; later jobs reuse the produced helper (light-cljs-798).
+/// A helper the job demands is produced in its own frozen initializer
+/// scope, numbering from one there whichever job demands it, and takes no
+/// number of the job's scope, whose count the job goes on with, whether it
+/// waits in place or saves its continuation; later jobs reuse the produced
+/// helper (light-cljs-798, light-cljs-802). The helper's names are the same
+/// whichever scope first demands it and at every worker count; a `def`
+/// whose compiled initializer calls `gensym` (through `nativeCoreBinding`)
+/// does not run on Goose yet, so the helper here is hand-written.
 #[test]
 #[ignore = "build native runner with compiler.bb"]
-fn goose_compiler_gensym_helper_production_numbers_in_the_demanding_scope() {
+fn goose_compiler_gensym_helper_production_numbers_in_its_own_scope() {
     let symbols = |names: &[String]| {
         names
             .iter()
             .map(|name| Datum::new(DatumKind::Symbol(Name::new(None, name))))
             .collect::<Vec<_>>()
     };
-    for (workers, retained) in [(1, None), (4, None), (1, Some(0)), (4, Some(0))] {
+    let configurations = [1, 2, 4, 8]
+        .into_iter()
+        .flat_map(|workers| [(workers, None), (workers, Some(0))])
+        .flat_map(|(workers, retained)| [(workers, retained, "7"), (workers, retained, "8")]);
+    for (workers, retained, demander) in configurations {
         let s = GooseSession::start_retaining(&runner(), workers, None, retained).unwrap();
         let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
-        let _scope = crate::generated_names::enter("7".into());
+        let _scope = crate::generated_names::enter(demander.into());
         crate::generated_names::sync_gensym_scope(&e).unwrap();
         let (f, args, call) = inputs(
             &e,
             "rt => (form,env) => { const a=rt.core.gensym(); const t=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/tag'); const b=rt.core.gensym(\"b\"); return __rt.formVector(a,t,b); }",
         );
-        serve(&e, &[("fixture/tag", 42)], |_| {
+        serve_scoped(&e, &[("fixture/tag", 42)], Some("9_1_i"), |_| {
             Ok("rt => rt.core.gensym(\"t\")".into())
         });
-        for (round, expected) in [["G__7_1", "t7_2", "b7_3"], ["G__7_4", "t7_2", "b7_5"]]
-            .iter()
-            .enumerate()
-        {
+        let rounds = [["G__D_1", "t9_1_i1", "bD_2"], ["G__D_3", "t9_1_i1", "bD_4"]];
+        for (round, expected) in rounds.iter().enumerate() {
             let value = e.call(f, &args).unwrap();
             let form = e
                 .export_form(value, &call, origin(&call), Default::default())
@@ -638,16 +653,17 @@ fn goose_compiler_gensym_helper_production_numbers_in_the_demanding_scope() {
             let DatumKind::Collection { children, .. } = data.kind() else {
                 panic!("{form:?}");
             };
-            let expected = symbols(&expected.map(String::from));
+            let expected = symbols(&expected.map(|name| name.replace('D', demander)));
             assert_eq!(children.len(), 3);
             for (child, expected) in children.iter().zip(&expected) {
                 assert!(
                     child.value_eq(expected),
-                    "workers={workers} retained={retained:?} round={round}: {child:?} vs {expected:?}"
+                    "workers={workers} retained={retained:?} demander={demander} round={round}: {child:?} vs {expected:?}"
                 );
             }
         }
-        assert_eq!(crate::generated_names::gensym("y").as_deref(), Some("y7_6"));
+        let next = crate::generated_names::gensym("y");
+        assert_eq!(next, Some(format!("y{demander}_5")));
         s.close();
         cleaned(&s);
     }

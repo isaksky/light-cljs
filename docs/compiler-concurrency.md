@@ -3109,20 +3109,28 @@ output changes once, when stage A lands.
     other names than the ones hits captured from it. Stage C needs no
     canonical position to name a namespace either. Two namespaces of a
     build collide only if their digests do (about 2^-64 per pair).
-  - The heap is also put in the innermost scope before a compile-time
-    initializer bundle runs, so its `gensym`s number in the scope that
-    registered it, and back in the expanding unit's scope after a unit
+  - *Frozen initializer scopes (light-cljs-802):* an initializer, root or
+    bundle, runs once in each heap that demands its unit, and its `gensym`
+    numbers from one in a scope of its own, `D_K_i` (`G__D_K_iN`; the `i`
+    no count spells), whichever unit demands it first, on whichever slot's
+    engine, at any slot count. The catalog keeps each unit's prefix. On V8
+    and QuickJS `__lightCompileUnit` wraps the initializer in the runtime's
+    `gensymFrame`, which a unit compiled meanwhile suspends; Goose gets the
+    prefix with the helper's key and produces it in that scope, not the
+    demander's. An artifact records each unit's prefix, so a cache hit's
+    helpers name alike as in an uncached build.
+  - The heap is put back in the expanding unit's scope after a unit
     analyzed on demand returns (`RestoreGensymScope`), so a running macro
     that demanded it goes on in its own. A scope that ends is retired: the
     next `gensymScope` call drops its count from the runtime, so retained
     sessions do not accumulate them. A dev session's file load is a scope
     of its namespace and text, so a watch step names alike in a session
     that loaded the program and in one installed from the cache.
-  - *Open:* a `gensym` that runs outside a macro expansion and outside an
-    initializer, such as in a deferred unit's function called later at
-    compile time, numbers in the scope the heap was last put in: unique and
-    deterministic serially, but not tied to the unit that runs it.
-    Per-worker isolates (light-cljs-339) should keep it in mind.
+  - *Decision (light-cljs-802):* a `gensym` that runs outside a macro
+    expansion and outside an initializer, once the scope the heap was last
+    put in has ended, fails with a named error on V8 and QuickJS, as it
+    faults on Goose, rather than number in that ended scope, whose count
+    would depend on what ran since. (The Pants runtime still numbers there.)
     `READER_GENERATION` stays process-wide: it only tells compilations
     apart for a macro environment's reader, is compared for equality and
     never reaches output or artifacts.

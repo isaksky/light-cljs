@@ -720,6 +720,11 @@ pub struct Unit {
     /// The extensions visible where it was defined: how many bundles this
     /// namespace had registered before it.
     pub extension_frontier: u32,
+    /// The prefix of the scope of generated names it was analyzed in
+    /// (`D_K`), from which its initializer's frozen `gensym` scope is
+    /// spelled (`crate::generated_names::initializer_gensym_prefix`), or
+    /// `None` if it was registered outside every scope.
+    pub names: Option<String>,
 }
 
 /// A unit's catalog name. Declaration bundles and `:test` metadata units are

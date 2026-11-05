@@ -519,7 +519,7 @@ impl GooseSession {
         graph: &bridge::Graph,
         c: &ExecutionControl,
         gensym: Option<(&str, u64)>,
-        mut helper: impl FnMut(&str) -> Result<(usize, String), EvalError>,
+        mut helper: impl FnMut(&str) -> Result<(usize, String, Option<String>), EvalError>,
     ) -> Result<(Vec<u8>, Option<u64>), EvalError> {
         let result = (|| {
             if let Some(error) = self.terminal.lock().unwrap().clone() {
@@ -583,7 +583,7 @@ impl GooseSession {
                             Some(error) => Err(error),
                             None => helper(&name),
                         };
-                        let (unit, source) = match reply {
+                        let (unit, source, prefix) = match reply {
                             Ok(reply) => reply,
                             Err(failure) => {
                                 *self.terminal.lock().unwrap() = Some(failure);
@@ -604,7 +604,13 @@ impl GooseSession {
                             self.directory.join(format!("{id}-{sequence}.helper")),
                         )
                         .map_err(error)?;
-                        self.answer_key(id, sequence, &unit.to_string())?;
+                        // `unit` or `unit prefix`: Goose produces the helper
+                        // in its frozen initializer scope (light-cljs-802).
+                        let key = match prefix {
+                            Some(prefix) => format!("{unit} {prefix}"),
+                            None => unit.to_string(),
+                        };
+                        self.answer_key(id, sequence, &key)?;
                     }
                     Ok(Event::Produced) => {}
                     Ok(Event::Resumed) => {}
@@ -657,10 +663,13 @@ enum DefinitionKey {
     Helper(usize),
 }
 /// The compiler's answer to a `Need` for a compile-time root by name: the
-/// root's unit and its initializer, resolved by the catalog view that
-/// installed it ([`crate::compilation_session::RootIndex`]). Goose never
-/// holds a copy of the registrations.
-type HelperService = Rc<dyn Fn(&dyn MacroEvaluator, &str) -> Result<(usize, String), String>>;
+/// root's unit, its initializer and what the initializer's `gensym`
+/// appends before its own count, if the unit was registered in a scope
+/// ([`crate::generated_names::initializer_gensym_prefix`]), resolved by the
+/// catalog view that installed it ([`crate::compilation_session::RootIndex`]).
+/// Goose never holds a copy of the registrations.
+type HelperService =
+    Rc<dyn Fn(&dyn MacroEvaluator, &str) -> Result<(usize, String, Option<String>), String>>;
 /// A token naming a catalog view that installs a helper service, unique
 /// in the process, so that a view installs its service once per evaluator.
 pub(crate) fn helper_owner() -> u64 {

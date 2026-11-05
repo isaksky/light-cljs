@@ -105,6 +105,11 @@ struct Unit {
     /// charges it ([`UnitCharges`]), and how long the analysis took.
     charges: Option<Box<UnitCharges>>,
     time: std::time::Duration,
+    /// The scope of generated names it is analyzed in, kept past its
+    /// analysis: its initializer's `gensym` numbers in a frozen scope of
+    /// that prefix ([`crate::generated_names::initializer_gensym_prefix`]).
+    /// `None` outside every scope. An artifact records it (`Unit::names`).
+    names: Option<Arc<str>>,
 }
 /// What a macro-free unit's analysis counts, on whichever thread it ran:
 /// it runs with counters and marks of its own, and the coordinator charges
@@ -2097,6 +2102,13 @@ impl SharedCatalog {
     fn unit_source(&self, id: usize) -> Option<u32> {
         Some(self.lock().units.get(id)?.source)
     }
+    /// What the `gensym` of unit `id`'s initializer appends before its own
+    /// count, or `None` if the unit was registered outside every scope
+    /// (light-cljs-802).
+    pub(crate) fn initializer_gensym_prefix(&self, id: usize) -> Option<String> {
+        let names = self.lock().units.get(id)?.names.clone()?;
+        Some(crate::generated_names::initializer_gensym_prefix(&names))
+    }
 }
 impl Catalog {
     /// If the thread in slot `thread` waiting for unit `id` would close a
@@ -2249,6 +2261,8 @@ pub(crate) struct UnitRecord {
     pub view_globals: usize,
     pub extension_frontier: usize,
     pub added: Vec<usize>,
+    /// The prefix of its scope of generated names (`Unit::names`).
+    pub names: Option<Arc<str>>,
     /// The reader contexts its prepared registration names.
     pub reader_contexts: Option<
         crate::shared::Shared<
@@ -2444,13 +2458,14 @@ impl CompilationSession {
                     unit.analyses,
                     unit.emitted,
                     prepared,
+                    unit.names.clone(),
                 )
             })
             .collect::<Vec<_>>();
         let mut capture = self.capture.borrow_mut();
         let capture = capture.as_mut().ok_or("capture is off")?;
         let mut records = Vec::new();
-        for (id, (name, generation, analyses, emitted, prepared)) in (from..).zip(units) {
+        for (id, (name, generation, analyses, emitted, prepared, names)) in (from..).zip(units) {
             let entry = id
                 .checked_sub(capture.first_unit)
                 .and_then(|index| capture.units.get_mut(index))
@@ -2469,6 +2484,7 @@ impl CompilationSession {
                 view_globals: entry.view_globals,
                 extension_frontier: entry.extension_frontier,
                 added: std::mem::take(&mut entry.added),
+                names,
                 reader_contexts,
             });
         }
@@ -2512,7 +2528,7 @@ impl CompilationSession {
     /// compilation's: no analysis and no execution yet.
     pub fn install(
         &self,
-        units: Vec<crate::emitter::DeferredUnit>,
+        units: Vec<(crate::emitter::DeferredUnit, Option<Arc<str>>)>,
         registrations: Vec<InstalledRegistration>,
         source: u32,
     ) -> Result<(), String> {
@@ -2543,7 +2559,7 @@ impl CompilationSession {
                                 var: binding.0,
                                 generation: binding.1,
                             };
-                            let prepared = units
+                            let (prepared, names) = units
                                 .next()
                                 .ok_or("an installed root names a unit the artifact lacks")?;
                             if let Some(capture) = self.capture.borrow_mut().as_mut() {
@@ -2574,6 +2590,7 @@ impl CompilationSession {
                                     dispatched: false,
                                     charges: None,
                                     time: Default::default(),
+                                    names,
                                 },
                                 order,
                             );
@@ -2975,7 +2992,8 @@ impl CompilationSession {
             Rc::new(move |active, name| {
                 let session = session.upgrade().ok_or("compilation session expired")?;
                 let unit = session.resolve_root(name)?;
-                session.compile_unit(active, unit).map(|code| (unit, code))
+                let code = session.compile_unit(active, unit)?;
+                Ok((unit, code, session.shared.initializer_gensym_prefix(unit)))
             })
         });
         Ok(())
@@ -3176,8 +3194,9 @@ impl CompilationSession {
             let mut c = self.shared.lock();
             self.record_registration(&mut c, Registration::Bundle(bundle))
         };
-        // Initializers that call `gensym` number in the scope that
-        // registers them.
+        // The registering scope is the engine's while the bundle installs;
+        // its initializer numbers `gensym` in a frozen scope of its own
+        // wherever it runs ([`crate::generated_names::frozen_initializer`]).
         self.install_registrations(end, |engine| {
             crate::generated_names::sync_gensym_scope(engine).map_err(|e| e.to_string())
         })?;
@@ -3271,6 +3290,7 @@ impl CompilationSession {
                 }
                 let source = self.lane_source(snapshot.source_index);
                 let order = self.shared.lanes.register_unit(id, source);
+                let names = snapshot.names.clone();
                 c.push_unit(
                     Unit {
                         request,
@@ -3292,6 +3312,7 @@ impl CompilationSession {
                         dispatched: false,
                         charges: None,
                         time: Default::default(),
+                        names,
                     },
                     order,
                 );
@@ -4450,6 +4471,11 @@ pub(crate) trait CatalogView {
     /// `__lightCompileUnit`: unit `id`'s initializer, analyzed first if it
     /// is not yet, with the registration it needs evaluated in `active`.
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String>;
+    /// What the `gensym` of unit `id`'s initializer appends before its own
+    /// count ([`SharedCatalog::initializer_gensym_prefix`]).
+    fn initializer_gensym_prefix(&self, _id: usize) -> Option<String> {
+        None
+    }
     /// `light.build`: the source index of unit `id`, if the catalog can tell.
     fn unit_source(&self, id: usize) -> Option<u32>;
     /// `light.build`: the source indexes of the units being analyzed, the
@@ -4541,6 +4567,9 @@ impl CatalogView for CompilationSession {
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
         compile_unit_in(&self.shared, active, id, || self.analyze(id, Some(active)))
     }
+    fn initializer_gensym_prefix(&self, id: usize) -> Option<String> {
+        self.shared.initializer_gensym_prefix(id)
+    }
     fn unit_source(&self, id: usize) -> Option<u32> {
         self.shared.unit_source(id)
     }
@@ -4589,7 +4618,8 @@ impl WorkerView {
             Rc::new(move |active, name| {
                 let view = view.upgrade().ok_or("compiler worker expired")?;
                 let unit = view.resolve_root(name)?;
-                view.compile_unit(active, unit).map(|code| (unit, code))
+                let code = view.compile_unit(active, unit)?;
+                Ok((unit, code, view.shared.initializer_gensym_prefix(unit)))
             })
         });
         Ok(())
@@ -5751,6 +5781,9 @@ impl CatalogView for WorkerView {
         (self.shared.counters.initializations).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         compile_unit_in(&self.shared, active, id, || self.analyze(id, Some(active)))
     }
+    fn initializer_gensym_prefix(&self, id: usize) -> Option<String> {
+        self.shared.initializer_gensym_prefix(id)
+    }
     fn unit_source(&self, id: usize) -> Option<u32> {
         self.shared.unit_source(id)
     }
@@ -5878,7 +5911,16 @@ pub(crate) fn install_catalog_services(
             "__lightCompileUnit",
             Rc::new(move |active, id| {
                 let view = view.upgrade().ok_or("compilation session expired")?;
-                view.compile_unit(active, id as usize)
+                let code = view.compile_unit(active, id as usize)?;
+                // Pants native units keep their own runtime's gensym.
+                #[cfg(feature = "bbp-macros")]
+                if active.has_native_bridge() {
+                    return Ok(code);
+                }
+                Ok(match view.initializer_gensym_prefix(id as usize) {
+                    Some(prefix) => crate::generated_names::frozen_initializer(&prefix, &code),
+                    None => code,
+                })
             }),
         )
         .map_err(|e| e.to_string())

@@ -216,3 +216,107 @@ fn a_macro_numbers_in_its_scope_after_a_helper_analyzed_on_demand() {
     );
     assert!(outside.ends_with("_1"), "{printed}");
 }
+
+/// A helper whose initializer calls `gensym`, `(def tag (gensym "t"))`,
+/// read by a macro that expands in eight namespaces: its initializer
+/// numbers in a frozen scope of its own unit, `tD_K_i1`, so every namespace
+/// quotes the one name, however many compiler slots run, in whichever
+/// slot's engine first demands the helper and under the schedule-stress
+/// seeds (light-cljs-802).
+#[test]
+fn a_helper_initializer_gensym_names_alike_at_every_slot_count() {
+    let mut sources = vec![(
+        "lib/macros.cljs".to_owned(),
+        r#"(ns lib.macros)
+           (def tag (gensym "t"))
+           (def pair [(gensym "p") (gensym "p")])
+           (defmacro tagged [x] (list 'quote [tag (first pair) (second pair) x (gensym "e")]))"#
+            .to_owned(),
+    )];
+    let mut main = String::from("(ns app (:require");
+    for n in 0..8 {
+        sources.push((
+            format!("app/w{n}.cljs"),
+            format!(
+                "(ns app.w{n} (:require [lib.macros :refer [tagged]]))\n(def v (tagged {n}))\n(defn f [] (tagged :f))"
+            ),
+        ));
+        main.push_str(&format!(" [app.w{n}]"));
+    }
+    main.push_str("))\n(js/console.log (pr-str [");
+    for n in 0..8 {
+        main.push_str(&format!(" app.w{n}/v (app.w{n}/f)"));
+    }
+    main.push_str("]))");
+    sources.push(("app.cljs".to_owned(), main));
+    let sources = sources
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect::<Vec<_>>();
+    let root = write(&sources);
+    let build = |jobs: usize, seed: u64| {
+        let mut host = MacroHost::new();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[PathBuf::from(root.path())],
+            &mut host,
+            AnalysisOptions::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: (seed > 0).then(|| light_cljs::scheduler::Perturbation {
+                    seed,
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("jobs {jobs}, seed {seed}: {e}"));
+        let _ = seed;
+        light_cljs::emit_js(&program)
+    };
+    let reference = build(1, 0);
+    let printed = execute(&reference);
+    let quoted = printed
+        .trim_end()
+        .trim_start_matches("[[")
+        .trim_end_matches("]]")
+        .split("] [")
+        .map(|entry| entry.split(' ').collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    assert_eq!(quoted.len(), 16, "{printed}");
+    // Every expansion quotes the helpers' one set of names and a name of
+    // its own scope.
+    let (tag, first, second) = (quoted[0][0], quoted[0][1], quoted[0][2]);
+    let unit = tag.strip_prefix('t').unwrap().strip_suffix("_i1").unwrap();
+    assert!(
+        unit.split('_').all(|part| part.parse::<u64>().is_ok()),
+        "{printed}"
+    );
+    assert!(
+        first.ends_with("_i1") && second.ends_with("_i2"),
+        "{printed}"
+    );
+    let mut own = std::collections::BTreeSet::new();
+    for entry in &quoted {
+        assert_eq!(&entry[..3], &[tag, first, second], "{printed}");
+        assert!(own.insert(entry[4]), "{printed}");
+    }
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for jobs in [1, 2, 4, 8] {
+        assert_eq!(build(jobs, 0), reference, "jobs {jobs}");
+        if cfg!(any(debug_assertions, feature = "scheduling-stress")) {
+            for seed in 1..=seeds {
+                assert_eq!(build(jobs, seed), reference, "jobs {jobs}, seed {seed}");
+            }
+        }
+    }
+}

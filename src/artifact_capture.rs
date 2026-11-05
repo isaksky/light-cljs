@@ -1501,6 +1501,7 @@ impl Converter<'_> {
                 )?,
                 extension_frontier: record.extension_frontier.saturating_sub(self.start.bundles)
                     as u32,
+                names: record.names.as_deref().map(str::to_owned),
             });
         }
         let own_method = format!("method@{}:", self.source_index);

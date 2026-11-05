@@ -786,8 +786,9 @@ line field per job; the effect would cost a round trip per name.
 Tests (`src/goose/compiler_tests.rs`): `goose_compiler_gensym_numbers_in_compiler_scopes`
 (eight namespaces of deferred units, two expansions a unit, a helper
 function that gensyms: the V8 build's JavaScript at slots 1/2/4/8),
-`goose_compiler_gensym_helper_production_numbers_in_the_demanding_scope`
-(waits in place and saved continuations) and the scope case of
+`goose_compiler_gensym_helper_production_numbers_in_its_own_scope`
+(waits in place and saved continuations; since light-cljs-802 a helper is
+produced in its own frozen initializer scope, not the demander's) and the scope case of
 `goose_compiler_assembly_leaf_boundaries`. A `def` initializer that calls
 `gensym` cannot run on Goose yet: the emitted initializer reads core through
 `rt.nativeCoreBinding` with object destructuring, which the realm and

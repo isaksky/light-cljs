@@ -2516,6 +2516,53 @@ fn codec_measurement_reports_sizes_without_changing_output() {
     assert!(value("cache.keys-ms") >= 0.0 && value("cache.revalidate-ms") >= 0.0);
 }
 
+/// A helper whose initializer calls `gensym` numbers in a frozen scope of
+/// its own unit, which its namespace's artifact records: a namespace
+/// compiled fresh next to the helper's cache hit, at one slot or four,
+/// quotes the name an uncached build gives (light-cljs-802).
+#[test]
+fn a_helper_initializer_gensym_names_alike_next_to_cache_hits() {
+    let sources = TempDir::new("cli-initializer-gensym");
+    std::fs::create_dir(sources.join("app")).unwrap();
+    let write =
+        |name: &str, text: &str| std::fs::write(sources.join("app").join(name), text).unwrap();
+    write(
+        "macros.cljs",
+        "(ns app.macros) (def tag (gensym \"t\")) (defmacro tagged [] (list 'quote tag))",
+    );
+    write(
+        "main.cljs",
+        "(ns app.main (:require [app.macros :refer [tagged]])) (js/console.log (str (tagged)))",
+    );
+    let root = sources.path().to_str().unwrap();
+    let cache = TempDir::new("cli-initializer-gensym-cache");
+    let dir = cache.path().to_str().unwrap();
+    for jobs in ["1", "4"] {
+        let entry = [
+            "--compile",
+            "--entry",
+            "app.main",
+            "--source-root",
+            root,
+            "--jobs",
+            jobs,
+        ];
+        let cached = [&entry[..], &["--cache-dir", dir]].concat();
+        let uncached = compiled(&entry);
+        assert!(uncached.contains("_i1"), "{uncached}");
+        assert_eq!(compiled(&cached), uncached, "jobs {jobs}");
+        // `app.macros` hits; `app.main`, changed, demands its helper.
+        write(
+            "main.cljs",
+            &format!(
+                "(ns app.main (:require [app.macros :refer [tagged]])) (js/console.log (str (tagged)) {jobs})"
+            ),
+        );
+        let uncached = compiled(&entry);
+        assert_eq!(compiled(&cached), uncached, "jobs {jobs}, after a change");
+    }
+}
+
 #[test]
 fn jobs_counts_work_slots_without_changing_output() {
     let root = "examples/namespaces";

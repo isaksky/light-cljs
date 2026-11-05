@@ -66,7 +66,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -1695,6 +1695,7 @@ impl Writer<'_> {
                 code,
                 view,
                 extension_frontier,
+                names,
             } = unit;
             match name {
                 UnitName::Var(name) => {
@@ -1713,6 +1714,7 @@ impl Writer<'_> {
             out.code(code);
             out.view(view);
             out.index(*extension_frontier);
+            out.option_str(names.as_deref());
         });
         self.list(registrations, |out, registration| match registration {
             Registration::Root {
@@ -3125,6 +3127,7 @@ impl<'a> Reader<'a> {
                 code: r.code()?,
                 view: r.view()?,
                 extension_frontier: r.index()?,
+                names: r.option_string()?,
             })
         })?;
         let registrations = self.list(|r| {
@@ -3683,6 +3686,7 @@ mod tests {
                         code: code.clone(),
                         view: view.clone(),
                         extension_frontier: 2,
+                        names: Some("17_3".into()),
                     },
                     Unit {
                         name: UnitName::Declaration,
@@ -3692,6 +3696,7 @@ mod tests {
                         code: RelocatableCode::default(),
                         view: RegistrationView::default(),
                         extension_frontier: 0,
+                        names: None,
                     },
                     Unit {
                         name: UnitName::Test("app.core/f".into()),
@@ -3701,6 +3706,7 @@ mod tests {
                         code,
                         view,
                         extension_frontier: 1,
+                        names: None,
                     },
                 ],
                 registrations: vec![
