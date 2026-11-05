@@ -634,13 +634,16 @@ job workers".
   compiler's answer is written into its receiver. A continuation carries
   both bounds.
 - *Retirement.* A worker whose tables end a job above
-  `BBP_WORKER_TABLE_BYTES` (default 1.25 MiB) exits instead of resetting; 0
+  `BBP_WORKER_TABLE_BYTES` (default 16 MiB) exits instead of resetting; 0
   retires after every job, light-cljs-784's one worker per job, the
   differential control. A reused worker keeps its data stacks' high water, so
-  the cap is what bounds idle workers' memory: on the 200k project it retires
-  a quarter of the workers' jobs and keeps the runner's peak memory within 5%
-  of the control; a cap no job reaches is faster by 0.4 s at one worker and
-  holds 5 MB more.
+  the cap is what bounds idle workers' memory. light-cljs-795 chose 1.25 MiB,
+  which retired a quarter of the workers' jobs on the 200k project and kept
+  the runner's peak memory within 5% of the control; the user then chose
+  16 MiB (light-cljs-791), which no 200k job reaches: a session spawns one
+  worker per execution slot and retires none, Goose 1/2/4/8 take 0.36 to
+  0.85 s less, and the runner holds up to a fifth more peak memory (6 MB at
+  one worker).
 - *Unchanged:* blocking waits within the retention budget, the `Answer`
   routing by job address, cancellation, the input and readiness protocol,
   `supervise` (a contained abort still ends the session), root reads in every
@@ -673,7 +676,8 @@ rows and bindings between workers, cold and warm equality tests) and makes a
 worker's tables depend on its history. The larger per-job cost left is the
 queue-to-first-instruction latency, mostly the spawns of retired workers'
 successors (0.31 s summed at one worker, 0.93 s at eight; their joins, 0.34 s
-and 2.46 s, are off the critical path), which is light-cljs-791's.
+and 2.46 s, are off the critical path), which is light-cljs-791's; it
+removed them by raising the default cap to 16 MiB ("Stack settings").
 light-cljs-792's premise of 155.9 MB of spawn arguments and 153.9 MB of
 restores a session was a worker per job; with 795's reuse they are 131.8 MB
 (1,282 base images and the jobs' snapshots) and 102.6 MB (only rows above
@@ -925,6 +929,23 @@ below it. Workers are spawned on demand, so the 200k project starts 1,282
 job workers a session at the default cap instead of 5,283 (2 to 8 with a cap
 no job reaches); the region cost per spawn is unchanged and paid that much
 less often. The defaults stand.
+
+With the 16 MiB default table cap (light-cljs-791, November 5, 2026),
+`goose check --stacks` on the runner is unchanged: main 59 data stacks plus
+1 global stack (60 regions), `run_worker` 53, `preparer` 38,
+`profile_restore` 21, `supervise` 2, `input` 2; thread cap 307 workers. On
+the 200k project a session spawns 2 / 3 / 5 / 8 job workers at 1/2/4/8
+execution workers and retires none, within light-cljs-791's bound of
+`limit + retention + 64` (97 to 104). The measured per-spawn cost, from the
+1.25 MiB sessions that retired 1,282 workers: 15 microseconds of spawn call
+in the coordinator, about 177 microseconds more from queueing to first
+instruction per successor at one worker (its 53 regions and image restore),
+and a join of 259 microseconds at one worker and 1,987 at eight. At 16 MiB,
+spawn calls and joins sum to 0.03 to 0.15 milliseconds a session, under
+0.003% of Goose wall at every worker count (the bar was 1%), so neither
+fewer data stacks nor a region-reuse proposal for the Goose maintainers is
+needed, and the defaults stand. Evidence: "Reused job workers at a 16 MiB
+cap".
 
 The conformance harness (light-cljs-782, decision 7) runs one Goose runner
 process per case, `src/conformance.goose`, at most `--jobs` (default 4) at

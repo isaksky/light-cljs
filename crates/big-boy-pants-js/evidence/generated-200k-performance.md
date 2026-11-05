@@ -1281,7 +1281,8 @@ settings"). A job worker now serves many jobs: it restores the base image
 once, installs each job's rows above it and truncates its tables back to the
 image after the job, or retires once its tables end a job above
 `BBP_WORKER_TABLE_BYTES`. **The 200k project stays byte-identical with its
-five oracles passing at the default cap (1.25 MiB), with a cap no job
+five oracles passing at the default cap of the time (1.25 MiB; 16 MiB since
+[light-cljs-791](#reused-job-workers-at-a-16-mib-cap)), with a cap no job
 reaches (16 MiB) and with a cap of 0 (a fresh worker per job). Goose 1/2/4/8
 take 15.422 / 10.561 / 7.254 / 7.700 s at the default, against 16.683 /
 11.540 / 7.831 / 8.640 s for light-cljs-784's worker per job (−1.261 /
@@ -1388,7 +1389,8 @@ prepared definition into a job and queueing it, spawns excluded).
 
 Binaries: light-cljs `--release --locked --features goose-macros` at this
 branch (SHA-256 `da7a41e8…`), runner `compiler_session.goose` at this branch
-(`e1fb35ce…`), master at `31d329fd`, default cap (1.25 MiB). Samples and the
+(`e1fb35ce…`), master at `31d329fd`, the default cap of the time (1.25 MiB;
+16 MiB since light-cljs-791). Samples and the
 traced `JOBS` lines: `generated-200k-worker-installs.edn.gz`.
 
 **Check gate**, `compare.bb --backend all --phase check --runs 1`, one
@@ -1413,3 +1415,91 @@ Every session ran 5,283 jobs, 5,283 snapshot installs (14.8 µs each at one
 worker) and 529 helper installs (7.3 µs each). The worker-side installs,
 what a cache could remove, are 81.8 ms, 0.52% of 15.788 s; with the
 hand-off, 0.80%. The warmup sessions agree within 8 ms.
+
+## Reused job workers at a 16 MiB cap
+
+November 5, 2026 (light-cljs-791; design in
+[javascript-coverage.md](../docs/javascript-coverage.md), "Stack settings").
+The per-spawn cost that light-cljs-784's worker per job introduced is now
+paid only for the workers a session needs. light-cljs-795's reused workers
+still retired 1,282 a session at the 1.25 MiB default cap, and their
+successors' spawns were the largest per-job cost left (light-cljs-796). The
+user chose to raise the default `BBP_WORKER_TABLE_BYTES` to 16 MiB, accepting
+about 19% more runner peak memory; no runtime change beyond that default was
+needed. **The 200k project stays byte-identical with its five oracles
+passing. Goose 1/2/4/8 take 14.448 / 9.934 / 6.898 / 6.861 s, against 15.302
+/ 10.384 / 7.261 / 7.417 s at the old default the same day (−0.854 / −0.450
+/ −0.363 / −0.556 s), 16.683 / 11.540 / 7.831 / 8.640 s for light-cljs-784's
+worker per job (−2.235 / −1.606 / −0.933 / −1.779 s) and 14.738 / 10.121 /
+7.167 / 7.274 s for the runner before light-cljs-784 (−0.290 / −0.187 /
+−0.269 / −0.413 s).** The 784 and pre-784 figures come from the sections
+above, measured on other days. A session spawns 2 / 3 / 5 / 8 job workers and
+retires none, against 1,282 / 1,282 / 1,284 / 1,285 spawned and retired.
+
+Binaries: light-cljs `--release --locked --features goose-macros` at master
+`801f7e66` (SHA-256 `7b957190…`, every cell); runner `compiler_session.goose`
+at `801f7e66` with the 1.25 MiB default (`271d22a9…`) and at this branch
+with 16 MiB (`5bf874de…`), no cap set in the environment. Goose
+v2026.3-267, seed 42, 199,129 lines, release/advanced/`--no-cache`.
+Samples, traced `JOBS` lines and runner peak memory:
+`generated-200k-default-cap.edn.gz`.
+
+**Check gate**, `compare.bb --backend all --phase check --runs 1` once per
+runner, one sample after one warmup a cell, not a timing run. Seconds of
+wall, then the compiler command's user + system CPU (the runner included)
+and its peak memory:
+
+| Default cap | Goose 1 | Goose 2 | Goose 4 | Goose 8 | V8 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1.25 MiB (before) | 15.302 (11.35 + 3.88) 0.908 GB | 10.384 (12.23 + 4.35) 0.950 GB | 7.261 (14.10 + 5.77) 0.946 GB | 7.417 (15.12 + 8.41) 0.992 GB | 5.759 |
+| 16 MiB (after) | 14.448 (11.09 + 3.02) 0.915 GB | 9.934 (11.90 + 3.32) 0.927 GB | 6.898 (13.59 + 4.14) 0.965 GB | 6.861 (14.68 + 5.06) 1.022 GB | 5.884 |
+
+Every cell of both runs passed the byte-identity, oracle and waste checks.
+System CPU falls by 0.86 s at one worker and 3.35 s at eight: the region
+setup and teardown of 1,280 spawns and exits a session (probe P12).
+
+**Spawns, retirements and their time**, from the final `JOBS` line of
+traced sessions (the runner in `readiness-test` mode, which adds trace
+lines only, with `BBP_RESET_CHECK=0`, under `/usr/bin/time -l`), one session
+each. The spawn column is the coordinator's spawn calls, the join column the
+time from a retiring worker's exit to its reaping, both summed over the
+session; the queue column is the summed time from queueing a job to its
+first instruction, which includes the successors' spawns:
+
+| Default cap, workers | Wall | Job workers (retired) | Spawn calls | Joins | Queue to first instruction | Runner peak memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1.25 MiB, 1 | 15.414 s | 1,282 (1,282) | 19.3 ms | 332.6 ms | 299.7 ms (57 µs a job) | 28.2 MB |
+| 1.25 MiB, 2 | 10.357 s | 1,282 (1,282) | 20.5 ms | 423.0 ms | 324.8 ms (61 µs) | 34.2 MB |
+| 1.25 MiB, 4 | 7.259 s | 1,284 (1,284) | 26.3 ms | 823.0 ms | 463.7 ms (88 µs) | 46.8 MB |
+| 1.25 MiB, 8 | 7.496 s | 1,285 (1,285) | 68.9 ms | 2,553.0 ms | 1,000.2 ms (189 µs) | 69.1 MB |
+| 16 MiB, 1 | 14.512 s | 2 (0) | 0.030 ms | 0 | 72.4 ms (14 µs) | 33.9 MB (+20.2%) |
+| 16 MiB, 2 | 9.879 s | 3 (0) | 0.045 ms | 0 | 81.2 ms (15 µs) | 40.8 MB (+19.1%) |
+| 16 MiB, 4 | 6.861 s | 5 (0) | 0.075 ms | 0 | 98.3 ms (19 µs) | 53.6 MB (+14.5%) |
+| 16 MiB, 8 | 6.963 s | 8 (0) | 0.151 ms | 0 | 110.8 ms (21 µs) | 73.8 MB (+6.9%) |
+
+Every session ran 5,283 jobs (5,226 macro starts, 57 helper productions;
+529 waits, all blocked and answered). At 16 MiB the spawns stay far below
+light-cljs-791's bound of `limit + retention + 64` (97 / 98 / 100 / 104), and
+spawn calls and joins together are under 0.003% of Goose wall at every
+worker count (no worker leaves before the session closes, so no join is
+timed), against the pellet's 1% bar; at 1.25 MiB they were 2.3% at one worker.
+What remains of the queue column is the hand-off between the coordinator and
+an idle worker, not a spawn. Per spawn, the 1.25 MiB sessions give 15 µs in
+the coordinator (the same at 16 MiB) and, per retired worker, about 177 µs
+more queue-to-first-instruction at one worker than the 16 MiB session (the
+successor's regions and image restore) and a 259 µs join (1,987 µs at
+eight). The runner's peak memory rises by up to a fifth, because idle workers
+keep their largest job's tables and data-stack high water (light-cljs-795);
+the compiler command's peak memory, which includes the runner, moves by
+−0.023 to +0.030 GB.
+
+Reproduce (the generated-project README's gate commands, once per runner;
+the traced sessions ran `light-cljs release bench --optimize advanced --jobs
+N --no-cache` in the project with `LIGHT_CLJS_GOOSE_RUNNER` set to a scratch
+wrapper running `/usr/bin/time -l RUNNER "$@" readiness-test`,
+`LIGHT_CLJS_GOOSE_WORKERS=N` and `LIGHT_CLJS_GOOSE_REPORT` set):
+
+```sh
+C="bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs"
+$C --backend all --runner RUNNER --phase check --runs 1
+```
