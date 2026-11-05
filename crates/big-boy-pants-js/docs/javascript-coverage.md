@@ -188,7 +188,9 @@ and Goose has no unions to box into.
 
 *Amended by light-cljs-792:* a job worker now serves many jobs and is reset
 to the image before each one; see
-[State isolation](#state-isolation-comparison-with-shadow-cljs). The bullets
+[State isolation](#state-isolation-comparison-with-shadow-cljs). *Amended by
+light-cljs-797:* that reset reclaims garbage only; compile-time state
+persists for the build in cells outside every worker's tables. The bullets
 below describe the one-worker-per-job design that light-cljs-784 built.
 
 - A **session worker** owns the session image: the realm (decision 6), loaded
@@ -313,7 +315,9 @@ must start from the clean image, but nothing needs a new thread program per
 job, which is what costs 5,283 sets of region setup a 200k session. This
 section amends decision 3; light-cljs-795 and -796 implement it, -785, -787,
 -788, -790 and -791 carry "Amended by light-cljs-792" notes, and -786, -789
-and -794 (one image per thread program) stand as written.
+and -794 (one image per thread program) stand as written. light-cljs-797
+revisited it without byte-identical output across worker counts, which the
+user does not require (last subsection).
 
 ### What shadow-cljs shares
 
@@ -356,29 +360,35 @@ one world per process for macro state, one environment per build.
 
 ### What light-cljs requires
 
-1. **Byte-identical output at every worker and slot count**, which
-   shadow-cljs does not promise. A job's result may depend only on the
-   session image, its arguments and the helpers resolved for it, never on
-   which worker ran it or what ran there before
-   (`docs/compiler-concurrency.md`, "Semantics and determinism"). The V8 path
-   kept persistent isolates and declared a macro's compile-time side effects
-   visible only in the isolate that made them (light-cljs-429), which keeps
-   output identical only for pure macros. Goose today keeps it for every
-   macro, because no job sees another's writes; runtime `gensym` and counter
-   effects fault with `NativeBoundary` on the compiler path (`execute`; test
-   `goose_compiler_assembly_leaf_boundaries`), and generated names stay
-   compiler-owned.
-2. **Root visibility as V8 had it** (light-cljs-776). The compiler resolves
+Rewritten by light-cljs-797. light-cljs-792 put "byte-identical output at
+every worker and slot count" first, from `docs/compiler-concurrency.md`
+("Semantics and determinism"); the user does not require it ("That isn't a
+requirement from me", November 5, 2026).
+
+1. **shadow-cljs's compile-time semantics.** Macro namespaces and their
+   state (atoms, `defonce`, caches, gensym counters) persist for the build
+   and are shared by every worker, as above. A macro whose result depends on
+   shared mutable state and on scheduling may give scheduling-dependent
+   output, as in shadow-cljs. Goose has no such state today: runtime
+   `gensym` faults with `NativeBoundary` (test
+   `goose_compiler_assembly_leaf_boundaries`), the runtime has no atoms,
+   writes into the realm fault, and writes into a prepared definition's rows
+   vanish when the job ends (`goose_compiler_every_job_runs_in_its_own_worker`).
+2. **Correct output.** Deterministic projects (the 200k project, the
+   expanded fixture) still match V8 byte for byte, so a pure job's result,
+   steps and limit outcome may not depend on which worker ran it or what ran
+   there before.
+3. **Root visibility as V8 had it** (light-cljs-776). The compiler resolves
    `__lightCompilerRoots[name]` at the job's visibility cursor and the job
    writes the answer into the roots object. A world reused across jobs may
    cache a helper by its unit key, never by name.
-3. **Contained failures.** A VM fault, a limit or a cancellation ends one
-   job; a contained Goose abort ends the session (`supervise` in
-   `src/compiler_session.goose`).
+4. **Contained failures.** A VM fault, a limit or a cancellation ends one
+   job and corrupts later calls no more than shadow-cljs would; a contained
+   Goose abort ends the session (`supervise` in `src/compiler_session.goose`).
 
-The minimum: **every job starts from the pristine image, and nothing it
-writes or allocates is reachable from a later job**, not a fresh thread
-program per job.
+The minimum: **nothing a job allocates is reachable from a later job except
+the compile-time state the build keeps**, and no fresh thread program per
+job.
 
 ### What Goose's memory model requires
 
@@ -401,7 +411,9 @@ reset needs only rewritten rows and an allocation point moved back.
 ### Options
 
 200k costs: 5,283 dispatches a session (5,226 macro starts, 57 helper
-productions; light-cljs-784's JOBS lines); per job from P16.
+productions; light-cljs-784's JOBS lines); per job from P16. These rows
+compare ways to reclaim a job's garbage; light-cljs-797 compares where
+compile-time state lives.
 
 | Option | Persists across jobs | Determinism and failures | Spawns a session | Isolation cost a job |
 | --- | --- | --- | --- | --- |
@@ -410,7 +422,7 @@ productions; light-cljs-784's JOBS lines); per job from P16.
 | (b) a long-lived worker per slot, job tables in a nested scope | the image | needs the image rows restored | at most limit + retention | P16's truncated control: 6-24 µs; but index types cannot name local tables (P13), so links become raw integer IDs, which decision 2 excludes |
 | (c) a worker per namespace or batch | the image and the batch's garbage | carrying state across a namespace's jobs is deterministic only if they all run in order in one worker, which the scheduler does not promise (deferred units, helper productions); with a reset it is (d) with more spawns | about 500 (199,129 lines at the generator's 400 a namespace) | a tenth of (a), plus garbage that grows with the batch |
 | **(d) a reused worker with a job arena** | the image | the image is restored before every job, so each job sees what a fresh worker would, at the same rows; a VM fault's state goes at the next reset; an abort ends the session as now | at most limit + retention (784 measured peak live workers 2/3/8/16), plus retirements | P16: 13 µs (the queue round trip), plus the prefix restore (about 17 µs for a 1.28 MB image); pages reused |
-| (e) one shared world without reset (shadow-cljs) | everything | macro state differs between workers and with history; garbage unbounded | at most limit | none, but it breaks requirement 1 and memory |
+| (e) one shared world without reset (shadow-cljs) | everything | not expressible: every world is one thread program's copy (P17); per worker it is light-cljs-797's (b); garbage unbounded | at most limit | none, but no collector reclaims its garbage |
 
 Row (a) is the 784 regression: +1.945/+1.419/+0.664/+1.366 s at 1/2/4/8
 workers, system CPU 3.03 to 5.76 s at one and 4.88 to 22.14 s at eight. Under
@@ -453,7 +465,8 @@ resetting a job arena**:
   saved continuation carries every row above the coordinator's image it
   reached, cached ones included, with its cache bindings, and resumes on a
   worker reset to the coordinator's image. Nothing keyed by root name, no
-  write to image rows and no row a job added survives the job.
+  write to image rows and no row a job added survives the job in a worker's
+  tables; compile-time state survives it in cells (light-cljs-797).
 - **Rules for the representation pellets** (light-cljs-785, -787, -788,
   -790): every piece of VM state a job can change is a table row, a field of
   the one worker-global state struct, or job-local; no lookup structure
@@ -461,6 +474,76 @@ resetting a job arena**:
   prefix restore does not cover; the VM reads tops, not physical table
   lengths. In tests a reset check compares the prefix and the struct with the
   twins after every reset (light-cljs-795).
+
+### Revisited without byte identity (light-cljs-797)
+
+November 5, 2026, on the four requirements above. The 200k instrument phase
+(`compare.bb --phase instrument --runs 1`, passing) at Goose 1: `JOBS 0 32
+5283 5283 88601000 718709000 1368937000 155892823 153906415 2 1 529 0 529 0
+0` (5,283 spawns, 136 µs spawn to first instruction and 259 µs last
+publication to join each); CENSUS gives a median job 5,841 nodes over a
+28-node image, 98.7% unreachable at exit. A probe runner counting each macro
+job's writes by target row: 123,397 writes by 5,226 jobs, none into a row
+the job did not allocate. The 200k project keeps no compile-time state, so
+each option costs it only its garbage reclamation.
+
+| Option | Persists across jobs | Garbage | Failures | Requirement 1 | 200k cost | 795 and 796 |
+| --- | --- | --- | --- | --- | --- | --- |
+| (a) 792's decision: reused workers, pristine restore | the image (and 796's caches) | job arena reset | a fault's writes go at the next reset | fails: no state survives, so an atom would be undone at every reset and a counter would return 1 forever | about 15 µs a job, at most limit + retention spawns (792's projection) against 5,283 above | as filed |
+| (b) one persistent world per worker, as V8's isolates | what its jobs wrote, per worker | top reset after promoting every row a persistent write reaches (an export and re-import, as for a result) or undoing the write, at every job end, faults included | a failed job's writes stay, as in shadow-cljs | exact at one worker; at N each worker has its own atoms, so a counter repeats values and a registry misses what other workers' jobs registered even when the compiler finished the dependency first (V8's light-cljs-429 contract, which needs `--cache-blocker` affinity) | as (a): nothing to promote | harder: retiring a worker discards its state unless its whole live world is evacuated, and a job's outcome depends on its worker's history by design |
+| (c) one world shared by all workers | — | — | — | not expressible: every world is one thread program's copy, and no message can hold an index-typed link (P17) | — | — |
+| (c1) one world in one thread program running every job | everything | as (b); the never-reset serial control failed its work quota at the fifteenth call of the expanded workload | as (b) | exact, value identity included | macro execution becomes serial: 9.52 s with one Goose worker against 8.15 s with four at 4 compiler slots, 10.36 against 9.31 s with eight at 8 (one check sample each, today's runner) | moot |
+| **(c2) state in process-wide cells outside every world** | the image and 796's caches in each worker; atoms, volatiles and delays reachable from published values, as flat values in one owner | job arena reset (795) | a cell operation is atomic at the owner, so a failed job's completed swaps stay, as in shadow-cljs; nothing to undo | as shadow-cljs for atoms at every worker count: one cell per published atom, linearizable operations, `swap!` reruns its function on a conflict as Clojure's does | none: no cell operations | unchanged; 795 gains one write rule |
+
+Cells cost P18: with a reply queue private to each worker, a `swap!` (a
+load and a compare-and-set, two round trips) takes 9.6 to 9.8 µs with a
+64-byte value and 29 to 34 µs with 64 KB at one worker; one owner serves
+about 200,000 messages a second, so 8 workers on their own cells complete a
+swap every 10 to 12 µs between them, and 8 workers on one cell rerun the
+function 7 times a swap. With one reply queue routed by address, as the
+`Answer` queue is, replies bounced 0.9 to 9.8 million times per 16,000 swaps.
+Other shadow-cljs features need no shared world: Goose prepares each
+definition and produces each helper once a session (macro namespaces load
+once), `gensym` belongs to the compiler's generated-name scopes (unique in
+the build, independent of scheduling), the cache's skipped effects are the
+`--cache-blocker` rule, and the compiler environment is the Rust compiler's.
+
+**Decision: (c2).** (c1) is exact but runs every macro on one core (11 to
+17% slower on the 200k project, more on macro-heavy builds) and, like (b),
+must promote and eventually collect its world; (b) is wrong at more than
+one worker. (c2) keeps parallel execution and needs no collection, since
+the owner keeps only current values. It gives up value identity across jobs
+(equality is kept) and mutable JavaScript objects as shared state, which
+shadow-cljs's macros, running on the JVM, cannot have either. Decision 3
+changes: **the job arena reclaims a job's garbage, and compile-time state
+lives in cells outside every worker's tables.** light-cljs-795 (amended)
+adds the write rule, light-cljs-799 the cells, light-cljs-798 the runtime
+`gensym`.
+
+- An atom, volatile or delay reachable from a published value (a prepared
+  definition, a produced helper) becomes a cell when published, one cell per
+  object, like the Pants build's one atom per Var
+  (`docs/compiler-concurrency.md`, "Effect lanes"); a job's own atoms stay
+  rows. A cell holds the flat encoding of a shareable value (forms,
+  functions, cell references); a mutable JavaScript object fails with a
+  named error. Cell operations are effects: `deref` reads the current
+  version (the same value for a version within a job), `reset!` replaces it,
+  `swap!` and `compare-and-set!` compare and set by version. Watches and
+  validators fail explicitly.
+- The owner is a program with no VM tables (the coordinator or one it
+  spawns), so no worker's image changes; replies go on a queue private to
+  the worker's execution slot (a generic reply struct with one marker type
+  per slot, P18).
+- A JavaScript-visible write into a row the job did not allocate (the realm,
+  a restored definition, an installed helper) faults with `NativeBoundary`
+  before it mutates, as writes into the realm do today, instead of being
+  undone silently by the reset. No 200k job makes one.
+- Unchanged: 795's arena and retirement, 796's caches and their cold and
+  warm equality (requirement 2), root reads at the cursor, `gensym` as the
+  compiler's (the runtime leaf numbers in the expansion's generated-name
+  scope, as V8's native mode does). Cell effects follow scheduling; the
+  owner is where effect lanes (light-cljs-480) could order them if that is
+  ever required.
 
 ## Decision 4: control flow
 
@@ -785,3 +868,19 @@ checked and the result.
   overwritten, in an index-typed table): 13.0-13.3, 22.5-22.9, 51-52, and
   28.7-33.2 restoring a 1.28 MB prefix. Tables without index types truncated
   after each job, option (b): 5.6-6.0, 10.7-12.9, 20.9-24.2.
+- **P17** (light-cljs-797). Main fills an index-typed global table and
+  spawns two workers: one writes a row and appends one (it sees `77`, three
+  rows), the other then reads the table and sees main's rows (`1`, two
+  rows), and so does main. A message struct holding an index-typed link is
+  refused: "Link cannot pass between threads: it holds an index type, and
+  each thread program's copy of the array it names grows on its own".
+- **P18** (light-cljs-797). An owner thread holds cells as flat bytes and
+  serves load and version compare-and-set messages; W workers each run 2,000
+  `swap!`s (load, update locally, compare-and-set, rerun on a conflict),
+  native build, two rounds. With replies on one queue routed by address,
+  every worker count above one bounced replies (0.9 to 9.8 million times).
+  With one reply queue per worker (`Reply<T>` with a marker type per
+  worker selects a distinct queue; a generic `thread_fn` cannot be spawned,
+  so each slot has a one-line wrapper): µs a swap of wall, 64 B / 64 KB
+  values, 1 worker 9.6-9.8 / 28.8-33.8, 8 on their own cells 10.1-11.9 /
+  15.0-17.0, 8 on one cell 46.6-51.2 / 85.8-86.8 with 111,700 reruns.
