@@ -469,6 +469,12 @@ fn goose_compiler_assembly_leaf_boundaries() {
             "Fault.UnsupportedOperand",
         ),
         ("const a=[];a.length=1048577;return a;", "Fault.MemoryLimit"),
+        // Every opcode exports; one the Goose VM does not implement fails the
+        // macro by name when it runs, uncatchably (light-cljs-783).
+        (
+            "function P(){} try { return new P(); } catch (e) { return null; }",
+            "Fault.Unsupported:construct",
+        ),
         (
             "return rt.core.sequence(null,null);",
             "Fault.NativeBoundary",

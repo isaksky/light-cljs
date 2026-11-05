@@ -118,7 +118,7 @@ fn encode(heap: const source::Heap&, base: const snapshot::Snapshot&, root: sour
     out.append(bytes); return true;
 }
 fn relocated(v: source::Value, ids: const i64[:], units: i64, identity: i64) -> source::Value {
-    var out = v; if v.tag >= 4 { out.session = identity; if v.tag == 5 { out.a = ids[v.a]; } else { out.a += units; } } return out;
+    var out = v; if v.tag == 4 || v.tag == 5 { out.session = identity; if v.tag == 5 { out.a = ids[v.a]; } else { out.a += units; } } return out;
 }
 fn shifted(n: i64, base: i64, delta: i64) -> i64 { return if n < base { n } else { n + delta }; }
 fn install(p: const Publication&, expected: snapshot::Header, code: source::Code&, heap: source::Heap&, c: snapshot::Control&) -> source::Value {
@@ -139,7 +139,7 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     let units = heap.units.len; let sources = heap.source_ranges.len; let bytes = heap.source_bytes.len;
     // Commit only after complete code/graph/context validation and all budgets.
     for f in s.functions[e[1]..] { var n = f; n.start += delta[4]; n.constants += delta[2]; n.children += delta[3]; code.functions.push(n); }
-    for op in s.ops[e[4]..] { var n = op; n.start += delta[0]; n.end += delta[0]; if n.code == 13 || n.code == 14 || n.code == 56 { n.arg += delta[4]; } code.ops.push(n); }
+    for op in s.ops[e[4]..] { var n = op; n.start += delta[0]; n.end += delta[0]; if source::branches(n.code) { n.arg += delta[4]; } code.ops.push(n); }
     for v in s.code_constants[e[2]..] { var n = v; if n.tag == 4 { n.a += delta[5]; } code.constants.push(n); }
     for id in s.children[e[3]..] { code.children.push(shifted(id, e[1], delta[1])); }
     code.units.append(s.code_units[e[5]..]); code.source_bytes.append(s.code_bytes[e[0]..]);

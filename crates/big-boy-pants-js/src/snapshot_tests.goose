@@ -139,6 +139,24 @@ fn stale_classification() {
     assert(source::valid(fresh, replacement) && source::install_field(fresh, replacement, "writable", source::number(2)));
     print("snapshot reset: stale object/string/definition handles cannot authorize replacements or inherit immutability");
 }
+// Symbol and BigInt constants on dead paths carry no session: capture,
+// restore and recapture keep them unchanged, and the restored code runs.
+fn dormant_constants() {
+    var code = source::Code {}; let entry = snapshot_test::append(code, embed_file("../corpus/serial/dormant-constants.gsp"));
+    var symbol: i64 = -1; var bigints: i64 = 0;
+    for v, i in code.constants { if v.tag == 7 { bigints += 1; if symbol < 0 { symbol = i; } } }
+    assert(bigints >= 5 && symbol >= 0);
+    // One dormant BigInt becomes a well-known Symbol (exported only by sloppy `with`).
+    code.constants[symbol] = source::Value { tag: 6, a: 7 };
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var first = snapshot::Control {}; let saved = snapshot::capture(heap, [], first); assert(first.error == snapshot::Error.None);
+    var restored_code = source::Code {}; var restored = source::Heap { code: restored_code }; var roots: snapshot::Binding[>..] = [];
+    var restore = snapshot::Control {}; assert(snapshot::restore(saved, restored_code, restored, roots, source::reserve_identity(), restore));
+    for v, i in restored.constants { if v.tag >= 6 { assert(v.session == 0 && to_bytes([v]) == to_bytes([code.constants[i]])); } }
+    var second = snapshot::Control {}; snapshot::capture(restored, [], second); assert(second.error == snapshot::Error.None);
+    let result = snapshot_test::invoke(restored, source::closure(restored, entry, []), []); assert(result.tag == 3 && result.number == 7);
+    print("snapshot: dormant Symbol/BigInt constants survive capture, restore and recapture");
+}
 fn reused_destination() {
     var parent_code = source::Code {}; var parent = source::Heap { code: parent_code }; var original: snapshot::Binding[>..] = []; snapshot_test::prepare(parent_code, parent, original);
     var capture = snapshot::Control {}; let saved = snapshot::capture(parent, original, capture); assert(capture.error == snapshot::Error.None);
@@ -166,7 +184,7 @@ fn reused_destination() {
     snapshot_test::verify(heap, roots, 7);
     print("reused code/heap/job destination: live/claimed/terminal guards, fresh IDs, alternating payloads, complete reset and transactional validation passed");
 }
-fn main() { callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); live_boundary(); }
+fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); live_boundary(); }
 
 fn finite_map_ownership() {
     var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/calls.gsp"));

@@ -7,11 +7,11 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "6d003c9fd903965cd237a7fa422d2bdbae948423b1b95cbf81ccefdd924c6b04",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "ee97dd3c3bf09801bedffa5b88b9aa65d10b245ea80be031b5de0b971c6a7322",
+  "1b6fe432cf07fdd932f166233dd94a6b106efed4dcfc82ae7c8f93179ff0503d",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "1a2108185dffceee40083c348fb8b306d46c392910ab5036cfe75b0ae45a205b",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
-  "ed75cd7c1e14dc8522f5a01f048b136c12cf51503d8a1efae1c828c317ce6823",
+  "1c6a7cbaba89a5756164e4d0902f74e1cc98d27d3bd2ee3c47348540b9f97ace",
   "crates/big-boy-pants-js/scripts/regenerate.bb"
   "445c05c9f5749d137821cb89532bcbd01b57061e4dbb6376e9d7fc7b56b099f4",
   "src/bbp_reader.js"
@@ -19,15 +19,15 @@
   "src/bbp_runtime.js"
   "1b9fff5b96a9e6bfc2882344de0212f6f009006837c52e8ebc1a149235df36bb",
   "src/compiler_bootstrap.rs"
-  "9c8388cd1c8511a43b4a49c3c7206fb8a29ea88218ca796c21abdc4a04125d71",
+  "b334ccac52813a93b32f2c7f8a28567129d20cf97b7ebdaa2ac5125ae062f83d",
   "src/emitter.rs"
-  "0b7cbc9a31d9b137644ee6351d5e6ed9d8bb6453ab8df69c97e11eced2198b41",
+  "42c5af5e3a6b1b588b0e79d803a80e11cbf4d1f8d9de1c4d6ab84a511e0badcb",
   "src/goose/capture.rs"
-  "059fcc764bb9efcf2e1324bbb1ce83a1704fff1b97b1f5732c5c04348cffb3e5",
+  "3a3179faf9012fa078e0a58fcd73df4b2cd36ebd905846b6328e0083401d677e",
   "src/js_runtime.js"
   "4880ad4634be21f1c05b5b63c74775442f1028ae31a859718a6424dc0bf6d1d7",
   "src/macro_host.rs"
-  "ca59f3766151077e2a5fbed8f39b5d0dfd7fd61f2ae382df828549529d9461c3"},
+  "0bc44c991b35ed6b8a3bc64708dcc5403dd3e0ddf2b4c8c94e600941793cb53c"},
  :artifact-sha256
  {"corpus/branches-consume.pants.gsp"
   "79591f786f72d32f10941be1704df0ca63e6dd32126714aa7cb3fb3386ef679c",
@@ -189,6 +189,10 @@
   "b729cd19eaa7cba0a30f7eb9281ea501aeb496b89bc48ef76762c654e2d5eee4",
   "corpus/serial/arguments.js"
   "4d1cf4908fff75dd6fdb86d256346603562798519216bd59eb84f9bd06c1d613",
+  "corpus/serial/bigint-reached.gsp"
+  "7e1c78895bf7a6a54fc3f1f416915232a0362029d51ee435ac29bbb5d2439388",
+  "corpus/serial/bigint-reached.js"
+  "cd4ad8d14c80c40354ebcb96deef37950d4007180704c8c105077b4f0d444428",
   "corpus/serial/calls.gsp"
   "fc85b8724f49dcc317c7a17e9b65dbbc3c5891715b0d7ac03bdedbefcc553eea",
   "corpus/serial/calls.js"
@@ -201,6 +205,10 @@
   "77ff717b14c04c886e875dd0d2f41f5038d650b2357bedc690efdfa2b2a26b87",
   "corpus/serial/control.js"
   "e503ed5568ad0c8f961ecbc5f1d2a417f2d7a6231bc640237b300d307910f029",
+  "corpus/serial/dormant-constants.gsp"
+  "54b22c4d33c22df0a8a655c72ab67bfa3230f2322cd28e56437b8a204835a6e9",
+  "corpus/serial/dormant-constants.js"
+  "d1094ee1e2835f30fa27281561b13a474085d6486d7624623fe2c4209e7d34c6",
   "corpus/serial/global-missing.gsp"
   "69a0c47520a35293f644c4391991692cb34ccc6f74687a9532659ef18f2b3094",
   "corpus/serial/global-missing.js"
@@ -253,10 +261,18 @@
   "1f1759f3d21998dcfeb56ed761dda512d250217363d720f44710bc2da9033861",
   "corpus/serial/unsupported-coercion.js"
   "645b55c4abdd9c9d34cc0a8a78b1733597c9dfa8382d6fd8880fe31eec42a299",
+  "corpus/serial/unsupported-dead.gsp"
+  "20106abe612042c17d3c64ed92cda72b89c0b07340b36cb3f6b1541b9bffc204",
+  "corpus/serial/unsupported-dead.js"
+  "ebab05b67c4ceeab52993e8dca0aca35a8514a876b789186ae183fa433f76ebe",
   "corpus/serial/unsupported-prototype.gsp"
   "8e4148bda4401a6159a7ce4f6f20868de668f5af43fa65dd0caa171a37f27f60",
   "corpus/serial/unsupported-prototype.js"
   "cc6c5a73c0397c5fa7c930846537e9b32d76bac4469adebc6de30c4834c4d3d9",
+  "corpus/serial/unsupported-reached.gsp"
+  "01049d8391e0b5428600fd184987b4ab159d54f26555c835f11c07ce393d3a40",
+  "corpus/serial/unsupported-reached.js"
+  "d22740c06c202983e99a36dfc08f2eef68c2464bbe287619bff8a7d8bbe7487d",
   "corpus/synthetic/arithmetic.function.js"
   "a48171116d7fa39dd0029f65a28ac9c9bcc44bddd010457d828181f0a7f05958",
   "corpus/synthetic/arithmetic.gsp"

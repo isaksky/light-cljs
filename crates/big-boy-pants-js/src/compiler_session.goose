@@ -48,7 +48,8 @@ fn initialize(id: i64, heap: source::Heap&, callee: source::Value, args: const s
     var job = source::Job { heap: heap, protected_nodes: protected }; defer { source::retire(job); }
     if !source::start(job, callee, args) || source::run(job, -1) != tiny::Outcome.Complete {
         let pc = job.fault_pc; let start = if pc >= 0 && pc < heap.code.ops.len { heap.code.ops[pc].start } else { -1 }; let end = if pc >= 0 && pc < heap.code.ops.len { heap.code.ops[pc].end } else { -1 };
-        print("ERROR ", id, " preparation-", job.fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end); flush_stdout(); return source::Value {}, false;
+        var fault: u8[>..] = []; source::describe_fault(fault, heap.code, job);
+        print("ERROR ", id, " preparation-", fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end); flush_stdout(); return source::Value {}, false;
     }
     return job.result, true;
 }
@@ -98,7 +99,8 @@ fn save(job: source::Job&, rt: source::Value, call: source::Value, control: brid
 fn fail(id: i64, heap: source::Heap&, job: source::Job&) {
     let pc = job.fault_pc; var start: i64 = -1; var end: i64 = -1;
     if pc >= 0 && pc < heap.code.ops.len { start = heap.code.ops[pc].start; end = heap.code.ops[pc].end; }
-    let text = str(job.fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end, " writes=", job.writes.len);
+    var fault: u8[>..] = []; source::describe_fault(fault, heap.code, job);
+    let text = str(fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end, " writes=", job.writes.len);
     publish(Event { id: id, kind: 3, name: copy(text) });
 }
 fn reset(graph: bridge::Graph&) { graph.nodes.clear(); graph.children.clear(); graph.units.clear(); graph.sources.clear(); graph.bytes.clear(); graph.roots.clear(); }

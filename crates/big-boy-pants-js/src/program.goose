@@ -13,6 +13,7 @@ fn word(bytes: const u8[:], offset: i64) -> i64 {
     for i in 4 { n |= (bytes[offset + i] as i64) << (8 * i); }
     return n;
 }
+fn unit(bytes: const u8[:], units: i64, index: i64) -> i64 { return bytes[units + index * 2] | ((bytes[units + index * 2 + 1] as i64) << 8); }
 fn layout(bytes: const u8[:]) -> Layout {
     let source = 32;
     let functions = source + word(bytes, 8);
@@ -23,6 +24,9 @@ fn layout(bytes: const u8[:]) -> Layout {
     return Layout { source: source, functions: functions, constants: constants, children: children, instructions: instructions, units: units, end: units + word(bytes, 28) * 2 };
 }
 fn range(start: i64, length: i64, count: i64) -> bool { return start <= count && length <= count - start; }
+// ThrowKind and built-in global selectors are 0..count; other category-6
+// operands (counts, form operations) have no selector table here.
+fn selector(op: i64, arg: i64) -> bool { let count = export_selector_count(op); return count < 0 || arg < count; }
 fn boundary(source: const u8[:], offset: i64) -> bool {
     return offset <= source.len && (offset == source.len || (source[offset] & 192) != 128);
 }
@@ -53,10 +57,18 @@ fn validate(bytes: const u8[:]) -> Error {
     let nf = word(bytes, 12); let nc = word(bytes, 16); let nch = word(bytes, 20); let ni = word(bytes, 24); let nu = word(bytes, 28);
     for i in nc {
         let at = l.constants + i * 12; let tag = word(bytes, at); let a = word(bytes, at + 4); let b = word(bytes, at + 8);
-        if tag > 4 { return Error.Operation; }
+        if tag == 5 || tag > 7 { return Error.Operation; }
         if tag <= 1 && (a != 0 || b != 0) { return Error.Operation; }
         if tag == 2 && (a > 1 || b != 0) { return Error.Operation; }
         if tag == 4 && !range(a, b, nu) { return Error.Reference; }
+        if tag == 6 && (export_well_known_symbol(a).len == 0 || b != 0) { return Error.Operation; }
+        if tag == 7 {
+            // Sign unit (0 or 1), then little-endian 16-bit digits with no
+            // high zero digit; zero is the single unit 0.
+            if b == 0 || !range(a, b, nu) { return Error.Reference; }
+            let sign = unit(bytes, l.units, a); let high = unit(bytes, l.units, a + b - 1);
+            if sign > 1 || b > 1 && high == 0 || b == 1 && sign != 0 { return Error.Operation; }
+        }
     }
     // Pool entries can be outside all function ranges; validate those IDs too.
     for i in nch { if word(bytes, l.children + i * 4) >= nf { return Error.Reference; } }
@@ -72,7 +84,9 @@ fn validate(bytes: const u8[:]) -> Error {
         if count == 0 || !range(start, count, ni) || !range(constants, constant_count, nc) || !range(children, child_count, nch) || !range(word(bytes, f + 36), word(bytes, f + 40), nu) { return Error.Range; }
         if params > locals || locals > 65535 || captures > 65535 || constant_count > 65536 || child_count > 65536 || word(bytes, f + 44) > 65535 { return Error.Limits; }
         let flags = word(bytes, f + 48);
-        if (flags & 255) > 1 || (flags >> 8) > 1 { return Error.Operation; }
+        // Strict bit 0; constructor kind bits 8..15 (none, ordinary, base,
+        // derived, default derived class); generator bit 16, async bit 17.
+        if (flags & 255) > 1 || ((flags >> 8) & 255) > 4 || (flags >> 16) > 3 { return Error.Operation; }
         for child in child_count {
             let target = word(bytes, l.children + (children + child) * 4);
             if target <= id || target >= nf || child_used[target] { return Error.Reference; }
@@ -87,6 +101,7 @@ fn validate(bytes: const u8[:]) -> Error {
             if export_descriptor(op) != descriptor { return Error.Operation; }
             if op == 194 && export_form_arity(word(bytes, at + 4)) < 0 { return Error.Operation; }
             let arg = word(bytes, at + 4); let kind = (descriptor >> 8) & 255; let size = descriptor >> 16;
+            if kind == 6 && !selector(op, arg) { return Error.Operation; }
             if word(bytes, at + 16) != expected_offset { return Error.Range; }
             expected_offset += size + 1;
             if expected_offset > 4294967295 { return Error.Limits; }

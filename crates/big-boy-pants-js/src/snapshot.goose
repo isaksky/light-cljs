@@ -79,7 +79,9 @@ fn payload_bytes<T>(s: const T&) -> i64 {
          + bytes_of(s.nodes).len + bytes_of(s.values).len + bytes_of(s.properties).len + bytes_of(s.units).len + bytes_of(s.constants).len + bytes_of(s.bytes).len + bytes_of(s.sources).len + bytes_of(s.bindings).len;
 }
 fn footprint<T>(s: const T&) -> i64 { let empty: Snapshot[] = [Snapshot {}]; return bytes_of(empty).len + payload_bytes(s); }
-fn value<T>(s: const T&, v: source::Value, code: bool = false) -> bool {
+fn value<T>(s: const T&, v: source::Value, code: bool = false, constant: bool = false) -> bool {
+    // Symbol (6) and BigInt (7) constants carry no runtime value (source::load).
+    if (code || constant) && (v.tag == 6 || v.tag == 7) { return v.session == 0 && v.number == 0 && v.b == 0 && (if v.tag == 6 { export_well_known_symbol(v.a).len > 0 } else { v.a == 0 }); }
     if v.tag < 0 || v.tag > (if code { 4 } else { 5 }) || v.tag == 2 && v.a != 0 && v.a != 1 { return false; }
     if v.tag >= 4 {
         if v.session != (if code { 0 } else { s.header.base }) { return false; }
@@ -99,7 +101,7 @@ fn code_valid<T>(s: const T&, c: Control&) -> bool {
     var next: i64       = 0;
     for f in s.functions {
         if !poll(c) { return false; }
-        if f.count <= 0 || !range(f.start, f.count, s.ops.len) || !range(f.constants, 0, s.code_constants.len) || !range(f.children, 0, s.children.len) || f.params < 0 || f.params > f.locals || f.locals > 65535 || f.captures < 0 || f.captures > 65535 { return reject(c, Error.Code); }
+        if f.count <= 0 || !range(f.start, f.count, s.ops.len) || !range(f.constants, 0, s.code_constants.len) || !range(f.children, 0, s.children.len) || f.params < 0 || f.params > f.locals || f.locals > 65535 || f.captures < 0 || f.captures > 65535 || f.kind < 0 || f.kind > 4 { return reject(c, Error.Code); }
         if s.ops[f.start].depth != 0 { return reject(c, Error.Code); }
         var offset: i64 = 0;
         for pc in f.start..(f.start + f.count) {
@@ -112,16 +114,17 @@ fn code_valid<T>(s: const T&, c: Control&) -> bool {
             if width == 0 && op.arg != 0 || width == 2 && op.arg > 65535 { return reject(c, Error.Code); }
             if kind == 1 && !range(op.arg, 1, s.code_constants.len - f.constants) || kind == 2 && op.arg >= f.locals || kind == 4 && !range(op.arg, 1, s.children.len - f.children) || kind == 5 && op.arg >= f.captures { return reject(c, Error.Code); }
             if kind == 1 && export_name_operand(op.code) && s.code_constants[f.constants + op.arg].tag != 4 { return reject(c, Error.Code); }
-            if kind == 3 && !range(op.arg - f.start, 1, f.count) || op.code == 194 && export_form_arity(op.arg) < 0 { return reject(c, Error.Code); }
+            if kind == 3 && !range(op.arg - f.start, 1, f.count) || op.code == 194 && export_form_arity(op.arg) < 0 || kind == 6 && !program::selector(op.code, op.arg) { return reject(c, Error.Code); }
             // Check stack flow without allocating another decoded Code owner.
             let pop, push = effect(s, f, op);
             if pop < 0 || push < 0 { return reject(c, Error.Code); }
             if op.depth >= 0 {
                 if op.depth < pop || op.depth - pop + push > 65536 { return reject(c, Error.Code); }
-                if op.code != 15 && op.code != 55 {
-                    for edge in (if op.code == 14 || op.code == 56 { 2 } else { 1 }) {
-                        let target = if (op.code == 13 || op.code == 14 || op.code == 56) && edge == 0 { op.arg } else { pc + 1 };
-                        let extra = if op.code == 56 && edge == 0 { 1 } else { 0 };
+                let next_flow = source::flow(op.code);
+                if next_flow != 4 {
+                    for edge in (if next_flow == 2 || next_flow == 3 { 2 } else { 1 }) {
+                        let target = if next_flow != 0 && edge == 0 { op.arg } else { pc + 1 };
+                        let extra = if next_flow == 3 && edge == 0 { 1 } else { 0 };
                         if !range(target - f.start, 1, f.count) || s.ops[target].depth != op.depth - pop + push + extra { return reject(c, Error.Code); }
                     }
                 }
@@ -148,14 +151,12 @@ fn utf8(bytes: const u8[:]) -> bool {
     }
     return remaining == 0;
 }
-// Same explicit effect table as source::stack_effect; its only data-dependent
-// case (closure captures) is resolved after validating the child link above.
+// The generated table source::stack_effect reads; its only data-dependent
+// count (child captures) is resolved after validating the child link above.
 fn effect<T>(s: const T&, f: source::Function, op: source::Op) -> i64, i64 {
-    if op.code == 43 { return s.functions[s.children[f.children + op.arg]].captures, 1; }
-    // The other cases do not read Code. This empty owner avoids duplicating
-    // the opcode contract and does not copy any source/constant table.
-    var empty = source::Code {};
-    return source::stack_effect(empty, f, op);
+    let e = export_stack_effect(op.code);
+    let captures = if e >= 0 && ((e >> 24) & 15) == 2 { s.functions[s.children[f.children + op.arg]].captures } else { 0 };
+    return source::effect_word(e, op, captures);
 }
 fn validate<T>(s: const T&, c: Control&) -> bool {
     if !poll(c) { return false; }
@@ -178,7 +179,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     for v, i in s.constants {
         if !poll(c) { return false; }
         var original = s.code_constants[i]; if original.tag == 4 { original.session = s.header.base; }
-        if !value(s, v) { return reject(c, Error.Link); }
+        if !value(s, v, false, true) { return reject(c, Error.Link); }
         // Live compiler sessions append code after runtime strings exist.
         // String constants keep exact UTF-16 contents, but their runtime range
         // need not have the same offset as the immutable code's string pool.
@@ -250,7 +251,9 @@ fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&, c
     return Snapshot { header: s.header, code_bytes: s.code_bytes, functions: s.functions, code_constants: s.code_constants, children: s.children, ops: s.ops, code_units: s.code_units,
         nodes: s.nodes, values: s.values, properties: s.properties, units: s.units, constants: s.constants, bytes: s.bytes, sources: s.sources, bindings: s.bindings };
 }
-fn relocated(v: source::Value, identity: i64) -> source::Value { var out = v; if out.tag >= 4 { out.session = identity; } return out; }
+// Only strings (4) and heap references (5) carry a session; Symbol (6) and
+// BigInt (7) constants carry none.
+fn relocated(v: source::Value, identity: i64) -> source::Value { var out = v; if out.tag == 4 || out.tag == 5 { out.session = identity; } return out; }
 // Reset only after the dispatch's job has retired. This reestablishes every
 // restore destination invariant; restore still validates the entire image and
 // requires a fresh identity. No references/roots may cross this boundary.

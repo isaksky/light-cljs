@@ -341,8 +341,9 @@ here proves entry-body execution only. Bootstrap invariants adapt `cc764dbe`,
 
 **Parsed, exported and executed are distinct.** Per-factory inventories mark
 parsed/exported true and Goose-executed false. Export walks every function,
-including dead functions: a parsed but unsupported operation, such as a constructor
-in an unused function, is a positioned error naming its operation and function.
+including dead functions, and exports every opcode; an operation the Goose VM
+does not implement, such as a constructor, fails only when it runs, with
+`Fault.Unsupported` naming it (direct eval is still refused at export).
 These flags describe the export stage. `macros.bb` separately executes the
 supported Pants macro images and compares structured results. The legacy scalar
 adapter still rejects them. The exporter accepts source alone and cannot
@@ -395,18 +396,31 @@ follow in that order:
 | Table | Record | Fields |
 | --- | --- | --- |
 | Functions | 13 × u32, 52 bytes | instruction start/count; constant start/count; child start/count; params; locals; captures; name-unit start/count; JS length; flags |
-| Constants | 3 × u32, 12 bytes | tag and two words: undefined=0, null=1, boolean=2, f64 bits=3, UTF-16 range=4 |
+| Constants | 3 × u32, 12 bytes | tag and two words: undefined=0, null=1, boolean=2, f64 bits=3, UTF-16 range=4, well-known Symbol index=6, BigInt UTF-16 range=7 (5 is never used) |
 | Child IDs | u32 | Absolute function IDs; function operands index their parent's child range |
 | Instructions | 5 × u32, 20 bytes | descriptor; operand; source-byte start/end; original function-code byte offset |
 | UTF-16 | u16 | Runtime string/name code units |
 
-Descriptor bits 0..7 are the explicitly allowed engine opcode, 8..15 the operand
-category (none, constant/name, local, byte target, child, capture, selector/count),
-16..23 the original operand width (0/2/4). Flags contain strictness in bit 0 and
-constructor kind (none/ordinary) in bits 8..15. `export_schema.goose` is compiled
-reader code generated from the exporter's checked opcode/selector surface; an
-input image cannot supply its own schema. Eval sites, unsupported operations,
-Symbol/BigInt constants fail explicitly. No source behavior is dropped.
+Descriptor bits 0..7 are the engine opcode, 8..15 the operand category (none,
+constant/name, local, byte target, child, capture, selector/count), 16..23 the
+original operand width (0/2/4). Every opcode of the shared registry
+(`rust/src/vm/instr.rs`) exports, implemented by the Goose VM or not
+(light-cljs-783); one the VM does not implement fails the job when it runs,
+with the uncatchable `Fault.Unsupported` naming it, and a dead one never fails.
+Flags contain strictness in bit 0, the constructor kind in bits 8..15 (none,
+ordinary, base class, derived class, default derived class), generator in bit
+16 and async in bit 17 (the function's code contains `GeneratorStart`,
+`AsyncStart` or `AsyncGeneratorStart`). A Symbol constant is a well-known
+symbol, its first word the index in `export_well_known_symbol` (the frontend
+emits only `Symbol.unscopables`); a BigInt constant's range holds the sign (0
+or 1) then the magnitude in little-endian 16-bit digits with no high zero
+digit. The version stays 2: these are new values of existing fields, which
+earlier readers refuse explicitly, and images without them are byte-identical.
+`export_schema.goose` is compiled reader code generated from the registry
+(descriptors, selectors, name operands, each opcode's stack effect and control
+flow, opcode and well-known symbol names); an input image cannot supply its
+own schema. Direct eval sites fail explicitly at export. No source behavior is
+dropped.
 
 The existing lowerer supplies u16 constant/local/capture/child indices and u32
 byte addresses. GSP table IDs/ranges are u32. Budgets: 8 MiB source, 65,536

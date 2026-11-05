@@ -33,7 +33,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use super::instr::{FormOp, Instr, Opcode, OperandKind, ThrowKind};
+use super::instr::{Flow, FormOp, Instr, Opcode, OperandKind, ThrowKind};
 use crate::error::SourceLocation;
 use crate::heap::gc::Trace;
 use crate::value::{JsString, Primitive, Value};
@@ -548,239 +548,30 @@ impl Executable {
                     .flatten()
                     .ok_or(err(offsets[i], BadBranchTarget { target: operand }))
             };
-            instrs.push(match opcode {
-                Opcode::Const => Instr::Const(operand as u16),
-                Opcode::Undefined => Instr::Undefined,
-                Opcode::GetLocal => Instr::GetLocal(operand as u16),
-                Opcode::SetLocal => Instr::SetLocal(operand as u16),
-                Opcode::Pop => Instr::Pop,
-                Opcode::Dup => Instr::Dup,
-                Opcode::Add => Instr::Add,
-                Opcode::Sub => Instr::Sub,
-                Opcode::Mul => Instr::Mul,
-                Opcode::Lt => Instr::Lt,
-                Opcode::StrictEq => Instr::StrictEq,
-                Opcode::Not => Instr::Not,
-                Opcode::Jump => Instr::Jump(target()?),
-                Opcode::JumpIfFalse => Instr::JumpIfFalse(target()?),
-                Opcode::Return => Instr::Return,
-                Opcode::NewObject => Instr::NewObject,
-                Opcode::HostEffect => Instr::HostEffect(operand as u16),
-                Opcode::NewVector => Instr::NewVector(operand as u16),
-                Opcode::NewMap => Instr::NewMap(operand as u16),
-                Opcode::NewFormList => Instr::NewFormList(operand as u16),
-                Opcode::NewFormVector => Instr::NewFormVector(operand as u16),
-                Opcode::NewFormSet => Instr::NewFormSet(operand as u16),
-                Opcode::NewStruct => Instr::NewStruct(operand as u16),
-                Opcode::NewFormMap => Instr::NewFormMap(operand as u16),
-                Opcode::FormOp => match FormOp::from_u16(operand as u16) {
-                    Some(op) => Instr::FormOp(op),
-                    // Pass 1 rejected unknown operations.
-                    None => {
-                        return Err(err(
-                            offsets[i],
-                            UnknownFormOp {
-                                code: operand as u16,
-                            },
-                        ));
-                    }
-                },
-                Opcode::Count => Instr::Count,
-                Opcode::Nth => Instr::Nth,
-                Opcode::Get => Instr::Get,
-                Opcode::GetOr => Instr::GetOr,
-                Opcode::Assoc => Instr::Assoc,
-                Opcode::Dissoc => Instr::Dissoc,
-                Opcode::Conj => Instr::Conj,
-                Opcode::PopLast => Instr::PopLast,
-                Opcode::NewVectorBuilder => Instr::NewVectorBuilder,
-                Opcode::NewMapBuilder => Instr::NewMapBuilder,
-                Opcode::BuilderConj => Instr::BuilderConj,
-                Opcode::BuilderAssoc => Instr::BuilderAssoc,
-                Opcode::Freeze => Instr::Freeze,
-                Opcode::Div => Instr::Div,
-                Opcode::Rem => Instr::Rem,
-                Opcode::Neg => Instr::Neg,
-                Opcode::ToNumber => Instr::ToNumber,
-                Opcode::ToNumberPair => Instr::ToNumberPair,
-                Opcode::Gt => Instr::Gt,
-                Opcode::Le => Instr::Le,
-                Opcode::Ge => Instr::Ge,
-                Opcode::LooseEq => Instr::LooseEq,
-                // Pass 1 checked the index; the capture count comes from the child.
-                Opcode::Function => {
-                    let index = operand as u16;
-                    Instr::Function(index, functions[usize::from(index)].0.captures)
-                }
-                Opcode::Method => {
-                    let index = operand as u16;
-                    Instr::Method(index, functions[usize::from(index)].0.captures)
-                }
-                Opcode::Call => Instr::Call(operand as u16),
-                Opcode::CurrentFunction => Instr::CurrentFunction,
-                Opcode::GetCapture => Instr::GetCapture(operand as u16),
-                Opcode::NewCell => Instr::NewCell,
-                Opcode::NewFixedCell => Instr::NewFixedCell,
-                Opcode::NewSealableCell => Instr::NewSealableCell,
-                Opcode::CellInit => Instr::CellInit,
-                Opcode::CellGet => Instr::CellGet,
-                Opcode::CellSet => Instr::CellSet,
-                Opcode::AtomNew => Instr::AtomNew,
-                Opcode::AtomLoad => Instr::AtomLoad,
-                Opcode::AtomCas => Instr::AtomCas,
-                Opcode::Need => Instr::Need,
-                Opcode::Throw => Instr::Throw,
-                Opcode::PushCatch => Instr::PushCatch(target()?),
-                Opcode::PushFinally => Instr::PushFinally(target()?),
-                Opcode::PopCatch => Instr::PopCatch,
-                Opcode::PopFinally => Instr::PopFinally,
-                Opcode::EndFinally => Instr::EndFinally,
-                Opcode::CallFinally => Instr::CallFinally,
-                Opcode::DropCompletion => Instr::DropCompletion,
-                Opcode::Plus => Instr::Plus,
-                Opcode::CompareLt => Instr::CompareLt,
-                Opcode::CompareGt => Instr::CompareGt,
-                Opcode::CompareLe => Instr::CompareLe,
-                Opcode::CompareGe => Instr::CompareGe,
-                Opcode::Typeof => Instr::Typeof,
-                Opcode::GetField => Instr::GetField(operand as u16),
-                Opcode::PutField => Instr::PutField(operand as u16),
-                Opcode::DefineField => Instr::DefineField(operand as u16),
-                Opcode::DefineGetter => Instr::DefineGetter(operand as u16),
-                Opcode::DefineSetter => Instr::DefineSetter(operand as u16),
-                Opcode::GetBuiltinGlobal => Instr::GetBuiltinGlobal(operand as u16),
-                Opcode::CallMethod => Instr::CallMethod(operand as u16),
-                Opcode::NewObjectLiteral => Instr::NewObjectLiteral,
-                Opcode::ToString => Instr::ToString,
-                Opcode::GetThis => Instr::GetThis,
-                Opcode::NewArray => Instr::NewArray,
-                Opcode::AppendElement => Instr::AppendElement,
-                Opcode::AppendHole => Instr::AppendHole,
-                Opcode::GetElem => Instr::GetElem,
-                Opcode::PutElem => Instr::PutElem,
-                Opcode::Dup2 => Instr::Dup2,
-                Opcode::ToPropertyKey => Instr::ToPropertyKey,
-                Opcode::Construct => Instr::Construct(operand as u16),
-                Opcode::SetProto => Instr::SetProto,
-                Opcode::Instanceof => Instr::Instanceof,
-                Opcode::Delete => Instr::Delete,
-                Opcode::In => Instr::In,
-                Opcode::GetIterator => Instr::GetIterator,
-                Opcode::RequireObject => Instr::RequireObject,
-                Opcode::PendingThrow => Instr::PendingThrow,
-                Opcode::CallSpread => Instr::CallSpread,
-                Opcode::CallMethodSpread => Instr::CallMethodSpread,
-                Opcode::ConstructSpread => Instr::ConstructSpread,
-                Opcode::CheckSpreadArguments => Instr::CheckSpreadArguments,
-                Opcode::ForInStart => Instr::ForInStart,
-                Opcode::ForInNext => Instr::ForInNext,
-                Opcode::NewArguments => Instr::NewArguments,
-                Opcode::GeneratorStart => Instr::GeneratorStart,
-                Opcode::GeneratorYield => Instr::GeneratorYield,
-                Opcode::GeneratorInitialYield => Instr::GeneratorInitialYield,
-                Opcode::GeneratorYieldStar => Instr::GeneratorYieldStar,
-                Opcode::AsyncStart => Instr::AsyncStart,
-                Opcode::AsyncGeneratorStart => Instr::AsyncGeneratorStart,
-                Opcode::GetAsyncIterator => Instr::GetAsyncIterator,
-                Opcode::Await => Instr::Await,
-                Opcode::CheckDirectEval => Instr::CheckDirectEval,
-                Opcode::GetRawThis => Instr::GetRawThis,
-                Opcode::GetNewTarget => Instr::GetNewTarget,
-                Opcode::CheckSloppyThis => Instr::CheckSloppyThis,
-                Opcode::DeclareGlobalLet => Instr::DeclareGlobalLet(operand as u16),
-                Opcode::DeclareGlobalConst => Instr::DeclareGlobalConst(operand as u16),
-                Opcode::InitGlobalLexical => Instr::InitGlobalLexical(operand as u16),
-                Opcode::CheckGlobalVar => Instr::CheckGlobalVar(operand as u16),
-                Opcode::CheckGlobalFunction => Instr::CheckGlobalFunction(operand as u16),
-                Opcode::DeleteGlobal => Instr::DeleteGlobal(operand as u16),
-                Opcode::DeclareGlobalConstValue => Instr::DeclareGlobalConstValue(operand as u16),
-                Opcode::CheckGlobalLexicalConflict => {
-                    Instr::CheckGlobalLexicalConflict(operand as u16)
-                }
-
-                Opcode::DefineElem => Instr::DefineElem,
-                Opcode::DefineClassMethod => Instr::DefineClassMethod,
-                Opcode::DefineClassGetter => Instr::DefineClassGetter,
-                Opcode::DefineClassSetter => Instr::DefineClassSetter,
-                Opcode::CheckHeritage => Instr::CheckHeritage,
-                Opcode::InitHeritage => Instr::InitHeritage,
-                Opcode::GetSuperConstructor => Instr::GetSuperConstructor,
-                Opcode::ConstructSuper => Instr::ConstructSuper(operand as u16),
-                Opcode::ConstructSuperSpread => Instr::ConstructSuperSpread,
-                Opcode::BindThis => Instr::BindThis,
-                Opcode::ResolveThis => Instr::ResolveThis,
-                Opcode::ForwardArguments => Instr::ForwardArguments,
-                Opcode::GetSuperBase => Instr::GetSuperBase,
-                Opcode::GetSuperElem => Instr::GetSuperElem,
-                Opcode::PutSuperElem => Instr::PutSuperElem,
-                Opcode::ToSuperKey => Instr::ToSuperKey,
-                Opcode::Dup3 => Instr::Dup3,
-                Opcode::PutSuperElemStrict => Instr::PutSuperElemStrict,
-                Opcode::UsingCheck => Instr::UsingCheck,
-                Opcode::IsCell => Instr::IsCell,
-                Opcode::IsObject => Instr::IsObject,
-                Opcode::ToObject => Instr::ToObject,
-                Opcode::PendingException => Instr::PendingException,
-                Opcode::SuppressedError => Instr::SuppressedError,
-                Opcode::PendingCancel => Instr::PendingCancel,
-                Opcode::UsingDispose => Instr::UsingDispose(operand as u16),
-                Opcode::UsingCheckAsync => Instr::UsingCheckAsync,
-                Opcode::UsingDisposeAsync => Instr::UsingDisposeAsync(operand as u16),
-                Opcode::Rest => Instr::Rest(operand as u16),
-                Opcode::CopyDataProperties => Instr::CopyDataProperties,
-                Opcode::NewPrivateName => Instr::NewPrivateName(operand as u16),
-                Opcode::GetPrivate => Instr::GetPrivate,
-                Opcode::PutPrivate => Instr::PutPrivate,
-                Opcode::DefinePrivateField => Instr::DefinePrivateField,
-                Opcode::DefinePrivateMethod => Instr::DefinePrivateMethod,
-                Opcode::DefinePrivateGetter => Instr::DefinePrivateGetter,
-                Opcode::DefinePrivateSetter => Instr::DefinePrivateSetter,
-                Opcode::PrivateIn => Instr::PrivateIn,
-                Opcode::DefineGetterElem => Instr::DefineGetterElem,
-                Opcode::DefineSetterElem => Instr::DefineSetterElem,
-                Opcode::SetComputedName => Instr::SetComputedName(operand as u16),
-                Opcode::IsEnumerable => Instr::IsEnumerable,
-                Opcode::OwnKeys => Instr::OwnKeys,
-                Opcode::RequireCoercible => Instr::RequireCoercible,
-
-                Opcode::GetGlobalObject => Instr::GetGlobalObject,
-                Opcode::GetGlobal => Instr::GetGlobal(operand as u16),
-                Opcode::GetGlobalOrUndefined => Instr::GetGlobalOrUndefined(operand as u16),
-                Opcode::PutGlobal => Instr::PutGlobal(operand as u16),
-                Opcode::PutGlobalStrict => Instr::PutGlobalStrict(operand as u16),
-                Opcode::PutFieldStrict => Instr::PutFieldStrict(operand as u16),
-                Opcode::PutElemStrict => Instr::PutElemStrict,
-                Opcode::DeleteStrict => Instr::DeleteStrict,
-                Opcode::DeclareGlobalVar => Instr::DeclareGlobalVar(operand as u16),
-                Opcode::DeclareGlobalFunction => Instr::DeclareGlobalFunction(operand as u16),
-                Opcode::TemplateObject => Instr::TemplateObject(operand as u16),
-                Opcode::ToNumeric => Instr::ToNumeric,
-                Opcode::Inc => Instr::Inc,
-                Opcode::Dec => Instr::Dec,
-                Opcode::RegExpLiteral => Instr::RegExpLiteral(operand as u16),
-                Opcode::Reduce => Instr::Reduce,
-                Opcode::NeedAll => Instr::NeedAll,
-                Opcode::BitAnd => Instr::BitAnd,
-                Opcode::BitOr => Instr::BitOr,
-                Opcode::BitXor => Instr::BitXor,
-                Opcode::Shl => Instr::Shl,
-                Opcode::Sar => Instr::Sar,
-                Opcode::UShr => Instr::UShr,
-                Opcode::BitNot => Instr::BitNot,
-                Opcode::Pow => Instr::Pow,
-                Opcode::ThrowError => match ThrowKind::from_u16(operand as u16) {
-                    Some(kind) => Instr::ThrowError(kind),
-                    // Pass 1 rejected unknown kinds.
-                    None => {
-                        return Err(err(
-                            offsets[i],
-                            UnknownThrowKind {
-                                code: operand as u16,
-                            },
-                        ));
-                    }
-                },
-            });
+            let target = if opcode.operand() == OperandKind::Target {
+                target()?
+            } else {
+                0
+            };
+            // Pass 1 checked the index; the capture count comes from the child.
+            let captures = if opcode.operand() == OperandKind::Function {
+                functions[operand as usize].0.captures
+            } else {
+                0
+            };
+            // Pass 1 rejected unknown form operations and throw kinds.
+            let instr = Instr::decode(opcode, operand, target, captures).ok_or_else(|| {
+                let code = operand as u16;
+                err(
+                    offsets[i],
+                    if opcode == Opcode::ThrowError {
+                        UnknownThrowKind { code }
+                    } else {
+                        UnknownFormOp { code }
+                    },
+                )
+            })?;
+            instrs.push(instr);
         }
 
         let mut sites = std::collections::HashMap::new();
@@ -1007,6 +798,8 @@ impl Executable {
                 | Instr::DefineGetter(v)
                 | Instr::DefineSetter(v)
                 | Instr::Rest(v)
+                | Instr::UsingDispose(v)
+                | Instr::UsingDisposeAsync(v)
                 | Instr::SetComputedName(v) => u32::from(v),
                 Instr::ThrowError(kind) => u32::from(kind as u16),
                 Instr::FormOp(op) => u32::from(op as u16),
@@ -1094,18 +887,22 @@ fn check_stack(instrs: &[Instr], offsets: &[u32]) -> Result<usize, ValidationErr
         }
         let after = depth - pops + pushes;
         max = max.max(after);
-        // Successors and their depths. A catch target starts with the
-        // exception value pushed, a finally target at its handler's depth.
-        // `Return` and `EndFinally` may also continue at a finally target of
-        // their frame, which that target's `PushFinally` edge already checks.
-        let (a, b) = match instr {
-            Instr::Return | Instr::Throw => (None, None),
-            Instr::Jump(t) => (Some((t as usize, after)), None),
-            Instr::JumpIfFalse(t) | Instr::PushFinally(t) => {
-                (Some((t as usize, after)), Some((i + 1, after)))
-            }
-            Instr::PushCatch(t) => (Some((t as usize, after + 1)), Some((i + 1, after))),
-            _ => (Some((i + 1, after)), None),
+        // Successors and their depths ([`Opcode::flow`]). A catch target
+        // starts with the exception value pushed, a finally target at its
+        // handler's depth.
+        let target = match instr {
+            Instr::Jump(t)
+            | Instr::JumpIfFalse(t)
+            | Instr::PushCatch(t)
+            | Instr::PushFinally(t) => t as usize,
+            _ => 0,
+        };
+        let (a, b) = match opcode.flow() {
+            Flow::End => (None, None),
+            Flow::Jump => (Some((target, after)), None),
+            Flow::Branch => (Some((target, after)), Some((i + 1, after))),
+            Flow::Catch => (Some((target, after + 1)), Some((i + 1, after))),
+            Flow::Next => (Some((i + 1, after)), None),
         };
         for (next, after) in [a, b].into_iter().flatten() {
             max = max.max(after);

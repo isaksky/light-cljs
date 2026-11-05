@@ -30,6 +30,10 @@ fn check(bytes: const u8[:], expected: const u8[:], fault: source::Fault = sourc
     assert(job.fault == fault);
     if fault == source::Fault.None {
         var output: u8[>..] = []; source::canonical(heap, job.result, output); assert(output[..] == expected);
+    } else if fault == source::Fault.Unsupported {
+        // The fault names the unimplemented opcode it stopped at.
+        var text: u8[>..] = []; source::describe_fault(text, code, job); assert(text[..] == expected);
+        assert(job.fault_opcode == code.ops[job.fault_pc].code && !job.thrown);
     }
     let steps = job.steps;
     for cut in (steps + 1) {
@@ -140,6 +144,15 @@ fn main() {
     check(embed_file("../corpus/serial/not-callable.gsp"), "", source::Fault.TypeError);
     check(embed_file("../corpus/serial/unsupported-coercion.gsp"), "", source::Fault.UnsupportedOperand);
     check(embed_file("../corpus/serial/unsupported-prototype.gsp"), "", source::Fault.UnsupportedOperand);
+    // Every opcode exports (light-cljs-783): `construct` on a dead path and in
+    // a dead nested function never runs; reached, it fails by name even under
+    // a `catch`. A class constructor cannot be called.
+    check(embed_file("../corpus/serial/unsupported-dead.gsp"), "number:7.0");
+    check(embed_file("../corpus/serial/unsupported-reached.gsp"), "Fault.Unsupported:construct", source::Fault.Unsupported);
+    class_kinds(embed_file("../corpus/serial/calls.gsp"));
+    check(embed_file("../corpus/serial/dormant-constants.gsp"), "number:7.0");
+    check(embed_file("../corpus/serial/bigint-reached.gsp"), "Fault.Unsupported:const(BigInt)", source::Fault.Unsupported);
+    bigint_constants(embed_file("../corpus/serial/dormant-constants.gsp"));
     fixed_cells(embed_file("../corpus/serial/mutations.gsp"));
     failed_job_isolation(embed_file("../corpus/serial/calls.gsp"));
     allocation_limits(embed_file("../corpus/serial/mutations.gsp"));
@@ -265,6 +278,61 @@ fn allocation_limits(bytes: const u8[:]) {
 }
 
 fn set_word(bytes: u8[:], at: i64, n: i64) { for i in 4 { bytes[at + i] = ((n >> (i * 8)) & 255) as u8; } }
+// GSP function kinds and constant tags (light-cljs-783): calling a class
+// constructor throws TypeError; a Symbol constant validates and fails by name
+// when pushed; unknown kinds and tags are refused before installation.
+fn class_kinds(bytes: const u8[:]) {
+    let l = program::layout(bytes); let functions = program::word(bytes, 12); assert(functions > 1);
+    var image = program::Image {};
+    for kind in [2, 3, 4, 5] {
+        var patched: u8[>..] = []; patched.append(bytes);
+        for id in 1..functions { set_word(patched[..], l.functions + id * 52 + 48, 1 | (kind << 8)); }
+        if kind == 5 { assert(program::install(image, patched) == program::Error.Operation); continue; }
+        check(patched, "", source::Fault.TypeError);
+    }
+    var number: i64 = -1;
+    for i in program::word(bytes, 16) { if program::word(bytes, l.constants + i * 12) == 3 { number = i; } }
+    assert(number >= 0);
+    for tag, i in [6, 6, 5, 8] {
+        var patched: u8[>..] = []; patched.append(bytes); let at = l.constants + number * 12;
+        set_word(patched[..], at, tag); set_word(patched[..], at + 4, if i == 1 { 15 } else { 7 }); set_word(patched[..], at + 8, 0);
+        if i > 0 { assert(program::install(image, patched) == program::Error.Operation); continue; }
+        check(patched, "Fault.Unsupported:const(Symbol)", source::Fault.Unsupported);
+    }
+}
+fn set_unit(bytes: u8[:], at: i64, n: i64) { bytes[at] = (n & 255) as u8; bytes[at + 1] = ((n >> 8) & 255) as u8; }
+// Exported BigInt constants (sign unit, then 16-bit digits without a high
+// zero digit) and selector operands validate before installation, including
+// on dead paths; a failed install keeps the previous image.
+fn bigint_constants(bytes: const u8[:]) {
+    let l = program::layout(bytes); var zero: i64 = -1; var wide: i64 = -1; var bigints: i64 = 0;
+    for i in program::word(bytes, 16) {
+        let at = l.constants + i * 12;
+        if program::word(bytes, at) != 7 { continue; }
+        bigints += 1; let len = program::word(bytes, at + 8);
+        if len == 1 { zero = at; } else if len > 2 { wide = at; }
+    }
+    assert(bigints >= 5 && zero >= 0 && wide >= 0);
+    var image = program::Image {}; assert(program::install(image, bytes) == program::Error.None);
+    let start = program::word(bytes, wide + 4); let len = program::word(bytes, wide + 8);
+    for mode in 6 {
+        var bad: u8[>..] = []; bad.append(bytes);
+        if mode == 0 { set_unit(bad[..], l.units + 2 * start, 2); }                  // sign must be 0 or 1
+        if mode == 1 { set_unit(bad[..], l.units + 2 * (start + len - 1), 0); }      // high zero digit
+        if mode == 2 { set_unit(bad[..], l.units + 2 * program::word(bytes, zero + 4), 1); } // negative zero
+        if mode == 3 { set_word(bad[..], wide + 8, 0); }                               // no sign unit
+        if mode == 4 { set_word(bad[..], wide + 8, program::word(bytes, 28) + 1); }   // past the pool
+        if mode == 5 {
+            // An unknown ThrowError selector in the dead branch.
+            var found = false;
+            for i in program::word(bytes, 24) { let at = l.instructions + i * 20; if (program::word(bytes, at) & 255) == 42 { set_word(bad[..], at + 4, 5); found = true; } }
+            assert(found);
+        }
+        let expected = if mode == 3 || mode == 4 { program::Error.Reference } else { program::Error.Operation };
+        assert(program::install(image, bad) == expected);
+        assert(image.valid && image.bytes[..] == bytes);
+    }
+}
 fn flow_errors(bytes: const u8[:]) {
     let l = program::layout(bytes); let start = program::word(bytes, l.functions); let count = program::word(bytes, l.functions + 4);
     var original = source::Code {}; decode(original, bytes);

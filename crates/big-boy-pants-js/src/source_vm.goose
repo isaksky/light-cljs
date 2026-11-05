@@ -13,7 +13,9 @@ var next_identity: i64 = 1;
 // Fixed-stride values, never Goose pointers. Tags follow GSP primitive tags;
 // tag 5 is a checked session-local heap ID. Strings are UTF-16 pool ranges.
 struct Value { tag: i64 = 0, number: f64 = 0, a: i64 = 0, b: i64 = 0, session: i64 = 0 }
-struct Function { start: i64, count: i64, constants: i64, children: i64, params: i64, locals: i64, captures: i64, strict: bool }
+// kind: GSP constructor kind (0 none, 1 ordinary, 2 base class, 3 derived
+// class, 4 default derived class).
+struct Function { start: i64, count: i64, constants: i64, children: i64, params: i64, locals: i64, captures: i64, strict: bool, kind: i64 = 0 }
 struct Op { code: i64, arg: i64, offset: i64, start: i64, end: i64, depth: i64 = -1 }
 root struct Code {
     source_bytes: u8[>..]         = [],
@@ -21,7 +23,10 @@ root struct Code {
     ops:          Op[>..]         = [], units: u16[>..] = [], valid: bool = false,
     error:        tiny::LoadError = tiny::LoadError.None, error_pc: i64 = -1,
 }
-enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed, EffectContract, HostEffect }
+// Unsupported: an exported opcode (or constant kind) this VM does not
+// implement ran; Job.fault_opcode names it. Like every fault except the
+// TypeError, ReferenceError and HostEffect throws, JavaScript cannot catch it.
+enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed, EffectContract, HostEffect, Unsupported }
 struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576, properties: i64 = 1048576, work: i64 = 10000000, steps: i64 = 1000000, frames: i64 = 256, stack: i64 = 65536 }
 // All heap tables append until session teardown; IDs are never recycled.
 // kind: plain=0, array=1, closure=2, cell=3. Captures and cell values never
@@ -55,7 +60,7 @@ root struct Job {
     heap:            Heap&, frames: Frame[>..<] = [], locals: Value[>..<] = [], operands: Value[>..<] = [],
     writes:          Write[>..]                 = [], status: tiny::Status = tiny::Status.Ready, result: Value = Value {},
     handlers:        Handler[>..<]              = [],
-    fault:           Fault                      = Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1, thrown: bool = false,
+    fault:           Fault                      = Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1, fault_opcode: i64 = -1, thrown: bool = false,
     steps:           i64                        = 0, claimed: bool = false, registered: bool = false,
     effects_enabled: bool                       = false, effect_pending: bool = false, effect_kind: i64 = -1,
     helpers_enabled: bool                       = false,
@@ -66,27 +71,26 @@ root struct Job {
 fn number(n: f64) -> Value { return Value { tag: 3, number: n }; }
 fn boolean(b: bool) -> Value { return Value { tag: 2, a: if b { 1 } else { 0 } }; }
 fn reject(code: Code&, error: tiny::LoadError, pc: i64) -> bool { code.error = error; code.error_pc = pc; return false; }
-fn stack_effect(code: const Code&, f: Function, op: Op) -> i64, i64 {
-    let n = op.arg;
-    match op.code {
-        1, 2, 3, 16, 45, 46, 47, 84, 86, 87, 101, 105, 106, 107, 145, 179, 197, 198 => { return 0, 1; },
-        4, 5, 14, 15, 55, 139 => { return 1, 0; },
-        6 => { return 1, 2; },
-        7, 8, 9, 10, 11, 21, 22, 25, 26, 33, 34, 38, 39, 40, 41, 73, 74, 75, 76, 77, 80, 81, 88, 90, 151 => { return 2, 1; },
-        12, 20, 27, 35, 36, 49, 78, 79, 85, 108, 112, 113, 114, 137, 138, 150, 161 => { return 1, 1; },
-        23, 24, 91, 152 => { return 3, 1; },
-        37 => { return 2, 2; },
-        48, 50 => { return 2, 0; },
-        13, 56, 58, 109, 110, 140, 141, 143, 144 => { return 0, 0; },
-        18, 191, 192, 195 => { return n, 1; },
-        19, 193 => { return n * 2, 1; },
-        194 => { return export_form_arity(n), 1; },
-        43 => { return code.functions[code.children[f.children + n]].captures, 1; },
-        44 => { return n + 1, 1; },
-        83 => { return n + 2, 1; },
-        _ => { return -1, -1; },
-    };
+// Every opcode's stack effect and control flow come from the generated
+// registry table (export_stack_effect, light-cljs-783); there is no
+// hand-written opcode list. `captures` is the child function's capture count,
+// read only when the effect's multiplied count is that (source 2).
+fn effect_word(e: i64, op: Op, captures: i64) -> i64, i64 {
+    if e < 0 { return -1, -1; }
+    let source = (e >> 24) & 15;
+    let n = if source == 1 { op.arg } else if source == 2 { captures } else if source == 3 { export_form_arity(op.arg) } else { 0 };
+    if n < 0 { return -1, -1; }
+    return (e & 255) + ((e >> 16) & 255) * n, (e >> 8) & 255;
 }
+fn stack_effect(code: const Code&, f: Function, op: Op) -> i64, i64 {
+    let e = export_stack_effect(op.code);
+    let captures = if e >= 0 && ((e >> 24) & 15) == 2 { code.functions[code.children[f.children + op.arg]].captures } else { 0 };
+    return effect_word(e, op, captures);
+}
+// Flow: 0 next, 1 jump, 2 branch, 3 catch (target starts with the exception
+// pushed), 4 end. Branching opcodes carry a byte-offset target operand.
+fn flow(code: i64) -> i64 { return export_stack_effect(code) >> 28; }
+fn branches(code: i64) -> bool { return ((export_descriptor(code) >> 8) & 255) == 3; }
 fn target(code: const Code&, f: Function, offset: i64) -> i64 {
     var lo = f.start; var hi = f.start + f.count;
     while lo < hi { let mid = lo + (hi - lo) / 2; if code.ops[mid].offset < offset { lo = mid + 1; } else { hi = mid; } }
@@ -100,14 +104,18 @@ fn load(code: Code&, image: const program::Image&) -> bool {
     let bytes = image.bytes[..]; let l = program::layout(bytes);
     code.source_bytes.append(bytes[l.source..l.functions]);
     for i in program::word(bytes, 12) {
-        let at = l.functions + i * 52;
-        code.functions.push(Function { start: program::word(bytes, at), count: program::word(bytes, at + 4), constants: program::word(bytes, at + 8), children: program::word(bytes, at + 16), params: program::word(bytes, at + 24), locals: program::word(bytes, at + 28), captures: program::word(bytes, at + 32), strict: (program::word(bytes, at + 48) & 1) == 1 });
+        let at = l.functions + i * 52; let flags = program::word(bytes, at + 48);
+        code.functions.push(Function { start: program::word(bytes, at), count: program::word(bytes, at + 4), constants: program::word(bytes, at + 8), children: program::word(bytes, at + 16), params: program::word(bytes, at + 24), locals: program::word(bytes, at + 28), captures: program::word(bytes, at + 32), strict: (flags & 1) == 1, kind: (flags >> 8) & 255 });
     }
     for i in program::word(bytes, 16) {
         let at = l.constants + i * 12; let tag = program::word(bytes, at);
         var value = Value { tag: tag };
         if tag == 3 { let n, ok = binary::read_f64le(bytes, at + 4); assert(ok); value.number = n; }
-        else { value.a = program::word(bytes, at + 4); value.b = program::word(bytes, at + 8); }
+        // Symbol (6) keeps its well-known index. No BigInt (7) operation is
+        // implemented, so its validated digits stay in the image; `Const`
+        // fails Unsupported before either value reaches a JavaScript value.
+        else if tag == 6 { value.a = program::word(bytes, at + 4); }
+        else if tag != 7 { value.a = program::word(bytes, at + 4); value.b = program::word(bytes, at + 8); }
         code.constants.push(value);
     }
     for i in program::word(bytes, 20) { code.children.push(program::word(bytes, l.children + i * 4)); }
@@ -120,7 +128,7 @@ fn load(code: Code&, image: const program::Image&) -> bool {
         for i in f.start..(f.start + f.count) {
             let op = code.ops[i]; let pop, push = stack_effect(code, f, op);
             if pop < 0 || push < 0 { return reject(code, tiny::LoadError.Unknown, i); }
-            if op.code == 13 || op.code == 14 || op.code == 56 { code.ops[i].arg = target(code, f, op.arg); }
+            if branches(op.code) { code.ops[i].arg = target(code, f, op.arg); }
         }
         var work: i64[>..<] = [f.start]; code.ops[f.start].depth = 0;
         while work.len > 0 {
@@ -128,10 +136,11 @@ fn load(code: Code&, image: const program::Image&) -> bool {
             if op.depth < pop { return reject(code, tiny::LoadError.Underflow, pc); }
             let after = op.depth - pop + push;
             if after > 65536 { return reject(code, tiny::LoadError.Limits, pc); }
-            if op.code == 15 || op.code == 55 { continue; }
-            for edge in (if op.code == 14 || op.code == 56 { 2 } else { 1 }) {
-                let next = if (op.code == 13 || op.code == 14 || op.code == 56) && edge == 0 { op.arg } else { pc + 1 };
-                let expected = after + (if op.code == 56 && edge == 0 { 1 } else { 0 });
+            let next_flow = flow(op.code);
+            if next_flow == 4 { continue; }
+            for edge in (if next_flow == 2 || next_flow == 3 { 2 } else { 1 }) {
+                let next = if next_flow != 0 && edge == 0 { op.arg } else { pc + 1 };
+                let expected = after + (if next_flow == 3 && edge == 0 { 1 } else { 0 });
                 if next < f.start || next >= f.start + f.count { return reject(code, tiny::LoadError.Fallthrough, pc); }
                 let depth = code.ops[next].depth;
                 if depth >= 0 && depth != expected { return reject(code, tiny::LoadError.Join, next); }
@@ -154,7 +163,7 @@ fn append_code(out: Code&, other: const Code&) -> i64 {
     let functions = out.functions.len; let ops = out.ops.len; let constants = out.constants.len;
     let children = out.children.len; let units = out.units.len; let bytes = out.source_bytes.len;
     for f in other.functions { var n = f; n.start += ops; n.constants += constants; n.children += children; out.functions.push(n); }
-    for op in other.ops { var n = op; n.start += bytes; n.end += bytes; if n.code == 13 || n.code == 14 || n.code == 56 { n.arg += ops; } out.ops.push(n); }
+    for op in other.ops { var n = op; n.start += bytes; n.end += bytes; if branches(n.code) { n.arg += ops; } out.ops.push(n); }
     for v in other.constants { var n = v; if n.tag == 4 { n.a += units; } out.constants.push(n); }
     for id in other.children { out.children.push(functions + id); }
     out.units.append(other.units); out.source_bytes.append(other.source_bytes); out.valid = true;
@@ -359,6 +368,23 @@ fn fail(job: Job&, fault: Fault, frame: Frame) {
     }
     unwind_maps(job, 0);
     job.status = tiny::Status.Failed; job.fault = reported; job.fault_function = frame.function; job.fault_pc = frame.pc;
+    let code .= job.heap.code;
+    job.fault_opcode = if reported == Fault.Unsupported && frame.function >= 0 && frame.pc >= 0 && frame.pc < code.ops.len { code.ops[frame.pc].code } else { -1 };
+}
+// The fault with the unimplemented operation's registry name, for example
+// `Fault.Unsupported:construct` or `Fault.Unsupported:const(BigInt)`.
+fn describe_fault(out: u8[>..]&, code: const Code&, job: const Job&) {
+    format(out, job.fault);
+    if job.fault == Fault.Unsupported && job.fault_opcode >= 0 { out.push(':'); unsupported_operation(out, code, job); }
+}
+// Just the operation: `construct`, `const(BigInt)`.
+fn unsupported_operation(out: u8[>..]&, code: const Code&, job: const Job&) {
+    if job.fault != Fault.Unsupported || job.fault_opcode < 0 { return; }
+    out.append(export_opcode_name(job.fault_opcode));
+    if job.fault_opcode == 1 {
+        let tag = code.constants[code.functions[job.fault_function].constants + code.ops[job.fault_pc].arg].tag;
+        out.append(if tag == 6 { "(Symbol)" } else if tag == 7 { "(BigInt)" } else { "" });
+    }
 }
 fn raise(job: Job&, value: Value, frame: Frame) {
     if job.handlers.len == 0 { job.result = value; job.thrown = true; fail(job, Fault.HostEffect, frame); return; }
@@ -372,6 +398,8 @@ fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -
     if !valid(heap, callee) || !valid(heap, receiver) { return false; }
     if callee.tag != 5 || heap.nodes[callee.a].kind != 2 { heap.fault = Fault.TypeError; return false; }
     let id = heap.nodes[callee.a].function; let f = heap.code.functions[id];
+    // A class constructor has no [[Call]]: calling it throws TypeError.
+    if f.kind >= 2 { heap.fault = Fault.TypeError; return false; }
     if job.frames.len >= heap.limits.frames || f.locals > heap.limits.stack - job.locals.len || arguments.len > heap.limits.stack - job.locals.len - f.locals { heap.fault = Fault.StackLimit; return false; }
     if !charge(heap, f.locals + arguments.len) { return false; }
     for v in arguments { if !valid(heap, v) { return false; } }
@@ -936,7 +964,11 @@ fn step(job: Job&) {
     if demanded { return; }
     job.steps += 1; job.frames[job.frames.len - 1].pc += 1;
     match op.code {
-        1 => { job.operands.push(heap.constants[f.constants + op.arg]); },
+        1 => {
+            let v = heap.constants[f.constants + op.arg];
+            // Symbol and BigInt constants have no VM value yet.
+            if v.tag >= 6 { heap.fault = Fault.Unsupported; } else { job.operands.push(v); }
+        },
         2 => { job.operands.push(Value {}); },
         3 => { job.operands.push(job.locals[frame.local_base + op.arg]); },
         4 => { job.locals[frame.local_base + op.arg] = job.operands.pop(); },
@@ -1086,8 +1118,10 @@ fn step(job: Job&) {
             if waiting { job.operands.resize(base); }
             else { let value = form_op(heap, op.arg, job.operands[base..]); job.operands.resize(base); job.operands.push(value); }
         },
-        // Other runtime/global declaration semantics remain explicit boundaries.
-        _ => { heap.fault = if (op.code >= 18 && op.code <= 27) || (op.code >= 191 && op.code <= 195) { Fault.NativeBoundary } else { Fault.UnsupportedOperand }; },
+        // Every other registry opcode exports and validates but is not
+        // implemented here: it fails the job by name, uncatchably, when it
+        // runs. Never a fallback or a no-op (light-cljs-783).
+        _ => { heap.fault = Fault.Unsupported; },
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
 }

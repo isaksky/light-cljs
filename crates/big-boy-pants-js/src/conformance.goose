@@ -11,7 +11,9 @@ import .vm;
 //   {:status :thrown :value V}          an uncaught JavaScript throw of V, or
 //                                       a VM-raised TypeError/ReferenceError
 //   {:status :unsupported :fault F ...} a named VM fault: behaviour the VM
-//                                       does not implement (never catchable)
+//                                       does not implement (never catchable);
+//                                       Fault.Unsupported adds :operation, the
+//                                       unimplemented opcode's registry name
 //   {:status :limit :fault F ...}       a VM resource limit was reached
 //   {:status :infrastructure :reason R} the image could not be loaded or run
 // V is source::canonical's text. The exit status is 0 for every outcome the
@@ -27,6 +29,7 @@ fn located(out: u8[>..]&, status: const u8[:], heap: const source::Heap&, job: c
         let op = heap.code.ops[job.fault_pc];
         format(out, " :opcode ", op.code, " :span [", op.start, " ", op.end, "]");
     }
+    if job.fault == source::Fault.Unsupported { out.append(" :operation \""); source::unsupported_operation(out, heap.code, job); out.push('"'); }
     out.push('}');
 }
 fn main() {

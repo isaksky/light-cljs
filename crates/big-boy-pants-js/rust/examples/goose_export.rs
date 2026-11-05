@@ -9,7 +9,7 @@
 //!
 //! * 0, `exported:FUNCTIONS:INSTRUCTIONS`: OUT.gsp was written.
 //! * 3, `unsupported:MESSAGE`: the frontend or the exporter refused the file
-//!   by name (an unsupported operation names its opcode). `--module` is always
+//!   by name (direct eval, for example; every opcode exports). `--module` is always
 //!   refused here: the exporter compiles scripts only.
 //! * 2, `syntax:LINE:COLUMN: MESSAGE`: any other compile error.
 //! * 1, `error:MESSAGE`: usage or file input/output.

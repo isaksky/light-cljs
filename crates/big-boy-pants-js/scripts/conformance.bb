@@ -329,7 +329,10 @@
                           (#{:returned :thrown} (:status outcome)) {:status (:status outcome) :value (canonical-value (:value outcome))}
                           (= :unsupported (:status outcome))
                           {:status :unsupported :stage :execute
-                           :fault (str fault (when-let [op (:opcode outcome)] (str " at opcode " (opcode-names op op))))
+                           ;; An exported opcode the Goose VM does not implement.
+                           :fault (if-let [operation (:operation outcome)]
+                                    (str "explicit-unsupported " operation)
+                                    (str fault (when-let [op (:opcode outcome)] (str " at opcode " (opcode-names op op)))))
                            :detail (pr-str (dissoc outcome :status))}
                           (= :limit (:status outcome)) {:status :limit :fault fault}
                           :else {:status :infrastructure :detail (:reason outcome)})

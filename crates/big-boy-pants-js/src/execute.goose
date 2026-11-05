@@ -10,6 +10,8 @@ fn error() { flush_stdout(); process_exit(1); }
 // Machine-readable semantic record. Program diagnostics are distinct from
 // loader/protocol/unsupported failures, which still exit nonzero.
 fn typed_outcome(heap: source::Heap&, job: source::Job&) {
+    // An unimplemented opcode is named, e.g. `unsupported:Fault.Unsupported:construct`.
+    if job.fault == source::Fault.Unsupported { var fault: u8[>..] = []; source::describe_fault(fault, heap.code, job); print("unsupported:", fault); error(); return; }
     if job.fault != source::Fault.None && !job.thrown && job.fault != source::Fault.TypeError && job.fault != source::Fault.ReferenceError { print("infrastructure:", job.fault); error(); return; }
     var value: u8[>..] = [];
     if job.fault == source::Fault.None || job.thrown { source::canonical(heap, job.result, value); }
@@ -50,7 +52,8 @@ fn main() {
         let outcome = source::run(job, -1);
         if typed { typed_outcome(heap, job); return; }
         if outcome != tiny::Outcome.Complete {
-            print("exception:", job.fault, ":function=", job.fault_function, ":pc=", job.fault_pc);
+            var fault: u8[>..] = []; source::describe_fault(fault, code, job);
+            print("exception:", fault, ":function=", job.fault_function, ":pc=", job.fault_pc);
             if job.fault_pc >= 0 { let op = code.ops[job.fault_pc]; print("source-bytes:", op.start, "..", op.end); }
             error(); return;
         }
