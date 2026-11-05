@@ -635,7 +635,7 @@ fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -
     let heap .= job.heap;
     if !valid(heap, callee) || !valid(heap, receiver) { return false; }
     if callee.tag() != 5 || heap.nodes[callee.id()].kind != 2 { heap.fault = Fault.TypeError; return false; }
-    let id = heap.nodes[callee.id()].function; let f = heap.code.functions[id];
+    let id = heap.nodes[callee.id()].function; let f .= heap.code.functions[id];
     // A class constructor has no [[Call]]: calling it throws TypeError.
     if f.kind >= 2 { heap.fault = Fault.TypeError; return false; }
     if job.frames.len >= heap.limits.frames || f.locals > heap.limits.stack - job.locals.len || arguments.len > heap.limits.stack - job.locals.len - f.locals { heap.fault = Fault.StackLimit; return false; }
@@ -1178,7 +1178,7 @@ fn step(job: Job&) {
         if heap.fault != Fault.None { fail(job, heap.fault, frame); }
         return;
     }
-    let f = code.functions[frame.function];
+    let f .= code.functions[frame.function];
     if frame.pc < f.start || frame.pc >= f.start + f.count || frame.pc >= code.ins.len { fail(job, Fault.InvalidState, frame); return; }
     if job.steps >= heap.limits.steps { fail(job, Fault.InstructionLimit, frame); return; }
     if !charge(heap) { fail(job, heap.fault, frame); return; }
@@ -1348,7 +1348,7 @@ fn call(job: Job&, frame: Frame, argc: i64, method: bool) {
     } else if enter(job, callee, receiver, job.operands[first..]) { job.frames[job.frames.len - 1].operand_base = base; job.operands.resize(base); }
 }
 // `arguments` (unmapped, read-only) or a rest array after `skip` parameters.
-fn arguments(job: Job&, frame: Frame, f: Function, rest: bool, skip_count: i64) {
+fn arguments(job: Job&, frame: Frame, f: const Function&, rest: bool, skip_count: i64) {
     let heap .= job.heap;
     let start = frame.local_base + f.locals;
     let skip = if rest { min(skip_count, frame.argument_count) } else { 0 };
