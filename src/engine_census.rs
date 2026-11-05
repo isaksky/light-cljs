@@ -10,6 +10,25 @@ static V8_PLATFORM: AtomicU64 = AtomicU64::new(0);
 static V8_ISOLATES: AtomicU64 = AtomicU64::new(0);
 static QUICKJS_RUNTIMES: AtomicU64 = AtomicU64::new(0);
 static PANTS_RUNTIMES: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    /// The same counts for the engines made on this thread alone, which a
+    /// test on one thread compares without the other tests' engines.
+    static THREAD: std::cell::Cell<EngineCensus> = const {
+        std::cell::Cell::new(EngineCensus {
+            v8_platform: 0,
+            v8_isolates: 0,
+            quickjs_runtimes: 0,
+            pants_runtimes: 0,
+        })
+    };
+}
+fn on_thread(count: impl FnOnce(&mut EngineCensus)) {
+    THREAD.with(|census| {
+        let mut now = census.get();
+        count(&mut now);
+        census.set(now);
+    });
+}
 
 /// The engines created so far, or between two censuses ([`Self::since`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -30,6 +49,11 @@ impl EngineCensus {
             quickjs_runtimes: QUICKJS_RUNTIMES.load(Relaxed),
             pants_runtimes: PANTS_RUNTIMES.load(Relaxed),
         }
+    }
+    /// The engines created up to now on this thread.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn on_this_thread() -> Self {
+        THREAD.with(std::cell::Cell::get)
     }
     /// The engines created since `earlier`.
     pub fn since(self, earlier: Self) -> Self {
@@ -64,18 +88,22 @@ impl EngineCensus {
 #[cfg_attr(not(light_v8), allow(dead_code))]
 pub(crate) fn v8_platform() {
     V8_PLATFORM.fetch_add(1, Relaxed);
+    on_thread(|census| census.v8_platform += 1);
 }
 #[cfg_attr(not(light_v8), allow(dead_code))]
 pub(crate) fn v8_isolate() {
     V8_ISOLATES.fetch_add(1, Relaxed);
+    on_thread(|census| census.v8_isolates += 1);
 }
 #[cfg_attr(not(light_quickjs), allow(dead_code))]
 pub(crate) fn quickjs_runtime() {
     QUICKJS_RUNTIMES.fetch_add(1, Relaxed);
+    on_thread(|census| census.quickjs_runtimes += 1);
 }
 #[cfg_attr(not(feature = "bbp-macros"), allow(dead_code))]
 pub(crate) fn pants_runtime() {
     PANTS_RUNTIMES.fetch_add(1, Relaxed);
+    on_thread(|census| census.pants_runtimes += 1);
 }
 
 #[cfg(test)]

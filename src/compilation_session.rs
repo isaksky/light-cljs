@@ -912,6 +912,10 @@ pub(crate) struct SharedCatalog {
     lanes: Arc<crate::effect_lanes::Lanes>,
     #[cfg(feature = "bbp-macros")]
     native_units: std::sync::atomic::AtomicBool,
+    /// Whether the compilation takes the Goose compiler path, which
+    /// [`Self::native_runtime`] refuses ([`Self::select_goose`]).
+    #[cfg(feature = "goose-macros")]
+    goose_path: std::sync::atomic::AtomicBool,
     /// Source-wide core writes and resolved generated targets, indexed before
     /// later macro factories are emitted. Deferred helper bodies must affect
     /// their callers' cache eligibility even after their IR is released.
@@ -1049,6 +1053,13 @@ impl SharedCatalog {
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn select_native(&self) {
         self.native_units
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// Mark the compilation as one on the Goose compiler path, as its host
+    /// does when it starts it: no Pants runtime is made for it.
+    #[cfg(feature = "goose-macros")]
+    pub(crate) fn select_goose(&self) {
+        self.goose_path
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
     #[cfg(feature = "bbp-macros")]
@@ -1547,6 +1558,15 @@ impl SharedCatalog {
         &self,
         options: &crate::evaluator::EvaluatorOptions,
     ) -> Result<crate::bbp_evaluator::BbpRuntime, crate::evaluator::EvalError> {
+        #[cfg(feature = "goose-macros")]
+        if self.goose_path.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(crate::evaluator::EvalError(
+                crate::compiler_bootstrap::goose_engine_error(
+                    "the compilation's native runtime",
+                    "a Pants runtime",
+                ),
+            ));
+        }
         let runtime = self
             .native_runtime
             .get_or_init(|| {
@@ -5167,8 +5187,17 @@ fn worker_view(
     let started = std::time::Instant::now();
     #[cfg(feature = "bbp-macros")]
     let mut lent = None;
-    if engines == PoolEngines::Fresh && environment.goose_path() {
-        return Err(GOOSE_FRESH_ERROR.into());
+    // On the Goose compiler path a worker makes no engine of its own
+    // (light-cljs-779): only Goose-bound and engine-free workers start.
+    match engines {
+        PoolEngines::Fresh if environment.goose_path() => return Err(GOOSE_FRESH_ERROR.into()),
+        PoolEngines::Persistent if environment.goose_path() => {
+            return Err(crate::compiler_bootstrap::goose_engine_error(
+                "a pool worker's persistent compile-time engine",
+                environment.refused_engine(),
+            ));
+        }
+        _ => {}
     }
     let engine: Option<Rc<dyn crate::compiler_evaluator::CompilerEvaluator>> = match engines {
         // A Goose-bound worker's evaluator is made from the environment's
@@ -8654,5 +8683,35 @@ mod root_index_tests {
         view.install(None).unwrap();
         read(2);
         goose.close();
+    }
+}
+/// A pool worker of the Goose compiler path makes no engine of its own: a
+/// persistent or fresh one is refused by name, and a Goose-bound one starts
+/// with none (light-cljs-779). A detached session needs no runner.
+#[cfg(all(test, feature = "goose-macros"))]
+mod goose_worker_refusal_tests {
+    use super::*;
+    use crate::engine_census::EngineCensus;
+    #[test]
+    fn goose_compiler_pool_workers_refuse_their_own_engines() {
+        let mut host = MacroHost::new();
+        host.use_goose_source_macros(crate::goose_evaluator::GooseSession::detached())
+            .unwrap();
+        host.begin_compilation();
+        let shared = host.session_handle().unwrap().shared.clone();
+        let environment = host.environment();
+        let census = EngineCensus::on_this_thread();
+        let refused = |engines| worker_view(&shared, engines, &environment).map(drop);
+        assert_eq!(
+            refused(PoolEngines::Persistent).unwrap_err(),
+            crate::compiler_bootstrap::goose_engine_error(
+                "a pool worker's persistent compile-time engine",
+                crate::compiler_bootstrap::BUILD_ENGINE,
+            )
+        );
+        assert_eq!(refused(PoolEngines::Fresh).unwrap_err(), GOOSE_FRESH_ERROR);
+        refused(PoolEngines::Goose).unwrap();
+        refused(PoolEngines::None).unwrap();
+        assert!(EngineCensus::on_this_thread().since(census).is_empty());
     }
 }

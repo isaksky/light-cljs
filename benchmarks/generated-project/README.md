@@ -139,7 +139,10 @@ QuickJS runtime or Pants runtime: the Goose report's `ENGINES` line and the
 `--stats` `engines.*` lines count them (all zero); it preserves the release/advanced
 compiler pipeline and production defaults. `--jobs` is separately recorded as
 compiler slots (equal to execution workers unless `--compiler-slots` is set).
-Unsupported work fails without fallback. `instrument` adds inclusive macro/bootstrap/helper-demand
+Unsupported work fails without fallback: anything that would start a
+compile-time engine on the Goose path, a compiler data reader function
+included, fails with a named `goose compiler path:` error, and `instrument`
+asserts every Goose cell's all-zero `ENGINES` line. `instrument` adds inclusive macro/bootstrap/helper-demand
 intervals, compiler trace/DAG diagnostics, and Goose session costs. Instrumented
 runs also require identical qualified source-macro entry counts to V8; intervals
 overlap and must not be summed. Helper-demand counts describe compiler callbacks,

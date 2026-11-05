@@ -89,6 +89,38 @@ impl GooseSession {
     pub fn start(executable: &Path, workers: usize) -> Result<Arc<Self>, EvalError> {
         Self::start_mode(executable, workers, None)
     }
+    /// A session with no subprocess, for tests that select the Goose
+    /// compiler path without a runner: every Goose call on it fails.
+    #[cfg(test)]
+    pub(crate) fn detached() -> Arc<Self> {
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        Arc::new(Self {
+            directory: std::env::temp_dir().join(format!(
+                "light-cljs-goose-detached-{}-{id}",
+                std::process::id()
+            )),
+            process: Mutex::new(None),
+            pending: Default::default(),
+            next: AtomicU64::new(1),
+            readers: Mutex::new(Vec::new()),
+            starts: AtomicU64::new(0),
+            exports: AtomicU64::new(0),
+            preparations: Default::default(),
+            export_ns: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+            started: Instant::now(),
+            spawn_ns: 0,
+            bridge_ns: AtomicU64::new(0),
+            control: Mutex::new(None),
+            trace: Default::default(),
+            costs: Default::default(),
+            definitions: Mutex::new(HashMap::new()),
+            stderr: Default::default(),
+            terminal: Default::default(),
+            claimed: AtomicBool::new(false),
+            compiling: AtomicBool::new(false),
+        })
+    }
     fn start_mode(
         executable: &Path,
         workers: usize,

@@ -261,7 +261,12 @@
     ;; Native total includes its coordinator; every other thread is joined.
     (assert (= (str (+ 1 (* 2 workers))) joined) "Native Goose spawned threads did not all join")
     (assert (= workers (count pools)) "Missing private worker diagnostics")
+    ;; The Goose compiler path creates no compile-time engine (light-cljs-779).
+    (assert (= ["ENGINES v8-platform=0 v8-isolates=0 quickjs-runtimes=0 pants-runtimes=0"]
+               (filter #(str/starts-with? % "ENGINES ") (str/split-lines text)))
+            "Goose cell's engine census is not all zero")
     {:native-thread-total (parse-long created) :spawned-threads-joined (parse-long joined) :workers pools
+     :engines {:v8-platform 0 :v8-isolates 0 :quickjs-runtimes 0 :pants-runtimes 0}
      :trace-scope "bounded early protocol prefix (4096 rows); final POOL/THREADS/CLOSED replace prefix rows; session cost counters cover all jobs"}))
 
 (defn comparison-cells [{:keys [backend workers compiler-slots]}]
@@ -381,7 +386,7 @@
              :toolchains (into {} (for [c [["rustc" "--version"] ["goose" "version"] ["bb" "--version"] ["node" "--version"] ["clang" "--version"] ["uname" "-a"]]]
                                    [c (checked (str repository) environment c)]))
              :memory-scope "macOS time -l compiler command rusage; not additive process-tree peak; Goose native stats separate"
-             :boundary "Goose source-macro execution with Rust core macros and no V8, QuickJS or Pants engine; Node application; fresh process per run"})
+             :boundary "Goose source-macro execution with Rust core macros and no V8, QuickJS or Pants engine (each refused by name, compiler data reader functions included); Node application; fresh process per run"})
     (let [warmups (mapv #(run-cell % -1 true) cells)
           viable (mapv first (filter #(zero? (:exit (second %))) (map vector cells warmups)))
           run-rounds #(doall (for [round (range runs) cell (if (even? round) viable (reverse viable))]

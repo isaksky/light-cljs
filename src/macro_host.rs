@@ -219,6 +219,21 @@ impl Drop for MacroFreeUnit {
         }
     }
 }
+/// [`MacroHost::refused_engine`] of the host or environment with `tables`.
+fn refused_engine(tables: &MacroTables) -> &'static str {
+    #[cfg(feature = "bbp-macros")]
+    let native = tables.native_macros;
+    #[cfg(not(feature = "bbp-macros"))]
+    let native = {
+        let _ = tables;
+        false
+    };
+    if native {
+        "a Pants runtime"
+    } else {
+        crate::compiler_bootstrap::BUILD_ENGINE
+    }
+}
 /// Panic if this thread analyzes a macro-free unit: `what` reached the
 /// macro host.
 pub(crate) fn forbid_engine_entry(what: &str) {
@@ -641,6 +656,11 @@ impl MacroEnvironment {
             && !self.tables.interactive
             && !self.goose_path()
     }
+    /// As [`MacroHost::refused_engine`].
+    #[cfg_attr(not(feature = "goose-macros"), allow(dead_code))]
+    pub(crate) fn refused_engine(&self) -> &'static str {
+        refused_engine(&self.tables)
+    }
     /// Whether the environment serves the Goose compiler path
     /// ([`MacroHost::goose_path`]).
     pub(crate) fn goose_path(&self) -> bool {
@@ -1026,7 +1046,10 @@ impl MacroHost {
         // path (light-cljs-778).
         if self.goose_path() {
             return Err(crate::evaluator::EvalError(
-                crate::compiler_bootstrap::goose_engine_error("a compile-time engine"),
+                crate::compiler_bootstrap::goose_engine_error(
+                    "a compile-time engine",
+                    self.refused_engine(),
+                ),
             ));
         }
         #[cfg(feature = "goose-macros")]
@@ -1126,10 +1149,19 @@ impl MacroHost {
     /// Allocate a fresh synchronous heap for a clean compilation. Its dynamic
     /// `*assert*` follows [`Self::set_assertions`], so the macros, functions and
     /// data readers it runs read the setting, as upstream's `:elide-asserts`
-    /// binds `clojure.core/*assert*` while compiling.
+    /// binds `clojure.core/*assert*` while compiling. The Goose compiler
+    /// path makes none and refuses with a named error.
     pub fn new_evaluator(
         &self,
     ) -> Result<crate::evaluator::Evaluator, crate::evaluator::EvalError> {
+        if self.goose_path() {
+            return Err(crate::evaluator::EvalError(
+                crate::compiler_bootstrap::goose_engine_error(
+                    "a synchronous macro heap",
+                    "a QuickJS runtime",
+                ),
+            ));
+        }
         let evaluator = if let Some(control) = &self.engine.interactive_control {
             crate::evaluator::Evaluator::interactive_with_control(
                 self.evaluator_options.clone(),
@@ -1344,6 +1376,12 @@ impl MacroHost {
     pub(crate) fn goose_path(&self) -> bool {
         self.engine.goose_path()
     }
+    /// The engine a compile-time engine of this host would be, for the
+    /// Goose compiler path's refusals to name: the Pants runtime with
+    /// native macros, else the build's engine.
+    pub(crate) fn refused_engine(&self) -> &'static str {
+        refused_engine(&self.tables)
+    }
     /// Which core macros expand in Rust, and with which semantics.
     pub(crate) fn core_routing(&self) -> crate::native_core_macros::CoreRouting {
         use crate::native_core_macros::CoreRouting;
@@ -1484,6 +1522,16 @@ impl MacroHost {
         std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
         crate::evaluator::EvalError,
     > {
+        // [`Self::call_compiler_data_reader`] refuses first on the Goose
+        // compiler path; this is the engine decision point.
+        if self.goose_path() {
+            return Err(crate::evaluator::EvalError(
+                crate::compiler_bootstrap::goose_engine_error(
+                    "a compiler data reader's engine",
+                    "a QuickJS runtime",
+                ),
+            ));
+        }
         #[cfg(feature = "bbp-macros")]
         if self.native_macro_backend() {
             // Share the build's budget, with a private reader task and no
@@ -1636,6 +1684,20 @@ impl MacroHost {
                     let Some(unit) = unit else {
                         return Ok(None);
                     };
+                    // A reader function needs a JavaScript engine, which the
+                    // Goose compiler path does not run: it fails here, before
+                    // any engine is touched, until Goose runs reader
+                    // functions (light-cljs-779). Built-in tags returned above.
+                    if self.goose_path() {
+                        let tag = match name_parts(tag) {
+                            (Some(namespace), name) => format!("{namespace}/{name}"),
+                            (None, name) => name,
+                        };
+                        return Err(crate::compiler_bootstrap::goose_engine_error(
+                            &format!("compiler data reader #{tag}"),
+                            "a QuickJS runtime",
+                        ));
+                    }
                     if readers.evaluator.is_none() {
                         let evaluator = self
                             .new_data_reader_evaluator()
@@ -2170,6 +2232,7 @@ impl MacroHost {
         if evaluator.is_some() && host.goose_path() {
             return Err(crate::compiler_bootstrap::goose_engine_error(
                 "a worker's compile-time engine",
+                host.refused_engine(),
             ));
         }
         if let Some(evaluator) = evaluator {
@@ -2336,6 +2399,15 @@ impl MacroHost {
             self.engine.elidable_sizes = Default::default();
             self.tables.source_bindings.clear();
             self.engine.session = Some(crate::compilation_session::CompilationSession::new());
+            #[cfg(feature = "goose-macros")]
+            if self.goose_path() {
+                self.engine
+                    .session
+                    .as_ref()
+                    .unwrap()
+                    .shared()
+                    .select_goose();
+            }
             #[cfg(feature = "bbp-macros")]
             if self.native_macro_backend() {
                 self.engine
@@ -3658,5 +3730,139 @@ mod compiler_default_reader_tests {
         host.register_compiler_default_data_reader("(fn [tag value] 42)")
             .unwrap();
         assert_eq!(number(&read(&mut host, "#unknown 9")), 42.0);
+    }
+}
+
+/// The Goose compiler path refuses every compile-time engine at its
+/// decision point with a named error and makes none (light-cljs-779). A
+/// detached Goose session selects the path without a runner.
+#[cfg(all(test, feature = "goose-macros"))]
+mod goose_refusal_tests {
+    use super::*;
+    use crate::compiler_data::Source;
+    use crate::engine_census::EngineCensus;
+
+    fn goose_host() -> MacroHost {
+        let mut host = MacroHost::new();
+        host.use_goose_source_macros(crate::goose_evaluator::GooseSession::detached())
+            .unwrap();
+        host
+    }
+    /// `message` is the named error of `responsibility` starting `engine`.
+    fn assert_refused(message: &str, responsibility: &str, engine: &str) {
+        assert_eq!(
+            message,
+            crate::compiler_bootstrap::goose_engine_error(responsibility, engine),
+        );
+        assert!(message.starts_with("goose compiler path: "), "{message}");
+    }
+
+    #[test]
+    fn goose_compiler_refuses_every_macro_host_engine() {
+        let mut host = goose_host();
+        host.begin_compilation();
+        assert!(host.goose_path());
+        let census = EngineCensus::on_this_thread();
+        let engine = crate::compiler_bootstrap::BUILD_ENGINE;
+        let refused = |result: Result<(), crate::evaluator::EvalError>| result.unwrap_err().0;
+        assert_refused(
+            &refused(host.new_compiler_evaluator().map(drop)),
+            "a compile-time engine",
+            engine,
+        );
+        assert_refused(
+            &refused(host.new_evaluator().map(drop)),
+            "a synchronous macro heap",
+            "a QuickJS runtime",
+        );
+        assert_refused(
+            &refused(host.new_data_reader_evaluator().map(drop)),
+            "a compiler data reader's engine",
+            "a QuickJS runtime",
+        );
+        assert_refused(
+            &crate::compiler_bootstrap::build(&host, true)
+                .map(drop)
+                .unwrap_err(),
+            "the bootstrap engine",
+            engine,
+        );
+        assert_refused(
+            &crate::compiler_bootstrap::prepare(&host).unwrap_err(),
+            "the bootstrap units' preparation",
+            engine,
+        );
+        // The compilation's native runtime, which its shared catalog makes.
+        assert_refused(
+            &host
+                .session_handle()
+                .unwrap()
+                .shared()
+                .native_runtime(&Default::default())
+                .map(drop)
+                .unwrap_err()
+                .0,
+            "the compilation's native runtime",
+            "a Pants runtime",
+        );
+        assert!(EngineCensus::on_this_thread().since(census).is_empty());
+        // A worker host bound to an engine, which its caller would have
+        // made (the pool's workers refuse before: `worker_view`).
+        #[cfg(light_v8)]
+        {
+            let evaluator: std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator> =
+                std::rc::Rc::new(
+                    crate::v8_evaluator::V8Evaluator::new(Default::default()).unwrap(),
+                );
+            let made = EngineCensus::on_this_thread();
+            assert_refused(
+                &MacroHost::bind(host.environment(), Some(evaluator))
+                    .map(drop)
+                    .unwrap_err(),
+                "a worker's compile-time engine",
+                engine,
+            );
+            assert!(EngineCensus::on_this_thread().since(made).is_empty());
+        }
+    }
+
+    #[test]
+    fn goose_compiler_data_readers_fail_by_name_and_built_in_tags_read() {
+        let mut host = goose_host();
+        host.register_compiler_data_reader(Name::new(Some("demo"), "named"), "(fn [v] v)")
+            .unwrap();
+        host.begin_compilation();
+        let census = EngineCensus::on_this_thread();
+        let read = |host: &mut MacroHost, text: &str| {
+            host.read_compiler_form(&Source::new("reader.cljs", text))
+                .map(|form| form.unwrap())
+                .map_err(|e| e.to_string())
+        };
+        let message = read(&mut host, "#demo/named 7").unwrap_err();
+        let expected = crate::compiler_bootstrap::goose_engine_error(
+            "compiler data reader #demo/named",
+            "a QuickJS runtime",
+        );
+        assert!(message.contains(&expected), "{message}");
+        // The default reader too; the built-in tags keep their readers.
+        host.register_compiler_default_data_reader("(fn [tag v] v)")
+            .unwrap();
+        let message = read(&mut host, "#demo/missing 7").unwrap_err();
+        assert!(
+            message.contains(
+                "goose compiler path: compiler data reader #demo/missing would start a QuickJS runtime"
+            ),
+            "{message}"
+        );
+        for text in [
+            "#inst \"2020-01-01\"",
+            "#uuid \"00000000-0000-0000-0000-000000000000\"",
+            "#js [1]",
+            "#queue [1]",
+        ] {
+            read(&mut host, text).unwrap();
+        }
+        assert!(host.engine.data_readers.borrow().evaluator.is_none());
+        assert!(EngineCensus::on_this_thread().since(census).is_empty());
     }
 }

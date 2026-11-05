@@ -682,13 +682,23 @@ fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> R
 }
 /// The bootstrap heap is `owner`'s compile-time evaluator, so its settings
 /// (including the `*assert*` source macros read) reach every macro it runs.
+/// The Goose compiler path builds none and refuses with a named error.
 pub(crate) fn build(owner: &MacroHost, cache: bool) -> Result<Bootstrap, String> {
+    if owner.goose_path() {
+        return Err(goose_engine_error(
+            "the bootstrap engine",
+            owner.refused_engine(),
+        ));
+    }
     let evaluator = owner.new_compiler_evaluator().map_err(|e| e.to_string())?;
     build_in(evaluator, cache)
 }
 /// The bootstrap of a host bound to `evaluator` on its own thread
 /// ([`MacroHost::bind`]): the process-wide units installed in it, compiled
-/// only if no thread has compiled them yet.
+/// only if no thread has compiled them yet. It starts no engine: its
+/// caller made `evaluator`, which is never the Goose evaluator (that is no
+/// `CompilerEvaluator`), and on the Goose compiler path `MacroHost::bind`
+/// refuses any engine before it gets here.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn bind(
     evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
@@ -699,7 +709,15 @@ pub(crate) fn bind(
 /// short-lived engine of the kind `owner` makes, with the default limits:
 /// a build with several isolates does this before it starts the deadline
 /// they share, which no isolate's own exemption stops (light-cljs-378).
+/// The Goose compiler path compiles no bootstrap units and refuses with a
+/// named error, even once a thread has compiled them.
 pub(crate) fn prepare(owner: &MacroHost) -> Result<(), String> {
+    if owner.goose_path() {
+        return Err(goose_engine_error(
+            "the bootstrap units' preparation",
+            owner.refused_engine(),
+        ));
+    }
     if UNITS.get().is_some() {
         return Ok(());
     }
@@ -999,15 +1017,25 @@ pub(crate) fn goose_core_error(name: &str) -> String {
         "goose compiler path: core macro {name}: this call has no Rust expansion and the Goose path runs no bootstrap engine"
     )
 }
-/// The named error of the Goose compiler path for `what`, an engine other
-/// than the Goose evaluator that something asked for: that path makes no
-/// bootstrap engine, V8 isolate, QuickJS runtime or Pants runtime
-/// (light-cljs-778).
-pub(crate) fn goose_engine_error(what: &str) -> String {
+/// The named error of the Goose compiler path when `responsibility` would
+/// start `engine`, an engine other than the Goose evaluator: that path
+/// makes no bootstrap engine, V8 isolate, QuickJS runtime or Pants runtime,
+/// and nothing falls back to one (light-cljs-778, light-cljs-779).
+pub(crate) fn goose_engine_error(responsibility: &str, engine: &str) -> String {
     format!(
-        "goose compiler path: {what} was requested; the Goose path runs no bootstrap engine, V8 isolate, QuickJS runtime or Pants runtime"
+        "goose compiler path: {responsibility} would start {engine}; the Goose path runs no bootstrap engine, V8 isolate, QuickJS runtime or Pants runtime"
     )
 }
+/// The engine a compile-time engine of this build would be when it is not
+/// the native backend's: a V8 isolate, else a QuickJS runtime, else a
+/// Pants runtime.
+pub(crate) const BUILD_ENGINE: &str = if cfg!(light_v8) {
+    "a V8 isolate"
+} else if cfg!(light_quickjs) {
+    "a QuickJS runtime"
+} else {
+    "a Pants runtime"
+};
 impl MacroHost {
     /// Start the compilation's compile-time engine now, as the first
     /// JavaScript macro it expands would: at a namespace's dispatch whose
@@ -1717,7 +1745,12 @@ impl MacroHost {
         let engine = match (engine, &bootstrap) {
             (Some(engine), _) => engine,
             (None, Some(bootstrap)) => bootstrap.evaluator.as_ref(),
-            (None, None) => return Err(goose_engine_error("a macro declaration's engine")),
+            (None, None) => {
+                return Err(goose_engine_error(
+                    "a macro declaration's engine",
+                    "a bootstrap engine",
+                ));
+            }
         };
         let environment_keys = source_environment_keys(&program).map(std::sync::Arc::from);
         let unit = crate::emitter::emit_deferred_unit(&program);
