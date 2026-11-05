@@ -22,7 +22,7 @@ fn produce(base: const snapshot::Snapshot&, which: i64, c: artifact::Control&) -
 }
 fn state(heap: const source::Heap&, imports: const artifact::Imports&) -> u8[>..] {
     var out: u8[>..] = []; let empty: snapshot::Binding[] = []; let view = snapshot::borrow(heap, empty, imports.base);
-    var header = view.header; header.global = source::Value.Undefined; header.call_method = source::Value.Undefined; to_bytes([header.ends], out); to_bytes([header.work, header.boot, header.initializers, header.producers], out); out.append(source::plain_rows([view.header.global, view.header.call_method]));
+    let header = view.header; to_bytes([header.ends], out); to_bytes([header.limits], out); to_bytes([header.version, header.allocator, header.base, header.checkpoint, header.work, header.boot, header.initializers, header.producers, header.property_rows, heap.identity], out); out.append(source::plain_rows([view.header.global, view.header.call_method]));
     out.append(source::plain_rows(heap.nodes)); out.append(source::plain_rows(heap.values)); out.append(source::plain_rows(heap.properties)); to_bytes(heap.units, out); to_bytes(heap.strings, out); out.append(source::plain_rows(heap.constants)); to_bytes(heap.source_bytes, out); to_bytes(heap.source_ranges, out);
     to_bytes([imports.base, imports.session], out); to_bytes(imports.entries, out); to_bytes(imports.definitions, out); to_bytes(imports.signatures, out); to_bytes(imports.deliveries, out); return out;
 }

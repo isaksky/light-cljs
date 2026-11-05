@@ -49,6 +49,8 @@ fn plain(v: Value) -> Plain {
     };
 }
 fn plain_bytes(v: Value, out: u8[>..]&) { out.append(bytes_of([plain(v)])); }
+// Bit-exact value identity: NaN equals itself, -0 differs from +0.
+fn same_bits(a: Value, b: Value) -> bool { return bytes_of([plain(a)]) == bytes_of([plain(b)]); }
 fn plain_bytes(n: Node, out: u8[>..]&) {
     out.append(bytes_of([n.kind, n.function, n.start, n.count, n.keys, n.key_count, n.key_capacity, n.length, n.origin, n.source, n.span_start, n.span_end])); out.append(bytes_of([n.initialized, n.immutable]));
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out);
@@ -301,7 +303,8 @@ fn allocate(heap: Heap&, node: Node) -> Value {
 }
 fn string(heap: Heap&, units: const u16[:]) -> Value {
     if !charge(heap, units.len) { return Value.Undefined; }
-    if units.len > heap.limits.units - heap.units.len { memory(heap); return Value.Undefined; }
+    // String header rows share the unit limit: an empty string still takes one.
+    if units.len > heap.limits.units - heap.units.len || heap.strings.len >= heap.limits.units { memory(heap); return Value.Undefined; }
     let start = heap.units.len; heap.units.append(units);
     return string_ref(heap, start, units.len);
 }
@@ -313,7 +316,7 @@ fn initialize(heap: Heap&) -> bool {
     if !heap.code.valid || heap.identity != 0 || heap.nodes.len != 0 || heap.units.len != 0 || heap.constants.len != 0 { heap.fault = Fault.InvalidState; return false; }
     heap.identity = reserve_identity();
     if heap.identity == 0 { return memory(heap); }
-    if heap.code.units.len > heap.limits.units || heap.code.constants.len > heap.limits.values { return memory(heap); }
+    if heap.code.units.len > heap.limits.units || heap.code.strings.len > heap.limits.units || heap.code.constants.len > heap.limits.values { return memory(heap); }
     if !charge(heap, heap.code.units.len + heap.code.constants.len) { return false; }
     heap.units.append(heap.code.units);
     // The heap starts empty, so the code's string headers keep their indices.
@@ -442,7 +445,7 @@ fn to_dictionary(heap: Heap&, array: Value) -> bool {
 }
 // The one allocation point of the property table: `count` cleared rows at
 // its end, charged to the rows the heap has added (limits.properties counts
-// rows added, not live records or the table's length). Returns the run's
+// allocated rows, spare capacity included, not live records). Returns the run's
 // first row, or -1 with MemoryLimit.
 fn add_properties(heap: Heap&, count: i64) -> i64 {
     if count > heap.limits.properties - heap.property_rows { memory(heap); return -1; }
@@ -515,9 +518,9 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
     return put_record(heap, object, k, value);
 }
 // A new key goes at the end of the object's run. A full run moves to a run of
-// twice the capacity at the table's end (the old rows are cleared and stay
-// charged: tables are append-only within a job). Only the new key is charged
-// against limits.properties, so growth never fails where a record fit before.
+// twice the capacity at the table's end, allocated (and charged, spare rows
+// included) through add_properties; the old rows are cleared and stay charged:
+// tables are append-only within a job. A rejection changes nothing.
 fn put_record(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
     let o = object.id(); let start = heap.nodes[o].keys; let count = heap.nodes[o].key_count;
     var i = count;
@@ -527,14 +530,13 @@ fn put_record(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
         if equal(heap, heap.properties[start + i].key, k) { heap.properties[start + i].value = value; return true; }
     }
     if heap.fault != Fault.None { return false; }
-    if heap.property_rows >= heap.limits.properties { return memory(heap); }
     if count == heap.nodes[o].key_capacity {
-        let capacity = max(4, count * 2); let at = heap.properties.len;
-        heap.properties.append(heap.properties[start..(start + count)]); heap.properties.resize(at + capacity, Property {});
-        for row in start..(start + count) { heap.properties[row] = Property {}; }
-        heap.nodes[o].keys = at; heap.nodes[o].key_capacity = capacity;
+        let at = add_properties(heap, max(4, count * 2));
+        if at < 0 { return false; }
+        for i in count { heap.properties[at + i] = heap.properties[start + i]; heap.properties[start + i] = Property {}; }
+        heap.nodes[o].keys = at; heap.nodes[o].key_capacity = max(4, count * 2);
     }
-    heap.properties[heap.nodes[o].keys + count] = Property { key: k, value: value }; heap.nodes[o].key_count = count + 1; heap.property_rows += 1;
+    heap.properties[heap.nodes[o].keys + count] = Property { key: k, value: value }; heap.nodes[o].key_count = count + 1;
     return heap.fault == Fault.None;
 }
 // Bounded numeric length writes only. A shorter length turns a dense array's

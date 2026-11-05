@@ -226,6 +226,8 @@ fn main() {
     heap_program::join(thread_spawn(factory, str(embed_file("../corpus/closure-captured.pants.gsp"))));
     malformed(embed_file("../corpus/serial/captures.gsp"));
     heap_program::join(thread_spawn(instruction_limit));
+    // Image comparisons are bit-exact: NaN matches itself, -0 differs from +0.
+    assert(source::same_bits(source::number(0.0 / 0.0), source::number(0.0 / 0.0)) && !source::same_bits(source::number(0.0), source::number(-0.0)));
     print("serial source VM: calls/captures/cells/properties/truth/UTF16/errors, exact slices and limits passed");
 }
 thread_fn instruction_limit() {

@@ -186,7 +186,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     if c.snapshot_bytes > c.bytes { return reject(c, Error.Bytes); }
     if !poll(c, s.code_bytes.len + s.code_units.len + s.units.len + s.bytes.len) { return false; }
     let l = s.header.limits;
-    if l.nodes < 0 || l.values < 0 || l.units < 0 || l.properties < 0 || l.work < 0 || l.steps < 0 || l.frames < 0 || l.stack < 0 || s.header.work < 0 || s.header.work > l.work || s.nodes.len > l.nodes || s.values.len > l.values || s.units.len > l.units || s.constants.len > l.values || s.header.property_rows < 0 || s.header.property_rows > l.properties || s.header.property_rows > s.properties.len || s.header.boot < 0 || s.header.boot > 1 || s.header.initializers < 0 || s.header.producers < 0 { return reject(c, Error.Allocator); }
+    if l.nodes < 0 || l.values < 0 || l.units < 0 || l.properties < 0 || l.work < 0 || l.steps < 0 || l.frames < 0 || l.stack < 0 || s.header.work < 0 || s.header.work > l.work || s.nodes.len > l.nodes || s.values.len > l.values || s.units.len > l.units || s.strings.len > l.units || s.constants.len > l.values || s.header.property_rows < 0 || s.header.property_rows > l.properties || s.header.property_rows > s.properties.len || s.header.boot < 0 || s.header.boot > 1 || s.header.initializers < 0 || s.header.producers < 0 { return reject(c, Error.Allocator); }
     if !code_valid(s, c) { return false; }
     if !value(s, s.header.global) || s.header.global.tag() != 5 || s.nodes[s.header.global.id()].kind != 0 { return reject(c, Error.Link); }
     if !value(s, s.header.call_method) || s.header.call_method.tag() != 5 || s.nodes[s.header.call_method.id()].kind != 4 || s.nodes[s.header.call_method.id()].function != 14 { return reject(c, Error.Link); }
@@ -208,7 +208,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
             if v.tag() != 4 { return reject(c, Error.Link); }
             let r = s.strings[v.sid()];
             if r.len != o.len || s.units[r.start..(r.start + r.len)] != s.code_units[o.start..(o.start + o.len)] { return reject(c, Error.Link); }
-        } else if v != original { return reject(c, Error.Link); }
+        } else if !source::same_bits(v, original) { return reject(c, Error.Link); }
     }
     for p, i in s.properties {
         if !poll(c) { return false; }

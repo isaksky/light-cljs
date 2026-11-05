@@ -10,11 +10,11 @@ namespace callable;
 struct Publication { version: i64 = 1, base: snapshot::Header, image: snapshot::Snapshot }
 struct Visit { id: i64, next: i64 = 0 }
 fn fail(c: snapshot::Control&, e: snapshot::Error = snapshot::Error.Unsupported) -> bool { return snapshot::reject(c, e); }
-fn same(a: source::Value, b: source::Value) -> bool { return a == b; }
+fn same(a: source::Value, b: source::Value) -> bool { return source::same_bits(a, b); }
 // Field by field: an enum's unused payload bytes are not part of its value.
 fn same(a: source::Node, b: source::Node) -> bool {
     return a.kind == b.kind && a.function == b.function && a.start == b.start && a.count == b.count && a.keys == b.keys && a.key_count == b.key_count && a.key_capacity == b.key_capacity && a.length == b.length && a.initialized == b.initialized && a.immutable == b.immutable
-        && a.value == b.value && a.namespace_value == b.namespace_value && a.metadata == b.metadata && a.origin == b.origin && a.source == b.source && a.span_start == b.span_start && a.span_end == b.span_end;
+        && same(a.value, b.value) && same(a.namespace_value, b.namespace_value) && same(a.metadata, b.metadata) && a.origin == b.origin && a.source == b.source && a.span_start == b.span_start && a.span_end == b.span_end;
 }
 fn code_prefix(p: const Publication&, bytes: const u8[:], functions: const source::Function[:], constants: const source::Value[:], children: const i64[:], ops: const source::Op[:], units: const u16[:], strings: const source::Str[:], c: snapshot::Control&) -> bool {
     let s .= p.image; let e = p.base.ends;
@@ -23,7 +23,7 @@ fn code_prefix(p: const Publication&, bytes: const u8[:], functions: const sourc
     for i in 6 { if !snapshot::range(0, e[i], lengths[i]) || !snapshot::range(0, e[i], destination[i]) { return fail(c, snapshot::Error.Code); } }
     if !snapshot::range(0, e[14], s.code_strings.len) || !snapshot::range(0, e[14], strings.len) || bytes_of(s.code_strings[..e[14]]) != bytes_of(strings[..e[14]]) { return fail(c, snapshot::Error.Code); }
     if !snapshot::poll(c, e[0] + e[1] + e[2] + e[3] + e[4] + e[5]) { return false; }
-    if s.code_bytes[..e[0]] != bytes[..e[0]] || bytes_of(s.functions[..e[1]]) != bytes_of(functions[..e[1]]) || s.code_constants[..e[2]] != constants[..e[2]] || s.children[..e[3]] != children[..e[3]] || bytes_of(s.ops[..e[4]]) != bytes_of(ops[..e[4]]) || s.code_units[..e[5]] != units[..e[5]] { return fail(c, snapshot::Error.Code); }
+    if s.code_bytes[..e[0]] != bytes[..e[0]] || bytes_of(s.functions[..e[1]]) != bytes_of(functions[..e[1]]) || source::plain_rows(s.code_constants[..e[2]]) != source::plain_rows(constants[..e[2]]) || s.children[..e[3]] != children[..e[3]] || bytes_of(s.ops[..e[4]]) != bytes_of(ops[..e[4]]) || s.code_units[..e[5]] != units[..e[5]] { return fail(c, snapshot::Error.Code); }
     // Suffix owners are independently appendable; cross-owner ranges would
     // otherwise change meaning when the consumer already has macro/helper code.
     for f in s.functions[e[1]..] { if !snapshot::poll(c) { return false; } if f.start < e[4] || f.constants < e[2] || f.children < e[3] { return fail(c, snapshot::Error.Code); } }
@@ -87,7 +87,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
                 if n.kind == 1 || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
                 if !base_node(p, heap, id, c) { return false; } ids[id] = id;
             } else {
-                if n.kind == 0 || n.kind == 1 || n.kind > 12 || n.key_count != 0 || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
+                if n.kind == 0 || n.kind == 1 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
                 ids[id] = heap.nodes.len + slots.len; slots.push(id);
             }
         }
@@ -139,7 +139,7 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     let lengths: i64[6] = [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len];
     for i in 6 { if lengths[i] + delta[i] > 8388608 { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; } }
     var count: i64 = 0; for id in slots { if snapshot::has_values(s.nodes[id].kind) { count += s.nodes[id].count; } }
-    if slots.len > heap.limits.nodes - heap.nodes.len || count > heap.limits.values - heap.values.len || s.units.len > heap.limits.units - heap.units.len || s.code_constants.len - e[2] > heap.limits.values - heap.constants.len || s.bytes.len > 8388608 - heap.source_bytes.len || s.sources.len > 1048576 - heap.source_ranges.len || s.functions.len + delta[1] > 65536 || s.code_bytes.len + delta[0] > 8388608 { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; }
+    if slots.len > heap.limits.nodes - heap.nodes.len || count > heap.limits.values - heap.values.len || s.units.len > heap.limits.units - heap.units.len || s.strings.len > heap.limits.units - heap.strings.len || s.code_constants.len - e[2] > heap.limits.values - heap.constants.len || s.bytes.len > 8388608 - heap.source_bytes.len || s.sources.len > 1048576 - heap.source_ranges.len || s.functions.len + delta[1] > 65536 || s.code_bytes.len + delta[0] > 8388608 { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; }
     // Cover existing destination + full decoded image + staging/mapping work.
     let empty: snapshot::Binding[] = []; let view = snapshot::borrow(heap, empty, expected.checkpoint);
     let cost = snapshot::footprint(view) + 2 * snapshot::footprint(s) + bytes_of(ids).len + bytes_of(slots).len;

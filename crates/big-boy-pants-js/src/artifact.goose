@@ -38,7 +38,7 @@ fn context(heap: const source::Heap&, base: const snapshot::Snapshot&, imports: 
     if base.header.version != 2 || base.header.checkpoint <= 0 || heap.identity <= 0 || heap.nodes.len < base.nodes.len || imports.base != base.header.checkpoint || imports.session != heap.identity { return reject(c, Error.Context); }
     let code .= heap.code;
     if !poll(c, base.code_bytes.len + base.ops.len + base.functions.len + base.code_constants.len + base.children.len + base.code_units.len) { return false; }
-    if !code.valid || code.source_bytes != base.code_bytes || bytes_of(code.functions) != bytes_of(base.functions) || code.constants != base.code_constants || code.children != base.children || bytes_of(code.ops) != bytes_of(base.ops) || code.units != base.code_units || code.strings != base.code_strings { return reject(c, Error.Context); }
+    if !code.valid || code.source_bytes != base.code_bytes || bytes_of(code.functions) != bytes_of(base.functions) || source::plain_rows(code.constants) != source::plain_rows(base.code_constants) || code.children != base.children || bytes_of(code.ops) != bytes_of(base.ops) || code.units != base.code_units || code.strings != base.code_strings { return reject(c, Error.Context); }
     return true;
 }
 fn origin(heap: const source::Heap&, base: const snapshot::Snapshot&, imports: const Imports&, slot: i64, c: Control&) -> Key {
@@ -56,7 +56,7 @@ fn valid_value(a: const Artifact&, v: source::Value) -> bool {
 }
 fn shape(a: const Artifact&, n: source::Node, base: const snapshot::Snapshot&, c: Control&) -> bool {
     if n.kind == 0 || n.kind == 1 || n.kind == 3 && (!n.immutable || !n.initialized) { return reject(c, Error.Mutable); }
-    if n.kind < 2 || n.kind > 12 || n.key_count != 0 || n.length < 0 { return reject(c, Error.Link); }
+    if n.kind < 2 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.length < 0 { return reject(c, Error.Link); }
     if has_values(n) && !snapshot::range(n.start, n.count, a.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); }
     if n.kind == 2 && (!snapshot::range(n.function, 1, base.functions.len) || n.count != base.functions[n.function].captures) || n.kind == 4 && (n.function < 0 || n.function > 13 || n.function == 9) { return reject(c, Error.Link); }
     if !valid_value(a, n.value) || !valid_value(a, n.namespace_value) || !valid_value(a, n.metadata) { return reject(c, Error.Link); }
@@ -81,6 +81,9 @@ fn validate(a: const Artifact&, base: const snapshot::Snapshot&, c: Control&) ->
     if a.base != base.header.checkpoint { return reject(c, Error.Context); }
     if payload(a) > c.bytes || a.nodes.len > 100000 || a.values.len > 1048576 || a.units.len > 1048576 || a.bytes.len > 8388608 { return reject(c, Error.Bytes); }
     if a.keys.len != a.nodes.len || !valid_value(a, a.root) { return reject(c, Error.Link); }
+    // Every header is installed, referenced or not.
+    if !poll(c, a.strings.len) { return false; }
+    for r in a.strings { if !snapshot::range(r.start, r.len, a.units.len) { return reject(c, Error.Link); } }
     for r in a.sources {
         if !snapshot::range(r.start, r.count, a.bytes.len) { return reject(c, Error.Link); }
         if !poll(c, r.count + 1) { return false; }
@@ -291,7 +294,7 @@ fn import_graph(a: const Artifact&, base: const snapshot::Snapshot&, heap: sourc
         if target < 0 { target = heap.nodes.len + new_nodes; new_nodes += 1; added.push(Entry { key: k, target: target, start: imports.signatures.len + start, count: signatures.len - start }); }
         mapping.push(target);
     }
-    if new_nodes > heap.limits.nodes - heap.nodes.len || a.values.len > heap.limits.values - heap.values.len || a.units.len > heap.limits.units - heap.units.len || a.bytes.len > 8388608 - heap.source_bytes.len || a.sources.len > 1048576 - heap.source_ranges.len { reject(c, Error.Bytes); return source::Value.Undefined; }
+    if new_nodes > heap.limits.nodes - heap.nodes.len || a.values.len > heap.limits.values - heap.values.len || a.units.len > heap.limits.units - heap.units.len || a.strings.len > heap.limits.units - heap.strings.len || a.bytes.len > 8388608 - heap.source_bytes.len || a.sources.len > 1048576 - heap.source_ranges.len { reject(c, Error.Bytes); return source::Value.Undefined; }
     if imports.entries.len + added.len > 100000 || imports.definitions.len >= 100000 || delivery.len > c.bytes - imports.deliveries.len || signatures.len > c.bytes - imports.signatures.len { reject(c, Error.Bytes); return source::Value.Undefined; }
     if !poll(c, a.values.len + a.units.len + a.bytes.len + a.sources.len + a.nodes.len) { return source::Value.Undefined; }
     let unit_start = heap.units.len; let string_start = heap.strings.len; let value_start = heap.values.len; let source_start = heap.source_ranges.len; let byte_start = heap.source_bytes.len;

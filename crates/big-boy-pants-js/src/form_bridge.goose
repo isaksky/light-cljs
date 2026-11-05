@@ -142,7 +142,7 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     let work = g.nodes.len + g.children.len + g.units.len + g.bytes.len + g.sources.len + g.roots.len;
     // Final cancellation and capacity checks precede any session installation.
     if !poll(c, work) { return false; }
-    if g.nodes.len > heap.limits.nodes - heap.nodes.len || g.children.len > heap.limits.values - heap.values.len || g.units.len > heap.limits.units - heap.units.len || g.bytes.len > c.bytes - heap.source_bytes.len { return reject(c, Error.Heap); }
+    if g.nodes.len > heap.limits.nodes - heap.nodes.len || g.children.len > heap.limits.values - heap.values.len || g.units.len > heap.limits.units - heap.units.len || 2 * g.nodes.len > heap.limits.units - heap.strings.len || g.bytes.len > c.bytes - heap.source_bytes.len { return reject(c, Error.Heap); }
     if !source::charge(heap, work) { heap.fault = source::Fault.None; return reject(c, Error.Heap); }
     let base = heap.nodes.len; let children = heap.values.len; let units = heap.units.len; let sources = heap.source_ranges.len; let bytes = heap.source_bytes.len;
     heap.units.append(g.units); heap.source_bytes.append(g.bytes);

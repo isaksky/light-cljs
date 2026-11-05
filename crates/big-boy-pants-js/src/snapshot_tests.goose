@@ -70,7 +70,7 @@ thread_fn isolation_parent() {
 }
 fn malformed() {
     heap_program::join(thread_spawn(malformed_parent)); let saved = qget<Saved>(); let original .= saved.image;
-    for mode in 28 { heap_program::join(thread_spawn(malformed_target, copy(original), mode)); }
+    for mode in 30 { heap_program::join(thread_spawn(malformed_target, copy(original), mode)); }
     for mode in 2 { heap_program::join(thread_spawn(malformed_budget, copy(original), mode)); }
     for identity in [0, original.header.base, original.header.checkpoint, 2147483648] { heap_program::join(thread_spawn(malformed_identity, copy(original), identity)); }
     print("snapshot malformed version/length/link/generation/allocator/code and atomic budget rejection passed");
@@ -102,7 +102,12 @@ thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
             18 => { bad.code_bytes[0] = 255; }, 19 => { bad.nodes[bad.bindings[7].value.id()].span_start = -9223372036854775807; bad.nodes[bad.bindings[7].value.id()].source = 0; },
             20 => { bad.ops[0].arg = 9223372036854775807; }, 21 => { bad.values[0] = source::Value.Symbol { s: 0 }; }, 22 => { bad.header.checkpoint = 0; },
             23 => { bad.header.limits.nodes = -1; }, 24 => { bad.nodes[0].metadata = bad.bindings[5].value; }, 25 => { bad.nodes[bad.header.global.id()].keys = 9223372036854775807; },
-            26 => { bad.header.call_method = source::object(bad.nodes.len); }, 27 => { bad.header.call_method = bad.header.global; }, _ => { abort("unexpected mode"); },
+            26 => { bad.header.call_method = source::object(bad.nodes.len); }, 27 => { bad.header.call_method = bad.header.global; },
+            // Key runs are exclusive over their whole capacity: another node
+            // claiming the global's run, even only its spare rows, is refused.
+            28 => { let g = bad.header.global.id(); let o = if g == 0 { 1 } else { 0 }; bad.nodes[o].keys = bad.nodes[g].keys; bad.nodes[o].key_capacity = bad.nodes[g].key_capacity; },
+            29 => { let g = bad.header.global.id(); bad.header.property_rows = bad.nodes[g].key_count - 1; },
+            _ => { abort("unexpected mode"); },
         }
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
         var wire: u8[>..] = []; to_bytes([bad], wire); var decode = snapshot::Control {};
