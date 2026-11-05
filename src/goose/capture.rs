@@ -42,7 +42,7 @@ fn anonymous_argument_index(token: &str) -> Option<i64> {
         _ => token.strip_prefix('%')?.parse().ok(),
     }
 }
-#[cfg(feature = "goose-macros")]
+#[cfg(all(feature = "goose-macros", light_v8))]
 pub(crate) fn validate_generated_scalar_cases(call: &Form, output: &Form) -> usize {
     fn at(form: &Form, path: &[usize]) -> Form {
         path.iter()
@@ -709,6 +709,7 @@ fn forms(form: &Form, sources: &mut Sources, data: &mut Data) -> String {
         nodes.join("\n")
     )
 }
+#[cfg(light_v8)]
 fn exported(
     root: &Path,
     filename: &str,
@@ -735,6 +736,8 @@ fn exported(
     export
 }
 
+// Compares with V8 artifacts (`*.v8.js`), so the Goose build skips it.
+#[cfg(light_v8)]
 #[test]
 fn source_corpus() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -986,6 +989,7 @@ fn synthetic_source_export() {
     artifact(&root.join("unicode.gsp"), &export.bytes, regenerate);
 }
 
+#[cfg(light_v8)]
 fn runtime_slice(
     root: &Path,
     names: &BTreeSet<String>,
@@ -1193,14 +1197,16 @@ fn goose_compiler_pipeline() {
     ] {
         let source = std::fs::read_to_string(root.join(format!("{case}.cljs"))).unwrap();
         let mut builds = Vec::new();
-        for (engine, workers) in [
-            ("v8", 1),
+        // The first build is the reference: V8 where it is linked, the Pants
+        // runtime in the Goose build, which links no V8 (light-cljs-780).
+        let reference = cfg!(light_v8).then_some(("v8", 1));
+        for (engine, workers) in reference.into_iter().chain([
             ("pants", 1),
             ("goose", 1),
             ("goose", 2),
             ("goose", 4),
             ("goose", 8),
-        ] {
+        ]) {
             let goose = engine == "goose";
             // A Goose build creates no other engine (light-cljs-778); the
             // census is the process's, and compiler.bb runs sequentially.

@@ -153,6 +153,7 @@ fn evaluator(
     goose: &Option<std::sync::Arc<crate::goose_evaluator::GooseSession>>,
 ) -> Box<dyn MacroEvaluator> {
     match engine {
+        #[cfg(light_v8)]
         "v8" => Box::new(crate::v8_evaluator::V8Evaluator::new(options.clone()).unwrap()),
         "pants" => Box::new(pants.as_ref().unwrap().evaluator().unwrap()),
         "goose" => Box::new(

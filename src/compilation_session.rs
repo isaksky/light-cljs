@@ -2012,7 +2012,7 @@ impl SharedCatalog {
         c.roots.resolve(name, position)
     }
     /// How many root reads [`Self::resolve_root`] answered.
-    #[cfg(all(test, light_v8))]
+    #[cfg(all(test, any(light_v8, feature = "goose-macros")))]
     pub(crate) fn root_resolutions(&self) -> usize {
         self.lock().root_resolutions
     }
@@ -8606,12 +8606,17 @@ mod root_index_tests {
         // Each read was resolved on its own, with no replay.
         assert_eq!(session.shared.root_resolutions(), 9);
     }
+}
+/// The worker's Goose root reads, which need no V8 and so also run in the
+/// Goose build (light-cljs-780).
+#[cfg(all(test, feature = "goose-macros"))]
+mod goose_root_cursor_tests {
+    use super::*;
 
     /// A worker's Goose helper service resolves each `Need` at the worker's
     /// cursor: a redefinition after the cursor stays hidden, also after a
     /// `Need` in the same call made the worker compile a helper, until the
     /// worker's next analysis advances the cursor.
-    #[cfg(feature = "goose-macros")]
     #[test]
     #[ignore = "build native runner with compiler.bb"]
     fn goose_compiler_worker_helper_roots_follow_visibility_cursor() {
@@ -8619,6 +8624,7 @@ mod root_index_tests {
         let runner = std::path::PathBuf::from(
             std::env::var_os("GOOSE_COMPILER_RUNNER").expect("run compiler.bb"),
         );
+        let census = crate::engine_census::EngineCensus::on_this_thread();
         let goose = crate::goose_evaluator::GooseSession::start(&runner, 2).unwrap();
         let mut host = MacroHost::new();
         host.use_goose_source_macros(goose.clone()).unwrap();
@@ -8692,6 +8698,8 @@ mod root_index_tests {
         view.install(None).unwrap();
         read(2);
         goose.close();
+        let created = crate::engine_census::EngineCensus::on_this_thread().since(census);
+        assert!(created.is_empty(), "{created:?}");
     }
 }
 /// A pool worker of the Goose compiler path makes no engine of its own: a

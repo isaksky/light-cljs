@@ -478,6 +478,9 @@ fn goose_compiler_assembly_leaf_boundaries() {
             "Fault.UnsupportedOperand",
         ),
         ("return rt.core.mapSeq(x=>x);", "Fault.NativeBoundary"),
+        // Gensym stays an explicit native-boundary fault in a Goose job.
+        ("return rt.core.gensym();", "Fault.NativeBoundary"),
+        ("return rt.core.gensym(\"x__\");", "Fault.NativeBoundary"),
         (
             "return __rt.cljCount(rt.core.mapSeq(()=>{throw 17;},__rt.formList(1)));",
             "Fault.HostEffect",

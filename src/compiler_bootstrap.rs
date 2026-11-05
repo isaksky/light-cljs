@@ -2866,6 +2866,6 @@ mod doseq_timing {
     }
 }
 
-#[cfg(all(test, feature = "bbp-macros", light_v8))]
+#[cfg(all(test, feature = "bbp-macros", any(light_v8, feature = "goose-macros")))]
 #[path = "goose/capture.rs"]
 pub(crate) mod goose_capture;

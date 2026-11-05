@@ -245,7 +245,7 @@ pub(crate) fn emit_deferred_unit(program: &Program) -> String {
         ..Default::default()
     };
     let source = emit_unit_parts(program, true, Some(&mut registration));
-    #[cfg(all(test, feature = "bbp-macros", light_v8))]
+    #[cfg(all(test, feature = "bbp-macros", any(light_v8, feature = "goose-macros")))]
     crate::compiler_bootstrap::goose_capture::unit(&source, false);
     source
 }
@@ -275,7 +275,7 @@ pub(crate) fn emit_native_macro_unit(
         replaced,
     )
     .0;
-    #[cfg(all(test, feature = "bbp-macros", light_v8))]
+    #[cfg(all(test, feature = "bbp-macros", any(light_v8, feature = "goose-macros")))]
     crate::compiler_bootstrap::goose_capture::unit(&source, true);
     source
 }

@@ -8,8 +8,8 @@ separately.
 ## Builds
 
 light-cljs runs ClojureScript macros by executing JavaScript while it
-compiles. The two builds differ only in which JavaScript engine does that;
-both must produce byte-identical output.
+compiles. The builds differ only in which JavaScript engine does that;
+all must produce byte-identical output.
 
 - **V8 build**: macros run on V8, Google's engine, which compiles hot code to
   machine code while it runs. This is the build that ships today (formerly
@@ -20,6 +20,16 @@ both must produce byte-identical output.
   many threads can share one set of compiled macros. Built with
   `--no-default-features --features bbp-macros` (formerly "native build",
   "native backend", "bbp backend").
+- **Goose build**: macros run on Goose: user macros and their helpers execute
+  in bbp's Goose runtime, and core macros expand in light-cljs's own Rust
+  code. No V8 or QuickJS is linked, and the compiler creates no compile-time
+  engine at all. Built with `cargo build --release --no-default-features
+  --features goose-macros --bin light-cljs`; Goose is selected at run time
+  by pointing `LIGHT_CLJS_GOOSE_RUNNER` at a runner built with `goose build
+  crates/big-boy-pants-js/src/compiler_session.goose -o RUNNER`
+  (benchmarks/generated-project/README.md). Without that variable the same
+  binary runs as the Pants build. The V8 build with `--features
+  goose-macros` selects Goose the same way.
 - **QuickJS reference**: the older QuickJS setup, kept only to check that the
   Pants build gives the same answers (formerly "legacy", "QuickJS oracle").
 

@@ -944,7 +944,7 @@ mod bridge_control_tests {
     }
 }
 
-#[cfg(all(test, light_v8))]
+#[cfg(test)]
 mod tests {
     use super::*;
     fn runner() -> PathBuf {
@@ -1115,6 +1115,6 @@ mod tests {
     }
 }
 
-#[cfg(all(test, light_v8))]
+#[cfg(test)]
 #[path = "goose/compiler_tests.rs"]
 mod lifecycle_tests;
