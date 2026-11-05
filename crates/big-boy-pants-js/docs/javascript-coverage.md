@@ -364,9 +364,13 @@ build, and a thread pool over namespaces.
    kept persistent isolates and declared a macro's compile-time side effects
    visible only in the isolate that made them (light-cljs-429), which keeps
    output identical only for pure macros. Goose today keeps it for every
-   macro, because no job sees another's writes; the effects that must be
-   shared (gensym, counters) are owned and ordered by the coordinator
-   (`src/effects.goose`).
+   macro, because no job sees another's writes. Runtime `gensym` and counter
+   effects, which would need sharing, are not serviced on the compiler path:
+   `execute` in `src/compiler_session.goose` serves only root reads and
+   faults the rest with `NativeBoundary` (test
+   `goose_compiler_assembly_leaf_boundaries`); compile-time generated names
+   stay compiler-owned. `src/effects.goose` is the scheduler's separate,
+   coordinator-ordered implementation.
 2. **Root visibility as V8 had it** (light-cljs-776). The compiler resolves
    `__lightCompilerRoots[name]` at the job's visibility cursor and the job
    writes the answer into the roots object. A world reused across jobs may
@@ -441,16 +445,23 @@ reclaimed by resetting a job arena**:
 - This is reclamation by the job's scope, not a heap allocator: the top is a
   bump pointer reset when the job ends, like a Goose data stack; no free
   list, per-object reuse or sweep, and links stay index types. A job's rows
-  start at the image length in every worker, so its heap layout is a fresh
-  worker's, and a saved continuation restores into any reset worker without
-  rebasing (its checking conversion validates links against the tops).
+  start at the coordinator's image length in every worker, so its heap
+  layout is a fresh worker's, and a saved continuation restores into any
+  reset worker without rebasing (its checking conversion validates links
+  against the tops).
 - **What may persist:** the image only (the realm, the runtime leaves, and
   the roots and helper-cache objects in their initial state). Prepared
   definitions and installed helpers may stay loaded in a worker if they are
   keyed by definition or unit key, out of JavaScript's reach, and added
-  between jobs; light-cljs-796 measures whether that pays. Nothing keyed by
-  root name, no write a job made to image rows and no row a job added
-  survives the job.
+  between jobs; light-cljs-796 measures whether that pays. Such an extended
+  prefix differs between workers, so two rules keep jobs independent of
+  history: a cache hit charges the job the rows and work its installation
+  recorded, so limit outcomes match a cold install; and a saved continuation
+  carries every row above the coordinator's image that it reached, cached
+  ones included, with its cache bindings, and resumes in a worker reset to
+  the coordinator's image, whose own extension the next reset restores.
+  Nothing keyed by root name, no write a job made to image rows and no row a
+  job added survives the job.
 - **Rules for the representation pellets** (light-cljs-785, -787, -788,
   -790): every piece of VM state a job can change is a table row, a field of
   the one worker-global state struct, or job-local; no lookup structure
