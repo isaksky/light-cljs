@@ -3,6 +3,7 @@ import os;
 import .program;
 import .source_vm;
 import .vm;
+import .census;
 
 // Conformance runner (scripts/conformance.bb): load one exported program
 // image, run its top level once with the VM's default limits, and print one
@@ -18,6 +19,9 @@ import .vm;
 //   {:status :infrastructure :reason R} the image could not be loaded or run
 // V is source::canonical's text. The exit status is 0 for every outcome the
 // runner could classify and 1 for usage or infrastructure failures.
+// `conformance PROGRAM.gsp heap` also prints a second map: the job heap's
+// table rows at the end and how many no root reaches (census.goose).
+//   {:heap {:nodes N :values V :properties P :units U :dead-nodes ...}}
 extern fn process_exit(status: i32) = "exit";
 fn infrastructure(reason: const u8[:], detail: const u8[:] = "") {
     var out: u8[>..] = []; format(out, "{:status :infrastructure :reason \"", reason, detail, "\"}");
@@ -34,7 +38,7 @@ fn located(out: u8[>..]&, status: const u8[:], heap: const source::Heap&, job: c
 }
 fn main() {
     let arguments = args();
-    if arguments.len != 2 { infrastructure("usage: conformance PROGRAM.gsp"); return; }
+    if arguments.len != 2 && !(arguments.len == 3 && arguments[2] == "heap") { infrastructure("usage: conformance PROGRAM.gsp [heap]"); return; }
     var bytes: u8[>..] = [];
     if !read_file(arguments[1], bytes) { infrastructure("cannot read program"); return; }
     var image = program::Image {};
@@ -68,4 +72,13 @@ fn main() {
         }
     }
     print(out);
+    if arguments.len == 3 {
+        var roots: source::Value[>..] = [job.result];
+        for f in job.frames { roots.push(f.callee); roots.push(f.receiver); }
+        for v in job.locals { roots.push(v); } for v in job.operands { roots.push(v); }
+        let c = census::take(heap, roots); var line: u8[>..] = [];
+        format(line, "{:heap {:nodes ", c.nodes, " :values ", c.values, " :properties ", c.properties, " :units ", c.units);
+        format(line, " :dead-nodes ", c.dead_nodes, " :dead-values ", c.dead_values, " :dead-properties ", c.dead_properties, " :dead-units ", c.dead_units, "}}");
+        print(line);
+    }
 }

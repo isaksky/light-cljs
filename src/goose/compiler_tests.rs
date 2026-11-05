@@ -728,43 +728,73 @@ fn goose_compiler_wrapper_conventions_and_boundaries() {
         cleaned(&s);
     }
 }
-pub(super) fn assert_pool(trace: &[String], workers: usize, chunks: u64) {
-    let pools = trace
+/// The runner's final JOBS line (compiler_session.goose `Jobs`), by name.
+#[derive(Debug)]
+pub(super) struct JobsLine {
+    pub retention: u64,
+    pub spawned: u64,
+    pub peak_live: u64,
+    pub peak_blocked: u64,
+    pub waits: u64,
+    pub saves: u64,
+    pub answers: u64,
+    pub live: u64,
+    pub blocked: u64,
+}
+pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
+    let line = trace
         .iter()
-        .filter(|s| s.starts_with("POOL "))
-        .map(|s| {
-            s.split_whitespace()
-                .skip(2)
-                .map(|n| n.parse::<u64>().unwrap())
-                .collect::<Vec<_>>()
-        })
+        .find(|s| s.starts_with("JOBS "))
+        .unwrap_or_else(|| panic!("no JOBS line: {trace:?}"));
+    let n = line
+        .split_whitespace()
+        .skip(2)
+        .map(|n| n.parse::<u64>().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(
-        pools.len(),
-        workers,
-        "one private storage owner per execution worker: {trace:?}"
-    );
-    assert_eq!(pools.iter().map(|p| p[1]).sum::<u64>(), chunks);
-    assert!(pools.iter().all(|p| p[1] == p[2]), "every dispatch reset");
-    assert!(
-        pools.iter().map(|p| p[5]).sum::<u64>() > 0,
-        "reused table addresses"
-    );
-    assert!(pools.iter().all(|p| p[6] > 0 && p[3] <= 536_870_912));
-    assert!(pools.iter().all(|p| p[3] == p[8..12].iter().sum::<u64>()));
-    assert!(
-        pools.iter().all(|p| p[4] <= 27 * 4),
-        "finite high water despite repeated jobs"
-    );
+    assert_eq!(n.len(), 15, "{line}");
+    JobsLine {
+        retention: n[0],
+        spawned: n[1],
+        peak_live: n[8],
+        peak_blocked: n[9],
+        waits: n[10],
+        saves: n[11],
+        answers: n[12],
+        live: n[13],
+        blocked: n[14],
+    }
+}
+/// Threads: the coordinator, the input thread, `workers + retention` reapers
+/// and one contained worker per job; every thread but the coordinator joined.
+pub(super) fn assert_threads(trace: &[String], workers: usize) -> JobsLine {
+    let jobs = jobs_line(trace);
+    let reapers = workers as u64 + jobs.retention;
     assert_eq!(
         trace.iter().find(|s| s.starts_with("THREADS ")).unwrap(),
         &format!(
             "THREADS 0 {} {} {}",
-            workers * 2 + 2,
-            workers * 2 + 2,
-            workers * 2 + 1
-        )
+            2 + reapers + jobs.spawned,
+            2 + reapers + jobs.peak_live,
+            1 + reapers + jobs.spawned
+        ),
+        "{jobs:?}"
     );
+    assert!(jobs.peak_live <= reapers, "{jobs:?}");
+    assert!(jobs.peak_blocked <= jobs.retention, "{jobs:?}");
+    assert_eq!(
+        (jobs.live, jobs.blocked),
+        (0, 0),
+        "every worker and retention slot released: {jobs:?}"
+    );
+    jobs
+}
+/// Every dispatch (a start, a helper production or a resume) runs in a job
+/// worker spawned for it, except a resume answered to a worker blocked in
+/// place, which keeps its own job.
+pub(super) fn assert_jobs(trace: &[String], workers: usize, dispatches: u64) -> JobsLine {
+    let jobs = assert_threads(trace, workers);
+    assert_eq!(jobs.spawned + jobs.answers, dispatches, "{jobs:?}");
+    jobs
 }
 #[test]
 #[ignore = "build native runner with compiler.bb"]
@@ -820,7 +850,7 @@ fn goose_compiler_preparation_identity_and_private_calls() {
                     .contains("identity/source conflict")
             );
             cleaned(&session);
-            assert_pool(&session.trace(), workers, 17);
+            assert_jobs(&session.trace(), workers, 17);
         }
     }
 }
@@ -1299,7 +1329,7 @@ fn goose_compiler_injected_worker_abort_cleans_entire_session() {
 
 #[test]
 #[ignore = "build native runner with compiler.bb"]
-fn goose_compiler_cleanup_abort_reclaims_queued_and_in_transit_work() {
+fn goose_compiler_cleanup_abort_cancels_a_started_replacement() {
     for workers in [1, 2, 4, 8] {
         let session =
             GooseSession::start_mode(&runner(), workers, Some("cleanup-abort-test")).unwrap();
@@ -1352,14 +1382,12 @@ fn goose_compiler_cleanup_abort_reclaims_queued_and_in_transit_work() {
             }
         }
         wait(&|| session.directory.join("cleanup-ready").exists());
-        // Worker 1 has published its result but still owns cleanup. At limit 1
-        // this replacement stays queued; with peers it is held between dequeue
-        // and claim publication. Neither case may be forgotten by poison.
+        // Worker 1 has published its result, released its execution slot and
+        // still runs. Its replacement gets a worker of its own even at limit
+        // 1, held before it executes; poison must cancel it, not forget it.
         let replacement = send(2);
         wait(&|| session.trace().iter().any(|s| s == "START 2"));
-        if workers > 1 {
-            wait(&|| session.directory.join("claim-ready").exists());
-        }
+        wait(&|| session.directory.join("claim-ready").exists());
         std::fs::write(session.directory.join("cleanup-abort"), "abort").unwrap();
         loop {
             match replacement.recv_timeout(Duration::from_secs(5)).unwrap() {
@@ -1383,13 +1411,7 @@ fn goose_compiler_cleanup_abort_reclaims_queued_and_in_transit_work() {
         wait(&|| session.trace().iter().any(|s| s == "CLOSED 1"));
         assert!(!session.directory.join("2.out").exists());
         assert!(!session.trace().iter().any(|s| s == "DONE 2"));
-        assert!(session.trace().iter().any(|s| s
-            == &format!(
-                "THREADS 0 {} {} {}",
-                workers * 2 + 2,
-                workers * 2 + 2,
-                workers * 2 + 1
-            )));
+        assert_threads(&session.trace(), workers);
         session.close();
         cleaned(&session);
     }
@@ -1397,11 +1419,183 @@ fn goose_compiler_cleanup_abort_reclaims_queued_and_in_transit_work() {
 
 #[test]
 #[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_every_job_runs_in_its_own_worker() {
+    // Each call mutates the prepared definition's closure state: a counter,
+    // a new property and an array element. The job worker's exit discards
+    // them, so every call sees the prepared image unchanged.
+    let source = "rt => { let state = {n: 40}; let list = []; return (form, env) => { state.n = state.n + 1; state.seen = (state.seen || 0) + 1; list[list.length] = 1; return state.n + state.seen + list.length; }; }";
+    for workers in [1, 2, 4, 8] {
+        let session = GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let (_, args, call) = inputs(&e, source);
+        let f = e.source_macro_function(901, source).unwrap();
+        for _ in 0..12 {
+            let result = e.call(f, &args).unwrap();
+            let form = e
+                .export_form(result, &call, origin(&call), Default::default())
+                .unwrap();
+            assert!(form.data().value_eq(&Datum::new(DatumKind::Integer(43))));
+            e.release(result).unwrap();
+        }
+        session.close();
+        cleaned(&session);
+        let jobs = assert_jobs(&session.trace(), workers, 12);
+        assert_eq!((jobs.spawned, jobs.waits), (12, 0), "{jobs:?}");
+    }
+}
+
+/// Submit raw job `id` of definition 1 with the fixture's arguments.
+fn submit(session: &GooseSession, bytes: &[u8], id: u64) -> mpsc::Receiver<Event> {
+    std::fs::write(session.directory.join(format!("{id}.definition")), "1").unwrap();
+    std::fs::write(session.directory.join(format!("{id}.gfb")), bytes).unwrap();
+    let (tx, rx) = mpsc::channel();
+    session.pending.lock().unwrap().insert(id, tx);
+    let mut process = session.process.lock().unwrap();
+    let input = &mut process.as_mut().unwrap().input;
+    writeln!(input, "{id}").unwrap();
+    input.flush().unwrap();
+    rx
+}
+fn await_need(rx: &mpsc::Receiver<Event>) {
+    loop {
+        match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+            Event::Need(_, _) => return,
+            Event::Start | Event::Resumed => {}
+            other => panic!("expected a dependency wait: {other:?}"),
+        }
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_blocked_waits_release_worker_and_retention() {
+    // Jobs that wait on a compiler root nobody answers. Each scenario ends
+    // with every job worker reaped and no retention slot held.
+    let fixture = |workers: usize, mode: Option<&str>, retained: Option<usize>| {
+        let session = GooseSession::start_retaining(&runner(), workers, mode, retained).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let (_, args, _) = inputs(&e, "rt => (form, env) => 0");
+        let values = args
+            .iter()
+            .map(|&id| e.get(id).unwrap())
+            .collect::<Vec<_>>();
+        let limits = ConversionLimits::default();
+        let budget = bridge::Budget::new(limits.nodes, e.control.clone());
+        let bytes = bridge::Graph::arguments(&values, limits, &budget)
+            .unwrap()
+            .encode()
+            .unwrap();
+        session.export(&session.directory.join("definition-1.gsp"), "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')").unwrap();
+        (session, bytes)
+    };
+    // Cancellation: a blocked worker leaves when the session closes.
+    let (session, bytes) = fixture(1, Some("readiness-test"), Some(4));
+    await_need(&submit(&session, &bytes, 1));
+    session.close();
+    cleaned(&session);
+    let jobs = assert_threads(&session.trace(), 1);
+    assert_eq!(
+        (
+            jobs.spawned,
+            jobs.waits,
+            jobs.peak_blocked,
+            jobs.answers,
+            jobs.saves
+        ),
+        (1, 1, 1, 0, 0),
+        "{jobs:?}"
+    );
+    // Over the budget: the first wait blocks, later ones save a continuation
+    // and their workers exit; the blocked one is cancelled at close.
+    let (session, bytes) = fixture(1, Some("readiness-test"), Some(1));
+    for id in 1..=3 {
+        await_need(&submit(&session, &bytes, id));
+    }
+    session.close();
+    cleaned(&session);
+    let jobs = assert_threads(&session.trace(), 1);
+    assert_eq!(
+        (jobs.spawned, jobs.waits, jobs.peak_blocked, jobs.saves),
+        (3, 3, 1, 2),
+        "{jobs:?}"
+    );
+    // Saturated retention: eight simultaneous waits at limit 8 with a budget
+    // of one. Jobs above 10 (cleanup-abort-test) leave their answers queued
+    // until released, so seven save answers sit on the Answer queue at once.
+    let (session, bytes) = fixture(8, Some("cleanup-abort-test"), Some(1));
+    let replies = (11..=18)
+        .map(|id| submit(&session, &bytes, id))
+        .collect::<Vec<_>>();
+    let until = Instant::now() + Duration::from_secs(10);
+    // SCHED's events count reaches 8 once the coordinator handled all eight waits.
+    while !session
+        .trace()
+        .iter()
+        .any(|s| s.starts_with("SCHED ") && s.split_whitespace().nth(10) == Some("8"))
+    {
+        assert!(Instant::now() < until, "{:?}", session.trace());
+        thread::yield_now();
+    }
+    std::fs::write(session.directory.join("answer-release"), "release").unwrap();
+    for rx in &replies {
+        await_need(rx);
+    }
+    session.close();
+    cleaned(&session);
+    let jobs = assert_threads(&session.trace(), 8);
+    assert_eq!(
+        (jobs.spawned, jobs.waits, jobs.peak_blocked, jobs.saves),
+        (8, 8, 1, 7),
+        "{jobs:?}"
+    );
+    // A contained abort while blocked (cleanup-abort-test job 3) poisons the
+    // session and releases that worker's retention slot.
+    let (session, bytes) = fixture(1, Some("cleanup-abort-test"), Some(4));
+    let rx = submit(&session, &bytes, 3);
+    loop {
+        match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+            Event::Failure(message) => {
+                assert!(message.contains("worker-abort"), "{message}");
+                break;
+            }
+            Event::Start | Event::Resumed | Event::Need(_, _) => {}
+            other => panic!("expected the blocked worker's abort: {other:?}"),
+        }
+    }
+    {
+        let mut process = session.process.lock().unwrap();
+        let input = &mut process.as_mut().unwrap().input;
+        writeln!(input, "0").unwrap();
+        input.flush().unwrap();
+    }
+    let until = Instant::now() + Duration::from_secs(5);
+    while !session.trace().iter().any(|s| s == "CLOSED 1") {
+        assert!(Instant::now() < until, "{:?}", session.trace());
+        thread::yield_now();
+    }
+    let jobs = assert_threads(&session.trace(), 1);
+    assert_eq!(
+        (jobs.spawned, jobs.waits, jobs.peak_blocked),
+        (1, 1, 1),
+        "{jobs:?}"
+    );
+    session.close();
+    cleaned(&session);
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_drains_ready_batches_without_progress_backoff() {
-    for callable in [false, true] {
+    // Default: waits block in their workers. Some(0): every wait saves a
+    // continuation and a fresh worker restores it.
+    for (callable, retained) in [false, true]
+        .into_iter()
+        .flat_map(|c| [(c, None), (c, Some(0))])
+    {
         for workers in [1, 2, 4, 8] {
             let session =
-                GooseSession::start_mode(&runner(), workers, Some("dispatch-test")).unwrap();
+                GooseSession::start_retaining(&runner(), workers, Some("dispatch-test"), retained)
+                    .unwrap();
             let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
             let (_, args, call) = inputs(&e, "rt => (form, env) => 0");
             let values = args
@@ -1509,18 +1703,21 @@ fn goose_compiler_drains_ready_batches_without_progress_backoff() {
                 "eight waits, one helper, eight completed bodies"
             );
             assert_eq!(previous[7], 9, "eight queued requests and shutdown");
-            let threads = trace.iter().find(|s| s.starts_with("THREADS ")).unwrap();
-            assert_eq!(
-                threads,
-                &format!(
-                    "THREADS 0 {} {} {}",
-                    workers * 2 + 2,
-                    workers * 2 + 2,
-                    workers * 2 + 1
-                ),
-                "coordinator + input + configured execution workers and join-only supervisors"
-            );
-            assert_pool(&trace, workers, 17);
+            let jobs = assert_jobs(&trace, workers, 17);
+            if retained == Some(0) {
+                assert_eq!(
+                    (jobs.spawned, jobs.saves, jobs.waits),
+                    (17, 8, 0),
+                    "{jobs:?}"
+                );
+            } else {
+                assert_eq!(
+                    (jobs.spawned, jobs.answers, jobs.waits),
+                    (9, 8, 8),
+                    "{jobs:?}"
+                );
+                assert!(jobs.peak_blocked >= 1, "{jobs:?}");
+            }
         }
     }
 }
@@ -1640,31 +1837,41 @@ fn goose_compiler_readiness_delayed_helper_and_idle_close_cancel() {
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_reclaims_inactive_waiters_between_batches() {
-    let session = GooseSession::start_mode(&runner(), 1, Some("readiness-test")).unwrap();
-    let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
-    let (function, args, _) = inputs(
-        &e,
-        "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')",
-    );
-    serve(&e, &[("fixture/value", 41)], |_| Ok("rt => 41".into()));
-    for _ in 0..256 {
-        let result = e.call(function, &args).unwrap();
-        assert!(
-            e.export_form(result, &form(), origin(&form()), Default::default())
-                .unwrap()
-                .data()
-                .value_eq(&Datum::new(DatumKind::Integer(41)))
+    for retained in [None, Some(0)] {
+        let session =
+            GooseSession::start_retaining(&runner(), 1, Some("readiness-test"), retained).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let (function, args, _) = inputs(
+            &e,
+            "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')",
         );
-        e.release(result).unwrap();
+        serve(&e, &[("fixture/value", 41)], |_| Ok("rt => 41".into()));
+        for _ in 0..256 {
+            let result = e.call(function, &args).unwrap();
+            assert!(
+                e.export_form(result, &form(), origin(&form()), Default::default())
+                    .unwrap()
+                    .data()
+                    .value_eq(&Datum::new(DatumKind::Integer(41)))
+            );
+            e.release(result).unwrap();
+        }
+        session.close();
+        cleaned(&session);
+        let jobs = assert_jobs(&session.trace(), 1, 513);
+        assert_eq!(
+            jobs.saves,
+            if retained == Some(0) { 256 } else { 0 },
+            "{jobs:?}"
+        );
+        assert!(
+            session.trace().iter().any(|s| s == "CLOSED 1"),
+            "bounded failure closes natively"
+        );
+        assert!(
+            !String::from_utf8_lossy(&session.stderr.lock().unwrap()).contains("assert failed")
+        );
     }
-    session.close();
-    cleaned(&session);
-    assert_pool(&session.trace(), 1, 513);
-    assert!(
-        session.trace().iter().any(|s| s == "CLOSED 1"),
-        "bounded failure closes natively"
-    );
-    assert!(!String::from_utf8_lossy(&session.stderr.lock().unwrap()).contains("assert failed"));
 }
 
 #[test]
@@ -1674,7 +1881,9 @@ fn goose_compiler_large_continuations_reclaim_across_batches() {
     // The pinned build suspends 529 times, with a largest saved continuation
     // just over 3 MB. Repeat a similarly sized transported argument twice as
     // often in one session: cumulative copying must not consume retention.
-    let session = GooseSession::start_mode(&runner(), 1, Some("readiness-test")).unwrap();
+    // Retention 0 saves every wait, as this test's continuations need.
+    let session =
+        GooseSession::start_retaining(&runner(), 1, Some("readiness-test"), Some(0)).unwrap();
     // Transport visits alone exceed the default one-million session polls.
     // Keep a finite test budget, below the generated project's 100 billion.
     let options = EvaluatorOptions {
@@ -1724,7 +1933,7 @@ fn goose_compiler_large_continuations_reclaim_across_batches() {
     e.release(input).unwrap();
     session.close();
     cleaned(&session);
-    assert_pool(&session.trace(), 1, 2 * 1058 + 1);
+    assert_eq!(assert_jobs(&session.trace(), 1, 2 * 1058 + 1).saves, 1058);
     drop(e);
     drop(session);
     for output in retained {
@@ -1827,7 +2036,7 @@ fn goose_compiler_pool_alternates_payloads_and_keeps_owned_forms() {
         session.close();
         cleaned(&session);
         assert_eq!(session.stats().preparations, 2);
-        assert_pool(&session.trace(), workers, 24);
+        assert_jobs(&session.trace(), workers, 24);
     }
     for (output, expected) in retained {
         assert!(
@@ -1840,7 +2049,7 @@ fn goose_compiler_pool_alternates_payloads_and_keeps_owned_forms() {
 
 #[test]
 #[ignore = "build native runner with compiler.bb"]
-fn goose_compiler_cancel_reaps_persistent_execution_workers() {
+fn goose_compiler_cancel_reaps_job_workers() {
     for source in [
         "rt => (form, env) => { while (true) {} }",
         "rt => (form, env) => __rt.cljCount(rt.core.mapSeq(()=>{while(true){}},__rt.formList(1)))",
@@ -1879,15 +2088,7 @@ fn goose_compiler_cancel_reaps_persistent_execution_workers() {
                 trace.iter().any(|s| s == "CLOSED 1"),
                 "native shutdown joined the pool: {trace:?}"
             );
-            assert_eq!(
-                trace.iter().find(|s| s.starts_with("THREADS ")).unwrap(),
-                &format!(
-                    "THREADS 0 {} {} {}",
-                    workers * 2 + 2,
-                    workers * 2 + 2,
-                    workers * 2 + 1
-                )
-            );
+            assert_threads(&trace, workers);
         }
     }
 }
@@ -2087,13 +2288,7 @@ fn generated_200k_complete_forms() {
             assert!(s.readers.lock().unwrap().is_empty());
             assert!(s.pending.lock().unwrap().is_empty());
             assert!(!s.directory.exists());
-            assert!(s.trace().iter().any(|r| r
-                == &format!(
-                    "THREADS 0 {} {} {}",
-                    workers * 2 + 2,
-                    workers * 2 + 2,
-                    workers * 2 + 1
-                )));
+            assert_threads(&s.trace(), workers);
         }
         let mut aliases = 0;
         let mut anonymous = 0;
@@ -2334,16 +2529,7 @@ fn goose_compiler_namespace_pool_failure_and_cancellation_tear_down() {
             cleaned(&session);
             let trace = session.trace();
             assert!(trace.iter().any(|s| s == "CLOSED 1"), "{trace:?}");
-            assert_eq!(
-                trace.iter().find(|s| s.starts_with("THREADS ")).unwrap(),
-                &format!(
-                    "THREADS 0 {} {} {}",
-                    slots * 2 + 2,
-                    slots * 2 + 2,
-                    slots * 2 + 1
-                ),
-                "{body} slots={slots}"
-            );
+            assert_threads(&trace, slots);
         }
     }
 }

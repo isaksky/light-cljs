@@ -19,3 +19,24 @@ static gs_i64 goose_measure_address(r_u8 bytes) {
     return (gs_i64)(uintptr_t)bytes;
 }
 static gs_i64 goose_measure_regions(void) { return (gs_i64)gs_nstks; }
+
+/* Current resident memory in bytes, for the trim_memory() measurement. */
+#ifdef __APPLE__
+#include <mach/mach.h>
+static gs_i64 goose_measure_resident(void) {
+    mach_task_basic_info_data_t info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    return task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count) == KERN_SUCCESS ? (gs_i64)info.resident_size : 0;
+}
+#else
+#include <stdio.h>
+#include <unistd.h>
+static gs_i64 goose_measure_resident(void) {
+    long pages = 0, resident = 0;
+    FILE *f = fopen("/proc/self/statm", "r");
+    if (!f) return 0;
+    int ok = fscanf(f, "%ld %ld", &pages, &resident) == 2;
+    fclose(f);
+    return ok ? (gs_i64)resident * (gs_i64)sysconf(_SC_PAGESIZE) : 0;
+}
+#endif

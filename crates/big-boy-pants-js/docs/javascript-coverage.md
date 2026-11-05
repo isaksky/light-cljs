@@ -236,6 +236,53 @@ and Goose has no unions to box into.
   a namespace batch only if the memory pellet measures a benefit. bbp calls it
   nowhere today.
 
+**Implemented (light-cljs-784, `src/compiler_session.goose`).** Measurements
+are in [the evidence](../evidence/generated-200k-performance.md), section
+"One job worker per job".
+
+- *Image owner: the coordinator* (the runner's `main`), not a dedicated
+  session worker. It already holds the realm, the base snapshot, the prepared
+  definition snapshots and the identity authority, and P9 requires the
+  spawning program to own the tables; a separate session worker would add a
+  hop to every dispatch. It is the only program that spawns job workers.
+  Probe P11 shows a spawn copies only the globals the spawned thread program
+  reaches, so when light-cljs-785 makes the realm the coordinator's flat
+  global tables, the input thread and the reapers (which reach none of them)
+  copy nothing, and each job worker copies the image as its restore.
+- *One contained job worker per dispatch* (`run_job`): a start, a helper
+  production and a resume of a saved continuation each get a fresh worker
+  with empty tables, which restores today's flat `snapshot::Snapshot` from
+  its spawn arguments. Nothing is reset or reused between jobs.
+- *Reapers* (`supervise`, `limit + retention` of them) only join job workers
+  and report how each ended. The coordinator keeps at most that many workers
+  live, so every worker's join is taken at once and a contained abort is
+  reported while its peers run. Abort, cancellation, the input/readiness
+  protocol and the queue limits are as before.
+- *Dependency waits block in place by default.* A worker that needs a helper
+  publishes the wait and blocks with its state in its own thread program; the
+  coordinator answers it through the `Answer` queue, routed by worker address
+  with the re-queue pattern of `cancelled()`. A blocked worker counts against
+  the *retention budget* (`BBP_RETAINED_WORKERS`, default 32, at most 128);
+  over it the coordinator answers "save", and the worker writes its
+  continuation and exits as before. Measured on the 200k project, blocking
+  beats saving at 1/2/4/8 workers and copies 154 MB instead of 996 MB per
+  session.
+- *Accounting*: at most `limit` workers execute; blocked workers do not, but
+  hold a retention slot until answered, cancelled or aborted; live workers
+  never exceed the reaper count. The peak thread count is `2 + 2 × (limit +
+  retention)` at most (274 at limit 8 and retention 128), below the 354-worker
+  cap `goose check --stacks` reports. The `JOBS` trace line reports the
+  totals, and the tests assert no worker or slot outlives the session.
+- *Spawn cost*: a job worker has 46 data stacks, and Goose sets up and tears
+  down each region per thread (probe P12: about 7.5 microseconds a data stack,
+  345 microseconds for a 44-stack worker against 26 for one stack). That, not
+  the 17 microseconds of P8, is the price of the scope, and it makes the 200k
+  project slower; see the evidence. light-cljs-791 works on that cost.
+- *Collection*: the census (`src/census.goose`, instrumented runs only)
+  found no target workload near its job limits, so no evacuation is built.
+- *`trim_memory()`*: measured after each idle batch in instrumented runs
+  only; see the evidence for why nothing calls it otherwise.
+
 **Why it fits compile-time use.** The 200k project runs 5,226 source macro
 entries per session. At 17 microseconds a spawn that is about 0.09 s of
 spawning, against 0.15 s of today's restore intervals, and the copy replaces
@@ -432,6 +479,19 @@ of 47 stacks (1 + 2 + 4 + 8 per process pair) and 38 workers of 2 stacks; no
 thread program came near `GS_MAX_STACKS` or the 347-worker cap. Peak memory
 in bytes is the measurement phase's job (`time -l`), not this report's.
 
+With one job worker per job (light-cljs-784), `goose check --stacks` on the
+runner: main 51 data stacks plus 1 global stack (52 regions), `run_job` 46,
+`supervise` (now a reaper) 2, `input` 2; the thread cap is 354 workers. A
+runner built with `-DGS_STACK_STATS=1` compiled the 200k project once at
+each of 1/2/4/8 workers (November 5, 2026, plain mode, retention 32): every
+run's main program reported 51 data stacks and 52 regions, each of its 5,283
+job workers 46 stacks and 46 regions (21,132 reports), and each input thread
+and reaper (147 reports) 2. At most 2 + 2 × (limit + retention) threads are
+alive at once, at most 274 with the caps, so nothing comes near
+`GS_MAX_STACKS` or the thread cap and the defaults stand. The spawn-per-job
+model does pay per region at every spawn and exit (probe P12); a smaller
+reserve saved only a fifth of that, so it does not justify a change either.
+
 The conformance harness (light-cljs-782, decision 7) runs one Goose runner
 process per case, `src/conformance.goose`, at most `--jobs` (default 4) at
 once. `goose check --stacks` on it: the main program uses 25 data stacks plus
@@ -522,3 +582,13 @@ checked and the result.
 - **P10.** A worker that owns an index-typed table (two rows, one linking to
   the other) spawns a job worker. The job worker sees both rows and the link,
   changes a row and appends one; after it exits the owner still has its two
+  rows, unchanged.
+- **P11** (light-cljs-784). A spawn copies only the globals the spawned
+  thread program reaches: with an 88 MB global array in main, spawning and
+  joining a worker that never names it took 23.6 microseconds, one that reads
+  it 17.2 ms (an 8 MB array: 17.0 microseconds and 1.39 ms).
+- **P12** (light-cljs-784). Spawn-and-join cost grows with the worker's data
+  stacks: 26 to 33 microseconds for a contained worker with one data stack,
+  340 to 351 microseconds for one with 44 (200 cycles, three rounds, native
+  build). With `--stack-reserve 64M` the 44-stack worker still took 278
+  microseconds, so the cost is per region, not per reserved byte.

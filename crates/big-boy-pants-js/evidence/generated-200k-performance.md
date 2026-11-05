@@ -1152,3 +1152,122 @@ $C --backend all --phase measure --runs 5
 $C --backend goose --workers 4 --compiler-slots 4,8 --phase measure --runs 5
 bb benchmarks/generated-project/compare.bb target/generated-200k --light BIN/integrated --runner BIN/runner --also-light goose-build=BIN/goose-build,goose --backend all --phase instrument --runs 1
 ```
+
+## One job worker per job
+
+November 5, 2026 (light-cljs-784; design in
+[javascript-coverage.md](../docs/javascript-coverage.md), decision 3). The
+runner now spawns one contained job worker per dispatch from the coordinator,
+which owns the session image, and a dependency wait blocks in its worker
+within a retention budget of 32. **The 200k project stays byte-identical with
+its five oracles passing, and gets slower: Goose 1/2/4/8 take 16.683 /
+11.540 / 7.831 / 8.640 s against 14.738 / 10.121 / 7.167 / 7.274 s for the
+runner before the change (+1.945 / +1.419 / +0.664 / +1.366 s).** The cause is
+the per-thread cost of Goose data-stack regions: a job worker has 46, and
+setting them up and tearing them down costs about 7.5 microseconds each
+(probe P12), paid 5,283 times a session, mostly as kernel time. No job comes
+near its limits, so no evacuation is needed, and `trim_memory()` gains nothing
+worth its cost.
+
+Binaries: light-cljs `--release --locked --features goose-macros` at this
+branch (SHA-256 `3077acf9…68e7`, used for every cell); runner before
+(`compiler_session.goose` at `7e46777f`, `c8a991a9…f8d425a`); job-worker
+runner (`b0357f66…5362a`). Goose v2026.3-267, Rust 1.99.1, the machine of the
+sections above, seed 42, 199,129 lines, release/advanced/`--no-cache`.
+Samples, census rows and totals: `generated-200k-job-workers.edn.gz`.
+
+**Check gate**, `compare.bb --backend all --phase check --runs 1` once per
+runner, one sample after one warmup per cell; these are single samples, not
+a timing run. Seconds of wall, and the compiler command's user and system
+CPU (the runner included):
+
+| Runner | Goose 1 | Goose 2 | Goose 4 | Goose 8 | V8 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| before | 14.738 (11.30 + 3.03) | 10.121 (12.13 + 3.30) | 7.167 (13.56 + 4.12) | 7.274 (15.03 + 4.88) | 5.826 |
+| job workers, waits block (default) | 16.683 (11.87 + 5.76) | 11.540 (13.11 + 6.67) | 7.831 (14.89 + 10.00) | 8.640 (15.89 + 22.14) | 5.752 |
+| job workers, every wait saved (`BBP_RETAINED_WORKERS=0`) | 17.301 (12.17 + 6.04) | 11.908 (13.27 + 7.11) | 8.435 (15.06 + 10.26) | 9.132 (16.25 + 17.27) | 5.781 |
+
+Every cell of all three runs passed the byte-identity, oracle and waste
+checks. Peak memory of the compiler command moved by at most 0.033 GB
+(0.897–0.999 GB before, 0.930–0.974 GB blocking). User CPU rose by 0.6–0.9 s;
+system CPU rose by 2.7 s at one worker and 17.3 s at eight, which is where
+the wall time went. The kernel cost grows with concurrency because exiting
+workers unmap their regions while others map theirs.
+
+**Spawns, latency and copies**, from the final `JOBS` line of traced runs
+(the runner in `readiness-test` mode, which adds trace lines only) of the
+same build, one session each:
+
+| Mode, workers | Job workers | Waits (blocked / saved) | Spawn call in coordinator | Spawn to first instruction | Last publication to join | Copied into workers (arguments + restores) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| blocking, 1 | 5,283 | 529 / 0 | 15 µs | 132 µs | 229 µs | 155.9 + 153.9 MB |
+| blocking, 2 | 5,283 | 529 / 0 | 17 µs | 152 µs | 309 µs | 155.9 + 153.9 MB |
+| blocking, 4 | 5,283 | 529 / 0 | 27 µs | 266 µs | 720 µs | 155.9 + 153.9 MB |
+| blocking, 8 | 5,283 | 529 / 0 | 79 µs | 656 µs | 2,076 µs | 155.9 + 153.9 MB |
+| saving, 1 | 5,812 | 0 / 529 | 25 µs | 148 µs | 244 µs | 1,005.5 + 995.9 MB |
+| saving, 8 | 5,812 | 0 / 529 | 59 µs | 552 µs | 1,770 µs | 1,005.5 + 995.9 MB |
+
+Means per worker. 5,283 = 5,226 source macro starts + 57 helper productions;
+saving adds the 529 resumes as fresh workers. The spawn-to-first-instruction
+interval is on each job's critical path (0.70 s a session at one worker, 3.47
+s of job time at eight); the join interval is not, but its kernel work
+competes with the next spawns. Blocking keeps the job's state in its worker:
+it copies 840 MB less per session and is faster than saving at every worker
+count, so it is the default. The 200k project never had more than one worker
+blocked at once (peak live workers 2 / 3 / 8 / 16), far below the budget of
+32; the budget's cap of 128 keeps the peak thread count, 2 + 2 × (8 + 128) =
+274, below the 354-worker cap of `goose check --stacks`.
+
+**Job heaps.** The instrument phase (`compare.bb --backend all --phase
+instrument --runs 1`, passing, with compare.bb's new JOBS/THREADS checks)
+records each job worker's table rows at its exit and how many no root of that
+exit reaches (`src/census.goose`: a diagnostic walk from the result, the
+bindings, frames, locals, operands, effect arguments, writes, constants and
+the global object; nothing is freed). Goose 1, 5,283 exits (5,226 finished
+macros, 57 produced helpers):
+
+| Table | Median | 90th percentile | 99th percentile | Largest | Job limit | Unreachable at exit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| nodes | 5,841 | 10,515 | 11,601 | 12,234 | 100,000 | 98.7% |
+| values | 5,820 | 10,493 | 11,581 | 12,299 | 1,048,576 | 99.1% |
+| properties | 28 | 31 | 36 | 36 | 1,048,576 | 16.9% (75.9% of those the job added) |
+| string units | 37,000 | 66,822 | 73,733 | 77,524 | 1,048,576 | 98.5% |
+
+The restored image is about 28 nodes; nearly everything a job allocates is
+garbage by its end, and its worker's exit frees it. Goose 8 gives the same
+figures within rounding. The largest job uses 12.2% of its node limit, so no
+200k job exceeds a limit because of unreachable data. On the conformance
+harness (`conformance.bb --check --heap-stats`, 181 cases; 78 Goose runs
+reached the VM, the rest were refused by the exporter or not scored) heaps are
+tiny: at most 20 nodes, 5 values, 1 property and 5,560 string units, 4.5% of
+nodes and 10.2% of units unreachable, because most cases stop at an
+unimplemented opcode. **No evacuation pellet is filed:** no target workload
+needs collection today. Area pellets should rerun `--heap-stats` as more cases
+run; long-running JavaScript is where it may be needed.
+
+**`trim_memory()`.** Instrumented runs call it in the coordinator whenever
+the session goes idle after a batch of jobs and record resident memory around
+it. Goose 1: 5,226 idle points (each job is a batch at one worker), resident
+15.85 MB before and 15.64 MB after on average (−0.22 MB, 1.4%), 164
+microseconds a call, 0.86 s a session. Goose 8: 945 calls, 25.16 → 24.83 MB,
+202 microseconds each. The runner's own resident memory is small (the 0.9 GB
+peak is the compiler's), so the gain is not worth the time and nothing calls
+it outside instrumented runs. The input thread and reapers hold two data
+stacks of a few bytes each, so they were not measured separately; job workers
+never call it.
+
+**Stack settings** (rule 8): see the design document's "Stack settings".
+A `-DGS_STACK_STATS=1` runner at 1/2/4/8 workers reported main 51 data stacks
+(52 regions), every job worker 46, every reaper and input thread 2.
+
+Reproduce (the 200k gate commands of the generated-project README, run once
+per runner and once more with `BBP_RETAINED_WORKERS=0`; the instrument phase
+once with the job-worker runner):
+
+```sh
+C="bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs"
+$C --backend all --runner RUNNER --phase check --runs 1
+BBP_RETAINED_WORKERS=0 $C --backend all --runner RUNNER --phase check --runs 1
+$C --backend all --runner RUNNER --phase instrument --runs 1
+bb crates/big-boy-pants-js/scripts/conformance.bb --check --heap-stats
+```

@@ -275,23 +275,26 @@
 
 (defn goose-diagnostics [path workers]
   (let [text (slurp (str path))
-        [_ created peak joined] (re-find #"(?m)^THREADS 0 (\d+) (\d+) (\d+)$" text)
-        pools (vec (for [line (str/split-lines text) :when (str/starts-with? line "POOL 0 ")]
-                     (zipmap [:slot :chunks :resets :capacity-bytes :growths :reuses :regions :reset-ns
-                              :code-bytes :heap-bytes :job-bytes :bridge-bytes]
-                             (map parse-long (drop 2 (str/split line #" "))))))]
+        [_ created peak joined] (map #(some-> % parse-long) (re-find #"(?m)^THREADS 0 (\d+) (\d+) (\d+)$" text))
+        ;; One contained job worker per dispatch (light-cljs-784); the JOBS
+        ;; fields are compiler_session.goose's `Jobs` totals.
+        jobs (some->> (re-find #"(?m)^JOBS 0 ([\d ]+)$" text) second (#(str/split % #" ")) (map parse-long)
+                      (zipmap [:retention :spawned :finals :spawn-ns :start-ns :join-ns :argument-bytes :restore-bytes
+                               :peak-live :peak-blocked :waits :saves :answers :live :blocked]))
+        reapers (+ workers (:retention jobs 0))]
     (assert (str/includes? text "CLOSED 1") "Native Goose session did not close")
-    (assert (= (str (+ 2 (* 2 workers))) created peak) "Native Goose thread total differs")
+    (assert jobs "Missing job worker diagnostics")
+    (assert (= [(+ 2 reapers (:spawned jobs)) (+ 2 reapers (:peak-live jobs))] [created peak]) "Native Goose thread total differs")
     ;; Native total includes its coordinator; every other thread is joined.
-    (assert (= (str (+ 1 (* 2 workers))) joined) "Native Goose spawned threads did not all join")
-    (assert (= workers (count pools)) "Missing private worker diagnostics")
+    (assert (= (+ 1 reapers (:spawned jobs)) joined) "Native Goose spawned threads did not all join")
+    (assert (= [0 0] ((juxt :live :blocked) jobs)) "Native Goose job workers or retention slots outlived the session")
     ;; The Goose compiler path creates no compile-time engine (light-cljs-779).
     (assert (= ["ENGINES v8-platform=0 v8-isolates=0 quickjs-runtimes=0 pants-runtimes=0"]
                (filter #(str/starts-with? % "ENGINES ") (str/split-lines text)))
             "Goose cell's engine census is not all zero")
-    {:native-thread-total (parse-long created) :spawned-threads-joined (parse-long joined) :workers pools
+    {:native-thread-total created :spawned-threads-joined joined :jobs jobs
      :engines {:v8-platform 0 :v8-isolates 0 :quickjs-runtimes 0 :pants-runtimes 0}
-     :trace-scope "bounded early protocol prefix (4096 rows); final POOL/THREADS/CLOSED replace prefix rows; session cost counters cover all jobs"}))
+     :trace-scope "bounded early protocol prefix (4096 rows); final JOBS/TRIM/THREADS/CLOSED replace prefix rows; session cost counters cover all jobs"}))
 
 (defn comparison-cells [{:keys [backend workers compiler-slots also-light]}]
   (let [primary (vec (concat (when (#{"v8" "all"} backend) [{:backend "v8" :workers 1}])

@@ -22,14 +22,14 @@
              (apply process/shell {:dir (str directory)} arguments))]
   (try
     (run! goose "version")
-    (doseq [source ["vm.goose" "tests.goose" "encoding.goose" "program.goose" "scalar.goose" "export_schema.goose" "inspect.goose" "source_tests.goose" "layout_probe.goose" "source_vm.goose" "execute.goose" "serial_tests.goose" "form_bridge.goose" "bridge_tests.goose" "macro_tests.goose" "macro_run.goose" "snapshot.goose" "callable.goose" "snapshot_fixture.goose" "snapshot_tests.goose" "snapshot_workers.goose" "artifact.goose" "artifact_tests.goose" "dependency.goose" "dependency_tests.goose" "scheduler.goose" "scheduler_tests.goose" "effects.goose" "effects_tests.goose" "compiler_session.goose" "conformance.goose"]]
+    (doseq [source ["vm.goose" "tests.goose" "encoding.goose" "program.goose" "scalar.goose" "export_schema.goose" "inspect.goose" "source_tests.goose" "layout_probe.goose" "source_vm.goose" "execute.goose" "serial_tests.goose" "form_bridge.goose" "bridge_tests.goose" "macro_tests.goose" "macro_run.goose" "snapshot.goose" "callable.goose" "snapshot_fixture.goose" "snapshot_tests.goose" "snapshot_workers.goose" "artifact.goose" "artifact_tests.goose" "dependency.goose" "dependency_tests.goose" "scheduler.goose" "scheduler_tests.goose" "effects.goose" "effects_tests.goose" "census.goose" "census_tests.goose" "compiler_session.goose" "conformance.goose"]]
       (run! goose "format" "--check" (str (fs/path root "src" source))))
     (let [probe (str (fs/path root "src/layout_probe.goose"))]
       (run! goose "check" probe)
       (run! goose probe "--debug")
       (run! goose "build" probe "-o" executable)
       (run! executable))
-    (doseq [source ["bridge_tests.goose" "macro_tests.goose" "snapshot_tests.goose" "artifact_tests.goose" "dependency_tests.goose"]]
+    (doseq [source ["bridge_tests.goose" "macro_tests.goose" "snapshot_tests.goose" "artifact_tests.goose" "dependency_tests.goose" "census_tests.goose"]]
       (let [path (str (fs/path root "src" source))]
         (run! goose "check" path)
         (run! goose path "--debug")

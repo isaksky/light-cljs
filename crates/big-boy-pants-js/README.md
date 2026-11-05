@@ -176,56 +176,49 @@ persistent-form requirements through QuickJS/Pants and explain the indexed
 storage choices. The smoke command includes `layout_probe.goose`, a bounded
 layout/lifetime probe; it does not execute macros or measure performance.
 
-## Persistent live compiler workers
+## One job worker per job
 
-The live `compiler_session.goose` now starts exactly the configured 1/2/4/8
-execution workers once. Each has a join-only supervisor to detect contained
-aborts without polling: total native threads are `2 + 2 * workers`, including
-coordinator and input. Every idle execution worker consumes the same bounded
-eight-entry `Work` queue. Ready continuations/helpers have admission priority;
-new jobs fill remaining slots. A suspension publishes a flat owned continuation
-and releases the slot, so nested helper production/reentry progresses at one
-worker without replaying the suspended body's mutations.
+Since light-cljs-784 the live `compiler_session.goose` runs every dispatch (a
+macro start, a helper production, a resume of a saved continuation) in a
+contained job worker spawned for it by the coordinator, which owns the session
+image: the realm, the base snapshot and the prepared definition snapshots. A
+job worker starts with empty VM tables, restores the flat snapshot its spawn
+copied, and its exit frees everything the job allocated; nothing is reset or
+reused between jobs. `limit + retention` reapers only join job workers and
+report how each ended; the coordinator never has more workers live than
+reapers, so every join is taken at once and a contained abort is reported
+while its peers run. Total native threads are the coordinator, the input
+thread, the reapers and one per job ever spawned; at most `2 + 2 * (limit +
+retention)` are alive at once.
 
-Each worker owns one Code, Heap, Job, bridge graph, bindings, arguments and byte
-scratch for its lifetime. After all references into the dispatch have died,
-retirement and explicit reset clear logical tables, faults, claims, effects,
-handlers, roots and counters. Snapshot restore still requires an empty invalid
-destination, validates the full image and relocates every handle to a fresh
-coordinator-issued identity. No mutable heap or root crosses a thread boundary.
-Inactive waiter records and their retained-byte charges are reclaimed after
-dispatch; the ceiling remains 128 **active** continuations.
+At most `limit` workers execute. A dependency wait releases its execution
+slot. Within the retention budget (`BBP_RETAINED_WORKERS`, default 32, at
+most 128) the worker blocks with its state in its own thread program until
+the coordinator answers it through the `Answer` queue (routed by worker
+address; a worker puts back an answer for another). Over the budget the
+coordinator tells it to save a flat continuation and exit, as every wait did
+before; a fresh worker restores it later, without replaying the suspended
+body's mutations. Ready continuations/helpers have admission priority; new
+jobs fill remaining slots. Existing VM node/value/property/string/work/step/
+stack budgets, 64 MiB snapshot and coordinator retained-state budgets, 16 MiB
+bridge budget, 128 waiters and 1024 queued requests/cached definitions bound
+live and retained data.
 
-Retention is session scoped: Goose v2026.3-267/runtime 3025e5810379 rewinds array
-tops on clear and retains the data-stack mappings/pages until explicit trimming
-or thread teardown. This path retains each table's high water and joins every
-worker at close; it does not trim every job. Existing VM node/value/property/
-string/work/step/stack budgets, 64 MiB snapshot and coordinator retained-state
-budgets, 16 MiB bridge budget, 128 active waiters and 1024 queued requests/cached
-definitions bound live and retained data. Table maxima can occur in different
-jobs; their sum, page rounding and transient validation/transport copies mean
-logical high-water bytes are not RSS or a strict process-memory ceiling.
+Tracing modes print a final `JOBS` line (retention, job workers spawned,
+final publications, spawn, start and join nanoseconds, spawn-argument and
+restore bytes, peak live and blocked workers, waits, saves, answers, and live
+and blocked workers left, which must be zero) and `THREADS` (created, peak,
+joined). Instrumented runs add one `CENSUS` line per worker exit (table rows,
+restored rows and unreachable rows; `census.goose`) and a `TRIM` line. The
+measurements are in [the 200k evidence](evidence/generated-200k-performance.md),
+"One job worker per job".
 
-`POOL` diagnostics sample table sizes after each dispatch. They record worker
-ID, dispatches, resets, sum of sampled table byte maxima, growths of those maxima,
-reused nonempty table addresses, reserved
-indexed data-stack regions, reset nanoseconds, and code/heap/continuation/scratch
-byte maxima separately. Read-only native address/region observations verify
-actual reuse with the installed runtime; growths are not malloc counts. These
-samples exclude transient peaks inside execution/export and stack frames that
-have already unwound; native RSS is reported separately. Queued
-snapshot/continuation copies, relocation and transactional bridge-export scratch
-remain. Clean timing builds omit these address/capacity observations.
-
-A contained worker abort poisons the whole session: its supervisor joins it,
-reports an owned diagnostic, and the coordinator stops admission, cancels
-survivors between bounded VM slices, reclaims queued dispatches, sends stop
-messages and joins supervisors. A worker may still be resetting after its
-terminal result releases coordinator capacity. Poison drains only dispatches
-the coordinator can dequeue; a racing worker that already dequeued one must
-report its claim and cancellation/failure, even if the claim arrives after poison.
-No failed worker is replaced and no effectful job is replayed. Normal close and
-cancellation also stop/join the pool; the Rust process watchdog remains the
+A contained worker abort poisons the whole session: its reaper reports an
+owned diagnostic, and the coordinator stops admission, cancels survivors
+(running or blocked) between bounded VM slices, releases the aborted worker's
+execution or retention slot, and joins every worker and reaper. No failed
+worker is replaced and no effectful job is replayed. Normal close and
+cancellation also reap every worker; the Rust process watchdog remains the
 backstop for failures outside Goose's containment contract.
 
 See [expanded results](evidence/expanded-results.md) for exact predecessor comparisons

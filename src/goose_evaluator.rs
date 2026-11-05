@@ -126,6 +126,18 @@ impl GooseSession {
         workers: usize,
         mode: Option<&str>,
     ) -> Result<Arc<Self>, EvalError> {
+        Self::start_retaining(executable, workers, mode, None)
+    }
+    /// `retained` overrides the runner's retention budget (how many job
+    /// workers may block in place on a dependency; 0 saves every wait as a
+    /// continuation) through BBP_RETAINED_WORKERS. None inherits the
+    /// environment.
+    fn start_retaining(
+        executable: &Path,
+        workers: usize,
+        mode: Option<&str>,
+        retained: Option<usize>,
+    ) -> Result<Arc<Self>, EvalError> {
         let started = Instant::now();
         if !(1..=8).contains(&workers) {
             return Err(error("worker count must be 1..8"));
@@ -139,6 +151,9 @@ impl GooseSession {
         std::fs::write(directory.join("base.gsp"), base.bytes).map_err(error)?;
         let mut command = Command::new(executable);
         command.arg(&directory).arg(workers.to_string());
+        if let Some(retained) = retained {
+            command.env("BBP_RETAINED_WORKERS", retained.to_string());
+        }
         if let Some(mode) = mode {
             command.arg(mode);
         }
@@ -212,13 +227,15 @@ impl GooseSession {
                         "PREPARED" if parts.len() == 3 && parts[2].parse::<u64>().is_ok() => {
                             Event::Resumed
                         }
-                        "SCHED" | "THREADS" | "PARK" | "POOL"
+                        "SCHED" | "THREADS" | "PARK" | "JOBS" | "TRIM" | "CENSUS"
                             if id == 0
                                 && parts.len()
                                     == (match kind {
                                         "SCHED" => 13,
                                         "THREADS" => 5,
-                                        "POOL" => 14,
+                                        "JOBS" => 17,
+                                        "TRIM" => 6,
+                                        "CENSUS" => 16,
                                         _ => 3,
                                     })
                                 && parts[2..].iter().all(|s| s.parse::<u64>().is_ok()) =>
@@ -277,7 +294,7 @@ impl GooseSession {
                         drop(costs);
                         let mut trace = traces.lock().unwrap();
                         if trace.len() == 4096
-                            && matches!(parts[0], "POOL" | "THREADS" | "CLOSED" | "FAULT")
+                            && matches!(parts[0], "JOBS" | "TRIM" | "THREADS" | "CLOSED" | "FAULT")
                         {
                             trace.remove(0);
                         }
@@ -294,7 +311,7 @@ impl GooseSession {
                             let _ = tx.send(event);
                         } else if !matches!(
                             parts[0],
-                            "CLOSED" | "SCHED" | "THREADS" | "PARK" | "POOL"
+                            "CLOSED" | "SCHED" | "THREADS" | "PARK" | "JOBS" | "TRIM" | "CENSUS"
                         ) {
                             for tx in boxes.values() {
                                 let _ =
@@ -1065,7 +1082,7 @@ mod tests {
                 }
                 session.close();
                 assert!(!session.directory.exists());
-                super::lifecycle_tests::assert_pool(&session.trace(), workers, 17);
+                super::lifecycle_tests::assert_jobs(&session.trace(), workers, 17);
             }
         }
     }
