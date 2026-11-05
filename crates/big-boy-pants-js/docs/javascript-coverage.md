@@ -173,6 +173,18 @@ check; an ID from another thread program is checked once against the
 receiving table's length; tables may be truncated (decision 3). light-cljs-785
 landed the values with `u32` payloads and light-cljs-800 finishes the tables.
 
+*As landed by light-cljs-800:* node, string-header, source-range and function
+rows link by `u32`; row reads go through helpers that name their table
+(`source::node`, `slot`, `run`, `property_row`, `header`, `constant`,
+`source_range`) and fail by that name, which also lets Goose drop the read's
+own bounds check. Each table grows through one allocation function whose
+limit counts rows above the heap's image tops. Strings are Latin-1 (one byte a
+unit) in their own table when every unit fits and UTF-16 otherwise, chosen
+canonically so equal strings share an encoding. Object headers keep **two**
+inline property slots, not four, so a header (121 bytes) stays below its
+size before the change (125 bytes) while most form nodes, which have no
+properties, pay for them; shapes and attributes remain light-cljs-787's.
+
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the
 real exported bytecode with this model; its map benchmark result is in
