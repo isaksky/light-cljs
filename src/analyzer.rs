@@ -7758,7 +7758,7 @@ impl Analyzer<'_> {
                     &datum,
                     self.namespace,
                     self.macro_host.limits.generated_nodes,
-                    self.macro_host.native_macro_backend(),
+                    self.macro_host.core_routing(),
                 )
                 .is_some_and(|expanded| {
                     self.macro_free_datum(&expanded, 1, true)
@@ -7864,7 +7864,7 @@ impl Analyzer<'_> {
                                 datum,
                                 self.namespace,
                                 self.macro_host.limits.generated_nodes,
-                                self.macro_host.native_macro_backend(),
+                                self.macro_host.core_routing(),
                             )
                             .is_some_and(|expanded| {
                                 self.macro_free_datum(&expanded, depth + 1, true)
@@ -8130,10 +8130,7 @@ impl Analyzer<'_> {
                     SymbolUse::Ineligible
                 } else if matches!(name.as_str(), "let" | "loop" | "fn" | "letfn") {
                     SymbolUse::Free
-                } else if crate::native_core_macros::native(
-                    &name,
-                    self.macro_host.native_macro_backend(),
-                ) {
+                } else if crate::native_core_macros::native(&name, self.macro_host.core_routing()) {
                     // A name the namespace shadows is no core macro to
                     // analysis (`Analyzer::expand_macro`): nothing to judge
                     // by expanding it.
@@ -11586,9 +11583,10 @@ impl Analyzer<'_> {
         }
         // The hottest core macros expand natively, as their definitions
         // would (light-cljs-426); a call one would reject is left to it.
-        if let Some(core_name) = core_name.as_deref().filter(|name| {
-            crate::native_core_macros::native(name, self.macro_host.native_macro_backend())
-        }) {
+        if let Some(core_name) = core_name
+            .as_deref()
+            .filter(|name| crate::native_core_macros::native(name, self.macro_host.core_routing()))
+        {
             if self.expansion_depth_exceeded(self.macro_depth) {
                 return Err(error(
                     "compiler macro expansion depth limit exceeded".into(),
@@ -11600,8 +11598,12 @@ impl Analyzer<'_> {
                 .map_err(|e| error(e.to_string()))?;
             // Outside every scope the V8 build converts the environment
             // first; the Pants build checks what that conversion rejects.
+            // The Goose compiler path has no engine to convert it for: its
+            // expansion declines such a call.
             #[cfg(feature = "bbp-macros")]
-            if !crate::generated_names::scoped() && self.macro_host.native_macro_backend() {
+            if !crate::generated_names::scoped()
+                && self.macro_host.core_routing() == crate::native_core_macros::CoreRouting::Pants
+            {
                 let locals = self
                     .env
                     .scopes
@@ -11656,6 +11658,13 @@ impl Analyzer<'_> {
             let form = self
                 .compiler_read_form(call)
                 .map_err(|e| error(e.to_string()))?;
+            // The Goose compiler path runs no bootstrap definition
+            // (light-cljs-777).
+            if self.macro_host.goose_core_macros() {
+                return Err(error(
+                    self.macro_host.decline_goose_core_call(&core_name, &form),
+                ));
+            }
             let locals = self
                 .env
                 .scopes

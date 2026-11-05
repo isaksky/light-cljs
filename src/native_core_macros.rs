@@ -25,14 +25,47 @@
 //! ([`native_expansion`], which the check of macro-free units walks).
 //! The native backend supplies its own rooted-form `js-obj` bootstrap builder
 //! for declined calls; the small Rust builder and legacy fallback stay unchanged.
+//! The Goose compiler path ([`CoreRouting::Goose`], light-cljs-777) expands
+//! every core macro here with the Pants build's semantics, in the engine's
+//! expansion room ([`expansion_room`]), and runs no definition: a call this module declines fails with the definition's
+//! diagnostic where [`rejection`] can tell it, and with a named error
+//! otherwise.
 use crate::CollectionKind;
 use crate::compiler_data::{DataBuilder, Datum, DatumKind, Name};
+
+/// Which core macros a host expands in Rust ([`native`]), and with which
+/// semantics ([`crate::MacroHost::core_routing`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CoreRouting {
+    /// The V8 build's and QuickJS's: the hottest macros expand here, and
+    /// every call this module declines runs its bootstrap definition.
+    Engine,
+    /// The Pants build's: every core macro but `simple-benchmark`, a
+    /// declined call failing with the definition's diagnostic or running
+    /// the definition in the Pants runtime.
+    Pants,
+    /// The Goose compiler path's (light-cljs-777): the Pants build's set and
+    /// semantics, and `simple-benchmark`, in the engine's expansion room
+    /// ([`expansion_room`]); a declined call fails with the
+    /// definition's diagnostic or a named error, as no bootstrap engine runs
+    /// ([`crate::MacroHost::decline_goose_core_call`]).
+    Goose,
+}
+
+impl CoreRouting {
+    /// Whether no bootstrap definition is left a call this module could
+    /// expand: the Pants build's semantics.
+    pub(crate) fn rust_only(self) -> bool {
+        self != CoreRouting::Engine
+    }
+}
 
 /// The core macros the analyzer expands in Rust for the selected backend.
 /// Additional bootstrap form builders serve the native backend's empty
 /// bootstrap table; legacy engines retain their expansion accounting,
 /// environment conversion and poll-budget behavior for those calls.
-pub(crate) fn native(name: &str, native_backend: bool) -> bool {
+pub(crate) fn native(name: &str, routing: CoreRouting) -> bool {
+    let rust_only = routing.rust_only();
     matches!(
         name,
         "and"
@@ -60,7 +93,7 @@ pub(crate) fn native(name: &str, native_backend: bool) -> bool {
             | "vswap!"
             | "for"
             | "doseq"
-    ) || native_backend
+    ) || rust_only
         && matches!(
             name,
             "as->"
@@ -84,6 +117,7 @@ pub(crate) fn native(name: &str, native_backend: bool) -> bool {
                 | "hash-map"
                 | "selector"
         )
+        || routing == CoreRouting::Goose && name == "simple-benchmark"
 }
 
 /// Allocates names with the compile-time runtime's `gensym`, one per
@@ -2520,7 +2554,7 @@ pub(crate) fn native_expansion(
     call: &Datum,
     namespace: &str,
     nodes: usize,
-    native_backend: bool,
+    routing: CoreRouting,
 ) -> Option<Datum> {
     if !crate::generated_names::scoped() || within(call, DEPTH).is_none_or(|count| count > nodes) {
         return None;
@@ -2535,13 +2569,18 @@ pub(crate) fn native_expansion(
     // As [`crate::MacroHost::expand_core_native`] expands it.
     #[cfg(feature = "bbp-macros")]
     let expanded = match expanded {
-        None if native_backend && name == "doseq" => {
+        None if routing.rust_only() && name == "doseq" => {
             expand_wide_doseq(call, nodes, &mut stand_ins).ok()?
+        }
+        #[cfg(feature = "goose-macros")]
+        None if routing == CoreRouting::Goose && name == "defmulti" => {
+            let (name, declarations) = children(call).get(1..)?.split_first()?;
+            defmulti::<true>(name, declarations, namespace).ok()?
         }
         expanded => expanded,
     };
     let expanded = expanded?;
-    within(&expanded, expansion_room(native_backend))?;
+    within(&expanded, expansion_room(routing))?;
     Some(expanded)
 }
 
@@ -2549,8 +2588,15 @@ pub(crate) fn native_expansion(
 /// to [`DEPTH`] levels below its root ([`rejection`] reports deeper ones as
 /// it does); an engine that would expand the call keeps a level of margin
 /// below that, the Pants build, which has none to leave a call to, none.
-fn expansion_room(native_backend: bool) -> usize {
-    if native_backend { DEPTH + 1 } else { DEPTH }
+/// The Goose compiler path keeps the engine's room: a deeper expansion,
+/// which the engine fails to convert, fails there with the engine's
+/// diagnostic ([`rejection`]) rather than expanding (light-cljs-777).
+fn expansion_room(routing: CoreRouting) -> usize {
+    if routing == CoreRouting::Pants {
+        DEPTH + 1
+    } else {
+        DEPTH
+    }
 }
 
 /// What stands for an argument the call of a core macro leaves out, which
@@ -2635,7 +2681,8 @@ pub(crate) fn rejection(name: &str, call: &Datum, namespace: &str, nodes: usize)
             }
             _ => error("iteration bindings must be a vector"),
         },
-        "cond->" | "cond->>" if args.len() % 2 == 0 => {
+        // With no value its forms are none, an even count.
+        "cond->" | "cond->>" if !args.is_empty() && args.len() % 2 == 0 => {
             error("conditional threading requires test/step pairs")
         }
         "selector" => match args.first() {
@@ -2739,8 +2786,15 @@ pub(crate) fn rejection(name: &str, call: &Datum, namespace: &str, nodes: usize)
             .collect())
     };
     let expanded = expand(name, &padded, namespace, &mut stand_ins).ok()??;
-    // The engine's conversion of the expansion, in its order.
-    refused(Conversion::run(&expanded, nodes, Lists::Nodes))
+    // The engine's conversion of the expansion, in its order, and then the
+    // compiler's of what it converted, to [`DEPTH`] levels and `nodes`
+    // nodes, which the Goose compiler path's room leaves it
+    // ([`expansion_room`]).
+    refused(Conversion::run(&expanded, nodes, Lists::Nodes)).or_else(|| {
+        within(&expanded, DEPTH)
+            .is_none_or(|count| count > nodes)
+            .then(|| "compiler output conversion limit".into())
+    })
 }
 
 /// How a build without the Pants build's runtime would name what it
@@ -2756,9 +2810,30 @@ impl crate::MacroHost {
     /// allocates come from the scope's count ([`scope_gensyms`]). Outside
     /// every scope, only on the Pants build, they come from the runtime
     /// that would run the definition, `engine` or the bootstrap's
-    /// ([`crate::MacroHost::unscoped_gensyms`]).
+    /// ([`crate::MacroHost::unscoped_gensyms`]). On the Goose compiler path
+    /// it is never `None`: a call it declines fails
+    /// ([`crate::MacroHost::decline_goose_core_call`]).
     pub(crate) fn expand_core_native(
         &mut self,
+        name: &str,
+        form: &crate::compiler_data::Form,
+        namespace: &str,
+        site: (&str, &std::ops::Range<usize>),
+        engine: Option<&dyn crate::evaluator::MacroEvaluator>,
+    ) -> Result<Option<crate::compiler_data::Form>, String> {
+        let routing = self.core_routing();
+        let expanded = self.expand_core_routed(routing, name, form, namespace, site, engine)?;
+        if expanded.is_none() && routing == CoreRouting::Goose {
+            return Err(self.decline_goose_core_call(name, form));
+        }
+        Ok(expanded)
+    }
+
+    /// [`Self::expand_core_native`] under `routing`, `None` where it
+    /// declines the call.
+    fn expand_core_routed(
+        &mut self,
+        routing: CoreRouting,
         name: &str,
         form: &crate::compiler_data::Form,
         namespace: &str,
@@ -2769,9 +2844,10 @@ impl crate::MacroHost {
         // the heap decoded, which the engine's conversion of the call adds:
         // the Pants build takes them from its runtime, which counts and
         // skips them as the engine would (light-cljs-611); other engines
-        // expand such a call themselves.
+        // expand such a call themselves. The Goose compiler path, which has
+        // no such runtime, declines it.
         let scoped = crate::generated_names::scoped();
-        if !scoped && !self.native_macro_backend() {
+        if !scoped && routing != CoreRouting::Pants {
             return Ok(None);
         }
         #[cfg(not(feature = "bbp-macros"))]
@@ -2820,7 +2896,7 @@ impl crate::MacroHost {
             // its conversion takes back; the Pants build expands it here.
             #[cfg(feature = "bbp-macros")]
             let expanded = match expanded {
-                None if name == "doseq" && self.native_macro_backend() => {
+                None if name == "doseq" && routing.rust_only() => {
                     expand_wide_doseq(&call, self.limits.generated_nodes, &mut gensym)?
                 }
                 expanded => expanded,
@@ -2828,7 +2904,7 @@ impl crate::MacroHost {
             expanded
         };
         #[cfg(feature = "bbp-macros")]
-        let expanded = if expanded.is_none() && name == "defmulti" && self.native_macro_backend() {
+        let expanded = if expanded.is_none() && name == "defmulti" && routing.rust_only() {
             match children(&call).get(1..).and_then(|args| args.split_first()) {
                 Some((name, declarations)) => defmulti::<true>(name, declarations, namespace)?,
                 None => None,
@@ -2849,7 +2925,7 @@ impl crate::MacroHost {
         };
         // Its names are allocated: the engine allocates others before it
         // fails to convert the expansion back.
-        if within(&expanded, expansion_room(self.native_macro_backend())).is_none() {
+        if within(&expanded, expansion_room(routing)).is_none() {
             return Ok(None);
         }
         let mut arguments = Arguments::new(&children(&call)[1..]);
@@ -2960,7 +3036,10 @@ mod tests {
             panic!("{source}: no operator");
         };
         let name = String::from_utf16_lossy(operator.name());
-        assert!(native(&name, true), "{source}: {name} is not native");
+        assert!(
+            native(&name, CoreRouting::Goose),
+            "{source}: {name} is not native"
+        );
         let environment = {
             let key = |name| C.keyword(Name::new(None, name));
             let namespace = C
@@ -2972,6 +3051,8 @@ mod tests {
             let _names = crate::generated_names::enter_namespace(7);
             host.expand_core_javascript(&name, &call, &environment, None)
         };
+        #[cfg(all(feature = "goose-macros", any(light_quickjs, light_v8)))]
+        compare_goose(host, &call, source, left, &script);
         let expanded = {
             let _names = crate::generated_names::enter_namespace(7);
             let before = host.engine.expansions.get();
@@ -2980,7 +3061,7 @@ mod tests {
                 &call.data(),
                 "user",
                 host.limits.generated_nodes,
-                host.native_macro_backend(),
+                host.core_routing(),
             );
             let expanded = host
                 .expand_core_native(&name, &call, "user", (&name, &(0..source.len())), None)
@@ -3037,6 +3118,92 @@ mod tests {
                 "{source}: native {:?}, engine {:?}",
                 native.map(|f| f.data()),
                 script.map(|f| f.data())
+            ),
+        }
+    }
+
+    /// The error `error` without the engine's stack: its lines, and the
+    /// definition's location on a line of its own after them.
+    #[cfg(all(feature = "goose-macros", any(light_quickjs, light_v8)))]
+    fn without_stack(error: &str) -> String {
+        error
+            .split('\n')
+            .filter(|line| !line.starts_with("    at "))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("\n; definition", "; definition")
+    }
+
+    /// Expand `call`, read from `source`, as the Goose compiler path does,
+    /// with a host of `host`'s limits that has no bootstrap engine and never
+    /// makes one (light-cljs-777), and require what the V8 build's engine
+    /// gave, `script`: the same complete form, or its diagnostic exactly. A
+    /// call the engine expands and the Goose path cannot is one the test
+    /// lists as the engine's alone, `left`, and fails with the named error.
+    #[cfg(all(feature = "goose-macros", any(light_quickjs, light_v8)))]
+    fn compare_goose(
+        host: &MacroHost,
+        call: &Form,
+        source: &str,
+        left: bool,
+        script: &Result<Form, String>,
+    ) {
+        let operator = call.children()[0].data();
+        let DatumKind::Symbol(operator) = operator.kind() else {
+            unreachable!()
+        };
+        let name = String::from_utf16_lossy(operator.name());
+        let mut goose = MacroHost::new();
+        goose.limits = host.limits;
+        goose.use_goose_core_macros();
+        assert_eq!(goose.core_routing(), CoreRouting::Goose);
+        let _names = crate::generated_names::enter_namespace(7);
+        let shape = native_expansion(
+            &name,
+            &call.data(),
+            "user",
+            goose.limits.generated_nodes,
+            CoreRouting::Goose,
+        );
+        let expanded = goose
+            .expand_core_native(&name, call, "user", (&name, &(0..source.len())), None)
+            .map(|expanded| expanded.expect("the Goose path declines no call"));
+        assert!(
+            goose.engine.bootstrap.is_none(),
+            "{source}: the Goose path made a bootstrap engine"
+        );
+        assert_eq!(
+            shape.as_ref().map(|shape| within(shape, usize::MAX)),
+            expanded
+                .as_ref()
+                .ok()
+                .map(|form| within(&form.data(), usize::MAX)),
+            "{source}: the Goose path's macro-free check"
+        );
+        let named = crate::compiler_bootstrap::goose_core_error(&name);
+        match (expanded, script) {
+            (Ok(native), Ok(script)) => {
+                if let Some(difference) = difference(&native, script, "") {
+                    panic!(
+                        "{source}: Goose path {difference}\nnative {:?}\nengine {:?}",
+                        native.data(),
+                        script.data()
+                    );
+                }
+            }
+            (Err(goose), Err(script)) => assert_eq!(
+                without_stack(&goose),
+                without_stack(script),
+                "{source}: the Goose path's diagnostic"
+            ),
+            (Err(goose), Ok(_)) if left => assert!(
+                goose.contains(&named),
+                "{source}: the Goose path's error {goose}"
+            ),
+            (goose, script) => panic!(
+                "{source}: Goose path {:?}, engine {:?}",
+                goose.map(|f| f.data()),
+                script.as_ref().map(|f| f.data())
             ),
         }
     }
@@ -3529,7 +3696,7 @@ mod tests {
                 &call.data(),
                 "user",
                 host.limits.generated_nodes,
-                host.native_macro_backend(),
+                host.core_routing(),
             );
             let expanded = host
                 .expand_core_native(name, &call, "user", (name, &(0..1)), None)
@@ -3858,6 +4025,155 @@ mod tests {
             compare(MacroHost::new().limits.generated_nodes);
             assert!(checked > 20, "{source}: {checked}");
         }
+    }
+
+    // Compares with the core macro's bootstrap definition, which only QuickJS or V8 runs.
+    #[cfg(any(light_quickjs, light_v8))]
+    #[test]
+    fn selector_and_simple_benchmark_expand_as_their_definitions() {
+        let wide = (0..9).map(|i| format!(":k{i} {i} ")).collect::<String>();
+        compare_all(&[
+            "(selector {:keys [a] :select picked})",
+            "(selector {:keys [b] :select s :missing m})",
+            "(selector {:select s :excess e :missing m :all a})",
+            "(selector {:select nil :all a} extra)",
+            "(selector {:keys [a]})",
+            "(selector {:select false})",
+            "(selector [a])",
+            "(selector)",
+            &format!("~(selector {{{wide}:select s}})"),
+            "(simple-benchmark [x 1] (+ x 1) 2)",
+            "(simple-benchmark [x 1] (+ x 1) 2 :print-fn p)",
+            "(simple-benchmark [x 1] (+ x 1) 2 :print-fn p :other 1 :print-fn q)",
+            "(simple-benchmark [x 1] (+ x 1) 2 :print-fn nil)",
+            "(simple-benchmark [x 1] (+ x 1) 2 :print-fn)",
+            "(simple-benchmark [x 1] (+ x 1) 2 :print-fn p {:print-fn q})",
+            r#"(simple-benchmark [m {:a 1 :b "s\"\n" :c \c}] (f m 1.5 -2 0.0 nil true :k/w ns/s) n)"#,
+            "(simple-benchmark [m {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8}] m 1)",
+            &format!("~(simple-benchmark [m {{{wide}}}] m 1)"),
+            "~(simple-benchmark [s #{1 2}] s 1)",
+            "~(simple-benchmark [x 1e21] x 1)",
+            "(simple-benchmark [x 1] x)",
+            "(simple-benchmark)",
+        ]);
+    }
+
+    // Compares with the core macro's bootstrap definition, which only QuickJS or V8 runs.
+    #[cfg(any(light_quickjs, light_v8))]
+    #[test]
+    fn wide_doseq_and_declined_defmulti_expand_as_their_definitions() {
+        let keys = |n: usize| (0..n).map(|i| format!(":k{i} {i} ")).collect::<String>();
+        let wide = "(doseq [a [0 1] b [0] c [0] d [0] e [0] f [0] g [0] h [0] i [2 3]] (f a i))";
+        let wider =
+            "(doseq [a xs b xs c xs d xs e xs f xs g xs h xs i xs :let [j 1] k xs] (f a k))";
+        compare_all(&[
+            wide,
+            wider,
+            &format!("(defmulti ^{{{}}} area identity)", keys(9)),
+            &format!("~(defmulti ^{{{}}} area {{:k0 true}} identity)", keys(8)),
+            &format!("~(defmulti ^{{{}}} area \"doc\" identity)", keys(8)),
+            &format!("~(defmulti ^{{{}}} area {{:k9 9}} identity)", keys(8)),
+            "(js-obj \"a\" ^:m [1] \"b\" 2 \"c\" 3 \"d\" 4 \"e\" 5 \"f\" 6 \"g\" 7 \"h\" 8)",
+            "~(js-obj \"a\" ^:m [1] \"b\" 2 \"c\" 3 \"d\" 4 \"e\" 5 \"f\" 6 \"g\" 7 \"h\" 8 \"i\" 9)",
+            "~(js-obj \"a\" 1 \"b\" 2 \"c\" 3 \"d\" 4 \"e\" 5 \"f\" 6 \"g\" 7 \"h\" 8 \"a\" 9)",
+        ]);
+        // Where the limits leave room for the wide `doseq`'s expansion, the
+        // engine expands it, and so does the Goose path.
+        let mut host = MacroHost::new();
+        host.limits.generated_nodes = 10_000_000;
+        host.limits.expansions = 100_000;
+        for source in [wide, wider] {
+            compare(&mut host, &format!("~{source}"));
+            #[cfg(feature = "goose-macros")]
+            {
+                let mut goose = MacroHost::new();
+                goose.limits = host.limits;
+                goose.use_goose_core_macros();
+                let call = goose
+                    .read_compiler_form(&Source::new("native.cljs", source))
+                    .unwrap()
+                    .unwrap();
+                let _names = crate::generated_names::enter_namespace(7);
+                let expanded =
+                    goose.expand_core_native("doseq", &call, "user", ("doseq", &(0..1)), None);
+                assert!(matches!(expanded, Ok(Some(_))), "{source}: {expanded:?}");
+            }
+        }
+    }
+
+    /// A Goose-path host analyzes calls of every core macro the Goose path
+    /// routes without a bootstrap engine, and a call no Rust expansion
+    /// applies to fails with the definition's diagnostic or the named error,
+    /// within a namespace's scope of generated names and outside every one.
+    #[cfg(feature = "goose-macros")]
+    #[test]
+    fn goose_path_analyzes_core_macros_without_a_bootstrap_engine() {
+        let mut host = MacroHost::new();
+        host.use_goose_core_macros();
+        let analyze = |host: &mut MacroHost, source: &str| {
+            let syntax = crate::parse(source).unwrap();
+            crate::analyze_with_macros(source, &syntax, host)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        };
+        let source = r#"
+            (def a (-> 1 inc (as-> n (* n 2)) (doto identity)))
+            (def o (js-obj "k" 1))
+            (dotimes [i 2] (when-let [y i] (while false y)))
+            (def s (selector {:keys [k] :select picked}))
+            (simple-benchmark [x 1] (+ x 1) 2 :print-fn identity)
+            (defmulti area :shape)
+            (defmethod area :square [x] x)
+            (doseq [x [1 2] :when (odd? x)] (lazy-cat [x] (for [y [x]] y)))
+            (comment ignored)
+            (time (unchecked-max 1 2 (unchecked-min 3 4)))
+            (amap (array 1) i r (aget r i))
+            (areduce (array 1) i r 0 (+ r i))
+            (.. js/Math (abs -1))
+            (memfn toString)
+            (locking a (js-fn? a))
+            (js-comment "c")
+            (js-debugger)
+            (with-in-str "s" 1)
+            (hash-map :a 1)
+            (vswap! (volatile! 1) inc)
+            (if-some [z nil] z (cond false 1 :else (condp = 1 1 :one :other)))
+            (case 1 1 (and (or nil 2) (when-not false (if-not true 1 (cond-> 1 true inc false dec)))))
+            (cond->> 2 true inc)
+            (some-> 1 inc (some->> 2 inc))
+            (when-first [f [1]] (->> f inc))"#;
+        {
+            let _names = crate::generated_names::enter_namespace(7);
+            analyze(&mut host, source).unwrap();
+        }
+        assert!(host.engine.bootstrap.is_none());
+        let named = crate::compiler_bootstrap::goose_core_error("when");
+        let failures = [
+            // The definition's diagnostic.
+            (
+                "(if-let [x] a)",
+                "conditional binding requires exactly two forms",
+            ),
+            // A shape only the definition expands.
+            (
+                "(js-obj \"a\" 1 \"b\" 2 \"c\" 3 \"d\" 4 \"e\" 5 \"f\" 6 \"g\" 7 \"h\" 8 \"i\" 9)",
+                "goose compiler path: core macro js-obj: this call has no Rust expansion",
+            ),
+        ];
+        for (source, expected) in failures {
+            let _names = crate::generated_names::enter_namespace(7);
+            let error = analyze(&mut host, source).unwrap_err();
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+        // Outside every scope the definition's diagnostic or the named error.
+        let error = analyze(&mut host, "(when x y)").unwrap_err();
+        assert!(error.contains(&named), "{error}");
+        let error = analyze(&mut host, "(when-let [x] y)").unwrap_err();
+        assert!(
+            error.contains("conditional binding requires exactly two forms"),
+            "{error}"
+        );
+        assert!(host.engine.bootstrap.is_none());
     }
 
     // Compares with the core macro's bootstrap definition, which only QuickJS or V8 runs.

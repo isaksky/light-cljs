@@ -658,6 +658,11 @@ impl MacroEnvironment {
 pub(crate) struct MacroTables {
     #[cfg(feature = "bbp-macros")]
     pub(crate) native_macros: bool,
+    /// Whether the host serves the Goose compiler path, which expands every
+    /// core macro in Rust and runs no bootstrap engine (light-cljs-777):
+    /// set with the host's Goose session ([`MacroHost::use_goose_source_macros`]).
+    #[cfg(feature = "goose-macros")]
+    pub(crate) goose_core_macros: bool,
     #[cfg(feature = "bbp-macros")]
     pub(crate) native_helpers: std::sync::Arc<Vec<(String, String)>>,
     data_readers: std::sync::Arc<DataReaderSources>,
@@ -1249,10 +1254,42 @@ impl MacroHost {
         session: std::sync::Arc<crate::goose_evaluator::GooseSession>,
     ) -> Result<(), crate::evaluator::EvalError> {
         session.claim_compilation()?;
+        self.tables.goose_core_macros = true;
         self.engine.goose = Some(std::rc::Rc::new(
             crate::goose_evaluator::GooseEvaluator::new(session, &self.evaluator_options)?,
         ));
         Ok(())
+    }
+    /// Serve the Goose compiler path's core macros as a host with a Goose
+    /// session does ([`Self::goose_core_macros`]), without a Goose runner.
+    #[cfg(all(test, feature = "goose-macros"))]
+    pub(crate) fn use_goose_core_macros(&mut self) {
+        self.tables.goose_core_macros = true;
+    }
+    /// Whether core macros take the Goose compiler path's routing: every
+    /// one expands in Rust, with the Pants build's semantics, and a call no
+    /// Rust expansion applies to fails with V8's diagnostic or a named error,
+    /// never entering a bootstrap engine (light-cljs-777).
+    pub(crate) fn goose_core_macros(&self) -> bool {
+        #[cfg(feature = "goose-macros")]
+        {
+            self.tables.goose_core_macros
+        }
+        #[cfg(not(feature = "goose-macros"))]
+        {
+            false
+        }
+    }
+    /// Which core macros expand in Rust, and with which semantics.
+    pub(crate) fn core_routing(&self) -> crate::native_core_macros::CoreRouting {
+        use crate::native_core_macros::CoreRouting;
+        if self.goose_core_macros() {
+            CoreRouting::Goose
+        } else if self.native_macro_backend() {
+            CoreRouting::Pants
+        } else {
+            CoreRouting::Engine
+        }
     }
     /// One entry per expansion executed by the native backend, in call order.
     pub fn native_macro_calls(&self) -> Vec<crate::compile_stats::NativeBridgeCall> {

@@ -982,6 +982,23 @@ pub(crate) fn invalid_regex(data: &Datum) -> Option<String> {
             .and_then(|metadata| invalid_regex(&metadata))
     })
 }
+/// On the Goose compiler path no core macro call enters a bootstrap engine
+/// (light-cljs-777): each expands in Rust or fails
+/// ([`crate::native_core_macros`], [`MacroHost::decline_goose_core_call`]).
+fn forbid_goose_core_engine(host: &MacroHost, name: &str) {
+    debug_assert!(
+        !host.goose_core_macros(),
+        "goose compiler path: core macro {name} reached its bootstrap engine"
+    );
+}
+/// The named error of the Goose compiler path for a call of the core macro
+/// `name` no Rust expansion applies to and whose definition's diagnostic
+/// cannot be told without running it.
+pub(crate) fn goose_core_error(name: &str) -> String {
+    format!(
+        "goose compiler path: core macro {name}: this call has no Rust expansion and the Goose path runs no bootstrap engine"
+    )
+}
 impl MacroHost {
     /// Start the compilation's compile-time engine now, as the first
     /// JavaScript macro it expands would: at a namespace's dispatch whose
@@ -1000,6 +1017,7 @@ impl MacroHost {
     /// Give the host its bootstrap, the session's or a new one, as the
     /// first expansion of the core macro `name` that needs it does.
     fn ensure_bootstrap(&mut self, name: &str) -> Result<(), String> {
+        forbid_goose_core_engine(self, name);
         if self.engine.bootstrap.is_none() {
             if self.tables.bootstrap_seed && self.session_handle().is_none() {
                 return Err(format!("bootstrap primitive seed cannot expand {name}"));
@@ -1026,6 +1044,7 @@ impl MacroHost {
         name: &str,
         engine: Option<&'e dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<impl FnMut(&Datum, &[&str]) -> Names + use<'e>, String> {
+        forbid_goose_core_engine(self, name);
         self.ensure_bootstrap(name)?;
         let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
         if engine.is_none()
@@ -1066,6 +1085,24 @@ impl MacroHost {
         };
         Some(crate::macro_host::expansion_failure(&origin, message))
     }
+    /// The Goose compiler path's failure for the call `call` of the core
+    /// macro `name` that no Rust expansion applies to (light-cljs-777): the
+    /// diagnostic the V8 build's engine gives running its definition, as the
+    /// Pants build gives it ([`Self::reject_core_call`]), or, where that
+    /// cannot be told, a named error, as that path runs no bootstrap engine.
+    pub(crate) fn decline_goose_core_call(&self, name: &str, call: &Form) -> String {
+        #[cfg(feature = "bbp-macros")]
+        if let Some(rejected) = self.reject_core_call(name, call) {
+            return rejected;
+        }
+        let origin = ExpansionOrigin {
+            macro_name: Name::new(Some("cljs.core"), name),
+            call: call.span(),
+            definition: None,
+            helpers: vec![],
+        };
+        crate::macro_host::expansion_failure(&origin, goose_core_error(name))
+    }
     /// Outside every scope of generated names the V8 build's engine runs
     /// the core macro `name`'s definition, converting the call's
     /// environment `env` first unless the definition never reads it and it
@@ -1080,6 +1117,7 @@ impl MacroHost {
         call: &Form,
         env: &Datum,
     ) -> Result<(), String> {
+        forbid_goose_core_engine(self, name);
         self.ensure_bootstrap(name)?;
         let control = self.engine.bootstrap.as_ref().unwrap().evaluator.control();
         let mut remaining = self.limits.generated_nodes / 2;
@@ -1119,6 +1157,7 @@ impl MacroHost {
         let _probe = crate::compiler_probe::scope(|| format!("core/cljs.core/{name}"));
         #[cfg(feature = "goose-macros")]
         let engine = engine.filter(|engine| !engine.source_only());
+        forbid_goose_core_engine(self, name);
         crate::macro_host::forbid_engine_entry(name);
         self.ensure_bootstrap(name)?;
         #[cfg(feature = "bbp-macros")]
