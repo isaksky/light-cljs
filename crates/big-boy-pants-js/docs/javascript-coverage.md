@@ -299,9 +299,12 @@ function map(a, f) {
 | V8 (node 24), map in JavaScript | 8.64 ns | 3.35 ns |
 | V8 (node 24), `Array.prototype.map` | 6.19 ns | 5.58 ns |
 
-Nanoseconds an element, best of five runs of 100 rounds, native release
-builds, one job worker per run; the 1,000-element probe rows give the range
-of three processes. Both probe variants return checksum 199,800 (1,000) and
+Nanoseconds an element, each run 100 rounds of map; the best run of three
+(Goose at 100 elements) or five (Goose at 1,000, V8) in one process, the
+1,000-element probe rows giving the range over three processes. Goose rows
+are native release builds, the probe with one job worker per run; the load
+average was about 1.5 on an otherwise idle machine, so these are diagnostic
+figures, not a quiet measurement. Both probe variants return checksum 199,800 (1,000) and
 19,800 (100). The native frame calls the same JavaScript callback through the
 same dispatch loop. Writing map in JavaScript costs 2.5 times the native
 frame, because its loop runs about 24 interpreted instructions an element
