@@ -50,7 +50,7 @@ fn plain(v: Value) -> Plain {
 }
 fn plain_bytes(v: Value, out: u8[>..]&) { out.append(bytes_of([plain(v)])); }
 fn plain_bytes(n: Node, out: u8[>..]&) {
-    out.append(bytes_of([n.kind, n.function, n.start, n.count, n.head, n.length, n.origin, n.source, n.span_start, n.span_end])); out.append(bytes_of([n.initialized, n.immutable]));
+    out.append(bytes_of([n.kind, n.function, n.start, n.count, n.keys, n.key_count, n.key_capacity, n.length, n.origin, n.source, n.span_start, n.span_end])); out.append(bytes_of([n.initialized, n.immutable]));
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out);
 }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
@@ -58,7 +58,7 @@ fn plain_bytes(f: Frame, out: u8[>..]&) {
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
 }
 fn plain_bytes(w: Write, out: u8[>..]&) { plain_bytes(w.object, out); plain_bytes(w.key, out); plain_bytes(w.value, out); }
-fn plain_bytes(p: Property, out: u8[>..]&) { plain_bytes(p.key, out); plain_bytes(p.value, out); out.append(bytes_of([p.next])); }
+fn plain_bytes(p: Property, out: u8[>..]&) { plain_bytes(p.key, out); plain_bytes(p.value, out); }
 fn plain_rows<T>(rows: const T[:]) -> u8[>..] { var out: u8[>..] = []; for r in rows { plain_bytes(r, out); } return out; }
 fn string_ref(heap: Heap&, start: i64, len: i64) -> Value { heap.strings.push(Str { start: start, len: len }); return Value.String { s: (heap.strings.len - 1) as u32 }; }
 // kind: GSP constructor kind (0 none, 1 ordinary, 2 base class, 3 derived
@@ -107,16 +107,20 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // Errors preserve object identity/truthiness;
 // property access/coercion and form transport reject unsupported inspection.
 // Metadata/origin belong to the occurrence, independently of value equality.
-struct Node { kind: i64, function: i64 = 0, start: i64 = 0, count: i64 = 0, head: i64 = -1, length: i64 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value.Undefined, namespace_value: Value = Value.Null, metadata: Value = Value.Undefined, origin: i64 = -1, source: i64 = -1, span_start: i64 = 0, span_end: i64 = 0 }
+struct Node { kind: i64, function: i64 = 0, start: i64 = 0, count: i64 = 0, keys: i64 = 0, key_count: i64 = 0, key_capacity: i64 = 0, length: i64 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value.Undefined, namespace_value: Value = Value.Null, metadata: Value = Value.Undefined, origin: i64 = -1, source: i64 = -1, span_start: i64 = 0, span_end: i64 = 0 }
 struct SourceRange { start: i64, count: i64 }
-struct Property { key: Value, value: Value, next: i64 }
+// An own property: a row of its object's key run (light-cljs-785). An
+// object's properties are heap.properties[keys..keys + key_count], oldest
+// first, in a run of key_capacity rows; there are no linked records.
+struct Property { key: Value = Value.Undefined, value: Value = Value.Undefined }
 root struct Heap {
-    code:         const Code&, identity: i64 = 0, limits: Limits = Limits {},
-    nodes:        Node[>..]                  = [], values: Value[>..] = [], properties: Property[>..] = [],
-    units:        u16[>..]                   = [], strings: Str[>..] = [], constants: Value[>..] = [], work: i64 = 0,
-    source_bytes: u8[>..]                    = [], source_ranges: SourceRange[>..] = [],
-    fault:        Fault                      = Fault.None, global: Value = Value.Undefined, call_method: Value = Value.Undefined, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
-    live_jobs:    i64                        = 0,
+    code:          const Code&, identity: i64 = 0, limits: Limits = Limits {},
+    nodes:         Node[>..]                  = [], values: Value[>..] = [], properties: Property[>..] = [],
+    units:         u16[>..]                   = [], strings: Str[>..] = [], constants: Value[>..] = [], work: i64 = 0,
+    source_bytes:  u8[>..]                    = [], source_ranges: SourceRange[>..] = [],
+    property_rows: i64                        = 0,
+    fault:         Fault                      = Fault.None, global: Value = Value.Undefined, call_method: Value = Value.Undefined, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
+    live_jobs:     i64                        = 0,
 }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
@@ -414,32 +418,46 @@ fn set_element(heap: Heap&, array: Value, i: i64, value: Value) -> bool {
     if i >= heap.nodes[array.id()].length { heap.nodes[array.id()].length = i + 1; }
     return true;
 }
-// Move a dense array's elements into index-keyed property records. Every
-// failure point precedes the header change, so a rejection leaves the array
-// as it was (records and keys built so far stay charged, unlinked).
+// Move a dense array's elements into index-keyed property records, a new key
+// run at the table's end. Every failure point precedes the header change, so
+// a rejection leaves the array as it was (records and keys built so far stay
+// charged, unowned).
 fn to_dictionary(heap: Heap&, array: Value) -> bool {
-    let start = heap.nodes[array.id()].start; let count = heap.nodes[array.id()].count; let end = min(heap.nodes[array.id()].length, count);
-    var head: i64 = -1;
+    let o = array.id(); let start = heap.nodes[o].start; let count = heap.nodes[o].count; let end = min(heap.nodes[o].length, count);
+    var records: i64 = 0; for i in end { if heap.values[start + i].tag() != -1 { records += 1; } }
+    let run = add_properties(heap, records);
+    if run < 0 { return false; }
+    var at = run;
     for i in end {
         let v = heap.values[start + i];
         if v.tag() == -1 { continue; }
-        if heap.properties.len >= heap.limits.properties { return memory(heap); }
         let k = key(heap, number(i));
         if heap.fault != Fault.None { return false; }
-        heap.properties.push(Property { key: k, value: v, next: head }); head = heap.properties.len - 1;
+        heap.properties[at] = Property { key: k, value: v }; at += 1;
     }
     if !charge(heap, count) { return false; }
-    for at in start..(start + count) { heap.values[at] = Value.Undefined; }
-    heap.nodes[array.id()].head = head; heap.nodes[array.id()].initialized = true; heap.nodes[array.id()].count = 0;
+    for slot in start..(start + count) { heap.values[slot] = Value.Undefined; }
+    heap.nodes[o].keys = run; heap.nodes[o].key_count = records; heap.nodes[o].key_capacity = records; heap.nodes[o].initialized = true; heap.nodes[o].count = 0;
     return true;
 }
+// The one allocation point of the property table: `count` cleared rows at
+// its end, charged to the rows the heap has added (limits.properties counts
+// rows added, not live records or the table's length). Returns the run's
+// first row, or -1 with MemoryLimit.
+fn add_properties(heap: Heap&, count: i64) -> i64 {
+    if count > heap.limits.properties - heap.property_rows { memory(heap); return -1; }
+    let at = heap.properties.len; heap.properties.resize(at + count, Property {}); heap.property_rows += count;
+    return at;
+}
+// Newest first: the order the former linked records were visited in, so a
+// lookup charges the same work.
 fn own_record(heap: Heap&, object: Value, k: Value) -> Value, bool {
-    var id = heap.nodes[object.id()].head;
-    while id >= 0 {
+    let o = object.id(); let start = heap.nodes[o].keys; var i = heap.nodes[o].key_count;
+    while i > 0 {
+        i -= 1;
         if !charge(heap) { return Value.Undefined, false; }
-        let property = heap.properties[id];
+        let property = heap.properties[start + i];
         if equal(heap, property.key, k) { return property.value, true; }
-        id = property.next;
     }
     return Value.Undefined, false;
 }
@@ -496,21 +514,32 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
     }
     return put_record(heap, object, k, value);
 }
+// A new key goes at the end of the object's run. A full run moves to a run of
+// twice the capacity at the table's end (the old rows are cleared and stay
+// charged: tables are append-only within a job). Only the new key is charged
+// against limits.properties, so growth never fails where a record fit before.
 fn put_record(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
-    var id = heap.nodes[object.id()].head;
-    while id >= 0 {
+    let o = object.id(); let start = heap.nodes[o].keys; let count = heap.nodes[o].key_count;
+    var i = count;
+    while i > 0 {
+        i -= 1;
         if !charge(heap) { return false; }
-        let p = heap.properties[id]; if equal(heap, p.key, k) { heap.properties[id].value = value; return true; } id = p.next;
+        if equal(heap, heap.properties[start + i].key, k) { heap.properties[start + i].value = value; return true; }
     }
     if heap.fault != Fault.None { return false; }
-    if heap.properties.len >= heap.limits.properties { return memory(heap); }
-    let previous = heap.nodes[object.id()].head; let next = heap.properties.len;
-    heap.properties.push(Property { key: k, value: value, next: previous }); heap.nodes[object.id()].head = next;
+    if heap.property_rows >= heap.limits.properties { return memory(heap); }
+    if count == heap.nodes[o].key_capacity {
+        let capacity = max(4, count * 2); let at = heap.properties.len;
+        heap.properties.append(heap.properties[start..(start + count)]); heap.properties.resize(at + capacity, Property {});
+        for row in start..(start + count) { heap.properties[row] = Property {}; }
+        heap.nodes[o].keys = at; heap.nodes[o].key_capacity = capacity;
+    }
+    heap.properties[heap.nodes[o].keys + count] = Property { key: k, value: value }; heap.nodes[o].key_count = count + 1; heap.property_rows += 1;
     return heap.fault == Fault.None;
 }
 // Bounded numeric length writes only. A shorter length turns a dense array's
-// cut-off slots back into holes, or unlinks a dictionary array's cut-off
-// records (which stay charged until teardown); the work is charged before
+// cut-off slots back into holes, or drops a dictionary array's cut-off
+// records from its run (their rows stay charged until teardown); the work is charged before
 // anything changes, so a work rejection is atomic. A longer length writes
 // nothing.
 fn array_length(heap: Heap&, object: Value, value: Value) -> bool {
@@ -528,27 +557,25 @@ fn array_length(heap: Heap&, object: Value, value: Value) -> bool {
 // Preflight the full walk before mutation so a work rejection is atomic.
 fn dictionary_length(heap: Heap&, object: Value, length: i64) -> bool {
     if length < heap.nodes[object.id()].length {
-        var id = heap.nodes[object.id()].head;
-        while id >= 0 {
-            if !charge(heap, 2 + str_len(heap, heap.properties[id].key)) { return false; }
-            let i = index(heap, heap.properties[id].key);
+        let o = object.id(); let start = heap.nodes[o].keys; let count = heap.nodes[o].key_count;
+        for row in start..(start + count) {
+            if !charge(heap, 2 + str_len(heap, heap.properties[row].key)) { return false; }
+            let i = index(heap, heap.properties[row].key);
             if heap.fault != Fault.None { return false; }
             if i < 0 { heap.fault = Fault.UnsupportedOperand; return false; }
-            id = heap.properties[id].next;
         }
-        var previous: i64 = -1; id = heap.nodes[object.id()].head;
-        while id >= 0 {
-            let p = heap.properties[id];
+        // Compact the kept records in order; the cut-off rows are cleared.
+        var kept: i64 = 0;
+        for row in start..(start + count) {
+            let p = heap.properties[row];
             // set_element admitted canonical indices. The preflight charged
             // this second decode, so mutation below cannot fail.
             var i: i64 = 0;
             for c in chars(heap, p.key) { i = i * 10 + (c - 48); }
-            if i >= length {
-                if previous < 0 { heap.nodes[object.id()].head = p.next; }
-                else { heap.properties[previous].next = p.next; }
-            } else { previous = id; }
-            id = p.next;
+            if i < length { heap.properties[start + kept] = p; kept += 1; }
         }
+        for row in (start + kept)..(start + count) { heap.properties[row] = Property {}; }
+        heap.nodes[o].key_count = kept;
     }
     heap.nodes[object.id()].length = length; return true;
 }

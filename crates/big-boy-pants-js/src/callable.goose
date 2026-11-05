@@ -13,7 +13,7 @@ fn fail(c: snapshot::Control&, e: snapshot::Error = snapshot::Error.Unsupported)
 fn same(a: source::Value, b: source::Value) -> bool { return a == b; }
 // Field by field: an enum's unused payload bytes are not part of its value.
 fn same(a: source::Node, b: source::Node) -> bool {
-    return a.kind == b.kind && a.function == b.function && a.start == b.start && a.count == b.count && a.head == b.head && a.length == b.length && a.initialized == b.initialized && a.immutable == b.immutable
+    return a.kind == b.kind && a.function == b.function && a.start == b.start && a.count == b.count && a.keys == b.keys && a.key_count == b.key_count && a.key_capacity == b.key_capacity && a.length == b.length && a.initialized == b.initialized && a.immutable == b.immutable
         && a.value == b.value && a.namespace_value == b.namespace_value && a.metadata == b.metadata && a.origin == b.origin && a.source == b.source && a.span_start == b.span_start && a.span_end == b.span_end;
 }
 fn code_prefix(p: const Publication&, bytes: const u8[:], functions: const source::Function[:], constants: const source::Value[:], children: const i64[:], ops: const source::Op[:], units: const u16[:], strings: const source::Str[:], c: snapshot::Control&) -> bool {
@@ -48,25 +48,24 @@ fn base_node<H>(p: const Publication&, heap: const H&, id: i64, c: snapshot::Con
         if !snapshot::range(n.start, n.count, heap.values.len) { return fail(c, snapshot::Error.Link); }
         for i in n.count { if !snapshot::poll(c) { return false; } if !same(s.values[n.start + i], heap.values[n.start + i]) { return fail(c, snapshot::Error.Link); } }
     }
-    var at = n.head;
-    while at >= 0 {
+    if !snapshot::range(n.keys, n.key_count, heap.properties.len) { return fail(c, snapshot::Error.Link); }
+    for at in n.keys..(n.keys + n.key_count) {
         if !snapshot::poll(c) { return false; }
-        if at >= heap.properties.len { return fail(c, snapshot::Error.Link); }
         let a = s.properties[at]; let b = heap.properties[at];
-        if a.next != b.next || !same(a.key, b.key) || !same(a.value, b.value) { return fail(c, snapshot::Error.Link); } at = a.next;
+        if !same(a.key, b.key) || !same(a.value, b.value) { return fail(c, snapshot::Error.Link); }
     }
     return true;
 }
 fn edge_count(s: const snapshot::Snapshot&, n: source::Node, c: snapshot::Control&) -> i64 {
     var count = 3 + (if snapshot::has_values(n.kind) { n.count } else { 0 });
-    var at = n.head; while at >= 0 { if !snapshot::poll(c) { return -1; } count += 2; at = s.properties[at].next; } return count;
+    if !snapshot::poll(c, n.key_count) { return -1; } return count + 2 * n.key_count;
 }
 fn edge(s: const snapshot::Snapshot&, n: source::Node, i: i64, c: snapshot::Control&) -> source::Value {
     if i < 3 { return match i { 0 => n.value, 1 => n.namespace_value, _ => n.metadata }; }
     var rest = i - 3;
     if snapshot::has_values(n.kind) { if rest < n.count { return s.values[n.start + rest]; } rest -= n.count; }
-    var at = n.head; while rest >= 2 { if !snapshot::poll(c) { return source::Value.Undefined; } at = s.properties[at].next; rest -= 2; }
-    return if rest == 0 { s.properties[at].key } else { s.properties[at].value };
+    let at = n.keys + rest / 2;
+    return if rest % 2 == 0 { s.properties[at].key } else { s.properties[at].value };
 }
 fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, ids: i64[>..]&, slots: i64[>..]&, c: snapshot::Control&) -> bool {
     if p.version != 1 || bytes_of([p.base]) != bytes_of([expected]) { return fail(c, snapshot::Error.Version); }
@@ -88,7 +87,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
                 if n.kind == 1 || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
                 if !base_node(p, heap, id, c) { return false; } ids[id] = id;
             } else {
-                if n.kind == 0 || n.kind == 1 || n.kind > 12 || n.head != -1 || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
+                if n.kind == 0 || n.kind == 1 || n.kind > 12 || n.key_count != 0 || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
                 ids[id] = heap.nodes.len + slots.len; slots.push(id);
             }
         }

@@ -11,17 +11,17 @@ fn main() {
     var code = source::Code {}; var heap = source::Heap { code: code };
     for u in "abcdef" { heap.units.push(u); }
     // 0: plain object, property 1 -> closure 1.
-    heap.nodes.push(source::Node { kind: 0, head: 1 });
+    heap.nodes.push(source::Node { kind: 0, keys: 1, key_count: 1, key_capacity: 1 });
     // 1: closure whose slots 0..2 hold the cell and a string.
     heap.nodes.push(source::Node { kind: 2, start: 0, count: 2 });
     // 2: cell pointing back at the closure (a cycle).
     heap.nodes.push(source::Node { kind: 3, value: node(1) });
     // 3: disconnected object owning property 0; 4: disconnected, empty.
-    heap.nodes.push(source::Node { kind: 0, head: 0 });
+    heap.nodes.push(source::Node { kind: 0, keys: 0, key_count: 1, key_capacity: 1 });
     heap.nodes.push(source::Node { kind: 0 });
     heap.values.push(node(2)); heap.values.push(text(heap, 0, 3)); heap.values.push(source::number(7));
-    heap.properties.push(source::Property { key: text(heap, 3, 2), value: source::number(1), next: -1 });
-    heap.properties.push(source::Property { key: text(heap, 0, 1), value: node(1), next: -1 });
+    heap.properties.push(source::Property { key: text(heap, 3, 2), value: source::number(1) });
+    heap.properties.push(source::Property { key: text(heap, 0, 1), value: node(1) });
     let c = census::take(heap, [node(0)]);
     assert(c.nodes == 5 && c.values == 3 && c.properties == 2 && c.units == 6);
     // Dead: nodes 3 and 4, slot 2, property 0, units 3..6 ("def").

@@ -16,7 +16,7 @@ struct Header {
     version: i64     = 2, allocator: i64 = 1, base: i64 = 0, checkpoint: i64 = 1,
     ends:    i64[16] = [0; 16], limits: source::Limits = source::Limits {},
     work:    i64     = 0, global: source::Value = source::Value.Undefined, call_method: source::Value = source::Value.Undefined,
-    boot:    i64     = 0, initializers: i64 = 0, producers: i64 = 0,
+    boot:    i64     = 0, initializers: i64 = 0, producers: i64 = 0, property_rows: i64 = 0,
 }
 struct Snapshot {
     header:     Header         = Header {},
@@ -70,6 +70,20 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
         }
     }
     return true;
+}
+// Key runs are exclusive (an object writes its run in place) and hold string
+// keys up to their count; their records were charged to property_rows.
+fn key_runs<T>(s: const T&, c: Control&) -> bool {
+    if s.properties.len > c.bytes - footprint(s) { return reject(c, Error.Bytes); }
+    if !poll(c, s.properties.len) { return false; }
+    var used: bool[>..] = []; used.resize(s.properties.len, false); var records: i64 = 0;
+    for n in s.nodes {
+        if !poll(c, 1 + n.key_capacity) { return false; }
+        for row in n.keys..(n.keys + n.key_capacity) { if used[row] { return reject(c, Error.Link); } used[row] = true; }
+        for row in n.keys..(n.keys + n.key_count) { if s.properties[row].key.tag() != 4 { return reject(c, Error.Link); } }
+        records += n.key_count;
+    }
+    return if records <= s.header.property_rows { true } else { reject(c, Error.Allocator) };
 }
 fn ends<T>(s: const T&) -> i64[16] {
     return [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len,
@@ -172,7 +186,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     if c.snapshot_bytes > c.bytes { return reject(c, Error.Bytes); }
     if !poll(c, s.code_bytes.len + s.code_units.len + s.units.len + s.bytes.len) { return false; }
     let l = s.header.limits;
-    if l.nodes < 0 || l.values < 0 || l.units < 0 || l.properties < 0 || l.work < 0 || l.steps < 0 || l.frames < 0 || l.stack < 0 || s.header.work < 0 || s.header.work > l.work || s.nodes.len > l.nodes || s.values.len > l.values || s.units.len > l.units || s.constants.len > l.values || s.properties.len > l.properties || s.header.boot < 0 || s.header.boot > 1 || s.header.initializers < 0 || s.header.producers < 0 { return reject(c, Error.Allocator); }
+    if l.nodes < 0 || l.values < 0 || l.units < 0 || l.properties < 0 || l.work < 0 || l.steps < 0 || l.frames < 0 || l.stack < 0 || s.header.work < 0 || s.header.work > l.work || s.nodes.len > l.nodes || s.values.len > l.values || s.units.len > l.units || s.constants.len > l.values || s.header.property_rows < 0 || s.header.property_rows > l.properties || s.header.property_rows > s.properties.len || s.header.boot < 0 || s.header.boot > 1 || s.header.initializers < 0 || s.header.producers < 0 { return reject(c, Error.Allocator); }
     if !code_valid(s, c) { return false; }
     if !value(s, s.header.global) || s.header.global.tag() != 5 || s.nodes[s.header.global.id()].kind != 0 { return reject(c, Error.Link); }
     if !value(s, s.header.call_method) || s.header.call_method.tag() != 5 || s.nodes[s.header.call_method.id()].kind != 4 || s.nodes[s.header.call_method.id()].function != 14 { return reject(c, Error.Link); }
@@ -198,8 +212,8 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     }
     for p, i in s.properties {
         if !poll(c) { return false; }
-        // put prepends a new record; backward links guarantee termination.
-        if p.next < -1 || p.next >= i || !value(s, p.key) || p.key.tag() != 4 || !value(s, p.value) { return reject(c, Error.Link); }
+        // A row is a record (string key) or cleared; key runs are checked below.
+        if p.key.tag() != 0 && p.key.tag() != 4 || !value(s, p.key) || !value(s, p.value) { return reject(c, Error.Link); }
     }
     for r in s.sources {
         if !range(r.start, r.count, s.bytes.len) { return reject(c, Error.Link); }
@@ -211,7 +225,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if !poll(c) { return false; }
         if n.kind < 0 || n.kind > 15 { return reject(c, Error.Unsupported); }
         if n.kind == 1 && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
-        if n.head < -1 || n.head >= s.properties.len || n.length < 0 || !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source < -1 || n.source >= s.sources.len || n.origin < -1 { return reject(c, Error.Link); }
+        if n.key_count < 0 || n.key_count > n.key_capacity || !range(n.keys, n.key_capacity, s.properties.len) || n.length < 0 || !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source < -1 || n.source >= s.sources.len || n.origin < -1 { return reject(c, Error.Link); }
         if n.source >= 0 && (n.span_start < 0 || n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
         if n.source >= 0 {
             let r = s.sources[n.source]; let text = s.bytes[r.start..(r.start + r.count)];
@@ -222,7 +236,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if n.kind == 1 {
             // A dictionary array (initialized) has records and no run; a dense
             // one has a run and no records.
-            if (n.initialized && n.count != 0) || (!n.initialized && n.head != -1) { return reject(c, Error.Link); }
+            if (n.initialized && n.count != 0) || (!n.initialized && n.key_count != 0) { return reject(c, Error.Link); }
             has_memo = has_memo || n.count > 0;
             if !poll(c, n.count) { return false; }
             // Slots at or past the length are holes (source::array_length).
@@ -239,6 +253,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if n.metadata.tag() != 0 && n.metadata.tag() != 1 && (n.metadata.tag() != 5 || s.nodes[n.metadata.id()].kind != 7) { return reject(c, Error.Link); }
     }
     if has_memo && !memo_ranges(s, c) { return false; }
+    if !key_runs(s, c) { return false; }
     if holes != array_holes { return reject(c, Error.Link); }
     var previous: i64 = -1;
     for b in s.bindings {
@@ -249,7 +264,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
 }
 fn borrow(heap: const source::Heap&, bindings: const Binding[:], checkpoint: i64) -> View {
     let code .= heap.code;
-    var v = View { header: Header { base: heap.identity, checkpoint: checkpoint, limits: heap.limits, work: heap.work, global: heap.global, call_method: heap.call_method, boot: heap.boot_count, initializers: heap.initializer_count, producers: heap.producer_count },
+    var v = View { header: Header { base: heap.identity, checkpoint: checkpoint, limits: heap.limits, work: heap.work, global: heap.global, call_method: heap.call_method, boot: heap.boot_count, initializers: heap.initializer_count, producers: heap.producer_count, property_rows: heap.property_rows },
         code_bytes: code.source_bytes, functions: code.functions, code_constants: code.constants, children: code.children, ops: code.ops, code_units: code.units, code_strings: code.strings,
         nodes: heap.nodes, values: heap.values, properties: heap.properties, units: heap.units, strings: heap.strings, constants: heap.constants, bytes: heap.source_bytes, sources: heap.source_ranges, bindings: bindings };
     v.header.ends = ends(v); return v;
@@ -279,7 +294,7 @@ fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> b
     code.source_bytes.clear(); code.functions.clear(); code.constants.clear(); code.children.clear(); code.ops.clear(); code.units.clear(); code.strings.clear(); code.ins.clear(); code.effects.clear(); code.decoded = 0;
     code.valid = false; code.error = tiny::LoadError.None; code.error_pc = -1;
     heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value.Undefined; heap.call_method = source::Value.Undefined;
-    heap.boot_count = 0; heap.initializer_count = 0; heap.producer_count = 0;
+    heap.boot_count = 0; heap.initializer_count = 0; heap.producer_count = 0; heap.property_rows = 0;
     return true;
 }
 fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&, identity: i64, c: Control&) -> bool {
@@ -290,7 +305,7 @@ fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, binding
     // No initialization, producer, publication cache, claim or waiter code.
     code.source_bytes.append(s.code_bytes); code.functions.append(s.functions); code.constants.append(s.code_constants); code.children.append(s.children); code.ops.append(s.ops); code.units.append(s.code_units); code.strings.append(s.code_strings); source::decode(code); code.valid = true;
     heap.identity = identity; heap.limits = s.header.limits; heap.work = s.header.work; heap.global = s.header.global; heap.call_method = s.header.call_method;
-    heap.boot_count = s.header.boot; heap.initializer_count = s.header.initializers; heap.producer_count = s.header.producers;
+    heap.boot_count = s.header.boot; heap.initializer_count = s.header.initializers; heap.producer_count = s.header.producers; heap.property_rows = s.header.property_rows;
     // Rows are copied verbatim: links count from each table's start, so the
     // destination's empty tables give every row its captured index.
     heap.nodes.append(s.nodes); heap.values.append(s.values); heap.properties.append(s.properties);

@@ -19,7 +19,7 @@ fn cap(heap: source::Heap&, s: const snapshot::Snapshot&, exhaust: bool) {
 fn heap_ceiling(s: const snapshot::Snapshot&) -> i64 {
     return (s.nodes.len + 512) * bytes_of([source::Node { kind: 0 }]).len
          + (s.values.len + 4096 + s.constants.len) * bytes_of([source::Value.Undefined]).len
-         + (s.properties.len + 128) * bytes_of([source::Property { key: source::Value.Undefined, value: source::Value.Undefined, next: -1 }]).len
+         + (s.properties.len + 128) * bytes_of([source::Property {}]).len
          + (s.units.len + 256) * 2 + s.bytes.len + bytes_of(s.sources).len;
 }
 fn charge(s: const snapshot::Snapshot&) -> i64 {

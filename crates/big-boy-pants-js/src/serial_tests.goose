@@ -256,7 +256,7 @@ thread_fn array_length_bounds() {
     assert(source::get(heap, array, source::key(heap, source::number(3))).tag() == 0);
     assert(source::put(heap, array, source::key(heap, source::number(2)), source::number(99)));
     assert(source::get(heap, array, source::key(heap, source::number(2))).num() == 99);
-    assert(source::put(heap, array, length, source::number(0)) && heap.nodes[array.id()].head == -1);
+    assert(source::put(heap, array, length, source::number(0)) && heap.nodes[array.id()].key_count == 0);
     assert(source::put(heap, array, length, source::number(3)));
     for i in 3 { assert(source::get(heap, array, source::key(heap, source::number(i))).tag() == 0); }
     for n in [-1.0, 1.5, 0.0 / 0.0, 1.0 / 0.0, 4294967296.0] {
@@ -266,10 +266,10 @@ thread_fn array_length_bounds() {
     assert(!source::put(heap, array, length, source::number(heap.limits.values + 1)) && heap.fault == source::Fault.MemoryLimit);
     heap.fault = source::Fault.None;
     assert(source::put(heap, array, source::key(heap, source::number(1)), source::number(7)));
-    let before = copy(heap.properties); let slots = copy(heap.values); let head = heap.nodes[array.id()].head;
+    let before = copy(heap.properties); let slots = copy(heap.values); let records = heap.nodes[array.id()].key_count;
     heap.limits.work = heap.work + 8;
     assert(!source::put(heap, array, length, source::number(0)) && heap.fault == source::Fault.WorkLimit);
-    assert(heap.nodes[array.id()].length == 3 && heap.nodes[array.id()].head == head && to_bytes(heap.properties) == to_bytes(before) && to_bytes(heap.values) == to_bytes(slots));
+    assert(heap.nodes[array.id()].length == 3 && heap.nodes[array.id()].key_count == records && source::plain_rows(heap.properties) == source::plain_rows(before) && source::plain_rows(heap.values) == source::plain_rows(slots));
     heap.fault = source::Fault.None; heap.limits = source::Limits {};
     // Elements live in the array's own value run (light-cljs-785), so the
     // value-slot limit, not the property limit, bounds a growing array.

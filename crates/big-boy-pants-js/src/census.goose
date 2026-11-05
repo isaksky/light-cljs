@@ -33,10 +33,9 @@ fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
         if snapshot::has_values(n.kind) {
             for slot in n.start..(n.start + n.count) { if slot >= 0 && slot < values.len { values[slot] = true; mark(heap, heap.values[slot], nodes, units, work); } }
         }
-        var p = n.head;
-        while p >= 0 && p < properties.len && !properties[p] {
+        for p in n.keys..min(n.keys + n.key_count, properties.len) {
             properties[p] = true; let record = heap.properties[p];
-            mark(heap, record.key, nodes, units, work); mark(heap, record.value, nodes, units, work); p = record.next;
+            mark(heap, record.key, nodes, units, work); mark(heap, record.value, nodes, units, work);
         }
     }
     var c = Census { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len };
