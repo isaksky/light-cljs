@@ -319,7 +319,7 @@ section amends decision 3; light-cljs-795 and -796 implement it, and -785,
 Paths are under `research/shadow-cljs/src/main/shadow/` (3.5.5) unless named.
 
 - **Macro namespaces load once per process.** `build/macros.clj`
-  `load-macros` (86-121) requires each macro namespace under one global
+  `load-macros` (86-126) requires each macro namespace under one global
   `require-lock` (84), only if it is not yet in the process-wide
   `active-macros-ref` (20): "since we can't isolate macros they will be
   reloaded for all builds" (13-19). Watch mode reloads a changed macro file
@@ -342,7 +342,7 @@ Paths are under `research/shadow-cljs/src/main/shadow/` (3.5.5) unless named.
   (`do-compile-cljs-resource`, 731-775: `*file-defs*`, warnings, and
   `*unchecked-if*` "so it is thread bound, since the analyzer may set! it").
 - **Determinism is partial.** Outputs are reassembled by resource
-  (1352-1360) and warnings kept per namespace, but nothing orders macro side
+  (1353-1360) and warnings kept per namespace, but nothing orders macro side
   effects or the gensym counter across threads. Namespaces that rely on macro
   side effects, and their direct dependents, skip the cache
   (`:cache-blockers`, default `clara.rules` and `clara.macros`: `build/api.clj`
@@ -384,8 +384,8 @@ light-cljs requires a fresh thread program for that.
 - No collector: garbage goes only when a scope ends. A 200k job leaves 98.7%
   of its nodes unreachable (median 5,841 rows; evidence, "One job worker per
   job"), so a world never reset grows without bound; the retained serial
-  control exhausted its work quota on the heavier expanded workload
-  (`evidence/expanded-results.md`).
+  control's cumulative session work quota already failed at the fifteenth
+  call of the heavier expanded workload (`evidence/expanded-results.md`).
 - An index type names only a global array (P13), which never shrinks (P4,
   P14), so a nested Goose scope cannot free a job's rows; a thread program's
   exit can, and so can rewriting them in place later (P14).
