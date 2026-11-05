@@ -44,7 +44,7 @@ fn poll(c: Control&, n: i64 = 1) -> bool {
     c.visited += n; return true;
 }
 fn range(start: i64, count: i64, len: i64) -> bool { return start >= 0 && count >= 0 && start <= len && count <= len - start; }
-fn has_values(kind: i64) -> bool { return kind == 2 || kind >= 5 && kind <= 8 || kind == 12 || kind == 14 || kind == 15; }
+fn has_values(kind: i64) -> bool { return kind == 1 || kind == 2 || kind >= 5 && kind <= 8 || kind == 12 || kind == 14 || kind == 15; }
 // All ranges have already passed bounds validation. Immutable views may share
 // slots, but an unrealized map owns its entire writable memo exclusively,
 // including the completed prefix. Charge both scratch initialization and each
@@ -59,7 +59,7 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
         if !has_values(n.kind) { continue; }
         if !poll(c, n.count) { return false; }
         for slot in n.start..(n.start + n.count) {
-            if n.kind == 15 {
+            if n.kind == 15 || n.kind == 1 {
                 if used[slot] != 0 { return reject(c, Error.Link); }
                 used[slot] = 2;
             } else {
@@ -174,7 +174,9 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     if !code_valid(s, c) { return false; }
     if !value(s, s.header.global) || s.header.global.tag != 5 || s.nodes[s.header.global.a].kind != 0 { return reject(c, Error.Link); }
     if !value(s, s.header.call_method) || s.header.call_method.tag != 5 || s.nodes[s.header.call_method.a].kind != 4 || s.nodes[s.header.call_method.a].function != 14 { return reject(c, Error.Link); }
-    for v in s.values { if !poll(c) { return false; } if !value(s, v) { return reject(c, Error.Link); } }
+    // Holes (tag -1) may appear only inside array element runs, counted below.
+    var holes: i64 = 0;
+    for v in s.values { if !poll(c) { return false; } if v.tag == -1 { holes += 1; continue; } if !value(s, v) { return reject(c, Error.Link); } }
     if s.constants.len != s.code_constants.len { return reject(c, Error.Length); }
     for v, i in s.constants {
         if !poll(c) { return false; }
@@ -198,7 +200,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if !poll(c, r.count + 1) { return false; }
         if !utf8(s.bytes[r.start..(r.start + r.count)]) { return reject(c, Error.Link); }
     }
-    var has_memo = false;
+    var has_memo = false; var array_holes: i64 = 0;
     for n in s.nodes {
         if !poll(c) { return false; }
         if n.kind < 0 || n.kind > 15 { return reject(c, Error.Unsupported); }
@@ -211,6 +213,13 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         }
         if n.kind == 2 && (!range(n.function, 1, s.functions.len) || n.count != s.functions[n.function].captures) { return reject(c, Error.Link); }
         if has_values(n.kind) { if !range(n.start, n.count, s.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); } }
+        if n.kind == 1 {
+            if n.head != -1 { return reject(c, Error.Link); }
+            has_memo = has_memo || n.count > 0;
+            if !poll(c, n.count) { return false; }
+            // Slots at or past the length are holes (source::array_length).
+            for v, i in s.values[n.start..(n.start + n.count)] { if v.tag == -1 { array_holes += 1; } else if i >= n.length { return reject(c, Error.Link); } }
+        }
         if n.kind == 15 {
             has_memo = has_memo || n.count > 0;
             if n.length > n.count { return reject(c, Error.Link); }
@@ -222,6 +231,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if n.metadata.tag != 0 && n.metadata.tag != 1 && (n.metadata.tag != 5 || s.nodes[n.metadata.a].kind != 7) { return reject(c, Error.Link); }
     }
     if has_memo && !memo_ranges(s, c) { return false; }
+    if holes != array_holes { return reject(c, Error.Link); }
     var previous: i64 = -1;
     for b in s.bindings {
         if !poll(c) { return false; }

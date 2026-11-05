@@ -155,7 +155,7 @@ fn main() {
     bigint_constants(embed_file("../corpus/serial/dormant-constants.gsp"));
     fixed_cells(embed_file("../corpus/serial/mutations.gsp"));
     failed_job_isolation(embed_file("../corpus/serial/calls.gsp"));
-    allocation_limits(embed_file("../corpus/serial/mutations.gsp"));
+    allocation_limits(embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/strings.gsp"));
     flow_errors(embed_file("../corpus/serial/control.gsp"));
     runtime_boundary(embed_file("../corpus/branches-helper-0.pants.gsp"));
     limits(embed_file("../corpus/serial/captures.gsp"));
@@ -189,25 +189,27 @@ fn array_lengths() {
     assert(!source::put(heap, array, length, source::number(heap.limits.values + 1)) && heap.fault == source::Fault.MemoryLimit);
     heap.fault = source::Fault.None;
     assert(source::put(heap, array, source::key(heap, source::number(1)), source::number(7)));
-    let before = copy(heap.properties); let head = heap.nodes[array.a].head;
+    let before = copy(heap.properties); let slots = copy(heap.values); let head = heap.nodes[array.a].head;
     heap.limits.work = heap.work + 8;
     assert(!source::put(heap, array, length, source::number(0)) && heap.fault == source::Fault.WorkLimit);
-    assert(heap.nodes[array.a].length == 3 && heap.nodes[array.a].head == head && to_bytes(heap.properties) == to_bytes(before));
+    assert(heap.nodes[array.a].length == 3 && heap.nodes[array.a].head == head && to_bytes(heap.properties) == to_bytes(before) && to_bytes(heap.values) == to_bytes(slots));
     heap.fault = source::Fault.None; heap.limits = source::Limits {};
-    let retained = heap.properties.len; heap.limits.properties = retained;
+    // Elements live in the array's own value run (light-cljs-785), so the
+    // value-slot limit, not the property limit, bounds a growing array.
+    let retained = heap.values.len; heap.limits.values = retained; let capacity = heap.nodes[array.a].count;
     assert(source::put(heap, array, length, source::number(0)));
-    assert(!source::put(heap, array, source::key(heap, source::number(0)), source::number(1)) && heap.fault == source::Fault.MemoryLimit);
-    assert(heap.properties.len == retained && heap.nodes[array.a].length == 0);
-    // Exercise every work boundary through the two-pass property unlink,
-    // including its final charge, against exactly the same array contents.
+    assert(!source::put(heap, array, source::key(heap, source::number(capacity)), source::number(1)) && heap.fault == source::Fault.MemoryLimit);
+    assert(heap.values.len == retained && heap.nodes[array.a].length == 0 && heap.properties.len == before.len);
+    // Exercise every work boundary through the length cut, including its
+    // final charge, against exactly the same array contents.
     for cut in 40 {
         var h = source::Heap { code: code }; assert(source::initialize(h));
         let a = source::allocate(h, source::Node { kind: 1 }); let k = source::text(h, "length");
         for i in 4 { assert(source::put(h, a, source::key(h, source::number(i)), source::number(i))); }
-        let nodes = copy(h.nodes); let properties = copy(h.properties);
+        let nodes = copy(h.nodes); let properties = copy(h.properties); let values = copy(h.values);
         h.limits.work = h.work + cut;
         let ok = source::put(h, a, k, source::number(2));
-        if !ok { assert(h.fault == source::Fault.WorkLimit && to_bytes(h.nodes) == to_bytes(nodes) && to_bytes(h.properties) == to_bytes(properties)); }
+        if !ok { assert(h.fault == source::Fault.WorkLimit && to_bytes(h.nodes) == to_bytes(nodes) && to_bytes(h.properties) == to_bytes(properties) && to_bytes(h.values) == to_bytes(values)); }
         else { assert(h.nodes[a.a].length == 2); }
     }
     print("temporary arrays: shorter/zero/extension/deleted holes, numeric bounds, atomic work and retained-property rejection passed");
@@ -229,7 +231,8 @@ fn argument_limits(bytes: const u8[:]) {
             if limit == 1 { heap.limits.nodes = heap.nodes.len; }
             if limit == 2 {
                 if op == 101 { heap.limits.values = heap.values.len + 2; }
-                else { heap.limits.properties = heap.properties.len; }
+                // A rest array keeps its elements in value slots (light-cljs-785).
+                else { heap.limits.values = heap.values.len; }
             }
             if limit == 3 { heap.limits.work = heap.work + code.functions[function].locals + 3; }
             var job = source::Job { heap: heap };
@@ -264,9 +267,11 @@ fn failed_job_isolation(bytes: const u8[:]) {
     assert(source::run(good, -1) == tiny::Outcome.Complete);
     assert(source::equal(heap, good.result, source::boolean(true)));
 }
-fn allocation_limits(bytes: const u8[:]) {
-    var code = source::Code {}; decode(code, bytes);
+fn allocation_limits(bytes: const u8[:], strings: const u8[:]) {
     for mode in 3 {
+        // Array elements need no key strings (light-cljs-785), so the unit
+        // limit is exercised by string indexing instead.
+        var code = source::Code {}; decode(code, if mode == 1 { strings } else { bytes });
         var heap = source::Heap { code: code }; assert(source::initialize(heap));
         let entry = source::closure(heap, 0, []);
         if mode == 0 { heap.limits.properties = 0; }

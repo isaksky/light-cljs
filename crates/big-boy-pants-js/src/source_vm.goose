@@ -300,8 +300,51 @@ fn index(heap: Heap&, k: Value) -> i64 {
     for i in k.b { let c = heap.units[k.a + i]; if c < 48 || c > 57 || (i == 0 && c == 48 && k.b > 1) { return -1; } n = n * 10 + (c - 48); }
     return if n < 4294967295 { n } else { -1 };
 }
+// Dense arrays (light-cljs-785): an array node (kind 1) keeps its elements in
+// its own run heap.values[start..start + count], indexed by integer; count is
+// the run's capacity and `length` the JavaScript length, which may exceed it.
+// A slot never written, or cut off by a shorter length, holds a hole. A hole
+// never leaves its run: element reads report it absent (undefined), and
+// valid() refuses it anywhere else. A write past the capacity copies the
+// elements into a new, larger run at the end of the table; tables stay
+// append-only, so the old run remains charged until teardown, as removed
+// property records did before. Arrays have no property records.
+fn hole() -> Value { return Value { tag: -1 }; }
+// The canonical array index of a number key (what key() then index() would
+// give), or -1.
+fn number_index(v: Value) -> i64 {
+    return if v.tag == 3 && v.number >= 0 && v.number < 4294967295.0 && v.number == (v.number as i64) { v.number as i64 } else { -1 };
+}
+fn own_element(heap: Heap&, array: Value, i: i64) -> Value, bool {
+    // Field reads: a whole Node copy would dominate an element access.
+    if i >= heap.nodes[array.a].length || i >= heap.nodes[array.a].count { return Value {}, false; }
+    let v = heap.values[heap.nodes[array.a].start + i];
+    if v.tag == -1 { return Value {}, false; }
+    return v, true;
+}
+fn set_element(heap: Heap&, array: Value, i: i64, value: Value) -> bool {
+    if i >= heap.limits.values { return memory(heap); }
+    let count = heap.nodes[array.a].count;
+    if i >= count {
+        let old = heap.nodes[array.a].start;
+        var capacity = max(i + 1, max(count * 2, 4));
+        if capacity > heap.limits.values - heap.values.len { capacity = i + 1; }
+        if capacity > heap.limits.values - heap.values.len { return memory(heap); }
+        if !charge(heap, capacity) { return false; }
+        let start = heap.values.len; heap.values.append(heap.values[old..(old + count)]); heap.values.resize(start + capacity, hole());
+        heap.nodes[array.a].start = start; heap.nodes[array.a].count = capacity;
+    } else if !charge(heap) { return false; }
+    heap.values[heap.nodes[array.a].start + i] = value;
+    if i >= heap.nodes[array.a].length { heap.nodes[array.a].length = i + 1; }
+    return true;
+}
 // Return presence separately: an own property's value can be undefined.
 fn own_property(heap: Heap&, object: Value, k: Value) -> Value, bool {
+    if heap.nodes[object.a].kind == 1 {
+        let i = index(heap, k);
+        if i < 0 { return Value {}, false; }
+        return own_element(heap, object, i);
+    }
     var id = heap.nodes[object.a].head;
     while id >= 0 {
         if !charge(heap) { return Value {}, false; }
@@ -345,13 +388,12 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
     if !valid(heap, object) || !valid(heap, k) || !valid(heap, value) { return false; }
     if object.tag != 5 || k.tag != 4 || heap.nodes[object.a].kind >= 2 { heap.fault = if object.tag == 5 { Fault.UnsupportedOperand } else { Fault.TypeError }; return false; }
     if key_is(heap, k, "__proto__") { heap.fault = Fault.UnsupportedOperand; return false; }
-    if heap.nodes[object.a].kind == 1 && key_is(heap, k, "length") { return array_length(heap, object, value); }
-    var array_index: i64 = -1;
     if heap.nodes[object.a].kind == 1 {
-        array_index = index(heap, k);
+        if key_is(heap, k, "length") { return array_length(heap, object, value); }
+        let i = index(heap, k);
         if heap.fault != Fault.None { return false; }
-        if array_index < 0 { heap.fault = Fault.UnsupportedOperand; return false; }
-        if array_index >= heap.limits.values { return memory(heap); }
+        if i < 0 { heap.fault = Fault.UnsupportedOperand; return false; }
+        return set_element(heap, object, i, value);
     }
     var id = heap.nodes[object.a].head;
     while id >= 0 {
@@ -362,38 +404,19 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
     if heap.properties.len >= heap.limits.properties { return memory(heap); }
     let previous = heap.nodes[object.a].head; let next = heap.properties.len;
     heap.properties.push(Property { key: k, value: value, next: previous }); heap.nodes[object.a].head = next;
-    if array_index >= heap.nodes[object.a].length { heap.nodes[object.a].length = array_index + 1; }
     return heap.fault == Fault.None;
 }
-// Bounded numeric length writes only. Removed property records remain charged
-// until teardown, but no longer participate in lookup or later extension.
-// Preflight the full walk before mutation so a work rejection is atomic.
+// Bounded numeric length writes only. A shorter length turns the cut-off
+// slots back into holes; the work is charged before any slot changes, so a
+// work rejection is atomic. A longer length writes no slot.
 fn array_length(heap: Heap&, object: Value, value: Value) -> bool {
     if value.tag != 3 || !(value.number >= 0 && value.number <= 4294967295.0) || value.number != trunc(value.number) { heap.fault = Fault.UnsupportedOperand; return false; }
     let length = value.number as i64;
     if length > heap.limits.values { return memory(heap); }
-    if length < heap.nodes[object.a].length {
-        var id = heap.nodes[object.a].head;
-        while id >= 0 {
-            if !charge(heap, 2 + heap.properties[id].key.b) { return false; }
-            let i = index(heap, heap.properties[id].key);
-            if heap.fault != Fault.None { return false; }
-            if i < 0 { heap.fault = Fault.UnsupportedOperand; return false; }
-            id = heap.properties[id].next;
-        }
-        var previous: i64 = -1; id = heap.nodes[object.a].head;
-        while id >= 0 {
-            let p = heap.properties[id];
-            // put admitted canonical indices. The preflight charged this
-            // second decode, so mutation below has no remaining failure point.
-            var i: i64 = 0;
-            for at in p.key.b { i = i * 10 + (heap.units[p.key.a + at] - 48); }
-            if i >= length {
-                if previous < 0 { heap.nodes[object.a].head = p.next; }
-                else { heap.properties[previous].next = p.next; }
-            } else { previous = id; }
-            id = p.next;
-        }
+    let n = heap.nodes[object.a]; let end = min(n.length, n.count);
+    if length < end {
+        if !charge(heap, end - length) { return false; }
+        for i in length..end { heap.values[n.start + i] = hole(); }
     }
     heap.nodes[object.a].length = length; return true;
 }
@@ -878,7 +901,7 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
         if count > heap.limits.values - heap.values.len { memory(heap); return Value {}; }
         if !charge(heap, count) { return Value {}; }
         var values: Value[>..] = [];
-        for i in count { values.push(get(heap, array, key(heap, number(i)))); if heap.fault != Fault.None { return Value {}; } }
+        for i in count { let v, found = own_element(heap, array, i); values.push(v); }
         return form_construct(heap, if id == 10 { 6 } else if id == 11 { 5 } else if id == 12 { 7 } else { 8 }, values);
     }
     if id == 0 && args.len == 1 { return args[0]; }
@@ -1053,14 +1076,26 @@ fn step(job: Job&) {
         ReadCell => { cell(job, 49); },
         WriteCell => { cell(job, 50); },
         GetNamed g => { get_property(job, heap.constants[f.constants + g.k]); },
-        GetIndexed => { let v = job.operands.pop(); let k = key(heap, v); get_property(job, k); },
+        GetIndexed => {
+            let v = job.operands.pop(); let object = job.operands[job.operands.len - 1]; let i = number_index(v);
+            if i >= 0 && dense(job, object) { job.operands.pop(); let e, found = own_element(heap, object, i); job.operands.push(e); }
+            else { let k = key(heap, v); get_property(job, k); }
+        },
         SetNamed s => { let value = job.operands.pop(); set_property(job, value, heap.constants[f.constants + s.k], false); },
         SetNamedChain s => { let value = job.operands.pop(); set_property(job, value, heap.constants[f.constants + s.k], true); },
-        SetIndexed => { let value = job.operands.pop(); let v = job.operands.pop(); let k = key(heap, v); set_property(job, value, k, false); },
+        SetIndexed => {
+            let value = job.operands.pop(); let v = job.operands.pop(); let object = job.operands[job.operands.len - 1]; let i = number_index(v);
+            // The write log keeps an element write's number as its key.
+            if i >= 0 && dense(job, object) { job.operands.pop(); if valid(heap, value) && set_element(heap, object, i, value) { record(job, object, v, value); } job.operands.push(value); }
+            else { let k = key(heap, v); set_property(job, value, k, false); }
+        },
         Append => {
             let value = job.operands.pop(); let object = job.operands[job.operands.len - 1];
-            let k = if valid(heap, object) && object.tag == 5 && heap.nodes[object.a].kind == 1 { key(heap, number(heap.nodes[object.a].length)) } else { heap.fault = Fault.TypeError; Value {} };
-            set_property(job, value, k, true);
+            if dense(job, object) { let at = heap.nodes[object.a].length; if valid(heap, value) && set_element(heap, object, at, value) { record(job, object, number(at), value); } }
+            else {
+                let k = if valid(heap, object) && object.tag == 5 && heap.nodes[object.a].kind == 1 { key(heap, number(heap.nodes[object.a].length)) } else { heap.fault = Fault.TypeError; Value {} };
+                set_property(job, value, k, true);
+            }
         },
         CheckValue => { let value = job.operands.pop(); if valid(heap, value) && value.tag == 5 && heap.nodes[value.a].kind == 3 { heap.fault = Fault.UnsupportedOperand; } job.operands.push(value); },
         This t => {
@@ -1165,7 +1200,7 @@ fn arguments(job: Job&, frame: Frame, f: Function, rest: bool, skip_count: i64) 
         }
     } else {
         let array = allocate(heap, Node { kind: 1 });
-        for value, i in args { if !put(heap, array, key(heap, number(i)), value) { break; } }
+        if array.tag == 5 { for value, i in args { if !valid(heap, value) || !set_element(heap, array, i, value) { break; } } }
         job.operands.push(array);
     }
 }
@@ -1199,6 +1234,13 @@ fn get_property(job: Job&, k: Value) {
         let optional = object.a == heap.global.a && (key_is(heap, k, "__lightCompilerRootReceiver") || key_is(heap, k, "__lightCompilerRootContext"));
         if !found && !optional { heap.fault = Fault.NativeBoundary; } job.operands.push(value);
     } else { let value = get(heap, object, k); job.operands.push(value); }
+}
+// An unprotected array other than the compiler roots object: element opcodes
+// read and write its run directly, without building key strings.
+fn dense(job: Job&, object: Value) -> bool {
+    let heap .= job.heap;
+    if object.tag != 5 || !valid(heap, object) || object.a < job.protected_nodes || heap.nodes[object.a].kind != 1 { return false; }
+    return !(job.root_receiver.tag == 5 && object.session == job.root_receiver.session && object.a == job.root_receiver.a);
 }
 // chain: the assignment expression yields the object (81, 88), else the value.
 fn set_property(job: Job&, value: Value, k: Value, chain: bool) {
