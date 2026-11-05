@@ -23,7 +23,7 @@ thread_fn churn() {
     var code = source::Code {}; decode(code, embed_file("../corpus/churn-churn.pants.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap);
     let macro = macro_factory(heap, rt);
-    for n in [0, 16, 100] { let result = invoke(heap, macro, [source::nil(), source::nil(), source::number(n)]); assert(result.tag == 3 && result.number == (if n == 0 { 0 } else if n == 16 { 168 } else { 5250 })); }
+    for n in [0, 16, 100] { let result = invoke(heap, macro, [source::nil(), source::nil(), source::number(n)]); assert(result.tag() == 3 && result.num() == (if n == 0 { 0 } else if n == 16 { 168 } else { 5250 })); }
     assert(heap.boot_count == 1 && heap.initializer_count == 1); print("real emitted churn: 0/16/100 passed, boot=1 initializer=1");
 }
 thread_fn closure() {
@@ -34,7 +34,7 @@ thread_fn closure() {
     for base in [7, 10] {
         let result = invoke(heap, macro, [source::nil(), source::nil(), source::number(base), input]);
         let out = source::form_nth(heap, result, 1); assert(source::form_count(heap, out) == 3);
-        for i in 3 { let pair = source::form_nth(heap, out, i); assert(source::form_nth(heap, pair, 0).number == i + 1 && source::form_nth(heap, pair, 1).number == base + 4 + i); }
+        for i in 3 { let pair = source::form_nth(heap, out, i); assert(source::form_nth(heap, pair, 0).num() == i + 1 && source::form_nth(heap, pair, 1).num() == base + 4 + i); }
     }
     print("real emitted captured closure/mapv passed");
 }
@@ -58,12 +58,12 @@ thread_fn finite_map_cut(cut: i64) {
         let callback = source::builtin(heap, 1);
         let input = source::form_collection(heap, 5, [source::number(1), source::number(2), source::number(3)]);
         let mapped = source::native_value(heap, 17, [callback, input]);
-        assert(heap.nodes[mapped.a].kind == 15 && heap.nodes[mapped.a].length == 0);
+        assert(heap.nodes[mapped.id()].kind == 15 && heap.nodes[mapped.id()].length == 0);
         var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
         assert(source::demand_map(job, mapped)); source::run(job, cut);
         while job.frames.len > 1 { assert(source::run(job, 1) == tiny::Outcome.Yielded); }
-        assert(job.steps == 7 && heap.nodes[mapped.a].kind == 12 && heap.nodes[mapped.a].length == 3);
-        for i in 3 { assert(source::form_nth(heap, mapped, i).number == i + 2); }
+        assert(job.steps == 7 && heap.nodes[mapped.id()].kind == 12 && heap.nodes[mapped.id()].length == 3);
+        for i in 3 { assert(source::form_nth(heap, mapped, i).num() == i + 2); }
         assert(!source::demand_map(job, mapped)); source::retire(job);
     }
 }
@@ -98,11 +98,11 @@ thread_fn finite_map_reset() {
         let mapped = source::native_value(heap, 17, [source::builtin(heap, 1), input]);
         let entry = source::closure(heap, 0, []); var job = source::Job { heap: heap };
         assert(source::start(job, entry, []) && source::demand_map(job, mapped));
-        source::run(job, 2); assert(heap.nodes[mapped.a].length == 1 && heap.nodes[mapped.a].initialized);
-        assert(source::retire(job) && !heap.nodes[mapped.a].initialized && source::reset(job));
+        source::run(job, 2); assert(heap.nodes[mapped.id()].length == 1 && heap.nodes[mapped.id()].initialized);
+        assert(source::retire(job) && !heap.nodes[mapped.id()].initialized && source::reset(job));
         assert(source::start(job, entry, []) && source::demand_map(job, mapped));
         while job.frames.len > 1 { source::run(job, 1); }
-        assert(job.steps == 5 && source::form_nth(heap, mapped, 2).number == 4);
+        assert(job.steps == 5 && source::form_nth(heap, mapped, 2).num() == 4);
         source::retire(job);
     }
 }
@@ -120,7 +120,7 @@ thread_fn bridge_smoke() {
         var c = bridge::Control {}; var roots: source::Value[>..] = [];
         assert(bridge::import_graph(heap, g, roots, c));
         let a = source::form_nth(heap, roots[0], 0); let b = source::form_nth(heap, roots[0], 1); let again = source::form_nth(heap, roots[0], 2);
-        assert(a.a != b.a && a.a == again.a && source::form_equal(heap, a, b));
+        assert(a.id() != b.id() && a.id() == again.id() && source::form_equal(heap, a, b));
         assert(bridge::export_graph(heap, roots, output, c));
     }
     assert(output.nodes.len == 3 && output.bytes[..] == "one two");
@@ -143,7 +143,7 @@ thread_fn callbacks_and_failures() {
         let before = heap.nodes.len; var job = source::Job { heap: heap }; assert(source::start(job, macro, params)); source::run(job, cut); source::run(job, -1);
         assert(job.status == tiny::Status.Complete && job.steps == whole.steps && heap.nodes.len - before == allocated && source::form_equal(heap, whole.result, job.result));
         let vector = source::form_nth(heap, job.result, 1);
-        assert(source::form_nth(heap, source::form_nth(heap, vector, 0), 0).a == a.a && source::form_nth(heap, source::form_nth(heap, vector, 1), 0).a == b.a);
+        assert(source::form_nth(heap, source::form_nth(heap, vector, 0), 0).id() == a.id() && source::form_nth(heap, source::form_nth(heap, vector, 1), 0).id() == b.id());
     }
     let invalid = source::form_collection(heap, 6, [source::text(heap, "not a number")]); var bad = source::Job { heap: heap };
     assert(source::start(bad, macro, [source::nil(), source::nil(), source::number(7), invalid])); assert(source::run(bad, -1) == tiny::Outcome.Failed && bad.fault == source::Fault.UnsupportedOperand);

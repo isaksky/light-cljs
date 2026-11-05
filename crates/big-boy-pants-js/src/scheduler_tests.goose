@@ -19,7 +19,7 @@ fn prepare(code: source::Code&, heap: source::Heap&, roots: snapshot::Binding[>.
     roots.push(snapshot::Binding { id: 1, generation: 1, value: rt });
     // No helper result exists in this initialized base. This is intentionally
     // distinct from snapshot_fixture's preinitialized isolation workload.
-    assert(source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")).tag == 0);
+    assert(source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")).tag() == 0);
 }
 fn job(id: i64, entry: i64, call: bool = false, delay: i64 = 0) -> scheduler::Spec {
     var s = scheduler::Spec { id: id, key: key(id), entry: entry, runtime_binding: 1, call_result: call, delay_ms: delay };
@@ -60,7 +60,7 @@ thread_fn import_artifacts(base: snapshot::Snapshot, results: scheduler::Result[
         assert(result.terminal.outcome == dependency::Outcome.Success);
         var c = artifact::Control {}; let value = artifact::import_graph(result.artifact, base, heap, imports, c); assert(c.error == artifact::Error.None);
         let expansion = source::form_nth(heap, value, 1); assert(source::form_count(heap, expansion) == 4);
-        for expected, i in [2, 3, 9, 16] { assert(source::form_nth(heap, expansion, i).number == expected); }
+        for expected, i in [2, 3, 9, 16] { assert(source::form_nth(heap, expansion, i).num() == expected); }
         var bc = bridge::Control {}; assert(bridge::export_graph(heap, [value], graph, bc));
     }
     assert(graph.roots.len == 1);
@@ -215,8 +215,8 @@ thread_fn root_reads(base: snapshot::Snapshot) {
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var c = snapshot::Control {};
     assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), c));
     let receiver = source::allocate(heap, source::Node { kind: 0 }); let name = source::text(heap, "root");
-    assert(source::put(heap, receiver, name, source::Value {}));
-    assert(source::form_op(heap, 82, [receiver, source::nil(), name]).tag == 0 && heap.fault == source::Fault.None);
+    assert(source::put(heap, receiver, name, source::Value.Undefined));
+    assert(source::form_op(heap, 82, [receiver, source::nil(), name]).tag() == 0 && heap.fault == source::Fault.None);
     source::form_op(heap, 82, [receiver, source::nil(), source::text(heap, "missing")]); assert(heap.fault == source::Fault.DependencyNeed);
 }
 fn budgets_and_control(base: const snapshot::Snapshot&, entries: const i64[:]) {
@@ -249,7 +249,7 @@ fn budgets_and_control(base: const snapshot::Snapshot&, entries: const i64[:]) {
         var plan = scheduler::Plan {}; var s = job(0, entries[0]);
         if mode == 0 { s.key.session = 2; }
         if mode == 1 { s.entry = base.functions.len; }
-        if mode == 2 { s.arguments[0] = source::Value { tag: 5, a: 1, session: 1 }; s.argument_count = 1; }
+        if mode == 2 { s.arguments[0] = source::object(1); s.argument_count = 1; }
         plan.jobs.push(s);
         if mode == 3 { plan.jobs.push(s); }
         if mode == 4 { plan.needs.push(scheduler::Need { consumer: 999, key: key(0) }); }

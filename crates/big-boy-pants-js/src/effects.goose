@@ -48,23 +48,23 @@ fn service(a: Authority&, job: source::Job&, owner: i64, sequence: i64&) -> bool
     let start = clock_ns(); defer { a.service_ns += clock_ns() - start; }
     var index: i64 = -1;
     for g, i in a.grants { if g.owner == owner && g.sequence == sequence { index = i; } }
-    if index < 0 || a.grants[index].kind != job.effect_kind { return source::deliver_effect(job, source::Value {}, source::Fault.EffectContract); }
+    if index < 0 || a.grants[index].kind != job.effect_kind { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); }
     let g = a.grants[index]; var prefix: u16[>..] = [];
     if g.kind == 5 {
-        if job.effect_count > 1 || job.effect_count == 1 && job.effect_args[0].tag != 4 { return source::deliver_effect(job, source::Value {}, source::Fault.EffectContract); }
+        if job.effect_count > 1 || job.effect_count == 1 && job.effect_args[0].tag() != 4 { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); }
         if job.effect_count == 0 { prefix.append([71, 95, 95]); }
-        else { let p = job.effect_args[0]; if !source::valid(job.heap, p) || p.b > 128 { return source::deliver_effect(job, source::Value {}, source::Fault.EffectContract); } prefix.append(job.heap.units[p.a..(p.a + p.b)]); }
-    } else if job.effect_count != 0 { return source::deliver_effect(job, source::Value {}, source::Fault.EffectContract); }
+        else { let p = job.effect_args[0]; if !source::valid(job.heap, p) || source::str_len(job.heap, p) > 128 { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); } prefix.append(source::chars(job.heap, p)); }
+    } else if job.effect_count != 0 { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); }
     // This slice supports unqualified generated names only; namespace and
     // compiler naming-scope/collision services require the compiler adapter.
-    for unit in prefix { if unit == 47 { return source::deliver_effect(job, source::Value {}, source::Fault.EffectContract); } }
+    for unit in prefix { if unit == 47 { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); } }
     let r = commit(a, g, prefix);
-    if r.fault != source::Fault.None { return source::deliver_effect(job, source::Value {}, r.fault); }
+    if r.fault != source::Fault.None { return source::deliver_effect(job, source::Value.Undefined, r.fault); }
     var value = source::number(r.value);
     if g.kind == 5 {
         let suffix = str(r.value); var units: u16[>..] = []; units.append(prefix); for byte in suffix { units.push(byte); }
         value = source::allocate(job.heap, source::Node { kind: 9, value: source::string(job.heap, units), namespace_value: source::nil() });
-        if job.heap.fault != source::Fault.None { return source::deliver_effect(job, source::Value {}, job.heap.fault); }
+        if job.heap.fault != source::Fault.None { return source::deliver_effect(job, source::Value.Undefined, job.heap.fault); }
     }
     sequence += 1; return source::deliver_effect(job, value);
 }

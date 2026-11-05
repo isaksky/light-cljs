@@ -15,7 +15,7 @@ import .heap_program;
 // The unchanged compiler-emitted effect.cljs macro is exercised separately.
 fn fixture(code: source::Code&, kinds: const i64[:], fail: bool = false) -> i64 {
     var part = source::Code {}; let names = ["unused", "unused", "unused", "unused", "unused", "gensym", "sharedIncrement", "sharedRead", "external", "missing"];
-    for name in names { let at = part.units.len; for byte in name { part.units.push(byte); } part.constants.push(source::Value { tag: 4, a: at, b: name.len }); }
+    for name in names { let at = part.units.len; for byte in name { part.units.push(byte); } part.strings.push(source::Str { start: at, len: name.len }); part.constants.push(source::Value.String { s: (part.strings.len - 1) as u32 }); }
     let count = kinds.len * 3 + (if fail { 2 } else { 0 });
     part.functions.push(source::Function { start: 0, count: count, constants: 0, children: 0, params: 0, locals: 0, captures: 0, strict: true });
     for kind, i in kinds {
@@ -60,8 +60,8 @@ fn counters(base: const snapshot::Snapshot&, entries: const i64[:]) {
         for r, i in run.effect_receipts { assert(r.grant.id == [100, 200, 300][i] && r.value == [1, 2, 2][i]); }
         for result in run.results {
             assert(result.terminal.outcome == dependency::Outcome.Success);
-            if result.id < 40 { assert(result.artifact.root.number == (if result.id == 30 { 1 } else { 2 })); }
-            else { assert(result.artifact.root.tag == 2 && result.artifact.root.a == 1); }
+            if result.id < 40 { assert(result.artifact.root.num() == (if result.id == 30 { 1 } else { 2 })); }
+            else { assert(result.artifact.root.tag() == 2 && result.artifact.root.flag()); }
         }
         if quantum == 1000000 { print("effects workers=", workers, " serialized-restore/execute/publish-ns=", run.ordered_ns, " authority-service-ns=", run.effect_service_ns, " pure-worker-sum-ns=", run.pure_ns); }
     } }
@@ -118,7 +118,7 @@ thread_fn emitted_import(base: snapshot::Snapshot, results: scheduler::Result[])
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {}; assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), sc));
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
     for packet in results { let result = artifact::import_graph(packet.artifact, base, heap, imports, c); assert(c.error == artifact::Error.None);
-        let expansion = source::form_nth(heap, result, 1); assert(source::form_nth(heap, expansion, 0).number == 7 && source::form_nth(heap, expansion, 1).a == 1); }
+        let expansion = source::form_nth(heap, result, 1); assert(source::form_nth(heap, expansion, 0).num() == 7 && source::plain(source::form_nth(heap, expansion, 1)).payload == 1); }
 }
 // Messages between the heap-free main and the thread programs that each own
 // one heap (light-cljs-794).
@@ -153,7 +153,7 @@ thread_fn caught_restore(saved: snapshot::Snapshot) {
     var sc = snapshot::Control {};
     var restored_code = source::Code {}; var restored = source::Heap { code: restored_code }; var roots: snapshot::Binding[>..] = [];
     assert(snapshot::restore(saved, restored_code, restored, roots, source::reserve_identity(), sc));
-    assert(source::truthy(roots[0].value) && !source::equal(restored, roots[0].value, source::nil()));
+    assert(source::truthy(restored, roots[0].value) && !source::equal(restored, roots[0].value, source::nil()));
     var graph = bridge::Graph {}; var bc = bridge::Control {}; assert(!bridge::export_graph(restored, [roots[0].value], graph, bc) && bc.error == bridge::Error.Unsupported);
     source::get(restored, roots[0].value, source::text(restored, "name")); assert(restored.fault == source::Fault.UnsupportedOperand);
 }
@@ -171,9 +171,9 @@ thread_fn caught_error(fault: source::Fault, limited: bool) {
         source::fail(job, fault, job.frames[0]);
         if limited { assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.MemoryLimit && job.fault_function == 0 && job.fault_pc == 0); }
         else {
-            let error = job.operands[0]; assert(error.tag == 5 && source::truthy(error) && source::equal(heap, error, error));
+            let error = job.operands[0]; assert(error.tag() == 5 && source::truthy(heap, error) && source::equal(heap, error, error));
             let other = source::allocate(heap, source::Node { kind: 13 }); assert(!source::equal(heap, error, other) && !source::form_equal(heap, error, other) && source::form_equal(heap, error, error));
-            assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.tag == 2 && job.result.a == 0);
+            assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.tag() == 2 && !job.result.flag());
             assert(source::retire(job));
             var sc = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 1, generation: 1, value: error }], sc); assert(sc.error == snapshot::Error.None);
             assert(qput(Caught { image: copy(saved) }));
@@ -211,10 +211,10 @@ thread_fn suspended(base: snapshot::Snapshot, entries: i64[], failed: i64, cut: 
                     // job's active mutation ownership released. It is not a
                     // restart of the waiting parent and has no shared grants.
                     assert(heap.live_jobs == 1 && !job.claimed);
-                    let nested = snapshot_test::invoke(heap, source::closure(heap, entries[5], []), []); assert(nested.tag == 2 && nested.a == 1 && heap.live_jobs == 1);
+                    let nested = snapshot_test::invoke(heap, source::closure(heap, entries[5], []), []); assert(nested.tag() == 2 && nested.flag() && heap.live_jobs == 1);
                     assert(dependency::install(table, dependency::Completion { key: key(99), producer: request.producer, terminal: dependency::Terminal { outcome: if failed == 1 { dependency::Outcome.Failed } else { dependency::Outcome.Success } } }));
                     assert(table.deliveries.len == 1 && !job.claimed);
-                    if table.deliveries[0].terminal.outcome == dependency::Outcome.Failed { assert(source::deliver_effect(job, source::Value {}, source::Fault.DependencyNeed)); continue; }
+                    if table.deliveries[0].terminal.outcome == dependency::Outcome.Failed { assert(source::deliver_effect(job, source::Value.Undefined, source::Fault.DependencyNeed)); continue; }
                 }
                 assert(effects::service(authority, job, 1, sequence));
                 // Duplicate delivery cannot append a second result or mutate
@@ -224,7 +224,7 @@ thread_fn suspended(base: snapshot::Snapshot, entries: i64[], failed: i64, cut: 
             source::run(job, quantum);
         }
         assert(waited && !job.claimed);
-        if failed == 0 { assert(job.status == tiny::Status.Complete && job.result.number == 2 && authority.receipts.len == 3 && authority.counters[0] == 2); }
+        if failed == 0 { assert(job.status == tiny::Status.Complete && job.result.num() == 2 && authority.receipts.len == 3 && authority.counters[0] == 2); }
         else { assert(job.status == tiny::Status.Failed && job.fault == source::Fault.DependencyNeed && authority.receipts.len == 1 && authority.counters[0] == 1); }
         let steps = job.steps; for i in 3 { assert(source::run(job, -1) == (if failed == 0 { tiny::Outcome.Complete } else { tiny::Outcome.Failed }) && job.steps == steps); }
         assert(source::retire(job) && heap.live_jobs == 0);
@@ -267,7 +267,7 @@ fn measure(base: const snapshot::Snapshot&, entries: const i64[:]) {
             assert(scheduler::dispatch(plan, base, run, scheduler::Options { workers: workers })); check(run);
             assert(run.effect_counters[0] == 32 && run.effect_receipts.len == 48 && run.admitted == 64);
             for state, i in run.states { assert(scheduler::terminal(run, i).outcome == dependency::Outcome.Success); }
-            for result in run.results { if result.id < 100 { assert(result.artifact.root.tag == 3 && result.artifact.root.number == (result.id + 1) * 2); } else { assert(result.artifact.root.tag == 2 && result.artifact.root.a == 1); } }
+            for result in run.results { if result.id < 100 { assert(result.artifact.root.tag() == 3 && result.artifact.root.num() == (result.id + 1) * 2); } else { assert(result.artifact.root.tag() == 2 && result.artifact.root.flag()); } }
             for r, i in run.effect_receipts { assert(r.grant.id == i && r.value == (i / 3) * 2 + (if i % 3 == 0 { 1 } else { 2 })); }
             if sample > 0 { print("effect-sample workers=", workers, " sample=", sample, " ordered-ns=", run.ordered_ns, " service-ns=", run.effect_service_ns, " pure-worker-sum-ns=", run.pure_ns, " dispatch-through-join-ns=", clock_ns() - started); }
         }
@@ -292,7 +292,7 @@ thread_fn result_failure(base: snapshot::Snapshot, entries: i64[]) {
     assert(source::run(job, -1) == tiny::Outcome.Failed && !effects::service(authority, job, 1, sequence) && source::retire(job));
     // Reuse the heap after terminal cleanup for unrelated compiler work.
     heap.limits.nodes += 1024;
-    let nested = snapshot_test::invoke(heap, source::closure(heap, entries[5], []), []); assert(nested.tag == 2 && nested.a == 1);
+    let nested = snapshot_test::invoke(heap, source::closure(heap, entries[5], []), []); assert(nested.tag() == 2 && nested.flag());
     print("post-commit result construction error stays terminal, original receipt retained, resource isolation and unrelated reuse passed");
 }
 
@@ -309,7 +309,7 @@ thread_fn native_callback(base: snapshot::Snapshot, entries: i64[], quantum: i64
         var authority = effects::Authority {}; authority.grants.append([grant(1, 1, 0, 5), grant(2, 1, 1, 5)]); var sequence: i64 = 0;
         while job.status == tiny::Status.Ready { source::run(job, quantum); if job.effect_pending { assert(effects::service(authority, job, 1, sequence)); } }
         assert(job.status == tiny::Status.Complete && sequence == 2 && authority.receipts.len == 2 && authority.counters[0] == 2);
-        for i in 2 { let symbol = heap.nodes[source::form_nth(heap, job.result, i).a]; let name = symbol.value; assert(symbol.kind == 9 && heap.units[name.a..(name.a + name.b)] == (if i == 0 { ['a' as u16, '1'] } else { ['b' as u16, '2'] })); }
+        for i in 2 { let symbol = heap.nodes[source::form_nth(heap, job.result, i).id()]; let name = symbol.value; assert(symbol.kind == 9 && source::chars(heap, name) == (if i == 0 { ['a' as u16, '1'] } else { ['b' as u16, '2'] })); }
         assert(source::retire(job));
     }
 }

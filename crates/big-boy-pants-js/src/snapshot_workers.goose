@@ -18,8 +18,8 @@ fn cap(heap: source::Heap&, s: const snapshot::Snapshot&, exhaust: bool) {
 }
 fn heap_ceiling(s: const snapshot::Snapshot&) -> i64 {
     return (s.nodes.len + 512) * bytes_of([source::Node { kind: 0 }]).len
-         + (s.values.len + 4096 + s.constants.len) * bytes_of([source::Value {}]).len
-         + (s.properties.len + 128) * bytes_of([source::Property { key: source::Value {}, value: source::Value {}, next: -1 }]).len
+         + (s.values.len + 4096 + s.constants.len) * bytes_of([source::Value.Undefined]).len
+         + (s.properties.len + 128) * bytes_of([source::Property { key: source::Value.Undefined, value: source::Value.Undefined, next: -1 }]).len
          + (s.units.len + 256) * 2 + s.bytes.len + bytes_of(s.sources).len;
 }
 fn charge(s: const snapshot::Snapshot&) -> i64 {
@@ -48,7 +48,7 @@ thread_fn worker(s: snapshot::Snapshot, request: Request) {
                 source::run(job, -1); report.fault = job.fault; assert(source::retire(job));
             } else {
                 let result = snapshot_test::verify(heap, bindings, request.id);
-                let out = source::form_nth(heap, result, 1); report.checksum = source::form_nth(heap, source::form_nth(heap, out, 0), 1).number as i64;
+                let out = source::form_nth(heap, result, 1); report.checksum = source::form_nth(heap, source::form_nth(heap, out, 0), 1).num() as i64;
                 var b = bridge::Control {}; b.nodes = 128; b.bytes = 32768; b.work = 100000;
                 assert(bridge::export_graph(heap, [result], artifact, b));
             }
@@ -68,7 +68,7 @@ fn main() {
     let reserved = charge(saved); var resources = snapshot::Resources { limit: 2 * reserved, workers: 2 };
     qlimit<Report>(2);
     // Parent diverges after capture. All workers still see the old cell=40.
-    parent.nodes[roots[5].value.a].value = source::number(900);
+    parent.nodes[roots[5].value.id()].value = source::number(900);
     var copied: i64 = c.copied_bytes; var restore_ns: i64 = 0; var max_nodes: i64 = 0; var max_private: i64 = 0; var max_work: i64 = 0;
     for batch in 16 {
         assert(snapshot::reserve(resources, reserved)); let first = thread_spawn_contained(worker, copy(saved), Request { id: batch * 2 + 1, identity: source::reserve_identity() });
@@ -90,7 +90,7 @@ fn main() {
             max_private = max(max_private, report.heap_bytes); max_work = max(max_work, report.work);
         }
         assert(seen == 3 && resources.active == 0 && resources.retained == 0 && reason.len == 0);
-        assert(parent.nodes[roots[5].value.a].value.number == 900 && parent.boot_count == 1 && parent.producer_count == 2);
+        assert(parent.nodes[roots[5].value.id()].value.num() == 900 && parent.boot_count == 1 && parent.producer_count == 2);
     }
     // Invalid data is rejected by the coordinator before any dispatch.
     var bad = copy(saved); bad.header.allocator = 0; var check = snapshot::Control {}; assert(!snapshot::validate(bad, check));

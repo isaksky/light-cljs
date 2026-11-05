@@ -14,7 +14,7 @@ extern fn peak_memory() -> i64 = "goose_measure_peak_rss";
 extern fn resident_memory() -> i64 = "goose_measure_resident";
 extern fn observe(bytes: const u8&, count: i64) -> i64 = "goose_measure_observe";
 fn consume<T>(values: const T[:]) -> i64 { let bytes = bytes_of(values); return if bytes.len == 0 { 0 } else { observe(bytes[0], bytes.len) }; }
-fn consume(s: const snapshot::Snapshot&) -> i64 { return s.header.work + consume(s.code_bytes) + consume(s.functions) + consume(s.code_constants) + consume(s.children) + consume(s.ops) + consume(s.code_units) + consume(s.nodes) + consume(s.values) + consume(s.properties) + consume(s.units) + consume(s.constants) + consume(s.bytes) + consume(s.sources) + consume(s.bindings); }
+fn consume(s: const snapshot::Snapshot&) -> i64 { return s.header.work + consume(s.code_bytes) + consume(s.functions) + consume(s.code_constants) + consume(s.children) + consume(s.ops) + consume(s.code_units) + consume(s.nodes) + consume(s.values) + consume(s.properties) + consume(s.units) + consume(s.constants) + consume(s.bytes) + consume(s.sources) + consume(s.bindings) + consume(s.code_strings) + consume(s.strings); }
 fn retained(heap: const source::Heap&) -> i64 { return bytes_of(heap.nodes).len + bytes_of(heap.values).len + bytes_of(heap.properties).len + bytes_of(heap.units).len + bytes_of(heap.constants).len + heap.source_bytes.len + bytes_of(heap.source_ranges).len; }
 
 // GCS2 (light-cljs-784; docs/javascript-coverage.md, decision 3): one input
@@ -30,7 +30,7 @@ fn retained(heap: const source::Heap&) -> i64 { return bytes_of(heap.nodes).len 
 // continuation and exits, and a fresh worker restores it later.
 struct Saved {
     heap:    snapshot::Snapshot = snapshot::Snapshot {}, frames: source::Frame[] = [], locals: source::Value[] = [], operands: source::Value[] = [], writes: source::Write[] = [], handlers: source::Handler[] = [],
-    steps:   i64                = 0, args: source::Value[8] = [source::Value {}; 8], frame: source::Frame = source::Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: source::Value {}, receiver: source::Value {} },
+    steps:   i64                = 0, args: source::Value[8] = [source::Value.Undefined; 8], frame: source::Frame = source::Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: source::Value.Undefined, receiver: source::Value.Undefined },
     bridge:  bridge::Control    = bridge::Control {}, sequence: i64 = 0, costs: i64[2] = [0; 2], protected: i64 = 0,
     storage: bool               = false, base: snapshot::Header = snapshot::Header {},
 }
@@ -83,7 +83,7 @@ fn initialize(id: i64, heap: source::Heap&, callee: source::Value, args: const s
     if !source::start(job, callee, args) || source::run(job, -1) != tiny::Outcome.Complete {
         let pc = job.fault_pc; let start = if pc >= 0 && pc < heap.code.ops.len { heap.code.ops[pc].start } else { -1 }; let end = if pc >= 0 && pc < heap.code.ops.len { heap.code.ops[pc].end } else { -1 };
         var fault: u8[>..] = []; source::describe_fault(fault, heap.code, job);
-        format(report, "ERROR ", id, " preparation-", fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end); return source::Value {}, false;
+        format(report, "ERROR ", id, " preparation-", fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end); return source::Value.Undefined, false;
     }
     return job.result, true;
 }
@@ -99,7 +99,7 @@ thread_fn preparer(base: snapshot::Snapshot, directory: u8[], id: i64, key: i64,
     let entry = append(code, heap, str(directory, "/definition-", key, ".gsp")); assert(entry >= 0);
     let factory, loaded = initialize(id, heap, source::closure(heap, entry, []), [], base.nodes.len, report); if !loaded { assert(qput(Preparation { report: copy(report) })); return; }
     let function, ready = initialize(id, heap, factory, [rt], base.nodes.len, report); if !ready { assert(qput(Preparation { report: copy(report) })); return; }
-    if !source::valid(heap, function) || function.tag != 5 || heap.nodes[function.a].kind != 2 { format(report, "ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
+    if !source::valid(heap, function) || function.tag() != 5 || heap.nodes[function.id()].kind != 2 { format(report, "ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
     heap.initializer_count += 1;
     let result = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: function }], sc); assert(sc.error == snapshot::Error.None);
     assert(qput(Preparation { ok: true, image: copy(result) }));
@@ -128,15 +128,12 @@ fn load(code: source::Code&, path: const u8[:]) -> i64 {
 }
 fn append(code: source::Code&, heap: source::Heap&, path: const u8[:]) -> i64 {
     let first = code.constants.len; let entry = load(code, path); if entry < 0 { return -1; }
-    for c in code.constants[first..] { var value = c; if c.tag == 4 { value = source::string(heap, code.units[c.a..(c.a + c.b)]); } heap.constants.push(value); }
+    for c in code.constants[first..] { var value = c; if c.tag() == 4 { value = source::string(heap, source::code_chars(code, c)); } heap.constants.push(value); }
     return entry;
 }
 fn leaf(id: i64, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64, address: i64 = 0, timing: i64[4] = [0; 4]) -> source::Value, bool {
     let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")); var job = source::Job { heap: heap, protected_nodes: protected, root_receiver: roots }; defer { source::retire(job); }
-    source::start(job, callee, args); if source::run(job, -1) != tiny::Outcome.Complete { fail(id, heap, job, address, timing); return source::Value {}, false; } return job.result, true;
-}
-fn relocated(f: source::Frame, identity: i64) -> source::Frame {
-    var out = f; out.callee = snapshot::relocated(f.callee, identity); out.receiver = snapshot::relocated(f.receiver, identity); out.input = snapshot::relocated(f.input, identity); out.output = snapshot::relocated(f.output, identity); return out;
+    source::start(job, callee, args); if source::run(job, -1) != tiny::Outcome.Complete { fail(id, heap, job, address, timing); return source::Value.Undefined, false; } return job.result, true;
 }
 fn save(job: source::Job&, rt: source::Value, call: source::Value, control: bridge::Control, sequence: i64, costs: i64[2], checkpoint: i64) -> Saved {
     assert(!job.claimed && job.effect_pending && job.status == tiny::Status.Ready && job.effect_kind == 9 && job.effect_count == 3);
@@ -221,7 +218,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, deterministi
     var sc = snapshot::Control {};
     if cancelled() { publish(Event { id: id, kind: 3, name: str("cancelled"), address: address, timing: timing(work, started, sc) }); return; }
     assert(snapshot::restore(saved.heap, code, heap, bindings, identity, sc)); let rt = bindings[0].value;
-    var costs = saved.costs; var control = saved.bridge; var call = source::Value {}; var function = source::Value {};
+    var costs = saved.costs; var control = saved.bridge; var call = source::Value.Undefined; var function = source::Value.Undefined;
     if mode == 0 { function = bindings[1].value; let importing = clock_ns();
         assert(read_file(str(directory, "/", id, ".gfb"), bytes)); assert(bridge::decode(graph, bytes, control)); assert(bridge::import_graph(heap, graph, args, control)); assert(args.len >= 2); call = args[0]; costs[1] += clock_ns() - importing;
     } else if mode == 2 {
@@ -229,37 +226,38 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, deterministi
         let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], saved.protected, address, timing(work, started, sc)); if !loaded { return; }
         let value, initialized = leaf(id, heap, factory, [rt], saved.protected, address, timing(work, started, sc)); if !initialized { return; } function = value;
         if mode == 2 { let exporting = clock_ns();
-            let closure = function.tag == 5 && heap.nodes[function.a].kind == 2;
+            let closure = function.tag() == 5 && heap.nodes[function.id()].kind == 2;
             var publication = snapshot::Control {};
             let ok = if closure { callable::encode(heap, saved.heap, function, bytes, publication, checkpoint) } else { bridge::export_graph(heap, [function], graph, control) && bridge::encode(graph, bytes, control) };
             if !ok {
-                let function_id = if closure { heap.nodes[function.a].function } else { entry }; let pc = code.functions[function_id].start; let op = code.ops[pc];
+                let function_id = if closure { heap.nodes[function.id()].function } else { entry }; let pc = code.functions[function_id].start; let op = code.ops[pc];
                 publish(Event { id: id, kind: 3, name: str("helper-", heap.fault, "-", control.error, "-", publication.error, " function=", function_id, " pc=", pc, " emitted-span=", op.start, ":", op.end), address: address, timing: timing(work, started, sc) }); return;
             } costs[1] += clock_ns() - exporting; publish(Event { id: id, kind: 5, key: key, name: str(costs[0], " ", costs[1]), data: copy(bytes), metrics: str(sc.restore_ns, " 0 ", clock_ns() - worker_started, " ", storage(saved, heap, sc, bytes.len), " ", mode), callable: closure, address: address, census: rows(work, heap, job, bindings, function), timing: timing(work, started, sc) }); return;
         }
     } else { call = bindings[1].value; }
     // Import before re-registering the suspended job; failed publication is
     // transactional and delivered at the original effect instruction.
-    var imported = source::Value {}; var import_ok = false;
+    var imported = source::Value.Undefined; var import_ok = false;
     if mode == 1 && work.callable {
         let importing = clock_ns(); let value, ok = published(work.helper, saved.base, key, code, heap); imported = value; import_ok = ok; costs[1] += clock_ns() - importing;
     }
     let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")); job.effects_enabled = true; job.helpers_enabled = true; job.protected_nodes = saved.protected; job.root_receiver = roots; defer { source::retire(job); }
     if mode == 0 { source::start(job, function, args); } else {
-        for f in saved.frames { job.frames.push(relocated(f, identity)); } for v in saved.locals { job.locals.push(snapshot::relocated(v, identity)); } for v in saved.operands { job.operands.push(snapshot::relocated(v, identity)); }
-        for w in saved.writes { job.writes.push(source::Write { object: snapshot::relocated(w.object, identity), key: snapshot::relocated(w.key, identity), value: snapshot::relocated(w.value, identity) }); }
-        for h in saved.handlers { job.handlers.push(h); } job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = 9; job.effect_count = 3; job.effect_frame = relocated(saved.frame, identity); for v, i in saved.args { job.effect_args[i] = snapshot::relocated(v, identity); }
+        // Saved rows link the restored heap's rows by index: copied verbatim.
+        for f in saved.frames { job.frames.push(f); } job.locals.append(saved.locals); job.operands.append(saved.operands);
+        job.writes.append(saved.writes);
+        for h in saved.handlers { job.handlers.push(h); } job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = 9; job.effect_count = 3; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
         if mode == 1 && !work.callable { import_ok = bridge::decode(graph, work.helper, control) && bridge::import_graph(heap, graph, args, control) && args.len == 1; if import_ok { imported = args[0]; } }
-        if !import_ok { source::deliver_effect(job, source::Value {}, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], imported); assert(source::deliver_effect(job, imported)); }
+        if !import_ok { source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], imported); assert(source::deliver_effect(job, imported)); }
     }
     let execution_started = clock_ns(); var sequence = if mode == 0 { 0 } else { saved.sequence + 1 };
     loop {
         if cancelled() { publish(Event { id: id, kind: 3, name: str("cancelled"), address: address, timing: timing(work, started, sc) }); return; }
         let outcome = source::run(job, 10000); if outcome == tiny::Outcome.Complete { break; } if outcome == tiny::Outcome.Failed { fail(id, heap, job, address, timing(work, started, sc)); return; }
         if !job.effect_pending { continue; }
-        if job.effect_kind != 9 || job.effect_count != 3 { source::deliver_effect(job, source::Value {}, source::Fault.NativeBoundary); continue; }
-        let v = job.effect_args[2]; var name: u8[>..] = []; if v.tag != 4 { source::deliver_effect(job, source::Value {}, source::Fault.TypeError); continue; }
-        for u in heap.units[v.a..(v.a + v.b)] { if u <= 32 || u > 127 { source::deliver_effect(job, source::Value {}, source::Fault.NativeBoundary); break; } name.push(u as u8); } if !job.effect_pending { continue; }
+        if job.effect_kind != 9 || job.effect_count != 3 { source::deliver_effect(job, source::Value.Undefined, source::Fault.NativeBoundary); continue; }
+        let v = job.effect_args[2]; var name: u8[>..] = []; if v.tag() != 4 { source::deliver_effect(job, source::Value.Undefined, source::Fault.TypeError); continue; }
+        for u in source::chars(heap, v) { if u <= 32 || u > 127 { source::deliver_effect(job, source::Value.Undefined, source::Fault.NativeBoundary); break; } name.push(u as u8); } if !job.effect_pending { continue; }
         if work.blocking {
             // Wait in place: the job's state stays in this thread program.
             publish(Event { id: id, kind: 10, sequence: sequence, name: copy(name), steps: job.steps, writes: job.writes.len, address: address, timing: timing(work, started, sc) });
@@ -275,7 +273,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, deterministi
             barrier = answer.checkpoint;
             if answer.mode == -1 { return; }
             if answer.mode != 0 {
-                let importing = clock_ns(); var value = source::Value {}; var ok = false;
+                let importing = clock_ns(); var value = source::Value.Undefined; var ok = false;
                 if answer.mode == 1 && answer.callable {
                     // Installing a publication requires no live job. The
                     // suspended job holds only values into the append-only
@@ -288,7 +286,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, deterministi
                     ok = bridge::decode(graph, answer.helper, control) && bridge::import_graph(heap, graph, helper, control) && helper.len == 1; if ok { for h in helper { value = h; } }
                 }
                 costs[1] += clock_ns() - importing;
-                if !ok { source::deliver_effect(job, source::Value {}, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], value); assert(source::deliver_effect(job, value)); }
+                if !ok { source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], value); assert(source::deliver_effect(job, value)); }
                 sequence += 1; continue;
             }
             // Over the retention budget: save the continuation and exit.
@@ -321,13 +319,13 @@ fn serial_call(directory: const u8[:], id: i64, code: source::Code&, heap: sourc
         assert(outcome != tiny::Outcome.Failed);
         if !job.effect_pending { continue; }
         assert(job.effect_kind == 9 && job.effect_count == 3);
-        let name = job.effect_args[2]; assert(name.tag == 4); var text: u8[>..] = [];
-        for u in heap.units[name.a..(name.a + name.b)] { assert(u > 32 && u <= 127); text.push(u as u8); }
+        let name = job.effect_args[2]; assert(name.tag() == 4); var text: u8[>..] = [];
+        for u in source::chars(heap, name) { assert(u > 32 && u <= 127); text.push(u as u8); }
         print("NEED ", id, " ", sequence, " ", text, " ", job.steps, " ", job.writes.len); flush_stdout();
         var notice: u8[>..] = []; assert(read_line(notice)); assert(notice == "-2");
         var bytes:  u8[>..] = []; assert(read_file(str(directory, "/", id, "-", sequence, ".key"), bytes));
         let key, ok = parse_int(bytes); assert(ok && key >= -1);
-        if key == -1 { assert(source::deliver_effect(job, source::Value {}, source::Fault.HostEffect)); sequence += 1; continue; }
+        if key == -1 { assert(source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect)); sequence += 1; continue; }
         let entry = append(code, heap, str(directory, "/", id, "-", sequence, ".helper")); assert(entry >= 0);
         let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], 0); assert(loaded);
         let value, done = leaf(id, heap, factory, [rt], 0); assert(done);
@@ -339,7 +337,7 @@ fn serial(directory: const u8[:], code: source::Code&, heap: source::Heap&, rt: 
     var definitions: SerialDefinition[>..] = [];
     loop {
         var line: u8[>..] = []; assert(read_line(line)); let id, ok = parse_int(line); assert(ok && id >= 0); if id == 0 { break; }
-        print("START ", id); flush_stdout(); let started = clock_ns(); let key = definition(directory, id); var function = source::Value {}; var found = false;
+        print("START ", id); flush_stdout(); let started = clock_ns(); let key = definition(directory, id); var function = source::Value.Undefined; var found = false;
         for d in definitions { if d.key == key { function = d.function; found = true; break; } }
         if !found { let entry = append(code, heap, str(directory, "/definition-", key, ".gsp")); assert(entry >= 0);
             let factory, a = initialize(id, heap, source::closure(heap, entry, []), [], 0); if !a { continue; } let value, b = initialize(id, heap, factory, [rt], 0); if !b { continue; } function = value; definitions.push(SerialDefinition { key: key, function: function }); print("PREPARED ", id, " ", key); flush_stdout(); }

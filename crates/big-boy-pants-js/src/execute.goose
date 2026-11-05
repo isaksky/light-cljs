@@ -16,7 +16,7 @@ fn typed_outcome(heap: source::Heap&, job: source::Job&) {
     var value: u8[>..] = [];
     if job.fault == source::Fault.None || job.thrown { source::canonical(heap, job.result, value); }
     else { format(value, "error:", if job.fault == source::Fault.TypeError { "TypeError" } else { "ReferenceError" }); }
-    if job.result.tag == 5 && (job.fault == source::Fault.None || job.thrown) { print("infrastructure:unsupported outcome identity"); error(); return; }
+    if job.result.tag() == 5 && (job.fault == source::Fault.None || job.thrown) { print("infrastructure:unsupported outcome identity"); error(); return; }
     var out: u8[>..] = []; format(out, "{:status :", if job.fault == source::Fault.None { "returned" } else { "thrown" }, " :value \"", value, "\" :effects [");
     for write in job.writes {
         if source::key_is(heap, write.key, "observed") { var effect: u8[>..] = []; source::canonical(heap, write.value, effect); format(out, "\"", effect, "\" "); }
@@ -41,7 +41,7 @@ fn main() {
     if !source::initialize(heap) { print("heap:", heap.fault); error(); return; }
     let entry = source::closure(heap, 0, []);
     let prepared = clock_ns();
-    var result = source::Value {}; var checksum: f64 = 0;
+    var result = source::Value.Undefined; var checksum: f64 = 0;
     let warmup: i64 = if repetitions > 1 { 100 } else { 0 };
     var warmed = prepared;
     for i in (repetitions + warmup) {
@@ -59,8 +59,8 @@ fn main() {
         }
         result = job.result;
         if repetitions > 1 {
-            if result.tag != 3 { print("measurement requires a numeric source result"); error(); return; }
-            if i >= warmup { checksum += result.number; }
+            if result.tag() != 3 { print("measurement requires a numeric source result"); error(); return; }
+            if i >= warmup { checksum += result.num(); }
         }
     }
     let executed = clock_ns();

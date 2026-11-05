@@ -19,8 +19,8 @@ struct State {
 fn state(a: source::Job&) -> State {
     return State {
         thrown:     a.thrown, status: a.status, steps: a.steps, claimed: a.claimed, fault: a.fault, fault_pc: a.fault_pc, fault_function: a.fault_function,
-        registered: a.registered, live_jobs: a.heap.live_jobs, result: to_bytes([a.result]), frames: to_bytes(a.frames), locals: to_bytes(a.locals), operands: to_bytes(a.operands), writes: to_bytes(a.writes),
-        nodes:      to_bytes(a.heap.nodes), values: to_bytes(a.heap.values), properties: to_bytes(a.heap.properties), units: copy(a.heap.units), identity: a.heap.identity, work: a.heap.work, heap_fault: a.heap.fault,
+        registered: a.registered, live_jobs: a.heap.live_jobs, result: source::plain_rows([a.result]), frames: source::plain_rows(a.frames), locals: source::plain_rows(a.locals), operands: source::plain_rows(a.operands), writes: source::plain_rows(a.writes),
+        nodes:      source::plain_rows(a.heap.nodes), values: source::plain_rows(a.heap.values), properties: source::plain_rows(a.heap.properties), units: copy(a.heap.units), identity: a.heap.identity, work: a.heap.work, heap_fault: a.heap.fault,
     };
 }
 fn same_state(a: const State&, b: const State&) {
@@ -84,9 +84,8 @@ thread_fn check_steps(bytes: u8[], cut: i64) {
     let first = qget<State>();
     var h2 = source::Heap { code: code }; assert(source::initialize(h2));
     // Two differential executions of one logical session image.
-    h2.identity = first.identity; h2.global.session = first.identity; h2.call_method.session = first.identity;
-    for &v in h2.constants { if v.tag == 4 { v.session = first.identity; } }
-    for &p in h2.properties { p.key.session = first.identity; p.value.session = first.identity; }
+    // Values carry no session, so only the heap's arena label differs.
+    h2.identity = first.identity;
     let e2 = source::closure(h2, 0, []);
     var b = source::Job { heap: h2 };
     assert(source::start(b, e2, []));
@@ -142,7 +141,9 @@ thread_fn execution_limit(bytes: u8[], kind: i64) {
         assert(job.fault == (if kind == 0 { source::Fault.InstructionLimit } else if kind == 1 || kind == 2 { source::Fault.StackLimit } else if kind == 5 { source::Fault.WorkLimit } else { source::Fault.MemoryLimit }));
     }
 }
-// A handle from one session's heap is stale in another session's heap.
+// A handle past a heap's rows is stale there. Values carry no session
+// (light-cljs-785): an in-range handle from another heap is not detectable,
+// because each thread program owns exactly one heap (light-cljs-794).
 struct Stale { value: source::Value }
 thread_fn stale_owner(bytes: u8[]) {
     defer { heap_program::finish(); }
@@ -151,9 +152,9 @@ thread_fn stale_owner(bytes: u8[]) {
     let object = source::allocate(heap, source::Node { kind: 0 });
     for i in 200 { source::allocate(heap, source::Node { kind: 0 }); }
     assert(source::valid(heap, object));
-    assert(qput(Stale { value: object }));
+    assert(qput(Stale { value: source::object(heap.nodes.len - 1) }));
     heap.fault = source::Fault.None;
-    assert(!source::valid(heap, source::Value { tag: 5, a: heap.nodes.len, session: heap.identity }));
+    assert(!source::valid(heap, source::object(heap.nodes.len)));
 }
 thread_fn stale_other(bytes: u8[], object: source::Value) {
     defer { heap_program::finish(); }
@@ -180,8 +181,8 @@ thread_fn factory(bytes: u8[]) {
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let entry = source::closure(heap, 0, []);
     var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
-    assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.tag == 5);
-    assert(heap.nodes[job.result.a].kind == 2);
+    assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.tag() == 5);
+    assert(heap.nodes[job.result.id()].kind == 2);
 }
 fn main() {
     array_lengths();
@@ -249,33 +250,33 @@ thread_fn array_length_bounds() {
     let array = source::allocate(heap, source::Node { kind: 1 }); let length = source::text(heap, "length");
     for i in 4 { assert(source::put(heap, array, source::key(heap, source::number(i)), source::number(i + 10))); }
     assert(source::put(heap, array, length, source::number(2)));
-    assert(source::get(heap, array, source::key(heap, source::number(1))).number == 11);
-    assert(source::get(heap, array, source::key(heap, source::number(2))).tag == 0);
+    assert(source::get(heap, array, source::key(heap, source::number(1))).num() == 11);
+    assert(source::get(heap, array, source::key(heap, source::number(2))).tag() == 0);
     assert(source::put(heap, array, length, source::number(4)));
-    assert(source::get(heap, array, source::key(heap, source::number(3))).tag == 0);
+    assert(source::get(heap, array, source::key(heap, source::number(3))).tag() == 0);
     assert(source::put(heap, array, source::key(heap, source::number(2)), source::number(99)));
-    assert(source::get(heap, array, source::key(heap, source::number(2))).number == 99);
-    assert(source::put(heap, array, length, source::number(0)) && heap.nodes[array.a].head == -1);
+    assert(source::get(heap, array, source::key(heap, source::number(2))).num() == 99);
+    assert(source::put(heap, array, length, source::number(0)) && heap.nodes[array.id()].head == -1);
     assert(source::put(heap, array, length, source::number(3)));
-    for i in 3 { assert(source::get(heap, array, source::key(heap, source::number(i))).tag == 0); }
+    for i in 3 { assert(source::get(heap, array, source::key(heap, source::number(i))).tag() == 0); }
     for n in [-1.0, 1.5, 0.0 / 0.0, 1.0 / 0.0, 4294967296.0] {
         assert(!source::put(heap, array, length, source::number(n)) && heap.fault == source::Fault.UnsupportedOperand);
-        heap.fault = source::Fault.None; assert(heap.nodes[array.a].length == 3);
+        heap.fault = source::Fault.None; assert(heap.nodes[array.id()].length == 3);
     }
     assert(!source::put(heap, array, length, source::number(heap.limits.values + 1)) && heap.fault == source::Fault.MemoryLimit);
     heap.fault = source::Fault.None;
     assert(source::put(heap, array, source::key(heap, source::number(1)), source::number(7)));
-    let before = copy(heap.properties); let slots = copy(heap.values); let head = heap.nodes[array.a].head;
+    let before = copy(heap.properties); let slots = copy(heap.values); let head = heap.nodes[array.id()].head;
     heap.limits.work = heap.work + 8;
     assert(!source::put(heap, array, length, source::number(0)) && heap.fault == source::Fault.WorkLimit);
-    assert(heap.nodes[array.a].length == 3 && heap.nodes[array.a].head == head && to_bytes(heap.properties) == to_bytes(before) && to_bytes(heap.values) == to_bytes(slots));
+    assert(heap.nodes[array.id()].length == 3 && heap.nodes[array.id()].head == head && to_bytes(heap.properties) == to_bytes(before) && to_bytes(heap.values) == to_bytes(slots));
     heap.fault = source::Fault.None; heap.limits = source::Limits {};
     // Elements live in the array's own value run (light-cljs-785), so the
     // value-slot limit, not the property limit, bounds a growing array.
-    let retained = heap.values.len; heap.limits.values = retained; let capacity = heap.nodes[array.a].count;
+    let retained = heap.values.len; heap.limits.values = retained; let capacity = heap.nodes[array.id()].count;
     assert(source::put(heap, array, length, source::number(0)));
     assert(!source::put(heap, array, source::key(heap, source::number(capacity)), source::number(1)) && heap.fault == source::Fault.MemoryLimit);
-    assert(heap.values.len == retained && heap.nodes[array.a].length == 0 && heap.properties.len == before.len);
+    assert(heap.values.len == retained && heap.nodes[array.id()].length == 0 && heap.properties.len == before.len);
 }
 thread_fn array_length_cut(cut: i64) {
     defer { heap_program::finish(); }
@@ -287,8 +288,8 @@ thread_fn array_length_cut(cut: i64) {
         let nodes = copy(h.nodes); let properties = copy(h.properties); let values = copy(h.values);
         h.limits.work = h.work + cut;
         let ok = source::put(h, a, k, source::number(2));
-        if !ok { assert(h.fault == source::Fault.WorkLimit && to_bytes(h.nodes) == to_bytes(nodes) && to_bytes(h.properties) == to_bytes(properties) && to_bytes(h.values) == to_bytes(values)); }
-        else { assert(h.nodes[a.a].length == 2); }
+        if !ok { assert(h.fault == source::Fault.WorkLimit && source::plain_rows(h.nodes) == source::plain_rows(nodes) && source::plain_rows(h.properties) == source::plain_rows(properties) && source::plain_rows(h.values) == source::plain_rows(values)); }
+        else { assert(h.nodes[a.id()].length == 2); }
     }
 }
 // Sparse writes far past the run use index-keyed records, so two
@@ -302,10 +303,10 @@ thread_fn sparse_array() {
         assert(source::put(h, a, source::key(h, source::number(0)), source::number(5)));
         assert(source::put(h, a, source::key(h, source::number(524287)), source::number(1)));
         assert(source::put(h, a, source::key(h, source::number(524288)), source::number(2)));
-        assert(h.nodes[a.a].initialized && h.nodes[a.a].count == 0 && h.nodes[a.a].length == 524289 && h.values.len < 1024);
-        assert(source::get(h, a, source::key(h, source::number(524287))).number + source::get(h, a, source::key(h, source::number(524288))).number == 3);
-        assert(source::get(h, a, source::key(h, source::number(0))).number == 5 && source::get(h, a, source::key(h, source::number(7))).tag == 0);
-        assert(source::put(h, a, k, source::number(524288)) && source::get(h, a, source::key(h, source::number(524288))).tag == 0 && source::get(h, a, source::key(h, source::number(524287))).number == 1);
+        assert(h.nodes[a.id()].initialized && h.nodes[a.id()].count == 0 && h.nodes[a.id()].length == 524289 && h.values.len < 1024);
+        assert(source::get(h, a, source::key(h, source::number(524287))).num() + source::get(h, a, source::key(h, source::number(524288))).num() == 3);
+        assert(source::get(h, a, source::key(h, source::number(0))).num() == 5 && source::get(h, a, source::key(h, source::number(7))).tag() == 0);
+        assert(source::put(h, a, k, source::number(524288)) && source::get(h, a, source::key(h, source::number(524288))).tag() == 0 && source::get(h, a, source::key(h, source::number(524287))).num() == 1);
     }
 }
 fn argument_limits(bytes: const u8[:]) {
@@ -360,7 +361,7 @@ thread_fn failed_job_isolation(bytes: u8[]) {
     // A malformed foreign argument fails before entering any frame. A later
     // job still executes on the same initialized session and closure.
     var bad = source::Job { heap: heap };
-    assert(!source::start(bad, entry, [source::Value { tag: 5, a: 0, session: heap.identity + 1 }]));
+    assert(!source::start(bad, entry, [source::object(heap.nodes.len + 1)]));
     assert(bad.fault == source::Fault.StaleID && !bad.claimed);
     var good = source::Job { heap: heap }; assert(source::start(good, entry, []));
     assert(source::run(good, -1) == tiny::Outcome.Complete);
@@ -464,8 +465,8 @@ thread_fn runtime_boundary(bytes: u8[]) {
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let entry = source::closure(heap, 0, []); var factory_job = source::Job { heap: heap }; assert(source::start(factory_job, entry, []));
     assert(source::run(factory_job, -1) == tiny::Outcome.Complete);
-    var job = source::Job { heap: heap }; assert(source::start(job, factory_job.result, [source::Value {}]));
+    var job = source::Job { heap: heap }; assert(source::start(job, factory_job.result, [source::Value.Undefined]));
     assert(source::run(job, -1) == tiny::Outcome.Complete);
     assert(source::form_kind(heap, job.result) == 6 && source::form_count(heap, job.result) == 2);
-    assert(source::form_nth(heap, job.result, 0).number == 2 && source::form_nth(heap, job.result, 1).number == 3);
+    assert(source::form_nth(heap, job.result, 0).num() == 2 && source::form_nth(heap, job.result, 1).num() == 3);
 }

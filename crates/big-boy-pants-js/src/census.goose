@@ -14,9 +14,9 @@ struct Census {
     nodes:      i64 = 0, values: i64 = 0, properties: i64 = 0, units: i64 = 0,
     dead_nodes: i64 = 0, dead_values: i64 = 0, dead_properties: i64 = 0, dead_units: i64 = 0,
 }
-fn mark(v: source::Value, nodes: bool[>..]&, units: bool[>..]&, work: i64[>..<]&) {
-    if v.tag == 5 && v.a >= 0 && v.a < nodes.len && !nodes[v.a] { nodes[v.a] = true; work.push(v.a); }
-    if v.tag == 4 && v.a >= 0 && v.b > 0 && v.b <= units.len - v.a { for i in v.a..(v.a + v.b) { units[i] = true; } }
+fn mark(heap: const source::Heap&, v: source::Value, nodes: bool[>..]&, units: bool[>..]&, work: i64[>..<]&) {
+    if v.tag() == 5 && v.id() < nodes.len && !nodes[v.id()] { nodes[v.id()] = true; work.push(v.id()); }
+    if v.tag() == 4 && v.sid() < heap.strings.len { let r = heap.strings[v.sid()]; if r.len > 0 && r.start >= 0 && r.len <= units.len - r.start { for i in r.start..(r.start + r.len) { units[i] = true; } } }
 }
 fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
     var nodes:      bool[>..] = []; nodes.resize(heap.nodes.len, false);
@@ -24,19 +24,19 @@ fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
     var properties: bool[>..] = []; properties.resize(heap.properties.len, false);
     var units:      bool[>..] = []; units.resize(heap.units.len, false);
     var work:       i64[>..<] = [];
-    for v in roots { mark(v, nodes, units, work); }
-    for v in heap.constants { mark(v, nodes, units, work); }
-    mark(heap.global, nodes, units, work); mark(heap.call_method, nodes, units, work);
+    for v in roots { mark(heap, v, nodes, units, work); }
+    for v in heap.constants { mark(heap, v, nodes, units, work); }
+    mark(heap, heap.global, nodes, units, work); mark(heap, heap.call_method, nodes, units, work);
     while work.len > 0 {
         let n = heap.nodes[work.pop()];
-        mark(n.value, nodes, units, work); mark(n.namespace_value, nodes, units, work); mark(n.metadata, nodes, units, work);
+        mark(heap, n.value, nodes, units, work); mark(heap, n.namespace_value, nodes, units, work); mark(heap, n.metadata, nodes, units, work);
         if snapshot::has_values(n.kind) {
-            for slot in n.start..(n.start + n.count) { if slot >= 0 && slot < values.len { values[slot] = true; mark(heap.values[slot], nodes, units, work); } }
+            for slot in n.start..(n.start + n.count) { if slot >= 0 && slot < values.len { values[slot] = true; mark(heap, heap.values[slot], nodes, units, work); } }
         }
         var p = n.head;
         while p >= 0 && p < properties.len && !properties[p] {
             properties[p] = true; let record = heap.properties[p];
-            mark(record.key, nodes, units, work); mark(record.value, nodes, units, work); p = record.next;
+            mark(heap, record.key, nodes, units, work); mark(heap, record.value, nodes, units, work); p = record.next;
         }
     }
     var c = Census { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len };

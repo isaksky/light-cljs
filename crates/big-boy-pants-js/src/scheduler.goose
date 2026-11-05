@@ -15,7 +15,7 @@ namespace scheduler;
 // separate work; this protocol initially accepts at most eight scalar args.
 struct Spec {
     id:           i64, key: dependency::Key, entry: i64, runtime_binding: i64 = -1, call_result: bool = false,
-    arguments:    source::Value[8]                                            = [source::Value {}; 8], argument_count: i64 = 0,
+    arguments:    source::Value[8]                                            = [source::Value.Undefined; 8], argument_count: i64 = 0,
     ordered:      bool                                                        = false,
     mid_job_need: bool                                                        = false, delay_ms: i64 = 0,
 }
@@ -67,7 +67,7 @@ fn perform(base: const snapshot::Snapshot&, work: const Work&, options: Options,
     heap.limits.stack = min(heap.limits.stack, 1024); heap.limits.frames = min(heap.limits.frames, 64);
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
     var definitions = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots"));
-    if definitions.tag == 0 { definitions = source::allocate(heap, source::Node { kind: 0 }); source::install_field(heap, heap.global, "__lightCompilerRoots", definitions); }
+    if definitions.tag() == 0 { definitions = source::allocate(heap, source::Node { kind: 0 }); source::install_field(heap, heap.global, "__lightCompilerRoots", definitions); }
     // This is a clean heap boundary: no Job exists while prerequisites import.
     for input in work.inputs {
         var c = artifact::Control { bytes: options.packet_bytes }; let value = artifact::import_graph(input.artifact, base, heap, imports, c);
@@ -78,7 +78,7 @@ fn perform(base: const snapshot::Snapshot&, work: const Work&, options: Options,
     let spec = work.spec; var sequence: i64 = 0;
     var value = execute(authority, spec.id, sequence, options.quantum, heap, source::closure(heap, spec.entry, []), [], result.terminal, result.fault, result.fault_function, result.fault_pc);
     if result.terminal.outcome == dependency::Outcome.Success && spec.runtime_binding >= 0 {
-        var rt = source::Value {}; for binding in bindings { if binding.id == spec.runtime_binding { rt = binding.value; } }
+        var rt = source::Value.Undefined; for binding in bindings { if binding.id == spec.runtime_binding { rt = binding.value; } }
         value = execute(authority, spec.id, sequence, options.quantum, heap, value, [rt], result.terminal, result.fault, result.fault_function, result.fault_pc);
     }
     if result.terminal.outcome == dependency::Outcome.Success && spec.call_result { value = execute(authority, spec.id, sequence, options.quantum, heap, value, spec.arguments[..spec.argument_count], result.terminal, result.fault, result.fault_function, result.fault_pc); }
@@ -140,7 +140,7 @@ fn invalid(plan: const Plan&, base: const snapshot::Snapshot&, run: const Run&, 
         if !dependency::valid(run.table, spec.key) || spec.id < 0 || spec.entry < 0 || spec.entry >= base.functions.len || spec.argument_count < 0 || spec.argument_count > 8 || spec.delay_ms < 0 || spec.delay_ms > 100 { return true; }
         if spec.runtime_binding >= 0 { var found = false; for binding in base.bindings { if binding.id == spec.runtime_binding { found = true; } } if !found { return true; } }
         for j in i { if plan.jobs[j].id == spec.id || dependency::same(plan.jobs[j].key, spec.key) { return true; } }
-        for v in spec.arguments[..spec.argument_count] { if v.tag < 0 || v.tag > 3 || v.session != 0 { return true; } }
+        for v in spec.arguments[..spec.argument_count] { if v.tag() < 0 || v.tag() > 3 { return true; } }
     }
     var previous: i64 = -1;
     for grant in plan.effects { let owner = position(plan, grant.owner); if owner < 0 || !plan.jobs[owner].ordered || owner < previous { return true; } previous = owner; }
