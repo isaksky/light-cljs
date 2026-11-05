@@ -85,7 +85,10 @@ stack-effect table generated from the Rust registry into
 today), then decodes each instruction row into a fixed-mode `Ins` enum with
 jump targets resolved to instruction indices. An opcode the VM does not
 implement decodes to `Ins.Unsupported { opcode }` and fails when executed
-with a fault that names the opcode. Constants gain Symbol and BigInt tags and
+with a fault that names the opcode. Such a fault is a VM outcome, never a
+JavaScript exception, so `catch` cannot swallow it and the harness always
+sees it as explicit-unsupported; the same holds for any unimplemented part of
+a built-in. Constants gain Symbol and BigInt tags and
 functions gain the class and generator constructor kinds as their areas need
 them; direct `eval` stays a named refusal until the functions area plans it.
 
@@ -211,7 +214,15 @@ and Goose has no unions to box into.
 - **Collection inside a job is evacuation, only if measured.** If a job's
   tables exceed its budget, the worker writes its live graph (reachable from
   frames, the promise job queue, the global object and the realm) as a
-  compacted image, spawns a successor with it and exits. The memory pellet
+  compacted image and sends it to a program whose VM tables are empty (the
+  coordinator when a session worker owns the image, otherwise a dedicated
+  clean spawner), then exits. That program spawns the successor, which starts
+  with empty tables and restores the image through the checking conversion
+  below. The old worker must not spawn its own successor: the spawn would copy
+  its full, unshrinkable tables, garbage included. During evacuation the old
+  heap, the image and the successor's copy coexist, and that peak is charged
+  to the retention budget. Images from elsewhere (below) likewise go only to
+  workers spawned by a program with empty VM tables. The memory pellet
   first measures unreachable rows at job end on the 200k project and on the
   harness; evacuation is built only if a target workload needs it. There is
   no mark and sweep over a global table.
@@ -331,7 +342,10 @@ function object is an object whose kind payload is its `Builtin`, with
 3. Port semantics from the Pants engine's native built-ins
    (`rust/src/vm/native.rs` and `vm/native/`), whose `NativeState` enum
    already is this resumable design, and cite the QuickJS case that tests it.
-4. Self-hosting a built-in in JavaScript is an exception an area must justify
+4. A step a built-in does not implement yet (species, a Proxy trap, a
+   locale) is a named unsupported VM fault, never a placeholder `TypeError`
+   that user code could catch (decision 1).
+5. Self-hosting a built-in in JavaScript is an exception an area must justify
    with a measurement and a reason (for example a large, cold algorithm); it
    needs the private intrinsic opcodes that self-hosted code would require,
    which the exporter does not have today.
@@ -376,6 +390,11 @@ ledger grouped by the 14 areas of bbp-34 to bbp-47 (light-cljs-762 to -775):
   that exercise its scheduler host (`concurrency_*`, `need_*`, `fold_*` and
   the like) are labelled host-specific with their reason, not counted as a
   JavaScript area. Every exclusion is listed in the ledger with its reason.
+  A Pants fixture is one case, so a fixture that tests many methods cannot
+  show a foundation pellet's partial progress; bbp-authored cases under
+  `crates/big-boy-pants-js/conformance/cases/`, labelled as such with the
+  fixture lines they derive from, cover those slices, and the full fixture
+  stays in the ledger for its area.
 - **Area map.** A checked-in EDN file assigns each case to one area, taken
   from the case lists in bbp-34 to bbp-47.
 - **Outcomes.** Goose: pass, fail (throw, wrong result or disagreement with
