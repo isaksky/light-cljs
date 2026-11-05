@@ -956,6 +956,35 @@ mod tests {
         );
     }
 
+    /// A runtime left in a scope that has ended, outside every expansion and
+    /// initializer, gets a named error from `gensym`, however many scopes
+    /// ended since, while a frozen initializer scope numbers on its own
+    /// (light-cljs-802).
+    #[test]
+    #[cfg(light_quickjs)]
+    fn gensym_in_an_ended_scope_fails_by_name() {
+        let unsynced = |engine: &Evaluator| {
+            engine
+                .evaluate_unit("rt => rt.core.gensym(\"g\")")
+                .and_then(|value| engine.print(value))
+        };
+        let frozen = "rt => { const forms = rt.compilerForms, outer = forms.gensymFrame({prefix: \"5_1_i\", count: 0}); try { return rt.core.gensym(\"g\"); } finally { forms.gensymFrame(outer); } }";
+        for ended in [1, ENDED_BOUND + 2] {
+            // The failure invalidates the engine's session.
+            let engine = Evaluator::new(Default::default()).unwrap();
+            {
+                let _namespace = enter_namespace(7);
+                assert_eq!(gensym(&engine), "g7_1");
+            }
+            for _ in 1..ended {
+                let _other = enter_namespace(8);
+            }
+            assert_eq!(evaluate(&engine, frozen), "g5_1_i1");
+            let error = unsynced(&engine).unwrap_err();
+            assert!(error.0.contains("after it ended"), "{error}");
+        }
+    }
+
     /// A custom data reader's runtime numbers in the scope apart from the
     /// compile-time runtime, in a scope of a reader's own while its
     /// definition is evaluated, which counts from one again each time, and

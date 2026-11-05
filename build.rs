@@ -368,8 +368,7 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
             concat!(
                 "      takeGensyms: () => { const names = Array.isArray(gensymLog) ? gensymLog : []; gensymLog = typeof globalThis.__lightGensym === \"function\" ? true : []; return vectorFromArray([gensymCounter, ...names]); }, raiseGensyms: floor => { if (floor > gensymCounter) gensymCounter = floor; },\n",
                 "      takeEncodePeak: () => { const peak = encode.peak ?? 0; encode.peak = 0; return peak; },\n",
-                "      gensymScope: (serial, prefix, retired, native) => { if (retired) for (const ended of retired.split(\",\")) gensymScopes.delete(+ended); if (serial === 0) { gensymScope = null; return null; } let scope = gensymScopes.get(serial); if (scope === undefined) gensymScopes.set(serial, scope = {serial, prefix, count: 0, native: native === true && typeof globalThis.__lightGensym === \"function\"}); gensymScope = scope; return null; }, gensymScopeCount: () => gensymScopes.size,\n",
-                "      gensymFrame: frame => { const outer = gensymFrame; gensymFrame = frame; return outer; },\n",
+                "      gensymScope: (serial, prefix, retired, native) => { if (retired) for (const ended of retired.split(\",\")) gensymScopes.delete(+ended); if (serial === 0) { gensymScope = null; return null; } let scope = gensymScopes.get(serial); if (scope === undefined) gensymScopes.set(serial, scope = {serial, prefix, count: 0, native: native === true && typeof globalThis.__lightGensym === \"function\"}); gensymScope = scope; return null; }, gensymScopeCount: () => gensymScopes.size, gensymFrame: frame => { const outer = gensymFrame; gensymFrame = frame; return outer; },\n",
             ),
         ),
         (

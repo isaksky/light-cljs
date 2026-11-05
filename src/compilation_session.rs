@@ -105,10 +105,12 @@ struct Unit {
     /// charges it ([`UnitCharges`]), and how long the analysis took.
     charges: Option<Box<UnitCharges>>,
     time: std::time::Duration,
-    /// The scope of generated names it is analyzed in, kept past its
-    /// analysis: its initializer's `gensym` numbers in a frozen scope of
-    /// that prefix ([`crate::generated_names::initializer_gensym_prefix`]).
-    /// `None` outside every scope. An artifact records it (`Unit::names`).
+    /// The prefix its initializer's frozen `gensym` scope is spelled from
+    /// ([`crate::generated_names::initializer_gensym_prefix`]): the scope of
+    /// generated names it is analyzed in, kept past its analysis, or for
+    /// executable `:test` metadata that scope's `D_K_t`, apart from its
+    /// owner's. `None` outside every scope. An artifact records it
+    /// (`Unit::names`).
     names: Option<Arc<str>>,
 }
 /// What a macro-free unit's analysis counts, on whichever thread it ran:
@@ -3254,6 +3256,16 @@ impl CompilationSession {
         let (id, end) = {
             let mut c = self.shared.lock();
             let c = &mut *c;
+            // Executable metadata analyzes in its owner's scope, but its
+            // initializer numbers in a frozen scope apart from the owner's
+            // (`D_K_t`, whose `t` no count spells).
+            let initializer_names = match &name {
+                RegistrationName::Test(_) => snapshot
+                    .names
+                    .as_ref()
+                    .map(|names| Arc::<str>::from(format!("{names}_t"))),
+                _ => snapshot.names.clone(),
+            };
             // Allocate synthetic names under the same lock as their unit ID.
             // Reading units.len() before entering register races other writers.
             let name = name.resolve(c.units.len());
@@ -3290,7 +3302,7 @@ impl CompilationSession {
                 }
                 let source = self.lane_source(snapshot.source_index);
                 let order = self.shared.lanes.register_unit(id, source);
-                let names = snapshot.names.clone();
+                let names = initializer_names;
                 c.push_unit(
                     Unit {
                         request,

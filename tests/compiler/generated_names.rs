@@ -320,3 +320,31 @@ fn a_helper_initializer_gensym_names_alike_at_every_slot_count() {
         }
     }
 }
+
+/// A Var's executable `:test` metadata has an initializer of its own, which
+/// numbers `gensym` in a frozen scope apart from its owner's: the two quote
+/// different names (light-cljs-802).
+#[test]
+fn test_metadata_initializers_number_apart_from_their_owner() {
+    let mut sources = PROGRAM.to_vec();
+    sources[0].1 = r#"(ns lib.macros)
+       (def ^{:test (let [g (gensym "g")] (fn [] g))} f (let [g (gensym "g")] (fn [] g)))
+       (defmacro both [] (list 'quote [(f) ((:test (meta (var f))))]))"#;
+    sources[1].1 = r#"(ns app (:require [lib.macros :refer [both]]))
+       (js/console.log (pr-str (both)))"#;
+    let program = write(&sources);
+    let printed = execute(&compile("app", &program).0);
+    let [owner, test]: [String; 2] = printed
+        .trim_end()
+        .trim_matches(['[', ']'])
+        .split(' ')
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    assert!(
+        owner.ends_with("_i1") && test.ends_with("_t_i1"),
+        "{printed}"
+    );
+    assert_ne!(owner, test, "{printed}");
+}
