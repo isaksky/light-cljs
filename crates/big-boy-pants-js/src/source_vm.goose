@@ -205,7 +205,10 @@ root struct Job {
     helpers_enabled: bool                       = false,
     protected_nodes: i64                        = 0,
     root_receiver:   Value                      = Value.Undefined,
-    effect_args:     Value[8]                   = [Value.Undefined; 8], effect_count: i64 = 0, effect_frame: Frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined },
+    // The compiler generated-name scope gensym numbers in (light-cljs-798):
+    // the scope prefix and the next number of its count, 0 outside a scope.
+    gensym_prefix: u8[>..]  = [], gensym_next: i64 = 0,
+    effect_args:   Value[8] = [Value.Undefined; 8], effect_count: i64 = 0, effect_frame: Frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined },
 }
 fn number(n: f64) -> Value { return Value.Number { v: n }; }
 fn boolean(b: bool) -> Value { return Value.Bool { v: b }; }
@@ -827,7 +830,7 @@ fn reset(job: Job&) -> bool {
     job.frames.clear(); job.locals.clear(); job.operands.clear(); job.writes.clear(); job.handlers.clear();
     job.status = tiny::Status.Ready; job.result = Value.Undefined; job.fault = Fault.None; job.fault_pc = -1; job.fault_function = -1; job.thrown = false;
     job.steps = 0; job.effects_enabled = false; job.helpers_enabled = false; job.effect_pending = false; job.effect_kind = -1;
-    job.protected_nodes = 0; job.root_receiver = Value.Undefined; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0;
+    job.protected_nodes = 0; job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0;
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
     return true;
 }
@@ -1179,7 +1182,7 @@ fn boot_runtime(heap: Heap&) -> Value {
     // The emitted call classifier compares against this constructor identity.
     // Executing regular expressions remains an explicit native boundary.
     install_field(heap, rt, "intrinsicRegExp", builtin(heap, 20));
-    // Gensym is serviced only by an explicitly enabled coordinator contract.
+    // Gensym numbers in the job's compiler generated-name scope (gensym).
     // Other shared-state leaves are installed explicitly by the compiler.
     install_field(heap, core, "gensym", builtin(heap, 5));
     install_field(heap, rt, "vectorFromArray", builtin(heap, 10));
@@ -1241,6 +1244,36 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
     heap.fault = Fault.NativeBoundary; return Value.Undefined;
 }
 
+// cljs.core/gensym in the compiler generated-name scope of the work the job
+// does (light-cljs-798): str(prefix), or G__, then the scope prefix and the
+// next number of the scope count, which the compiler hands the job and takes
+// back with its result, so a name is the V8 build one and unique in the build.
+// Outside a scope (gensym_next 0), and for a prefix str() is not supported on
+// here, gensym stays an explicit NativeBoundary fault.
+fn gensym(job: Job&, args: const Value[:]) -> Value {
+    let heap .= job.heap;
+    if job.gensym_next <= 0 || job.gensym_next >= 9007199254740991 || args.len > 1 { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    var units: u16[>..] = [];
+    if args.len == 0 { units.append([71, 95, 95]); } else {
+        // A prefix read from a form arrives as its scalar occurrence.
+        let a = form_value(heap, args[0]); if !valid(heap, a) { return Value.Undefined; }
+        let kind = if a.tag() == 5 { node(heap, a.id()).kind } else { -1 };
+        if a.tag() == 4 { append_utf16(heap, a, units); }
+        else if kind == 9 || kind == 10 {
+            let n = node(heap, a.id()); if kind == 10 { units.push(58); }
+            if n.namespace_value.tag() == 4 { append_utf16(heap, n.namespace_value, units); units.push(47); }
+            append_utf16(heap, n.value, units);
+        } else { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    }
+    for b in job.gensym_prefix { units.push(b); }
+    for b in str(job.gensym_next) { units.push(b); }
+    // V8 reads a name with a slash as a namespace and a name; not supported here.
+    for u in units { if u == 47 { heap.fault = Fault.NativeBoundary; return Value.Undefined; } }
+    if !charge(heap, units.len) { return Value.Undefined; }
+    let name = allocate(heap, Node { kind: 9, value: string(heap, units), namespace_value: nil() });
+    if heap.fault == Fault.None { job.gensym_next += 1; }
+    return name;
+}
 // Save the request at the call continuation. No host runs under the claim.
 fn request_effect(job: Job&, id: i64, args: const Value[:], frame: Frame) {
     if !job.effects_enabled { job.heap.fault = Fault.NativeBoundary; return; }
@@ -1309,7 +1342,8 @@ fn step(job: Job&) {
             job.frames[job.frames.len - 1].pc = 1;
             if frame.callee.tag() == 5 && node(heap, frame.callee.id()).kind == 4 {
                 let id = node(heap, frame.callee.id()).function;
-                if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
+                if id == 5 && job.gensym_next > 0 { job.operands.push(gensym(job, [arg])); }
+                else if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
                 else { job.operands.push(native_value(heap, id, [arg])); }
             } else { enter(job, frame.callee, nil(), [arg]); }
         }
@@ -1333,7 +1367,8 @@ fn step(job: Job&) {
             job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 1;
             if frame.callee.tag() == 5 && node(heap, frame.callee.id()).kind == 4 {
                 let id = node(heap, frame.callee.id()).function;
-                if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
+                if id == 5 && job.gensym_next > 0 { job.operands.push(gensym(job, [arg])); }
+                else if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
                 else { let v = native_value(heap, id, [arg]); job.operands.push(v); }
             } else { enter(job, frame.callee, Value.Undefined, [arg]); }
         }
@@ -1505,7 +1540,8 @@ fn call(job: Job&, frame: Frame, argc: i64, method: bool) {
                 job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: callback, receiver: Value.Undefined, input: input, output: out });
                 job.operands.resize(base);
             }
-        } else if id >= 5 && id <= 8 { request_effect(job, id, args, frame); job.operands.resize(base); }
+        } else if id == 5 && job.gensym_next > 0 { let value = gensym(job, args); job.operands.resize(base); job.operands.push(value); }
+        else if id >= 5 && id <= 8 { request_effect(job, id, args, frame); job.operands.resize(base); }
         else { let value = native_value(heap, id, args); job.operands.resize(base); job.operands.push(value); }
     } else if enter(job, callee, receiver, job.operands[first..]) { job.frames[job.frames.len - 1].operand_base = base; job.operands.resize(base); }
 }

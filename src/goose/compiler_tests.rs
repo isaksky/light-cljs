@@ -484,7 +484,8 @@ fn goose_compiler_assembly_leaf_boundaries() {
             "Fault.UnsupportedOperand",
         ),
         ("return rt.core.mapSeq(x=>x);", "Fault.NativeBoundary"),
-        // Gensym stays an explicit native-boundary fault in a Goose job.
+        // Outside every generated-name scope gensym stays an explicit
+        // native-boundary fault; in one it returns symbols (below).
         ("return rt.core.gensym();", "Fault.NativeBoundary"),
         ("return rt.core.gensym(\"x__\");", "Fault.NativeBoundary"),
         (
@@ -524,6 +525,127 @@ fn goose_compiler_assembly_leaf_boundaries() {
             error.0.contains(fault) && error.0.contains("emitted-span="),
             "{body}: {error}"
         );
+        s.close();
+        cleaned(&s);
+    }
+    // In a generated-name scope (light-cljs-798) `rt.core.gensym()` and
+    // `rt.core.gensym("x__")` return symbols numbered in the scope's count,
+    // which each job moves past what it took, so a core macro expanded
+    // natively in the scope numbers on after them.
+    let s = GooseSession::start(&runner(), 1).unwrap();
+    let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+    let _scope = crate::generated_names::enter("7".into());
+    crate::generated_names::sync_gensym_scope(&e).unwrap();
+    let (f, args, call) = inputs(
+        &e,
+        "rt => (form,env) => __rt.formVector(rt.core.gensym(), rt.core.gensym(\"x__\"), rt.core.gensym(rt.symbol(null, \"s\")))",
+    );
+    for round in 0..2 {
+        let value = e.call(f, &args).unwrap();
+        let form = e
+            .export_form(value, &call, origin(&call), Default::default())
+            .unwrap();
+        let n = 3 * round;
+        let expected = [
+            format!("G__7_{}", n + 1),
+            format!("x__7_{}", n + 2),
+            format!("s7_{}", n + 3),
+        ]
+        .map(|name| Datum::new(DatumKind::Symbol(Name::new(None, &name))));
+        let data = form.data();
+        let DatumKind::Collection { children, .. } = data.kind() else {
+            panic!("{form:?}");
+        };
+        assert_eq!(children.len(), 3);
+        for (child, expected) in children.iter().zip(&expected) {
+            assert!(child.value_eq(expected), "{child:?} vs {expected:?}");
+        }
+    }
+    // As a collection callback, and in the definition's preparation, which
+    // runs once, in the scope of the first job that needs it.
+    let (f, args, call) = inputs(
+        &e,
+        "rt => { const p=rt.core.gensym(\"p\"); return (form,env) => __rt.formVector(p, rt.core.mapv(rt.core.gensym, __rt.formVector(\"a\",\"b\"))); }",
+    );
+    for expected in [["p7_7", "a7_8", "b7_9"], ["p7_7", "a7_10", "b7_11"]] {
+        let value = e.call(f, &args).unwrap();
+        let form = e
+            .export_form(value, &call, origin(&call), Default::default())
+            .unwrap();
+        let data = form.data();
+        let DatumKind::Collection { children, .. } = data.kind() else {
+            panic!("{form:?}");
+        };
+        let DatumKind::Collection {
+            children: mapped, ..
+        } = children[1].kind()
+        else {
+            panic!("{form:?}");
+        };
+        let names = std::iter::once(&children[0]).chain(mapped.iter());
+        for (child, expected) in names.zip(expected) {
+            let expected = Datum::new(DatumKind::Symbol(Name::new(None, expected)));
+            assert!(child.value_eq(&expected), "{child:?} vs {expected:?}");
+        }
+    }
+    assert_eq!(
+        crate::generated_names::gensym("y").as_deref(),
+        Some("y7_12")
+    );
+    // Two arguments are an arity error V8 throws; Goose refuses them.
+    let (f, args, _) = inputs(&e, "rt => (form,env) => rt.core.gensym(\"a\",\"b\")");
+    let error = e.call(f, &args).unwrap_err();
+    assert!(error.0.contains("Fault.NativeBoundary"), "{error}");
+    s.close();
+    cleaned(&s);
+}
+/// A helper the job demands is produced in the job's generated-name scope:
+/// its initializer's `gensym` takes the scope's next number, and the job
+/// numbers on after it, whether the job waits in place or saves its
+/// continuation; later jobs reuse the produced helper (light-cljs-798).
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_gensym_helper_production_numbers_in_the_demanding_scope() {
+    let symbols = |names: &[String]| {
+        names
+            .iter()
+            .map(|name| Datum::new(DatumKind::Symbol(Name::new(None, name))))
+            .collect::<Vec<_>>()
+    };
+    for (workers, retained) in [(1, None), (4, None), (1, Some(0)), (4, Some(0))] {
+        let s = GooseSession::start_retaining(&runner(), workers, None, retained).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let _scope = crate::generated_names::enter("7".into());
+        crate::generated_names::sync_gensym_scope(&e).unwrap();
+        let (f, args, call) = inputs(
+            &e,
+            "rt => (form,env) => { const a=rt.core.gensym(); const t=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/tag'); const b=rt.core.gensym(\"b\"); return __rt.formVector(a,t,b); }",
+        );
+        serve(&e, &[("fixture/tag", 42)], |_| {
+            Ok("rt => rt.core.gensym(\"t\")".into())
+        });
+        for (round, expected) in [["G__7_1", "t7_2", "b7_3"], ["G__7_4", "t7_2", "b7_5"]]
+            .iter()
+            .enumerate()
+        {
+            let value = e.call(f, &args).unwrap();
+            let form = e
+                .export_form(value, &call, origin(&call), Default::default())
+                .unwrap();
+            let data = form.data();
+            let DatumKind::Collection { children, .. } = data.kind() else {
+                panic!("{form:?}");
+            };
+            let expected = symbols(&expected.map(String::from));
+            assert_eq!(children.len(), 3);
+            for (child, expected) in children.iter().zip(&expected) {
+                assert!(
+                    child.value_eq(expected),
+                    "workers={workers} retained={retained:?} round={round}: {child:?} vs {expected:?}"
+                );
+            }
+        }
+        assert_eq!(crate::generated_names::gensym("y").as_deref(), Some("y7_6"));
         s.close();
         cleaned(&s);
     }
@@ -1376,7 +1498,7 @@ fn goose_compiler_cleanup_abort_cancels_a_started_replacement() {
         let first = send(1);
         loop {
             match first.recv_timeout(Duration::from_secs(5)).unwrap() {
-                Event::Done => break,
+                Event::Done(_) => break,
                 Event::Start | Event::Resumed => {}
                 other => panic!("unexpected first result: {other:?}"),
             }
@@ -1645,7 +1767,7 @@ fn goose_compiler_drains_ready_batches_without_progress_backoff() {
             for (index, rx) in replies.into_iter().enumerate() {
                 loop {
                     match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
-                        Event::Done => break,
+                        Event::Done(_) => break,
                         Event::Start | Event::Resumed | Event::Produced | Event::Need(_, _) => {}
                         other => panic!("unexpected reply: {other:?}"),
                     }
@@ -2435,6 +2557,76 @@ fn pooled_build(
     drop(host);
     let census = crate::engine_census::EngineCensus::now().since(before);
     (result, stats, census)
+}
+
+/// A namespace build whose macros bind `(gensym)` and `(gensym "x")` names,
+/// call a helper that gensyms, and take a prefix from the call, in eight
+/// namespaces of deferred units,
+/// two expansions to a unit: at compiler slots 1/2/4/8 on the Goose path
+/// the JavaScript is the V8 build's, names included, since each job numbers
+/// in the compiler's scope of the unit it expands in (light-cljs-798).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_gensym_numbers_in_compiler_scopes() {
+    let mut files = HashMap::new();
+    files.insert(
+        "m.gen".to_owned(),
+        "(ns m.gen)
+         (defn fresh [p] (gensym p))
+         (defmacro named [p] (list (quote quote) [(gensym p) (gensym p)]))
+         (defmacro bind [x]
+           (let [a (gensym) b (gensym \"x\")]
+             (list 'let [a x b (list 'inc a)] (list 'vector a b (list 'quote [a b (fresh \"h\")])))))"
+            .to_owned(),
+    );
+    let mut main = String::from("(ns app.main (:require");
+    for n in 0..8 {
+        let mut source = format!("(ns app.w{n} (:require [m.gen :as g]))\n");
+        for d in 0..4 {
+            source.push_str(&format!(
+                "(defn f{d} [] [(g/bind {n}) (g/bind {d}) (g/named \"n\")])\n"
+            ));
+        }
+        files.insert(format!("app.w{n}"), source);
+        main.push_str(&format!(" [app.w{n}]"));
+    }
+    main.push_str("))\n(def all [");
+    for n in 0..8 {
+        for d in 0..4 {
+            main.push_str(&format!(" (app.w{n}/f{d})"));
+        }
+    }
+    main.push_str("])\n");
+    files.insert("app.main".to_owned(), main);
+    // Every expansion binds two names of its own and quotes a third.
+    let names = |js: &str, base: &str| {
+        let mut names = std::collections::BTreeSet::new();
+        for (at, _) in js.match_indices(base) {
+            let rest = &js[at + base.len()..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_digit() || c == '_'))
+                .unwrap_or(rest.len());
+            if end > 0 {
+                names.insert(rest[..end].to_owned());
+            }
+        }
+        names.len()
+    };
+    let (reference, _, _) = pooled_build(&files, 1, None, Default::default());
+    let reference = reference.unwrap();
+    for base in ["G__", "x", "h"] {
+        assert!(names(&reference, base) >= 64, "{base}: {reference}");
+    }
+    for slots in [1, 2, 4, 8] {
+        let session = GooseSession::start(&runner(), slots).unwrap();
+        let (output, _, census) = pooled_build(&files, slots, Some(&session), Default::default());
+        assert_eq!(output.as_deref(), Ok(reference.as_str()), "slots={slots}");
+        assert!(census.is_empty(), "slots={slots}: {census:?}");
+        assert_eq!(session.stats().jobs, 96, "slots={slots}");
+        session.close();
+        cleaned(&session);
+    }
 }
 
 /// A namespace build on the Goose compiler path at compiler slots 1/2/4/8

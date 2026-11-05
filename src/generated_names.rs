@@ -322,6 +322,65 @@ impl NativeGensyms {
     }
 }
 
+/// A Goose job's window on the `gensym` count of the scope its macro
+/// expands in (light-cljs-798): the job numbers from [`Self::start`] in its
+/// own thread program, and [`Self::close`] moves the count past what it
+/// took, so its names are the ones a V8 runtime put in the scope would
+/// return there, taking each number here ([`serve_gensym`]).
+#[cfg(feature = "goose-macros")]
+pub(crate) struct GensymWindow {
+    counter: Arc<AtomicU64>,
+    start: u64,
+}
+
+#[cfg(feature = "goose-macros")]
+impl GensymWindow {
+    /// The window on the scope with `serial` that a compile-time runtime of
+    /// this thread was put in ([`sync_gensym_scope`]), or `None` if this
+    /// thread no longer knows it.
+    pub(crate) fn open(serial: u64) -> Option<Self> {
+        let counter = installed_scope(serial)?.gensym.clone();
+        let start = counter.load(Ordering::Relaxed);
+        Some(Self { counter, start })
+    }
+
+    /// The next number of the scope's count when the job starts.
+    pub(crate) fn start(&self) -> u64 {
+        self.start
+    }
+
+    /// Move the scope's count to `next`, the number after the last one the
+    /// job took. Nothing else numbers in the scope while its macro runs,
+    /// since the analyzing thread waits for the job and a helper the job
+    /// demands is analyzed in a scope of its own; if anything did, or if
+    /// the compilation logs `gensym` names for artifact capture, which the
+    /// Goose path does not (it requires `--no-cache`), this refuses rather
+    /// than let two names collide or go unlogged.
+    pub(crate) fn close(self, next: u64) -> Result<(), String> {
+        if next == self.start {
+            return Ok(());
+        }
+        if next < self.start {
+            return Err(format!(
+                "Goose gensym count went back from {} to {next}",
+                self.start
+            ));
+        }
+        if LOG.with(|log| log.borrow().is_some()) {
+            return Err("Goose gensym names cannot be logged for artifact capture".into());
+        }
+        self.counter
+            .compare_exchange(self.start, next, Ordering::Relaxed, Ordering::Relaxed)
+            .map(drop)
+            .map_err(|now| {
+                format!(
+                    "Goose gensym scope was numbered elsewhere during the job ({} to {now})",
+                    self.start
+                )
+            })
+    }
+}
+
 /// How many ended scopes [`ENDED`] keeps.
 const ENDED_BOUND: usize = 64;
 

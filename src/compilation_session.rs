@@ -2962,7 +2962,7 @@ impl CompilationSession {
     /// no effect Goose can observe, since bundles and protocol extensions
     /// never run in Goose (the index names them as errors); compile-time
     /// generated names stay in [`crate::generated_names`] scopes and the
-    /// Goose runtime's `gensym` stays an explicit fault; producer claims and
+    /// Goose runtime's `gensym` numbers in them (light-cljs-798); producer claims and
     /// once-only helper production stay in Goose's coordinator; and the
     /// `Need` event, `CodeIdentity` and `DefinitionKey` do not change.
     #[cfg(feature = "goose-macros")]

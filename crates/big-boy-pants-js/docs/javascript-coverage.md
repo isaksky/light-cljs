@@ -391,8 +391,8 @@ requirement from me", November 5, 2026).
    and are shared by every worker, as above. A macro whose result depends on
    shared mutable state and on scheduling may give scheduling-dependent
    output, as in shadow-cljs. Goose has no such state today: runtime
-   `gensym` faults with `NativeBoundary` (test
-   `goose_compiler_assembly_leaf_boundaries`), the runtime has no atoms,
+   `gensym` numbers in the compiler's generated-name scopes
+   (light-cljs-798, below), the runtime has no atoms,
    writes into the realm fault, and writes into a prepared definition's rows
    vanish when the job ends (`goose_compiler_every_job_runs_in_its_own_worker`).
 2. **Correct output.** Deterministic projects (the 200k project, the
@@ -593,6 +593,48 @@ light-cljs-799 builds the cells, light-cljs-798 the runtime `gensym`.
   scope, as V8's native mode does). Cell effects follow scheduling; the
   owner is where effect lanes (light-cljs-480) could order them if that is
   ever required.
+
+### Runtime gensym in the compiler's scopes (light-cljs-798, November 5, 2026)
+
+`rt.core.gensym` on the Goose path gives the name V8's native mode gives:
+`str(prefix)` (or `G__`), the scope's prefix `D_` and the next number of the
+count of the generated-name scope the macro expands in
+(`src/generated_names.rs`). `GooseEvaluator::gensym_scope` records the scope
+`sync_gensym_scope` puts it in; each job takes the scope's prefix and next
+number with it (`{id}.definition` holds `key prefix next`), numbers in its
+own thread program, and gives the count back on its `DONE` line, which
+moves the compiler's count past the numbers it took (`GensymWindow`), so a
+core macro expanded natively in the scope numbers on after them. The count
+travels with every wait: in the blocked-wait event and its answer, and in a
+saved continuation. A helper the job demands is produced in the job's
+scope (its initializer's `gensym` numbers on from the job's count), and so
+is the preparation of the job's definition. Nothing else numbers in the
+scope while its macro runs, since the analyzing thread waits for the job
+and a demanded helper is analyzed in a scope of its own; closing the window
+refuses a count that moved meanwhile, and refuses to advance while the
+compilation logs names for artifact capture (the Goose path requires
+`--no-cache`). Outside every scope, and for a data reader's runtime scope
+(`native` false), `gensym` stays an explicit `NativeBoundary` fault, as do
+two arguments, a prefix that is not a string, symbol or keyword (a string
+read from a form is its scalar occurrence, unwrapped), and a name with a
+slash.
+
+The other option was one compiler effect per `gensym`, answered as a root
+read is. Measured with one worker on a release build, 20 jobs each: an
+empty macro job took 595 µs, one making 200 gensyms 717 µs (0.6 µs a
+name), one making 200 root reads the compiler answers from produced
+helpers 74,656 µs (370 µs a round trip). Numbering in the job costs one
+line field per job; the effect would cost a round trip per name.
+
+Tests (`src/goose/compiler_tests.rs`): `goose_compiler_gensym_numbers_in_compiler_scopes`
+(eight namespaces of deferred units, two expansions a unit, a helper
+function that gensyms: the V8 build's JavaScript at slots 1/2/4/8),
+`goose_compiler_gensym_helper_production_numbers_in_the_demanding_scope`
+(waits in place and saved continuations) and the scope case of
+`goose_compiler_assembly_leaf_boundaries`. A `def` initializer that calls
+`gensym` cannot run on Goose yet: the emitted initializer reads core through
+`rt.nativeCoreBinding` with object destructuring, which the realm and
+property-model pellets provide.
 
 ## Decision 4: control flow
 

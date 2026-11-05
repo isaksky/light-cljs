@@ -32,7 +32,9 @@ enum Event {
     Start,
     Produced,
     Resumed,
-    Done,
+    /// A finished job, and the next number of its gensym scope's count if
+    /// the compiler gave it one.
+    Done(Option<u64>),
     Need(u64, String),
     Failure(String),
 }
@@ -259,7 +261,8 @@ impl GooseSession {
                         {
                             Event::Resumed
                         }
-                        "DONE" if parts.len() == 2 => Event::Done,
+                        "DONE" if parts.len() == 2 => Event::Done(None),
+                        "DONE" if parts.len() == 3 => Event::Done(Some(parts[2].parse().ok()?)),
                         "NEED"
                             if parts.len() == 6
                                 && parts[4..].iter().all(|s| s.parse::<u64>().is_ok()) =>
@@ -501,8 +504,9 @@ impl GooseSession {
         source: &str,
         graph: &bridge::Graph,
         c: &ExecutionControl,
+        gensym: Option<(&str, u64)>,
         mut helper: impl FnMut(&str) -> Result<(usize, String), EvalError>,
-    ) -> Result<Vec<u8>, EvalError> {
+    ) -> Result<(Vec<u8>, Option<u64>), EvalError> {
         let result = (|| {
             if let Some(error) = self.terminal.lock().unwrap().clone() {
                 return Err(error);
@@ -511,8 +515,13 @@ impl GooseSession {
             let id = self.next.fetch_add(1, Ordering::Relaxed);
             let stem = self.directory.join(id.to_string());
             let definition = self.definition(key, source)?;
-            std::fs::write(stem.with_extension("definition"), definition.to_string())
-                .map_err(error)?;
+            // The macro's generated-name scope, if any: its prefix and the
+            // next number of its count (light-cljs-798).
+            let definition = match gensym {
+                Some((prefix, start)) => format!("{definition} {prefix} {start}"),
+                None => definition.to_string(),
+            };
+            std::fs::write(stem.with_extension("definition"), definition).map_err(error)?;
             let bridged = Instant::now();
             let input = graph.encode()?;
             self.bytes.fetch_add(input.len() as u64, Ordering::Relaxed);
@@ -534,7 +543,7 @@ impl GooseSession {
                     Ok(Event::Start) => {
                         self.starts.fetch_add(1, Ordering::Relaxed);
                     }
-                    Ok(Event::Done) => {
+                    Ok(Event::Done(next)) => {
                         self.pending.lock().unwrap().remove(&id);
                         if let Some(error) = self.terminal.lock().unwrap().clone() {
                             return Err(error);
@@ -551,7 +560,7 @@ impl GooseSession {
                             }
                         }
                         self.bytes.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-                        return Ok(bytes);
+                        return Ok((bytes, next));
                     }
                     Ok(Event::Need(sequence, name)) => {
                         helpers.push(sequence);
@@ -656,6 +665,11 @@ pub struct GooseEvaluator {
     helper_installs: Cell<usize>,
     budget: RefCell<Option<Rc<bridge::Budget>>>,
     functions: RefCell<HashMap<usize, ValueId>>,
+    /// The generated-name scope the compiler last put the evaluator's
+    /// `gensym` in ([`crate::generated_names::sync_gensym_scope`]): its
+    /// serial and prefix, or `None` outside every scope, where `gensym`
+    /// stays an explicit fault (light-cljs-798).
+    gensym: RefCell<Option<(u64, String)>>,
     #[cfg(test)]
     pub(crate) helper_delay: Cell<Duration>,
 }
@@ -678,6 +692,7 @@ impl GooseEvaluator {
             helper_installs: Cell::new(0),
             budget: RefCell::new(None),
             functions: RefCell::new(HashMap::new()),
+            gensym: RefCell::new(None),
             #[cfg(test)]
             helper_delay: Cell::new(Duration::ZERO),
         })
@@ -768,7 +783,20 @@ impl MacroEvaluator for GooseEvaluator {
     fn compiler_frontier(&self, _: Option<usize>) -> Result<(), EvalError> {
         Ok(())
     }
-    fn gensym_scope(&self, _: u64, _: &str, _: &str, _: bool) -> Result<(), EvalError> {
+    /// Each job of a macro expanding in a scope numbers in the scope's count,
+    /// as V8's native runtime does through `__lightGensym`: the job takes the
+    /// scope's prefix and next number with it and gives the count back with
+    /// its result ([`crate::generated_names::GensymWindow`]). A scope whose
+    /// numbers the runtime would count itself (`native` false, a data
+    /// reader's) has none on Goose.
+    fn gensym_scope(
+        &self,
+        serial: u64,
+        prefix: &str,
+        _: &str,
+        native: bool,
+    ) -> Result<(), EvalError> {
+        *self.gensym.borrow_mut() = (native && serial != 0).then(|| (serial, prefix.to_owned()));
         Ok(())
     }
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
@@ -819,26 +847,36 @@ impl MacroEvaluator for GooseEvaluator {
             .clone()
             .unwrap_or_else(|| Rc::new(bridge::Budget::new(limits.nodes, self.control.clone())));
         *self.budget.borrow_mut() = Some(budget.clone());
+        let scope = self.gensym.borrow().clone();
         let result = (|| {
+            let window = scope.as_ref().and_then(|(serial, prefix)| {
+                crate::generated_names::GensymWindow::open(*serial).map(|w| (prefix.as_str(), w))
+            });
             let bridged = Instant::now();
             let graph = bridge::Graph::arguments(&values, limits, &budget)?;
             budget.finish()?;
             self.session
                 .bridge_ns
                 .fetch_add(bridged.elapsed().as_nanos() as u64, Ordering::Relaxed);
-            let bytes = self
-                .session
-                .execute(key, &source, &graph, &self.control, |name| {
-                    #[cfg(test)]
-                    thread::sleep(self.helper_delay.get());
-                    let helper = self
-                        .helper
-                        .borrow()
-                        .as_ref()
-                        .map(|(_, helper)| helper.clone())
-                        .ok_or_else(|| error("compiler service is not installed"))?;
-                    helper(self, name).map_err(error)
-                })?;
+            let gensym = window.as_ref().map(|(prefix, w)| (*prefix, w.start()));
+            let (bytes, next) =
+                self.session
+                    .execute(key, &source, &graph, &self.control, gensym, |name| {
+                        #[cfg(test)]
+                        thread::sleep(self.helper_delay.get());
+                        let helper = self
+                            .helper
+                            .borrow()
+                            .as_ref()
+                            .map(|(_, helper)| helper.clone())
+                            .ok_or_else(|| error("compiler service is not installed"))?;
+                        helper(self, name).map_err(error)
+                    })?;
+            if let Some((_, window)) = window {
+                window
+                    .close(next.ok_or_else(|| error("job lost its gensym count"))?)
+                    .map_err(error)?;
+            }
             Ok(self.store(Stored::Result(
                 bytes,
                 Arc::new(graph.originals),
