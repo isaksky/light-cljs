@@ -8544,4 +8544,91 @@ mod root_index_tests {
         // Each read was resolved on its own, with no replay.
         assert_eq!(session.shared.root_resolutions(), 9);
     }
+
+    /// A worker's Goose helper service resolves each `Need` at the worker's
+    /// cursor: a redefinition after the cursor stays hidden, also after a
+    /// `Need` in the same call made the worker compile a helper, until the
+    /// worker's next analysis advances the cursor.
+    #[cfg(feature = "goose-macros")]
+    #[test]
+    #[ignore = "build native runner with compiler.bb"]
+    fn goose_compiler_worker_helper_roots_follow_visibility_cursor() {
+        use crate::compiler_data::{DatumKind, ExpansionOrigin, Name, Origin, Source};
+        let runner = std::path::PathBuf::from(
+            std::env::var_os("GOOSE_COMPILER_RUNNER").expect("run compiler.bb"),
+        );
+        let goose = crate::goose_evaluator::GooseSession::start(&runner, 2).unwrap();
+        let mut host = MacroHost::new();
+        host.use_goose_source_macros(goose.clone()).unwrap();
+        crate::compile_with_macros(
+            "(defmacro m [] nil) (def value 1) (defn reader [] value) (def value 2) (m)",
+            &mut host,
+        )
+        .unwrap();
+        let session = host.session_handle().unwrap();
+        let shared = session.shared.clone();
+        // The position of the redefinition: the worker's cursor stops there.
+        let redefinition = {
+            let c = shared.lock();
+            let positions = c
+                .journal
+                .registrations
+                .iter()
+                .enumerate()
+                .filter(|(_, registration)| {
+                    matches!(registration, Registration::Root(name, Some(_), ..) if name == "cljs.user/value")
+                })
+                .map(|(position, _)| position)
+                .collect::<Vec<_>>();
+            assert_eq!(positions.len(), 2);
+            positions[1]
+        };
+        let evaluator =
+            crate::goose_evaluator::GooseEvaluator::new(goose.clone(), &Default::default())
+                .unwrap();
+        let view = WorkerView::new(shared.clone(), MacroHost::new()).unwrap();
+        view.prepare_goose(&evaluator).unwrap();
+        view.installed.set(redefinition);
+        let source = Source::new("cursor.cljs", "nil");
+        let form = Form::from_data(
+            Datum::new(DatumKind::Nil),
+            source.span(0..3).unwrap(),
+            Origin::Source,
+        );
+        let origin = ExpansionOrigin {
+            macro_name: Name::new(Some("fixture"), "macro"),
+            call: form.span(),
+            definition: Some(form.span()),
+            helpers: vec![],
+        };
+        let function = evaluator
+            .evaluate_unit(
+                "rt => (form, env) => { const roots = globalThis.__lightCompilerRoots; __rt.cljReadRoot(roots, null, 'cljs.user/reader'); return __rt.cljReadRoot(roots, null, 'cljs.user/value'); }",
+            )
+            .unwrap();
+        let call = evaluator.import_form(&form, Default::default()).unwrap();
+        let env = evaluator
+            .import_data(&Datum::new(DatumKind::Nil), Default::default())
+            .unwrap();
+        let read = |expected: i64| {
+            let result = evaluator.call(function, &[call, env]).unwrap();
+            let output = evaluator
+                .export_form(result, &form, origin.clone(), Default::default())
+                .unwrap();
+            let expected = Datum::new(DatumKind::Integer(expected));
+            assert!(output.data().value_eq(&expected), "{:?}", output.data());
+        };
+        read(1);
+        // The helper and the root, each resolved once.
+        assert_eq!(shared.root_resolutions(), 2);
+        assert_eq!(
+            view.installed.get(),
+            redefinition,
+            "a Goose demand moved the cursor"
+        );
+        // The worker's next analysis takes the redefinition.
+        view.install(None).unwrap();
+        read(2);
+        goose.close();
+    }
 }
