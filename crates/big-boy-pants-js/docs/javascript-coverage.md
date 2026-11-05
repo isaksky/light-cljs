@@ -190,9 +190,9 @@ and Goose has no unions to box into.
   that spawns the job workers.)
 - Each JavaScript job runs in a fresh **job worker** spawned by the session
   worker. The spawn copies the session worker's tables into the job worker
-  (the reference: copies "are taken from the spawning program at the moment
-  of the spawn"; `compiler_session.goose` already spawns workers from a
-  worker): that copy is the snapshot restore. It is typed and valid by construction,
+  (probe P10: a job worker spawned by an image-owning worker sees its rows
+  and links, mutates its own copy, and leaves the owner's rows unchanged):
+  that copy is the snapshot restore. It is typed and valid by construction,
   so it needs no verification and no relocation, and there is no session
   identity in any value. The job appends above the copied image; its results
   leave as flat messages (forms); its exit frees everything it allocated in
@@ -348,7 +348,7 @@ engine already specifies as resumable native code.
 worker, before any job: the global object, `Object.prototype`,
 `Function.prototype`, the Error constructors, `Array.prototype`, the
 well-known symbols and every intrinsic the areas add, as the first rows of
-the tables. Job workers inherit it through the spawn copy (decision 3), so
+the tables. Job workers inherit it through the spawn copy (decision 3, probe P10), so
 "build once and snapshot" costs one table copy a job, consistent with today's
 initialized-snapshot design. Large immutable data (Unicode and Intl tables)
 is static `let` data rather than table rows, so it is never part of the
@@ -488,3 +488,7 @@ checked and the result.
 - **P9.** `from_bytes` of a table whose rows link into the same table, into a
   worker whose table is empty, returns false, so cross-worker images are
   restored through plain twin rows and a checking conversion.
+- **P10.** A worker that owns an index-typed table (two rows, one linking to
+  the other) spawns a job worker. The job worker sees both rows and the link,
+  changes a row and appends one; after it exits the owner still has its two
+  unchanged rows, and main's table is empty throughout.
