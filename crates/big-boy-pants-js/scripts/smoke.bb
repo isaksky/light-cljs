@@ -1,6 +1,7 @@
 #!/usr/bin/env bb
 (require '[babashka.fs :as fs]
          '[babashka.process :as process]
+         '[clojure.edn]
          '[clojure.string :as str])
 
 ;; Resolve inputs from this script, independently of the caller's working directory.
@@ -21,7 +22,7 @@
              (apply process/shell {:dir (str directory)} arguments))]
   (try
     (run! goose "version")
-    (doseq [source ["vm.goose" "tests.goose" "encoding.goose" "program.goose" "scalar.goose" "export_schema.goose" "inspect.goose" "source_tests.goose" "layout_probe.goose" "source_vm.goose" "execute.goose" "serial_tests.goose" "form_bridge.goose" "bridge_tests.goose" "macro_tests.goose" "macro_run.goose" "snapshot.goose" "callable.goose" "snapshot_fixture.goose" "snapshot_tests.goose" "snapshot_workers.goose" "artifact.goose" "artifact_tests.goose" "dependency.goose" "dependency_tests.goose" "scheduler.goose" "scheduler_tests.goose" "effects.goose" "effects_tests.goose" "compiler_session.goose"]]
+    (doseq [source ["vm.goose" "tests.goose" "encoding.goose" "program.goose" "scalar.goose" "export_schema.goose" "inspect.goose" "source_tests.goose" "layout_probe.goose" "source_vm.goose" "execute.goose" "serial_tests.goose" "form_bridge.goose" "bridge_tests.goose" "macro_tests.goose" "macro_run.goose" "snapshot.goose" "callable.goose" "snapshot_fixture.goose" "snapshot_tests.goose" "snapshot_workers.goose" "artifact.goose" "artifact_tests.goose" "dependency.goose" "dependency_tests.goose" "scheduler.goose" "scheduler_tests.goose" "effects.goose" "effects_tests.goose" "compiler_session.goose" "conformance.goose"]]
       (run! goose "format" "--check" (str (fs/path root "src" source))))
     (let [probe (str (fs/path root "src/layout_probe.goose"))]
       (run! goose "check" probe)
@@ -53,6 +54,7 @@
       (run! goose "build" serial-driver "-o" executable)
       (run! executable)
       (run! goose "check" runner)
+      (run! goose "check" (str (fs/path root "src/conformance.goose")))
       (run! goose "build" runner "-o" executable)
       (doseq [name ["serial/calls" "serial/captures" "serial/mutations" "serial/global-undefined" "serial/global-this" "synthetic/control_flow" "synthetic/unicode" "closure-captured.pants"]]
         (run! executable (str (fs/path root "corpus" (str name ".gsp")))))
@@ -67,7 +69,24 @@
             path (str (fs/path temporary "bad.gsp"))]
         (aset-byte bad 4 (byte 1)) (fs/write-bytes path bad)
         (let [result (process/shell {:continue true :out :string :err :string} executable path)]
-          (assert (= 1 (:exit result))) (assert (= "load:Error.Version\n" (:out result))))))
+          (assert (= 1 (:exit result))) (assert (= "load:Error.Version\n" (:out result))))
+        ;; The conformance runner's outcome contract (scripts/conformance.bb):
+        ;; exactly one EDN map, exit 0 for classified outcomes, 1 for
+        ;; infrastructure failures.
+        (let [conformance (str (fs/path temporary "conformance"))]
+          (run! goose "build" (str (fs/path root "src/conformance.goose")) "-o" conformance)
+          (doseq [[image exit expected]
+                  [["corpus/serial/calls.gsp" 0 {:status :returned}]
+                   ["corpus/serial/loop.gsp" 0 {:status :limit :fault "Fault.InstructionLimit"}]
+                   ["corpus/serial/type-error.gsp" 0 {:status :thrown :value "error:TypeError"}]
+                   ["corpus/serial/global-missing.gsp" 0 {:status :thrown :value "error:ReferenceError"}]
+                   [path 1 {:status :infrastructure :reason "load:Error.Version"}]
+                   ["corpus/missing.gsp" 1 {:status :infrastructure :reason "cannot read program"}]]]
+            (let [result (process/shell {:continue true :out :string :err :string} conformance (if (fs/absolute? image) image (str (fs/path root image))))
+                  outcome (clojure.edn/read-string (:out result))]
+              (assert (= exit (:exit result)) (str "conformance runner exit for " image ": " (:exit result)))
+              (assert (= 1 (count (str/split-lines (:out result)))) (str "one outcome line for " image))
+              (assert (= expected (select-keys outcome (keys expected))) (str "conformance outcome for " image ": " (:out result))))))))
     (let [source-driver (str (fs/path root "src/source_tests.goose"))
           inspector (str (fs/path root "src/inspect.goose"))
           images (mapv str (sort (fs/glob (fs/path root "corpus") "**.gsp")))

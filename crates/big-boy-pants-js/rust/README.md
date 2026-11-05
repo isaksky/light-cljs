@@ -40,7 +40,12 @@ cargo run --example e2e -- companion
 ```
 
 The binary compiles a script and prints its completion value; the explicit
-file command above uses a checked-in script. It is script-only. Module graph
+file command above uses a checked-in script. It runs strict scripts unless
+`--sloppy` (non-strict) or `--module` (a module graph of files) is given;
+`--host-bindings` installs the QuickJS-style `std.gc` and `os` timer
+bindings. `cargo run --release --example
+goose_export -- [--sloppy] IN.js OUT.gsp` writes a Goose program image; both
+serve the conformance harness (`../scripts/conformance.bb`). Module graph
 loading and evaluation use the library's `ModuleLoader` and
 `Runtime::spawn_module` API. The library owns no execution worker pool; `Executor` is an
 optional reference scheduler.

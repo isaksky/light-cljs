@@ -2,7 +2,7 @@
 //! The engine frontend supplies parsing, binding resolution and lowering.
 use std::collections::BTreeSet;
 
-use crate::frontend::{Span, SyntaxError, SyntaxErrorKind, compile_script};
+use crate::frontend::{ScriptOptions, Span, SyntaxError, SyntaxErrorKind, compile_script_with};
 use crate::value::Primitive;
 use crate::vm::Executable;
 use crate::vm::instr::{Opcode, OperandKind};
@@ -345,8 +345,18 @@ impl Tables {
 /// Parse and lower every function, preserving exact source bytes once. This
 /// accepts no values or host callbacks and cannot compute an expansion.
 pub fn export_source(name: &str, source: &str) -> Result<Export, SyntaxError> {
+    export_source_with(name, source, ScriptOptions::STRICT)
+}
+
+/// [`export_source`] with the script's top level in the mode `options` gives
+/// (the conformance harness exports QuickJS's sloppy-mode test files).
+pub fn export_source_with(
+    name: &str,
+    source: &str,
+    options: ScriptOptions,
+) -> Result<Export, SyntaxError> {
     bounded(source.len(), MAX_SOURCE, source)?;
-    let executable = compile_script(name, source)?;
+    let executable = compile_script_with(name, source, options)?;
     encode(&executable, source)
 }
 

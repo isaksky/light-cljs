@@ -13,7 +13,8 @@ JavaScript (group `goose-javascript`). Read [AGENTS.md](AGENTS.md) first.
 | --- | --- |
 | `src/` | The Goose runtime: VM, snapshots, scheduler, compiler session, form bridge, and the `*_tests.goose` test programs beside the modules they import |
 | `corpus/` | Captured bytecode images, jobs and expectations used by the tests (`corpus/manifest.edn` records their sources) |
-| `scripts/` | Babashka entry points: `smoke.bb`, `compiler.bb`, `correctness.bb`, `regenerate.bb`, benchmarks |
+| `scripts/` | Babashka entry points: `smoke.bb`, `compiler.bb`, `correctness.bb`, `regenerate.bb`, `conformance.bb`, benchmarks |
+| `conformance/` | The JavaScript conformance harness's area map (`areas.edn`), expected Goose passes (`expected-pass.edn`) and bbp-authored cases (`cases/`); see `scripts/conformance.bb` |
 | `evidence/` | Measurement reports and raw archives |
 | `docs/` | Design notes |
 | `rust/` | The first, Rust implementation (package `big-boy-pants-js`). Its parser and bytecode compiler still produce what Goose executes (`rust/src/frontend/goose.rs` exports it), and its VM is the reference oracle for porting JavaScript semantics. See [rust/README.md](rust/README.md). |

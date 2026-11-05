@@ -432,6 +432,18 @@ of 47 stacks (1 + 2 + 4 + 8 per process pair) and 38 workers of 2 stacks; no
 thread program came near `GS_MAX_STACKS` or the 347-worker cap. Peak memory
 in bytes is the measurement phase's job (`time -l`), not this report's.
 
+The conformance harness (light-cljs-782, decision 7) runs one Goose runner
+process per case, `src/conformance.goose`, at most `--jobs` (default 4) at
+once. `goose check --stacks` on it: the main program uses 25 data stacks plus
+1 global stack, 26 regions, and starts no workers, so it sets no thread cap.
+A runner built with `-DGS_STACK_STATS=1` ran the whole ledger once
+(`conformance.bb --stack-stats`, November 5, 2026: 181 cases, 147 run on
+all three engines, 34 excluded). Only 11 cases got past the exporter; each of
+those runner processes reported the same 25 data stacks and 26 regions. The
+other 136 were refused at export by name and never started the runner, so
+these figures describe today's VM only; `--stack-stats` measures them again
+once more cases run. Nothing came near `GS_MAX_STACKS`; the defaults stand.
+
 The design adds no Goose recursion per JavaScript call (decision 4), so the
 8 MB native main-thread stack bounds only the remaining recursive functions
 (form equality, validation), all depth-limited. Nothing measured justifies a

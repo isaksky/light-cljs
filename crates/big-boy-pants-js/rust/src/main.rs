@@ -3,7 +3,15 @@
 //!
 //! * `cargo run` runs the bundled demo, `examples/demo.js` (a documented
 //!   synthetic fixture).
-//! * `cargo run -- path/to/script.js` runs that file instead.
+//! * `cargo run -- path/to/script.js` runs that file instead, as strict code.
+//! * `cargo run -- --sloppy path/to/script.js` runs it as non-strict code,
+//!   except where a `"use strict"` directive applies (the conformance harness
+//!   runs QuickJS's sloppy-mode test files this way).
+//! * `--module` runs the file as a module graph; relative imports are files
+//!   beside the importing module, and a `.json` file is a JSON module.
+//! * `--host-bindings` installs the QuickJS-style `std.gc`, `os.setTimeout`
+//!   and `os.clearTimeout` bindings (`Task::install_sim_host_bindings`), as
+//!   the QuickJS-derived Rust tests do.
 //!
 //! The completion value is printed; a string exactly, as a quoted literal
 //! that writes a lone surrogate as `\u{d800}` (`JsString`'s `Debug`). Host
@@ -12,8 +20,11 @@
 //! failures with status 1. No qjsc or C engine is involved: the script is
 //! compiled by `big_boy_pants_js::frontend` and executed by its VM.
 
-use big_boy_pants_js::frontend::compile_script;
-use big_boy_pants_js::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView};
+use big_boy_pants_js::frontend::{ScriptOptions, compile_script_with};
+use big_boy_pants_js::module::{ModuleHost, ModuleKey, ModuleLoader, ModuleSource};
+use big_boy_pants_js::{
+    Budget, Host, HostCall, JsString, Primitive, RunOutcome, Runtime, ValueView,
+};
 
 /// Prints each host effect and returns its argument.
 struct PrintingHost;
@@ -30,8 +41,57 @@ impl Host for PrintingHost {
     }
 }
 
+/// `--module`: modules are files; a relative specifier resolves against the
+/// importing module's directory, and each canonical path is one module.
+#[derive(Default)]
+struct FileModules {
+    keys: std::collections::HashMap<ModuleKey, std::path::PathBuf>,
+}
+
+impl ModuleHost for FileModules {
+    fn resolve(
+        &mut self,
+        specifier: &JsString,
+        referrer: Option<ModuleKey>,
+    ) -> Result<ModuleKey, String> {
+        let specifier =
+            String::from_utf16(specifier.code_units()).map_err(|_| "invalid UTF-16 specifier")?;
+        let base = referrer
+            .and_then(|key| self.keys[&key].parent().map(std::path::Path::to_path_buf))
+            .unwrap_or_default();
+        let path = base
+            .join(&specifier)
+            .canonicalize()
+            .map_err(|e| format!("{specifier}: {e}"))?;
+        if let Some((key, _)) = self.keys.iter().find(|(_, p)| **p == path) {
+            return Ok(*key);
+        }
+        let key = ModuleKey::new(self.keys.len() as u64);
+        self.keys.insert(key, path);
+        Ok(key)
+    }
+
+    fn fetch(&mut self, key: ModuleKey) -> Result<ModuleSource, String> {
+        let path = &self.keys[&key];
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(ModuleSource::from_name(path.display().to_string(), text))
+    }
+}
+
 fn main() {
-    let (name, source) = match std::env::args().nth(1) {
+    let mut options = ScriptOptions::STRICT;
+    let mut module = false;
+    let mut host_bindings = false;
+    let mut path = None;
+    for argument in std::env::args().skip(1) {
+        match argument.as_str() {
+            "--sloppy" => options = ScriptOptions::SLOPPY,
+            "--module" => module = true,
+            "--host-bindings" => host_bindings = true,
+            _ => path = Some(argument),
+        }
+    }
+    let (name, source) = match path {
         Some(path) => match std::fs::read_to_string(&path) {
             Ok(source) => (path, source),
             Err(e) => {
@@ -44,21 +104,40 @@ fn main() {
             include_str!("../examples/demo.js").to_string(),
         ),
     };
-    let exe = match compile_script(&name, &source) {
-        Ok(exe) => exe,
-        Err(e) => {
-            eprintln!("{name}:{e}");
-            std::process::exit(2);
-        }
-    };
     let rt = Runtime::new();
-    let task = match rt.spawn(&exe, &[]) {
-        Ok(task) => task,
-        Err(e) => {
-            eprintln!("run error: {e}");
-            std::process::exit(1);
+    let task = if module {
+        let graph = match ModuleLoader::new().load(
+            rt.world(),
+            &JsString::from(name.as_str()),
+            &mut FileModules::default(),
+        ) {
+            Ok(graph) => graph,
+            Err(e) => {
+                eprintln!("{name}: {e}");
+                std::process::exit(2);
+            }
+        };
+        rt.spawn_module(&graph)
+    } else {
+        let exe = match compile_script_with(&name, &source, options) {
+            Ok(exe) => exe,
+            Err(e) => {
+                eprintln!("{name}:{e}");
+                std::process::exit(2);
+            }
+        };
+        match rt.spawn(&exe, &[]) {
+            Ok(task) => task,
+            Err(e) => {
+                eprintln!("run error: {e}");
+                std::process::exit(1);
+            }
         }
     };
+    if host_bindings && let Err(e) = task.install_sim_host_bindings() {
+        eprintln!("run error: host bindings: {e:?}");
+        std::process::exit(1);
+    }
     let outcome = task.run_with(Budget::UNLIMITED, &mut PrintingHost);
     match outcome {
         Ok(RunOutcome::Complete(v)) => match v.view() {

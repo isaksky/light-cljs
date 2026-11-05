@@ -1,0 +1,256 @@
+;; Area map of the Goose conformance harness (scripts/conformance.bb,
+;; docs/javascript-coverage.md decision 7). Every inventoried case is either
+;; in :cases with one of the 14 areas or in :excluded with its reason; the
+;; runner fails on an unmapped or stale entry.
+;;
+;; Areas follow the QuickJS audits bbp-34 to bbp-47 (Pellets project bbp,
+;; ~/src/big-boy-pants-js) and the area planners light-cljs-762 to -775; the
+;; QuickJS case lists below are those audits' "Cases to classify".
+;;
+;; Origins (labels): :pants-authored (the Pants engine's own synthetic
+;; fixtures); :quickjs-selected-text (Pants fixtures whose header says the
+;; selected QuickJS lines are byte-for-byte unchanged, only a header, calls or
+;; a minimal harness helper added); :quickjs-adapted (Pants fixtures whose
+;; header records changed upstream lines or replaced host bindings);
+;; :quickjs-per-function (set by the runner: unmodified upstream text,
+;; per-function entry); :quickjs-unmodified (a whole upstream file);
+;; :bbp-authored (set by the runner for conformance/cases/).
+;;
+;; Modes: QuickJS-derived cases run as sloppy scripts, as qjs runs them (a
+;; "use strict" directive in the text still applies); bbp- and
+;; Pants-authored cases run as strict scripts, as the Pants command line and
+;; the Goose exporter do by default; :module cases run as modules.
+{:areas
+ {:lexing-parsing "Lexing, literals, parsing and source positions (bbp-34, light-cljs-775)"
+  :operators-values "Expression operators, primitive values and coercions (bbp-35, light-cljs-762)"
+  :statements-loops "Statements, loops, labels and completion values (bbp-36, light-cljs-763)"
+  :functions-scope "Functions, scope, closures, arguments and eval (bbp-37, light-cljs-764)"
+  :objects-classes "Objects, properties, prototypes, classes and symbols (bbp-38, light-cljs-766)"
+  :core-builtins "Array, String, Number, Math and JSON built-ins (bbp-39, light-cljs-767)"
+  :collections-weak "Map/Set, typed arrays, weak references and finalization (bbp-40, light-cljs-769)"
+  :date-regexp "Date and RegExp built-ins (bbp-41, light-cljs-770)"
+  :bigint "BigInt (bbp-42, light-cljs-771)"
+  :intl "Intl (ECMA-402) locale built-ins (bbp-43, light-cljs-774)"
+  :exceptions "Exceptions and try/catch/finally control flow (bbp-44, light-cljs-765)"
+  :using "Explicit resource management, using / await using (bbp-45, light-cljs-772)"
+  :generators-async "Generators, async functions and promise jobs (bbp-46, light-cljs-768)"
+  :modules "ES modules (bbp-47, light-cljs-773)"}
+
+ ;; Per-function entries come from each file's own calls. bbp-36 also lists
+ ;; test_loop.js's test_cyclic_labels, which upstream defines but never calls:
+ ;; its body is an endless loop that only checks compilation, so it is not an
+ ;; execution case here (every quickjs/test_loop.js/* entry compiles it).
+ :cases
+ {;; ---- bbp-authored slices (conformance/cases/)
+  "bbp/arithmetic_function" {:area :operators-values}
+  "bbp/closure_counter" {:area :functions-scope}
+  "bbp/completion_declarations_only" {:area :statements-loops}
+  "bbp/driver_names_are_free" {:area :functions-scope}
+
+  ;; ---- Pants engine fixtures (rust/tests/fixtures/js)
+  "pants/arithmetic" {:area :operators-values :origin :pants-authored}
+  "pants/array_callbacks" {:area :core-builtins :origin :pants-authored}
+  "pants/array_copy" {:area :core-builtins :origin :pants-authored}
+  "pants/array_mutators" {:area :core-builtins :origin :pants-authored}
+  "pants/array_search" {:area :core-builtins :origin :pants-authored}
+  "pants/builtin_cache" {:area :core-builtins :origin :pants-authored}
+  "pants/closures" {:area :functions-scope :origin :pants-authored}
+  "pants/control_flow" {:area :statements-loops :origin :pants-authored}
+  "pants/functions" {:area :functions-scope :origin :pants-authored}
+  "pants/generator_return_throw" {:area :generators-async :origin :pants-authored}
+  "pants/logical_assignment" {:area :operators-values :origin :pants-authored}
+  "pants/private_classes" {:area :objects-classes :origin :pants-authored}
+  "pants/proxy_builtin_reads" {:area :objects-classes :origin :pants-authored}
+  "pants/proxy_get" {:area :objects-classes :origin :pants-authored}
+  "pants/proxy_has" {:area :objects-classes :origin :pants-authored}
+  "pants/quickjs_op1_while" {:area :operators-values :origin :quickjs-adapted}
+  "pants/quickjs_pi_bigint" {:area :bigint :origin :quickjs-selected-text
+                             :note "print is routed to the Pants host effect __rt.effect"}
+  "pants/quickjs_rope" {:area :core-builtins :origin :quickjs-adapted
+                        :note "upstream lines unchanged; a minimal assert and the calls are added"}
+  "pants/quickjs_super_arrow" {:area :objects-classes :origin :quickjs-adapted}
+  "pants/quickjs_test_async_gc" {:area :generators-async :origin :quickjs-adapted
+                                 :note "std/os imports replaced by host bindings the Rust test installs"}
+  "pants/quickjs_test_async_promise_rejection" {:area :generators-async :origin :quickjs-adapted
+                                                :note "std/os imports replaced by host bindings the Rust test installs"}
+  "pants/quickjs_test_bigint" {:area :bigint :origin :quickjs-selected-text}
+  "pants/quickjs_test_builtin_builtins" {:area :core-builtins :origin :quickjs-selected-text}
+  "pants/quickjs_test_builtin_collections" {:area :collections-weak :origin :quickjs-adapted
+                                            :note "one weak-reference case adapted; std.gc/os.setTimeout installed by the Rust test"}
+  "pants/quickjs_test_builtin_date_regexp" {:area :date-regexp :origin :quickjs-selected-text}
+  "pants/quickjs_test_builtin_functions" {:area :functions-scope :origin :quickjs-selected-text}
+  "pants/quickjs_test_builtin_objects" {:area :objects-classes :origin :quickjs-selected-text}
+  "pants/quickjs_test_builtin_positions" {:area :lexing-parsing :origin :quickjs-selected-text}
+  "pants/quickjs_test_closure" {:area :functions-scope :origin :quickjs-selected-text}
+  "pants/quickjs_test_generator" {:area :generators-async :origin :quickjs-selected-text}
+  "pants/quickjs_test_intl" {:area :intl :origin :quickjs-selected-text}
+  "pants/quickjs_test_language_functions" {:area :functions-scope :origin :quickjs-selected-text}
+  "pants/quickjs_test_language_labels" {:area :statements-loops :origin :quickjs-selected-text}
+  "pants/quickjs_test_language_objects" {:area :objects-classes :origin :quickjs-selected-text}
+  "pants/quickjs_test_language_operators" {:area :operators-values :origin :quickjs-selected-text}
+  "pants/quickjs_test_language_parsing" {:area :lexing-parsing :origin :quickjs-selected-text}
+  "pants/quickjs_test_language_using" {:area :using :origin :quickjs-adapted}
+  "pants/quickjs_test_loop_statements" {:area :statements-loops :origin :quickjs-selected-text}
+  "pants/quickjs_test_loop_try_catch" {:area :exceptions :origin :quickjs-selected-text}
+  "pants/regexp_case_fold" {:area :date-regexp :origin :pants-authored}
+  "pants/regexp_indices" {:area :date-regexp :origin :pants-authored}
+  "pants/regexp_legacy_case_fold" {:area :date-regexp :origin :pants-authored}
+  "pants/regexp_objects" {:area :date-regexp :origin :pants-authored}
+  "pants/regexp_properties" {:area :date-regexp :origin :pants-authored}
+  "pants/regexp_scripts" {:area :date-regexp :origin :pants-authored}
+  "pants/regexp_sets" {:area :date-regexp :origin :pants-authored}
+  "pants/regexp_string_properties" {:area :date-regexp :origin :pants-authored}
+  "pants/regexp_symbols" {:area :date-regexp :origin :pants-authored}
+  "pants/regexp_unicode" {:area :date-regexp :origin :pants-authored}
+  "pants/string_methods" {:area :core-builtins :origin :pants-authored}
+  "pants/quickjs_modules/test_cyclic_import.js" {:area :modules :origin :quickjs-selected-text}
+  "pants/quickjs_modules/hello_module.js" {:area :modules :origin :quickjs-adapted
+                                           :note "console.log is a host binding the Rust test installs"}
+
+  ;; ---- QuickJS tests, unmodified text, per-function entries
+  ;; bbp-34 lexing, literals, parsing and source positions
+  "quickjs/test_language.js/test_template" {:area :lexing-parsing}
+  "quickjs/test_language.js/test_template_skip" {:area :lexing-parsing}
+  "quickjs/test_language.js/test_regexp_skip" {:area :lexing-parsing}
+  "quickjs/test_language.js/test_parse_semicolon" {:area :lexing-parsing}
+  "quickjs/test_language.js/test_parse_arrow_function" {:area :lexing-parsing}
+  "quickjs/test_language.js/test_unicode_ident" {:area :lexing-parsing}
+  "quickjs/test_language.js/test_number_literals" {:area :lexing-parsing}
+  "quickjs/test_builtin.js/test_line_column_numbers" {:area :lexing-parsing}
+  ;; bbp-35 expression operators, primitive values and coercions
+  "quickjs/test_language.js/test_op1" {:area :operators-values}
+  "quickjs/test_language.js/test_cvt" {:area :operators-values}
+  "quickjs/test_language.js/test_eq" {:area :operators-values}
+  "quickjs/test_language.js/test_inc_dec" {:area :operators-values}
+  "quickjs/test_language.js/test_op2" {:area :operators-values}
+  ;; bbp-36 statements, loops, labels and completion values
+  "quickjs/test_loop.js/test_while" {:area :statements-loops}
+  "quickjs/test_loop.js/test_while_break" {:area :statements-loops}
+  "quickjs/test_loop.js/test_do_while" {:area :statements-loops}
+  "quickjs/test_loop.js/test_for" {:area :statements-loops}
+  "quickjs/test_loop.js/test_for_in" {:area :statements-loops}
+  "quickjs/test_loop.js/test_for_in2" {:area :statements-loops}
+  "quickjs/test_loop.js/test_for_in_proxy" {:area :statements-loops}
+  "quickjs/test_loop.js/test_for_break" {:area :statements-loops}
+  "quickjs/test_loop.js/test_switch1" {:area :statements-loops}
+  "quickjs/test_loop.js/test_switch2" {:area :statements-loops}
+  "quickjs/test_language.js/test_labels" {:area :statements-loops}
+  "quickjs/test_language.js/test_labels2" {:area :statements-loops}
+  ;; bbp-37 functions, scope, closures, arguments and eval
+  "quickjs/test_closure.js/test_closure1" {:area :functions-scope}
+  "quickjs/test_closure.js/test_closure2" {:area :functions-scope}
+  "quickjs/test_closure.js/test_closure3" {:area :functions-scope}
+  "quickjs/test_closure.js/test_arrow_function" {:area :functions-scope}
+  "quickjs/test_closure.js/test_with" {:area :functions-scope}
+  "quickjs/test_closure.js/test_eval_closure" {:area :functions-scope}
+  "quickjs/test_closure.js/test_eval_const" {:area :functions-scope}
+  "quickjs/test_language.js/test_arguments" {:area :functions-scope}
+  "quickjs/test_language.js/test_function_length" {:area :functions-scope}
+  "quickjs/test_language.js/test_argument_scope" {:area :functions-scope}
+  "quickjs/test_language.js/test_function_expr_name" {:area :functions-scope}
+  "quickjs/test_language.js/test_global_var_opt" {:area :functions-scope}
+  "quickjs/test_builtin.js/test_function" {:area :functions-scope}
+  "quickjs/test_builtin.js/test_eval" {:area :functions-scope}
+  ;; bbp-38 objects, properties, prototypes, classes and symbols
+  "quickjs/test_language.js/test_delete" {:area :objects-classes}
+  "quickjs/test_language.js/test_constructor" {:area :objects-classes}
+  "quickjs/test_language.js/test_prototype" {:area :objects-classes}
+  "quickjs/test_language.js/test_class" {:area :objects-classes}
+  "quickjs/test_language.js/test_object_literal" {:area :objects-classes}
+  "quickjs/test_language.js/test_destructuring" {:area :objects-classes}
+  "quickjs/test_language.js/test_spread" {:area :objects-classes}
+  "quickjs/test_language.js/test_optional_chaining" {:area :objects-classes}
+  "quickjs/test_builtin.js/test" {:area :objects-classes}
+  "quickjs/test_builtin.js/test_enum" {:area :objects-classes}
+  "quickjs/test_builtin.js/test_symbol" {:area :objects-classes}
+  ;; bbp-39 Array, String, Number, Math and JSON built-ins
+  "quickjs/test_builtin.js/test_array" {:area :core-builtins}
+  "quickjs/test_builtin.js/test_string" {:area :core-builtins}
+  "quickjs/test_builtin.js/test_math" {:area :core-builtins}
+  "quickjs/test_builtin.js/test_number" {:area :core-builtins}
+  "quickjs/test_builtin.js/test_json" {:area :core-builtins}
+  "quickjs/test_builtin.js/test_rope" {:area :core-builtins}
+  ;; bbp-40 Map/Set, typed arrays, weak references and finalization
+  "quickjs/test_builtin.js/test_typed_array" {:area :collections-weak}
+  "quickjs/test_builtin.js/test_map" {:area :collections-weak}
+  "quickjs/test_builtin.js/test_weak_map" {:area :collections-weak}
+  "quickjs/test_builtin.js/test_weak_map_cycles" {:area :collections-weak}
+  "quickjs/test_builtin.js/test_weak_ref" {:area :collections-weak}
+  "quickjs/test_builtin.js/test_finalization_registry" {:area :collections-weak}
+  ;; bbp-41 Date and RegExp
+  "quickjs/test_builtin.js/test_date" {:area :date-regexp}
+  "quickjs/test_builtin.js/test_regexp" {:area :date-regexp}
+  ;; bbp-42 BigInt
+  "quickjs/test_bigint.js/test_bigint1" {:area :bigint}
+  "quickjs/test_bigint.js/test_bigint2" {:area :bigint}
+  "quickjs/test_bigint.js/test_bigint3" {:area :bigint}
+  "quickjs/test_bigint.js/test_pi" {:area :bigint}
+  "quickjs/test_bigint.js/test_bigint_asintn" {:area :bigint}
+  ;; bbp-43 Intl
+  "quickjs/test_intl.js/test_dateTimeFormat" {:area :intl}
+  "quickjs/test_intl.js/test_numberFormat" {:area :intl}
+  "quickjs/test_intl.js/test_collator" {:area :intl}
+  "quickjs/test_intl.js/test_listFormat" {:area :intl}
+  "quickjs/test_intl.js/test_relativeTimeFormat" {:area :intl}
+  "quickjs/test_intl.js/test_pluralRules" {:area :intl}
+  "quickjs/test_intl.js/test_locale" {:area :intl}
+  "quickjs/test_intl.js/test_segmenter" {:area :intl}
+  "quickjs/test_intl.js/test_displayNames" {:area :intl}
+  "quickjs/test_intl.js/test_durationFormat" {:area :intl}
+  ;; bbp-44 exceptions and try/catch/finally
+  "quickjs/test_loop.js/test_try_catch1" {:area :exceptions}
+  "quickjs/test_loop.js/test_try_catch2" {:area :exceptions}
+  "quickjs/test_loop.js/test_try_catch3" {:area :exceptions}
+  "quickjs/test_loop.js/test_try_catch4" {:area :exceptions}
+  "quickjs/test_loop.js/test_try_catch5" {:area :exceptions}
+  "quickjs/test_loop.js/test_try_catch6" {:area :exceptions}
+  "quickjs/test_loop.js/test_try_catch7" {:area :exceptions}
+  "quickjs/test_loop.js/test_try_catch8" {:area :exceptions}
+  ;; bbp-45 using / await using
+  "quickjs/test_language.js/test_using" {:area :using}
+  "quickjs/test_language.js/test_await_using" {:area :using}
+  ;; bbp-46 generators, async functions and promise jobs (test_std.js's
+  ;; test_async_gc and test_async_promise_rejection run as the adapted Pants
+  ;; fixtures pants/quickjs_test_async_*)
+  "quickjs/test_builtin.js/test_generator" {:area :generators-async}
+  ;; bbp-47 ES modules: the whole upstream file, run as a module
+  "quickjs/test_cyclic_import.js" {:area :modules :mode :module}}
+
+ :excluded
+ {;; QuickJS host facilities (bbp-33's non-applicable classification)
+  "quickjs/test_std.js" {:reason "QuickJS host facilities: the std and os modules (files, popen, printf, timers, exec); its async cases run as pants/quickjs_test_async_gc and pants/quickjs_test_async_promise_rejection, and its hashbang line belongs to lexing (bbp-34)"}
+  "quickjs/test_worker.js" {:reason "QuickJS host facility: os.Worker threads and message ports"}
+  "quickjs/test_worker_module.js" {:reason "QuickJS host facility: the module a test_worker.js os.Worker runs"}
+  "quickjs/test_rw_handler.js" {:reason "QuickJS host facility: os.setReadHandler/setWriteHandler on pipes"}
+  "quickjs/test_bjson.js" {:reason "QuickJS host facility: the bjson binary serialization module"}
+  "quickjs/microbench.js" {:reason "a QuickJS benchmark, not a test: it times operations and asserts nothing"}
+  "quickjs/assert.js" {:reason "support module imported by quickjs/test_cyclic_import.js, not a test"}
+  "quickjs/fixture_cyclic_import.js" {:reason "support module imported by quickjs/test_cyclic_import.js, not a test"}
+  "pants/quickjs_modules/assert.js" {:origin :quickjs-selected-text :reason "support module imported by pants/quickjs_modules/test_cyclic_import.js"}
+  "pants/quickjs_modules/fixture_cyclic_import.js" {:origin :quickjs-selected-text :reason "support module imported by pants/quickjs_modules/test_cyclic_import.js"}
+  "pants/quickjs_modules/fib_module.js" {:origin :quickjs-selected-text :reason "support module imported by pants/quickjs_modules/hello_module.js"}
+  "pants/quickjs_modules/message.json" {:origin :quickjs-selected-text :reason "JSON module imported by pants/quickjs_modules/hello_module.js"}
+  ;; Pants engine host-specific fixtures: they exercise its scheduler,
+  ;; dependency, executor or compiler-access host, not a JavaScript area
+  "pants/cancel_consumer" {:origin :pants-authored :reason "host-specific: work cut short by the Pants scheduler's cancellation (tests/cancellation.rs)"}
+  "pants/compiler_proxy_calls" {:origin :pants-authored :reason "host-specific: a compile_function entry calling the compiler-access host's __rt.need (tests/compiler_access.rs)"}
+  "pants/compiler_root_invariants" {:origin :pants-authored :reason "host-specific: a compile_function entry checking compiler-access host roots via __rt (tests/compiler_access.rs)"}
+  "pants/concurrency_blocker" {:origin :pants-authored :reason "host-specific: occupies a Pants worker inside a gated host operation (tests/concurrency)"}
+  "pants/concurrency_consumer" {:origin :pants-authored :reason "host-specific: a dependency consumer waiting through __rt.need (tests/concurrency)"}
+  "pants/concurrency_cycle" {:origin :pants-authored :reason "host-specific: a producer cycle through the Pants dependency host (tests/concurrency)"}
+  "pants/concurrency_descend" {:origin :pants-authored :reason "host-specific: deep recursion that waits on the Pants dependency host (tests/concurrency)"}
+  "pants/concurrency_done" {:origin :pants-authored :reason "host-specific: the VM part of a need the concurrency driver issues (tests/concurrency)"}
+  "pants/concurrency_fold_finally" {:origin :pants-authored :reason "host-specific: a native fold whose callback suspends on the Pants dependency host (tests/concurrency)"}
+  "pants/concurrency_fold_in_finally" {:origin :pants-authored :reason "host-specific: a suspending native fold inside finally (tests/concurrency)"}
+  "pants/concurrency_guarded" {:origin :pants-authored :reason "host-specific: a need guarded by catch/finally on the Pants dependency host (tests/concurrency)"}
+  "pants/concurrency_parity" {:origin :pants-authored :reason "host-specific: a producer result for the concurrency suite's dependency host (tests/concurrency)"}
+  "pants/executor_spin" {:origin :pants-authored :reason "host-specific: never finishes on its own; the Pants executor's cancellation and shutdown tests (tests/executor.rs)"}
+  "pants/executor_work" {:origin :pants-authored :reason "host-specific: worker filler for the Pants executor tests (tests/executor.rs)"}
+  "pants/fold_consumer" {:origin :pants-authored :reason "host-specific: the __rt.reduce resumable native fold of the Pants runtime contract (tests/native_fold.rs)"}
+  "pants/fold_needs" {:origin :pants-authored :reason "host-specific: a native fold needing a dependency per element (tests/native_fold.rs)"}
+  "pants/intrinsics" {:origin :pants-authored :reason "host-specific: the compiler's reserved __rt collection intrinsics and host effect"}
+  "pants/need_consumer" {:origin :pants-authored :reason "host-specific: a dependency consumer for the Pants need host (tests/need.rs)"}
+  "pants/need_producer" {:origin :pants-authored :reason "host-specific: a dependency producer for the Pants need host (tests/need.rs)"}
+  "pants/sim_is_even" {:origin :pants-authored :reason "host-specific: the simulated host's tail-call stand-in convention (tests/sim_host.rs)"}
+  "pants/sim_is_odd" {:origin :pants-authored :reason "host-specific: the simulated host's tail-call stand-in convention (tests/sim_host.rs)"}
+  "pants/quickjs_closure" {:area :functions-scope :origin :quickjs-adapted :reason "rewritten for an old Pants subset with the __rt.vector/__rt.nth intrinsics, which QuickJS lacks, so the oracles cannot agree; the upstream closure cases run unmodified as quickjs/test_closure.js/*"}}}
