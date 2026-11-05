@@ -108,6 +108,58 @@ fn check(bytes: const u8[:], expected: const u8[:], fault: source::Fault = sourc
         heap_program::join(thread_spawn(check_steps, str(bytes), cut));
     }
 }
+// Limit points (light-cljs-801). The dispatch loop runs a frame in place and
+// takes the exact limit checks only when its fuel is spent; one instruction a
+// slice spends it every instruction, which is the per-step check. For every
+// instruction limit, work limit above the started job, and stack limit up to
+// what the run needs, one uncut run and one run in slices of one instruction
+// must stop at the same instruction with the same fault and counts, and
+// leave the same state. kind 0 limits.steps, 1 limits.work, 2 limits.stack.
+struct Need { steps: i64, work: i64, stack: i64 }
+thread_fn limit_need(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let entry = source::closure(heap, 0, []);
+    var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
+    let work = heap.work;
+    // The deepest the locals and operands go, as the stack limit counts them.
+    var stack: i64 = 0;
+    while source::run(job, 1) == tiny::Outcome.Yielded { stack = max(stack, max(job.locals.len, job.operands.len)); }
+    assert(job.status == tiny::Status.Complete && job.fault == source::Fault.None);
+    assert(qput(Need { steps: job.steps, work: heap.work - work, stack: stack }));
+}
+thread_fn limit_side(bytes: u8[], kind: i64, limit: i64, sliced: bool, identity: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    if identity != 0 { heap.identity = identity; }
+    let entry = source::closure(heap, 0, []);
+    var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
+    if kind == 0 { heap.limits.steps = limit; } else if kind == 1 { heap.limits.work = heap.work + limit; } else { heap.limits.stack = limit; }
+    if sliced { while source::run(job, 1) == tiny::Outcome.Yielded {} } else { source::run(job, -1); }
+    // Neither count overruns its limit, not even by instructions run in place.
+    assert(job.steps <= heap.limits.steps && heap.work <= heap.limits.work);
+    assert(qput(state(job)));
+}
+fn limit_points(bytes: const u8[:]) {
+    heap_program::join(thread_spawn(limit_need, str(bytes))); let need = qget<Need>();
+    for kind in 3 {
+        let count = if kind == 0 { need.steps } else if kind == 1 { need.work } else { need.stack };
+        for limit in (count + 1) {
+            heap_program::join(thread_spawn(limit_side, str(bytes), kind, limit, false, 0)); let whole = qget<State>();
+            heap_program::join(thread_spawn(limit_side, str(bytes), kind, limit, true, whole.identity)); let sliced = qget<State>();
+            same_state(whole, sliced);
+            // A work limit a helper's own charge meets fails with that
+            // helper's fault (key_is, for one, answers false and its caller
+            // reports UnsupportedOperand), on both sides alike.
+            let fault = if kind == 0 { source::Fault.InstructionLimit } else { source::Fault.StackLimit };
+            if limit < count { assert(whole.status == tiny::Status.Failed && (kind == 1 || whole.fault == fault)); }
+            if kind == 0 { assert(whole.steps == min(limit, need.steps)); }
+            if limit == count { assert(whole.status == tiny::Status.Complete); }
+        }
+    }
+}
 fn limits(bytes: const u8[:]) {
     for kind in 3 { heap_program::join(thread_spawn(initialization_limit, str(bytes), kind)); }
     for kind in 6 { heap_program::join(thread_spawn(execution_limit, str(bytes), kind)); }
@@ -318,6 +370,7 @@ fn main() {
     flow_errors(embed_file("../corpus/serial/control.gsp"));
     heap_program::join(thread_spawn(runtime_boundary, str(embed_file("../corpus/branches-helper-0.pants.gsp"))));
     limits(embed_file("../corpus/serial/captures.gsp"));
+    for image in [embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/control.gsp"), embed_file("../corpus/serial/arguments.gsp"), embed_file("../corpus/serial/mutations.gsp")] { limit_points(image); }
     heap_program::join(thread_spawn(factory, str(embed_file("../corpus/closure-captured.pants.gsp"))));
     malformed(embed_file("../corpus/serial/captures.gsp"));
     heap_program::join(thread_spawn(instruction_limit));

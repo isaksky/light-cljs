@@ -273,6 +273,8 @@ thread_fn reused_target(saved: snapshot::Snapshot) {
     var stale = source::Value.Undefined;
     for n in [3, 20, 1, 50, 3, 20] {
         var restore = snapshot::Control {}; assert(snapshot::restore(saved, code, heap, roots, source::reserve_identity(), restore));
+        // One decoded height a function: a reset leaves none of the last restore's.
+        assert(code.heights.len == code.functions.len && code.ins.len == code.ops.len);
         if stale.tag() != 0 { assert(!source::valid(heap, stale) && heap.fault == source::Fault.StaleID); heap.fault = source::Fault.None; }
         assert(source::start(job, roots[0].value, [source::nil(), source::nil(), source::number(n)]));
         assert(!source::reset(job) && !snapshot::reset(code, heap, roots));
@@ -286,7 +288,7 @@ thread_fn reused_target(saved: snapshot::Snapshot) {
         assert(job.frames.len == 0 && job.locals.len == 0 && job.operands.len == 0 && job.writes.len == 0 && job.handlers.len == 0);
         assert(job.result.tag() == 0 && job.steps == 0 && job.status == tiny::Status.Ready && !job.registered && !job.effect_pending && job.effect_count == 0);
         assert(snapshot::reset(code, heap, roots));
-        assert(heap.identity == 0 && heap.global.tag() == 0 && heap.live_jobs == 0 && heap.nodes.len == 0 && heap.work == 0 && roots.len == 0 && !code.valid && code.ops.len == 0);
+        assert(heap.identity == 0 && heap.global.tag() == 0 && heap.live_jobs == 0 && heap.nodes.len == 0 && heap.work == 0 && roots.len == 0 && !code.valid && code.ops.len == 0 && code.heights.len == 0);
         var wrong = snapshot::Control {}; assert(!snapshot::restore(saved, code, heap, roots, saved.header.base, wrong) && wrong.error == snapshot::Error.Identity && heap.identity == 0);
     }
     var corrupt = copy(saved); corrupt.nodes[0].kind = 999; var invalid = snapshot::Control {};

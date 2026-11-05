@@ -27,30 +27,30 @@ enum Value { Undefined, Null, Bool { v: bool }, Number { v: f64 }, String { s: u
 // some unit is above 255. Code and wire strings (Code, bridge graphs,
 // artifacts) are always wide.
 struct Str { start: u32, len: u32, wide: bool = true }
-fn tag(v: Value) -> i64 { return match v { Undefined => 0, Null => 1, Bool => 2, Number => 3, String => 4, Object => 5, Symbol => 6, BigInt => 7, Empty => -1 }; }
+inline fn tag(v: Value) -> i64 { return match v { Undefined => 0, Null => 1, Bool => 2, Number => 3, String => 4, Object => 5, Symbol => 6, BigInt => 7, Empty => -1 }; }
 // Every link between VM tables is a plain u32 row ID (light-cljs-800,
 // decision 2), never a Goose index type: rows cross threads in every
 // snapshot, saved continuation and message. no_row() marks an absent link;
 // no table reaches it (snapshot::validate caps every table far below).
-fn no_row() -> u32 { return 4294967295; }
+inline fn no_row() -> u32 { return 4294967295; }
 // The object row, or no_row() for a non-object.
-fn id(v: Value) -> u32 { return match v { Object x => x.o, _ => no_row() }; }
+inline fn id(v: Value) -> u32 { return match v { Object x => x.o, _ => no_row() }; }
 // The string header, or no_row() for a non-string.
-fn sid(v: Value) -> u32 { return match v { String x => x.s, _ => no_row() }; }
-fn num(v: Value) -> f64 { return match v { Number x => x.v, _ => 0 }; }
-fn flag(v: Value) -> bool { return match v { Bool x => x.v, _ => false }; }
+inline fn sid(v: Value) -> u32 { return match v { String x => x.s, _ => no_row() }; }
+inline fn num(v: Value) -> f64 { return match v { Number x => x.v, _ => 0 }; }
+inline fn flag(v: Value) -> bool { return match v { Bool x => x.v, _ => false }; }
 // A Symbol constant's well-known index.
 fn symbol_index(v: Value) -> i64 { return match v { Symbol x => x.s, _ => -1 }; }
-fn object(row: i64) -> Value { return Value.Object { o: row as u32 }; }
+inline fn object(row: i64) -> Value { return Value.Object { o: row as u32 }; }
 // Row access names its table (light-cljs-800): a row of another table, or
 // past this one's end, fails here with the table's name. The explicit check
 // is what Goose's bounds check would do, so the read itself keeps none.
 // Readers take a const heap; *_mut and set_* write.
-fn node(heap: const Heap&, o: i64) -> const Node& { if o < 0 || o >= heap.nodes.len { abort("row is not in table nodes"); } return heap.nodes[o]; }
-fn node_mut(heap: Heap&, o: i64) -> Node& { if o < 0 || o >= heap.nodes.len { abort("row is not in table nodes"); } return heap.nodes[o]; }
+inline fn node(heap: const Heap&, o: i64) -> const Node& { if o < 0 || o >= heap.nodes.len { abort("row is not in table nodes"); } return heap.nodes[o]; }
+inline fn node_mut(heap: Heap&, o: i64) -> Node& { if o < 0 || o >= heap.nodes.len { abort("row is not in table nodes"); } return heap.nodes[o]; }
 fn set_node(heap: Heap&, o: i64, n: Node) { if o < 0 || o >= heap.nodes.len { abort("row is not in table nodes"); } heap.nodes[o] = n; }
-fn slot(heap: const Heap&, row: i64) -> Value { if row < 0 || row >= heap.values.len { abort("row is not in table values"); } return heap.values[row]; }
-fn set_slot(heap: Heap&, row: i64, v: Value) { if row < 0 || row >= heap.values.len { abort("row is not in table values"); } heap.values[row] = v; }
+inline fn slot(heap: const Heap&, row: i64) -> Value { if row < 0 || row >= heap.values.len { abort("row is not in table values"); } return heap.values[row]; }
+inline fn set_slot(heap: Heap&, row: i64, v: Value) { if row < 0 || row >= heap.values.len { abort("row is not in table values"); } heap.values[row] = v; }
 fn run(heap: const Heap&, start: i64, count: i64) -> const Value[:] { if start < 0 || count < 0 || start > heap.values.len || count > heap.values.len - start { abort("run is not in table values"); } return heap.values[start..(start + count)]; }
 fn property_row(heap: const Heap&, row: i64) -> const Property& { if row < 0 || row >= heap.properties.len { abort("row is not in table properties"); } return heap.properties[row]; }
 fn property_mut(heap: Heap&, row: i64) -> Property& { if row < 0 || row >= heap.properties.len { abort("row is not in table properties"); } return heap.properties[row]; }
@@ -123,7 +123,7 @@ struct Function { start: u32, count: u32, constants: u32, children: u32, params:
 struct Op { code: i64, arg: i64, offset: i64, start: i64, end: i64, depth: i64 = -1 }
 // One decoded instruction per validated `Op` row (light-cljs-785; decision 1
 // of docs/javascript-coverage.md): a fixed-mode enum dispatched by `match` in
-// `step`. Payloads are the row's validated operand; jump targets are absolute
+// `execute`. Payloads are the row's validated operand; jump targets are absolute
 // instruction indices. `Op` rows remain the validation and provenance record
 // (source spans, byte offsets, the opcode a fault names). An opcode this VM
 // does not implement decodes to `Unsupported` and fails by name when it runs.
@@ -145,6 +145,10 @@ root struct Code {
     ops:          Op[>..]         = [], units: u16[>..] = [], strings: Str[>..] = [], valid: bool = false,
     error:        tiny::LoadError = tiny::LoadError.None, error_pc: i64 = -1,
     ins:          Ins[>..]        = [], effects: Effect[>..] = [], decoded: i64 = 0,
+    // Each decoded function's deepest operand height, from the validated
+    // depths: a frame with that much stack room skips the per-instruction
+    // stack checks (light-cljs-801).
+    heights: u32[>..] = [],
 }
 // Unsupported: an exported opcode (or constant kind) this VM does not
 // implement ran; Job.fault_opcode names it. Like every fault except the
@@ -210,8 +214,8 @@ root struct Job {
     gensym_prefix: u8[>..]  = [], gensym_next: i64 = 0,
     effect_args:   Value[8] = [Value.Undefined; 8], effect_count: i64 = 0, effect_frame: Frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined },
 }
-fn number(n: f64) -> Value { return Value.Number { v: n }; }
-fn boolean(b: bool) -> Value { return Value.Bool { v: b }; }
+inline fn number(n: f64) -> Value { return Value.Number { v: n }; }
+inline fn boolean(b: bool) -> Value { return Value.Bool { v: b }; }
 // A code constant's units: Code keeps its own string headers over its units.
 fn code_chars(code: const Code&, v: Value) -> const u16[:] { let s = code.strings[v.sid()]; return code.units[s.start..(s.start + s.len)]; }
 fn reject(code: Code&, error: tiny::LoadError, pc: i64) -> bool { code.error = error; code.error_pc = pc; return false; }
@@ -267,13 +271,18 @@ fn instruction(op: Op) -> Ins {
 // immutable, so this is idempotent. Every Code owner calls it after it appends
 // validated rows (load, append_code, snapshot restore, callable install).
 fn decode(code: Code&) {
+    // heights[i] is function i's: a Code reset (snapshot::reset) clears it
+    // with the functions it describes.
+    assert(code.heights.len == code.decoded);
     if code.ins.len < code.ops.len { code.ins.resize(code.ops.len, Ins.Pop); code.effects.resize(code.ops.len, Effect { pop: -1, push: -1 }); }
     for i in code.decoded..code.functions.len {
-        let f = code.functions[i];
+        let f = code.functions[i]; var height: i64 = 0;
         for pc in f.start..(f.start + f.count) {
             let op = code.ops[pc]; let pop, push = stack_effect(code, f, op);
             code.ins[pc] = instruction(op); code.effects[pc] = Effect { pop: pop as i32, push: push as i32 };
+            if op.depth >= 0 { height = max(height, max(op.depth, op.depth - pop + push)); }
         }
+        code.heights.push(height as u32);
     }
     code.decoded = code.functions.len;
 }
@@ -466,7 +475,7 @@ fn reserve_identity() -> i64 {
     let result = next_identity; next_identity += 1; return result;
 }
 // Strings are truthy unless empty; truthy reads the header.
-fn truthy(heap: const Heap&, v: Value) -> bool { return match v { Undefined, Null, Empty => false, Bool b => b.v, Number n => n.v != 0 && n.v == n.v, String s => heap.strings[s.s].len != 0, _ => true }; }
+inline fn truthy(heap: const Heap&, v: Value) -> bool { return match v { Undefined, Null, Empty => false, Bool b => b.v, Number n => n.v != 0 && n.v == n.v, String s => heap.strings[s.s].len != 0, _ => true }; }
 fn equal(heap: Heap&, a: Value, b: Value) -> bool {
     if !valid(heap, a) || !valid(heap, b) || a.tag() != b.tag() { return false; }
     return match a.tag() {
@@ -789,15 +798,25 @@ fn raise(job: Job&, value: Value, frame: Frame) {
     job.frames[handler.frame].pc = handler.pc; job.operands.push(value);
 }
 fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -> bool {
+    if !valid(job.heap, callee) || !valid(job.heap, receiver) { return false; }
+    return push_frame(job, callee, receiver, arguments, true);
+}
+// Push the callee's frame. `checked` validates the receiver's and arguments'
+// rows (enter, for values from outside the job). A call from the dispatch
+// loop skips that (light-cljs-801): its callee, receiver and arguments are
+// the job's operands, which hold only valid values, because every value
+// enters a job validated (start, deliver_effect, load-validated constants,
+// table rows written by validated writes or a validated image) and rows are
+// never removed while a job runs.
+fn push_frame(job: Job&, callee: Value, receiver: Value, arguments: const Value[:], checked: bool) -> bool {
     let heap .= job.heap;
-    if !valid(heap, callee) || !valid(heap, receiver) { return false; }
     if callee.tag() != 5 || node(heap, callee.id()).kind != 2 { heap.fault = Fault.TypeError; return false; }
     let id = node(heap, callee.id()).function; let f .= heap.code.functions[id];
     // A class constructor has no [[Call]]: calling it throws TypeError.
     if f.kind >= 2 { heap.fault = Fault.TypeError; return false; }
     if job.frames.len >= heap.limits.frames || f.locals > heap.limits.stack - job.locals.len || arguments.len > heap.limits.stack - job.locals.len - f.locals { heap.fault = Fault.StackLimit; return false; }
     if !charge(heap, f.locals + arguments.len) { return false; }
-    for v in arguments { if !valid(heap, v) { return false; } }
+    if checked { for v in arguments { if !valid(heap, v) { return false; } } }
     let base = job.locals.len; job.locals.resize(base + f.locals, Value.Undefined);
     for value, i in arguments { if i < f.params { job.locals[base + i] = value; } }
     job.locals.append(arguments);
@@ -834,6 +853,10 @@ fn reset(job: Job&) -> bool {
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
     return true;
 }
+// The write log holds named property writes only: the typed outcome's
+// `observed` effects and the compiler's write counts read it. The job reset
+// needs no log (decision 3), so element stores and cell writes, which no
+// reader looks at, are not logged (light-cljs-801).
 fn record(job: Job&, object: Value, k: Value, value: Value) {
     if job.writes.len >= job.heap.limits.properties { memory(job.heap); return; }
     job.writes.push(Write { object: object, key: k, value: value });
@@ -1316,8 +1339,10 @@ fn demand_maps(job: Job&, values: const Value[:], nested: bool = false) -> bool 
     }
     return false;
 }
-fn step(job: Job&) {
-    let heap .= job.heap; let code .= heap.code;
+// A native frame's step (-2 a deferred map's callbacks, -1 mapv), with the
+// per-step budget, instruction and work checks of every step.
+fn native_step(job: Job&) {
+    let heap .= job.heap;
     if job.frames.len == 0 { fail(job, Fault.InvalidState, Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined }); return; }
     let frame = job.frames[job.frames.len - 1];
     if frame.function == -2 {
@@ -1375,131 +1400,327 @@ fn step(job: Job&) {
         if heap.fault != Fault.None { fail(job, heap.fault, frame); }
         return;
     }
-    let f .= code.functions[frame.function];
-    if frame.pc < f.start || frame.pc >= f.start + f.count || frame.pc >= code.ins.len { fail(job, Fault.InvalidState, frame); return; }
-    if job.steps >= heap.limits.steps { fail(job, Fault.InstructionLimit, frame); return; }
-    if !charge(heap) { fail(job, heap.fault, frame); return; }
-    let ins = code.ins[frame.pc]; let effect = code.effects[frame.pc]; let pop = effect.pop; let push = effect.push;
-    if job.operands.len - frame.operand_base < pop { fail(job, Fault.InvalidState, frame); return; }
-    if push - pop > heap.limits.stack - job.operands.len { fail(job, Fault.StackLimit, frame); return; }
-    var demanded = false;
-    match ins {
-        Form x => { if x.op == 5 || x.op == 19 || x.op == 35 || x.op == 36 { demanded = demand_maps(job, job.operands[(job.operands.len - pop)..], x.op == 36); } },
-        Call c => { demanded = demand_call(job, c.argc, false); },
-        CallMethod c => { demanded = demand_call(job, c.argc, true); },
-        _ => {},
+    // A frame of no function: the per-step checks above, then InvalidState.
+    fail(job, Fault.InvalidState, frame);
+}
+// The dispatch loop runs the active frame in place (light-cljs-801): its
+// function, pc, local and operand bases are locals for the whole loop, not a
+// Frame copied every instruction, and are written back to the frame row only
+// where the frame stack changes or a helper may read them: calls, returns,
+// throws, faults, effect suspension, demands and the budget cut. A call into
+// bytecode and a return to a bytecode caller start the next frame's pass
+// without leaving the loop.
+//
+// Every instruction still costs one step, one work unit and one unit of the
+// run's budget, and the limits fault at the same instruction as before, with
+// the same counts: `fuel` is how many instructions may run before one of the
+// three is spent, so the loop counts down a local and settles the counts into
+// job.steps, heap.work and the budget before any helper that charges work,
+// reads the counts or may fault, and at every exit. Only when the fuel is
+// spent does an instruction take the exact checks (budget, InstructionLimit,
+// WorkLimit). A frame whose operand base leaves room for its function's
+// deepest validated height (Code.heights) cannot underflow or exceed
+// limits.stack, so only a frame without that room checks each instruction's
+// stack effect, as before.
+inline fn fuel(job: const Job&, allowance: i64, used: i64) -> i64 {
+    var n = min(job.heap.limits.steps - job.steps, job.heap.limits.work - job.heap.work);
+    if allowance >= 0 { n = min(n, allowance - used); }
+    return max(n, 0);
+}
+// Settle `ran` instructions run in place: a step, a work unit and a budget
+// unit each.
+inline fn settle(job: Job&, ran: i64&, used: i64&) { job.steps += ran; job.heap.work += ran; used += ran; ran = 0; }
+// The frame row at `top` as the instruction at `at` saw it: fault locations
+// and effect continuations name the instruction, not its successor.
+inline fn frame_at(job: const Job&, top: i64, at: i64) -> Frame { var frame = job.frames[top]; frame.pc = at; return frame; }
+// After a helper ran for the instruction at `at` (its pc already written
+// back): report its fault, and whether the frame at `top` is still active and
+// running, so the loop may continue in place.
+inline fn in_place(job: Job&, top: i64, at: i64) -> bool {
+    if job.heap.fault != Fault.None { fail(job, job.heap.fault, frame_at(job, top, at)); return false; }
+    return job.frames.len == top + 1 && job.status == tiny::Status.Ready && !job.effect_pending;
+}
+// Numbers on both sides of a binary operator: what binary_value computes for
+// them, without its coercions (no charge, no fault).
+inline fn arithmetic(op: i64, x: f64, y: f64) -> Value {
+    return match op {
+        7, 73 => number(x + y), 8 => number(x - y), 9 => number(x * y), 33 => number(x / y), 34 => number(x % y),
+        11, 41 => boolean(x == y), 38, 75 => boolean(x > y), 39, 76 => boolean(x <= y), 40, 77 => boolean(x >= y), _ => boolean(x < y),
+    };
+}
+// Run bytecode frames until the job stops or suspends, the active frame is a
+// native one, or `allowance` instructions ran (-1: no budget). Returns the
+// budget units used: one an instruction dispatched, including a faulting one
+// and one that only started a demand.
+fn execute(job: Job&, allowance: i64) -> i64 {
+    let heap .= job.heap; let code .= heap.code;
+    // The instructions do not change while a job runs.
+    let program = code.ins[..];
+    var used: i64 = 0;
+    while job.status == tiny::Status.Ready && !job.effect_pending && job.frames.len > 0 && job.frames[job.frames.len - 1].function >= 0 && (allowance < 0 || used < allowance) {
+        let top = job.frames.len - 1;
+        let fid = job.frames[top].function; let lb = job.frames[top].local_base; let ob = job.frames[top].operand_base;
+        var pc = job.frames[top].pc;
+        let f .= code.functions[fid];
+        if pc < f.start || pc >= f.start + f.count || pc >= program.len { let here = job.frames[top]; fail(job, Fault.InvalidState, here); return used + 1; }
+        // Validated code keeps a frame's operand height at its pc's depth; a
+        // frame entered at any other height takes the per-instruction checks.
+        let checked = job.operands.len - ob != code.ops[pc].depth || ob + code.heights[fid] > heap.limits.stack;
+        var ran: i64 = 0; var left = fuel(job, allowance, used); var at = pc;
+        // Each pass of this loop dispatches one instruction; it breaks when
+        // the frame stops being the active one or a fault stops it.
+        loop {
+            if ran == left {
+                settle(job, ran, used);
+                if allowance >= 0 && used >= allowance { job.frames[top].pc = pc; return used; }
+                if job.steps >= heap.limits.steps { heap.fault = Fault.InstructionLimit; } else if heap.work >= heap.limits.work { heap.fault = Fault.WorkLimit; }
+                if heap.fault != Fault.None { job.frames[top].pc = pc; used += 1; fail(job, heap.fault, frame_at(job, top, pc)); return used; }
+                left = fuel(job, allowance, used);
+            }
+            at = pc; ran += 1;
+            if checked {
+                // As before: the work unit and budget unit are spent, the step is not.
+                let e = code.effects[at];
+                let bad = if job.operands.len - ob < e.pop { Fault.InvalidState } else if e.push - e.pop > heap.limits.stack - job.operands.len { Fault.StackLimit } else { Fault.None };
+                if bad != Fault.None { settle(job, ran, used); job.steps -= 1; job.frames[top].pc = at; fail(job, bad, frame_at(job, top, at)); break; }
+            }
+            pc = at + 1;
+            // An arm that runs a helper first settles the counts and writes
+            // its continuation back, and afterwards continues in place only if
+            // the frame is still the active one; an arm that may fault on its
+            // own breaks with heap.fault set.
+            match program[at] {
+                Const c => {
+                    let v = heap.constants[f.constants + c.k];
+                    // Symbol and BigInt constants have no VM value yet.
+                    if v.tag() >= 6 { heap.fault = Fault.Unsupported; break; }
+                    job.operands.push(v);
+                },
+                Undefined => { job.operands.push(Value.Undefined); },
+                Load l => { job.operands.push(job.locals[lb + l.slot]); },
+                Store s => { job.locals[lb + s.slot] = job.operands.pop(); },
+                Pop => { job.operands.pop(); },
+                Dup => { let v = job.operands[job.operands.len - 1]; job.operands.push(v); },
+                Binary b => {
+                    let y = job.operands.pop(); let x = job.operands.pop();
+                    if x.tag() == 3 && y.tag() == 3 { job.operands.push(arithmetic(b.op, x.num(), y.num())); }
+                    else {
+                        settle(job, ran, used); job.frames[top].pc = pc;
+                        let v = binary_value(heap, b.op, x, y); job.operands.push(v);
+                        if !in_place(job, top, at) { break; }
+                        left = fuel(job, allowance, used);
+                    }
+                },
+                Not => { let v = job.operands.pop(); job.operands.push(boolean(!truthy(heap, v))); },
+                Jump j => { pc = j.to; },
+                JumpUnless j => { let v = job.operands.pop(); if !truthy(heap, v) { pc = j.to; } },
+                Return => {
+                    settle(job, ran, used);
+                    while job.handlers.len > 0 && job.handlers[job.handlers.len - 1].frame >= top { job.handlers.pop(); }
+                    let v = job.operands.pop(); job.frames.pop(); job.locals.resize(lb); job.operands.resize(ob);
+                    if job.frames.len == 0 { job.result = v; job.status = tiny::Status.Complete; } else { job.operands.push(v); }
+                    break;
+                },
+                NewObject => {
+                    settle(job, ran, used); job.frames[top].pc = pc; let v = allocate(heap, Node { kind: 0 }); job.operands.push(v);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                NewArray => {
+                    settle(job, ran, used); job.frames[top].pc = pc; let v = allocate(heap, Node { kind: 1 }); job.operands.push(v);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                Try t => { job.handlers.push(Handler { frame: top, pc: t.to, operands: job.operands.len, locals: job.locals.len }); },
+                Throw => { settle(job, ran, used); job.frames[top].pc = pc; let value = job.operands.pop(); raise(job, value, frame_at(job, top, at)); break; },
+                EndTry => {
+                    if job.handlers.len == 0 || job.handlers[job.handlers.len - 1].frame != top { heap.fault = Fault.InvalidState; break; }
+                    job.handlers.pop();
+                },
+                Unary u => {
+                    let v = job.operands.pop(); let n = if v.tag() == 3 { v.num() } else { numeric(heap, v) };
+                    job.operands.push(number(if u.op == 35 { -n } else if u.op == 113 { n + 1 } else if u.op == 114 { n - 1 } else { n }));
+                    if heap.fault != Fault.None { break; }
+                },
+                Numeric2 => {
+                    let b = job.operands.pop(); let a = job.operands.pop();
+                    let x = if a.tag() == 3 { a.num() } else { numeric(heap, a) }; let y = if b.tag() == 3 { b.num() } else { numeric(heap, b) };
+                    job.operands.push(number(x)); job.operands.push(number(y));
+                    if heap.fault != Fault.None { break; }
+                },
+                Closure c => {
+                    settle(job, ran, used); job.frames[top].pc = pc;
+                    let child = code.children[f.children + c.child]; let count = code.functions[child].captures; let base = job.operands.len - count;
+                    let v = closure(heap, child, job.operands[base..]); job.operands.resize(base); job.operands.push(v);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                Call c => {
+                    settle(job, ran, used);
+                    if !invoke(job, top, at, c.argc, false) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                CallMethod c => {
+                    settle(job, ran, used);
+                    if !invoke(job, top, at, c.argc, true) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                Arguments => {
+                    settle(job, ran, used); job.frames[top].pc = pc; let here = job.frames[top]; arguments(job, here, f, false, 0);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                Rest r => {
+                    settle(job, ran, used); job.frames[top].pc = pc; let here = job.frames[top]; arguments(job, here, f, true, r.skip);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                Callee => { job.operands.push(job.frames[top].callee); },
+                Capture c => { let row .= node(heap, job.frames[top].callee.id()); job.operands.push(slot(heap, row.start + c.slot)); },
+                NewCell c => {
+                    settle(job, ran, used); job.frames[top].pc = pc; let v = allocate(heap, Node { kind: 3, immutable: c.immutable }); job.operands.push(v);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                InitCell => { cell(job, 48); if heap.fault != Fault.None { break; } },
+                ReadCell => { cell(job, 49); if heap.fault != Fault.None { break; } },
+                WriteCell => { cell(job, 50); if heap.fault != Fault.None { break; } },
+                GetNamed g => {
+                    settle(job, ran, used); job.frames[top].pc = pc; get_property(job, heap.constants[f.constants + g.k]);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                GetIndexed => {
+                    let v = job.operands[job.operands.len - 1]; let object = job.operands[job.operands.len - 2]; let i = number_index(v);
+                    // A dense run read neither charges nor faults.
+                    if i >= 0 && dense(job, object) && !node(heap, object.id()).initialized { job.operands.pop(); job.operands.pop(); let e, found = own_element(heap, object, i); job.operands.push(e); }
+                    else {
+                        settle(job, ran, used); job.frames[top].pc = pc; job.operands.pop();
+                        if i >= 0 && dense(job, object) { job.operands.pop(); let e, found = own_element(heap, object, i); job.operands.push(e); }
+                        else { let k = key(heap, v); get_property(job, k); }
+                        if !in_place(job, top, at) { break; }
+                        left = fuel(job, allowance, used);
+                    }
+                },
+                SetNamed s => {
+                    settle(job, ran, used); job.frames[top].pc = pc; let value = job.operands.pop(); set_property(job, value, heap.constants[f.constants + s.k], false);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                SetNamedChain s => {
+                    settle(job, ran, used); job.frames[top].pc = pc; let value = job.operands.pop(); set_property(job, value, heap.constants[f.constants + s.k], true);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                SetIndexed => {
+                    settle(job, ran, used); job.frames[top].pc = pc;
+                    let value = job.operands.pop(); let v = job.operands.pop(); let object = job.operands[job.operands.len - 1]; let i = number_index(v);
+                    if i >= 0 && dense(job, object) { job.operands.pop(); if valid(heap, value) { set_element(heap, object, i, value); } job.operands.push(value); }
+                    else { let k = key(heap, v); set_property(job, value, k, false); }
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                Append => {
+                    settle(job, ran, used); job.frames[top].pc = pc;
+                    let value = job.operands.pop(); let object = job.operands[job.operands.len - 1];
+                    if dense(job, object) { let end = node(heap, object.id()).length; if valid(heap, value) { set_element(heap, object, end, value); } }
+                    else {
+                        let k = if valid(heap, object) && object.tag() == 5 && node(heap, object.id()).kind == 1 { key(heap, number(node(heap, object.id()).length)) } else { heap.fault = Fault.TypeError; Value.Undefined };
+                        set_property(job, value, k, true);
+                    }
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                CheckValue => {
+                    let value = job.operands.pop(); if valid(heap, value) && value.tag() == 5 && node(heap, value.id()).kind == 3 { heap.fault = Fault.UnsupportedOperand; } job.operands.push(value);
+                    if heap.fault != Fault.None { break; }
+                },
+                This t => {
+                    var receiver = job.frames[top].receiver;
+                    if t.sloppy && !f.strict && (receiver.tag() == 0 || receiver.tag() == 1) { receiver = heap.global; }
+                    else if t.sloppy && !f.strict && receiver.tag() != 5 { heap.fault = Fault.UnsupportedOperand; }
+                    job.operands.push(receiver);
+                    if heap.fault != Fault.None { break; }
+                },
+                Global => { job.operands.push(heap.global); },
+                GetGlobal g => {
+                    settle(job, ran, used); job.frames[top].pc = pc;
+                    let k = heap.constants[f.constants + g.k];
+                    let v, found = own_property(heap, heap.global, k);
+                    if !found {
+                        if job.protected_nodes > 0 { heap.fault = Fault.NativeBoundary; }
+                        // Keep prototype-dependent reads explicitly unsupported.
+                        get(heap, heap.global, k);
+                        if g.throws && heap.fault == Fault.None { heap.fault = Fault.ReferenceError; }
+                    }
+                    job.operands.push(v);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                Literal l => {
+                    settle(job, ran, used); job.frames[top].pc = pc;
+                    let base = job.operands.len - (l.count);
+                    let value = form_construct(heap, l.kind, job.operands[base..]); job.operands.resize(base); job.operands.push(value);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                Form x => {
+                    settle(job, ran, used);
+                    let op = x.op; let base = job.operands.len - export_form_arity(op);
+                    if op == 5 || op == 19 || op == 35 || op == 36 {
+                        // A demand starts before the step counts (see invoke).
+                        let demanded = demand_maps(job, job.operands[(job.operands.len - code.effects[at].pop)..], op == 36);
+                        if demanded || heap.fault != Fault.None { job.steps -= 1; job.frames[top].pc = at; if !demanded { fail(job, heap.fault, frame_at(job, top, at)); } break; }
+                    }
+                    job.frames[top].pc = pc;
+                    // The live compiler adapter opts into a demand at the exact saved
+                    // intrinsic-call continuation. Sealed-plan users retain the
+                    // explicit DependencyNeed failure from form_op below.
+                    var waiting = false;
+                    if op == 82 && job.helpers_enabled {
+                        let args = job.operands[base..];
+                        if valid(heap, args[0]) && args[0].tag() == 5 && node(heap, args[0].id()).kind == 0 && args[1].tag() <= 1 && args[2].tag() == 4 {
+                            let value, found = own_property(heap, args[0], args[2]);
+                            if !found && heap.fault == Fault.None { request_effect(job, 9, args, frame_at(job, top, at)); waiting = true; }
+                        }
+                    }
+                    if waiting { job.operands.resize(base); }
+                    else { let value = form_op(heap, op, job.operands[base..]); job.operands.resize(base); job.operands.push(value); }
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                // Every other registry opcode exports and validates but is not
+                // implemented here: it fails the job by name, uncatchably, when it
+                // runs. Never a fallback or a no-op (light-cljs-783).
+                Unsupported => { heap.fault = Fault.Unsupported; break; },
+            }
+        }
+        // A fault an arm raised on its own counts its instruction, as before:
+        // step, work and budget, with the frame's pc past it.
+        if heap.fault != Fault.None { settle(job, ran, used); job.frames[top].pc = pc; fail(job, heap.fault, frame_at(job, top, at)); }
     }
-    if heap.fault != Fault.None { fail(job, heap.fault, frame); return; }
-    if demanded { return; }
-    job.steps += 1; job.frames[job.frames.len - 1].pc += 1;
-    match ins {
-        Const c => {
-            let v = heap.constants[f.constants + c.k];
-            // Symbol and BigInt constants have no VM value yet.
-            if v.tag() >= 6 { heap.fault = Fault.Unsupported; } else { job.operands.push(v); }
-        },
-        Undefined => { job.operands.push(Value.Undefined); },
-        Load l => { job.operands.push(job.locals[frame.local_base + l.slot]); },
-        Store s => { job.locals[frame.local_base + s.slot] = job.operands.pop(); },
-        Pop => { job.operands.pop(); },
-        Dup => { let v = job.operands[job.operands.len - 1]; job.operands.push(v); },
-        Binary b => { let y = job.operands.pop(); let x = job.operands.pop(); let v = binary_value(heap, b.op, x, y); job.operands.push(v); },
-        Not => { let v = job.operands.pop(); job.operands.push(boolean(!truthy(heap, v))); },
-        Jump j => { job.frames[job.frames.len - 1].pc = j.to; },
-        JumpUnless j => { let v = job.operands.pop(); if !truthy(heap, v) { job.frames[job.frames.len - 1].pc = j.to; } },
-        Return => {
-            while job.handlers.len > 0 && job.handlers[job.handlers.len - 1].frame >= job.frames.len - 1 { job.handlers.pop(); }
-            let v = job.operands.pop(); job.frames.pop(); job.locals.resize(frame.local_base); job.operands.resize(frame.operand_base);
-            if job.frames.len == 0 { job.result = v; job.status = tiny::Status.Complete; } else { job.operands.push(v); }
-        },
-        NewObject => { let v = allocate(heap, Node { kind: 0 }); job.operands.push(v); },
-        NewArray => { let v = allocate(heap, Node { kind: 1 }); job.operands.push(v); },
-        Try t => { job.handlers.push(Handler { frame: job.frames.len - 1, pc: t.to, operands: job.operands.len, locals: job.locals.len }); },
-        Throw => { let value = job.operands.pop(); raise(job, value, frame); },
-        EndTry => { if job.handlers.len == 0 || job.handlers[job.handlers.len - 1].frame != job.frames.len - 1 { heap.fault = Fault.InvalidState; } else { job.handlers.pop(); } },
-        Unary u => { let v = job.operands.pop(); let n = numeric(heap, v); job.operands.push(number(if u.op == 35 { -n } else if u.op == 113 { n + 1 } else if u.op == 114 { n - 1 } else { n })); },
-        Numeric2 => { let b = job.operands.pop(); let a = job.operands.pop(); let x = numeric(heap, a); let y = numeric(heap, b); job.operands.push(number(x)); job.operands.push(number(y)); },
-        Closure c => {
-            let child = code.children[f.children + c.child]; let count = code.functions[child].captures; let base = job.operands.len - count;
-            let v = closure(heap, child, job.operands[base..]); job.operands.resize(base); job.operands.push(v);
-        },
-        Call c => { call(job, frame, c.argc, false); },
-        CallMethod c => { call(job, frame, c.argc, true); },
-        Arguments => { arguments(job, frame, f, false, 0); },
-        Rest r => { arguments(job, frame, f, true, r.skip); },
-        Callee => { job.operands.push(frame.callee); },
-        Capture c => { let row = node(heap, frame.callee.id()); job.operands.push(slot(heap, row.start + c.slot)); },
-        NewCell c => { let v = allocate(heap, Node { kind: 3, immutable: c.immutable }); job.operands.push(v); },
-        InitCell => { cell(job, 48); },
-        ReadCell => { cell(job, 49); },
-        WriteCell => { cell(job, 50); },
-        GetNamed g => { get_property(job, heap.constants[f.constants + g.k]); },
-        GetIndexed => {
-            let v = job.operands.pop(); let object = job.operands[job.operands.len - 1]; let i = number_index(v);
-            if i >= 0 && dense(job, object) { job.operands.pop(); let e, found = own_element(heap, object, i); job.operands.push(e); }
-            else { let k = key(heap, v); get_property(job, k); }
-        },
-        SetNamed s => { let value = job.operands.pop(); set_property(job, value, heap.constants[f.constants + s.k], false); },
-        SetNamedChain s => { let value = job.operands.pop(); set_property(job, value, heap.constants[f.constants + s.k], true); },
-        SetIndexed => {
-            let value = job.operands.pop(); let v = job.operands.pop(); let object = job.operands[job.operands.len - 1]; let i = number_index(v);
-            // The write log keeps an element write's number as its key.
-            if i >= 0 && dense(job, object) { job.operands.pop(); if valid(heap, value) && set_element(heap, object, i, value) { record(job, object, v, value); } job.operands.push(value); }
-            else { let k = key(heap, v); set_property(job, value, k, false); }
-        },
-        Append => {
-            let value = job.operands.pop(); let object = job.operands[job.operands.len - 1];
-            if dense(job, object) { let at = node(heap, object.id()).length; if valid(heap, value) && set_element(heap, object, at, value) { record(job, object, number(at), value); } }
-            else {
-                let k = if valid(heap, object) && object.tag() == 5 && node(heap, object.id()).kind == 1 { key(heap, number(node(heap, object.id()).length)) } else { heap.fault = Fault.TypeError; Value.Undefined };
-                set_property(job, value, k, true);
-            }
-        },
-        CheckValue => { let value = job.operands.pop(); if valid(heap, value) && value.tag() == 5 && node(heap, value.id()).kind == 3 { heap.fault = Fault.UnsupportedOperand; } job.operands.push(value); },
-        This t => {
-            var receiver = frame.receiver;
-            if t.sloppy && !f.strict && (receiver.tag() == 0 || receiver.tag() == 1) { receiver = heap.global; }
-            else if t.sloppy && !f.strict && receiver.tag() != 5 { heap.fault = Fault.UnsupportedOperand; }
-            job.operands.push(receiver);
-        },
-        Global => { job.operands.push(heap.global); },
-        GetGlobal g => {
-            let k = heap.constants[f.constants + g.k];
-            let v, found = own_property(heap, heap.global, k);
-            if !found {
-                if job.protected_nodes > 0 { heap.fault = Fault.NativeBoundary; }
-                // Keep prototype-dependent reads explicitly unsupported.
-                get(heap, heap.global, k);
-                if g.throws && heap.fault == Fault.None { heap.fault = Fault.ReferenceError; }
-            }
-            job.operands.push(v);
-        },
-        Literal l => {
-            let base = job.operands.len - (l.count);
-            let value = form_construct(heap, l.kind, job.operands[base..]); job.operands.resize(base); job.operands.push(value);
-        },
-        Form x => {
-            let op = x.op; let base = job.operands.len - export_form_arity(op);
-            // The live compiler adapter opts into a demand at the exact saved
-            // intrinsic-call continuation. Sealed-plan users retain the
-            // explicit DependencyNeed failure from form_op below.
-            var waiting = false;
-            if op == 82 && job.helpers_enabled {
-                let args = job.operands[base..];
-                if valid(heap, args[0]) && args[0].tag() == 5 && node(heap, args[0].id()).kind == 0 && args[1].tag() <= 1 && args[2].tag() == 4 {
-                    let value, found = own_property(heap, args[0], args[2]);
-                    if !found && heap.fault == Fault.None { request_effect(job, 9, args, frame); waiting = true; }
-                }
-            }
-            if waiting { job.operands.resize(base); }
-            else { let value = form_op(heap, op, job.operands[base..]); job.operands.resize(base); job.operands.push(value); }
-        },
-        // Every other registry opcode exports and validates but is not
-        // implemented here: it fails the job by name, uncatchably, when it
-        // runs. Never a fallback or a no-op (light-cljs-783).
-        Unsupported => { heap.fault = Fault.Unsupported; },
+    return used;
+}
+// Call and CallMethod at `at`, with the instruction's counts settled. A map
+// demand (mapv/vec/into over a deferred map) runs first and, when it starts
+// or faults, leaves the call at its pc with no step counted; otherwise the
+// call runs with its continuation written back. A closure callee has no
+// demand and takes the direct path. Returns whether the frame continues in
+// place.
+inline fn invoke(job: Job&, top: i64, at: i64, argc: i64, method: bool) -> bool {
+    let base = job.operands.len - argc - (if method { 2 } else { 1 });
+    let callee = job.operands[base + (if method { 1 } else { 0 })];
+    if callee.tag() == 5 && node(job.heap, callee.id()).kind == 2 {
+        job.frames[top].pc = at + 1;
+        let receiver = if method { job.operands[base] } else { Value.Undefined };
+        if push_frame(job, callee, receiver, job.operands[(job.operands.len - argc)..], false) { job.frames[job.frames.len - 1].operand_base = base; job.operands.resize(base); }
+        return in_place(job, top, at);
     }
-    if heap.fault != Fault.None { fail(job, heap.fault, frame); }
+    let demanded = demand_call(job, argc, method);
+    if demanded || job.heap.fault != Fault.None { job.steps -= 1; job.frames[top].pc = at; if !demanded { fail(job, job.heap.fault, frame_at(job, top, at)); } return false; }
+    job.frames[top].pc = at + 1;
+    call(job, top, at, argc, method);
+    return in_place(job, top, at);
 }
 // A call's map demand (mapv/vec/into over a deferred map) runs before the
 // call consumes its operands; see demand_map.
@@ -1517,7 +1738,8 @@ fn demand_call(job: Job&, argc: i64, method: bool) -> bool {
     }
     return false;
 }
-fn call(job: Job&, frame: Frame, argc: i64, method: bool) {
+// `at` is the call instruction, the continuation an effect request saves.
+fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
     let heap .= job.heap;
     let base = job.operands.len - argc - (if method { 2 } else { 1 });
     var callee = job.operands[base + (if method { 1 } else { 0 })];
@@ -1525,11 +1747,13 @@ fn call(job: Job&, frame: Frame, argc: i64, method: bool) {
     var first = job.operands.len - argc;
     // Function.prototype.call forwards its method receiver as callee.
     // Detached calls fail; missing thisArg is exactly undefined.
-    if valid(heap, callee) && callee.tag() == 5 && node(heap, callee.id()).kind == 4 && node(heap, callee.id()).function == 14 {
+    var kind: i64 = if valid(heap, callee) && callee.tag() == 5 { node(heap, callee.id()).kind } else { -1 };
+    if kind == 4 && node(heap, callee.id()).function == 14 {
         callee = receiver; receiver = if first < job.operands.len { job.operands[first] } else { Value.Undefined };
         if first < job.operands.len { first += 1; }
+        kind = if valid(heap, callee) && callee.tag() == 5 { node(heap, callee.id()).kind } else { -1 };
     }
-    if valid(heap, callee) && callee.tag() == 5 && node(heap, callee.id()).kind == 4 {
+    if kind == 4 {
         let id = node(heap, callee.id()).function;
         let args = job.operands[first..];
         if id == 2 && args.len == 2 {
@@ -1541,9 +1765,9 @@ fn call(job: Job&, frame: Frame, argc: i64, method: bool) {
                 job.operands.resize(base);
             }
         } else if id == 5 && job.gensym_next > 0 { let value = gensym(job, args); job.operands.resize(base); job.operands.push(value); }
-        else if id >= 5 && id <= 8 { request_effect(job, id, args, frame); job.operands.resize(base); }
+        else if id >= 5 && id <= 8 { request_effect(job, id, args, frame_at(job, top, at)); job.operands.resize(base); }
         else { let value = native_value(heap, id, args); job.operands.resize(base); job.operands.push(value); }
-    } else if enter(job, callee, receiver, job.operands[first..]) { job.frames[job.frames.len - 1].operand_base = base; job.operands.resize(base); }
+    } else if push_frame(job, callee, receiver, job.operands[first..], false) { job.frames[job.frames.len - 1].operand_base = base; job.operands.resize(base); }
 }
 // `arguments` (unmapped, read-only) or a rest array after `skip` parameters.
 fn arguments(job: Job&, frame: Frame, f: const Function&, rest: bool, skip_count: i64) {
@@ -1568,14 +1792,15 @@ fn cell(job: Job&, op: i64) {
     let heap .= job.heap;
     let value = if op == 49 { Value.Undefined } else { job.operands.pop() }; let cell = job.operands.pop();
     if valid(heap, cell) && cell.tag() == 5 && node(heap, cell.id()).kind == 3 {
-        let row = node(heap, cell.id());
+        // The write log keeps no cell writes (light-cljs-801): nothing reads them.
+        let row .= node_mut(heap, cell.id());
         if op == 49 || op == 50 {
             if !row.initialized { heap.fault = Fault.ReferenceError; }
             else if op == 50 && row.immutable { heap.fault = Fault.ConstAssignment; }
             else if op == 49 { job.operands.push(row.value); }
-            else { node_mut(heap, cell.id()).value = value; record(job, cell, Value.Undefined, value); }
+            else { row.value = value; }
         } else if row.initialized && row.immutable { heap.fault = Fault.ConstAssignment; }
-        else { node_mut(heap, cell.id()).value = value; node_mut(heap, cell.id()).initialized = true; record(job, cell, Value.Undefined, value); }
+        else { row.value = value; row.initialized = true; }
     } else if heap.fault == Fault.None { heap.fault = Fault.TypeError; }
 }
 fn get_property(job: Job&, k: Value) {
@@ -1614,7 +1839,10 @@ fn run_claimed(job: Job&, budget: i64) -> tiny::Outcome {
     if !job.claimed { return tiny::Outcome.Busy; }
     defer { job.claimed = false; }
     var used: i64 = 0;
-    while job.status == tiny::Status.Ready && !job.effect_pending && (budget < 0 || used < budget) { step(job); used += 1; }
+    while job.status == tiny::Status.Ready && !job.effect_pending && (budget < 0 || used < budget) {
+        if job.frames.len == 0 || job.frames[job.frames.len - 1].function < 0 { native_step(job); used += 1; }
+        else { used += execute(job, if budget < 0 { -1 } else { budget - used }); }
+    }
     return match job.status { Ready => tiny::Outcome.Yielded, Complete => tiny::Outcome.Complete, Failed => tiny::Outcome.Failed };
 }
 fn run(job: Job&, budget: i64) -> tiny::Outcome {
