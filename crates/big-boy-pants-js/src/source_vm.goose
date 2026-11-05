@@ -1687,6 +1687,10 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                         let args = job.operands[base..];
                         if valid(heap, args[0]) && args[0].tag() == 5 && node(heap, args[0].id()).kind == 0 && args[1].tag() <= 1 && args[2].tag() == 4 {
                             let value, found = own_property(heap, args[0], args[2]);
+                            // The answer is written into the receiver: only the
+                            // compiler roots object or a row the job allocated
+                            // (light-cljs-795), never a retained image row.
+                            if !found && heap.fault == Fault.None && !(args[0] == job.root_receiver || writable(job, args[0].id())) { heap.fault = Fault.NativeBoundary; }
                             if !found && heap.fault == Fault.None { request_effect(job, 9, args, frame_at(job, top, at)); waiting = true; }
                         }
                     }

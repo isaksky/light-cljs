@@ -625,7 +625,10 @@ job workers".
   started) and `Job.foreign` (node ranges installed from publications during
   the job) bound the rows JavaScript may write: a property, element or
   closure-cell store into any other row faults `NativeBoundary` before it
-  mutates (`source::writable`). A continuation carries both.
+  mutates (`source::writable`). A root read whose receiver is neither the
+  compiler roots object nor such a row faults the same way, since the
+  compiler's answer is written into its receiver. A continuation carries
+  both bounds.
 - *Retirement.* A worker whose tables end a job above
   `BBP_WORKER_TABLE_BYTES` (default 1.25 MiB) exits instead of resetting; 0
   retires after every job, light-cljs-784's one worker per job, the

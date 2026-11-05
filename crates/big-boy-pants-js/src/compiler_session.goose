@@ -301,7 +301,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
     assert(snapshot::extend(saved.heap, base, service, code, heap, bindings, identity, sc)); let rt = bindings[0].value;
     // Rows below this are the image's and the definition's (a continuation
     // keeps its job's boundary).
-    let owned = if mode == 1 { saved.owned } else { heap.nodes.len };
+    let owned = if mode == 1 || mode == 3 { saved.owned } else { heap.nodes.len };
     var costs = saved.costs; var control = saved.bridge; var call = source::Value.Undefined; var function = source::Value.Undefined; var next = saved.gensym_next;
     if mode == 0 { function = bindings[1].value; let importing = clock_ns();
         assert(read_file(str(directory, "/", id, ".gfb"), bytes)); assert(bridge::decode(graph, bytes, control)); assert(bridge::import_graph(heap, graph, args, control)); assert(args.len >= 2); call = args[0]; costs[1] += clock_ns() - importing;

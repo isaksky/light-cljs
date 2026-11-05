@@ -1599,8 +1599,13 @@ fn submit_key(session: &GooseSession, bytes: &[u8], id: u64, key: u64) -> mpsc::
 /// in order, one at a time) on a session whose workers retire above `cap`
 /// table bytes. Returns each job's outcome (its result or failure, the
 /// FINISH line with steps and writes, and the NEED lines) and the JOBS line.
-fn reuse_session(workers: usize, cap: Option<u64>, plan: &[u64]) -> (Vec<(u64, String)>, JobsLine) {
-    let definitions: [(u64, &str); 10] = [
+fn reuse_session(
+    workers: usize,
+    cap: Option<u64>,
+    retained: Option<usize>,
+    plan: &[u64],
+) -> (Vec<(u64, String)>, JobsLine) {
+    let definitions: [(u64, &str); 14] = [
         // Pure: garbage in every table, a fresh object and array.
         (
             1,
@@ -1640,10 +1645,35 @@ fn reuse_session(workers: usize, cap: Option<u64>, plan: &[u64]) -> (Vec<(u64, S
             10,
             "rt => (form, env) => { const xs = []; for (let i = 0; i < 20000; i++) xs[xs.length] = {i: i}; return xs.length; }",
         ),
+        // Element stores into the definition's array: an existing element
+        // and a new one.
+        (
+            11,
+            "rt => { const xs = [1, 2]; return (form, env) => { xs[0] = 5; return xs[0]; }; }",
+        ),
+        (
+            12,
+            "rt => { const xs = [1, 2]; return (form, env) => { xs[xs.length] = 3; return xs.length; }; }",
+        ),
+        // A root read whose receiver is not the compiler roots object would
+        // have the answer written into a retained image row.
+        (
+            13,
+            "rt => (form, env) => { const v = __rt.cljReadRoot(globalThis, null, 'fixture/value'); return v + 1; }",
+        ),
+        // A missing dependency (key -1) is a catchable failure; the job's own
+        // object, array and captured local stay writable after it resumes.
+        (
+            14,
+            "rt => (form, env) => { const o = {n: 0}; const xs = []; let k = 0; const f = () => { k = 2; }; try { __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/missing'); } catch (e) { o.n = 1; xs[0] = 4; f(); } return o.n + k + xs[0]; }",
+        ),
     ];
     let mut env = vec![];
     if let Some(cap) = cap {
         env.push(("BBP_WORKER_TABLE_BYTES", cap.to_string()));
+    }
+    if let Some(retained) = retained {
+        env.push(("BBP_RETAINED_WORKERS", retained.to_string()));
     }
     let session =
         GooseSession::start_env(&runner(), workers, Some("readiness-test"), &env).unwrap();
@@ -1668,6 +1698,9 @@ fn reuse_session(workers: usize, cap: Option<u64>, plan: &[u64]) -> (Vec<(u64, S
     let mut outcomes = Vec::new();
     for (index, &key) in plan.iter().enumerate() {
         let id = index as u64 + 1;
+        if key == 14 {
+            session.answer_key(id, 0, "-1").unwrap();
+        }
         if key == 8 || key == 9 {
             let helper = if key == 8 {
                 "rt => {const result=41; return function(){return result;};}"
@@ -1724,7 +1757,7 @@ fn reuse_session(workers: usize, cap: Option<u64>, plan: &[u64]) -> (Vec<(u64, S
     );
     // A start per job, a resume per root read and one helper production per
     // root the session produced.
-    let reads = plan.iter().filter(|&&k| k == 8 || k == 9).count() as u64;
+    let reads = plan.iter().filter(|&&k| [8, 9, 14].contains(&k)).count() as u64;
     let productions = [8, 9].iter().filter(|k| plan.contains(k)).count() as u64;
     let jobs = assert_jobs(&trace, workers, plan.len() as u64 + reads + productions);
     (outcomes, jobs)
@@ -1737,17 +1770,20 @@ fn goose_compiler_reused_workers_start_every_job_from_the_image() {
     // the same reused worker, and the whole plan once more with a cap of 0,
     // which retires the worker after every job (a fresh worker each): every
     // job's result, events, steps and limit outcome are the same.
-    let plan = [1, 2, 1, 3, 1, 4, 1, 5, 1, 6, 1, 7, 1, 8, 8, 1, 9, 9, 1];
+    let plan = [
+        1, 2, 1, 3, 1, 4, 1, 5, 1, 6, 1, 7, 1, 8, 8, 1, 9, 9, 1, 11, 1, 12, 1, 13, 1, 14, 14, 1,
+    ];
     for workers in [1, 4] {
-        let (reused, jobs) = reuse_session(workers, Some(16 << 20), &plan);
-        let (fresh, control) = reuse_session(workers, Some(0), &plan);
+        let (reused, jobs) = reuse_session(workers, Some(16 << 20), None, &plan);
+        let (fresh, control) = reuse_session(workers, Some(0), None, &plan);
         assert_eq!(reused, fresh);
         let first = &reused[0].1;
         assert!(first.contains("Double(53.0)"), "{first}");
         for (key, outcome) in &reused {
             let expected = match key {
                 1 => "Double(53.0)",
-                2..=5 => "Fault.NativeBoundary",
+                2..=5 | 11..=13 => "Fault.NativeBoundary",
+                14 => "Double(7.0)",
                 6 => "Fault.InstructionLimit",
                 7 => "Fault.TypeError",
                 _ => "Double(42.0)",
@@ -1757,7 +1793,7 @@ fn goose_compiler_reused_workers_start_every_job_from_the_image() {
                 assert_eq!(outcome, first, "job 1 after other jobs");
             }
             // Root reads ask the compiler in every job.
-            if *key >= 8 {
+            if [8, 9, 14].contains(key) {
                 assert!(outcome.contains("NEED "), "{key}: {outcome}");
             }
         }
@@ -1775,10 +1811,35 @@ fn goose_compiler_reused_workers_start_every_job_from_the_image() {
 
 #[test]
 #[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_missing_dependency_resume_keeps_the_jobs_rows_writable() {
+    // A missing dependency resumes in its blocked worker, or (retention 0)
+    // from a saved continuation in any worker: either way the rows the job
+    // allocated before the wait stay its own.
+    for retained in [None, Some(0)] {
+        let (outcomes, jobs) = reuse_session(1, Some(16 << 20), retained, &[14, 1, 14]);
+        for (key, outcome) in &outcomes {
+            let expected = if *key == 14 {
+                "Double(7.0)"
+            } else {
+                "Double(53.0)"
+            };
+            assert!(outcome.contains(expected), "{retained:?} {key}: {outcome}");
+        }
+        assert_eq!(outcomes[0], outcomes[2]);
+        assert_eq!(
+            jobs.saves,
+            if retained == Some(0) { 2 } else { 0 },
+            "{jobs:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_reused_worker_retires_at_its_table_cap() {
     // Under a 1 MB cap the large job's tables retire its worker; the next
     // job gets a new worker and the same result.
-    let (outcomes, jobs) = reuse_session(1, Some(1 << 20), &[1, 10, 1, 1]);
+    let (outcomes, jobs) = reuse_session(1, Some(1 << 20), None, &[1, 10, 1, 1]);
     assert!(outcomes[1].1.contains("Double(20000.0)"), "{outcomes:?}");
     assert_eq!(outcomes[0], outcomes[2]);
     assert_eq!(outcomes[0], outcomes[3]);
