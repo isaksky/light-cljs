@@ -57,10 +57,13 @@ recorded. Four facts about the current compiler decide most of what follows:
    P5: verified `to_bytes`/`from_bytes` across a worker, in-place relinking
    inside a payload). They do not fit a fixed-mode value (P1: "a fixed-mode
    Cell binds its payloads only by value"), and in a probe interpreter whose
-   values pass through operand stacks, frames and helper functions every
-   relinking store was rejected ("this reference's root is not known exactly,
-   only that it outlives heap", P7). Variable-element arrays also cannot be
-   truncated.
+   values pass through operand stacks, frames and helper functions the
+   checker could not prove the exact root that a relinking store needs: a
+   store into an object reached through a value popped from the operand stack
+   and a copy of links into a regrown run were both rejected ("this
+   reference's root is not known exactly, only that it outlives heap", P7),
+   and a helper taking a cell reference as a parameter cannot relink at all
+   ("rooted at target"). Variable-element arrays also cannot be truncated.
 3. **Index types fit, and tie reclamation to the thread program.**
    `type ObjId = u32 in objects` over a flat global table works inside a
    worker, each worker gets its own copy of the tables at spawn, reads through
@@ -182,10 +185,14 @@ and Goose has no unions to box into.
 
 - A **session worker** owns the session image: the realm (decision 6), loaded
   namespaces and their initialized definitions, in its tables. They only grow
-  for the session's life.
+  for the session's life. (The memory pellet may instead give this role to
+  today's coordinator; what matters is that the image owner is the program
+  that spawns the job workers.)
 - Each JavaScript job runs in a fresh **job worker** spawned by the session
-  worker. The spawn copies the session worker's tables into the job worker:
-  that copy is the snapshot restore. It is typed and valid by construction,
+  worker. The spawn copies the session worker's tables into the job worker
+  (the reference: copies "are taken from the spawning program at the moment
+  of the spawn"; `compiler_session.goose` already spawns workers from a
+  worker): that copy is the snapshot restore. It is typed and valid by construction,
   so it needs no verification and no relocation, and there is no session
   identity in any value. The job appends above the copied image; its results
   leave as flat messages (forms); its exit frees everything it allocated in
