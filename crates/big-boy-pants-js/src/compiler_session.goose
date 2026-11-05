@@ -495,7 +495,9 @@ fn main() {
         print("JOBS 0 ", retention, " ", stats.spawned, " ", finals, " ", stats.spawn_ns, " ", stats.start_ns, " ", stats.join_ns, " ", stats.argument_bytes, " ", stats.restore_bytes, " ", stats.peak_live, " ", stats.peak_blocked, " ", stats.waits, " ", stats.saves, " ", stats.answers, " ", counts.live, " ", counts.blocked);
         if instrumented { print("TRIM 0 ", stats.trims, " ", stats.trim_before, " ", stats.trim_after, " ", stats.trim_ns); }
         // The coordinator, the input thread, the reapers and every job worker;
-        // all but the coordinator are joined.
+        // all but the coordinator are joined. Preparers (one per PREPARED or
+        // preparation ERROR line, each joined before the coordinator goes on)
+        // and the profile restore are not job-path threads and are not counted.
         print("THREADS 0 ", 2 + counts.reapers + stats.spawned, " ", 2 + counts.reapers + stats.peak_live, " ", 1 + counts.reapers + stats.spawned);
     }
     print("CLOSED 1"); flush_stdout();

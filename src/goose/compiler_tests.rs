@@ -2585,3 +2585,53 @@ fn goose_compiler_refuses_fresh_unit_isolates() {
     session.close();
     cleaned(&session);
 }
+/// The profile mode restores the base snapshot in a thread program of its own
+/// (light-cljs-794); its single metrics map carries that worker's restore.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_profile_restore_worker() {
+    let directory = std::env::temp_dir().join(format!(
+        "goose-profile-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let base =
+        big_boy_pants_js::frontend::goose::export_source("goose-base.js", "rt => null").unwrap();
+    std::fs::write(directory.join("base.gsp"), base.bytes).unwrap();
+    let mut child = std::process::Command::new(runner())
+        .arg(&directory)
+        .args(["1", "profile"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "profile mode did not exit"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().filter(|l| !l.starts_with("READY ")).collect();
+    assert_eq!(lines.len(), 1, "{text}");
+    let field = |name: &str| -> i64 {
+        let rest = lines[0].split(&format!(":{name} ")).nth(1).unwrap();
+        rest.split([' ', '}']).next().unwrap().parse().unwrap()
+    };
+    assert!(field("restore-ns") >= 0);
+    assert!(field("restore-copy-bytes") > 0);
+    assert_eq!(
+        field("restore-copy-bytes") * field("raw-copy-repeats"),
+        field("raw-copy-payload-bytes")
+    );
+}
