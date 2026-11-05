@@ -235,9 +235,24 @@ fn direct_update_boundaries() {
 // main builds no heap; each heap-building test is its own thread program.
 fn main() {
     heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality));
-    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets));
+    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work));
     print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
 
+// Fifty strings sharing one 100-unit range copy 5,000 units on import, and
+// the import is charged for them: one visit short refuses it with no change.
+thread_fn shared_text_work() {
+    defer { heap_program::finish(); }
+    var g = bridge::Graph {}; for i in 100 { g.units.push(97); }
+    for i in 50 { g.nodes.push(bridge::Form { tag: 3, start: 0, count: 100 }); g.children.push(i); }
+    g.nodes.push(bridge::Form { tag: 7, start: 0, count: 50 }); g.roots.push(50);
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var probe = bridge::Control {}; assert(bridge::validate(g, probe)); let validation = probe.visits;
+    let latin1 = heap.latin1.len; let nodes = heap.nodes.len;
+    var short = bridge::Control { work: validation + 51 + 50 + 5000 + 1 - 1 }; var none: source::Value[>..] = [];
+    assert(!bridge::import_graph(heap, g, none, short) && short.error == bridge::Error.Work && none.len == 0 && heap.latin1.len == latin1 && heap.nodes.len == nodes);
+    var exact = bridge::Control { work: validation + 51 + 50 + 5000 + 1 }; var roots: source::Value[>..] = [];
+    assert(bridge::import_graph(heap, g, roots, exact) && roots.len == 1 && heap.latin1.len == latin1 + 5000);
+}
 thread_fn assembly() {
     defer { heap_program::finish(); }
     var code = source::Code {}; code_init(code); var out = bridge::Graph {};

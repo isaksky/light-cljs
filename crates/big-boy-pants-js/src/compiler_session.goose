@@ -14,8 +14,8 @@ extern fn peak_memory() -> i64 = "goose_measure_peak_rss";
 extern fn resident_memory() -> i64 = "goose_measure_resident";
 extern fn observe(bytes: const u8&, count: i64) -> i64 = "goose_measure_observe";
 fn consume<T>(values: const T[:]) -> i64 { let bytes = bytes_of(values); return if bytes.len == 0 { 0 } else { observe(bytes[0], bytes.len) }; }
-fn consume(s: const snapshot::Snapshot&) -> i64 { return s.header.work + consume(s.code_bytes) + consume(s.functions) + consume(s.code_constants) + consume(s.children) + consume(s.ops) + consume(s.code_units) + consume(s.nodes) + consume(s.values) + consume(s.properties) + consume(s.units) + consume(s.constants) + consume(s.bytes) + consume(s.sources) + consume(s.bindings) + consume(s.code_strings) + consume(s.strings); }
-fn retained(heap: const source::Heap&) -> i64 { return bytes_of(heap.nodes).len + bytes_of(heap.values).len + bytes_of(heap.properties).len + bytes_of(heap.units).len + bytes_of(heap.constants).len + heap.source_bytes.len + bytes_of(heap.source_ranges).len; }
+fn consume(s: const snapshot::Snapshot&) -> i64 { return s.header.work + consume(s.code_bytes) + consume(s.functions) + consume(s.code_constants) + consume(s.children) + consume(s.ops) + consume(s.code_units) + consume(s.nodes) + consume(s.values) + consume(s.properties) + consume(s.units) + consume(s.constants) + consume(s.bytes) + consume(s.sources) + consume(s.bindings) + consume(s.code_strings) + consume(s.strings) + consume(s.latin1); }
+fn retained(heap: const source::Heap&) -> i64 { return bytes_of(heap.nodes).len + bytes_of(heap.values).len + bytes_of(heap.properties).len + bytes_of(heap.units).len + heap.latin1.len + bytes_of(heap.constants).len + heap.source_bytes.len + bytes_of(heap.source_ranges).len; }
 
 // GCS2 (light-cljs-784; docs/javascript-coverage.md, decision 3): one input
 // thread, the coordinator, `limit + retention` reapers and one contained job
@@ -43,7 +43,8 @@ fn cancelled() -> bool { let token, present = qpoll<Cancel>(); if present { asse
 // 6 reaped (key = thread; aborted with its message in name), 10 blocked wait.
 // address names the job worker (its first checkpoint). census: table rows at
 // the worker's exit, then the restored image's rows, then unreachable rows
-// (nodes, values, properties, units each; instrumented runs only). timing:
+// (nodes, values, properties, units of both unit tables each; instrumented
+// runs only). timing:
 // spawn-to-start latency, the clock at this publication, restore bytes and ns.
 struct Event { id: i64, kind: i64, saved: Saved = Saved {}, sequence: i64 = 0, key: i64 = -1, name: u8[] = [], data: u8[] = [], steps: i64 = 0, writes: i64 = 0, metrics: u8[] = [], callable: bool = false, address: i64 = 0, aborted: bool = false, census: i64[12] = [-1; 12], timing: i64[4] = [0; 4] }
 fn publish(event: Event) { assert(qput(event)); readiness::notify(); }
@@ -198,7 +199,7 @@ fn rows(work: const Work&, heap: const source::Heap&, job: const source::Job&, b
     for v in job.locals { roots.push(v); } for v in job.operands { roots.push(v); } for v in job.effect_args { roots.push(v); }
     for w in job.writes { roots.push(w.object); roots.push(w.key); roots.push(w.value); }
     let c = census::take(heap, roots); let s .= work.saved.heap;
-    return [c.nodes, c.values, c.properties, c.units, s.nodes.len, s.values.len, s.properties.len, s.units.len, c.dead_nodes, c.dead_values, c.dead_properties, c.dead_units];
+    return [c.nodes, c.values, c.properties, c.units, s.nodes.len, s.values.len, s.properties.len, s.units.len + s.latin1.len, c.dead_nodes, c.dead_values, c.dead_properties, c.dead_units];
 }
 // A published callable helper, from the session cache or installed once.
 fn published(helper: const u8[:], base: snapshot::Header, key: i64, code: source::Code&, heap: source::Heap&) -> source::Value, bool {

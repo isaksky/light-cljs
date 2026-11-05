@@ -250,8 +250,11 @@ fn base_signature<T>(s: const T&, slot: i64, checkpoint: i64, out: u8[>..]&, c: 
         else if v.tag() == 4 {
             if !snapshot::range(v.sid(), 1, s.strings.len) { return reject(c, Error.Link); }
             let r = s.strings[v.sid()];
-            if !snapshot::range(r.start, r.len, s.units.len) { return reject(c, Error.Link); }
-            if !signature_bytes([scalar_sig(v, r.len)], out, c) || !signature_bytes(s.units[r.start..(r.start + r.len)], out, c) { return false; }
+            // Signatures carry UTF-16 units whatever the run's table (light-cljs-800).
+            if !snapshot::range(r.start, r.len, if r.wide { s.units.len } else { s.latin1.len }) { return reject(c, Error.Link); }
+            if !signature_bytes([scalar_sig(v, r.len)], out, c) { return false; }
+            if r.wide { if !signature_bytes(s.units[r.start..(r.start + r.len)], out, c) { return false; } }
+            else { var wide: u16[>..] = []; for b in s.latin1[r.start..(r.start + r.len)] { wide.push(b); } if !signature_bytes(wide, out, c) { return false; } }
         } else if !signature_bytes([scalar_sig(v, 0)], out, c) { return false; }
     }
     if original.source != source::no_row() {
@@ -298,7 +301,8 @@ fn import_graph(a: const Artifact&, base: const snapshot::Snapshot&, heap: sourc
     var text: i64 = 0; for r in a.strings { text += r.len; }
     if !source::nodes_fit(heap, new_nodes) || !source::values_fit(heap, a.values.len) || !source::units_fit(heap, text) || a.strings.len > heap.limits.units - (heap.strings.len - heap.image.strings) || a.bytes.len > 8388608 - heap.source_bytes.len || a.sources.len > 1048576 - heap.source_ranges.len { reject(c, Error.Bytes); return source::Value.Undefined; }
     if imports.entries.len + added.len > 100000 || imports.definitions.len >= 100000 || delivery.len > c.bytes - imports.deliveries.len || signatures.len > c.bytes - imports.signatures.len { reject(c, Error.Bytes); return source::Value.Undefined; }
-    if !poll(c, a.values.len + a.units.len + a.bytes.len + a.sources.len + a.nodes.len) { return source::Value.Undefined; }
+    // Every string header copies its own run, shared units included.
+    if !poll(c, a.values.len + max(a.units.len, text) + a.bytes.len + a.sources.len + a.nodes.len) { return source::Value.Undefined; }
     let string_start = heap.strings.len; let value_start = heap.values.len; let source_start = heap.source_ranges.len;
     // Commit: all validation, comparison, budgets and link resolution finished;
     // the preflight above reserved every row, so no allocation below fails.

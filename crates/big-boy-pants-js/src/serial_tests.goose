@@ -35,9 +35,16 @@ fn same_state(a: const State&, b: const State&) {
     assert(a.nodes == b.nodes);
     assert(a.values == b.values);
     assert(a.properties == b.properties);
-    assert(a.units[..] == b.units[..] && a.identity == b.identity && a.work == b.work && a.heap_fault == b.heap_fault);
+    assert(a.units[..] == b.units[..] && a.latin1[..] == b.latin1[..] && a.identity == b.identity && a.work == b.work && a.heap_fault == b.heap_fault);
 }
 struct Run { status: tiny::Status, steps: i64 }
+// States that differ only in Latin-1 bytes are different states.
+thread_fn latin1_state_differs(a: State, b: State) { same_state(a, b); }
+fn latin1_state_check() {
+    let a = State { latin1: [97, 98] }; let b = State { latin1: [97, 99] };
+    assert(thread_wait(thread_spawn_contained(latin1_state_differs, copy(a), copy(a))));
+    assert(!thread_wait(thread_spawn_contained(latin1_state_differs, copy(a), copy(b))));
+}
 thread_fn check_run(bytes: u8[], expected: u8[], fault: source::Fault) {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
@@ -271,7 +278,7 @@ fn wrong_rows() {
     print("serial source VM: every row helper family refuses a wrong-table row by its table name");
 }
 fn main() {
-    array_lengths();
+    array_lengths(); latin1_state_check();
     wrong_rows();
     heap_program::join(thread_spawn(latin1_strings)); heap_program::join(thread_spawn(inline_slots));
     check(embed_file("../corpus/synthetic/arithmetic.gsp"), "number:27.5");

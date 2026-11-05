@@ -141,12 +141,13 @@ fn encode(g: const Graph&, out: u8[>..]&, c: Control&) -> bool {
 fn graph_source(row: u32) -> i64 { return if row == source::no_row() { -1 } else { row }; }
 fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&, c: Control&) -> bool {
     if !validate(g, c) { return false; }
-    let work = g.nodes.len + g.children.len + g.units.len + g.bytes.len + g.sources.len + g.roots.len;
-    // Final cancellation and capacity checks precede any session installation.
-    if !poll(c, work) { return false; }
-    // Each string takes its own canonical run (Latin-1 or UTF-16).
+    // Each string occurrence is copied into its own canonical run (Latin-1 or
+    // UTF-16), so work counts the units copied, not the shared input table.
     var text: i64 = 0;
     for n in g.nodes { if n.tag == 3 || n.tag == 4 || n.tag == 5 { text += n.count; } if (n.tag == 4 || n.tag == 5) && n.ns_count >= 0 { text += n.ns_count; } }
+    let work = g.nodes.len + g.children.len + max(g.units.len, text) + g.bytes.len + g.sources.len + g.roots.len;
+    // Final cancellation and capacity checks precede any session installation.
+    if !poll(c, work) { return false; }
     if !source::nodes_fit(heap, g.nodes.len) || !source::values_fit(heap, g.children.len) || !source::units_fit(heap, text) || 2 * g.nodes.len > heap.limits.units - (heap.strings.len - heap.image.strings) || g.bytes.len > c.bytes - heap.source_bytes.len { return reject(c, Error.Heap); }
     if !source::charge(heap, work) { heap.fault = source::Fault.None; return reject(c, Error.Heap); }
     // The preflight above reserved every row, so no allocation below fails.

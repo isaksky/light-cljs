@@ -379,9 +379,33 @@ thread_fn base_image() {
     for op, i in [46, 49, 15] { getter.ops.push(source::Op { code: op, arg: 0, offset: [0, 3, 4][i], start: 0, end: 0, depth: [0, 1, 1][i] }); } getter.valid = true; let read = source::append_code(code, getter);
     getter.functions[0].captures = 2; assert(source::append_code(code, getter) == read + 1);
     assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let shared = source::allocate(heap, source::Node { kind: 11, value: source::number(9), origin: 90 });
-    let bindings: snapshot::Binding[] = [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: source::number(left) }, snapshot::Binding { id: 2, generation: 1, value: source::number(right) }, snapshot::Binding { id: 3, generation: 1, value: source::number(consumer) }, snapshot::Binding { id: 4, generation: 1, value: source::number(read) }, snapshot::Binding { id: 5, generation: 1, value: shared }];
+    let named = source::allocate(heap, source::Node { kind: 11, value: source::text(heap, "x"), origin: 91 });
+    let bindings: snapshot::Binding[] = [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: source::number(left) }, snapshot::Binding { id: 2, generation: 1, value: source::number(right) }, snapshot::Binding { id: 3, generation: 1, value: source::number(consumer) }, snapshot::Binding { id: 4, generation: 1, value: source::number(read) }, snapshot::Binding { id: 5, generation: 1, value: shared }, snapshot::Binding { id: 6, generation: 1, value: named }];
     var c = snapshot::Control {}; let base = snapshot::capture(heap, bindings, c); assert(c.error == snapshot::Error.None);
     assert(qput(Base { image: copy(base) }));
+}
+// A base node whose string is Latin-1 reconnects by its UTF-16 signature, and
+// a changed destination string is a conflict (light-cljs-800).
+thread_fn latin1_producer(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
+    assert(!source::header(heap, source::node(heap, roots[6].value.id()).value.sid()).wide);
+    var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
+    let root = source::form_collection(heap, 6, [roots[6].value, source::number(1)]);
+    let a = artifact::export_graph(heap, base, imports, root, 61, 1, c); assert(c.error == artifact::Error.None);
+    assert(qput(Published { artifact: copy(a) }));
+}
+thread_fn latin1_consumer(base: snapshot::Snapshot, a: artifact::Artifact) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
+    {
+        var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
+        let got = artifact::import_graph(a, base, heap, imports, c); assert(c.error == artifact::Error.None);
+        assert(source::form_nth(heap, got, 0) == roots[6].value);
+    }
+    var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
+    source::node_mut(heap, roots[6].value.id()).value = source::text(heap, "y");
+    reject_import(a, base, heap, imports, artifact::Error.Conflict);
 }
 // main builds no heap; every heap is its own thread program.
 fn main() {
@@ -390,6 +414,8 @@ fn main() {
     heap_program::join(thread_spawn(producer, copy(base), 2)); let published_b = qget<Published>(); let b .= published_b.artifact;
     joins(base, a, b); diamond_delivery(base, a); heap_program::join(thread_spawn(invalid, copy(base), copy(a))); heap_program::join(thread_spawn(graphs, copy(base))); heap_program::join(thread_spawn(overlapping_cycles, copy(base)));
     heap_program::join(thread_spawn(signature_budgets, copy(base))); heap_program::join(thread_spawn(source_spans, copy(base))); provenance(base); heap_program::join(thread_spawn(scalars, copy(base))); work_cuts(base, a);
+    heap_program::join(thread_spawn(latin1_producer, copy(base))); let latin1 = qget<Published>();
+    heap_program::join(thread_spawn(latin1_consumer, copy(base), copy(latin1.artifact)));
 }
 
 thread_fn source_spans(base: snapshot::Snapshot) {
