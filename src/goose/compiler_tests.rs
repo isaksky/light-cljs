@@ -869,6 +869,12 @@ pub(super) struct JobsLine {
     pub jobs: u64,
     pub retired: u64,
     pub reset_ns: u64,
+    /// The workers' snapshot installs and helper installs (time and count),
+    /// and the coordinator's definition hand-off (light-cljs-796).
+    pub restore_ns: u64,
+    pub install_ns: u64,
+    pub installs: u64,
+    pub handoff_ns: u64,
 }
 pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
     let line = trace
@@ -894,6 +900,10 @@ pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
         jobs: n[15],
         retired: n[16],
         reset_ns: n[17],
+        restore_ns: n[18],
+        install_ns: n[19],
+        installs: n[20],
+        handoff_ns: n[21],
     }
 }
 /// Threads: the coordinator, the input thread, `workers + retention` reapers
@@ -930,6 +940,11 @@ pub(super) fn assert_jobs(trace: &[String], workers: usize, dispatches: u64) -> 
     assert_eq!(jobs.jobs + jobs.answers, dispatches, "{jobs:?}");
     assert!(jobs.spawned <= jobs.jobs.max(1), "{jobs:?}");
     assert!(jobs.retired <= jobs.spawned, "{jobs:?}");
+    // Only a job installs a snapshot, and a helper is installed only for an
+    // answer or a resumed continuation (light-cljs-796).
+    assert!(jobs.restore_ns == 0 || jobs.jobs > 0, "{jobs:?}");
+    assert!(jobs.installs <= jobs.answers + jobs.saves, "{jobs:?}");
+    assert_eq!(jobs.installs > 0, jobs.install_ns > 0, "{jobs:?}");
     jobs
 }
 #[test]
@@ -2118,6 +2133,11 @@ fn goose_compiler_drains_ready_batches_without_progress_backoff() {
             );
             assert_eq!(previous[7], 9, "eight queued requests and shutdown");
             let jobs = assert_jobs(&trace, workers, 17);
+            // Each of the eight resumed bodies installs the helper once, whether
+            // answered in place or restored from its continuation, however many
+            // jobs a worker served (light-cljs-796).
+            assert_eq!(jobs.installs, 8, "{jobs:?}");
+            assert!(jobs.restore_ns > 0 && jobs.handoff_ns > 0, "{jobs:?}");
             if retained == Some(0) {
                 assert_eq!((jobs.jobs, jobs.saves, jobs.waits), (17, 8, 0), "{jobs:?}");
             } else {
