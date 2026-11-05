@@ -311,8 +311,9 @@ November 5, 2026 (light-cljs-792). Does one fresh job worker per job
 (light-cljs-784) isolate more state than light-cljs needs? **Yes.** Every job
 must start from the clean image, but nothing needs a new thread program per
 job, which is what costs 5,283 sets of region setup a 200k session. This
-section amends decision 3; light-cljs-795 and -796 implement it, and -785,
--787, -788, -790 and -791 carry "Amended by light-cljs-792" notes.
+section amends decision 3; light-cljs-795 and -796 implement it, -785, -787,
+-788, -790 and -791 carry "Amended by light-cljs-792" notes, and -786, -789
+and -794 (one image per thread program) stand as written.
 
 ### What shadow-cljs shares
 
@@ -351,8 +352,7 @@ Paths are under `research/shadow-cljs/src/main/shadow/` (3.5.5) unless named.
   (`cljs/analyzer.cljc` 639, `cljs/closure.clj` 1048-1100).
 
 So shadow-cljs has no clean world per namespace, still less per macro call:
-one world per process for macro code and state, one compiler environment per
-build, and a thread pool over namespaces.
+one world per process for macro state, one environment per build.
 
 ### What light-cljs requires
 
@@ -364,13 +364,10 @@ build, and a thread pool over namespaces.
    kept persistent isolates and declared a macro's compile-time side effects
    visible only in the isolate that made them (light-cljs-429), which keeps
    output identical only for pure macros. Goose today keeps it for every
-   macro, because no job sees another's writes. Runtime `gensym` and counter
-   effects, which would need sharing, are not serviced on the compiler path:
-   `execute` in `src/compiler_session.goose` serves only root reads and
-   faults the rest with `NativeBoundary` (test
-   `goose_compiler_assembly_leaf_boundaries`); compile-time generated names
-   stay compiler-owned. `src/effects.goose` is the scheduler's separate,
-   coordinator-ordered implementation.
+   macro, because no job sees another's writes; runtime `gensym` and counter
+   effects fault with `NativeBoundary` on the compiler path (`execute`; test
+   `goose_compiler_assembly_leaf_boundaries`), and generated names stay
+   compiler-owned.
 2. **Root visibility as V8 had it** (light-cljs-776). The compiler resolves
    `__lightCompilerRoots[name]` at the job's visibility cursor and the job
    writes the answer into the roots object. A world reused across jobs may
@@ -379,9 +376,9 @@ build, and a thread pool over namespaces.
    job; a contained Goose abort ends the session (`supervise` in
    `src/compiler_session.goose`).
 
-The minimum is therefore: **every job starts from the pristine image, and
-nothing it writes or allocates is reachable from a later job.** Nothing in
-light-cljs requires a fresh thread program for that.
+The minimum: **every job starts from the pristine image, and nothing it
+writes or allocates is reachable from a later job**, not a fresh thread
+program per job.
 
 ### What Goose's memory model requires
 
@@ -403,9 +400,8 @@ reset needs only rewritten rows and an allocation point moved back.
 
 ### Options
 
-Costs on the 200k project: 5,283 dispatches a session (5,226 macro starts and
-57 helper productions) from light-cljs-784's JOBS lines, and per job from
-P16 (native build, 1,000 jobs, workers of 44 to 48 regions).
+200k costs: 5,283 dispatches a session (5,226 macro starts, 57 helper
+productions; light-cljs-784's JOBS lines); per job from P16.
 
 | Option | Persists across jobs | Determinism and failures | Spawns a session | Isolation cost a job |
 | --- | --- | --- | --- | --- |
@@ -416,16 +412,15 @@ P16 (native build, 1,000 jobs, workers of 44 to 48 regions).
 | **(d) a reused worker with a job arena** | the image | the image is restored before every job, so each job sees what a fresh worker would, at the same rows; a VM fault's state goes at the next reset; an abort ends the session as now | at most limit + retention (784 measured peak live workers 2/3/8/16), plus retirements | P16: 13 µs (the queue round trip), plus the prefix restore (about 17 µs for a 1.28 MB image); pages reused |
 | (e) one shared world without reset (shadow-cljs) | everything | macro state differs between workers and with history; garbage unbounded | at most limit | none, but it breaks requirement 1 and memory |
 
-The 784 regression (+1.945/+1.419/+0.664/+1.366 s at 1/2/4/8 workers; system
-CPU 3.03 to 5.76 s at one worker and 4.88 to 22.14 s at eight) is the cost in
-row (a). Under (d) the projected isolation cost is about 5,283 × 15 µs,
-roughly 0.1 s a session, against about 1.9 s; light-cljs-795 measures it.
+Row (a) is the 784 regression: +1.945/+1.419/+0.664/+1.366 s at 1/2/4/8
+workers, system CPU 3.03 to 5.76 s at one and 4.88 to 22.14 s at eight. Under
+(d) it projects to about 5,283 × 15 µs, 0.1 s a session, against 1.9 s.
 
 ### Decision
 
-Decision 3 is amended. The thread program still owns an image and frees its
-tables when it exits, but a job worker serves many jobs, and **a job is
-reclaimed by resetting a job arena**:
+Decision 3 is amended: the thread program still owns an image and frees its
+tables at exit, but a worker serves many jobs, and **a job is reclaimed by
+resetting a job arena**:
 
 - The coordinator, the image owner, spawns contained job workers on demand,
   at most `limit + retention` live, and gives each job to an idle one. Its VM
@@ -439,9 +434,8 @@ reclaimed by resetting a job arena**:
   nothing is reused. Frames, operands, bindings and bridge buffers are
   locals of the per-job function and go when it returns.
 - Limits count the rows a job added above its starting tops. A worker retires
-  after a job once its tables exceed a byte cap, and the coordinator spawns a
-  successor from its unchanged image. A cap of zero retires a worker after
-  every job, which is (a) and serves as the differential control.
+  after a job once its tables exceed a byte cap; a cap of zero retires it
+  after every job, which is (a), the differential control.
 - This is reclamation by the job's scope, not a heap allocator: the top is a
   bump pointer reset when the job ends, like a Goose data stack; no free
   list, per-object reuse or sweep, and links stay index types. A job's rows
@@ -453,15 +447,13 @@ reclaimed by resetting a job arena**:
   the roots and helper-cache objects in their initial state). Prepared
   definitions and installed helpers may stay loaded in a worker if they are
   keyed by definition or unit key, out of JavaScript's reach, and added
-  between jobs; light-cljs-796 measures whether that pays. Such an extended
-  prefix differs between workers, so two rules keep jobs independent of
-  history: a cache hit charges the job the rows and work its installation
-  recorded, so limit outcomes match a cold install; and a saved continuation
-  carries every row above the coordinator's image that it reached, cached
-  ones included, with its cache bindings, and resumes in a worker reset to
-  the coordinator's image, whose own extension the next reset restores.
-  Nothing keyed by root name, no write a job made to image rows and no row a
-  job added survives the job.
+  between jobs; light-cljs-796 measures whether that pays. Extended prefixes
+  differ between workers, so a cache hit charges the job the rows and work
+  its installation recorded (limit outcomes match a cold install), and a
+  saved continuation carries every row above the coordinator's image it
+  reached, cached ones included, with its cache bindings, and resumes on a
+  worker reset to the coordinator's image. Nothing keyed by root name, no
+  write to image rows and no row a job added survives the job.
 - **Rules for the representation pellets** (light-cljs-785, -787, -788,
   -790): every piece of VM state a job can change is a table row, a field of
   the one worker-global state struct, or job-local; no lookup structure
@@ -469,9 +461,6 @@ reclaimed by resetting a job arena**:
   prefix restore does not cover; the VM reads tops, not physical table
   lengths. In tests a reset check compares the prefix and the struct with the
   twins after every reset (light-cljs-795).
-
-Unchanged: light-cljs-794 (its premise, one image per thread program for its
-whole life, holds), -786 and -789 (they assume nothing about worker lifetime).
 
 ## Decision 4: control flow
 
