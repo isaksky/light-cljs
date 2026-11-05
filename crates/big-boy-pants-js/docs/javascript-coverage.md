@@ -3,9 +3,10 @@
 November 5, 2026 (light-cljs-761). This document fixes how bbp's Goose VM
 (`src/`) grows from the macro subset it runs today to essentially complete
 JavaScript, measured case by case. It records seven decisions, the evidence
-for each and the alternatives rejected. The foundation and harness pellets in
-group `goose-javascript` implement them; the area planners (light-cljs-762 to
--775) build on them. Pellets holds the work; this file holds the reasons.
+for each and the alternatives rejected. The foundation and harness pellets
+(light-cljs-782 to -790, group `goose-javascript`) implement them; the area
+planners (light-cljs-762 to -775) build on them. Pellets holds the work; this
+file holds the reasons.
 
 Verified with Goose `v2026.3-267-g369c7a2c` (runtime 3025e5810379). Every
 Goose rule relied on below was checked with a small `goose check` or run
@@ -17,8 +18,7 @@ taken from documentation alone.
 - The Rust frontend (bbp's Rust implementation, `rust/`) parses and compiles
   JavaScript to the bytecode of `rust/src/vm/instr.rs`: 198 opcodes in an
   append-only registry (0x01 to 0xC6). Its Goose exporter
-  (`rust/src/frontend/goose.rs`, `supported`) accepts 93 of them (not the
-  "about 105" of the group context) and refuses
+  (`rust/src/frontend/goose.rs`, `supported`) accepts 93 of them and refuses
   the whole program on any other, even on a dead path. It also refuses Symbol
   and BigInt constants, direct `eval`, and every constructor kind except
   ordinary functions.
@@ -510,4 +510,3 @@ checked and the result.
 - **P10.** A worker that owns an index-typed table (two rows, one linking to
   the other) spawns a job worker. The job worker sees both rows and the link,
   changes a row and appends one; after it exits the owner still has its two
-  unchanged rows, and main's table is empty throughout.
