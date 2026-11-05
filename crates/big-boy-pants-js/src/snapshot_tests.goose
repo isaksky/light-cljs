@@ -271,6 +271,13 @@ fn assembly_ownership() {
     let length = source::text(heap, "length");
     for i in 3 { assert(source::put(heap, array, source::key(heap, source::number(i)), if i == 1 { b } else { a })); }
     assert(source::put(heap, array, length, source::number(1)));
+    // Growth past a holed run retires it, and a sparse write makes a
+    // dictionary array; both images must still validate (light-cljs-785).
+    let grown = source::allocate(heap, source::Node { kind: 1 }); let sparse = source::allocate(heap, source::Node { kind: 1 });
+    assert(source::put(heap, grown, source::key(heap, source::number(1)), a) && source::put(heap, grown, source::key(heap, source::number(6)), b));
+    assert(source::put(heap, sparse, source::key(heap, source::number(2)), a) && source::put(heap, sparse, source::key(heap, source::number(100000)), b));
+    assert(heap.nodes[sparse.a].initialized && !heap.nodes[grown.a].initialized && heap.nodes[grown.a].count == 8);
+    { var check = snapshot::Control {}; let image = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: grown }], check); assert(check.error == snapshot::Error.None && image.nodes.len == heap.nodes.len); }
     let roots = [snapshot::Binding { id: 0, generation: 1, value: array }, snapshot::Binding { id: 1, generation: 1, value: array }, snapshot::Binding { id: 2, generation: 1, value: joined }];
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, roots, c); assert(c.error == snapshot::Error.None);
     for i in 2 {

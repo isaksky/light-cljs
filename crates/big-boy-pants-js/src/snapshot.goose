@@ -214,7 +214,9 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if n.kind == 2 && (!range(n.function, 1, s.functions.len) || n.count != s.functions[n.function].captures) { return reject(c, Error.Link); }
         if has_values(n.kind) { if !range(n.start, n.count, s.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); } }
         if n.kind == 1 {
-            if n.head != -1 { return reject(c, Error.Link); }
+            // A dictionary array (initialized) has records and no run; a dense
+            // one has a run and no records.
+            if (n.initialized && n.count != 0) || (!n.initialized && n.head != -1) { return reject(c, Error.Link); }
             has_memo = has_memo || n.count > 0;
             if !poll(c, n.count) { return false; }
             // Slots at or past the length are holes (source::array_length).

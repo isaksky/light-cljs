@@ -212,7 +212,20 @@ fn array_lengths() {
         if !ok { assert(h.fault == source::Fault.WorkLimit && to_bytes(h.nodes) == to_bytes(nodes) && to_bytes(h.properties) == to_bytes(properties) && to_bytes(h.values) == to_bytes(values)); }
         else { assert(h.nodes[a.a].length == 2); }
     }
-    print("temporary arrays: shorter/zero/extension/deleted holes, numeric bounds, atomic work and retained-property rejection passed");
+    // Sparse writes far past the run use index-keyed records, so two
+    // elements near the value-slot limit still fit (Sol review, light-cljs-785).
+    {
+        var h = source::Heap { code: code }; assert(source::initialize(h));
+        let a = source::allocate(h, source::Node { kind: 1 }); let k = source::text(h, "length");
+        assert(source::put(h, a, source::key(h, source::number(0)), source::number(5)));
+        assert(source::put(h, a, source::key(h, source::number(524287)), source::number(1)));
+        assert(source::put(h, a, source::key(h, source::number(524288)), source::number(2)));
+        assert(h.nodes[a.a].initialized && h.nodes[a.a].count == 0 && h.nodes[a.a].length == 524289 && h.values.len < 1024);
+        assert(source::get(h, a, source::key(h, source::number(524287))).number + source::get(h, a, source::key(h, source::number(524288))).number == 3);
+        assert(source::get(h, a, source::key(h, source::number(0))).number == 5 && source::get(h, a, source::key(h, source::number(7))).tag == 0);
+        assert(source::put(h, a, k, source::number(524288)) && source::get(h, a, source::key(h, source::number(524288))).tag == 0 && source::get(h, a, source::key(h, source::number(524287))).number == 1);
+    }
+    print("temporary arrays: shorter/zero/extension/deleted holes, numeric bounds, atomic work, retained-slot rejection and sparse records passed");
 }
 fn argument_limits(bytes: const u8[:]) {
     var code = source::Code {}; decode(code, bytes);

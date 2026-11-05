@@ -300,15 +300,19 @@ fn index(heap: Heap&, k: Value) -> i64 {
     for i in k.b { let c = heap.units[k.a + i]; if c < 48 || c > 57 || (i == 0 && c == 48 && k.b > 1) { return -1; } n = n * 10 + (c - 48); }
     return if n < 4294967295 { n } else { -1 };
 }
-// Dense arrays (light-cljs-785): an array node (kind 1) keeps its elements in
-// its own run heap.values[start..start + count], indexed by integer; count is
-// the run's capacity and `length` the JavaScript length, which may exceed it.
-// A slot never written, or cut off by a shorter length, holds a hole. A hole
+// Arrays (light-cljs-785). A dense array (kind 1) keeps its elements in its
+// own run heap.values[start..start + count], indexed by integer; count is the
+// run's capacity and `length` the JavaScript length, which may exceed it. A
+// slot never written, or cut off by a shorter length, holds a hole. A hole
 // never leaves its run: element reads report it absent (undefined), and
 // valid() refuses it anywhere else. A write past the capacity copies the
-// elements into a new, larger run at the end of the table; tables stay
-// append-only, so the old run remains charged until teardown, as removed
-// property records did before. Arrays have no property records.
+// elements into a new, larger run at the end of the table and clears the old
+// run to undefined; tables stay append-only, so the old run remains charged
+// until teardown, as removed property records did before. A write far past
+// the run (sparse_write) turns the array into a dictionary array
+// (`initialized` set, no run) whose elements are index-keyed property
+// records, as every array's were before, so a sparse array costs a record an
+// element, not a slot an index.
 fn hole() -> Value { return Value { tag: -1 }; }
 // The canonical array index of a number key (what key() then index() would
 // give), or -1.
@@ -316,35 +320,60 @@ fn number_index(v: Value) -> i64 {
     return if v.tag == 3 && v.number >= 0 && v.number < 4294967295.0 && v.number == (v.number as i64) { v.number as i64 } else { -1 };
 }
 fn own_element(heap: Heap&, array: Value, i: i64) -> Value, bool {
+    if heap.nodes[array.a].initialized { let k = key(heap, number(i)); return own_record(heap, array, k); }
     // Field reads: a whole Node copy would dominate an element access.
     if i >= heap.nodes[array.a].length || i >= heap.nodes[array.a].count { return Value {}, false; }
     let v = heap.values[heap.nodes[array.a].start + i];
     if v.tag == -1 { return Value {}, false; }
     return v, true;
 }
+// More than doubling the run would leave most of its slots holes.
+fn sparse_write(count: i64, i: i64) -> bool { return i >= count && i > 2 * count + 1024; }
 fn set_element(heap: Heap&, array: Value, i: i64, value: Value) -> bool {
     if i >= heap.limits.values { return memory(heap); }
+    if !heap.nodes[array.a].initialized && sparse_write(heap.nodes[array.a].count, i) && !to_dictionary(heap, array) { return false; }
+    if heap.nodes[array.a].initialized {
+        let k = key(heap, number(i));
+        if heap.fault != Fault.None || !put_record(heap, array, k, value) { return false; }
+        if i >= heap.nodes[array.a].length { heap.nodes[array.a].length = i + 1; }
+        return true;
+    }
     let count = heap.nodes[array.a].count;
     if i >= count {
         let old = heap.nodes[array.a].start;
         var capacity = max(i + 1, max(count * 2, 4));
         if capacity > heap.limits.values - heap.values.len { capacity = i + 1; }
         if capacity > heap.limits.values - heap.values.len { return memory(heap); }
-        if !charge(heap, capacity) { return false; }
+        if !charge(heap, capacity + count) { return false; }
         let start = heap.values.len; heap.values.append(heap.values[old..(old + count)]); heap.values.resize(start + capacity, hole());
+        // No node owns the old run now: holes may live only in array runs.
+        for at in old..(old + count) { heap.values[at] = Value {}; }
         heap.nodes[array.a].start = start; heap.nodes[array.a].count = capacity;
     } else if !charge(heap) { return false; }
     heap.values[heap.nodes[array.a].start + i] = value;
     if i >= heap.nodes[array.a].length { heap.nodes[array.a].length = i + 1; }
     return true;
 }
-// Return presence separately: an own property's value can be undefined.
-fn own_property(heap: Heap&, object: Value, k: Value) -> Value, bool {
-    if heap.nodes[object.a].kind == 1 {
-        let i = index(heap, k);
-        if i < 0 { return Value {}, false; }
-        return own_element(heap, object, i);
+// Move a dense array's elements into index-keyed property records. Every
+// failure point precedes the header change, so a rejection leaves the array
+// as it was (records and keys built so far stay charged, unlinked).
+fn to_dictionary(heap: Heap&, array: Value) -> bool {
+    let start = heap.nodes[array.a].start; let count = heap.nodes[array.a].count; let end = min(heap.nodes[array.a].length, count);
+    var head: i64 = -1;
+    for i in end {
+        let v = heap.values[start + i];
+        if v.tag == -1 { continue; }
+        if heap.properties.len >= heap.limits.properties { return memory(heap); }
+        let k = key(heap, number(i));
+        if heap.fault != Fault.None { return false; }
+        heap.properties.push(Property { key: k, value: v, next: head }); head = heap.properties.len - 1;
     }
+    if !charge(heap, count) { return false; }
+    for at in start..(start + count) { heap.values[at] = Value {}; }
+    heap.nodes[array.a].head = head; heap.nodes[array.a].initialized = true; heap.nodes[array.a].count = 0;
+    return true;
+}
+fn own_record(heap: Heap&, object: Value, k: Value) -> Value, bool {
     var id = heap.nodes[object.a].head;
     while id >= 0 {
         if !charge(heap) { return Value {}, false; }
@@ -353,6 +382,16 @@ fn own_property(heap: Heap&, object: Value, k: Value) -> Value, bool {
         id = property.next;
     }
     return Value {}, false;
+}
+// Return presence separately: an own property's value can be undefined.
+fn own_property(heap: Heap&, object: Value, k: Value) -> Value, bool {
+    if heap.nodes[object.a].kind == 1 {
+        let i = index(heap, k);
+        if i < 0 { return Value {}, false; }
+        if heap.nodes[object.a].initialized { return own_record(heap, object, k); }
+        return own_element(heap, object, i);
+    }
+    return own_record(heap, object, k);
 }
 fn get(heap: Heap&, object: Value, k: Value) -> Value {
     if !valid(heap, object) || !valid(heap, k) { return Value {}; }
@@ -395,6 +434,9 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
         if i < 0 { heap.fault = Fault.UnsupportedOperand; return false; }
         return set_element(heap, object, i, value);
     }
+    return put_record(heap, object, k, value);
+}
+fn put_record(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
     var id = heap.nodes[object.a].head;
     while id >= 0 {
         if !charge(heap) { return false; }
@@ -406,17 +448,47 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
     heap.properties.push(Property { key: k, value: value, next: previous }); heap.nodes[object.a].head = next;
     return heap.fault == Fault.None;
 }
-// Bounded numeric length writes only. A shorter length turns the cut-off
-// slots back into holes; the work is charged before any slot changes, so a
-// work rejection is atomic. A longer length writes no slot.
+// Bounded numeric length writes only. A shorter length turns a dense array's
+// cut-off slots back into holes, or unlinks a dictionary array's cut-off
+// records (which stay charged until teardown); the work is charged before
+// anything changes, so a work rejection is atomic. A longer length writes
+// nothing.
 fn array_length(heap: Heap&, object: Value, value: Value) -> bool {
     if value.tag != 3 || !(value.number >= 0 && value.number <= 4294967295.0) || value.number != trunc(value.number) { heap.fault = Fault.UnsupportedOperand; return false; }
     let length = value.number as i64;
     if length > heap.limits.values { return memory(heap); }
-    let n = heap.nodes[object.a]; let end = min(n.length, n.count);
+    if heap.nodes[object.a].initialized { return dictionary_length(heap, object, length); }
+    let start = heap.nodes[object.a].start; let end = min(heap.nodes[object.a].length, heap.nodes[object.a].count);
     if length < end {
         if !charge(heap, end - length) { return false; }
-        for i in length..end { heap.values[n.start + i] = hole(); }
+        for i in length..end { heap.values[start + i] = hole(); }
+    }
+    heap.nodes[object.a].length = length; return true;
+}
+// Preflight the full walk before mutation so a work rejection is atomic.
+fn dictionary_length(heap: Heap&, object: Value, length: i64) -> bool {
+    if length < heap.nodes[object.a].length {
+        var id = heap.nodes[object.a].head;
+        while id >= 0 {
+            if !charge(heap, 2 + heap.properties[id].key.b) { return false; }
+            let i = index(heap, heap.properties[id].key);
+            if heap.fault != Fault.None { return false; }
+            if i < 0 { heap.fault = Fault.UnsupportedOperand; return false; }
+            id = heap.properties[id].next;
+        }
+        var previous: i64 = -1; id = heap.nodes[object.a].head;
+        while id >= 0 {
+            let p = heap.properties[id];
+            // set_element admitted canonical indices. The preflight charged
+            // this second decode, so mutation below cannot fail.
+            var i: i64 = 0;
+            for at in p.key.b { i = i * 10 + (heap.units[p.key.a + at] - 48); }
+            if i >= length {
+                if previous < 0 { heap.nodes[object.a].head = p.next; }
+                else { heap.properties[previous].next = p.next; }
+            } else { previous = id; }
+            id = p.next;
+        }
     }
     heap.nodes[object.a].length = length; return true;
 }
