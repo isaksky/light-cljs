@@ -7,7 +7,8 @@ namespace census;
 // Diagnostic only (light-cljs-784): a job heap's table rows at the job's end
 // and how many of them no root reaches. It frees and rewrites nothing; a job's
 // tables are reclaimed when its worker exits. The walk follows every link a
-// snapshot validates (node values, slot runs, property chains, string ranges).
+// snapshot validates (node values, slot runs, property chains, string ranges
+// in both unit tables).
 // A property record shadowed by a later put on the same chain is still linked
 // from it and counts as reachable, so the dead counts are lower bounds.
 struct Census {
@@ -16,13 +17,17 @@ struct Census {
 }
 fn mark(heap: const source::Heap&, v: source::Value, nodes: bool[>..]&, units: bool[>..]&, work: i64[>..<]&) {
     if v.tag() == 5 && v.id() < nodes.len && !nodes[v.id()] { nodes[v.id()] = true; work.push(v.id()); }
-    if v.tag() == 4 && v.sid() < heap.strings.len { let r = heap.strings[v.sid()]; if r.len > 0 && r.len <= units.len - r.start { for i in r.start..(r.start + r.len) { units[i] = true; } } }
+    // Unit rows: the UTF-16 table, then the Latin-1 table.
+    if v.tag() == 4 && v.sid() < heap.strings.len {
+        let r = heap.strings[v.sid()]; let base = if r.wide { 0 } else { heap.units.len }; let length = if r.wide { heap.units.len } else { heap.latin1.len };
+        if r.len > 0 && r.len <= length - r.start { for i in r.start..(r.start + r.len) { units[base + i] = true; } }
+    }
 }
 fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
     var nodes:      bool[>..] = []; nodes.resize(heap.nodes.len, false);
     var values:     bool[>..] = []; values.resize(heap.values.len, false);
     var properties: bool[>..] = []; properties.resize(heap.properties.len, false);
-    var units:      bool[>..] = []; units.resize(heap.units.len, false);
+    var units:      bool[>..] = []; units.resize(heap.units.len + heap.latin1.len, false);
     var work:       i64[>..<] = [];
     for v in roots { mark(heap, v, nodes, units, work); }
     for v in heap.constants { mark(heap, v, nodes, units, work); }
@@ -33,12 +38,13 @@ fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
         if snapshot::has_values(n.kind) {
             for row in n.start..(n.start + n.count) { if row < values.len { values[row] = true; mark(heap, source::slot(heap, row), nodes, units, work); } }
         }
-        for p in n.keys..min((n.keys + n.key_count) as i64, properties.len) {
+        for p, i in n.slots { if i < n.key_count { mark(heap, p.key, nodes, units, work); mark(heap, p.value, nodes, units, work); } }
+        for p in n.keys..min(n.keys + source::overflow(n), properties.len) {
             properties[p] = true; let record = source::property_row(heap, p);
             mark(heap, record.key, nodes, units, work); mark(heap, record.value, nodes, units, work);
         }
     }
-    var c = Census { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len };
+    var c = Census { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len + heap.latin1.len };
     for live in nodes { if !live { c.dead_nodes += 1; } }
     for live in values { if !live { c.dead_values += 1; } }
     for live in properties { if !live { c.dead_properties += 1; } }

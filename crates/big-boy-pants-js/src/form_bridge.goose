@@ -31,7 +31,7 @@ fn scalar_equal(heap: source::Heap&, a: source::Value, b: source::Value, c: Cont
     match a.tag() {
         0, 1 => { return true; }, 2 => { return a.flag() == b.flag(); },
         3 => { return a.num() == b.num() && (a.num() != 0 || 1.0 / a.num() == 1.0 / b.num()) || a.num() != a.num() && b.num() != b.num(); },
-        4 => { if !poll(c, source::str_len(heap, a) + source::str_len(heap, b)) { return false; } return source::chars(heap, a) == source::chars(heap, b); },
+        4 => { if !poll(c, source::str_len(heap, a) + source::str_len(heap, b)) { return false; } return source::same_text(heap, a, b); },
         _ => { return false; },
     }
 }
@@ -144,11 +144,14 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     let work = g.nodes.len + g.children.len + g.units.len + g.bytes.len + g.sources.len + g.roots.len;
     // Final cancellation and capacity checks precede any session installation.
     if !poll(c, work) { return false; }
-    if !source::nodes_fit(heap, g.nodes.len) || !source::values_fit(heap, g.children.len) || g.units.len > heap.limits.units - (heap.units.len - heap.image.units) || 2 * g.nodes.len > heap.limits.units - (heap.strings.len - heap.image.strings) || g.bytes.len > c.bytes - heap.source_bytes.len { return reject(c, Error.Heap); }
+    // Each string takes its own canonical run (Latin-1 or UTF-16).
+    var text: i64 = 0;
+    for n in g.nodes { if n.tag == 3 || n.tag == 4 || n.tag == 5 { text += n.count; } if (n.tag == 4 || n.tag == 5) && n.ns_count >= 0 { text += n.ns_count; } }
+    if !source::nodes_fit(heap, g.nodes.len) || !source::values_fit(heap, g.children.len) || !source::units_fit(heap, text) || 2 * g.nodes.len > heap.limits.units - (heap.strings.len - heap.image.strings) || g.bytes.len > c.bytes - heap.source_bytes.len { return reject(c, Error.Heap); }
     if !source::charge(heap, work) { heap.fault = source::Fault.None; return reject(c, Error.Heap); }
     // The preflight above reserved every row, so no allocation below fails.
     let sources = heap.source_ranges.len;
-    let units = source::add_units(heap, g.units); let bytes = source::add_source_bytes(heap, g.bytes);
+    let bytes = source::add_source_bytes(heap, g.bytes);
     for s in g.sources { source::add_source_range(heap, source::SourceRange { start: (bytes + s.start) as u32, count: s.count }); }
     let base = source::add_nodes(heap, [], g.nodes.len, source::Node { kind: 11 });
     var links: source::Value[>..] = []; for id in g.children { links.push(source::object(base + id)); }
@@ -158,9 +161,9 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
         if n.metadata >= 0 { node.metadata = source::object(base + n.metadata); }
         if n.tag >= 6 { node.kind = n.tag - 1; node.start = (children + n.start) as u32; node.count = n.count as u32; }
         else if n.tag == 4 || n.tag == 5 {
-            node.kind = n.tag + 5; node.value = source::string_ref(heap, units + n.start, n.count);
-            if n.ns_count >= 0 { node.namespace_value = source::string_ref(heap, units + n.ns_start, n.ns_count); }
-        } else { node.value = if n.tag == 0 { source::nil() } else if n.tag == 1 { source::boolean(n.number != 0) } else if n.tag == 2 { source::number(n.number) } else { source::string_ref(heap, units + n.start, n.count) }; }
+            node.kind = n.tag + 5; node.value = source::import_text(heap, g.units[n.start..(n.start + n.count)]);
+            if n.ns_count >= 0 { node.namespace_value = source::import_text(heap, g.units[n.ns_start..(n.ns_start + n.ns_count)]); }
+        } else { node.value = if n.tag == 0 { source::nil() } else if n.tag == 1 { source::boolean(n.number != 0) } else if n.tag == 2 { source::number(n.number) } else { source::import_text(heap, g.units[n.start..(n.start + n.count)]) }; }
         source::set_node(heap, base + i, node);
     }
     for id in g.roots { roots.push(source::object(base + id)); }
@@ -236,8 +239,8 @@ fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&,
                 else { n.tag = if x.tag() == 1 { 0 } else if x.tag() == 2 { 1 } else if x.tag() == 3 { 2 } else if x.tag() == 4 { 3 } else { -1 }; }
                 if n.tag < 0 || !source::valid(heap, x) { heap.fault = source::Fault.None; return reject(c, Error.Unsupported); }
                 n.number = if x.tag() == 2 { if x.flag() { 1.0 } else { 0.0 } } else { x.num() };
-                if x.tag() == 4 { let units = source::chars(heap, x); if !poll(c, units.len) { return false; } n.start = g.units.len; n.count = units.len; g.units.append(units); }
-                if n.tag == 4 || n.tag == 5 { let ns = node.namespace_value; if ns.tag() == 4 { if !source::valid(heap, ns) || !poll(c, source::str_len(heap, ns)) { return reject(c); } let units = source::chars(heap, ns); n.ns_start = g.units.len; n.ns_count = units.len; g.units.append(units); } }
+                if x.tag() == 4 { let count = source::str_len(heap, x); if !poll(c, count) { return false; } n.start = g.units.len; n.count = count; source::append_utf16(heap, x, g.units); }
+                if n.tag == 4 || n.tag == 5 { let ns = node.namespace_value; if ns.tag() == 4 { if !source::valid(heap, ns) || !poll(c, source::str_len(heap, ns)) { return reject(c); } n.ns_start = g.units.len; n.ns_count = source::str_len(heap, ns); source::append_utf16(heap, ns, g.units); } }
             }
             n.origin = node.origin; n.source = graph_source(node.source); n.span_start = node.span_start; n.span_end = node.span_end;
             if n.origin == -1 && call.tag() == 5 && source::valid(heap, call) { let context = source::node(heap, call.id()); n.source = graph_source(context.source); n.span_start = context.span_start; n.span_end = context.span_end; }

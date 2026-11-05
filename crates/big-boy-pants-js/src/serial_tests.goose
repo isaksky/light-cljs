@@ -14,13 +14,13 @@ fn decode(code: source::Code&, bytes: const u8[:]) {
 struct State {
     thrown:     bool = false, status: tiny::Status = tiny::Status.Ready, steps: i64 = 0, claimed: bool = false, fault: source::Fault = source::Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1,
     registered: bool = false, live_jobs: i64 = 0, result: u8[] = [], frames: u8[] = [], locals: u8[] = [], operands: u8[] = [], writes: u8[] = [],
-    nodes:      u8[] = [], values: u8[] = [], properties: u8[] = [], units: u16[] = [], identity: i64 = 0, work: i64 = 0, heap_fault: source::Fault = source::Fault.None,
+    nodes:      u8[] = [], values: u8[] = [], properties: u8[] = [], units: u16[] = [], latin1: u8[] = [], identity: i64 = 0, work: i64 = 0, heap_fault: source::Fault = source::Fault.None,
 }
 fn state(a: source::Job&) -> State {
     return State {
         thrown:     a.thrown, status: a.status, steps: a.steps, claimed: a.claimed, fault: a.fault, fault_pc: a.fault_pc, fault_function: a.fault_function,
         registered: a.registered, live_jobs: a.heap.live_jobs, result: source::plain_rows([a.result]), frames: source::plain_rows(a.frames), locals: source::plain_rows(a.locals), operands: source::plain_rows(a.operands), writes: source::plain_rows(a.writes),
-        nodes:      source::plain_rows(a.heap.nodes), values: source::plain_rows(a.heap.values), properties: source::plain_rows(a.heap.properties), units: copy(a.heap.units), identity: a.heap.identity, work: a.heap.work, heap_fault: a.heap.fault,
+        nodes:      source::plain_rows(a.heap.nodes), values: source::plain_rows(a.heap.values), properties: source::plain_rows(a.heap.properties), units: copy(a.heap.units), latin1: copy(a.heap.latin1), identity: a.heap.identity, work: a.heap.work, heap_fault: a.heap.fault,
     };
 }
 fn same_state(a: const State&, b: const State&) {
@@ -110,13 +110,17 @@ fn limits(bytes: const u8[:]) {
 thread_fn initialization_limit(bytes: u8[], kind: i64) {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
-    // The globalThis own property participates in all initialization budgets.
+    // The globalThis own property participates in the unit and work budgets.
+    // Initialization imports each code string's units, and the property is
+    // the global's first inline slot, so it takes no property row (light-cljs-800).
     {
+        var text: i64 = 0; for s in code.strings { text += s.len; }
         var limit = source::Limits {};
         if kind == 0 { limit.properties = 0; }
-        if kind == 1 { limit.units = code.units.len; }
-        if kind == 2 { limit.work = code.units.len + code.constants.len + 1; }
+        if kind == 1 { limit.units = text; }
+        if kind == 2 { limit.work = text + code.constants.len + 1; }
         var heap = source::Heap { code: code, limits: limit };
+        if kind == 0 { assert(source::initialize(heap) && heap.properties.len == 0 && source::node(heap, heap.global.id()).key_count == 1); return; }
         assert(!source::initialize(heap));
         assert(heap.fault == (if kind == 2 { source::Fault.WorkLimit } else { source::Fault.MemoryLimit }));
     }
@@ -191,7 +195,7 @@ struct WrongRow { family: i64 }
 thread_fn wrong_row(probe: WrongRow) {
     var code = source::Code {}; decode(code, embed_file("../corpus/serial/calls.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); source::boot_runtime(heap);
-    let f = code.functions[0]; let big = heap.units.len;
+    let f = code.functions[0]; let big = heap.latin1.len;
     match probe.family {
         0 => { assert(heap.nodes.len < big); source::node(heap, heap.nodes.len); },
         1 => { assert(heap.nodes.len < big); source::node_mut(heap, heap.nodes.len).kind = 0; },
@@ -201,12 +205,65 @@ thread_fn wrong_row(probe: WrongRow) {
         5 => { assert(heap.strings.len < big); source::header(heap, heap.strings.len); },
         6 => { assert(heap.constants.len < big); source::constant(heap, f, heap.constants.len - f.constants); },
         7 => { assert(heap.source_ranges.len < heap.nodes.len); source::source_range(heap, heap.source_ranges.len); },
-        // A header whose run is past the units table (only a corrupted row can say so).
-        _ => { heap.strings.push(source::Str { start: big as u32, len: 1 }); source::chars(heap, source::Value.String { s: (heap.strings.len - 1) as u32 }); },
+        // A header whose run is past its unit table (only a corrupted row can say so).
+        8 => { heap.strings.push(source::Str { start: big as u32, len: 1, wide: true }); source::utf16(heap, source::Value.String { s: (heap.strings.len - 1) as u32 }); },
+        _ => { heap.strings.push(source::Str { start: heap.latin1.len as u32, len: 1, wide: false }); source::unit(heap, source::Value.String { s: (heap.strings.len - 1) as u32 }, 0); },
     }
 }
+// Strings are Latin-1 (one byte a unit) when every unit fits, else UTF-16,
+// canonically, through every operation that makes one (light-cljs-800).
+thread_fn latin1_strings() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, embed_file("../corpus/serial/calls.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    for s in heap.strings { assert(!s.wide); }
+    let units = heap.units.len; let latin1 = heap.latin1.len;
+    let a = source::string(heap, [99 as u16, 97, 102, 233]);
+    assert(!source::header(heap, a.sid()).wide && heap.latin1.len == latin1 + 4 && heap.units.len == units);
+    let w = source::string(heap, [0x263A as u16, 97]);
+    assert(source::header(heap, w.sid()).wide && heap.units.len == units + 2 && heap.latin1.len == latin1 + 4);
+    let b = source::string(heap, [99 as u16, 97, 102, 233]);
+    assert(source::same_text(heap, a, b) && source::equal(heap, a, b) && !source::same_text(heap, a, w) && !source::equal(heap, a, w));
+    let ab = source::binary_value(heap, 73, a, b); assert(!source::header(heap, ab.sid()).wide && source::str_len(heap, ab) == 8);
+    let aw = source::binary_value(heap, 73, a, w);
+    assert(source::header(heap, aw.sid()).wide && source::utf16(heap, aw) == [99 as u16, 97, 102, 233, 0x263A, 97]);
+    assert(source::unit(heap, a, 3) == 233 && source::unit(heap, w, 0) == 0x263A);
+    assert(source::binary_value(heap, 74, a, w).flag() && !source::binary_value(heap, 75, a, w).flag());
+    // One unit of a wide string that fits Latin-1 is a Latin-1 string.
+    let one = source::form_nth(heap, w, 1); assert(!source::header(heap, one.sid()).wide && source::unit(heap, one, 0) == 97);
+    var out: u8[>..] = []; source::canonical(heap, aw, out); assert(out == "utf16:[99,97,102,233,9786,97]");
+    let k = source::key(heap, source::number(42)); assert(!source::header(heap, k.sid()).wide && source::index(heap, k) == 42 && source::key_is(heap, k, "42"));
+    print("serial source VM: Latin-1 and UTF-16 strings stay canonical through make, concatenate, compare, index and print");
+}
+// Small objects keep their first two properties in the header's inline
+// slots; the third spills into an overflow run (light-cljs-800).
+thread_fn inline_slots() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, embed_file("../corpus/serial/calls.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let o = source::allocate(heap, source::Node { kind: 0 }); let rows = heap.properties.len;
+    let a = source::text(heap, "a"); let b = source::text(heap, "b"); let c = source::text(heap, "c");
+    assert(source::put(heap, o, a, source::number(1)) && source::put(heap, o, b, source::number(2)));
+    assert(heap.properties.len == rows && source::node(heap, o.id()).key_count == 2 && source::node(heap, o.id()).key_capacity == 0);
+    // Overwriting an inline record allocates nothing.
+    assert(source::put(heap, o, a, source::number(10)) && heap.properties.len == rows);
+    assert(source::put(heap, o, c, source::number(3)));
+    let n = source::node(heap, o.id());
+    assert(n.key_count == 3 && n.key_capacity == 4 && heap.properties.len == rows + 4 && source::overflow(n) == 1);
+    for k, i in [a, b, c] { let v, found = source::own_property(heap, o, k); assert(found && v.num() == [10.0, 2.0, 3.0][i]); }
+    let none, missing = source::own_property(heap, o, source::text(heap, "d")); assert(!missing && none.tag() == 0);
+    // A sparse write turns an array into a dictionary array, its first two
+    // records inline; cutting its length clears the cut-off inline slot.
+    let array = source::allocate(heap, source::Node { kind: 1 }); let before = heap.properties.len;
+    assert(source::set_element(heap, array, 0, source::number(5)) && source::set_element(heap, array, 5000, source::number(6)));
+    let d = source::node(heap, array.id()); assert(d.initialized && d.key_count == 2 && d.key_capacity == 0 && heap.properties.len == before);
+    assert(source::put(heap, array, source::text(heap, "length"), source::number(1)));
+    let cut = source::node(heap, array.id()); assert(cut.key_count == 1 && cut.length == 1 && cut.slots[1].key.tag() == 0);
+    let kept, present = source::own_element(heap, array, 0); assert(present && kept.num() == 5);
+    print("serial source VM: two inline property slots, then an overflow run; dictionary arrays share them");
+}
 fn wrong_rows() {
-    let tables = ["table nodes", "table nodes", "table values", "table values", "table properties", "table strings", "table constants", "table source_ranges", "table units"];
+    let tables = ["table nodes", "table nodes", "table values", "table values", "table properties", "table strings", "table constants", "table source_ranges", "table units", "table latin1"];
     for name, family in tables {
         var why: u8[>..] = [];
         assert(!thread_wait(thread_spawn_contained(wrong_row, WrongRow { family: family }), why) && find(why, name) >= 0);
@@ -216,6 +273,7 @@ fn wrong_rows() {
 fn main() {
     array_lengths();
     wrong_rows();
+    heap_program::join(thread_spawn(latin1_strings)); heap_program::join(thread_spawn(inline_slots));
     check(embed_file("../corpus/synthetic/arithmetic.gsp"), "number:27.5");
     check(embed_file("../corpus/synthetic/control_flow.gsp"), "number:7307.0");
     check(embed_file("../corpus/synthetic/wide.gsp"), "number:299.0");

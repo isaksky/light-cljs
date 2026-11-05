@@ -53,7 +53,7 @@ fn service(a: Authority&, job: source::Job&, owner: i64, sequence: i64&) -> bool
     if g.kind == 5 {
         if job.effect_count > 1 || job.effect_count == 1 && job.effect_args[0].tag() != 4 { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); }
         if job.effect_count == 0 { prefix.append([71, 95, 95]); }
-        else { let p = job.effect_args[0]; if !source::valid(job.heap, p) || source::str_len(job.heap, p) > 128 { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); } prefix.append(source::chars(job.heap, p)); }
+        else { let p = job.effect_args[0]; if !source::valid(job.heap, p) || source::str_len(job.heap, p) > 128 { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); } source::append_utf16(job.heap, p, prefix); }
     } else if job.effect_count != 0 { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); }
     // This slice supports unqualified generated names only; namespace and
     // compiler naming-scope/collision services require the compiler adapter.

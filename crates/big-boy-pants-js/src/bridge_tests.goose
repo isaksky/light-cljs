@@ -132,11 +132,11 @@ thread_fn budgets() {
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); var roots: source::Value[>..] = []; var control = bridge::Control {}; assert(bridge::import_graph(heap, g, roots, control));
     let nodes = heap.nodes.len; let units = heap.units.len; let values = heap.values.len; let text = heap.source_bytes.len;
     var success = bridge::Control {}; var imported: source::Value[>..] = []; assert(bridge::import_graph(heap, g, imported, success));
-    let stable_nodes = heap.nodes.len; let stable_units = heap.units.len; let stable_values = heap.values.len; let stable_text = heap.source_bytes.len;
+    let stable_nodes = heap.nodes.len; let stable_units = heap.units.len; let stable_latin1 = heap.latin1.len; let stable_values = heap.values.len; let stable_text = heap.source_bytes.len;
     for cut in success.visits {
         var c = bridge::Control { cancel_after: cut }; var untouched: source::Value[>..] = [];
         assert(!bridge::import_graph(heap, g, untouched, c) && c.error == bridge::Error.Cancelled && untouched.len == 0);
-        assert(heap.nodes.len == stable_nodes && heap.units.len == stable_units && heap.values.len == stable_values && heap.source_bytes.len == stable_text);
+        assert(heap.nodes.len == stable_nodes && heap.units.len == stable_units && heap.latin1.len == stable_latin1 && heap.values.len == stable_values && heap.source_bytes.len == stable_text);
     }
     heap.limits.nodes = heap.nodes.len - heap.image.nodes; var c = bridge::Control {}; var untouched: source::Value[>..] = [];
     assert(!bridge::import_graph(heap, g, untouched, c) && c.error == bridge::Error.Heap && heap.nodes.len == stable_nodes);
@@ -304,20 +304,20 @@ thread_fn adversarial_forms() {
     var complete = bridge::Control {}; var bytes: u8[>..] = []; assert(bridge::encode(g, bytes, complete));
     var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
     var roots: source::Value[>..] = []; var committed = bridge::Control {}; assert(bridge::import_graph(heap, g, roots, committed));
-    let original_nodes = copy(heap.nodes); let original_units = copy(heap.units); let original_work = heap.work;
+    let original_nodes = copy(heap.nodes); let original_units = copy(heap.units); let original_latin1 = copy(heap.latin1); let original_work = heap.work;
     for mode in 13 {
         var bad = copy(bytes);
         let at = [8, 12, 16, 20, 24, 28, 32, 44, 48, 68, 72, 76, bytes.len - 4][mode];
         for i in 4 { bad[at + i] = ((2147483647 >> (i * 8)) & 255) as u8; }
         var c = bridge::Control {}; var graph = bridge::Graph {}; assert(!bridge::decode(graph, bad, c) && graph.nodes.len == 0);
-        assert(source::plain_rows(heap.nodes) == source::plain_rows(original_nodes) && heap.units == original_units && heap.work == original_work);
+        assert(source::plain_rows(heap.nodes) == source::plain_rows(original_nodes) && heap.units == original_units && heap.latin1 == original_latin1 && heap.work == original_work);
     }
     // Valid UTF-8 source spans cannot split either multibyte code point;
     // runtime UTF-16 can still retain an unpaired surrogate unchanged.
     for start in [1, 3, 4, 5] {
         g.nodes[0].span_start = start; var c = bridge::Control {}; var no: source::Value[>..] = [];
         assert(!bridge::import_graph(heap, g, no, c) && c.error == bridge::Error.Malformed && no.len == 0);
-        assert(heap.nodes.len == original_nodes.len && heap.units == original_units && heap.work == original_work);
+        assert(heap.nodes.len == original_nodes.len && heap.units == original_units && heap.latin1 == original_latin1 && heap.work == original_work);
     }
     g.nodes[0].span_start = 0; g.bytes[0] = 255;
     var invalid = bridge::Control {}; assert(!bridge::validate(g, invalid));

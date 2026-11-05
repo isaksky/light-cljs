@@ -6,18 +6,21 @@ import .census;
 // a closure's slot run and a cell, a property chain, overlapping string
 // ranges, an unowned slot, and two disconnected objects.
 fn node(id: i64) -> source::Value { return source::object(id); }
-fn text(heap: source::Heap&, start: i64, count: i64) -> source::Value { return source::string_ref(heap, start, count); }
+fn text(heap: source::Heap&, start: i64, count: i64) -> source::Value { return source::string_ref(heap, start, count, true); }
 fn main() {
     var code = source::Code {}; var heap = source::Heap { code: code };
     for u in "abcdef" { heap.units.push(u); }
-    // 0: plain object, property 1 -> closure 1.
-    heap.nodes.push(source::Node { kind: 0, keys: 1, key_count: 1, key_capacity: 1 });
+    // 0: plain object: two inline records, then overflow property 1 -> closure 1.
+    let inline: source::Property[2] = [source::Property { key: text(heap, 0, 1), value: source::number(5) }, source::Property { key: text(heap, 0, 2), value: source::number(6) }];
+    heap.nodes.push(source::Node { kind: 0, keys: 1, key_count: 3, key_capacity: 1, slots: inline });
     // 1: closure whose slots 0..2 hold the cell and a string.
     heap.nodes.push(source::Node { kind: 2, start: 0, count: 2 });
     // 2: cell pointing back at the closure (a cycle).
     heap.nodes.push(source::Node { kind: 3, value: node(1) });
-    // 3: disconnected object owning property 0; 4: disconnected, empty.
-    heap.nodes.push(source::Node { kind: 0, keys: 0, key_count: 1, key_capacity: 1 });
+    // 3: disconnected object with two inline records and overflow property 0;
+    // 4: disconnected, empty.
+    let other: source::Property[2] = [source::Property { key: text(heap, 3, 1), value: source::number(8) }, source::Property { key: text(heap, 4, 1), value: source::number(9) }];
+    heap.nodes.push(source::Node { kind: 0, keys: 0, key_count: 3, key_capacity: 1, slots: other });
     heap.nodes.push(source::Node { kind: 0 });
     heap.values.push(node(2)); heap.values.push(text(heap, 0, 3)); heap.values.push(source::number(7));
     heap.properties.push(source::Property { key: text(heap, 3, 2), value: source::number(1) });

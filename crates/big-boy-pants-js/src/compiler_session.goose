@@ -257,7 +257,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, deterministi
         if !job.effect_pending { continue; }
         if job.effect_kind != 9 || job.effect_count != 3 { source::deliver_effect(job, source::Value.Undefined, source::Fault.NativeBoundary); continue; }
         let v = job.effect_args[2]; var name: u8[>..] = []; if v.tag() != 4 { source::deliver_effect(job, source::Value.Undefined, source::Fault.TypeError); continue; }
-        for u in source::chars(heap, v) { if u <= 32 || u > 127 { source::deliver_effect(job, source::Value.Undefined, source::Fault.NativeBoundary); break; } name.push(u as u8); } if !job.effect_pending { continue; }
+        for u in source::utf16(heap, v) { if u <= 32 || u > 127 { source::deliver_effect(job, source::Value.Undefined, source::Fault.NativeBoundary); break; } name.push(u as u8); } if !job.effect_pending { continue; }
         if work.blocking {
             // Wait in place: the job's state stays in this thread program.
             publish(Event { id: id, kind: 10, sequence: sequence, name: copy(name), steps: job.steps, writes: job.writes.len, address: address, timing: timing(work, started, sc) });
@@ -320,7 +320,7 @@ fn serial_call(directory: const u8[:], id: i64, code: source::Code&, heap: sourc
         if !job.effect_pending { continue; }
         assert(job.effect_kind == 9 && job.effect_count == 3);
         let name = job.effect_args[2]; assert(name.tag() == 4); var text: u8[>..] = [];
-        for u in source::chars(heap, name) { assert(u > 32 && u <= 127); text.push(u as u8); }
+        for u in source::utf16(heap, name) { assert(u > 32 && u <= 127); text.push(u as u8); }
         print("NEED ", id, " ", sequence, " ", text, " ", job.steps, " ", job.writes.len); flush_stdout();
         var notice: u8[>..] = []; assert(read_line(notice)); assert(notice == "-2");
         var bytes:  u8[>..] = []; assert(read_file(str(directory, "/", id, "-", sequence, ".key"), bytes));

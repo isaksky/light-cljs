@@ -92,10 +92,10 @@ fn verify(heap: source::Heap&, bindings: const snapshot::Binding[:], n: i64) -> 
     let form = bindings[7].value; let x = source::form_nth(heap, form, 0); let y = source::form_nth(heap, form, 1);
     assert(x.id() == source::form_nth(heap, form, 2).id() && x.id() != y.id() && source::form_equal(heap, x, y));
     assert(source::node(heap, x.id()).origin == 10 && source::node(heap, y.id()).span_start == 4 && heap.source_bytes[..] == "one two");
-    let text = source::form_value(heap, source::form_nth(heap, form, 3)); assert(source::chars(heap, text) == [0xD83D as u16, 0xDE00, 0xD800]);
+    let text = source::form_value(heap, source::form_nth(heap, form, 3)); assert(source::utf16(heap, text) == [0xD83D as u16, 0xDE00, 0xD800]);
     let named = source::node(heap, source::form_nth(heap, form, 4).id()); assert(named.kind == 9 && source::node(heap, named.metadata.id()).kind == 7);
-    assert(source::chars(heap, named.namespace_value) == ['n' as u16, 's']);
-    assert(source::chars(heap, named.value)[0] == 'x');
+    assert(source::utf16(heap, named.namespace_value) == ['n' as u16, 's']);
+    assert(source::utf16(heap, named.value)[0] == 'x');
     let first = source::node(heap, bindings[8].value.id()); let second = source::node(heap, bindings[9].value.id());
     assert(source::slot(heap, first.start).id() == source::slot(heap, second.start).id());
     let hidden = source::node(heap, source::slot(heap, first.start).id()).value;

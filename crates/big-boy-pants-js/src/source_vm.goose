@@ -12,15 +12,21 @@ var next_identity: i64 = 1;
 
 // A JavaScript value: a 9-byte fixed-mode enum (light-cljs-785, decision 2
 // of docs/javascript-coverage.md), never a Goose pointer. Object links a row
-// of `heap.nodes`; String links a header in `heap.strings`, whose UTF-16
-// units live in `heap.units`. No value carries a session: a heap's rows are
+// of `heap.nodes`; String links a header in `heap.strings`, whose code
+// units live in `heap.latin1`, one byte a unit, when every unit fits
+// (Latin-1), and otherwise in `heap.units` as UTF-16 (light-cljs-800). The
+// choice is canonical, so equal strings share an encoding. No value carries a session: a heap's rows are
 // the only thing its links count from, so a copied image needs no
 // relocation. Symbol keeps a well-known symbol index and BigInt no payload
 // (constants only: `Const` fails Unsupported on both). Empty marks an array
 // hole; it never leaves an array run (`valid` refuses it elsewhere).
 // tag() gives the GSP primitive tag the rest of the module compares.
 enum Value { Undefined, Null, Bool { v: bool }, Number { v: f64 }, String { s: u32 }, Symbol { s: u32 }, BigInt { b: u32 }, Object { o: u32 }, Empty }
-struct Str { start: u32, len: u32 }
+// A string header. `wide` runs are UTF-16 units; a heap header that is not
+// wide is a Latin-1 run in heap.latin1, and a heap string is wide only when
+// some unit is above 255. Code and wire strings (Code, bridge graphs,
+// artifacts) are always wide.
+struct Str { start: u32, len: u32, wide: bool = true }
 fn tag(v: Value) -> i64 { return match v { Undefined => 0, Null => 1, Bool => 2, Number => 3, String => 4, Object => 5, Symbol => 6, BigInt => 7, Empty => -1 }; }
 // Every link between VM tables is a plain u32 row ID (light-cljs-800,
 // decision 2), never a Goose index type: rows cross threads in every
@@ -52,13 +58,36 @@ fn set_property_row(heap: Heap&, row: i64, p: Property) { if row < 0 || row >= h
 fn header(heap: const Heap&, s: i64) -> Str { if s < 0 || s >= heap.strings.len { abort("row is not in table strings"); } return heap.strings[s]; }
 fn constant(heap: const Heap&, f: const Function&, k: i64) -> Value { let row = f.constants + k; if row < 0 || row >= heap.constants.len { abort("row is not in table constants"); } return heap.constants[row]; }
 fn source_range(heap: const Heap&, r: i64) -> SourceRange { if r < 0 || r >= heap.source_ranges.len { abort("row is not in table source_ranges"); } return heap.source_ranges[r]; }
-fn str_start(heap: const Heap&, v: Value) -> i64 { return header(heap, v.sid()).start; }
 fn str_len(heap: const Heap&, v: Value) -> i64 { return if v.tag() != 4 { 0 } else { header(heap, v.sid()).len }; }
-fn chars(heap: const Heap&, v: Value) -> const u16[:] {
-    let s = header(heap, v.sid());
-    if s.start > heap.units.len || s.len > heap.units.len - s.start { abort("run is not in table units"); }
+// The run of a wide (narrow) string; a header naming a run past its table
+// fails by that table's name.
+fn wide_run(heap: const Heap&, s: Str) -> const u16[:] {
+    if !s.wide || s.start > heap.units.len || s.len > heap.units.len - s.start { abort("run is not in table units"); }
     return heap.units[s.start..(s.start + s.len)];
 }
+fn narrow_run(heap: const Heap&, s: Str) -> const u8[:] {
+    if s.wide || s.start > heap.latin1.len || s.len > heap.latin1.len - s.start { abort("run is not in table latin1"); }
+    return heap.latin1[s.start..(s.start + s.len)];
+}
+// Unit i of a string value, i < str_len.
+fn unit(heap: const Heap&, v: Value, i: i64) -> u16 {
+    let s = header(heap, v.sid());
+    return if s.wide { wide_run(heap, s)[i] } else { narrow_run(heap, s)[i] };
+}
+// The string's UTF-16 units, appended (export to wire formats and tests).
+fn append_utf16(heap: const Heap&, v: Value, out: u16[>..]&) {
+    let s = header(heap, v.sid());
+    if s.wide { out.append(wide_run(heap, s)); } else { for b in narrow_run(heap, s) { out.push(b); } }
+}
+fn utf16(heap: const Heap&, v: Value) -> u16[>..] { var out: u16[>..] = []; append_utf16(heap, v, out); return out; }
+// Equal code units. Encodings are canonical, so different ones differ.
+fn same_text(heap: const Heap&, a: Value, b: Value) -> bool {
+    if a.sid() == b.sid() { return true; }
+    let x = header(heap, a.sid()); let y = header(heap, b.sid());
+    if x.len != y.len || x.wide != y.wide { return false; }
+    return if x.wide { wide_run(heap, x) == wide_run(heap, y) } else { narrow_run(heap, x) == narrow_run(heap, y) };
+}
+fn fits_latin1(units: const u16[:]) -> bool { for u in units { if u > 255 { return false; } } return true; }
 // A string value over units already in the table (a view or a copied image
 // range); only the 16-byte header is new.
 // Plain twins: a value's or row's fully written fields, for byte-exact
@@ -79,6 +108,7 @@ fn same_bits(a: Value, b: Value) -> bool { return bytes_of([plain(a)]) == bytes_
 fn plain_bytes(n: Node, out: u8[>..]&) {
     out.append(bytes_of([n.kind, n.function, n.start, n.count, n.keys, n.key_count, n.key_capacity, n.length, n.origin, n.source, n.span_start, n.span_end])); out.append(bytes_of([n.initialized, n.immutable]));
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out);
+    for p in n.slots { plain_bytes(p, out); }
 }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index]));
@@ -139,19 +169,22 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // Links (function, start, keys, source) and counts are plain u32 rows;
 // source is no_row() for a node without provenance. origin is the compiler
 // occurrence the node came from, not a VM row, and stays -1 when absent.
-struct Node { kind: i64, function: u32 = 0, start: u32 = 0, count: u32 = 0, keys: u32 = 0, key_count: u32 = 0, key_capacity: u32 = 0, length: u32 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value.Undefined, namespace_value: Value = Value.Null, metadata: Value = Value.Undefined, origin: i64 = -1, source: u32 = 4294967295, span_start: u32 = 0, span_end: u32 = 0 }
+struct Node { kind: i64, function: u32 = 0, start: u32 = 0, count: u32 = 0, keys: u32 = 0, key_count: u32 = 0, key_capacity: u32 = 0, length: u32 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value.Undefined, namespace_value: Value = Value.Null, metadata: Value = Value.Undefined, origin: i64 = -1, source: u32 = 4294967295, span_start: u32 = 0, span_end: u32 = 0, slots: Property[2] = [Property {}; 2] }
 struct SourceRange { start: u32, count: u32 }
-// An own property: a row of its object's key run (light-cljs-785). An
-// object's properties are heap.properties[keys..keys + key_count], oldest
-// first, in a run of key_capacity rows; there are no linked records.
+// An own property record (light-cljs-785, light-cljs-800). An object's
+// key_count records, oldest first, are its header's inline slots and then
+// its overflow run: record i < inline_slots() is slots[i], record i above is
+// heap.properties[keys + i - inline_slots()], in a run of key_capacity rows.
+// An object with at most two properties allocates no run; inline slots past
+// key_count are cleared. There are no linked records.
 struct Property { key: Value = Value.Undefined, value: Value = Value.Undefined }
 // Table lengths when the heap became an image (restore); 0 for a heap built
 // by initialize. Allocation limits count rows above these tops.
-struct Tops { nodes: i64 = 0, values: i64 = 0, properties: i64 = 0, units: i64 = 0, strings: i64 = 0 }
+struct Tops { nodes: i64 = 0, values: i64 = 0, properties: i64 = 0, units: i64 = 0, strings: i64 = 0, latin1: i64 = 0 }
 root struct Heap {
     code:          const Code&, identity: i64 = 0, limits: Limits = Limits {},
     nodes:         Node[>..]                  = [], values: Value[>..] = [], properties: Property[>..] = [],
-    units:         u16[>..]                   = [], strings: Str[>..] = [], constants: Value[>..] = [], work: i64 = 0,
+    units:         u16[>..]                   = [], latin1: u8[>..] = [], strings: Str[>..] = [], constants: Value[>..] = [], work: i64 = 0,
     source_bytes:  u8[>..]                    = [], source_ranges: SourceRange[>..] = [],
     property_rows: i64                        = 0, image: Tops = Tops {},
     fault:         Fault                      = Fault.None, global: Value = Value.Undefined, call_method: Value = Value.Undefined, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
@@ -362,40 +395,61 @@ fn add_values(heap: Heap&, values: const Value[:], extra: i64 = 0, fill: Value =
 // any other table changes.
 fn values_fit(heap: const Heap&, count: i64) -> bool { return count >= 0 && count <= heap.limits.values - (heap.values.len - heap.image.values); }
 fn nodes_fit(heap: const Heap&, count: i64) -> bool { return count >= 0 && count <= heap.limits.nodes - (heap.nodes.len - heap.image.nodes); }
+// Code-unit rows the heap added above its image, in both unit tables: the
+// unit limit counts them together.
+fn unit_rows(heap: const Heap&) -> i64 { return heap.units.len - heap.image.units + heap.latin1.len - heap.image.latin1; }
+fn units_fit(heap: const Heap&, count: i64) -> bool { return count >= 0 && count <= heap.limits.units - unit_rows(heap); }
 fn add_units(heap: Heap&, units: const u16[:]) -> i64 {
-    if !room(heap, heap.units.len, heap.image.units, heap.limits.units, units.len) { return -1; }
+    if !units_fit(heap, units.len) { memory(heap); return -1; }
     let at = heap.units.len; heap.units.append(units); return at;
 }
-// The string header table's one allocation function, over units already in
-// the units table (a view, a copied image range or new units). Header rows
-// share the unit limit: an empty string still takes one.
-fn string_ref(heap: Heap&, start: i64, len: i64) -> Value {
-    if start < 0 || len < 0 || start > heap.units.len || len > heap.units.len - start { heap.fault = Fault.InvalidState; return Value.Undefined; }
+fn add_latin1(heap: Heap&, bytes: const u8[:]) -> i64 {
+    if !units_fit(heap, bytes.len) { memory(heap); return -1; }
+    let at = heap.latin1.len; heap.latin1.append(bytes); return at;
+}
+// The string header table's one allocation function, over a run already in
+// its unit table (a view, a copied image range or new units): `wide` names
+// heap.units, otherwise heap.latin1. Callers keep the encoding canonical.
+// Header rows share the unit limit: an empty string still takes one.
+fn string_ref(heap: Heap&, start: i64, len: i64, wide: bool) -> Value {
+    let length = if wide { heap.units.len } else { heap.latin1.len };
+    if start < 0 || len < 0 || start > length || len > length - start { heap.fault = Fault.InvalidState; return Value.Undefined; }
     if !room(heap, heap.strings.len, heap.image.strings, heap.limits.units, 1) { return Value.Undefined; }
-    heap.strings.push(Str { start: start as u32, len: len as u32 }); return Value.String { s: (heap.strings.len - 1) as u32 };
+    heap.strings.push(Str { start: start as u32, len: len as u32, wide: wide }); return Value.String { s: (heap.strings.len - 1) as u32 };
+}
+// A new string of these UTF-16 units in its canonical encoding, without a
+// work charge (callers charge or preflight); Undefined with MemoryLimit.
+fn import_text(heap: Heap&, units: const u16[:]) -> Value {
+    if !units_fit(heap, units.len) || heap.strings.len - heap.image.strings >= heap.limits.units { memory(heap); return Value.Undefined; }
+    if !fits_latin1(units) { return string_ref(heap, add_units(heap, units), units.len, true); }
+    var bytes: u8[>..] = []; for u in units { bytes.push(u as u8); }
+    return string_ref(heap, add_latin1(heap, bytes), bytes.len, false);
 }
 fn add_constants(heap: Heap&, values: const Value[:]) -> i64 { let at = heap.constants.len; heap.constants.append(values); return at; }
 fn add_source_bytes(heap: Heap&, bytes: const u8[:]) -> i64 { let at = heap.source_bytes.len; heap.source_bytes.append(bytes); return at; }
 fn add_source_range(heap: Heap&, r: SourceRange) -> i64 { heap.source_ranges.push(r); return heap.source_ranges.len - 1; }
 fn string(heap: Heap&, units: const u16[:]) -> Value {
     if !charge(heap, units.len) { return Value.Undefined; }
-    if units.len > heap.limits.units - (heap.units.len - heap.image.units) || heap.strings.len - heap.image.strings >= heap.limits.units { memory(heap); return Value.Undefined; }
-    let start = add_units(heap, units);
-    return string_ref(heap, start, units.len);
+    return import_text(heap, units);
 }
+// Bytes as units, one a byte: always Latin-1.
 fn text(heap: Heap&, bytes: const u8[:]) -> Value {
-    var units: u16[>..] = []; for byte in bytes { units.push(byte); }
-    return string(heap, units);
+    if !charge(heap, bytes.len) { return Value.Undefined; }
+    if !units_fit(heap, bytes.len) || heap.strings.len - heap.image.strings >= heap.limits.units { memory(heap); return Value.Undefined; }
+    return string_ref(heap, add_latin1(heap, bytes), bytes.len, false);
 }
+// One unit of an existing string as a new string, in the same encoding.
+fn unit_string(heap: Heap&, v: Value, i: i64) -> Value { return string(heap, [unit(heap, v, i)]); }
 fn initialize(heap: Heap&) -> bool {
-    if !heap.code.valid || heap.identity != 0 || heap.nodes.len != 0 || heap.units.len != 0 || heap.constants.len != 0 { heap.fault = Fault.InvalidState; return false; }
+    if !heap.code.valid || heap.identity != 0 || heap.nodes.len != 0 || heap.units.len != 0 || heap.latin1.len != 0 || heap.strings.len != 0 || heap.constants.len != 0 { heap.fault = Fault.InvalidState; return false; }
     heap.identity = reserve_identity();
     if heap.identity == 0 { return memory(heap); }
-    if heap.code.units.len > heap.limits.units || heap.code.strings.len > heap.limits.units || heap.code.constants.len > heap.limits.values { return memory(heap); }
-    if !charge(heap, heap.code.units.len + heap.code.constants.len) { return false; }
-    add_units(heap, heap.code.units);
-    // The heap starts empty, so the code's string headers keep their indices.
-    for s in heap.code.strings { string_ref(heap, s.start, s.len); }
+    var units: i64 = 0; for s in heap.code.strings { units += s.len; }
+    if units > heap.limits.units || heap.code.strings.len > heap.limits.units || heap.code.constants.len > heap.limits.values { return memory(heap); }
+    if !charge(heap, units + heap.code.constants.len) { return false; }
+    // The heap starts empty, so each code string keeps its header index; its
+    // units take their canonical encoding.
+    for s in heap.code.strings { import_text(heap, heap.code.units[s.start..(s.start + s.len)]); }
     add_constants(heap, heap.code.constants);
     heap.global = allocate(heap, Node { kind: 0 });
     heap.call_method = builtin(heap, 14);
@@ -414,7 +468,7 @@ fn equal(heap: Heap&, a: Value, b: Value) -> bool {
     if !valid(heap, a) || !valid(heap, b) || a.tag() != b.tag() { return false; }
     return match a.tag() {
         0, 1 => true, 2 => a.flag() == b.flag(), 3 => a.num() == b.num(),
-        4 => { if !charge(heap, str_len(heap, a) + str_len(heap, b)) { return false; } a.sid() == b.sid() || chars(heap, a) == chars(heap, b) },
+        4 => { if !charge(heap, str_len(heap, a) + str_len(heap, b)) { return false; } same_text(heap, a, b) },
         _ => a == b,
     };
 }
@@ -431,16 +485,20 @@ fn key(heap: Heap&, value: Value) -> Value {
 }
 fn key_is(heap: Heap&, value: Value, bytes: const u8[:]) -> bool {
     if value.tag() != 4 || str_len(heap, value) != bytes.len || !charge(heap, bytes.len) { return false; }
-    let units = chars(heap, value);
+    let s = header(heap, value.sid());
+    if !s.wide { return narrow_run(heap, s) == bytes; }
+    let units = wide_run(heap, s);
     for byte, i in bytes { if units[i] != byte { return false; } } return true;
 }
 fn index(heap: Heap&, k: Value) -> i64 {
     if k.tag() != 4 { return -1; }
-    let units = chars(heap, k);
-    if units.len == 0 || units.len > 10 { return -1; }
-    if !charge(heap, units.len) { return -1; }
+    // An array index is decimal digits: always Latin-1.
+    let s = header(heap, k.sid());
+    if s.wide || s.len == 0 || s.len > 10 { return -1; }
+    if !charge(heap, s.len) { return -1; }
+    let digits = narrow_run(heap, s);
     var n: i64 = 0;
-    for c, i in units { if c < 48 || c > 57 || (i == 0 && c == 48 && units.len > 1) { return -1; } n = n * 10 + (c - 48); }
+    for c, i in digits { if c < 48 || c > 57 || (i == 0 && c == 48 && digits.len > 1) { return -1; } n = n * 10 + (c - 48); }
     return if n < 4294967295 { n } else { -1 };
 }
 // Arrays (light-cljs-785). A dense array (kind 1) keeps its elements in its
@@ -504,19 +562,22 @@ fn set_element(heap: Heap&, array: Value, i: i64, value: Value) -> bool {
 fn to_dictionary(heap: Heap&, array: Value) -> bool {
     let o = array.id(); let start = node(heap, o).start; let count = node(heap, o).count; let end = min(node(heap, o).length, count);
     var records: i64 = 0; for i in end { if slot(heap, start + i).tag() != -1 { records += 1; } }
-    let run = add_properties(heap, records);
+    let spill = max(0, records - inline_slots());
+    let run = add_properties(heap, spill);
     if run < 0 { return false; }
-    var at = run;
+    // Records are built aside: the header changes only after every failure point.
+    var built: Property[>..] = [];
     for i in end {
         let v = slot(heap, start + i);
         if v.tag() == -1 { continue; }
         let k = key(heap, number(i));
         if heap.fault != Fault.None { return false; }
-        set_property_row(heap, at, Property { key: k, value: v }); at += 1;
+        built.push(Property { key: k, value: v });
     }
     if !charge(heap, count) { return false; }
     for row in start..(start + count) { set_slot(heap, row, Value.Undefined); }
-    node_mut(heap, o).keys = run as u32; node_mut(heap, o).key_count = records as u32; node_mut(heap, o).key_capacity = records as u32; node_mut(heap, o).initialized = true; node_mut(heap, o).count = 0;
+    node_mut(heap, o).keys = run as u32; node_mut(heap, o).key_count = records as u32; node_mut(heap, o).key_capacity = spill as u32; node_mut(heap, o).initialized = true; node_mut(heap, o).count = 0;
+    for p, i in built { set_own_at(heap, o, i, p); }
     return true;
 }
 // The one allocation point of the property table: `count` cleared rows at
@@ -524,6 +585,17 @@ fn to_dictionary(heap: Heap&, array: Value) -> bool {
 // (limits.properties counts allocated rows, spare capacity included, not live
 // records; property_rows is their running total for snapshot validation). Returns the run's
 // first row, or -1 with MemoryLimit.
+fn inline_slots() -> i64 { return 2; }
+// Record i of an object (see Property); i < key_count.
+fn own_at(heap: const Heap&, o: i64, i: i64) -> Property {
+    let n .= node(heap, o);
+    return if i < inline_slots() { n.slots[i] } else { property_row(heap, n.keys + i - inline_slots()) };
+}
+fn set_own_at(heap: Heap&, o: i64, i: i64, p: Property) {
+    if i < inline_slots() { node_mut(heap, o).slots[i] = p; } else { set_property_row(heap, node(heap, o).keys + i - inline_slots(), p); }
+}
+// Records an object keeps in its overflow run.
+fn overflow(n: const Node&) -> i64 { return max(0, n.key_count - inline_slots()); }
 fn add_properties(heap: Heap&, count: i64) -> i64 {
     if !room(heap, heap.properties.len, heap.image.properties, heap.limits.properties, count) { return -1; }
     let at = heap.properties.len; heap.properties.resize(at + count, Property {}); heap.property_rows += count;
@@ -532,11 +604,11 @@ fn add_properties(heap: Heap&, count: i64) -> i64 {
 // Newest first: the order the former linked records were visited in, so a
 // lookup charges the same work.
 fn own_record(heap: Heap&, object: Value, k: Value) -> Value, bool {
-    let o = object.id(); let start = node(heap, o).keys; var i = node(heap, o).key_count;
+    let o = object.id(); var i = node(heap, o).key_count;
     while i > 0 {
         i -= 1;
         if !charge(heap) { return Value.Undefined, false; }
-        let property = property_row(heap, start + i);
+        let property = own_at(heap, o, i);
         if equal(heap, property.key, k) { return property.value, true; }
     }
     return Value.Undefined, false;
@@ -556,7 +628,7 @@ fn get(heap: Heap&, object: Value, k: Value) -> Value {
     if k.tag() != 4 { heap.fault = Fault.InvalidState; return Value.Undefined; }
     if object.tag() == 4 {
         if key_is(heap, k, "length") { return number(str_len(heap, object)); }
-        let i = index(heap, k); if i >= 0 { if i >= str_len(heap, object) { return Value.Undefined; } let unit = heap.units[str_start(heap, object) + i]; return string(heap, [unit]); }
+        let i = index(heap, k); if i >= 0 { if i >= str_len(heap, object) { return Value.Undefined; } return unit_string(heap, object, i); }
         heap.fault = Fault.UnsupportedOperand; return Value.Undefined;
     }
     if object.tag() != 5 { heap.fault = if object.tag() <= 1 { Fault.TypeError } else { Fault.UnsupportedOperand }; return Value.Undefined; }
@@ -599,21 +671,24 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
 // included) through add_properties; the old rows are cleared and stay charged:
 // tables are append-only within a job. A rejection changes nothing.
 fn put_record(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
-    let o = object.id(); let start = node(heap, o).keys; let count = node(heap, o).key_count;
+    let o = object.id(); let count = node(heap, o).key_count;
     var i = count;
     while i > 0 {
         i -= 1;
         if !charge(heap) { return false; }
-        if equal(heap, property_row(heap, start + i).key, k) { property_mut(heap, start + i).value = value; return true; }
+        let p = own_at(heap, o, i);
+        if equal(heap, p.key, k) { set_own_at(heap, o, i, Property { key: p.key, value: value }); return true; }
     }
     if heap.fault != Fault.None { return false; }
-    if count == node(heap, o).key_capacity {
-        let at = add_properties(heap, max(4, count * 2));
+    let spilled = count - inline_slots();
+    if spilled >= 0 && spilled == node(heap, o).key_capacity {
+        let start = node(heap, o).keys; let capacity = max(4, spilled * 2);
+        let at = add_properties(heap, capacity);
         if at < 0 { return false; }
-        for i in count { set_property_row(heap, at + i, property_row(heap, start + i)); set_property_row(heap, start + i, Property {}); }
-        node_mut(heap, o).keys = at as u32; node_mut(heap, o).key_capacity = max(4, count * 2);
+        for i in spilled { set_property_row(heap, at + i, property_row(heap, start + i)); set_property_row(heap, start + i, Property {}); }
+        node_mut(heap, o).keys = at as u32; node_mut(heap, o).key_capacity = capacity as u32;
     }
-    set_property_row(heap, node(heap, o).keys + count, Property { key: k, value: value }); node_mut(heap, o).key_count = count + 1;
+    set_own_at(heap, o, count, Property { key: k, value: value }); node_mut(heap, o).key_count = count + 1;
     return heap.fault == Fault.None;
 }
 // Bounded numeric length writes only. A shorter length turns a dense array's
@@ -636,24 +711,24 @@ fn array_length(heap: Heap&, object: Value, value: Value) -> bool {
 // Preflight the full walk before mutation so a work rejection is atomic.
 fn dictionary_length(heap: Heap&, object: Value, length: i64) -> bool {
     if length < node(heap, object.id()).length {
-        let o = object.id(); let start = node(heap, o).keys; let count = node(heap, o).key_count;
-        for row in start..(start + count) {
-            if !charge(heap, 2 + str_len(heap, property_row(heap, row).key)) { return false; }
-            let i = index(heap, property_row(heap, row).key);
+        let o = object.id(); let count = node(heap, o).key_count;
+        for r in count {
+            if !charge(heap, 2 + str_len(heap, own_at(heap, o, r).key)) { return false; }
+            let i = index(heap, own_at(heap, o, r).key);
             if heap.fault != Fault.None { return false; }
             if i < 0 { heap.fault = Fault.UnsupportedOperand; return false; }
         }
         // Compact the kept records in order; the cut-off rows are cleared.
         var kept: i64 = 0;
-        for row in start..(start + count) {
-            let p = property_row(heap, row);
+        for r in count {
+            let p = own_at(heap, o, r);
             // set_element admitted canonical indices. The preflight charged
             // this second decode, so mutation below cannot fail.
             var i: i64 = 0;
-            for c in chars(heap, p.key) { i = i * 10 + (c - 48); }
-            if i < length { set_property_row(heap, start + kept, p); kept += 1; }
+            for c in narrow_run(heap, header(heap, p.key.sid())) { i = i * 10 + (c - 48); }
+            if i < length { set_own_at(heap, o, kept, p); kept += 1; }
         }
-        for row in (start + kept)..(start + count) { set_property_row(heap, row, Property {}); }
+        for r in kept..count { set_own_at(heap, o, r, Property {}); }
         node_mut(heap, o).key_count = kept as u32;
     }
     node_mut(heap, object.id()).length = length as u32; return true;
@@ -771,13 +846,20 @@ fn binary_value(heap: Heap&, op: i64, a: Value, b: Value) -> Value {
     }
     if op == 73 && a.tag() == 4 && b.tag() == 4 {
         if !valid(heap, a) || !valid(heap, b) { return Value.Undefined; }
-        if str_len(heap, a) + str_len(heap, b) > heap.limits.units - (heap.units.len - heap.image.units) { memory(heap); return Value.Undefined; }
-        var units: u16[>..] = []; units.append(chars(heap, a)); units.append(chars(heap, b)); return string(heap, units);
+        if !units_fit(heap, str_len(heap, a) + str_len(heap, b)) { memory(heap); return Value.Undefined; }
+        let x = header(heap, a.sid()); let y = header(heap, b.sid());
+        if !x.wide && !y.wide {
+            if !charge(heap, x.len + y.len) { return Value.Undefined; }
+            var bytes: u8[>..] = []; bytes.append(narrow_run(heap, x)); bytes.append(narrow_run(heap, y));
+            if !units_fit(heap, bytes.len) || heap.strings.len - heap.image.strings >= heap.limits.units { memory(heap); return Value.Undefined; }
+            return string_ref(heap, add_latin1(heap, bytes), bytes.len, false);
+        }
+        var units: u16[>..] = []; append_utf16(heap, a, units); append_utf16(heap, b, units); return string(heap, units);
     }
     if op >= 74 && op <= 77 && a.tag() == 4 && b.tag() == 4 {
         if !valid(heap, a) || !valid(heap, b) || !charge(heap, str_len(heap, a) + str_len(heap, b)) { return Value.Undefined; }
-        let p = chars(heap, a); let q = chars(heap, b);
-        var c: i64 = 0; for i in min(p.len, q.len) { let x = p[i]; let y = q[i]; if x != y { c = if x < y { -1 } else { 1 }; break; } } if c == 0 { c = if p.len < q.len { -1 } else if p.len > q.len { 1 } else { 0 }; }
+        let p = str_len(heap, a); let q = str_len(heap, b);
+        var c: i64 = 0; for i in min(p, q) { let x = unit(heap, a, i); let y = unit(heap, b, i); if x != y { c = if x < y { -1 } else { 1 }; break; } } if c == 0 { c = if p < q { -1 } else if p > q { 1 } else { 0 }; }
         return boolean(if op == 74 { c < 0 } else if op == 75 { c > 0 } else if op == 76 { c <= 0 } else { c >= 0 });
     }
     let x = numeric(heap, a); let y = numeric(heap, b);
@@ -833,7 +915,7 @@ fn form_count(heap: Heap&, v: Value) -> i64 {
 fn form_nth(heap: Heap&, v: Value, i: i64, fallback: Value = Value.Null) -> Value {
     let x = form_value(heap, v);
     if x.tag() <= 1 { return fallback; }
-    if x.tag() == 4 { return if i >= 0 && i < str_len(heap, x) { string(heap, [heap.units[str_start(heap, x) + i]]) } else { fallback }; }
+    if x.tag() == 4 { return if i >= 0 && i < str_len(heap, x) { unit_string(heap, x, i) } else { fallback }; }
     if x.tag() == 5 { let n = node(heap, x.id()); if n.kind == 5 || n.kind == 6 || n.kind == 12 { return if i >= 0 && i < n.count { slot(heap, n.start + i) } else { fallback }; } }
     heap.fault = Fault.TypeError; return Value.Undefined;
 }
@@ -992,9 +1074,9 @@ fn form_sequence(heap: Heap&, v: Value, skip: i64, empty_nil: bool) -> Value {
     let n = node(heap, x.id()); return allocate(heap, Node { kind: 12, start: (n.start + skip) as u32, count: (n.count - skip) as u32 });
 }
 fn named_supported(heap: Heap&, ns: Value, name: Value) -> bool {
-    let n = chars(heap, name);
+    let n = utf16(heap, name);
     if !charge(heap, n.len + str_len(heap, ns)) { return false; }
-    if ns.tag() == 4 { for c in chars(heap, ns) { if c == 47 { return false; } } if str_len(heap, ns) == 0 && n.len == 0 { return false; } }
+    if ns.tag() == 4 { for i in str_len(heap, ns) { if unit(heap, ns, i) == 47 { return false; } } if str_len(heap, ns) == 0 && n.len == 0 { return false; } }
     else { for c in n { if c == 47 && n.len != 1 { return false; } } }
     return true;
 }
@@ -1512,7 +1594,7 @@ fn canonical(heap: Heap&, v: Value, out: u8[>..]&) {
     match v.tag() {
         0 => { out.append("undefined"); }, 1 => { out.append("null"); }, 2 => { out.append(if v.flag() { "boolean:true" } else { "boolean:false" }); },
         3 => { if v.num() != v.num() { out.append("number:NaN"); } else if v.num() == 0 && 1.0 / v.num() < 0 { out.append("number:-0"); } else { format(out, "number:", v.num()); } },
-        4 => { out.append("utf16:["); for c, i in chars(heap, v) { if i > 0 { out.push(','); } format(out, c); } out.push(']'); },
+        4 => { out.append("utf16:["); for i in str_len(heap, v) { if i > 0 { out.push(','); } format(out, unit(heap, v, i)); } out.push(']'); },
         5 => { format(out, "identity:", heap.identity, ":", v.id(), ":", node(heap, v.id()).kind); },
         _ => { out.append("invalid:tag"); },
     }

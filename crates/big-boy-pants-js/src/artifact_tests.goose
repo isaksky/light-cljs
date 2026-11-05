@@ -23,7 +23,7 @@ fn produce(base: const snapshot::Snapshot&, which: i64, c: artifact::Control&) -
 fn state(heap: const source::Heap&, imports: const artifact::Imports&) -> u8[>..] {
     var out: u8[>..] = []; let empty: snapshot::Binding[] = []; let view = snapshot::borrow(heap, empty, imports.base);
     let header = view.header; to_bytes([header.ends], out); to_bytes([header.limits], out); to_bytes([header.version, header.allocator, header.base, header.checkpoint, header.work, header.boot, header.initializers, header.producers, header.property_rows, heap.identity], out); out.append(source::plain_rows([view.header.global, view.header.call_method]));
-    out.append(source::plain_rows(heap.nodes)); out.append(source::plain_rows(heap.values)); out.append(source::plain_rows(heap.properties)); to_bytes(heap.units, out); to_bytes(heap.strings, out); out.append(source::plain_rows(heap.constants)); to_bytes(heap.source_bytes, out); to_bytes(heap.source_ranges, out);
+    out.append(source::plain_rows(heap.nodes)); out.append(source::plain_rows(heap.values)); out.append(source::plain_rows(heap.properties)); to_bytes(heap.units, out); to_bytes(heap.latin1, out); to_bytes(heap.strings, out); out.append(source::plain_rows(heap.constants)); to_bytes(heap.source_bytes, out); to_bytes(heap.source_ranges, out);
     to_bytes([imports.base, imports.session], out); to_bytes(imports.entries, out); to_bytes(imports.definitions, out); to_bytes(imports.signatures, out); to_bytes(imports.deliveries, out); return out;
 }
 fn reject_import(a: const artifact::Artifact&, base: const snapshot::Snapshot&, heap: source::Heap&, imports: artifact::Imports&, error: artifact::Error) {
@@ -239,8 +239,8 @@ thread_fn provenance_consumer(base: snapshot::Snapshot, a: artifact::Artifact) {
         assert(x.id() != y.id() && x.id() == source::form_nth(heap, v, 2).id() && source::form_equal(heap, x, y));
         assert(source::node(heap, x.id()).origin == 10 && source::node(heap, y.id()).origin == 11 && source::node(heap, y.id()).span_start == 4);
         assert(source::node(heap, x.id()).source == source::node(heap, y.id()).source);
-        let text = source::form_value(heap, source::form_nth(heap, v, 3)); assert(source::chars(heap, text) == [0xD83D as u16, 0xDE00, 0xD800]);
-        let name = source::node(heap, source::form_nth(heap, v, 4).id()); assert(source::node(heap, name.metadata.id()).kind == 7 && source::chars(heap, name.namespace_value) == ['n' as u16, 's']);
+        let text = source::form_value(heap, source::form_nth(heap, v, 3)); assert(source::utf16(heap, text) == [0xD83D as u16, 0xDE00, 0xD800]);
+        let name = source::node(heap, source::form_nth(heap, v, 4).id()); assert(source::node(heap, name.metadata.id()).kind == 7 && source::utf16(heap, name.namespace_value) == ['n' as u16, 's']);
         var bc = bridge::Control {}; assert(bridge::export_graph(heap, [v], result, bc));
     }
     var bc = bridge::Control {}; assert(bridge::validate(result, bc));
@@ -256,7 +256,7 @@ thread_fn scalars(base: snapshot::Snapshot) {
     for v, i in values {
         var ec = artifact::Control {}; let a = artifact::export_graph(heap, base, imports, v, 100 + i, 1, ec); assert(ec.error == artifact::Error.None && a.nodes.len == 0);
         var ic = artifact::Control {}; let got = artifact::import_graph(a, base, heap, imports, ic); assert(ic.error == artifact::Error.None && ic.copied_nodes == 0);
-        if v.tag() == 4 { assert(source::chars(heap, v) == source::chars(heap, got)); }
+        if v.tag() == 4 { assert(source::utf16(heap, v) == source::utf16(heap, got)); }
         else { assert(source::plain_rows([v]) == source::plain_rows([got])); }
         var encoded: u8[>..] = []; assert(artifact::encode(a, base, encoded, ec));
         let decoded = artifact::decode(encoded, base, ec); assert(ec.error == artifact::Error.None && decoded.len == 1);

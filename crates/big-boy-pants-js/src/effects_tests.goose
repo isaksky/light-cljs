@@ -309,7 +309,7 @@ thread_fn native_callback(base: snapshot::Snapshot, entries: i64[], quantum: i64
         var authority = effects::Authority {}; authority.grants.append([grant(1, 1, 0, 5), grant(2, 1, 1, 5)]); var sequence: i64 = 0;
         while job.status == tiny::Status.Ready { source::run(job, quantum); if job.effect_pending { assert(effects::service(authority, job, 1, sequence)); } }
         assert(job.status == tiny::Status.Complete && sequence == 2 && authority.receipts.len == 2 && authority.counters[0] == 2);
-        for i in 2 { let symbol = source::node(heap, source::form_nth(heap, job.result, i).id()); let name = symbol.value; assert(symbol.kind == 9 && source::chars(heap, name) == (if i == 0 { ['a' as u16, '1'] } else { ['b' as u16, '2'] })); }
+        for i in 2 { let symbol = source::node(heap, source::form_nth(heap, job.result, i).id()); let name = symbol.value; assert(symbol.kind == 9 && source::utf16(heap, name) == (if i == 0 { ['a' as u16, '1'] } else { ['b' as u16, '2'] })); }
         assert(source::retire(job));
     }
 }

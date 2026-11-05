@@ -56,7 +56,7 @@ fn valid_value(a: const Artifact&, v: source::Value) -> bool {
 }
 fn shape(a: const Artifact&, n: source::Node, base: const snapshot::Snapshot&, c: Control&) -> bool {
     if n.kind == 0 || n.kind == 1 || n.kind == 3 && (!n.immutable || !n.initialized) { return reject(c, Error.Mutable); }
-    if n.kind < 2 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 { return reject(c, Error.Link); }
+    if n.kind < 2 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || source::plain_rows(n.slots) != source::plain_rows([source::Property {}, source::Property {}]) { return reject(c, Error.Link); }
     if has_values(n) && !snapshot::range(n.start, n.count, a.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); }
     if n.kind == 2 && (!snapshot::range(n.function, 1, base.functions.len) || n.count != base.functions[n.function].captures) || n.kind == 4 && (n.function > 13 || n.function == 9) { return reject(c, Error.Link); }
     if !valid_value(a, n.value) || !valid_value(a, n.namespace_value) || !valid_value(a, n.metadata) { return reject(c, Error.Link); }
@@ -154,7 +154,7 @@ fn export_value(heap: const source::Heap&, v: source::Value, ids: i64[>..]&, slo
         if ids[id] < 0 { ids[id] = slots.len; slots.push(id); } return source::object(ids[id]);
     } else if v.tag() == 4 {
         if !snapshot::range(v.sid(), 1, heap.strings.len) || !poll(c, source::str_len(heap, v)) { reject(c, Error.Link); return source::Value.Undefined; }
-        strings.push(source::Str { start: units.len as u32, len: source::str_len(heap, v) as u32 }); units.append(source::chars(heap, v));
+        strings.push(source::Str { start: units.len as u32, len: source::str_len(heap, v) as u32 }); source::append_utf16(heap, v, units);
         return source::Value.String { s: (strings.len - 1) as u32 };
     }
     return v;
@@ -294,13 +294,15 @@ fn import_graph(a: const Artifact&, base: const snapshot::Snapshot&, heap: sourc
         if target < 0 { target = heap.nodes.len + new_nodes; new_nodes += 1; added.push(Entry { key: k, target: target, start: imports.signatures.len + start, count: signatures.len - start }); }
         mapping.push(target);
     }
-    if !source::nodes_fit(heap, new_nodes) || !source::values_fit(heap, a.values.len) || a.units.len > heap.limits.units - (heap.units.len - heap.image.units) || a.strings.len > heap.limits.units - (heap.strings.len - heap.image.strings) || a.bytes.len > 8388608 - heap.source_bytes.len || a.sources.len > 1048576 - heap.source_ranges.len { reject(c, Error.Bytes); return source::Value.Undefined; }
+    // Each string takes its own canonical run (Latin-1 or UTF-16).
+    var text: i64 = 0; for r in a.strings { text += r.len; }
+    if !source::nodes_fit(heap, new_nodes) || !source::values_fit(heap, a.values.len) || !source::units_fit(heap, text) || a.strings.len > heap.limits.units - (heap.strings.len - heap.image.strings) || a.bytes.len > 8388608 - heap.source_bytes.len || a.sources.len > 1048576 - heap.source_ranges.len { reject(c, Error.Bytes); return source::Value.Undefined; }
     if imports.entries.len + added.len > 100000 || imports.definitions.len >= 100000 || delivery.len > c.bytes - imports.deliveries.len || signatures.len > c.bytes - imports.signatures.len { reject(c, Error.Bytes); return source::Value.Undefined; }
     if !poll(c, a.values.len + a.units.len + a.bytes.len + a.sources.len + a.nodes.len) { return source::Value.Undefined; }
     let string_start = heap.strings.len; let value_start = heap.values.len; let source_start = heap.source_ranges.len;
     // Commit: all validation, comparison, budgets and link resolution finished;
     // the preflight above reserved every row, so no allocation below fails.
-    let unit_start = source::add_units(heap, a.units); for r in a.strings { source::string_ref(heap, r.start + unit_start, r.len); }
+    for r in a.strings { source::import_text(heap, a.units[r.start..(r.start + r.len)]); }
     var moved: source::Value[>..] = []; for v in a.values { moved.push(relocated(v, mapping, string_start)); } source::add_values(heap, moved);
     let byte_start = source::add_source_bytes(heap, a.bytes); for r in a.sources { source::add_source_range(heap, source::SourceRange { start: r.start + byte_start as u32, count: r.count }); }
     for n, i in a.nodes {

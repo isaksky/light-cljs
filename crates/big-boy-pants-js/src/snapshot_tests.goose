@@ -70,7 +70,7 @@ thread_fn isolation_parent() {
 }
 fn malformed() {
     heap_program::join(thread_spawn(malformed_parent)); let saved = qget<Saved>(); let original .= saved.image;
-    for mode in 30 { heap_program::join(thread_spawn(malformed_target, copy(original), mode)); }
+    for mode in 33 { heap_program::join(thread_spawn(malformed_target, copy(original), mode)); }
     for mode in 2 { heap_program::join(thread_spawn(malformed_budget, copy(original), mode)); }
     key_run_budgets(original);
     for identity in [0, original.header.base, original.header.checkpoint, 2147483648] { heap_program::join(thread_spawn(malformed_identity, copy(original), identity)); }
@@ -95,7 +95,7 @@ thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
             0 => { bad.header.version = 1; }, 1 => { bad.header.allocator = 0; }, 2 => { bad.header.ends[6] -= 1; },
             3 => { bad.header.base = 0; }, 4 => { bad.bindings[0].generation = 0; }, 5 => { bad.bindings[1].id = bad.bindings[0].id; },
             6 => { bad.values[0] = source::object(bad.nodes.len); }, 7 => { bad.nodes[bad.bindings[4].value.id()].function = bad.functions.len as u32; },
-            8 => { bad.nodes[bad.header.global.id()].key_count = bad.nodes[bad.header.global.id()].key_capacity + 1; }, 9 => { bad.properties[0].value = source::object(bad.nodes.len); },
+            8 => { bad.nodes[bad.header.global.id()].key_count = bad.nodes[bad.header.global.id()].key_capacity + source::inline_slots() as u32 + 1; }, 9 => { bad.properties[0].value = source::object(bad.nodes.len); },
             10 => { bad.nodes[bad.bindings[7].value.id()].count = 9999999; }, 11 => { bad.sources[0].count = 9999999; },
             12 => { bad.header.work = bad.header.limits.work + 1; }, 13 => { bad.children[0] = bad.functions.len as u32; },
             14 => { bad.ops[0].depth = 1; }, 15 => { bad.nodes[0].kind = 13; }, 16 => { bad.header.ends[13] += 1; },
@@ -107,7 +107,13 @@ thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
             // Key runs are exclusive over their whole capacity: another node
             // claiming the global's run, even only its spare rows, is refused.
             28 => { let g = bad.header.global.id(); let o = if g == 0 { 1 } else { 0 }; bad.nodes[o].keys = bad.nodes[g].keys; bad.nodes[o].key_capacity = bad.nodes[g].key_capacity; },
-            29 => { let g = bad.header.global.id(); bad.header.property_rows = bad.nodes[g].key_count - 1; },
+            29 => { let g = bad.header.global.id(); assert(source::overflow(bad.nodes[g]) > 0); bad.header.property_rows = source::overflow(bad.nodes[g]) - 1; },
+            // Strings keep a canonical encoding (light-cljs-800): a wide run
+            // whose units all fit Latin-1, or a Latin-1 run past its table, is refused.
+            30 => { var at: i64 = -1; for r, i in bad.strings { if r.wide && r.len > 0 { at = i; } } assert(at >= 0); let r = bad.strings[at]; for i in r.start..(r.start + r.len) { bad.units[i] = 97; } },
+            31 => { var at: i64 = -1; for r, i in bad.strings { if !r.wide && r.len > 0 { at = i; } } assert(at >= 0); bad.strings[at].start = bad.latin1.len as u32; },
+            // An inline slot past key_count must be cleared (light-cljs-800).
+            32 => { var at: i64 = -1; for n, i in bad.nodes { if n.key_count < 2 { at = i; } } assert(at >= 0); bad.nodes[at].slots[1] = source::Property { value: source::number(1) }; },
             _ => { abort("unexpected mode"); },
         }
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
@@ -379,7 +385,7 @@ thread_fn finite_map_malformed(parent: FiniteMap, mode: i64) {
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
         assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), restore) && restore.error == snapshot::Error.Link && restore.copied_bytes == 0);
         let empty = snapshot::borrow(target, roots, 1);
-        assert(snapshot::ends(empty) == [0; 16] && target.identity == 0 && !dest.valid && target.fault == source::Fault.None);
+        assert(snapshot::ends(empty) == [0; 17] && target.identity == 0 && !dest.valid && target.fault == source::Fault.None);
         var retry = snapshot::Control {}; assert(snapshot::restore(saved, dest, target, roots, source::reserve_identity(), retry));
     }
 }
@@ -578,7 +584,7 @@ thread_fn callable_mode(base: snapshot::Snapshot, original: callable::Publicatio
             5 => { bad.image.values[bad.image.nodes[forms.id()].start] = bad.image.bindings[0].value; }, // form cycle
             6 => { bad.image.nodes[function.id()].function = bad.image.functions.len as u32; },
             7 => { bad.image.nodes[rt_cell.id()].value = bad.image.header.global; },
-            8 => { bad.image.units[0] = 255; },
+            8 => { bad.image.latin1[0] = 255; },
             9 => { bad.image.nodes[two.id()].span_start = 4; },
             10 => { bad.image.functions[entry].start = 0; },
             11 => { bad.image.nodes[forms.id()].metadata = bad.image.bindings[0].value; },

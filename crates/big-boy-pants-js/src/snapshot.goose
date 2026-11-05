@@ -14,7 +14,7 @@ namespace snapshot;
 struct Binding { id: i64, generation: i64, value: source::Value }
 struct Header {
     version: i64     = 2, allocator: i64 = 1, base: i64 = 0, checkpoint: i64 = 1,
-    ends:    i64[16] = [0; 16], limits: source::Limits = source::Limits {},
+    ends:    i64[17] = [0; 17], limits: source::Limits = source::Limits {},
     work:    i64     = 0, global: source::Value = source::Value.Undefined, call_method: source::Value = source::Value.Undefined,
     boot:    i64     = 0, initializers: i64 = 0, producers: i64 = 0, property_rows: i64 = 0,
 }
@@ -23,7 +23,7 @@ struct Snapshot {
     code_bytes: u8[]           = [], functions: source::Function[] = [], code_constants: source::Value[] = [],
     children:   u32[]          = [], ops: source::Op[] = [], code_units: u16[] = [], code_strings: source::Str[] = [],
     nodes:      source::Node[] = [], values: source::Value[] = [], properties: source::Property[] = [],
-    units:      u16[]          = [], strings: source::Str[] = [], constants: source::Value[] = [], bytes: u8[] = [], sources: source::SourceRange[] = [], bindings: Binding[] = [],
+    units:      u16[]          = [], strings: source::Str[] = [], constants: source::Value[] = [], bytes: u8[] = [], sources: source::SourceRange[] = [], bindings: Binding[] = [], latin1: u8[] = [],
 }
 // A borrowing counterpart lets capture validate before allocating a copy.
 struct View {
@@ -31,7 +31,7 @@ struct View {
     code_bytes: const u8[:], functions: const source::Function[:], code_constants: const source::Value[:],
     children:   const u32[:], ops: const source::Op[:], code_units: const u16[:], code_strings: const source::Str[:],
     nodes:      const source::Node[:], values: const source::Value[:], properties: const source::Property[:],
-    units:      const u16[:], strings: const source::Str[:], constants: const source::Value[:], bytes: const u8[:], sources: const source::SourceRange[:], bindings: const Binding[:],
+    units:      const u16[:], strings: const source::Str[:], constants: const source::Value[:], bytes: const u8[:], sources: const source::SourceRange[:], bindings: const Binding[:], latin1: const u8[:],
 }
 enum Error { None, Boundary, Version, Allocator, Identity, Length, Link, Code, Unsupported, Bytes, Work, Destination }
 struct Control {
@@ -72,7 +72,9 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
     return true;
 }
 // Key runs are exclusive (an object writes its run in place) and hold string
-// keys up to their count; their records were charged to property_rows.
+// keys for the records past the inline slots; their records were charged to
+// property_rows. Inline slots hold string keys up to key_count and are
+// cleared past it (source::Property).
 fn key_runs<T>(s: const T&, c: Control&) -> bool {
     if s.properties.len > c.bytes - footprint(s) { return reject(c, Error.Bytes); }
     if !poll(c, s.properties.len) { return false; }
@@ -81,18 +83,26 @@ fn key_runs<T>(s: const T&, c: Control&) -> bool {
     for n in s.nodes {
         if !poll(c, 1 + n.key_capacity) { return false; }
         for row in n.keys..(n.keys + n.key_capacity) { if used[row] { return reject(c, Error.Link); } used[row] = true; }
-        for row in n.keys..(n.keys + n.key_count) { if s.properties[row].key.tag() != 4 { return reject(c, Error.Link); } }
-        records += n.key_count;
+        let spilled = source::overflow(n);
+        for row in n.keys..(n.keys + spilled) { if s.properties[row].key.tag() != 4 { return reject(c, Error.Link); } }
+        for p, i in n.slots { if (if i < n.key_count { p.key.tag() != 4 } else { p.key.tag() != 0 || p.value.tag() != 0 }) || !value(s, p.key) || !value(s, p.value) { return reject(c, Error.Link); } }
+        records += spilled;
     }
     return if records <= s.header.property_rows { true } else { reject(c, Error.Allocator) };
 }
-fn ends<T>(s: const T&) -> i64[16] {
+// A heap string run equals these UTF-16 units.
+fn same_units<T>(s: const T&, r: source::Str, units: const u16[:]) -> bool {
+    if r.wide { return s.units[r.start..(r.start + r.len)] == units; }
+    for b, i in s.latin1[r.start..(r.start + r.len)] { if units[i] != b { return false; } }
+    return true;
+}
+fn ends<T>(s: const T&) -> i64[17] {
     return [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len,
-            s.nodes.len, s.values.len, s.properties.len, s.units.len, s.constants.len, s.bytes.len, s.sources.len, s.bindings.len, s.code_strings.len, s.strings.len];
+            s.nodes.len, s.values.len, s.properties.len, s.units.len, s.constants.len, s.bytes.len, s.sources.len, s.bindings.len, s.code_strings.len, s.strings.len, s.latin1.len];
 }
 fn payload_bytes<T>(s: const T&) -> i64 {
     return bytes_of(s.code_bytes).len + bytes_of(s.functions).len + bytes_of(s.code_constants).len + bytes_of(s.children).len + bytes_of(s.ops).len + bytes_of(s.code_units).len
-         + bytes_of(s.nodes).len + bytes_of(s.values).len + bytes_of(s.properties).len + bytes_of(s.units).len + bytes_of(s.constants).len + bytes_of(s.bytes).len + bytes_of(s.sources).len + bytes_of(s.bindings).len + bytes_of(s.code_strings).len + bytes_of(s.strings).len;
+         + bytes_of(s.nodes).len + bytes_of(s.values).len + bytes_of(s.properties).len + bytes_of(s.units).len + bytes_of(s.constants).len + bytes_of(s.bytes).len + bytes_of(s.sources).len + bytes_of(s.bindings).len + bytes_of(s.latin1).len + bytes_of(s.code_strings).len + bytes_of(s.strings).len;
 }
 fn footprint<T>(s: const T&) -> i64 { let empty: Snapshot[] = [Snapshot {}]; return bytes_of(empty).len + payload_bytes(s); }
 fn value<T>(s: const T&, v: source::Value, code: bool = false, constant: bool = false) -> bool {
@@ -185,13 +195,19 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     for n in lengths { if n < 0 || n > 8388608 { return reject(c, Error.Length); } }
     c.snapshot_bytes = footprint(s);
     if c.snapshot_bytes > c.bytes { return reject(c, Error.Bytes); }
-    if !poll(c, s.code_bytes.len + s.code_units.len + s.units.len + s.bytes.len) { return false; }
+    if !poll(c, s.code_bytes.len + s.code_units.len + s.units.len + s.latin1.len + s.bytes.len) { return false; }
     let l = s.header.limits;
     if l.nodes < 0 || l.values < 0 || l.units < 0 || l.properties < 0 || l.work < 0 || l.steps < 0 || l.frames < 0 || l.stack < 0 || s.header.work < 0 || s.header.work > l.work || s.header.property_rows < 0 || s.header.property_rows > s.properties.len || s.header.boot < 0 || s.header.boot > 1 || s.header.initializers < 0 || s.header.producers < 0 { return reject(c, Error.Allocator); }
     if !code_valid(s, c) { return false; }
     if !value(s, s.header.global) || s.header.global.tag() != 5 || s.nodes[s.header.global.id()].kind != 0 { return reject(c, Error.Link); }
     if !value(s, s.header.call_method) || s.header.call_method.tag() != 5 || s.nodes[s.header.call_method.id()].kind != 4 || s.nodes[s.header.call_method.id()].function != 14 { return reject(c, Error.Link); }
-    for r in s.strings { if !poll(c) { return false; } if !range(r.start, r.len, s.units.len) { return reject(c, Error.Link); } }
+    // A header names a run of its own table; a wide run must need two bytes
+    // (some unit above 255), so the encoding stays canonical (source::Str).
+    for r in s.strings {
+        if !poll(c) { return false; }
+        if !range(r.start, r.len, if r.wide { s.units.len } else { s.latin1.len }) { return reject(c, Error.Link); }
+        if r.wide && (!poll(c, r.len) || source::fits_latin1(s.units[r.start..(r.start + r.len)])) { return reject(c, Error.Link); }
+    }
     // Holes (Empty) may appear only inside array element runs, counted below.
     var holes: i64 = 0;
     for v in s.values { if !poll(c) { return false; } if v.tag() == -1 { holes += 1; continue; } if !value(s, v) { return reject(c, Error.Link); } }
@@ -208,7 +224,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
             if !poll(c, o.len) { return false; }
             if v.tag() != 4 { return reject(c, Error.Link); }
             let r = s.strings[v.sid()];
-            if r.len != o.len || s.units[r.start..(r.start + r.len)] != s.code_units[o.start..(o.start + o.len)] { return reject(c, Error.Link); }
+            if r.len != o.len || !same_units(s, r, s.code_units[o.start..(o.start + o.len)]) { return reject(c, Error.Link); }
         } else if !source::same_bits(v, original) { return reject(c, Error.Link); }
     }
     for p, i in s.properties {
@@ -226,7 +242,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if !poll(c) { return false; }
         if n.kind < 0 || n.kind > 15 { return reject(c, Error.Unsupported); }
         if n.kind == 1 && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
-        if n.key_count > n.key_capacity || !range(n.keys, n.key_capacity, s.properties.len) || !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source != source::no_row() && n.source >= s.sources.len || n.origin < -1 { return reject(c, Error.Link); }
+        if n.key_count > n.key_capacity + source::inline_slots() || !range(n.keys, n.key_capacity, s.properties.len) || !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source != source::no_row() && n.source >= s.sources.len || n.origin < -1 { return reject(c, Error.Link); }
         if n.source != source::no_row() && (n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
         if n.source != source::no_row() {
             let r = s.sources[n.source]; let text = s.bytes[r.start..(r.start + r.count)];
@@ -267,7 +283,7 @@ fn borrow(heap: const source::Heap&, bindings: const Binding[:], checkpoint: i64
     let code .= heap.code;
     var v = View { header: Header { base: heap.identity, checkpoint: checkpoint, limits: heap.limits, work: heap.work, global: heap.global, call_method: heap.call_method, boot: heap.boot_count, initializers: heap.initializer_count, producers: heap.producer_count, property_rows: heap.property_rows },
         code_bytes: code.source_bytes, functions: code.functions, code_constants: code.constants, children: code.children, ops: code.ops, code_units: code.units, code_strings: code.strings,
-        nodes: heap.nodes, values: heap.values, properties: heap.properties, units: heap.units, strings: heap.strings, constants: heap.constants, bytes: heap.source_bytes, sources: heap.source_ranges, bindings: bindings };
+        nodes: heap.nodes, values: heap.values, properties: heap.properties, units: heap.units, strings: heap.strings, constants: heap.constants, bytes: heap.source_bytes, sources: heap.source_ranges, bindings: bindings, latin1: heap.latin1 };
     v.header.ends = ends(v); return v;
 }
 fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&, checkpoint: i64 = 0) -> Snapshot {
@@ -283,7 +299,7 @@ fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&, c
     if s.header.checkpoint <= 0 || s.header.checkpoint > 2147483647 || s.header.checkpoint == heap.identity { reject(c, Error.Identity); return Snapshot {}; }
     c.copied_bytes += footprint(s);
     return Snapshot { header: s.header, code_bytes: s.code_bytes, functions: s.functions, code_constants: s.code_constants, children: s.children, ops: s.ops, code_units: s.code_units, code_strings: s.code_strings,
-        nodes: s.nodes, values: s.values, properties: s.properties, units: s.units, strings: s.strings, constants: s.constants, bytes: s.bytes, sources: s.sources, bindings: s.bindings };
+        nodes: s.nodes, values: s.values, properties: s.properties, units: s.units, strings: s.strings, constants: s.constants, bytes: s.bytes, sources: s.sources, bindings: s.bindings, latin1: s.latin1 };
 }
 // Reset only after the dispatch's job has retired. This reestablishes every
 // restore destination invariant; restore still validates the entire image and
@@ -291,7 +307,7 @@ fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&, c
 fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> bool {
     if !(heap.code .== code) || heap.live_jobs != 0 { return false; }
     bindings.clear();
-    heap.nodes.clear(); heap.values.clear(); heap.properties.clear(); heap.units.clear(); heap.strings.clear(); heap.constants.clear(); heap.source_bytes.clear(); heap.source_ranges.clear();
+    heap.nodes.clear(); heap.values.clear(); heap.properties.clear(); heap.units.clear(); heap.latin1.clear(); heap.strings.clear(); heap.constants.clear(); heap.source_bytes.clear(); heap.source_ranges.clear();
     code.source_bytes.clear(); code.functions.clear(); code.constants.clear(); code.children.clear(); code.ops.clear(); code.units.clear(); code.strings.clear(); code.ins.clear(); code.effects.clear(); code.decoded = 0;
     code.valid = false; code.error = tiny::LoadError.None; code.error_pc = -1;
     heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value.Undefined; heap.call_method = source::Value.Undefined;
@@ -300,7 +316,7 @@ fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> b
 }
 fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&, identity: i64, c: Control&) -> bool {
     let started = clock_ns(); defer { c.restore_ns += clock_ns() - started; }
-    if !(heap.code .== code) || heap.identity != 0 || heap.live_jobs != 0 || heap.nodes.len != 0 || heap.values.len != 0 || heap.properties.len != 0 || heap.units.len != 0 || heap.strings.len != 0 || heap.constants.len != 0 || heap.source_bytes.len != 0 || heap.source_ranges.len != 0 || code.valid || code.source_bytes.len != 0 || code.functions.len != 0 || code.constants.len != 0 || code.children.len != 0 || code.ops.len != 0 || code.units.len != 0 || code.strings.len != 0 || bindings.len != 0 { return reject(c, Error.Destination); }
+    if !(heap.code .== code) || heap.identity != 0 || heap.live_jobs != 0 || heap.nodes.len != 0 || heap.values.len != 0 || heap.properties.len != 0 || heap.units.len != 0 || heap.latin1.len != 0 || heap.strings.len != 0 || heap.constants.len != 0 || heap.source_bytes.len != 0 || heap.source_ranges.len != 0 || code.valid || code.source_bytes.len != 0 || code.functions.len != 0 || code.constants.len != 0 || code.children.len != 0 || code.ops.len != 0 || code.units.len != 0 || code.strings.len != 0 || bindings.len != 0 { return reject(c, Error.Destination); }
     if identity <= 0 || identity > 2147483647 || identity == s.header.base || identity == s.header.checkpoint { return reject(c, Error.Identity); }
     if !validate(s, c) { return false; }
     // No initialization, producer, publication cache, claim or waiter code.
@@ -312,10 +328,10 @@ fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, binding
     // destination's empty tables give every row its captured index); the
     // tables' one allocation functions (source_vm) add rows above it.
     heap.nodes.append(s.nodes); heap.values.append(s.values); heap.properties.append(s.properties);
-    heap.units.append(s.units); heap.strings.append(s.strings); heap.constants.append(s.constants);
+    heap.units.append(s.units); heap.latin1.append(s.latin1); heap.strings.append(s.strings); heap.constants.append(s.constants);
     heap.source_bytes.append(s.bytes); heap.source_ranges.append(s.sources);
     // The restored rows are the image: table limits count rows added above it.
-    heap.image = source::Tops { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len, strings: heap.strings.len };
+    heap.image = source::Tops { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len, strings: heap.strings.len, latin1: heap.latin1.len };
     bindings.append(s.bindings);
     c.copied_bytes += payload_bytes(s); return true;
 }

@@ -14,7 +14,8 @@ fn same(a: source::Value, b: source::Value) -> bool { return source::same_bits(a
 // Field by field: an enum's unused payload bytes are not part of its value.
 fn same(a: source::Node, b: source::Node) -> bool {
     return a.kind == b.kind && a.function == b.function && a.start == b.start && a.count == b.count && a.keys == b.keys && a.key_count == b.key_count && a.key_capacity == b.key_capacity && a.length == b.length && a.initialized == b.initialized && a.immutable == b.immutable
-        && same(a.value, b.value) && same(a.namespace_value, b.namespace_value) && same(a.metadata, b.metadata) && a.origin == b.origin && a.source == b.source && a.span_start == b.span_start && a.span_end == b.span_end;
+        && same(a.value, b.value) && same(a.namespace_value, b.namespace_value) && same(a.metadata, b.metadata) && a.origin == b.origin && a.source == b.source && a.span_start == b.span_start && a.span_end == b.span_end
+        && source::plain_rows(a.slots) == source::plain_rows(b.slots);
 }
 fn code_prefix(p: const Publication&, bytes: const u8[:], functions: const source::Function[:], constants: const source::Value[:], children: const u32[:], ops: const source::Op[:], units: const u16[:], strings: const source::Str[:], c: snapshot::Control&) -> bool {
     let s .= p.image; let e = p.base.ends;
@@ -48,8 +49,10 @@ fn base_node<H>(p: const Publication&, heap: const H&, id: i64, c: snapshot::Con
         if !snapshot::range(n.start, n.count, heap.values.len) { return fail(c, snapshot::Error.Link); }
         for i in n.count { if !snapshot::poll(c) { return false; } if !same(s.values[n.start + i], heap.values[n.start + i]) { return fail(c, snapshot::Error.Link); } }
     }
-    if !snapshot::range(n.keys, n.key_count, heap.properties.len) { return fail(c, snapshot::Error.Link); }
-    for at in n.keys..(n.keys + n.key_count) {
+    // Inline slots were compared with the header (same); the overflow run here.
+    let spilled = source::overflow(n);
+    if !snapshot::range(n.keys, spilled, heap.properties.len) { return fail(c, snapshot::Error.Link); }
+    for at in n.keys..(n.keys + spilled) {
         if !snapshot::poll(c) { return false; }
         let a = s.properties[at]; let b = heap.properties[at];
         if !same(a.key, b.key) || !same(a.value, b.value) { return fail(c, snapshot::Error.Link); }
@@ -64,8 +67,9 @@ fn edge(s: const snapshot::Snapshot&, n: source::Node, i: i64, c: snapshot::Cont
     if i < 3 { return match i { 0 => n.value, 1 => n.namespace_value, _ => n.metadata }; }
     var rest = i - 3;
     if snapshot::has_values(n.kind) { if rest < n.count { return s.values[n.start + rest]; } rest -= n.count; }
-    let at = n.keys + rest / 2;
-    return if rest % 2 == 0 { s.properties[at].key } else { s.properties[at].value };
+    let i = rest / 2;
+    let p = if i < source::inline_slots() { n.slots[i] } else { s.properties[n.keys + i - source::inline_slots()] };
+    return if rest % 2 == 0 { p.key } else { p.value };
 }
 fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, ids: i64[>..]&, slots: i64[>..]&, c: snapshot::Control&) -> bool {
     if p.version != 1 || bytes_of([p.base]) != bytes_of([expected]) { return fail(c, snapshot::Error.Version); }
@@ -74,6 +78,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
     if !code_matches(p, heap, c) { return false; }
     if !snapshot::range(0, expected.ends[9], s.units.len) || !snapshot::range(0, expected.ends[9], heap.units.len) || !snapshot::poll(c, expected.ends[9]) { return fail(c, snapshot::Error.Link); }
     if s.units[..expected.ends[9]] != heap.units[..expected.ends[9]] { return fail(c, snapshot::Error.Link); }
+    if !snapshot::range(0, expected.ends[16], s.latin1.len) || !snapshot::range(0, expected.ends[16], heap.latin1.len) || !snapshot::poll(c, expected.ends[16]) || s.latin1[..expected.ends[16]] != heap.latin1[..expected.ends[16]] { return fail(c, snapshot::Error.Link); }
     if !snapshot::range(0, expected.ends[15], s.strings.len) || !snapshot::range(0, expected.ends[15], heap.strings.len) || bytes_of(s.strings[..expected.ends[15]]) != bytes_of(heap.strings[..expected.ends[15]]) { return fail(c, snapshot::Error.Link); }
     if !snapshot::poll(c, s.nodes.len * 2) { return false; }
     ids.resize(s.nodes.len, -1); var colors: u8[>..] = []; colors.resize(s.nodes.len, 0);
@@ -87,7 +92,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
                 if n.kind == 1 || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
                 if !base_node(p, heap, id, c) { return false; } ids[id] = id;
             } else {
-                if n.kind == 0 || n.kind == 1 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
+                if n.kind == 0 || n.kind == 1 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || source::plain_rows(n.slots) != source::plain_rows([source::Property {}, source::Property {}]) || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
                 ids[id] = heap.nodes.len + slots.len; slots.push(id);
             }
         }
@@ -139,7 +144,7 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     let lengths: i64[6] = [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len];
     for i in 6 { if lengths[i] + delta[i] > 8388608 { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; } }
     var count: i64 = 0; for id in slots { if snapshot::has_values(s.nodes[id].kind) { count += s.nodes[id].count; } }
-    if !source::nodes_fit(heap, slots.len) || !source::values_fit(heap, count) || s.units.len > heap.limits.units - (heap.units.len - heap.image.units) || s.strings.len > heap.limits.units - (heap.strings.len - heap.image.strings) || s.code_constants.len - e[2] > heap.limits.values - heap.constants.len || s.bytes.len > 8388608 - heap.source_bytes.len || s.sources.len > 1048576 - heap.source_ranges.len || s.functions.len + delta[1] > 65536 || s.code_bytes.len + delta[0] > 8388608 { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; }
+    if !source::nodes_fit(heap, slots.len) || !source::values_fit(heap, count) || !source::units_fit(heap, s.units.len + s.latin1.len) || s.strings.len > heap.limits.units - (heap.strings.len - heap.image.strings) || s.code_constants.len - e[2] > heap.limits.values - heap.constants.len || s.bytes.len > 8388608 - heap.source_bytes.len || s.sources.len > 1048576 - heap.source_ranges.len || s.functions.len + delta[1] > 65536 || s.code_bytes.len + delta[0] > 8388608 { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; }
     // Cover existing destination + full decoded image + staging/mapping work.
     let empty: snapshot::Binding[] = []; let view = snapshot::borrow(heap, empty, expected.checkpoint);
     let cost = snapshot::footprint(view) + 2 * snapshot::footprint(s) + bytes_of(ids).len + bytes_of(slots).len;
@@ -157,8 +162,8 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     // The base prefix of strings is shared (checked in graph); the rest follow.
     let strings = heap.strings.len - expected.ends[15];
     // The preflight above reserved every row, so no allocation below fails.
-    let units = source::add_units(heap, s.units); let bytes = source::add_source_bytes(heap, s.bytes);
-    for r in s.strings[expected.ends[15]..] { source::string_ref(heap, r.start + units, r.len); }
+    let units = source::add_units(heap, s.units); let latin1 = source::add_latin1(heap, s.latin1); let bytes = source::add_source_bytes(heap, s.bytes);
+    for r in s.strings[expected.ends[15]..] { source::string_ref(heap, r.start + (if r.wide { units } else { latin1 }), r.len, r.wide); }
     for v in s.constants[e[2]..] { source::add_constants(heap, [relocated(v, ids, expected.ends[15], strings)]); }
     for r in s.sources { source::add_source_range(heap, source::SourceRange { start: (bytes + r.start) as u32, count: r.count }); }
     for id in slots {
