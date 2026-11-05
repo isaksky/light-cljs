@@ -10,7 +10,10 @@ optimization, while retaining the unfavorable comparison with V8. See the
 [final integrated measurement](#final-integrated-five-round-measurement).
 A later [factorial follow-up](#independent-compiler-slots-and-native-capacity)
 separates compiler slots from native capacity: extra compiler slots account for
-most of the replicated four-to-eight slowdown.
+most of the replicated four-to-eight slowdown. The
+[measurement without V8](#goose-compiler-path-without-v8) (November 5) supersedes
+the Goose timings: Goose4 7.028 s against V8's 5.762 s, and a four-to-eight
+compiler-slot penalty of 0.066 s.
 
 ## Historical clean primary comparison, before coalescing
 
@@ -982,3 +985,170 @@ Diagnostic source edits are restored. Exact-source complete-form/control evidenc
 and the preceding broad-suite limitations are reused; no broad tests or new
 performance assertions are added for this report-only change. The archive is
 reread with every embedded digest verified, and `git diff --check` passes.
+
+## Goose compiler path without V8
+
+November 5, 2026 (light-cljs-781), the final measurement for light-cljs-759.
+**Removing V8 from the Goose compiler path made every Goose cell faster, used
+less CPU and less peak memory, and shrank the four-to-eight compiler-slot
+penalty.** Goose4 now takes **7.028 s against V8's 5.762 s** (1.22× the wall
+time, 2.82× the aggregate CPU); before the change it took 8.848 s. V8 is still
+faster on this target.
+
+Binaries, all release builds with `--locked`:
+
+| Label | Commit | Features | SHA-256 |
+| --- | --- | --- | --- |
+| predecessor | `5e77771d` (last master commit before light-cljs-776) | `goose-macros` | `b74332c218af56a7f02e05cd673ae4f565b62e1619ae52941e4436b1b93e9ea6` |
+| integrated | `63386769` (master after 776–780) | `goose-macros` | `f0d5b042a8aedd1766253c978f75568bdbee8220a46e16c6a03f36b838bd279d` |
+| Goose build | `63386769` | `--no-default-features --features goose-macros` (no V8 linked) | `e85537eab4c407ca2d76b05501a120a2d13ee6da1937dd243ab439b00bfbaf03` |
+| runner | `compiler_session.goose`, identical at both commits | `goose build` | `cf38f8f648a3ad1bcf3f32a2d43d0c2618a80527496ffb64427f54b0fe3f57d6` |
+
+The Goose sources under `crates/big-boy-pants-js/src` do not differ between
+the two commits, so one runner serves all three binaries. The samples record
+the harness commit (`6483f706`, master plus the compare.bb change below);
+compiler sources are those of `63386769`. Toolchains: Rust 1.99.1, Goose
+v2026.3-267 (runtime 3025e5810379), on the same machine as the sections above.
+Workload: seed 42, 199,129 lines, 450 worker namespaces, 653 files,
+release/advanced/`--no-cache`, checked against the frozen manifest.
+
+Harness: compare.bb gained `--also-light LABEL=BINARY[,goose]`, which puts
+another CLI's cells into the same rounds right after the primary cell of the
+same setting and records its hash; `,goose` limits the Goose build to Goose
+cells. The coupled matrix and the slot factorial are two invocations, each
+with one excluded warmup per cell and five measured rounds in forward/reverse
+order. Every quiet gate admitted on its first reading (96.9–99.9% idle for the
+coupled matrix, 91.6–99.9% for the factorial). An earlier coupled attempt
+stopped when one gate read **88.93%** idle after 17 measured samples; it is kept
+in the archive, unused, and the gate now waits 5 s and retries (at most 12
+times), keeping every rejected reading. No completed sample was discarded.
+
+Seconds, median [minimum, maximum], five samples each. Aggregate CPU is the
+compiler command's user+system CPU, waited children (the native runner)
+included. Peak memory is macOS `time -l` maximum resident set of the compiler
+command, in GB; it is not an additive process-tree peak and excludes the
+separately reported native-runner statistics.
+
+Coupled cells (compiler slots = native Goose workers; V8 has one execution
+worker):
+
+| Binary | Backend | Compiler slots | Native workers | Wall | Aggregate CPU | Peak memory |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| integrated | V8 | 1 | 1 | 5.762 [5.755, 5.952] | 6.27 [6.24, 6.45] | 1.048 [1.028, 1.053] |
+| predecessor | V8 | 1 | 1 | 5.739 [5.719, 5.828] | 6.22 [6.21, 6.35] | 1.047 [1.037, 1.057] |
+| predecessor | Goose | 1 | 1 | 17.242 [17.229, 17.391] | 16.95 [16.93, 17.18] | 0.971 [0.951, 1.003] |
+| integrated | Goose | 1 | 1 | 14.503 [14.441, 14.573] | 14.12 [14.11, 14.14] | 0.910 [0.884, 0.910] |
+| Goose build | Goose | 1 | 1 | 14.557 [14.497, 14.638] | 14.14 [14.13, 14.22] | 0.912 [0.899, 0.916] |
+| predecessor | Goose | 2 | 2 | 12.278 [12.224, 12.467] | 19.68 [19.64, 19.81] | 1.027 [1.019, 1.044] |
+| integrated | Goose | 2 | 2 | 10.084 [9.982, 10.322] | 15.47 [15.36, 15.65] | 0.926 [0.916, 0.958] |
+| Goose build | Goose | 2 | 2 | 10.112 [10.026, 10.232] | 15.45 [15.32, 15.68] | 0.937 [0.936, 0.961] |
+| predecessor | Goose | 4 | 4 | 8.848 [8.802, 8.960] | 23.61 [23.46, 23.78] | 1.121 [1.092, 1.139] |
+| integrated | Goose | 4 | 4 | 7.028 [6.988, 7.114] | 17.69 [17.54, 17.73] | 0.947 [0.937, 0.973] |
+| Goose build | Goose | 4 | 4 | 7.043 [6.979, 7.135] | 17.73 [17.63, 17.87] | 0.947 [0.920, 0.969] |
+| predecessor | Goose | 8 | 8 | 9.238 [9.196, 9.514] | 26.89 [26.77, 27.30] | 1.250 [1.247, 1.284] |
+| integrated | Goose | 8 | 8 | 7.155 [7.124, 7.330] | 19.71 [19.62, 19.76] | 1.001 [0.982, 1.030] |
+| Goose build | Goose | 8 | 8 | 7.184 [7.113, 7.285] | 19.72 [19.63, 19.78] | 1.006 [0.978, 1.012] |
+
+Integrated against predecessor, Goose 1/2/4/8: wall **−2.739 / −2.194 /
+−1.820 / −2.083 s** (−15.9 / −17.9 / −20.6 / −22.5%), aggregate CPU **−2.83 /
+−4.21 / −5.92 / −7.18 s**, peak memory **−0.061 / −0.101 / −0.174 / −0.249 GB**.
+The ranges do not overlap in any cell. The comparison measures the five
+children of light-cljs-759 together (compiler-owned helper-root catalog, core
+macros in Rust, no bootstrap engine, every engine refused, the Goose build); it
+does not split the saving between them. At one slot the predecessor had no
+pool, so its saving there is coordinator-side work: its V8 coordinator and
+bootstrap, catalog and core-macro fallback. The CPU saving grows with the slot
+count, consistent with each extra predecessor slot having had its own V8
+isolate catching up the catalog. The two V8 cells agree within 0.023 s, so the
+compiler's V8 path did not change. The Goose build and the integrated binary
+agree within 0.054 s wall and 0.04 s CPU in every cell, with overlapping
+ranges: once the Goose path makes no engine, linking V8 or not makes no
+measurable difference.
+
+Slot factorial (native workers fixed at 4):
+
+| Binary | Compiler slots | Native workers | Wall | Aggregate CPU | Peak memory |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| predecessor | 4 | 4 | 8.925 [8.875, 9.330] | 23.71 [23.66, 24.06] | 1.119 [1.103, 1.128] |
+| integrated | 4 | 4 | 7.065 [7.009, 7.186] | 17.70 [17.63, 17.81] | 0.956 [0.928, 0.968] |
+| Goose build | 4 | 4 | 7.067 [7.050, 7.131] | 17.85 [17.58, 17.94] | 0.940 [0.922, 0.962] |
+| predecessor | 8 | 4 | 9.226 [9.210, 9.255] | 26.70 [26.63, 26.88] | 1.279 [1.275, 1.291] |
+| integrated | 8 | 4 | 7.131 [7.122, 7.237] | 19.58 [19.47, 19.80] | 1.007 [0.991, 1.013] |
+| Goose build | 8 | 4 | 7.171 [7.111, 7.259] | 19.61 [19.52, 19.66] | 0.999 [0.983, 1.008] |
+
+**The slot penalty**, compiler slots 4→8 at native workers 4: before, **+0.301 s
+wall and +2.99 s CPU** (the earlier sessions above found +0.318/+0.508 s and
++2.76/+2.94 s); after, **+0.066 s wall and +1.88 s CPU** (Goose build +0.104 s,
++1.76 s). The wall penalty is now within the cells' spread. About 1.1 s of the
+CPU penalty disappeared with the per-slot V8 isolates and their catalog
+catch-up, more than the 0.555 s the earlier, partial catalog ablation removed. The remaining ~1.9 s of CPU is the extra
+compiler workers themselves; this run does not assign it further.
+
+**V8 isolate count.** Integrated and Goose build: zero. The instrument run's
+Goose report for every Goose cell of both binaries reads `ENGINES v8-platform=0
+v8-isolates=0 quickjs-runtimes=0 pants-runtimes=0` (compare.bb asserts it), and
+separate `--stats` runs at slots/workers 1/1, 2/2, 4/4, 8/8 and 8/4 print
+`engines.v8-isolates 0` and `pool.worker-isolates 0`. Predecessor, derived:
+its `--stats` reports `pool.worker-isolates` 0 / 1 / 3 / 7 / 7 at those five
+settings (one per pool worker, every worker with an engine); add the
+coordinator's isolate, and the bootstrap-preparation isolate when the pool has
+engines, as inventoried in light-cljs-759. That gives **1 / 3 / 5 / 9 / 9** V8
+isolates. The bootstrap-preparation isolate is from that inventory; the
+predecessor's statistics do not count it separately.
+
+**Achieved concurrency.** Native Goose overlap comes from the instrument run's
+complete native protocols (`.protocol`, all 5,812 job openings: 5,226 starts,
+529 resumptions, 57 helper producers), counted with the event accounting of
+`src/goose_evaluator.rs`: START/RESUME/PRODUCE open a job lifetime and
+NEED/DONE/PRODUCED close it. These are overlapping job lifetimes, not
+simultaneous VM instructions. Integrated, Goose 1/2/4/8 (Goose build in
+parentheses):
+
+| Native workers | Peak overlapping jobs | Mean active jobs at an opening | Openings at full width |
+| ---: | ---: | ---: | ---: |
+| 1 | 1 (1) | 1.00 (1.00) | 5,812 (5,812) |
+| 2 | 2 (2) | 1.27 (1.27) | 1,552 (1,595) |
+| 4 | 4 (4) | 1.77 (1.76) | 189 (177) |
+| 8 | 8 (8) | 2.22 (2.23) | 6 (3) |
+
+Every worker count reaches its full width at least once, but rarely: at eight
+workers, 41% of openings find no other job active and only 6 of 5,812 reach
+eight. The native session creates 4/6/10/18 threads, its coordinator included,
+and all 3/5/9/17 spawned threads join. Separately, the compiler pool's own
+statistics (`pool.utilization`: elapsed unit-analysis time, waits included,
+over pool workers × pool time) are **0.729 / 0.757 / 0.380** at compiler slots
+2/4/8 with 1/3/7 pool workers (Goose build 0.735 / 0.764 / 0.394), every pool
+worker participating. Aggregate CPU over wall in the clean runs is **0.97 /
+1.53 / 2.52 / 2.75** at Goose 1/2/4/8 (predecessor 0.98 / 1.60 / 2.67 / 2.91).
+Together: going from four to eight adds width the build seldom fills, which
+agrees with the run's DAG lower bounds (9.83 s at P=4 against 9.71 s at P=8 for
+the drain-barrier model). That is a statement about this target's available
+overlap as these measurements see it, not proof that no schedule could use
+eight workers.
+
+**Correctness.** All **197 builds** (28 check, 31 in the stopped attempt, 84
+coupled, 36 factorial, 18 instrument) exit 0 and produce the complete
+**3,449,022-byte** output, SHA-256
+`18335556dd4672f2f63b901b68fcad3c447cf5676f457a08fda61f366cc9f3ec`, identical to
+V8 with no normalization, pass all five independent oracle outputs and the
+strict waste check. The instrument run's executed source-macro identities and
+counts match V8 for every Goose cell. Diagnostics (instrument run, `--stats`
+runs) are separate from the clean timings. No timing assertions are added.
+
+The [raw archive](generated-200k-no-v8.edn.gz) is the five phases'
+`samples.edn` (check, the stopped attempt, coupled, factorial, instrument),
+each after a `{:kind :file}` marker line, then one `{:kind :stats}` line per
+`--stats` run with its `pool.*`, `engines.*` and `memory.live.*` lines, then one
+`{:kind :native-overlap}` line with the overlap counts for every instrument
+protocol and the Babashka script that computed them.
+To reproduce, build the three binaries and the runner as in
+benchmarks/generated-project/README.md (the predecessor from a `git archive
+5e77771d` tree), generate the target, then:
+
+```sh
+C="bb benchmarks/generated-project/compare.bb target/generated-200k --light BIN/integrated --runner BIN/runner --also-light predecessor=BIN/predecessor --also-light goose-build=BIN/goose-build,goose"
+$C --backend all --phase check --runs 1
+$C --backend all --phase measure --runs 5
+$C --backend goose --workers 4 --compiler-slots 4,8 --phase measure --runs 5
+bb benchmarks/generated-project/compare.bb target/generated-200k --light BIN/integrated --runner BIN/runner --also-light goose-build=BIN/goose-build,goose --backend all --phase instrument --runs 1
+```

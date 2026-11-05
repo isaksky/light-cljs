@@ -281,6 +281,38 @@
            (mapv (juxt compare/cell-slots :workers)
                  (compare/comparison-cells {:backend "v8" :compiler-slots [4 8]}))))))
 
+(deftest extra-labelled-binaries-share-rounds
+  (let [opts (compare/parse-options ["fixture" "--light" "compiler" "--backend" "all" "--runner" "runner"
+                                     "--workers" "1,4" "--also-light" "before=old"
+                                     "--also-light" "novee=nov8,goose"])
+        cells (compare/comparison-cells opts)
+        old (str (fs/absolutize "old"))]
+    (is (= ["v81" "before-v81" "goose1" "before-goose1" "novee-goose1"
+            "goose4" "before-goose4" "novee-goose4"]
+           (mapv compare/cell-name cells)))
+    (is (= [old "release" "bench" "--optimize" "advanced" "--jobs" "4" "--no-cache"]
+           (compare/macro-command (or (:light (nth cells 6)) (:light opts)) (:dir opts) "measure" (nth cells 6))))
+    (is (= [4 4] ((juxt compare/cell-slots :workers) (nth cells 7))))
+    (is (= ["before-goose-slots8-workers4" "novee-goose-slots8-workers4"]
+           (mapv compare/cell-name (rest (compare/comparison-cells (assoc opts :backend "goose" :workers [4] :compiler-slots [8]))))))
+    (doseq [bad ["" "Upper=x" "label"]]
+      (is (thrown-with-msg? AssertionError #"LABEL=BINARY" (compare/parse-also-light bad))))
+    (is (thrown-with-msg? AssertionError #"distinct"
+                         (compare/macro-main (update opts :also-light conj {:label "before" :light old}))))
+    (is (thrown-with-msg? AssertionError #"cache/leaf"
+                         (compare/macro-main (assoc opts :backend "v8" :phase "cached"))))))
+
+(deftest quiet-gate-waits-and-keeps-rejections
+  (let [readings (atom [88.5 89.9 95.0])]
+    (with-redefs [compare/quiet-once! (fn [_] (let [idle (first @readings)]
+                                                (swap! readings rest)
+                                                (assert (>= idle 90) (str "Quiet gate: idle=" idle))
+                                                {:idle-percent idle}))
+                  compare/sleep-between-gates! (fn [])]
+      (is (= {:idle-percent 95.0 :rejected-idle-percent [88.5 89.9]} (compare/quiet! {})))
+      (reset! readings (repeat 13 50.0))
+      (is (thrown-with-msg? AssertionError #"idle=50.0" (compare/quiet! {}))))))
+
 (deftest process-tree-sampling-excludes-unrelated-processes
   (let [text " 10 1 20 /bin/time\n 11 10 100 compiler\n 12 11 50 native\n 13 1 999 unrelated\n"]
     (is (= [10 11 12] (mapv :pid (compare/process-tree 10 text))))
@@ -312,11 +344,14 @@
         (is (thrown-with-msg? AssertionError #"identities/counts differ"
                              (compare/verify-macro-counts (str dir) "goose" counts))))
       (let [native (fs/path dir "native.txt")]
-        (spit (str native) "POOL 0 0 5 5 256 1 4 4 10 64 64 64 64\nTHREADS 0 4 4 3\nCLOSED 1\n")
+        (spit (str native) "POOL 0 0 5 5 256 1 4 4 10 64 64 64 64\nTHREADS 0 4 4 3\nENGINES v8-platform=0 v8-isolates=0 quickjs-runtimes=0 pants-runtimes=0\nCLOSED 1\n")
         (is (= [4 3] ((juxt :native-thread-total :spawned-threads-joined)
                       (compare/goose-diagnostics native 1))))
         (spit (str native) "POOL 0 0 5 5 256 1 4 4 10 64 64 64 64\nTHREADS 0 4 4 2\nCLOSED 1\n")
         (is (thrown-with-msg? AssertionError #"spawned threads did not all join"
+                             (compare/goose-diagnostics native 1)))
+        (spit (str native) "POOL 0 0 5 5 256 1 4 4 10 64 64 64 64\nTHREADS 0 4 4 3\nENGINES v8-platform=1 v8-isolates=2 quickjs-runtimes=0 pants-runtimes=0\nCLOSED 1\n")
+        (is (thrown-with-msg? AssertionError #"engine census is not all zero"
                              (compare/goose-diagnostics native 1))))
       (finally (fs/delete-tree dir)))))
 

@@ -11,7 +11,15 @@
             [clojure.edn]
             [clojure.string :as str]))
 
-(def usage "Usage: bb compare.bb PROJECT-DIR --light BINARY [--runs N] [--warm-jvm N] [--leaf FILE] [--light-only]")
+(def usage "Usage: bb compare.bb PROJECT-DIR --light BINARY [--runs N] [--warm-jvm N] [--leaf FILE] [--light-only] [--backend v8|goose|all --runner R --phase P --workers W --compiler-slots S --also-light LABEL=BINARY[,goose]]")
+
+(defn parse-also-light
+  "LABEL=BINARY or LABEL=BINARY,goose (that binary runs only Goose cells, e.g. a
+  build that links no V8)."
+  [text]
+  (let [[_ label path goose-only] (re-matches #"([a-z][a-z0-9-]*)=([^,]+)(,goose)?" (or text ""))]
+    (assert label "--also-light takes LABEL=BINARY[,goose]")
+    {:label label :light (str (fs/absolutize path)) :goose-only (boolean goose-only)}))
 
 (defn parse-options [args]
   (loop [[arg & more] args options {:runs 3 :warm-jvm 0 :workers [1 2 4 8] :phase "check" :timeout-ms 3600000}]
@@ -26,6 +34,7 @@
       "--runner" (recur (rest more) (assoc options :runner (str (fs/absolutize (first more)))))
       "--workers" (recur (rest more) (assoc options :workers (mapv parse-long (str/split (first more) #","))))
       "--compiler-slots" (recur (rest more) (assoc options :compiler-slots (mapv parse-long (str/split (or (first more) "") #","))))
+      "--also-light" (recur (rest more) (update options :also-light (fnil conj []) (parse-also-light (first more))))
       "--timeout-ms" (recur (rest more) (assoc options :timeout-ms (parse-long (first more))))
       "--light-only" (recur more (assoc options :light-only true))
       (if (or (str/starts-with? arg "-") (:dir options))
@@ -212,7 +221,22 @@
                                 [file (sha256 (fs/path dir file))]))
      :population (select-keys manifest [:code-lines :physical-lines :bytes :worker-namespaces :source-namespaces])}))
 
-(defn quiet! [environment]
+(declare quiet-once!)
+(defn sleep-between-gates! [] (Thread/sleep 5000))
+(defn quiet!
+  "The quiet gate before a measured run. A rejected gate waits 5 s and tries
+  again, at most 12 times; every rejected idle reading is kept in the sample."
+  [environment]
+  (loop [rejected []]
+    (let [result (try (quiet-once! environment) (catch AssertionError e e))]
+      (cond
+        (map? result) (assoc result :rejected-idle-percent rejected)
+        (= 12 (count rejected)) (throw result)
+        :else (do (sleep-between-gates!)
+                  (recur (conj rejected (or (some->> (re-find #"idle=([0-9.]+)" (ex-message result)) second parse-double)
+                                            (ex-message result)))))))))
+
+(defn quiet-once! [environment]
   (let [snapshot (checked (str repository) environment ["top" "-l" "2" "-s" "1" "-n" "0"])
         idle (some-> (last (re-seq #"([0-9.]+)% idle" snapshot)) second parse-double)
         processes (checked (str repository) environment ["ps" "-axo" "pid,ppid,%cpu,comm"])]
@@ -269,28 +293,35 @@
      :engines {:v8-platform 0 :v8-isolates 0 :quickjs-runtimes 0 :pants-runtimes 0}
      :trace-scope "bounded early protocol prefix (4096 rows); final POOL/THREADS/CLOSED replace prefix rows; session cost counters cover all jobs"}))
 
-(defn comparison-cells [{:keys [backend workers compiler-slots]}]
-  (let [coupled (vec (concat (when (#{"v8" "all"} backend) [{:backend "v8" :workers 1}])
+(defn comparison-cells [{:keys [backend workers compiler-slots also-light]}]
+  (let [primary (vec (concat (when (#{"v8" "all"} backend) [{:backend "v8" :workers 1}])
                             (when (#{"goose" "all"} backend) (map #(hash-map :backend "goose" :workers %) workers))))]
-    (if compiler-slots
-      (vec (for [slots compiler-slots cell coupled] (assoc cell :compiler-slots slots)))
-      coupled)))
+    (vec (for [cell (if compiler-slots
+                      (for [slots compiler-slots cell primary] (assoc cell :compiler-slots slots))
+                      primary)
+               ;; Each extra binary's cells sit beside the primary cell, in the same rounds.
+               binary (cons nil also-light)
+               :when (not (and (:goose-only binary) (= "v8" (:backend cell))))]
+           (cond-> cell binary (assoc :binary (:label binary) :light (:light binary)))))))
 
 (defn cell-slots [cell] (or (:compiler-slots cell) (:workers cell)))
 (defn cell-name [cell]
-  (str (:backend cell) (when (:compiler-slots cell) (str "-slots" (:compiler-slots cell) "-workers")) (:workers cell)))
+  (str (when (:binary cell) (str (:binary cell) "-")) (:backend cell) (when (:compiler-slots cell) (str "-slots" (:compiler-slots cell) "-workers")) (:workers cell)))
 (defn macro-command [light dir phase cell]
   (cond-> [light "release" "bench" "--optimize" "advanced" "--jobs" (str (cell-slots cell))]
     (#{"cached" "leaf"} phase) (into ["--cache-dir" (str (fs/path dir "macro-v8-cache"))])
     (not (#{"cached" "leaf"} phase)) (conj "--no-cache")))
 
-(defn macro-main [{:keys [dir light runner backend workers compiler-slots phase runs timeout-ms leaf] :as opts}]
+(defn macro-main [{:keys [dir light runner backend workers compiler-slots also-light phase runs timeout-ms leaf] :as opts}]
   (assert (#{"v8" "goose" "all"} backend))
   (assert (#{"check" "measure" "instrument" "cached" "leaf" "leaf-uncached"} phase))
   (assert (and (pos? runs) (or (not= phase "measure") (>= runs 5))))
   (assert (and (seq workers) (= (count workers) (count (distinct workers)))
                (every? #{1 2 4 8} workers)))
   (assert (pos? timeout-ms))
+  (assert (apply distinct? "primary" (map :label also-light)) "--also-light labels must be distinct")
+  (assert (or (empty? also-light) (not (#{"cached" "leaf" "leaf-uncached"} phase)))
+          "--also-light shares one cache/leaf edit; use it with check, measure or instrument")
   (when compiler-slots
     (assert (and (seq compiler-slots) (= (count compiler-slots) (count (distinct compiler-slots)))
                  (every? #(and (integer? %) (pos? %)) compiler-slots))
@@ -323,7 +354,7 @@
         expected (mapv (fn [[i n]] (checked dir environment ["bb" "oracle.bb" (str i) (str n)])) oracle-inputs)
         cells (comparison-cells opts)
         _ (assert (or (not= backend "goose") (fs/exists? reference)) "Run V8 check first to establish complete JS reference")
-        cmd (partial macro-command light dir phase)
+        cmd #(macro-command (or (:light %) light) dir phase %)
         run-cell (fn [cell round warmup?]
                    (let [stem (str (cell-name cell) "-" (if warmup? "warmup" round))
                          log (fs/path results (str stem ".stderr"))
@@ -376,7 +407,9 @@
     (write! {:kind :manifest :phase phase :options opts :fixed fixed :inputs oracle-inputs :expected expected
              :harness-sha256 (sha256 (fs/path kit "compare.bb"))
              :native-diagnostic-mode (when (= "instrument" phase) "compiler_session instrumented; tee preserves full protocol; inner time records native rusage; 100ms owned-tree RSS sampling")
-             :compiler-sha256 (sha256 light) :runner-sha256 (when runner (sha256 runner))
+             :compiler-sha256 (sha256 light)
+             :also-light (into (sorted-map) (for [{:keys [label] :as b} also-light] [label (assoc b :sha256 (sha256 (:light b)))]))
+             :runner-sha256 (when runner (sha256 runner))
              :git (checked (str repository) environment ["git" "rev-parse" "HEAD"])
              :source-hashes (into (sorted-map)
                                   (for [path (str/split-lines (checked (str repository) environment ["git" "ls-files" "src" "crates/big-boy-pants-js" "Cargo.toml" "Cargo.lock" "build.rs"]))

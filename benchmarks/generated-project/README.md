@@ -122,13 +122,23 @@ compiler slots and native Goose workers independently. These runs use separate
 `macro-PHASE-slots-4-8` result directories and filenames containing both limits;
 the original modes retain their filenames. V8 uses each requested compiler-slot
 count with its single execution worker.
+`--also-light LABEL=BINARY` (repeatable) puts another CLI's cells into the same
+rounds, each right after the primary cell of the same setting, so a predecessor
+and its successor interleave; `LABEL=BINARY,goose` gives that binary only the
+Goose cells, as for a Goose build that links no V8. Those cells' names and
+samples carry the label and binary path, and the manifest records each binary's
+SHA-256 under `:also-light`. The primary `--light` stays unlabelled and
+produces the V8 reference. It is refused with the cache and leaf phases, which
+share one cache directory or edited source.
 Every completed build must match its complete emitted JavaScript bytes,
 all five independent oracle outputs (including final newlines), and the strict
 waste check. Sources/configuration are hashed before and after each build.
 `--timeout-ms` bounds each compiler process tree (default one hour); validation
 commands have a separate three-minute watchdog. Interrupts kill owned children.
 macOS `--phase measure` requires at least five rounds, >=90% CPU idle before
-each run, and no competing compiler/build process. Generation, binary building
+each run, and no competing compiler/build process; a rejected gate waits 5 s and
+tries again, at most 12 times, and the sample keeps every rejected reading
+(`:rejected-idle-percent`). Generation, binary building
 and output/oracle checks are outside the measured command.
 
 Selection is restricted to release build commands; other entry points reject it.
