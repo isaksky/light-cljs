@@ -461,11 +461,13 @@ fn retained_workers() -> i64 {
 // BBP_WORKER_TABLE_BYTES: a job worker whose VM tables end a job above this
 // many bytes retires (0: after every job, the differential control).
 fn worker_table_bytes() -> i64 {
-    // 1.25 MiB: a reused worker keeps its data stacks' high water, so the cap
-    // bounds what idle workers hold. On the 200k project it retires a
-    // quarter of the jobs' workers and keeps the runner's peak memory within
-    // 5% of retiring after every job (evidence, "Reused job workers").
-    var text: u8[>..] = []; if !env("BBP_WORKER_TABLE_BYTES", text) { return 1310720; }
+    // 16 MiB (the user's decision, light-cljs-791): a reused worker keeps its
+    // data stacks' high water, so the cap bounds what idle workers hold. On
+    // the 200k project no job reaches it, so a session spawns one worker per
+    // execution slot and retires none, for about a fifth more runner peak
+    // memory than retiring after every job (evidence, "Reused job workers at
+    // a 16 MiB cap"); 1.25 MiB stayed within 5% but retired 1,282 workers.
+    var text: u8[>..] = []; if !env("BBP_WORKER_TABLE_BYTES", text) { return 16777216; }
     let n, ok = parse_int(text); assert(ok && n >= 0); return n;
 }
 // Whether a job can be given to a worker now: an idle one, or a new one.

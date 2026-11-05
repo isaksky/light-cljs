@@ -1863,6 +1863,15 @@ fn goose_compiler_reused_worker_retires_at_its_table_cap() {
         (4, 2, 1),
         "{jobs:?}"
     );
+    // The default cap (16 MiB, light-cljs-791) keeps the worker through the
+    // large job: one worker serves the plan and none retires.
+    let (defaults, jobs) = reuse_session(1, None, None, &[1, 10, 1, 1]);
+    assert_eq!(defaults, outcomes);
+    assert_eq!(
+        (jobs.jobs, jobs.spawned, jobs.retired),
+        (4, 1, 0),
+        "{jobs:?}"
+    );
 }
 
 /// Submit raw job `id` of definition 1 with the fixture's arguments.
