@@ -2827,7 +2827,7 @@ fn analyze_entry(
         let engines = if macros.goose_path() {
             if fresh {
                 return Err(NamespaceCompileError::new(
-                    crate::compilation_session::GOOSE_FRESH_ERROR,
+                    crate::compilation_session::goose_fresh_error(macros.refused_engine()),
                 ));
             }
             PoolEngines::Goose

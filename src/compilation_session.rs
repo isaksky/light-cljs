@@ -4863,7 +4863,14 @@ pub(crate) enum PoolEngines {
     Goose,
 }
 /// The named error of [`PoolEngines::Fresh`] on the Goose compiler path.
-pub(crate) const GOOSE_FRESH_ERROR: &str = "goose compiler path: fresh unit isolates (LIGHT_CLJS_FRESH_UNIT_ISOLATES) are not supported; the Goose path runs no isolate";
+/// `engine` is the one each fresh unit would start
+/// ([`MacroHost::refused_engine`]).
+pub(crate) fn goose_fresh_error(engine: &str) -> String {
+    crate::compiler_bootstrap::goose_engine_error(
+        "fresh unit isolates (LIGHT_CLJS_FRESH_UNIT_ISOLATES)",
+        engine,
+    )
+}
 /// The pool that analyzes a build's deferred units with `--jobs N`, kept
 /// for the whole build: N-1 worker threads, the first ones each owning one
 /// compile-time engine made on it (after the V8 platform), and destroyed on
@@ -5190,7 +5197,9 @@ fn worker_view(
     // On the Goose compiler path a worker makes no engine of its own
     // (light-cljs-779): only Goose-bound and engine-free workers start.
     match engines {
-        PoolEngines::Fresh if environment.goose_path() => return Err(GOOSE_FRESH_ERROR.into()),
+        PoolEngines::Fresh if environment.goose_path() => {
+            return Err(goose_fresh_error(environment.refused_engine()));
+        }
         PoolEngines::Persistent if environment.goose_path() => {
             return Err(crate::compiler_bootstrap::goose_engine_error(
                 "a pool worker's persistent compile-time engine",
@@ -8709,7 +8718,10 @@ mod goose_worker_refusal_tests {
                 crate::compiler_bootstrap::BUILD_ENGINE,
             )
         );
-        assert_eq!(refused(PoolEngines::Fresh).unwrap_err(), GOOSE_FRESH_ERROR);
+        assert_eq!(
+            refused(PoolEngines::Fresh).unwrap_err(),
+            goose_fresh_error(crate::compiler_bootstrap::BUILD_ENGINE)
+        );
         refused(PoolEngines::Goose).unwrap();
         refused(PoolEngines::None).unwrap();
         assert!(EngineCensus::on_this_thread().since(census).is_empty());

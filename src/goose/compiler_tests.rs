@@ -2376,7 +2376,9 @@ fn goose_compiler_refuses_fresh_unit_isolates() {
     .unwrap_err()
     .to_string();
     assert!(
-        error.contains(crate::compilation_session::GOOSE_FRESH_ERROR),
+        error.contains(&crate::compilation_session::goose_fresh_error(
+            crate::compiler_bootstrap::BUILD_ENGINE
+        )),
         "{error}"
     );
     assert!(

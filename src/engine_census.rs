@@ -144,48 +144,94 @@ mod tests {
         use crate::evaluator::{BuildResources, EvaluatorOptions};
         let options = EvaluatorOptions::default();
         let resources = BuildResources::new(&options, 2).unwrap();
+        // The engines `make` creates: process-wide (at least), and on this
+        // thread (exactly, as nothing else runs on it).
+        fn made<T>(make: impl FnOnce() -> T) -> (T, EngineCensus, EngineCensus) {
+            let (before, local) = (EngineCensus::now(), EngineCensus::on_this_thread());
+            let value = make();
+            (
+                value,
+                EngineCensus::now().since(before),
+                EngineCensus::on_this_thread().since(local),
+            )
+        }
         #[cfg(light_v8)]
         {
-            let before = EngineCensus::now();
-            let plain = crate::v8_evaluator::V8Evaluator::new(options.clone()).unwrap();
-            let pooled =
-                crate::v8_evaluator::V8Evaluator::new_for_build(options.clone(), &resources, false)
-                    .unwrap();
-            let created = EngineCensus::now().since(before);
+            let (engines, created, here) = made(|| {
+                (
+                    crate::v8_evaluator::V8Evaluator::new(options.clone()).unwrap(),
+                    crate::v8_evaluator::V8Evaluator::new_for_build(
+                        options.clone(),
+                        &resources,
+                        false,
+                    )
+                    .unwrap(),
+                )
+            });
             assert!(created.v8_isolates >= 2, "{created:?}");
             assert!(created.v8_platform >= 2, "{created:?}");
-            drop((plain, pooled));
-            let before = EngineCensus::now();
-            crate::v8_evaluator::initialize_platform();
-            assert!(EngineCensus::now().since(before).v8_platform >= 1);
+            assert_eq!((here.v8_isolates, here.v8_platform), (2, 2), "{here:?}");
+            drop(engines);
+            let ((), created, here) = made(crate::v8_evaluator::initialize_platform);
+            assert!(created.v8_platform >= 1);
+            assert_eq!(here.v8_platform, 1, "{here:?}");
         }
         #[cfg(light_quickjs)]
         {
-            let before = EngineCensus::now();
-            let plain = crate::evaluator::Evaluator::new(options.clone()).unwrap();
-            let interactive = crate::evaluator::Evaluator::interactive(options.clone()).unwrap();
-            let created = EngineCensus::now().since(before);
+            let (engines, created, here) = made(|| {
+                (
+                    crate::evaluator::Evaluator::new(options.clone()).unwrap(),
+                    crate::evaluator::Evaluator::interactive(options.clone()).unwrap(),
+                )
+            });
             assert!(created.quickjs_runtimes >= 2, "{created:?}");
-            drop((plain, interactive));
+            assert_eq!(here.quickjs_runtimes, 2, "{here:?}");
+            drop(engines);
             #[cfg(not(light_v8))]
             {
-                let before = EngineCensus::now();
-                let pooled =
+                let (pooled, created, here) = made(|| {
                     crate::evaluator::Evaluator::new_for_build(options.clone(), &resources, false)
-                        .unwrap();
-                assert!(EngineCensus::now().since(before).quickjs_runtimes >= 1);
+                        .unwrap()
+                });
+                assert!(created.quickjs_runtimes >= 1);
+                assert_eq!(here.quickjs_runtimes, 1, "{here:?}");
                 drop(pooled);
             }
         }
         #[cfg(feature = "bbp-macros")]
         {
-            let before = EngineCensus::now();
-            let evaluator = crate::bbp_evaluator::BbpEvaluator::new(options.clone()).unwrap();
-            let runtime = crate::bbp_evaluator::BbpRuntime::new(&options).unwrap();
-            let created = EngineCensus::now().since(before);
+            let (engines, created, here) = made(|| {
+                (
+                    crate::bbp_evaluator::BbpEvaluator::new(options.clone()).unwrap(),
+                    crate::bbp_evaluator::BbpRuntime::new(&options).unwrap(),
+                )
+            });
             assert!(created.pants_runtimes >= 2, "{created:?}");
-            drop((evaluator, runtime));
+            assert!(here.pants_runtimes >= 2, "{here:?}");
+            drop(engines);
         }
         drop(resources);
+    }
+    /// An engine made on another thread moves the process-wide census and
+    /// that thread's, never this thread's.
+    #[cfg(any(light_v8, light_quickjs, feature = "bbp-macros"))]
+    #[test]
+    fn the_thread_census_counts_only_this_threads_engines() {
+        let local = EngineCensus::on_this_thread();
+        let there = std::thread::spawn(|| {
+            let before = EngineCensus::on_this_thread();
+            let options = crate::evaluator::EvaluatorOptions::default();
+            #[cfg(light_v8)]
+            drop(crate::v8_evaluator::V8Evaluator::new(options).unwrap());
+            #[cfg(all(light_quickjs, not(light_v8)))]
+            drop(crate::evaluator::Evaluator::new(options).unwrap());
+            #[cfg(not(any(light_v8, light_quickjs)))]
+            drop(crate::bbp_evaluator::BbpRuntime::new(&options).unwrap());
+            EngineCensus::on_this_thread().since(before)
+        })
+        .join()
+        .unwrap();
+        assert!(!there.is_empty(), "{there:?}");
+        assert!(EngineCensus::on_this_thread().since(local).is_empty());
     }
 }
