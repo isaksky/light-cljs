@@ -3687,12 +3687,10 @@ pub(crate) fn analyze_deferred_form(
     // A unit's names depend only on where it was registered, not on when
     // it is analyzed, what was analyzed before it or on which thread.
     let _names = snapshot.names.clone().map(crate::generated_names::enter);
-    let evaluator = host.engine.bootstrap.as_ref().map(|b| b.evaluator.clone());
-    let engine = engine.or_else(|| {
-        evaluator
-            .as_ref()
-            .map(|e| e.as_ref() as &dyn crate::evaluator::MacroEvaluator)
-    });
+    // Given none, the host's: the bootstrap's, or the Goose evaluator on the
+    // Goose compiler path (light-cljs-778).
+    let evaluator = host.engine.compile_time_engine();
+    let engine = engine.or(evaluator.as_deref());
     let program = analyze_input(
         form.span().source().text(),
         &SyntaxTree {

@@ -633,10 +633,25 @@ pub(crate) struct MacroEnvironment {
     tables: MacroTables,
 }
 impl MacroEnvironment {
+    /// As [`MacroHost::native_macro_backend`]: never on the Goose compiler
+    /// path.
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn native_macro_backend(&self) -> bool {
         (self.tables.native_macros || !cfg!(any(light_quickjs, light_v8)))
             && !self.tables.interactive
+            && !self.goose_path()
+    }
+    /// Whether the environment serves the Goose compiler path
+    /// ([`MacroHost::goose_path`]).
+    pub(crate) fn goose_path(&self) -> bool {
+        #[cfg(feature = "goose-macros")]
+        {
+            self.goose.is_some()
+        }
+        #[cfg(not(feature = "goose-macros"))]
+        {
+            false
+        }
     }
     /// The options a worker's own engine is made with.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -826,6 +841,37 @@ impl EngineBinding {
     ) -> Option<std::rc::Rc<crate::compilation_session::CompilationSession>> {
         self.session.clone().or_else(|| self.session_ref.upgrade())
     }
+    /// Whether the binding serves the Goose compiler path: it has the
+    /// session's Goose evaluator, and never a bootstrap engine.
+    pub(crate) fn goose_path(&self) -> bool {
+        #[cfg(feature = "goose-macros")]
+        {
+            self.goose.is_some()
+        }
+        #[cfg(not(feature = "goose-macros"))]
+        {
+            false
+        }
+    }
+    /// The compile-time engine an analysis that is given none falls back
+    /// to, for its control polls, frontier and gensym scope: on the Goose
+    /// compiler path the Goose evaluator, whose frontier and gensym-scope
+    /// calls do nothing, else the bootstrap's evaluator, if it has started.
+    pub(crate) fn compile_time_engine(
+        &self,
+    ) -> Option<std::rc::Rc<dyn crate::evaluator::MacroEvaluator>> {
+        #[cfg(feature = "goose-macros")]
+        if let Some(goose) = &self.goose {
+            return Some(goose.clone());
+        }
+        self.bootstrap
+            .as_ref()
+            .map(|b| b.evaluator.clone() as std::rc::Rc<dyn crate::evaluator::MacroEvaluator>)
+    }
+    /// The execution control of [`Self::compile_time_engine`].
+    pub(crate) fn compile_time_control(&self) -> Option<crate::evaluator::ExecutionControl> {
+        self.compile_time_engine().map(|engine| engine.control())
+    }
     /// How many extension bundles the compilation registered, from its
     /// session or, on a worker, its catalog; 0 outside a compilation.
     pub(crate) fn extension_frontier(&self) -> usize {
@@ -976,6 +1022,13 @@ impl MacroHost {
         std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
         crate::evaluator::EvalError,
     > {
+        // Every bootstrap engine is made here: none on the Goose compiler
+        // path (light-cljs-778).
+        if self.goose_path() {
+            return Err(crate::evaluator::EvalError(
+                crate::compiler_bootstrap::goose_engine_error("a compile-time engine"),
+            ));
+        }
         #[cfg(feature = "goose-macros")]
         let _probe = crate::compiler_probe::scope(|| "bootstrap/new-compiler-evaluator".into());
         #[cfg(feature = "bbp-macros")]
@@ -1247,7 +1300,11 @@ impl MacroHost {
         Self::default()
     }
     /// Execute compiler-emitted user source macros in one experimental Goose
-    /// session. Core syntax expansion remains the compiler's bootstrap service.
+    /// session: the Goose compiler path ([`Self::goose_path`]). Core macros
+    /// expand in Rust ([`Self::goose_core_macros`]), and the compilation and
+    /// its pool workers analyze with the Goose evaluator as their
+    /// compile-time engine: no bootstrap engine, V8 isolate, V8 platform,
+    /// QuickJS runtime or Pants runtime is made (light-cljs-778).
     #[cfg(feature = "goose-macros")]
     pub fn use_goose_source_macros(
         &mut self,
@@ -1280,6 +1337,13 @@ impl MacroHost {
             false
         }
     }
+    /// Whether the host serves the Goose compiler path: it has a Goose
+    /// session ([`Self::use_goose_source_macros`]), so it and every worker
+    /// bound to its environment analyze with the Goose evaluator and never
+    /// make a bootstrap engine (light-cljs-778).
+    pub(crate) fn goose_path(&self) -> bool {
+        self.engine.goose_path()
+    }
     /// Which core macros expand in Rust, and with which semantics.
     pub(crate) fn core_routing(&self) -> crate::native_core_macros::CoreRouting {
         use crate::native_core_macros::CoreRouting;
@@ -1295,12 +1359,16 @@ impl MacroHost {
     pub fn native_macro_calls(&self) -> Vec<crate::compile_stats::NativeBridgeCall> {
         self.engine.native_macro_calls.borrow().clone()
     }
+    /// Whether the host's compile-time engine is the Pants runtime: with
+    /// native macros, or in a build without V8 or QuickJS; never on the
+    /// Goose compiler path, whatever the build (light-cljs-778).
     pub(crate) fn native_macro_backend(&self) -> bool {
         #[cfg(feature = "bbp-macros")]
         {
             (self.tables.native_macros || !cfg!(any(light_quickjs, light_v8)))
                 && !self.tables.interactive
                 && self.engine.script_host.is_none()
+                && !self.goose_path()
         }
         #[cfg(not(feature = "bbp-macros"))]
         {
@@ -2076,7 +2144,10 @@ impl MacroHost {
     /// engine made on this thread. The evaluator gets the host's settings
     /// and the process-wide bootstrap units, which no thread compiles a
     /// second time, as the engine of a fresh compilation would; without
-    /// one, the host analyzes only what runs no macro in an engine.
+    /// one, the host analyzes only what runs no macro in an engine, unless
+    /// `environment` serves the Goose compiler path: then the host analyzes
+    /// with an evaluator of the environment's Goose session, made here,
+    /// and is never given a bootstrap engine (light-cljs-778).
     ///
     /// The binding starts with no session, empty environment caches and
     /// zero counters. Source macros declared in another engine are not
@@ -2096,6 +2167,11 @@ impl MacroHost {
                 ..Default::default()
             },
         );
+        if evaluator.is_some() && host.goose_path() {
+            return Err(crate::compiler_bootstrap::goose_engine_error(
+                "a worker's compile-time engine",
+            ));
+        }
         if let Some(evaluator) = evaluator {
             // A native task context another pool slot parked holds these
             // settings already ([`crate::bbp_evaluator::TaskContext`]).
@@ -2219,12 +2295,11 @@ impl MacroHost {
         &self,
         control: Option<&crate::evaluator::ExecutionControl>,
     ) -> Option<String> {
-        let session = self.engine.interactive_control.clone().or_else(|| {
-            self.engine
-                .bootstrap
-                .as_ref()
-                .map(|b| b.evaluator.control())
-        });
+        let session = self
+            .engine
+            .interactive_control
+            .clone()
+            .or_else(|| self.engine.compile_time_control());
         control
             .into_iter()
             .chain(session.as_ref())

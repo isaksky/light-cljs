@@ -31,10 +31,12 @@ impl Drop for Backend {
             let started = Instant::now();
             session.close();
             if let Some(path) = std::env::var_os("LIGHT_CLJS_GOOSE_REPORT") {
+                // One build per process: the census is the build's.
                 let text = format!(
-                    "{:?}\ncleanup_ns {}\n{}\n",
+                    "{:?}\ncleanup_ns {}\n{}\n{}\n",
                     session.stats(),
                     started.elapsed().as_nanos(),
+                    light_cljs::engine_census::EngineCensus::now().line(),
                     session.trace().join("\n")
                 );
                 if let Err(error) = std::fs::write(path, text) {

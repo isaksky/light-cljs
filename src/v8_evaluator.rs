@@ -249,6 +249,7 @@ pub(crate) fn initialize_platform() {
     platform();
 }
 fn platform() -> v8::SharedRef<v8::Platform> {
+    crate::engine_census::v8_platform();
     static PLATFORM: OnceLock<v8::SharedRef<v8::Platform>> = OnceLock::new();
     PLATFORM
         .get_or_init(|| {
@@ -384,6 +385,7 @@ impl V8Evaluator {
                 .heap_limits(0, heap_limit)
                 .set_stack_limit(stack.boundary()?)
         };
+        crate::engine_census::v8_isolate();
         let mut isolate = v8::Isolate::new(params);
         isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
         let state = Rc::new(State {

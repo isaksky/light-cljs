@@ -1202,6 +1202,9 @@ fn goose_compiler_pipeline() {
             ("goose", 8),
         ] {
             let goose = engine == "goose";
+            // A Goose build creates no other engine (light-cljs-778); the
+            // census is the process's, and compiler.bb runs sequentially.
+            let census = crate::engine_census::EngineCensus::now();
             let mut host = MacroHost::new();
             if engine == "pants" {
                 host.use_native_macros();
@@ -1230,6 +1233,10 @@ fn goose_compiler_pipeline() {
                 &mut Vec::new(),
             )
             .unwrap_or_else(|e| panic!("{case}, Goose={goose}: {e}"));
+            if goose {
+                let created = crate::engine_census::EngineCensus::now().since(census);
+                assert!(created.is_empty(), "{case}, workers={workers}: {created:?}");
+            }
             let requests = REQUESTS
                 .with_borrow_mut(|r| r.take().unwrap())
                 .into_iter()
@@ -1363,6 +1370,7 @@ fn goose_compiler_resolves_helper_roots_per_need_without_replay() {
     for i in 0..calls {
         source.push_str(&format!("(def call-{i} (m [{i}]))\n"));
     }
+    let census = crate::engine_census::EngineCensus::now();
     let session = crate::goose_evaluator::GooseSession::start(&runner, 2).unwrap();
     let mut host = MacroHost::new();
     host.use_goose_source_macros(session.clone()).unwrap();
@@ -1376,6 +1384,9 @@ fn goose_compiler_resolves_helper_roots_per_need_without_replay() {
         &mut Vec::new(),
     )
     .unwrap();
+    // With no bootstrap engine either (light-cljs-778).
+    let created = crate::engine_census::EngineCensus::now().since(census);
+    assert!(created.is_empty(), "{created:?}");
     let compilation = host.session_handle().unwrap();
     let catalog = compilation.shared().clone();
     let (_, registrations, _) = compilation.capture_marks();

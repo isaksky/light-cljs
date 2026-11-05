@@ -690,6 +690,7 @@ impl Evaluator {
         crate::generated_names::forget_installed_scopes();
         let control = shared.unwrap_or(ExecutionControl::new(&options)?);
         let headroom = share.as_ref().map(|share| share.taken.clone());
+        crate::engine_census::quickjs_runtime();
         let runtime = Runtime::new_with_alloc(LimitedAllocator {
             used: 0,
             limit: share
@@ -1471,8 +1472,10 @@ pub enum EnvironmentExtensions {
 pub type EnvironmentTracking = std::rc::Rc<std::cell::Cell<EnvironmentExtensions>>;
 /// Common macro operations at either an outer boundary or an active callback.
 pub trait MacroEvaluator {
-    /// The bounded Goose adapter executes user source declarations only.
-    /// Compiler bootstrap syntax macros keep their ordinary compiler engine.
+    /// Whether this is the bounded Goose adapter, which executes user source
+    /// declarations and their helpers only: core macros expand in Rust on
+    /// the Goose compiler path, which has no other engine, so a core
+    /// expansion given this engine uses none (light-cljs-777, 778).
     #[cfg(feature = "goose-macros")]
     fn source_only(&self) -> bool {
         false

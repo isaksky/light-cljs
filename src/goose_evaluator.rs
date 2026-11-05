@@ -687,6 +687,18 @@ impl GooseEvaluator {
     pub(crate) fn helper_installs(&self) -> usize {
         self.helper_installs.get()
     }
+    /// Retire the session after an outermost call or export failed: every
+    /// worker goes with it. The control stays failed as it was, cancelled or
+    /// past its deadline, or else is invalidated, as an engine failure
+    /// invalidates V8's or QuickJS's. It is the compile-time control of the
+    /// whole Goose compiler path (light-cljs-778), whose drains then report
+    /// the failing unit's own error rather than charging the polls of the
+    /// units before it as a cancellation.
+    fn retire(&self) {
+        let _ = self.control.poll_many(0);
+        self.control.invalidate();
+        self.session.close();
+    }
 }
 impl MacroEvaluator for GooseEvaluator {
     fn source_only(&self) -> bool {
@@ -787,8 +799,7 @@ impl MacroEvaluator for GooseEvaluator {
         let result = budget.settle(result);
         *self.budget.borrow_mut() = previous.clone();
         if result.is_err() && previous.is_none() {
-            self.control.cancel();
-            self.session.close();
+            self.retire();
         }
         result
     }
@@ -818,8 +829,7 @@ impl MacroEvaluator for GooseEvaluator {
             .bridge_ns
             .fetch_add(bridged.elapsed().as_nanos() as u64, Ordering::Relaxed);
         if result.is_err() && self.budget.borrow().is_none() {
-            self.control.cancel();
-            self.session.close();
+            self.retire();
         }
         result
     }

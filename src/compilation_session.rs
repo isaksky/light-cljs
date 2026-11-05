@@ -3398,7 +3398,9 @@ impl CompilationSession {
     /// Start the coordinator's engine for `host` at a namespace's dispatch,
     /// if it has none ([`MacroHost::start_session_engine`]).
     pub(crate) fn start_dispatch_engine(self: &Rc<Self>, host: &MacroHost) -> Result<(), String> {
-        if self.bootstrap().is_some() {
+        // The Goose compiler path's engine is the Goose evaluator, which
+        // needs no start (light-cljs-778).
+        if self.bootstrap().is_some() || host.goose_path() {
             return Ok(());
         }
         #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
@@ -3432,15 +3434,23 @@ impl CompilationSession {
         }
         attached
     }
-    /// The coordinator's engine, started now if it has none, as the first
-    /// JavaScript macro a serial build expands starts it; `binding` is a
-    /// frame of the compilation's, which reaches this session. None without
-    /// a pool or a session; a start that fails, its engine's construction or
-    /// its attachment, gives the error that expansion would have failed with
-    /// (light-cljs-386).
-    fn start_main_engine(&self, binding: &EngineBinding) -> Result<Option<Bootstrap>, String> {
+    /// The control of the coordinator's engine, started now if it has none,
+    /// as the first JavaScript macro a serial build expands starts it;
+    /// `binding` is a frame of the compilation's, which reaches this
+    /// session. None without a pool or a session; a start that fails, its
+    /// engine's construction or its attachment, gives the error that
+    /// expansion would have failed with (light-cljs-386). On the Goose
+    /// compiler path, the Goose evaluator's, and nothing starts
+    /// (light-cljs-778).
+    fn start_main_engine(
+        &self,
+        binding: &EngineBinding,
+    ) -> Result<Option<crate::evaluator::ExecutionControl>, String> {
+        if binding.goose_path() {
+            return Ok(binding.compile_time_control());
+        }
         if let Some(bootstrap) = self.bootstrap() {
-            return Ok(Some(bootstrap));
+            return Ok(Some(bootstrap.evaluator.control()));
         }
         let Some(environment) = self.pool.borrow().as_ref().map(|pool| pool.main.clone()) else {
             return Ok(None);
@@ -3460,7 +3470,7 @@ impl CompilationSession {
             std::thread::sleep(delay);
         }
         session.attach(&bootstrap, &host)?;
-        Ok(Some(bootstrap))
+        Ok(Some(bootstrap.evaluator.control()))
     }
     /// The build failed with an error the coordinator has chosen: what
     /// the pool has not started is not needed, and what its workers run is
@@ -3644,8 +3654,10 @@ impl CompilationSession {
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn charge_namespace(&self, charges: UnitCharges, host: &MacroHost) -> Result<(), crate::AnalysisError> {
         let binding = &host.engine;
-        let control = binding.bootstrap.as_ref().or(self.bootstrap().as_ref()).map(|b| b.evaluator.control());
-        let start = || self.start_main_engine(binding).map(|b| b.map(|b| b.evaluator.control()));
+        let control = binding
+            .compile_time_control()
+            .or_else(|| self.bootstrap().map(|b| b.evaluator.control()));
+        let start = || self.start_main_engine(binding);
         charges.charge(binding, None, control, &start, self).map_err(|(_, diagnostic)| diagnostic)?;
         self.shared.raise_charged(binding.expansions.get(), binding.generated_nodes.get());
         Ok(())
@@ -3929,13 +3941,10 @@ impl CompilationSession {
         {
             let depth = self.shared.lock().threads[self.thread].stack.len();
             // What its analysis here would have polled ([`analyze_unit`]).
-            let control = engine.map(|engine| engine.control()).or_else(|| {
-                binding
-                    .bootstrap
-                    .as_ref()
-                    .or(self.bootstrap().as_ref())
-                    .map(|b| b.evaluator.control())
-            });
+            let control = engine
+                .map(|engine| engine.control())
+                .or_else(|| binding.compile_time_control())
+                .or_else(|| self.bootstrap().map(|b| b.evaluator.control()));
             // A demand this deep fails before the unit is analyzed, as
             // its claim would have failed it with one slot.
             if depth >= charges.depth_limit {
@@ -3964,7 +3973,6 @@ impl CompilationSession {
                     std::thread::sleep(delay);
                 }
                 self.start_main_engine(&binding)
-                    .map(|b| b.map(|b| b.evaluator.control()))
             };
             if let Err((message, diagnostic)) =
                 charges.charge(&binding, Some(depth), control, &start, self)
@@ -4117,12 +4125,11 @@ fn analyze_unit(
             },
             &host,
         );
-        let evaluator = host.engine.bootstrap.as_ref().map(|b| b.evaluator.clone());
-        let engine = engine.or_else(|| {
-            evaluator
-                .as_ref()
-                .map(|e| e.as_ref() as &dyn MacroEvaluator)
-        });
+        // Given none, the host's: the bootstrap's, or on the Goose compiler
+        // path the Goose evaluator, whose frontier and gensym-scope calls do
+        // nothing, so that analysis polls its control (light-cljs-778).
+        let evaluator = host.engine.compile_time_engine();
+        let engine = engine.or(evaluator.as_deref());
         // A proven macro-free native body cannot enter the VM, just as it
         // can run in the pool's engine-free view. Its analysis cannot see or
         // change the VM's frontier or gensym scope. Keep the engine available
@@ -4718,7 +4725,9 @@ impl WorkerView {
     /// needed does not stay taken for the rest of the build and decide
     /// which later units fit. What it holds up to that is its steady need,
     /// such as the build's macros, which a replacement would take again at
-    /// once (light-cljs-459).
+    /// once (light-cljs-459). A Goose-bound view holds none: the build has
+    /// no shared V8 budget, and Goose's storage limits are its own
+    /// (light-cljs-778).
     fn holds_excess_headroom(&self) -> bool {
         let keep = self.shared.resources().map_or(0, |r| r.memory.keep());
         self.host
@@ -4728,13 +4737,14 @@ impl WorkerView {
             .is_some_and(|b| b.evaluator.headroom_held() > keep)
     }
     /// Whether the view's engine failed for good, such as by running out of
-    /// memory or time: its worker retires it.
+    /// memory or time: its worker retires it. On the Goose compiler path,
+    /// whether the Goose evaluator's control, which the session's
+    /// evaluators share, did (light-cljs-778).
     fn terminal(&self) -> bool {
         self.host
             .engine
-            .bootstrap
-            .as_ref()
-            .is_some_and(|b| b.evaluator.control().check().is_err())
+            .compile_time_control()
+            .is_some_and(|control| control.check().is_err())
     }
     /// Unit `id`'s analysis, by this thread or another.
     pub(crate) fn analyze(
@@ -4822,9 +4832,18 @@ pub(crate) enum PoolEngines {
     /// macro-free units (light-cljs-437).
     Persistent,
     /// Each unit is analyzed in a fresh isolate, the correctness reference
-    /// of persistent ones (`LIGHT_CLJS_FRESH_UNIT_ISOLATES=1`).
+    /// of persistent ones (`LIGHT_CLJS_FRESH_UNIT_ISOLATES=1`). The Goose
+    /// compiler path refuses it with a named error.
     Fresh,
+    /// The Goose compiler path (light-cljs-778): every worker is bound to
+    /// no compile-time engine of its own but to an evaluator of the build's
+    /// Goose session, made on its thread ([`MacroHost::bind`]), and takes
+    /// every unit a worker with an engine would. No isolate limit applies:
+    /// all the slots but the coordinator's are such workers.
+    Goose,
 }
+/// The named error of [`PoolEngines::Fresh`] on the Goose compiler path.
+pub(crate) const GOOSE_FRESH_ERROR: &str = "goose compiler path: fresh unit isolates (LIGHT_CLJS_FRESH_UNIT_ISOLATES) are not supported; the Goose path runs no isolate";
 /// The pool that analyzes a build's deferred units with `--jobs N`, kept
 /// for the whole build: N-1 worker threads, the first ones each owning one
 /// compile-time engine made on it (after the V8 platform), and destroyed on
@@ -5148,8 +5167,13 @@ fn worker_view(
     let started = std::time::Instant::now();
     #[cfg(feature = "bbp-macros")]
     let mut lent = None;
+    if engines == PoolEngines::Fresh && environment.goose_path() {
+        return Err(GOOSE_FRESH_ERROR.into());
+    }
     let engine: Option<Rc<dyn crate::compiler_evaluator::CompilerEvaluator>> = match engines {
-        PoolEngines::None => None,
+        // A Goose-bound worker's evaluator is made from the environment's
+        // session by `MacroHost::bind` (light-cljs-778).
+        PoolEngines::None | PoolEngines::Goose => None,
         // A persistent slot borrows a task context another slot parked, if
         // one is idle (`WorkerView::park_context`).
         #[cfg(feature = "bbp-macros")]

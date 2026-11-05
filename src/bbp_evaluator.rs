@@ -1457,6 +1457,7 @@ impl BbpRuntime {
         options: &EvaluatorOptions,
         policy: big_boy_pants_js::HeapPolicy,
     ) -> Result<Self, EvalError> {
+        crate::engine_census::pants_runtime();
         let runtime = Runtime::try_with_heap_policy(
             big_boy_pants_js::VmLimits {
                 max_stack_values: (options.stack_limit / 16).max(1),

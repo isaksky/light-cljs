@@ -381,7 +381,7 @@
              :toolchains (into {} (for [c [["rustc" "--version"] ["goose" "version"] ["bb" "--version"] ["node" "--version"] ["clang" "--version"] ["uname" "-a"]]]
                                    [c (checked (str repository) environment c)]))
              :memory-scope "macOS time -l compiler command rusage; not additive process-tree peak; Goose native stats separate"
-             :boundary "Goose source-macro execution with V8 core/bootstrap; Node application; fresh process per run"})
+             :boundary "Goose source-macro execution with Rust core macros and no V8, QuickJS or Pants engine; Node application; fresh process per run"})
     (let [warmups (mapv #(run-cell % -1 true) cells)
           viable (mapv first (filter #(zero? (:exit (second %))) (map vector cells warmups)))
           run-rounds #(doall (for [round (range runs) cell (if (even? round) viable (reverse viable))]

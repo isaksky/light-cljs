@@ -2653,9 +2653,12 @@ fn analyze_entry(
             .then_some(macros.evaluator_options.macro_core);
     }
     // V8 is initialized before this compilation starts a thread: the load
-    // pool's now, the analysis workers' later.
+    // pool's now, the analysis workers' later. The Goose compiler path runs
+    // no V8 (light-cljs-778).
     #[cfg(light_v8)]
-    crate::v8_evaluator::initialize_platform();
+    if !macros.goose_path() {
+        crate::v8_evaluator::initialize_platform();
+    }
     let cache_reservation = cache
         .as_deref()
         .filter(|_| reserve.is_none())
@@ -2814,13 +2817,25 @@ fn analyze_entry(
         && let Some(session) = macros.session_handle()
     {
         use crate::compilation_session::PoolEngines;
-        // V8 isolates, or in QuickJS-only builds QuickJS runtimes
-        // (light-cljs-436).
-        let engines = if (macros.native_macro_backend() || cfg!(any(light_v8, light_quickjs)))
+        let fresh = fresh_isolates || std::env::var_os("LIGHT_CLJS_FRESH_UNIT_ISOLATES").is_some();
+        // On the Goose compiler path every worker is Goose-bound, with no
+        // isolate limit, no bootstrap units and no shared V8 budget: the
+        // Goose session's control, which every thread's evaluator shares,
+        // gives the build's deadline, poll budget and cancellation
+        // (light-cljs-778). Elsewhere V8 isolates, or in QuickJS-only
+        // builds QuickJS runtimes (light-cljs-436).
+        let engines = if macros.goose_path() {
+            if fresh {
+                return Err(NamespaceCompileError::new(
+                    crate::compilation_session::GOOSE_FRESH_ERROR,
+                ));
+            }
+            PoolEngines::Goose
+        } else if (macros.native_macro_backend() || cfg!(any(light_v8, light_quickjs)))
             && macros.engine.script_host.is_none()
             && !macros.tables.interactive
         {
-            if fresh_isolates || std::env::var_os("LIGHT_CLJS_FRESH_UNIT_ISOLATES").is_some() {
+            if fresh {
                 PoolEngines::Fresh
             } else {
                 PoolEngines::Persistent
@@ -2831,7 +2846,7 @@ fn analyze_entry(
         // The main isolate's reservation and as many workers' as the rest
         // of the limit gives `WORKER_SHARE` each; with none, no worker has an
         // engine.
-        let isolates = if macros.native_macro_backend() {
+        let isolates = if macros.native_macro_backend() || engines == PoolEngines::Goose {
             analysis.unit_slots.get()
         } else {
             crate::compilation_session::isolate_count(memory_limit, analysis.unit_slots)
@@ -2842,7 +2857,9 @@ fn analyze_entry(
             engines
         };
         let mut resources = None;
-        if engines != PoolEngines::None && !macros.native_macro_backend() {
+        if !matches!(engines, PoolEngines::None | PoolEngines::Goose)
+            && !macros.native_macro_backend()
+        {
             // Every isolate installs the bootstrap units: they are compiled
             // before the build's deadline starts (light-cljs-378).
             crate::compiler_bootstrap::prepare(macros).map_err(NamespaceCompileError::new)?;

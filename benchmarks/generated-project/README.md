@@ -134,7 +134,9 @@ and output/oracle checks are outside the measured command.
 Selection is restricted to release build commands; other entry points reject it.
 Selection uses the feature-gated `LIGHT_CLJS_GOOSE_RUNNER` and
 `LIGHT_CLJS_GOOSE_WORKERS` embedding. It executes emitted user macros/helpers
-in Goose with retained V8 core/bootstrap; it preserves the release/advanced
+in Goose and expands core macros in Rust, with no V8 isolate, V8 platform,
+QuickJS runtime or Pants runtime: the Goose report's `ENGINES` line and the
+`--stats` `engines.*` lines count them (all zero); it preserves the release/advanced
 compiler pipeline and production defaults. `--jobs` is separately recorded as
 compiler slots (equal to execution workers unless `--compiler-slots` is set).
 Unsupported work fails without fallback. `instrument` adds inclusive macro/bootstrap/helper-demand

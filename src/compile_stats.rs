@@ -313,6 +313,10 @@ pub struct CompileStats {
     pub cache: Option<CacheCounts>,
     /// The exclusive-stage trace of the analysis ([`crate::compile_trace`]).
     pub trace: Option<crate::compile_trace::Trace>,
+    /// The compile-time engines the process had created when the report
+    /// was made ([`crate::engine_census`]): the CLI's, whose one build per
+    /// process makes them the build's (light-cljs-778).
+    pub engines: Option<crate::engine_census::EngineCensus>,
     /// What the compilation held in memory at its peaks.
     pub memory: MemoryCounts,
 }
@@ -938,6 +942,11 @@ impl CompileStats {
         if let Some(trace) = &self.trace {
             trace.lines(&mut line);
         }
+        if let Some(engines) = &self.engines {
+            for (key, count) in engines.counts() {
+                line(&format!("engines.{key}"), &count);
+            }
+        }
         let memory = &self.memory;
         if let Some(rss) = memory.peak_rss {
             line("memory.peak-rss-bytes", &rss);
@@ -1093,6 +1102,33 @@ mod tests {
             ),
             "{report}"
         );
+    }
+
+    /// `--stats` prints the engine census before the memory counters
+    /// (light-cljs-778).
+    #[test]
+    fn report_lists_the_engine_census_before_memory() {
+        let stats = CompileStats {
+            engines: Some(crate::engine_census::EngineCensus {
+                v8_platform: 1,
+                v8_isolates: 2,
+                quickjs_runtimes: 0,
+                pants_runtimes: 3,
+            }),
+            ..CompileStats::default()
+        };
+        let report = stats.report();
+        assert!(
+            report.contains(
+                "\nengines.v8-platform 1\n\
+                 engines.v8-isolates 2\n\
+                 engines.quickjs-runtimes 0\n\
+                 engines.pants-runtimes 3\n\
+                 memory.parsed-trees.peak-bytes 0\n"
+            ),
+            "{report}"
+        );
+        assert!(!CompileStats::default().report().contains("engines."));
     }
 
     #[test]

@@ -999,14 +999,28 @@ pub(crate) fn goose_core_error(name: &str) -> String {
         "goose compiler path: core macro {name}: this call has no Rust expansion and the Goose path runs no bootstrap engine"
     )
 }
+/// The named error of the Goose compiler path for `what`, an engine other
+/// than the Goose evaluator that something asked for: that path makes no
+/// bootstrap engine, V8 isolate, QuickJS runtime or Pants runtime
+/// (light-cljs-778).
+pub(crate) fn goose_engine_error(what: &str) -> String {
+    format!(
+        "goose compiler path: {what} was requested; the Goose path runs no bootstrap engine, V8 isolate, QuickJS runtime or Pants runtime"
+    )
+}
 impl MacroHost {
     /// Start the compilation's compile-time engine now, as the first
     /// JavaScript macro it expands would: at a namespace's dispatch whose
     /// units may need it, so that it starts at the same point whichever
     /// thread analyzes them (light-cljs-391). Nothing without a session or
-    /// once it has an engine. A start that fails is left to the expansion
-    /// that needs it, which fails as it would have.
+    /// once it has an engine, nor on the Goose compiler path, whose engine
+    /// is the Goose evaluator the host has from the start. A start that
+    /// fails is left to the expansion that needs it, which fails as it
+    /// would have.
     pub(crate) fn start_session_engine(&mut self) {
+        if self.goose_path() {
+            return;
+        }
         let Some(session) = self.session_handle() else {
             return;
         };
@@ -1015,9 +1029,13 @@ impl MacroHost {
         }
     }
     /// Give the host its bootstrap, the session's or a new one, as the
-    /// first expansion of the core macro `name` that needs it does.
+    /// first expansion of the core macro `name` that needs it does; on the
+    /// Goose compiler path, the named error that it has none.
     fn ensure_bootstrap(&mut self, name: &str) -> Result<(), String> {
         forbid_goose_core_engine(self, name);
+        if self.goose_path() {
+            return Err(goose_core_error(name));
+        }
         if self.engine.bootstrap.is_none() {
             if self.tables.bootstrap_seed && self.session_handle().is_none() {
                 return Err(format!("bootstrap primitive seed cannot expand {name}"));
@@ -1665,19 +1683,26 @@ impl MacroHost {
             &name,
             crate::macro_host::SourceBindingKind::Macro,
         )?;
-        if self.engine.bootstrap.is_none() {
-            self.engine.bootstrap = self
-                .session_handle()
-                .and_then(|session| session.bootstrap());
+        // On the Goose compiler path the declaration evaluates only into the
+        // Goose evaluator: no bootstrap is built or attached (light-cljs-778).
+        let bootstrap = if self.goose_path() {
+            None
+        } else {
             if self.engine.bootstrap.is_none() {
-                self.engine.bootstrap = Some(build(self, true)?);
+                self.engine.bootstrap = self
+                    .session_handle()
+                    .and_then(|session| session.bootstrap());
+                if self.engine.bootstrap.is_none() {
+                    self.engine.bootstrap = Some(build(self, true)?);
+                }
             }
-        }
-        let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
-        bootstrap.release_dropped();
-        if let Some(session) = self.session_handle() {
-            session.attach(&bootstrap, self)?;
-        }
+            let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
+            bootstrap.release_dropped();
+            if let Some(session) = self.session_handle() {
+                session.attach(&bootstrap, self)?;
+            }
+            Some(bootstrap)
+        };
         let mut frame = self.macro_analysis_frame();
         let (mut program, _) =
             crate::analyzer::analyze_deferred_form(&function, &mut frame, &snapshot, engine)
@@ -1689,11 +1714,15 @@ impl MacroHost {
             .as_deref()
             .map(|e| e as &dyn crate::evaluator::MacroEvaluator)
             .or(engine);
-        let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
+        let engine = match (engine, &bootstrap) {
+            (Some(engine), _) => engine,
+            (None, Some(bootstrap)) => bootstrap.evaluator.as_ref(),
+            (None, None) => return Err(goose_engine_error("a macro declaration's engine")),
+        };
         let environment_keys = source_environment_keys(&program).map(std::sync::Arc::from);
         let unit = crate::emitter::emit_deferred_unit(&program);
         #[cfg(feature = "bbp-macros")]
-        let unit = if bootstrap.evaluator.native_forms() || {
+        let unit = if bootstrap.as_ref().is_some_and(|b| b.evaluator.native_forms()) || {
             #[cfg(feature = "goose-macros")]
             {
                 engine.source_only()
@@ -1736,7 +1765,16 @@ impl MacroHost {
         #[cfg(not(feature = "goose-macros"))]
         let prepared = engine.evaluate_unit(&source);
         let function = prepared.map_err(|e| e.to_string())?;
-        let function = std::sync::Arc::new(bootstrap.own(engine, function));
+        // Without a bootstrap, as on the Goose compiler path, the owner
+        // releases nothing: the function goes with its engine, as one of
+        // another engine than the bootstrap's always has.
+        let function = std::sync::Arc::new(match &bootstrap {
+            Some(bootstrap) => bootstrap.own(engine, function),
+            None => MacroValue {
+                id: function,
+                dropped: None,
+            },
+        });
         let code = std::sync::Arc::new(MacroCode {
             tables,
             unit,
@@ -1828,8 +1866,11 @@ impl MacroHost {
             ));
         }
         // A macro installed from an artifact may be the compilation's first:
-        // its session starts as declaring one would have started it.
+        // its session starts as declaring one would have started it. The
+        // Goose compiler path's engine is the Goose evaluator alone
+        // (light-cljs-778).
         if self.engine.bootstrap.is_none()
+            && !self.goose_path()
             && matches!(
                 declaration.function,
                 MacroFunction::Installed(_) | MacroFunction::Published(_)
@@ -1847,12 +1888,11 @@ impl MacroHost {
                 session.attach(bootstrap, self)?;
             }
         }
-        let bootstrap = self
-            .engine
-            .bootstrap
-            .as_ref()
-            .ok_or("macro session failed")?
-            .clone();
+        let bootstrap = match &self.engine.bootstrap {
+            Some(bootstrap) => Some(bootstrap.clone()),
+            None if self.goose_path() => None,
+            None => return Err("macro session failed".into()),
+        };
         let (ns, name) = key.split_once('/').unwrap();
         #[cfg(feature = "goose-macros")]
         let goose = self.engine.goose.clone();
@@ -1872,7 +1912,11 @@ impl MacroHost {
             .as_deref()
             .map(|e| e as &dyn crate::evaluator::MacroEvaluator)
             .or(engine);
-        let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
+        let engine = match (engine, &bootstrap) {
+            (Some(engine), _) => engine,
+            (None, Some(bootstrap)) => bootstrap.evaluator.as_ref(),
+            (None, None) => return Err("macro session failed".into()),
+        };
         let function = declaration.function(engine, &self.engine)?;
         let reader_view;
         let env = match self.reader_view(&declaration, env, engine) {

@@ -2026,6 +2026,7 @@ fn generated_200k_complete_forms() {
             host.use_goose_source_macros(s.clone()).unwrap();
         }
         *GENERATED_FORMS.lock().unwrap() = Some(Vec::new());
+        let census = crate::engine_census::EngineCensus::now();
         let program = crate::compiler::analyze_namespace_entry_recorded(
             "workload.main",
             &[generated.join("src"), generated.join("macros")],
@@ -2038,6 +2039,12 @@ fn generated_200k_complete_forms() {
             },
         )
         .unwrap_or_else(|e| panic!("workers={workers}: {e}"));
+        // The Goose builds create no engine (light-cljs-778).
+        let created = crate::engine_census::EngineCensus::now().since(census);
+        assert!(
+            workers == 0 || created.is_empty(),
+            "workers={workers}: {created:?}"
+        );
         let mut requests = GENERATED_FORMS.lock().unwrap().take().unwrap();
         requests.sort_by_key(|r| {
             (
@@ -2130,4 +2137,254 @@ fn generated_200k_complete_forms() {
             "complete generated forms workers={workers}: 5226 expansions, 615 identities, {aliases} reference alias ambiguities, {anonymous} raw input/{inherited} common compiler input/{returned} returned anonymous-parameter checks, {scalars} scalar occurrence checks, closed"
         );
     }
+}
+
+/// The sources of a namespace build with a pool's worth of macro units:
+/// `m.macros` declares a helper and macros that call it, and each of eight
+/// namespaces expands `bump` inside eight definitions, deferred units the
+/// pool's workers take, each of which demands the helper; `body`, unless
+/// empty, replaces the first definition's body in `app.w0`, the first unit
+/// after the helper's, so that no unit before it in source order is still
+/// running when it fails.
+fn pooled_sources(body: &str) -> HashMap<String, String> {
+    let mut files = HashMap::new();
+    files.insert(
+        "m.macros".to_owned(),
+        "(ns m.macros)
+         (defn helper [xs] (mapv inc xs))
+         (defmacro bump [& xs] (list 'quote (helper (vec xs))))
+         (defmacro boom [] (nth [1] 10))
+         (defmacro spin [] (loop [i 0] (recur (inc i))))"
+            .to_owned(),
+    );
+    let mut main = String::from("(ns app.main (:require");
+    for n in 0..8 {
+        let mut source = format!("(ns app.w{n} (:require [m.macros :as m]))\n");
+        for d in 0..8 {
+            if n == 0 && d == 0 && !body.is_empty() {
+                source.push_str(&format!("(defn f{d} [] {body})\n"));
+            } else {
+                source.push_str(&format!("(defn f{d} [] (m/bump {n} {d}))\n"));
+            }
+        }
+        files.insert(format!("app.w{n}"), source);
+        main.push_str(&format!(" [app.w{n}]"));
+    }
+    main.push_str("))\n(def all [");
+    for n in 0..8 {
+        for d in 0..8 {
+            main.push_str(&format!(" (app.w{n}/f{d})"));
+        }
+    }
+    main.push_str("])\n");
+    files.insert("app.main".to_owned(), main);
+    files
+}
+/// Analyze and emit `app.main` of `files` at `slots` compiler slots, with
+/// the Goose session `goose` if any: the emitted JavaScript or the error,
+/// the build's stats and the engines the build created.
+fn pooled_build(
+    files: &HashMap<String, String>,
+    slots: usize,
+    goose: Option<&Arc<GooseSession>>,
+    options: EvaluatorOptions,
+) -> (
+    Result<String, String>,
+    crate::compile_stats::CompileStats,
+    crate::engine_census::EngineCensus,
+) {
+    let before = crate::engine_census::EngineCensus::now();
+    let provider = |request: &crate::source_provider::LoadRequest| {
+        let name = String::from_utf16_lossy(request.namespace.name());
+        let extension = if name.starts_with("m.") {
+            "cljc"
+        } else {
+            "cljs"
+        };
+        Ok(files.get(&name).map(|source| {
+            crate::source_provider::SourceInput::new(
+                format!("{}.{extension}", name.replace('.', "/")),
+                source.clone(),
+            )
+        }))
+    };
+    let mut host = crate::MacroHost::new();
+    host.evaluator_options = options;
+    if let Some(session) = goose {
+        host.use_goose_source_macros(session.clone()).unwrap();
+    }
+    let mut stats = crate::compile_stats::CompileStats::default();
+    let result = crate::compiler::analyze_namespace_entry_recorded_with_provider(
+        "app.main",
+        &provider,
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+        crate::compiler::EntryRecorders {
+            stats: Some(&mut stats),
+            slots: crate::scheduler::Slots::new(slots).unwrap(),
+            ..Default::default()
+        },
+    )
+    .map(|(program, _)| crate::emit_js(&program))
+    .map_err(|error| error.to_string());
+    drop(host);
+    let census = crate::engine_census::EngineCensus::now().since(before);
+    (result, stats, census)
+}
+
+/// A namespace build on the Goose compiler path at compiler slots 1/2/4/8
+/// declares and expands its macros, and its pool's Goose-bound workers
+/// analyze macro units that demand a helper, with no bootstrap: no V8
+/// platform request, V8 isolate, QuickJS runtime or Pants runtime
+/// (light-cljs-778). The output is the V8 build's. The census is
+/// process-wide: run sequentially (compiler.bb does).
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_namespace_pool_runs_no_engine() {
+    let files = pooled_sources("");
+    let (reference, _, _) = pooled_build(&files, 1, None, Default::default());
+    let reference = reference.unwrap();
+    for slots in [1, 2, 4, 8] {
+        let session = GooseSession::start(&runner(), slots).unwrap();
+        let (output, stats, census) =
+            pooled_build(&files, slots, Some(&session), Default::default());
+        assert_eq!(output.as_deref(), Ok(reference.as_str()), "slots={slots}");
+        assert!(census.is_empty(), "slots={slots}: {census:?}");
+        // One Goose job per macro call; the helper is demanded by name.
+        assert_eq!(session.stats().jobs, 64, "slots={slots}");
+        let trace = session.trace();
+        assert!(
+            trace.iter().any(|line| line.starts_with("NEED ")),
+            "slots={slots}: {trace:?}"
+        );
+        let units = stats.deferred_units;
+        if slots > 1 {
+            // Every worker is Goose-bound, with no isolate, and some
+            // analyzed units that expand `bump`.
+            assert_eq!(units.pool_workers, slots - 1, "slots={slots}");
+            assert_eq!(units.pool_engine_workers, slots - 1, "slots={slots}");
+            assert_eq!(units.worker_isolates, 0, "slots={slots}");
+            assert!(units.pooled > 0, "slots={slots}: {units:?}");
+            assert!(
+                units.pool_engine_participants > 0,
+                "slots={slots}: {units:?}"
+            );
+            assert_eq!(units.engine_less_units, 0, "slots={slots}: {units:?}");
+        }
+        session.close();
+        cleaned(&session);
+    }
+}
+
+/// On the Goose compiler path at compiler slots 1/2/4/8, a macro that
+/// throws, one the Goose VM faults, a build past its deadline and one
+/// cancelled while its macros run, each with definitions a worker may
+/// analyze, fail with their error, tear the Goose session down, join every
+/// native thread, and create no engine (light-cljs-778).
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_namespace_pool_failure_and_cancellation_tear_down() {
+    for (body, expected) in [
+        ("(m/boom)", "macro m.macros/boom: Goose"),
+        ("(m/spin)", "Fault.InstructionLimit"),
+        ("", "deadline"),
+        ("", "cancelled"),
+    ] {
+        let files = pooled_sources(body);
+        for slots in [1, 2, 4, 8] {
+            let session =
+                GooseSession::start_mode(&runner(), slots, Some("readiness-test")).unwrap();
+            let options = EvaluatorOptions {
+                timeout: Duration::from_millis(if expected == "deadline" { 1 } else { 60_000 }),
+                ..Default::default()
+            };
+            // The session's control, which this evaluator makes, is the
+            // build's: it is cancelled at a later check, once some of the
+            // build's Goose jobs have run.
+            let control = GooseEvaluator::new(session.clone(), &options)
+                .unwrap()
+                .control();
+            if expected == "cancelled" {
+                control.cancel_after_checks(40);
+            }
+            let (output, _, census) = pooled_build(&files, slots, Some(&session), options);
+            let error = output.unwrap_err();
+            assert!(error.contains(expected), "{body} slots={slots}: {error}");
+            if expected == "cancelled" {
+                let jobs = session.stats().jobs;
+                assert!(jobs > 0 && jobs < 64, "slots={slots}: {jobs} jobs");
+            }
+            assert!(census.is_empty(), "{body} slots={slots}: {census:?}");
+            // The pool's threads are joined once the build returns. A Goose
+            // call that failed closed the session; one the analysis stopped
+            // before any call is its owner's to close, as the CLI's is.
+            let closed = session.process.lock().unwrap().is_none();
+            assert!(closed || expected == "deadline", "{expected} slots={slots}");
+            session.close();
+            cleaned(&session);
+            let trace = session.trace();
+            assert!(trace.iter().any(|s| s == "CLOSED 1"), "{trace:?}");
+            assert_eq!(
+                trace.iter().find(|s| s.starts_with("THREADS ")).unwrap(),
+                &format!(
+                    "THREADS 0 {} {} {}",
+                    slots * 2 + 2,
+                    slots * 2 + 2,
+                    slots * 2 + 1
+                ),
+                "{body} slots={slots}"
+            );
+        }
+    }
+}
+
+/// Fresh unit isolates, the reference for persistent V8 isolates, have no
+/// meaning on the Goose compiler path, which runs none: a pooled build
+/// asking for them fails with a named error before its pool starts, and
+/// creates no engine (light-cljs-778).
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_refuses_fresh_unit_isolates() {
+    let session = GooseSession::start(&runner(), 2).unwrap();
+    let mut host = crate::MacroHost::new();
+    host.use_goose_source_macros(session.clone()).unwrap();
+    let census = crate::engine_census::EngineCensus::now();
+    let provider = |request: &crate::source_provider::LoadRequest| {
+        let name = String::from_utf16_lossy(request.namespace.name());
+        Ok((name == "app.main").then(|| {
+            crate::source_provider::SourceInput::new("app/main.cljs", "(ns app.main) (defn f [] 1)")
+        }))
+    };
+    let error = crate::compiler::analyze_namespace_entry_recorded_with_provider(
+        "app.main",
+        &provider,
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+        crate::compiler::EntryRecorders {
+            slots: crate::scheduler::Slots::new(2).unwrap(),
+            perturbation: Some(crate::scheduler::Perturbation {
+                fresh_isolates: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+    .map(drop)
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains(crate::compilation_session::GOOSE_FRESH_ERROR),
+        "{error}"
+    );
+    assert!(
+        crate::engine_census::EngineCensus::now()
+            .since(census)
+            .is_empty()
+    );
+    drop(host);
+    session.close();
+    cleaned(&session);
 }
