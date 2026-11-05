@@ -398,6 +398,12 @@ struct Catalog {
     unit_order: Option<std::collections::BTreeMap<crate::effect_lanes::UnitOrder, usize>>,
     bindings: HashMap<String, (VarId, usize)>,
     journal: RegistrationJournal,
+    /// The roots `journal` registers, which the Goose compiler path reads.
+    #[cfg(any(all(test, light_v8), feature = "goose-macros"))]
+    roots: RootIndex,
+    /// How many root reads [`SharedCatalog::resolve_root`] answered.
+    #[cfg(any(all(test, light_v8), feature = "goose-macros"))]
+    root_resolutions: usize,
     /// By the slot each view joined with ([`SharedCatalog::join`]).
     threads: Vec<AnalysisThread>,
     /// How many threads wait for a unit another thread analyzes.
@@ -601,6 +607,124 @@ impl RegistrationJournal {
         }
         self.registrations.push(registration);
         self.registrations.len()
+    }
+}
+/// What the V8 registry (`src/compiler_roots.js`) holds for a name from one
+/// journal position on, as far as resolving a root read needs.
+#[cfg(any(all(test, light_v8), feature = "goose-macros"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RootSlot {
+    /// A root with its unit, or a declaration without one. `over_group`: a
+    /// `defonce` that replaced a group bundle's slot, which the registry
+    /// reads first while that bundle has the product (`oncePrevious`).
+    Root {
+        unit: Option<usize>,
+        over_group: bool,
+    },
+    /// A declaration bundle's product.
+    Bundle { group: bool },
+}
+#[cfg(any(all(test, light_v8), feature = "goose-macros"))]
+impl RootSlot {
+    /// Whether the registry's slot has a unit (`slot.unit !== null`): a
+    /// bundle's slot does, with unit -1.
+    fn defined(self) -> bool {
+        !matches!(self, Self::Root { unit: None, .. })
+    }
+}
+/// The compiler-owned index of compile-time roots that the Goose compiler
+/// path resolves `__lightCompilerRoots[name]` reads from: by qualified
+/// name, the slot history by journal position, kept in the catalog and
+/// updated where each registration is recorded, with the rules of
+/// `__lightRegisterUnit` and `__lightRegisterBundle` in compiler_roots.js.
+/// A read resolves against a visibility point, the journal position that the
+/// same thread's V8 registry would have installed, without replaying the journal.
+#[cfg(any(all(test, light_v8), feature = "goose-macros"))]
+#[derive(Default)]
+pub(crate) struct RootIndex {
+    slots: HashMap<String, Vec<(usize, RootSlot)>>,
+}
+#[cfg(any(all(test, light_v8), feature = "goose-macros"))]
+impl RootIndex {
+    fn current(&self, name: &str) -> Option<RootSlot> {
+        self.slots.get(name)?.last().map(|&(_, slot)| slot)
+    }
+    fn set(&mut self, name: &str, position: usize, slot: RootSlot) {
+        let history = match self.slots.get_mut(name) {
+            Some(history) => history,
+            None => self.slots.entry(name.to_owned()).or_default(),
+        };
+        match history.last_mut() {
+            // A bundle naming a product twice sets it once.
+            Some(last) if last.0 == position => last.1 = slot,
+            _ => history.push((position, slot)),
+        }
+    }
+    /// Note the registration recorded at journal `position`.
+    fn record(&mut self, position: usize, registration: &Registration) {
+        match registration {
+            Registration::Root(name, unit, _, once, _) => {
+                let old = self.current(name);
+                // A declaration without a unit never replaces a slot, and a
+                // `defonce` keeps one with a unit unless a group bundle's.
+                if unit.is_none() && old.is_some()
+                    || *once
+                        && old.is_some_and(|old| {
+                            old.defined() && old != RootSlot::Bundle { group: true }
+                        })
+                {
+                    return;
+                }
+                let over_group = *once && old == Some(RootSlot::Bundle { group: true });
+                let unit = *unit;
+                self.set(name, position, RootSlot::Root { unit, over_group });
+            }
+            Registration::Bundle(bundle) => {
+                // A `defonce`-like bundle whose every product is defined
+                // changes nothing.
+                if bundle.once
+                    && !bundle.products.is_empty()
+                    && bundle
+                        .products
+                        .iter()
+                        .all(|name| self.current(name).is_some_and(RootSlot::defined))
+                {
+                    return;
+                }
+                let group = bundle.group;
+                for name in &bundle.products {
+                    self.set(name, position, RootSlot::Bundle { group });
+                }
+            }
+        }
+    }
+    /// The unit of the root `name` names to the journal's registrations
+    /// before `position`, or why the Goose compiler path cannot read it. It
+    /// never falls back to an older root.
+    ///
+    /// Inside a root's initializer the V8 registry hides bundles registered
+    /// after that root (`declarationFrontier`). A `Need` names no reader, so
+    /// such a read resolves as a top-level one: to the bundle's error.
+    pub(crate) fn resolve(&self, name: &str, position: usize) -> Result<usize, String> {
+        let slot = self.slots.get(name).and_then(|history| {
+            let visible = history.partition_point(|&(at, _)| at < position);
+            visible.checked_sub(1).map(|last| history[last].1)
+        });
+        match slot {
+            None => Err(format!("compiler root is not registered: {name}")),
+            Some(RootSlot::Root { unit: None, .. }) => Err(format!(
+                "compiler root is not registered: {name} (declared without a definition)"
+            )),
+            Some(RootSlot::Root {
+                unit: Some(unit),
+                over_group: false,
+            }) => Ok(unit),
+            // A bundle's product, or a `defonce` over a group bundle,
+            // whose product the registry reads first.
+            Some(_) => Err(format!(
+                "{name} is a declaration-bundle product; bundle products and protocol extensions are not supported on the Goose compiler path"
+            )),
+        }
     }
 }
 impl Catalog {
@@ -1857,6 +1981,21 @@ impl SharedCatalog {
     pub(crate) fn extension_frontier(&self) -> usize {
         self.lock().journal.bundle_count
     }
+    /// The unit of the root a Goose `Need` names, resolved in the catalog's
+    /// [`RootIndex`] against the registrations before `visible`, or all of
+    /// them: the visibility point of the view that asks.
+    #[cfg(any(all(test, light_v8), feature = "goose-macros"))]
+    pub(crate) fn resolve_root(&self, name: &str, visible: Option<usize>) -> Result<usize, String> {
+        let mut c = self.lock();
+        c.root_resolutions += 1;
+        let position = visible.unwrap_or(c.journal.registrations.len());
+        c.roots.resolve(name, position)
+    }
+    /// How many root reads [`Self::resolve_root`] answered.
+    #[cfg(all(test, light_v8))]
+    pub(crate) fn root_resolutions(&self) -> usize {
+        self.lock().root_resolutions
+    }
     /// How many of them [`reaches_environment_data`].
     pub(crate) fn environment_bundles(&self) -> usize {
         self.lock().journal.environment_bundles
@@ -2029,6 +2168,10 @@ pub(crate) struct CompilationSession {
     owns_namespace_journal: Cell<bool>,
     #[cfg(feature = "bbp-macros")]
     namespace_seed: Option<crate::bbp_evaluator::CatalogSeed>,
+    /// The token of the Goose helper service this view installs
+    /// ([`Self::prepare_goose`]).
+    #[cfg(feature = "goose-macros")]
+    helper_owner: u64,
 }
 #[cfg(feature = "bbp-macros")]
 struct NamespaceJournal {
@@ -2147,6 +2290,8 @@ impl Default for CompilationSession {
             owns_namespace_journal: Cell::new(false),
             #[cfg(feature = "bbp-macros")]
             namespace_seed: None,
+            #[cfg(feature = "goose-macros")]
+            helper_owner: crate::goose_evaluator::helper_owner(),
         }
     }
 }
@@ -2462,6 +2607,12 @@ impl CompilationSession {
         read(&self.shared.lock().journal)
     }
     fn record_registration(&self, catalog: &mut Catalog, registration: Registration) -> usize {
+        // The index follows the shared journal, whose positions the
+        // visibility points of every view count.
+        #[cfg(any(all(test, light_v8), feature = "goose-macros"))]
+        catalog
+            .roots
+            .record(catalog.journal.registrations.len(), &registration);
         #[cfg(feature = "bbp-macros")]
         if self.owns_namespace_journal.get() {
             // The shared catalog retains the arrival log for unit allocation
@@ -2782,28 +2933,47 @@ impl CompilationSession {
         let end = self.with_journal(|journal| journal.registrations.len());
         self.install_registrations(end, |_| Ok(()))
     }
+    /// Give `evaluator`, once, the helper service through which Goose reads
+    /// compile-time roots (effect kind 9, the only effect the Goose compiler
+    /// path services): each `Need` names a root, which this view resolves in
+    /// the catalog's [`RootIndex`] and initializes. Nothing is replayed.
+    ///
+    /// What stays as it was: a unit's `extension_frontier` is Rust data, of
+    /// no effect Goose can observe, since bundles and protocol extensions
+    /// never run in Goose (the index names them as errors); compile-time
+    /// generated names stay in [`crate::generated_names`] scopes and the
+    /// Goose runtime's `gensym` stays an explicit fault; producer claims and
+    /// once-only helper production stay in Goose's coordinator; and the
+    /// `Need` event, `CodeIdentity` and `DefinitionKey` do not change.
     #[cfg(feature = "goose-macros")]
     pub(crate) fn prepare_goose(
         self: &Rc<Self>,
         evaluator: &crate::goose_evaluator::GooseEvaluator,
     ) -> Result<(), String> {
         let session = Rc::downgrade(self);
-        evaluator.install_helper(Rc::new(move |active, id| {
-            session
-                .upgrade()
-                .ok_or("compilation session expired")?
-                .compile_unit(active, id)
-        }));
-        self.with_journal(|journal| {
-            for registration in journal.registrations.iter() {
-                if let Registration::Root(name, unit, test, once, location) = registration {
-                    evaluator
-                        .register_compiler_root(name, *unit, *once, location, *test)
-                        .map_err(|e| e.to_string())?;
-                }
-            }
-            Ok(())
-        })
+        evaluator.install_helper(self.helper_owner, || {
+            Rc::new(move |active, name| {
+                let session = session.upgrade().ok_or("compilation session expired")?;
+                let unit = session.resolve_root(name)?;
+                session.compile_unit(active, unit).map(|code| (unit, code))
+            })
+        });
+        Ok(())
+    }
+    /// The unit of the root a Goose `Need` names, as the coordinator's
+    /// engine sees it: the whole journal at the time of the request, since
+    /// the coordinator's registry is caught up at every registration.
+    #[cfg(any(all(test, light_v8), feature = "goose-macros"))]
+    fn resolve_root(&self, name: &str) -> Result<usize, String> {
+        // A namespace writer's engine sees its own journal, which no
+        // index describes; the Goose compiler path has none.
+        #[cfg(feature = "bbp-macros")]
+        if self.owns_namespace_journal.get() {
+            return Err(format!(
+                "compiler root {name}: namespace-writer journals are not supported on the Goose compiler path"
+            ));
+        }
+        self.shared.resolve_root(name, None)
     }
     pub fn compilation_uses(&self) -> Vec<crate::analyzer::CompilationUse> {
         self.shared
@@ -4366,41 +4536,43 @@ pub(crate) struct WorkerView {
     /// The worker's host ([`MacroHost::bind`]), whose binding each unit's
     /// analysis frame is taken from.
     host: MacroHost,
-    /// How many of the catalog's registrations the host's engine holds.
+    /// How many of the catalog's registrations the host's engine holds:
+    /// the visibility point of the roots the view resolves for Goose
+    /// ([`Self::resolve_root`]), kept with or without an engine.
     installed: Cell<usize>,
+    /// The token of the Goose helper service this view installs
+    /// ([`Self::prepare_goose`]).
+    #[cfg(feature = "goose-macros")]
+    helper_owner: u64,
     /// Whether its `light.build` requests go to the coordinator: a pool
     /// worker's ([`SharedCatalog::forward_build`]).
     forwards: Cell<bool>,
 }
 #[cfg_attr(not(test), allow(dead_code))]
 impl WorkerView {
+    /// [`CompilationSession::prepare_goose`] for a worker, whose roots
+    /// resolve at its cursor.
     #[cfg(feature = "goose-macros")]
     pub(crate) fn prepare_goose(
         self: &Rc<Self>,
         evaluator: &crate::goose_evaluator::GooseEvaluator,
     ) -> Result<(), String> {
         let view = Rc::downgrade(self);
-        evaluator.install_helper(Rc::new(move |active, id| {
-            view.upgrade()
-                .ok_or("compiler worker expired")?
-                .compile_unit(active, id)
-        }));
-        let registrations: Vec<_> = self
-            .shared
-            .lock()
-            .journal
-            .registrations
-            .iter()
-            .cloned()
-            .collect();
-        for registration in registrations {
-            if let Registration::Root(name, unit, test, once, location) = registration {
-                evaluator
-                    .register_compiler_root(&name, unit, once, &location, test)
-                    .map_err(|e| e.to_string())?;
-            }
-        }
+        evaluator.install_helper(self.helper_owner, || {
+            Rc::new(move |active, name| {
+                let view = view.upgrade().ok_or("compiler worker expired")?;
+                let unit = view.resolve_root(name)?;
+                view.compile_unit(active, unit).map(|code| (unit, code))
+            })
+        });
         Ok(())
+    }
+    /// The unit of the root a Goose `Need` names, as this thread's engine
+    /// sees it: the registrations before the view's cursor, which
+    /// [`Self::install`] advances.
+    #[cfg(any(all(test, light_v8), feature = "goose-macros"))]
+    fn resolve_root(&self, name: &str) -> Result<usize, String> {
+        self.shared.resolve_root(name, Some(self.installed.get()))
     }
     /// A view of `shared` for this thread, which analyzes in frames of
     /// `host`. If the host has an engine, the engine reaches the view
@@ -4421,6 +4593,8 @@ impl WorkerView {
                 host,
                 installed: Cell::new(0),
                 forwards: Cell::new(false),
+                #[cfg(feature = "goose-macros")]
+                helper_owner: crate::goose_evaluator::helper_owner(),
             }
         });
         if let Some(bootstrap) = &view.host.engine.bootstrap {
@@ -4437,8 +4611,23 @@ impl WorkerView {
     /// helper is compiled: it gets the registrations, and the engine still
     /// lacks them and takes them at its next analysis. (A legacy engine's
     /// nested demand runs in the engine itself.)
+    ///
+    /// The cursor, `installed`, is also the point to which the view resolves
+    /// roots for Goose ([`Self::resolve_root`]), and advances here whether or
+    /// not the view has an engine. Goose holds no registrations: a demand from
+    /// it installs nothing and leaves the cursor where this thread's engine
+    /// is, as a native producer's demand does.
     fn install(&self, active: Option<&dyn MacroEvaluator>) -> Result<(), String> {
+        #[cfg(feature = "goose-macros")]
+        if active.is_some_and(|active| active.source_only()) {
+            return Ok(());
+        }
         let Some(bootstrap) = &self.host.engine.bootstrap else {
+            #[cfg(any(all(test, light_v8), feature = "goose-macros"))]
+            if active.is_none_or(|active| !active.has_native_bridge()) {
+                self.installed
+                    .set(self.shared.lock().journal.registrations.len());
+            }
             return Ok(());
         };
         let producer = active.is_some_and(|active| {
@@ -8046,5 +8235,313 @@ mod worker_tests {
                 .iter()
                 .all(|t| t.stack.is_empty() && t.waiting.is_none())
         );
+    }
+}
+#[cfg(all(test, light_v8))]
+mod root_index_tests {
+    //! The catalog's [`RootIndex`] against the V8 registry it replaces on
+    //! the Goose compiler path: the same registration sequences, driven
+    //! into a V8 engine prepared as the session prepares one and into the
+    //! index, resolve every visible root to the same unit, and the index
+    //! names its error exactly where V8 resolves a bundle product.
+    use super::*;
+
+    /// Added to a bundle's unit ID to make the value of its products.
+    const BUNDLE: usize = 100_000;
+
+    /// A catalog view whose units initialize to their own IDs, and whose
+    /// bundles install each product as `BUNDLE` plus the bundle's unit.
+    struct Recorder {
+        asked: RefCell<Vec<usize>>,
+        bundles: HashMap<usize, Vec<String>>,
+    }
+    impl CatalogView for Recorder {
+        fn compile_unit(&self, _: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
+            self.asked.borrow_mut().push(id);
+            Ok(match self.bundles.get(&id) {
+                Some(products) => {
+                    let installs = products
+                        .iter()
+                        .map(|name| format!("products[{name:?}] = {};", BUNDLE + id))
+                        .collect::<String>();
+                    format!(
+                        "rt => {{ const products = globalThis.__lightCompilerBundleProducts; {installs} return null; }}"
+                    )
+                }
+                None => format!("rt => {id}"),
+            })
+        }
+        fn unit_source(&self, _: usize) -> Option<u32> {
+            None
+        }
+        fn analysis_sources(&self) -> Vec<u32> {
+            Vec::new()
+        }
+    }
+
+    fn root(name: &str, unit: Option<usize>, once: bool) -> Registration {
+        Registration::Root(name.into(), unit, None, once, format!("{name}.cljs"))
+    }
+    fn bundle(products: &[&str], unit: usize, once: bool, group: bool) -> Registration {
+        Registration::Bundle(Arc::new(BundleRecord {
+            products: products.iter().map(|&name| name.into()).collect(),
+            unit,
+            extensions: Vec::new(),
+            location: "bundle.cljs".into(),
+            once,
+            group,
+        }))
+    }
+
+    /// What a read resolves to.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Read {
+        Unit(usize),
+        /// A product of the bundle with this unit.
+        Bundle(usize),
+        Unavailable,
+    }
+
+    /// What a V8 engine prepared through the session reads for each of
+    /// `names` once `registrations` are installed in it.
+    fn v8_reads(registrations: &[Registration], names: &[&str]) -> Vec<Read> {
+        let evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator> =
+            Rc::new(crate::v8_evaluator::V8Evaluator::new(Default::default()).unwrap());
+        let bundles = registrations
+            .iter()
+            .filter_map(|registration| match registration {
+                Registration::Bundle(bundle) => Some((bundle.unit, bundle.products.clone())),
+                Registration::Root(..) => None,
+            })
+            .collect();
+        let view = Rc::new(Recorder {
+            asked: RefCell::new(Vec::new()),
+            bundles,
+        });
+        let weak = Rc::downgrade(&view) as std::rc::Weak<Recorder>;
+        prepare_engine(&evaluator, weak, &MacroHost::new().engine).unwrap();
+        install_registrations(evaluator.as_ref(), 0, registrations, |_| Ok(())).unwrap();
+        names
+            .iter()
+            .map(|name| {
+                let value = evaluator
+                    .evaluate_js(&format!(
+                        "(() => {{ try {{ return globalThis.__lightCompilerRoots[{name:?}]; }} catch (error) {{ if (!String(error.message).includes('unavailable definition: ')) throw error; return -1; }} }})()"
+                    ))
+                    .unwrap();
+                let n = evaluator.number(value).unwrap();
+                evaluator.release(value).unwrap();
+                let read = match n {
+                    n if n < 0.0 => Read::Unavailable,
+                    n if n as usize >= BUNDLE => Read::Bundle(n as usize - BUNDLE),
+                    n => Read::Unit(n as usize),
+                };
+                // The engine asked its view for exactly the unit it read.
+                if let Read::Unit(unit) | Read::Bundle(unit) = read {
+                    assert!(view.asked.borrow().contains(&unit), "{name}: {read:?}");
+                }
+                read
+            })
+            .collect()
+    }
+
+    /// The index's answer for `name` as a [`Read`], with its message
+    /// checked. Its bundle error names no unit: `bundle` is the one V8
+    /// read, if any.
+    fn index_read(answer: Result<usize, String>, name: &str, bundle: Option<usize>) -> Read {
+        match answer {
+            Ok(unit) => Read::Unit(unit),
+            Err(error) if error.contains("is a declaration-bundle product") => {
+                assert_eq!(
+                    error,
+                    format!(
+                        "{name} is a declaration-bundle product; bundle products and protocol extensions are not supported on the Goose compiler path"
+                    )
+                );
+                Read::Bundle(bundle.unwrap_or(usize::MAX))
+            }
+            Err(error) => {
+                assert!(
+                    error.starts_with(&format!("compiler root is not registered: {name}")),
+                    "{error}"
+                );
+                Read::Unavailable
+            }
+        }
+    }
+
+    /// Record `registrations` in `session`'s catalog, as registering does.
+    fn record(session: &CompilationSession, registrations: &[Registration]) {
+        for registration in registrations {
+            session.record_registration(&mut session.shared.lock(), registration.clone());
+        }
+    }
+
+    /// The index resolves each of `names` as `v8` read it, through `resolve`.
+    fn index_reads(
+        names: &[&str],
+        v8: &[Read],
+        resolve: &dyn Fn(&str) -> Result<usize, String>,
+    ) -> Vec<Read> {
+        names
+            .iter()
+            .zip(v8)
+            .map(|(name, v8)| {
+                let bundle = match v8 {
+                    Read::Bundle(unit) => Some(*unit),
+                    _ => None,
+                };
+                index_read(resolve(name), name, bundle)
+            })
+            .collect()
+    }
+
+    /// V8 and the index both read `expected` after `registrations`.
+    fn agree(case: &str, registrations: &[Registration], expected: &[(&str, Read)]) {
+        let names = expected.iter().map(|&(name, _)| name).collect::<Vec<_>>();
+        let expected = expected.iter().map(|&(_, read)| read).collect::<Vec<_>>();
+        let v8 = v8_reads(registrations, &names);
+        assert_eq!(v8, expected, "{case}: V8");
+        let session = CompilationSession::default();
+        record(&session, registrations);
+        let index = index_reads(&names, &v8, &|name| session.resolve_root(name));
+        assert_eq!(index, expected, "{case}: index");
+    }
+
+    #[test]
+    fn the_root_index_resolves_as_the_v8_registry_does() {
+        use Read::{Bundle, Unavailable, Unit};
+        agree(
+            "plain root",
+            &[root("t/a", Some(1), false)],
+            &[("t/a", Unit(1)), ("t/b", Unavailable)],
+        );
+        agree(
+            "redefinition",
+            &[root("t/a", Some(1), false), root("t/a", Some(2), false)],
+            &[("t/a", Unit(2))],
+        );
+        agree(
+            "defonce over a defined name",
+            &[root("t/a", Some(1), false), root("t/a", Some(2), true)],
+            &[("t/a", Unit(1))],
+        );
+        agree(
+            "defonce over a declared name",
+            &[root("t/a", None, false), root("t/a", Some(2), true)],
+            &[("t/a", Unit(2))],
+        );
+        agree(
+            "defonce over an absent name",
+            &[root("t/a", Some(2), true)],
+            &[("t/a", Unit(2))],
+        );
+        agree(
+            "declaration without a unit",
+            &[
+                root("t/a", None, false),
+                root("t/b", Some(1), false),
+                root("t/b", None, false),
+            ],
+            &[("t/a", Unavailable), ("t/b", Unit(1))],
+        );
+        agree(
+            "bundle product over a root",
+            &[
+                root("t/a", Some(1), false),
+                bundle(&["t/a", "t/b"], 10, false, false),
+            ],
+            &[("t/a", Bundle(10)), ("t/b", Bundle(10))],
+        );
+        agree(
+            "defonce over a bundle product",
+            &[
+                bundle(&["t/a"], 10, false, false),
+                root("t/a", Some(2), true),
+            ],
+            &[("t/a", Bundle(10))],
+        );
+        agree(
+            "group bundle",
+            &[
+                root("t/a", Some(1), false),
+                bundle(&["t/a", "t/b"], 11, false, true),
+            ],
+            &[("t/a", Bundle(11)), ("t/b", Bundle(11))],
+        );
+        agree(
+            "defonce over a group bundle product",
+            &[
+                bundle(&["t/a"], 11, false, true),
+                root("t/a", Some(3), true),
+            ],
+            &[("t/a", Bundle(11))],
+        );
+        agree(
+            "redefinition after a bundle",
+            &[
+                bundle(&["t/a"], 10, false, false),
+                root("t/a", Some(2), false),
+            ],
+            &[("t/a", Unit(2))],
+        );
+        agree(
+            "once bundle over defined products",
+            &[
+                root("t/a", Some(1), false),
+                bundle(&["t/a"], 12, true, false),
+            ],
+            &[("t/a", Unit(1))],
+        );
+        agree(
+            "once bundle over some undefined products",
+            &[
+                root("t/a", Some(1), false),
+                root("t/b", None, false),
+                bundle(&["t/a", "t/b"], 12, true, false),
+            ],
+            &[("t/a", Bundle(12)), ("t/b", Bundle(12))],
+        );
+    }
+
+    #[test]
+    fn a_worker_resolves_roots_at_its_cursor_and_the_coordinator_at_the_journal() {
+        use Read::{Bundle, Unavailable, Unit};
+        let before = [root("t/a", Some(1), false), root("t/b", Some(2), false)];
+        let after = [
+            root("t/a", Some(3), false),
+            bundle(&["t/b"], 10, false, false),
+            root("t/c", Some(4), false),
+        ];
+        let all = before.iter().chain(&after).cloned().collect::<Vec<_>>();
+        let names = ["t/a", "t/b", "t/c"];
+        let session = CompilationSession::default();
+        record(&session, &before);
+        // A worker, with no engine, starts an analysis here.
+        let view = WorkerView::new(session.shared.clone(), MacroHost::new()).unwrap();
+        view.install(None).unwrap();
+        record(&session, &after);
+        // The worker's engine would hold the registrations before its cursor.
+        let worker = v8_reads(&before, &names);
+        assert_eq!(worker, [Unit(1), Unit(2), Unavailable]);
+        assert_eq!(
+            index_reads(&names, &worker, &|name| view.resolve_root(name)),
+            worker
+        );
+        // The coordinator's holds them all.
+        let coordinator = v8_reads(&all, &names);
+        assert_eq!(coordinator, [Unit(3), Bundle(10), Unit(4)]);
+        assert_eq!(
+            index_reads(&names, &coordinator, &|name| session.resolve_root(name)),
+            coordinator
+        );
+        // The worker's next analysis takes the rest.
+        view.install(None).unwrap();
+        assert_eq!(
+            index_reads(&names, &coordinator, &|name| view.resolve_root(name)),
+            coordinator
+        );
+        // Each read was resolved on its own, with no replay.
+        assert_eq!(session.shared.root_resolutions(), 9);
     }
 }

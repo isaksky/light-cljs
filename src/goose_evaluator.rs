@@ -584,7 +584,16 @@ enum DefinitionKey {
     Anonymous(u64),
     Helper(usize),
 }
-type HelperService = Rc<dyn Fn(&dyn MacroEvaluator, usize) -> Result<String, String>>;
+/// The compiler's answer to a `Need` for a compile-time root by name: the
+/// root's unit and its initializer, resolved by the catalog view that
+/// installed it ([`crate::compilation_session::RootIndex`]). Goose never
+/// holds a copy of the registrations.
+type HelperService = Rc<dyn Fn(&dyn MacroEvaluator, &str) -> Result<(usize, String), String>>;
+/// A token naming a catalog view that installs a helper service, unique
+/// in the process, so that a view installs its service once per evaluator.
+pub(crate) fn helper_owner() -> u64 {
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
 /// A thread-local compiler view with session/version-scoped, non-reused handles.
 pub struct GooseEvaluator {
     session: Arc<GooseSession>,
@@ -592,8 +601,10 @@ pub struct GooseEvaluator {
     slots: RefCell<HashMap<u64, Stored>>,
     next: Cell<u64>,
     control: ExecutionControl,
-    helper: RefCell<Option<HelperService>>,
-    roots: RefCell<HashMap<String, usize>>,
+    /// The helper service and the token of the view that installed it.
+    helper: RefCell<Option<(u64, HelperService)>>,
+    /// How many times a helper service was installed.
+    helper_installs: Cell<usize>,
     budget: RefCell<Option<Rc<bridge::Budget>>>,
     functions: RefCell<HashMap<usize, ValueId>>,
     #[cfg(test)]
@@ -615,7 +626,7 @@ impl GooseEvaluator {
             next: Cell::new(0),
             control,
             helper: RefCell::new(None),
-            roots: RefCell::new(HashMap::new()),
+            helper_installs: Cell::new(0),
             budget: RefCell::new(None),
             functions: RefCell::new(HashMap::new()),
             #[cfg(test)]
@@ -657,8 +668,24 @@ impl GooseEvaluator {
             .cloned()
             .ok_or_else(|| error("released handle"))
     }
-    pub(crate) fn install_helper(&self, helper: HelperService) {
-        *self.helper.borrow_mut() = Some(helper);
+    /// Install the helper service of the view `owner` names, unless it is
+    /// already the installed one: nothing is replayed per macro call.
+    pub(crate) fn install_helper(&self, owner: u64, helper: impl FnOnce() -> HelperService) {
+        if self
+            .helper
+            .borrow()
+            .as_ref()
+            .is_some_and(|(installed, _)| *installed == owner)
+        {
+            return;
+        }
+        *self.helper.borrow_mut() = Some((owner, helper()));
+        self.helper_installs.set(self.helper_installs.get() + 1);
+    }
+    /// How many times a helper service was installed.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn helper_installs(&self) -> usize {
+        self.helper_installs.get()
     }
 }
 impl MacroEvaluator for GooseEvaluator {
@@ -681,19 +708,6 @@ impl MacroEvaluator for GooseEvaluator {
         Ok(())
     }
     fn gensym_scope(&self, _: u64, _: &str, _: &str, _: bool) -> Result<(), EvalError> {
-        Ok(())
-    }
-    fn register_compiler_root(
-        &self,
-        name: &str,
-        unit: Option<usize>,
-        _: bool,
-        _: &str,
-        _: Option<usize>,
-    ) -> Result<(), EvalError> {
-        if let Some(unit) = unit {
-            self.roots.borrow_mut().insert(name.to_owned(), unit);
-        }
         Ok(())
     }
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
@@ -751,23 +765,19 @@ impl MacroEvaluator for GooseEvaluator {
             self.session
                 .bridge_ns
                 .fetch_add(bridged.elapsed().as_nanos() as u64, Ordering::Relaxed);
-            let bytes =
-                self.session
-                    .execute(key, &source, &graph, &self.control, |name| {
-                        #[cfg(test)]
-                        thread::sleep(self.helper_delay.get());
-                        let unit = self.roots.borrow().get(name).copied().ok_or_else(|| {
-                            error(format!("compiler root is not registered: {name}"))
-                        })?;
-                        let helper = self
-                            .helper
-                            .borrow()
-                            .clone()
-                            .ok_or_else(|| error("compiler service is not installed"))?;
-                        helper(self, unit)
-                            .map(|source| (unit, source))
-                            .map_err(error)
-                    })?;
+            let bytes = self
+                .session
+                .execute(key, &source, &graph, &self.control, |name| {
+                    #[cfg(test)]
+                    thread::sleep(self.helper_delay.get());
+                    let helper = self
+                        .helper
+                        .borrow()
+                        .as_ref()
+                        .map(|(_, helper)| helper.clone())
+                        .ok_or_else(|| error("compiler service is not installed"))?;
+                    helper(self, name).map_err(error)
+                })?;
             Ok(self.store(Stored::Result(
                 bytes,
                 Arc::new(graph.originals),

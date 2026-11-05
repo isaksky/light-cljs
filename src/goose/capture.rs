@@ -1343,3 +1343,52 @@ fn goose_compiler_pipeline() {
 #[cfg(feature = "goose-macros")]
 #[path = "benchmark.rs"]
 mod benchmark;
+
+/// The compiler answers each Goose `Need` for a helper root by one lookup in
+/// the catalog's root index, and installs the helper service once: however
+/// many registrations precede them, macro calls replay nothing.
+#[cfg(feature = "goose-macros")]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_resolves_helper_roots_per_need_without_replay() {
+    let runner = std::path::PathBuf::from(
+        std::env::var_os("GOOSE_COMPILER_RUNNER").expect("run bb crates/big-boy-pants-js/scripts/compiler.bb"),
+    );
+    let mut source = String::new();
+    for i in 0..64 {
+        source.push_str(&format!("(def filler-{i} {i})\n"));
+    }
+    source.push_str("(defn helper [xs] (mapv inc xs))\n(defmacro m [xs] (list (quote quote) (helper xs)))\n");
+    let calls = 12;
+    for i in 0..calls {
+        source.push_str(&format!("(def call-{i} (m [{i}]))\n"));
+    }
+    let session = crate::goose_evaluator::GooseSession::start(&runner, 2).unwrap();
+    let mut host = MacroHost::new();
+    host.use_goose_source_macros(session.clone()).unwrap();
+    let _names = crate::generated_names::enter_namespace(0);
+    crate::analyzer::analyze_named_with_macro_warnings(
+        "helpers.cljs",
+        &source,
+        &crate::parse(&source).unwrap(),
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let compilation = host.session_handle().unwrap();
+    let catalog = compilation.shared().clone();
+    let (_, registrations, _) = compilation.capture_marks();
+    let needs = session
+        .trace()
+        .iter()
+        .filter(|line| line.starts_with("NEED "))
+        .count();
+    assert!(needs > 0);
+    assert!(registrations > 64);
+    // One resolution per Need, not per call times the journal.
+    assert_eq!(catalog.root_resolutions(), needs);
+    assert_eq!(host.engine.goose.as_ref().unwrap().helper_installs(), 1);
+    assert_eq!(session.stats().jobs, calls as u64);
+    session.close();
+}

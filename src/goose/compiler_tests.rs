@@ -32,6 +32,28 @@ fn inputs(e: &GooseEvaluator, source: &str) -> (ValueId, Vec<ValueId>, Form) {
         .unwrap();
     (function, vec![call, env], form)
 }
+/// Install a helper service that resolves the fixture's `roots` by name,
+/// as the compiler's catalog index does, and gives each the initializer
+/// `initialize` returns for its unit.
+fn serve(
+    e: &GooseEvaluator,
+    roots: &[(&str, usize)],
+    initialize: impl Fn(usize) -> Result<String, String> + 'static,
+) {
+    let roots: HashMap<String, usize> = roots
+        .iter()
+        .map(|&(name, unit)| (name.to_owned(), unit))
+        .collect();
+    let initialize = Rc::new(initialize);
+    e.install_helper(crate::goose_evaluator::helper_owner(), move || {
+        Rc::new(move |_, name| {
+            let unit = *roots
+                .get(name)
+                .ok_or_else(|| format!("compiler root is not registered: {name}"))?;
+            initialize(unit).map(|code| (unit, code))
+        })
+    });
+}
 fn cleaned(s: &GooseSession) {
     assert!(s.process.lock().unwrap().is_none());
     assert!(s.readers.lock().unwrap().is_empty());
@@ -354,14 +376,12 @@ fn goose_compiler_mapseq_helper_no_replay() {
             return calls===3 && order===123 && __rt.cljCount(second)===6 && __rt.formValue(__rt.cljNth(first,1))===40;
         }"#;
         let (f, args, call) = inputs(&e, source);
-        e.register_compiler_root("fixture/mapseq", Some(42), true, "mapseq.cljs", None)
-            .unwrap();
         let called = Rc::new(Cell::new(0));
         let counter = called.clone();
-        e.install_helper(Rc::new(move |_, _| {
+        serve(&e, &[("fixture/mapseq", 42)], move |_| {
             counter.set(counter.get() + 1);
             Ok("rt => {let x=0;for(let i=0;i<40;i++)x++;return x;}".into())
-        }));
+        });
         for _ in 0..3 {
             let result = e.call(f, &args).unwrap();
             let result = e
@@ -552,14 +572,12 @@ fn goose_compiler_arguments_across_helper_suspension() {
         let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
         let source = "rt => { function keep(a) { return () => arguments; } const prepared=keep(17,18); return (form,env) => { const saved=keep(7,8); function inner(a,...rest) { const value=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/wrapped'); return value+arguments.length+arguments[0]+rest[0]+saved()[1]; } const wrapped=__rt.fnApplyNull(inner); const result=wrapped.call(null,2,3,4); return result+prepared()[0]+(__rt.fnApplyReceiver(wrapped)===null?0:1000); }; }";
         let (f, args, call) = inputs(&e, source);
-        e.register_compiler_root("fixture/wrapped", Some(42), true, "wrapper.cljs", None)
-            .unwrap();
         let called = Rc::new(Cell::new(0));
         let counter = called.clone();
-        e.install_helper(Rc::new(move |_, _| {
+        serve(&e, &[("fixture/wrapped", 42)], move |_| {
             counter.set(counter.get() + 1);
             Ok("rt => 40".into())
-        }));
+        });
         for _ in 0..3 {
             let result = e.call(f, &args).unwrap();
             let result = e
@@ -807,11 +825,9 @@ fn goose_compiler_prepared_definition_keeps_live_helper_contexts() {
             let (_, args, call) = inputs(&e, "rt => (form, env) => 0");
             let source = "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')";
             let f = e.source_macro_function(777, source).unwrap();
-            e.register_compiler_root("fixture/value", Some(unit), true, "fixture.cljs", None)
-                .unwrap();
             let callbacks = Rc::new(Cell::new(0));
             let calls = callbacks.clone();
-            e.install_helper(Rc::new(move |_, requested| {
+            serve(&e, &[("fixture/value", unit)], move |requested| {
                 assert_eq!(requested, unit);
                 calls.set(calls.get() + 1);
                 // The real compiler likewise has equivalent native/canonical
@@ -821,7 +837,7 @@ fn goose_compiler_prepared_definition_keeps_live_helper_contexts() {
                 } else {
                     format!("rt => ({} + 1)", unit - 1)
                 })
-            }));
+            });
             for invocation in 0..3 {
                 // Bootstrap ownership can release a declaring view's handle
                 // while another published declaration still holds its code.
@@ -1128,13 +1144,10 @@ fn goose_compiler_cancel_and_deadline_cleanup() {
             };
             let evaluator = GooseEvaluator::new(session.clone(), &options).unwrap();
             let (function, args, _) = inputs(&evaluator, source);
-            evaluator
-                .register_compiler_root("fixture/value", Some(0), true, "fixture.cljs", None)
-                .unwrap();
-            evaluator.install_helper(Rc::new(|_, _| {
+            serve(&evaluator, &[("fixture/value", 0)], |_| {
                 thread::sleep(Duration::from_millis(60));
                 Ok("rt => __rt.formVector(1)".into())
-            }));
+            });
             let control = evaluator.control();
             let s = session.clone();
             let cancelling = cancel.then(|| {
@@ -1548,8 +1561,6 @@ fn goose_compiler_readiness_delayed_helper_and_idle_close_cancel() {
             &e,
             "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')",
         );
-        e.register_compiler_root("fixture/value", Some(41), true, "fixture.cljs", None)
-            .unwrap();
         let s = session.clone();
         let (release, delayed) = mpsc::channel();
         let publishing = thread::spawn(move || {
@@ -1569,11 +1580,11 @@ fn goose_compiler_readiness_delayed_helper_and_idle_close_cancel() {
                 thread::yield_now();
             }
         });
-        e.install_helper(Rc::new(move |_, unit| {
+        serve(&e, &[("fixture/value", 41)], move |unit| {
             assert_eq!(unit, 41);
             delayed.recv_timeout(Duration::from_secs(10)).unwrap();
             Ok("rt => 41".into())
-        }));
+        });
         let result = e.call(function, &args).unwrap();
         publishing.join().unwrap();
         let output = e
@@ -1626,9 +1637,7 @@ fn goose_compiler_reclaims_inactive_waiters_between_batches() {
         &e,
         "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')",
     );
-    e.register_compiler_root("fixture/value", Some(41), true, "fixture.cljs", None)
-        .unwrap();
-    e.install_helper(Rc::new(|_, _| Ok("rt => 41".into())));
+    serve(&e, &[("fixture/value", 41)], |_| Ok("rt => 41".into()));
     for _ in 0..256 {
         let result = e.call(function, &args).unwrap();
         assert!(
@@ -1669,9 +1678,7 @@ fn goose_compiler_large_continuations_reclaim_across_batches() {
         &e,
         "rt => (form, env, x) => { const shared = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value'); return __rt.formVector(__rt.cljCount(x), shared); }",
     );
-    e.register_compiler_root("fixture/value", Some(41), true, "fixture.cljs", None)
-        .unwrap();
-    e.install_helper(Rc::new(|_, _| Ok("rt => 41".into())));
+    serve(&e, &[("fixture/value", 41)], |_| Ok("rt => 41".into()));
     let payload = Datum::new(DatumKind::Collection {
         kind: CollectionKind::Vector,
         children: (0..14_000)
@@ -1835,9 +1842,9 @@ fn goose_compiler_cancel_reaps_persistent_execution_workers() {
                 GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
             let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
             let (function, args, _) = inputs(&e, source);
-            e.register_compiler_root("fixture/infinite", Some(42), true, "cancel.cljs", None)
-                .unwrap();
-            e.install_helper(Rc::new(|_, _| Ok("rt => function(){while(true){}}".into())));
+            serve(&e, &[("fixture/infinite", 42)], |_| {
+                Ok("rt => function(){while(true){}}".into())
+            });
             let gate = if source.contains("fixture/infinite") {
                 "RESUME "
             } else {
@@ -1892,22 +1899,22 @@ fn goose_compiler_callable_nested_demand_aliases_and_no_replay() {
             return state.n===2 && f===alias && result===43;
         };}"#,
         );
-        for (name, unit) in [
+        let roots = [
             ("fixture/function", 42),
             ("fixture/alias", 42),
             ("fixture/number", 43),
-        ] {
-            e.register_compiler_root(name, Some(unit), true, "callable.cljs", None)
-                .unwrap();
-        }
+        ];
         let callbacks = Rc::new(Cell::new(0));
         let count = callbacks.clone();
-        e.install_helper(Rc::new(move |_, unit| {
-            count.set(count.get()+1);
+        serve(&e, &roots, move |unit| {
+            count.set(count.get() + 1);
             Ok(if unit == 42 {
                 "rt => function(state){state.n++; const n=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/number'); return this===null ? n+state.n : -100;}".into()
-            } else { assert_eq!(unit,43); "rt => 41".into() })
-        }));
+            } else {
+                assert_eq!(unit, 43);
+                "rt => 41".into()
+            })
+        });
         for _ in 0..3 {
             let result = e.call(f, &args).unwrap();
             let output = e
@@ -1966,9 +1973,7 @@ fn goose_compiler_callable_throw_and_publication_errors() {
                 "const f=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/throw');return f.call(null,form);"
             };
             let (f, args, call) = inputs(&e, &format!("rt => (form,env) => {{{body}}}"));
-            e.register_compiler_root("fixture/throw", Some(42), true, "throw.cljs", None)
-                .unwrap();
-            e.install_helper(Rc::new(move |_, _| Ok(helper.into())));
+            serve(&e, &[("fixture/throw", 42)], move |_| Ok(helper.into()));
             let result = e.call(f, &args);
             if let Some(expected) = expected {
                 let message = result.unwrap_err().to_string();
