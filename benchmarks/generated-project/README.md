@@ -98,14 +98,14 @@ bb benchmarks/generated-project/compare.bb /tmp/cljs-200k --light "$LIGHT" --run
 The pinned Goose comparison extends the same `compare.bb` command. It requires
 the exact seed-42/200k manifest, including every source and shim, and checks
 all five input/iteration pairs in the
-[target contract](../../crates/big-boy-pants-js/prototypes/goose/generated-200k.md).
+[target contract](../../crates/big-boy-pants-js/evidence/generated-200k.md).
 Build both executables outside measurement:
 
 ```sh
 export CARGO_TARGET_DIR="$PWD/target" GOOSE_HOME="$PWD/target/goose"
 export CARGO_BUILD_JOBS=3 LIGHT_CLJS_V8_CACHE=require
 cargo build --release --locked --features goose-macros --bin light-cljs
-goose build crates/big-boy-pants-js/prototypes/goose/compiler_session.goose -o target/generated-200k-runner
+goose build crates/big-boy-pants-js/src/compiler_session.goose -o target/generated-200k-runner
 bb benchmarks/generated-project/generate.bb target/generated-200k --seed 42 --lines 200k
 bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs --backend all --runner target/generated-200k-runner --phase check --runs 1
 bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs --backend all --runner target/generated-200k-runner --phase measure --runs 5
@@ -168,7 +168,7 @@ For an explicitly uncached edited-source diagnostic, use `--phase leaf-uncached
 same binary/runner options. It checks a warmup and the edited build in both V8
 and Goose, requires the full source-macro identity/count table, and restores the
 source. It passes `--no-cache`; it does not implement Goose cached installation.
-The [full performance report](../../crates/big-boy-pants-js/prototypes/goose/generated-200k-performance.md)
+The [full performance report](../../crates/big-boy-pants-js/evidence/generated-200k-performance.md)
 keeps these scenarios and the 200k clean matrix separate.
 
 ## How a project is made

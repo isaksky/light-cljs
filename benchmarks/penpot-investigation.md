@@ -510,7 +510,7 @@ sweep that empties segments returns their charge until a reservation
 reuses them, but not while a mutator still holds a reservation of its
 slots; and a reservation that cannot charge an emptied segment takes a
 charged segment's free or never-issued slot without a denial
-(`crates/big-boy-pants-js/src/heap/storage.rs`, `gc.rs`). Stats now print
+(`crates/big-boy-pants-js/rust/src/heap/storage.rs`, `gc.rs`). Stats now print
 `macro.gc.traced-edges`, the total edges all collections traced.
 
 ## What each collection traces, and pacing by its work (light-cljs-664, October 30, 2026, on `0c78606c`)
@@ -522,7 +522,7 @@ ever made was a root source, so each collection upgraded, visited and
 released all of them: 240,000 by the end, 3-5 ms of an 18-24 ms
 collection, while only about 400 hold a heap value. Now a cell becomes a
 root source only when its outcome holds an object or a symbol
-(`crates/big-boy-pants-js/src/dep.rs`). That change is landed: garbage
+(`crates/big-boy-pants-js/rust/src/dep.rs`). That change is landed: garbage
 collection falls from 18.3% to 15.0% of the main thread's samples, with
 the same collections (631) and the same peak memory. Second, the
 allocation-count trigger waits as many allocations as there are live
@@ -801,7 +801,7 @@ headroom has been admitted. With a 4 GB limit and 200-400 MB live, that was a
 full collection every ~1.9 GB of credits, each tracing the whole heap.
 
 The fix: a credit is reserved against the limit without counting as volume
-(`ByteBudget::reserve_credit`, crates/big-boy-pants-js/src/heap/budget.rs)
+(`ByteBudget::reserve_credit`, crates/big-boy-pants-js/rust/src/heap/budget.rs)
 and counts once a flatten makes the copy (`ByteReservation::allocated`).
 The limit is enforced exactly as before. The regression test
 `an_append_loop_admits_volume_linear_in_its_length` (src/value/string.rs)

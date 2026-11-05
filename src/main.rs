@@ -619,7 +619,7 @@ fn run_namespace(
 }
 
 #[cfg(feature = "goose-macros")]
-#[path = "../crates/big-boy-pants-js/prototypes/goose/compiler_cli.rs"]
+#[path = "goose/compiler_cli.rs"]
 mod goose_cli;
 
 /// Compile the namespace build `namespace` and `flags` describe: what

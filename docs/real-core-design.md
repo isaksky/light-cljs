@@ -49,7 +49,7 @@ the Closure Library, which the user has excluded, and a different compiler.
 ### The constraint
 
 The engine shares values between threads only by category
-(`crates/big-boy-pants-js/src/value/share.rs`): persistent values (engine
+(`crates/big-boy-pants-js/rust/src/value/share.rs`): persistent values (engine
 vectors, maps, forms, structs, lazy cells, functions whose captures are
 shareable) and concurrent references (atoms, cells, Promises) publish;
 ordinary objects, arrays, Maps, WeakMaps, private fields and mutable binding
@@ -629,7 +629,7 @@ task. With them, 647 (profile assembly) can start from this spike's swap
 list; the swap mechanism and the manifest slicing it needs work now.
 
 **Update after light-cljs-646: go for sharing.** The three primitives exist
-(`crates/big-boy-pants-js/docs/architecture.md`, "Shared-heap profile
+(`crates/big-boy-pants-js/rust/docs/architecture.md`, "Shared-heap profile
 primitives": fixed bindings, `__rt.sealBindings`, `__rt.seal`); the
 identity hash and keyword interning map of section 2 were not needed by any
 unit the spike or the naive boot reaches, and that table says why. The

@@ -67,11 +67,14 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
 ## Building
 
 The repository is a Cargo workspace. The compiler is the default package;
-the Rust-native JavaScript engine lives in
-[`crates/big-boy-pants-js`](crates/big-boy-pants-js/README.md). It was imported
-with its full Git history and is being integrated as the compile-time backend.
-Compiler and engine changes can be developed and committed together. To work
-on the engine without building V8 or QuickJS, run from the repository root:
+the compile-time JavaScript runtime, big-boy-pants-js (bbp), lives in
+[`crates/big-boy-pants-js`](crates/big-boy-pants-js/README.md). It is implemented in
+Goose; its first, Rust implementation is the workspace package in
+[`crates/big-boy-pants-js/rust`](crates/big-boy-pants-js/rust/README.md), which was
+imported with its full Git history and still provides the JavaScript parser and
+bytecode compiler. Compiler and runtime changes can be developed and committed
+together. To work on the Rust package without building V8 or QuickJS, run from
+the repository root:
 
 ```sh
 cargo build --locked -p big-boy-pants-js

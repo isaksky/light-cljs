@@ -1,7 +1,7 @@
 # Compiling on one shared heap: the big-boy-pants-js strategy
 
 Status, October 25, 2026: strategy, not a delivered contract. The engine is in
-the workspace at [`crates/big-boy-pants-js`](../crates/big-boy-pants-js/README.md)
+the workspace at [`crates/big-boy-pants-js`](../crates/big-boy-pants-js/rust/README.md)
 (bbp below). The compiler does not run macros in it yet. The integration work
 is queued in the Pellets group `bbp-integration` (light-cljs-462 to 481). This
 document gives the reasons for that queue, the architecture it should arrive
@@ -1737,10 +1737,10 @@ stack), the largest terms below `analyze_source`:
 | `BbpEvaluator::run` (src/bbp_evaluator.rs:1669), the task command loop | 73.0% | 87.3% | 56.5% | 75.5% |
 | `MacroHost::expand_javascript` (src/macro_host.rs:1031), macro expansion | 44.8% | 54.3% | 47.9% | 72.0% |
 | `CompilationSession::analyze_in` (src/compilation_session.rs:2648), deferred units | 44.7% | 46.8% | 26.7% | 13.5% |
-| `Task::dependency_log` (crates/big-boy-pants-js/src/task.rs:806), called after every step at src/bbp_evaluator.rs:1664 of `b1ed620d` before the fix | 29.4% | 40.6% | - | - |
+| `Task::dependency_log` (crates/big-boy-pants-js/rust/src/task.rs:806), called after every step at src/bbp_evaluator.rs:1664 of `b1ed620d` before the fix | 29.4% | 40.6% | - | - |
 | `BbpEvaluator::use_catalog` (src/bbp_evaluator/catalog.rs:141), applying the catalog | 29.1% | 36.9% | 39.2% | 67.1% |
-| `execute_budgeted` (crates/big-boy-pants-js/src/vm/dispatch.rs:3847), the interpreter | 25.7% | 26.1% | 43.5% | 57.0% |
-| `Heap::mark_and_sweep` (crates/big-boy-pants-js/src/heap/gc.rs:1337) | 6.1% | 6.9% | 10.4% | 16.5% |
+| `execute_budgeted` (crates/big-boy-pants-js/rust/src/vm/dispatch.rs:3847), the interpreter | 25.7% | 26.1% | 43.5% | 57.0% |
+| `Heap::mark_and_sweep` (crates/big-boy-pants-js/rust/src/heap/gc.rs:1337) | 6.1% | 6.9% | 10.4% | 16.5% |
 
 The history copy is `_platform_memmove` under `Task::dependency_log`
 (28.9% self time at 200k); the graph hand-off is the hashing in
@@ -1933,7 +1933,7 @@ thread and linear.
 #### Causality check
 
 Fix 1 is the intervention: `Task::dependency_edges_since`
-(crates/big-boy-pants-js/src/task.rs:818) returns only the entries after a
+(crates/big-boy-pants-js/rust/src/task.rs:818) returns only the entries after a
 count the task context keeps (src/bbp_evaluator.rs:1747). The graph keeps
 every use it was given, so it records the same uses in the same order.
 Measured on the complete build, alternating before and after:
@@ -2047,7 +2047,7 @@ sequence keeps its place too, its storage counted in the memory budget. In
 the rare case that the walk also had to ask the task runtime to compare a
 `sorted-map-by` map, it starts over as before.
 `realizing_nested_lazy_sequences_is_linear_in_their_number`
-(crates/big-boy-pants-js/src/vm/native/realize.rs) counts the walk's steps:
+(crates/big-boy-pants-js/rust/src/vm/native/realize.rs) counts the walk's steps:
 401, 801 and 1,601 for 50, 100 and 200 nested sequences, against 15,351,
 60,701 and 241,401 before.
 

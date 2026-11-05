@@ -35,7 +35,7 @@ mod compiler_destructuring;
 mod compiler_libraries;
 pub mod compiler_names;
 #[cfg(feature = "goose-macros")]
-#[path = "../crates/big-boy-pants-js/prototypes/goose/compiler_probe.rs"]
+#[path = "goose/compiler_probe.rs"]
 pub mod compiler_probe;
 pub mod compiler_reader;
 pub mod config_file;

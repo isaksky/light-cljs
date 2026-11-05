@@ -1480,7 +1480,7 @@ use resumable native continuations too: reads preserve the original receiver
 and enforce fixed-property invariants after the trap; calls create a fresh
 argument array and preserve `this` through bound/Reflect forwarding and native
 callbacks. The first-party semantic fixtures
-`crates/big-boy-pants-js/tests/fixtures/js/proxy_has.js` and `proxy_get.js` run
+`crates/big-boy-pants-js/rust/tests/fixtures/js/proxy_has.js` and `proxy_get.js` run
 unchanged in Node/V8 and the native engine. `tests/proxy_has.rs` checks exact
 callback order across dependency waits, collection and migration on 64 KiB
 worker stacks, including every supported descriptor reader and extensibility
@@ -5201,7 +5201,7 @@ before its operands and promotes only the intrinsic `RegExp`; a global
 is called or constructed as it is, as in the QuickJS reference. Raw JavaScript (`js*`, or an explicit
 `(.call js/RegExp …)`) still makes an ordinary task-owned RegExp. The form is
 persistent and shareable, so atoms, published helpers and closures hold it,
-and the engine treats it as a RegExp (`crates/big-boy-pants-js/src/regexp/shared.rs`):
+and the engine treats it as a RegExp (`crates/big-boy-pants-js/rust/src/regexp/shared.rs`):
 
 - `crate::regexp::object::data` answers its compiled program (compiled once,
   lazily for a quoted literal from the bridge), so `exec`, `test`, the flag and
@@ -5782,7 +5782,7 @@ The engine now charges a rope its node and, as a credit, one flattened copy
 at two bytes per unit while a string value of the rope remains. The copy
 takes the credit when it is made, and the release of the rope's last string
 value returns the credit, since a rope that only later ropes refer to can
-never be flattened by itself (`crates/big-boy-pants-js/docs/architecture.md`,
+never be flattened by itself (`crates/big-boy-pants-js/rust/docs/architecture.md`,
 "Byte accounting"). A retained append chain is charged its ropes, its
 pieces and one copy. The library-free
 `a_macro_appending_to_a_long_string_fits_the_default_memory_limit` (5,000

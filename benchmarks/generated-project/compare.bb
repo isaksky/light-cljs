@@ -195,7 +195,7 @@
 (def ^:dynamic *leaf-edit* nil)
 (defn pinned! [dir]
   (let [manifest (clojure.edn/read-string (slurp (str (fs/path dir "manifest.edn"))))
-        frozen (fs/path repository "crates/big-boy-pants-js/prototypes/goose/generated-200k-manifest.edn")]
+        frozen (fs/path repository "crates/big-boy-pants-js/evidence/generated-200k-manifest.edn")]
     (assert (= (sha256 frozen) (sha256 (fs/path dir "manifest.edn"))) "Pinned manifest differs")
     (assert (= [199129 450 653] [(:code-lines manifest) (:worker-namespaces manifest) (count (:files manifest))]))
     (doseq [[path hash] {"model.edn" "75a743002f95e38b31f7b351b512e3e8c1dd618a2b7c4ca1947d398503a33bc1", "light-cljs.edn" "7c14e540bed768879c75d817010bd3a09ed0c2b96119f5276c41f0b319f8906c", "run-light.mjs" "d55d1a350da3dd5384f5dbaaf4b55e1d929d4e4176a25206fadd3d7322a4d317", "oracle.bb" "d341b739e7db6a28d102fa88e10fc16f9235c0dfc52e8f847dec7b6256eaaebf", "check-waste.bb" "fc6cbedb8dcd0e89d1852aa0c619788cd1da8b4835211385f57eb69c182094ba"}]

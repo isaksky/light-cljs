@@ -20,7 +20,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-#[path = "../crates/big-boy-pants-js/prototypes/goose/compiler_bridge.rs"]
+#[path = "goose/compiler_bridge.rs"]
 mod bridge;
 static NEXT: AtomicU64 = AtomicU64::new(1);
 fn error(e: impl std::fmt::Display) -> EvalError {
@@ -1064,5 +1064,5 @@ mod tests {
 }
 
 #[cfg(all(test, light_v8))]
-#[path = "../crates/big-boy-pants-js/prototypes/goose/compiler_tests.rs"]
+#[path = "goose/compiler_tests.rs"]
 mod lifecycle_tests;

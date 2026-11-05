@@ -107,8 +107,8 @@ const IDENTITY_INPUTS: [&str; 9] = [
     "vendor/rquickjs-sys",
     "vendor/v8",
     "vendor/v8-headers",
-    "crates/big-boy-pants-js/src",
-    "crates/big-boy-pants-js/Cargo.toml",
+    "crates/big-boy-pants-js/rust/src",
+    "crates/big-boy-pants-js/rust/Cargo.toml",
 ];
 
 /// The SHA-256 identity of the compiler being built, which every cache key

@@ -11,13 +11,13 @@ readme = "README.md"
 license = "MIT AND EPL-1.0"
 
 [workspace]
-members = ["crates/big-boy-pants-js"]
+members = ["crates/big-boy-pants-js/rust"]
 default-members = ["."]
 exclude = ["vendor/v8", "vendor/rquickjs-sys", "playground/crate"]
 resolver = "3"
 
 [workspace.dependencies]
-big-boy-pants-js = { path = "crates/big-boy-pants-js" }
+big-boy-pants-js = { path = "crates/big-boy-pants-js/rust" }
 
 # QuickJS is the default native interactive and data-reader engine. The optional
 # feature also permits builds containing only big-boy-pants-js or no engine.
