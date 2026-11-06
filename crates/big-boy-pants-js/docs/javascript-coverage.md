@@ -764,6 +764,22 @@ job worker, and the dispatch loop is one non-recursive function (rule 5):
   blocks and `using` disposal, the Pants `PendingCancel` contract; then the
   worker exits.
 
+**As implemented (light-cljs-786, November 5, 2026).** `source_vm.goose`
+keeps catch and finally handlers and pending completions (Normal, Return,
+Throw, Cancel, Jump) as one handler stack of plain `Handler` rows, and runs
+the seven finally opcodes and `PendingCancel` by the Pants contracts; a
+`return` runs its frame's finally blocks first. TypeError, ReferenceError,
+HostEffect and StackLimit faults are catchable, raised as a minimal error
+object (node kind 13 labelled with its fault) until the realm exists, and an
+uncaught one reports its fault again. The limits are 10,000 frames and
+1,048,576 values (locals and operands together). `cancel()` delivers a
+cancellation between runs and the compiler session's poll point uses it.
+Native frames are frames of function -1 whose `Native` enum names the
+operation (`Mapv`, `MapSeq`, and `ToPrimitive`, the resumable
+OrdinaryToPrimitive of `+` on an ordinary object); the delivery protocol is
+documented at `Native`. Not yet: generators and async functions, promise
+jobs, error objects of the realm, and catching natives (none needs one yet).
+
 **Rejected.** *Goose recursion per call with `exception::try` for throw*:
 the native stack is 8 MB on the macOS main thread, a handler cannot be
 re-entered recursively, and suspension would need the native stack saved.
@@ -946,6 +962,15 @@ spawn calls and joins sum to 0.03 to 0.15 milliseconds a session, under
 fewer data stacks nor a region-reuse proposal for the Goose maintainers is
 needed, and the defaults stand. Evidence: "Reused job workers at a 16 MiB
 cap".
+
+With data-only control flow (light-cljs-786: finally blocks, cancellation,
+native frames, the 10,000-frame limit), `goose check --stacks` is unchanged
+for the runner (main 59 data stacks plus 1 global stack, `run_worker` 53,
+`preparer` 38, `profile_restore` 21, `supervise` 2, `input` 2; thread cap
+307), the conformance runner (36 plus 1) and `src/execute.goose` (32 plus 1).
+A recursion of 9,999 frames above the entry frame runs in the dispatch loop
+without native recursion (`corpus/serial/depth.js`, `serial_tests.goose`),
+so the JavaScript depth limit is independent of the 8 MB native stack.
 
 The conformance harness (light-cljs-782, decision 7) runs one Goose runner
 process per case, `src/conformance.goose`, at most `--jobs` (default 4) at

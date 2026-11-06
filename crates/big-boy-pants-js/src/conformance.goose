@@ -10,7 +10,8 @@ import .census;
 // EDN outcome map. It never changes VM behaviour; it only names what happened.
 //   {:status :returned :value V}        the script completed with value V
 //   {:status :thrown :value V}          an uncaught JavaScript throw of V, or
-//                                       a VM-raised TypeError/ReferenceError
+//                                       a VM-raised TypeError, ReferenceError
+//                                       or InternalError (stack overflow)
 //   {:status :unsupported :fault F ...} a named VM fault: behaviour the VM
 //                                       does not implement (never catchable);
 //                                       Fault.Unsupported adds :operation, the
@@ -64,9 +65,10 @@ fn main() {
         var detail: u8[>..] = []; format(detail, outcome); infrastructure("outcome:", detail); return;
     } else {
         match job.fault {
-            TypeError => { out.append("{:status :thrown :value \"error:TypeError\"}"); },
-            ReferenceError => { out.append("{:status :thrown :value \"error:ReferenceError\"}"); },
-            MemoryLimit, WorkLimit, InstructionLimit, StackLimit => { located(out, "limit", heap, job); },
+            // The catchable faults, uncaught, named as the Pants engine and
+            // QuickJS name them (light-cljs-786).
+            TypeError, ReferenceError, StackLimit => { format(out, "{:status :thrown :value \"error:", source::error_name(job.fault), "\"}"); },
+            MemoryLimit, WorkLimit, InstructionLimit => { located(out, "limit", heap, job); },
             InvalidState, StaleID, None => { var detail: u8[>..] = []; format(detail, job.fault); infrastructure("fault:", detail); return; },
             _ => { located(out, "unsupported", heap, job); },
         }
@@ -74,7 +76,8 @@ fn main() {
     print(out);
     if arguments.len == 3 {
         var roots: source::Value[>..] = [job.result];
-        for f in job.frames { roots.push(f.callee); roots.push(f.receiver); }
+        for f in job.frames { roots.push(f.callee); roots.push(f.receiver); roots.push(f.input); roots.push(f.output); }
+        for h in job.handlers { roots.push(h.value); }
         for v in job.locals { roots.push(v); } for v in job.operands { roots.push(v); }
         let c = census::take(heap, roots); var line: u8[>..] = [];
         format(line, "{:heap {:nodes ", c.nodes, " :values ", c.values, " :properties ", c.properties, " :units ", c.units);

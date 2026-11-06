@@ -282,6 +282,7 @@ fn rows(work: const Work&, heap: const source::Heap&, job: const source::Job&, b
     var roots: source::Value[>..] = [job.result, extra];
     for b in bindings { roots.push(b.value); }
     for f in job.frames { roots.push(f.callee); roots.push(f.receiver); roots.push(f.input); roots.push(f.output); }
+    for h in job.handlers { roots.push(h.value); }
     for v in job.locals { roots.push(v); } for v in job.operands { roots.push(v); } for v in job.effect_args { roots.push(v); }
     for w in job.writes { roots.push(w.object); roots.push(w.key); roots.push(w.value); }
     let c = census::take(heap, roots); let s .= work.saved.heap;
@@ -347,7 +348,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
     }
     let execution_started = clock_ns(); var sequence = if mode == 0 { 0 } else { saved.sequence + 1 };
     loop {
-        if cancelled() { publish(Event { id: id, kind: 3, name: str("cancelled"), address: address, timing: timing(work, started, sc) }); return; }
+        if cancelled() { clean_up(job); publish(Event { id: id, kind: 3, name: str("cancelled"), address: address, timing: timing(work, started, sc) }); return; }
         let outcome = source::run(job, 10000); if outcome == tiny::Outcome.Complete { break; } if outcome == tiny::Outcome.Failed { fail(id, heap, job, address, timing(work, started, sc)); return; }
         if !job.effect_pending { continue; }
         if job.effect_kind != 9 || job.effect_count != 3 { source::deliver_effect(job, source::Value.Undefined, source::Fault.NativeBoundary); continue; }
@@ -364,7 +365,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
             // hold one answer per live worker.
             if cleanup_test && id > 10 { var gate: u8[>..] = []; while !read_file(str(directory, "/answer-release"), gate) { sleep_ms(1); } }
             let answer, present = await_answer(address);
-            if !present { publish(Event { id: id, kind: 3, name: str("cancelled"), address: address, timing: timing(work, started, sc) }); return; }
+            if !present { clean_up(job); publish(Event { id: id, kind: 3, name: str("cancelled"), address: address, timing: timing(work, started, sc) }); return; }
             barrier = answer.checkpoint;
             if answer.mode == -1 { return; }
             if answer.mode != 0 {
@@ -395,6 +396,13 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
     let counted = rows(work, heap, job, bindings, call);
     if !bridge::export_graph(heap, [result], graph, control, call) || !bridge::encode(graph, bytes, control) { publish(Event { id: id, kind: 3, name: str("bridge-", control.error), address: address, timing: timing(work, started, sc) }); return; }
     assert(write_file(str(directory, "/", id, ".out"), bytes)); costs[1] += clock_ns() - exporting; publish(Event { id: id, kind: 2, gensym_next: job.gensym_next, name: str(costs[0], " ", costs[1]), steps: steps, writes: job.writes.len, metrics: str(sc.restore_ns, " ", execution_ns, " ", clock_ns() - worker_started, " ", storage(saved, heap, sc, bytes.len), " ", mode), address: address, census: counted, timing: timing(work, started, sc) });
+}
+// Session cancellation reaching a live job, at the dispatch poll point or
+// while it waits in place for a helper: its finally blocks run, under its
+// limits, before it ends Cancelled (light-cljs-786). A cleanup cannot wait,
+// so it never suspends again.
+fn clean_up(job: source::Job&) {
+    if source::cancel(job) { while source::run(job, 10000) == tiny::Outcome.Yielded && !job.effect_pending {} }
 }
 fn storage(saved: const Saved&, heap: const source::Heap&, sc: snapshot::Control, output: i64) -> u8[] {
     if !saved.storage { return str("0 0 0 0 0 0 0"); }

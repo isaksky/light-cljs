@@ -803,6 +803,15 @@ mod serial_tests {
             ("dormant-constants", "number:7"),
             ("bigint-reached", "string:bigint"),
             ("loop", "limit"),
+            // Control flow (light-cljs-786): finally blocks, native frames,
+            // the call depth limit, and an endless loop that only
+            // cancellation ends (serial_tests.goose).
+            ("finally", "boolean:true"),
+            ("native-frame", "boolean:true"),
+            ("depth", "boolean:true"),
+            ("cancel", "limit"),
+            ("cancel-break", "limit"),
+            ("cancel-fault", "limit"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));
@@ -812,22 +821,26 @@ mod serial_tests {
             } else {
                 assert_eq!(std::fs::read(path).unwrap(), export.bytes, "{name}");
             }
-            if name == "loop" {
+            if name == "loop" || name.starts_with("cancel") {
                 continue;
             }
-            let js = format!(
-                "try {{ const value = ({source})(); console.log(typeof value === 'number' ? 'number:' + (Object.is(value, -0) ? '-0' : String(value)) : typeof value + ':' + String(value)); }} catch(e) {{ console.log('exception:' + e.name); }}"
-            );
-            let output = std::process::Command::new("node")
-                .args(["-e", &js])
-                .output()
-                .unwrap();
-            assert!(output.status.success());
-            assert_eq!(
-                String::from_utf8(output.stdout).unwrap().trim(),
-                expected,
-                "{name}"
-            );
+            // Node's default native stack holds fewer than the 10,000 frames
+            // `depth` needs; the Pants engine below is its oracle.
+            if name != "depth" {
+                let js = format!(
+                    "try {{ const value = ({source})(); console.log(typeof value === 'number' ? 'number:' + (Object.is(value, -0) ? '-0' : String(value)) : typeof value + ':' + String(value)); }} catch(e) {{ console.log('exception:' + e.name); }}"
+                );
+                let output = std::process::Command::new("node")
+                    .args(["-e", &js])
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                assert_eq!(
+                    String::from_utf8(output.stdout).unwrap().trim(),
+                    expected,
+                    "{name}"
+                );
+            }
             let rt = Runtime::new();
             let executable = crate::frontend::compile_function(&source).unwrap();
             let actual = match rt.spawn(&executable, &[]).unwrap().run().unwrap() {

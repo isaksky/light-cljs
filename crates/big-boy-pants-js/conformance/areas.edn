@@ -46,6 +46,13 @@
   "bbp/closure_counter" {:area :functions-scope}
   "bbp/completion_declarations_only" {:area :statements-loops}
   "bbp/driver_names_are_free" {:area :functions-scope}
+  "bbp/to_primitive_value_of" {:area :operators-values}
+  "bbp/try_catch_finally" {:area :exceptions}
+  "bbp/try_catch_normal" {:area :exceptions}
+  "bbp/try_catch_throw" {:area :exceptions}
+  "bbp/try_finally_break" {:area :exceptions}
+  "bbp/try_finally_nested" {:area :exceptions}
+  "bbp/try_finally_return" {:area :exceptions}
 
   ;; ---- Pants engine fixtures (rust/tests/fixtures/js)
   "pants/arithmetic" {:area :operators-values :origin :pants-authored}

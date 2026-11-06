@@ -1,3 +1,11 @@
 ;; Cases that must pass on the Goose VM: `conformance.bb --check` fails when one
 ;; does not. Area pellets add the cases their acceptance requires.
-["bbp/arithmetic_function" "bbp/closure_counter"]
+["bbp/arithmetic_function"
+ "bbp/closure_counter"
+ "bbp/to_primitive_value_of"
+ "bbp/try_catch_finally"
+ "bbp/try_catch_normal"
+ "bbp/try_catch_throw"
+ "bbp/try_finally_break"
+ "bbp/try_finally_nested"
+ "bbp/try_finally_return"]

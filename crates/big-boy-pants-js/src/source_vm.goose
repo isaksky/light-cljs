@@ -110,8 +110,9 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out);
     for p in n.slots { plain_bytes(p, out); }
 }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, ToPrimitive t => 3 + (t.op as i64) * 4 + (t.method as i64) * 1024 }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
-    out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index]));
+    out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
 }
 fn plain_bytes(w: Write, out: u8[>..]&) { plain_bytes(w.object, out); plain_bytes(w.key, out); plain_bytes(w.value, out); }
@@ -135,6 +136,10 @@ enum Ins {
     InitCell, ReadCell, WriteCell, GetNamed { k: u32 }, GetIndexed, SetNamed { k: u32 }, SetNamedChain { k: u32 },
     SetIndexed, Append, CheckValue, This { sloppy: bool }, Global, GetGlobal { k: u32, throws: bool },
     Literal { kind: u8, count: u32 }, Form { op: u32 }, Unsupported { opcode: u8 },
+    // Finally blocks and completion records (light-cljs-786): the Pants
+    // opcodes, with their stack contracts in rust/src/vm/instr.rs. Pending
+    // is PendingThrow (118), PendingException (170) or PendingCancel (172).
+    PushFinally { to: u32 }, PopFinally, EndFinally, CallFinally, DropCompletion, Pending { what: u8 },
 }
 // The row's stack effect from the generated registry table, resolved once at
 // decode (-1 marks a row the table refuses; load never admits one).
@@ -152,12 +157,20 @@ root struct Code {
 }
 // Unsupported: an exported opcode (or constant kind) this VM does not
 // implement ran; Job.fault_opcode names it. Like every fault except the
-// TypeError, ReferenceError and HostEffect throws, JavaScript cannot catch it.
-enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed, EffectContract, HostEffect, Unsupported }
+// TypeError, ReferenceError, HostEffect and StackLimit throws (catchable(),
+// light-cljs-786), JavaScript cannot catch it. Cancelled: the job's consumer
+// cancelled it (cancel()); its finally blocks ran first.
+enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed, EffectContract, HostEffect, Unsupported, Cancelled }
 // Table limits count the rows a heap added above its image (Heap.image),
 // not table lengths (light-cljs-792 constraint 4); each table checks its limit
-// in its one allocation function.
-struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576, properties: i64 = 1048576, work: i64 = 10000000, steps: i64 = 1000000, frames: i64 = 256, stack: i64 = 65536 }
+// in its one allocation function. The call limits are the Pants engine's
+// VmLimits::DEFAULT (light-cljs-786, rust/src/vm/frames.rs): at most `frames`
+// live frames, the entry frame and native frames included, and at most
+// `stack` values in the job's locals and operands together; a call or
+// instruction that would pass either fails with a catchable StackLimit
+// before it changes anything. Neither depends on the native stack: the
+// dispatch loop never recurses per JavaScript call.
+struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576, properties: i64 = 1048576, work: i64 = 10000000, steps: i64 = 1000000, frames: i64 = 10000, stack: i64 = 1048576 }
 // All heap tables append until session teardown; IDs are never recycled.
 // kind: plain=0, array=1, closure=2, cell=3. Captures and cell values never
 // reference frame scratch. Property chains are indices, not Goose references.
@@ -194,11 +207,46 @@ root struct Heap {
     fault:         Fault                      = Fault.None, global: Value = Value.Undefined, call_method: Value = Value.Undefined, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
     live_jobs:     i64                        = 0,
 }
+// Native frames (light-cljs-786, decision 4): an operation that must run
+// JavaScript from inside an instruction or built-in pushes a frame of
+// function -1 whose `native` names the operation, with its whole state in
+// the frame's fields (pc its phase, index its position, input/output/callee
+// its values), and returns to the dispatch loop; nothing is a callback and
+// nothing recurses in Goose. run_claimed steps the top native frame
+// (native_step, a `match` on this enum). The protocol: a native step that
+// needs JavaScript enters the function's frame above its own and sets its pc
+// to the phase that consumes the result; the callee's Return pushes its value
+// on the operands, at the native frame's operand base, and the next step pops
+// it. An exception the callee does not catch unwinds through the native frame
+// like any frame: raise() pops it and unwind_natives() lets it release its
+// state (a deferred map's claim), so native frames never catch. A finished
+// operation pops its frame, cuts the operands to its base and pushes its
+// result for the frame below (or completes the job).
+//   Mapv         mapv: callee the callback, input the source, output the
+//                vector so far, index the next element; pc 1 awaits a result.
+//   MapSeq       a deferred map's callbacks (demand_map): input the map,
+//                index the next element; pc 1 awaits a result.
+//   ToPrimitive  OrdinaryToPrimitive of the ordinary-object operands of the
+//                binary operator `op`, left (input) then right (output),
+//                index the operand being converted, method 0 valueOf and 1
+//                toString; pc 1 awaits the method's result. The operator
+//                then runs on the converted operands.
+enum Native { None, Mapv, MapSeq, ToPrimitive { op: u8, method: u8 } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
-struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, argument_count: i64 = 0, input: Value = Value.Undefined, output: Value = Value.Undefined, index: i64 = 0 }
+struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, argument_count: i64 = 0, input: Value = Value.Undefined, output: Value = Value.Undefined, index: i64 = 0, native: Native = Native.None }
 struct Write { object: Value, key: Value, value: Value }
-struct Handler { frame: i64, pc: i64, operands: i64, locals: i64 }
+// The handler stack (light-cljs-786; the Pants engine's vm/exception.rs):
+// every entry belongs to one frame and records the operand and local heights
+// to restore. Catch and Finally are handlers whose pc is their block. The
+// others are pending completions, the reason a finally block of that frame
+// is running: Normal (PopFinally), Return with `value`, Throw with the
+// exception `value`, Cancel (the consumer's cancellation, cancel()), and
+// Jump, a break or continue (CallFinally) resuming at pc. EndFinally pops the
+// frame's pending completion and resumes it. Every entry is plain data: a
+// suspended job saves its handlers with its frames.
+enum HandlerKind { Catch, Finally, Normal, Return, Throw, Cancel, Jump }
+struct Handler { frame: i64, pc: i64, operands: i64, locals: i64, kind: HandlerKind = HandlerKind.Catch, value: Value = Value.Undefined }
 root struct Job {
     heap:            Heap&, frames: Frame[>..<] = [], locals: Value[>..<] = [], operands: Value[>..<] = [],
     writes:          Write[>..]                 = [], status: tiny::Status = tiny::Status.Ready, result: Value = Value.Undefined,
@@ -217,8 +265,11 @@ root struct Job {
     root_receiver: Value = Value.Undefined,
     // The compiler generated-name scope gensym numbers in (light-cljs-798):
     // the scope prefix and the next number of its count, 0 outside a scope.
-    gensym_prefix: u8[>..]  = [], gensym_next: i64 = 0,
-    effect_args:   Value[8] = [Value.Undefined; 8], effect_count: i64 = 0, effect_frame: Frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined },
+    gensym_prefix: u8[>..] = [], gensym_next: i64 = 0,
+    // Set by cancel(): the job is running its finally blocks for its
+    // consumer's cancellation and then fails with Fault.Cancelled.
+    cancelling:  bool     = false,
+    effect_args: Value[8] = [Value.Undefined; 8], effect_count: i64 = 0, effect_frame: Frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined },
 }
 inline fn number(n: f64) -> Value { return Value.Number { v: n }; }
 inline fn boolean(b: bool) -> Value { return Value.Bool { v: b }; }
@@ -270,6 +321,8 @@ fn instruction(op: Op) -> Ins {
         191 => Ins.Literal { kind: 5, count: a }, 192 => Ins.Literal { kind: 6, count: a },
         193 => Ins.Literal { kind: 7, count: a * 2 }, 195 => Ins.Literal { kind: 8, count: a },
         194 => Ins.Form { op: a },
+        57 => Ins.PushFinally { to: a }, 59 => Ins.PopFinally, 60 => Ins.EndFinally, 71 => Ins.CallFinally, 72 => Ins.DropCompletion,
+        118, 170, 172 => Ins.Pending { what: op.code as u8 },
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -758,28 +811,63 @@ fn closure(heap: Heap&, function: i64, captures: const Value[:]) -> Value {
     let start = add_values(heap, captures);
     return allocate(heap, Node { kind: 2, function: function as u32, start: start as u32, count: captures.len as u32 });
 }
-fn unwind_maps(job: Job&, keep: i64) {
+// The native frames from `keep` up release their state as an unwind passes
+// them (see Native): a deferred map gives up its claim, so a later demand
+// retries it. No native frame catches.
+fn unwind_natives(job: Job&, keep: i64) {
     for i in keep..job.frames.len {
-        let f = job.frames[i]; if f.function == -2 { node_mut(job.heap, f.input.id()).initialized = false; }
+        let f = job.frames[i];
+        match f.native { MapSeq => { node_mut(job.heap, f.input.id()).initialized = false; }, _ => {} }
     }
 }
+// The minimal error object (light-cljs-786, until the realm exists): a node
+// of kind 13 whose `function` is error_code of the catchable fault it was
+// raised for. JavaScript sees an object with identity and truthiness; its
+// properties stay unsupported. Uncaught, it reports that fault again.
+fn error_code(fault: Fault) -> u32 { return match fault { TypeError => 1, ReferenceError => 2, HostEffect => 3, StackLimit => 4, _ => 0 }; }
+fn error_fault(code: i64) -> Fault { return match code { 1 => Fault.TypeError, 2 => Fault.ReferenceError, 3 => Fault.HostEffect, 4 => Fault.StackLimit, _ => Fault.InvalidState }; }
+// The JavaScript error name of a catchable fault, as the Pants engine and
+// QuickJS name it (a call-depth or value-stack overflow is QuickJS's
+// InternalError "stack overflow").
+fn error_name(fault: Fault) -> const u8[:] { return match fault { TypeError => "TypeError", ReferenceError => "ReferenceError", StackLimit => "InternalError", _ => "Error" }; }
+fn catchable(fault: Fault) -> bool { return error_code(fault) != 0; }
+// Whether an exception raised now would reach a catch or finally block.
+fn catches(job: const Job&) -> bool {
+    for h in job.handlers { if h.kind == HandlerKind.Catch || h.kind == HandlerKind.Finally { return true; } }
+    return false;
+}
+// End the job with `reason` at `frame`'s instruction: no catch or finally
+// block runs. A job cancelling (cancel()) ends Cancelled whatever ended its
+// cleanup, an uncaught exception, a limit or any other fault, as the Pants
+// engine's terminal cleanup does; its thrown value is no result.
+fn terminate(job: Job&, reason: Fault, frame: Frame) {
+    unwind_natives(job, 0);
+    let fault = if job.cancelling { Fault.Cancelled } else { reason };
+    if job.cancelling { job.thrown = false; job.result = Value.Undefined; }
+    job.status = tiny::Status.Failed; job.fault = fault; job.fault_function = frame.function; job.fault_pc = frame.pc;
+    let code .= job.heap.code;
+    job.fault_opcode = if fault == Fault.Unsupported && frame.function >= 0 && frame.pc >= 0 && frame.pc < code.ops.len { code.ops[frame.pc].code } else { -1 };
+}
+// A fault at `frame`'s instruction. A catchable one some handler would see
+// is raised as a minimal error object; every other fault ends the job.
 fn fail(job: Job&, fault: Fault, frame: Frame) {
     job.heap.fault = Fault.None;
     var reported = fault;
-    if (fault == Fault.TypeError || fault == Fault.ReferenceError || fault == Fault.HostEffect) && job.handlers.len > 0 {
-        let error = allocate(job.heap, Node { kind: 13 });
-        if job.heap.fault == Fault.None {
-            let handler = job.handlers.pop();
-            unwind_maps(job, handler.frame + 1);
-            job.frames.resize(handler.frame + 1); job.locals.resize(handler.locals); job.operands.resize(handler.operands);
-            job.frames[handler.frame].pc = handler.pc; job.operands.push(error); return;
-        }
+    if catchable(fault) && catches(job) {
+        let error = allocate(job.heap, Node { kind: 13, function: error_code(fault) });
+        if job.heap.fault == Fault.None { raise(job, error, frame); return; }
         reported = job.heap.fault; job.heap.fault = Fault.None;
     }
-    unwind_maps(job, 0);
-    job.status = tiny::Status.Failed; job.fault = reported; job.fault_function = frame.function; job.fault_pc = frame.pc;
-    let code .= job.heap.code;
-    job.fault_opcode = if reported == Fault.Unsupported && frame.function >= 0 && frame.pc >= 0 && frame.pc < code.ops.len { code.ops[frame.pc].code } else { -1 };
+    terminate(job, reported, frame);
+}
+// Unwind `h`, a handler of a live frame: the frames above its frame are
+// popped (their native frames released) and its heights restored.
+fn unwind_to(job: Job&, h: Handler) -> bool {
+    if h.frame < 0 || h.frame >= job.frames.len || h.operands > job.operands.len || h.locals > job.locals.len { return false; }
+    unwind_natives(job, h.frame + 1);
+    job.frames.resize(h.frame + 1); job.locals.resize(h.locals); job.operands.resize(h.operands);
+    job.frames[h.frame].pc = h.pc;
+    return true;
 }
 // The fault with the unimplemented operation's registry name, for example
 // `Fault.Unsupported:construct` or `Fault.Unsupported:const(BigInt)`.
@@ -796,16 +884,132 @@ fn unsupported_operation(out: u8[>..]&, code: const Code&, job: const Job&) {
         out.append(if tag == 6 { "(Symbol)" } else if tag == 7 { "(BigInt)" } else { "" });
     }
 }
+// Raise `value` (light-cljs-786): unwind to the innermost catch or finally
+// handler of any frame, discarding the pending completions passed on the way,
+// and continue there: a catch block starts with the exception pushed, a
+// finally block with a pending Throw completion. A pending cancellation it
+// would discard ends the cleanup instead (Cancelled). Uncaught, an error
+// object reports its fault and any other value is a thrown result. Never
+// recurses, whatever the number of frames.
 fn raise(job: Job&, value: Value, frame: Frame) {
-    if job.handlers.len == 0 { job.result = value; job.thrown = true; fail(job, Fault.HostEffect, frame); return; }
-    let handler = job.handlers.pop();
-    unwind_maps(job, handler.frame + 1);
-    job.frames.resize(handler.frame + 1); job.locals.resize(handler.locals); job.operands.resize(handler.operands);
-    job.frames[handler.frame].pc = handler.pc; job.operands.push(value);
+    while job.handlers.len > 0 {
+        let h = job.handlers.pop();
+        if h.kind == HandlerKind.Cancel { terminate(job, Fault.Cancelled, frame); return; }
+        if h.kind != HandlerKind.Catch && h.kind != HandlerKind.Finally { continue; }
+        if !unwind_to(job, h) { terminate(job, Fault.InvalidState, frame); return; }
+        if h.kind == HandlerKind.Catch { job.operands.push(value); }
+        else { job.handlers.push(Handler { frame: h.frame, pc: h.pc, operands: h.operands, locals: h.locals, kind: HandlerKind.Throw, value: value }); }
+        return;
+    }
+    if value.tag() == 5 && node(job.heap, value.id()).kind == 13 { terminate(job, error_fault(node(job.heap, value.id()).function), frame); return; }
+    job.result = value; job.thrown = true; terminate(job, Fault.HostEffect, frame);
+}
+// Return `value` from the frame at `top` (light-cljs-786): its innermost
+// finally handler, if any, becomes a pending Return completion and its block
+// runs first (the entries above it, catch handlers and the pending
+// completions this return overrides, are discarded); otherwise the frame is
+// left and the value delivered to the frame below, or the job completes. A
+// return that would discard a pending cancellation ends the cleanup.
+fn return_value(job: Job&, top: i64, value: Value, at: i64) {
+    while job.handlers.len > 0 && job.handlers[job.handlers.len - 1].frame >= top {
+        let h = job.handlers[job.handlers.len - 1];
+        if h.frame == top && h.kind == HandlerKind.Cancel { terminate(job, Fault.Cancelled, frame_at(job, top, at)); return; }
+        if h.frame == top && h.kind == HandlerKind.Finally {
+            if h.operands < job.frames[top].operand_base || h.operands > job.operands.len { terminate(job, Fault.InvalidState, frame_at(job, top, at)); return; }
+            job.operands.resize(h.operands);
+            job.handlers[job.handlers.len - 1] = Handler { frame: h.frame, pc: h.pc, operands: h.operands, locals: h.locals, kind: HandlerKind.Return, value: value };
+            job.frames[top].pc = h.pc; return;
+        }
+        job.handlers.pop();
+    }
+    let lb = job.frames[top].local_base; let ob = job.frames[top].operand_base;
+    job.frames.pop(); job.locals.resize(lb); job.operands.resize(ob);
+    if job.frames.len == 0 { job.result = value; job.status = tiny::Status.Complete; } else { job.operands.push(value); }
+}
+// Whether the innermost handler entry belongs to frame `top` and is `kind`.
+fn own(job: const Job&, top: i64, kind: HandlerKind) -> bool {
+    return job.handlers.len > 0 && job.handlers[job.handlers.len - 1].frame == top && job.handlers[job.handlers.len - 1].kind == kind;
+}
+fn pending(kind: HandlerKind) -> bool { return kind != HandlerKind.Catch && kind != HandlerKind.Finally; }
+// The handler instructions of the frame at `top`, run at `at` with its pc
+// written back past `at`. A mismatch with the handler stack (possible only in
+// hand-assembled code) fails with InvalidState, as the Pants engine's
+// Internal. PushFinally pushes a finally handler at the operand height;
+// PopFinally turns it into a pending Normal completion; CallFinally turns it
+// into a pending Jump to the next instruction and runs the block; EndFinally
+// resumes the pending completion; DropCompletion discards it (a jump out of
+// the finally block), except a pending cancellation, whose cleanup ends.
+fn push_handler(job: Job&, top: i64, kind: HandlerKind, pc: i64) {
+    if job.handlers.len >= job.heap.limits.stack { job.heap.fault = Fault.StackLimit; return; }
+    job.handlers.push(Handler { frame: top, pc: pc, operands: job.operands.len, locals: job.locals.len, kind: kind });
+}
+fn pop_finally(job: Job&, top: i64) {
+    if !own(job, top, HandlerKind.Finally) { job.heap.fault = Fault.InvalidState; return; }
+    job.handlers[job.handlers.len - 1].kind = HandlerKind.Normal;
+}
+fn call_finally(job: Job&, top: i64, at: i64) {
+    if !own(job, top, HandlerKind.Finally) || job.handlers[job.handlers.len - 1].operands != job.operands.len { job.heap.fault = Fault.InvalidState; return; }
+    let target = job.handlers[job.handlers.len - 1].pc;
+    job.handlers[job.handlers.len - 1].kind = HandlerKind.Jump; job.handlers[job.handlers.len - 1].pc = at + 1;
+    job.frames[top].pc = target;
+}
+fn end_finally(job: Job&, top: i64, at: i64) {
+    if job.handlers.len == 0 || job.handlers[job.handlers.len - 1].frame != top || !pending(job.handlers[job.handlers.len - 1].kind) { job.heap.fault = Fault.InvalidState; return; }
+    let h = job.handlers.pop();
+    match h.kind {
+        Return => { return_value(job, top, h.value, at); },
+        Throw => { raise(job, h.value, frame_at(job, top, at)); },
+        Jump => { if job.operands.len != h.operands { job.heap.fault = Fault.InvalidState; return; } job.frames[top].pc = h.pc; },
+        Cancel => { unwind_cancel(job, frame_at(job, top, at)); },
+        _ => {},
+    }
+}
+fn drop_completion(job: Job&, top: i64, at: i64) {
+    if job.handlers.len == 0 || job.handlers[job.handlers.len - 1].frame != top || !pending(job.handlers[job.handlers.len - 1].kind) { job.heap.fault = Fault.InvalidState; return; }
+    if job.handlers[job.handlers.len - 1].kind == HandlerKind.Cancel { terminate(job, Fault.Cancelled, frame_at(job, top, at)); return; }
+    job.handlers.pop();
+}
+// PendingThrow, PendingException and PendingCancel: what the frame's
+// innermost entry says about the running finally block.
+fn pending_value(job: const Job&, top: i64, what: i64) -> Value {
+    if what == 172 { return boolean(own(job, top, HandlerKind.Cancel)); }
+    let thrown = own(job, top, HandlerKind.Throw);
+    if what == 118 { return boolean(thrown); }
+    return if thrown { job.handlers[job.handlers.len - 1].value } else { Value.Undefined };
+}
+// Cancellation (light-cljs-786; the Pants engine's PendingCancel contract,
+// rust/src/task.rs "Cancellation and finally blocks"). The consumer delivers
+// it at a poll point, between runs: it is an abrupt completion that no catch
+// block intercepts and no JavaScript sees as a value, but that runs every
+// finally block, innermost first, each with a pending Cancel completion
+// (PendingCancel reports it) whose EndFinally goes on to the next. A pending
+// effect is dropped. Nothing overrides it: a return, exception or jump that
+// would discard it, an effect request, or any fault ends the cleanup. When
+// none is left the job fails with Fault.Cancelled. The cleanup runs under the
+// job's budget and limits like any code. Returns false for a job that is
+// claimed or not running.
+fn cancel(job: Job&) -> bool {
+    if job.claimed || job.status != tiny::Status.Ready || !job.registered { return false; }
+    if job.cancelling { return true; }
+    job.cancelling = true; job.effect_pending = false; job.effect_count = 0;
+    let frame = if job.frames.len > 0 { job.frames[job.frames.len - 1] } else { Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined } };
+    unwind_cancel(job, frame); return true;
+}
+// Unwind the cancellation to the innermost finally handler of any frame,
+// skipping catch handlers and discarding pending completions, or end it.
+fn unwind_cancel(job: Job&, frame: Frame) {
+    while job.handlers.len > 0 {
+        let h = job.handlers.pop();
+        if h.kind != HandlerKind.Finally { continue; }
+        if !unwind_to(job, h) { break; }
+        job.handlers.push(Handler { frame: h.frame, pc: h.pc, operands: h.operands, locals: h.locals, kind: HandlerKind.Cancel });
+        return;
+    }
+    terminate(job, Fault.Cancelled, frame);
 }
 fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -> bool {
     if !valid(job.heap, callee) || !valid(job.heap, receiver) { return false; }
-    return push_frame(job, callee, receiver, arguments, true);
+    return push_frame(job, callee, receiver, arguments, true, job.operands.len);
 }
 // Push the callee's frame. `checked` validates the receiver's and arguments'
 // rows (enter, for values from outside the job). A call from the dispatch
@@ -813,20 +1017,22 @@ fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -
 // the job's operands, which hold only valid values, because every value
 // enters a job validated (start, deliver_effect, load-validated constants,
 // table rows written by validated writes or a validated image) and rows are
-// never removed while a job runs.
-fn push_frame(job: Job&, callee: Value, receiver: Value, arguments: const Value[:], checked: bool) -> bool {
+// never removed while a job runs. `operands` is the callee's operand base:
+// the caller's operand height once the call has consumed its operands. The
+// call limits (Limits) count the frame and the values it adds above that.
+fn push_frame(job: Job&, callee: Value, receiver: Value, arguments: const Value[:], checked: bool, operands: i64) -> bool {
     let heap .= job.heap;
     if callee.tag() != 5 || node(heap, callee.id()).kind != 2 { heap.fault = Fault.TypeError; return false; }
     let id = node(heap, callee.id()).function; let f .= heap.code.functions[id];
     // A class constructor has no [[Call]]: calling it throws TypeError.
     if f.kind >= 2 { heap.fault = Fault.TypeError; return false; }
-    if job.frames.len >= heap.limits.frames || f.locals > heap.limits.stack - job.locals.len || arguments.len > heap.limits.stack - job.locals.len - f.locals { heap.fault = Fault.StackLimit; return false; }
+    if job.frames.len >= heap.limits.frames || f.locals + arguments.len > heap.limits.stack - job.locals.len - operands { heap.fault = Fault.StackLimit; return false; }
     if !charge(heap, f.locals + arguments.len) { return false; }
     if checked { for v in arguments { if !valid(heap, v) { return false; } } }
     let base = job.locals.len; job.locals.resize(base + f.locals, Value.Undefined);
     for value, i in arguments { if i < f.params { job.locals[base + i] = value; } }
     job.locals.append(arguments);
-    job.frames.push(Frame { function: id, pc: f.start, local_base: base, operand_base: job.operands.len, callee: callee, receiver: receiver, argument_count: arguments.len });
+    job.frames.push(Frame { function: id, pc: f.start, local_base: base, operand_base: operands, callee: callee, receiver: receiver, argument_count: arguments.len });
     return true;
 }
 fn start(job: Job&, callee: Value, arguments: const Value[:], receiver: Value = Value.Undefined) -> bool {
@@ -842,7 +1048,7 @@ fn start(job: Job&, callee: Value, arguments: const Value[:], receiver: Value = 
 fn retire(job: Job&, suspending: bool = false) -> bool {
     if job.claimed { return false; }
     if suspending && (!job.effect_pending || job.status != tiny::Status.Ready) { return false; }
-    if !suspending { unwind_maps(job, 0); }
+    if !suspending { unwind_natives(job, 0); }
     if job.registered { assert(job.heap.live_jobs > 0); job.heap.live_jobs -= 1; job.registered = false; }
     if job.status == tiny::Status.Ready { job.status = tiny::Status.Failed; job.fault = Fault.InvalidState; }
     return true;
@@ -854,7 +1060,7 @@ fn reset(job: Job&) -> bool {
     if job.claimed || job.registered || job.heap.live_jobs != 0 { return false; }
     job.frames.clear(); job.locals.clear(); job.operands.clear(); job.writes.clear(); job.handlers.clear();
     job.status = tiny::Status.Ready; job.result = Value.Undefined; job.fault = Fault.None; job.fault_pc = -1; job.fault_function = -1; job.thrown = false;
-    job.steps = 0; job.effects_enabled = false; job.helpers_enabled = false; job.effect_pending = false; job.effect_kind = -1;
+    job.steps = 0; job.effects_enabled = false; job.helpers_enabled = false; job.effect_pending = false; job.effect_kind = -1; job.cancelling = false;
     job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0;
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
     return true;
@@ -1305,6 +1511,8 @@ fn gensym(job: Job&, args: const Value[:]) -> Value {
 }
 // Save the request at the call continuation. No host runs under the claim.
 fn request_effect(job: Job&, id: i64, args: const Value[:], frame: Frame) {
+    // A cleanup for a cancellation cannot wait: the request ends it.
+    if job.cancelling { job.heap.fault = Fault.Cancelled; return; }
     if !job.effects_enabled { job.heap.fault = Fault.NativeBoundary; return; }
     if args.len > 8 { job.heap.fault = Fault.EffectContract; return; }
     job.effect_pending = true; job.effect_kind = id; job.effect_count = args.len; job.effect_frame = frame;
@@ -1329,7 +1537,7 @@ fn demand_map(job: Job&, value: Value) -> bool {
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return false; }
     let row = node(heap, value.id());
     node_mut(heap, value.id()).initialized = true;
-    job.frames.push(Frame { function: -2, pc: 0, local_base: job.locals.len, operand_base: job.operands.len, callee: row.value, receiver: nil(), input: value, index: row.length });
+    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: job.operands.len, callee: row.value, receiver: nil(), input: value, index: row.length, native: Native.MapSeq });
     return true;
 }
 fn demand_maps(job: Job&, values: const Value[:], nested: bool = false) -> bool {
@@ -1345,69 +1553,132 @@ fn demand_maps(job: Job&, values: const Value[:], nested: bool = false) -> bool 
     }
     return false;
 }
-// A native frame's step (-2 a deferred map's callbacks, -1 mapv), with the
-// per-step budget, instruction and work checks of every step.
+// A native frame's step (see Native), dispatched by `match` on its
+// operation, with the per-step budget, instruction and work checks of every
+// step. A frame of no operation fails InvalidState.
 fn native_step(job: Job&) {
     let heap .= job.heap;
     if job.frames.len == 0 { fail(job, Fault.InvalidState, Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined }); return; }
     let frame = job.frames[job.frames.len - 1];
-    if frame.function == -2 {
-        if !charge(heap) { fail(job, heap.fault, frame); return; }
-        if job.steps >= heap.limits.steps { fail(job, Fault.InstructionLimit, frame); return; }
-        job.steps += 1;
-        let row = node(heap, frame.input.id());
-        if frame.pc == 1 {
-            let value = job.operands.pop(); set_slot(heap, row.start + frame.index, value);
-            node_mut(heap, frame.input.id()).length += 1;
-            job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 0;
-        } else if frame.index == row.count {
-            // Completed maps become ordinary cursors without copying or
-            // replacing their identity; all aliases see the same memo range.
-            node_mut(heap, frame.input.id()).kind = 12;
-            node_mut(heap, frame.input.id()).initialized = false;
-            node_mut(heap, frame.input.id()).value = Value.Undefined; node_mut(heap, frame.input.id()).namespace_value = nil();
-            job.frames.pop();
-        } else {
-            if job.operands.len >= heap.limits.stack { fail(job, Fault.StackLimit, frame); return; }
-            let arg = form_nth(heap, row.namespace_value, frame.index);
-            job.frames[job.frames.len - 1].pc = 1;
-            if frame.callee.tag() == 5 && node(heap, frame.callee.id()).kind == 4 {
-                let id = node(heap, frame.callee.id()).function;
-                if id == 5 && job.gensym_next > 0 { job.operands.push(gensym(job, [arg])); }
-                else if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
-                else { job.operands.push(native_value(heap, id, [arg])); }
-            } else { enter(job, frame.callee, nil(), [arg]); }
-        }
-        if heap.fault != Fault.None { fail(job, heap.fault, frame); }
+    match frame.native { None => { fail(job, Fault.InvalidState, frame); return; }, _ => {} }
+    if !charge(heap) { fail(job, heap.fault, frame); return; }
+    if job.steps >= heap.limits.steps { fail(job, Fault.InstructionLimit, frame); return; }
+    job.steps += 1;
+    match frame.native {
+        MapSeq => { map_seq_step(job, frame); },
+        Mapv => { mapv_step(job, frame); },
+        ToPrimitive t => { to_primitive_step(job, frame, t.op, t.method); },
+        None => {},
+    }
+    if heap.fault != Fault.None { fail(job, heap.fault, frame); }
+}
+// A deferred map's callbacks, one element a step.
+fn map_seq_step(job: Job&, frame: Frame) {
+    let heap .= job.heap;
+    let row = node(heap, frame.input.id());
+    if frame.pc == 1 {
+        let value = job.operands.pop(); set_slot(heap, row.start + frame.index, value);
+        node_mut(heap, frame.input.id()).length += 1;
+        job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 0;
+    } else if frame.index == row.count {
+        // Completed maps become ordinary cursors without copying or
+        // replacing their identity; all aliases see the same memo range.
+        node_mut(heap, frame.input.id()).kind = 12;
+        node_mut(heap, frame.input.id()).initialized = false;
+        node_mut(heap, frame.input.id()).value = Value.Undefined; node_mut(heap, frame.input.id()).namespace_value = nil();
+        job.frames.pop();
+    } else {
+        if job.operands.len >= heap.limits.stack - job.locals.len { heap.fault = Fault.StackLimit; return; }
+        let arg = form_nth(heap, row.namespace_value, frame.index);
+        job.frames[job.frames.len - 1].pc = 1;
+        if frame.callee.tag() == 5 && node(heap, frame.callee.id()).kind == 4 {
+            let id = node(heap, frame.callee.id()).function;
+            if id == 5 && job.gensym_next > 0 { job.operands.push(gensym(job, [arg])); }
+            else if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
+            else { job.operands.push(native_value(heap, id, [arg])); }
+        } else { enter(job, frame.callee, nil(), [arg]); }
+    }
+}
+// mapv is a native collection iterator, with source callback calls saved
+// explicitly. A budget cut never replays a callback or loses its capture.
+fn mapv_step(job: Job&, frame: Frame) {
+    let heap .= job.heap;
+    if frame.pc == 1 {
+        let value = job.operands.pop(); let out = form_conj(heap, frame.output, value);
+        job.frames[job.frames.len - 1].output = out; job.frames[job.frames.len - 1].pc = 0;
+    } else if frame.index >= form_count(heap, frame.input) {
+        finish_native(job, frame, frame.output);
+    } else {
+        let arg = form_nth(heap, frame.input, frame.index);
+        job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 1;
+        if frame.callee.tag() == 5 && node(heap, frame.callee.id()).kind == 4 {
+            let id = node(heap, frame.callee.id()).function;
+            if id == 5 && job.gensym_next > 0 { job.operands.push(gensym(job, [arg])); }
+            else if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
+            else { let v = native_value(heap, id, [arg]); job.operands.push(v); }
+        } else { enter(job, frame.callee, Value.Undefined, [arg]); }
+    }
+}
+// Pop a finished native frame and deliver its result to the frame below.
+fn finish_native(job: Job&, frame: Frame, result: Value) {
+    job.frames.pop(); job.operands.resize(frame.operand_base);
+    if job.frames.len == 0 { job.result = result; job.status = tiny::Status.Complete; } else { job.operands.push(result); }
+}
+// Whether a binary operator's operand is an ordinary object, which converts
+// through ToPrimitive before the operator runs.
+fn ordinary(heap: const Heap&, v: Value) -> bool { return v.tag() == 5 && node(heap, v.id()).kind == 0; }
+// Start the resumable ToPrimitive (hint default) of a binary operator `op`
+// whose operands x and y include an ordinary object (light-cljs-786): a
+// native frame converts them, left to right, and then runs the operator. The
+// frame below has already consumed the operands.
+fn to_primitive(job: Job&, op: i64, x: Value, y: Value) {
+    if job.frames.len >= job.heap.limits.frames { job.heap.fault = Fault.StackLimit; return; }
+    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: job.operands.len, callee: Value.Undefined, receiver: Value.Undefined, input: x, output: y, native: Native.ToPrimitive { op: op as u8, method: 0 } });
+}
+// An own data property by name, newest record first, as own_record looks.
+fn own_named(heap: Heap&, object: Value, name: const u8[:]) -> Value, bool {
+    let o = object.id(); var i = node(heap, o).key_count;
+    while i > 0 {
+        i -= 1;
+        if !charge(heap) { return Value.Undefined, false; }
+        let p = own_at(heap, o, i);
+        if key_is(heap, p.key, name) { return p.value, true; }
+    }
+    return Value.Undefined, false;
+}
+// One step of OrdinaryToPrimitive with hint default (number order: valueOf,
+// then toString), the Pants engine's Convert native (rust/src/vm/native.rs).
+// The operand being converted is index 0 (input) or 1 (output); an operand
+// that is not an ordinary object is left as it is for the operator. A
+// callable own method is called with the object as receiver; a primitive
+// result replaces the operand, an object result tries the next method, and a
+// non-callable property is skipped. Without prototypes (light-cljs-787), a
+// method the object does not own is the prototype's: UnsupportedOperand; an
+// object that converts by neither method is a TypeError.
+fn to_primitive_step(job: Job&, frame: Frame, op: u8, method: u8) {
+    let heap .= job.heap; let at = job.frames.len - 1;
+    if frame.pc == 1 {
+        let result = job.operands.pop();
+        job.frames[at].pc = 0;
+        if result.tag() == 5 { job.frames[at].native = Native.ToPrimitive { op: op, method: method + 1 }; return; }
+        if frame.index == 0 { job.frames[at].input = result; } else { job.frames[at].output = result; }
+        job.frames[at].index += 1; job.frames[at].native = Native.ToPrimitive { op: op, method: 0 };
         return;
     }
-    // mapv is a native collection iterator, with source callback calls saved
-    // explicitly. A budget cut never replays a callback or loses its capture.
-    if frame.function == -1 {
-        if !charge(heap) { fail(job, heap.fault, frame); return; }
-        if job.steps >= heap.limits.steps { fail(job, Fault.InstructionLimit, frame); return; }
-        job.steps += 1;
-        if frame.pc == 1 {
-            let value = job.operands.pop(); let out = form_conj(heap, frame.output, value);
-            job.frames[job.frames.len - 1].output = out; job.frames[job.frames.len - 1].pc = 0;
-        } else if frame.index >= form_count(heap, frame.input) {
-            job.frames.pop(); job.operands.resize(frame.operand_base);
-            if job.frames.len == 0 { job.result = frame.output; job.status = tiny::Status.Complete; } else { job.operands.push(frame.output); }
-        } else {
-            let arg = form_nth(heap, frame.input, frame.index);
-            job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 1;
-            if frame.callee.tag() == 5 && node(heap, frame.callee.id()).kind == 4 {
-                let id = node(heap, frame.callee.id()).function;
-                if id == 5 && job.gensym_next > 0 { job.operands.push(gensym(job, [arg])); }
-                else if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
-                else { let v = native_value(heap, id, [arg]); job.operands.push(v); }
-            } else { enter(job, frame.callee, Value.Undefined, [arg]); }
-        }
-        if heap.fault != Fault.None { fail(job, heap.fault, frame); }
+    if frame.index >= 2 {
+        let value = binary_value(heap, op, frame.input, frame.output);
+        if heap.fault == Fault.None { finish_native(job, frame, value); }
         return;
     }
-    // A frame of no function: the per-step checks above, then InvalidState.
-    fail(job, Fault.InvalidState, frame);
+    let v = if frame.index == 0 { frame.input } else { frame.output };
+    if !ordinary(heap, v) { job.frames[at].index += 1; return; }
+    if method >= 2 { heap.fault = Fault.TypeError; return; }
+    let m, found = own_named(heap, v, if method == 0 { "valueOf" } else { "toString" });
+    if heap.fault != Fault.None { return; }
+    if !found { heap.fault = Fault.UnsupportedOperand; return; }
+    if m.tag() == 5 && node(heap, m.id()).kind == 4 { heap.fault = Fault.UnsupportedOperand; return; }
+    if m.tag() == 5 && node(heap, m.id()).kind == 2 { job.frames[at].pc = 1; enter(job, m, v, []); return; }
+    job.frames[at].native = Native.ToPrimitive { op: op, method: method + 1 };
 }
 // The dispatch loop runs the active frame in place (light-cljs-801): its
 // function, pc, local and operand bases are locals for the whole loop, not a
@@ -1471,7 +1742,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
         if pc < f.start || pc >= f.start + f.count || pc >= program.len { let here = job.frames[top]; fail(job, Fault.InvalidState, here); return used + 1; }
         // Validated code keeps a frame's operand height at its pc's depth; a
         // frame entered at any other height takes the per-instruction checks.
-        let checked = job.operands.len - ob != code.ops[pc].depth || ob + code.heights[fid] > heap.limits.stack;
+        let checked = job.operands.len - ob != code.ops[pc].depth || job.locals.len + ob + code.heights[fid] > heap.limits.stack;
         var ran: i64 = 0; var left = fuel(job, allowance, used); var at = pc;
         // Each pass of this loop dispatches one instruction; it breaks when
         // the frame stops being the active one or a fault stops it.
@@ -1487,7 +1758,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
             if checked {
                 // As before: the work unit and budget unit are spent, the step is not.
                 let e = code.effects[at];
-                let bad = if job.operands.len - ob < e.pop { Fault.InvalidState } else if e.push - e.pop > heap.limits.stack - job.operands.len { Fault.StackLimit } else { Fault.None };
+                let bad = if job.operands.len - ob < e.pop { Fault.InvalidState } else if e.push - e.pop > heap.limits.stack - job.locals.len - job.operands.len { Fault.StackLimit } else { Fault.None };
                 if bad != Fault.None { settle(job, ran, used); job.steps -= 1; job.frames[top].pc = at; fail(job, bad, frame_at(job, top, at)); break; }
             }
             pc = at + 1;
@@ -1510,7 +1781,11 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Binary b => {
                     let y = job.operands.pop(); let x = job.operands.pop();
                     if x.tag() == 3 && y.tag() == 3 { job.operands.push(arithmetic(b.op, x.num(), y.num())); }
-                    else {
+                    else if b.op == 73 && (ordinary(heap, x) || ordinary(heap, y)) {
+                        // `+` on an object: resumable ToPrimitive in a native
+                        // frame, which pushes the sum for this frame.
+                        settle(job, ran, used); job.frames[top].pc = pc; to_primitive(job, b.op, x, y); break;
+                    } else {
                         settle(job, ran, used); job.frames[top].pc = pc;
                         let v = binary_value(heap, b.op, x, y); job.operands.push(v);
                         if !in_place(job, top, at) { break; }
@@ -1522,9 +1797,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 JumpUnless j => { let v = job.operands.pop(); if !truthy(heap, v) { pc = j.to; } },
                 Return => {
                     settle(job, ran, used);
-                    while job.handlers.len > 0 && job.handlers[job.handlers.len - 1].frame >= top { job.handlers.pop(); }
-                    let v = job.operands.pop(); job.frames.pop(); job.locals.resize(lb); job.operands.resize(ob);
-                    if job.frames.len == 0 { job.result = v; job.status = tiny::Status.Complete; } else { job.operands.push(v); }
+                    let v = job.operands.pop(); return_value(job, top, v, at);
                     break;
                 },
                 NewObject => {
@@ -1537,10 +1810,16 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
-                Try t => { job.handlers.push(Handler { frame: top, pc: t.to, operands: job.operands.len, locals: job.locals.len }); },
+                Try t => { push_handler(job, top, HandlerKind.Catch, t.to); if heap.fault != Fault.None { break; } },
+                PushFinally t => { push_handler(job, top, HandlerKind.Finally, t.to); if heap.fault != Fault.None { break; } },
+                PopFinally => { pop_finally(job, top); if heap.fault != Fault.None { break; } },
+                Pending p => { job.operands.push(pending_value(job, top, p.what)); },
+                CallFinally => { settle(job, ran, used); job.frames[top].pc = pc; call_finally(job, top, at); break; },
+                EndFinally => { settle(job, ran, used); job.frames[top].pc = pc; end_finally(job, top, at); break; },
+                DropCompletion => { settle(job, ran, used); job.frames[top].pc = pc; drop_completion(job, top, at); break; },
                 Throw => { settle(job, ran, used); job.frames[top].pc = pc; let value = job.operands.pop(); raise(job, value, frame_at(job, top, at)); break; },
                 EndTry => {
-                    if job.handlers.len == 0 || job.handlers[job.handlers.len - 1].frame != top { heap.fault = Fault.InvalidState; break; }
+                    if !own(job, top, HandlerKind.Catch) { heap.fault = Fault.InvalidState; break; }
                     job.handlers.pop();
                 },
                 Unary u => {
@@ -1723,7 +2002,7 @@ inline fn invoke(job: Job&, top: i64, at: i64, argc: i64, method: bool) -> bool 
     if callee.tag() == 5 && node(job.heap, callee.id()).kind == 2 {
         job.frames[top].pc = at + 1;
         let receiver = if method { job.operands[base] } else { Value.Undefined };
-        if push_frame(job, callee, receiver, job.operands[(job.operands.len - argc)..], false) { job.frames[job.frames.len - 1].operand_base = base; job.operands.resize(base); }
+        if push_frame(job, callee, receiver, job.operands[(job.operands.len - argc)..], false, base) { job.operands.resize(base); }
         return in_place(job, top, at);
     }
     let demanded = demand_call(job, argc, method);
@@ -1771,13 +2050,13 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
             else {
                 let input = args[1]; let callback = args[0]; let out = form_collection(heap, 6, []);
                 form_count(heap, input);
-                job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: callback, receiver: Value.Undefined, input: input, output: out });
+                job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: callback, receiver: Value.Undefined, input: input, output: out, native: Native.Mapv });
                 job.operands.resize(base);
             }
         } else if id == 5 && job.gensym_next > 0 { let value = gensym(job, args); job.operands.resize(base); job.operands.push(value); }
         else if id >= 5 && id <= 8 { request_effect(job, id, args, frame_at(job, top, at)); job.operands.resize(base); }
         else { let value = native_value(heap, id, args); job.operands.resize(base); job.operands.push(value); }
-    } else if push_frame(job, callee, receiver, job.operands[first..], false) { job.frames[job.frames.len - 1].operand_base = base; job.operands.resize(base); }
+    } else if push_frame(job, callee, receiver, job.operands[first..], false, base) { job.operands.resize(base); }
 }
 // `arguments` (unmapped, read-only) or a rest array after `skip` parameters.
 fn arguments(job: Job&, frame: Frame, f: const Function&, rest: bool, skip_count: i64) {

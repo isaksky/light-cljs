@@ -123,9 +123,10 @@ thread_fn limit_need(bytes: u8[]) {
     let entry = source::closure(heap, 0, []);
     var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
     let work = heap.work;
-    // The deepest the locals and operands go, as the stack limit counts them.
+    // The most values the locals and operands hold together, as the stack
+    // limit counts them (light-cljs-786).
     var stack: i64 = 0;
-    while source::run(job, 1) == tiny::Outcome.Yielded { stack = max(stack, max(job.locals.len, job.operands.len)); }
+    while source::run(job, 1) == tiny::Outcome.Yielded { stack = max(stack, job.locals.len + job.operands.len); }
     assert(job.status == tiny::Status.Complete && job.fault == source::Fault.None);
     assert(qput(Need { steps: job.steps, work: heap.work - work, stack: stack }));
 }
@@ -374,9 +375,98 @@ fn main() {
     heap_program::join(thread_spawn(factory, str(embed_file("../corpus/closure-captured.pants.gsp"))));
     malformed(embed_file("../corpus/serial/captures.gsp"));
     heap_program::join(thread_spawn(instruction_limit));
+    control_flow();
     // Image comparisons are bit-exact: NaN matches itself, -0 differs from +0.
     assert(source::same_bits(source::number(0.0 / 0.0), source::number(0.0 / 0.0)) && !source::same_bits(source::number(0.0), source::number(-0.0)));
     print("serial source VM: calls/captures/cells/properties/truth/UTF16/errors, exact slices and limits passed");
+}
+// Control flow (light-cljs-786). Each runs in a thread program of its own.
+fn control_flow() {
+    // try/catch/finally with return, break, continue and throw through and
+    // out of finally blocks, nested finally; and `+` on objects, whose
+    // valueOf runs in a native ToPrimitive frame and whose exception unwinds
+    // through it. Every budget cut matches the uncut run.
+    check(embed_file("../corpus/serial/finally.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/native-frame.gsp"), "boolean:true");
+    // 9,999 frames of f above the entry frame fit the 10,000-frame limit, and
+    // a deeper recursion is caught; one frame less fails it uncaught.
+    let depth = embed_file("../corpus/serial/depth.gsp");
+    heap_program::join(thread_spawn(depth_limit, str(depth), 10000, source::Fault.None));
+    heap_program::join(thread_spawn(depth_limit, str(depth), 9999, source::Fault.StackLimit));
+    for sliced in [false, true] {
+        heap_program::join(thread_spawn(cancelled_job, str(embed_file("../corpus/serial/cancel.gsp")), sliced, 0));
+        heap_program::join(thread_spawn(cancelled_job, str(embed_file("../corpus/serial/cancel-break.gsp")), sliced, 1));
+        heap_program::join(thread_spawn(cancelled_job, str(embed_file("../corpus/serial/loop.gsp")), sliced, 2));
+        heap_program::join(thread_spawn(cancelled_job, str(embed_file("../corpus/serial/cancel-fault.gsp")), sliced, 3));
+        heap_program::join(thread_spawn(cancelled_job, str(embed_file("../corpus/serial/cancel.gsp")), sliced, 4));
+    }
+    heap_program::join(thread_spawn(pending_completions, str(embed_file("../corpus/serial/calls.gsp"))));
+    print("serial source VM: finally/completions, native ToPrimitive frames, 10,000-frame depth and cancellation passed");
+}
+thread_fn depth_limit(bytes: u8[], frames: i64, fault: source::Fault) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    assert(heap.limits.frames == 10000 && heap.limits.stack == 1048576);
+    heap.limits.frames = frames;
+    let entry = source::closure(heap, 0, []);
+    var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
+    let outcome = source::run(job, -1);
+    if fault == source::Fault.None {
+        assert(outcome == tiny::Outcome.Complete && job.result.tag() == 2 && job.result.flag());
+    } else { assert(outcome == tiny::Outcome.Failed && job.fault == fault && !job.thrown); }
+}
+// The keys of the job's named writes, in order, as one string.
+fn written(heap: source::Heap&, job: const source::Job&) -> u8[>..] {
+    var out: u8[>..] = [];
+    for w in job.writes { for u in source::utf16(heap, w.key) { out.push(u as u8); } out.push(' '); }
+    return out;
+}
+// mode 0 cancel.js, 1 cancel-break.js, 2 loop.js (no finally block), 3
+// cancel-fault.js, 4 cancel.js with the instruction limit two steps into the
+// cleanup. A cancellation delivered between runs runs the finally blocks,
+// innermost first, never the catch block, then fails the job Cancelled; a
+// break out of the cleanup's finally block, an exception escaping it or a
+// limit ends the cleanup, still Cancelled; with no finally block the job
+// fails at once.
+thread_fn cancelled_job(bytes: u8[], sliced: bool, mode: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let entry = source::closure(heap, 0, []);
+    var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
+    assert(source::run(job, 500) == tiny::Outcome.Yielded);
+    let looped = job.writes.len;
+    assert(source::cancel(job));
+    if mode == 2 { assert(job.status == tiny::Status.Failed && job.fault == source::Fault.Cancelled && !source::cancel(job)); return; }
+    // A second delivery while the cleanup runs changes nothing.
+    assert(source::cancel(job));
+    // The innermost finally block runs with a pending cancellation.
+    let top = job.frames.len - 1;
+    assert(job.status == tiny::Status.Ready && source::own(job, top, source::HandlerKind.Cancel));
+    assert(source::pending_value(job, top, 172).flag() && !source::pending_value(job, top, 118).flag() && source::pending_value(job, top, 170).tag() == 0);
+    if mode == 4 { heap.limits.steps = job.steps + 2; }
+    if sliced { while source::run(job, 1) == tiny::Outcome.Yielded {} } else { source::run(job, -1); }
+    assert(job.status == tiny::Status.Failed && job.fault == source::Fault.Cancelled && !job.thrown);
+    // Cleanup wrote only the finally blocks' keys after the loop's.
+    let keys = written(heap, job);
+    var expected: u8[>..] = []; for i in looped { expected.append("looped "); }
+    expected.append(if mode == 0 { "inner outer " } else if mode == 4 { "" } else { "inner " });
+    assert(keys[..] == expected[..]);
+}
+// PendingThrow, PendingException and PendingCancel read the frame's
+// innermost entry only; an entry of another frame reads as none.
+thread_fn pending_completions(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
+    job.handlers.push(source::Handler { frame: 0, pc: 0, operands: 0, locals: 0, kind: source::HandlerKind.Throw, value: source::number(5) });
+    assert(source::pending_value(job, 0, 118).flag() && source::pending_value(job, 0, 170).num() == 5 && !source::pending_value(job, 0, 172).flag());
+    assert(!source::pending_value(job, 1, 118).flag() && source::pending_value(job, 1, 170).tag() == 0);
+    job.handlers[0].kind = source::HandlerKind.Normal;
+    assert(!source::pending_value(job, 0, 118).flag() && source::pending_value(job, 0, 170).tag() == 0);
+    assert(source::retire(job));
 }
 thread_fn instruction_limit() {
     defer { heap_program::finish(); }
