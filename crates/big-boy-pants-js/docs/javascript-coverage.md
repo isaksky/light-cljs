@@ -1043,8 +1043,9 @@ conformance runner is 40 plus 1 (master: 39 plus 1) and
 `src/execute.goose` 38 plus 1 (37 plus 1). The defaults stand.
 
 The 200k check gate (`compare.bb --phase check --runs 1`, November 5, 2026)
-passes: Goose 1/2/4/8 15.4/10.7/7.2/7.3 s, V8 6.0 s, against
-15.8/10.7/7.4/7.3 s at light-cljs-805.
+passes: Goose 1/2/4/8 15.4/10.7/7.2/7.3 s, and 15.5/10.6/7.5/7.4 s after the
+review's changes, V8 6.0 s, against 15.8/10.7/7.4/7.3 s at light-cljs-805:
+within run-to-run noise.
 
 ## Decision 7: conformance harness
 
