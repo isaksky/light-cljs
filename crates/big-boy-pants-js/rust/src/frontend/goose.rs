@@ -831,6 +831,7 @@ mod serial_tests {
             ("function-names", "boolean:true"),
             ("getter-value-of", "boolean:true"),
             ("function-name", "string:f"),
+            ("function-keys", "boolean:true"),
             ("unsupported-array-method", "number:1"),
             ("unsupported-generator-prototype", "boolean:true"),
         ] {

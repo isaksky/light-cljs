@@ -27,7 +27,7 @@ fn code_prefix(p: const Publication&, bytes: const u8[:], functions: const sourc
     if s.code_bytes[..e[0]] != bytes[..e[0]] || bytes_of(s.functions[..e[1]]) != bytes_of(functions[..e[1]]) || source::plain_rows(s.code_constants[..e[2]]) != source::plain_rows(constants[..e[2]]) || s.children[..e[3]] != children[..e[3]] || bytes_of(s.ops[..e[4]]) != bytes_of(ops[..e[4]]) || s.code_units[..e[5]] != units[..e[5]] { return fail(c, snapshot::Error.Code); }
     // Suffix owners are independently appendable; cross-owner ranges would
     // otherwise change meaning when the consumer already has macro/helper code.
-    for f in s.functions[e[1]..] { if !snapshot::poll(c) { return false; } if f.start < e[4] || f.constants < e[2] || f.children < e[3] { return fail(c, snapshot::Error.Code); } }
+    for f in s.functions[e[1]..] { if !snapshot::poll(c) { return false; } if f.start < e[4] || f.constants < e[2] || f.children < e[3] || f.name_len > 0 && f.name_start < e[5] { return fail(c, snapshot::Error.Code); } }
     for op in s.ops[e[4]..] { if !snapshot::poll(c) { return false; } if op.start < e[0] { return fail(c, snapshot::Error.Code); } }
     for v in s.code_constants[e[2]..] { if !snapshot::poll(c) { return false; } if v.tag() == 4 && v.sid() < e[14] { return fail(c, snapshot::Error.Code); } }
     for r in s.code_strings[e[14]..] { if !snapshot::poll(c) { return false; } if r.start < e[5] { return fail(c, snapshot::Error.Code); } }

@@ -642,7 +642,9 @@ struct Published { wire: u8[], entry: i64, runtime: source::Value, rt_cell: sour
 // from the base and the consumer appends other code before import.
 fn extra_code(extra: source::Code&) {
     extra.source_bytes.append("\n");
-    extra.functions.push(source::Function { start: 0, count: 3, constants: 0, children: 0, params: 0, locals: 0, captures: 2, strict: true });
+    // Its name, "f", is a run of its own code units (light-cljs-806).
+    extra.units.push(102);
+    extra.functions.push(source::Function { start: 0, count: 3, constants: 0, children: 0, params: 0, locals: 0, captures: 2, strict: true, name_start: 0, name_len: 1 });
     for op, i in [46, 49, 15] { extra.ops.push(source::Op { code: op, arg: if i == 0 { 1 } else { 0 }, offset: [0, 3, 4][i], start: 0, end: 1, depth: [0, 1, 1][i] }); }
     // A second unreachable function must still be validated on publication.
     extra.functions.push(source::Function { start: 3, count: 2, constants: 0, children: 0, params: 0, locals: 0, captures: 0, strict: true });
@@ -654,7 +656,7 @@ fn callable_publication() {
     for cut in [0, 1, wire.len / 2, wire.len - 1] { heap_program::join(thread_spawn(callable_cut, copy(base), str(wire[..cut]))); }
     let records, parsed = from_bytes<callable::Publication[>..]>(wire); assert(parsed && records.len == 1);
     for original in records {
-        for mode in -1..16 { heap_program::join(thread_spawn(callable_mode, copy(base), copy(original), copy(p), mode)); }
+        for mode in -1..17 { heap_program::join(thread_spawn(callable_mode, copy(base), copy(original), copy(p), mode)); }
         for limit in 2 { heap_program::join(thread_spawn(callable_limit, copy(base), copy(original), wire.len, limit)); }
     }
     print("callable code/capture relocation, runtime reconnection, occurrence aliases and transactional malformed/limited publication passed");
@@ -717,7 +719,8 @@ thread_fn callable_mode(base: snapshot::Snapshot, original: callable::Publicatio
             12 => { bad.image.nodes[function.id()].count += 1; },
             13 => { bad.image.nodes[rt_cell.id()].initialized = false; },
             14 => { bad.image.code_bytes[0] = 32; },
-            15 => { bad.image.nodes[p.runtime.id()].length += 1; }, _ => {},
+            15 => { bad.image.nodes[p.runtime.id()].length += 1; },
+            16 => { bad.image.functions[entry].name_start = 0; }, _ => {}, // 16: a name in the base prefix
         }
         let before = snapshot::capture(target, roots, sc); assert(sc.error == snapshot::Error.None);
         var encoded: u8[>..] = []; to_bytes([bad], encoded);
@@ -729,6 +732,8 @@ thread_fn callable_mode(base: snapshot::Snapshot, original: callable::Publicatio
         } else {
             assert(check.error == snapshot::Error.None && imported.tag() == 5);
             assert(target.nodes[imported.id()].function == entry + extra.functions.len && target.nodes[imported.id()].immutable);
+            // Its name is relocated behind the consumer's own code units.
+            let named = target_code.functions[entry + extra.functions.len]; assert(named.name_len == 1 && target_code.units[named.name_start] == 102 && named.name_start >= extra.units.len);
             let n = target.nodes[imported.id()]; let captured = target.nodes[target.values[n.start].id()].value;
             assert(captured == roots[0].value);
             let result = snapshot_test::invoke(target, imported, []); let x = source::form_nth(target, result, 0); let y = source::form_nth(target, result, 1);

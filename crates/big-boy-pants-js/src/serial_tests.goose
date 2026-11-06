@@ -441,6 +441,13 @@ thread_fn realm_model(bytes: u8[]) {
     var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     assert(heap.nodes.len == source::realm_nodes() && source::realm_valid(heap.nodes, heap.accessors, heap.global, heap.call_method));
+    // Symbol's pending names are its own, not its neighbour's (light-cljs-806).
+    let object_fn = source::get(heap, source::object(source::global_row()), source::text(heap, "Object"));
+    let symbol_fn = source::get(heap, source::object(source::global_row()), source::text(heap, "Symbol"));
+    let descriptor = source::get(heap, object_fn, source::text(heap, "getOwnPropertyDescriptor"));
+    assert(symbol_fn.id() == source::symbol_row() && descriptor.tag() == 5 && source::node(heap, descriptor.id()).kind == 4 && heap.fault == source::Fault.None);
+    assert(source::own_entry(heap, symbol_fn, key(heap, "for")).found && !source::own_entry(heap, descriptor, key(heap, "for")).found && !source::own_entry(heap, descriptor, key(heap, "prototype")).found);
+    source::get(heap, symbol_fn, source::text(heap, "keyFor")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     let a = source::allocate(heap, source::Node { kind: 1 }); let o = source::allocate(heap, source::Node { kind: 0 });
     assert(source::prototype(heap, a.id()) == source::object(source::array_prototype_row()) && source::prototype(heap, o.id()) == source::object(source::object_prototype_row()));
     assert(source::prototype(heap, source::object_prototype_row()).tag() == 1 && source::prototype(heap, heap.call_method.id()) == source::object(source::function_prototype_row()));
@@ -568,6 +575,7 @@ fn named_properties() {
     check(embed_file("../corpus/serial/function-names.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/getter-value-of.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/function-name.gsp"), "utf16:[102]");
+    check(embed_file("../corpus/serial/function-keys.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/unsupported-array-method.gsp"), "", source::Fault.UnsupportedOperand);
     check(embed_file("../corpus/serial/unsupported-generator-prototype.gsp"), "", source::Fault.UnsupportedOperand);
     heap_program::join(thread_spawn(named_model));

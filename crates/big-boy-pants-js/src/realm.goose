@@ -121,7 +121,7 @@ let PENDING: PendingName[125] = [
     PendingName { holder: 12, key: "isExtensible" }, PendingName { holder: 12, key: "isFrozen" }, PendingName { holder: 12, key: "isSealed" }, PendingName { holder: 12, key: "keys" },
     PendingName { holder: 12, key: "preventExtensions" }, PendingName { holder: 12, key: "seal" }, PendingName { holder: 12, key: "setPrototypeOf" }, PendingName { holder: 12, key: "values" },
     // Symbol (symbol_row(); its well-known symbols are real)
-    PendingName { holder: 32, key: "prototype" }, PendingName { holder: 32, key: "for" }, PendingName { holder: 32, key: "keyFor" },
+    PendingName { holder: 33, key: "prototype" }, PendingName { holder: 33, key: "for" }, PendingName { holder: 33, key: "keyFor" },
     // Array
     PendingName { holder: 14, key: "from" }, PendingName { holder: 14, key: "of" }, PendingName { holder: 14, key: "fromAsync" }, PendingName { holder: 14, key: "", symbol: 8 },
     // The global object's other standard names.
@@ -270,6 +270,9 @@ fn build_realm(heap: Heap&) -> bool {
     for t in ERROR_NAMES.len { if !realm_value(heap, global_row(), ERROR_NAMES[t].text, object(error_constructor_row(t)), attr_writable() | attr_configurable()) { return false; } }
     if !realm_value(heap, global_row(), "NaN", number(0.0 / 0.0), 0) || !realm_value(heap, global_row(), "Infinity", number(1.0 / 0.0), 0) || !realm_value(heap, global_row(), "undefined", Value.Undefined, 0) { return false; }
     for p in PENDING {
+        // Symbol's pending names sit on symbol_row(), which moves when a
+        // REALM_FUNCTIONS entry is added before it.
+        assert(p.key != "keyFor" || p.holder == symbol_row());
         let k: Value = if p.symbol >= 0 { Value.Symbol { s: p.symbol as u32 } } else { key_named(heap, p.key) };
         if heap.fault != Fault.None || !add_own(heap, p.holder, k, pending(), attr_configurable()) { return false; }
     }
@@ -378,8 +381,9 @@ fn has_own(job: Job&, b: Builtin, o: Value, k: Value) -> bool {
 // Object.getOwnPropertyDescriptor(o, key) (light-cljs-806): undefined for
 // no own property `key`, otherwise a new ordinary object
 // (FromPropertyDescriptor) with `value` and `writable`, or `get` and `set`,
-// then `enumerable` and `configurable`. An ordinary function's lazy
-// `prototype` is made first, as a read makes it (prepare_function). A
+// then `enumerable` and `configurable`. An ordinary function's own lazy
+// `prototype` is made first, as a read makes it (prepare_function); an
+// inherited one is not looked at. A
 // primitive o other than undefined and null (ToObject) and a pending
 // property fail by name.
 fn own_descriptor(job: Job&, b: Builtin, o: Value, kv: Value) -> Value {
@@ -388,7 +392,7 @@ fn own_descriptor(job: Job&, b: Builtin, o: Value, kv: Value) -> Value {
     let k = property_key(job, b, kv);
     if heap.fault != Fault.None { return Value.Undefined; }
     if o.tag() != 5 { return unsupported_step(job, b, "primitive wrapper objects"); }
-    prepare_function(job, o, k, false);
+    if lazy_prototype(heap, o.id()) && key_is(heap, k, "prototype") { prepare_function(job, o, k, false); }
     let p = own_entry(heap, o, k);
     if heap.fault != Fault.None || !p.found { return Value.Undefined; }
     if is_pending(p.value) { pending_fault(heap, k); return Value.Undefined; }
