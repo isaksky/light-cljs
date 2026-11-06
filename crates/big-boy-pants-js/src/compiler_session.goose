@@ -55,7 +55,72 @@ struct Saved {
     // its suspended activations are rows of `heap`.
     queue: source::Task[] = [], queue_head: i64 = 0, draining: bool = false, entry: source::Value = source::Value.Undefined, rejections: u32[] = [],
 }
-struct Command { id: i64 }
+// The compiler's commands on stdin (light-cljs-816), one line each:
+//   `C id definition bytes` or `C id definition bytes prefix next`, then
+//     `bytes` bytes of the call's argument graph: a source-macro call of
+//     definition key `definition`, in the generated-name scope `prefix` at
+//     `next` (light-cljs-798) when given;
+//   `A id sequence -1`, `A id sequence unit definition` or `A id sequence
+//     unit definition prefix`: the answer to job `id`'s wait `sequence`, a
+//     missing helper or helper `unit`, exported as definition-N.gsp, with
+//     what its initializer's gensym appends (light-cljs-802);
+//   `0`, or the end of input: close.
+// Anything else, a payload over the graph bound (FRAME_BYTES) or one that
+// ends early fails the session explicitly, as a malformed line did.
+extern fn read_exact(out: u8[>..]&, count: i64) -> bool = "goose_pipe_read_exact";
+// Every argument and result graph's bound (form_bridge::Control.bytes).
+let FRAME_BYTES: i64 = 16777216;
+// Queued input is bounded in 64 KiB credits (InputBytes), each call taking at
+// least one: at most 64 MiB of argument graphs, and 1024 calls, wait in the
+// Call queue. The input thread blocks for credits before it reads a payload,
+// so a full queue is real backpressure on the pipe.
+let CREDIT_BYTES:  i64 = 65536;
+let INPUT_CREDITS: i64 = 1024;
+struct InputBytes { ready: bool = true }
+// A call's frame, queued by the input thread until the coordinator admits it.
+struct Call { id: i64 = 0, key: i64 = 0, prefix: u8[] = [], next: i64 = 0, arguments: u8[] = [], credits: i64 = 0 }
+// Every other command: id 0 closes, id -1 a malformed input (fault names
+// it), answer an `A` line.
+struct Command { id: i64, call: bool = false, answer: bool = false, sequence: i64 = 0, key: i64 = -1, definition: i64 = -1, prefix: u8[..64] = [], fault: u8[..32] = [] }
+fn malformed(fault: const u8[:]) -> Command, Call { var c = Command { id: -1 }; c.fault.append(fault); return c, Call {}; }
+// A generated-name prefix: `_`, digits and, for a helper's, `i`.
+fn valid_prefix(prefix: const u8[:], helper: bool) -> bool {
+    if prefix.len == 0 || prefix.len > 64 { return false; }
+    for b in prefix { if !(b == 95 || b >= 48 && b <= 57 || helper && b == 105) { return false; } }
+    return true;
+}
+// One command from stdin, and a call's frame (Command.call). With
+// `credited` (the input thread) a call first takes its InputBytes credits.
+fn read_command(credited: bool) -> Command, Call {
+    var line: u8[>..]  = []; if !read_line(line) { return Command { id: 0 }, Call {}; }
+    var at:   i64[>..] = []; var start: i64 = 0;
+    for b, i in line { if b == 32 { at.push(start); at.push(i); start = i + 1; } } at.push(start); at.push(line.len);
+    let n = at.len / 2; for k in n { if at[2 * k] == at[2 * k + 1] { return malformed("input-malformed"); } }
+    let head = line[at[0]..at[1]];
+    if n == 1 && head == "0" { return Command { id: 0 }, Call {}; }
+    var number: i64[6] = [0; 6]; for k in n { if k >= 6 { break; } if k == 0 || (head == "C" && k == 4) || (head == "A" && k == 5) { continue; } let v, ok = parse_int(line[at[2 * k]..at[2 * k + 1]]); if !ok { return malformed("input-malformed"); } number[k] = v; }
+    if head == "C" && (n == 4 || n == 6) {
+        let id = number[1]; let key = number[2]; let bytes = number[3];
+        if id <= 0 || key <= 0 || bytes < 0 { return malformed("input-malformed"); }
+        if bytes > FRAME_BYTES { return malformed("input-oversized"); }
+        var next: i64 = 0;
+        if n == 6 {
+            next = number[5]; if !valid_prefix(line[at[8]..at[9]], false) || next <= 0 || next >= 9007199254740991 { return malformed("input-malformed"); }
+        }
+        let credits = max(1, (bytes + CREDIT_BYTES - 1) / CREDIT_BYTES); if credited { for i in credits { qget<InputBytes>(); } }
+        var data: u8[>..] = []; if !read_exact(data, bytes) { if credited { for i in credits { assert(qput(InputBytes {})); } } return malformed("input-truncated"); }
+        return Command { id: id, call: true }, Call { id: id, key: key, prefix: if n == 6 { str(line[at[8]..at[9]]) } else { str("") }, next: next, arguments: str(data), credits: if credited { credits } else { 0 } };
+    }
+    if head == "A" && n >= 4 && n <= 6 {
+        let id = number[1]; let sequence = number[2]; let key = number[3];
+        if id <= 0 || sequence < 0 || key < -1 || (key == -1) != (n == 4) { return malformed("input-malformed"); }
+        var c = Command { id: id, answer: true, sequence: sequence, key: key };
+        if n >= 5 { if number[4] <= 0 { return malformed("input-malformed"); } c.definition = number[4]; }
+        if n == 6 { let prefix = line[at[10]..at[11]]; if !valid_prefix(prefix, true) { return malformed("input-malformed"); } c.prefix.append(prefix); }
+        return c, Call {};
+    }
+    return malformed("input-malformed");
+}
 struct Cancel {}
 // A single retained token is a session-wide cancellation flag. Active jobs
 // inspect it only between bounded VM slices; idle workers block on Work.
@@ -85,10 +150,12 @@ fn publish(event: Event) { if event.worker < 0 { event.worker = worker_serial; }
 // (light-cljs-795). blocking: the worker may wait for a dependency in place;
 // spawned: the coordinator's clock when it queued the job; stop: the worker
 // exits instead; definition: a start's definition key, which names its
-// publication's identities (light-cljs-808). mode: 0 start, 1 answered
+// publication's identities (light-cljs-808), or the definition export a
+// helper production loads; arguments: a start's argument graph, from its
+// call frame (light-cljs-816). mode: 0 start, 1 answered
 // continuation, 2 helper production, 3 missing helper, 4 cancelled
 // continuation, 5 a delay wait whose claim ended (light-cljs-808).
-struct Work { saved: Saved = Saved {}, id: i64 = 0, identity: i64 = 0, mode: i64 = 0, helper: u8[] = [], key: i64 = -1, checkpoint: i64 = 0, callable: bool = false, blocking: bool = false, spawned: i64 = 0, stop: bool = false, definition: i64 = -1 }
+struct Work { saved: Saved = Saved {}, id: i64 = 0, identity: i64 = 0, mode: i64 = 0, helper: u8[] = [], key: i64 = -1, checkpoint: i64 = 0, callable: bool = false, blocking: bool = false, spawned: i64 = 0, stop: bool = false, definition: i64 = -1, arguments: u8[] = [] }
 // The coordinator's reply to a blocked worker, routed by address: mode 1
 // delivers a produced helper, 3 a missing one, 5 ends a delay wait (the
 // claim it waited for ended), 0 asks the worker to save its continuation
@@ -100,7 +167,8 @@ struct Running { id: i64, thread: i64 = -1, address: i64 = 0, key: i64 = -1, che
 // address != 0: a blocked worker that keeps its state; otherwise saved holds
 // the flat continuation. delay >= 0: a delay wait for that cell's claim
 // `epoch` (light-cljs-808), resumed when the cell owner reports it ended.
-struct Waiting { id: i64, name: u8[], saved: Saved, key: i64 = -2, active: bool = true, address: i64 = 0, thread: i64 = -1, prefix: u8[..64] = [], delay: i64 = -1, epoch: i64 = 0 }
+// key -2: no answer yet; then its Staged answer's key, definition and prefix.
+struct Waiting { id: i64, name: u8[], saved: Saved, key: i64 = -2, active: bool = true, address: i64 = 0, thread: i64 = -1, prefix: u8[..64] = [], delay: i64 = -1, epoch: i64 = 0, definition: i64 = -1 }
 struct Exit { address: i64, clock: i64 }
 // Session totals for the JOBS line. Byte counts are spawn-argument copies
 // (snapshot and helper) and restore copies inside the workers.
@@ -120,30 +188,16 @@ struct Jobs {
 struct Produced { key: i64, data: u8[], callable: bool = false }
 struct Prepared { key: i64, heap: snapshot::Snapshot }
 struct SerialDefinition { key: i64, function: source::Value }
-// `{id}.definition` holds the definition key, then, when the compiler expands
-// the macro in a generated-name scope, the scope's gensym prefix and the next
-// number of its count: `key` or `key prefix next` (light-cljs-798).
-fn definition(directory: const u8[:], id: i64) -> i64, u8[], i64 {
-    var bytes:  u8[>..]  = []; assert(read_file(str(directory, "/", id, ".definition"), bytes));
-    var spaces: i64[>..] = []; for b, i in bytes { if b == 32 { spaces.push(i); } }
-    assert(spaces.len == 0 || spaces.len == 2); let key, ok = parse_int(bytes[..(if spaces.len == 0 { bytes.len } else { spaces[0] })]); assert(ok && key > 0);
-    if spaces.len == 0 { return key, str(""), 0; }
-    let prefix = bytes[(spaces[0] + 1)..spaces[1]]; for b in prefix { assert(b == 95 || b >= 48 && b <= 57); } assert(prefix.len > 0 && prefix.len <= 64);
-    let next, valid = parse_int(bytes[(spaces[1] + 1)..]); assert(valid && next > 0 && next < 9007199254740991); return key, str(prefix), next;
-}
+// A helper answer (an `A` command) the coordinator holds until its waiter,
+// job `id` at wait `sequence`, takes it: the helper's unit (-1 for a missing
+// one), its definition export and, when the compiler registered it in a
+// generated-name scope, what its initializer's gensym appends before its own
+// count (light-cljs-802). The helper is produced in that frozen scope from
+// one, whichever job demands it first; without one its gensym faults. At
+// most 1024 wait.
+struct Staged { id: i64, sequence: i64, key: i64, definition: i64, prefix: u8[..64] = [] }
 // Put a job in a generated-name scope; its gensym_next is the count after.
 fn scope(job: source::Job&, prefix: const u8[:], next: i64) { job.gensym_prefix.clear(); job.gensym_prefix.append(prefix); job.gensym_next = next; }
-// `{id}-{sequence}.key` holds the helper's unit, -1 for a missing one, and,
-// when the compiler registered it in a generated-name scope, what its
-// initializer's gensym appends before its own count: `key` or `key prefix`
-// (light-cljs-802). The helper is produced in that frozen scope from one,
-// whichever job demands it first; without one its gensym faults.
-fn helper_key(bytes: const u8[:]) -> i64, u8[] {
-    var space: i64 = -1; for b, i in bytes { if b == 32 { assert(space < 0); space = i; } }
-    let key, ok = parse_int(bytes[..(if space < 0 { bytes.len } else { space })]); assert(ok && key >= -1);
-    if space < 0 { return key, str(""); }
-    let prefix = bytes[(space + 1)..]; for b in prefix { assert(b == 95 || b == 105 || b >= 48 && b <= 57); } assert(prefix.len > 0 && prefix.len <= 64); return key, str(prefix);
-}
 // The scope a helper with initializer prefix `prefix` is produced in: its
 // gensym_next is 1 there, 0 (faulting) without one.
 fn helper_next(prefix: const u8[:]) -> i64 { return if prefix.len > 0 { 1 } else { 0 }; }
@@ -197,13 +251,18 @@ fn prepare(base: const snapshot::Snapshot&, directory: const u8[:], id: i64, key
 }
 thread_fn input(directory: u8[], deterministic: bool) {
     var count: i64 = 0;
-    loop { var line: u8[>..] = []; let present = read_line(line); let parsed, ok = parse_int(line); let id = if !present { 0 } else if !ok || parsed < -2 { -1 } else { parsed };
+    loop {
+        // A call took its InputBytes credits before its payload was read.
+        let command, call = read_command(true);
+        if command.call { assert(qput(call)); readiness::notify(); count += 1; if deterministic && count == 8 { assert(write_file(str(directory, "/commands-ready"), "ready")); } continue; }
         // A credit reserves one command slot, including EOF/close. Blocking
         // here gives the pipe real backpressure without fixed-delay retries.
-        qget<readiness::InputCredit>(); assert(qput(Command { id: id })); readiness::notify();
-        if id > 0 { count += 1; } if deterministic && count == 8 { assert(write_file(str(directory, "/commands-ready"), "ready")); } if id == 0 || id == -1 { return; }
+        qget<readiness::InputCredit>(); assert(qput(command)); readiness::notify();
+        if !command.answer && command.id <= 0 { return; }
     }
 }
+// Give a call's InputBytes credits back: its payload left the queue.
+fn release_credits(call: const Call&) { for i in call.credits { assert(qput(InputBytes {})); } }
 fn load(code: source::Code&, path: const u8[:]) -> i64 {
     var bytes: u8[>..] = []; if !read_file(path, bytes) { return -1; }
     var image = program::Image {}; if program::install(image, bytes) != program::Error.None { return -1; }
@@ -383,9 +442,9 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
     let owned = if mode == 1 || mode == 3 || mode == 4 || mode == 5 { saved.owned } else { heap.nodes.len };
     var costs = saved.costs; var control = saved.bridge; var call = source::Value.Undefined; var function = source::Value.Undefined; var next = saved.gensym_next;
     if mode == 0 { function = bindings[1].value; let importing = clock_ns();
-        assert(read_file(str(directory, "/", id, ".gfb"), bytes)); assert(bridge::decode(graph, bytes, control)); assert(bridge::import_graph(heap, graph, args, control)); assert(args.len >= 2); call = args[0]; costs[1] += clock_ns() - importing;
+        assert(bridge::decode(graph, work.arguments, control)); assert(bridge::import_graph(heap, graph, args, control)); assert(args.len >= 2); call = args[0]; costs[1] += clock_ns() - importing;
     } else if mode == 2 {
-        let loading = clock_ns(); let entry = append(code, heap, str(directory, "/", id, "-", saved.sequence, ".helper")); assert(entry >= 0); costs[0] += clock_ns() - loading;
+        let loading = clock_ns(); let entry = append(code, heap, str(directory, "/definition-", work.definition, ".gsp")); assert(entry >= 0); costs[0] += clock_ns() - loading;
         let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], saved.protected, saved.gensym_prefix, next, address, timing(work, started, sc)); if !loaded { return; }
         let value, initialized = leaf(id, heap, factory, [rt], saved.protected, saved.gensym_prefix, next, address, timing(work, started, sc)); if !initialized { return; } function = value;
         if mode == 2 { let exporting = clock_ns();
@@ -499,7 +558,9 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
     let exporting = clock_ns(); let execution_ns = exporting - execution_started; let result = job.result; let steps = job.steps; assert(source::retire(job)); reset(graph); bytes.clear();
     let counted = rows(work, heap, job, bindings, call);
     control.cells = false; if !bridge::export_graph(heap, [result], graph, control, call) || !bridge::encode(graph, bytes, control) { publish(Event { id: id, kind: 3, name: str("bridge-", control.error), address: address, timing: timing(work, started, sc) }); return; }
-    assert(write_file(str(directory, "/", id, ".out"), bytes)); costs[1] += clock_ns() - exporting; publish(Event { id: id, kind: 2, gensym_next: job.gensym_next, name: str(costs[0], " ", costs[1]), steps: steps, writes: job.writes.len, metrics: str(sc.restore_ns, " ", execution_ns, " ", clock_ns() - worker_started, " ", storage(saved, heap, sc, bytes.len), " ", mode), address: address, census: counted, timing: timing(work, started, sc) });
+    // The result graph goes to the coordinator with the event, which sends
+    // it on in the job's reply (light-cljs-816).
+    costs[1] += clock_ns() - exporting; publish(Event { id: id, kind: 2, gensym_next: job.gensym_next, name: str(costs[0], " ", costs[1]), data: copy(bytes), steps: steps, writes: job.writes.len, metrics: str(sc.restore_ns, " ", execution_ns, " ", clock_ns() - worker_started, " ", storage(saved, heap, sc, bytes.len), " ", mode), address: address, census: counted, timing: timing(work, started, sc) });
 }
 // Session cancellation reaching a job, at the dispatch poll point, while it
 // waits in place for a helper, or while it waits as a saved continuation
@@ -543,31 +604,41 @@ fn serial_call(directory: const u8[:], id: i64, code: source::Code&, heap: sourc
         let name = job.effect_args[2]; assert(name.tag() == 4); var text: u8[>..] = [];
         for u in source::utf16(heap, name) { assert(u > 32 && u <= 127); text.push(u as u8); }
         print("NEED ", id, " ", sequence, " ", text, " ", job.steps, " ", job.writes.len); flush_stdout();
-        var notice: u8[>..] = []; assert(read_line(notice)); assert(notice == "-2");
-        var bytes:  u8[>..] = []; assert(read_file(str(directory, "/", id, "-", sequence, ".key"), bytes));
-        let key, scoped = helper_key(bytes);
+        // The compiler answers before it sends anything else.
+        let answer, unused = read_command(false); assert(answer.answer && answer.id == id && answer.sequence == sequence);
+        let key = answer.key; let scoped = answer.prefix[..];
         if key == -1 { assert(source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect)); sequence += 1; continue; }
-        let entry = append(code, heap, str(directory, "/", id, "-", sequence, ".helper")); assert(entry >= 0);
+        let entry = append(code, heap, str(directory, "/definition-", answer.definition, ".gsp")); assert(entry >= 0);
         var produced = helper_next(scoped); let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], 0, scoped, produced); assert(loaded);
         let value, done = leaf(id, heap, factory, [rt], 0, scoped, produced); assert(done);
         source::put(heap, job.effect_args[0], job.effect_args[2], value); assert(source::deliver_effect(job, value));
         print("PRODUCED ", id, " ", key); print("RESUME ", id); flush_stdout(); sequence += 1;
     }
 }
+// A finished job's one reply (light-cljs-816): `DONE id next steps writes
+// load bridge bytes`, the METRIC fields if any, then the result graph's
+// `bytes` bytes, in one write, so no other line splits it. next is the
+// count after the job's generated-name scope, 0 outside one; load and
+// bridge are its COST.
+fn reply(id: i64, next: i64, steps: i64, writes: i64, costs: const u8[:], metrics: const u8[:], data: const u8[:]) {
+    var out: u8[>..] = []; format(out, "DONE ", id, " ", next, " ", steps, " ", writes, " ", costs, " ", data.len); if metrics.len > 0 { format(out, " ", metrics); }
+    out.push(10); out.append(data); write_stdout(out); flush_stdout();
+}
 fn serial(directory: const u8[:], code: source::Code&, heap: source::Heap&, rt: source::Value, instrumented: bool) {
     var definitions: SerialDefinition[>..] = [];
     loop {
-        var line: u8[>..] = []; assert(read_line(line)); let id, ok = parse_int(line); assert(ok && id >= 0); if id == 0 { break; }
-        print("START ", id); flush_stdout(); let started = clock_ns(); let key, prefix, first = definition(directory, id); var next = first; var function = source::Value.Undefined; var found = false;
+        let command, call = read_command(false);
+        if !command.call { if command.answer || command.id != 0 { print("FAULT 0 ", if command.answer { "input-uncorrelated" } else { command.fault[..] }); flush_stdout(); } break; }
+        let id = call.id; let started = clock_ns(); let key = call.key; let prefix = call.prefix[..]; var next = call.next; var function = source::Value.Undefined; var found = false;
         for d in definitions { if d.key == key { function = d.function; found = true; break; } }
         if !found { let entry = append(code, heap, str(directory, "/definition-", key, ".gsp")); assert(entry >= 0);
             let factory, a = initialize(id, heap, source::closure(heap, entry, []), [], 0, prefix, next); if !a { continue; } let value, b = initialize(id, heap, factory, [rt], 0, prefix, next); if !b { continue; } function = value; definitions.push(SerialDefinition { key: key, function: function }); print("PREPARED ", id, " ", key); flush_stdout(); }
         let loaded = clock_ns();
-        var data: u8[>..] = []; assert(read_file(str(directory, "/", id, ".gfb"), data)); var graph = bridge::Graph {}; var c = bridge::Control {}; assert(bridge::decode(graph, data, c)); var args: source::Value[>..] = []; assert(bridge::import_graph(heap, graph, args, c));
+        var graph = bridge::Graph {}; var c = bridge::Control {}; assert(bridge::decode(graph, call.arguments, c)); var args: source::Value[>..] = []; assert(bridge::import_graph(heap, graph, args, c));
         let ready = clock_ns(); let value = serial_call(directory, id, code, heap, rt, function, args, prefix, next); let invoked = clock_ns();
-        var output = bridge::Graph {}; var bytes: u8[>..] = []; assert(bridge::export_graph(heap, [value], output, c, args[0]) && bridge::encode(output, bytes, c)); assert(write_file(str(directory, "/", id, ".out"), bytes));
-        let empty = Saved { storage: instrumented }; print("METRIC ", id, " 0 ", invoked - ready, " ", clock_ns() - started, " ", storage(empty, heap, snapshot::Control {}, bytes.len), " 0");
-        print("COST ", id, " ", loaded - started, " ", ready - loaded + clock_ns() - invoked); print("FINISH ", id, " 0 0"); if next > 0 { print("DONE ", id, " ", next); } else { print("DONE ", id); } flush_stdout();
+        var output = bridge::Graph {}; var bytes: u8[>..] = []; assert(bridge::export_graph(heap, [value], output, c, args[0]) && bridge::encode(output, bytes, c));
+        let empty = Saved { storage: instrumented }; let metrics = str("0 ", invoked - ready, " ", clock_ns() - started, " ", storage(empty, heap, snapshot::Control {}, bytes.len), " 0");
+        reply(id, next, 0, 0, str(loaded - started, " ", ready - loaded + clock_ns() - invoked), metrics, bytes);
     }
     print("CLOSED 1"); flush_stdout();
 }
@@ -679,7 +750,7 @@ fn main() {
     // never refuse a publish.
     // Each live worker also has at most one unconsumed Answer (a resume or,
     // over the retention budget, a save), so the re-queue never fails either.
-    qlimit<Command>(128); qlimit<readiness::InputCredit>(128); for i in 128 { assert(qput(readiness::InputCredit {})); } qlimit<Event>(6 * counts.reapers + 8); qlimit<Answer>(counts.reapers + 1); qlimit<Reap>(counts.reapers); qlimit<Cancel>(1); qlimit<readiness::Wake>(1); cells::prepare(); let owner = thread_spawn(cell_owner, cells::budget()); cells::enabled = true; source::cell_base = base.header; let reader = thread_spawn(input, copy(directory), deterministic); var running: Running[>..] = []; var queue: i64[>..] = []; var received: i64 = 0; var waiting: Waiting[>..] = []; var produced: Produced[>..] = []; var prepared: Prepared[>..] = []; var closing = false; var cancelling = false; var poisoned = false; var retained: i64 = 0; var sleep_ns: i64 = 0; var turns: i64 = 0; var progress_turns: i64 = 0; var backoffs: i64 = 0; var commands: i64 = 0; var events: i64 = 0; var max_commands: i64 = 0; var max_events: i64 = 0; var exits: Exit[>..] = []; var finals: i64 = 0; var since_trim: i64 = 0; var settled: cells::Settled[>..] = [];
+    qlimit<Command>(128); qlimit<readiness::InputCredit>(128); for i in 128 { assert(qput(readiness::InputCredit {})); } qlimit<Call>(INPUT_CREDITS); qlimit<InputBytes>(INPUT_CREDITS); for i in INPUT_CREDITS { assert(qput(InputBytes {})); } qlimit<Event>(6 * counts.reapers + 8); qlimit<Answer>(counts.reapers + 1); qlimit<Reap>(counts.reapers); qlimit<Cancel>(1); qlimit<readiness::Wake>(1); cells::prepare(); let owner = thread_spawn(cell_owner, cells::budget()); cells::enabled = true; source::cell_base = base.header; let reader = thread_spawn(input, copy(directory), deterministic); var running: Running[>..] = []; var queue: Call[>..] = []; var received: i64 = 0; var staged: Staged[>..] = []; var input_done = false; var waiting: Waiting[>..] = []; var produced: Produced[>..] = []; var prepared: Prepared[>..] = []; var closing = false; var cancelling = false; var poisoned = false; var retained: i64 = 0; var sleep_ns: i64 = 0; var turns: i64 = 0; var progress_turns: i64 = 0; var backoffs: i64 = 0; var commands: i64 = 0; var events: i64 = 0; var max_commands: i64 = 0; var max_events: i64 = 0; var exits: Exit[>..] = []; var finals: i64 = 0; var since_trim: i64 = 0; var settled: cells::Settled[>..] = [];
     var reapers: i64[>..] = []; for slot in counts.reapers { reapers.push(thread_spawn(supervise)); }
     print("READY 1 ", heap.boot_count, " ", loaded - beginning, " ", booted - loaded, " ", clock_ns() - booted); flush_stdout();
     // The deterministic fixture queues a complete batch before the first turn.
@@ -687,7 +758,14 @@ fn main() {
     while !closing || counts.live > 0 || saved_waiters(waiting) {
         var progress = false; var command_count: i64 = 0; var event_count: i64 = 0;
         readiness::clear();
-        loop { let command, available = qpoll<Command>(); if !available { break; } assert(qput(readiness::InputCredit {})); progress = true; if command.id == -2 { continue; } command_count += 1; commands += 1; if command.id <= 0 { closing = true; } else if !closing { if queue.len >= 1024 { print("ERROR ", command.id, " command-budget"); flush_stdout(); } else { queue.push(command.id); } } }
+        // Calls wait here, holding their credits until they leave: their
+        // credits bound this queue (light-cljs-816).
+        loop { let call, available = qpoll<Call>(); if !available { break; } progress = true; command_count += 1; commands += 1; if closing { release_credits(call); } else { queue.push(copy(call)); } }
+        loop { let command, available = qpoll<Command>(); if !available { break; } assert(qput(readiness::InputCredit {})); progress = true;
+            if command.answer { if closing { continue; } if staged.len >= 1024 { print("ERROR ", command.id, " answer-budget"); flush_stdout(); continue; } var s = Staged { id: command.id, sequence: command.sequence, key: command.key, definition: command.definition }; s.prefix.append(command.prefix[..]); staged.push(s); continue; }
+            command_count += 1; commands += 1; closing = true; input_done = true; if command.fault.len > 0 { print("FAULT 0 ", command.fault[..]); flush_stdout(); } }
+        // Closing: queued calls are never admitted; their credits go back.
+        if closing && queue.len > 0 { for c in queue { release_credits(c); } queue.clear(); received = 0; }
         // Test mode waits for this bounded batch's real events, ensuring the
         // multi-completion drain is exercised independently of OS scheduling.
         if deterministic { for r in running { var ready: u8[>..] = []; while !read_file(str(directory, "/ready-", r.checkpoint), ready) { sleep_ms(1); } } }
@@ -720,13 +798,16 @@ fn main() {
                 // Over the retention budget: the worker saves its continuation and ends the job.
                 let checkpoint = source::reserve_identity(); assert(qput(Answer { address: event.address, mode: 0, checkpoint: checkpoint })); running.push(Running { id: event.id, thread: owner.thread, address: event.address, checkpoint: checkpoint }); continue;
             }
-            let bytes = if event.kind == 1 { footprint(event.saved) } else { event.data.len }; if bytes > 67108864 - retained { abandon(event); print("ERROR ", event.id, " retained-budget"); flush_stdout(); continue; } retained += bytes; if event.metrics.len > 0 { print("METRIC ", event.id, " ", event.metrics, " ", sleep_ns, " ", clock_ns() - beginning); } if event.kind == 2 || event.kind == 5 { print("COST ", event.id, " ", event.name); }
+            // A finished job's result graph leaves with its reply below; it is not retained.
+            let bytes = if event.kind == 1 { footprint(event.saved) } else if event.kind == 5 { event.data.len } else { 0 }; if bytes > 67108864 - retained { abandon(event); print("ERROR ", event.id, " retained-budget"); flush_stdout(); continue; } retained += bytes; let metrics = if event.metrics.len > 0 { str(event.metrics, " ", sleep_ns, " ", clock_ns() - beginning) } else { str("") }; if event.kind != 2 && metrics.len > 0 { print("METRIC ", event.id, " ", metrics); } if event.kind == 5 { print("COST ", event.id, " ", event.name); }
             if event.census[0] >= 0 { var text: u8[>..] = []; format(text, "CENSUS 0 ", event.id, " ", event.kind); for n in event.census { format(text, " ", n); } print(text); }
             if event.kind == 1 { stats.saves += 1; if waiting.len >= 128 { abandon(event); print("ERROR ", event.id, " waiter-budget"); } else { waiting.push(Waiting { id: event.id, name: copy(event.name), saved: copy(event.saved), delay: event.delay, epoch: event.epoch }); if event.delay >= 0 { print("WAIT ", event.id, " ", event.delay); } else { print("NEED ", event.id, " ", event.saved.sequence, " ", event.name, " ", event.steps, " ", event.saved.writes.len); } } }
             else if event.kind == 5 { produced.push(Produced { key: event.key, data: copy(event.data), callable: event.callable });
                 // The helper numbered in its own frozen scope, not the wait's.
                 print("PRODUCED ", event.id, " ", event.key); }
-            else if event.kind == 2 { print("FINISH ", event.id, " ", event.steps, " ", event.writes); if event.gensym_next > 0 { print("DONE ", event.id, " ", event.gensym_next); } else { print("DONE ", event.id); } }
+            // One reply carries what START, METRIC, COST, FINISH and DONE
+            // lines did, and the result graph (light-cljs-816).
+            else if event.kind == 2 { if event.data.len > FRAME_BYTES { print("ERROR ", event.id, " result-budget"); } else { reply(event.id, max(event.gensym_next, 0), event.steps, event.writes, event.name, metrics, event.data); } }
             else { print("ERROR ", event.id, " ", event.name); }
             flush_stdout();
         }
@@ -746,21 +827,27 @@ fn main() {
         loop { let ended, present = qpoll<cells::Settled>(); if !present { break; } settled.push(ended); progress = true; }
         if !closing { for w in waiting { if running.len >= limit { break; } if !w.active { continue; }
             if w.delay >= 0 { if claim_ended(settled, w.delay, w.epoch) && resume(w, 5, [], -1, false, running, base, pool, counts, stats) { progress = true; } continue; }
-            if w.key == -2 { var bytes: u8[>..] = []; if !read_file(str(directory, "/", w.id, "-", w.saved.sequence, ".key"), bytes) { continue; } let key, prefix = helper_key(bytes); w.key = key; w.prefix.append(prefix); }
+            if w.key == -2 { var at: i64 = -1; for s, i in staged { if s.id == w.id && s.sequence == w.saved.sequence { at = i; break; } } if at < 0 { continue; }
+                let s = staged[at]; w.key = s.key; w.definition = s.definition; w.prefix.append(s.prefix[..]); staged.swap_remove(at); }
             let key = w.key; if key == -1 { if resume(w, 3, [], -1, false, running, base, pool, counts, stats) { progress = true; } continue; } var found = false;
             for p in produced { if p.key == key { found = true; if resume(w, 1, p.data, key, p.callable, running, base, pool, counts, stats) { progress = true; } break; } }
             if found { continue; }
             var producing = false; for r in running { if r.key == key { producing = true; } }
-            if !producing && available(counts) { let initial = Saved { heap: copy(base), base: base.header, sequence: w.saved.sequence, protected: base.nodes.len, storage: instrumented, gensym_prefix: w.prefix[..], gensym_next: helper_next(w.prefix[..]) }; let checkpoint = source::reserve_identity(); var work = Work { saved: copy(initial), id: w.id, identity: identity(initial), mode: 2, helper: [], key: key, checkpoint: checkpoint }; dispatch(work, base, pool, counts, stats); running.push(Running { id: w.id, address: checkpoint, key: key, checkpoint: checkpoint }); print("PRODUCE ", w.id, " ", key); flush_stdout(); progress = true; }
+            if !producing && available(counts) { let initial = Saved { heap: copy(base), base: base.header, sequence: w.saved.sequence, protected: base.nodes.len, storage: instrumented, gensym_prefix: w.prefix[..], gensym_next: helper_next(w.prefix[..]) }; let checkpoint = source::reserve_identity(); var work = Work { saved: copy(initial), id: w.id, identity: identity(initial), mode: 2, helper: [], key: key, checkpoint: checkpoint, definition: w.definition }; dispatch(work, base, pool, counts, stats); running.push(Running { id: w.id, address: checkpoint, key: key, checkpoint: checkpoint }); print("PRODUCE ", w.id, " ", key); flush_stdout(); progress = true; }
         } }
         // Ready continuations/helpers get first refusal; new jobs fill every remaining slot.
-        while !closing && received < queue.len && running.len < limit && available(counts) { progress = true; let id = queue[received]; received += 1; let key, prefix, first = definition(directory, id); var next = first; var index: i64 = -1;
+        for call, position in queue { if position < received { continue; } if closing || running.len >= limit || !available(counts) { break; }
+            progress = true; received += 1; let id = call.id; let key = call.key; let prefix .= call.prefix; var next = call.next; var index: i64 = -1;
             for p, i in prepared { if p.key == key { index = i; break; } }
             if index < 0 { let checkpoint, ok = prepare(base, directory, id, key, prefix, next); if !ok { continue; } let bytes = snapshot::footprint(checkpoint); if prepared.len >= 1024 || bytes > 67108864 - retained { print("ERROR ", id, " definition-budget"); flush_stdout(); continue; } retained += bytes; index = prepared.len; prepared.push(Prepared { key: key, heap: copy(checkpoint) }); }
-            for p in prepared { if p.key != key { continue; } let handing = clock_ns(); let spawning = stats.spawn_ns; let initial = Saved { heap: copy(p.heap), base: base.header, protected: base.nodes.len, storage: instrumented, gensym_prefix: copy(prefix), gensym_next: next }; let checkpoint = source::reserve_identity(); var work = Work { saved: copy(initial), id: id, identity: identity(initial), mode: 0, helper: [], key: -1, checkpoint: checkpoint, blocking: retention > 0, definition: key }; dispatch(work, base, pool, counts, stats); stats.handoff_ns += clock_ns() - handing - (stats.spawn_ns - spawning); running.push(Running { id: id, address: checkpoint, checkpoint: checkpoint }); since_trim += 1; print("START ", id); flush_stdout(); break; } }
+            for p in prepared { if p.key != key { continue; } let handing = clock_ns(); let spawning = stats.spawn_ns; let initial = Saved { heap: copy(p.heap), base: base.header, protected: base.nodes.len, storage: instrumented, gensym_prefix: copy(prefix), gensym_next: next }; let checkpoint = source::reserve_identity(); var work = Work { saved: copy(initial), id: id, identity: identity(initial), mode: 0, helper: [], key: -1, checkpoint: checkpoint, blocking: retention > 0, definition: key, arguments: copy(call.arguments) }; dispatch(work, base, pool, counts, stats); stats.handoff_ns += clock_ns() - handing - (stats.spawn_ns - spawning); running.push(Running { id: id, address: checkpoint, checkpoint: checkpoint }); since_trim += 1; if tracing { print("START ", id); flush_stdout(); } break; } }
         // Release inactive continuation owners and their budget after dispatch.
         { var inactive: i64 = 0; for w in waiting { if !w.active { inactive += 1; if w.address == 0 { retained -= footprint(w.saved); } } } if inactive == waiting.len { waiting.clear(); } else if inactive > 0 { var active: Waiting[>..] = []; for w in waiting { if w.active { active.push(copy(w)); } } waiting = copy(active); } }
-        if received == queue.len { queue.clear(); received = 0; }
+        // The admitted calls leave the queue, and their payloads with them;
+        // only then do their credits go back, so the credits bound the bytes
+        // the queue holds.
+        if received > 0 { for c, i in queue { if i < received { release_credits(c); } }
+            if received == queue.len { queue.clear(); } else { var rest: Call[>..] = []; for c, i in queue { if i >= received { rest.push(copy(c)); } } queue = copy(rest); } received = 0; }
         // Instrumented runs measure trim_memory() once the coordinator is idle
         // after a batch of jobs (light-cljs-784); other runs never call it.
         if instrumented && since_trim > 0 && running.len == 0 && queue.len == 0 && !closing {
@@ -778,6 +865,11 @@ fn main() {
     for thread in reapers { assert(thread_wait(thread)); }
     // No job runs any more: the cell owner reports and exits.
     let cell_stats = cells::stop(); assert(thread_wait(owner));
+    // The input thread reads until stdin closes: keep giving its credits
+    // back until its last command, so it never blocks on one.
+    for c in queue { release_credits(c); }
+    while !input_done { loop { let call, present = qpoll<Call>(); if !present { break; } release_credits(call); }
+        let command, present = qget<Command>(5); if present { assert(qput(readiness::InputCredit {})); if !command.answer { input_done = true; } } }
     assert(thread_wait(reader));
     // The coordinator's VM tables did not change after READY.
     if check { assert(image == heap_digest(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }])); }

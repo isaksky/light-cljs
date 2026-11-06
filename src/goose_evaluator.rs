@@ -13,7 +13,7 @@ use std::{
     process::{Child, ChildStdin, Command, Stdio},
     rc::Rc,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, TryLockError,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
@@ -36,22 +36,23 @@ enum Event {
     Start,
     Produced,
     Resumed,
-    /// A finished job, and the next number of its gensym scope's count if
-    /// the compiler gave it one.
-    Done(Option<u64>),
+    /// A finished job: the next number of its gensym scope's count if
+    /// the compiler gave it one, and its result graph.
+    Done(Option<u64>, Vec<u8>),
     Need(u64, String),
     Failure(String),
 }
-struct Process {
-    child: Child,
-    input: ChildStdin,
-}
 /// One initialized subprocess per compilation; clones share only transport.
-/// Each outstanding call has its own correlated mailbox. The writer lock is
-/// held for one command write, never while waiting or invoking the compiler.
+/// Each outstanding call has its own correlated mailbox. The input lock is
+/// held for one command and its payload, never while waiting or invoking the
+/// compiler, and the reader thread never takes it, so a writer blocked on a
+/// full pipe never stops the replies that drain it. Calls, answers and
+/// results travel in the pipes (light-cljs-816); the directory holds only
+/// the base image and the definition exports.
 pub struct GooseSession {
     directory: PathBuf,
-    process: Mutex<Option<Process>>,
+    process: Mutex<Option<Child>>,
+    input: Mutex<Option<ChildStdin>>,
     pending: Arc<Mutex<HashMap<u64, mpsc::Sender<Event>>>>,
     next: AtomicU64,
     readers: Mutex<Vec<thread::JoinHandle<()>>>,
@@ -127,6 +128,7 @@ impl GooseSession {
                 std::process::id()
             )),
             process: Mutex::new(None),
+            input: Mutex::new(None),
             pending: Default::default(),
             next: AtomicU64::new(1),
             readers: Mutex::new(Vec::new()),
@@ -310,8 +312,17 @@ impl GooseSession {
                         {
                             Event::Resumed
                         }
-                        "DONE" if parts.len() == 2 => Event::Done(None),
-                        "DONE" if parts.len() == 3 => Event::Done(Some(parts[2].parse().ok()?)),
+                        // A finished job's one reply (light-cljs-816):
+                        // `DONE id next steps writes load bridge bytes`,
+                        // its METRIC fields if any, then `bytes` bytes of
+                        // its result graph.
+                        "DONE"
+                            if matches!(parts.len(), 8 | 19 | 21)
+                                && parts[2..].iter().all(|s| s.parse::<u64>().is_ok()) =>
+                        {
+                            let next = parts[2].parse::<u64>().ok()?;
+                            Event::Done((next > 0).then_some(next), Vec::new())
+                        }
                         "NEED"
                             if parts.len() == 6
                                 && parts[4..].iter().all(|s| s.parse::<u64>().is_ok()) =>
@@ -327,7 +338,19 @@ impl GooseSession {
                     Some((id, event))
                 })();
                 match parsed {
-                    Some((id, event)) => {
+                    Some((id, mut event)) => {
+                        if let Event::Done(_, bytes) = &mut event {
+                            let length = parts[7].parse::<usize>().unwrap();
+                            if length > bridge::MAX_BYTES {
+                                terminal_reason = "oversized subprocess reply";
+                                break;
+                            }
+                            bytes.resize(length, 0);
+                            if output.read_exact(bytes).is_err() {
+                                terminal_reason = "truncated subprocess reply";
+                                break;
+                            }
+                        }
                         if parts[0] == "PREPARED" {
                             prepared.fetch_add(1, Ordering::Relaxed);
                         }
@@ -337,10 +360,11 @@ impl GooseSession {
                                 costs[i] = parts[i + 3].parse().unwrap();
                             }
                         }
-                        if parts[0] == "COST" {
+                        if parts[0] == "COST" || parts[0] == "DONE" {
+                            let at = if parts[0] == "COST" { 2 } else { 5 };
                             for i in 0..2 {
                                 costs[i + 3] = costs[i + 3]
-                                    .saturating_add(parts[i + 2].parse::<u64>().unwrap());
+                                    .saturating_add(parts[at + i].parse::<u64>().unwrap());
                             }
                         }
                         drop(costs);
@@ -350,8 +374,15 @@ impl GooseSession {
                         {
                             trace.remove(0);
                         }
-                        if trace.len() < 4096 {
-                            trace.push(line.trim().to_owned());
+                        let traced = if parts[0] == "DONE" {
+                            reply_lines(&parts)
+                        } else {
+                            vec![line.trim().to_owned()]
+                        };
+                        for line in traced {
+                            if trace.len() < 4096 {
+                                trace.push(line);
+                            }
                         }
                         let boxes = mailboxes.lock().unwrap();
                         if parts[0] == "FAULT" && id == 0 {
@@ -402,7 +433,8 @@ impl GooseSession {
         });
         let session = Arc::new(Self {
             directory,
-            process: Mutex::new(Some(Process { child, input })),
+            process: Mutex::new(Some(child)),
+            input: Mutex::new(Some(input)),
             pending,
             next: AtomicU64::new(1),
             readers: Mutex::new(vec![reader, drain]),
@@ -480,7 +512,7 @@ impl GooseSession {
     }
     /// Terminal failures retire the entire compilation, including every worker.
     ///
-    /// The close request cancels every job; the runner then runs each saved
+    /// The close request (the end of the runner's input) cancels every job; the runner then runs each saved
     /// waiter's pending finally blocks as a cleanup job (light-cljs-803)
     /// before it prints `CLOSED 1` and exits. close() waits for that exit as
     /// long as the runner keeps replying (each cleanup reports a line),
@@ -491,15 +523,32 @@ impl GooseSession {
         self.close_within(CLOSE_QUIET, CLOSE_LIMIT);
     }
     /// close() with these bounds on the wait for the runner to exit.
+    ///
+    /// A writer blocked mid-frame on a full pipe holds the input: close()
+    /// waits for it within the quiet bound, then kills the runner, which
+    /// fails that write (light-cljs-816).
     fn close_within(&self, quiet_limit: Duration, limit: Duration) {
-        if let Some(mut process) = self.process.lock().unwrap().take() {
-            let _ = writeln!(process.input, "0");
-            let _ = process.input.flush();
+        if let Some(mut child) = self.process.lock().unwrap().take() {
             let started = Instant::now();
+            // Held: a writer kept the input past the quiet bound.
+            let (input, held) = loop {
+                match self.input.try_lock() {
+                    Ok(mut input) => break (input.take(), false),
+                    Err(TryLockError::Poisoned(input)) => break (input.into_inner().take(), false),
+                    Err(TryLockError::WouldBlock) if started.elapsed() < quiet_limit => {
+                        thread::sleep(Duration::from_millis(1))
+                    }
+                    Err(TryLockError::WouldBlock) => break (None, true),
+                }
+            };
+            // The close request is the end of input: dropping it cannot
+            // block on a full pipe, as writing a line could (an input
+            // already gone ended at its drop).
+            drop(input);
             let mut seen = self.lines.load(Ordering::Relaxed);
-            let mut quiet = started;
+            let mut quiet = Instant::now();
             let exited = loop {
-                if process.child.try_wait().ok().flatten().is_some() {
+                if child.try_wait().ok().flatten().is_some() {
                     break true;
                 }
                 let now = Instant::now();
@@ -508,7 +557,7 @@ impl GooseSession {
                     seen = lines;
                     quiet = now;
                 }
-                if now - quiet >= quiet_limit || now - started >= limit {
+                if held || now - quiet >= quiet_limit || now - started >= limit {
                     break false;
                 }
                 thread::sleep(Duration::from_millis(1));
@@ -524,8 +573,13 @@ impl GooseSession {
                 }
                 trace.push(format!("KILLED {waited}"));
             }
-            let _ = process.child.kill();
-            let _ = process.child.wait();
+            let _ = child.kill();
+            let _ = child.wait();
+            // A writer that held the input has failed now; no later one writes.
+            self.input
+                .lock()
+                .unwrap_or_else(|input| input.into_inner())
+                .take();
         }
         for reader in self.readers.lock().unwrap().drain(..) {
             let _ = reader.join();
@@ -543,24 +597,21 @@ impl GooseSession {
             .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
         Ok(())
     }
+    /// Write one command line and its payload to the runner, under the
+    /// input lock.
+    fn send(&self, header: &str, payload: &[u8]) -> Result<(), EvalError> {
+        let mut input = self.input.lock().unwrap();
+        let input = input.as_mut().ok_or_else(|| error("session is closed"))?;
+        input
+            .write_all(header.as_bytes())
+            .and_then(|_| input.write_all(payload))
+            .and_then(|_| input.flush())
+            .map_err(error)
+    }
+    /// Answer job `id`'s wait `sequence`: `-1` for a missing helper, or
+    /// `unit definition` with the initializer's gensym prefix if it has one.
     fn answer_key(&self, id: u64, sequence: u64, key: &str) -> Result<(), EvalError> {
-        let temporary = self.directory.join(format!("{id}-{sequence}.key.tmp"));
-        std::fs::write(&temporary, key).map_err(error)?;
-        std::fs::rename(
-            temporary,
-            self.directory.join(format!("{id}-{sequence}.key")),
-        )
-        .map_err(error)?;
-        // Publish the file before readiness. The native input thread folds
-        // this notice into its bounded wake protocol; payloads remain keyed
-        // by request and sequence. This lock only frames one pipe write.
-        let mut process = self.process.lock().unwrap();
-        let input = &mut process
-            .as_mut()
-            .ok_or_else(|| error("session is closed"))?
-            .input;
-        writeln!(input, "-2").map_err(error)?;
-        input.flush().map_err(error)
+        self.send(&format!("A {id} {sequence} {key}\n"), &[])
     }
     // Compiler CodeIdentity includes the resolved declaration context. Never
     // merge equal source text from distinct definitions or compilation sessions.
@@ -606,15 +657,7 @@ impl GooseSession {
             }
             c.check()?;
             let id = self.next.fetch_add(1, Ordering::Relaxed);
-            let stem = self.directory.join(id.to_string());
             let definition = self.definition(key, source)?;
-            // The macro's generated-name scope, if any: its prefix and the
-            // next number of its count (light-cljs-798).
-            let definition = match gensym {
-                Some((prefix, start)) => format!("{definition} {prefix} {start}"),
-                None => definition.to_string(),
-            };
-            std::fs::write(stem.with_extension("definition"), definition).map_err(error)?;
             let bridged = Instant::now();
             let input = graph.encode()?;
             self.bytes.fetch_add(input.len() as u64, Ordering::Relaxed);
@@ -626,39 +669,38 @@ impl GooseSession {
                 .fetch_add(input.len() as u64, Ordering::Relaxed);
             t.argument_source_bytes
                 .fetch_add(graph.source_bytes() as u64, Ordering::Relaxed);
-            std::fs::write(stem.with_extension("gfb"), input).map_err(error)?;
             self.bridge_ns
                 .fetch_add(bridged.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            // The call's frame: its definition key, the macro's generated-name
+            // scope if any (its prefix and the next number of its count,
+            // light-cljs-798), then the argument graph.
+            let header = match gensym {
+                Some((prefix, start)) => {
+                    format!("C {id} {definition} {} {prefix} {start}\n", input.len())
+                }
+                None => format!("C {id} {definition} {}\n", input.len()),
+            };
             let (tx, rx) = mpsc::channel();
-            let mut helpers = Vec::new();
             self.pending.lock().unwrap().insert(id, tx);
-            {
-                let mut process = self.process.lock().unwrap();
-                let process = process.as_mut().ok_or_else(|| error("session is closed"))?;
-                writeln!(process.input, "{id}").map_err(error)?;
-                process.input.flush().map_err(error)?;
-            }
+            self.send(&header, &input)?;
+            // A START line comes only in traced runs; the reply counts too.
+            let mut started = false;
             loop {
                 c.poll()?;
                 match rx.recv_timeout(Duration::from_millis(2)) {
                     Ok(Event::Start) => {
-                        self.starts.fetch_add(1, Ordering::Relaxed);
+                        if !started {
+                            started = true;
+                            self.starts.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                    Ok(Event::Done(next)) => {
+                    Ok(Event::Done(next, bytes)) => {
+                        if !started {
+                            self.starts.fetch_add(1, Ordering::Relaxed);
+                        }
                         self.pending.lock().unwrap().remove(&id);
                         if let Some(error) = self.terminal.lock().unwrap().clone() {
                             return Err(error);
-                        }
-                        let bytes = std::fs::read(stem.with_extension("out")).map_err(error)?;
-                        for extension in ["definition", "gfb", "out"] {
-                            let _ = std::fs::remove_file(stem.with_extension(extension));
-                        }
-                        for sequence in helpers {
-                            for extension in ["helper", "key"] {
-                                let _ = std::fs::remove_file(
-                                    self.directory.join(format!("{id}-{sequence}.{extension}")),
-                                );
-                            }
                         }
                         self.bytes.fetch_add(bytes.len() as u64, Ordering::Relaxed);
                         self.transport
@@ -667,7 +709,6 @@ impl GooseSession {
                         return Ok((bytes, next));
                     }
                     Ok(Event::Need(sequence, name)) => {
-                        helpers.push(sequence);
                         let failed = self.terminal.lock().unwrap().clone();
                         let reply = match failed {
                             Some(error) => Err(error),
@@ -682,23 +723,14 @@ impl GooseSession {
                             }
                         };
                         c.poll()?;
-                        let temporary = self.directory.join(format!("{id}-{sequence}.tmp"));
+                        // The helper's export, which a worker loads once.
                         let definition = self.definition(DefinitionKey::Helper(unit), &source)?;
-                        std::fs::copy(
-                            self.directory.join(format!("definition-{definition}.gsp")),
-                            &temporary,
-                        )
-                        .map_err(error)?;
-                        std::fs::rename(
-                            temporary,
-                            self.directory.join(format!("{id}-{sequence}.helper")),
-                        )
-                        .map_err(error)?;
-                        // `unit` or `unit prefix`: Goose produces the helper
-                        // in its frozen initializer scope (light-cljs-802).
+                        // `unit definition` or `unit definition prefix`:
+                        // Goose produces the helper in its frozen initializer
+                        // scope (light-cljs-802).
                         let key = match prefix {
-                            Some(prefix) => format!("{unit} {prefix}"),
-                            None => unit.to_string(),
+                            Some(prefix) => format!("{unit} {definition} {prefix}"),
+                            None => format!("{unit} {definition}"),
                         };
                         self.answer_key(id, sequence, &key)?;
                     }
@@ -729,6 +761,23 @@ impl GooseSession {
             e
         })
     }
+}
+/// The trace lines a finished job's reply stands for, as the runner printed
+/// them before it folded them into the reply (light-cljs-816): METRIC when it
+/// has fields, COST, FINISH and DONE.
+fn reply_lines(parts: &[&str]) -> Vec<String> {
+    let id = parts[1];
+    let mut lines = Vec::with_capacity(4);
+    if parts.len() > 8 {
+        lines.push(format!("METRIC {id} {}", parts[8..].join(" ")));
+    }
+    lines.push(format!("COST {id} {} {}", parts[5], parts[6]));
+    lines.push(format!("FINISH {id} {} {}", parts[3], parts[4]));
+    lines.push(match parts[2] {
+        "0" => format!("DONE {id}"),
+        next => format!("DONE {id} {next}"),
+    });
+    lines
 }
 impl Drop for GooseSession {
     fn drop(&mut self) {
@@ -1146,7 +1195,12 @@ mod bridge_control_tests {
                 };
                 assert!(error.0.contains("budget exhausted"), "{error}");
                 if !output {
-                    assert!(!session.trace().iter().any(|s| s.starts_with("START ")));
+                    assert!(
+                        !session
+                            .trace()
+                            .iter()
+                            .any(|s| s.starts_with("START ") || s.starts_with("DONE "))
+                    );
                 }
                 assert!(c.check().is_err(), "catch cannot clear a failed tail debit");
                 assert!(session.process.lock().unwrap().is_none());

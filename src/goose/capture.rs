@@ -1283,7 +1283,9 @@ fn goose_compiler_pipeline() {
                             > 0,
                         "pre-wait mutation must be saved"
                     );
-                    assert!(trace.iter().any(|line| line == "START 2"));
+                    // The nested job ran to its reply (light-cljs-816: a
+                    // START line comes only in traced runs).
+                    assert!(trace.iter().any(|line| line == "DONE 2" || line.starts_with("DONE 2 ")));
                     let finish = trace
                         .iter()
                         .find(|line| line.starts_with("FINISH 1 "))

@@ -103,7 +103,7 @@ impl Drop for Budget {
     }
 }
 
-const MAX_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAX_BYTES: usize = 16 * 1024 * 1024;
 /// Goose's default per-job graph nodes, value rows, text units and bridge
 /// work (form_bridge.goose `Control`, source_vm.goose `Limits`).
 const GOOSE_NODES: usize = 100_000;

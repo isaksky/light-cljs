@@ -1219,13 +1219,41 @@ fn goose_compiler_handles_are_owner_scoped() {
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_exit_and_malformed_replies_cleanup() {
-    for (body, malformed_graph) in [
-        ("read id\nexit 0", false),
-        ("read id\nprintf 'malformed\\n'\nread stop", false),
-        ("read id\nprintf 'DONE 999\\n'\nread stop", false),
+    // Each fake reads the call's frame header (`C id definition bytes`) and
+    // answers it. A reply frame (light-cljs-816) for an unknown id, over the
+    // graph bound, or that ends early fails the call explicitly; one in the
+    // old line shape is malformed.
+    for (body, malformed_graph, expected) in [
+        ("read c id rest\nexit 0", false, "subprocess exited"),
         (
-            "read id\nprintf x > \"$1/$id.out\"\nprintf 'DONE %s\\n' \"$id\"\nread stop",
+            "read c id rest\nprintf 'malformed\\n'\nread stop",
+            false,
+            "malformed subprocess reply",
+        ),
+        (
+            "read c id rest\nprintf 'DONE %s\\n' \"$id\"\nread stop",
+            false,
+            "malformed subprocess reply",
+        ),
+        (
+            "read c id rest\nprintf 'DONE 999 0 0 0 0 0 1\\nx'\nread stop",
+            false,
+            "uncorrelated subprocess reply",
+        ),
+        (
+            "read c id rest\nprintf 'DONE %s 0 0 0 0 0 16777217\\n' \"$id\"\nread stop",
+            false,
+            "oversized subprocess reply",
+        ),
+        (
+            "read c id rest\nprintf 'DONE %s 0 0 0 0 0 100\\nxx' \"$id\"\nexit 0",
+            false,
+            "truncated subprocess reply",
+        ),
+        (
+            "read c id rest\nprintf 'DONE %s 0 0 0 0 0 1\\nx' \"$id\"\nread stop",
             true,
+            "",
         ),
     ] {
         let session = fake(body);
@@ -1240,10 +1268,181 @@ fn goose_compiler_exit_and_malformed_replies_cleanup() {
                     .is_err()
             );
         } else {
-            assert!(result.is_err());
+            let failure = result.unwrap_err();
+            assert!(failure.0.contains(expected), "{body}: {failure}");
         }
         cleaned(&session);
     }
+}
+/// The runner fails the session explicitly on a call frame over the graph
+/// bound, one whose payload ends early (the compiler's side closed while it
+/// was half-written), or a command it does not know (light-cljs-816): its
+/// FAULT reaches every pending call, and it still closes and exits.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_runner_refuses_bad_frames() {
+    for (case, fault) in [
+        ("oversized", "input-oversized"),
+        ("truncated", "input-truncated"),
+        ("unknown", "input-malformed"),
+        ("answer", "input-malformed"),
+    ] {
+        let session = GooseSession::start(&runner(), 1).unwrap();
+        let (tx, rx) = mpsc::channel();
+        session.pending.lock().unwrap().insert(1, tx);
+        match case {
+            "oversized" => session.send("C 1 1 16777217\n", &[]).unwrap(),
+            "truncated" => {
+                session.send("C 1 1 1000\n", b"GFB1-short").unwrap();
+                // The compiler's end of the pipe goes mid-frame.
+                drop(session.input.lock().unwrap().take());
+            }
+            "unknown" => session.send("X 1 2 3\n", &[]).unwrap(),
+            _ => session.send("A 1 0 7\n", &[]).unwrap(),
+        }
+        let message = loop {
+            match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                Event::Failure(message) => break message,
+                Event::Start | Event::Resumed => {}
+                other => panic!("{case}: expected the runner's fault: {other:?}"),
+            }
+        };
+        assert!(message.contains(fault), "{case}: {message}");
+        let until = Instant::now() + Duration::from_secs(10);
+        while !session.trace().iter().any(|s| s == "CLOSED 1") {
+            assert!(Instant::now() < until, "{case}: {:?}", session.trace());
+            thread::sleep(Duration::from_millis(1));
+        }
+        session.close();
+        cleaned(&session);
+        assert!(
+            !session.trace().iter().any(|s| s.starts_with("KILLED ")),
+            "{case}: {:?}",
+            session.trace()
+        );
+    }
+}
+/// The runner's input credits bound the argument bytes it holds
+/// (light-cljs-816): a call's credits go back only when its payload leaves
+/// the coordinator's queue. 2,000 calls of 300 KiB each (600 MB in all),
+/// sent as fast as the credits allow to one execution slot, keep a backlog
+/// for most of the run; the runner's resident memory, sampled throughout,
+/// stays far below what keeping consumed payloads until the backlog
+/// emptied takes (light-cljs-816's review measured both).
+#[cfg(unix)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_input_credit_lifetimes_stay_bounded() {
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+    let raw = raw_inputs_from(&e, "big.cljs", &"x".repeat(300 << 10), DatumKind::Nil);
+    assert!(raw.bytes.len() >= 300 << 10, "{}", raw.bytes.len());
+    session
+        .export(
+            &session.directory.join("definition-1.gsp"),
+            // Each body runs long enough for the backlog to persist.
+            "rt => (form, env) => { let x = 0; for (let i = 0; i < 50000; i++) x = x + 1; return x - 49993; }",
+        )
+        .unwrap();
+    let calls = 2000u64;
+    let replies = (1..=calls)
+        .map(|id| {
+            let (tx, rx) = mpsc::channel();
+            session.pending.lock().unwrap().insert(id, tx);
+            rx
+        })
+        .collect::<Vec<_>>();
+    let pid = session.process.lock().unwrap().as_ref().unwrap().id();
+    let stop = Arc::new(AtomicBool::new(false));
+    let sampler = {
+        let stop = stop.clone();
+        thread::spawn(move || {
+            let mut peak = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                let out = std::process::Command::new("ps")
+                    .args(["-o", "rss=", "-p", &pid.to_string()])
+                    .output()
+                    .unwrap();
+                if let Ok(kib) = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>() {
+                    peak = peak.max(kib << 10);
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            peak
+        })
+    };
+    let writer = {
+        let (session, bytes) = (session.clone(), raw.bytes.clone());
+        thread::spawn(move || {
+            for id in 1..=calls {
+                session
+                    .send(&format!("C {id} 1 {}\n", bytes.len()), &bytes)
+                    .unwrap();
+            }
+        })
+    };
+    // The first result decodes to 7; one conversion budget would not cover
+    // decoding every call's copy of the source text.
+    assert!(raw_outcome(&raw, &replies[0]).unwrap().contains('7'));
+    for rx in &replies[1..] {
+        loop {
+            match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
+                Event::Done(_, out) => break assert!(out.len() >= 32),
+                Event::Failure(message) => panic!("{message}"),
+                _ => {}
+            }
+        }
+    }
+    writer.join().unwrap();
+    stop.store(true, Ordering::Relaxed);
+    let peak = sampler.join().unwrap();
+    eprintln!("runner resident memory peak {peak}");
+    assert!(
+        peak > 0 && peak < 320 << 20,
+        "runner resident memory {peak}"
+    );
+    session.close();
+    cleaned(&session);
+}
+/// close() while a compiler thread is blocked half-way through writing a
+/// call's frame to a runner that stopped reading (light-cljs-816): close()
+/// waits for the input only within its quiet bound, kills the runner, the
+/// writer fails, and nothing is left behind.
+#[cfg(unix)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_close_while_a_frame_is_half_written() {
+    let session = fake("read c id rest\nexec sleep 30");
+    let writer = {
+        let session = session.clone();
+        thread::spawn(move || {
+            // Far more than a pipe holds: the write blocks part-way.
+            let payload = vec![0u8; 4 << 20];
+            session.send(&format!("C 1 1 {}\n", payload.len()), &payload)
+        })
+    };
+    let until = Instant::now() + Duration::from_secs(5);
+    while session.input.try_lock().is_ok() {
+        assert!(Instant::now() < until, "the writer never took the input");
+        thread::yield_now();
+    }
+    thread::sleep(Duration::from_millis(50));
+    assert!(!writer.is_finished(), "the frame fit in the pipe");
+    let quiet = Duration::from_millis(300);
+    let started = Instant::now();
+    session.close_within(quiet, Duration::from_secs(20));
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= quiet && elapsed < Duration::from_secs(5),
+        "{elapsed:?}"
+    );
+    assert!(
+        writer.join().unwrap().is_err(),
+        "the half-written frame must fail"
+    );
+    assert!(session.trace().iter().any(|l| l.starts_with("KILLED ")));
+    assert!(session.send("0\n", &[]).unwrap_err().0.contains("closed"));
+    cleaned(&session);
 }
 /// close()'s watchdog (light-cljs-812) with fake runners: one that goes
 /// silent after the close request is killed at the quiet bound; one that
@@ -1694,16 +1893,7 @@ fn goose_compiler_injected_worker_abort_cleans_entire_session() {
                 "rt => (form, env) => 1",
             )
             .unwrap();
-        std::fs::write(session.directory.join("1.definition"), "2").unwrap();
-        std::fs::write(session.directory.join("1.gfb"), b"GFB1").unwrap();
-        let (tx, rx) = mpsc::channel();
-        session.pending.lock().unwrap().insert(1, tx);
-        {
-            let mut process = session.process.lock().unwrap();
-            let input = &mut process.as_mut().unwrap().input;
-            writeln!(input, "1").unwrap();
-            input.flush().unwrap();
-        }
+        let rx = send_call(&session, 1, 2, b"GFB1");
         let until = Instant::now() + Duration::from_secs(5);
         loop {
             match rx.recv_timeout(Duration::from_millis(2)) {
@@ -1777,17 +1967,7 @@ fn goose_compiler_cleanup_abort_cancels_a_started_replacement() {
                 "rt => (form, env) => 42",
             )
             .unwrap();
-        let send = |id| {
-            std::fs::write(session.directory.join(format!("{id}.definition")), "1").unwrap();
-            std::fs::write(session.directory.join(format!("{id}.gfb")), &bytes).unwrap();
-            let (tx, rx) = mpsc::channel();
-            session.pending.lock().unwrap().insert(id, tx);
-            let mut process = session.process.lock().unwrap();
-            let input = &mut process.as_mut().unwrap().input;
-            writeln!(input, "{id}").unwrap();
-            input.flush().unwrap();
-            rx
-        };
+        let send = |id| send_call(&session, id, 1, &bytes);
         let wait = |ready: &dyn Fn() -> bool| {
             let until = Instant::now() + Duration::from_secs(5);
             while !ready() {
@@ -1802,7 +1982,7 @@ fn goose_compiler_cleanup_abort_cancels_a_started_replacement() {
         let first = send(1);
         loop {
             match first.recv_timeout(Duration::from_secs(5)).unwrap() {
-                Event::Done(_) => break,
+                Event::Done(..) => break,
                 Event::Start | Event::Resumed => {}
                 other => panic!("unexpected first result: {other:?}"),
             }
@@ -1826,21 +2006,128 @@ fn goose_compiler_cleanup_abort_cancels_a_started_replacement() {
             }
         }
         std::fs::write(session.directory.join("claim-release"), "release").unwrap();
-        {
-            let mut process = session.process.lock().unwrap();
-            let input = &mut process.as_mut().unwrap().input;
-            writeln!(input, "0").unwrap();
-            input.flush().unwrap();
-        }
+        session.send("0\n", &[]).unwrap();
         // Observe native closure before calling close: close()'s kill
         // fallback must not turn a deadlocked native shutdown into a pass.
         wait(&|| session.trace().iter().any(|s| s == "CLOSED 1"));
-        assert!(!session.directory.join("2.out").exists());
         assert!(!session.trace().iter().any(|s| s == "DONE 2"));
         assert_threads(&session.trace(), workers);
         session.close();
         cleaned(&session);
     }
+}
+
+/// Source-macro calls, their results and their helper answers travel in the
+/// runner's pipes (light-cljs-816): a build of many calls at 1 and 4 workers,
+/// some reading a data root, some calling a function root, and some reading
+/// neither, never has a file in the session directory but the base image
+/// and the definition exports, polled throughout the build.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_calls_create_no_per_call_files() {
+    let root = std::env::temp_dir().join(format!(
+        "goose-no-call-files-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("macros.cljs"), "(ns macros) (defn wrap [form] (list 'quote form)) (def shared [11 22]) (defmacro data [n] (list 'quote [n shared])) (defmacro call [n] (wrap [n n])) (defmacro plain [n] (* n 2))").unwrap();
+    let mut requires = String::new();
+    let mut names = Vec::new();
+    for space in 0..4 {
+        let calls = (0..12)
+            .map(|i| {
+                let n = space * 100 + i;
+                let call = ["data", "call", "plain"][i % 3];
+                format!("(def v{i} ({call} {n}))")
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        std::fs::write(
+            root.join(format!("batch{space}.cljs")),
+            format!("(ns batch{space} (:require [macros :refer [data call plain]])) {calls}"),
+        )
+        .unwrap();
+        requires.push_str(&format!(" [batch{space} :as b{space}]"));
+        names.push(format!("b{space}/v0 b{space}/v1 b{space}/v11"));
+    }
+    std::fs::write(
+        root.join("main.cljs"),
+        format!(
+            "(ns main (:require{requires})) (js/console.log (pr-str [{}]))",
+            names.join(" ")
+        ),
+    )
+    .unwrap();
+    let mut builds = Vec::new();
+    for workers in [1, 4] {
+        let session = GooseSession::start(&runner(), workers).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let (directory, stop) = (session.directory.clone(), stop.clone());
+            thread::spawn(move || {
+                let (mut seen, mut polls) = (std::collections::BTreeSet::new(), 0u64);
+                while !stop.load(Ordering::Relaxed) {
+                    if let Ok(entries) = std::fs::read_dir(&directory) {
+                        for entry in entries.flatten() {
+                            seen.insert(entry.file_name().to_string_lossy().into_owned());
+                        }
+                    }
+                    polls += 1;
+                }
+                (seen, polls)
+            })
+        };
+        let mut host = crate::MacroHost::new();
+        host.evaluator_options.memory_limit = 512 << 20;
+        host.use_goose_source_macros(session.clone()).unwrap();
+        let _names = crate::generated_names::enter_namespace(0);
+        let (program, _) = crate::compiler::analyze_namespace_entry_recorded(
+            "main",
+            std::slice::from_ref(&root),
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            crate::compiler::EntryRecorders {
+                slots: crate::scheduler::Slots::new(4).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("workers={workers}: {e} trace={:?}", session.trace()));
+        stop.store(true, Ordering::Relaxed);
+        let (seen, polls) = watcher.join().unwrap();
+        let stats = session.stats();
+        let trace = session.trace();
+        assert_eq!(stats.calls, 48, "{trace:?}");
+        assert!(
+            trace.iter().filter(|s| s.starts_with("NEED ")).count() >= 32,
+            "the data and call macros demand their roots: {trace:?}"
+        );
+        assert!(polls > 1);
+        let stray = seen
+            .iter()
+            .filter(|name| {
+                *name != "base.gsp"
+                    && !name.strip_prefix("definition-").is_some_and(|rest| {
+                        rest.strip_suffix(".gsp")
+                            .is_some_and(|n| n.parse::<u64>().is_ok())
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            stray.is_empty(),
+            "workers={workers}: per-call files {stray:?}"
+        );
+        assert!(seen.contains("base.gsp") && seen.len() as u64 == 1 + stats.definitions);
+        session.close();
+        cleaned(&session);
+        builds.push(crate::emit_js(&program));
+    }
+    assert_eq!(builds[0], builds[1], "deterministic compiler output");
+    for expected in ["[11, 22]", "[101, 101]"] {
+        assert!(builds[0].contains(expected), "{expected}: {}", builds[0]);
+    }
+    std::fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -1868,19 +2155,22 @@ fn goose_compiler_every_job_runs_in_its_own_worker() {
 
 /// Submit raw job `id` of definition `key` with the fixture's arguments.
 fn submit_key(session: &GooseSession, bytes: &[u8], id: u64, key: u64) -> mpsc::Receiver<Event> {
-    std::fs::write(
-        session.directory.join(format!("{id}.definition")),
-        key.to_string(),
-    )
-    .unwrap();
-    std::fs::write(session.directory.join(format!("{id}.gfb")), bytes).unwrap();
+    send_call(session, id, key, bytes)
+}
+/// Send raw call `id` of definition `key` with argument graph `bytes`, in
+/// its frame (light-cljs-816), and return its mailbox.
+fn send_call(session: &GooseSession, id: u64, key: u64, bytes: &[u8]) -> mpsc::Receiver<Event> {
     let (tx, rx) = mpsc::channel();
     session.pending.lock().unwrap().insert(id, tx);
-    let mut process = session.process.lock().unwrap();
-    let input = &mut process.as_mut().unwrap().input;
-    writeln!(input, "{id}").unwrap();
-    input.flush().unwrap();
+    session
+        .send(&format!("C {id} {key} {}\n", bytes.len()), bytes)
+        .unwrap();
     rx
+}
+/// The definition export that answers job `id`'s wait `sequence` in raw
+/// fixtures: one per answer, as the compiler's helper exports are numbered.
+fn helper_definition(id: u64, sequence: u64) -> u64 {
+    1_000_000 + id * 1000 + sequence
 }
 
 /// Reused job workers (light-cljs-795): the jobs of `plan` (definition keys,
@@ -2026,18 +2316,24 @@ fn reuse_session(
             } else {
                 "rt => 41"
             };
+            let definition = helper_definition(id, 0);
             session
-                .export(&session.directory.join(format!("{id}-0.helper")), helper)
+                .export(
+                    &session
+                        .directory
+                        .join(format!("definition-{definition}.gsp")),
+                    helper,
+                )
                 .unwrap();
+            let unit = if key == 8 { 8 } else { 9 };
             session
-                .answer_key(id, 0, if key == 8 { "8" } else { "9" })
+                .answer_key(id, 0, &format!("{unit} {definition}"))
                 .unwrap();
         }
         let rx = submit_key(&session, &bytes, id, key);
         let result = loop {
             match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
-                Event::Done(_) => {
-                    let out = std::fs::read(session.directory.join(format!("{id}.out"))).unwrap();
+                Event::Done(_, out) => {
                     let output = bridge::Graph::decode(&out, limits, &budget)
                         .unwrap()
                         .expansion(&call, origin(&call), &graph.originals, limits, &budget)
@@ -2221,15 +2517,7 @@ fn goose_compiler_reused_worker_retires_at_its_table_cap() {
 
 /// Submit raw job `id` of definition 1 with the fixture's arguments.
 fn submit(session: &GooseSession, bytes: &[u8], id: u64) -> mpsc::Receiver<Event> {
-    std::fs::write(session.directory.join(format!("{id}.definition")), "1").unwrap();
-    std::fs::write(session.directory.join(format!("{id}.gfb")), bytes).unwrap();
-    let (tx, rx) = mpsc::channel();
-    session.pending.lock().unwrap().insert(id, tx);
-    let mut process = session.process.lock().unwrap();
-    let input = &mut process.as_mut().unwrap().input;
-    writeln!(input, "{id}").unwrap();
-    input.flush().unwrap();
-    rx
+    send_call(session, id, 1, bytes)
 }
 fn await_need(rx: &mpsc::Receiver<Event>) {
     loop {
@@ -2347,12 +2635,7 @@ fn goose_compiler_blocked_waits_release_worker_and_retention() {
             other => panic!("expected the blocked worker's abort: {other:?}"),
         }
     }
-    {
-        let mut process = session.process.lock().unwrap();
-        let input = &mut process.as_mut().unwrap().input;
-        writeln!(input, "0").unwrap();
-        input.flush().unwrap();
-    }
+    session.send("0\n", &[]).unwrap();
     let until = Instant::now() + Duration::from_secs(5);
     while !session.trace().iter().any(|s| s == "CLOSED 1") {
         assert!(Instant::now() < until, "{:?}", session.trace());
@@ -2399,12 +2682,7 @@ fn goose_compiler_cancel_reaches_a_queued_resume() {
         assert!(Instant::now() < until, "{:?}", session.trace());
         thread::sleep(Duration::from_millis(1));
     }
-    {
-        let mut process = session.process.lock().unwrap();
-        let input = &mut process.as_mut().unwrap().input;
-        writeln!(input, "0").unwrap();
-        input.flush().unwrap();
-    }
+    session.send("0\n", &[]).unwrap();
     // SCHED's commands count reaches 2 (the job and the close) in the turn
     // that puts the cancellation token.
     while !session
@@ -2464,13 +2742,14 @@ fn goose_compiler_drains_ready_batches_without_progress_backoff() {
             &format!("rt => {{ return (form, env) => {{ let state = {{n: 0}}; state.n = state.n + 1; let value = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value'); return state.n + {result}; }}; }}")).unwrap();
             let mut replies = Vec::new();
             for id in 1..=8 {
-                std::fs::write(session.directory.join(format!("{id}.definition")), "1").unwrap();
-                std::fs::write(session.directory.join(format!("{id}.gfb")), &bytes).unwrap();
-                // Real emitted helper, with all keys available before dispatch.
+                // Real emitted helper, with all answers sent before dispatch.
                 // Concurrent waiters must still elect exactly one producer.
+                let definition = helper_definition(id, 0);
                 session
                     .export(
-                        &session.directory.join(format!("{id}-0.helper")),
+                        &session
+                            .directory
+                            .join(format!("definition-{definition}.gsp")),
                         if callable {
                             "rt => {const result=41; return function(){return result;};}"
                         } else {
@@ -2478,29 +2757,21 @@ fn goose_compiler_drains_ready_batches_without_progress_backoff() {
                         },
                     )
                     .unwrap();
-                session.answer_key(id, 0, "9").unwrap();
-                let (tx, rx) = mpsc::channel();
-                session.pending.lock().unwrap().insert(id, tx);
-                replies.push(rx);
+                session
+                    .answer_key(id, 0, &format!("9 {definition}"))
+                    .unwrap();
             }
-            {
-                let mut process = session.process.lock().unwrap();
-                let input = &mut process.as_mut().unwrap().input;
-                for id in 1..=8 {
-                    writeln!(input, "{id}").unwrap();
-                }
-                input.flush().unwrap();
+            for id in 1..=8 {
+                replies.push(send_call(&session, id, 1, &bytes));
             }
-            for (index, rx) in replies.into_iter().enumerate() {
-                loop {
+            for rx in replies {
+                let bytes = loop {
                     match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
-                        Event::Done(_) => break,
+                        Event::Done(_, bytes) => break bytes,
                         Event::Start | Event::Resumed | Event::Produced | Event::Need(_, _) => {}
                         other => panic!("unexpected reply: {other:?}"),
                     }
-                }
-                let bytes =
-                    std::fs::read(session.directory.join(format!("{}.out", index + 1))).unwrap();
+                };
                 let output = bridge::Graph::decode(&bytes, limits, &budget)
                     .unwrap()
                     .expansion(&call, origin(&call), &graph.originals, limits, &budget)
@@ -2598,15 +2869,10 @@ fn goose_compiler_readiness_delayed_helper_and_idle_close_cancel() {
     for workers in [1, 2, 4, 8] {
         let session = GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
         await_park(&session, 0);
-        // Repeated/spurious file notices contain no job and cannot produce a
-        // terminal reply. Wake is coalesced even while the input pipe drains.
-        {
-            let mut process = session.process.lock().unwrap();
-            let input = &mut process.as_mut().unwrap().input;
-            for _ in 0..256 {
-                writeln!(input, "-2").unwrap();
-            }
-            input.flush().unwrap();
+        // Answers no job waits for stay held and cannot produce a terminal
+        // reply. Wake is coalesced even while the input pipe drains.
+        for sequence in 0..256 {
+            session.answer_key(999_999, sequence, "-1").unwrap();
         }
         let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
         let (function, args, call) = inputs(
@@ -2807,19 +3073,7 @@ fn goose_compiler_active_waiter_limit_stays_bounded() {
     session.export(&session.directory.join("definition-1.gsp"), "rt => (form, env) => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value')").unwrap();
     let mut replies = Vec::new();
     for id in 1..=129 {
-        std::fs::write(session.directory.join(format!("{id}.definition")), "1").unwrap();
-        std::fs::write(session.directory.join(format!("{id}.gfb")), &bytes).unwrap();
-        let (tx, rx) = mpsc::channel();
-        session.pending.lock().unwrap().insert(id, tx);
-        replies.push(rx);
-    }
-    {
-        let mut process = session.process.lock().unwrap();
-        let input = &mut process.as_mut().unwrap().input;
-        for id in 1..=129 {
-            writeln!(input, "{id}").unwrap();
-        }
-        input.flush().unwrap();
+        replies.push(send_call(&session, id, 1, &bytes));
     }
     for (index, rx) in replies.into_iter().enumerate() {
         loop {
@@ -2840,12 +3094,7 @@ fn goose_compiler_active_waiter_limit_stays_bounded() {
     // 60-110 ms on the release runner alone, more on the debug runner or under
     // load. The test observes the native close itself rather than through
     // GooseSession::close(), whose kill fallback could end the session.
-    {
-        let mut process = session.process.lock().unwrap();
-        let input = &mut process.as_mut().unwrap().input;
-        writeln!(input, "0").unwrap();
-        input.flush().unwrap();
-    }
+    session.send("0\n", &[]).unwrap();
     let until = Instant::now() + Duration::from_secs(30);
     while !session.trace().iter().any(|s| s == "CLOSED 1") {
         assert!(Instant::now() < until, "{:?}", session.trace());
@@ -3999,25 +4248,24 @@ fn raw_job(session: &GooseSession, raw: &RawInputs, id: u64, body: &str) -> mpsc
 /// Job `id`'s dependency wait `sequence` reads unit `unit`, whose
 /// initializer is `source` when this job is the first to demand it.
 fn raw_helper(session: &GooseSession, id: u64, sequence: u64, unit: u64, source: &str) {
+    let definition = helper_definition(id, sequence);
     session
         .export(
-            &session.directory.join(format!("{id}-{sequence}.helper")),
+            &session
+                .directory
+                .join(format!("definition-{definition}.gsp")),
             source,
         )
         .unwrap();
-    session.answer_key(id, sequence, &unit.to_string()).unwrap();
+    session
+        .answer_key(id, sequence, &format!("{unit} {definition}"))
+        .unwrap();
 }
 /// Job `id`'s result (its expansion's data) or failure.
-fn raw_outcome(
-    session: &GooseSession,
-    raw: &RawInputs,
-    rx: &mpsc::Receiver<Event>,
-    id: u64,
-) -> Result<String, String> {
+fn raw_outcome(raw: &RawInputs, rx: &mpsc::Receiver<Event>) -> Result<String, String> {
     loop {
         match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
-            Event::Done(_) => {
-                let out = std::fs::read(session.directory.join(format!("{id}.out"))).unwrap();
+            Event::Done(_, out) => {
                 let output = bridge::Graph::decode(&out, raw.limits, &raw.budget)
                     .unwrap()
                     .expansion(
@@ -4094,7 +4342,7 @@ fn cell_session_roots(
             reads += 1;
         }
         let rx = raw_job(&session, &raw, id, body);
-        outcomes.push(raw_outcome(&session, &raw, &rx, id));
+        outcomes.push(raw_outcome(&raw, &rx));
         thread::sleep(Duration::from_millis(20));
     }
     // A start and a resume per root read of each job (the counter's
@@ -4352,10 +4600,7 @@ fn goose_compiler_shared_delay_realizes_once() {
         let second = raw_job(&session, &raw, 2, &force("fixture/delay"));
         raw_trace(&session, "WAIT 2 ");
         raw_helper(&session, 1, 2, 44, number);
-        let outcomes = [
-            raw_outcome(&session, &raw, &first, 1),
-            raw_outcome(&session, &raw, &second, 2),
-        ];
+        let outcomes = [raw_outcome(&raw, &first), raw_outcome(&raw, &second)];
         // A later force: the value, no call.
         raw_helper(&session, 3, 1, 43, &delay);
         let third = raw_job(
@@ -4367,7 +4612,7 @@ fn goose_compiler_shared_delay_realizes_once() {
                 root("fixture/delay")
             ),
         );
-        let later = raw_outcome(&session, &raw, &third, 3);
+        let later = raw_outcome(&raw, &third);
         // Starts, root reads (3 + 2 + 2), one delay wake, productions
         // (counter, delay, number).
         let jobs = raw_close(&session, workers, 3 + 7 + 1 + 3);
@@ -4413,10 +4658,7 @@ fn goose_compiler_shared_delay_realizes_once() {
         let second = raw_job(&session, &raw, 2, &catch);
         raw_trace(&session, "WAIT 2 ");
         raw_helper(&session, 1, 3, 44, number);
-        let outcomes = [
-            raw_outcome(&session, &raw, &first, 1),
-            raw_outcome(&session, &raw, &second, 2),
-        ];
+        let outcomes = [raw_outcome(&raw, &first), raw_outcome(&raw, &second)];
         raw_helper(&session, 3, 1, 43, &bad);
         raw_helper(&session, 3, 2, 45, calls);
         let third = raw_job(
@@ -4429,7 +4671,7 @@ fn goose_compiler_shared_delay_realizes_once() {
                 root("fixture/calls")
             ),
         );
-        let later = raw_outcome(&session, &raw, &third, 3);
+        let later = raw_outcome(&raw, &third);
         // Starts, root reads (4 + 2 + 3), one delay wake, productions
         // (counter, bad, calls, number).
         let jobs = raw_close(&session, workers, 3 + 9 + 1 + 4);
@@ -4477,10 +4719,7 @@ fn goose_compiler_shared_delay_realizes_once() {
         raw_trace(&session, "WAIT 2 ");
         raw_helper(&session, 1, 2, 45, "rt => 0");
         raw_helper(&session, 1, 3, 44, &d2);
-        let outcomes = [
-            raw_outcome(&session, &raw, &first, 1),
-            raw_outcome(&session, &raw, &second, 2),
-        ];
+        let outcomes = [raw_outcome(&raw, &first), raw_outcome(&raw, &second)];
         // Starts, root reads (4 + 4), one delay wake, productions (counter,
         // d1, d2, gate).
         let jobs = raw_close(&session, workers, 2 + 8 + 1 + 4);
@@ -4639,7 +4878,7 @@ fn goose_compiler_cells_preserve_published_alias_identity() {
                 )
                 .unwrap();
             let rx = submit_key(&session, &raw.bytes, id, 101);
-            outcomes.push(raw_outcome(&session, &raw, &rx, id));
+            outcomes.push(raw_outcome(&raw, &rx));
         }
         raw_close(&session, workers, 2);
         assert_eq!(
@@ -4837,7 +5076,7 @@ fn goose_compiler_cells_hold_functions() {
                 )
                 .unwrap();
             let rx = submit_key(&session, &raw.bytes, id, 101);
-            outcomes.push(raw_outcome(&session, &raw, &rx, id));
+            outcomes.push(raw_outcome(&raw, &rx));
         }
         raw_close(&session, workers, 2);
         assert_eq!(
@@ -4893,7 +5132,7 @@ fn goose_compiler_cell_function_forms_and_byte_census() {
             (3, &second, "rt.core.reset(a, 'abcdefghij'); return 0;"),
         ] {
             let rx = raw_job(&session, raw, id, body);
-            outcomes.push(raw_outcome(&session, raw, &rx, id));
+            outcomes.push(raw_outcome(raw, &rx));
             thread::sleep(Duration::from_millis(20));
         }
         let line = raw_close(&session, workers, 7);
@@ -4948,10 +5187,7 @@ fn goose_compiler_cell_swap_cost() {
         );
         let started = Instant::now();
         let rx = raw_job(&session, &raw, id, &body);
-        assert_eq!(
-            raw_outcome(&session, &raw, &rx, id).as_deref(),
-            Ok("Double(0.0)")
-        );
+        assert_eq!(raw_outcome(&raw, &rx).as_deref(), Ok("Double(0.0)"));
         started.elapsed()
     };
     // The last, a closure capturing a number, is published from the whole
