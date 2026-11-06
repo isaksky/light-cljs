@@ -14,3 +14,12 @@ static uint8_t goose_pipe_read_exact(gs_rref out, gs_i64 count) {
     }
     return 1;
 }
+
+/* The files the runner has created in its session directory, across every
+   thread of the process (light-cljs-822): create_file counts each one before
+   it writes it, and the runner reports the total as `FILES 0 n` before
+   `CLOSED 1`, so a file created and removed again is still counted. */
+#include <stdatomic.h>
+static _Atomic gs_i64 goose_pipe_files = 0;
+static gs_i64 goose_pipe_count_file(void) { return atomic_fetch_add(&goose_pipe_files, 1) + 1; }
+static gs_i64 goose_pipe_files_created(void) { return atomic_load(&goose_pipe_files); }

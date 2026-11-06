@@ -68,6 +68,13 @@ struct Saved {
 // Anything else, a payload over the graph bound (FRAME_BYTES) or one that
 // ends early fails the session explicitly, as a malformed line did.
 extern fn read_exact(out: u8[>..]&, count: i64) -> bool = "goose_pipe_read_exact";
+// Every file the runner creates in its session directory goes through
+// create_file, which counts it in pipes.h; `FILES 0 n`, printed before each
+// `CLOSED 1`, reports the count (light-cljs-822). The compiler asserts that a
+// source-macro build creates none: calls travel in the pipes.
+extern fn count_file() -> i64 = "goose_pipe_count_file";
+extern fn files_created() -> i64 = "goose_pipe_files_created";
+fn create_file(path: const u8[:], data: const u8[:]) -> bool { count_file(); return write_file(path, data); }
 // Every argument and result graph's bound (form_bridge::Control.bytes).
 let FRAME_BYTES: i64 = 16777216;
 // Queued input is bounded in 64 KiB credits (InputBytes), each call taking at
@@ -254,7 +261,7 @@ thread_fn input(directory: u8[], deterministic: bool) {
     loop {
         // A call took its InputBytes credits before its payload was read.
         let command, call = read_command(true);
-        if command.call { assert(qput(call)); readiness::notify(); count += 1; if deterministic && count == 8 { assert(write_file(str(directory, "/commands-ready"), "ready")); } continue; }
+        if command.call { assert(qput(call)); readiness::notify(); count += 1; if deterministic && count == 8 { assert(create_file(str(directory, "/commands-ready"), "ready")); } continue; }
         // A credit reserves one command slot, including EOF/close. Blocking
         // here gives the pipe real backpressure without fixed-delay retries.
         qget<readiness::InputCredit>(); assert(qput(command)); readiness::notify();
@@ -342,15 +349,15 @@ thread_fn run_worker(base: snapshot::Snapshot, directory: u8[], setup: Setup) {
         let work = qget<Work>(); if work.stop { return; }
         // Deterministic poison regression: hold a started replacement before it
         // runs, so poison must also cancel a live worker that has not executed.
-        if setup.cleanup_test && work.id == 2 { assert(write_file(str(directory, "/claim-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/claim-release"), gate) { sleep_ms(1); } }
+        if setup.cleanup_test && work.id == 2 { assert(create_file(str(directory, "/claim-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/claim-release"), gate) { sleep_ms(1); } }
         // Deterministic regression (light-cljs-803): hold job 4's resumed
         // continuation before it runs, so the session's cancellation reaches
         // it queued, after the coordinator stopped tracking it as a waiter.
-        if setup.cleanup_test && work.id == 4 && work.mode == 3 { assert(write_file(str(directory, "/resume-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/resume-release"), gate) { sleep_ms(1); } }
+        if setup.cleanup_test && work.id == 4 && work.mode == 3 { assert(create_file(str(directory, "/resume-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/resume-release"), gate) { sleep_ms(1); } }
         serve(work, directory, setup, base, service, code, heap, bindings);
         // Publish the real terminal result, then abort while this worker still
         // runs. The host starts a replacement before releasing the gate.
-        if setup.cleanup_test && work.id == 1 { assert(write_file(str(directory, "/cleanup-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/cleanup-abort"), gate) { sleep_ms(1); } assert(false); }
+        if setup.cleanup_test && work.id == 1 { assert(create_file(str(directory, "/cleanup-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/cleanup-abort"), gate) { sleep_ms(1); } assert(false); }
         let bytes = table_bytes(code, heap);
         // Retiring: the exit frees the tables in one step.
         if bytes > setup.cap { publish(Event { id: 0, kind: 7, timing: [0, clock_ns(), bytes, 0], worker: setup.worker, retired: true, image: image, installs: worker_installs }); return; }
@@ -428,7 +435,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
     let deterministic = setup.deterministic; let cleanup_test = setup.cleanup_test;
     // Test-only completion barrier: publish the real event before acknowledging.
     var barrier = checkpoint;
-    defer { if deterministic { assert(write_file(str(directory, "/ready-", barrier), "ready")); } }
+    defer { if deterministic { assert(create_file(str(directory, "/ready-", barrier), "ready")); } }
     let worker_started = clock_ns();
     var sc = snapshot::Control {};
     // A fresh job (a start or a helper production) has entered no finally
@@ -517,7 +524,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
         if work.blocking {
             // Wait in place: the job's state stays in this thread program.
             publish(Event { id: id, kind: if delay >= 0 { 11 } else { 10 }, saved: Saved { gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next }, sequence: sequence, name: copy(name), steps: job.steps, writes: job.writes.len, address: address, timing: timing(work, started, sc), delay: delay, epoch: epoch });
-            if deterministic { assert(write_file(str(directory, "/ready-", barrier), "ready")); }
+            if deterministic { assert(create_file(str(directory, "/ready-", barrier), "ready")); }
             // Deterministic regression: a contained abort while blocked.
             if cleanup_test && id == 3 { assert(false); }
             // Deterministic regression: jobs above 10 leave their answers
@@ -640,7 +647,7 @@ fn serial(directory: const u8[:], code: source::Code&, heap: source::Heap&, rt: 
         let empty = Saved { storage: instrumented }; let metrics = str("0 ", invoked - ready, " ", clock_ns() - started, " ", storage(empty, heap, snapshot::Control {}, bytes.len), " 0");
         reply(id, next, 0, 0, str(loaded - started, " ", ready - loaded + clock_ns() - invoked), metrics, bytes);
     }
-    print("CLOSED 1"); flush_stdout();
+    print("FILES 0 ", files_created()); print("CLOSED 1"); flush_stdout();
 }
 // The executing (running) and blocked counts the coordinator admits against:
 // at most `limit` running, at most `retention` blocked, at most `reapers`
@@ -884,5 +891,5 @@ fn main() {
         // and the profile restore are not job-path threads and are not counted.
         print("THREADS 0 ", 3 + counts.reapers + stats.spawned, " ", 3 + counts.reapers + stats.peak_live, " ", 2 + counts.reapers + stats.spawned);
     }
-    print("CLOSED 1"); flush_stdout();
+    print("FILES 0 ", files_created()); print("CLOSED 1"); flush_stdout();
 }

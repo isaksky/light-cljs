@@ -48,9 +48,15 @@ enum Event {
 /// compiler, and the reader thread never takes it, so a writer blocked on a
 /// full pipe never stops the replies that drain it. Calls, answers and
 /// results travel in the pipes (light-cljs-816); the directory holds only
-/// the base image and the definition exports.
+/// the base image and the definition exports. Every file either side
+/// creates there is counted (light-cljs-822): see [`GooseSession::files`].
 pub struct GooseSession {
     directory: PathBuf,
+    /// The names of the files this adapter created in `directory`, in order.
+    created: Mutex<Vec<String>>,
+    /// The runner's count of the files it created there, from its `FILES 0 n`
+    /// line, printed just before `CLOSED 1`.
+    runner_files: Arc<Mutex<Option<u64>>>,
     process: Mutex<Option<Child>>,
     input: Mutex<Option<ChildStdin>>,
     pending: Arc<Mutex<HashMap<u64, mpsc::Sender<Event>>>>,
@@ -75,6 +81,14 @@ pub struct GooseSession {
     terminal: Arc<Mutex<Option<EvalError>>>,
     claimed: AtomicBool,
     compiling: AtomicBool,
+}
+/// Every file created in a session's directory: by this adapter, by name,
+/// and by the runner, as the count it reported at close (None before then).
+/// A file created and removed again is still counted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionFiles {
+    pub compiler: Vec<String>,
+    pub runner: Option<u64>,
 }
 /// What the session sent its jobs and received from them, as counts only:
 /// one call for each job submitted ([`GooseSession::execute`]).
@@ -127,6 +141,8 @@ impl GooseSession {
                 "light-cljs-goose-detached-{}-{id}",
                 std::process::id()
             )),
+            created: Mutex::new(Vec::new()),
+            runner_files: Default::default(),
             process: Mutex::new(None),
             input: Mutex::new(None),
             pending: Default::default(),
@@ -244,6 +260,8 @@ impl GooseSession {
         let prepared = preparations.clone();
         let terminal = Arc::new(Mutex::new(None));
         let failures = terminal.clone();
+        let runner_files = Arc::new(Mutex::new(None));
+        let counted = runner_files.clone();
         let reader = thread::spawn(move || {
             let mut output = BufReader::new(output);
             let mut line = String::new();
@@ -275,7 +293,7 @@ impl GooseSession {
                         "PREPARED" if parts.len() == 3 && parts[2].parse::<u64>().is_ok() => {
                             Event::Resumed
                         }
-                        "SCHED" | "THREADS" | "PARK" | "JOBS" | "TRIM" | "CENSUS"
+                        "SCHED" | "THREADS" | "PARK" | "JOBS" | "TRIM" | "CENSUS" | "FILES"
                             if id == 0
                                 && parts.len()
                                     == (match kind {
@@ -368,9 +386,15 @@ impl GooseSession {
                             }
                         }
                         drop(costs);
+                        if parts[0] == "FILES" {
+                            *counted.lock().unwrap() = parts[2].parse().ok();
+                        }
                         let mut trace = traces.lock().unwrap();
                         if trace.len() == 4096
-                            && matches!(parts[0], "JOBS" | "TRIM" | "THREADS" | "CLOSED" | "FAULT")
+                            && matches!(
+                                parts[0],
+                                "JOBS" | "TRIM" | "THREADS" | "FILES" | "CLOSED" | "FAULT"
+                            )
                         {
                             trace.remove(0);
                         }
@@ -394,7 +418,14 @@ impl GooseSession {
                             let _ = tx.send(event);
                         } else if !matches!(
                             parts[0],
-                            "CLOSED" | "SCHED" | "THREADS" | "PARK" | "JOBS" | "TRIM" | "CENSUS"
+                            "CLOSED"
+                                | "SCHED"
+                                | "THREADS"
+                                | "PARK"
+                                | "JOBS"
+                                | "TRIM"
+                                | "CENSUS"
+                                | "FILES"
                         ) {
                             for tx in boxes.values() {
                                 let _ =
@@ -433,6 +464,8 @@ impl GooseSession {
         });
         let session = Arc::new(Self {
             directory,
+            created: Mutex::new(vec!["base.gsp".to_owned()]),
+            runner_files,
             process: Mutex::new(Some(child)),
             input: Mutex::new(Some(input)),
             pending,
@@ -492,6 +525,13 @@ impl GooseSession {
             argument_bytes: self.transport.argument_bytes.load(Ordering::Relaxed),
             argument_source_bytes: self.transport.argument_source_bytes.load(Ordering::Relaxed),
             result_bytes: self.transport.result_bytes.load(Ordering::Relaxed),
+        }
+    }
+    /// Every file created in the session directory so far.
+    pub fn files(&self) -> SessionFiles {
+        SessionFiles {
+            compiler: self.created.lock().unwrap().clone(),
+            runner: *self.runner_files.lock().unwrap(),
         }
     }
     pub fn trace(&self) -> Vec<String> {
@@ -587,10 +627,16 @@ impl GooseSession {
         self.pending.lock().unwrap().clear();
         let _ = std::fs::remove_dir_all(&self.directory);
     }
+    /// Export `source` to `path`: the adapter's only file write after
+    /// start. It records every write into the session directory by name.
     fn export(&self, path: &Path, source: &str) -> Result<(), EvalError> {
         let started = Instant::now();
         let export = big_boy_pants_js::frontend::goose::export_source("compiler-macro.js", source)
             .map_err(error)?;
+        if let Ok(name) = path.strip_prefix(&self.directory) {
+            let name = name.to_string_lossy().into_owned();
+            self.created.lock().unwrap().push(name);
+        }
         std::fs::write(path, &export.bytes).map_err(error)?;
         self.exports.fetch_add(1, Ordering::Relaxed);
         self.export_ns

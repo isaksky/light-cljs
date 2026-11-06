@@ -2026,14 +2026,66 @@ fn goose_compiler_cleanup_abort_cancels_a_started_replacement() {
         assert_threads(&session.trace(), workers);
         session.close();
         cleaned(&session);
+        // The runner's gate files, cleanup-ready from job 1's worker and
+        // claim-ready from job 2's, are counted though both are gone with the
+        // directory now: the count light-cljs-822's checks rely on sees files
+        // that no longer exist, from any worker thread.
+        assert_eq!(session.files().runner, Some(2), "{:?}", session.trace());
+    }
+}
+
+/// The session directory got no file but the base image and one export per
+/// prepared definition, in that order, from the compiler or the runner. Both
+/// count every file as they create it (light-cljs-822), so a per-call file
+/// removed again at once still fails this. After close: the runner reports
+/// its count as it closes.
+fn assert_only_definition_files(session: &GooseSession, definitions: u64, context: &str) {
+    let files = session.files();
+    let expected = std::iter::once("base.gsp".to_owned())
+        .chain((1..=definitions).map(|n| format!("definition-{n}.gsp")))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        files.compiler, expected,
+        "{context}: compiler-created files"
+    );
+    assert_eq!(files.runner, Some(0), "{context}: runner-created files");
+}
+
+/// The counts above see every file only while each side has one way to
+/// create one: the adapter writes base.gsp at start and every other file
+/// through `export`, and the runner writes through `create_file` alone
+/// (light-cljs-822). A new write elsewhere must be routed through them.
+#[test]
+fn goose_session_files_have_one_counted_writer_on_each_side() {
+    let adapter = include_str!("../goose_evaluator.rs");
+    let adapter = &adapter[..adapter.find("#[cfg(test)]\nmod ").unwrap()];
+    assert_eq!(adapter.matches("fs::write(").count(), 2);
+    for other in [
+        "File::create",
+        "OpenOptions",
+        "fs::copy",
+        "fs::rename",
+        "hard_link",
+        "symlink",
+    ] {
+        assert!(!adapter.contains(other), "{other}");
+    }
+    let runner = include_str!("../../crates/big-boy-pants-js/src/compiler_session.goose");
+    assert_eq!(
+        runner.matches("write_file(").count(),
+        1,
+        "only in create_file"
+    );
+    for other in ["append_file(", "write_file_atomic(", "rename_file("] {
+        assert!(!runner.contains(other), "{other}");
     }
 }
 
 /// Source-macro calls, their results and their helper answers travel in the
 /// runner's pipes (light-cljs-816): a build of many calls at 1 and 4 workers,
 /// some reading a data root, some calling a function root, and some reading
-/// neither, never has a file in the session directory but the base image
-/// and the definition exports, polled throughout the build.
+/// neither, creates no file in the session directory but the base image and
+/// the definition exports, counted as they are created (light-cljs-822).
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_calls_create_no_per_call_files() {
@@ -2074,22 +2126,6 @@ fn goose_compiler_calls_create_no_per_call_files() {
     let mut builds = Vec::new();
     for workers in [1, 4] {
         let session = GooseSession::start(&runner(), workers).unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let watcher = {
-            let (directory, stop) = (session.directory.clone(), stop.clone());
-            thread::spawn(move || {
-                let (mut seen, mut polls) = (std::collections::BTreeSet::new(), 0u64);
-                while !stop.load(Ordering::Relaxed) {
-                    if let Ok(entries) = std::fs::read_dir(&directory) {
-                        for entry in entries.flatten() {
-                            seen.insert(entry.file_name().to_string_lossy().into_owned());
-                        }
-                    }
-                    polls += 1;
-                }
-                (seen, polls)
-            })
-        };
         let mut host = crate::MacroHost::new();
         host.evaluator_options.memory_limit = 512 << 20;
         host.use_goose_source_macros(session.clone()).unwrap();
@@ -2106,8 +2142,6 @@ fn goose_compiler_calls_create_no_per_call_files() {
             },
         )
         .unwrap_or_else(|e| panic!("workers={workers}: {e} trace={:?}", session.trace()));
-        stop.store(true, Ordering::Relaxed);
-        let (seen, polls) = watcher.join().unwrap();
         let stats = session.stats();
         let trace = session.trace();
         assert_eq!(stats.calls, 48, "{trace:?}");
@@ -2115,24 +2149,9 @@ fn goose_compiler_calls_create_no_per_call_files() {
             trace.iter().filter(|s| s.starts_with("NEED ")).count() >= 32,
             "the data and call macros demand their roots: {trace:?}"
         );
-        assert!(polls > 1);
-        let stray = seen
-            .iter()
-            .filter(|name| {
-                *name != "base.gsp"
-                    && !name.strip_prefix("definition-").is_some_and(|rest| {
-                        rest.strip_suffix(".gsp")
-                            .is_some_and(|n| n.parse::<u64>().is_ok())
-                    })
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            stray.is_empty(),
-            "workers={workers}: per-call files {stray:?}"
-        );
-        assert!(seen.contains("base.gsp") && seen.len() as u64 == 1 + stats.definitions);
         session.close();
         cleaned(&session);
+        assert_only_definition_files(&session, stats.definitions, &format!("workers={workers}"));
         builds.push(crate::emit_js(&program));
     }
     assert_eq!(builds[0], builds[1], "deterministic compiler output");
@@ -5999,28 +6018,7 @@ fn goose_compiler_pins_per_call_transport_volume() {
     let mut pinned = Vec::new();
     for slots in [1, 4] {
         let session = GooseSession::start(&runner(), slots).unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let watcher = {
-            let (directory, stop) = (session.directory.clone(), stop.clone());
-            thread::spawn(move || {
-                let (mut seen, mut polls) = (std::collections::BTreeSet::new(), 0u64);
-                // Only complete reads of the directory count as polls.
-                while !stop.load(Ordering::Relaxed) {
-                    if let Ok(entries) = std::fs::read_dir(&directory)
-                        && let Ok(names) = entries.collect::<Result<Vec<_>, _>>()
-                    {
-                        for entry in names {
-                            seen.insert(entry.file_name().to_string_lossy().into_owned());
-                        }
-                        polls += 1;
-                    }
-                }
-                (seen, polls)
-            })
-        };
         let (output, _, census) = pooled_build(&files, slots, Some(&session), Default::default());
-        stop.store(true, Ordering::Relaxed);
-        let (seen, polls) = watcher.join().unwrap();
         let output = output.unwrap_or_else(|e| panic!("slots={slots}: {e} {:?}", session.trace()));
         assert!(census.is_empty(), "slots={slots}: {census:?}");
         let stats = session.stats();
@@ -6043,21 +6041,9 @@ fn goose_compiler_pins_per_call_transport_volume() {
             trace.iter().filter(|s| s.starts_with("NEED ")).count() >= 2,
             "the data and call macros demand their roots: {trace:?}"
         );
-        // With per-call files (816 reverted) other names show up here. The
-        // watcher samples the directory, so a file created and removed
-        // between two polls could go unseen (light-cljs-822).
-        assert!(polls > 1);
-        let stray = seen
-            .iter()
-            .filter(|name| {
-                *name != "base.gsp"
-                    && !name.strip_prefix("definition-").is_some_and(|rest| {
-                        rest.strip_suffix(".gsp")
-                            .is_some_and(|n| n.parse::<u64>().is_ok())
-                    })
-            })
-            .collect::<Vec<_>>();
-        assert!(stray.is_empty(), "slots={slots}: per-call files {stray:?}");
+        // With per-call files (816 reverted) other names are counted here,
+        // even ones removed at once (light-cljs-822).
+        assert_only_definition_files(&session, stats.definitions, &format!("slots={slots}"));
         // With source text in the arguments (817 reverted) this is not zero.
         assert_eq!(stats.argument_source_bytes, 0, "slots={slots}: {stats:?}");
         pinned.push((
