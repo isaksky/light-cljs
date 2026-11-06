@@ -44,6 +44,9 @@
  {;; ---- bbp-authored slices (conformance/cases/)
   "bbp/accessor_own_inherited" {:area :objects-classes}
   "bbp/arithmetic_function" {:area :operators-values}
+  "bbp/array_for_each" {:area :core-builtins}
+  "bbp/array_map" {:area :core-builtins}
+  "bbp/array_map_species" {:area :core-builtins}
   "bbp/array_named_properties" {:area :objects-classes}
   "bbp/closure_counter" {:area :functions-scope}
   "bbp/completion_declarations_only" {:area :statements-loops}

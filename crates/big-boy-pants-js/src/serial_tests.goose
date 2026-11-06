@@ -404,6 +404,9 @@ fn control_flow() {
     // through it. Every budget cut matches the uncut run.
     check(embed_file("../corpus/serial/finally.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/native-frame.gsp"), "boolean:true");
+    // map and forEach (light-cljs-789): their callbacks, getters and the
+    // length's valueOf run in the built-in's native frame.
+    check(embed_file("../corpus/serial/array-callbacks.gsp"), "boolean:true");
     // 9,999 frames of f above the entry frame fit the 10,000-frame limit, and
     // a deeper recursion is caught; one frame less fails it uncaught.
     let depth = embed_file("../corpus/serial/depth.gsp");
@@ -462,9 +465,13 @@ thread_fn realm_model(bytes: u8[]) {
     let iterator = source::get(heap, symbol, source::text(heap, "iterator"));
     assert(heap.fault == source::Fault.None && iterator.tag() == 6 && source::valid(heap, iterator) && source::equal(heap, iterator, source::Value.Symbol { s: 0 }));
     var text: u8[>..] = []; source::canonical(heap, iterator, text); assert(text[..] == "symbol");
-    source::get(heap, a, source::text(heap, "map")); assert(heap.fault == source::Fault.UnsupportedOperand);
-    heap.fault = source::Fault.None; assert(source::key_is(heap, heap.pending, "map")); heap.pending = source::Value.Undefined;
-    assert(source::has_property(heap, a, key(heap, "map")) && !source::has_property(heap, o, key(heap, "map")));
+    source::get(heap, a, source::text(heap, "filter")); assert(heap.fault == source::Fault.UnsupportedOperand);
+    heap.fault = source::Fault.None; assert(source::key_is(heap, heap.pending, "filter")); heap.pending = source::Value.Undefined;
+    assert(source::has_property(heap, a, key(heap, "filter")) && !source::has_property(heap, o, key(heap, "filter")));
+    // map and forEach are real built-ins (light-cljs-789), with length 1.
+    let map = source::get(heap, a, source::text(heap, "map")); let for_each = source::get(heap, a, source::text(heap, "forEach"));
+    assert(heap.fault == source::Fault.None && source::builtin_of(heap, map.id()) == source::Builtin.ArrayPrototypeMap && source::builtin_of(heap, for_each.id()) == source::Builtin.ArrayPrototypeForEach);
+    assert(source::key_is(heap, source::get(heap, for_each, source::text(heap, "name")), "forEach") && source::get(heap, map, source::text(heap, "length")).num() == 1);
     print("serial source VM: realm rows, prototypes, built-in and runtime leaf metadata, well-known symbols and pending names passed");
 }
 thread_fn property_model() {

@@ -911,6 +911,47 @@ function object is an object whose kind payload is its `Builtin`, with
    needs the private intrinsic opcodes that self-hosted code would require,
    which the exporter does not have today.
 
+**Template (light-cljs-789).** `Array.prototype.map` and `forEach` are the
+reference for rule 1: `src/array_callbacks.goose`, with
+`array_callbacks_step` as the step function. An area adding a built-in that
+runs user code follows it:
+
+- a `Builtin` variant appended to the enum and `BUILTINS` (codes are
+  positions, so existing codes never move), installed by a `REALM_FUNCTIONS`
+  entry, its pending name removed from `PENDING`;
+- `native_builtin` names it and `native_start` pushes its frame from the
+  dispatch loop's `call`, after `Function.prototype.call` has been unwrapped;
+  `call_builtin` gives it a named unsupported step, so a caller that runs
+  built-ins to completion (ToPrimitive, another native frame's callback)
+  cannot run it by mistake;
+- a `Native` variant carrying its `Builtin`, its state in the frame's fields
+  (`pc` the phase awaiting a result, `index` the position, `input`, `output`,
+  `callee`, `receiver`, and `argument_count` for a length), and a `match` arm
+  in `native_step`;
+- each phase that runs JavaScript enters the function with `push_frame` (a
+  getter, the callback) or pushes another native frame (`to_primitive` with
+  operator 8, `v - 0`, is ToNumber of an ordinary object), sets the phase that
+  consumes the result and returns; a step visits at most one element, holes
+  included, so every budget cut, limit and suspension falls between
+  callbacks (serial_tests.goose checks every cut of
+  `corpus/serial/array-callbacks.js`);
+- a fast path reads what a general step would read without user code (an own
+  data element of a dense array) and re-reads it every visit; anything else
+  takes the specification's steps.
+
+Measured on the ported map (native release build of `execute.goose`, one
+map of the benchmark's array a job, best of five, array setup subtracted):
+`Array.prototype.map` 65 to 66 nanoseconds an element at 100 and 1,000
+elements, `forEach` 79 to 91, the same map written in JavaScript 111 to 112.
+The ported map is 1.7 times faster than the JavaScript one but 3.8 times the
+probe's 17.2: the probe's interpreter had none of the general VM's per-call
+work. Each element costs a full call and return of the callback in the
+dispatch loop (about 20 nanoseconds, light-cljs-801's figure, plus about 2.4
+an instruction), and, because a native caller ends the loop's in-place run,
+a return through `run` to `native_step`, with its step accounting and frame
+row copies. Keeping a callback's return in the loop when its caller is a
+native frame is the next cut.
+
 **Rejected.** *Self-hosting by default*: 2.5 times slower on the measured
 case; it needs private intrinsics hidden from ordinary code, a second compile
 path for the realm, and `Function.prototype.toString` and stack traces that

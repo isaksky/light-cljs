@@ -5,6 +5,7 @@ import .program;
 import .vm;
 import .export_schema;
 import .realm;
+import .array_callbacks;
 
 namespace source;
 
@@ -117,7 +118,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, ToPrimitive t => 3 + (t.op as i64) * 4 + (t.method as i64) * 1024 }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, ToPrimitive t => 3 + (t.op as i64) * 4 + (t.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -301,7 +302,10 @@ root struct Heap {
 //                callee the key list of the source's own keys, input the
 //                source, output the target, index the next key, one key a
 //                step; pc 1 awaits a getter's result for key index - 1.
-enum Native { None, Mapv, MapSeq, Setter, CopyData, ToPrimitive { op: u8, method: u8 } }
+//   ArrayCallbacks  a built-in that calls back into JavaScript, its Builtin
+//                the payload: Array.prototype.map and forEach
+//                (array_callbacks.goose, which gives its fields and phases).
+enum Native { None, Mapv, MapSeq, Setter, CopyData, ToPrimitive { op: u8, method: u8 }, ArrayCallbacks { which: Builtin } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, argument_count: i64 = 0, input: Value = Value.Undefined, output: Value = Value.Undefined, index: i64 = 0, native: Native = Native.None }
@@ -2340,6 +2344,7 @@ fn native_step(job: Job&) {
         // The setter returned: drop its value, deliver the assignment's.
         Setter => { job.operands.pop(); finish_native(job, frame, frame.output); },
         CopyData => { copy_step(job, frame); },
+        ArrayCallbacks a => { array_callbacks_step(job, frame, a.which); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -2931,6 +2936,7 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
                 job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: callback, receiver: Value.Undefined, input: input, output: out, native: Native.Mapv });
                 job.operands.resize(base);
             }
+        } else if native_builtin(BUILTINS[id].which) { native_start(job, BUILTINS[id].which, receiver, args, base);
         } else if id == 5 && job.gensym_next > 0 { let value = gensym(job, args); job.operands.resize(base); job.operands.push(value); }
         else if id >= 5 && id <= 8 { request_effect(job, id, args, frame_at(job, top, at)); job.operands.resize(base); }
         else { let value = call_builtin(job, id, receiver, args); job.operands.resize(base); job.operands.push(value); }

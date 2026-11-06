@@ -808,6 +808,8 @@ mod serial_tests {
             // cancellation ends (serial_tests.goose).
             ("finally", "boolean:true"),
             ("native-frame", "boolean:true"),
+            // Array.prototype.map and forEach as native frames (light-cljs-789).
+            ("array-callbacks", "boolean:true"),
             ("depth", "boolean:true"),
             ("cancel", "limit"),
             ("cancel-break", "limit"),
