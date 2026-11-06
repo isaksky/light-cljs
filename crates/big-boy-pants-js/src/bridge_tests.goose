@@ -235,9 +235,28 @@ fn direct_update_boundaries() {
 // main builds no heap; each heap-building test is its own thread program.
 fn main() {
     heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality));
-    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work));
+    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export));
     print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
 
+// A cell value's export (spans off, light-cljs-809) carries what the value
+// reaches and none of the heap's source text: with 8 KB of unrelated source
+// over a 4 KB byte budget it succeeds and round-trips without provenance,
+// where the export that carries spans refuses it.
+thread_fn spanless_export() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var g = bridge::Graph {}; graph_init(g); var imported = bridge::Control {}; var roots: source::Value[>..] = [];
+    assert(bridge::import_graph(heap, g, roots, imported));
+    var text: u8[>..] = []; for i in 8192 { text.push(59); } source::add_source_bytes(heap, text);
+    var spans = bridge::Control { bytes: 4096 }; var refused = bridge::Graph {};
+    assert(!bridge::export_graph(heap, roots, refused, spans) && spans.error == bridge::Error.Bytes);
+    var c = bridge::Control { bytes: 4096, spans: false }; var out = bridge::Graph {};
+    assert(bridge::export_graph(heap, roots, out, c));
+    assert(out.bytes.len == 0 && out.sources.len == 0 && out.nodes.len == g.nodes.len);
+    for n in out.nodes { assert(n.source == -1 && n.span_start == 0 && n.span_end == 0); }
+    var bytes: u8[>..]            = []; assert(bridge::encode(out, bytes, c)); var decoded = bridge::Graph {}; assert(bridge::decode(decoded, bytes, c));
+    var back:  source::Value[>..] = []; var again = bridge::Control {}; assert(bridge::import_graph(heap, decoded, back, again) && back.len == 1 && source::form_equal(heap, back[0], roots[0]));
+}
 // Fifty strings sharing one 100-unit range copy 5,000 units on import, and
 // the import is charged for them: one visit short refuses it with no change.
 thread_fn shared_text_work() {

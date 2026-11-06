@@ -4624,7 +4624,7 @@ fn goose_compiler_cells_hold_functions() {
     ];
     let boxed = root("fixture/box");
     let adder = root("fixture/adder");
-    let jobs: [(String, &[&str]); 15] = [
+    let jobs: [(String, &[&str]); 21] = [
         (
             format!(
                 "const b = {boxed}; const n = 5; rt.core.reset(a, () => rt.core.deref(b) + n); return 0;"
@@ -4688,6 +4688,32 @@ fn goose_compiler_cells_hold_functions() {
             &[],
         ),
         ("return rt.core.deref(a)();".to_owned(), &[]),
+        // A stored function is shared: its producer may not write it.
+        (
+            "const f = () => 1; rt.core.reset(a, f); f.memo = 7; return 0;".to_owned(),
+            &[],
+        ),
+        (
+            "const f = rt.core.deref(a); return f() + (f.memo === undefined ? 10 : 0);"
+                .to_owned(),
+            &[],
+        ),
+        // A job's pending delay, alone and inside a vector, keeps its thunk.
+        (
+            "rt.core.reset(a, new rt.core.Delay(() => 42, null)); return 0;".to_owned(),
+            &[],
+        ),
+        ("return rt.core.force(rt.core.deref(a));".to_owned(), &[]),
+        (
+            "rt.core.reset(a, rt.vectorFromArray([new rt.core.Delay(() => 43, null)])); return 0;"
+                .to_owned(),
+            &[],
+        ),
+        (
+            "let d = null; rt.core.mapv((x) => { d = x; return 0; }, rt.core.deref(a)); return rt.core.force(d);"
+                .to_owned(),
+            &[],
+        ),
     ];
     let jobs = jobs
         .iter()
@@ -4731,8 +4757,20 @@ fn goose_compiler_cells_hold_functions() {
         );
         assert_eq!(at(13), ok(13, "Double(2.0)"), "workers={workers} {env:?}");
         assert_eq!(at(14), ok(14, "Double(2.0)"), "workers={workers} {env:?}");
-        // The counter and the box; no swap! here met a conflicting write.
-        assert_eq!((line.cells, line.conflicts), (2, 0), "{line:?}");
+        assert!(
+            outcomes[15]
+                .as_ref()
+                .is_err_and(|e| e.contains("Fault.NativeBoundary")),
+            "workers={workers} {env:?}: {outcomes:?}"
+        );
+        assert_eq!(at(16), ok(16, "Double(11.0)"), "workers={workers} {env:?}");
+        assert_eq!(at(18), ok(18, "Double(42.0)"), "workers={workers} {env:?}");
+        assert_eq!(at(20), ok(20, "Double(43.0)"), "workers={workers} {env:?}");
+        // The counter, the box and the two delays; no swap! here met a
+        // conflicting write.
+        assert_eq!((line.cells, line.conflicts), (4, 0), "{line:?}");
+        // The counter ends holding the last value stored, its bytes held.
+        assert!(line.cell_bytes > 0, "{line:?}");
         if !env.is_empty() {
             assert_eq!(line.retired, line.spawned, "{line:?}");
         }
@@ -4761,6 +4799,71 @@ fn goose_compiler_cells_hold_functions() {
     }
 }
 
+/// raw_inputs for a call whose form is `kind`, spanning the first three
+/// bytes of source file `name` with text `text`.
+fn raw_inputs_from(e: &GooseEvaluator, name: &str, text: &str, kind: DatumKind) -> RawInputs {
+    let mut raw = raw_inputs(e);
+    let source = Source::new(name, text);
+    let call = Form::from_data(Datum::new(kind), source.span(0..3).unwrap(), Origin::Source);
+    let call_id = e.import_form(&call, Default::default()).unwrap();
+    let env = e
+        .import_data(&Datum::new(DatumKind::Nil), Default::default())
+        .unwrap();
+    let values = [call_id, env]
+        .iter()
+        .map(|&id| e.get(id).unwrap())
+        .collect::<Vec<_>>();
+    raw.graph = bridge::Graph::arguments(&values, raw.limits, &raw.budget).unwrap();
+    raw.bytes = raw.graph.encode().unwrap();
+    raw.call = call;
+    raw
+}
+
+/// light-cljs-809: a stored function's captured forms outlive their call,
+/// as a form cell value does: an expansion of another call (other data,
+/// another source file and span) that returns a form an earlier expansion
+/// captured gets it as a form built afresh. The owner's byte census follows
+/// the values held: a 10-unit string, then a 3-unit one replacing it.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cell_function_forms_and_byte_census() {
+    for workers in [1, 2, 4, 8] {
+        let session =
+            GooseSession::start_env(&runner(), workers, Some("readiness-test"), &[]).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let first = raw_inputs_from(&e, "first.cljs", "nil ;; first", DatumKind::Nil);
+        let second = raw_inputs_from(&e, "second.cljs", "  true", DatumKind::Boolean(true));
+        let mut outcomes = Vec::new();
+        for (id, raw, body) in [
+            (
+                1,
+                &first,
+                "const saved = form; rt.core.reset(a, () => saved); return 0;",
+            ),
+            (2, &second, "return rt.core.deref(a)();"),
+            (3, &second, "rt.core.reset(a, 'abcdefghij'); return 0;"),
+        ] {
+            let rx = raw_job(&session, raw, id, body);
+            outcomes.push(raw_outcome(&session, raw, &rx, id));
+            thread::sleep(Duration::from_millis(20));
+        }
+        let line = raw_close(&session, workers, 7);
+        assert_eq!(outcomes[0].as_deref(), Ok("Double(0.0)"), "{outcomes:?}");
+        assert_eq!(outcomes[1].as_deref(), Ok("Nil"), "{outcomes:?}");
+        assert_eq!(line.cell_bytes, 20, "{line:?}");
+        let (outcomes, line) = cell_session(
+            workers,
+            &[],
+            &[
+                "rt.core.reset(a, 'abcdefghij'); return 0;",
+                "rt.core.reset(a, 'abc'); return 0;",
+            ],
+        );
+        assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
+        assert_eq!((line.cells, line.cell_bytes), (1, 6), "{line:?}");
+    }
+}
+
 /// light-cljs-809: what a swap! on a cell costs in a macro job, for a number
 /// (no graph: the fixed cost), a value encoding to about 64 bytes (a
 /// one-number vector, 136 bytes of GFB) and to 64 KB (1,260 numbers),
@@ -4782,28 +4885,11 @@ fn goose_compiler_cell_swap_cost() {
     )
     .unwrap();
     let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
-    let mut raw = raw_inputs(&e);
     let mut text = String::from("nil\n");
     while text.len() < 100_000 {
         text.push_str(";; a namespace's source text\n");
     }
-    let source = Source::new("large.cljs", &text);
-    let call = Form::from_data(
-        Datum::new(DatumKind::Nil),
-        source.span(0..3).unwrap(),
-        Origin::Source,
-    );
-    let call_id = e.import_form(&call, Default::default()).unwrap();
-    let env = e
-        .import_data(&Datum::new(DatumKind::Nil), Default::default())
-        .unwrap();
-    let values = [call_id, env]
-        .iter()
-        .map(|&id| e.get(id).unwrap())
-        .collect::<Vec<_>>();
-    raw.graph = bridge::Graph::arguments(&values, raw.limits, &raw.budget).unwrap();
-    raw.bytes = raw.graph.encode().unwrap();
-    raw.call = call;
+    let raw = raw_inputs_from(&e, "large.cljs", &text, DatumKind::Nil);
     assert!(raw.bytes.len() > 100_000);
     let mut id = 0;
     let mut timed = |value: &str, swaps: usize| {

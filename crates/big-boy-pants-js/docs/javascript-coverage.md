@@ -886,6 +886,11 @@ cell census.**
   function with own properties and a function capturing a variable it may
   assign (`callable_unshareable`, callable::graph's rules). A definition's
   or helper's atom may start out holding a function (`store_initial`).
+  Once stored, the job's closures are foreign to its own writes too
+  (`protect`), so no job sees a function its cell's encoding does not
+  hold; captured forms lose their call's occurrences and spans, as a form
+  value does; a delay reference that keeps its thunk travels by this
+  transport, so a job's pending delay stored in a cell forces in any job.
 - *Code while a job runs.* Loading a function appends its code, so the
   dispatch loop takes its instruction view per frame activation, not per
   run, and `source::decode` only grows the instruction tables. A load

@@ -171,10 +171,17 @@ fn encode_cell(heap: const source::Heap&, base: snapshot::Header, root: source::
     if 5 * snapshot::footprint(view) > c.bytes { return fail(c, snapshot::Error.Bytes); }
     let image = snapshot::capture(heap, bindings, c, if heap.identity == 1 { 2 } else { 1 }, true);
     if c.error != snapshot::Error.None { return false; }
-    let p = Publication { base: base, image: copy(image) };
+    var p = Publication { base: base, image: copy(image) };
     var ids: i64[>..] = []; var slots: i64[>..] = [];
     if !graph(p, base, heap, ids, slots, c) { return false; }
     if slots.len == 0 || slots[0] != root.id() { return fail(c, snapshot::Error.Link); }
+    // A captured form outlives its call, as a form cell value does
+    // (cells.goose encode): its compiler occurrence and source span mean
+    // nothing to a later expansion, which sees it as built afresh.
+    for id in slots {
+        let k = p.image.nodes[id].kind;
+        if k >= 5 && k <= 12 { p.image.nodes[id].origin = -1; p.image.nodes[id].source = source::no_row(); p.image.nodes[id].span_start = 0; p.image.nodes[id].span_end = 0; }
+    }
     installed.clear(); installed.append(slots);
     var bytes: u8[>..] = []; to_bytes([p], bytes);
     if bytes.len > c.bytes || !snapshot::poll(c, bytes.len) { return fail(c, snapshot::Error.Bytes); }

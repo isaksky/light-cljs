@@ -153,11 +153,19 @@ fn remember_stored(rows: CellRow[>..]&, stored: const i64[:], nodes: const i64[:
 // reaches no function or delay of the job must be a form graph
 // (form_unshareable); one that does goes by the callable transport
 // (callable_unshareable, light-cljs-809). `atoms` gets the atoms (and job
-// delays) to make cells of.
-fn unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&) -> const u8[:] {
+// delays) to make cells of, `closures` the job's closures it reaches.
+fn unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&) -> const u8[:] { var closures: i64[>..] = []; return unshareable(heap, roots, atoms, closures); }
+fn unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, closures: i64[>..]&) -> const u8[:] {
     var functions = false; let bad = form_unshareable(heap, roots, atoms, functions);
     if !functions { return bad; }
-    atoms.clear(); return callable_unshareable(heap, roots, atoms);
+    atoms.clear(); return callable_unshareable(heap, roots, atoms, closures);
+}
+// A stored value's closures are shared now, so the storing job may no more
+// write them than an installed helper's (light-cljs-809): a later write
+// faults NativeBoundary before it mutates, and no job sees a function its
+// cell's encoding does not hold.
+fn protect(job: Job&, closures: const i64[:]) {
+    for row in closures { if writable(job, row) { job.foreign.push(row as u32); job.foreign.push((row + 1) as u32); } }
 }
 // Whether `v` reaches a function or a delay of the job, and so travels by
 // the callable transport.
@@ -178,7 +186,7 @@ fn form_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, functi
         if n.metadata.tag() == 5 { work.push(n.metadata); }
         if n.kind >= 5 && n.kind <= 8 || n.kind == 12 { for i in n.count { work.push(slot(heap, n.start + i)); } }
         else if n.kind == atom_kind() { atoms.push(v.id()); work.push(n.value); }
-        else if n.kind == 2 || n.kind == 4 || n.kind == delay_kind() { functions = true; return ""; }
+        else if n.kind == 2 || n.kind == 4 || n.kind == delay_kind() || n.kind == cell_kind() && n.length == delay_flavor() && n.value.tag() == 5 { functions = true; return ""; }
         else if n.kind == 15 { return "an unrealized lazy sequence"; }
         else if n.kind != 9 && n.kind != 10 && n.kind != 11 && n.kind != cell_kind() { return "a mutable JavaScript object"; }
     }
@@ -190,7 +198,7 @@ fn form_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, functi
 // delays (collected in `atoms`, which become cells, a delay's reference
 // keeping its thunk), and built-ins; the image's own rows as they are, but
 // for arrays and assignable variables.
-fn callable_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&) -> const u8[:] {
+fn callable_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, closures: i64[>..]&) -> const u8[:] {
     let floor = cell_base.ends[6];
     var marks: bool[>..]   = []; marks.resize(heap.nodes.len, false);
     var work:  Value[>..<] = []; for v in roots { work.push(v); }
@@ -207,6 +215,7 @@ fn callable_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&) ->
         if n.kind == 0 || n.kind == 1 || n.kind > 12 && n.kind != atom_kind() && n.kind != cell_kind() && n.kind != delay_kind() { return "a mutable JavaScript object"; }
         if n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.proto.tag() != -1 { return if n.kind == 2 { "a function with properties (a mutable JavaScript object)" } else { "a mutable JavaScript object" }; }
         if n.kind == atom_kind() || n.kind == delay_kind() { atoms.push(v.id()); }
+        if n.kind == 2 { closures.push(v.id()); }
         work.push(n.value); work.push(n.namespace_value); work.push(n.metadata);
         if snapshot::has_values(n.kind) { for i in n.count { work.push(slot(heap, n.start + i)); } }
     }
@@ -360,15 +369,15 @@ fn error_flat(heap: Heap&, rows: const CellRow[:], e: Value) -> cells::Flat, boo
 // already made for its atoms.
 fn store_value(job: Job&, b: Builtin, v: Value, stored: i64[>..]&) -> cells::Flat, bool {
     let heap .= job.heap;
-    var atoms: i64[>..] = [];
-    let bad = unshareable(heap, [v], atoms);
+    var atoms: i64[>..] = []; var closures: i64[>..] = [];
+    let bad = unshareable(heap, [v], atoms, closures);
     if heap.fault != Fault.None { return cells::Flat {}, false; }
     if bad.len > 0 { var what: u8[>..] = []; for c in "cannot share " { what.push(c); } what.append(bad); cell_fail(job, b, what); return cells::Flat {}, false; }
     var failure: i64 = 0;
     if atoms.len > 0 && !make_cells(heap, job.cell_rows, atoms, failure) { owner_or_bridge(job, b, failure); return cells::Flat {}, false; }
     let f, ok = encode(heap, job.cell_rows, v, failure, stored);
     if !ok { owner_or_bridge(job, b, failure); return cells::Flat {}, false; }
-    return f, true;
+    protect(job, closures); return f, true;
 }
 fn owner_or_bridge(job: Job&, b: Builtin, failure: i64) { if failure == 5 { cell_fail(job, b, "the value does not encode"); } else { owner_fail(job, b, failure); } }
 fn units_of(data: const u8[:]) -> u16[>..] {
