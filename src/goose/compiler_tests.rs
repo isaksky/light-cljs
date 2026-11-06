@@ -217,24 +217,28 @@ fn goose_compiler_generated_assembly() {
                 trace.iter().filter(|s| s.starts_with("PRODUCED ")).count(),
                 1
             );
-            // The prepared branch exports canonical source with its captured
-            // runtime. Inspect the actual transported compiler artifact; no
-            // rewritten helper body is supplied by this test.
-            let helpers = std::fs::read_dir(&s.directory)
+            // The prepared branch exports the native emission the job's
+            // demand would, never the canonical one, whose core calls a
+            // native form would reach (light-cljs-821). Inspect the actual
+            // transported compiler artifacts; no rewritten helper body is
+            // supplied by this test.
+            let exports = std::fs::read_dir(&s.directory)
                 .unwrap()
                 .map(|e| e.unwrap().path())
                 .filter(|p| p.extension().is_some_and(|e| e == "gsp"))
                 .map(|p| String::from_utf8_lossy(&std::fs::read(p).unwrap()).into_owned())
-                .filter(|s| s.contains("rt.core.list") && s.contains("workload.common"))
                 .collect::<Vec<_>>();
-            assert_eq!(helpers.len(), 1);
-            let source = &helpers[0];
-            for emitted in ["rt.core.list", "rt.symbol", "workload.common", "norm"] {
-                assert!(
-                    source.contains(emitted),
-                    "missing canonical helper {emitted}"
-                );
-            }
+            assert!(
+                exports.iter().all(|s| !s.contains("rt.core.list")),
+                "a canonical helper was exported"
+            );
+            let helpers = exports
+                .iter()
+                .filter(|s| {
+                    s.contains("__rt.formList(__rt.formSymbol(\"workload.common\", \"norm\")")
+                })
+                .count();
+            assert_eq!(helpers, 1);
             eprintln!("generated callable workers={workers}: {trace:?}");
             s.close();
             cleaned(&s);
