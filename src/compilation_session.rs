@@ -1069,6 +1069,21 @@ impl SharedCatalog {
         self.goose_path
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
+    /// Whether a drained unit's initializer is prepared in native emission,
+    /// as the compile-time engine asks for it on demand
+    /// ([`compile_unit_in`]): on the native backend, and on the Goose
+    /// compiler path, whose evaluator always has the native bridge. A unit
+    /// drained before a Goose job demands it (at more than one compiler
+    /// slot, light-cljs-821) is then served the same JavaScript as one the
+    /// job's demand emits.
+    #[cfg(feature = "bbp-macros")]
+    fn prepares_native(&self) -> bool {
+        #[cfg(feature = "goose-macros")]
+        if self.goose_path.load(std::sync::atomic::Ordering::Relaxed) {
+            return true;
+        }
+        self.native_units.load(std::sync::atomic::Ordering::Relaxed)
+    }
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn native_replaced_core(&self) -> Vec<&'static str> {
         self.native_replaced_core
@@ -3588,7 +3603,7 @@ impl SharedCatalog {
         // last holder, outside it too.
         let prepared = Arc::new({
             #[cfg(feature = "bbp-macros")]
-            if self.native_units.load(std::sync::atomic::Ordering::Relaxed) {
+            if self.prepares_native() {
                 crate::emitter::DeferredUnit::prepare_native(&program, &self.native_replaced_core())
             } else {
                 crate::emitter::DeferredUnit::prepare(&program)

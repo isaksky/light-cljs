@@ -3713,6 +3713,51 @@ fn goose_compiler_gensym_numbers_in_compiler_scopes() {
     }
 }
 
+/// Source macros that call a `defn` helper of their macro namespace which
+/// calls `count`, on a quoted vector, on `&env` and on the call's argument:
+/// at compiler slots 1/2/4/8 on the Goose path the JavaScript is the V8
+/// build's (light-cljs-821).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_defn_helpers_that_count_at_every_slot_count() {
+    let cases = [
+        (
+            "(ns m.macros) (defn c [x] (count x)) (defmacro lit [] (c '[1 2 3]))",
+            "(ns app.main (:require [m.macros :as m])) (def w (m/lit))",
+        ),
+        (
+            "(ns m.macros) (defn inventory2 [e] (count e)) (defmacro whole2 [] (inventory2 &env))",
+            "(ns app.main (:require [m.macros :as m])) (def w (m/whole2))",
+        ),
+        (
+            "(ns m.macros) (defn c [x] (count x)) (defmacro arg [x] (c x))",
+            "(ns app.main (:require [m.macros :as m])) (def w [(m/arg [1 2]) (m/arg (a b c d))])",
+        ),
+    ];
+    for (macros, main) in cases {
+        let files = HashMap::from([
+            ("m.macros".to_owned(), macros.to_owned()),
+            ("app.main".to_owned(), main.to_owned()),
+        ]);
+        let (reference, _, _) = pooled_build(&files, 1, None, Default::default());
+        let reference = reference.unwrap();
+        for slots in [1, 2, 4, 8] {
+            let session = GooseSession::start(&runner(), slots).unwrap();
+            let (output, _, census) =
+                pooled_build(&files, slots, Some(&session), Default::default());
+            assert_eq!(
+                output.as_deref(),
+                Ok(reference.as_str()),
+                "slots={slots}: {macros}"
+            );
+            assert!(census.is_empty(), "slots={slots}: {census:?}");
+            session.close();
+            cleaned(&session);
+        }
+    }
+}
+
 /// A macro that quotes a compiled `(def x (gensym))`: the definition's
 /// prologue reads `rt.nativeCoreBinding("gensym")` (light-cljs-807).
 #[cfg(light_v8)]
