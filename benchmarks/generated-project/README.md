@@ -125,9 +125,11 @@ count with its single execution worker.
 `--also-light LABEL=BINARY` (repeatable) puts another CLI's cells into the same
 rounds, each right after the primary cell of the same setting, so a predecessor
 and its successor interleave; `LABEL=BINARY,goose` gives that binary only the
-Goose cells, as for a Goose build that links no V8. Those cells' names and
-samples carry the label and binary path, and the manifest records each binary's
-SHA-256 under `:also-light`. The primary `--light` stays unlabelled and
+Goose cells, as for a Goose build that links no V8, and a trailing
+`,runner=RUNNER` runs that binary's Goose cells with its own runner instead of
+`--runner`, as for a predecessor whose runner protocol differs. Those cells'
+names and samples carry the label, binary and runner paths, and the manifest
+records each binary's (and runner's) SHA-256 under `:also-light`. The primary `--light` stays unlabelled and
 produces the V8 reference. It is refused with the cache and leaf phases, which
 share one cache directory or edited source.
 Every completed build must match its complete emitted JavaScript bytes,

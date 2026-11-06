@@ -11,15 +11,17 @@
             [clojure.edn]
             [clojure.string :as str]))
 
-(def usage "Usage: bb compare.bb PROJECT-DIR --light BINARY [--runs N] [--warm-jvm N] [--leaf FILE] [--light-only] [--backend v8|goose|all --runner R --phase P --workers W --compiler-slots S --also-light LABEL=BINARY[,goose]]")
+(def usage "Usage: bb compare.bb PROJECT-DIR --light BINARY [--runs N] [--warm-jvm N] [--leaf FILE] [--light-only] [--backend v8|goose|all --runner R --phase P --workers W --compiler-slots S --also-light LABEL=BINARY[,goose][,runner=R]]")
 
 (defn parse-also-light
-  "LABEL=BINARY or LABEL=BINARY,goose (that binary runs only Goose cells, e.g. a
-  build that links no V8)."
+  "LABEL=BINARY, optionally followed by ,goose (that binary runs only Goose cells,
+  e.g. a build that links no V8) and ,runner=R (its Goose cells use runner R
+  instead of --runner, e.g. a predecessor whose runner protocol differs)."
   [text]
-  (let [[_ label path goose-only] (re-matches #"([a-z][a-z0-9-]*)=([^,]+)(,goose)?" (or text ""))]
-    (assert label "--also-light takes LABEL=BINARY[,goose]")
-    {:label label :light (str (fs/absolutize path)) :goose-only (boolean goose-only)}))
+  (let [[_ label path goose-only runner] (re-matches #"([a-z][a-z0-9-]*)=([^,]+)(,goose)?(?:,runner=([^,]+))?" (or text ""))]
+    (assert label "--also-light takes LABEL=BINARY[,goose][,runner=R]")
+    (cond-> {:label label :light (str (fs/absolutize path)) :goose-only (boolean goose-only)}
+      runner (assoc :runner (str (fs/absolutize runner))))))
 
 (defn parse-options [args]
   (loop [[arg & more] args options {:runs 3 :warm-jvm 0 :workers [1 2 4 8] :phase "check" :timeout-ms 3600000}]
@@ -316,7 +318,9 @@
                ;; Each extra binary's cells sit beside the primary cell, in the same rounds.
                binary (cons nil also-light)
                :when (not (and (:goose-only binary) (= "v8" (:backend cell))))]
-           (cond-> cell binary (assoc :binary (:label binary) :light (:light binary)))))))
+           (cond-> cell
+             binary (assoc :binary (:label binary) :light (:light binary))
+             (:runner binary) (assoc :runner (:runner binary)))))))
 
 (defn cell-slots [cell] (or (:compiler-slots cell) (:workers cell)))
 (defn cell-name [cell]
@@ -370,7 +374,8 @@
         _ (assert (or (not= backend "goose") (fs/exists? reference)) "Run V8 check first to establish complete JS reference")
         cmd #(macro-command (or (:light %) light) dir phase %)
         run-cell (fn [cell round warmup?]
-                   (let [stem (str (cell-name cell) "-" (if warmup? "warmup" round))
+                   (let [runner (or (:runner cell) runner)
+                         stem (str (cell-name cell) "-" (if warmup? "warmup" round))
                          log (fs/path results (str stem ".stderr"))
                          trace (fs/path results (str stem ".trace.tsv"))
                          tree (fs/path results (str stem ".tree.edn"))
@@ -426,7 +431,7 @@
              :harness-sha256 (sha256 (fs/path kit "compare.bb"))
              :native-diagnostic-mode (when (= "instrument" phase) "compiler_session instrumented; tee preserves full protocol; inner time records native rusage; 100ms owned-tree RSS sampling")
              :compiler-sha256 (sha256 light)
-             :also-light (into (sorted-map) (for [{:keys [label] :as b} also-light] [label (assoc b :sha256 (sha256 (:light b)))]))
+             :also-light (into (sorted-map) (for [{:keys [label] :as b} also-light] [label (cond-> (assoc b :sha256 (sha256 (:light b))) (:runner b) (assoc :runner-sha256 (sha256 (:runner b))))]))
              :runner-sha256 (when runner (sha256 runner))
              :git (checked (str repository) environment ["git" "rev-parse" "HEAD"])
              :source-hashes (into (sorted-map)
