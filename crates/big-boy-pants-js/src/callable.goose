@@ -172,7 +172,7 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     if cost > c.bytes || !snapshot::poll(c, snapshot::payload_bytes(s) + count + slots.len) { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; }
     let sources = heap.source_ranges.len;
     // Commit only after complete code/graph/context validation and all budgets.
-    for f in s.functions[e[1]..] { var n = f; n.start += delta[4] as u32; n.constants += delta[2] as u32; n.children += delta[3] as u32; code.functions.push(n); }
+    for f in s.functions[e[1]..] { var n = f; n.start += delta[4] as u32; n.constants += delta[2] as u32; n.children += delta[3] as u32; n.name_start += delta[5] as u32; code.functions.push(n); }
     for op in s.ops[e[4]..] { var n = op; n.start += delta[0]; n.end += delta[0]; if source::branches(n.code) { n.arg += delta[4]; } code.ops.push(n); }
     let code_strings = code.strings.len - e[14];
     for r in s.code_strings[e[14]..] { code.strings.push(source::Str { start: r.start + delta[5] as u32, len: r.len }); }

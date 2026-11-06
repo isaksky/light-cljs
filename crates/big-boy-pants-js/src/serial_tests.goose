@@ -559,15 +559,15 @@ thread_fn property_model() {
 }
 // Named properties of arrays and functions (light-cljs-805): arrays' names
 // through sparse, length-cut and dictionary arrays, closures' properties and
-// an ordinary function's lazy `prototype`, ToPrimitive through getters, and
-// the gaps that still fail by name (a function's `name`, an array method, a
-// generator's `prototype`),
+// an ordinary function's lazy `prototype`, a function's `name`
+// (light-cljs-806), ToPrimitive through getters, and the gaps that still
+// fail by name (an array method, a generator's `prototype`),
 // every budget cut matching the uncut run; then the Goose functions.
 fn named_properties() {
     check(embed_file("../corpus/serial/array-names.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/function-names.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/getter-value-of.gsp"), "boolean:true");
-    check(embed_file("../corpus/serial/unsupported-function-name.gsp"), "", source::Fault.UnsupportedOperand);
+    check(embed_file("../corpus/serial/function-name.gsp"), "utf16:[102]");
     check(embed_file("../corpus/serial/unsupported-array-method.gsp"), "", source::Fault.UnsupportedOperand);
     check(embed_file("../corpus/serial/unsupported-generator-prototype.gsp"), "", source::Fault.UnsupportedOperand);
     heap_program::join(thread_spawn(named_model));
@@ -599,28 +599,43 @@ thread_fn named_model() {
     source::get(heap, b, source::text(heap, "push")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     source::get(heap, b, source::Value.Symbol { s: 0 }); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     assert(source::get(heap, b, source::text(heap, "other")).tag() == 0 && heap.fault == source::Fault.None);
-    // A closure: a lazy `prototype` fails until made; once made it is
-    // non-configurable and first in creation order. `name` and `length`
-    // fail by name; an arrow (constructor kind 0) has no `prototype`.
+    // A closure (light-cljs-806): `length` and `name` come from its code row
+    // and are configurable only; while lazy, reads, `in` and key listing
+    // answer them and an ordinary function's `prototype` without making
+    // them, and a Goose caller's change fails by name. Once made, they come
+    // first in creation order and `prototype` is non-configurable. An arrow
+    // (constructor kind 0) has no `prototype`.
     var ordinary: i64 = -1; var arrow: i64 = -1;
     for f, i in heap.code.functions { if f.captures == 0 && f.kind == 1 && ordinary < 0 && i > 0 { ordinary = i; } if f.captures == 0 && f.kind == 0 && arrow < 0 && i > 0 { arrow = i; } }
     assert(ordinary > 0 && arrow > 0);
     let f = source::closure(heap, ordinary, []); let g = source::closure(heap, arrow, []);
-    assert(source::lazy_prototype(heap, f.id()) && !source::lazy_prototype(heap, g.id()));
+    assert(source::lazy_prototype(heap, f.id()) && !source::lazy_prototype(heap, g.id()) && source::lazy_function(heap, g.id()));
+    let fname = source::get(heap, f, source::text(heap, "name"));
+    assert(fname.tag() == 4 && source::str_len(heap, fname) == heap.code.functions[ordinary].name_len && source::get(heap, g, source::text(heap, "length")).num() == heap.code.functions[arrow].length && heap.fault == source::Fault.None);
+    assert(source::own_entry(heap, f, key(heap, "length")).attrs == source::attr_configurable() && source::own_entry(heap, f, key(heap, "name")).attrs == source::attr_configurable() && source::has_property(heap, g, key(heap, "name")));
+    var lazy: source::Value[>..] = []; assert(source::own_keys(heap, f, lazy) && lazy.len == 3);
+    for name, i in ["length", "name", "prototype"] { assert(source::key_is(heap, lazy[i], name)); }
     // `in` and delete answer a lazy prototype without making it (the Pants
     // engine's function::probe).
     assert(source::has_property(heap, f, key(heap, "prototype")) && !source::delete_property(heap, f, key(heap, "prototype")) && source::lazy_prototype(heap, f.id()) && heap.fault == source::Fault.None);
     source::get(heap, f, source::text(heap, "prototype")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     assert(!source::put(heap, f, source::text(heap, "x"), source::number(1)) && heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
-    assert(source::materialize_prototype(heap, f.id()) && !source::lazy_prototype(heap, f.id()));
+    assert(!source::delete_property(heap, g, key(heap, "name")) && heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    assert(source::lazy_function(heap, f.id()) && source::lazy_function(heap, g.id()));
+    assert(source::materialize_function(heap, f.id()) && !source::lazy_prototype(heap, f.id()) && source::same_text(heap, source::get(heap, f, source::text(heap, "name")), fname));
     let p = source::get(heap, f, source::text(heap, "prototype"));
-    assert(p.tag() == 5 && source::get(heap, p, source::text(heap, "constructor")) == f && source::own_entry(heap, f, key(heap, "prototype")).attrs == source::attr_writable());
+    assert(p.tag() == 5 && source::get(heap, p, source::text(heap, "constructor")) == f && source::own_entry(heap, f, key(heap, "prototype")).attrs == source::attr_writable() && source::own_entry(heap, f, key(heap, "length")).attrs == source::attr_configurable());
     assert(source::put(heap, f, source::text(heap, "x"), source::number(1)) && source::get(heap, f, source::text(heap, "x")).num() == 1 && !source::delete_property(heap, f, key(heap, "prototype")));
+    var made: source::Value[>..] = []; assert(source::own_keys(heap, f, made) && made.len == 4);
+    for name, i in ["length", "name", "prototype", "x"] { assert(source::key_is(heap, made[i], name)); }
     assert(source::delete_property(heap, f, key(heap, "x")) && source::node(heap, f.id()).initialized && source::get(heap, f, source::text(heap, "x")).tag() == 0 && source::get(heap, f, source::text(heap, "prototype")) == p);
-    assert(source::get(heap, g, source::text(heap, "prototype")).tag() == 0 && source::put(heap, g, source::text(heap, "y"), source::number(2)) && source::get(heap, g, source::text(heap, "call")) == heap.call_method);
-    for name in ["name", "length"] { source::get(heap, g, source::text(heap, name)); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None; }
+    // Without `name` and `length` a closure is not lazy again: `name` is
+    // Function.prototype's, the empty string.
+    assert(source::delete_property(heap, f, key(heap, "name")) && source::delete_property(heap, f, key(heap, "length")) && !source::lazy_function(heap, f.id()) && !source::own_entry(heap, f, key(heap, "name")).found && source::get(heap, f, source::text(heap, "name")).tag() == 4 && source::str_len(heap, source::get(heap, f, source::text(heap, "name"))) == 0);
+    assert(source::get(heap, g, source::text(heap, "prototype")).tag() == 0 && source::materialize_function(heap, g.id()) && source::put(heap, g, source::text(heap, "y"), source::number(2)) && source::get(heap, g, source::text(heap, "call")) == heap.call_method);
+    var arrow_keys: source::Value[>..] = []; assert(source::own_keys(heap, g, arrow_keys) && arrow_keys.len == 3);
+    for name, i in ["length", "name", "y"] { assert(source::key_is(heap, arrow_keys[i], name)); }
     source::get(heap, g, source::text(heap, "bind")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
-    var none: source::Value[>..] = []; assert(!source::own_keys(heap, g, none) && heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     // Snapshots validate arrays' and closures' shapes and records.
     var c = snapshot::Control {};
     let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: f }, snapshot::Binding { id: 1, generation: 1, value: g }, snapshot::Binding { id: 2, generation: 1, value: a }, snapshot::Binding { id: 3, generation: 1, value: b }], c);

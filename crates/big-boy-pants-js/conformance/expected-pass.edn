@@ -7,6 +7,7 @@
  "bbp/delete_dictionary"
  "bbp/for_in_chain_order"
  "bbp/for_in_forms"
+ "bbp/function_name_length"
  "bbp/function_properties_prototype"
  "bbp/getter_only_strict"
  "bbp/index_keys_order"

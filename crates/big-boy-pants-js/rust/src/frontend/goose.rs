@@ -825,13 +825,12 @@ mod serial_tests {
             ("index-keys", "boolean:true"),
             // Arrays' and functions' named properties, a function's lazy
             // `prototype` and ToPrimitive through getters (light-cljs-805);
-            // a function's `name`, an array method and a generator's
-            // `prototype` stay explicit gaps
-            // until the realm (serial_tests.goose).
+            // a function's own `name` (light-cljs-806); an array method and a
+            // generator's `prototype` stay explicit gaps (serial_tests.goose).
             ("array-names", "boolean:true"),
             ("function-names", "boolean:true"),
             ("getter-value-of", "boolean:true"),
-            ("unsupported-function-name", "string:f"),
+            ("function-name", "string:f"),
             ("unsupported-array-method", "number:1"),
             ("unsupported-generator-prototype", "boolean:true"),
         ] {

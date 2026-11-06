@@ -230,7 +230,7 @@ fn code_valid<T>(s: const T&, c: Control&) -> bool {
     var next: i64       = 0;
     for f in s.functions {
         if !poll(c) { return false; }
-        if f.count <= 0 || !range(f.start, f.count, s.ops.len) || !range(f.constants, 0, s.code_constants.len) || !range(f.children, 0, s.children.len) || f.params < 0 || f.params > f.locals || f.locals > 65535 || f.captures < 0 || f.captures > 65535 || f.kind < 0 || f.kind > 4 { return reject(c, Error.Code); }
+        if f.count <= 0 || !range(f.start, f.count, s.ops.len) || !range(f.constants, 0, s.code_constants.len) || !range(f.children, 0, s.children.len) || f.params < 0 || f.params > f.locals || f.locals > 65535 || f.captures < 0 || f.captures > 65535 || f.kind < 0 || f.kind > 4 || !range(f.name_start, f.name_len, s.code_units.len) || f.length > 65535 { return reject(c, Error.Code); }
         if s.ops[f.start].depth != 0 { return reject(c, Error.Code); }
         var offset: i64 = 0;
         for pc in f.start..(f.start + f.count) {

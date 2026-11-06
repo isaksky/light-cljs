@@ -171,7 +171,7 @@ thread_fn invalid(base: snapshot::Snapshot, a: artifact::Artifact) {
     // delete; nothing is registered.
     {
         let owned = source::closure(heap, roots[4].value.num() as i64, [source::number(1)]);
-        if source::lazy_prototype(heap, owned.id()) { assert(source::materialize_prototype(heap, owned.id())); }
+        assert(source::materialize_function(heap, owned.id()));
         assert(source::put(heap, owned, source::text(heap, "x"), source::number(1)));
         let definitions = imports.definitions.len; let before = state(heap, imports);
         var shaped = artifact::Control {}; let none = artifact::export_graph(heap, base, imports, owned, 34, 1, shaped);

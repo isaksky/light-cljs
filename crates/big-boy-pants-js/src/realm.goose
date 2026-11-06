@@ -37,12 +37,12 @@ enum Builtin {
     FunctionPrototype, Object, Function, Array,
     Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError,
     ObjectGetPrototypeOf, ObjectIs, ObjectHasOwn, ObjectPrototypeHasOwnProperty, ObjectPrototypeValueOf, ObjectPrototypeToString,
-    ArrayIsArray, ErrorPrototypeToString, SymbolFunction,
+    ArrayIsArray, ErrorPrototypeToString, SymbolFunction, ObjectGetOwnPropertyDescriptor,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[42] = [
+let BUILTINS: BuiltinInfo[43] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -63,7 +63,7 @@ let BUILTINS: BuiltinInfo[42] = [
     BuiltinInfo { which: Builtin.ObjectHasOwn, name: "hasOwn", length: 2 }, BuiltinInfo { which: Builtin.ObjectPrototypeHasOwnProperty, name: "hasOwnProperty", length: 1 },
     BuiltinInfo { which: Builtin.ObjectPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.ObjectPrototypeToString, name: "toString" },
     BuiltinInfo { which: Builtin.ArrayIsArray, name: "isArray", length: 1 }, BuiltinInfo { which: Builtin.ErrorPrototypeToString, name: "toString" },
-    BuiltinInfo { which: Builtin.SymbolFunction, name: "Symbol" },
+    BuiltinInfo { which: Builtin.SymbolFunction, name: "Symbol" }, BuiltinInfo { which: Builtin.ObjectGetOwnPropertyDescriptor, name: "getOwnPropertyDescriptor", length: 2 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -83,21 +83,22 @@ let ERROR_NAMES:    Name[8]    = [Name { text: "Error" }, Name { text: "EvalErro
 let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[10] = [
+let REALM_FUNCTIONS: Method[11] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
     Method { which: Builtin.ArrayIsArray, holder: 14 }, Method { which: Builtin.ErrorPrototypeToString, holder: 4 },
+    Method { which: Builtin.ObjectGetOwnPropertyDescriptor, holder: 12 },
     // The Symbol function, row symbol_row(), holds the well-known symbols.
     Method { which: Builtin.SymbolFunction, holder: 0 },
 ];
 inline fn realm_nodes() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
 // The Symbol function's row: the last REALM_FUNCTIONS entry.
-inline fn symbol_row() -> i64 { return fixed_rows() + 9; }
+inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[126] = [
+let PENDING: PendingName[125] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
@@ -115,7 +116,7 @@ let PENDING: PendingName[126] = [
     PendingName { holder: 3, key: "unshift" }, PendingName { holder: 3, key: "values" }, PendingName { holder: 3, key: "with" }, PendingName { holder: 3, key: "", symbol: 0 }, PendingName { holder: 3, key: "", symbol: 7 },
     // Object
     PendingName { holder: 12, key: "assign" }, PendingName { holder: 12, key: "create" }, PendingName { holder: 12, key: "defineProperties" }, PendingName { holder: 12, key: "defineProperty" },
-    PendingName { holder: 12, key: "entries" }, PendingName { holder: 12, key: "freeze" }, PendingName { holder: 12, key: "fromEntries" }, PendingName { holder: 12, key: "getOwnPropertyDescriptor" },
+    PendingName { holder: 12, key: "entries" }, PendingName { holder: 12, key: "freeze" }, PendingName { holder: 12, key: "fromEntries" },
     PendingName { holder: 12, key: "getOwnPropertyDescriptors" }, PendingName { holder: 12, key: "getOwnPropertyNames" }, PendingName { holder: 12, key: "getOwnPropertySymbols" }, PendingName { holder: 12, key: "groupBy" },
     PendingName { holder: 12, key: "isExtensible" }, PendingName { holder: 12, key: "isFrozen" }, PendingName { holder: 12, key: "isSealed" }, PendingName { holder: 12, key: "keys" },
     PendingName { holder: 12, key: "preventExtensions" }, PendingName { holder: 12, key: "seal" }, PendingName { holder: 12, key: "setPrototypeOf" }, PendingName { holder: 12, key: "values" },
@@ -374,6 +375,32 @@ fn has_own(job: Job&, b: Builtin, o: Value, k: Value) -> bool {
     if lazy_prototype(heap, o.id()) && key_is(heap, k, "prototype") { return true; }
     return own_entry(heap, o, k).found;
 }
+// Object.getOwnPropertyDescriptor(o, key) (light-cljs-806): undefined for
+// no own property `key`, otherwise a new ordinary object
+// (FromPropertyDescriptor) with `value` and `writable`, or `get` and `set`,
+// then `enumerable` and `configurable`. An ordinary function's lazy
+// `prototype` is made first, as a read makes it (prepare_function). A
+// primitive o other than undefined and null (ToObject) and a pending
+// property fail by name.
+fn own_descriptor(job: Job&, b: Builtin, o: Value, kv: Value) -> Value {
+    let heap .= job.heap;
+    if o.tag() <= 1 { return type_error(job, "cannot convert undefined or null to object"); }
+    let k = property_key(job, b, kv);
+    if heap.fault != Fault.None { return Value.Undefined; }
+    if o.tag() != 5 { return unsupported_step(job, b, "primitive wrapper objects"); }
+    prepare_function(job, o, k, false);
+    let p = own_entry(heap, o, k);
+    if heap.fault != Fault.None || !p.found { return Value.Undefined; }
+    if is_pending(p.value) { pending_fault(heap, k); return Value.Undefined; }
+    let d = allocate(heap, Node { kind: 0 });
+    if heap.fault != Fault.None { return Value.Undefined; }
+    if is_accessor(p.value) {
+        let fns = pair(heap, p.value);
+        if !realm_value(heap, d.id(), "get", fns.get, attrs_data()) || !realm_value(heap, d.id(), "set", fns.set, attrs_data()) { return Value.Undefined; }
+    } else if !realm_value(heap, d.id(), "value", p.value, attrs_data()) || !realm_value(heap, d.id(), "writable", boolean(p.attrs & attr_writable() != 0), attrs_data()) { return Value.Undefined; }
+    if !realm_value(heap, d.id(), "enumerable", boolean(p.attrs & attr_enumerable() != 0), attrs_data()) || !realm_value(heap, d.id(), "configurable", boolean(p.attrs & attr_configurable() != 0), attrs_data()) { return Value.Undefined; }
+    return d;
+}
 // Units of `[object Tag]`.
 fn object_tag(job: Job&, receiver: Value) -> Value {
     let heap .= job.heap;
@@ -500,6 +527,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
             return receiver;
         },
         ObjectPrototypeToString => { return object_tag(job, receiver); },
+        ObjectGetOwnPropertyDescriptor => { return own_descriptor(job, b, arg(args, 0), arg(args, 1)); },
         ArrayIsArray => { let v = arg(args, 0); return boolean(v.tag() == 5 && node(heap, v.id()).kind == 1); },
         ErrorPrototypeToString => { return error_to_string(job, receiver); },
         FunctionPrototypeCall => { return unsupported_step(job, b, "called from a native frame"); },

@@ -130,7 +130,10 @@ fn plain_rows<T>(rows: const T[:]) -> u8[>..] { var out: u8[>..] = []; for r in 
 // kind: GSP constructor kind (0 none, 1 ordinary, 2 base class, 3 derived
 // class, 4 default derived class); generator: a generator or async generator
 // (export flag bit 16), which has an own `prototype` though its kind is 0.
-struct Function { start: u32, count: u32, constants: u32, children: u32, params: u32, locals: u32, captures: u32, strict: bool, kind: i64 = 0, generator: bool = false }
+// name_start and name_len: the function's `name` (SetFunctionName, the
+// Rust compiler's inferred name included) as a run of Code.units; length:
+// its `length` (ExpectedArgumentCount) (light-cljs-806).
+struct Function { start: u32, count: u32, constants: u32, children: u32, params: u32, locals: u32, captures: u32, strict: bool, kind: i64 = 0, generator: bool = false, name_start: u32 = 0, name_len: u32 = 0, length: u32 = 0 }
 struct Op { code: i64, arg: i64, offset: i64, start: i64, end: i64, depth: i64 = -1 }
 // One decoded instruction per validated `Op` row (light-cljs-785; decision 1
 // of docs/javascript-coverage.md): a fixed-mode enum dispatched by `match` in
@@ -432,7 +435,7 @@ fn load(code: Code&, image: const program::Image&) -> bool {
     code.source_bytes.append(bytes[l.source..l.functions]);
     for i in program::word(bytes, 12) {
         let at = l.functions + i * 52; let flags = program::word(bytes, at + 48);
-        code.functions.push(Function { start: program::word(bytes, at) as u32, count: program::word(bytes, at + 4) as u32, constants: program::word(bytes, at + 8) as u32, children: program::word(bytes, at + 16) as u32, params: program::word(bytes, at + 24) as u32, locals: program::word(bytes, at + 28) as u32, captures: program::word(bytes, at + 32) as u32, strict: (flags & 1) == 1, kind: (flags >> 8) & 255, generator: ((flags >> 16) & 1) == 1 });
+        code.functions.push(Function { start: program::word(bytes, at) as u32, count: program::word(bytes, at + 4) as u32, constants: program::word(bytes, at + 8) as u32, children: program::word(bytes, at + 16) as u32, params: program::word(bytes, at + 24) as u32, locals: program::word(bytes, at + 28) as u32, captures: program::word(bytes, at + 32) as u32, strict: (flags & 1) == 1, kind: (flags >> 8) & 255, generator: ((flags >> 16) & 1) == 1, name_start: program::word(bytes, at + 36) as u32, name_len: program::word(bytes, at + 40) as u32, length: program::word(bytes, at + 44) as u32 });
     }
     for i in program::word(bytes, 16) {
         let at = l.constants + i * 12; let tag = program::word(bytes, at);
@@ -492,7 +495,7 @@ fn append_code(out: Code&, other: const Code&) -> i64 {
     assert(other.valid);
     let functions = out.functions.len; let ops = out.ops.len; let constants = out.constants.len;
     let children = out.children.len; let units = out.units.len; let bytes = out.source_bytes.len;
-    for f in other.functions { var n = f; n.start += ops as u32; n.constants += constants as u32; n.children += children as u32; out.functions.push(n); }
+    for f in other.functions { var n = f; n.start += ops as u32; n.constants += constants as u32; n.children += children as u32; n.name_start += units as u32; out.functions.push(n); }
     for op in other.ops { var n = op; n.start += bytes; n.end += bytes; if branches(n.code) { n.arg += ops; } out.ops.push(n); }
     let strings = out.strings.len;
     for s in other.strings { out.strings.push(Str { start: s.start + units as u32, len: s.len }); }
@@ -1141,27 +1144,42 @@ fn delete_own(heap: Heap&, o: i64, k: Value) -> bool {
     set_dict_at(heap, o, count - 1, Property {}); node_mut(heap, o).key_count = (count - 1) as u32;
     return true;
 }
-// Functions' own properties (light-cljs-805; the Pants engine's
-// rust/src/vm/function.rs). A closure (kind 2) keeps its properties as an
-// ordinary object does, in a shape or dictionary records beside its captures
-// (`start`, `count`). Code from a `function` declaration or expression
-// (constructor kind 1, Function.kind) has an own `prototype`, writable, not
-// enumerable, not configurable, made on its first observation
-// (prepare_function, materialize_prototype): a new ordinary object whose
-// non-enumerable `constructor` is the function. It is made before any other
-// property and never removed, so an ordinary function without own
-// properties has not made it yet (lazy_prototype). `in` reports it and a
-// delete refuses it without making it (has_property, delete_property), as
-// the Pants engine's function::probe does. Arrows, methods and async
-// functions have none. Not implemented, failing UnsupportedOperand by name:
-// `length` and `name`, which code metadata would supply; a class
-// constructor's eager `prototype` and a generator's (Function.generator);
-// the key list of a function (own_property_keys). Built-ins (kind 4) answer
-// only `call` until light-cljs-788 gives them `name` and `length`.
+// Functions' own properties (light-cljs-805, light-cljs-806; the Pants
+// engine's rust/src/vm/function.rs). A closure (kind 2) keeps its properties
+// as an ordinary object does, in a shape or dictionary records beside its
+// captures (`start`, `count`). Every closure has `length` (its code's
+// ExpectedArgumentCount) and then `name` (its SetFunctionName name), both
+// configurable only; code from a `function` declaration or expression
+// (constructor kind 1, Function.kind) then has `prototype`, writable, not
+// enumerable, not configurable: a new ordinary object whose non-enumerable
+// `constructor` is the function. A closure without own properties has not
+// made them yet (lazy_function): they come from its code row. Reads of
+// `length` and `name`, `in`, hasOwnProperty and key listing answer them
+// without making them (as the Pants engine's function::own_metadata does);
+// a job's first read of `prototype`, and its first write, definition or
+// delete of any key, makes all three in that order (prepare_function,
+// materialize_function), so creation order is the specification's. They are
+// made before any other property and a delete moves the closure to
+// dictionary mode (`initialized`), so a closure with them made never looks
+// lazy again. Arrows, methods and async functions have no `prototype`. Not
+// implemented, failing UnsupportedOperand by name: a class constructor's
+// eager `prototype` and a generator's (Function.generator), and therefore
+// those functions' key lists; computed names (SetComputedName). Built-ins
+// (kind 4) have their own `length` and `name` from the realm (light-cljs-788).
 fn constructor_kind(heap: const Heap&, o: i64) -> i64 { return heap.code.functions[node(heap, o).function].kind; }
-fn lazy_prototype(heap: const Heap&, o: i64) -> bool {
+fn lazy_function(heap: const Heap&, o: i64) -> bool {
     let n .= node(heap, o);
-    return n.kind == 2 && n.key_count == 0 && !n.initialized && constructor_kind(heap, o) == 1;
+    return n.kind == 2 && n.key_count == 0 && !n.initialized;
+}
+fn lazy_prototype(heap: const Heap&, o: i64) -> bool { return lazy_function(heap, o) && constructor_kind(heap, o) == 1; }
+// Whether closure o's `prototype` is one this VM does not make (a class
+// constructor's or a generator's).
+fn unsupported_prototype(heap: const Heap&, o: i64) -> bool { return constructor_kind(heap, o) >= 2 || heap.code.functions[node(heap, o).function].generator; }
+// Closure o's `length` and `name` from its code row.
+fn function_length(heap: const Heap&, o: i64) -> Value { return number(heap.code.functions[node(heap, o).function].length); }
+fn function_name(heap: Heap&, o: i64) -> Value {
+    let f = heap.code.functions[node(heap, o).function];
+    return string(heap, heap.code.units[f.name_start..(f.name_start + f.name_len)]);
 }
 // Whether closure o's own properties answer key k; otherwise it fails
 // UnsupportedOperand (see above). An ordinary function's `prototype` must
@@ -1169,14 +1187,27 @@ fn lazy_prototype(heap: const Heap&, o: i64) -> bool {
 fn function_key(heap: Heap&, o: i64, k: Value) -> bool {
     if heap.fault != Fault.None { return false; }
     if k.tag() != 4 { return true; }
-    if key_is(heap, k, "length") || key_is(heap, k, "name") || key_is(heap, k, "prototype") && (constructor_kind(heap, o) >= 2 || heap.code.functions[node(heap, o).function].generator || lazy_prototype(heap, o)) {
+    if key_is(heap, k, "prototype") && (unsupported_prototype(heap, o) || lazy_prototype(heap, o)) {
         if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; }
     }
     return heap.fault == Fault.None;
 }
-// Make ordinary function o's `prototype`. A rejection (MemoryLimit) leaves
-// the function without one.
-fn materialize_prototype(heap: Heap&, o: i64) -> bool {
+// Whether a change to closure o from a Goose caller is refused: a lazy
+// closure's properties must be made first (materialize_function, which a
+// job's operations do), so it fails UnsupportedOperand.
+fn lazy_change(heap: Heap&, o: i64) -> bool {
+    if !lazy_function(heap, o) { return false; }
+    if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; }
+    return true;
+}
+// Make lazy closure o's `length`, `name` and, for an ordinary function,
+// `prototype`. A rejection (MemoryLimit) leaves a fault set.
+fn materialize_function(heap: Heap&, o: i64) -> bool {
+    if !lazy_function(heap, o) { return heap.fault == Fault.None; }
+    let length = key_named(heap, "length"); let name = key_named(heap, "name");
+    let n = function_name(heap, o);
+    if heap.fault != Fault.None || !add_own(heap, o, length, function_length(heap, o), attr_configurable()) || !add_own(heap, o, name, n, attr_configurable()) { return false; }
+    if constructor_kind(heap, o) != 1 { return true; }
     let constructor = key_named(heap, "constructor"); let prototype = key_named(heap, "prototype");
     if heap.fault != Fault.None { return false; }
     let p = allocate(heap, Node { kind: 0 });
@@ -1222,6 +1253,11 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             return Own { found: true, index: i, value: slot(heap, node(heap, o).start + i), attrs: attrs_data() };
         },
         2 => {
+            // A lazy closure's `length` and `name` come from its code row.
+            if k.tag() == 4 && lazy_function(heap, o) {
+                if key_is(heap, k, "length") { return Own { found: true, value: function_length(heap, o), attrs: attr_configurable() }; }
+                if key_is(heap, k, "name") { return Own { found: true, value: function_name(heap, o), attrs: attr_configurable() }; }
+            }
             if !function_key(heap, o, k) { return Own {}; }
             return find_own(heap, o, k);
         },
@@ -1248,6 +1284,13 @@ fn lookup(heap: Heap&, object: Value, k: Value) -> Value, Value {
         if !charge(heap) { return Value.Undefined, Value.Undefined; }
         at = proto;
     }
+}
+// own_entry for callers that need only whether the property is there and
+// its attributes (key enumeration): an ordinary function's lazy `prototype`
+// is a non-enumerable property not yet made, without a value.
+fn enumerable_entry(heap: Heap&, object: Value, k: Value) -> Own {
+    if lazy_prototype(heap, object.id()) && key_is(heap, k, "prototype") { return Own { found: true, attrs: attr_writable() }; }
+    return own_entry(heap, object, k);
 }
 // [[HasProperty]] of interned key k: an own or inherited property, data or
 // accessor (OrdinaryHasProperty).
@@ -1290,8 +1333,7 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
             if i >= 0 { return Value.Undefined, set_element(heap, object, i, value); }
         },
         2 => {
-            if !function_key(heap, o, k) { return Value.Undefined, false; }
-            if lazy_prototype(heap, o) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; }
+            if !function_key(heap, o, k) || lazy_change(heap, o) { return Value.Undefined, false; }
         },
         _ => { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; },
     }
@@ -1340,8 +1382,8 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
         if half == 0 && attrs == attrs_data() { return set_element(heap, object, i, value); }
     }
     if kind == 2 {
-        if !function_key(heap, o, k) { return false; }
-        if !lazy_prototype(heap, o) { return define_own(heap, o, k, value, attrs, half); }
+        if !function_key(heap, o, k) || lazy_change(heap, o) { return false; }
+        return define_own(heap, o, k, value, attrs, half);
     }
     if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; }
     return false;
@@ -1370,7 +1412,13 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
             if i < node(heap, o).count && i < node(heap, o).length { set_slot(heap, node(heap, o).start + i, hole()); }
             return true;
         },
-        2 => { if lazy_prototype(heap, o) && key_is(heap, k, "prototype") { return false; } return function_key(heap, o, k) && delete_own(heap, o, k); },
+        2 => {
+            if lazy_function(heap, o) && k.tag() == 4 {
+                if lazy_prototype(heap, o) && key_is(heap, k, "prototype") { return false; }
+                if (key_is(heap, k, "length") || key_is(heap, k, "name")) && lazy_change(heap, o) { return false; }
+            }
+            return function_key(heap, o, k) && delete_own(heap, o, k);
+        },
         _ => { heap.fault = Fault.UnsupportedOperand; return false; },
     }
 }
@@ -1379,13 +1427,26 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
 // the other strings in property creation order, then symbols in creation
 // order. An array's are its element indices, then `length`; an ordinary
 // object's elements (light-cljs-804) are index keys like its index-keyed
-// shape keys. Other kinds fail UnsupportedOperand. Index keys of elements are
+// shape keys; a closure's are its own properties in creation order, `length`,
+// `name` and `prototype` first (light-cljs-806), except a class constructor's
+// or a generator's. Other kinds fail UnsupportedOperand. Index keys of elements are
 // interned strings the call creates. own_property_keys gives each key's
 // attribute bits and array index (-1 for a name or symbol) too.
 struct OwnKey { key: Value, attrs: u8 = 0, index: i64 = -1 }
 fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind != 0 && kind != 1 && kind != 4 && kind != 13 { heap.fault = Fault.UnsupportedOperand; return false; }
+    if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 || kind == 2 && unsupported_prototype(heap, o) { heap.fault = Fault.UnsupportedOperand; return false; }
+    // A lazy closure's are `length`, `name` and, for an ordinary function,
+    // `prototype`, not yet made (light-cljs-806).
+    if kind == 2 && lazy_function(heap, o) {
+        for name in ["length", "name", "prototype"] {
+            if name == "prototype" && constructor_kind(heap, o) != 1 { break; }
+            let k = key_named(heap, name);
+            if heap.fault != Fault.None { return false; }
+            out.push(OwnKey { key: k, attrs: if name == "prototype" { attr_writable() } else { attr_configurable() } });
+        }
+        return charge(heap, 3);
+    }
     var keys: OwnKey[>..] = [];
     // An element run's scan costs a work unit a slot, holes included.
     if (kind == 0 || !node(heap, o).initialized) && !charge(heap, if kind == 0 { node(heap, o).count as i64 } else { min(node(heap, o).length, node(heap, o).count) as i64 }) { return false; }
@@ -2950,24 +3011,27 @@ fn writable(job: const Job&, o: i64) -> bool {
     while i + 1 < job.foreign.len { if o >= job.foreign[i] && o < job.foreign[i + 1] { return false; } i += 2; }
     return true;
 }
-// Before a job's operation on key k of `object` (light-cljs-805): an
-// ordinary function's lazy `prototype` (lazy_prototype) is made on its first
-// observation: a read of `prototype`, on the function or inherited from it
+// Before a job's operation on key k of `object` (light-cljs-805,
+// light-cljs-806): a lazy closure's properties (lazy_function) are made
+// (materialize_function) on a read of `prototype` from an ordinary function
+// with a lazy one (lazy_prototype), on the function or inherited from it
 // (the first object of the chain that has the key or is such a function),
-// or, `adding`, an assignment or definition of any key on the function, so
-// that `prototype` comes first in creation order (the Pants engine's
-// function.rs). `in` and delete answer without making it (has_property,
-// delete_property). Only a function the job allocated is changed: making
-// another's would write a row the reset does not restore, so a read fails
-// UnsupportedOperand (a read has no JavaScript failure for it), as the
-// Pants engine does for a published function; a write has already failed
-// NativeBoundary. Goose callers' reads meet a lazy prototype in
-// function_key, which fails by name.
+// or, `adding`, before an assignment, definition or delete of any key on a
+// lazy closure, so that `length`, `name` and `prototype` come first in
+// creation order (the Pants engine's function.rs). Reads of `length` and
+// `name`, `in`, and a delete of a lazy `prototype` answer without making
+// them (own_entry, has_property, delete_property). Only a function the job
+// allocated is changed: making another's would write a row the reset does
+// not restore, so a read fails UnsupportedOperand (a read has no JavaScript
+// failure for it), as the Pants engine does for a published function; a
+// write has already failed NativeBoundary. Goose callers' reads meet a lazy
+// prototype in function_key and their changes to a lazy closure in
+// lazy_change, which fail by name.
 fn prepare_function(job: Job&, object: Value, k: Value, adding: bool) {
     let heap .= job.heap;
     if heap.fault != Fault.None || object.tag() != 5 || object.id() >= heap.nodes.len { return; }
     var at = object;
-    if adding { if !lazy_prototype(heap, at.id()) { return; } }
+    if adding { if !lazy_function(heap, at.id()) { return; } }
     else {
         if !key_is(heap, k, "prototype") { return; }
         let key = intern(heap, k);
@@ -2981,7 +3045,7 @@ fn prepare_function(job: Job&, object: Value, k: Value, adding: bool) {
         }
     }
     if !writable(job, at.id()) { heap.fault = Fault.UnsupportedOperand; return; }
-    materialize_prototype(heap, at.id());
+    materialize_function(heap, at.id());
 }
 // Mark the node rows a publication installed in this job, from `start` to
 // the table's end, as rows the job did not allocate.
@@ -3068,6 +3132,8 @@ fn delete_op(job: Job&, strict: bool) {
         if !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; return; }
         let key = intern(heap, k);
         if heap.fault != Fault.None { return; }
+        // A lazy closure's `length` or `name` is made before it goes.
+        if key.tag() == 4 && (key_is(heap, key, "length") || key_is(heap, key, "name")) { prepare_function(job, object, key, true); }
         ok = delete_property(heap, object, key);
     }
     if heap.fault != Fault.None { return; }
@@ -3192,7 +3258,7 @@ fn for_in_next(job: Job&) {
             node_mut(heap, o).length = (next + 1) as u32;
             if r.attrs & attr_enumerable() == 0 || hidden(heap, o, r.key) { if heap.fault != Fault.None { return; } continue; }
             if walked.tag() == 5 {
-                let e = own_entry(heap, walked, r.key);
+                let e = enumerable_entry(heap, walked, r.key);
                 if heap.fault != Fault.None { return; }
                 if !e.found || e.attrs & attr_enumerable() == 0 { continue; }
             }
@@ -3248,7 +3314,7 @@ fn is_enumerable(job: Job&) {
         else {
             let ik = intern(heap, k);
             if heap.fault != Fault.None { return; }
-            let e = own_entry(heap, source, ik);
+            let e = enumerable_entry(heap, source, ik);
             result = e.found && e.attrs & attr_enumerable() != 0;
         }
     }
@@ -3293,7 +3359,7 @@ fn copy_step(job: Job&, frame: Frame) {
     let k = property_row(heap, node(heap, list).keys + frame.index).key;
     job.frames[at].index += 1;
     if frame.input.tag() == 4 { let i = index(heap, k); if heap.fault == Fault.None { copy_define(job, frame.output, k, unit_string(heap, frame.input, i)); } return; }
-    let e = own_entry(heap, frame.input, k);
+    let e = enumerable_entry(heap, frame.input, k);
     if heap.fault != Fault.None || !e.found || e.attrs & attr_enumerable() == 0 { return; }
     if !is_accessor(e.value) { copy_define(job, frame.output, k, e.value); return; }
     let getter = pair(heap, e.value).get;
