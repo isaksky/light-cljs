@@ -200,6 +200,21 @@ fn cont_run<T>(s: const T&, first: u32, capacity: u32, kind: i64) -> bool {
     for i in capacity { if !cont_is(s, first + i, kind) { return false; } }
     return true;
 }
+// Whether v is an object of node kind `kind` (-1: any kind).
+fn object_of<T>(s: const T&, v: source::Value, kind: i64) -> bool { return v.tag() == 5 && v.id() < s.nodes.len && (kind < 0 || s.nodes[v.id()].kind == kind); }
+// A native frame's state that its steps read by row: a Resume frame's
+// generator, a MapSeq frame's deferred map, a Force frame's delay, a Swap
+// frame's function and a CopyData frame's key list.
+fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
+    return match f.native {
+        Resume => object_of(s, f.input, source::generator_kind()),
+        MapSeq => object_of(s, f.input, 15),
+        Force => object_of(s, f.input, -1),
+        Swap => object_of(s, f.callee, -1),
+        CopyData => object_of(s, f.callee, 16),
+        _ => true,
+    };
+}
 // An activation (light-cljs-813, source::Activation): its runs of Frame,
 // value and Saved rows; its frames bottom first, the first at the run's
 // bases and every base within the run, never below the frame's under it; a
@@ -219,7 +234,7 @@ fn activation_valid<T>(s: const T&, a: source::Activation, c: Control&) -> bool 
         let span = end - f.local_base;
         let native = match f.native { None => false, _ => true };
         if f.function == source::no_row() {
-            if !native { return reject(c, Error.Link); }
+            if !native || f.argument_count < 0 || !native_valid(s, f) { return reject(c, Error.Link); }
         } else {
             if f.function >= s.functions.len || native { return reject(c, Error.Link); }
             let code = s.functions[f.function];

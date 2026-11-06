@@ -109,7 +109,7 @@ struct Activation { frames: u32, frame_count: u32, frame_capacity: u32, values: 
 // A frame of a detached run (Cont.Frame): source::Frame's fields, its bases
 // relative to the run's; function no_row() for a native frame, whose Native
 // names its operation and whose input, output and index hold its state.
-struct SavedFrame { function: u32 = 4294967295, pc: u32 = 0, local_base: u32 = 0, operand_base: u32 = 0, argument_count: u32 = 0, index: i64 = 0, callee: Value = Value.Undefined, receiver: Value = Value.Undefined, input: Value = Value.Undefined, output: Value = Value.Undefined, native: Native = Native.None }
+struct SavedFrame { function: u32 = 4294967295, pc: u32 = 0, local_base: u32 = 0, operand_base: u32 = 0, argument_count: i64 = 0, index: i64 = 0, callee: Value = Value.Undefined, receiver: Value = Value.Undefined, input: Value = Value.Undefined, output: Value = Value.Undefined, native: Native = Native.None }
 // A handler of a detached activation: its frame's index in the run and its
 // heights relative to the run's local and operand bases.
 struct SavedHandler { frame: u32 = 0, pc: i64 = 0, operands: u32 = 0, locals: u32 = 0, kind: HandlerKind = HandlerKind.Catch, value: Value = Value.Undefined }
@@ -138,7 +138,7 @@ fn plain_bytes(c: Cont, out: u8[>..]&) {
         Saved x => { out.push(1); out.append(bytes_of([x.h.pc])); out.append(bytes_of([x.h.frame, x.h.operands, x.h.locals])); out.push(handler_code(x.h.kind)); plain_bytes(x.h.value, out); },
         Promise x => { out.push(2); out.push(x.p.state); plain_bytes(x.p.result, out); out.append(bytes_of([x.p.first, x.p.last, x.p.activation])); out.push(if x.p.handled { 1 } else { 0 }); },
         Reaction x => { out.push(3); out.append(bytes_of([x.r.target, x.r.next])); out.push(if x.r.resume { 1 } else { 0 }); },
-        Frame x => { let f = x.f; out.push(4); out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count])); out.append(bytes_of([f.index, native_code(f.native)])); plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out); },
+        Frame x => { let f = x.f; out.push(4); out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base])); out.append(bytes_of([f.argument_count, f.index, native_code(f.native)])); plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out); },
     }
 }
 fn plain_bytes(t: Task, out: u8[>..]&) { out.append(bytes_of([t.target, t.thenable])); out.push(if t.resume { 1 } else { 0 }); out.push(if t.rejected { 1 } else { 0 }); plain_bytes(t.value, out); }
@@ -225,7 +225,7 @@ fn detach_run(job: Job&, from: i64, reuse: i64, charged: bool) -> i64 {
     if handlers > 0 { a.handlers = add_conts(heap, Cont.Saved { h: SavedHandler {} }, handlers) as u32; a.handler_capacity = handlers as u32; }
     for i in nf {
         let f = job.frames[from + i];
-        set_cont(heap, a.frames + i, Cont.Frame { f: SavedFrame { function: if f.function < 0 { no_row() } else { f.function as u32 }, pc: f.pc as u32, local_base: (f.local_base - lb) as u32, operand_base: (f.operand_base - ob) as u32, argument_count: f.argument_count as u32, index: f.index, callee: f.callee, receiver: f.receiver, input: f.input, output: f.output, native: f.native } });
+        set_cont(heap, a.frames + i, Cont.Frame { f: SavedFrame { function: if f.function < 0 { no_row() } else { f.function as u32 }, pc: f.pc as u32, local_base: (f.local_base - lb) as u32, operand_base: (f.operand_base - ob) as u32, argument_count: f.argument_count, index: f.index, callee: f.callee, receiver: f.receiver, input: f.input, output: f.output, native: f.native } });
     }
     for i in nl { set_slot(heap, a.values + i, job.locals[lb + i]); }
     for i in no { set_slot(heap, a.values + nl + i, job.operands[ob + i]); }

@@ -445,6 +445,7 @@ fn suspended_continuations() {
     heap_program::join(thread_spawn(suspended_wait, str(wait), true)); let saved = qget<Waiting>();
     heap_program::join(thread_spawn(resumed_wait, copy(saved)));
     let stacked = embed_file("../corpus/serial/suspended-stack.gsp");
+    heap_program::join(thread_spawn(stack_limits, str(stacked)));
     heap_program::join(thread_spawn(stack_wait, str(stacked))); let first = qget<Waiting>();
     heap_program::join(thread_spawn(stack_resumed, copy(first), false)); let second = qget<Waiting>();
     heap_program::join(thread_spawn(stack_resumed, copy(second), true));
@@ -533,12 +534,19 @@ thread_fn stack_wait(bytes: u8[]) {
     let rows = heap.conts.len; let values = heap.values.len;
     assert(source::resume_stack(job, stack) && source::plain_rows(job.frames) == frames && source::plain_rows(job.locals) == locals && source::plain_rows(job.operands) == operands && job.handlers.len == handlers);
     assert(!source::resume_stack(job, stack) && heap.fault == source::Fault.InvalidState); heap.fault = source::Fault.None;
+    // A native frame's state keeps its full width: map's length is an
+    // array-like's (up to 2^53 - 1), not a row count.
+    var at: i64 = -1; for f, i in job.frames { match f.native { ArrayCallbacks => { at = i; }, _ => {} } }
+    assert(at >= 0); let length = job.frames[at].argument_count; job.frames[at].argument_count = 4294967297;
+    assert(source::suspend_stack(job, stack) == stack && source::resume_stack(job, stack) && job.frames[at].argument_count == 4294967297);
+    job.frames[at].argument_count = length;
     assert(source::suspend_stack(job, stack) == stack && heap.conts.len == rows && heap.values.len == values);
     assert(source::retire(job, true));
     var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
     // Refused: a native frame without its operation, a bytecode frame's pc
-    // outside its code, bases falling up the stack, a handler past the run.
-    for mode in 4 {
+    // outside its code, bases falling up the stack, a handler past the run,
+    // a Resume frame naming no generator.
+    for mode in 5 {
         var bad = copy(image); var changed = false;
         for i in a.frame_count {
             let r = a.frames + i;
@@ -548,6 +556,7 @@ thread_fn stack_wait(bytes: u8[]) {
                     if mode == 0 && f.function == source::no_row() && !changed { f.native = source::Native.None; changed = true; }
                     if mode == 1 && f.function != source::no_row() && !changed { f.pc = 4000000000; changed = true; }
                     if mode == 2 && i == a.frame_count - 1 { f.local_base = 0; changed = true; }
+                    if mode == 4 { match f.native { Resume => { f.input = source::Value.Undefined; changed = true; }, _ => {} } }
                     bad.conts[r] = source::Cont.Frame { f: f };
                 },
                 _ => {},
@@ -556,8 +565,31 @@ thread_fn stack_wait(bytes: u8[]) {
         if mode == 3 { match image.conts[a.handlers] { Saved x => { var h = x.h; h.frame = a.frame_count; bad.conts[a.handlers] = source::Cont.Saved { h: h }; changed = true; }, _ => {} } }
         assert(changed);
         var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+        var dest = source::Code {}; var target_heap = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var refused = snapshot::Control {};
+        assert(!snapshot::restore(bad, dest, target_heap, roots, source::reserve_identity(), refused) && refused.error == snapshot::Error.Link && target_heap.nodes.len == 0);
     }
     assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// A stack whose rows pass the job's continuation or value limits stays on
+// the job with every table unchanged; the session then delivers the fault
+// at the wait (compiler_session.goose, execute), which ends the job.
+thread_fn stack_limits(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.frames.len == 5);
+    let frames = source::plain_rows(job.frames); let locals = source::plain_rows(job.locals); let operands = source::plain_rows(job.operands); let handlers = job.handlers.len;
+    let rows = heap.conts.len; let values = heap.values.len; let limits = heap.limits;
+    for table in 2 {
+        if table == 0 { heap.limits.conts = heap.conts.len - heap.image.conts; } else { heap.limits.values = heap.values.len - heap.image.values; }
+        assert(source::suspend_stack(job, -1) == -1 && heap.fault == source::Fault.MemoryLimit);
+        assert(heap.conts.len == rows && heap.values.len == values && source::plain_rows(job.frames) == frames && source::plain_rows(job.locals) == locals && source::plain_rows(job.operands) == operands && job.handlers.len == handlers);
+        heap.fault = source::Fault.None; heap.limits = limits;
+    }
+    assert(source::deliver_effect(job, source::Value.Undefined, source::Fault.MemoryLimit));
+    assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.MemoryLimit);
+    assert(source::retire(job));
 }
 // Restore a stack_wait continuation in a fresh heap, answer it, and run to
 // the next wait (saved again into the same row) or to the end.
