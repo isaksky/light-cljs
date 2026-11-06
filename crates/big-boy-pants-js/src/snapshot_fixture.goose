@@ -46,6 +46,11 @@ fn prepare(code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding
     assert(source::install_field(heap, object, "self", object)); assert(source::install_field(heap, object, "cell", cell));
     assert(source::install_field(heap, object, "nan", source::number(0.0 / 0.0)));
     assert(source::install_field(heap, object, "negativeZero", source::number(-0.0)));
+    // An index key makes an element run with holes, and a for-in walk over
+    // the object leaves a key list (light-cljs-804).
+    assert(source::install_field(heap, object, "2", source::number(2)) && source::node(heap, object.id()).count > 2);
+    var keys: source::OwnKey[>..] = []; assert(source::own_property_keys(heap, object, keys));
+    let list = source::key_list(heap, object, keys, false); assert(list.tag() == 5); source::node_mut(heap, list.id()).length = 1;
     bindings.push(snapshot::Binding { id: 7, generation: 1, value: object });
     // Import all source/form pools and retain distinct occurrences plus aliases.
     var graph = bridge::Graph {}; graph.bytes.append("one two"); graph.sources.push(source::SourceRange { start: 0, count: 7 });

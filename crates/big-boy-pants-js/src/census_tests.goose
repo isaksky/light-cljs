@@ -39,7 +39,32 @@ fn main() {
     let empty = census::take(heap, none);
     assert(empty.dead_nodes == 5 && empty.dead_values == 3 && empty.dead_properties == 6 && empty.dead_units == 6);
     shaped();
+    elements_and_key_lists();
     print("census tests passed");
+}
+// Element runs and key lists (light-cljs-804): a node reachable only through
+// an ordinary object's element slot is live, and so are a key list's walked
+// object and its records' key text; the run's holes count as its live rows;
+// an unlinked node and value are dead.
+fn elements_and_key_lists() {
+    var code = source::Code {}; var heap = source::Heap { code: code };
+    for u in "xy" { heap.units.push(u); }
+    // 0: ordinary object, element run values 0..3: hole, node 1, hole.
+    heap.nodes.push(source::Node { kind: 0, start: 0, count: 3 });
+    heap.nodes.push(source::Node { kind: 0 });
+    // 2: key list walking node 3, one record keyed "x" in properties 0..2.
+    heap.nodes.push(source::Node { kind: 16, keys: 0, key_count: 1, key_capacity: 2, value: node(3) });
+    heap.nodes.push(source::Node { kind: 0 });
+    // 4: unlinked; value 3 unowned.
+    heap.nodes.push(source::Node { kind: 0 });
+    heap.values.push(source::hole()); heap.values.push(node(1)); heap.values.push(source::hole()); heap.values.push(source::number(1));
+    heap.properties.push(source::Property { key: text(heap, 0, 1) }); heap.properties.push(source::Property {});
+    let c = census::take(heap, [node(0), node(2)]);
+    assert(c.nodes == 5 && c.values == 4 && c.properties == 2 && c.units == 2);
+    assert(c.dead_nodes == 1 && c.dead_values == 1 && c.dead_properties == 1 && c.dead_units == 1);
+    // Without the key list, its walked object and key text are dead.
+    let elements = census::take(heap, [node(0)]);
+    assert(elements.dead_nodes == 3 && elements.dead_values == 1 && elements.dead_properties == 2 && elements.dead_units == 2);
 }
 // Shape mode, prototypes and accessors (light-cljs-787): nodes reachable only
 // through a shaped object's inline slot, its overflow run, its prototype, or

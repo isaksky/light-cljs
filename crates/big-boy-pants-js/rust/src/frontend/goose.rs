@@ -818,6 +818,11 @@ mod serial_tests {
             ("prototypes", "boolean:true"),
             ("deletes", "boolean:true"),
             ("getter-only", "exception:TypeError"),
+            // Key enumeration (light-cljs-804): for-in over a three-object
+            // chain, object rest and spread, and ordinary objects' index keys.
+            ("for-in", "boolean:true"),
+            ("object-rest", "boolean:true"),
+            ("index-keys", "boolean:true"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));

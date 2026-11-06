@@ -70,7 +70,7 @@ thread_fn isolation_parent() {
 }
 fn malformed() {
     heap_program::join(thread_spawn(malformed_parent)); let saved = qget<Saved>(); let original .= saved.image;
-    for mode in 38 { heap_program::join(thread_spawn(malformed_target, copy(original), mode)); }
+    for mode in 45 { heap_program::join(thread_spawn(malformed_target, copy(original), mode)); }
     for mode in 2 { heap_program::join(thread_spawn(malformed_budget, copy(original), mode)); }
     key_run_budgets(original);
     for identity in [0, original.header.base, original.header.checkpoint, 2147483648] { heap_program::join(thread_spawn(malformed_identity, copy(original), identity)); }
@@ -87,6 +87,8 @@ thread_fn malformed_parent() {
     assert(!snapshot::restore(original, code, heap, bindings, source::reserve_identity(), occupied) && occupied.error == snapshot::Error.Destination);
     assert(heap.nodes.len == before_nodes && heap.work == before_work && heap.identity == before_identity && code.valid);
 }
+// The fixture's key list row (kind 16).
+fn list_row(s: const snapshot::Snapshot&) -> i64 { for n, i in s.nodes { if n.kind == 16 { assert(n.key_count > 0); return i; } } abort("no key list"); return -1; }
 thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
     defer { heap_program::finish(); }
     {
@@ -123,6 +125,17 @@ thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
             // A shaped object's overflow run past the values table.
             37 => { let g = bad.header.global.id(); assert(bad.nodes[g].key_capacity > 0); bad.nodes[g].keys = bad.values.len as u32; },
             36 => { var at: i64 = -1; for r, i in bad.strings { if !r.key && r.len > 0 { at = i; } } assert(at >= 0); bad.strings[at].key = true; },
+            // An ordinary object's element run (light-cljs-804) is exclusive
+            // and holds holes only inside it; it has no length.
+            38 => { let o = bad.bindings[6].value.id(); let g = bad.header.global.id(); assert(bad.nodes[o].count > 0 && bad.nodes[g].key_capacity > 0); bad.nodes[o].start = bad.nodes[g].keys; },
+            39 => { let o = bad.bindings[6].value.id(); assert(bad.nodes[o].count > 0); bad.nodes[o].count -= 1; },
+            40 => { let o = bad.bindings[6].value.id(); bad.nodes[o].length = 1; },
+            // A key list's position lies in its records; it walks an object
+            // or nothing, and its records are keyed.
+            41 => { let l = list_row(bad); bad.nodes[l].length = bad.nodes[l].key_count + 1; },
+            42 => { let l = list_row(bad); bad.nodes[l].start = bad.nodes[l].length + 1; },
+            43 => { let l = list_row(bad); bad.nodes[l].value = source::number(1); },
+            44 => { let l = list_row(bad); bad.properties[bad.nodes[l].keys].key = source::number(1); },
             _ => { abort("unexpected mode"); },
         }
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
@@ -317,6 +330,8 @@ thread_fn truncated_parent() {
     defer { heap_program::finish(); }
     var code = source::Code {}; var parent = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, parent, bindings);
     let service = source::allocate(parent, source::Node { kind: 0 }); assert(source::install_field(parent, parent.global, "service", service));
+    // The service object has an element in the image (light-cljs-804).
+    assert(source::install_field(parent, service, "1", source::number(1)) && source::node(parent, service.id()).count == 4);
     var c = snapshot::Control {}; let base = snapshot::capture(parent, bindings, c); assert(c.error == snapshot::Error.None);
     // The derived image: base, a definition's code and rows above it.
     var dc = source::Code {}; var derived = source::Heap { code: dc }; var db: snapshot::Binding[>..] = []; var r = snapshot::Control {}; assert(snapshot::restore(base, dc, derived, db, source::reserve_identity(), r));
@@ -349,6 +364,9 @@ thread_fn truncated_worker(base: snapshot::Snapshot, derived: snapshot::Snapshot
         assert(!snapshot::truncate(base, rows, identity, code, heap, bindings));
         assert(source::retire(job));
         for i in 4 { assert(source::install_field(heap, source::object(service), str("s", i), source::number(i))); }
+        // The service writes its image element in place, then grows the run past it.
+        assert(source::install_field(heap, source::object(service), "1", source::number(n)) && source::install_field(heap, source::object(service), "9", source::number(9)));
+        assert(source::node(heap, service).count > 4);
         assert(!snapshot::pristine(base, identity, code, heap, bindings));
         assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings));
     }

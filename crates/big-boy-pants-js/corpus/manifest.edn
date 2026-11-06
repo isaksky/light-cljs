@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "6d003c9fd903965cd237a7fa422d2bdbae948423b1b95cbf81ccefdd924c6b04",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "47e91fa28c475d2280adf673f958cae6f1e1869fb51dc41366c5e0bb5f723283",
+  "00cd9bfd89e4c0f9f43a3d08bedafdffed724de085a167860b300d9f4ea72d25",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "1a2108185dffceee40083c348fb8b306d46c392910ab5036cfe75b0ae45a205b",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -237,6 +237,10 @@
   "02dc233dfd08aca5d0ef7370ad5bd25a12b34a1093b105955df89d9ecab9dd58",
   "corpus/serial/finally.js"
   "c5f283cb2c10cff406572b92b7da997e8e1f9197456aaa8bdc49de92fe89d221",
+  "corpus/serial/for-in.gsp"
+  "ed5d9b18cfcdf6b46c7e72c9d73fe5e60f695de80b59e975262a579d18b4d09d",
+  "corpus/serial/for-in.js"
+  "7e694131eea33dd80c6377b40bf3060dd3b8a190961cf3361d2aa56da41fa87e",
   "corpus/serial/getter-only.gsp"
   "2e6bf74ff22fdcd58fb693c1c935f8f7e85cbcf8cee21eac367297cec46ad47a",
   "corpus/serial/getter-only.js"
@@ -253,6 +257,10 @@
   "043f738fdffcaae52b5235e82c8cae383b79f0c7fa8cac32f75ecbb7b16e6d2c",
   "corpus/serial/global-undefined.js"
   "b6987474de9043c9f5b84b824d042f6eff3cae60d825a099817d29243dfc84dd",
+  "corpus/serial/index-keys.gsp"
+  "1bc8a3e15efa95512fa7b215b9dcef225aac74db986acd7e5ea2d07906e49d0d",
+  "corpus/serial/index-keys.js"
+  "16aab52cbd8aed7b6cf108b6b7168223308a7240939244f60fd5d4806806d438",
   "corpus/serial/loop.gsp"
   "913088d66bb96c348aa90f474de89aae76d4ce386b2e58c2d31e32d210c531c9",
   "corpus/serial/loop.js"
@@ -281,6 +289,10 @@
   "c5e323edb5ef71cc36bb7a47a3efefadf93bf9b8990669a77d01ac1fc95447ac",
   "corpus/serial/numbers.js"
   "bbda6b66f5e9f0539d956357cea24bd8594809b43cefd5bb8a5311c410bacdcb",
+  "corpus/serial/object-rest.gsp"
+  "fa62b7774893306c20ee086dd42737b735bc4b7af95ec0d348f8ddb811087229",
+  "corpus/serial/object-rest.js"
+  "7d53bf63de3cb6aa3978a324901c38db5308ac5bb8e582244ba814e219f0a98c",
   "corpus/serial/prototypes.gsp"
   "b7446a543b9ef49428ba26f401f187d48fb666e940237fb920931bcd535ed809",
   "corpus/serial/prototypes.js"

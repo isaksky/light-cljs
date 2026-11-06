@@ -48,7 +48,11 @@
   "bbp/completion_declarations_only" {:area :statements-loops}
   "bbp/delete_dictionary" {:area :objects-classes}
   "bbp/driver_names_are_free" {:area :functions-scope}
+  "bbp/for_in_chain_order" {:area :statements-loops}
+  "bbp/for_in_forms" {:area :statements-loops}
   "bbp/getter_only_strict" {:area :objects-classes}
+  "bbp/index_keys_order" {:area :objects-classes}
+  "bbp/object_rest_spread" {:area :objects-classes}
   "bbp/prototype_chain_three" {:area :objects-classes}
   "bbp/to_primitive_value_of" {:area :operators-values}
   "bbp/try_catch_finally" {:area :exceptions}

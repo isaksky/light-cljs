@@ -209,8 +209,26 @@ getter runs as a frame entered from the read; a setter runs under a
 that adds a transition to an image shape or a key to the index marks the
 image written, and the reset copies both back from the twin
 (`snapshot::truncate`), so a job's shapes and keys vanish with its rows.
-Array-index keys of ordinary objects stay shape keys, ordered first by
-`own_keys`; element runs for them are later work.
+
+*As landed by light-cljs-804 (key enumeration):* an ordinary object keeps
+its index-keyed data properties with every attribute set in an element run
+of `values` (its header's `start` and `count`, holes where absent, no
+length), as an array does, so `o[i]` with a number reads and writes the slot
+without building a key string. An index key with other attributes, an
+accessor, or an index far past the run stays a shape key or record; a key
+lives in one place, and `own_keys` sorts both kinds of index key first. A
+name pays one header read (`element_key` decodes only digit-led keys).
+for-in, object rest and spread enumerate through a *key list*, a node of
+kind 16 whose records in `properties` hold own keys with the attribute bits
+they had when listed, the object the walk is on, the first record of its
+keys and the next record: the Pants engine's `ForInIterator` as table rows a
+job allocates and its frames alone hold, truncated with the job.
+`ForInNext` re-checks each key against the object's current attributes,
+lists a prototype's keys when the walk reaches it, skips names an object
+nearer the operand had, and stops at `Null` or the pending
+%Object.prototype%. `OwnKeys`, `IsEnumerable`, `ToPropertyKey` and
+`RequireCoercible` run object rest; `CopyDataProperties` runs as a
+`CopyData` native frame, one key a step, a getter entered above it.
 
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the

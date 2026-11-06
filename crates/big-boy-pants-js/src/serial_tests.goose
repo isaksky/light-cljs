@@ -387,6 +387,7 @@ fn main() {
     heap_program::join(thread_spawn(instruction_limit));
     control_flow();
     properties();
+    key_enumeration();
     // Image comparisons are bit-exact: NaN matches itself, -0 differs from +0.
     assert(source::same_bits(source::number(0.0 / 0.0), source::number(0.0 / 0.0)) && !source::same_bits(source::number(0.0), source::number(-0.0)));
     print("serial source VM: calls/captures/cells/properties/truth/UTF16/errors, exact slices and limits passed");
@@ -520,6 +521,98 @@ thread_fn property_model() {
     let big = source::allocate(heap, source::Node { kind: 0 });
     for i in source::shape_limit() + 1 { assert(source::put(heap, big, source::text(heap, str("k", i)), source::number(i))); }
     assert(source::node(heap, big.id()).initialized && source::get(heap, big, source::text(heap, "k3")).num() == 3 && source::get(heap, big, source::text(heap, "k64")).num() == 64);
+}
+// Key enumeration (light-cljs-804): for-in over a three-object chain with
+// shadowing and deletion during the loop, object rest and spread (a getter
+// run from a CopyData native frame, an exception through it), and ordinary
+// objects' index keys, every budget cut matching the uncut run; then the
+// element runs and key lists' Goose functions.
+fn key_enumeration() {
+    check(embed_file("../corpus/serial/for-in.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/object-rest.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/index-keys.gsp"), "boolean:true");
+    // The new instructions run in place or push a native frame: each limit,
+    // met uncut or one instruction a slice, stops at the same point.
+    limit_points(embed_file("../corpus/serial/object-rest.gsp"));
+    heap_program::join(thread_spawn(element_runs));
+    heap_program::join(thread_spawn(for_in_rechecks));
+    print("serial source VM: for-in, object rest/spread, ordinary objects' element runs and key lists passed");
+}
+thread_fn element_runs() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, embed_file("../corpus/serial/calls.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    // Index-keyed data properties go to the element run, names to the shape:
+    // the shape holds only the name, and objects with the same names but
+    // other indices share it.
+    let o = source::allocate(heap, source::Node { kind: 0 }); let p = source::allocate(heap, source::Node { kind: 0 });
+    assert(source::put(heap, o, source::text(heap, "3"), source::number(3)) && source::put(heap, o, source::text(heap, "name"), source::number(1)) && source::put(heap, o, source::text(heap, "0"), source::number(0)));
+    let n = source::node(heap, o.id());
+    assert(n.key_count == 1 && n.count >= 4 && source::object_element(heap, o.id(), 3).num() == 3 && source::object_element(heap, o.id(), 1).tag() == -1);
+    assert(source::put(heap, p, source::text(heap, "name"), source::number(2)) && source::put(heap, p, source::text(heap, "7"), source::number(7)) && source::node(heap, p.id()).shape == n.shape);
+    // "01", "4294967295" and an index far past the run are shape keys.
+    let rows = heap.values.len;
+    assert(source::put(heap, o, source::text(heap, "01"), source::number(9)) && source::put(heap, o, source::text(heap, "4294967295"), source::number(9)) && source::put(heap, o, source::text(heap, "1000000"), source::number(9)));
+    assert(source::node(heap, o.id()).key_count == 4 && heap.values.len < rows + 16);
+    var order: source::Value[>..] = []; assert(source::own_keys(heap, o, order) && order.len == 6);
+    for name, i in ["0", "3", "1000000", "name", "01", "4294967295"] { assert(source::key_is(heap, order[i], name)); }
+    // An accessor or other attributes under an element's key move it to the
+    // shape; the element becomes a hole. A data definition with every
+    // attribute keeps it an element.
+    let getter = source::closure(heap, 0, []);
+    assert(source::define_own(heap, o.id(), key(heap, "0"), source::number(5), source::attrs_data()) && source::object_element(heap, o.id(), 0).num() == 5);
+    assert(source::define_own(heap, o.id(), key(heap, "0"), getter, source::attrs_accessor(), 1) && source::object_element(heap, o.id(), 0).tag() == -1);
+    let entry = source::own_entry(heap, o, key(heap, "0")); assert(entry.found && !entry.element && source::is_accessor(entry.value));
+    assert(source::define_own(heap, o.id(), key(heap, "3"), source::number(4), source::attr_writable() | source::attr_configurable()) && source::object_element(heap, o.id(), 3).tag() == -1);
+    let hidden = source::own_entry(heap, o, key(heap, "3")); assert(hidden.found && hidden.attrs == 5 && hidden.value.num() == 4);
+    var after: source::Value[>..] = []; assert(source::own_keys(heap, o, after) && after.len == 6 && source::key_is(heap, after[0], "0") && source::key_is(heap, after[1], "3"));
+    // Delete, read through a prototype, and assignment to an inherited
+    // element's key: an own element on the receiver.
+    assert(source::put(heap, p, source::text(heap, "2"), source::number(2)) && source::delete_property(heap, p, key(heap, "2")) && source::object_element(heap, p.id(), 2).tag() == -1 && !source::has_property(heap, p, key(heap, "2")));
+    let heir = source::allocate(heap, source::Node { kind: 0 }); assert(source::set_prototype(heap, heir.id(), p));
+    assert(source::get(heap, heir, source::text(heap, "7")).num() == 7 && source::put(heap, heir, source::text(heap, "7"), source::number(8)));
+    assert(source::object_element(heap, heir.id(), 7).num() == 8 && source::object_element(heap, p.id(), 7).num() == 7);
+    // Own property keys with their attributes: an array's elements, then its
+    // non-enumerable `length`.
+    var listed: source::OwnKey[>..] = []; let a = source::allocate(heap, source::Node { kind: 1 });
+    assert(source::set_element(heap, a, 1, source::number(1)) && source::own_property_keys(heap, a, listed) && listed.len == 2 && listed[0].index == 1 && listed[0].attrs == 7 && listed[1].attrs == 1);
+    // A key list keeps string keys (or every key) as records.
+    var keys: source::OwnKey[>..] = []; assert(source::own_property_keys(heap, o, keys));
+    let list = source::key_list(heap, o, keys, false); let l = source::node(heap, list.id());
+    assert(l.kind == 16 && l.key_count == 6 && l.key_capacity >= 6 && l.start == 0 && l.length == 0 && source::dict_at(heap, list.id(), 0).attrs == source::attrs_accessor());
+    assert(heap.fault == source::Fault.None);
+}
+// ForInNext against attributes (light-cljs-804): a non-enumerable own `x`
+// hides an enumerable inherited `x`; a key made non-enumerable after the
+// listing, before its turn, is skipped; the prototype's other key follows,
+// then the walk ends at the pending %Object.prototype%. An element run of
+// holes alone still costs its scan.
+fn next_key(job: source::Job&, it: source::Value) -> source::Value {
+    job.operands.push(it); source::for_in_next(job); assert(job.heap.fault == source::Fault.None);
+    let more = job.operands.pop(); let k = job.operands.pop();
+    assert(more.flag() == (k.tag() == 4)); return k;
+}
+thread_fn for_in_rechecks() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, embed_file("../corpus/serial/calls.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let p = source::allocate(heap, source::Node { kind: 0 }); let o = source::allocate(heap, source::Node { kind: 0 }); assert(source::set_prototype(heap, o.id(), p));
+    assert(source::put(heap, p, source::text(heap, "x"), source::number(1)) && source::put(heap, p, source::text(heap, "y"), source::number(1)));
+    let hidden = source::attr_writable() | source::attr_configurable();
+    assert(source::define_own(heap, o.id(), key(heap, "x"), source::number(2), hidden));
+    for name in ["a", "b", "c"] { assert(source::put(heap, o, source::text(heap, name), source::number(1))); }
+    var job = source::Job { heap: heap };
+    job.operands.push(o); source::for_in_start(job); assert(heap.fault == source::Fault.None); let it = job.operands.pop();
+    assert(source::key_is(heap, next_key(job, it), "a"));
+    assert(source::define_own(heap, o.id(), key(heap, "b"), source::number(2), hidden));
+    assert(source::key_is(heap, next_key(job, it), "c"));
+    assert(source::key_is(heap, next_key(job, it), "y"));
+    assert(next_key(job, it).tag() == 0 && next_key(job, it).tag() == 0);
+    // Holes alone: the scan of a 64-slot run is charged before it runs.
+    let e = source::allocate(heap, source::Node { kind: 0 });
+    assert(source::put(heap, e, source::text(heap, "63"), source::number(1)) && source::delete_property(heap, e, key(heap, "63")) && source::node(heap, e.id()).count == 64);
+    heap.limits.work = heap.work + 32;
+    var none: source::Value[>..] = []; assert(!source::own_keys(heap, e, none) && heap.fault == source::Fault.WorkLimit && none.len == 0);
 }
 thread_fn depth_limit(bytes: u8[], frames: i64, fault: source::Fault) {
     defer { heap_program::finish(); }

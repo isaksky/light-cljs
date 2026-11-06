@@ -44,12 +44,13 @@ fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
         }
         // Own properties (light-cljs-787): a shape-mode object's slots and
         // overflow run, a dictionary's records, accessors' functions, and
-        // the prototype. Every shape's key is live.
+        // the prototype. Every shape's key is live. A key list's records
+        // (kind 16) are a dictionary's; element runs are value runs.
         mark(heap, n.proto, nodes, units, work);
         if snapshot::shaped(n) {
             for v, i in n.slots { if i < n.key_count { mark_slot(heap, v, nodes, units, work); } }
             for row in n.keys..min(n.keys + source::overflow(n), values.len) { values[row] = true; mark_slot(heap, source::slot(heap, row), nodes, units, work); }
-        } else if snapshot::dictionary(n) {
+        } else if snapshot::record_run(n) {
             for p in n.keys..min((n.keys + n.key_count) as i64, properties.len) {
                 properties[p] = true; let record = source::property_row(heap, p);
                 mark(heap, record.key, nodes, units, work); mark_slot(heap, record.value, nodes, units, work);

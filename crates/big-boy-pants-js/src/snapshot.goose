@@ -47,7 +47,13 @@ fn poll(c: Control&, n: i64 = 1) -> bool {
     c.visited += n; return true;
 }
 fn range(start: i64, count: i64, len: i64) -> bool { return start >= 0 && count >= 0 && start <= len && count <= len - start; }
-fn has_values(kind: i64) -> bool { return kind == 1 || kind == 2 || kind >= 5 && kind <= 8 || kind == 12 || kind == 14 || kind == 15; }
+// Kinds whose start/count name a run of values: an ordinary object's or an
+// array's element run (light-cljs-804), captures, form children, arguments
+// and a deferred map's memo.
+fn has_values(kind: i64) -> bool { return kind <= 2 || kind >= 5 && kind <= 8 || kind == 12 || kind == 14 || kind == 15; }
+// An element run (an ordinary object's or an array's) is exclusive and may
+// hold holes.
+fn elements(kind: i64) -> bool { return kind == 0 || kind == 1; }
 // All ranges have already passed bounds validation. Immutable views may share
 // slots, but an unrealized map owns its entire writable memo exclusively,
 // including the completed prefix. Charge both scratch initialization and each
@@ -68,7 +74,7 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
         if !has_values(n.kind) { continue; }
         if !poll(c, n.count) { return false; }
         for slot in n.start..(n.start + n.count) {
-            if n.kind == 15 || n.kind == 1 {
+            if n.kind == 15 || elements(n.kind) {
                 if used[slot] != 0 { return reject(c, Error.Link); }
                 used[slot] = 2;
             } else {
@@ -83,6 +89,9 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
 fn shaped(n: const source::Node&) -> bool { return n.kind == 0 && !n.initialized; }
 // A dictionary-mode object or a dictionary array.
 fn dictionary(n: const source::Node&) -> bool { return (n.kind == 0 || n.kind == 1) && n.initialized; }
+// A run of property records: a dictionary's, or a key list's (kind 16, the
+// keys a for-in walk or an object spread visits; source::Node).
+fn record_run(n: const source::Node&) -> bool { return dictionary(n) || n.kind == 16; }
 // A property key: an interned string (source::intern) or a well-known symbol.
 fn key_value<T>(s: const T&, k: source::Value) -> bool {
     return match k { String x => range(x.s, 1, s.strings.len) && s.strings[x.s].key, Symbol x => export_well_known_symbol(x.s).len > 0, _ => false };
@@ -107,7 +116,7 @@ fn key_runs<T>(s: const T&, c: Control&) -> bool {
             if !range(n.keys, n.key_capacity, s.values.len) || n.shape != 0 && !range(n.shape, 1, s.shapes.len) || (if n.shape == 0 { 0 } else { s.shapes[n.shape].count }) != n.key_count { return reject(c, Error.Link); }
             continue;
         }
-        if !dictionary(n) && (n.key_count != 0 || n.key_capacity != 0) { return reject(c, Error.Link); }
+        if !record_run(n) && (n.key_count != 0 || n.key_capacity != 0) { return reject(c, Error.Link); }
         if !range(n.keys, n.key_capacity, s.properties.len) { return reject(c, Error.Link); }
         for row in n.keys..(n.keys + n.key_capacity) { if used[row] { return reject(c, Error.Link); } used[row] = true; }
         for row in n.keys..(n.keys + n.key_capacity) {
@@ -327,8 +336,11 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     var has_memo = false; var array_holes: i64 = 0;
     for n in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < 0 || n.kind > 15 { return reject(c, Error.Unsupported); }
+        if n.kind < 0 || n.kind > 16 { return reject(c, Error.Unsupported); }
         if n.kind == 1 && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
+        // A key list (source::Node kind 16): its walk position lies in its
+        // records, and it walks an object or nothing.
+        if n.kind == 0 && n.length != 0 || n.kind == 16 && (n.count != 0 || n.initialized || n.start > n.length || n.length > n.key_count || n.value.tag() != 0 && n.value.tag() != 5) { return reject(c, Error.Link); }
         if !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source != source::no_row() && n.source >= s.sources.len || n.origin < -1 || n.proto.tag() != -1 && n.proto.tag() != 1 && (n.proto.tag() != 5 || !value(s, n.proto)) { return reject(c, Error.Link); }
         has_memo = has_memo || shaped(n) && n.key_capacity > 0;
         if n.source != source::no_row() && (n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
@@ -338,14 +350,15 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         }
         if n.kind == 2 && (!range(n.function, 1, s.functions.len) || n.count != s.functions[n.function].captures) { return reject(c, Error.Link); }
         if has_values(n.kind) { if !range(n.start, n.count, s.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); } }
-        if n.kind == 1 {
+        if elements(n.kind) {
             // A dictionary array (initialized) has records and no run; a dense
-            // one has a run and no records.
-            if (n.initialized && n.count != 0) || (!n.initialized && n.key_count != 0) { return reject(c, Error.Link); }
+            // one has a run and no records. An ordinary object's element run
+            // (light-cljs-804) has no length.
+            if n.kind == 1 && ((n.initialized && n.count != 0) || (!n.initialized && n.key_count != 0)) { return reject(c, Error.Link); }
             has_memo = has_memo || n.count > 0;
             if !poll(c, n.count) { return false; }
-            // Slots at or past the length are holes (source::array_length).
-            for v, i in s.values[n.start..(n.start + n.count)] { if v.tag() == -1 { array_holes += 1; } else if i >= n.length { return reject(c, Error.Link); } }
+            // Slots at or past an array's length are holes (source::array_length).
+            for v, i in s.values[n.start..(n.start + n.count)] { if v.tag() == -1 { array_holes += 1; } else if n.kind == 1 && i >= n.length { return reject(c, Error.Link); } }
         }
         if n.kind == 15 {
             has_memo = has_memo || n.count > 0;
@@ -456,12 +469,13 @@ fn truncate(twin: const Snapshot&, service: const i64[:], identity: i64, code: s
     bindings.clear(); bindings.append(twin.bindings);
     return true;
 }
-// Service row r and the property rows of its image run (twin's: in values
-// for a shape-mode object, in properties for a dictionary-mode one), as
-// `from` has them.
+// Service row r and the property rows of its image runs (twin's: in values
+// for a shape-mode object, in properties for a dictionary-mode one, and its
+// element run in values, light-cljs-804), as `from` has them.
 fn service_row(heap: source::Heap&, from: const Snapshot&, twin: const Snapshot&, r: i64) {
     heap.nodes[r] = from.nodes[r]; let n = twin.nodes[r];
     for k in n.keys..(n.keys + n.key_capacity) { if shaped(n) { heap.values[k] = from.values[k]; } else { heap.properties[k] = from.properties[k]; } }
+    if n.kind == 0 { for k in n.start..(n.start + n.count) { heap.values[k] = from.values[k]; } }
 }
 // The heap's state fields, as a restore of this header sets them.
 fn state(h: const Header&, identity: i64, heap: source::Heap&) {
@@ -488,7 +502,7 @@ fn same_bits(a: source::Limits, b: source::Limits) -> bool { let x: source::Limi
 fn over_image(s: const Snapshot&, twin: const Snapshot&, service: const i64[:]) -> bool {
     let a = ends(s); let b = ends(twin); for n, i in b { if a[i] < n { return false; } }
     var keys: i64[>..] = []; var slots: i64[>..] = [];
-    for r in service { let n = twin.nodes[r]; for k in n.keys..(n.keys + n.key_capacity) { if shaped(n) { slots.push(k); } else { keys.push(k); } } }
+    for r in service { let n = twin.nodes[r]; for k in n.keys..(n.keys + n.key_capacity) { if shaped(n) { slots.push(k); } else { keys.push(k); } } if n.kind == 0 { for k in n.start..(n.start + n.count) { slots.push(k); } } }
     for row, i in twin.nodes { var skip = false; for r in service { if r == i { skip = true; } } if !skip && !same_rows(s.nodes[i..(i + 1)], twin.nodes[i..(i + 1)]) { return false; } }
     for row, i in twin.properties { var skip = false; for k in keys { if k == i { skip = true; } } if !skip && !same_rows(s.properties[i..(i + 1)], twin.properties[i..(i + 1)]) { return false; } }
     for row, i in twin.values { var skip = false; for k in slots { if k == i { skip = true; } } if !skip && !same_rows(s.values[i..(i + 1)], twin.values[i..(i + 1)]) { return false; } }
