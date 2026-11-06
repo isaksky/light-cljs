@@ -37,8 +37,11 @@ enum Error { None, Malformed, Nodes, Depth, Bytes, Work, Cancelled, Unsupported,
 // form bridge refuses an atom. spans: an export carries each form's source
 // span and the sources its forms name (an identity, or a fixture's text); a
 // cell value, which outlives its call, carries neither (light-cljs-809), so a
-// store exports only what the value reaches.
-struct Control { nodes: i64 = 100000, depth: i64 = 128, bytes: i64 = 16777216, work: i64 = 10000000, cancel_after: i64 = -1, visits: i64 = 0, error: Error = Error.None, cancelled: bool = false, cells: bool = false, spans: bool = true }
+// store exports only what the value reaches. reserved: the nodes of the
+// omissions this control imported (light-cljs-820), which an export with
+// spans polls as heap rows, as it would the imported entries; a job's
+// control lasts as long as the job, through a saved continuation too.
+struct Control { nodes: i64 = 100000, depth: i64 = 128, bytes: i64 = 16777216, work: i64 = 10000000, cancel_after: i64 = -1, visits: i64 = 0, error: Error = Error.None, cancelled: bool = false, cells: bool = false, spans: bool = true, reserved: i64 = 0 }
 inline fn collection(tag: i64) -> bool { return tag >= 6 && tag <= 9; }
 fn poll(c: Control&, count: i64 = 1) -> bool {
     if c.error != Error.None { return false; }
@@ -237,7 +240,7 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     if !source::nodes_fit(heap, nodes) || !source::values_fit(heap, children) || !source::units_fit(heap, text) || 2 * nodes > heap.limits.units - (heap.strings.len - heap.image.strings) || g.bytes.len > c.bytes - heap.source_bytes.len { return reject(c, Error.Heap); }
     if !source::charge(heap, work) { heap.fault = source::Fault.None; return reject(c, Error.Heap); }
     // The omitted rows are the job's for the rest of it, as if imported.
-    source::reserve_rows(heap, o.nodes, o.children, o.units, o.strings);
+    source::reserve_rows(heap, o.nodes, o.children, o.units, o.strings); c.reserved += o.nodes;
     // The preflight above reserved every row, so no allocation below fails.
     let sources = heap.source_ranges.len;
     let bytes = source::add_source_bytes(heap, g.bytes);
@@ -271,7 +274,7 @@ fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&,
 fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, c: Control&, call: source::Value, rows: i64[>..]&) -> bool {
     var g = Graph {}; var ids: i64[>..] = []; var source_ids: i64[>..] = []; rows.clear();
     if c.spans {
-        if !poll(c, heap.nodes.len + heap.source_ranges.len) { return false; }
+        if !poll(c, heap.nodes.len + c.reserved + heap.source_ranges.len) { return false; }
         source_ids.resize(heap.source_ranges.len, -1);
     }
     ids.resize(heap.nodes.len, -1);

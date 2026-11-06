@@ -305,9 +305,11 @@ and their depth. Goose's decode, validation and import check, poll and
 charge these as if the entries were present, and the import reserves
 their rows for the rest of the job, which ends with the job when the
 worker resets, so a job runs out of heap rows where it ran out with the
-whole environment. Goose refuses some data the compiler does not (a `/`
-in a symbol's namespace, non-map metadata); a left-out entry that holds
-such data sends the whole environment instead, so Goose refuses it. On the seed-42 200k project this cuts the argument
+whole environment; the result's export polls the reserved nodes as heap
+rows. Goose refuses some data the compiler does not (a `/` in a symbol's
+namespace, non-map metadata, a map of an odd number of children); a
+left-out entry that holds such data sends the whole environment instead,
+so Goose refuses it. On the seed-42 200k project this cuts the argument
 graph from about 30.5 million nodes to about 0.54 million. The Goose
 session counts what it sends (`SessionStats`: calls, argument nodes,
 argument bytes, the source text in them, result bytes), and

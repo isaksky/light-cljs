@@ -390,6 +390,16 @@ thread_fn omission() {
     let full = import_wire(heap, wire, -1, whole); let part = import_wire(heap, bytes, -1, whole);
     assert(full.error == bridge::Error.None && part.error == bridge::Error.None && full.visits == part.visits && full.work == part.work && full.taken == part.taken);
     assert(full.taken == [8 as i64, 6, 8, 5]);
+    // A result exported with the import's control, as a job's is, polls
+    // the omitted nodes as heap rows: in two fresh heaps, the same visits.
+    var exported: i64[2] = [0; 2];
+    for narrow in 2 {
+        var fresh = source::Heap { code: code }; assert(source::initialize(fresh));
+        var c = bridge::Control {}; var g = bridge::Graph {}; var roots: source::Value[>..] = [];
+        assert(bridge::decode(g, if narrow == 1 { bytes[..] } else { wire[..] }, c) && bridge::import_graph(fresh, g, roots, c));
+        var out = bridge::Graph {}; assert(bridge::export_graph(fresh, [source::number(7)], out, c)); exported[narrow] = c.visits;
+    }
+    assert(exported[0] == exported[1]);
     for limit in 7 {
         let a = import_wire(heap, wire, limit, whole, full.visits - 1); let b = import_wire(heap, bytes, limit, whole, full.visits - 1);
         let expected = if limit == 0 { bridge::Error.Nodes } else if limit == 1 { bridge::Error.Depth } else if limit == 2 { bridge::Error.Bytes } else if limit == 3 { bridge::Error.Work } else { bridge::Error.Heap };

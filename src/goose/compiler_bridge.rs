@@ -443,7 +443,9 @@ impl Graph {
                     }
                 }
             }
-            DatumKind::Collection { children, .. } => {
+            DatumKind::Collection { kind, children } => {
+                // Goose refuses a map of an odd number of children.
+                self.omitted_refused |= *kind == CollectionKind::Map && children.len() % 2 != 0;
                 for child in children.iter() {
                     self.omit(child, depth + 1, limits, c)?;
                 }
@@ -1767,6 +1769,7 @@ mod tests {
             keyword(Some("a/b"), "c"),
             Datum::new(DatumKind::Symbol(Name::from_utf16(Some(&[]), &[]))),
             text("x").with_metadata(collection(CollectionKind::Vector, vec![])),
+            collection(CollectionKind::Map, vec![text("x")]),
         ];
         let accepted = [symbol(None, "/"), keyword(Some("a"), "b/c"), text("x")];
         for (probe, refuse) in refused
@@ -1778,14 +1781,24 @@ mod tests {
             let budget = Budget::new(limits.nodes, control(1_000_000));
             let mut full = Graph::default();
             full.datum(&whole, 1, limits, &budget).unwrap();
-            let g = Graph::arguments(
-                &[super::super::Stored::Environment(view, whole, limits)],
-                limits,
-                &budget,
-            )
-            .unwrap();
-            assert_eq!(g.omission().is_none(), refuse, "{probe:?}");
-            assert_eq!(g.nodes.len() == full.nodes.len(), refuse, "{probe:?}");
+            // Walked, then from the cached cost of the inventory.
+            let cache = OmitCache::default();
+            for _ in 0..2 {
+                let g = Graph::arguments_omitting(
+                    &[super::super::Stored::Environment(
+                        view.clone(),
+                        whole.clone(),
+                        limits,
+                    )],
+                    limits,
+                    &budget,
+                    &cache,
+                )
+                .unwrap();
+                assert_eq!(g.omission().is_none(), refuse, "{probe:?}");
+                assert_eq!(g.nodes.len() == full.nodes.len(), refuse, "{probe:?}");
+            }
+            assert_eq!(cache.borrow().len(), 1);
         }
     }
 }
