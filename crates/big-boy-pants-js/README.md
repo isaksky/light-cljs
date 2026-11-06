@@ -1043,7 +1043,7 @@ Goose verification.
 Run `bb crates/big-boy-pants-js/scripts/macros.bb` from the repository
 root. It builds the native `macro_run.goose` runner inside this checkout, imports
 compiler-captured forms/environments from the existing `.jobs.edn` files through
-GFB1 binary packets, and removes temporary files on every exit. Each corpus case
+GFB2 binary packets, and removes temporary files on every exit. Each corpus case
 uses one heap and one boot. Every emitted macro factory executes once; both
 branch helper producers execute once before their consumer is admitted. The
 entire job sequence then repeats on those same closures. Counters assert one
@@ -1091,10 +1091,18 @@ exported as an immutable form. General builders, lazy realization, protocol
 callbacks, dynamic helper requests and production runtime coverage remain explicit
 boundaries; the declared coordinator contract below supports narrow effects.
 
-`form_bridge.goose` owns flat graph nodes, child IDs, UTF-16 units, source byte
-owners/ranges and root IDs. GFB1 has a 32-byte header (magic/version and six
+`form_bridge.goose` owns flat graph nodes, child IDs, UTF-16 units, source
+entries and root IDs. GFB2 has a 32-byte header (magic/version and six
 pool counts), 48-byte tagged node records, 32-bit child/root IDs, 16-bit code
-units and source ranges/bytes, all little endian with IEEE binary64 Numbers.
+units and 12-byte source entries, all little endian with IEEE binary64 Numbers.
+A source entry is an identity, a start and a byte count. The compiler sends
+each source as its identity and length with no text, and checks every
+returned span against its own source, UTF-8 boundaries included; Goose
+range-checks spans, keeps the identity in its heap rows and snapshots, and an
+export names only the sources its forms came from (light-cljs-817). An entry
+with identity -1 carries its text in the graph's source bytes; only Goose's
+fixtures use one, and the compiler refuses it. GFB1, which carried every
+source's text, is refused.
 Node records retain ordered child/text ranges, optional namespace, metadata
 edge, opaque compiler origin token, source index and byte span. `-1` denotes a
 new expansion origin, resolved by the caller's current macro identity; imported
@@ -1205,7 +1213,7 @@ syntax/bootstrap service still compiles those declarations; it is not a port of
 the full canonical runtime. Unsupported source jobs fail without another engine.
 
 The compiler exports each definition's GSP2 code once per compilation and emits
-fresh GFB1 structured form arguments for every call. The cache uses the compiler's
+fresh GFB2 structured form arguments for every call. The cache uses the compiler's
 resolved `CodeIdentity`, with separate anonymous and helper-unit identities;
 equal source text does not merge distinct definitions. Conflicting source under
 one macro code identity is terminal. A helper's immutable catalog unit includes
@@ -1282,7 +1290,7 @@ independent of value equality, and retains environment data without inventing
 source locations for it.
 
 GCS1 control messages are newline-delimited ASCII records with numeric request
-IDs; GSP2/GFB1 payloads are owned flat files in a private session directory. EOF,
+IDs; GSP2/GFB2 payloads are owned flat files in a private session directory. EOF,
 malformed control/form replies, failed jobs, cancellation and deadlines retire
 the compilation, reap the process and its threads, join Rust transport readers,
 and remove the directory. Handles carry distinct evaluator/session ownership

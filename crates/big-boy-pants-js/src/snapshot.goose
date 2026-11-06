@@ -428,9 +428,9 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if p.key.tag() != 0 && !key_value(s, p.key) || !slot_value(s, p.value) { return reject(c, Error.Link); }
     }
     for r in s.sources {
-        if !range(r.start, r.count, s.bytes.len) { return reject(c, Error.Link); }
+        if !source::source_row_ok(r, s.bytes.len) { return reject(c, Error.Link); }
         if !poll(c, r.count + 1) { return false; }
-        if !utf8(s.bytes[r.start..(r.start + r.count)]) { return reject(c, Error.Link); }
+        if source::has_text(r) && !utf8(s.bytes[r.start..(r.start + r.count)]) { return reject(c, Error.Link); }
     }
     var has_memo = false; var array_holes: i64 = 0;
     for n in s.nodes {
@@ -450,7 +450,8 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source != source::no_row() && n.source >= s.sources.len || n.origin < -1 || n.proto.tag() != -1 && n.proto.tag() != 1 && (n.proto.tag() != 5 || !value(s, n.proto)) { return reject(c, Error.Link); }
         has_memo = has_memo || shaped(n) && n.key_capacity > 0;
         if n.source != source::no_row() && (n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
-        if n.source != source::no_row() {
+        // The compiler checks an identity source's UTF-8 boundaries.
+        if n.source != source::no_row() && source::has_text(s.sources[n.source]) {
             let r = s.sources[n.source]; let text = s.bytes[r.start..(r.start + r.count)];
             if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c, Error.Link); }
         }

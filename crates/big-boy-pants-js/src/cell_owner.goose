@@ -14,7 +14,7 @@ namespace cells;
 // heap (probe P17): a job loads a cell's value into its own rows and stores
 // or compare-and-sets a flat encoding back, each a message to the owner.
 //
-// A flat value (Flat) is a primitive, or a form graph (bridge::Graph in GFB1
+// A flat value (Flat) is a primitive, or a form graph (bridge::Graph in GFB2
 // bytes, with cell references as tag 10) and its process-wide identity: an
 // object that leaves a job in a cell value gets one when it first leaves
 // (the owner numbers it), a job remembers the identity of every object it
@@ -41,7 +41,7 @@ namespace cells;
 // (light-cljs-809's census; the JOBS line ends with the bytes held).
 
 // kind: 0 undefined, 1 null, 2 boolean (number 0 or 1), 3 number, 4 string
-// (UTF-16 little-endian units in data), 5 a form graph (GFB1 in data), 6
+// (UTF-16 little-endian units in data), 5 a form graph (GFB2 in data), 6
 // an error a delay's thunk threw (cells.goose error_flat), with an identity;
 // 7 a callable graph (light-cljs-809: a value that reaches a function, as
 // callable::encode_cell publishes it, in data), numbered as a form graph;

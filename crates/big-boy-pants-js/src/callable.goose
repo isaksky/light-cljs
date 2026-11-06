@@ -228,7 +228,7 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     let units = source::add_units(heap, s.units); let latin1 = source::add_latin1(heap, s.latin1); let bytes = source::add_source_bytes(heap, s.bytes);
     for r in s.strings[expected.ends[15]..] { source::string_ref(heap, r.start + (if r.wide { units } else { latin1 }), r.len, r.wide); }
     for v in s.constants[e[2]..] { source::add_constants(heap, [relocated(v, ids, expected.ends[15], strings)]); }
-    for r in s.sources { source::add_source_range(heap, source::SourceRange { start: (bytes + r.start) as u32, count: r.count }); }
+    for r in s.sources { source::add_source_range(heap, source::shifted_source(r, bytes)); }
     for id in slots {
         var n = s.nodes[id]; n.value = relocated(n.value, ids, expected.ends[15], strings); n.namespace_value = relocated(n.namespace_value, ids, expected.ends[15], strings); n.metadata = relocated(n.metadata, ids, expected.ends[15], strings);
         if n.kind == 2 { n.function = shifted(n.function, e[1], delta[1]) as u32; }

@@ -772,7 +772,7 @@ values and the identity of published values are the follow-up pellets'.
   `source::publish_cells` before they encode: every atom the published value
   reaches through any link becomes a cell, its row a reference of kind 18
   (the cell in `function`), which `callable::graph` and the snapshots accept
-  and GFB1 carries as tag 10 inside the session only (`bridge::Control.cells`;
+  and GFB2 carries as tag 10 inside the session only (`bridge::Control.cells`;
   a job's result for the compiler refuses one, as the V8 build's form bridge
   refuses an atom).
 - *Values.* A cell holds a primitive or a form graph: forms, cell references

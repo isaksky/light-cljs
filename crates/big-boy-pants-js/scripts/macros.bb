@@ -16,7 +16,7 @@
   (let [g (atom {:nodes [] :children [] :units (get-in capture [:data :units]) :sources [] :bytes [] :roots []})
         data (:data capture) forms (get job (if expected? :expected-output-forms :input-forms)) memo (atom {})]
     (doseq [source (:sources capture)]
-      (swap! g (fn [g] (-> g (update :sources conj [(count (:bytes g)) (count (:utf8 source))]) (update :bytes into (:utf8 source))))))
+      (swap! g (fn [g] (-> g (update :sources conj [-1 (count (:bytes g)) (count (:utf8 source))]) (update :bytes into (:utf8 source))))))
     (letfn [(node! [node] (let [id (count (:nodes @g))] (swap! g update :nodes conj (merge defaults node)) id))
             (children! [ids] (let [start (count (:children @g))] (swap! g update :children into ids) [start (count ids)]))
             (datum! [id]
@@ -44,8 +44,8 @@
                 [start count] (children! args) argv (node! {:tag 7 :start start :count count}) macro-id (node! {:tag 2 :number which})]
             (swap! g assoc :roots [call environment argv macro-id]))))) @g))
 (defn encode [g]
-  (let [buffer (doto (ByteBuffer/allocate (+ 32 (* 48 (count (:nodes g))) (* 4 (count (:children g))) (* 2 (count (:units g))) (* 8 (count (:sources g))) (count (:bytes g)) (* 4 (count (:roots g))))) (.order ByteOrder/LITTLE_ENDIAN))]
-    (.put buffer (.getBytes "GFB1" "UTF-8")) (.putInt buffer 1)
+  (let [buffer (doto (ByteBuffer/allocate (+ 32 (* 48 (count (:nodes g))) (* 4 (count (:children g))) (* 2 (count (:units g))) (* 12 (count (:sources g))) (count (:bytes g)) (* 4 (count (:roots g))))) (.order ByteOrder/LITTLE_ENDIAN))]
+    (.put buffer (.getBytes "GFB2" "UTF-8")) (.putInt buffer 2)
     (doseq [key [:nodes :children :units :sources :bytes :roots]] (.putInt buffer (count (get g key))))
     (doseq [n (:nodes g)] (.putInt buffer (:tag n)) (.putDouble buffer (double (:number n))) (doseq [field fields] (.putInt buffer (int (get n field)))))
     (doseq [id (:children g)] (.putInt buffer id)) (doseq [u (:units g)] (.putShort buffer (unchecked-short u)))
@@ -53,11 +53,11 @@
     (doseq [id (:roots g)] (.putInt buffer id)) (.array buffer)))
 (defn decode [bytes]
   (let [b (doto (ByteBuffer/wrap bytes) (.order ByteOrder/LITTLE_ENDIAN)) magic (byte-array 4)]
-    (.get b magic) (assert (= "GFB1" (String. magic "UTF-8"))) (assert (= 1 (.getInt b)))
+    (.get b magic) (assert (= "GFB2" (String. magic "UTF-8"))) (assert (= 2 (.getInt b)))
     (let [[nodes children units sources text roots] (repeatedly 6 #(.getInt b))]
       {:nodes (vec (repeatedly nodes #(merge {:tag (.getInt b) :number (.getDouble b)} (zipmap fields (repeatedly 9 (fn [] (.getInt b)))))))
        :children (vec (repeatedly children #(.getInt b))) :units (vec (repeatedly units #(bit-and 65535 (.getShort b))))
-       :sources (vec (repeatedly sources #(vector (.getInt b) (.getInt b)))) :bytes (vec (repeatedly text #(bit-and 255 (.get b)))) :roots (vec (repeatedly roots #(.getInt b)))})))
+       :sources (vec (repeatedly sources #(vector (.getInt b) (.getInt b) (.getInt b)))) :bytes (vec (repeatedly text #(bit-and 255 (.get b)))) :roots (vec (repeatedly roots #(.getInt b)))})))
 (defn semantic [g id provenance?]
   (let [n (nth (:nodes g) id) tag (:tag n)
         value (case (long tag) 0 nil 1 (not (zero? (:number n))) 2 (:number n)
@@ -65,7 +65,7 @@
                 (4 5) [(when (>= (:ns-count n) 0) (segment (:units g) [(:ns-start n) (:ns-count n)])) (segment (:units g) [(:start n) (:count n)])]
                 (mapv #(semantic g % provenance?) (segment (:children g) [(:start n) (:count n)])))
         meta (when (>= (:metadata n) 0) (semantic g (:metadata n) provenance?))]
-    (cond-> [tag value meta] provenance? (conj [(:origin n) (when (>= (:source n) 0) (hash (segment (:bytes g) (nth (:sources g) (:source n))))) (:span-start n) (:span-end n)]))))
+    (cond-> [tag value meta] provenance? (conj [(:origin n) (when (>= (:source n) 0) (hash (segment (:bytes g) (rest (nth (:sources g) (:source n)))))) (:span-start n) (:span-end n)]))))
 
 (defn first-difference [a b path] (when (not= a b) (if (and (vector? a) (vector? b) (= (count a) (count b))) (some identity (map-indexed (fn [i x] (first-difference x (nth b i) (conj path i))) a)) [path a b])))
 (defn normalize-reference [[tag value metadata]]

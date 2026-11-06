@@ -1293,7 +1293,7 @@ fn goose_compiler_runner_refuses_bad_frames() {
         match case {
             "oversized" => session.send("C 1 1 16777217\n", &[]).unwrap(),
             "truncated" => {
-                session.send("C 1 1 1000\n", b"GFB1-short").unwrap();
+                session.send("C 1 1 1000\n", b"GFB2-short").unwrap();
                 // The compiler's end of the pipe goes mid-frame.
                 drop(session.input.lock().unwrap().take());
             }
@@ -1335,7 +1335,15 @@ fn goose_compiler_runner_refuses_bad_frames() {
 fn goose_compiler_input_credit_lifetimes_stay_bounded() {
     let session = GooseSession::start(&runner(), 1).unwrap();
     let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
-    let raw = raw_inputs_from(&e, "big.cljs", &"x".repeat(300 << 10), DatumKind::Nil);
+    // A 300 KiB payload: a call form holding 150 Ki code units of string
+    // text, since a source travels as its identity, not its text
+    // (light-cljs-817).
+    let raw = raw_inputs_from(
+        &e,
+        "big.cljs",
+        "\"x\"",
+        DatumKind::String(vec![u16::from(b'x'); 150 << 10].into()),
+    );
     assert!(raw.bytes.len() >= 300 << 10, "{}", raw.bytes.len());
     session
         .export(
@@ -1382,7 +1390,7 @@ fn goose_compiler_input_credit_lifetimes_stay_bounded() {
         })
     };
     // The first result decodes to 7; one conversion budget would not cover
-    // decoding every call's copy of the source text.
+    // decoding every call's copy of the string.
     assert!(raw_outcome(&raw, &replies[0]).unwrap().contains('7'));
     for rx in &replies[1..] {
         loop {
@@ -1893,7 +1901,7 @@ fn goose_compiler_injected_worker_abort_cleans_entire_session() {
                 "rt => (form, env) => 1",
             )
             .unwrap();
-        let rx = send_call(&session, 1, 2, b"GFB1");
+        let rx = send_call(&session, 1, 2, b"GFB2");
         let until = Instant::now() + Duration::from_secs(5);
         loop {
             match rx.recv_timeout(Duration::from_millis(2)) {
@@ -2334,7 +2342,7 @@ fn reuse_session(
         let result = loop {
             match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
                 Event::Done(_, out) => {
-                    let output = bridge::Graph::decode(&out, limits, &budget)
+                    let output = bridge::Graph::decode(&out, &graph.originals, limits, &budget)
                         .unwrap()
                         .expansion(&call, origin(&call), &graph.originals, limits, &budget)
                         .unwrap();
@@ -2772,7 +2780,7 @@ fn goose_compiler_drains_ready_batches_without_progress_backoff() {
                         other => panic!("unexpected reply: {other:?}"),
                     }
                 };
-                let output = bridge::Graph::decode(&bytes, limits, &budget)
+                let output = bridge::Graph::decode(&bytes, &graph.originals, limits, &budget)
                     .unwrap()
                     .expansion(&call, origin(&call), &graph.originals, limits, &budget)
                     .unwrap();
@@ -4266,16 +4274,17 @@ fn raw_outcome(raw: &RawInputs, rx: &mpsc::Receiver<Event>) -> Result<String, St
     loop {
         match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
             Event::Done(_, out) => {
-                let output = bridge::Graph::decode(&out, raw.limits, &raw.budget)
-                    .unwrap()
-                    .expansion(
-                        &raw.call,
-                        origin(&raw.call),
-                        &raw.graph.originals,
-                        raw.limits,
-                        &raw.budget,
-                    )
-                    .unwrap();
+                let output =
+                    bridge::Graph::decode(&out, &raw.graph.originals, raw.limits, &raw.budget)
+                        .unwrap()
+                        .expansion(
+                            &raw.call,
+                            origin(&raw.call),
+                            &raw.graph.originals,
+                            raw.limits,
+                            &raw.budget,
+                        )
+                        .unwrap();
                 break Ok(format!("{:?}", output.data()));
             }
             Event::Failure(message) => break Err(message),
@@ -5090,9 +5099,24 @@ fn goose_compiler_cells_hold_functions() {
 /// raw_inputs for a call whose form is `kind`, spanning the first three
 /// bytes of source file `name` with text `text`.
 fn raw_inputs_from(e: &GooseEvaluator, name: &str, text: &str, kind: DatumKind) -> RawInputs {
-    let mut raw = raw_inputs(e);
     let source = Source::new(name, text);
     let call = Form::from_data(Datum::new(kind), source.span(0..3).unwrap(), Origin::Source);
+    raw_inputs_of(e, call)
+}
+/// [`raw_inputs`] for the call form the reader reads from `text`.
+fn raw_inputs_read(e: &GooseEvaluator, name: &str, text: &str) -> RawInputs {
+    let source = Source::new(name, text);
+    let call = crate::compiler_reader::read_form(
+        &source,
+        &crate::compiler_reader::NamespaceView::new("fixture.core", &source),
+    )
+    .unwrap()
+    .unwrap();
+    raw_inputs_of(e, call)
+}
+/// [`raw_inputs`] for `call`.
+fn raw_inputs_of(e: &GooseEvaluator, call: Form) -> RawInputs {
+    let mut raw = raw_inputs(e);
     let call_id = e.import_form(&call, Default::default()).unwrap();
     let env = e
         .import_data(&Datum::new(DatumKind::Nil), Default::default())
@@ -5152,13 +5176,102 @@ fn goose_compiler_cell_function_forms_and_byte_census() {
     }
 }
 
+/// Job `id`'s expansion, read against its call as the compiler reads it.
+fn raw_form(raw: &RawInputs, rx: &mpsc::Receiver<Event>) -> Result<Form, String> {
+    loop {
+        match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
+            Event::Done(_, out) => {
+                break bridge::Graph::decode(&out, &raw.graph.originals, raw.limits, &raw.budget)
+                    .and_then(|graph| {
+                        graph.expansion(
+                            &raw.call,
+                            origin(&raw.call),
+                            &raw.graph.originals,
+                            raw.limits,
+                            &raw.budget,
+                        )
+                    })
+                    .map_err(|error| error.0);
+            }
+            Event::Failure(message) => break Err(message),
+            _ => {}
+        }
+    }
+}
+
+/// light-cljs-817: what a publication that captured an input form carries
+/// of the form's source. A function stored in a cell (a callable
+/// publication) that captured its call's form, and the form stored as a
+/// cell value, carry neither the source's text nor its identity: the form
+/// outlives its call (light-cljs-809), so a later expansion from another
+/// file, whose call sent only that file, gets it built afresh at its own
+/// call's span. Had the publication kept the first file's identity, the
+/// second call's result would name a source it did not send, and fail.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_captured_input_forms_carry_no_source_of_their_call() {
+    for workers in [1, 2, 4, 8] {
+        let session =
+            GooseSession::start_env(&runner(), workers, Some("readiness-test"), &[]).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let first = raw_inputs_read(&e, "first.cljs", "[x \"é\" (y :k)]");
+        let second = raw_inputs_read(&e, "second.cljs", ";; second\n(zz)");
+        assert_ne!(first.call.span().bytes(), second.call.span().bytes());
+        let mut outcomes = Vec::new();
+        for (id, raw, body) in [
+            (
+                1,
+                &first,
+                "const saved = form; rt.core.reset(a, () => saved); return 0;",
+            ),
+            (2, &second, "return rt.core.deref(a)();"),
+            (3, &first, "rt.core.reset(a, form); return 0;"),
+            (4, &second, "return rt.core.deref(a);"),
+            // The first call's own form, returned in its own call, is the
+            // compiler's original, at its span.
+            (5, &first, "return form;"),
+        ] {
+            let rx = raw_job(&session, raw, id, body);
+            outcomes.push(raw_form(raw, &rx));
+            thread::sleep(Duration::from_millis(20));
+        }
+        raw_close(&session, workers, 11);
+        let outcomes = outcomes
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|error| panic!("workers={workers}: {error}"));
+        fn fresh(form: &Form, call: &Form) {
+            assert_eq!(form.span().source().id(), call.span().source().id());
+            assert_eq!(form.span().bytes(), call.span().bytes());
+            assert!(matches!(form.node().origin, Origin::MacroExpansion(_)));
+            for child in form.children() {
+                fresh(&child, call);
+            }
+        }
+        for at in [1, 3] {
+            assert!(outcomes[at].data().value_eq(&first.call.data()));
+            fresh(&outcomes[at], &second.call);
+        }
+        let own = &outcomes[4];
+        assert_eq!(own.span().source().id(), first.call.span().source().id());
+        assert_eq!(own.span().bytes(), first.call.span().bytes());
+        assert!(matches!(own.node().origin, Origin::Source));
+        let element = &own.children()[2];
+        assert_eq!(
+            element.span().bytes(),
+            first.call.children()[2].span().bytes()
+        );
+    }
+}
+
 /// light-cljs-809: what a swap! on a cell costs in a macro job, for a number
 /// (no graph: the fixed cost), a value encoding to about 64 bytes (a
 /// one-number vector, 136 bytes of GFB) and to 64 KB (1,260 numbers),
 /// against probe P18's flat-byte figures (9.6 to 9.8 and 28.8 to 33.8
 /// microseconds a swap at one worker). The call's
 /// source file is 100 KB, as a real namespace's is: a cell store exports
-/// only what the value reaches, not the job's source text. Each swap loads
+/// only what the value reaches, and the call carries the source as its
+/// identity, not its text (light-cljs-817). Each swap loads
 /// the value it stored (an identity the job holds, so no import), encodes
 /// the value again and compare-and-sets it. Prints the figures; the
 /// assertion is only that the swaps ran.
@@ -5178,7 +5291,11 @@ fn goose_compiler_cell_swap_cost() {
         text.push_str(";; a namespace's source text\n");
     }
     let raw = raw_inputs_from(&e, "large.cljs", &text, DatumKind::Nil);
-    assert!(raw.bytes.len() > 100_000);
+    assert!(
+        text.len() >= 100_000 && raw.bytes.len() < 1000,
+        "{}",
+        raw.bytes.len()
+    );
     let mut id = 0;
     let mut timed = |value: &str, swaps: usize| {
         id += 1;
@@ -5601,7 +5718,8 @@ fn goose_compiler_environment_narrowing_preserves_shared_conversion_limits() {
 
 /// The session's transport counters count what each job's call sent and
 /// received: its argument graph's nodes, encoded bytes and source text
-/// (UTF-8 bytes), and its result's bytes, summed over calls
+/// (UTF-8 bytes, none since a source travels as its identity,
+/// light-cljs-817), and its result's bytes, summed over calls
 /// (light-cljs-815).
 #[test]
 #[ignore = "build native runner with compiler.bb"]
@@ -5618,9 +5736,9 @@ fn goose_compiler_transport_counters_count_wire_payloads() {
     let env = e
         .import_data(&Datum::new(DatumKind::Nil), Default::default())
         .unwrap();
-    // Two nodes, one code unit of string text, one source of four bytes
-    // and two roots, after the 32-byte header.
-    let argument_bytes = 32 + 2 * 48 + 2 + 8 + 4 + 2 * 4;
+    // Two nodes, one code unit of string text, one source entry (its
+    // identity and length, no text) and two roots, after the 32-byte header.
+    let argument_bytes = 32 + 2 * 48 + 2 + 12 + 2 * 4;
     let mut result_bytes = 0;
     for calls in 1..=2 {
         let result = e.call(function, &[call, env]).unwrap();
@@ -5637,13 +5755,7 @@ fn goose_compiler_transport_counters_count_wire_payloads() {
                 stats.argument_source_bytes,
                 stats.result_bytes
             ),
-            (
-                calls,
-                2 * calls,
-                argument_bytes * calls,
-                4 * calls,
-                result_bytes
-            ),
+            (calls, 2 * calls, argument_bytes * calls, 0, result_bytes),
             "{stats:?}"
         );
         let returned = e

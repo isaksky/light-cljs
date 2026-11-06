@@ -260,7 +260,24 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // elements or the captures), a dictionary array's names among its index
 // records. Other kinds keep no own properties.
 struct Node { kind: i64, function: u32 = 0, start: u32 = 0, count: u32 = 0, keys: u32 = 0, key_count: u32 = 0, key_capacity: u32 = 0, length: u32 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value.Undefined, namespace_value: Value = Value.Null, metadata: Value = Value.Undefined, origin: i64 = -1, source: u32 = 4294967295, span_start: u32 = 0, span_end: u32 = 0, shape: u32 = 0, proto: Value = Value.Empty, slots: Value[2] = [Value.Undefined; 2] }
-struct SourceRange { start: u32, count: u32 }
+// A form source row: its text in the owner's source bytes (`identity` -1),
+// or, from the compiler (GFB2, light-cljs-817), the compiler's identity for
+// the source and its byte length, with no text (`start` 0). Goose never
+// interprets a source's text: it range-checks spans against `count` and
+// carries rows on; the compiler checks an identity row's spans against its
+// own source, UTF-8 boundaries included.
+struct SourceRange { start: u32, count: u32, identity: i64 = -1 }
+fn has_text(r: SourceRange) -> bool { return r.identity < 0; }
+// The largest identity a graph's source entry carries (a signed 32-bit word).
+fn max_identity() -> i64 { return 2147483647; }
+// Whether a row's text, if it has any, lies inside `bytes` source bytes, and
+// an identity row has no text and an identity a graph can carry.
+fn source_row_ok(r: SourceRange, bytes: i64) -> bool {
+    if !has_text(r) { return r.start == 0 && r.identity <= max_identity(); }
+    return r.start <= bytes && r.count <= bytes - r.start;
+}
+// `r` for text appended at offset `bytes`; an identity row has none to move.
+fn shifted_source(r: SourceRange, bytes: i64) -> SourceRange { return if has_text(r) { SourceRange { start: (bytes + r.start) as u32, count: r.count } } else { r }; }
 // A dictionary-mode property record (see Node): an interned key, the value
 // (Accessor for an accessor property) and its attribute bits (attr_*).
 struct Property { key: Value = Value.Undefined, value: Value = Value.Undefined, attrs: u8 = 0 }

@@ -110,6 +110,14 @@ pub struct FormNode {
 /// ([`crate::generated_names`]).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct SourceId(u64);
+impl SourceId {
+    /// The identity's number, unique in the process, which the Goose form
+    /// bridge sends in place of a source's text.
+    #[cfg(feature = "goose-macros")]
+    pub(crate) fn get(self) -> u64 {
+        self.0
+    }
+}
 static NEXT_SOURCE: AtomicU64 = AtomicU64::new(1);
 struct SourceFile {
     id: SourceId,

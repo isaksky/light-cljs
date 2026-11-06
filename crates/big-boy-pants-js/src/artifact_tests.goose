@@ -220,9 +220,12 @@ thread_fn work_target(base: snapshot::Snapshot, a: artifact::Artifact, visited: 
     var exact = artifact::Control { work: visited }; artifact::import_graph(a, base, target, cache, exact); assert(exact.error == artifact::Error.None && exact.visited == visited);
     print("artifact every import work cut/unchanged heap and caches/exact budget passed: ", visited);
 }
-fn provenance_artifact(base: const snapshot::Snapshot&) -> artifact::Artifact {
+// `identity`: the form's source is a compiler identity, with no text
+// (light-cljs-817), which the artifact carries as it is.
+fn provenance_artifact(base: const snapshot::Snapshot&, identity: bool) -> artifact::Artifact {
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
-    var graph = bridge::Graph {}; graph.bytes.append("one two"); graph.sources.push(source::SourceRange { start: 0, count: 7 });
+    var graph = bridge::Graph {};
+    if identity { graph.sources.push(source::SourceRange { start: 0, count: 7, identity: 42 }); } else { graph.bytes.append("one two"); graph.sources.push(source::SourceRange { start: 0, count: 7 }); }
     graph.units.append([0xD83D, 0xDE00, 0xD800, 'n', 's', 'x']);
     graph.nodes.push(bridge::Form { tag: 2, number: 1, origin: 10, source: 0, span_start: 0, span_end: 3 });
     graph.nodes.push(bridge::Form { tag: 2, number: 1, origin: 11, source: 0, span_start: 4, span_end: 7 });
@@ -233,15 +236,18 @@ fn provenance_artifact(base: const snapshot::Snapshot&) -> artifact::Artifact {
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
     let a = artifact::export_graph(heap, base, imports, values[0], 60, 1, c); assert(c.error == artifact::Error.None); return copy(a);
 }
-thread_fn provenance_producer(base: snapshot::Snapshot) {
+thread_fn provenance_producer(base: snapshot::Snapshot, identity: bool) {
     defer { heap_program::finish(); }
-    assert(qput(Published { artifact: provenance_artifact(base) }));
+    assert(qput(Published { artifact: provenance_artifact(base, identity) }));
 }
 fn provenance(base: const snapshot::Snapshot&) {
-    heap_program::join(thread_spawn(provenance_producer, copy(base))); let published_a = qget<Published>(); let a .= published_a.artifact;
-    heap_program::join(thread_spawn(provenance_consumer, copy(base), copy(a)));
+    for identity in [false, true] {
+        heap_program::join(thread_spawn(provenance_producer, copy(base), identity)); let published_a = qget<Published>(); let a .= published_a.artifact;
+        if identity { assert(a.bytes.len == 0 && a.sources.len == 1 && a.sources[0].identity == 42 && a.sources[0].count == 7); }
+        heap_program::join(thread_spawn(provenance_consumer, copy(base), copy(a), identity));
+    }
 }
-thread_fn provenance_consumer(base: snapshot::Snapshot, a: artifact::Artifact) {
+thread_fn provenance_consumer(base: snapshot::Snapshot, a: artifact::Artifact, identity: bool) {
     defer { heap_program::finish(); }
     var result = bridge::Graph {};
     {
@@ -258,7 +264,7 @@ thread_fn provenance_consumer(base: snapshot::Snapshot, a: artifact::Artifact) {
     }
     var bc = bridge::Control {}; assert(bridge::validate(result, bc));
     let root = result.nodes[result.roots[0]]; let x = result.nodes[result.children[root.start]]; let r = result.sources[x.source];
-    assert(result.bytes[r.start..(r.start + r.count)] == "one two");
+    if identity { assert(result.bytes.len == 0 && r.identity == 42 && r.count == 7 && x.span_start == 0 && x.span_end == 3); } else { assert(result.bytes[r.start..(r.start + r.count)] == "one two"); }
     print("artifact owned UTF16/namespace/metadata/source spans/occurrences survive producer and consumer teardown");
 }
 thread_fn scalars(base: snapshot::Snapshot) {

@@ -65,7 +65,8 @@ fn shape(a: const Artifact&, n: source::Node, base: const snapshot::Snapshot&, c
     if (n.kind == 9 || n.kind == 10) && (n.value.tag() != 4 || n.namespace_value.tag() != 1 && n.namespace_value.tag() != 4) || n.kind == 11 && n.value.tag() > 4 { return reject(c, Error.Link); }
     if n.source != source::no_row() && n.source >= a.sources.len || n.origin < -1 { return reject(c, Error.Link); }
     if n.source != source::no_row() && (n.span_end < n.span_start || !snapshot::range(n.span_start, n.span_end - n.span_start, a.sources[n.source].count)) { return reject(c, Error.Link); }
-    if n.source != source::no_row() {
+    // The compiler checks an identity source's UTF-8 boundaries.
+    if n.source != source::no_row() && source::has_text(a.sources[n.source]) {
         let r = a.sources[n.source]; let text = a.bytes[r.start..(r.start + r.count)];
         if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c, Error.Link); }
     }
@@ -86,9 +87,9 @@ fn validate(a: const Artifact&, base: const snapshot::Snapshot&, c: Control&) ->
     if !poll(c, a.strings.len) { return false; }
     for r in a.strings { if !snapshot::range(r.start, r.len, a.units.len) { return reject(c, Error.Link); } }
     for r in a.sources {
-        if !snapshot::range(r.start, r.count, a.bytes.len) { return reject(c, Error.Link); }
+        if !source::source_row_ok(r, a.bytes.len) { return reject(c, Error.Link); }
         if !poll(c, r.count + 1) { return false; }
-        if !snapshot::utf8(a.bytes[r.start..(r.start + r.count)]) { return reject(c, Error.Link); }
+        if source::has_text(r) && !snapshot::utf8(a.bytes[r.start..(r.start + r.count)]) { return reject(c, Error.Link); }
     }
     // Installation copies the whole flat value pool, including unused ranges.
     // Validate those links too before relocated() can index the mapping table.
@@ -184,9 +185,9 @@ fn export_graph(heap: const source::Heap&, base: const snapshot::Snapshot&, impo
             let original_source = n.source;
             if source_ids[original_source] < 0 {
                 let r = heap.source_ranges[original_source];
-                if !snapshot::range(r.start, r.count, heap.source_bytes.len) || !poll(c, r.count) { reject(c, Error.Link); break; }
+                if !source::source_row_ok(r, heap.source_bytes.len) || !poll(c, r.count) { reject(c, Error.Link); break; }
                 source_ids[original_source] = sources.len;
-                sources.push(source::SourceRange { start: bytes.len as u32, count: r.count }); bytes.append(heap.source_bytes[r.start..(r.start + r.count)]);
+                if source::has_text(r) { sources.push(source::SourceRange { start: bytes.len as u32, count: r.count }); bytes.append(heap.source_bytes[r.start..(r.start + r.count)]); } else { sources.push(r); }
             }
             n.source = source_ids[original_source] as u32;
         }
@@ -233,8 +234,14 @@ fn signature(a: const Artifact&, id: i64, out: u8[>..]&, c: Control&) -> bool {
     let original = a.nodes[id];
     if !signature_bytes([node_sig(original)], out, c) { return false; }
     for i in edge_count(original) { if !poll(c) || !signature_value(a, edge(a, original, i), out, c) { return false; } }
-    if original.source != source::no_row() { let r = a.sources[original.source]; if !signature_bytes(a.bytes[r.start..(r.start + r.count)], out, c) { return false; } }
+    if original.source != source::no_row() { let r = a.sources[original.source]; if !source_signature(a.bytes, r, out, c) { return false; } }
     return true;
+}
+// A source's signature: its text, or an identity source's identity and length.
+fn source_signature(bytes: const u8[:], r: source::SourceRange, out: u8[>..]&, c: Control&) -> bool {
+    // A leading kind word keeps a text equal to an identity's bytes distinct.
+    if !source::has_text(r) { return signature_bytes([1, r.identity, r.count], out, c); }
+    return signature_bytes([0], out, c) && signature_bytes(bytes[r.start..(r.start + r.count)], out, c);
 }
 fn relocated(v: source::Value, mapping: const i64[:], string_start: i64) -> source::Value {
     return match v { Object o => source::object(mapping[o.o]), String x => source::Value.String { s: (x.s + string_start) as u32 }, _ => v };
@@ -260,8 +267,8 @@ fn base_signature<T>(s: const T&, slot: i64, checkpoint: i64, out: u8[>..]&, c: 
     }
     if original.source != source::no_row() {
         if !snapshot::range(original.source, 1, s.sources.len) { return reject(c, Error.Link); } let r = s.sources[original.source];
-        if !snapshot::range(r.start, r.count, s.bytes.len) { return reject(c, Error.Link); }
-        if !signature_bytes(s.bytes[r.start..(r.start + r.count)], out, c) { return false; }
+        if !source::source_row_ok(r, s.bytes.len) { return reject(c, Error.Link); }
+        if !source_signature(s.bytes, r, out, c) { return false; }
     }
     return true;
 }
@@ -309,7 +316,7 @@ fn import_graph(a: const Artifact&, base: const snapshot::Snapshot&, heap: sourc
     // the preflight above reserved every row, so no allocation below fails.
     for r in a.strings { source::import_text(heap, a.units[r.start..(r.start + r.len)]); }
     var moved: source::Value[>..] = []; for v in a.values { moved.push(relocated(v, mapping, string_start)); } source::add_values(heap, moved);
-    let byte_start = source::add_source_bytes(heap, a.bytes); for r in a.sources { source::add_source_range(heap, source::SourceRange { start: r.start + byte_start as u32, count: r.count }); }
+    let byte_start = source::add_source_bytes(heap, a.bytes); for r in a.sources { source::add_source_range(heap, source::shifted_source(r, byte_start)); }
     for n, i in a.nodes {
         if mapping[i] < heap.nodes.len { continue; } assert(mapping[i] == heap.nodes.len);
         var out = n; out.value = relocated(n.value, mapping, string_start); out.namespace_value = relocated(n.namespace_value, mapping, string_start); out.metadata = relocated(n.metadata, mapping, string_start);

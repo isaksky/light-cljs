@@ -865,13 +865,15 @@ fn extra_code(extra: source::Code&) {
 }
 fn callable_publication() {
     heap_program::join(thread_spawn(callable_base)); let saved = qget<Saved>(); let base .= saved.image;
-    heap_program::join(thread_spawn(callable_producer, copy(base))); let p = qget<Published>(); let wire .= p.wire;
+    heap_program::join(thread_spawn(callable_producer, copy(base), false)); let p = qget<Published>(); let wire .= p.wire;
     for cut in [0, 1, wire.len / 2, wire.len - 1] { heap_program::join(thread_spawn(callable_cut, copy(base), str(wire[..cut]))); }
     let records, parsed = from_bytes<callable::Publication[>..]>(wire); assert(parsed && records.len == 1);
     for original in records {
         for mode in -1..17 { heap_program::join(thread_spawn(callable_mode, copy(base), copy(original), copy(p), mode)); }
         for limit in 2 { heap_program::join(thread_spawn(callable_limit, copy(base), copy(original), wire.len, limit)); }
     }
+    heap_program::join(thread_spawn(callable_producer, copy(base), true)); let q = qget<Published>();
+    heap_program::join(thread_spawn(callable_identity, copy(base), copy(q)));
     print("callable code/capture relocation, runtime reconnection, occurrence aliases and transactional malformed/limited publication passed");
 }
 thread_fn callable_base() {
@@ -881,14 +883,16 @@ thread_fn callable_base() {
     var capture = snapshot::Control {}; let base = snapshot::capture(base_heap, [snapshot::Binding { id: 0, generation: 1, value: runtime }], capture); assert(capture.error == snapshot::Error.None);
     assert(qput(Saved { image: copy(base) }));
 }
-thread_fn callable_producer(base: snapshot::Snapshot) {
+// `identity`: the captured forms' source is a compiler identity with no text
+// (light-cljs-817), as a job's call sends it.
+thread_fn callable_producer(base: snapshot::Snapshot, identity: bool) {
     defer { heap_program::finish(); }
     var code = source::Code {}; var producer = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
     assert(snapshot::restore(base, code, producer, bindings, source::reserve_identity(), restore));
     var extra = source::Code {}; extra_code(extra);
     let entry = source::append_code(code, extra);
     let rt_cell = source::allocate(producer, source::Node { kind: 3, initialized: true, immutable: true, value: bindings[0].value });
-    producer.source_bytes.append("a b"); producer.source_ranges.push(source::SourceRange { start: 0, count: 3 });
+    if identity { producer.source_ranges.push(source::SourceRange { start: 0, count: 3, identity: 77 }); } else { producer.source_bytes.append("a b"); producer.source_ranges.push(source::SourceRange { start: 0, count: 3 }); }
     let one = source::allocate(producer, source::Node { kind: 11, value: source::number(7), origin: 1, source: 0, span_start: 0, span_end: 1 });
     let two = source::allocate(producer, source::Node { kind: 11, value: source::number(7), origin: 2, source: 0, span_start: 2, span_end: 3 });
     let marked = source::form_op(producer, 0, [source::nil(), source::text(producer, "marked")]);
@@ -899,6 +903,26 @@ thread_fn callable_producer(base: snapshot::Snapshot) {
     producer.nodes[function.id()].immutable = true;
     var encoding = snapshot::Control {}; var wire: u8[>..] = []; assert(callable::encode(producer, base, function, wire, encoding, source::reserve_identity()));
     assert(qput(Published { wire: copy(wire), entry: entry, runtime: bindings[0].value, rt_cell: rt_cell, two: two, forms: forms, cell: cell, function: function }));
+}
+// A helper publication whose captured forms name an identity source installs
+// into a consumer that already holds source text: the installed forms name a
+// row with the same identity and length and no text, at their own spans, the
+// consumer's text row is unchanged, and the heap still captures as a valid
+// snapshot.
+thread_fn callable_identity(base: snapshot::Snapshot, p: Published) {
+    defer { heap_program::finish(); }
+    var extra = source::Code {}; extra_code(extra);
+    var target_code = source::Code {}; var target = source::Heap { code: target_code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
+    assert(snapshot::restore(base, target_code, target, roots, source::reserve_identity(), sc)); source::append_code(target_code, extra);
+    let own = source::add_source_bytes(target, "(own)"); let own_row = source::add_source_range(target, source::SourceRange { start: own as u32, count: 5 });
+    var check = snapshot::Control {}; let imported = callable::decode_install(p.wire, base.header, target_code, target, check);
+    assert(check.error == snapshot::Error.None && imported.tag() == 5);
+    let result = snapshot_test::invoke(target, imported, []); let x = source::form_nth(target, result, 0); let y = source::form_nth(target, result, 1);
+    let nx = target.nodes[x.id()]; let ny = target.nodes[y.id()];
+    assert(nx.source == ny.source && nx.source != own_row && nx.span_start == 0 && nx.span_end == 1 && ny.span_start == 2 && ny.span_end == 3);
+    let r = target.source_ranges[nx.source]; assert(r.identity == 77 && r.count == 3 && r.start == 0 && !source::has_text(r));
+    let mine = target.source_ranges[own_row]; assert(source::has_text(mine) && target.source_bytes[mine.start..(mine.start + mine.count)] == "(own)" && target.source_bytes.len == 5);
+    var valid = snapshot::Control {}; let finished = snapshot::capture(target, roots, valid); assert(valid.error == snapshot::Error.None);
 }
 // A truncated publication installs nothing into a fresh consumer.
 thread_fn callable_cut(base: snapshot::Snapshot, wire: u8[]) {

@@ -1,6 +1,9 @@
-//! GFB1 compiler-owned form transport. No engine pointers or printed forms.
+//! GFB2 compiler-owned form transport. No engine pointers or printed forms.
+//! A source travels as the compiler's identity for it and its byte length,
+//! never its text (light-cljs-817): Goose keeps spans against the identity,
+//! and a result's spans are checked against the compiler's own [`Source`].
 use crate::CollectionKind;
-use crate::compiler_data::{Datum, DatumKind, ExpansionOrigin, Form, Name};
+use crate::compiler_data::{Datum, DatumKind, ExpansionOrigin, Form, Name, Source};
 use crate::evaluator::{EvalError, ExecutionControl};
 use crate::form_bridge::ConversionLimits;
 use std::{cell::Cell, collections::HashMap};
@@ -128,15 +131,33 @@ impl Default for Node {
         }
     }
 }
+/// A graph's source entry: the compiler's identity for a source (its
+/// [`crate::compiler_data::SourceId`]), no text (`start` 0), and its byte
+/// length. Goose's own fixtures may carry text (identity -1, `start` into
+/// the graph's text), which the compiler never sends and refuses.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SourceEntry {
+    identity: i32,
+    start: u32,
+    count: u32,
+}
+/// What a call sent, which its result is read against: its input
+/// occurrences by origin token, and its sources by identity.
+#[derive(Default)]
+pub(super) struct Originals {
+    inputs: HashMap<i32, Input>,
+    sources: HashMap<i32, Source>,
+}
 #[derive(Default)]
 pub(super) struct Graph {
     nodes: Vec<Node>,
     children: Vec<u32>,
     units: Vec<u16>,
-    sources: Vec<(u32, u32)>,
-    bytes: Vec<u8>,
+    sources: Vec<SourceEntry>,
     roots: Vec<u32>,
-    pub originals: HashMap<i32, Input>,
+    pub originals: Originals,
+    /// A decoded result's sources: the call's [`Source`] each entry names.
+    resolved: Vec<Source>,
     memo: HashMap<(usize, usize), u32>,
     source_ids: HashMap<crate::compiler_data::SourceId, usize>,
     /// The nodes and encoded bytes the environment entries a narrowed
@@ -258,10 +279,10 @@ impl Graph {
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
-    /// The bytes of source text the graph carries, which its encoding
-    /// includes, for the session's transport counters.
+    /// The bytes of source text the graph carries, for the session's
+    /// transport counters: none, since a source travels as its identity.
     pub fn source_bytes(&self) -> usize {
-        self.bytes.len()
+        0
     }
     fn charge(
         &self,
@@ -287,8 +308,7 @@ impl Graph {
         32 + self.nodes.len() * 48
             + self.children.len() * 4
             + self.units.len() * 2
-            + self.sources.len() * 8
-            + self.bytes.len()
+            + self.sources.len() * 12
             + self.roots.len() * 4
     }
     fn text(&mut self, text: &[u16]) -> (i32, i32) {
@@ -349,8 +369,8 @@ impl Graph {
             n.fields[4] = self.datum(&meta, depth + 1, limits, c)? as i32;
         }
         self.charge(depth, limits, c)?;
-        let occurrence = self.originals.len() as i32;
-        self.originals.insert(
+        let occurrence = self.originals.inputs.len() as i32;
+        self.originals.inputs.insert(
             occurrence,
             Input {
                 data: d.clone(),
@@ -540,8 +560,8 @@ impl Graph {
         n.fields[1] = ids.len() as i32;
         self.children.extend(ids);
         self.charge(depth, limits, c)?;
-        let occurrence = self.originals.len() as i32;
-        self.originals.insert(
+        let occurrence = self.originals.inputs.len() as i32;
+        self.originals.inputs.insert(
             occurrence,
             Input {
                 data: view.clone(),
@@ -595,16 +615,23 @@ impl Graph {
         let source_index = if let Some(i) = self.source_ids.get(&source.id()) {
             *i
         } else {
-            c.bytes(source.text().len())?;
+            // The source's identity and length, not its text.
+            let identity = i32::try_from(source.id().get()).map_err(|_| {
+                EvalError("Goose source identity is past the graph format's range".into())
+            })?;
+            let count = u32::try_from(source.text().len()).map_err(|_| bad())?;
             let i = self.sources.len();
-            self.sources
-                .push((self.bytes.len() as u32, source.text().len() as u32));
-            self.bytes.extend(source.text().as_bytes());
+            self.sources.push(SourceEntry {
+                identity,
+                start: 0,
+                count,
+            });
             self.source_ids.insert(source.id(), i);
+            self.originals.sources.insert(identity, source.clone());
             i
         };
-        let occurrence = self.originals.len() as i32;
-        self.originals.insert(
+        let occurrence = self.originals.inputs.len() as i32;
+        self.originals.inputs.insert(
             occurrence,
             Input {
                 data: f.data(),
@@ -677,8 +704,7 @@ impl Graph {
         let nodes = self.nodes.len() + self.omitted_nodes;
         let children = self.children.len() + self.omitted_children;
         let units = self.units.len() + self.omitted_units;
-        let work =
-            nodes + children + units + self.bytes.len() + self.sources.len() + self.roots.len();
+        let work = nodes + children + units + self.sources.len() + self.roots.len();
         2 * nodes > GOOSE_NODES
             || 2 * children > GOOSE_VALUES
             || 2 * units > GOOSE_UNITS
@@ -690,14 +716,14 @@ impl Graph {
             return Err(bad());
         }
         let mut out = Vec::with_capacity(self.encoded_size());
-        out.extend(b"GFB1");
-        out.extend(1u32.to_le_bytes());
+        out.extend(b"GFB2");
+        out.extend(2u32.to_le_bytes());
         for n in [
             self.nodes.len(),
             self.children.len(),
             self.units.len(),
             self.sources.len(),
-            self.bytes.len(),
+            0,
             self.roots.len(),
         ] {
             out.extend((n as u32).to_le_bytes());
@@ -715,19 +741,28 @@ impl Graph {
         for u in &self.units {
             out.extend(u.to_le_bytes());
         }
-        for (s, n) in &self.sources {
-            out.extend(s.to_le_bytes());
-            out.extend(n.to_le_bytes());
+        for s in &self.sources {
+            out.extend(s.identity.to_le_bytes());
+            out.extend(s.start.to_le_bytes());
+            out.extend(s.count.to_le_bytes());
         }
-        out.extend(&self.bytes);
         for id in &self.roots {
             out.extend(id.to_le_bytes());
         }
         Ok(out)
     }
-    pub fn decode(bytes: &[u8], limits: ConversionLimits, c: &Budget) -> Result<Self, EvalError> {
+    /// A result graph for the call that sent `originals`: its sources must
+    /// be ones the call sent, by identity and byte length, and each span
+    /// must lie inside its source on UTF-8 boundaries, checked against the
+    /// compiler's own [`Source`] once per source entry.
+    pub fn decode(
+        bytes: &[u8],
+        originals: &Originals,
+        limits: ConversionLimits,
+        c: &Budget,
+    ) -> Result<Self, EvalError> {
         c.check()?;
-        if bytes.len() < 32 || bytes.len() > MAX_BYTES || &bytes[..4] != b"GFB1" {
+        if bytes.len() < 32 || bytes.len() > MAX_BYTES || &bytes[..4] != b"GFB2" {
             return Err(bad());
         }
         let mut at = 4;
@@ -736,19 +771,20 @@ impl Graph {
             *at += 4;
             n
         };
-        if word(&mut at) != 1 {
+        if word(&mut at) != 2 {
             return Err(bad());
         }
         let counts: [usize; 6] = std::array::from_fn(|_| word(&mut at) as usize);
         let [nodes, children, units, sources, text, roots] = counts;
+        // The compiler sends no source text and takes none back.
         if nodes > limits.nodes
             || roots != 1
+            || text != 0
             || 32u64
                 + nodes as u64 * 48
                 + children as u64 * 4
                 + units as u64 * 2
-                + sources as u64 * 8
-                + text as u64
+                + sources as u64 * 12
                 + roots as u64 * 4
                 != bytes.len() as u64
         {
@@ -776,10 +812,22 @@ impl Graph {
             at += 2;
         }
         for _ in 0..sources {
-            g.sources.push((word(&mut at), word(&mut at)));
+            c.check()?;
+            let entry = SourceEntry {
+                identity: word(&mut at) as i32,
+                start: word(&mut at),
+                count: word(&mut at),
+            };
+            // A source the call did not send, or with another length, is
+            // malformed, as is one that claims text.
+            let source = originals
+                .sources
+                .get(&entry.identity)
+                .filter(|s| entry.start == 0 && s.text().len() == entry.count as usize)
+                .ok_or_else(bad)?;
+            g.sources.push(entry);
+            g.resolved.push(source.clone());
         }
-        g.bytes.extend(&bytes[at..at + text]);
-        at += text;
         for _ in 0..roots {
             g.roots.push(word(&mut at));
         }
@@ -811,17 +859,13 @@ impl Graph {
                 return Err(bad());
             }
             if n.fields[6] >= 0 {
-                let (start, len) = g.sources[n.fields[6] as usize];
-                if n.fields[7] < 0 || n.fields[8] < n.fields[7] || n.fields[8] as u32 > len {
-                    return Err(bad());
-                }
-                let text = g.segment(&g.bytes, start as i32, len as i32)?;
-                // Sources are UTF-8 validated once below. Checking only the
-                // boundary bytes here avoids rescanning a source per node.
-                if [n.fields[7], n.fields[8]].iter().any(|&offset| {
-                    text.get(offset as usize)
-                        .is_some_and(|byte| byte & 0xc0 == 0x80)
-                }) {
+                let text = g.resolved[n.fields[6] as usize].text();
+                if n.fields[7] < 0
+                    || n.fields[8] < n.fields[7]
+                    || n.fields[8] as usize > text.len()
+                    || !text.is_char_boundary(n.fields[7] as usize)
+                    || !text.is_char_boundary(n.fields[8] as usize)
+                {
                     return Err(bad());
                 }
             }
@@ -832,10 +876,6 @@ impl Graph {
             .any(|&id| id as usize >= nodes)
         {
             return Err(bad());
-        }
-        for &(s, n) in &g.sources {
-            c.bytes(n as usize)?;
-            std::str::from_utf8(g.segment(&g.bytes, s as i32, n as i32)?).map_err(|_| bad())?;
         }
         let mut states = vec![0u8; nodes];
         let mut heights = vec![0usize; nodes];
@@ -906,7 +946,7 @@ impl Graph {
         &self,
         call: &Form,
         origin: ExpansionOrigin,
-        originals: &HashMap<i32, Input>,
+        originals: &Originals,
         limits: ConversionLimits,
         c: &Budget,
     ) -> Result<Form, EvalError> {
@@ -914,7 +954,7 @@ impl Graph {
             g: &'a Graph,
             states: Vec<u8>,
             memo: Vec<Option<Datum>>,
-            originals: &'a HashMap<i32, Input>,
+            originals: &'a Originals,
             reuse: HashMap<usize, Form>,
             limits: ConversionLimits,
             c: &'a Budget,
@@ -984,7 +1024,7 @@ impl Graph {
                 if f[4] >= 0 {
                     d = d.with_metadata(self.visit(f[4] as usize, depth + 1)?);
                 }
-                if let Some(original) = self.originals.get(&f[5]) {
+                if let Some(original) = self.originals.inputs.get(&f[5]) {
                     if !compatible(&d, &original.data, self.c, depth, self.limits)? {
                         return Err(bad());
                     }
@@ -1005,10 +1045,9 @@ impl Graph {
                         {
                             return Err(bad());
                         }
-                        let (start, len) = self.g.sources[f[6] as usize];
-                        if self.g.segment(&self.g.bytes, start as i32, len as i32)?
-                            != span.source().text().as_bytes()
-                        {
+                        // The same source, by identity: decode checked the
+                        // entry against the call's sources once.
+                        if self.g.resolved[f[6] as usize].id() != span.source().id() {
                             return Err(bad());
                         }
                         self.reuse.insert(d.identity(), form.clone());
@@ -1226,36 +1265,203 @@ mod tests {
             &Budget::new(limits.nodes, control.clone()),
         )
         .unwrap();
-        for offset in [1, 3, 4, 5] {
-            graph.nodes[0].fields[7] = offset;
-            assert!(
-                Graph::decode(
-                    &graph.encode().unwrap(),
-                    limits,
-                    &Budget::new(limits.nodes, control.clone())
-                )
-                .is_err()
-            );
+        let decode = |graph: &Graph, originals: &Originals| {
+            Graph::decode(
+                &graph.encode().unwrap(),
+                originals,
+                limits,
+                &Budget::new(limits.nodes, control.clone()),
+            )
+        };
+        // Spans are checked against the compiler's source: off a UTF-8
+        // boundary, past its end or reversed is malformed.
+        for (start, end) in [(1, 6), (3, 6), (4, 6), (5, 6), (0, 7), (2, 0), (0, 5)] {
+            graph.nodes[0].fields[7] = start;
+            graph.nodes[0].fields[8] = end;
+            assert!(decode(&graph, &graph.originals).is_err(), "{start}..{end}");
             assert_eq!(form.span().bytes(), 0..6);
             assert!(
                 matches!(form.data().kind(), DatumKind::String(units) if units.last() == Some(&0xd800))
             );
         }
         graph.nodes[0].fields[7] = 0;
+        graph.nodes[0].fields[8] = 6;
         let good = graph.encode().unwrap();
-        let decoded =
-            Graph::decode(&good, limits, &Budget::new(limits.nodes, control.clone())).unwrap();
+        // The wire carries the source's identity and length, not its text.
+        assert_eq!(&good[..4], b"GFB2");
+        assert!(!good.windows(6).any(|w| w == "é😀".as_bytes()[..6].as_ref()));
+        assert_eq!(good[24..28], [0; 4], "no source text");
+        let decoded = decode(&graph, &graph.originals).unwrap();
         assert_eq!(decoded.units, [0x00e9, 0xd83d, 0xde00, 0xd800]);
-        graph.bytes[0] = 255;
+        assert_eq!(decoded.resolved[0].id(), source.id());
+        // A source the call did not send, a length that is not its
+        // source's, or an entry claiming text is malformed.
+        let other = Graph::arguments(
+            &[super::super::Stored::Form(
+                Form::from_data(
+                    Datum::new(DatumKind::Nil),
+                    crate::compiler_data::Source::new("other.cljs", "é😀")
+                        .span(0..6)
+                        .unwrap(),
+                    crate::compiler_data::Origin::Source,
+                ),
+                limits,
+            )],
+            limits,
+            &Budget::new(limits.nodes, control.clone()),
+        )
+        .unwrap();
+        assert!(decode(&graph, &other.originals).is_err());
+        assert!(decode(&graph, &Originals::default()).is_err());
+        let entry = graph.sources[0];
+        for changed in [
+            SourceEntry { count: 5, ..entry },
+            SourceEntry { count: 7, ..entry },
+            SourceEntry { start: 1, ..entry },
+            SourceEntry {
+                identity: entry.identity + 1,
+                ..entry
+            },
+        ] {
+            graph.sources[0] = changed;
+            assert!(decode(&graph, &graph.originals).is_err(), "{changed:?}");
+        }
+        graph.sources[0] = entry;
+        let mut text = good.clone();
+        text[24] = 1;
+        text.push(b'x');
         assert!(
             Graph::decode(
-                &graph.encode().unwrap(),
+                &text,
+                &graph.originals,
+                limits,
+                &Budget::new(limits.nodes, control.clone())
+            )
+            .is_err(),
+            "a result carrying source text"
+        );
+        let mut old = good.clone();
+        old[..4].copy_from_slice(b"GFB1");
+        assert!(
+            Graph::decode(
+                &old,
+                &graph.originals,
                 limits,
                 &Budget::new(limits.nodes, control)
             )
-            .is_err()
+            .is_err(),
+            "GFB1"
         );
         assert_eq!(form.span().source().text(), "é😀");
+    }
+    /// light-cljs-817: a returned input occurrence names its source by the
+    /// identity the call sent and keeps its original form's span and origin,
+    /// and a new form takes the call's; a result naming a source the call
+    /// did not send, or an occurrence naming another sent source than its
+    /// form's, is malformed.
+    #[test]
+    fn goose_compiler_bridge_returned_inputs_keep_their_forms_by_source_identity() {
+        use crate::compiler_reader::{NamespaceView, read_form};
+        let read = |name: &str, text: &str| {
+            let source = crate::compiler_data::Source::new(name, text);
+            read_form(&source, &NamespaceView::new("fixture.core", &source))
+                .unwrap()
+                .unwrap()
+        };
+        let call = read("call.cljs", "(m [x \"é\"] y)");
+        // As long as the call, so that the call's span lies inside it.
+        let other = read("other.cljs", "(zzzzzzzzzzzz)");
+        assert_eq!(call.span().bytes(), other.span().bytes());
+        let origin = || ExpansionOrigin {
+            macro_name: Name::new(None, "m"),
+            call: call.span(),
+            definition: None,
+            helpers: vec![],
+        };
+        let limits = ConversionLimits::default();
+        let control = ExecutionControl::new(&Default::default()).unwrap();
+        let budget = || Budget::new(limits.nodes, control.clone());
+        let stored = |forms: &[&Form]| {
+            forms
+                .iter()
+                .map(|&f| super::super::Stored::Form(f.clone(), limits))
+                .collect::<Vec<_>>()
+        };
+        let mut args = Graph::arguments(&stored(&[&call, &other]), limits, &budget()).unwrap();
+        // A result has one root; `other`'s nodes stay, unreached.
+        args.roots.truncate(1);
+        assert_eq!(args.sources.len(), 2);
+        assert_eq!(args.source_bytes(), 0);
+        // The argument graph is the result an identity expansion returns:
+        // every node an input occurrence, named by its origin token.
+        let bytes = args.encode().unwrap();
+        let decoded = Graph::decode(&bytes, &args.originals, limits, &budget()).unwrap();
+        let form = decoded
+            .expansion(&call, origin(), &args.originals, limits, &budget())
+            .unwrap();
+        fn same(a: &Form, b: &Form) {
+            assert_eq!(a.span().source().id(), b.span().source().id());
+            assert_eq!(a.span().bytes(), b.span().bytes());
+            assert!(matches!(
+                a.node().origin,
+                crate::compiler_data::Origin::Source
+            ));
+            assert!(a.data().value_eq(&b.data()));
+            let (ac, bc) = (a.children(), b.children());
+            assert_eq!(ac.len(), bc.len());
+            for (a, b) in ac.iter().zip(&bc) {
+                same(a, b);
+            }
+        }
+        same(&form, &call);
+        // A new vector holding the call's second element: the vector takes
+        // the call's span, the element keeps its own.
+        let mut built = Graph::arguments(&stored(&[&call]), limits, &budget()).unwrap();
+        let element = built.children[built.nodes[built.roots[0] as usize].fields[0] as usize + 1];
+        let mut fresh = Node {
+            tag: 7,
+            ..Default::default()
+        };
+        fresh.fields[0] = built.children.len() as i32;
+        fresh.fields[1] = 1;
+        built.children.push(element);
+        built.roots = vec![built.nodes.len() as u32];
+        built.nodes.push(fresh);
+        let result = Graph::decode(
+            &built.encode().unwrap(),
+            &built.originals,
+            limits,
+            &budget(),
+        )
+        .unwrap()
+        .expansion(&call, origin(), &built.originals, limits, &budget())
+        .unwrap();
+        assert_eq!(result.span().bytes(), call.span().bytes());
+        assert!(matches!(
+            result.node().origin,
+            crate::compiler_data::Origin::MacroExpansion(_)
+        ));
+        same(&result.children()[0], &call.children()[1]);
+        // `other.cljs` was not sent by a call of `call` alone.
+        let alone = Graph::arguments(&stored(&[&call]), limits, &budget()).unwrap();
+        assert!(Graph::decode(&bytes, &alone.originals, limits, &budget()).is_err());
+        // An occurrence of `call` naming `other.cljs`, with its own span.
+        let mut swapped = Graph::arguments(&stored(&[&call, &other]), limits, &budget()).unwrap();
+        swapped.roots.truncate(1);
+        let root = swapped.roots[0] as usize;
+        swapped.nodes[root].fields[6] = 1;
+        let decoded = Graph::decode(
+            &swapped.encode().unwrap(),
+            &swapped.originals,
+            limits,
+            &budget(),
+        )
+        .unwrap();
+        assert!(
+            decoded
+                .expansion(&call, origin(), &swapped.originals, limits, &budget())
+                .is_err()
+        );
     }
     #[test]
     fn goose_compiler_bridge_rejects_truncations_and_unreachable_cycles() {
@@ -1278,6 +1484,7 @@ mod tests {
             assert!(
                 Graph::decode(
                     &bytes[..end],
+                    &graph.originals,
                     limits,
                     &Budget::new(limits.nodes, control.clone())
                 )
@@ -1285,7 +1492,15 @@ mod tests {
                 "prefix {end}"
             );
         }
-        assert!(Graph::decode(&bytes, limits, &Budget::new(limits.nodes, control.clone())).is_ok());
+        assert!(
+            Graph::decode(
+                &bytes,
+                &graph.originals,
+                limits,
+                &Budget::new(limits.nodes, control.clone())
+            )
+            .is_ok()
+        );
         let id = graph.nodes.len() as u32;
         let start = graph.children.len() as i32;
         graph.children.push(id);
@@ -1299,6 +1514,7 @@ mod tests {
         assert!(
             Graph::decode(
                 &graph.encode().unwrap(),
+                &graph.originals,
                 limits,
                 &Budget::new(limits.nodes, control)
             )
@@ -1333,9 +1549,10 @@ mod tests {
                 roots: vec![0],
                 ..Default::default()
             };
-            let decoded = Graph::decode(&graph.encode().unwrap(), limits, &budget).unwrap();
+            let decoded =
+                Graph::decode(&graph.encode().unwrap(), &graph.originals, limits, &budget).unwrap();
             let form = decoded
-                .expansion(&call, origin(), &HashMap::new(), limits, &budget)
+                .expansion(&call, origin(), &Originals::default(), limits, &budget)
                 .unwrap();
             let data = form.data();
             let DatumKind::Double(value) = data.kind() else {
@@ -1354,7 +1571,8 @@ mod tests {
             &budget,
         )
         .unwrap();
-        let decoded = Graph::decode(&graph.encode().unwrap(), limits, &budget).unwrap();
+        let decoded =
+            Graph::decode(&graph.encode().unwrap(), &graph.originals, limits, &budget).unwrap();
         let form = decoded
             .expansion(&call, origin(), &graph.originals, limits, &budget)
             .unwrap();

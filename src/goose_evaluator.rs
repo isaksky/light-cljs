@@ -792,11 +792,7 @@ enum Stored {
     /// A narrowed environment and the one it was narrowed from, whose
     /// conversion still checks and charges what it leaves out.
     Environment(Datum, Datum, ConversionLimits),
-    Result(
-        Vec<u8>,
-        Arc<HashMap<i32, bridge::Input>>,
-        Rc<bridge::Budget>,
-    ),
+    Result(Vec<u8>, Arc<bridge::Originals>, Rc<bridge::Budget>),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum DefinitionKey {
@@ -1121,7 +1117,7 @@ impl MacroEvaluator for GooseEvaluator {
             return Err(error("handle is not a result"));
         };
         let bridged = Instant::now();
-        let result = bridge::Graph::decode(&bytes, limits, &budget)
+        let result = bridge::Graph::decode(&bytes, &originals, limits, &budget)
             .and_then(|graph| graph.expansion(call, origin, &originals, limits, &budget));
         let result = budget.settle(result);
         self.session

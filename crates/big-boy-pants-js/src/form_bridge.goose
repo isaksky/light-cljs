@@ -6,9 +6,14 @@ import .program;
 
 namespace bridge;
 
-// GFB1: tagged structured graphs, never source text. Child and metadata edges
+// GFB2: tagged structured graphs, never printed forms. Child and metadata edges
 // name occurrences; repeated IDs preserve aliases, equal nodes are not interned.
 // Tags nil/bool/Number/string/symbol/keyword/list/vector/map/set = 0..9.
+// A source entry is three words, identity, start and count
+// (source::SourceRange): the compiler sends its identity for each source and
+// the source's byte length, no text, and gets the same identities back
+// (light-cljs-817); a source with identity -1 carries its text in `bytes`
+// (Goose's own fixtures). GFB1, which carried every source's text, is refused.
 struct Form { tag: i64 = 0, number: f64 = 0, start: i64 = 0, count: i64 = 0, ns_start: i64 = 0, ns_count: i64 = -1, metadata: i64 = -1, origin: i64 = -1, source: i64 = -1, span_start: i64 = 0, span_end: i64 = 0 }
 root struct Graph { nodes: Form[>..] = [], children: i64[>..] = [], units: u16[>..] = [], sources: source::SourceRange[>..] = [], bytes: u8[>..] = [], roots: i64[>..] = [] }
 enum Error { None, Malformed, Nodes, Depth, Bytes, Work, Cancelled, Unsupported, Heap }
@@ -16,10 +21,10 @@ enum Error { None, Malformed, Nodes, Depth, Bytes, Work, Cancelled, Unsupported,
 // count its flavor; light-cljs-799, cells.goose): a cell's value or a
 // produced helper, which stay inside the Goose session. A job's result for
 // the compiler never does, so a cell there is Unsupported, as the V8 build's
-// form bridge refuses an atom. spans: an export carries the heap's source
-// text and each form's source span; a cell value, which outlives its call,
-// carries neither (light-cljs-809), so a store exports only what the value
-// reaches.
+// form bridge refuses an atom. spans: an export carries each form's source
+// span and the sources its forms name (an identity, or a fixture's text); a
+// cell value, which outlives its call, carries neither (light-cljs-809), so a
+// store exports only what the value reaches.
 struct Control { nodes: i64 = 100000, depth: i64 = 128, bytes: i64 = 16777216, work: i64 = 10000000, cancel_after: i64 = -1, visits: i64 = 0, error: Error = Error.None, cancelled: bool = false, cells: bool = false, spans: bool = true }
 inline fn collection(tag: i64) -> bool { return tag >= 6 && tag <= 9; }
 fn poll(c: Control&, count: i64 = 1) -> bool {
@@ -31,7 +36,7 @@ fn poll(c: Control&, count: i64 = 1) -> bool {
 }
 fn reject(c: Control&, error: Error = Error.Malformed) -> bool { if c.error == Error.None { c.error = error; } return false; }
 fn range(start: i64, count: i64, len: i64) -> bool { return start >= 0 && count >= 0 && start <= len && count <= len - start; }
-fn footprint(g: const Graph&) -> i64 { return 32 + g.nodes.len * 48 + g.children.len * 4 + g.units.len * 2 + g.sources.len * 8 + g.bytes.len + g.roots.len * 4; }
+fn footprint(g: const Graph&) -> i64 { return 32 + g.nodes.len * 48 + g.children.len * 4 + g.units.len * 2 + g.sources.len * 12 + g.bytes.len + g.roots.len * 4; }
 struct Edge { value: source::Value, parent: i64, field: i64 }
 struct Retain { value: source::Value, depth: i64, argument: bool = false }
 fn scalar_equal(heap: source::Heap&, a: source::Value, b: source::Value, c: Control&) -> bool {
@@ -54,9 +59,11 @@ fn validate(g: const Graph&, c: Control&) -> bool {
     if !poll(c, g.nodes.len + g.children.len + g.units.len + g.sources.len + g.bytes.len + g.roots.len) { return false; }
     states.resize(g.nodes.len, 0); heights.resize(g.nodes.len, 0);
     for s in g.sources {
-        if !range(s.start, s.count, g.bytes.len) { return reject(c); }
-        if !poll(c, s.count) { return false; }
-        if !snapshot::utf8(g.bytes[s.start..(s.start + s.count)]) { return reject(c); }
+        if !source::source_row_ok(s, g.bytes.len) { return reject(c); }
+        if source::has_text(s) {
+            if !poll(c, s.count) { return false; }
+            if !snapshot::utf8(g.bytes[s.start..(s.start + s.count)]) { return reject(c); }
+        }
     }
     for id in g.roots { if id < 0 || id >= g.nodes.len { return reject(c); } }
     for n in g.nodes {
@@ -64,7 +71,9 @@ fn validate(g: const Graph&, c: Control&) -> bool {
         if n.tag == 10 && (!c.cells || n.number < 0 || n.number > 2147483647 || n.number != (n.number as i64) || n.count < 0 || n.count > 2 || n.metadata >= 0) { return reject(c, Error.Unsupported); }
         if n.tag < 0 || n.tag > 10 || n.metadata < -1 || n.metadata >= g.nodes.len || n.source < -1 || n.source >= g.sources.len || n.origin < -1 { return reject(c); }
         if n.source >= 0 && !range(n.span_start, n.span_end - n.span_start, g.sources[n.source].count) { return reject(c); }
-        if n.source >= 0 {
+        // An identity source has no text here: the compiler checks those
+        // spans' UTF-8 boundaries against its own source.
+        if n.source >= 0 && source::has_text(g.sources[n.source]) {
             let s = g.sources[n.source]; let text = g.bytes[s.start..(s.start + s.count)];
             if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c); }
         }
@@ -114,10 +123,10 @@ fn append_graph(out: Graph&, g: const Graph&) {
 fn decode(out: Graph&, bytes: const u8[:], c: Control&) -> bool {
     if bytes.len > c.bytes { return reject(c, Error.Bytes); }
     if !poll(c, bytes.len) { return false; }
-    if bytes.len < 32 || bytes[..4] != "GFB1" || word(bytes, 4) != 1 { return reject(c); }
+    if bytes.len < 32 || bytes[..4] != "GFB2" || word(bytes, 4) != 2 { return reject(c); }
     let nodes = word(bytes, 8); let children = word(bytes, 12); let units = word(bytes, 16); let sources = word(bytes, 20); let text = word(bytes, 24); let roots = word(bytes, 28);
     if nodes > c.nodes { return reject(c, Error.Nodes); }
-    if 32 + nodes * 48 + children * 4 + units * 2 + sources * 8 + text + roots * 4 != bytes.len { return reject(c); }
+    if 32 + nodes * 48 + children * 4 + units * 2 + sources * 12 + text + roots * 4 != bytes.len { return reject(c); }
     var g = Graph {}; var at: i64 = 32;
     for i in nodes {
         if !poll(c) { return false; }
@@ -126,7 +135,7 @@ fn decode(out: Graph&, bytes: const u8[:], c: Control&) -> bool {
     }
     for i in children { if !poll(c) { return false; } g.children.push(word(bytes, at)); at += 4; }
     for i in units { if !poll(c) { return false; } let u, ok = binary::read_u16le(bytes, at); assert(ok); g.units.push(u); at += 2; }
-    for i in sources { if !poll(c) { return false; } g.sources.push(source::SourceRange { start: word(bytes, at) as u32, count: word(bytes, at + 4) as u32 }); at += 8; }
+    for i in sources { if !poll(c) { return false; } g.sources.push(source::SourceRange { start: word(bytes, at + 4) as u32, count: word(bytes, at + 8) as u32, identity: signed(bytes, at) }); at += 12; }
     for i in text { if !poll(c) { return false; } g.bytes.push(bytes[at]); at += 1; }
     for i in roots { if !poll(c) { return false; } g.roots.push(word(bytes, at)); at += 4; }
     if !validate(g, c) { return false; } append_graph(out, g); return true;
@@ -135,7 +144,7 @@ fn put_word(out: u8[>..]&, n: i64) { for i in 4 { out.push(((n >> (i * 8)) & 255
 fn encode(g: const Graph&, out: u8[>..]&, c: Control&) -> bool {
     if !validate(g, c) { return false; }
     if !poll(c, footprint(g)) { return false; }
-    var bytes: u8[>..] = []; bytes.append("GFB1"); put_word(bytes, 1);
+    var bytes: u8[>..] = []; bytes.append("GFB2"); put_word(bytes, 2);
     for n in [g.nodes.len, g.children.len, g.units.len, g.sources.len, g.bytes.len, g.roots.len] { put_word(bytes, n); }
     for n in g.nodes {
         put_word(bytes, n.tag); for byte in bytes_of([n.number]) { bytes.push(byte); }
@@ -143,12 +152,32 @@ fn encode(g: const Graph&, out: u8[>..]&, c: Control&) -> bool {
     }
     for id in g.children { put_word(bytes, id); }
     for u in g.units { bytes.push((u & 255) as u8); bytes.push((u >> 8) as u8); }
-    for s in g.sources { put_word(bytes, s.start); put_word(bytes, s.count); }
+    for s in g.sources { put_word(bytes, s.identity); put_word(bytes, s.start); put_word(bytes, s.count); }
     bytes.append(g.bytes); for id in g.roots { put_word(bytes, id); }
     out.append(bytes); return true;
 }
-// A VM node's provenance row as a graph source: -1 when it has none.
-fn graph_source(row: u32) -> i64 { return if row == source::no_row() { -1 } else { row }; }
+// A VM node's provenance row as a graph source of `g`: -1 when it has none.
+// A row's first use adds its source (its identity, or a fixture's text), so
+// an export carries only the sources its forms name, not every row the heap
+// holds (an installed helper's, say). `ids` maps heap rows to graph sources.
+fn graph_source(heap: const source::Heap&, row: u32, g: Graph&, ids: i64[>..]&, c: Control&) -> i64 {
+    if row == source::no_row() { return -1; }
+    if row >= ids.len { reject(c); return -1; }
+    if ids[row] < 0 {
+        let r = heap.source_ranges[row];
+        if !source::source_row_ok(r, heap.source_bytes.len) { reject(c); return -1; }
+        // The first text source copies the heap's source text, which text
+        // rows share at their own offsets.
+        if source::has_text(r) && g.bytes.len < heap.source_bytes.len {
+            if !poll(c, heap.source_bytes.len) { return -1; }
+            if heap.source_bytes.len > c.bytes { reject(c, Error.Bytes); return -1; }
+            g.bytes.append(heap.source_bytes);
+        }
+        g.sources.push(r);
+        ids[row] = g.sources.len - 1;
+    }
+    return ids[row];
+}
 fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&, c: Control&) -> bool {
     if !validate(g, c) { return false; }
     // Each string occurrence is copied into its own canonical run (Latin-1 or
@@ -163,7 +192,8 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     // The preflight above reserved every row, so no allocation below fails.
     let sources = heap.source_ranges.len;
     let bytes = source::add_source_bytes(heap, g.bytes);
-    for s in g.sources { source::add_source_range(heap, source::SourceRange { start: (bytes + s.start) as u32, count: s.count }); }
+    // An identity source copies no text: the row names the compiler's source.
+    for s in g.sources { source::add_source_range(heap, source::shifted_source(s, bytes)); }
     let base = source::add_nodes(heap, [], g.nodes.len, source::Node { kind: 11 });
     var links: source::Value[>..] = []; for id in g.children { links.push(source::object(base + id)); }
     let children = source::add_values(heap, links);
@@ -190,18 +220,17 @@ fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&,
 // export_graph, and the heap row each graph node came from (-1 for a
 // primitive), for the identities of a cell value's nodes (cells.goose).
 fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, c: Control&, call: source::Value, rows: i64[>..]&) -> bool {
-    var g = Graph {}; var ids: i64[>..] = []; rows.clear();
+    var g = Graph {}; var ids: i64[>..] = []; var source_ids: i64[>..] = []; rows.clear();
     if c.spans {
-        if !poll(c, heap.nodes.len + heap.source_bytes.len + heap.source_ranges.len) { return false; }
-        if heap.source_bytes.len > c.bytes { return reject(c, Error.Bytes); }
-        g.bytes.append(heap.source_bytes); g.sources.append(heap.source_ranges);
+        if !poll(c, heap.nodes.len + heap.source_ranges.len) { return false; }
+        source_ids.resize(heap.source_ranges.len, -1);
     }
     ids.resize(heap.nodes.len, -1);
     // Match the compiler's current primitive-result compatibility contract:
     // a newly computed bare primitive can recover the latest argument's span.
     // Explicit occurrence handles bypass this fallback and remain distinct.
     var origins:        source::Value[>..] = []; var pending: Retain[>..<] = [];
-    var retained_nodes: i64                = 0; var retained_bytes: i64 = if c.spans { heap.source_bytes.len } else { 0 };
+    var retained_nodes: i64                = 0; var retained_bytes: i64 = 0;
     if call.tag() != 0 { pending.push(Retain { value: call, depth: 1 }); }
     while pending.len > 0 {
         if !poll(c) { return false; }
@@ -266,8 +295,14 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
                 if x.tag() == 4 { let count = source::str_len(heap, x); if !poll(c, count) { return false; } n.start = g.units.len; n.count = count; source::append_utf16(heap, x, g.units); }
                 if n.tag == 4 || n.tag == 5 { let ns = node.namespace_value; if ns.tag() == 4 { if !source::valid(heap, ns) || !poll(c, source::str_len(heap, ns)) { return reject(c); } n.ns_start = g.units.len; n.ns_count = source::str_len(heap, ns); source::append_utf16(heap, ns, g.units); } }
             }
-            n.origin = node.origin; if c.spans { n.source = graph_source(node.source); n.span_start = node.span_start; n.span_end = node.span_end; }
-            if n.origin == -1 && call.tag() == 5 && source::valid(heap, call) { let context = source::node(heap, call.id()); n.source = graph_source(context.source); n.span_start = context.span_start; n.span_end = context.span_end; }
+            n.origin = node.origin;
+            if c.spans {
+                // A new form takes the call's span.
+                var span = node;
+                if n.origin == -1 && call.tag() == 5 && source::valid(heap, call) { span = source::node(heap, call.id()); }
+                n.source = graph_source(heap, span.source, g, source_ids, c); n.span_start = span.span_start; n.span_end = span.span_end;
+                if c.error != Error.None { return false; }
+            }
             g.nodes.push(n);
             if node.metadata.tag() != 0 { queue.push(Edge { value: node.metadata, parent: id, field: -1 }); }
             if footprint(g) > c.bytes { return reject(c, Error.Bytes); }

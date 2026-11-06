@@ -235,9 +235,86 @@ fn direct_update_boundaries() {
 // main builds no heap; each heap-building test is its own thread program.
 fn main() {
     heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality));
-    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export));
+    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources));
     print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
 
+// light-cljs-817: the compiler sends a source's identity and byte length, no
+// text. The call's graph: a vector of two spanned forms from source 7
+// (21 bytes) and one from source 9 (5 bytes); source 11 is named by no form.
+fn identity_graph(g: bridge::Graph&) {
+    g.sources.push(source::SourceRange { start: 0, count: 21, identity: 7 }); g.sources.push(source::SourceRange { start: 0, count: 5, identity: 9 });
+    g.sources.push(source::SourceRange { start: 0, count: 40, identity: 11 });
+    g.nodes.push(bridge::Form { tag: 2, number: 1, origin: 1, source: 0, span_start: 1, span_end: 2 });
+    g.nodes.push(bridge::Form { tag: 2, number: 2, origin: 2, source: 0, span_start: 3, span_end: 21 });
+    g.nodes.push(bridge::Form { tag: 0, origin: 3, source: 1, span_start: 0, span_end: 5 });
+    g.children.append([0, 1, 2]); g.nodes.push(bridge::Form { tag: 7, count: 3, origin: 0, source: 0, span_start: 0, span_end: 21 }); g.roots.push(3);
+}
+// Spans round-trip without text: the wire and the job heap hold no source
+// bytes, an export names the identities its forms came from (and no other),
+// a new form takes the call's span, and the graph decodes to the same rows.
+// A span outside its source, an unknown source, an identity row claiming
+// text, an identity past 32 bits and a GFB1 or version-1 header are
+// refused; cancellation and over-budget conversions fail with no change. An
+// identity source's UTF-8 boundaries are the compiler's to check (Goose has
+// no text): an offset that splits a text source's code point is refused, the
+// same offset into an identity source is not.
+thread_fn identity_sources() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; code_init(code); var g = bridge::Graph {}; identity_graph(g);
+    var c = bridge::Control {}; var bytes: u8[>..] = []; assert(bridge::encode(g, bytes, c));
+    assert(bytes[..4] == "GFB2" && bytes.len == bridge::footprint(g) && bytes.len == 32 + 4 * 48 + 3 * 4 + 3 * 12 + 4);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var decoded = bridge::Graph {}; var roots: source::Value[>..] = []; assert(bridge::decode(decoded, bytes, c) && bridge::import_graph(heap, decoded, roots, c));
+    assert(heap.source_bytes.len == 0 && heap.source_ranges.len == 3 && heap.source_ranges[1].identity == 9 && heap.source_ranges[1].count == 5);
+    let vector = roots[0];
+    let fresh = source::form_collection(heap, 6, [source::form_nth(heap, vector, 2), source::form_nth(heap, vector, 0)]);
+    var out = bridge::Graph {}; var e = bridge::Control {}; assert(bridge::export_graph(heap, [fresh], out, e, vector));
+    assert(out.bytes.len == 0 && out.sources.len == 2 && out.sources[0].identity == 7 && out.sources[0].count == 21 && out.sources[1].identity == 9 && out.sources[1].count == 5);
+    let root = out.nodes[out.roots[0]]; let first = out.nodes[out.children[root.start]]; let second = out.nodes[out.children[root.start + 1]];
+    assert(root.origin == -1 && out.sources[root.source].identity == 7 && root.span_start == 0 && root.span_end == 21);
+    assert(first.origin == 3 && out.sources[first.source].identity == 9 && first.span_end == 5 && second.origin == 1 && out.sources[second.source].identity == 7 && second.span_start == 1);
+    var wire: u8[>..] = []; assert(bridge::encode(out, wire, e)); var back = bridge::Graph {}; assert(bridge::decode(back, wire, e));
+    assert(bytes_of(back.sources) == bytes_of(out.sources) && back.bytes.len == 0 && back.nodes.len == out.nodes.len);
+    for n, i in back.nodes { assert(n.source == out.nodes[i].source && n.span_start == out.nodes[i].span_start && n.span_end == out.nodes[i].span_end && n.origin == out.nodes[i].origin); }
+    // Refusals, each before any heap row changes.
+    let nodes = heap.nodes.len; let ranges = heap.source_ranges.len;
+    for mode in 6 {
+        var bad = bridge::Graph {}; identity_graph(bad);
+        if mode == 0 { bad.nodes[1].span_end = 22; }
+        if mode == 1 { bad.nodes[2].span_start = 6; bad.nodes[2].span_end = 6; }
+        if mode == 2 { bad.nodes[0].source = 3; }
+        if mode == 3 { bad.sources[1].start = 1; }
+        if mode == 4 { bad.sources[1].identity = 2147483648; }
+        if mode == 5 { bad.bytes.append("x"); bad.sources[0].start = 1; }
+        var r = bridge::Control {}; var none: source::Value[>..] = [];
+        assert(!bridge::import_graph(heap, bad, none, r) && r.error == bridge::Error.Malformed && none.len == 0);
+        assert(heap.nodes.len == nodes && heap.source_ranges.len == ranges && heap.source_bytes.len == 0);
+    }
+    for at in [3, 4] {
+        var bad = copy(bytes); if at == 3 { bad[3] = 49; } else { bad[4] = 1; }
+        var r = bridge::Control {}; var graph = bridge::Graph {}; assert(!bridge::decode(graph, bad, r) && r.error == bridge::Error.Malformed && graph.nodes.len == 0);
+    }
+    var mixed = bridge::Graph {}; mixed.bytes.append("é"); mixed.sources.push(source::SourceRange { start: 0, count: 2 }); mixed.sources.push(source::SourceRange { start: 0, count: 2, identity: 5 });
+    mixed.nodes.push(bridge::Form { tag: 0, source: 1, span_start: 1, span_end: 2 }); mixed.roots.push(0);
+    var m = bridge::Control {}; assert(bridge::validate(mixed, m));
+    mixed.nodes[0].source = 0; var split = bridge::Control {}; assert(!bridge::validate(mixed, split) && split.error == bridge::Error.Malformed);
+    // Cancellation at every visit, and one unit short of the work and byte budgets.
+    var full = bridge::Control {}; var graph = bridge::Graph {}; var installed: source::Value[>..] = [];
+    assert(bridge::decode(graph, bytes, full) && bridge::import_graph(heap, graph, installed, full));
+    let stable_nodes = heap.nodes.len; let stable_ranges = heap.source_ranges.len;
+    for cut in full.visits {
+        var r = bridge::Control { cancel_after: cut }; var partial = bridge::Graph {}; var none: source::Value[>..] = [];
+        assert(!(bridge::decode(partial, bytes, r) && bridge::import_graph(heap, partial, none, r)) && r.error == bridge::Error.Cancelled && none.len == 0);
+        assert(heap.nodes.len == stable_nodes && heap.source_ranges.len == stable_ranges && heap.source_bytes.len == 0);
+    }
+    var short = bridge::Control { work: full.visits - 1 }; var partial = bridge::Graph {}; var none: source::Value[>..] = [];
+    assert(!(bridge::decode(partial, bytes, short) && bridge::import_graph(heap, partial, none, short)) && short.error == bridge::Error.Work && none.len == 0);
+    var small = bridge::Control { bytes: bytes.len - 1 }; var refused = bridge::Graph {}; assert(!bridge::decode(refused, bytes, small) && small.error == bridge::Error.Bytes);
+    var export_cut = bridge::Control {}; var sized = bridge::Graph {}; assert(bridge::export_graph(heap, [fresh], sized, export_cut, vector));
+    for cut in export_cut.visits { var r = bridge::Control { cancel_after: cut }; var untouched = bridge::Graph {}; assert(!bridge::export_graph(heap, [fresh], untouched, r, vector) && r.error == bridge::Error.Cancelled && untouched.nodes.len == 0 && untouched.sources.len == 0); }
+    assert(heap.nodes.len == stable_nodes && heap.source_ranges.len == stable_ranges);
+    print("identity sources: spans round-trip without text, only named sources export, bad spans/sources/headers refused, cancellation and budgets clean");
+}
 // A cell value's export (spans off, light-cljs-809) carries what the value
 // reaches and none of the heap's source text: with 8 KB of unrelated source
 // over a 4 KB byte budget it succeeds and round-trips without provenance,
@@ -331,7 +408,7 @@ thread_fn assembly() {
 thread_fn adversarial_forms() {
     defer { heap_program::finish(); }
     // db6f7f07:tests/parser.rs's independent breadth/depth/decoded-text
-    // budgets, translated to owned GFB1 graphs rather than another parser.
+    // budgets, translated to owned GFB2 graphs rather than another parser.
     var g = bridge::Graph {}; g.bytes.append("é😀"); g.sources.push(source::SourceRange { start: 0, count: g.bytes.len as u32 });
     g.units.append([233 as u16, 55357, 56832, 55296]);
     g.nodes.push(bridge::Form { tag: 3, count: 4, source: 0, span_start: 0, span_end: g.bytes.len }); g.roots.push(0);
