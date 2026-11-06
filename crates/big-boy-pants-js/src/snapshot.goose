@@ -14,7 +14,7 @@ namespace snapshot;
 struct Binding { id: i64, generation: i64, value: source::Value }
 struct Header {
     version: i64     = 2, allocator: i64 = 1, base: i64 = 0, checkpoint: i64 = 1,
-    ends:    i64[20] = [0; 20], limits: source::Limits = source::Limits {},
+    ends:    i64[21] = [0; 21], limits: source::Limits = source::Limits {},
     work:    i64     = 0, global: source::Value = source::Value.Undefined, call_method: source::Value = source::Value.Undefined,
     boot:    i64     = 0, initializers: i64 = 0, producers: i64 = 0, property_rows: i64 = 0,
 }
@@ -24,7 +24,7 @@ struct Snapshot {
     children:   u32[]           = [], ops: source::Op[] = [], code_units: u16[] = [], code_strings: source::Str[] = [],
     nodes:      source::Node[]  = [], values: source::Value[] = [], properties: source::Property[] = [],
     units:      u16[]           = [], strings: source::Str[] = [], constants: source::Value[] = [], bytes: u8[] = [], sources: source::SourceRange[] = [], bindings: Binding[] = [], latin1: u8[] = [],
-    shapes:     source::Shape[] = [], accessors: source::Pair[] = [], keys: source::KeySlot[] = [],
+    shapes:     source::Shape[] = [], accessors: source::Pair[] = [], keys: source::KeySlot[] = [], conts: source::Cont[] = [],
 }
 // A borrowing counterpart lets capture validate before allocating a copy.
 struct View {
@@ -33,7 +33,7 @@ struct View {
     children:   const u32[:], ops: const source::Op[:], code_units: const u16[:], code_strings: const source::Str[:],
     nodes:      const source::Node[:], values: const source::Value[:], properties: const source::Property[:],
     units:      const u16[:], strings: const source::Str[:], constants: const source::Value[:], bytes: const u8[:], sources: const source::SourceRange[:], bindings: const Binding[:], latin1: const u8[:],
-    shapes:     const source::Shape[:], accessors: const source::Pair[:], keys: const source::KeySlot[:],
+    shapes:     const source::Shape[:], accessors: const source::Pair[:], keys: const source::KeySlot[:], conts: const source::Cont[:],
 }
 enum Error { None, Boundary, Version, Allocator, Identity, Length, Link, Code, Unsupported, Bytes, Work, Destination }
 struct Control {
@@ -88,7 +88,7 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
 // The kinds with own properties by name (source::Node): ordinary objects,
 // arrays and closures (light-cljs-805), built-in functions and error objects
 // (light-cljs-788).
-fn named(kind: i64) -> bool { return kind >= 0 && kind <= 2 || kind == 4 || kind == 13; }
+fn named(kind: i64) -> bool { return kind >= 0 && kind <= 2 || kind == 4 || kind == 13 || kind == 20 || kind == 21; }
 // A shape-mode object, dense array or closure: without `initialized`.
 fn shaped(n: const source::Node&) -> bool { return named(n.kind) && !n.initialized; }
 // A dictionary-mode object, a dictionary array or a closure's records.
@@ -188,6 +188,48 @@ fn accessor_half<T>(s: const T&, v: source::Value) -> bool { return v.tag() == 0
 // A property's value: any value, or an accessor naming a pair.
 fn slot_value<T>(s: const T&, v: source::Value) -> bool { return match v { Accessor a => range(a.a, 1, s.accessors.len), _ => value(s, v) }; }
 // The number of occupied index slots.
+// Continuation rows (light-cljs-790, source::Cont): whether row r of conts
+// is variant `kind` (0 Activation, 1 Saved, 2 Promise, 3 Reaction).
+fn cont_kind(c: source::Cont) -> i64 { return match c { Activation => 0, Saved => 1, Promise => 2, Reaction => 3 }; }
+fn cont_is<T>(s: const T&, r: u32, kind: i64) -> bool { return r < s.conts.len && cont_kind(s.conts[r]) == kind; }
+fn link_or_none<T>(s: const T&, r: u32, kind: i64) -> bool { return r == source::no_row() || cont_is(s, r, kind); }
+// Every row's links: an activation's code and pc, its values, its run in
+// values and its handler run of Saved rows; a promise's result, reactions
+// and activation; a reaction's promise and next reaction.
+fn conts_valid<T>(s: const T&, c: Control&) -> bool {
+    for row in s.conts {
+        if !poll(c) { return false; }
+        match row {
+            Activation x => {
+                let a = x.a;
+                if a.function >= s.functions.len { return reject(c, Error.Link); }
+                let f = s.functions[a.function];
+                if a.pc < f.start || a.pc >= f.start + f.count || a.locals < f.locals || a.locals + a.operands > a.capacity || !range(a.values, a.capacity, s.values.len) || a.handler_count > a.handler_capacity || !value(s, a.callee) || !value(s, a.receiver) || a.argument_count > a.locals - f.locals { return reject(c, Error.Link); }
+                if a.handler_capacity > 0 && !range(a.handlers, a.handler_capacity, s.conts.len) || a.handler_capacity == 0 && a.handlers != source::no_row() { return reject(c, Error.Link); }
+                for i in a.handler_capacity { if !cont_is(s, a.handlers + i, 1) { return reject(c, Error.Link); } }
+            },
+            // An async function's boundary names its promise.
+            Saved x => { if !value(s, x.h.value) || x.h.pc < -1 || x.h.kind == source::HandlerKind.Async && (x.h.value.tag() != 5 || s.nodes[x.h.value.id()].kind != 21) { return reject(c, Error.Link); } },
+            Promise x => {
+                let p = x.p;
+                if p.state > 2 || !value(s, p.result) || !link_or_none(s, p.first, 3) || !link_or_none(s, p.last, 3) || (p.first == source::no_row()) != (p.last == source::no_row()) || p.state != 0 && p.first != source::no_row() || !link_or_none(s, p.activation, 0) { return reject(c, Error.Link); }
+                // The pending reactions end, at `last`, within the table.
+                var at = p.first; var tail = source::no_row(); var steps: i64 = 0;
+                while at != source::no_row() {
+                    if !poll(c) { return false; }
+                    steps += 1; if steps > s.conts.len { return reject(c, Error.Link); }
+                    tail = at; at = match s.conts[at] { Reaction y => y.r.next, _ => source::no_row() };
+                }
+                if tail != p.last { return reject(c, Error.Link); }
+            },
+            Reaction x => {
+                let r = x.r;
+                if r.target >= s.nodes.len || s.nodes[r.target].kind != 21 || !link_or_none(s, r.next, 3) { return reject(c, Error.Link); }
+            },
+        }
+    }
+    return true;
+}
 fn interned<T>(s: const T&) -> i64 { var n: i64 = 0; for e in s.keys { if e.row != source::no_row() { n += 1; } } return n; }
 // A heap string run equals these UTF-16 units.
 fn same_units<T>(s: const T&, r: source::Str, units: const u16[:]) -> bool {
@@ -195,14 +237,14 @@ fn same_units<T>(s: const T&, r: source::Str, units: const u16[:]) -> bool {
     for b, i in s.latin1[r.start..(r.start + r.len)] { if units[i] != b { return false; } }
     return true;
 }
-fn ends<T>(s: const T&) -> i64[20] {
+fn ends<T>(s: const T&) -> i64[21] {
     return [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len,
-            s.nodes.len, s.values.len, s.properties.len, s.units.len, s.constants.len, s.bytes.len, s.sources.len, s.bindings.len, s.code_strings.len, s.strings.len, s.latin1.len, s.shapes.len, s.accessors.len, s.keys.len];
+            s.nodes.len, s.values.len, s.properties.len, s.units.len, s.constants.len, s.bytes.len, s.sources.len, s.bindings.len, s.code_strings.len, s.strings.len, s.latin1.len, s.shapes.len, s.accessors.len, s.keys.len, s.conts.len];
 }
 fn payload_bytes<T>(s: const T&) -> i64 {
     return bytes_of(s.code_bytes).len + bytes_of(s.functions).len + bytes_of(s.code_constants).len + bytes_of(s.children).len + bytes_of(s.ops).len + bytes_of(s.code_units).len
          + bytes_of(s.nodes).len + bytes_of(s.values).len + bytes_of(s.properties).len + bytes_of(s.units).len + bytes_of(s.constants).len + bytes_of(s.bytes).len + bytes_of(s.sources).len + bytes_of(s.bindings).len + bytes_of(s.latin1).len + bytes_of(s.code_strings).len + bytes_of(s.strings).len
-         + bytes_of(s.shapes).len + bytes_of(s.accessors).len + bytes_of(s.keys).len;
+         + bytes_of(s.shapes).len + bytes_of(s.accessors).len + bytes_of(s.keys).len + bytes_of(s.conts).len;
 }
 fn footprint<T>(s: const T&) -> i64 { let empty: Snapshot[] = [Snapshot {}]; return bytes_of(empty).len + payload_bytes(s); }
 fn value<T>(s: const T&, v: source::Value, code: bool = false, constant: bool = false) -> bool {
@@ -343,7 +385,10 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     var has_memo = false; var array_holes: i64 = 0;
     for n in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < 0 || n.kind > 19 { return reject(c, Error.Unsupported); }
+        if n.kind < 0 || n.kind > 21 { return reject(c, Error.Unsupported); }
+        // A generator (20) names its activation or nothing and has a state,
+        // 0 to 3; a promise (21) names its state row (light-cljs-790).
+        if n.kind == 20 && (n.length > 3 || n.function != source::no_row() && !cont_is(s, n.function, 0) || n.length != 3 && n.function == source::no_row()) || n.kind == 21 && !cont_is(s, n.function, 2) { return reject(c, Error.Link); }
         // An atom or volatile (17) has a flavor, 0 or 1; a cell reference (18,
         // no state of its own) 0, 1 or 2, a delay, whose value is its thunk
         // or nothing; a job's own delay (19) none (source::Node, cells.goose).
@@ -386,6 +431,9 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     }
     if has_memo && !memo_ranges(s, c) { return false; }
     if !property_model(s, c) || !key_runs(s, c) { return false; }
+    // Activation runs hold no holes (source::detach refuses one), so every
+    // hole is still an array element's.
+    if !conts_valid(s, c) { return false; }
     if holes != array_holes { return reject(c, Error.Link); }
     var previous: i64 = -1;
     for b in s.bindings {
@@ -399,7 +447,7 @@ fn borrow(heap: const source::Heap&, bindings: const Binding[:], checkpoint: i64
     var v = View { header: Header { base: heap.identity, checkpoint: checkpoint, limits: heap.limits, work: heap.work, global: heap.global, call_method: heap.call_method, boot: heap.boot_count, initializers: heap.initializer_count, producers: heap.producer_count, property_rows: heap.property_rows },
         code_bytes: code.source_bytes, functions: code.functions, code_constants: code.constants, children: code.children, ops: code.ops, code_units: code.units, code_strings: code.strings,
         nodes:      heap.nodes, values: heap.values, properties: heap.properties, units: heap.units, strings: heap.strings, constants: heap.constants, bytes: heap.source_bytes, sources: heap.source_ranges, bindings: bindings, latin1: heap.latin1,
-        shapes: heap.shapes, accessors: heap.accessors, keys: heap.keys };
+        shapes: heap.shapes, accessors: heap.accessors, keys: heap.keys, conts: heap.conts };
     v.header.ends = ends(v); return v;
 }
 // `live`: the heap's one job is running a built-in that only reads it (a
@@ -418,7 +466,7 @@ fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&, c
     if s.header.checkpoint <= 0 || s.header.checkpoint > 2147483647 || s.header.checkpoint == heap.identity { reject(c, Error.Identity); return Snapshot {}; }
     c.copied_bytes += footprint(s);
     return Snapshot { header: s.header, code_bytes: s.code_bytes, functions: s.functions, code_constants: s.code_constants, children: s.children, ops: s.ops, code_units: s.code_units, code_strings: s.code_strings,
-        nodes: s.nodes, values: s.values, properties: s.properties, units: s.units, strings: s.strings, constants: s.constants, bytes: s.bytes, sources: s.sources, bindings: s.bindings, latin1: s.latin1, shapes: s.shapes, accessors: s.accessors, keys: s.keys };
+        nodes: s.nodes, values: s.values, properties: s.properties, units: s.units, strings: s.strings, constants: s.constants, bytes: s.bytes, sources: s.sources, bindings: s.bindings, latin1: s.latin1, shapes: s.shapes, accessors: s.accessors, keys: s.keys, conts: s.conts };
 }
 // Reset only after the dispatch's job has retired. This reestablishes every
 // restore destination invariant; restore still validates the entire image and
@@ -427,7 +475,7 @@ fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> b
     if !(heap.code .== code) || heap.live_jobs != 0 { return false; }
     bindings.clear();
     heap.nodes.clear(); heap.values.clear(); heap.properties.clear(); heap.units.clear(); heap.latin1.clear(); heap.strings.clear(); heap.constants.clear(); heap.source_bytes.clear(); heap.source_ranges.clear();
-    heap.shapes.clear(); heap.accessors.clear(); heap.keys.clear(); heap.interned = 0; heap.image_written = false;
+    heap.shapes.clear(); heap.accessors.clear(); heap.keys.clear(); heap.interned = 0; heap.image_written = false; heap.conts.clear();
     code.source_bytes.clear(); code.functions.clear(); code.constants.clear(); code.children.clear(); code.ops.clear(); code.units.clear(); code.strings.clear(); code.ins.clear(); code.effects.clear(); code.heights.clear(); code.decoded = 0;
     code.valid = false; code.error = tiny::LoadError.None; code.error_pc = -1;
     heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value.Undefined; heap.call_method = source::Value.Undefined;
@@ -436,7 +484,7 @@ fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> b
 }
 fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&, identity: i64, c: Control&) -> bool {
     let started = clock_ns(); defer { c.restore_ns += clock_ns() - started; }
-    if !(heap.code .== code) || heap.identity != 0 || heap.live_jobs != 0 || heap.nodes.len != 0 || heap.values.len != 0 || heap.properties.len != 0 || heap.units.len != 0 || heap.latin1.len != 0 || heap.strings.len != 0 || heap.constants.len != 0 || heap.source_bytes.len != 0 || heap.source_ranges.len != 0 || heap.shapes.len != 0 || heap.accessors.len != 0 || heap.keys.len != 0 || code.valid || code.source_bytes.len != 0 || code.functions.len != 0 || code.constants.len != 0 || code.children.len != 0 || code.ops.len != 0 || code.units.len != 0 || code.strings.len != 0 || bindings.len != 0 { return reject(c, Error.Destination); }
+    if !(heap.code .== code) || heap.identity != 0 || heap.live_jobs != 0 || heap.nodes.len != 0 || heap.values.len != 0 || heap.properties.len != 0 || heap.units.len != 0 || heap.latin1.len != 0 || heap.strings.len != 0 || heap.constants.len != 0 || heap.source_bytes.len != 0 || heap.source_ranges.len != 0 || heap.shapes.len != 0 || heap.accessors.len != 0 || heap.keys.len != 0 || heap.conts.len != 0 || code.valid || code.source_bytes.len != 0 || code.functions.len != 0 || code.constants.len != 0 || code.children.len != 0 || code.ops.len != 0 || code.units.len != 0 || code.strings.len != 0 || bindings.len != 0 { return reject(c, Error.Destination); }
     if identity <= 0 || identity > 2147483647 || identity == s.header.base || identity == s.header.checkpoint { return reject(c, Error.Identity); }
     if !validate(s, c) { return false; }
     // No initialization, producer, publication cache, claim or waiter code.
@@ -450,7 +498,7 @@ fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, binding
     heap.nodes.append(s.nodes); heap.values.append(s.values); heap.properties.append(s.properties);
     heap.units.append(s.units); heap.latin1.append(s.latin1); heap.strings.append(s.strings); heap.constants.append(s.constants);
     heap.source_bytes.append(s.bytes); heap.source_ranges.append(s.sources);
-    heap.shapes.append(s.shapes); heap.accessors.append(s.accessors); heap.keys.append(s.keys); heap.interned = interned(s); heap.image_written = false;
+    heap.shapes.append(s.shapes); heap.accessors.append(s.accessors); heap.keys.append(s.keys); heap.interned = interned(s); heap.image_written = false; heap.conts.append(s.conts);
     // The restored rows are the image: table limits count rows added above it.
     heap.image = source::tops(heap);
     bindings.append(s.bindings);
@@ -475,7 +523,7 @@ fn truncate(twin: const Snapshot&, service: const i64[:], identity: i64, code: s
     heap.nodes.resize(twin.nodes.len); heap.values.resize(twin.values.len); heap.properties.resize(twin.properties.len);
     heap.units.resize(twin.units.len); heap.latin1.resize(twin.latin1.len); heap.strings.resize(twin.strings.len); heap.constants.resize(twin.constants.len);
     heap.source_bytes.resize(twin.bytes.len); heap.source_ranges.resize(twin.sources.len);
-    heap.shapes.resize(twin.shapes.len); heap.accessors.resize(twin.accessors.len);
+    heap.shapes.resize(twin.shapes.len); heap.accessors.resize(twin.accessors.len); heap.conts.resize(twin.conts.len);
     for r in service { service_row(heap, twin, twin, r); }
     // A job's transitions from image shapes and its interned keys wrote the
     // image's shape rows and key index (source::Heap.image_written): both
@@ -509,7 +557,7 @@ fn pristine(twin: const Snapshot&, identity: i64, code: const source::Code&, hea
     return same_rows(code.source_bytes, twin.code_bytes) && same_rows(code.functions, twin.functions) && same_rows(code.constants, twin.code_constants) && same_rows(code.children, twin.children) && same_rows(code.ops, twin.ops) && same_rows(code.units, twin.code_units) && same_rows(code.strings, twin.code_strings)
         && same_rows(heap.nodes, twin.nodes) && same_rows(heap.values, twin.values) && same_rows(heap.properties, twin.properties) && same_rows(heap.units, twin.units) && same_rows(heap.latin1, twin.latin1) && same_rows(heap.strings, twin.strings) && same_rows(heap.constants, twin.constants)
         && same_rows(heap.source_bytes, twin.bytes) && same_rows(heap.source_ranges, twin.sources) && same_rows(bindings, twin.bindings)
-        && same_rows(heap.shapes, twin.shapes) && same_rows(heap.accessors, twin.accessors) && same_rows(heap.keys, twin.keys) && heap.interned == interned(twin);
+        && same_rows(heap.shapes, twin.shapes) && same_rows(heap.accessors, twin.accessors) && same_rows(heap.keys, twin.keys) && heap.interned == interned(twin) && same_rows(heap.conts, twin.conts);
 }
 fn same_bits(a: source::Limits, b: source::Limits) -> bool { let x: source::Limits[] = [a]; let y: source::Limits[] = [b]; return bytes_of(x) == bytes_of(y); }
 // Whether a job snapshot's rows below the twin's lengths are the image's,
@@ -525,7 +573,7 @@ fn over_image(s: const Snapshot&, twin: const Snapshot&, service: const i64[:]) 
     for row, i in twin.values { var skip = false; for k in slots { if k == i { skip = true; } } if !skip && !same_rows(s.values[i..(i + 1)], twin.values[i..(i + 1)]) { return false; } }
     // Image shapes keep their layout; only their newest child may differ.
     for e, i in twin.shapes { var x = s.shapes[i]; x.child = e.child; if !same_rows([x], [e]) { return false; } }
-    if !same_rows(s.accessors[..twin.accessors.len], twin.accessors) { return false; }
+    if !same_rows(s.accessors[..twin.accessors.len], twin.accessors) || !same_rows(s.conts[..twin.conts.len], twin.conts) { return false; }
     return same_rows(s.code_bytes[..twin.code_bytes.len], twin.code_bytes) && same_rows(s.functions[..twin.functions.len], twin.functions) && same_rows(s.code_constants[..twin.code_constants.len], twin.code_constants) && same_rows(s.children[..twin.children.len], twin.children)
         && same_rows(s.ops[..twin.ops.len], twin.ops) && same_rows(s.code_units[..twin.code_units.len], twin.code_units) && same_rows(s.code_strings[..twin.code_strings.len], twin.code_strings)
         && same_rows(s.units[..twin.units.len], twin.units) && same_rows(s.latin1[..twin.latin1.len], twin.latin1) && same_rows(s.strings[..twin.strings.len], twin.strings)
@@ -549,7 +597,7 @@ fn extend(s: const Snapshot&, twin: const Snapshot&, service: const i64[:], code
     heap.nodes.append(s.nodes[twin.nodes.len..]); heap.values.append(s.values[twin.values.len..]); heap.properties.append(s.properties[twin.properties.len..]);
     heap.units.append(s.units[twin.units.len..]); heap.latin1.append(s.latin1[twin.latin1.len..]); heap.strings.append(s.strings[twin.strings.len..]); heap.constants.append(s.constants[twin.constants.len..]);
     heap.source_bytes.append(s.bytes[twin.bytes.len..]); heap.source_ranges.append(s.sources[twin.sources.len..]);
-    heap.accessors.append(s.accessors[twin.accessors.len..]);
+    heap.accessors.append(s.accessors[twin.accessors.len..]); heap.conts.append(s.conts[twin.conts.len..]);
     // The job's shapes and key index replace the image's whole (truncate
     // restores the image's).
     heap.shapes.clear(); heap.shapes.append(s.shapes); heap.keys.clear(); heap.keys.append(s.keys); heap.interned = interned(s); heap.image_written = true;

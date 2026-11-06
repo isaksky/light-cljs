@@ -17,6 +17,8 @@ struct State {
     registered: bool = false, live_jobs: i64 = 0, result: u8[] = [], frames: u8[] = [], locals: u8[] = [], operands: u8[] = [], writes: u8[] = [],
     nodes:      u8[] = [], values: u8[] = [], properties: u8[] = [], units: u16[] = [], latin1: u8[] = [], identity: i64 = 0, work: i64 = 0, heap_fault: source::Fault = source::Fault.None,
     shapes:     u8[] = [], accessors: u8[] = [], keys: u8[] = [],
+    // Continuations and promise jobs (light-cljs-790).
+    conts: u8[] = [], queue: u8[] = [], draining: bool = false, entry: u8[] = [], handlers: u8[] = [],
 }
 fn state(a: source::Job&) -> State {
     return State {
@@ -24,7 +26,13 @@ fn state(a: source::Job&) -> State {
         registered: a.registered, live_jobs: a.heap.live_jobs, result: source::plain_rows([a.result]), frames: source::plain_rows(a.frames), locals: source::plain_rows(a.locals), operands: source::plain_rows(a.operands), writes: source::plain_rows(a.writes),
         nodes:      source::plain_rows(a.heap.nodes), values: source::plain_rows(a.heap.values), properties: source::plain_rows(a.heap.properties), units: copy(a.heap.units), latin1: copy(a.heap.latin1), identity: a.heap.identity, work: a.heap.work, heap_fault: a.heap.fault,
         shapes:     source::plain_rows(a.heap.shapes), accessors: source::plain_rows(a.heap.accessors), keys: str(bytes_of(a.heap.keys)),
+        conts:      source::plain_rows(a.heap.conts), queue: source::plain_rows(a.queue[a.queue_head..]), draining: a.draining, entry: source::plain_rows([a.entry]), handlers: handler_rows(a.handlers),
     };
+}
+fn handler_rows(handlers: const source::Handler[:]) -> u8[] {
+    var out: u8[>..] = [];
+    for h in handlers { out.append(bytes_of([h.frame, h.pc, h.operands, h.locals])); out.push(source::handler_code(h.kind)); source::plain_bytes(h.value, out); }
+    return copy(out);
 }
 fn same_state(a: const State&, b: const State&) {
     // Byte comparisons preserve NaNs and signed zero in every explicit field.
@@ -39,6 +47,7 @@ fn same_state(a: const State&, b: const State&) {
     assert(a.values == b.values);
     assert(a.properties == b.properties);
     assert(a.shapes == b.shapes && a.accessors == b.accessors && a.keys == b.keys);
+    assert(a.conts == b.conts && a.queue == b.queue && a.draining == b.draining && a.entry == b.entry && a.handlers == b.handlers);
     assert(a.units[..] == b.units[..] && a.latin1[..] == b.latin1[..] && a.identity == b.identity && a.work == b.work && a.heap_fault == b.heap_fault);
 }
 struct Run { status: tiny::Status, steps: i64 }
@@ -388,6 +397,8 @@ fn main() {
     malformed(embed_file("../corpus/serial/captures.gsp"));
     heap_program::join(thread_spawn(instruction_limit));
     control_flow();
+    continuations();
+
     properties();
     key_enumeration();
     named_properties();
@@ -421,6 +432,97 @@ fn control_flow() {
     }
     heap_program::join(thread_spawn(pending_completions, str(embed_file("../corpus/serial/calls.gsp"))));
     print("serial source VM: finally/completions, native ToPrimitive frames, 10,000-frame depth and cancellation passed");
+}
+// Generators, async functions and promise jobs (light-cljs-790;
+// continuations.goose). Every budget cut matches the uncut run, so
+// suspension, resumption and the job queue are data the loop resumes at
+// any instruction or promise job.
+fn continuations() {
+    // A generator yielding through finally blocks, return() and throw() on
+    // suspended generators, an exception completing one, re-entry.
+    check(embed_file("../corpus/serial/generators.gsp"), "boolean:true");
+    // Async functions awaiting fulfilled values and a rejected promise, the
+    // order of several queued reactions and an adoption; a wrong order is
+    // an unhandled rejection, which fails the job.
+    check(embed_file("../corpus/serial/async.gsp"), "boolean:true");
+    // An async entry completes with its promise's value; a promise that
+    // never settles fails the job by name.
+    check(embed_file("../corpus/serial/async-entry.gsp"), "utf16:[120,121]");
+    check(embed_file("../corpus/serial/unsettled.gsp"), "", source::Fault.Unsettled);
+    // Adoption follows the visible `then`: without one, a returned promise
+    // is the value.
+    check(embed_file("../corpus/serial/promise-then.gsp"), "utf16:[115,97,109,101,55]");
+    heap_program::join(thread_spawn(continuation_rows, str(embed_file("../corpus/serial/generator-loop.gsp"))));
+    for handled in [false, true] { heap_program::join(thread_spawn(rejection_outcomes, str(embed_file("../corpus/serial/async.gsp")), handled)); }
+    heap_program::join(thread_spawn(rejected_resume, str(embed_file("../corpus/serial/generator-limit.gsp"))));
+    for mode in 2 { for sliced in [false, true] { heap_program::join(thread_spawn(cancelled_continuation, str(embed_file("../corpus/serial/cancel-suspended.gsp")), mode, sliced)); } }
+    print("serial source VM: generators, async functions and promise jobs as continuation records passed");
+}
+// 2,000 yields and 2,000 awaits reuse their activations' rows: no value
+// rows per step, no continuation row per yield and one (the awaited
+// value's promise) per await.
+thread_fn continuation_rows(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let values = heap.values.len; let conts = heap.conts.len;
+    var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
+    assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.tag() == 2 && job.result.flag());
+    assert(heap.values.len - values < 64 && heap.conts.len - conts < 2000 + 64 && heap.conts.len - conts >= 2000);
+    assert(source::retire(job));
+}
+// A resumption the frame limit refuses leaves the generator suspended, at
+// its start and at a yield (the Pants engine's
+// generator_rejected_resume_preserves_suspension).
+thread_fn rejected_resume(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code, limits: source::Limits { frames: 3 } }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
+    assert(source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "InternalError;Y7;InternalError;Y8;"));
+    assert(source::retire(job));
+}
+// Cancellation (decision 4): the running activation's finally block runs,
+// a yield or await in it ends that block, and the suspended generator's
+// finally block never runs; mode 0 a resumed generator, mode 1 an async
+// function a promise job resumed.
+thread_fn cancelled_continuation(bytes: u8[], mode: i64, sliced: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), [source::number(mode)]));
+    assert(source::run(job, 2000) == tiny::Outcome.Yielded && job.draining == (mode == 1));
+    let looped = job.writes.len; assert(looped > 0);
+    assert(source::cancel(job));
+    if sliced { while source::run(job, 1) == tiny::Outcome.Yielded {} } else { source::run(job, -1); }
+    assert(job.status == tiny::Status.Failed && job.fault == source::Fault.Cancelled && !job.thrown);
+    var expected: u8[>..] = []; for i in looped { expected.append("looped "); } expected.append("cleaned ");
+    assert(written(heap, job)[..] == expected[..]);
+    assert(source::retire(job));
+}
+// The job queue's ends, on hand-made promises in a job's heap: a rejection
+// a reaction handles is no report (p adopted by q, q's reaction settling p
+// again, a no-op), one nothing handles fails the job UnhandledRejection
+// with its reason as the thrown value, once the entry's own jobs ran.
+thread_fn rejection_outcomes(bytes: u8[], handled: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    {
+        var heap = source::Heap { code: code }; assert(source::initialize(heap));
+        var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
+        let p = source::new_promise(heap); let q = source::new_promise(heap);
+        if handled { source::add_reaction(job, p.id(), q.id(), false); source::add_reaction(job, q.id(), p.id(), false); }
+        source::settle_promise(job, p.id(), source::text(heap, "r"), true);
+        assert(heap.fault == source::Fault.None && job.rejections.len == (if handled { 0 } else { 1 }) && job.queue.len == (if handled { 1 } else { 0 }));
+        let outcome = source::run(job, -1);
+        if handled {
+            assert(outcome == tiny::Outcome.Complete && job.result.tag() == 2 && job.result.flag());
+            assert(source::promise_state(heap, q.id()).state == 2 && source::promise_state(heap, q.id()).handled && source::promise_state(heap, p.id()).state == 2);
+        } else {
+            assert(outcome == tiny::Outcome.Failed && job.fault == source::Fault.UnhandledRejection && job.thrown && source::key_is(heap, job.result, "r"));
+        }
+        assert(source::retire(job));
+    }
 }
 // The property model (light-cljs-787): accessors (a getter's frame, a
 // setter's native frame, an exception through it), prototype chains, `in`,
@@ -584,7 +686,8 @@ fn named_properties() {
     check(embed_file("../corpus/serial/function-name.gsp"), "utf16:[102]");
     check(embed_file("../corpus/serial/function-keys.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/unsupported-array-method.gsp"), "", source::Fault.UnsupportedOperand);
-    check(embed_file("../corpus/serial/unsupported-generator-prototype.gsp"), "", source::Fault.UnsupportedOperand);
+    // A generator function's `prototype` (light-cljs-790; an explicit gap before).
+    check(embed_file("../corpus/serial/unsupported-generator-prototype.gsp"), "boolean:true");
     heap_program::join(thread_spawn(named_model));
     print("serial source VM: arrays' and functions' named properties, lazy prototypes and ToPrimitive getters passed");
 }

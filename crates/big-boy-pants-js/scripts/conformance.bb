@@ -276,8 +276,10 @@
       (if (:timeout r) {:status :timeout}
           (let [line (last (filter #(str/starts-with? % "{:status") (str/split-lines (:out r))))
                 outcome (some-> line edn/read-string)]
-            (cond (nil? outcome) {:status :error :detail (first-line (str (:err r) (:out r)))}
-                  (re-find #"(?i)unhandled promise rejection" (:err r)) {:status :rejected :detail (first-line (:err r))}
+            ;; qjs reports an unhandled rejection and exits before the driver's
+            ;; timer prints the outcome line, so the report comes first.
+            (cond (re-find #"(?i)unhandled promise rejection" (:err r)) {:status :rejected :detail (first-line (:err r))}
+                  (nil? outcome) {:status :error :detail (first-line (str (:err r) (:out r)))}
                   ;; A job or timer threw after the script completed.
                   (not (zero? (:exit r))) {:status :thrown :value (error-name (first-line (:err r))) :detail (str "after " line ": " (first-line (:err r)))}
                   :else {:status (:status outcome) :value (canonical-value (:value outcome))}))))))
@@ -331,6 +333,9 @@
             (cond-> (cond (:timeout r) {:status :timeout}
                           (not (map? outcome)) {:status :infrastructure :detail (str "runner exit " (:exit r) ": " (first-line (str (:out r) (:err r))))}
                           (#{:returned :thrown} (:status outcome)) {:status (:status outcome) :value (canonical-value (:value outcome))}
+                          ;; A rejection nothing handled (light-cljs-790), scored as the
+                          ;; oracles' :rejected is: by status alone.
+                          (= :rejected (:status outcome)) {:status :rejected :detail (str "rejected with " (:value outcome))}
                           (= :unsupported (:status outcome))
                           {:status :unsupported :stage :execute
                            ;; An exported opcode the Goose VM does not implement.

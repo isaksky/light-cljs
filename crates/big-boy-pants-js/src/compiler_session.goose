@@ -16,7 +16,7 @@ extern fn resident_memory() -> i64 = "goose_measure_resident";
 extern fn observe(bytes: const u8&, count: i64) -> i64 = "goose_measure_observe";
 fn consume<T>(values: const T[:]) -> i64 { let bytes = bytes_of(values); return if bytes.len == 0 { 0 } else { observe(bytes[0], bytes.len) }; }
 fn consume(s: const snapshot::Snapshot&) -> i64 { return s.header.work + consume(s.code_bytes) + consume(s.functions) + consume(s.code_constants) + consume(s.children) + consume(s.ops) + consume(s.code_units) + consume(s.nodes) + consume(s.values) + consume(s.properties) + consume(s.units) + consume(s.constants) + consume(s.bytes) + consume(s.sources) + consume(s.bindings) + consume(s.code_strings) + consume(s.strings) + consume(s.latin1) + consume(s.shapes) + consume(s.accessors) + consume(s.keys); }
-fn retained(heap: const source::Heap&) -> i64 { return bytes_of(heap.nodes).len + bytes_of(heap.values).len + bytes_of(heap.properties).len + bytes_of(heap.units).len + heap.latin1.len + bytes_of(heap.constants).len + heap.source_bytes.len + bytes_of(heap.source_ranges).len + bytes_of(heap.shapes).len + bytes_of(heap.accessors).len + bytes_of(heap.keys).len; }
+fn retained(heap: const source::Heap&) -> i64 { return bytes_of(heap.nodes).len + bytes_of(heap.values).len + bytes_of(heap.properties).len + bytes_of(heap.units).len + heap.latin1.len + bytes_of(heap.constants).len + heap.source_bytes.len + bytes_of(heap.source_ranges).len + bytes_of(heap.shapes).len + bytes_of(heap.accessors).len + bytes_of(heap.keys).len + bytes_of(heap.conts).len; }
 
 // GCS2 (light-cljs-784, light-cljs-795; docs/javascript-coverage.md,
 // decision 3): one input thread, the coordinator, `limit + retention` reapers
@@ -47,6 +47,9 @@ struct Saved {
     // (source::Job.cell_rows, light-cljs-799), and how many delay claims it
     // holds unsettled (source::Job.claims, light-cljs-808).
     cell_rows: source::CellRow[] = [], claims: i64 = 0,
+    // The job's promise jobs (light-cljs-790; source::Job.queue and the rest):
+    // its suspended activations are rows of `heap`.
+    queue: source::Task[] = [], queue_head: i64 = 0, draining: bool = false, entry: source::Value = source::Value.Undefined, rejections: u32[] = [],
 }
 struct Command { id: i64 }
 struct Cancel {}
@@ -217,7 +220,7 @@ fn save(job: source::Job&, rt: source::Value, call: source::Value, control: brid
     // The continuation carries the job's delay claims; this worker no longer does.
     let claims = job.claims; job.claims = 0;
     assert(source::retire(job, true)); var c = snapshot::Control {}; let heap = snapshot::capture(job.heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: call }], c, checkpoint); assert(c.error == snapshot::Error.None);
-    return Saved { heap: copy(heap), frames: copy(job.frames), locals: copy(job.locals), operands: copy(job.operands), writes: copy(job.writes), handlers: copy(job.handlers), steps: job.steps, args: job.effect_args, frame: job.effect_frame, bridge: control, sequence: sequence, costs: costs, protected: job.protected_nodes, gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next, owned: job.owned_nodes, foreign: copy(job.foreign), cell_rows: copy(job.cell_rows), claims: claims };
+    return Saved { heap: copy(heap), frames: copy(job.frames), locals: copy(job.locals), operands: copy(job.operands), writes: copy(job.writes), handlers: copy(job.handlers), steps: job.steps, args: job.effect_args, frame: job.effect_frame, bridge: control, sequence: sequence, costs: costs, protected: job.protected_nodes, gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next, owned: job.owned_nodes, foreign: copy(job.foreign), cell_rows: copy(job.cell_rows), claims: claims, queue: copy(job.queue), queue_head: job.queue_head, draining: job.draining, entry: job.entry, rejections: copy(job.rejections) };
 }
 fn fail(id: i64, heap: source::Heap&, job: source::Job&, address: i64 = 0, timing: i64[4] = [0; 4]) {
     let pc = job.fault_pc; var start: i64 = -1; var end: i64 = -1;
@@ -418,7 +421,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
         // Saved rows link the restored heap's rows by index: copied verbatim.
         for f in saved.frames { job.frames.push(f); } job.locals.append(saved.locals); job.operands.append(saved.operands);
         job.writes.append(saved.writes);
-        for h in saved.handlers { job.handlers.push(h); } job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = 9; job.effect_count = 3; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+        for h in saved.handlers { job.handlers.push(h); } for t in saved.queue { job.queue.push(t); } job.queue_head = saved.queue_head; job.draining = saved.draining; job.entry = saved.entry; for r in saved.rejections { job.rejections.push(r); } job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = 9; job.effect_count = 3; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
         // Mode 4: the session was cancelled while this continuation waited;
         // or it was cancelled while this resume was queued (light-cljs-803).
         // Its finally blocks run under its limits; nothing is published.
@@ -510,7 +513,7 @@ fn storage(saved: const Saved&, heap: const source::Heap&, sc: snapshot::Control
     return str(sc.copied_bytes, " ", if saved.heap.nodes.len == 0 { 0 } else { snapshot::footprint(saved.heap) }, " ", output, " ", heap.nodes.len, " ", heap.values.len, " ", peak_memory(), " ", retained(heap));
 }
 fn release(running: Running[>..]&, address: i64) -> Running, bool { for r, i in running { if r.address == address { let out = r; running.swap_remove(i); return out, true; } } return Running { id: 0 }, false; }
-fn footprint(saved: const Saved&) -> i64 { return snapshot::footprint(saved.heap) + bytes_of(saved.frames).len + bytes_of(saved.locals).len + bytes_of(saved.operands).len + bytes_of(saved.writes).len + bytes_of(saved.handlers).len; }
+fn footprint(saved: const Saved&) -> i64 { return snapshot::footprint(saved.heap) + bytes_of(saved.frames).len + bytes_of(saved.locals).len + bytes_of(saved.operands).len + bytes_of(saved.writes).len + bytes_of(saved.handlers).len + bytes_of(saved.queue).len + bytes_of(saved.rejections).len; }
 fn identity(saved: const Saved&) -> i64 { var id = source::reserve_identity(); while id == saved.heap.header.base || id == saved.heap.header.checkpoint { id = source::reserve_identity(); } return id; }
 // Measurement control: a single retained heap, no snapshots or execution
 // threads. The bounded benchmark's pure shared helper is emitted on demand by

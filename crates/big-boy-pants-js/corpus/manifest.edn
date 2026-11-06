@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "6d003c9fd903965cd237a7fa422d2bdbae948423b1b95cbf81ccefdd924c6b04",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "3dc516704ee96ae588bfbde7d3f5c7b0a83f95b650c1bb359704d0565f459ef0",
+  "633bb0973f6ca4b049f2a5140aeeaf44ac645309a012c1875556f76b2fa6110d",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "1a2108185dffceee40083c348fb8b306d46c392910ab5036cfe75b0ae45a205b",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -201,6 +201,14 @@
   "56f507a5544f68b9d20767f244f6cd5059694f542da2bf26dd37341ea5015ef1",
   "corpus/serial/array-names.js"
   "a9dcd0c107903d18ff347ea653db64fb3c4738bfc66e78ee0a82e3d2b452068d",
+  "corpus/serial/async-entry.gsp"
+  "f8ba966389ad2ffaa5e923c22d0952308480bbeef01b0b1da2cd49c0418eb5f7",
+  "corpus/serial/async-entry.js"
+  "443925b27f4b18b0f1aba044ee42533a036a9177d5a31bd36ae8f24047abfb39",
+  "corpus/serial/async.gsp"
+  "ac4dda4f720668be870090e33186c0b59221fb65883f49368cea8501e11e7844",
+  "corpus/serial/async.js"
+  "bca6b1a9b3a0aec5437e5433ec824d1bd700dcc427409e4ef41a8f76ee25b335",
   "corpus/serial/bigint-reached.gsp"
   "7e1c78895bf7a6a54fc3f1f416915232a0362029d51ee435ac29bbb5d2439388",
   "corpus/serial/bigint-reached.js"
@@ -217,6 +225,10 @@
   "82d283d725f7bd990d4a389590be92633478b4d3c6d03c37a36ddabc57e188e8",
   "corpus/serial/cancel-fault.js"
   "e2c34495ef35ab5f9afce52b824a58da83bb016bba00bfac294c14f851bfd6a6",
+  "corpus/serial/cancel-suspended.gsp"
+  "331808c2b204463e1f56669707b460aeefa152fba5fb6111a53e8e5dd7a74405",
+  "corpus/serial/cancel-suspended.js"
+  "75315ba1aaac8cb8d30cedc6a1f9fc5c0372fa25cda5eb58a7d5ccebd7db0f68",
   "corpus/serial/cancel.gsp"
   "184c6df8cdbd8bf7a6e36369c7f21ab5d2decbc2f3d55808216883d1e882ca3d",
   "corpus/serial/cancel.js"
@@ -261,6 +273,18 @@
   "4fa580c0de942e359edc18399ed55caabb8b7ca4c90b3b8e58b4b8696e6da4b0",
   "corpus/serial/function-names.js"
   "09b4f81f77d01efa0a645fc15a7c09c4957b24ab023031580a46ce91bcbc1cb4",
+  "corpus/serial/generator-limit.gsp"
+  "ac88a2fbca6c85167eb6b917463181910000a433c94ebeaff8153fc9701398a9",
+  "corpus/serial/generator-limit.js"
+  "8a0dee34c681366b68687c7e07b2151c57b437dbf91aaa2824a642422fc71dda",
+  "corpus/serial/generator-loop.gsp"
+  "b1670b6972029d8b850322247b79b85432f74d16549858772a9091c8c33d526c",
+  "corpus/serial/generator-loop.js"
+  "c7836fcc46a7a9884504ec503e74b0780eeeaf8d16e99024f972060b6a70a9bb",
+  "corpus/serial/generators.gsp"
+  "8db1f66a9ed76c62f5480ef050146d749530cf15760ce1bb8a5d909d37e2ffb6",
+  "corpus/serial/generators.js"
+  "29569c742b1030bdbbeea69b9567bf625246004ae2f387cc8165f55bcc1e3151",
   "corpus/serial/getter-only.gsp"
   "2e6bf74ff22fdcd58fb693c1c935f8f7e85cbcf8cee21eac367297cec46ad47a",
   "corpus/serial/getter-only.js"
@@ -317,6 +341,10 @@
   "fa62b7774893306c20ee086dd42737b735bc4b7af95ec0d348f8ddb811087229",
   "corpus/serial/object-rest.js"
   "7d53bf63de3cb6aa3978a324901c38db5308ac5bb8e582244ba814e219f0a98c",
+  "corpus/serial/promise-then.gsp"
+  "a93157a67fc74ace8e6770eb3d6247b95daa7691f69e92acdc1e4bb632169982",
+  "corpus/serial/promise-then.js"
+  "0d8966e1b0f12373da54fd5285b42f4cd044acc9a745a5eac90a857a76f7b683",
   "corpus/serial/prototypes.gsp"
   "b7446a543b9ef49428ba26f401f187d48fb666e940237fb920931bcd535ed809",
   "corpus/serial/prototypes.js"
@@ -325,6 +353,14 @@
   "d45757d9ea74ae429685f621ec0f259dd72ce7a27e7ea0c415e8869504e8932f",
   "corpus/serial/strings.js"
   "ed7e88de0a3974c5012e388a6676c645b891aa6d94b6e0652488d6956ab0c254",
+  "corpus/serial/suspended-generator.gsp"
+  "6865ccf047f61475779034a72f45fcba09d1b1ad2e04a7170bf39d3adeacc3d8",
+  "corpus/serial/suspended-generator.js"
+  "d241902fa214ca5dd9e1beaa798fdba2c23deba22aba9731f46671429c8c7371",
+  "corpus/serial/suspended-wait.gsp"
+  "96b8d2c503018f6d3314bfbae69501703b1c6a1e0d784c8ab5253712241c59c9",
+  "corpus/serial/suspended-wait.js"
+  "9b140ad77096771a2de0ec9c4e9c1e858eace97f14a5bcf35ce695e9781c0f5f",
   "corpus/serial/tdz.gsp"
   "5846754451cfc3a3170bf453d34bd89c7799e2594fd2178d615f0e108b88d331",
   "corpus/serial/tdz.js"
@@ -333,6 +369,10 @@
   "fdd42503ba272d1f2415b28cc2efa122d41aef85bbbeeecf0b513d55e697b1eb",
   "corpus/serial/type-error.js"
   "20def2aa98ed0a39fdcfa6c43a6fab37f57f02128f981aa3d5e417bf7d7363cb",
+  "corpus/serial/unsettled.gsp"
+  "1b0d231c7c44a8974e1ee784ed8b85a18be34e783afad7d1205994396cdf5034",
+  "corpus/serial/unsettled.js"
+  "ead804c1e583d80e648ea4b6388d3e999da3a667923dec3cbf03ee306e12cb9d",
   "corpus/serial/unsupported-array-method.gsp"
   "ebac3d50e17cb8e2fa6eda669a0c841d184e148f91a2c26a2d6cb48ada2305c1",
   "corpus/serial/unsupported-array-method.js"

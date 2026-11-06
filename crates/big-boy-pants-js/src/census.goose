@@ -27,6 +27,12 @@ fn mark(heap: const source::Heap&, v: source::Value, nodes: bool[>..]&, units: b
 fn mark_slot(heap: const source::Heap&, v: source::Value, nodes: bool[>..]&, units: bool[>..]&, work: i64[>..<]&) {
     if v.tag() == -2 { let p = source::pair(heap, v); mark(heap, p.get, nodes, units, work); mark(heap, p.set, nodes, units, work); } else { mark(heap, v, nodes, units, work); }
 }
+fn mark_activation(heap: const source::Heap&, row: u32, values: bool[>..]&, nodes: bool[>..]&, units: bool[>..]&, work: i64[>..<]&) {
+    let a = source::activation(heap, row);
+    mark(heap, a.callee, nodes, units, work); mark(heap, a.receiver, nodes, units, work);
+    let first: i64 = a.values; for r in first..min(first + a.capacity, values.len) { values[r] = true; mark(heap, source::slot(heap, r), nodes, units, work); }
+    for i in a.handler_count { match source::cont_row(heap, a.handlers + i) { Saved s => { mark(heap, s.h.value, nodes, units, work); }, _ => {} } }
+}
 fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
     var nodes:      bool[>..] = []; nodes.resize(heap.nodes.len, false);
     var values:     bool[>..] = []; values.resize(heap.values.len, false);
@@ -37,7 +43,7 @@ fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
     for v in heap.constants { mark(heap, v, nodes, units, work); }
     mark(heap, heap.global, nodes, units, work); mark(heap, heap.call_method, nodes, units, work);
     while work.len > 0 {
-        let n = source::node(heap, work.pop());
+        let id = work.pop(); let n = source::node(heap, id);
         mark(heap, n.value, nodes, units, work); mark(heap, n.namespace_value, nodes, units, work); mark(heap, n.metadata, nodes, units, work);
         if snapshot::has_values(n.kind) {
             for row in n.start..(n.start + n.count) { if row < values.len { values[row] = true; mark(heap, source::slot(heap, row), nodes, units, work); } }
@@ -47,6 +53,16 @@ fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
         // the prototype. Every shape's key is live. A key list's records
         // (kind 16) are a dictionary's; element runs are value runs.
         mark(heap, n.proto, nodes, units, work);
+        // A generator's activation or a promise's state (light-cljs-790):
+        // the activation's slot run and handlers, the promise's result,
+        // reactions' promises and an async function's activation.
+        if n.kind == source::generator_kind() && n.function != source::no_row() { mark_activation(heap, n.function, values, nodes, units, work); }
+        if n.kind == source::promise_kind() {
+            let s = source::promise_state(heap, id);
+            mark(heap, s.result, nodes, units, work);
+            if s.activation != source::no_row() { mark_activation(heap, s.activation, values, nodes, units, work); }
+            var at = s.first; while at != source::no_row() { let r = source::reaction(heap, at); mark(heap, source::object(r.target), nodes, units, work); at = r.next; }
+        }
         if snapshot::shaped(n) {
             for v, i in n.slots { if i < n.key_count { mark_slot(heap, v, nodes, units, work); } }
             for row in n.keys..min(n.keys + source::overflow(n), values.len) { values[row] = true; mark_slot(heap, source::slot(heap, row), nodes, units, work); }

@@ -836,6 +836,23 @@ mod serial_tests {
             ("function-keys", "boolean:true"),
             ("unsupported-array-method", "number:1"),
             ("unsupported-generator-prototype", "boolean:true"),
+            // Generators, async functions and promise jobs (light-cljs-790).
+            // `async` checks its order in a promise job: a wrong one is an
+            // unhandled rejection, which fails Node's run. The "goose" cases
+            // end in ways only the Goose job defines (an async entry's
+            // settled value, a promise that never settles, a dependency
+            // wait, a generator left suspended; serial_tests.goose and
+            // snapshot_tests.goose).
+            ("generators", "boolean:true"),
+            ("async", "boolean:true"),
+            ("generator-loop", "boolean:true"),
+            ("async-entry", "goose"),
+            ("unsettled", "goose"),
+            ("suspended-wait", "goose"),
+            ("suspended-generator", "goose"),
+            ("cancel-suspended", "goose"),
+            ("generator-limit", "goose"),
+            ("promise-then", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));
@@ -845,7 +862,7 @@ mod serial_tests {
             } else {
                 assert_eq!(std::fs::read(path).unwrap(), export.bytes, "{name}");
             }
-            if name == "loop" || name.starts_with("cancel") {
+            if name == "loop" || name.starts_with("cancel") || expected == "goose" {
                 continue;
             }
             // Node's default native stack holds fewer than the 10,000 frames

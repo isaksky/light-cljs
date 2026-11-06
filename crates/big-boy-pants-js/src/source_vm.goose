@@ -7,6 +7,7 @@ import .export_schema;
 import .realm;
 import .array_callbacks;
 import .cells;
+import .continuations;
 
 namespace source;
 
@@ -119,7 +120,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, ToPrimitive t => 3 + (t.op as i64) * 4 + (t.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, ToPrimitive t => 3 + (t.op as i64) * 4 + (t.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -131,11 +132,12 @@ fn plain_bytes(p: Pair, out: u8[>..]&) { plain_bytes(p.get, out); plain_bytes(p.
 fn plain_rows<T>(rows: const T[:]) -> u8[>..] { var out: u8[>..] = []; for r in rows { plain_bytes(r, out); } return out; }
 // kind: GSP constructor kind (0 none, 1 ordinary, 2 base class, 3 derived
 // class, 4 default derived class); generator: a generator or async generator
-// (export flag bit 16), which has an own `prototype` though its kind is 0.
+// (export flag bit 16), which has an own `prototype` though its kind is 0;
+// asynchronous: an async function or async generator (bit 17).
 // name_start and name_len: the function's `name` (SetFunctionName, the
 // Rust compiler's inferred name included) as a run of Code.units; length:
 // its `length` (ExpectedArgumentCount) (light-cljs-806).
-struct Function { start: u32, count: u32, constants: u32, children: u32, params: u32, locals: u32, captures: u32, strict: bool, kind: i64 = 0, generator: bool = false, name_start: u32 = 0, name_len: u32 = 0, length: u32 = 0 }
+struct Function { start: u32, count: u32, constants: u32, children: u32, params: u32, locals: u32, captures: u32, strict: bool, kind: i64 = 0, generator: bool = false, asynchronous: bool = false, name_start: u32 = 0, name_len: u32 = 0, length: u32 = 0 }
 struct Op { code: i64, arg: i64, offset: i64, start: i64, end: i64, depth: i64 = -1 }
 // One decoded instruction per validated `Op` row (light-cljs-785; decision 1
 // of docs/javascript-coverage.md): a fixed-mode enum dispatched by `match` in
@@ -164,6 +166,12 @@ enum Ins {
     ForInStart, ForInNext, OwnKeys, IsEnumerable, CopyData, ToPropertyKey, RequireCoercible,
     // typeof (78, light-cljs-788).
     TypeOf,
+    // Generators and async functions (light-cljs-790, continuations.goose):
+    // GeneratorStart (123) only marks code; GeneratorInitialYield (125),
+    // GeneratorYield (124), AsyncStart (131) and Await (132) detach and
+    // settle activations. GeneratorYieldStar (126) and AsyncGeneratorStart
+    // (181) stay Unsupported.
+    GeneratorStart, GeneratorInitialYield, GeneratorYield, AsyncStart, Await,
 }
 // The row's stack effect from the generated registry table, resolved once at
 // decode (-1 marks a row the table refuses; load never admits one).
@@ -183,8 +191,12 @@ root struct Code {
 // implement ran; Job.fault_opcode names it. Like every fault except the
 // TypeError, ReferenceError, RangeError, HostEffect and StackLimit throws
 // (catchable(), light-cljs-786), JavaScript cannot catch it. Cancelled: the job's consumer
-// cancelled it (cancel()); its finally blocks ran first.
-enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed, EffectContract, HostEffect, Unsupported, Cancelled, RangeError }
+// cancelled it (cancel()); its finally blocks ran first. UnhandledRejection
+// and Unsettled end a job whose promise jobs have drained (light-cljs-790,
+// continuations.goose): a promise was rejected with no reaction, the
+// result its thrown value; or the entry returned a promise that can never
+// settle, since nothing is left to run.
+enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed, EffectContract, HostEffect, Unsupported, Cancelled, RangeError, UnhandledRejection, Unsettled }
 // Table limits count the rows a heap added above its image (Heap.image),
 // not table lengths (light-cljs-792 constraint 4); each table checks its limit
 // in its one allocation function. The call limits are the Pants engine's
@@ -194,8 +206,9 @@ enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLim
 // instruction that would pass either fails with a catchable StackLimit
 // before it changes anything. Neither depends on the native stack: the
 // dispatch loop never recurses per JavaScript call.
-// `shapes` bounds shape and accessor rows together (light-cljs-787).
-struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576, properties: i64 = 1048576, work: i64 = 10000000, steps: i64 = 1000000, frames: i64 = 10000, stack: i64 = 1048576, shapes: i64 = 1048576 }
+// `shapes` bounds shape and accessor rows together (light-cljs-787);
+// `conts` the continuation table's rows (light-cljs-790).
+struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576, properties: i64 = 1048576, work: i64 = 10000000, steps: i64 = 1000000, frames: i64 = 10000, stack: i64 = 1048576, shapes: i64 = 1048576, conts: i64 = 1048576 }
 // All heap tables append until session teardown; IDs are never recycled.
 // kind: plain=0, array=1, closure=2, cell=3. Captures and cell values never
 // reference frame scratch. Property chains are indices, not Goose references.
@@ -210,7 +223,12 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // reference=18 (function=cell, length=flavor: 0 atom, 1 volatile or 2
 // delay, whose value is its thunk when the job holds it; cells.goose) and a
 // job's own delay=19 (value=thunk, pending while truthy, namespace_value=the
-// value it realized, light-cljs-808).
+// value it realized, light-cljs-808), a generator object=20 (function=its
+// Activation row in heap.conts or no_row(), length=its state) and a
+// promise=21 (function=its Promise row in heap.conts) (light-cljs-790;
+// continuations.goose). Errors, generators and promises are ordinary
+// objects with internal slots: their own properties are kind 0's, without
+// an element run.
 // Closure immutable marks fnApplyNull's immutable receiver convention.
 // Errors preserve object identity/truthiness;
 // property access/coercion and form transport reject unsupported inspection.
@@ -261,7 +279,7 @@ struct Pair { get: Value = Value.Undefined, set: Value = Value.Undefined }
 struct KeySlot { row: u32 = 4294967295, hash: u32 = 0 }
 // Table lengths when the heap became an image (restore); 0 for a heap built
 // by initialize. Allocation limits count rows above these tops.
-struct Tops { nodes: i64 = 0, values: i64 = 0, properties: i64 = 0, units: i64 = 0, strings: i64 = 0, latin1: i64 = 0, shapes: i64 = 0, accessors: i64 = 0 }
+struct Tops { nodes: i64 = 0, values: i64 = 0, properties: i64 = 0, units: i64 = 0, strings: i64 = 0, latin1: i64 = 0, shapes: i64 = 0, accessors: i64 = 0, conts: i64 = 0 }
 root struct Heap {
     code:  const Code&, identity: i64 = 0, limits: Limits = Limits {},
     nodes: Node[>..]                  = [], values: Value[>..] = [], properties: Property[>..] = [],
@@ -272,6 +290,9 @@ root struct Heap {
     units:         u16[>..]   = [], latin1: u8[>..] = [], strings: Str[>..] = [], constants: Value[>..] = [], work: i64 = 0,
     source_bytes:  u8[>..]    = [], source_ranges: SourceRange[>..] = [],
     property_rows: i64        = 0, image: Tops = Tops {},
+    // Detached activations, their handlers, promise states and reactions
+    // (light-cljs-790; continuations.goose, Cont).
+    conts: Cont[>..] = [],
     // pending: the key of the pending property (realm.goose) an
     // UnsupportedOperand reached, for its report; fail() takes and clears it.
     pending:   Value = Value.Undefined,
@@ -319,7 +340,11 @@ root struct Heap {
 //                gives its fields and phases), its Builtin the payload.
 //   Force        force, deref and derefProtocol of a delay (light-cljs-808;
 //                cells.goose, which gives its fields and phases).
-enum Native { None, Mapv, MapSeq, Setter, CopyData, ToPrimitive { op: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin } }
+//   Resume       a generator's next (kind 0), return (1) or throw (2)
+//                (light-cljs-790; continuations.goose): input the
+//                generator, its activation attached above; pc 1 awaits the
+//                value it yields or returns.
+enum Native { None, Mapv, MapSeq, Setter, CopyData, ToPrimitive { op: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, argument_count: i64 = 0, input: Value = Value.Undefined, output: Value = Value.Undefined, index: i64 = 0, native: Native = Native.None }
@@ -331,9 +356,13 @@ struct Write { object: Value, key: Value, value: Value }
 // is running: Normal (PopFinally), Return with `value`, Throw with the
 // exception `value`, Cancel (the consumer's cancellation, cancel()), and
 // Jump, a break or continue (CallFinally) resuming at pc. EndFinally pops the
-// frame's pending completion and resumes it. Every entry is plain data: a
-// suspended job saves its handlers with its frames.
-enum HandlerKind { Catch, Finally, Normal, Return, Throw, Cancel, Jump }
+// frame's pending completion and resumes it. Async (light-cljs-790) is an
+// async function's completion boundary, its frame's first entry, `value`
+// its promise: an exception that reaches it rejects the promise, and a
+// return resolves it (continuations.goose). Every entry is plain data: a
+// suspended job saves its handlers with its frames, and a detached
+// activation its own (Cont.Saved).
+enum HandlerKind { Catch, Finally, Normal, Return, Throw, Cancel, Jump, Async }
 struct Handler { frame: i64, pc: i64, operands: i64, locals: i64, kind: HandlerKind = HandlerKind.Catch, value: Value = Value.Undefined }
 root struct Job {
     heap:            Heap&, frames: Frame[>..<] = [], locals: Value[>..<] = [], operands: Value[>..<] = [],
@@ -374,6 +403,12 @@ root struct Job {
     // cell installs its code there (light-cljs-809; null elsewhere, where
     // such a load fails by name).
     cell_code: Code? = null,
+    // Promise jobs (light-cljs-790; continuations.goose): the job's FIFO of
+    // reactions, `queue_head` its next; `draining` once the entry has
+    // finished with `entry`, its value; and the promises rejected while no
+    // reaction was registered on them. All of it is the job's, saved with
+    // its continuation and cleared by reset.
+    queue: Task[>..] = [], queue_head: i64 = 0, draining: bool = false, entry: Value = Value.Undefined, rejections: u32[>..] = [],
 }
 // A row a job holds that names a process-wide cell (a cell reference) or
 // has a process-wide identity (a value loaded from or stored in a cell, or
@@ -439,6 +474,7 @@ fn instruction(op: Op) -> Ins {
         57 => Ins.PushFinally { to: a }, 59 => Ins.PopFinally, 60 => Ins.EndFinally, 71 => Ins.CallFinally, 72 => Ins.DropCompletion,
         118, 170, 172 => Ins.Pending { what: op.code as u8 },
         78 => Ins.TypeOf, 99 => Ins.ForInStart, 100 => Ins.ForInNext, 128 => Ins.OwnKeys, 129 => Ins.IsEnumerable, 180 => Ins.CopyData, 93 => Ins.ToPropertyKey, 127 => Ins.RequireCoercible,
+        123 => Ins.GeneratorStart, 125 => Ins.GeneratorInitialYield, 124 => Ins.GeneratorYield, 131 => Ins.AsyncStart, 132 => Ins.Await,
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -470,7 +506,7 @@ fn load(code: Code&, image: const program::Image&) -> bool {
     code.source_bytes.append(bytes[l.source..l.functions]);
     for i in program::word(bytes, 12) {
         let at = l.functions + i * 52; let flags = program::word(bytes, at + 48);
-        code.functions.push(Function { start: program::word(bytes, at) as u32, count: program::word(bytes, at + 4) as u32, constants: program::word(bytes, at + 8) as u32, children: program::word(bytes, at + 16) as u32, params: program::word(bytes, at + 24) as u32, locals: program::word(bytes, at + 28) as u32, captures: program::word(bytes, at + 32) as u32, strict: (flags & 1) == 1, kind: (flags >> 8) & 255, generator: ((flags >> 16) & 1) == 1, name_start: program::word(bytes, at + 36) as u32, name_len: program::word(bytes, at + 40) as u32, length: program::word(bytes, at + 44) as u32 });
+        code.functions.push(Function { start: program::word(bytes, at) as u32, count: program::word(bytes, at + 4) as u32, constants: program::word(bytes, at + 8) as u32, children: program::word(bytes, at + 16) as u32, params: program::word(bytes, at + 24) as u32, locals: program::word(bytes, at + 28) as u32, captures: program::word(bytes, at + 32) as u32, strict: (flags & 1) == 1, kind: (flags >> 8) & 255, generator: ((flags >> 16) & 1) == 1, asynchronous: ((flags >> 17) & 1) == 1, name_start: program::word(bytes, at + 36) as u32, name_len: program::word(bytes, at + 40) as u32, length: program::word(bytes, at + 44) as u32 });
     }
     for i in program::word(bytes, 16) {
         let at = l.constants + i * 12; let tag = program::word(bytes, at);
@@ -541,7 +577,7 @@ fn append_code(out: Code&, other: const Code&) -> i64 {
 }
 fn memory(heap: Heap&) -> bool { heap.fault = Fault.MemoryLimit; return false; }
 // The heap's table lengths, as the image tops a restore or reset sets.
-fn tops(heap: const Heap&) -> Tops { return Tops { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len, strings: heap.strings.len, latin1: heap.latin1.len, shapes: heap.shapes.len, accessors: heap.accessors.len }; }
+fn tops(heap: const Heap&) -> Tops { return Tops { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len, strings: heap.strings.len, latin1: heap.latin1.len, shapes: heap.shapes.len, accessors: heap.accessors.len, conts: heap.conts.len }; }
 fn valid(heap: Heap&, v: Value) -> bool {
     if heap.fault != Fault.None { return false; }
     return match v {
@@ -1196,9 +1232,11 @@ fn delete_own(heap: Heap&, o: i64, k: Value) -> bool {
 // materialize_function), so creation order is the specification's. They are
 // made before any other property and a delete moves the closure to
 // dictionary mode (`initialized`), so a closure with them made never looks
-// lazy again. Arrows, methods and async functions have no `prototype`. Not
-// implemented, failing UnsupportedOperand by name: a class constructor's
-// eager `prototype` and a generator's (Function.generator), and therefore
+// lazy again. Arrows, methods and async functions have no `prototype`. A
+// generator function's (light-cljs-790) is made the same way, a new object
+// whose [[Prototype]] is %GeneratorPrototype% and which has no
+// `constructor`. Not implemented, failing UnsupportedOperand by name: a class
+// constructor's eager `prototype` and an async generator's, and therefore
 // those functions' key lists; computed names (SetComputedName). Built-ins
 // (kind 4) have their own `length` and `name` from the realm (light-cljs-788).
 fn constructor_kind(heap: const Heap&, o: i64) -> i64 { return heap.code.functions[node(heap, o).function].kind; }
@@ -1206,10 +1244,13 @@ fn lazy_function(heap: const Heap&, o: i64) -> bool {
     let n .= node(heap, o);
     return n.kind == 2 && n.key_count == 0 && !n.initialized;
 }
-fn lazy_prototype(heap: const Heap&, o: i64) -> bool { return lazy_function(heap, o) && constructor_kind(heap, o) == 1; }
+// Whether closure o's code gives it an own `prototype`: an ordinary
+// function's or a (synchronous) generator's.
+fn has_prototype(heap: const Heap&, o: i64) -> bool { let f .= heap.code.functions[node(heap, o).function]; return f.kind == 1 || f.generator && !f.asynchronous; }
+fn lazy_prototype(heap: const Heap&, o: i64) -> bool { return lazy_function(heap, o) && has_prototype(heap, o); }
 // Whether closure o's `prototype` is one this VM does not make (a class
-// constructor's or a generator's).
-fn unsupported_prototype(heap: const Heap&, o: i64) -> bool { return constructor_kind(heap, o) >= 2 || heap.code.functions[node(heap, o).function].generator; }
+// constructor's or an async generator's).
+fn unsupported_prototype(heap: const Heap&, o: i64) -> bool { let f .= heap.code.functions[node(heap, o).function]; return f.kind >= 2 || f.generator && f.asynchronous; }
 // Closure o's `length` and `name` from its code row.
 fn function_length(heap: const Heap&, o: i64) -> Value { return number(heap.code.functions[node(heap, o).function].length); }
 fn function_name(heap: Heap&, o: i64) -> Value {
@@ -1242,11 +1283,12 @@ fn materialize_function(heap: Heap&, o: i64) -> bool {
     let length = key_named(heap, "length"); let name = key_named(heap, "name");
     let n = function_name(heap, o);
     if heap.fault != Fault.None || !add_own(heap, o, length, function_length(heap, o), attr_configurable()) || !add_own(heap, o, name, n, attr_configurable()) { return false; }
-    if constructor_kind(heap, o) != 1 { return true; }
+    if !has_prototype(heap, o) { return true; }
     let constructor = key_named(heap, "constructor"); let prototype = key_named(heap, "prototype");
     if heap.fault != Fault.None { return false; }
-    let p = allocate(heap, Node { kind: 0 });
-    if heap.fault != Fault.None || !add_own(heap, p.id(), constructor, object(o), attr_writable() | attr_configurable()) { return false; }
+    let ordinary = constructor_kind(heap, o) == 1;
+    let p = allocate(heap, if ordinary { Node { kind: 0 } } else { Node { kind: 0, proto: object(generator_prototype_row()) } });
+    if heap.fault != Fault.None || ordinary && !add_own(heap, p.id(), constructor, object(o), attr_writable() | attr_configurable()) { return false; }
     return add_own(heap, o, prototype, p, attr_writable());
 }
 // [[GetOwnProperty]] by object kind (interned key k): ordinary objects their
@@ -1260,7 +1302,7 @@ fn materialize_function(heap: Heap&, o: i64) -> bool {
 fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
     let o: i64 = object.id();
     match node(heap, o).kind {
-        0, 13 => {
+        0, 13, 20, 21 => {
             if node(heap, o).count > 0 {
                 let i = element_key(heap, k);
                 if heap.fault != Fault.None { return Own {}; }
@@ -1360,7 +1402,7 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
 fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
     match kind {
-        0, 4, 13 => {},
+        0, 4, 13, 20, 21 => {},
         1 => {
             if key_is(heap, k, "length") { return Value.Undefined, array_length(heap, object, value); }
             let i = index(heap, k);
@@ -1409,7 +1451,7 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
 // fail UnsupportedOperand.
 fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8, half: i64 = 0) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind == 0 || kind == 4 || kind == 13 { return define_own(heap, o, k, value, attrs, half); }
+    if kind == 0 || kind == 4 || kind == 13 || kind == 20 || kind == 21 { return define_own(heap, o, k, value, attrs, half); }
     if kind == 1 && !key_is(heap, k, "length") {
         let i = index(heap, k);
         if heap.fault != Fault.None { return false; }
@@ -1432,7 +1474,7 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
     let o: i64 = object.id();
     match node(heap, o).kind {
         4 => { return delete_own(heap, o, k); },
-        0, 13 => {
+        0, 13, 20, 21 => {
             let i = element_key(heap, k);
             if heap.fault != Fault.None { return false; }
             if object_element(heap, o, i).tag() != -1 { if !charge(heap) { return false; } set_slot(heap, node(heap, o).start + i, hole()); return true; }
@@ -1470,12 +1512,12 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
 struct OwnKey { key: Value, attrs: u8 = 0, index: i64 = -1 }
 fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 || kind == 2 && unsupported_prototype(heap, o) { heap.fault = Fault.UnsupportedOperand; return false; }
+    if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 20 && kind != 21 || kind == 2 && unsupported_prototype(heap, o) { heap.fault = Fault.UnsupportedOperand; return false; }
     // A lazy closure's are `length`, `name` and, for an ordinary function,
     // `prototype`, not yet made (light-cljs-806).
     if kind == 2 && lazy_function(heap, o) {
         for name in ["length", "name", "prototype"] {
-            if name == "prototype" && constructor_kind(heap, o) != 1 { break; }
+            if name == "prototype" && !has_prototype(heap, o) { break; }
             let k = key_named(heap, name);
             if heap.fault != Fault.None { return false; }
             out.push(OwnKey { key: k, attrs: if name == "prototype" { attr_writable() } else { attr_configurable() } });
@@ -1633,7 +1675,8 @@ fn closure(heap: Heap&, function: i64, captures: const Value[:]) -> Value {
 fn unwind_natives(job: Job&, keep: i64) {
     for i in keep..job.frames.len {
         let f = job.frames[i];
-        match f.native { MapSeq => { node_mut(job.heap, f.input.id()).initialized = false; }, _ => {} }
+        // A generator an exception or cancellation leaves is completed.
+        match f.native { MapSeq => { node_mut(job.heap, f.input.id()).initialized = false; }, Resume => { complete_generator(job.heap, f.input.id()); }, _ => {} }
     }
 }
 // An error object (light-cljs-788, realm.goose error_object): a node of kind
@@ -1651,7 +1694,7 @@ fn error_name(fault: Fault) -> const u8[:] { return match fault { TypeError => "
 fn catchable(fault: Fault) -> bool { return error_code(fault) != 0; }
 // Whether an exception raised now would reach a catch or finally block.
 fn catches(job: const Job&) -> bool {
-    for h in job.handlers { if h.kind == HandlerKind.Catch || h.kind == HandlerKind.Finally { return true; } }
+    for h in job.handlers { if h.kind == HandlerKind.Catch || h.kind == HandlerKind.Finally || h.kind == HandlerKind.Async { return true; } }
     return false;
 }
 // End the job with `reason` at `frame`'s instruction: no catch or finally
@@ -1723,12 +1766,20 @@ fn raise(job: Job&, value: Value, frame: Frame) {
     while job.handlers.len > 0 {
         let h = job.handlers.pop();
         if h.kind == HandlerKind.Cancel { terminate(job, Fault.Cancelled, frame); return; }
-        if h.kind != HandlerKind.Catch && h.kind != HandlerKind.Finally { continue; }
+        if h.kind != HandlerKind.Catch && h.kind != HandlerKind.Finally && h.kind != HandlerKind.Async { continue; }
         if !unwind_to(job, h) { terminate(job, Fault.InvalidState, frame); return; }
+        // An async function's boundary: its promise is rejected and it
+        // returns the promise (continuations.goose).
+        if h.kind == HandlerKind.Async { async_settle(job, h, value, true, frame); return; }
         if h.kind == HandlerKind.Catch { job.operands.push(value); }
         else { job.handlers.push(Handler { frame: h.frame, pc: h.pc, operands: h.operands, locals: h.locals, kind: HandlerKind.Throw, value: value }); }
         return;
     }
+    uncaught(job, value, frame);
+}
+// An exception no handler caught ends the job: an error object a fault
+// raised reports that fault, any other value is a thrown result.
+fn uncaught(job: Job&, value: Value, frame: Frame) {
     if value.tag() == 5 && node(job.heap, value.id()).kind == 13 && node(job.heap, value.id()).function != 0 { terminate(job, error_fault(node(job.heap, value.id()).function), frame); return; }
     job.result = value; job.thrown = true; terminate(job, Fault.HostEffect, frame);
 }
@@ -1749,16 +1800,21 @@ fn return_value(job: Job&, top: i64, value: Value, at: i64) {
             job.frames[top].pc = h.pc; return;
         }
         job.handlers.pop();
+        // An async function returns its promise, resolved with the value.
+        if h.frame == top && h.kind == HandlerKind.Async { async_settle(job, h, value, false, frame_at(job, top, at)); return; }
     }
     let lb = job.frames[top].local_base; let ob = job.frames[top].operand_base;
     job.frames.pop(); job.locals.resize(lb); job.operands.resize(ob);
-    if job.frames.len == 0 { job.result = value; job.status = tiny::Status.Complete; } else { job.operands.push(value); }
+    deliver(job, value);
 }
+// Deliver a finished frame's value to the frame below, or, with none left,
+// end the entry (continuations.goose, entry_done).
+inline fn deliver(job: Job&, value: Value) { if job.frames.len == 0 { entry_done(job, value); } else { job.operands.push(value); } }
 // Whether the innermost handler entry belongs to frame `top` and is `kind`.
 fn own(job: const Job&, top: i64, kind: HandlerKind) -> bool {
     return job.handlers.len > 0 && job.handlers[job.handlers.len - 1].frame == top && job.handlers[job.handlers.len - 1].kind == kind;
 }
-fn pending(kind: HandlerKind) -> bool { return kind != HandlerKind.Catch && kind != HandlerKind.Finally; }
+fn pending(kind: HandlerKind) -> bool { return kind != HandlerKind.Catch && kind != HandlerKind.Finally && kind != HandlerKind.Async; }
 // The handler instructions of the frame at `top`, run at `at` with its pc
 // written back past `at`. A mismatch with the handler stack (possible only in
 // hand-assembled code) fails with InvalidState, as the Pants engine's
@@ -1891,6 +1947,7 @@ fn reset(job: Job&) -> bool {
     job.steps = 0; job.effects_enabled = false; job.helpers_enabled = false; job.effect_pending = false; job.effect_kind = -1; job.cancelling = false;
     job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0; job.detail.clear();
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
+    job.queue.clear(); job.queue_head = 0; job.draining = false; job.entry = Value.Undefined; job.rejections.clear();
     return true;
 }
 // The write log holds named property writes only: the typed outcome's
@@ -1996,7 +2053,7 @@ recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool
     if x.tag() != 5 { return equal(heap, x, y); }
     let n = node(heap, x.id()); let m = node(heap, y.id());
     if n.kind == 15 || m.kind == 15 { heap.fault = Fault.NativeBoundary; return false; }
-    if n.kind < 5 || m.kind < 5 || n.kind == 13 || m.kind == 13 || n.kind == 14 || m.kind == 14 { return x == y; }
+    if n.kind < 5 || m.kind < 5 || n.kind == 13 || m.kind == 13 || n.kind == 14 || m.kind == 14 || n.kind >= 20 || m.kind >= 20 { return x == y; }
     // An atom is equal only to itself; two references to one cell are one atom.
     if n.kind >= 16 || m.kind >= 16 { return x == y || n.kind == 18 && m.kind == 18 && n.function == m.function; }
     if n.kind != m.kind && !((n.kind == 5 || n.kind == 6 || n.kind == 12) && (m.kind == 5 || m.kind == 6 || m.kind == 12)) { return false; }
@@ -2383,6 +2440,7 @@ fn native_step(job: Job&) {
         ArrayCallbacks a => { array_callbacks_step(job, frame, a.which); },
         Swap s => { swap_step(job, frame, s.which); },
         Force x => { force_step(job, frame, x.which); },
+        Resume => { resume_step(job, frame); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -2449,11 +2507,11 @@ fn builtin_callback(job: Job&, callee: Value, receiver: Value, arg: Value, frame
 // Pop a finished native frame and deliver its result to the frame below.
 fn finish_native(job: Job&, frame: Frame, result: Value) {
     job.frames.pop(); job.operands.resize(frame.operand_base);
-    if job.frames.len == 0 { job.result = result; job.status = tiny::Status.Complete; } else { job.operands.push(result); }
+    deliver(job, result);
 }
 // Whether a binary operator's operand is an ordinary object, which converts
 // through ToPrimitive before the operator runs.
-fn ordinary(heap: const Heap&, v: Value) -> bool { return v.tag() == 5 && (node(heap, v.id()).kind == 0 || node(heap, v.id()).kind == 13); }
+fn ordinary(heap: const Heap&, v: Value) -> bool { return v.tag() == 5 && (node(heap, v.id()).kind == 0 || node(heap, v.id()).kind == 13 || node(heap, v.id()).kind == 20 || node(heap, v.id()).kind == 21); }
 // Start the resumable ToPrimitive (hint default) of a binary operator `op`
 // whose operands x and y include an ordinary object (light-cljs-786): a
 // native frame converts them, left to right, and then runs the operator. The
@@ -2905,6 +2963,13 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     left = fuel(job, allowance, used);
                 },
                 RequireCoercible => { if job.operands[job.operands.len - 1].tag() <= 1 { heap.fault = Fault.TypeError; break; } },
+                // Generators and async functions (continuations.goose): each
+                // detaches, ends or settles the frame, so the loop leaves it.
+                GeneratorStart => {},
+                AsyncStart => { settle(job, ran, used); job.frames[top].pc = pc; async_start(job, top); if heap.fault != Fault.None { break; } left = fuel(job, allowance, used); },
+                GeneratorInitialYield => { settle(job, ran, used); job.frames[top].pc = pc; initial_yield(job, top, at); break; },
+                GeneratorYield => { settle(job, ran, used); job.frames[top].pc = pc; generator_yield(job, top, at); break; },
+                Await => { settle(job, ran, used); job.frames[top].pc = pc; await_value(job, top, at); break; },
                 Unsupported => { heap.fault = Fault.Unsupported; break; },
                 Construct c => {
                     if !constructible(heap, job.operands[job.operands.len - c.argc - 1]) { heap.fault = Fault.Unsupported; break; }
@@ -3442,7 +3507,10 @@ fn run_claimed(job: Job&, budget: i64) -> tiny::Outcome {
     defer { job.claimed = false; }
     var used: i64 = 0;
     while job.status == tiny::Status.Ready && !job.effect_pending && (budget < 0 || used < budget) {
-        if job.frames.len == 0 || job.frames[job.frames.len - 1].function < 0 { native_step(job); used += 1; }
+        // No frame left once the entry finished: the next promise job runs
+        // (continuations.goose).
+        if job.frames.len == 0 && job.draining { drain_step(job); used += 1; }
+        else if job.frames.len == 0 || job.frames[job.frames.len - 1].function < 0 { native_step(job); used += 1; }
         else { used += execute(job, if budget < 0 { -1 } else { budget - used }); }
     }
     return match job.status { Ready => tiny::Outcome.Yielded, Complete => tiny::Outcome.Complete, Failed => tiny::Outcome.Failed };

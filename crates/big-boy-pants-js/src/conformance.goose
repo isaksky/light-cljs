@@ -9,6 +9,8 @@ import .census;
 // image, run its top level once with the VM's default limits, and print one
 // EDN outcome map. It never changes VM behaviour; it only names what happened.
 //   {:status :returned :value V}        the script completed with value V
+//   {:status :rejected :value V}        a promise rejected with V that no
+//                                       reaction ever handled
 //   {:status :thrown :value V}          an uncaught JavaScript throw of V, or
 //                                       a VM-raised TypeError, ReferenceError
 //                                       or InternalError (stack overflow)
@@ -56,7 +58,12 @@ fn main() {
     if !source::start(job, entry, []) { var detail: u8[>..] = []; format(detail, job.fault); infrastructure("start:", detail); return; }
     let outcome = source::run(job, -1);
     var out: u8[>..] = [];
-    if outcome == tiny::Outcome.Complete || job.thrown {
+    // A promise rejected with no reaction once the promise jobs drained
+    // (light-cljs-790), as the QuickJS driver and the Pants engine report it.
+    if outcome == tiny::Outcome.Failed && job.fault == source::Fault.UnhandledRejection {
+        var value: u8[>..] = []; source::canonical(heap, job.result, value);
+        format(out, "{:status :rejected :value \"", value, "\"}");
+    } else if outcome == tiny::Outcome.Complete || job.thrown {
         var value: u8[>..] = []; source::canonical(heap, job.result, value);
         // An error object JavaScript made is named by its `name` (a data
         // property, own or inherited), as the QuickJS driver names it.
@@ -87,6 +94,7 @@ fn main() {
         for f in job.frames { roots.push(f.callee); roots.push(f.receiver); roots.push(f.input); roots.push(f.output); }
         for h in job.handlers { roots.push(h.value); }
         for v in job.locals { roots.push(v); } for v in job.operands { roots.push(v); }
+        roots.push(job.entry); for t in job.queue { roots.push(t.value); roots.push(source::object(t.target)); }
         let c = census::take(heap, roots); var line: u8[>..] = [];
         format(line, "{:heap {:nodes ", c.nodes, " :values ", c.values, " :properties ", c.properties, " :units ", c.units);
         format(line, " :dead-nodes ", c.dead_nodes, " :dead-values ", c.dead_values, " :dead-properties ", c.dead_properties, " :dead-units ", c.dead_units, "}}");

@@ -48,6 +48,8 @@
   "bbp/array_map" {:area :core-builtins}
   "bbp/array_map_length_to_primitive" {:area :core-builtins}
   "bbp/array_map_species" {:area :core-builtins}
+  "bbp/async_await_order" {:area :generators-async}
+  "bbp/async_unhandled_rejection" {:area :generators-async}
   "bbp/array_named_properties" {:area :objects-classes}
   "bbp/closure_counter" {:area :functions-scope}
   "bbp/completion_declarations_only" {:area :statements-loops}
@@ -57,6 +59,7 @@
   "bbp/for_in_forms" {:area :statements-loops}
   "bbp/function_name_length" {:area :functions-scope}
   "bbp/function_properties_prototype" {:area :functions-scope}
+  "bbp/generator_finally" {:area :generators-async}
   "bbp/getter_only_strict" {:area :objects-classes}
   "bbp/index_keys_order" {:area :objects-classes}
   "bbp/object_rest_spread" {:area :objects-classes}

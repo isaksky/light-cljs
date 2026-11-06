@@ -46,11 +46,13 @@ enum Builtin {
     Atom, Deref, Reset, Swap, CompareAndSet, SwapVals, ResetVals, Volatile, Vreset, AddWatch, RemoveWatch, SetValidator,
     // Delays (light-cljs-808; cells.goose).
     Delay, Force, Realized, IsDelay, NativeConstruct,
+    // Generators (light-cljs-790; continuations.goose).
+    GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, IteratorPrototypeIterator,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[63] = [
+let BUILTINS: BuiltinInfo[67] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -83,6 +85,8 @@ let BUILTINS: BuiltinInfo[63] = [
     BuiltinInfo { which: Builtin.Delay, name: "Delay", length: 2 }, BuiltinInfo { which: Builtin.Force, name: "force", length: 1 },
     BuiltinInfo { which: Builtin.Realized, name: "realized", length: 1 }, BuiltinInfo { which: Builtin.IsDelay, name: "isDelay", length: 1 },
     BuiltinInfo { which: Builtin.NativeConstruct, name: "nativeConstruct", length: 1 },
+    BuiltinInfo { which: Builtin.GeneratorPrototypeNext, name: "next", length: 1 }, BuiltinInfo { which: Builtin.GeneratorPrototypeReturn, name: "return", length: 1 },
+    BuiltinInfo { which: Builtin.GeneratorPrototypeThrow, name: "throw", length: 1 }, BuiltinInfo { which: Builtin.IteratorPrototypeIterator, name: "[Symbol.iterator]" },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -96,13 +100,18 @@ inline fn object_constructor_row() -> i64 { return 12; }
 inline fn function_constructor_row() -> i64 { return 13; }
 inline fn array_constructor_row() -> i64 { return 14; }
 inline fn error_constructor_row(t: i64) -> i64 { return 15 + t; }
-inline fn fixed_rows() -> i64 { return 23; }
+// %IteratorPrototype%, %GeneratorPrototype% (%GeneratorFunction.prototype.prototype%)
+// and %Promise.prototype% (light-cljs-790), ordinary objects.
+inline fn iterator_prototype_row() -> i64 { return 23; }
+inline fn generator_prototype_row() -> i64 { return 24; }
+inline fn promise_prototype_row() -> i64 { return 25; }
+inline fn fixed_rows() -> i64 { return 26; }
 struct Name { text: u8[..24] }
 let ERROR_NAMES:    Name[8]    = [Name { text: "Error" }, Name { text: "EvalError" }, Name { text: "RangeError" }, Name { text: "ReferenceError" }, Name { text: "SyntaxError" }, Name { text: "TypeError" }, Name { text: "URIError" }, Name { text: "InternalError" }];
 let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[13] = [
+let REALM_FUNCTIONS: Method[17] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -111,6 +120,10 @@ let REALM_FUNCTIONS: Method[13] = [
     // The Symbol function, row symbol_row(), holds the well-known symbols.
     Method { which: Builtin.SymbolFunction, holder: 0 },
     Method { which: Builtin.ArrayPrototypeMap, holder: 3 }, Method { which: Builtin.ArrayPrototypeForEach, holder: 3 },
+    // %GeneratorPrototype%'s methods and %IteratorPrototype%[@@iterator]
+    // (light-cljs-790), whose key is the well-known symbol, not its name.
+    Method { which: Builtin.GeneratorPrototypeNext, holder: 24 }, Method { which: Builtin.GeneratorPrototypeReturn, holder: 24 },
+    Method { which: Builtin.GeneratorPrototypeThrow, holder: 24 }, Method { which: Builtin.IteratorPrototypeIterator, holder: 23 },
 ];
 inline fn realm_nodes() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
 // The Symbol function's row: its REALM_FUNCTIONS entry, the eleventh.
@@ -118,7 +131,7 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[123] = [
+let PENDING: PendingName[141] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
@@ -141,7 +154,14 @@ let PENDING: PendingName[123] = [
     PendingName { holder: 12, key: "isExtensible" }, PendingName { holder: 12, key: "isFrozen" }, PendingName { holder: 12, key: "isSealed" }, PendingName { holder: 12, key: "keys" },
     PendingName { holder: 12, key: "preventExtensions" }, PendingName { holder: 12, key: "seal" }, PendingName { holder: 12, key: "setPrototypeOf" }, PendingName { holder: 12, key: "values" },
     // Symbol (symbol_row(); its well-known symbols are real)
-    PendingName { holder: 33, key: "prototype" }, PendingName { holder: 33, key: "for" }, PendingName { holder: 33, key: "keyFor" },
+    PendingName { holder: 36, key: "prototype" }, PendingName { holder: 36, key: "for" }, PendingName { holder: 36, key: "keyFor" },
+    // %IteratorPrototype% (its helpers), %GeneratorPrototype% and
+    // %Promise.prototype% (light-cljs-790; the Promise area makes the last's).
+    PendingName { holder: 23, key: "constructor" }, PendingName { holder: 23, key: "drop" }, PendingName { holder: 23, key: "every" }, PendingName { holder: 23, key: "filter" },
+    PendingName { holder: 23, key: "find" }, PendingName { holder: 23, key: "flatMap" }, PendingName { holder: 23, key: "forEach" }, PendingName { holder: 23, key: "map" },
+    PendingName { holder: 23, key: "reduce" }, PendingName { holder: 23, key: "some" }, PendingName { holder: 23, key: "take" }, PendingName { holder: 23, key: "toArray" },
+    PendingName { holder: 23, key: "", symbol: 4 }, PendingName { holder: 24, key: "constructor" },
+    PendingName { holder: 25, key: "constructor" }, PendingName { holder: 25, key: "then" }, PendingName { holder: 25, key: "catch" }, PendingName { holder: 25, key: "finally" },
     // Array
     PendingName { holder: 14, key: "from" }, PendingName { holder: 14, key: "of" }, PendingName { holder: 14, key: "fromAsync" }, PendingName { holder: 14, key: "", symbol: 8 },
     // The global object's other standard names.
@@ -277,6 +297,7 @@ fn build_realm(heap: Heap&) -> bool {
     for t in ERROR_NAMES.len { rows.push(Node { kind: 0, proto: object(if t == 0 { object_prototype_row() } else { error_prototype_row(0) }) }); }
     rows.push(Node { kind: 4, function: code(Builtin.Object) }); rows.push(Node { kind: 4, function: code(Builtin.Function) }); rows.push(Node { kind: 4, function: code(Builtin.Array) });
     for b, t in ERROR_BUILTINS { rows.push(if t == 0 { Node { kind: 4, function: code(b) } } else { Node { kind: 4, function: code(b), proto: object(error_constructor_row(0)) } }); }
+    rows.push(Node { kind: 0, proto: object(object_prototype_row()) }); rows.push(Node { kind: 0, proto: object(iterator_prototype_row()) }); rows.push(Node { kind: 0, proto: object(object_prototype_row()) });
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: 4, function: code(m.which) }); }
     if !charge(heap, rows.len) || add_nodes(heap, rows) != 0 { if heap.fault == Fault.None { memory(heap); } return false; }
@@ -292,9 +313,12 @@ fn build_realm(heap: Heap&) -> bool {
         if !link_constructor(heap, error_constructor_row(t), p) || !realm_value(heap, p, "name", key_named(heap, ERROR_NAMES[t].text), attr_writable() | attr_configurable()) || !realm_value(heap, p, "message", key_named(heap, ""), attr_writable() | attr_configurable()) { return false; }
     }
     for m, j in REALM_FUNCTIONS {
+        if m.which == Builtin.IteratorPrototypeIterator { if !add_own(heap, m.holder, Value.Symbol { s: 0 }, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; } continue; }
         if !realm_value(heap, m.holder, BUILTINS[code(m.which)].name, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; }
         if m.which == Builtin.FunctionPrototypeCall { heap.call_method = object(fixed_rows() + j); }
     }
+    // %GeneratorPrototype%[@@toStringTag] and %Promise.prototype%[@@toStringTag].
+    if !add_own(heap, generator_prototype_row(), Value.Symbol { s: 4 }, key_named(heap, "Generator"), attr_configurable()) || !add_own(heap, promise_prototype_row(), Value.Symbol { s: 4 }, key_named(heap, "Promise"), attr_configurable()) { return false; }
     // The well-known symbols, Symbol's non-writable, non-enumerable,
     // non-configurable data properties; their values are the exporter's
     // fixed indices (decision 2), so they take no rows.
@@ -570,7 +594,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
             if v.tag() <= 1 { return type_error(job, "cannot convert undefined or null to object"); }
             if v.tag() != 5 { return unsupported_step(job, b, "primitive wrapper prototypes"); }
             let kind = node(heap, v.id()).kind;
-            if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 14 { return unsupported_step(job, b, "a runtime form"); }
+            if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 14 && kind != 20 && kind != 21 { return unsupported_step(job, b, "a runtime form"); }
             return prototype(heap, v.id());
         },
         ObjectIs => { return boolean(same_value(heap, arg(args, 0), arg(args, 1))); },
@@ -601,7 +625,9 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         SymbolFunction => { return unsupported_step(job, b, "creating symbols"); },
         NativeCoreBinding => { return core_binding(job, b, arg(args, 0)); },
         Atom, Deref, Reset, CompareAndSet, ResetVals, Volatile, Vreset, AddWatch, RemoveWatch, SetValidator => { return cell_builtin(job, b, args); },
-        Swap, SwapVals => { return unsupported_step(job, b, "called from a native frame"); },
+        Swap, SwapVals, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow => { return unsupported_step(job, b, "called from a native frame"); },
+        // %IteratorPrototype%[@@iterator]: returns its receiver.
+        IteratorPrototypeIterator => { return receiver; },
         Delay, Force, Realized, IsDelay => { return delay_builtin(job, b, args); },
         NativeConstruct => {
             if !constructible(heap, arg(args, 0)) { return unsupported_step(job, b, "constructing a value other than a Delay"); }

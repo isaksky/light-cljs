@@ -1006,6 +1006,42 @@ OrdinaryToPrimitive of `+` on an ordinary object); the delivery protocol is
 documented at `Native`. Not yet: generators and async functions, promise
 jobs, and catching natives (none needs one yet).
 
+**As implemented (light-cljs-790, November 6, 2026).** `continuations.goose`
+holds the mechanism; its header is the contract. The continuation table
+`heap.conts` is one table of `Cont` rows, an enum of four flat records
+linked by plain `u32` row IDs: `Activation` (a detached frame row, its
+locals and operands in a run of `heap.values`, its handlers in a run of
+`Saved` rows with heights relative to the frame's bases), `Saved`,
+`Promise` (state, result, its pending reactions' first and last rows and
+an async function's activation) and `Reaction`. Generator objects (node
+kind 20) and promises (kind 21) are ordinary objects whose `function`
+names their row. GeneratorInitialYield, GeneratorYield and Await *detach*
+the top frame into its activation row, reusing the row and its runs when
+they fit (a run that no longer fits is replaced by one twice as large), so
+a long generator or await loop adds no value rows per step; next, return
+and throw push a `Resume` native frame that *attaches* the activation and
+receives what it yields or returns, and the bytecode's own paths run
+return and throw. An async function's completion boundary is a handler of
+kind `Async` holding its promise, so an exception that reaches it rejects
+the promise, a return resolves it, and both deliver the promise. The
+promise job queue is the job's FIFO (`Job.queue`), drained one task a step
+when the frame stack is empty after the entry finished; resolving a
+promise with a promise takes the specification's extra job, so job order
+is QuickJS's (bbp/async_await_order). A job ends when the queue is empty:
+`Fault.UnhandledRejection` if a promise was rejected with no reaction ever
+registered (as QuickJS and the Pants engine report), otherwise the entry's
+value or, for an entry that returned a promise, its value, its reason
+thrown, or `Fault.Unsettled` if it is still pending. A saved continuation
+carries the activations in its snapshot (`snapshot.goose` validates every
+`Cont` link) and the queue in `Saved`; the worker reset truncates
+`heap.conts` with every table, so nothing a job left suspended reaches the
+next job. Not yet (the generators area, light-cljs-768): `yield*`, async
+generators, the Promise constructor and methods, thenable objects (a named
+UnsupportedOperand), %GeneratorFunction.prototype% (generator functions
+inherit Function.prototype); and (light-cljs-813) the helper-suspension
+continuation (`compiler_session.goose`, `Saved`) still copies the whole
+job stack rather than detaching it into continuation rows.
+
 **Rejected.** *Goose recursion per call with `exception::try` for throw*:
 the native stack is 8 MB on the macOS main thread, a handler cannot be
 re-entered recursively, and suspension would need the native stack saved.

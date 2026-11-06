@@ -422,7 +422,116 @@ thread_fn layout_worker(base: snapshot::Snapshot) {
     }
 }
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); heap_program::join(thread_spawn(live_boundary)); }
+
+// Suspended continuations (light-cljs-790; decision 4, amended by
+// light-cljs-792). A dependency wait while a generator is suspended at its
+// yield and an async function awaits: answered in place, the worker keeps
+// both in its tables; saved as a continuation, the snapshot carries their
+// rows and the job's stacks and promise jobs carry the rest, and a fresh
+// heap that restores them completes the job the same way. Then a reused
+// worker: a generator one job leaves suspended is gone after the reset,
+// and the next job cannot reach it.
+struct Waiting {
+    image: snapshot::Snapshot = snapshot::Snapshot {}, frames: source::Frame[] = [], locals: source::Value[] = [], operands: source::Value[] = [], handlers: source::Handler[] = [],
+    queue: source::Task[]     = [], queue_head: i64 = 0, draining: bool = false, entry: source::Value = source::Value.Undefined, rejections: u32[] = [],
+    steps: i64                = 0, kind: i64 = 0, count: i64 = 0, frame: source::Frame = source::Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: source::Value.Undefined, receiver: source::Value.Undefined },
+    args:  source::Value[8]   = [source::Value.Undefined; 8],
+}
+fn suspended_continuations() {
+    let wait = embed_file("../corpus/serial/suspended-wait.gsp");
+    heap_program::join(thread_spawn(suspended_wait, str(wait), false));
+    heap_program::join(thread_spawn(suspended_wait, str(wait), true)); let saved = qget<Waiting>();
+    heap_program::join(thread_spawn(resumed_wait, copy(saved)));
+    heap_program::join(thread_spawn(suspension_parent, str(embed_file("../corpus/serial/suspended-generator.gsp")))); let base = qget<snapshot::Snapshot>();
+    heap_program::join(thread_spawn(suspension_worker, copy(base)));
+    print("suspended continuations: a dependency wait keeps them in place or carries them in a saved continuation; a reused worker's next job cannot reach them");
+}
+// Run suspended-wait.js to its dependency wait, with a generator and an
+// async function suspended; answer it in place, or save the continuation.
+thread_fn suspended_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let dep = source::builtin(heap, 8);
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [dep]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    // The generator's and the async function's activations are rows.
+    var activations: i64 = 0; for c in heap.conts { match c { Activation => { activations += 1; }, _ => {} } }
+    assert(activations == 4 && job.frames.len == 1);
+    if !save {
+        assert(source::deliver_effect(job, source::text(heap, "D")));
+        assert(source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "axDbfypz"));
+        assert(source::retire(job)); return;
+    }
+    assert(source::retire(job, true));
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None && image.conts.len == heap.conts.len);
+    // Malformed continuation rows are refused before a restore: an async
+    // boundary naming no promise, a pending promise's reaction cycle, and a
+    // reaction list whose `last` is not its end.
+    for mode in 3 {
+        // af's promise has two pending reactions (the two `also` awaits).
+        var bad = copy(image); var changed = false;
+        for row, i in image.conts {
+            match row {
+                Saved s => { if mode == 0 && s.h.kind == source::HandlerKind.Async { var h = s.h; h.value = source::number(0); bad.conts[i] = source::Cont.Saved { h: h }; changed = true; } },
+                Promise p => {
+                    if mode > 0 && p.p.first != source::no_row() && p.p.first != p.p.last {
+                        if mode == 1 { match image.conts[p.p.last] { Reaction r => { var x = r.r; x.next = p.p.first; bad.conts[p.p.last] = source::Cont.Reaction { r: x }; }, _ => {} } }
+                        else { var s = p.p; s.last = s.first; bad.conts[i] = source::Cont.Promise { p: s }; }
+                        changed = true;
+                    }
+                },
+                _ => {},
+            }
+        }
+        assert(changed);
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+        var dest = source::Code {}; var target_heap = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var refused = snapshot::Control {};
+        assert(!snapshot::restore(bad, dest, target_heap, roots, source::reserve_identity(), refused) && refused.error == snapshot::Error.Link && target_heap.nodes.len == 0);
+    }
+    assert(qput(Waiting { image: copy(image), frames: copy(job.frames), locals: copy(job.locals), operands: copy(job.operands), handlers: copy(job.handlers), queue: copy(job.queue), queue_head: job.queue_head, draining: job.draining, entry: job.entry, rejections: copy(job.rejections), steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// A fresh heap restores the saved continuation and completes the job.
+thread_fn resumed_wait(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    for f in saved.frames { job.frames.push(f); } job.locals.append(saved.locals); job.operands.append(saved.operands); for h in saved.handlers { job.handlers.push(h); }
+    for t in saved.queue { job.queue.push(t); } job.queue_head = saved.queue_head; job.draining = saved.draining; job.entry = saved.entry; for p in saved.rejections { job.rejections.push(p); }
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    assert(source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "axDbfypz"));
+    assert(source::retire(job));
+}
+thread_fn suspension_parent(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var bindings: snapshot::Binding[>..] = [snapshot::Binding { id: 1, generation: 1, value: source::closure(heap, 0, []) }];
+    var c = snapshot::Control {}; let base = snapshot::capture(heap, bindings, c); assert(c.error == snapshot::Error.None && base.conts.len == 0);
+    assert(qput(base));
+}
+thread_fn suspension_worker(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    let identity = source::reserve_identity(); let rows: i64[] = [];
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, bindings, identity, r) && snapshot::truncate(base, rows, identity, code, heap, bindings));
+    // The first job leaves its generator suspended at its yield.
+    var first = source::Job { heap: heap };
+    assert(source::start(first, bindings[0].value, []) && source::run(first, -1) == tiny::Outcome.Complete);
+    let g = first.result; assert(g.tag() == 5 && source::node(heap, g.id()).kind == source::generator_kind() && source::node(heap, g.id()).length == 1 && heap.conts.len > base.conts.len);
+    assert(source::retire(first));
+    // The reset drops its rows, and the next job cannot name it.
+    assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings));
+    assert(heap.conts.len == base.conts.len && g.id() >= heap.nodes.len);
+    var second = source::Job { heap: heap };
+    assert(!source::start(second, bindings[0].value, [g]) && second.fault == source::Fault.StaleID);
+    var third = source::Job { heap: heap };
+    assert(source::start(third, bindings[0].value, []) && source::run(third, -1) == tiny::Outcome.Complete && third.result.tag() == 5 && third.result.id() == g.id());
+    assert(source::retire(third) && snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings));
+}
 
 // The finite map's parent handles that restored heaps look up by index.
 struct FiniteMap { image: snapshot::Snapshot, input: source::Value, tail: source::Value, mapped: source::Value, callback: source::Value, alias: source::Value, other: source::Value, later_tail: source::Value }
@@ -511,7 +620,7 @@ thread_fn finite_map_malformed(parent: FiniteMap, mode: i64) {
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
         assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), restore) && restore.error == snapshot::Error.Link && restore.copied_bytes == 0);
         let empty = snapshot::borrow(target, roots, 1);
-        assert(snapshot::ends(empty) == [0; 20] && target.identity == 0 && !dest.valid && target.fault == source::Fault.None);
+        assert(snapshot::ends(empty) == [0; 21] && target.identity == 0 && !dest.valid && target.fault == source::Fault.None);
         var retry = snapshot::Control {}; assert(snapshot::restore(saved, dest, target, roots, source::reserve_identity(), retry));
     }
 }
