@@ -86,8 +86,9 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
     return true;
 }
 // The kinds with own properties by name (source::Node): ordinary objects,
-// arrays and closures (light-cljs-805).
-fn named(kind: i64) -> bool { return kind >= 0 && kind <= 2; }
+// arrays and closures (light-cljs-805), built-in functions and error objects
+// (light-cljs-788).
+fn named(kind: i64) -> bool { return kind >= 0 && kind <= 2 || kind == 4 || kind == 13; }
 // A shape-mode object, dense array or closure: without `initialized`.
 fn shaped(n: const source::Node&) -> bool { return named(n.kind) && !n.initialized; }
 // A dictionary-mode object, a dictionary array or a closure's records.
@@ -300,6 +301,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     if !code_valid(s, c) { return false; }
     if !value(s, s.header.global) || s.header.global.tag() != 5 || s.nodes[s.header.global.id()].kind != 0 { return reject(c, Error.Link); }
     if !value(s, s.header.call_method) || s.header.call_method.tag() != 5 || s.nodes[s.header.call_method.id()].kind != 4 || s.nodes[s.header.call_method.id()].function != 14 { return reject(c, Error.Link); }
+    if !source::realm_valid(s.nodes, s.accessors, s.header.global, s.header.call_method) { return reject(c, Error.Link); }
     // A header names a run of its own table; a wide run must need two bytes
     // (some unit above 255), so the encoding stays canonical (source::Str).
     for r in s.strings {
@@ -370,7 +372,9 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
             let input = n.namespace_value;
             if input.tag() > 1 && (input.tag() != 5 || (s.nodes[input.id()].kind != 5 && s.nodes[input.id()].kind != 12) || s.nodes[input.id()].count != n.count) || input.tag() <= 1 && n.count != 0 { return reject(c, Error.Link); }
         }
-        if n.kind == 4 && (n.function < 0 || n.function > 20 || n.function == 9) { return reject(c, Error.Unsupported); }
+        // A built-in function's code names a Builtin (source::BUILTINS); an
+        // error object's, the catchable fault it was raised for or 0.
+        if n.kind == 4 && (n.function >= source::builtin_count() || n.function == 9) || n.kind == 13 && n.function > 5 { return reject(c, Error.Unsupported); }
         if (n.kind == 9 || n.kind == 10) && (n.value.tag() != 4 || n.namespace_value.tag() != 1 && n.namespace_value.tag() != 4) || n.kind == 11 && n.value.tag() > 4 { return reject(c, Error.Link); }
         if n.metadata.tag() != 0 && n.metadata.tag() != 1 && (n.metadata.tag() != 5 || s.nodes[n.metadata.id()].kind != 7) { return reject(c, Error.Link); }
     }

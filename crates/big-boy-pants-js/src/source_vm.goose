@@ -4,6 +4,7 @@ import math;
 import .program;
 import .vm;
 import .export_schema;
+import .realm;
 
 namespace source;
 
@@ -152,6 +153,8 @@ enum Ins {
     // Key enumeration (light-cljs-804): for-in (99, 100), object rest (93,
     // 127, 128, 129) and spread (180).
     ForInStart, ForInNext, OwnKeys, IsEnumerable, CopyData, ToPropertyKey, RequireCoercible,
+    // typeof (78, light-cljs-788).
+    TypeOf,
 }
 // The row's stack effect from the generated registry table, resolved once at
 // decode (-1 marks a row the table refuses; load never admits one).
@@ -169,10 +172,10 @@ root struct Code {
 }
 // Unsupported: an exported opcode (or constant kind) this VM does not
 // implement ran; Job.fault_opcode names it. Like every fault except the
-// TypeError, ReferenceError, HostEffect and StackLimit throws (catchable(),
-// light-cljs-786), JavaScript cannot catch it. Cancelled: the job's consumer
+// TypeError, ReferenceError, RangeError, HostEffect and StackLimit throws
+// (catchable(), light-cljs-786), JavaScript cannot catch it. Cancelled: the job's consumer
 // cancelled it (cancel()); its finally blocks ran first.
-enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed, EffectContract, HostEffect, Unsupported, Cancelled }
+enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed, EffectContract, HostEffect, Unsupported, Cancelled, RangeError }
 // Table limits count the rows a heap added above its image (Heap.image),
 // not table lengths (light-cljs-792 constraint 4); each table checks its limit
 // in its one allocation function. The call limits are the Pants engine's
@@ -329,7 +332,11 @@ root struct Job {
     gensym_prefix: u8[>..] = [], gensym_next: i64 = 0,
     // Set by cancel(): the job is running its finally blocks for its
     // consumer's cancellation and then fails with Fault.Cancelled.
-    cancelling:  bool     = false,
+    cancelling: bool = false,
+    // The message of the error a fault raises, when the faulting operation
+    // names one (a built-in's TypeError), or the built-in step an
+    // UnsupportedOperand did not implement (realm.goose); cleared by fail.
+    detail:      u16[>..] = [],
     effect_args: Value[8] = [Value.Undefined; 8], effect_count: i64 = 0, effect_frame: Frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined },
 }
 inline fn number(n: f64) -> Value { return Value.Number { v: n }; }
@@ -390,7 +397,7 @@ fn instruction(op: Op) -> Ins {
         194 => Ins.Form { op: a },
         57 => Ins.PushFinally { to: a }, 59 => Ins.PopFinally, 60 => Ins.EndFinally, 71 => Ins.CallFinally, 72 => Ins.DropCompletion,
         118, 170, 172 => Ins.Pending { what: op.code as u8 },
-        99 => Ins.ForInStart, 100 => Ins.ForInNext, 128 => Ins.OwnKeys, 129 => Ins.IsEnumerable, 180 => Ins.CopyData, 93 => Ins.ToPropertyKey, 127 => Ins.RequireCoercible,
+        78 => Ins.TypeOf, 99 => Ins.ForInStart, 100 => Ins.ForInNext, 128 => Ins.OwnKeys, 129 => Ins.IsEnumerable, 180 => Ins.CopyData, 93 => Ins.ToPropertyKey, 127 => Ins.RequireCoercible,
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -644,10 +651,8 @@ fn initialize(heap: Heap&) -> bool {
     // units take their canonical encoding.
     for s in heap.code.strings { import_text(heap, heap.code.units[s.start..(s.start + s.len)]); }
     add_constants(heap, heap.code.constants);
-    heap.global = allocate(heap, Node { kind: 0 });
-    heap.call_method = builtin(heap, 14);
-    let global_name = text(heap, "globalThis");
-    return put(heap, heap.global, global_name, heap.global);
+    // The realm's intrinsics are the first node rows (realm.goose).
+    return build_realm(heap);
 }
 // Call only on the serial coordinator, including before native worker spawn.
 // Workers receive one fresh private identity, never this admission authority.
@@ -1184,7 +1189,7 @@ fn materialize_prototype(heap: Heap&, o: i64) -> bool {
 fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
     let o: i64 = object.id();
     match node(heap, o).kind {
-        0 => {
+        0, 13 => {
             if node(heap, o).count > 0 {
                 let i = element_key(heap, k);
                 if heap.fault != Fault.None { return Own {}; }
@@ -1213,40 +1218,12 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
         },
         2 => {
             if !function_key(heap, o, k) { return Own {}; }
-            let p = find_own(heap, o, k);
-            if p.found || heap.fault != Fault.None || !key_is(heap, k, "call") { return p; }
-            return Own { found: true, value: heap.call_method, attrs: attr_writable() | attr_configurable() };
+            return find_own(heap, o, k);
         },
-        4 => {
-            if key_is(heap, k, "call") { return Own { found: true, value: heap.call_method, attrs: attr_writable() | attr_configurable() }; }
-            if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; }
-            return Own {};
-        },
+        4 => { return find_own(heap, o, k); },
         _ => { if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; } return Own {}; },
     }
 }
-// A lookup that reaches the realm's pending %Object.prototype% (a Node's
-// Empty proto) finds nothing, except the names that prototype will define
-// (light-cljs-788): those fail UnsupportedOperand rather than read as absent.
-// An array's pending prototype is %Array.prototype% and a function's
-// %Function.prototype% (light-cljs-805), each in front of %Object.prototype%:
-// their names fail too, and so does every symbol key (@@iterator,
-// @@unscopables, @@hasInstance). `kind` is the kind of the object whose
-// prototype is pending.
-fn on_intrinsic(heap: Heap&, k: Value, kind: i64 = 0) -> bool {
-    if key_is(heap, k, "__proto__") || key_is(heap, k, "constructor") || key_is(heap, k, "toString") || key_is(heap, k, "valueOf") || key_is(heap, k, "call") || key_is(heap, k, "apply") || key_is(heap, k, "hasOwnProperty") || key_is(heap, k, "isPrototypeOf") || key_is(heap, k, "propertyIsEnumerable") || key_is(heap, k, "toLocaleString") || key_is(heap, k, "__defineGetter__") || key_is(heap, k, "__defineSetter__") || key_is(heap, k, "__lookupGetter__") || key_is(heap, k, "__lookupSetter__") { return true; }
-    if kind != 1 && kind != 2 { return false; }
-    if k.tag() == 6 { return true; }
-    if kind == 2 { return key_is(heap, k, "bind") || key_is(heap, k, "length") || key_is(heap, k, "name") || key_is(heap, k, "arguments") || key_is(heap, k, "caller"); }
-    for name in ["at", "concat", "copyWithin", "entries", "every", "fill", "filter", "find", "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "forEach", "includes", "indexOf", "join", "keys", "lastIndexOf", "map", "pop", "push", "reduce", "reduceRight", "reverse", "shift", "slice", "some", "sort", "splice", "toReversed", "toSorted", "toSpliced", "unshift", "values", "with"] {
-        if key_is(heap, k, name) { return true; }
-    }
-    return false;
-}
-// The end of a prototype chain: Null finds nothing; Empty, the pending
-// realm prototype of an object of `kind`, finds nothing but fails for its
-// own names (on_intrinsic).
-fn chain_end(heap: Heap&, proto: Value, k: Value, kind: i64) { if proto.tag() == -1 && on_intrinsic(heap, k, kind) && heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; } }
 // [[Get]] of interned key k (OrdinaryGet through the prototype chain, each
 // object's own lookup by kind), without running JavaScript: the value, or,
 // for an accessor property with a getter, Undefined and the getter, which
@@ -1257,9 +1234,12 @@ fn lookup(heap: Heap&, object: Value, k: Value) -> Value, Value {
     loop {
         let p = own_entry(heap, at, k);
         if heap.fault != Fault.None { return Value.Undefined, Value.Undefined; }
-        if p.found { return if is_accessor(p.value) { Value.Undefined } else { p.value }, if is_accessor(p.value) { pair(heap, p.value).get } else { Value.Undefined }; }
-        let proto = node(heap, at.id()).proto;
-        if proto.tag() != 5 { chain_end(heap, proto, k, node(heap, at.id()).kind); return Value.Undefined, Value.Undefined; }
+        if p.found {
+            if is_pending(p.value) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, Value.Undefined; }
+            return if is_accessor(p.value) { Value.Undefined } else { p.value }, if is_accessor(p.value) { pair(heap, p.value).get } else { Value.Undefined };
+        }
+        let proto = prototype(heap, at.id());
+        if proto.tag() != 5 { return Value.Undefined, Value.Undefined; }
         if !charge(heap) { return Value.Undefined, Value.Undefined; }
         at = proto;
     }
@@ -1275,8 +1255,8 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
         let p = own_entry(heap, at, k);
         if heap.fault != Fault.None { return false; }
         if p.found { return true; }
-        let proto = node(heap, at.id()).proto;
-        if proto.tag() != 5 { chain_end(heap, proto, k, node(heap, at.id()).kind); return false; }
+        let proto = prototype(heap, at.id());
+        if proto.tag() != 5 { return false; }
         if !charge(heap) { return false; }
         at = proto;
     }
@@ -1297,7 +1277,7 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
 fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
     match kind {
-        0 => {},
+        0, 4, 13 => {},
         1 => {
             if key_is(heap, k, "length") { return Value.Undefined, array_length(heap, object, value); }
             let i = index(heap, k);
@@ -1318,24 +1298,26 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     let own = find_own(heap, o, k);
     if heap.fault != Fault.None { return Value.Undefined, false; }
     if own.found {
+        if is_pending(own.value) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; }
         if is_accessor(own.value) { let f = pair(heap, own.value).set; return f, f.tag() == 5; }
         if own.attrs & attr_writable() == 0 { return Value.Undefined, false; }
         write_own(heap, o, own.index, value); return Value.Undefined, true;
     }
-    // `end`: the kind of the object whose prototype the walk reads next.
-    var proto = node(heap, o).proto; var end = kind;
+    // A pending property on the chain (Object.prototype's `__proto__`,
+    // Function.prototype's `arguments` and `caller`) fails by name.
+    var proto = prototype(heap, o);
     while proto.tag() == 5 {
         if !charge(heap) { return Value.Undefined, false; }
         let p = own_entry(heap, proto, k);
         if heap.fault != Fault.None { return Value.Undefined, false; }
         if p.found {
+            if is_pending(p.value) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; }
             if is_accessor(p.value) { let f = pair(heap, p.value).set; return f, f.tag() == 5; }
             if p.attrs & attr_writable() == 0 { return Value.Undefined, false; }
             break;
         }
-        end = node(heap, proto.id()).kind; proto = node(heap, proto.id()).proto;
+        proto = prototype(heap, proto.id());
     }
-    if proto.tag() == -1 && (key_is(heap, k, "__proto__") || end == 2 && (key_is(heap, k, "arguments") || key_is(heap, k, "caller"))) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; }
     return Value.Undefined, if as_element(heap, o, i) { put_element(heap, o, i, value) } else { add_own(heap, o, k, value, attrs_data()) };
 }
 // [[DefineOwnProperty]] by object kind: ordinary objects (define_own), an
@@ -1345,7 +1327,7 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
 // fail UnsupportedOperand.
 fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8, half: i64 = 0) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind == 0 { return define_own(heap, o, k, value, attrs, half); }
+    if kind == 0 || kind == 4 || kind == 13 { return define_own(heap, o, k, value, attrs, half); }
     if kind == 1 && !key_is(heap, k, "length") {
         let i = index(heap, k);
         if heap.fault != Fault.None { return false; }
@@ -1367,7 +1349,8 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
 fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
     let o: i64 = object.id();
     match node(heap, o).kind {
-        0 => {
+        4 => { return delete_own(heap, o, k); },
+        0, 13 => {
             let i = element_key(heap, k);
             if heap.fault != Fault.None { return false; }
             if object_element(heap, o, i).tag() != -1 { if !charge(heap) { return false; } set_slot(heap, node(heap, o).start + i, hole()); return true; }
@@ -1397,7 +1380,7 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
 struct OwnKey { key: Value, attrs: u8 = 0, index: i64 = -1 }
 fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind != 0 && kind != 1 { heap.fault = Fault.UnsupportedOperand; return false; }
+    if kind != 0 && kind != 1 && kind != 4 && kind != 13 { heap.fault = Fault.UnsupportedOperand; return false; }
     var keys: OwnKey[>..] = [];
     // An element run's scan costs a work unit a slot, holes included.
     if (kind == 0 || !node(heap, o).initialized) && !charge(heap, if kind == 0 { node(heap, o).count as i64 } else { min(node(heap, o).length, node(heap, o).count) as i64 }) { return false; }
@@ -1440,7 +1423,7 @@ fn own_keys(heap: Heap&, object: Value, out: Value[>..]&) -> bool {
 // prototype's chain (a cycle).
 fn set_prototype(heap: Heap&, o: i64, proto: Value) -> bool {
     var p = proto;
-    while p.tag() == 5 { if !charge(heap) { return false; } if p.id() == o { return false; } p = node(heap, p.id()).proto; }
+    while p.tag() == 5 { if !charge(heap) { return false; } if p.id() == o { return false; } p = prototype(heap, p.id()); }
     node_mut(heap, o).proto = proto; return true;
 }
 // Own data property by kind for Goose callers (compiler services, form
@@ -1552,16 +1535,18 @@ fn unwind_natives(job: Job&, keep: i64) {
         match f.native { MapSeq => { node_mut(job.heap, f.input.id()).initialized = false; }, _ => {} }
     }
 }
-// The minimal error object (light-cljs-786, until the realm exists): a node
-// of kind 13 whose `function` is error_code of the catchable fault it was
-// raised for. JavaScript sees an object with identity and truthiness; its
-// properties stay unsupported. Uncaught, it reports that fault again.
-fn error_code(fault: Fault) -> u32 { return match fault { TypeError => 1, ReferenceError => 2, HostEffect => 3, StackLimit => 4, _ => 0 }; }
-fn error_fault(code: i64) -> Fault { return match code { 1 => Fault.TypeError, 2 => Fault.ReferenceError, 3 => Fault.HostEffect, 4 => Fault.StackLimit, _ => Fault.InvalidState }; }
+// An error object (light-cljs-788, realm.goose error_object): a node of kind
+// 13, an ordinary object with its type's prototype (TypeError.prototype for
+// a TypeError fault, InternalError.prototype for a stack overflow) and an
+// own `message`, whose `function` is error_code of the catchable fault it was
+// raised for, or 0 for one JavaScript made (Error(...)). Uncaught, a fault's
+// error reports that fault again; JavaScript's is a thrown value.
+fn error_code(fault: Fault) -> u32 { return match fault { TypeError => 1, ReferenceError => 2, HostEffect => 3, StackLimit => 4, RangeError => 5, _ => 0 }; }
+fn error_fault(code: i64) -> Fault { return match code { 1 => Fault.TypeError, 2 => Fault.ReferenceError, 3 => Fault.HostEffect, 4 => Fault.StackLimit, 5 => Fault.RangeError, _ => Fault.InvalidState }; }
 // The JavaScript error name of a catchable fault, as the Pants engine and
 // QuickJS name it (a call-depth or value-stack overflow is QuickJS's
 // InternalError "stack overflow").
-fn error_name(fault: Fault) -> const u8[:] { return match fault { TypeError => "TypeError", ReferenceError => "ReferenceError", StackLimit => "InternalError", _ => "Error" }; }
+fn error_name(fault: Fault) -> const u8[:] { return match fault { TypeError => "TypeError", ReferenceError => "ReferenceError", RangeError => "RangeError", StackLimit => "InternalError", _ => "Error" }; }
 fn catchable(fault: Fault) -> bool { return error_code(fault) != 0; }
 // Whether an exception raised now would reach a catch or finally block.
 fn catches(job: const Job&) -> bool {
@@ -1581,12 +1566,16 @@ fn terminate(job: Job&, reason: Fault, frame: Frame) {
     job.fault_opcode = if fault == Fault.Unsupported && frame.function >= 0 && frame.pc >= 0 && frame.pc < code.ops.len { code.ops[frame.pc].code } else { -1 };
 }
 // A fault at `frame`'s instruction. A catchable one some handler would see
-// is raised as a minimal error object; every other fault ends the job.
+// is raised as an error object of its type with its message (Job.detail, or
+// fault_message's wording); every other fault ends the job, keeping
+// Job.detail for its report (the built-in step it did not implement).
 fn fail(job: Job&, fault: Fault, frame: Frame) {
     job.heap.fault = Fault.None;
     var reported = fault;
     if catchable(fault) && catches(job) {
-        let error = allocate(job.heap, Node { kind: 13, function: error_code(fault) });
+        let message = fault_message(job, fault, frame);
+        let error = if job.heap.fault == Fault.None { error_object(job.heap, fault_type(fault), error_code(fault), message) } else { Value.Undefined };
+        job.detail.clear();
         if job.heap.fault == Fault.None { raise(job, error, frame); return; }
         reported = job.heap.fault; job.heap.fault = Fault.None;
     }
@@ -1633,7 +1622,7 @@ fn raise(job: Job&, value: Value, frame: Frame) {
         else { job.handlers.push(Handler { frame: h.frame, pc: h.pc, operands: h.operands, locals: h.locals, kind: HandlerKind.Throw, value: value }); }
         return;
     }
-    if value.tag() == 5 && node(job.heap, value.id()).kind == 13 { terminate(job, error_fault(node(job.heap, value.id()).function), frame); return; }
+    if value.tag() == 5 && node(job.heap, value.id()).kind == 13 && node(job.heap, value.id()).function != 0 { terminate(job, error_fault(node(job.heap, value.id()).function), frame); return; }
     job.result = value; job.thrown = true; terminate(job, Fault.HostEffect, frame);
 }
 // Return `value` from the frame at `top` (light-cljs-786): its innermost
@@ -1793,7 +1782,7 @@ fn reset(job: Job&) -> bool {
     job.frames.clear(); job.locals.clear(); job.operands.clear(); job.writes.clear(); job.handlers.clear();
     job.status = tiny::Status.Ready; job.result = Value.Undefined; job.fault = Fault.None; job.fault_pc = -1; job.fault_function = -1; job.thrown = false;
     job.steps = 0; job.effects_enabled = false; job.helpers_enabled = false; job.effect_pending = false; job.effect_kind = -1; job.cancelling = false;
-    job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0;
+    job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0; job.detail.clear();
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
     return true;
 }
@@ -2130,36 +2119,12 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         _ => { heap.fault = Fault.NativeBoundary; return Value.Undefined; },
     }
 }
-// Enumerated native runtime leaves: 0 macroReaderFunction (Pants uses
-// occurrence-aware leaves directly), 1 inc, 2 mapv, 3 vec, 4 into, 16 sequence.
+// A bare built-in function object of code `id` (realm.goose BUILTINS), for
+// compiler services and tests; the realm and boot_runtime make their own.
 fn builtin(heap: Heap&, id: i64) -> Value { return allocate(heap, Node { kind: 4, function: id as u32 }); }
 fn install_field(heap: Heap&, object: Value, name: const u8[:], value: Value) -> bool { let k = text(heap, name); return put(heap, object, k, value); }
-fn boot_runtime(heap: Heap&) -> Value {
-    if heap.boot_count != 0 { heap.fault = Fault.InvalidState; return Value.Undefined; }
-    let rt = allocate(heap, Node { kind: 0 }); let core = allocate(heap, Node { kind: 0 });
-    install_field(heap, rt, "core", core);
-    install_field(heap, heap.global, "__lightNativeRuntime", rt);
-    install_field(heap, core, "macroReaderFunction", builtin(heap, 0));
-    install_field(heap, core, "inc", builtin(heap, 1)); install_field(heap, core, "mapv", builtin(heap, 2));
-    install_field(heap, core, "vec", builtin(heap, 3)); install_field(heap, core, "into", builtin(heap, 4));
-    install_field(heap, core, "sequence", builtin(heap, 16));
-    install_field(heap, core, "mapSeq", builtin(heap, 17));
-    install_field(heap, core, "list", builtin(heap, 18));
-    install_field(heap, rt, "symbol", builtin(heap, 19));
-    // The emitted call classifier compares against this constructor identity.
-    // Executing regular expressions remains an explicit native boundary.
-    install_field(heap, rt, "intrinsicRegExp", builtin(heap, 20));
-    // Gensym numbers in the job's compiler generated-name scope (gensym).
-    // Other shared-state leaves are installed explicitly by the compiler.
-    install_field(heap, core, "gensym", builtin(heap, 5));
-    install_field(heap, rt, "vectorFromArray", builtin(heap, 10));
-    install_field(heap, rt, "listFromArray", builtin(heap, 11));
-    install_field(heap, rt, "mapFromArray", builtin(heap, 12));
-    install_field(heap, rt, "setFromArray", builtin(heap, 13));
-    install_field(heap, rt, "fnRest", builtin(heap, 15));
-    if heap.fault == Fault.None { heap.boot_count += 1; }
-    return rt;
-}
+// The runtime leaves that run no JavaScript, by code (realm.goose
+// RUNTIME_LEAVES; call_builtin dispatches the realm's).
 fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
     if id == 18 { return form_construct(heap, 5, args); }
     if id == 19 && args.len == 2 { return form_op(heap, 1, args); }
@@ -2336,12 +2301,8 @@ fn map_seq_step(job: Job&, frame: Frame) {
         if job.operands.len >= heap.limits.stack - job.locals.len { heap.fault = Fault.StackLimit; return; }
         let arg = form_nth(heap, row.namespace_value, frame.index);
         job.frames[job.frames.len - 1].pc = 1;
-        if frame.callee.tag() == 5 && node(heap, frame.callee.id()).kind == 4 {
-            let id = node(heap, frame.callee.id()).function;
-            if id == 5 && job.gensym_next > 0 { job.operands.push(gensym(job, [arg])); }
-            else if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
-            else { job.operands.push(native_value(heap, id, [arg])); }
-        } else { enter(job, frame.callee, nil(), [arg]); }
+        if frame.callee.tag() == 5 && node(heap, frame.callee.id()).kind == 4 { builtin_callback(job, frame.callee, nil(), arg, frame); }
+        else { enter(job, frame.callee, nil(), [arg]); }
     }
 }
 // mapv is a native collection iterator, with source callback calls saved
@@ -2356,13 +2317,18 @@ fn mapv_step(job: Job&, frame: Frame) {
     } else {
         let arg = form_nth(heap, frame.input, frame.index);
         job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 1;
-        if frame.callee.tag() == 5 && node(heap, frame.callee.id()).kind == 4 {
-            let id = node(heap, frame.callee.id()).function;
-            if id == 5 && job.gensym_next > 0 { job.operands.push(gensym(job, [arg])); }
-            else if id >= 5 && id <= 8 { request_effect(job, id, [arg], frame); }
-            else { let v = native_value(heap, id, [arg]); job.operands.push(v); }
-        } else { enter(job, frame.callee, Value.Undefined, [arg]); }
+        if frame.callee.tag() == 5 && node(heap, frame.callee.id()).kind == 4 { builtin_callback(job, frame.callee, Value.Undefined, arg, frame); }
+        else { enter(job, frame.callee, Value.Undefined, [arg]); }
     }
+}
+// A native frame's callback that is a built-in function: gensym in a scope,
+// a host effect saved at the frame, or a plain built-in whose result the
+// frame's next step pops.
+fn builtin_callback(job: Job&, callee: Value, receiver: Value, arg: Value, frame: Frame) {
+    let id: i64 = node(job.heap, callee.id()).function; let b = builtin_of(job.heap, callee.id());
+    if b == Builtin.Gensym && job.gensym_next > 0 { job.operands.push(gensym(job, [arg])); }
+    else if effect_builtin(b) { request_effect(job, id, [arg], frame); }
+    else { let v = call_builtin(job, id, receiver, [arg]); job.operands.push(v); }
 }
 // Pop a finished native frame and deliver its result to the frame below.
 fn finish_native(job: Job&, frame: Frame, result: Value) {
@@ -2371,7 +2337,7 @@ fn finish_native(job: Job&, frame: Frame, result: Value) {
 }
 // Whether a binary operator's operand is an ordinary object, which converts
 // through ToPrimitive before the operator runs.
-fn ordinary(heap: const Heap&, v: Value) -> bool { return v.tag() == 5 && node(heap, v.id()).kind == 0; }
+fn ordinary(heap: const Heap&, v: Value) -> bool { return v.tag() == 5 && (node(heap, v.id()).kind == 0 || node(heap, v.id()).kind == 13); }
 // Start the resumable ToPrimitive (hint default) of a binary operator `op`
 // whose operands x and y include an ordinary object (light-cljs-786): a
 // native frame converts them, left to right, and then runs the operator. The
@@ -2442,7 +2408,15 @@ fn to_primitive_step(job: Job&, frame: Frame, op: u8, method: u8) {
         }
         m = value;
     }
-    if m.tag() == 5 && node(heap, m.id()).kind == 4 { heap.fault = Fault.UnsupportedOperand; return; }
+    // A plain built-in method (Object.prototype.valueOf and toString,
+    // Error.prototype.toString) runs here; its result is the next step's.
+    if m.tag() == 5 && node(heap, m.id()).kind == 4 {
+        let b = builtin_of(heap, m.id());
+        if effect_builtin(b) || b == Builtin.Mapv { heap.fault = Fault.UnsupportedOperand; return; }
+        let r = call_builtin(job, node(heap, m.id()).function, v, []);
+        if heap.fault == Fault.None { job.frames[at].pc = 1; job.operands.push(r); }
+        return;
+    }
     if m.tag() == 5 && node(heap, m.id()).kind == 2 { job.frames[at].pc = 1; enter(job, m, v, []); return; }
     job.frames[at].native = Native.ToPrimitive { op: op, method: method + 1 };
 }
@@ -2721,14 +2695,23 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 GetGlobal g => {
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let k = heap.constants[f.constants + g.k];
-                    let v, found = own_property(heap, heap.global, k);
-                    if !found {
+                    var v, found = own_property(heap, heap.global, k);
+                    // A compiler job's global names are the V8 build's; one
+                    // the image lacks is a boundary, never a ReferenceError. A
+                    // name the global object inherits (Object.prototype's) is
+                    // found there; a pending one fails by name.
+                    if !found && heap.fault == Fault.None {
                         if job.protected_nodes > 0 { heap.fault = Fault.NativeBoundary; }
-                        // Keep prototype-dependent reads explicitly unsupported.
-                        get(heap, heap.global, k);
-                        if g.throws && heap.fault == Fault.None { heap.fault = Fault.ReferenceError; }
+                        else if has_property(heap, heap.global, intern(heap, k)) { v = get(heap, heap.global, k); }
+                        else if g.throws && heap.fault == Fault.None { not_defined(job, k); }
                     }
                     job.operands.push(v);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                TypeOf => {
+                    settle(job, ran, used); job.frames[top].pc = pc;
+                    let v = job.operands.pop(); job.operands.push(type_name(heap, v));
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
@@ -2878,7 +2861,7 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
             }
         } else if id == 5 && job.gensym_next > 0 { let value = gensym(job, args); job.operands.resize(base); job.operands.push(value); }
         else if id >= 5 && id <= 8 { request_effect(job, id, args, frame_at(job, top, at)); job.operands.resize(base); }
-        else { let value = native_value(heap, id, args); job.operands.resize(base); job.operands.push(value); }
+        else { let value = call_builtin(job, id, receiver, args); job.operands.resize(base); job.operands.push(value); }
     } else if push_frame(job, callee, receiver, job.operands[first..], false, base) { job.operands.resize(base); }
 }
 // `arguments` (unmapped, read-only) or a rest array after `skip` parameters.
@@ -2927,7 +2910,7 @@ fn get_property(job: Job&, k: Value) {
         if !found { heap.fault = Fault.DependencyNeed; } job.operands.push(value);
     } else if valid(heap, object) && object.tag() == 5 && (node(heap, object.id()).kind == 4 || node(heap, object.id()).kind == 2 && node(heap, object.id()).key_count == 0 && !node(heap, object.id()).initialized) && key_is(heap, k, "call") {
         job.operands.push(get(heap, object, k));
-    } else if object.tag() == 5 && object.id() < job.protected_nodes {
+    } else if object.tag() == 5 && !realm_intrinsic(object.id()) && object.id() < job.protected_nodes {
         let value, found = own_property(heap, object, k);
         let optional = object == heap.global && (key_is(heap, k, "__lightCompilerRootReceiver") || key_is(heap, k, "__lightCompilerRootContext"));
         if !found && !optional { heap.fault = Fault.NativeBoundary; } job.operands.push(value);
@@ -2940,6 +2923,12 @@ fn get_property(job: Job&, k: Value) {
         else if node(heap, getter.id()).kind != 2 { heap.fault = Fault.UnsupportedOperand; job.operands.push(value); }
         else { enter(job, getter, object, []); }
     }
+}
+// A ReferenceError for global name k: "k is not defined".
+fn not_defined(job: Job&, k: Value) {
+    job.detail.clear(); append_utf16(job.heap, k, job.detail);
+    for c in " is not defined" { job.detail.push(c); }
+    job.heap.fault = Fault.ReferenceError;
 }
 // Whether the job allocated node row o (Job.owned_nodes), so JavaScript may
 // write it: not the realm, the restored image or definition, nor a
@@ -2975,7 +2964,7 @@ fn prepare_function(job: Job&, object: Value, k: Value, adding: bool) {
             if heap.fault != Fault.None { return; }
             if lazy_prototype(heap, at.id()) { break; }
             if own_entry(heap, at, key).found || heap.fault != Fault.None { return; }
-            let proto = node(heap, at.id()).proto;
+            let proto = prototype(heap, at.id());
             if proto.tag() != 5 || !charge(heap) { return; }
             at = proto;
         }
@@ -3108,7 +3097,7 @@ fn in_op(job: Job&) {
 // compiler roots object and protected rows answer missing names by demand,
 // so their keys are not a list.
 fn listable(job: Job&, object: Value) -> bool {
-    if object.id() < job.protected_nodes || job.root_receiver.tag() == 5 && object == job.root_receiver { job.heap.fault = Fault.NativeBoundary; return false; }
+    if !realm_intrinsic(object.id()) && object.id() < job.protected_nodes || job.root_receiver.tag() == 5 && object == job.root_receiver { job.heap.fault = Fault.NativeBoundary; return false; }
     return true;
 }
 // A primitive string's own keys: its indices, enumerable (and, with
@@ -3198,7 +3187,7 @@ fn for_in_next(job: Job&) {
             }
             job.operands.push(r.key); job.operands.push(boolean(true)); return;
         }
-        let proto = if walked.tag() == 5 { node(heap, walked.id()).proto } else { Value.Undefined };
+        let proto = if walked.tag() == 5 { prototype(heap, walked.id()) } else { Value.Undefined };
         if proto.tag() != 5 {
             node_mut(heap, o).value = Value.Undefined;
             job.operands.push(Value.Undefined); job.operands.push(boolean(false)); return;

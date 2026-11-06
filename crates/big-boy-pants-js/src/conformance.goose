@@ -35,6 +35,7 @@ fn located(out: u8[>..]&, status: const u8[:], heap: const source::Heap&, job: c
         format(out, " :opcode ", op.code, " :span [", op.start, " ", op.end, "]");
     }
     if job.fault == source::Fault.Unsupported { out.append(" :operation \""); source::unsupported_operation(out, heap.code, job); out.push('"'); }
+    if job.detail.len > 0 { out.append(" :detail \""); for u in job.detail { out.push(u as u8); } out.push('"'); }
     out.push('}');
 }
 fn main() {
@@ -57,6 +58,13 @@ fn main() {
     var out: u8[>..] = [];
     if outcome == tiny::Outcome.Complete || job.thrown {
         var value: u8[>..] = []; source::canonical(heap, job.result, value);
+        // An error object JavaScript made is named by its `name` (a data
+        // property, own or inherited), as the QuickJS driver names it.
+        if job.thrown && job.result.tag() == 5 && source::node(heap, job.result.id()).kind == 13 {
+            let name = source::get(heap, job.result, source::text(heap, "name"));
+            if heap.fault == source::Fault.None && name.tag() == 4 { value.clear(); value.append("error:"); for i in source::str_len(heap, name) { value.push(source::unit(heap, name, i) as u8); } }
+            heap.fault = source::Fault.None;
+        }
         format(out, "{:status :", if job.thrown { "thrown" } else { "returned" }, " :value \"", value, "\"}");
     } else if outcome == tiny::Outcome.Yielded && job.effect_pending {
         // A host effect (__rt.effect) has no host in this runner.
@@ -67,7 +75,7 @@ fn main() {
         match job.fault {
             // The catchable faults, uncaught, named as the Pants engine and
             // QuickJS name them (light-cljs-786).
-            TypeError, ReferenceError, StackLimit => { format(out, "{:status :thrown :value \"error:", source::error_name(job.fault), "\"}"); },
+            TypeError, ReferenceError, RangeError, StackLimit => { format(out, "{:status :thrown :value \"error:", source::error_name(job.fault), "\"}"); },
             MemoryLimit, WorkLimit, InstructionLimit => { located(out, "limit", heap, job); },
             InvalidState, StaleID, None => { var detail: u8[>..] = []; format(detail, job.fault); infrastructure("fault:", detail); return; },
             _ => { located(out, "unsupported", heap, job); },

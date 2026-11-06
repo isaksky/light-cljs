@@ -145,7 +145,7 @@ fn caught_errors() {
         heap_program::join(thread_spawn(caught_error, fault, limited));
         if !limited { let caught = qget<Caught>(); heap_program::join(thread_spawn(caught_restore, copy(caught.image))); }
     } }
-    print("caught TypeError/ReferenceError/HostEffect identity, false nil equality, snapshot retention, explicit property boundary and terminal allocation failure passed");
+    print("caught TypeError/ReferenceError/HostEffect identity, false nil equality, snapshot retention, realm name and message and terminal allocation failure passed");
 }
 // The caught error's snapshot restores into a heap of its own.
 thread_fn caught_restore(saved: snapshot::Snapshot) {
@@ -155,7 +155,10 @@ thread_fn caught_restore(saved: snapshot::Snapshot) {
     assert(snapshot::restore(saved, restored_code, restored, roots, source::reserve_identity(), sc));
     assert(source::truthy(restored, roots[0].value) && !source::equal(restored, roots[0].value, source::nil()));
     var graph = bridge::Graph {}; var bc = bridge::Control {}; assert(!bridge::export_graph(restored, [roots[0].value], graph, bc) && bc.error == bridge::Error.Unsupported);
-    source::get(restored, roots[0].value, source::text(restored, "name")); assert(restored.fault == source::Fault.UnsupportedOperand);
+    // The realm's error object (light-cljs-788): its type's `name`, inherited,
+    // and an own non-empty `message`.
+    let name = source::get(restored, roots[0].value, source::text(restored, "name")); let message = source::get(restored, roots[0].value, source::text(restored, "message"));
+    assert(restored.fault == source::Fault.None && name.tag() == 4 && message.tag() == 4 && source::str_len(restored, message) > 0);
 }
 thread_fn caught_error(fault: source::Fault, limited: bool) {
     defer { heap_program::finish(); }

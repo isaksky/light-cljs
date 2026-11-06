@@ -1305,16 +1305,19 @@ fn goose_compiler_caught_runtime_errors_preserve_identity() {
     );
     session.close();
     cleaned(&session);
-    // Error properties/prototypes are explicitly outside the bounded surface.
-    let source = "(defmacro caught [] (js* \"(() => {try {null.x;} catch(e) {return e.name;}})()\")) (caught)";
-    assert!(crate::compile_with_macros(source, &mut crate::MacroHost::new()).is_ok());
+    // The caught error is the realm's (light-cljs-788): its type's `name`
+    // and prototype, as in the V8 build.
+    let source = "(defmacro caught [] (js* \"(() => {try {null.x;} catch(e) {return e.name === 'TypeError' && Object.getPrototypeOf(e) === TypeError.prototype;}})()\")) (caught)";
+    let reference = crate::compile_with_macros(source, &mut crate::MacroHost::new()).unwrap();
+    assert!(reference.contains("true"), "{reference}");
     let session = GooseSession::start(&runner(), 1).unwrap();
     let mut host = crate::MacroHost::new();
     host.use_goose_source_macros(session.clone()).unwrap();
-    let error = crate::compile_with_macros(source, &mut host)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("UnsupportedOperand"), "{error}");
+    assert_eq!(
+        crate::compile_with_macros(source, &mut host).unwrap(),
+        reference
+    );
+    session.close();
     cleaned(&session);
 }
 /// Control flow across helper waits (light-cljs-803): a pending Return,
@@ -1513,7 +1516,9 @@ fn goose_compiler_cancel_and_deadline_cleanup() {
 fn goose_compiler_rejects_shared_writes_before_mutation() {
     for source in [
         "(defmacro effect [] (js* \"(globalThis.gooseForbidden = 1)\") 1) (effect)",
-        "(defmacro effect [] (js* \"(typeof globalThis.Array === 'undefined' ? 1 : 2)\")) (effect)",
+        // The realm (light-cljs-788) defines Array; a name the image lacks
+        // stays a boundary.
+        "(defmacro effect [] (js* \"(typeof globalThis.gooseAbsentName === 'undefined' ? 1 : 2)\")) (effect)",
     ] {
         let session = GooseSession::start(&runner(), 1).unwrap();
         let mut host = crate::MacroHost::new();
@@ -1762,7 +1767,7 @@ fn reuse_session(
     retained: Option<usize>,
     plan: &[u64],
 ) -> (Vec<(u64, String)>, JobsLine) {
-    let definitions: [(u64, &str); 14] = [
+    let definitions: [(u64, &str); 16] = [
         // Pure: garbage in every table, a fresh object and array.
         (
             1,
@@ -1823,6 +1828,16 @@ fn reuse_session(
         (
             14,
             "rt => (form, env) => { const o = {n: 0}; const xs = []; let k = 0; const f = () => { k = 2; }; try { __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/missing'); } catch (e) { o.n = 1; xs[0] = 4; f(); } return o.n + k + xs[0]; }",
+        ),
+        // The realm (light-cljs-788), inherited from the image: a job's
+        // mutation of an intrinsic faults before it mutates, and the next job
+        // sees the intrinsics as built, its literals' prototypes, a built-in
+        // method, and a VM fault's error object with its type's prototype
+        // and a message.
+        (15, "rt => (form, env) => { Array.prototype.leak = 1; return 1; }"),
+        (
+            16,
+            "rt => (form, env) => { let n = 0; if (Object.getPrototypeOf([]) === Array.prototype && Object.getPrototypeOf({}) === Object.prototype) n += 1; if (typeof Object.prototype.hasOwnProperty === 'function') n += 2; if ([].leak === undefined && !Array.prototype.hasOwnProperty('leak')) n += 4; try { const o = null; o.x; } catch (e) { if (Object.getPrototypeOf(e) === TypeError.prototype && typeof e.message === 'string' && e.message.length > 0) n += 8; } return n; }",
         ),
     ];
     let mut env = vec![];
@@ -1928,7 +1943,8 @@ fn goose_compiler_reused_workers_start_every_job_from_the_image() {
     // which retires the worker after every job (a fresh worker each): every
     // job's result, events, steps and limit outcome are the same.
     let plan = [
-        1, 2, 1, 3, 1, 4, 1, 5, 1, 6, 1, 7, 1, 8, 8, 1, 9, 9, 1, 11, 1, 12, 1, 13, 1, 14, 14, 1,
+        1, 2, 1, 3, 1, 4, 1, 5, 1, 6, 1, 7, 1, 8, 8, 1, 9, 9, 1, 11, 1, 12, 1, 13, 1, 14, 14, 1, 16,
+        15, 16, 1,
     ];
     for workers in [1, 4] {
         let (reused, jobs) = reuse_session(workers, Some(16 << 20), None, &plan);
@@ -1939,7 +1955,8 @@ fn goose_compiler_reused_workers_start_every_job_from_the_image() {
         for (key, outcome) in &reused {
             let expected = match key {
                 1 => "Double(53.0)",
-                2..=5 | 11..=13 => "Fault.NativeBoundary",
+                2..=5 | 11..=13 | 15 => "Fault.NativeBoundary",
+                16 => "Double(15.0)",
                 14 => "Double(7.0)",
                 6 => "Fault.InstructionLimit",
                 7 => "Fault.TypeError",

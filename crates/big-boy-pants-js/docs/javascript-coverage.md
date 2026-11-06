@@ -196,8 +196,7 @@ merge makes a new pair). `keys` is an open-addressed index of interned key
 headers (`Str.key`); string constants are interned when code is installed,
 so a named access compares one `u32` per shape entry and hashes nothing.
 An ordinary object stores its shape, its prototype (`Null`, an object, or
-`Empty` for the realm's pending %Object.prototype%, whose own names fail
-`UnsupportedOperand` until light-cljs-788) and its values: two inline, the
+`Empty` for its kind's realm prototype, light-cljs-788, decision 6) and its values: two inline, the
 rest in an overflow run of `values`. A delete, an attribute change or more
 than 64 keys moves it to dictionary mode, records of key, value and
 attributes in `properties`. The internal methods (`own_entry`, `lookup`,
@@ -838,7 +837,8 @@ Throw, Cancel, Jump) as one handler stack of plain `Handler` rows, and runs
 the seven finally opcodes and `PendingCancel` by the Pants contracts; a
 `return` runs its frame's finally blocks first. TypeError, ReferenceError,
 HostEffect and StackLimit faults are catchable, raised as a minimal error
-object (node kind 13 labelled with its fault) until the realm exists, and an
+object (node kind 13 labelled with its fault; since light-cljs-788 the
+realm's error object of its type, with a `message`, decision 6), and an
 uncaught one reports its fault again. The limits are 10,000 frames and
 1,048,576 values (locals and operands together). `cancel()` delivers a
 cancellation between runs and the compiler session's poll point uses it.
@@ -846,7 +846,7 @@ Native frames are frames of function -1 whose `Native` enum names the
 operation (`Mapv`, `MapSeq`, and `ToPrimitive`, the resumable
 OrdinaryToPrimitive of `+` on an ordinary object); the delivery protocol is
 documented at `Native`. Not yet: generators and async functions, promise
-jobs, error objects of the realm, and catching natives (none needs one yet).
+jobs, and catching natives (none needs one yet).
 
 **Rejected.** *Goose recursion per call with `exception::try` for throw*:
 the native stack is 8 MB on the macOS main thread, a handler cannot be
@@ -932,6 +932,114 @@ realm's rows, bytes and build time, and the spawn cost they add.
 **Rejected.** *Building the realm lazily per job*, as the Pants engine does
 on first use: every job would pay for it. *Building it in JavaScript*:
 decision 5.
+
+**As landed (light-cljs-788, `src/realm.goose`).** `source::initialize`
+builds the realm into the empty heap, after the code strings and constants,
+so only the program that initializes a heap builds one: the compiler
+session's coordinator, before `READY`, and the conformance and test runners.
+Job workers restore the coordinator's image (`snapshot::restore`) and never
+build it. The layout comes from fixed-size static tables (`BUILTINS`,
+`REALM_FUNCTIONS`, `PENDING`, `RUNTIME_LEAVES`), so the realm's node rows are
+fixed and `snapshot::validate` checks them (`source::realm_valid`): row 0 the
+global object, 1 `Object.prototype` (null prototype), 2
+`Function.prototype` (a built-in that returns undefined), 3
+`Array.prototype` (an array of length 0), 4 to 11 `Error.prototype` and the
+prototypes of `EvalError`, `RangeError`, `ReferenceError`, `SyntaxError`,
+`TypeError`, `URIError` and QuickJS's `InternalError` (the stack overflow
+error), 12 to 22 their constructors and `Object`, `Function` and `Array`,
+then one built-in function per method: `Function.prototype.call`,
+`Object.getPrototypeOf`, `Object.is`, `Object.hasOwn`,
+`Object.prototype.hasOwnProperty`, `valueOf` and `toString`,
+`Array.isArray`, `Error.prototype.toString`. Each built-in has `length` and
+`name` (configurable only), a constructor its `prototype` (no attributes)
+and the prototype its `constructor`; the global object has the
+constructors, `globalThis`, `NaN`, `Infinity` and `undefined`.
+
+- *Built-ins (decision 5).* A built-in function is a node of kind 4 whose
+  `function` field is its code, the position of its `Builtin` variant in
+  `BUILTINS`; `call_builtin` dispatches on the variant with one `match`, the
+  same path for a call, a method call, `Function.prototype.call`, a native
+  frame's callback (`builtin_callback`) and ToPrimitive's methods. The
+  light-cljs runtime leaves (`rt.core.inc`, `mapv`, `gensym` and the rest)
+  are variants 0 to 20 of the same enum at their old codes, installed by
+  `boot_runtime` from `RUNTIME_LEAVES` once in the coordinator, with the
+  same identities and behaviour. Construct (`new`) is still the
+  `Unsupported:construct` opcode for every callee.
+- *Prototypes.* A node whose `proto` is `Empty` has its kind's realm
+  prototype (`source::prototype`): ordinary objects and arguments objects
+  `Object.prototype`, arrays `Array.prototype`, closures and built-ins
+  `Function.prototype`, error objects `Error.prototype`; literals therefore
+  get the realm's prototypes without a write. A heap built without
+  `initialize` (hand-made test heaps) has none.
+- *Pending properties.* A name the specification puts on a realm object and
+  this VM does not implement yet (`Array.prototype.map`, `Object.keys`,
+  `Math`, `JSON`, `Symbol`, `Function.prototype.bind`, `@@iterator`: 124
+  entries of `PENDING`) is an accessor property whose slot names accessor row 0,
+  the realm's pending pair. `in` and `hasOwnProperty` see it; reading,
+  assigning or defining through it fails `UnsupportedOperand` (decision 1),
+  so a case that needs it is explicit-unsupported, not wrong. An area
+  replaces its entries by built-ins. A built-in step not implemented (a
+  primitive wrapper, a `@@toStringTag` getter, dynamic `Function`) fails
+  `UnsupportedOperand` and names the built-in in `Job.detail`, which the
+  conformance runner prints.
+- *Errors.* A catchable VM fault (TypeError, ReferenceError, the new
+  RangeError of `Array(-1)`, HostEffect, a stack overflow) raises an error
+  object (kind 13, an ordinary object for properties) with its type's
+  prototype and an own `message`: the faulting operation's (`x is not
+  defined`, a built-in's message) or the QuickJS wording for the
+  instruction (`not a function`, `stack overflow`). Uncaught, it still
+  reports its fault; an error JavaScript made (`TypeError("m")`, called as a
+  function) is a thrown value. `typeof` (opcode 78) is implemented here.
+- *Compiler jobs.* The realm rows are image rows below `Job.owned_nodes`, so
+  a job's write into an intrinsic (`Array.prototype.leak = 1`) faults
+  `NativeBoundary` before it mutates (decision 3, light-cljs-797), and its
+  state is its rows, which the reset restores like any image row; a job
+  never sees another's change. A job reads realm objects other than the
+  global through their prototype chains; the global object keeps the rule of
+  protected rows (a name it lacks is a `NativeBoundary`, since the V8 build
+  has many more globals). The well-known symbols remain the exporter's fixed
+  indices (`Value.Symbol`); the `Symbol` global is pending.
+
+Measured on a native release build (November 5, 2026, one process, the
+calls image of `corpus/serial`, no code strings): the realm is 32 node rows
+(3,712 bytes), 428 value rows (3,852 bytes; overflow runs with their spare
+capacity), 156 shapes (4,056 bytes), 1 accessor pair (18 bytes), 300 string
+headers (3,000 bytes), 1,289 Latin-1 units and a 512-slot key index
+(4,096 bytes), no property records: about 20 KB, and 6,166 work units.
+`initialize` takes 7.8 µs, mean of 2,000. With `boot_runtime` the image is
+50 nodes and 26,429 bytes of payload. Each reused job worker copies the
+realm once with its spawn (about 20 KB more per spawn; a 200k session at the
+16 MiB cap spawns 2 to 8 workers); a restore of the 26 KB image took 67 µs.
+The per-job reset (`snapshot::truncate`) takes 43 ns when the job wrote no
+image row and 390 ns when it did (a transition from an image shape or a new
+interned key, which copies the twin's 174 shapes and 512 key slots back),
+mean of 20,000 each; before the realm the image had 28 nodes and few
+shapes, so the realm adds at most about 0.35 µs to a job's reset, under
+2 ms over the 200k project's 5,283 jobs.
+
+*Static data at spawn (item 4).* A probe with a 1 MiB static `let` table of
+`u32` (262,144 entries) read by 1, 16 and 63 live workers, native release
+build, peak memory from `time -l`: 7.7, 40.0 and 141.3 MB with the
+variable-size form `u32[]`, 8.6, 41.2 and 143.5 MB with the fixed-size form
+`u32[262144]`, about 2.15 MB a worker in both (the worker's own stacks), not
+the 1 MiB more a copy would add; spawn to first read took 0.11 to 0.13 ms a
+worker either way. Static data is therefore shared by every thread program,
+not copied at spawn. The forms differ in address space: `goose check
+--stacks` gives a variable-size `let` one global stack region in every
+program that reads it (a reused job worker took 5 more regions for the
+realm's tables written that way, lowering the runner's thread cap from 291
+to 262), a fixed-size one none. Areas write large immutable data (Unicode
+and Intl tables) as fixed-size `let` arrays, as `realm.goose` does. With
+them, `goose check --stacks` on the runner (`src/compiler_session.goose`):
+main 63 data stacks plus 1 global stack (master: 62 plus 1), `run_worker`
+57 (56, the `Job.detail` message buffer), `preparer` 41, `profile_restore`
+26, `supervise` 2, `input` 2; thread cap 286 workers (291). The
+conformance runner is 40 plus 1 (master: 39 plus 1) and
+`src/execute.goose` 38 plus 1 (37 plus 1). The defaults stand.
+
+The 200k check gate (`compare.bb --phase check --runs 1`, November 5, 2026)
+passes: Goose 1/2/4/8 15.4/10.7/7.2/7.3 s, V8 6.0 s, against
+15.8/10.7/7.4/7.3 s at light-cljs-805.
 
 ## Decision 7: conformance harness
 

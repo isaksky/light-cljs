@@ -174,9 +174,9 @@ fn limits(bytes: const u8[:]) {
 thread_fn initialization_limit(bytes: u8[], kind: i64) {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
-    // The globalThis own property participates in the unit and work budgets.
-    // Initialization imports each code string's units, and the property is
-    // the global's first inline slot, so it takes no property row (light-cljs-800).
+    // The realm (light-cljs-788) participates in the unit and work budgets.
+    // Initialization imports each code string's units; every realm object
+    // stays in shape mode, so the realm takes no property row (light-cljs-800).
     {
         var text: i64 = 0; for s in code.strings { text += s.len; }
         var limit = source::Limits {};
@@ -184,7 +184,7 @@ thread_fn initialization_limit(bytes: u8[], kind: i64) {
         if kind == 1 { limit.units = text; }
         if kind == 2 { limit.work = text + code.constants.len + 1; }
         var heap = source::Heap { code: code, limits: limit };
-        if kind == 0 { assert(source::initialize(heap) && heap.properties.len == 0 && source::node(heap, heap.global.id()).key_count == 1); return; }
+        if kind == 0 { assert(source::initialize(heap) && heap.properties.len == 0 && !source::node(heap, heap.global.id()).initialized && source::node(heap, heap.global.id()).key_count > 1); return; }
         assert(!source::initialize(heap));
         assert(heap.fault == (if kind == 2 { source::Fault.WorkLimit } else { source::Fault.MemoryLimit }));
     }
@@ -366,7 +366,8 @@ fn main() {
     check(embed_file("../corpus/serial/type-error.gsp"), "", source::Fault.TypeError);
     check(embed_file("../corpus/serial/not-callable.gsp"), "", source::Fault.TypeError);
     check(embed_file("../corpus/serial/unsupported-coercion.gsp"), "", source::Fault.UnsupportedOperand);
-    check(embed_file("../corpus/serial/unsupported-prototype.gsp"), "", source::Fault.UnsupportedOperand);
+    // ({}).toString() is the realm's Object.prototype.toString (light-cljs-788).
+    check(embed_file("../corpus/serial/unsupported-prototype.gsp"), "utf16:[91,111,98,106,101,99,116,32,79,98,106,101,99,116,93]");
     // Every opcode exports (light-cljs-783): `construct` on a dead path and in
     // a dead nested function never runs; reached, it fails by name even under
     // a `catch`. A class constructor cannot be called.
@@ -468,7 +469,7 @@ thread_fn property_model() {
     let getter = source::closure(heap, 0, []); let setter_fn = source::closure(heap, 0, []);
     let base = source::allocate(heap, source::Node { kind: 0 }); let a = key(heap, "a"); let g = key(heap, "g");
     assert(source::define_own(heap, base.id(), a, getter, source::attrs_accessor(), 1) && source::define_own(heap, base.id(), a, setter_fn, source::attrs_accessor(), 2));
-    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 3);
+    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 4); // after the realm's pending pair
     let child = source::allocate(heap, source::Node { kind: 0 }); assert(source::set_prototype(heap, child.id(), base));
     for target in [base, child] {
         let v, found = source::lookup(heap, target, a); assert(v.tag() == 0 && found == getter);
@@ -515,10 +516,13 @@ thread_fn property_model() {
     assert(source::get(heap, c3, source::text(heap, "deep")).num() == 1 && source::get(heap, c3, source::text(heap, "s")).num() == 2 && source::has_property(heap, c3, key(heap, "deep")));
     assert(source::get(heap, c3, source::text(heap, "nothing")).tag() == 0 && heap.fault == source::Fault.None);
     assert(!source::set_prototype(heap, c1.id(), c3) && source::node(heap, c1.id()).proto.tag() == -1);
-    // An inherited name of the realm's pending %Object.prototype% fails by
-    // name; under a null prototype it is simply absent.
-    source::get(heap, c3, source::text(heap, "toString")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
-    assert(source::set_prototype(heap, c1.id(), source::nil()) && source::get(heap, c3, source::text(heap, "toString")).tag() == 0 && heap.fault == source::Fault.None);
+    // The chain ends at the realm's Object.prototype (light-cljs-788): its
+    // built-in toString is found, and a name it defines but this VM does not
+    // implement (a pending property) fails by name; under a null prototype
+    // both are simply absent.
+    let found = source::get(heap, c3, source::text(heap, "toString")); assert(heap.fault == source::Fault.None && found.tag() == 5 && source::node(heap, found.id()).kind == 4);
+    source::get(heap, c3, source::text(heap, "propertyIsEnumerable")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    assert(source::set_prototype(heap, c1.id(), source::nil()) && source::get(heap, c3, source::text(heap, "toString")).tag() == 0 && source::get(heap, c3, source::text(heap, "propertyIsEnumerable")).tag() == 0 && heap.fault == source::Fault.None);
     // Past shape_limit() keys an object turns to dictionary mode.
     let big = source::allocate(heap, source::Node { kind: 0 });
     for i in source::shape_limit() + 1 { assert(source::put(heap, big, source::text(heap, str("k", i)), source::number(i))); }

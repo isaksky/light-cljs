@@ -52,7 +52,7 @@ thread_fn isolation_parent() {
     var code = source::Code {}; var parent = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, parent, bindings);
     var c = snapshot::Control {}; let saved = snapshot::capture(parent, bindings, c);
     assert(c.error == snapshot::Error.None && c.snapshot_bytes == snapshot::footprint(saved) && c.copied_bytes == c.snapshot_bytes);
-    assert(saved.header.checkpoint != parent.identity && saved.header.checkpoint > 0 && c.validation_peak == saved.ops.len);
+    assert(saved.header.checkpoint != parent.identity && saved.header.checkpoint > 0 && c.validation_peak == max(saved.ops.len, max(saved.values.len, saved.properties.len)));
     // Parent changes *after* capture, including code growth and private cycles.
     parent.nodes[bindings[5].value.id()].value = source::number(900);
     assert(source::install_field(parent, bindings[6].value, "parentOnly", source::number(99)));
