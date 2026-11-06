@@ -58,7 +58,7 @@ fn validate(g: const Graph&, c: Control&) -> bool {
     for id in g.roots { if id < 0 || id >= g.nodes.len { return reject(c); } }
     for n in g.nodes {
         if !poll(c) { return false; }
-        if n.tag == 10 && (!c.cells || n.number < 0 || n.number > 2147483647 || n.number != (n.number as i64) || n.count < 0 || n.count > 1 || n.metadata >= 0) { return reject(c, Error.Unsupported); }
+        if n.tag == 10 && (!c.cells || n.number < 0 || n.number > 2147483647 || n.number != (n.number as i64) || n.count < 0 || n.count > 2 || n.metadata >= 0) { return reject(c, Error.Unsupported); }
         if n.tag < 0 || n.tag > 10 || n.metadata < -1 || n.metadata >= g.nodes.len || n.source < -1 || n.source >= g.sources.len || n.origin < -1 { return reject(c); }
         if n.source >= 0 && !range(n.span_start, n.span_end - n.span_start, g.sources[n.source].count) { return reject(c); }
         if n.source >= 0 {

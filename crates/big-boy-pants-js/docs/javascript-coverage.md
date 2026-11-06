@@ -819,16 +819,22 @@ census remain light-cljs-809's.
   functions; a delay realized before publication is stored realized). The
   first force claims it at the owner (op 5) and runs the thunk in its job
   under a catch handler of the force frame; the value, or what the thunk
-  threw (a realm error keeps its type, fault code and message), settles the
+  threw (a realm error keeps its type, fault code and message, and has an
+  identity, so repeated forces in a job throw one object), settles the
   claim (op 6), and every later force takes it, as Clojure's `Delay`. A
+  delay forced as a built-in's callback (`mapv`, `swap!`, an array
+  callback) runs in its own force frame too. A
   force while another job holds the claim gets the claim's epoch and waits
   as a dependency wait does (event 11, a `WAIT id cell` line; within the
   retention budget in place, otherwise as a saved continuation), and the
   owner posts `Settled` when a claim with waiters ends, which the
   coordinator turns into a resume (Answer or Work mode 5) that forces again.
   A job that ends holding claims (a fault its thunk could not catch, a
-  cancellation) releases them (op 7), so its waiters force again and one
-  claims. The owner follows wait edges from the claim's holder: a force that
+  cancellation) releases them (op 7), and so does the coordinator for a
+  saved continuation it refuses (retained or waiter budget), so the waiters
+  force again and one claims. A delay reference that reaches a job only
+  through a cell value has no thunk unless the job also installed its
+  publication; forcing it while pending and unclaimed fails by name. The owner follows wait edges from the claim's holder: a force that
   would close a cycle of claims fails `deref: a cycle of delay claims`
   (uncatchable, so the job ends and releases its claims; in a two-job cycle
   both jobs fail). The holder is the macro job's compiler id; a preparation
@@ -836,13 +842,18 @@ census remain light-cljs-809's.
   delay cell. The JOBS line's delay waits count the forces that waited.
 - *Identity.* Every object of a stored graph has an identity now (GFB node
   identities travel beside the bytes, numbered by the owner on first store,
-  -1 for primitives and cell references), and the objects of a publication
+  -1 for primitives, and a cell reference's derived from its cell, so a
+  compare-and-set of an atom holding an atom compares cells), and the
+  objects of a publication
   have one from the moment they leave their job, with no owner message:
   `publication_identity(publication, place)`, the publication a helper's
   unit or a definition's key and the place the object's row offset in it
   (the rows a form helper's graph, a callable install or a definition
   snapshot installs keep their order in every job). `Job.cell_rows` holds a
-  publication as one range entry. Every path that installs rows
+  publication as one range entry. A publication stores its cells' initial
+  states only once it knows those places (`store_initial`), so an object
+  that is both in the publication and in a cell's initial content has one
+  identity. Every path that installs rows
   (`snapshot::extend` of a definition, `callable::decode_install` through
   `published`, a form helper's import, a cell value's import) registers
   its cell references and identities and maps an object or cell the job

@@ -139,7 +139,10 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
     }
     return true;
 }
-fn encode(heap: const source::Heap&, base: const snapshot::Snapshot&, root: source::Value, out: u8[>..]&, c: snapshot::Control&, checkpoint: i64) -> bool {
+fn encode(heap: const source::Heap&, base: const snapshot::Snapshot&, root: source::Value, out: u8[>..]&, c: snapshot::Control&, checkpoint: i64) -> bool { var slots: i64[>..] = []; return encode(heap, base, root, out, c, checkpoint, slots); }
+// encode, and the producer row of each installed slot, in install order (the
+// places of the publication's objects, light-cljs-808).
+fn encode(heap: const source::Heap&, base: const snapshot::Snapshot&, root: source::Value, out: u8[>..]&, c: snapshot::Control&, checkpoint: i64, installed: i64[>..]&) -> bool {
     let bindings = [snapshot::Binding { id: 0, generation: 1, value: root }];
     let view = snapshot::borrow(heap, bindings, checkpoint);
     if 5 * snapshot::footprint(view) + 2 * snapshot::footprint(base) > c.bytes { return fail(c, snapshot::Error.Bytes); }
@@ -150,6 +153,7 @@ fn encode(heap: const source::Heap&, base: const snapshot::Snapshot&, root: sour
     // No restore/initialization/identity allocation is needed for comparison.
     var ids: i64[>..] = []; var slots: i64[>..] = [];
     if !graph(p, base.header, base, ids, slots, c) { return false; }
+    installed.clear(); installed.append(slots);
     var bytes: u8[>..] = []; to_bytes([p], bytes);
     if bytes.len > c.bytes || !snapshot::poll(c, bytes.len) { return fail(c, snapshot::Error.Bytes); }
     out.append(bytes); return true;

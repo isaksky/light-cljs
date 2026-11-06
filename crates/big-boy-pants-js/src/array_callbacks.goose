@@ -193,6 +193,8 @@ fn array_call(job: Job&, at: i64, b: Builtin, v: Value) {
     let args: Value[3] = [v, number(job.frames[at].index), job.frames[at].input];
     if node(heap, f.id()).kind == 4 {
         let cb = builtin_of(heap, f.id());
+        // A delay forced as the callback runs in a frame of its own (cells.goose).
+        if forces(heap, cb, args) { start_force(job, cb, v, job.operands.len); return; }
         if effect_builtin(cb) || cb == Builtin.Mapv || cb == Builtin.MapSeq || native_builtin(cb) { unsupported_step(job, b, "a host-effect or native-frame built-in callback"); return; }
         let r = call_builtin(job, node(heap, f.id()).function, this_arg, args);
         if heap.fault == Fault.None { job.operands.push(r); }

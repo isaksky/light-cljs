@@ -40,7 +40,8 @@ namespace cells;
 // measured workload needs one (light-cljs-799's census).
 
 // kind: 0 undefined, 1 null, 2 boolean (number 0 or 1), 3 number, 4 string
-// (UTF-16 little-endian units in data), 5 a form graph (GFB1 in data).
+// (UTF-16 little-endian units in data), 5 a form graph (GFB1 in data), 6
+// an error a delay's thunk threw (cells.goose error_flat), with an identity.
 // A graph's nodes have identities (light-cljs-808): `nodes` holds one per
 // graph node, 0 for one the owner numbers when it is first stored and -1
 // for one that has none (a primitive child), and `root` is the root's
@@ -177,13 +178,16 @@ fn answer(s: Store&, bytes: slice_pool<u8>&, ids: slice_pool<i64>&, r: const Req
 // Store `value` into `cell`: a graph's unnumbered nodes get identities here.
 fn store(s: Store&, bytes: slice_pool<u8>&, ids: slice_pool<i64>&, cell: i64, value: const Flat&) -> Answer {
     var numbers: i64 = 0;
+    // A graph's unnumbered objects, or a thrown error (kind 6) stored for the
+    // first time, get identities here.
     if value.kind == 5 { if value.nodes.len > 0 { for n in value.nodes { if n == 0 { numbers += 1; } } } else if value.identity == 0 { numbers = 1; } }
+    if value.kind == 6 && value.identity == 0 { numbers = 1; }
     let freed = s.entries[cell].len;
     if numbers > 0 && s.entries.len + s.stats.identities + numbers > s.limit || s.held - freed + value.data.len > byte_budget() { return Answer { ok: false, error: 1, cell: cell }; }
     var nodes: i64[>..] = []; nodes.append(value.nodes);
     var identity = value.identity;
     for n, i in nodes { if n == 0 { nodes[i] = s.next; s.next += 1; s.stats.identities += 1; } }
-    if value.kind == 5 { if nodes.len > 0 { identity = nodes[value.root]; } else if identity == 0 { identity = s.next; s.next += 1; s.stats.identities += 1; } }
+    if value.kind == 5 && nodes.len > 0 { identity = nodes[value.root]; } else if (value.kind == 5 || value.kind == 6) && identity == 0 { identity = s.next; s.next += 1; s.stats.identities += 1; }
     let e .= s.entries[cell];
     s.held -= e.len; if e.len > 0 { bytes.free_slice(bytes.items[e.start..(e.start + e.len)]); }
     if e.ids_len > 0 { ids.free_slice(ids.items[e.ids_start..(e.ids_start + e.ids_len)]); }

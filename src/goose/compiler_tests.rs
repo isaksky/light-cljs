@@ -4272,7 +4272,8 @@ fn delay_variants() -> Vec<(usize, Vec<(&'static str, String)>)> {
 /// helper the test holds back (the barrier) until the second job's force
 /// waits for the claim; both get the one value, and a later force takes it
 /// without a call. A thunk that throws throws its error (type and message)
-/// to every force, also later ones, and runs once. A cycle of claims (each
+/// to every force, also later ones, one error object in a job, and runs
+/// once. A cycle of claims (each
 /// job's thunk forces the delay the other claimed) fails by name, in both
 /// jobs: the second, released by the first's failure, claims the first's
 /// delay and then reaches its own claim.
@@ -4344,7 +4345,7 @@ fn goose_compiler_shared_delay_realizes_once() {
     );
     let calls = "rt => rt.core.atom(0)";
     let catch = format!(
-        "const d = {}; try {{ rt.core.force(d); return -1; }} catch (e) {{ return (e.message === 'boom' ? 1 : 0) + (e.name === 'TypeError' ? 10 : 0); }}",
+        "const d = {}; try {{ rt.core.force(d); return -1; }} catch (e) {{ let again = null; try {{ rt.core.deref(d); }} catch (f) {{ again = f; }} return (e.message === 'boom' ? 1 : 0) + (e.name === 'TypeError' ? 10 : 0) + (again === e ? 100 : 0); }}",
         root("fixture/bad")
     );
     for (workers, env) in delay_variants() {
@@ -4371,7 +4372,7 @@ fn goose_compiler_shared_delay_realizes_once() {
             &raw,
             3,
             &format!(
-                "const d = {}; let r = 0; try {{ rt.core.deref(d); }} catch (e) {{ r = e.message === 'boom' ? 1 : 0; }} const c = {}; return r + rt.core.deref(c) * 10 + (rt.core.realized(d) ? 100 : 0);",
+                "const d = {}; let first = null; try {{ rt.core.deref(d); }} catch (e) {{ first = e; }} let r = 0; try {{ rt.core.force(d); }} catch (e) {{ r = e === first && e.message === 'boom' ? 1 : 0; }} const c = {}; return r + rt.core.deref(c) * 10 + (rt.core.realized(d) ? 100 : 0);",
                 root("fixture/bad"),
                 root("fixture/calls")
             ),
@@ -4382,7 +4383,10 @@ fn goose_compiler_shared_delay_realizes_once() {
         let jobs = raw_close(&session, workers, 3 + 9 + 1 + 4);
         assert_eq!(
             outcomes,
-            [Ok("Double(11.0)".to_owned()), Ok("Double(11.0)".to_owned())],
+            [
+                Ok("Double(111.0)".to_owned()),
+                Ok("Double(111.0)".to_owned())
+            ],
             "workers={workers} {env:?}"
         );
         assert_eq!(
@@ -4457,10 +4461,20 @@ fn goose_compiler_cells_preserve_published_alias_identity() {
             "fixture/getter",
             "rt => { const c = rt.core.atom(5); return () => c; }",
         ),
+        // An object a publication holds both directly and as a cell's
+        // initial content: a callable helper and a form helper.
+        (
+            "fixture/pair",
+            "rt => { const t = rt.vectorFromArray([1]); const c = rt.core.atom(t); return () => rt.core.deref(c) === t ? 1 : 0; }",
+        ),
+        (
+            "fixture/boxed",
+            "rt => { const t = rt.vectorFromArray([1]); return rt.vectorFromArray([rt.core.atom(t), t]); }",
+        ),
     ];
     let token = root("fixture/token");
     let getter = root("fixture/getter");
-    let jobs: [(String, &[&str]); 8] = [
+    let jobs: [(String, &[&str]); 10] = [
         (
             format!(
                 "const t = {token}; rt.core.reset(a, t); return rt.core.deref(a) === t ? 1 : 0;"
@@ -4505,6 +4519,17 @@ fn goose_compiler_cells_preserve_published_alias_identity() {
             ),
             &["fixture/getter"],
         ),
+        (
+            format!("return {}();", root("fixture/pair")),
+            &["fixture/pair"],
+        ),
+        (
+            format!(
+                "const v = {}; let c = null; let t = null; let i = 0; rt.core.mapv((x) => {{ if (i++ === 0) c = x; else t = x; return 0; }}, v); return rt.core.deref(c) === t ? 1 : 0;",
+                root("fixture/boxed")
+            ),
+            &["fixture/boxed"],
+        ),
     ];
     let jobs = jobs
         .iter()
@@ -4542,8 +4567,113 @@ fn goose_compiler_cells_preserve_published_alias_identity() {
             "workers={workers} {env:?}: {}",
             ok(7)
         );
+        for i in [8, 9] {
+            assert_eq!(ok(i), "Double(1.0)", "{i}: workers={workers} {env:?}");
+        }
         if !env.is_empty() {
             assert_eq!(line.retired, line.spawned, "{line:?}");
         }
+        // The same through a prepared definition, in two jobs.
+        let session =
+            GooseSession::start_env(&runner(), workers, Some("readiness-test"), &env).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let raw = raw_inputs(&e);
+        let mut outcomes = Vec::new();
+        for id in 1..=2u64 {
+            session
+                .export(
+                    &session.directory.join("definition-101.gsp"),
+                    "rt => { const t = rt.vectorFromArray([1]); const c = rt.core.atom(t); return (form, env) => rt.core.deref(c) === t ? 1 : 0; }",
+                )
+                .unwrap();
+            let rx = submit_key(&session, &raw.bytes, id, 101);
+            outcomes.push(raw_outcome(&session, &raw, &rx, id));
+        }
+        raw_close(&session, workers, 2);
+        assert_eq!(
+            outcomes,
+            [Ok("Double(1.0)".to_owned()), Ok("Double(1.0)".to_owned())],
+            "workers={workers} {env:?}"
+        );
+    }
+}
+
+/// light-cljs-808: a job's own delay follows the V8 build's deferredValue
+/// (its thunk runs once, a thunk that throws stays and runs again at the
+/// next force, a thunk that waits for a helper resumes in a fresh worker),
+/// `force` and `deref` passed to built-ins as callbacks force pending,
+/// realized and shared delays, a delay realized before it was published
+/// travels as a form helper's value, and an atom holding another atom
+/// (a bare cell reference) swaps without a conflict.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_delays_in_jobs_and_cell_references() {
+    let helpers = [
+        ("fixture/number", "rt => 41"),
+        (
+            "fixture/ready",
+            "rt => { const d = new rt.core.Delay(() => 7, null); rt.core.force(d); return d; }",
+        ),
+    ];
+    let number = root("fixture/number");
+    let ready = root("fixture/ready");
+    let bodies: [(String, &[&str]); 7] = [
+        (
+            "let calls = 0; const d = new rt.core.Delay(() => { calls++; return 5; }, null); const before = rt.core.realized(d); const x = rt.core.deref(d) + rt.core.force(d); return calls * 100 + x + (before ? 1000 : 0) + (rt.core.realized(d) ? 10000 : 0);".to_owned(),
+            &[],
+        ),
+        (
+            "let calls = 0; const d = new rt.core.Delay(() => { calls++; if (calls === 1) throw TypeError('x'); return 3; }, null); let r = 0; try { rt.core.force(d); } catch (e) { r = 1; } return rt.core.force(d) * 100 + calls * 10 + r;".to_owned(),
+            &[],
+        ),
+        (
+            format!("const d = new rt.core.Delay(() => {number} + 1, null); return rt.core.deref(d) + (rt.core.realized(d) ? 100 : 0);"),
+            &["fixture/number"],
+        ),
+        (
+            "const v = rt.vectorFromArray([new rt.core.Delay(() => 4, null), 6]); return rt.core.mapv(rt.core.force, v);".to_owned(),
+            &[],
+        ),
+        (
+            format!("const d = {ready}; rt.core.reset(a, rt.vectorFromArray([d])); return rt.core.deref(d) + (rt.core.realized(d) ? 100 : 0);"),
+            &["fixture/ready"],
+        ),
+        (
+            "return rt.core.mapv(rt.core.deref, rt.core.deref(a));".to_owned(),
+            &[],
+        ),
+        (
+            "const b = rt.core.atom(1); rt.core.reset(a, b); let calls = 0; const r = rt.core.swap(a, (x) => { calls++; return x; }); const c = rt.core.atom(2); const pair = rt.core.resetVals(a, c); return (r === b ? 1 : 0) + calls * 10 + (rt.core.compareAndSet(a, c, b) ? 100 : 0) + (rt.core.deref(a) === b ? 1000 : 0);".to_owned(),
+            &[],
+        ),
+    ];
+    let jobs = bodies
+        .iter()
+        .map(|(body, reads)| (body.as_str(), *reads))
+        .collect::<Vec<_>>();
+    for (workers, env) in delay_variants() {
+        let (outcomes, line) = cell_session_roots(workers, &env, &helpers, &jobs);
+        let ok = |i: usize| {
+            outcomes[i]
+                .as_deref()
+                .unwrap_or_else(|e| panic!("{i}: workers={workers} {env:?}: {e}"))
+                .to_owned()
+        };
+        assert_eq!(ok(0), "Double(10110.0)", "workers={workers} {env:?}");
+        assert_eq!(ok(1), "Double(321.0)", "workers={workers} {env:?}");
+        assert_eq!(ok(2), "Double(142.0)", "workers={workers} {env:?}");
+        let forced = ok(3);
+        assert!(
+            matches!((forced.find("Double(4.0)"), forced.find("Double(6.0)")), (Some(f), Some(s)) if f < s),
+            "workers={workers} {env:?}: {forced}"
+        );
+        assert_eq!(ok(4), "Double(107.0)", "workers={workers} {env:?}");
+        assert!(
+            ok(5).contains("Double(7.0)"),
+            "workers={workers} {env:?}: {}",
+            ok(5)
+        );
+        assert_eq!(ok(6), "Double(1111.0)", "workers={workers} {env:?}");
+        assert_eq!(line.conflicts, 0, "{line:?}");
     }
 }

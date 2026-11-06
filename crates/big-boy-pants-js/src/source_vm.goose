@@ -2438,6 +2438,7 @@ fn mapv_step(job: Job&, frame: Frame) {
 fn builtin_callback(job: Job&, callee: Value, receiver: Value, arg: Value, frame: Frame) {
     let id: i64 = node(job.heap, callee.id()).function; let b = builtin_of(job.heap, callee.id());
     if b == Builtin.Gensym && job.gensym_next > 0 { job.operands.push(gensym(job, [arg])); }
+    else if forces(job.heap, b, [arg]) { start_force(job, b, arg, job.operands.len); }
     else if effect_builtin(b) { request_effect(job, id, [arg], frame); }
     else { let v = call_builtin(job, id, receiver, [arg]); job.operands.push(v); }
 }

@@ -168,8 +168,15 @@ thread_fn preparer(base: snapshot::Snapshot, directory: u8[], id: i64, key: i64,
     let function, ready = initialize(id, heap, factory, [rt], base.nodes.len, report, prefix, next); if !ready { assert(qput(Preparation { report: copy(report) })); return; }
     if !source::valid(heap, function) || function.tag() != 5 || source::node(heap, function.id()).kind != 2 { format(report, "ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
     // Every atom the definition reaches becomes a process-wide cell (light-cljs-799).
-    var thunks = false; let refused = source::publish_cells(heap, function, base.nodes.len, thunks);
+    var thunks = false; var initial: source::Initial[>..] = []; let refused = source::publish_cells(heap, function, base.nodes.len, thunks, initial);
     if refused.len > 0 { format(report, "ERROR ", id, " preparation-", refused, " function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
+    // The cells' states, whose objects of the definition have the identities
+    // of their rows above the image (light-cljs-808).
+    if initial.len > 0 {
+        var rows: i64[>..] = []; for r in base.nodes.len..heap.nodes.len { rows.push(r); }
+        let stored = source::store_initial(heap, initial, source::places_of(heap, rows), source::definition_publication(key));
+        if stored.len > 0 { format(report, "ERROR ", id, " preparation-", stored, " function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
+    }
     heap.initializer_count += 1;
     let result = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: function }], sc); assert(sc.error == snapshot::Error.None);
     assert(qput(Preparation { ok: true, image: copy(result), gensym_next: next }));
@@ -375,13 +382,20 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
             var publication = snapshot::Control {};
             // Every atom the helper reaches becomes a process-wide cell, and a
             // form helper's graph names it (light-cljs-799).
-            var thunks = false; let refused = source::publish_cells(heap, function, base.nodes.len, thunks);
+            var thunks = false; var initial: source::Initial[>..] = []; let refused = source::publish_cells(heap, function, base.nodes.len, thunks, initial);
             if refused.len > 0 { publish(Event { id: id, kind: 3, name: str("helper-", refused), address: address, timing: timing(work, started, sc) }); return; }
             // A value that reaches a pending delay goes as a callable
             // publication, which carries the delay's thunk (light-cljs-808).
             let closure = is_closure || thunks;
             control.cells = true;
-            let ok = if closure { callable::encode(heap, saved.heap, function, bytes, publication, checkpoint) } else { bridge::export_graph(heap, [function], graph, control) && bridge::encode(graph, bytes, control) };
+            var placed: i64[>..] = [];
+            let ok = if closure { callable::encode(heap, saved.heap, function, bytes, publication, checkpoint, placed) } else { bridge::export_rows(heap, [function], graph, control, source::Value.Undefined, placed) && bridge::encode(graph, bytes, control) };
+            // The cells' states, whose objects of the publication have the
+            // identities of their places in it (light-cljs-808).
+            if ok && initial.len > 0 {
+                let stored = source::store_initial(heap, initial, source::places_of(heap, placed), source::helper_publication(key));
+                if stored.len > 0 { publish(Event { id: id, kind: 3, name: str("helper-", stored), address: address, timing: timing(work, started, sc) }); return; }
+            }
             if !ok {
                 let function_id = if is_closure { source::node(heap, function.id()).function } else { entry }; let pc = code.functions[function_id].start; let op = code.ops[pc];
                 publish(Event { id: id, kind: 3, name: str("helper-", heap.fault, "-", control.error, "-", publication.error, " function=", function_id, " pc=", pc, " emitted-span=", op.start, ":", op.end), address: address, timing: timing(work, started, sc) }); return;
@@ -599,6 +613,9 @@ fn resume(w: Waiting&, mode: i64, helper: const u8[:], key: i64, is_callable: bo
     }
     print("RESUME ", w.id); flush_stdout(); w.active = false; return true;
 }
+// A saved continuation the coordinator refuses holds delay claims no job
+// will settle: release them, so their waiters force again (light-cljs-808).
+fn abandon(event: const Event&) { if event.kind == 1 && event.saved.claims > 0 { cells::exchange(cells::Request { op: 7, holder: event.id }); } }
 // Whether the cell owner reported that `cell`'s claim `epoch` ended.
 fn claim_ended(settled: const cells::Settled[:], cell: i64, epoch: i64) -> bool { for s in settled { if s.cell == cell && s.epoch == epoch { return true; } } return false; }
 // Whether a saved continuation still waits (for its answer or, cancelling,
@@ -688,9 +705,9 @@ fn main() {
                 // Over the retention budget: the worker saves its continuation and ends the job.
                 let checkpoint = source::reserve_identity(); assert(qput(Answer { address: event.address, mode: 0, checkpoint: checkpoint })); running.push(Running { id: event.id, thread: owner.thread, address: event.address, checkpoint: checkpoint }); continue;
             }
-            let bytes = if event.kind == 1 { footprint(event.saved) } else { event.data.len }; if bytes > 67108864 - retained { print("ERROR ", event.id, " retained-budget"); flush_stdout(); continue; } retained += bytes; if event.metrics.len > 0 { print("METRIC ", event.id, " ", event.metrics, " ", sleep_ns, " ", clock_ns() - beginning); } if event.kind == 2 || event.kind == 5 { print("COST ", event.id, " ", event.name); }
+            let bytes = if event.kind == 1 { footprint(event.saved) } else { event.data.len }; if bytes > 67108864 - retained { abandon(event); print("ERROR ", event.id, " retained-budget"); flush_stdout(); continue; } retained += bytes; if event.metrics.len > 0 { print("METRIC ", event.id, " ", event.metrics, " ", sleep_ns, " ", clock_ns() - beginning); } if event.kind == 2 || event.kind == 5 { print("COST ", event.id, " ", event.name); }
             if event.census[0] >= 0 { var text: u8[>..] = []; format(text, "CENSUS 0 ", event.id, " ", event.kind); for n in event.census { format(text, " ", n); } print(text); }
-            if event.kind == 1 { stats.saves += 1; if waiting.len >= 128 { print("ERROR ", event.id, " waiter-budget"); } else { waiting.push(Waiting { id: event.id, name: copy(event.name), saved: copy(event.saved), delay: event.delay, epoch: event.epoch }); if event.delay >= 0 { print("WAIT ", event.id, " ", event.delay); } else { print("NEED ", event.id, " ", event.saved.sequence, " ", event.name, " ", event.steps, " ", event.saved.writes.len); } } }
+            if event.kind == 1 { stats.saves += 1; if waiting.len >= 128 { abandon(event); print("ERROR ", event.id, " waiter-budget"); } else { waiting.push(Waiting { id: event.id, name: copy(event.name), saved: copy(event.saved), delay: event.delay, epoch: event.epoch }); if event.delay >= 0 { print("WAIT ", event.id, " ", event.delay); } else { print("NEED ", event.id, " ", event.saved.sequence, " ", event.name, " ", event.steps, " ", event.saved.writes.len); } } }
             else if event.kind == 5 { produced.push(Produced { key: event.key, data: copy(event.data), callable: event.callable });
                 // The helper numbered in its own frozen scope, not the wait's.
                 print("PRODUCED ", event.id, " ", event.key); }
