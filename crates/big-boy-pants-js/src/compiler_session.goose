@@ -230,6 +230,10 @@ thread_fn run_worker(base: snapshot::Snapshot, directory: u8[], setup: Setup) {
         // Deterministic poison regression: hold a started replacement before it
         // runs, so poison must also cancel a live worker that has not executed.
         if setup.cleanup_test && work.id == 2 { assert(write_file(str(directory, "/claim-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/claim-release"), gate) { sleep_ms(1); } }
+        // Deterministic regression (light-cljs-803): hold job 4's resumed
+        // continuation before it runs, so the session's cancellation reaches
+        // it queued, after the coordinator stopped tracking it as a waiter.
+        if setup.cleanup_test && work.id == 4 && work.mode == 3 { assert(write_file(str(directory, "/resume-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/resume-release"), gate) { sleep_ms(1); } }
         serve(work, directory, setup, base, service, code, heap, bindings);
         // Publish the real terminal result, then abort while this worker still
         // runs. The host starts a replacement before releasing the gate.
@@ -306,13 +310,15 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
     defer { if deterministic { assert(write_file(str(directory, "/ready-", barrier), "ready")); } }
     let worker_started = clock_ns();
     var sc = snapshot::Control {};
-    if cancelled() { publish(Event { id: id, kind: 3, name: str("cancelled"), address: address, timing: timing(work, started, sc) }); return; }
+    // A fresh job (a start or a helper production) has entered no finally
+    // block yet; a continuation checks once its activation is restored.
+    if (mode == 0 || mode == 2) && cancelled() { publish(Event { id: id, kind: 3, name: str("cancelled"), address: address, timing: timing(work, started, sc) }); return; }
     // The job's rows above the worker's image; the image rows are the twin's.
     if setup.check { assert(snapshot::over_image(saved.heap, base, service)); }
     assert(snapshot::extend(saved.heap, base, service, code, heap, bindings, identity, sc)); worker_installs[0] += sc.restore_ns; let rt = bindings[0].value;
     // Rows below this are the image's and the definition's (a continuation
     // keeps its job's boundary).
-    let owned = if mode == 1 || mode == 3 { saved.owned } else { heap.nodes.len };
+    let owned = if mode == 1 || mode == 3 || mode == 4 { saved.owned } else { heap.nodes.len };
     var costs = saved.costs; var control = saved.bridge; var call = source::Value.Undefined; var function = source::Value.Undefined; var next = saved.gensym_next;
     if mode == 0 { function = bindings[1].value; let importing = clock_ns();
         assert(read_file(str(directory, "/", id, ".gfb"), bytes)); assert(bridge::decode(graph, bytes, control)); assert(bridge::import_graph(heap, graph, args, control)); assert(args.len >= 2); call = args[0]; costs[1] += clock_ns() - importing;
@@ -343,12 +349,16 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
         for f in saved.frames { job.frames.push(f); } job.locals.append(saved.locals); job.operands.append(saved.operands);
         job.writes.append(saved.writes);
         for h in saved.handlers { job.handlers.push(h); } job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = 9; job.effect_count = 3; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+        // Mode 4: the session was cancelled while this continuation waited;
+        // or it was cancelled while this resume was queued (light-cljs-803).
+        // Its finally blocks run under its limits; nothing is published.
+        if mode == 4 || cancelled() { publish(Event { id: id, kind: 3, name: clean_up(job), address: address, timing: timing(work, started, sc) }); return; }
         if mode == 1 && !work.callable { let start = heap.nodes.len; let installing = clock_ns(); defer { worker_installs[1] += clock_ns() - installing; worker_installs[2] += 1; } import_ok = bridge::decode(graph, work.helper, control) && bridge::import_graph(heap, graph, args, control) && args.len == 1; if import_ok { imported = args[0]; } source::install_foreign(job, start); }
         if !import_ok { source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], imported); assert(source::deliver_effect(job, imported)); }
     }
     let execution_started = clock_ns(); var sequence = if mode == 0 { 0 } else { saved.sequence + 1 };
     loop {
-        if cancelled() { clean_up(job); publish(Event { id: id, kind: 3, name: str("cancelled"), address: address, timing: timing(work, started, sc) }); return; }
+        if cancelled() { publish(Event { id: id, kind: 3, name: clean_up(job), address: address, timing: timing(work, started, sc) }); return; }
         let outcome = source::run(job, 10000); if outcome == tiny::Outcome.Complete { break; } if outcome == tiny::Outcome.Failed { fail(id, heap, job, address, timing(work, started, sc)); return; }
         if !job.effect_pending { continue; }
         if job.effect_kind != 9 || job.effect_count != 3 { source::deliver_effect(job, source::Value.Undefined, source::Fault.NativeBoundary); continue; }
@@ -365,7 +375,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
             // hold one answer per live worker.
             if cleanup_test && id > 10 { var gate: u8[>..] = []; while !read_file(str(directory, "/answer-release"), gate) { sleep_ms(1); } }
             let answer, present = await_answer(address);
-            if !present { clean_up(job); publish(Event { id: id, kind: 3, name: str("cancelled"), address: address, timing: timing(work, started, sc) }); return; }
+            if !present { publish(Event { id: id, kind: 3, name: clean_up(job), address: address, timing: timing(work, started, sc) }); return; }
             barrier = answer.checkpoint;
             if answer.mode == -1 { return; }
             if answer.mode != 0 {
@@ -397,12 +407,24 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
     if !bridge::export_graph(heap, [result], graph, control, call) || !bridge::encode(graph, bytes, control) { publish(Event { id: id, kind: 3, name: str("bridge-", control.error), address: address, timing: timing(work, started, sc) }); return; }
     assert(write_file(str(directory, "/", id, ".out"), bytes)); costs[1] += clock_ns() - exporting; publish(Event { id: id, kind: 2, gensym_next: job.gensym_next, name: str(costs[0], " ", costs[1]), steps: steps, writes: job.writes.len, metrics: str(sc.restore_ns, " ", execution_ns, " ", clock_ns() - worker_started, " ", storage(saved, heap, sc, bytes.len), " ", mode), address: address, census: counted, timing: timing(work, started, sc) });
 }
-// Session cancellation reaching a live job, at the dispatch poll point or
-// while it waits in place for a helper: its finally blocks run, under its
-// limits, before it ends Cancelled (light-cljs-786). A cleanup cannot wait,
-// so it never suspends again.
-fn clean_up(job: source::Job&) {
+// Session cancellation reaching a job, at the dispatch poll point, while it
+// waits in place for a helper, or while it waits as a saved continuation
+// (mode 4, light-cljs-803): its finally blocks run, under its limits, before
+// it ends Cancelled (light-cljs-786). A cleanup cannot wait, so it never
+// suspends again. The job's report: `cancelled`, then ` cleanup=` and the
+// keys of the named property writes the cleanup made, in order (at most 32),
+// so the session's trace shows which finally blocks ran.
+fn clean_up(job: source::Job&) -> u8[] {
+    let from = job.writes.len;
     if source::cancel(job) { while source::run(job, 10000) == tiny::Outcome.Yielded && !job.effect_pending {} }
+    var out: u8[>..] = []; out.append("cancelled");
+    for w, i in job.writes[from..] {
+        if i >= 32 { break; }
+        out.append(if i == 0 { " cleanup=" } else { "," });
+        if w.key.tag() != 4 { out.push('?'); continue; }
+        for u, j in source::utf16(job.heap, w.key) { if j >= 64 { break; } out.push(if u > 32 && u < 127 && u != 44 { u as u8 } else { '?' }); }
+    }
+    return str(out);
 }
 fn storage(saved: const Saved&, heap: const source::Heap&, sc: snapshot::Control, output: i64) -> u8[] {
     if !saved.storage { return str("0 0 0 0 0 0 0"); }
@@ -512,6 +534,9 @@ fn resume(w: Waiting&, mode: i64, helper: const u8[:], key: i64, is_callable: bo
     }
     print("RESUME ", w.id); flush_stdout(); w.active = false; return true;
 }
+// Whether a saved continuation still waits (for its answer or, cancelling,
+// for its cleanup).
+fn saved_waiters(waiting: const Waiting[:]) -> bool { for w in waiting { if w.active && w.address == 0 { return true; } } return false; }
 // A blocked waiter left without an answer (cancellation or abort): release
 // its retention slot.
 fn unblock(waiting: Waiting[>..]&, address: i64, thread: i64, counts: Counts&) {
@@ -560,7 +585,7 @@ fn main() {
     print("READY 1 ", heap.boot_count, " ", loaded - beginning, " ", booted - loaded, " ", clock_ns() - booted); flush_stdout();
     // The deterministic fixture queues a complete batch before the first turn.
     if deterministic { var bytes: u8[>..] = []; while !read_file(str(directory, "/commands-ready"), bytes) { sleep_ms(1); } }
-    while !closing || counts.live > 0 {
+    while !closing || counts.live > 0 || saved_waiters(waiting) {
         var progress = false; var command_count: i64 = 0; var event_count: i64 = 0;
         readiness::clear();
         loop { let command, available = qpoll<Command>(); if !available { break; } assert(qput(readiness::InputCredit {})); progress = true; if command.id == -2 { continue; } command_count += 1; commands += 1; if command.id <= 0 { closing = true; } else if !closing { if queue.len >= 1024 { print("ERROR ", command.id, " command-budget"); flush_stdout(); } else { queue.push(command.id); } } }
@@ -580,13 +605,13 @@ fn main() {
                 // Every worker, whenever spawned, inherits the same image.
                 if check && event.image != image { print("FAULT 0 worker-image ", event.worker); flush_stdout(); assert(false); }
                 if event.retired { stats.retired += 1; exits.push(Exit { address: event.worker, clock: event.timing[1] }); }
-                else if closing { assert(qput(Work { stop: true })); } else { counts.idle += 1; }
+                else if closing && !saved_waiters(waiting) { assert(qput(Work { stop: true })); } else { counts.idle += 1; }
                 continue; }
             if event.kind != 10 && event.timing[1] > 0 { finals += 1; stats.start_ns += event.timing[0]; stats.restore_bytes += event.timing[2]; }
             var owner, owned = release(running, event.address); if owned && event.worker >= 0 { owner.thread = pool.threads[event.worker]; }
             // Only a blocked waiter publishes while not running: its own
-            // cancellation, which is no job result.
-            if !owned { unblock(waiting, event.address, -1, counts); continue; }
+            // cancellation, which is no job result; its report is traced.
+            if !owned { unblock(waiting, event.address, -1, counts); if event.kind == 3 && !poisoned { print("ERROR ", event.id, " ", event.name); flush_stdout(); } continue; }
             event_count += 1; events += 1; if poisoned { continue; }
             if event.kind == 10 { stats.waits += 1;
                 if waiting.len >= 128 { print("ERROR ", event.id, " waiter-budget"); flush_stdout(); assert(qput(Answer { address: event.address, mode: -1 })); continue; }
@@ -605,8 +630,17 @@ fn main() {
             flush_stdout();
         }
         if closing && !cancelling { assert(qput(Cancel {})); cancelling = true; }
-        // Closing: every idle worker exits; busy ones get a stop when idle.
-        if closing { while counts.idle > 0 { assert(qput(Work { stop: true })); counts.idle -= 1; } }
+        // Cancelling: every saved continuation still waiting is restored in a
+        // worker to run its finally blocks (mode 4, light-cljs-803), within the
+        // execution slots, as the Pants contract has a cancelled task
+        // suspended at a wait do (rust/src/task.rs, "Cancellation and finally
+        // blocks"). Its report is traced; the session publishes nothing.
+        if cancelling { for w in waiting { if !w.active || w.address != 0 { continue; } if running.len >= limit || !available(counts) { break; }
+            let checkpoint = source::reserve_identity(); var work = Work { saved: copy(w.saved), id: w.id, identity: identity(w.saved), mode: 4, checkpoint: checkpoint };
+            dispatch(work, base, pool, counts, stats); running.push(Running { id: w.id, address: checkpoint, checkpoint: checkpoint }); w.active = false; progress = true; } }
+        // Closing: every idle worker exits once no saved continuation waits
+        // for its cleanup; busy ones get a stop when idle.
+        if closing && !saved_waiters(waiting) { while counts.idle > 0 { assert(qput(Work { stop: true })); counts.idle -= 1; } }
         if !closing { for w in waiting { if running.len >= limit { break; } if !w.active { continue; }
             if w.key == -2 { var bytes: u8[>..] = []; if !read_file(str(directory, "/", w.id, "-", w.saved.sequence, ".key"), bytes) { continue; } let key, ok = parse_int(bytes); assert(ok && key >= -1); w.key = key; }
             let key = w.key; if key == -1 { if resume(w, 3, [], -1, false, running, base, pool, counts, stats) { progress = true; } continue; } var found = false;

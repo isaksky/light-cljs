@@ -1317,6 +1317,148 @@ fn goose_compiler_caught_runtime_errors_preserve_identity() {
     assert!(error.contains("UnsupportedOperand"), "{error}");
     cleaned(&session);
 }
+/// Control flow across helper waits (light-cljs-803): a pending Return,
+/// Throw or Jump completion of a finally block that demands a root, and a
+/// ToPrimitive native frame whose `valueOf` demands one, survive the wait,
+/// in place (retained workers) and as a saved continuation (none retained).
+/// A session cancelled during any of these waits runs the job's pending
+/// finally blocks, innermost first and across frames, and the runner
+/// reports the keys their writes named, so a skipped finally block of a
+/// saved waiter fails here.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_control_flow_across_helper_waits_and_cancellation() {
+    const ROOTS: [(&str, usize); 3] = [("fixture/a", 1), ("fixture/b", 2), ("fixture/s", 3)];
+    // Each body runs inside two finally blocks of the macro's frame; the
+    // result is the cleanup order's digits, then the completion values.
+    let cases: [(&str, &str, i64, &[usize]); 5] = [
+        (
+            "return",
+            "function f() { try { try { note(1); return 7; } finally { note(2); rec.waited = read('fixture/a'); note(3); } } finally { rec.frame = 1; note(4); } } value = f() + rec.waited;",
+            123489047,
+            &[1],
+        ),
+        (
+            "throw",
+            "function g() { try { try { note(1); throw 7; } finally { note(2); rec.waited = read('fixture/a'); note(3); } } finally { rec.frame = 1; note(4); } } try { g(); } catch (e) { value = e + rec.waited; }",
+            123489047,
+            &[1],
+        ),
+        (
+            "jump",
+            "function h() { let n = 0; try { for (let i = 0; i < 2; i++) { try { note(1); if (i == 0) continue; n += 7; break; } finally { note(2); n += read(i == 0 ? 'fixture/a' : 'fixture/b'); note(3); } } } finally { rec.frame = 1; note(4); } return n; } value = h();",
+            123123489097,
+            &[1, 2],
+        ),
+        (
+            "to-primitive",
+            "let calls = 0; const o = { valueOf: function () { try { calls += 1; note(1); return read('fixture/a'); } finally { rec.frame = 1; note(4); } } }; value = (o + 2) + calls * 100;",
+            1489142,
+            &[1],
+        ),
+        // A string from the helper converts as a string.
+        (
+            "to-primitive-string",
+            "let calls = 0; const s = { valueOf: function () { try { calls += 1; note(1); return read('fixture/s'); } finally { rec.frame = 1; note(4); } } }; value = ((s + 'y') === 'xy' ? 5 : 0) + calls * 100;",
+            1489105,
+            &[3],
+        ),
+    ];
+    // fixture/a and fixture/b are the numbers 40 and 50, fixture/s is 'x'.
+    let helper = |unit: usize| -> Result<String, String> {
+        Ok(if unit == 3 {
+            "rt => 'x'".to_owned()
+        } else {
+            format!("rt => {}", 30 + 10 * unit)
+        })
+    };
+    for retained in [0, 2] {
+        for (name, body, expected, units) in cases {
+            let source = format!(
+                "rt => (form, env) => {{ const read = name => __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, name); const rec = {{}}; let order = 0; const note = d => {{ order = order * 10 + d; }}; let value = 0; try {{ try {{ {body} }} finally {{ rec.inner = 1; note(8); }} }} finally {{ rec.outer = 1; note(9); }} return order * 1000 + value; }}"
+            );
+            let context = format!("{name} retained={retained}");
+            // Completed: every completion value and the cleanup order, each
+            // root produced and each method run exactly once.
+            let session =
+                GooseSession::start_retaining(&runner(), 1, Some("readiness-test"), Some(retained))
+                    .unwrap();
+            let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+            let (function, args, call) = inputs(&e, &source);
+            let demanded = Rc::new(RefCell::new(Vec::new()));
+            let seen = demanded.clone();
+            serve(&e, &ROOTS, move |unit| {
+                seen.borrow_mut().push(unit);
+                helper(unit)
+            });
+            let result = e
+                .call(function, &args)
+                .unwrap_or_else(|error| panic!("{context}: {error:?}"));
+            let result = e
+                .export_form(result, &call, origin(&call), Default::default())
+                .unwrap();
+            assert!(
+                result
+                    .data()
+                    .value_eq(&Datum::new(DatumKind::Integer(expected))),
+                "{context}: {:?}",
+                result.data()
+            );
+            assert_eq!(*demanded.borrow(), units, "{context}");
+            session.close();
+            cleaned(&session);
+            let trace = session.trace();
+            let jobs = assert_threads(&trace, 1);
+            // Each wait blocks in place or is saved as a continuation.
+            let n = units.len() as u64;
+            assert_eq!(
+                (jobs.waits, jobs.saves),
+                if retained == 0 { (0, n) } else { (n, 0) },
+                "{context}: {jobs:?}"
+            );
+            // Cancelled during each wait: the finally blocks pending there run.
+            for &target in units {
+                let session = GooseSession::start_retaining(
+                    &runner(),
+                    1,
+                    Some("readiness-test"),
+                    Some(retained),
+                )
+                .unwrap();
+                let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+                let (function, args, _) = inputs(&e, &source);
+                let control = e.control();
+                serve(&e, &ROOTS, move |unit| {
+                    if unit == target {
+                        control.cancel();
+                    }
+                    helper(unit)
+                });
+                let error = e.call(function, &args).unwrap_err().to_string();
+                assert!(error.contains("cancelled"), "{context} {target}: {error}");
+                cleaned(&session);
+                let trace = session.trace();
+                let reports = trace
+                    .iter()
+                    .filter(|line| line.contains("cancelled"))
+                    .collect::<Vec<_>>();
+                assert_eq!(reports.len(), 1, "{context} {target}: {trace:?}");
+                assert!(
+                    reports[0].starts_with("ERROR ")
+                        && reports[0].ends_with(" cancelled cleanup=frame,inner,outer"),
+                    "{context} {target}: {trace:?}"
+                );
+                let jobs = assert_threads(&trace, 1);
+                let n = units.iter().position(|&u| u == target).unwrap() as u64 + 1;
+                assert_eq!(
+                    (jobs.waits, jobs.saves),
+                    if retained == 0 { (0, n) } else { (n, 0) },
+                    "{context} {target}: {jobs:?}"
+                );
+            }
+        }
+    }
+}
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_cancel_and_deadline_cleanup() {
@@ -1937,7 +2079,8 @@ fn goose_compiler_blocked_waits_release_worker_and_retention() {
     );
     // Over the budget: the first wait blocks, later ones save a continuation
     // and their workers go idle (a later job may reuse one); the blocked one
-    // is cancelled at close.
+    // is cancelled at close, and each saved one is restored at close to run
+    // its finally blocks, a job of its own (light-cljs-803).
     let (session, bytes) = fixture(1, Some("readiness-test"), Some(1));
     for id in 1..=3 {
         await_need(&submit(&session, &bytes, id));
@@ -1947,7 +2090,7 @@ fn goose_compiler_blocked_waits_release_worker_and_retention() {
     let jobs = assert_threads(&session.trace(), 1);
     assert_eq!(
         (jobs.jobs, jobs.waits, jobs.peak_blocked, jobs.saves),
-        (3, 3, 1, 2),
+        (3 + 2, 3, 1, 2),
         "{jobs:?}"
     );
     assert!((2..=3).contains(&jobs.spawned), "{jobs:?}");
@@ -1983,7 +2126,8 @@ fn goose_compiler_blocked_waits_release_worker_and_retention() {
             jobs.peak_blocked,
             jobs.saves
         ),
-        (8, 8, 8, 1, 7),
+        // Each saved continuation's cleanup at close is a job (light-cljs-803).
+        (8 + 7, 8, 8, 1, 7),
         "{jobs:?}"
     );
     // A contained abort while blocked (cleanup-abort-test job 3) poisons the
@@ -2021,6 +2165,70 @@ fn goose_compiler_blocked_waits_release_worker_and_retention() {
     cleaned(&session);
 }
 
+/// A saved continuation whose resume is queued when the session is
+/// cancelled runs its finally blocks once restored, skipping its catch
+/// block (light-cljs-803). cleanup-abort-test holds job 4's resume before it
+/// runs until the coordinator has taken the close.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cancel_reaches_a_queued_resume() {
+    let session =
+        GooseSession::start_retaining(&runner(), 1, Some("cleanup-abort-test"), Some(0)).unwrap();
+    let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+    let (_, args, _) = inputs(&e, "rt => (form, env) => 0");
+    let values = args
+        .iter()
+        .map(|&id| e.get(id).unwrap())
+        .collect::<Vec<_>>();
+    let limits = ConversionLimits::default();
+    let budget = bridge::Budget::new(limits.nodes, e.control.clone());
+    let bytes = bridge::Graph::arguments(&values, limits, &budget)
+        .unwrap()
+        .encode()
+        .unwrap();
+    session.export(&session.directory.join("definition-1.gsp"), "rt => (form, env) => { const rec = {}; try { try { __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/missing'); } catch (e) { rec.caught = 1; } } finally { rec.resumed = 1; } return 0; }").unwrap();
+    let rx = submit(&session, &bytes, 4);
+    await_need(&rx);
+    // A missing dependency: the coordinator queues the resume (mode 3).
+    session.answer_key(4, 0, "-1").unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    while !session.directory.join("resume-ready").exists() {
+        assert!(Instant::now() < until, "{:?}", session.trace());
+        thread::sleep(Duration::from_millis(1));
+    }
+    {
+        let mut process = session.process.lock().unwrap();
+        let input = &mut process.as_mut().unwrap().input;
+        writeln!(input, "0").unwrap();
+        input.flush().unwrap();
+    }
+    // SCHED's commands count reaches 2 (the job and the close) in the turn
+    // that puts the cancellation token.
+    while !session
+        .trace()
+        .iter()
+        .any(|s| s.starts_with("SCHED ") && s.split_whitespace().nth(9) == Some("2"))
+    {
+        assert!(Instant::now() < until, "{:?}", session.trace());
+        thread::yield_now();
+    }
+    std::fs::write(session.directory.join("resume-release"), "release").unwrap();
+    while !session.trace().iter().any(|s| s == "CLOSED 1") {
+        assert!(Instant::now() < until, "{:?}", session.trace());
+        thread::yield_now();
+    }
+    let trace = session.trace();
+    assert!(
+        trace
+            .iter()
+            .any(|s| s == "ERROR 4 cancelled cleanup=resumed"),
+        "{trace:?}"
+    );
+    let jobs = assert_threads(&trace, 1);
+    assert_eq!((jobs.saves, jobs.jobs), (1, 2), "{jobs:?}");
+    session.close();
+    cleaned(&session);
+}
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_drains_ready_batches_without_progress_backoff() {

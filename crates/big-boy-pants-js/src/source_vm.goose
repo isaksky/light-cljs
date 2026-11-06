@@ -1658,7 +1658,9 @@ fn own_named(heap: Heap&, object: Value, name: const u8[:]) -> Value, bool {
 fn to_primitive_step(job: Job&, frame: Frame, op: u8, method: u8) {
     let heap .= job.heap; let at = job.frames.len - 1;
     if frame.pc == 1 {
-        let result = job.operands.pop();
+        // A scalar form (kind 11: a primitive with its provenance, as a
+        // helper's value arrives) is its primitive.
+        let result = form_value(heap, job.operands.pop());
         job.frames[at].pc = 0;
         if result.tag() == 5 { job.frames[at].native = Native.ToPrimitive { op: op, method: method + 1 }; return; }
         if frame.index == 0 { job.frames[at].input = result; } else { job.frames[at].output = result; }
