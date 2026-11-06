@@ -2733,9 +2733,35 @@ fn goose_compiler_active_waiter_limit_stays_bounded() {
             }
         }
     }
+    // Request the native close and wait for it. Cancellation cancels the 32
+    // waiters blocked in place and runs every one of the 96 saved
+    // continuations as a cleanup job, one per execution slot (light-cljs-803):
+    // 60-110 ms on the release runner alone, more on the debug runner or under
+    // load. GooseSession::close() kills the runner 100 ms after its close
+    // request, so it may not be what ends this session.
+    {
+        let mut process = session.process.lock().unwrap();
+        let input = &mut process.as_mut().unwrap().input;
+        writeln!(input, "0").unwrap();
+        input.flush().unwrap();
+    }
+    let until = Instant::now() + Duration::from_secs(30);
+    while !session.trace().iter().any(|s| s == "CLOSED 1") {
+        assert!(Instant::now() < until, "{:?}", session.trace());
+        thread::sleep(Duration::from_millis(1));
+    }
+    // Every admitted waiter is cancelled exactly once, and the refused one
+    // never was a waiter.
+    let trace = session.trace();
+    let mut cancelled = trace
+        .iter()
+        .filter_map(|s| s.strip_suffix(" cancelled")?.strip_prefix("ERROR "))
+        .map(|id| id.parse::<u64>().unwrap())
+        .collect::<Vec<_>>();
+    cancelled.sort_unstable();
+    assert_eq!(cancelled, (1..=128).collect::<Vec<_>>());
     session.close();
     cleaned(&session);
-    assert!(session.trace().iter().any(|s| s == "CLOSED 1"));
     assert!(!String::from_utf8_lossy(&session.stderr.lock().unwrap()).contains("assert failed"));
 }
 
