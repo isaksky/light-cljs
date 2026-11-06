@@ -985,6 +985,35 @@ mod tests {
         }
     }
 
+    /// [`gensym_in_an_ended_scope_fails_by_name`] on V8: the frozen
+    /// initializer scope numbers on its own and an unscoped `gensym` after
+    /// its scope ended gets the named error (light-cljs-802).
+    #[test]
+    #[cfg(light_v8)]
+    fn v8_gensym_in_an_ended_scope_fails_by_name() {
+        use crate::evaluator::SessionEvaluator;
+        use crate::v8_evaluator::V8Evaluator;
+        let run = |engine: &V8Evaluator, source: &str| {
+            SessionEvaluator::evaluate_unit(engine, source)
+                .and_then(|value| SessionEvaluator::print(engine, value))
+        };
+        let frozen = "rt => { const forms = rt.compilerForms, outer = forms.gensymFrame({prefix: \"5_1_i\", count: 0}); try { return rt.core.gensym(\"g\"); } finally { forms.gensymFrame(outer); } }";
+        for ended in [1, ENDED_BOUND + 2] {
+            let engine = V8Evaluator::new(Default::default()).unwrap();
+            {
+                let _namespace = enter_namespace(7);
+                sync_gensym_scope(&engine).unwrap();
+                assert_eq!(run(&engine, "rt => rt.core.gensym(\"g\")").unwrap(), "g7_1");
+            }
+            for _ in 1..ended {
+                let _other = enter_namespace(8);
+            }
+            assert_eq!(run(&engine, frozen).unwrap(), "g5_1_i1");
+            let error = run(&engine, "rt => rt.core.gensym(\"g\")").unwrap_err();
+            assert!(error.0.contains("after it ended"), "{error}");
+        }
+    }
+
     /// A custom data reader's runtime numbers in the scope apart from the
     /// compile-time runtime, in a scope of a reader's own while its
     /// definition is evaluated, which counts from one again each time, and
