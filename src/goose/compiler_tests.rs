@@ -5812,3 +5812,148 @@ fn goose_compiler_environment_narrowing_preserves_goose_import_limits() {
         "{whole_stats:?}"
     );
 }
+
+/// The fixture of [`goose_compiler_pins_per_call_transport_volume`]:
+/// `m.macros` declares 120 filler macros, so a call given the whole `&env`
+/// carries an inventory of more than 120 macros, and the source macros
+/// `blind` (reads no `&env`), `or-local` (reads only `(:locals &env)`),
+/// `whole` (reads all of `&env` with `count`, and counts its macro
+/// inventory), `data` and `call` (which demand the helper roots `shared`
+/// and `wrap`); `app.a`, `app.b` and `app.c` call them, and `app.main`
+/// requires those three.
+fn transport_volume_sources() -> HashMap<String, String> {
+    let mut macros = String::from("(ns m.macros)\n");
+    for n in 0..120 {
+        macros.push_str(&format!("(defmacro filler{n} [x] x)\n"));
+    }
+    macros.push_str(
+        "(defn wrap [form] (list 'quote form))
+         (def shared [11 22])
+         (defmacro blind [] 42)
+         (defmacro or-local [sym fallback] (if (contains? (:locals &env) sym) sym fallback))
+         (defmacro whole [] [(count &env) (count (:light-cljs/macros &env))])
+         (defmacro data [n] (list 'quote [n shared]))
+         (defmacro call [n] (wrap [n n]))",
+    );
+    let mut files = HashMap::from([("m.macros".to_owned(), macros)]);
+    for (space, offset) in [("a", 0), ("b", 100), ("c", 200)] {
+        let mut body = format!("(ns app.{space} (:require [m.macros :as m]))\n");
+        for i in 0..4 {
+            let n = offset + i;
+            body.push_str(&format!(
+                "(def v{i} (let [x {n}] [(m/blind) (m/or-local x 1) (m/or-local y 2) (m/data {n}) (m/call {n})]))\n"
+            ));
+        }
+        body.push_str("(def w (m/whole))\n");
+        files.insert(format!("app.{space}"), body);
+    }
+    files.insert(
+        "app.main".to_owned(),
+        "(ns app.main (:require [app.a :as a] [app.b :as b] [app.c :as c]))
+(js/console.log (pr-str [a/v0 b/v3 c/v1 a/w b/w c/w]))"
+            .to_owned(),
+    );
+    files
+}
+
+/// The per-call transport volume the three transport changes reached is
+/// pinned (light-cljs-818, after 815, 816 and 817). A fixed multi-namespace
+/// build at one compiler slot and Goose worker sends exactly the argument
+/// nodes and bytes, and receives exactly the result bytes, pinned below (at
+/// four, the same calls and results and a few more nodes); its argument
+/// graphs carry no source text
+/// (sources travel as identities, 817); the session directory never holds a
+/// file but the base image and the definition exports (calls travel in the
+/// pipes, 816); the 60 calls that read no `&env` or only its `:locals` are
+/// sent the narrowed environment, without the 120-macro inventory (815);
+/// and the three calls that read all of `&env` still receive the whole
+/// environment, inventory included. Counts only, no timing.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_pins_per_call_transport_volume() {
+    let files = transport_volume_sources();
+    let mut pinned = Vec::new();
+    for slots in [1, 4] {
+        let session = GooseSession::start(&runner(), slots).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let (directory, stop) = (session.directory.clone(), stop.clone());
+            thread::spawn(move || {
+                let (mut seen, mut polls) = (std::collections::BTreeSet::new(), 0u64);
+                // Only complete reads of the directory count as polls.
+                while !stop.load(Ordering::Relaxed) {
+                    if let Ok(entries) = std::fs::read_dir(&directory)
+                        && let Ok(names) = entries.collect::<Result<Vec<_>, _>>()
+                    {
+                        for entry in names {
+                            seen.insert(entry.file_name().to_string_lossy().into_owned());
+                        }
+                        polls += 1;
+                    }
+                }
+                (seen, polls)
+            })
+        };
+        let (output, _, census) = pooled_build(&files, slots, Some(&session), Default::default());
+        stop.store(true, Ordering::Relaxed);
+        let (seen, polls) = watcher.join().unwrap();
+        let output = output.unwrap_or_else(|e| panic!("slots={slots}: {e} {:?}", session.trace()));
+        assert!(census.is_empty(), "slots={slots}: {census:?}");
+        let stats = session.stats();
+        let trace = session.trace();
+        session.close();
+        cleaned(&session);
+        #[cfg(light_v8)]
+        {
+            let (reference, _, _) = pooled_build(&files, 1, None, Default::default());
+            assert_eq!(Ok(output.as_str()), reference.as_deref(), "slots={slots}");
+        }
+        // Each `whole` call got all eight entries of `&env`, the inventory
+        // of m.macros's 125 macros among them.
+        assert_eq!(
+            output.matches("rt.vectorFromArray([8, 125])").count(),
+            3,
+            "slots={slots}: {output}"
+        );
+        assert!(
+            trace.iter().filter(|s| s.starts_with("NEED ")).count() >= 2,
+            "the data and call macros demand their roots: {trace:?}"
+        );
+        // With per-call files (816 reverted) other names show up here. The
+        // watcher samples the directory, so a file created and removed
+        // between two polls could go unseen (light-cljs-822).
+        assert!(polls > 1);
+        let stray = seen
+            .iter()
+            .filter(|name| {
+                *name != "base.gsp"
+                    && !name.strip_prefix("definition-").is_some_and(|rest| {
+                        rest.strip_suffix(".gsp")
+                            .is_some_and(|n| n.parse::<u64>().is_ok())
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert!(stray.is_empty(), "slots={slots}: per-call files {stray:?}");
+        // With source text in the arguments (817 reverted) this is not zero.
+        assert_eq!(stats.argument_source_bytes, 0, "slots={slots}: {stats:?}");
+        pinned.push((
+            stats.calls,
+            stats.argument_nodes,
+            stats.argument_bytes,
+            stats.result_bytes,
+        ));
+    }
+    // 21 calls in each of three namespaces. With the whole environment
+    // sent to every call (815 reverted), the nodes and bytes grow by the
+    // 120-macro inventory about 60 times over.
+    assert_eq!(pinned[0], (63, 8337, 515_208, 12_288), "{pinned:?}");
+    // At four slots a build's graphs held 12 or 15 more nodes (56 encoded
+    // bytes each) than at one, from run to run; the calls and results are
+    // the same.
+    let (calls, nodes, bytes, results) = pinned[1];
+    assert_eq!((calls, results), (63, 12_288), "{pinned:?}");
+    assert!(
+        (8337..=8337 + 32).contains(&nodes) && (515_208..=515_208 + 32 * 56).contains(&bytes),
+        "{pinned:?}"
+    );
+}
