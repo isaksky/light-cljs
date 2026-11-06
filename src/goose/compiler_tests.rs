@@ -3779,6 +3779,48 @@ fn goose_compiler_cells_counter_fixture() {
     }
 }
 
+/// light-cljs-808 through the compiler: a macro namespace's
+/// `(def d (delay (swap! counter inc)))` is one shared delay, realized once
+/// for the session at every slot count, so `dep`'s expansion and `main`'s
+/// both read 1 from it, and take the counter's next values after it: 12 and
+/// 13, in either order (a delay realized per job would give the second 34).
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cells_delay_fixture() {
+    let mut files = HashMap::new();
+    files.insert(
+        "m.lazy".to_owned(),
+        "(ns m.lazy) (def counter (atom 0)) (def d (delay (swap! counter inc))) (defmacro once [] (+ (* 10 @d) (if (realized? d) (swap! counter inc) 100)))".to_owned(),
+    );
+    files.insert(
+        "app.dep".to_owned(),
+        "(ns app.dep (:require [m.lazy :refer [once]])) (def value (once))".to_owned(),
+    );
+    files.insert(
+        "app.main".to_owned(),
+        "(ns app.main (:require [app.dep :as d] [m.lazy :refer [once]])) (js/console.log d/value (once))".to_owned(),
+    );
+    for slots in [1, 2, 4, 8] {
+        let session = GooseSession::start(&runner(), slots).unwrap();
+        let (output, _, _) = pooled_build(&files, slots, Some(&session), Default::default());
+        let js = output.unwrap();
+        let value = initializer_numbers(&js);
+        let logged = js
+            .split("[\"log\"])(")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+            .unwrap_or_else(|| panic!("{js}"));
+        let last: u64 = logged.rsplit(", ").next().unwrap().parse().unwrap();
+        assert_eq!(value.len(), 1, "slots={slots}: {value:?}");
+        // The two expansions may run in either order.
+        let mut both = [value[0], last];
+        both.sort();
+        assert_eq!(both, [12, 13], "slots={slots}: {logged}");
+        session.close();
+        cleaned(&session);
+    }
+}
+
 /// A registry macro (light-cljs-799): eight namespaces register an entry in
 /// the macro namespace's atom, and a consumer that requires all of them sees
 /// every entry, at every slot count; 64 expansions across the job workers
@@ -3844,9 +3886,33 @@ fn cell_session(
     env: &[(&str, String)],
     bodies: &[&str],
 ) -> (Vec<Result<String, String>>, JobsLine) {
-    let session = GooseSession::start_env(&runner(), workers, Some("readiness-test"), env).unwrap();
-    let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
-    let (_, args, call) = inputs(&e, "rt => (form, env) => 0");
+    // A body may read `fixture/number` (the number 41) after the counter:
+    // the job's second dependency wait.
+    let jobs = bodies
+        .iter()
+        .map(|&body| {
+            let reads: &[&str] = if body.contains("fixture/number") {
+                &["fixture/number"]
+            } else {
+                &[]
+            };
+            (body, reads)
+        })
+        .collect::<Vec<_>>();
+    cell_session_roots(workers, env, &[("fixture/number", "rt => 41")], &jobs)
+}
+
+/// The raw protocol's inputs for one session: the call's GFB bytes, the
+/// call form and the argument graph its expansions are read against.
+struct RawInputs {
+    bytes: Vec<u8>,
+    call: Form,
+    graph: bridge::Graph,
+    limits: ConversionLimits,
+    budget: bridge::Budget,
+}
+fn raw_inputs(e: &GooseEvaluator) -> RawInputs {
+    let (_, args, call) = inputs(e, "rt => (form, env) => 0");
     let values = args
         .iter()
         .map(|&id| e.get(id).unwrap())
@@ -3855,70 +3921,137 @@ fn cell_session(
     let budget = bridge::Budget::new(limits.nodes, e.control.clone());
     let graph = bridge::Graph::arguments(&values, limits, &budget).unwrap();
     let bytes = graph.encode().unwrap();
-    let mut outcomes = Vec::new();
-    for (index, body) in bodies.iter().enumerate() {
-        let id = index as u64 + 1;
-        let key = 100 + id;
-        session
-            .export(
-                &session.directory.join(format!("definition-{key}.gsp")),
-                &format!(
-                    "rt => (form, env) => {{ const a = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/counter'); {body} }}"
-                ),
-            )
-            .unwrap();
-        session
-            .export(
-                &session.directory.join(format!("{id}-0.helper")),
-                "rt => rt.core.atom(0)",
-            )
-            .unwrap();
-        session.answer_key(id, 0, "42").unwrap();
-        // A body may read `fixture/number` (unit 43, the number 41) after
-        // the counter: the job's second dependency wait.
-        if body.contains("fixture/number") {
-            session
-                .export(
-                    &session.directory.join(format!("{id}-1.helper")),
-                    "rt => 41",
-                )
-                .unwrap();
-            session.answer_key(id, 1, "43").unwrap();
-        }
-        let rx = submit_key(&session, &bytes, id, key);
-        outcomes.push(loop {
-            match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
-                Event::Done(_) => {
-                    let out = std::fs::read(session.directory.join(format!("{id}.out"))).unwrap();
-                    let output = bridge::Graph::decode(&out, limits, &budget)
-                        .unwrap()
-                        .expansion(&call, origin(&call), &graph.originals, limits, &budget)
-                        .unwrap();
-                    break Ok(format!("{:?}", output.data()));
-                }
-                Event::Failure(message) => break Err(message),
-                _ => {}
-            }
-        });
-        thread::sleep(Duration::from_millis(20));
+    RawInputs {
+        bytes,
+        call,
+        graph,
+        limits,
+        budget,
     }
+}
+/// Submit job `id`, whose definition (key 100 + id) reads the counter
+/// (`a`, the job's first dependency wait) and runs `body`.
+fn raw_job(session: &GooseSession, raw: &RawInputs, id: u64, body: &str) -> mpsc::Receiver<Event> {
+    let key = 100 + id;
+    session
+        .export(
+            &session.directory.join(format!("definition-{key}.gsp")),
+            &format!(
+                "rt => (form, env) => {{ const a = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/counter'); {body} }}"
+            ),
+        )
+        .unwrap();
+    raw_helper(session, id, 0, 42, "rt => rt.core.atom(0)");
+    submit_key(session, &raw.bytes, id, key)
+}
+/// Job `id`'s dependency wait `sequence` reads unit `unit`, whose
+/// initializer is `source` when this job is the first to demand it.
+fn raw_helper(session: &GooseSession, id: u64, sequence: u64, unit: u64, source: &str) {
+    session
+        .export(
+            &session.directory.join(format!("{id}-{sequence}.helper")),
+            source,
+        )
+        .unwrap();
+    session.answer_key(id, sequence, &unit.to_string()).unwrap();
+}
+/// Job `id`'s result (its expansion's data) or failure.
+fn raw_outcome(
+    session: &GooseSession,
+    raw: &RawInputs,
+    rx: &mpsc::Receiver<Event>,
+    id: u64,
+) -> Result<String, String> {
+    loop {
+        match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
+            Event::Done(_) => {
+                let out = std::fs::read(session.directory.join(format!("{id}.out"))).unwrap();
+                let output = bridge::Graph::decode(&out, raw.limits, &raw.budget)
+                    .unwrap()
+                    .expansion(
+                        &raw.call,
+                        origin(&raw.call),
+                        &raw.graph.originals,
+                        raw.limits,
+                        &raw.budget,
+                    )
+                    .unwrap();
+                break Ok(format!("{:?}", output.data()));
+            }
+            Event::Failure(message) => break Err(message),
+            _ => {}
+        }
+    }
+}
+/// Wait until the session's trace has a line starting with `prefix`.
+fn raw_trace(session: &GooseSession, prefix: &str) {
+    let started = Instant::now();
+    while !session.trace().iter().any(|line| line.starts_with(prefix)) {
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "no {prefix:?}: {:?}",
+            session.trace()
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+/// Close the session, check its cleanup, and its JOBS line: one dispatch
+/// per start, per resume and per helper production.
+fn raw_close(session: &GooseSession, workers: usize, dispatches: u64) -> JobsLine {
     session.close();
-    cleaned(&session);
+    cleaned(session);
     let trace = session.trace();
     assert!(
         !String::from_utf8_lossy(&session.stderr.lock().unwrap()).contains("assert failed"),
         "{trace:?}"
     );
-    // A start and a resume per root read of each job, and one production
-    // per root the session produced.
-    let numbers = bodies
-        .iter()
-        .filter(|b| b.contains("fixture/number"))
-        .count() as u64;
-    let jobs = assert_jobs(
-        &trace,
+    assert_jobs(&trace, workers, dispatches)
+}
+
+/// cell_session with more roots: `helpers` are the roots a body may read
+/// after the counter (units 43, 44, ... in order, with their initializers),
+/// and each job of `jobs` is its body and the roots it reads, in order (its
+/// dependency waits 1, 2, ...).
+fn cell_session_roots(
+    workers: usize,
+    env: &[(&str, String)],
+    helpers: &[(&str, &str)],
+    jobs: &[(&str, &[&str])],
+) -> (Vec<Result<String, String>>, JobsLine) {
+    let session = GooseSession::start_env(&runner(), workers, Some("readiness-test"), env).unwrap();
+    let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+    let raw = raw_inputs(&e);
+    let mut outcomes = Vec::new();
+    let mut produced = vec![false; helpers.len()];
+    let mut reads = 0;
+    for (index, (body, roots)) in jobs.iter().enumerate() {
+        let id = index as u64 + 1;
+        for (sequence, root) in roots.iter().enumerate() {
+            let at = helpers
+                .iter()
+                .position(|(name, _)| name == root)
+                .unwrap_or_else(|| panic!("no helper {root}"));
+            raw_helper(
+                &session,
+                id,
+                sequence as u64 + 1,
+                43 + at as u64,
+                helpers[at].1,
+            );
+            produced[at] = true;
+            reads += 1;
+        }
+        let rx = raw_job(&session, &raw, id, body);
+        outcomes.push(raw_outcome(&session, &raw, &rx, id));
+        thread::sleep(Duration::from_millis(20));
+    }
+    // A start and a resume per root read of each job (the counter's
+    // included), and one production per root the session produced.
+    let productions = 1 + produced.iter().filter(|&&p| p).count() as u64;
+    let jobs = raw_close(
+        &session,
         workers,
-        2 * bodies.len() as u64 + numbers + 1 + (numbers > 0) as u64,
+        2 * jobs.len() as u64 + reads + productions,
     );
     (outcomes, jobs)
 }
@@ -4108,5 +4241,309 @@ fn goose_compiler_cell_swap_across_helper_suspension() {
         assert_eq!(outcomes[1].as_deref(), Ok("Double(41.0)"), "{outcomes:?}");
         assert_eq!(jobs.conflicts, 0, "{jobs:?}");
         assert!(jobs.saves >= 3 && jobs.retired == jobs.spawned, "{jobs:?}");
+    }
+}
+
+/// A root read in a fixture's JavaScript.
+fn root(name: &str) -> String {
+    format!("__rt.cljReadRoot(globalThis.__lightCompilerRoots, null, '{name}')")
+}
+/// The session variants the delay and identity tests run in: 1, 2, 4 and 8
+/// execution slots, with workers that wait in place and with every wait a
+/// saved continuation and every worker retired after its job.
+fn delay_variants() -> Vec<(usize, Vec<(&'static str, String)>)> {
+    let mut variants = Vec::new();
+    for workers in [1, 2, 4, 8] {
+        variants.push((workers, vec![]));
+        variants.push((
+            workers,
+            vec![
+                ("BBP_RETAINED_WORKERS", "0".to_owned()),
+                ("BBP_WORKER_TABLE_BYTES", "0".to_owned()),
+            ],
+        ));
+    }
+    variants
+}
+
+/// light-cljs-808: a published delay is one process-wide cell. Two jobs
+/// force it at once: the first claims it and runs its thunk, which counts
+/// its calls in an atom it captured (a cell too) and then waits for a
+/// helper the test holds back (the barrier) until the second job's force
+/// waits for the claim; both get the one value, and a later force takes it
+/// without a call. A thunk that throws throws its error (type and message)
+/// to every force, also later ones, and runs once. A cycle of claims (each
+/// job's thunk forces the delay the other claimed) fails by name, in both
+/// jobs: the second, released by the first's failure, claims the first's
+/// delay and then reaches its own claim.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_shared_delay_realizes_once() {
+    let number = "rt => 41";
+    let delay = format!(
+        "rt => {{ const calls = rt.core.atom(0); return new rt.core.Delay(() => {{ rt.core.swap(calls, rt.core.inc); const n = {}; return rt.core.deref(calls) * 100 + n; }}, null); }}",
+        root("fixture/number")
+    );
+    let force = |name: &str| format!("const d = {}; return rt.core.deref(d);", root(name));
+    for (workers, env) in delay_variants() {
+        let session =
+            GooseSession::start_env(&runner(), workers, Some("readiness-test"), &env).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let raw = raw_inputs(&e);
+        // Job 1 claims and stops in its thunk at fixture/number (unanswered).
+        raw_helper(&session, 1, 1, 43, &delay);
+        let first = raw_job(&session, &raw, 1, &force("fixture/delay"));
+        raw_trace(&session, "NEED 1 2 fixture/number");
+        // Job 2's force waits for job 1's claim.
+        raw_helper(&session, 2, 1, 43, &delay);
+        let second = raw_job(&session, &raw, 2, &force("fixture/delay"));
+        raw_trace(&session, "WAIT 2 ");
+        raw_helper(&session, 1, 2, 44, number);
+        let outcomes = [
+            raw_outcome(&session, &raw, &first, 1),
+            raw_outcome(&session, &raw, &second, 2),
+        ];
+        // A later force: the value, no call.
+        raw_helper(&session, 3, 1, 43, &delay);
+        let third = raw_job(
+            &session,
+            &raw,
+            3,
+            &format!(
+                "const d = {}; return rt.core.deref(d) + (rt.core.realized(d) ? 1000 : 0) + (rt.core.isDelay(d) ? 10000 : 0);",
+                root("fixture/delay")
+            ),
+        );
+        let later = raw_outcome(&session, &raw, &third, 3);
+        // Starts, root reads (3 + 2 + 2), one delay wake, productions
+        // (counter, delay, number).
+        let jobs = raw_close(&session, workers, 3 + 7 + 1 + 3);
+        assert_eq!(
+            outcomes,
+            [
+                Ok("Double(141.0)".to_owned()),
+                Ok("Double(141.0)".to_owned())
+            ],
+            "workers={workers} {env:?}"
+        );
+        assert_eq!(
+            later.as_deref(),
+            Ok("Double(11141.0)"),
+            "workers={workers} {env:?}"
+        );
+        assert_eq!(jobs.delay_waits, 1, "workers={workers} {env:?}: {jobs:?}");
+        // The delay and the atom its thunk captured, and the counter.
+        assert_eq!(jobs.cells, 3, "{jobs:?}");
+    }
+
+    // A thunk that throws: every force throws its error, and it ran once.
+    let bad = format!(
+        "rt => new rt.core.Delay(() => {{ const c = {}; rt.core.swap(c, rt.core.inc); {}; throw TypeError('boom'); }}, null)",
+        root("fixture/calls"),
+        root("fixture/number")
+    );
+    let calls = "rt => rt.core.atom(0)";
+    let catch = format!(
+        "const d = {}; try {{ rt.core.force(d); return -1; }} catch (e) {{ return (e.message === 'boom' ? 1 : 0) + (e.name === 'TypeError' ? 10 : 0); }}",
+        root("fixture/bad")
+    );
+    for (workers, env) in delay_variants() {
+        let session =
+            GooseSession::start_env(&runner(), workers, Some("readiness-test"), &env).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let raw = raw_inputs(&e);
+        raw_helper(&session, 1, 1, 43, &bad);
+        raw_helper(&session, 1, 2, 45, calls);
+        let first = raw_job(&session, &raw, 1, &catch);
+        raw_trace(&session, "NEED 1 3 fixture/number");
+        raw_helper(&session, 2, 1, 43, &bad);
+        let second = raw_job(&session, &raw, 2, &catch);
+        raw_trace(&session, "WAIT 2 ");
+        raw_helper(&session, 1, 3, 44, number);
+        let outcomes = [
+            raw_outcome(&session, &raw, &first, 1),
+            raw_outcome(&session, &raw, &second, 2),
+        ];
+        raw_helper(&session, 3, 1, 43, &bad);
+        raw_helper(&session, 3, 2, 45, calls);
+        let third = raw_job(
+            &session,
+            &raw,
+            3,
+            &format!(
+                "const d = {}; let r = 0; try {{ rt.core.deref(d); }} catch (e) {{ r = e.message === 'boom' ? 1 : 0; }} const c = {}; return r + rt.core.deref(c) * 10 + (rt.core.realized(d) ? 100 : 0);",
+                root("fixture/bad"),
+                root("fixture/calls")
+            ),
+        );
+        let later = raw_outcome(&session, &raw, &third, 3);
+        // Starts, root reads (4 + 2 + 3), one delay wake, productions
+        // (counter, bad, calls, number).
+        let jobs = raw_close(&session, workers, 3 + 9 + 1 + 4);
+        assert_eq!(
+            outcomes,
+            [Ok("Double(11.0)".to_owned()), Ok("Double(11.0)".to_owned())],
+            "workers={workers} {env:?}"
+        );
+        assert_eq!(
+            later.as_deref(),
+            Ok("Double(111.0)"),
+            "workers={workers} {env:?}"
+        );
+        assert_eq!(jobs.delay_waits, 1, "workers={workers} {env:?}: {jobs:?}");
+    }
+
+    // A cycle of claims: job 1 claims d1, job 2 claims d2, each thunk
+    // forces the other delay after the gate.
+    let cyclic = |other: &str| {
+        format!(
+            "rt => new rt.core.Delay(() => {{ {}; const o = {}; return rt.core.deref(o); }}, null)",
+            root("fixture/gate"),
+            root(other)
+        )
+    };
+    let (d1, d2) = (cyclic("fixture/d2"), cyclic("fixture/d1"));
+    for (workers, env) in delay_variants() {
+        let session =
+            GooseSession::start_env(&runner(), workers, Some("readiness-test"), &env).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let raw = raw_inputs(&e);
+        raw_helper(&session, 1, 1, 43, &d1);
+        let first = raw_job(&session, &raw, 1, &force("fixture/d1"));
+        raw_trace(&session, "NEED 1 2 fixture/gate");
+        // Job 2: d2, its gate (the session's first), d1 (job 1 holds it);
+        // after job 1 fails, d1's thunk again, whose roots the job holds
+        // already: gate, then d2 (its own claim).
+        raw_helper(&session, 2, 1, 44, &d2);
+        raw_helper(&session, 2, 2, 45, "rt => 0");
+        raw_helper(&session, 2, 3, 43, &d1);
+        let second = raw_job(&session, &raw, 2, &force("fixture/d2"));
+        raw_trace(&session, "WAIT 2 ");
+        raw_helper(&session, 1, 2, 45, "rt => 0");
+        raw_helper(&session, 1, 3, 44, &d2);
+        let outcomes = [
+            raw_outcome(&session, &raw, &first, 1),
+            raw_outcome(&session, &raw, &second, 2),
+        ];
+        // Starts, root reads (4 + 4), one delay wake, productions (counter,
+        // d1, d2, gate).
+        let jobs = raw_close(&session, workers, 2 + 8 + 1 + 4);
+        for outcome in &outcomes {
+            assert!(
+                outcome
+                    .as_ref()
+                    .unwrap_err()
+                    .contains("Fault.NativeBoundary:deref:-a-cycle-of-delay-claims"),
+                "workers={workers} {env:?}: {outcomes:?}"
+            );
+        }
+        assert_eq!(jobs.delay_waits, 1, "workers={workers} {env:?}: {jobs:?}");
+    }
+}
+
+/// light-cljs-808: published values keep their identity across jobs. One
+/// expansion stores a published vector (a form helper's value) into an
+/// atom; later ones, each on a fresh worker (every worker retires after
+/// its job), find it identical to the helper's value, whichever they read
+/// first, and so are the vector's elements inside a stored vector. Two
+/// references to one cell, one captured by a callable helper and one stored
+/// in a cell value, are one object in a job, in either order.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cells_preserve_published_alias_identity() {
+    let helpers = [
+        ("fixture/token", "rt => rt.vectorFromArray([1, 2])"),
+        (
+            "fixture/getter",
+            "rt => { const c = rt.core.atom(5); return () => c; }",
+        ),
+    ];
+    let token = root("fixture/token");
+    let getter = root("fixture/getter");
+    let jobs: [(String, &[&str]); 8] = [
+        (
+            format!(
+                "const t = {token}; rt.core.reset(a, t); return rt.core.deref(a) === t ? 1 : 0;"
+            ),
+            &["fixture/token"],
+        ),
+        (
+            format!("const t = {token}; return t === rt.core.deref(a) ? 1 : 0;"),
+            &["fixture/token"],
+        ),
+        (
+            format!("const s = rt.core.deref(a); const t = {token}; return t === s ? 1 : 0;"),
+            &["fixture/token"],
+        ),
+        (
+            format!(
+                "const t = {token}; rt.core.reset(a, rt.vectorFromArray([t, rt.vectorFromArray([t])])); return 0;"
+            ),
+            &["fixture/token"],
+        ),
+        (
+            format!(
+                "const v = rt.core.deref(a); const t = {token}; return rt.core.mapv((x) => x === t ? 1 : 0, v);"
+            ),
+            &["fixture/token"],
+        ),
+        (
+            format!(
+                "const g = {getter}; rt.core.reset(a, rt.vectorFromArray([g()])); return rt.core.deref(g()) + 1;"
+            ),
+            &["fixture/getter"],
+        ),
+        (
+            format!(
+                "const g = {getter}; const v = rt.core.deref(a); return rt.core.mapv((x) => x === g() ? 1 : 0, v);"
+            ),
+            &["fixture/getter"],
+        ),
+        (
+            format!(
+                "const v = rt.core.deref(a); const g = {getter}; rt.core.swap(g(), rt.core.inc); return rt.core.mapv((x) => x === g() ? rt.core.deref(x) : 0, v);"
+            ),
+            &["fixture/getter"],
+        ),
+    ];
+    let jobs = jobs
+        .iter()
+        .map(|(body, reads)| (body.as_str(), *reads))
+        .collect::<Vec<_>>();
+    for (workers, env) in delay_variants() {
+        let (outcomes, line) = cell_session_roots(workers, &env, &helpers, &jobs);
+        let ok = |i: usize| {
+            outcomes[i]
+                .as_deref()
+                .unwrap_or_else(|e| panic!("{i}: {e}"))
+                .to_owned()
+        };
+        for i in 0..3 {
+            assert_eq!(ok(i), "Double(1.0)", "{i}: workers={workers} {env:?}");
+        }
+        // The stored vector [token [token]]: its first element, a node
+        // below the root, is the helper's value; its second is not.
+        let pair = ok(4);
+        assert!(
+            matches!((pair.find("Double(1.0)"), pair.find("Double(0.0)")), (Some(one), Some(zero)) if one < zero)
+                && pair.matches("Double").count() == 2,
+            "workers={workers} {env:?}: {pair}"
+        );
+        assert_eq!(ok(5), "Double(6.0)", "workers={workers} {env:?}");
+        for i in [6, 7] {
+            assert!(
+                ok(i).contains("kind: Vector") && !ok(i).contains("Double(0.0)"),
+                "{i}: workers={workers} {env:?}: {}",
+                ok(i)
+            );
+        }
+        assert!(
+            ok(7).contains("Double(6.0)"),
+            "workers={workers} {env:?}: {}",
+            ok(7)
+        );
+        if !env.is_empty() {
+            assert_eq!(line.retired, line.spawned, "{line:?}");
+        }
     }
 }

@@ -788,7 +788,8 @@ values and the identity of published values are the follow-up pellets'.
   `swap!` on a cell compare-and-sets against the identity of the value it
   read (for a primitive, the same primitive), so a function that resets the
   cell to that value still ends without a rerun. Only the root of a stored
-  graph has an identity in this slice.
+  graph has an identity in this slice (every object has one since
+  light-cljs-808, below).
 - *Owner.* `cell_owner` is a thread program the coordinator spawns before
   any other, with no VM tables, holding each cell's encoding in a
   `slice_pool<u8>`. A requester takes one of eight slot tokens and receives
@@ -797,7 +798,61 @@ values and the identity of published values are the follow-up pellets'.
   `BBP_CELL_BUDGET` (default 1,048,576) and their bytes against 256 MiB;
   past either an operation fails `cell budget`. The THREADS line counts the
   owner, and the JOBS line ends with its cells, identities, operations,
-  refused compare-and-sets, delay waits (none yet) and serving nanoseconds.
+  refused compare-and-sets, delay waits and serving nanoseconds.
+
+**Implemented, second slice (light-cljs-808): shared delays and the
+identity of published values.** Functions as cell values and the cell
+census remain light-cljs-809's.
+
+- *Delays.* `rt.core.Delay` (what the compiler emits for `(delay ...)`:
+  `new rt.core.Delay(thunk, null)`; Construct, opcode 94, now runs for this
+  one built-in constructor and still fails `Unsupported` for any other
+  callee), `force`, `realized` and `isDelay` are leaves, and `deref` and
+  `derefProtocol` of a delay force it. A job's own delay is a node of kind
+  19 (thunk in `value`, the realized value in `namespace_value`) and
+  follows the V8 build's `deferredValue`: a thunk that throws stays, and a
+  later force calls it again. A force is a native frame (`Native.Force`),
+  so a thunk that suspends on a helper resumes in any worker.
+- *Delay cells.* Publication makes a delay a cell of flavor 2 whose
+  reference keeps the thunk (a value that reaches a pending delay is
+  published as a callable publication, the transport that carries
+  functions; a delay realized before publication is stored realized). The
+  first force claims it at the owner (op 5) and runs the thunk in its job
+  under a catch handler of the force frame; the value, or what the thunk
+  threw (a realm error keeps its type, fault code and message), settles the
+  claim (op 6), and every later force takes it, as Clojure's `Delay`. A
+  force while another job holds the claim gets the claim's epoch and waits
+  as a dependency wait does (event 11, a `WAIT id cell` line; within the
+  retention budget in place, otherwise as a saved continuation), and the
+  owner posts `Settled` when a claim with waiters ends, which the
+  coordinator turns into a resume (Answer or Work mode 5) that forces again.
+  A job that ends holding claims (a fault its thunk could not catch, a
+  cancellation) releases them (op 7), so its waiters force again and one
+  claims. The owner follows wait edges from the claim's holder: a force that
+  would close a cycle of claims fails `deref: a cycle of delay claims`
+  (uncatchable, so the job ends and releases its claims; in a two-job cycle
+  both jobs fail). The holder is the macro job's compiler id; a preparation
+  or a helper production claims nothing and fails by name on a pending
+  delay cell. The JOBS line's delay waits count the forces that waited.
+- *Identity.* Every object of a stored graph has an identity now (GFB node
+  identities travel beside the bytes, numbered by the owner on first store,
+  -1 for primitives and cell references), and the objects of a publication
+  have one from the moment they leave their job, with no owner message:
+  `publication_identity(publication, place)`, the publication a helper's
+  unit or a definition's key and the place the object's row offset in it
+  (the rows a form helper's graph, a callable install or a definition
+  snapshot installs keep their order in every job). `Job.cell_rows` holds a
+  publication as one range entry. Every path that installs rows
+  (`snapshot::extend` of a definition, `callable::decode_install` through
+  `published`, a form helper's import, a cell value's import) registers
+  its cell references and identities and maps an object or cell the job
+  held before to the row it holds, rewriting the new rows' links (a held
+  delay reference without a thunk takes the installed one's). So a
+  published vector stored in an atom is `identical?` to the helper's value
+  in a later job on a fresh worker, whichever it reads first, and so is the
+  same vector inside a stored vector; a cell captured by a callable helper
+  and the same cell inside a cell value are one object in a job.
+
 
 ### Runtime gensym in the compiler's scopes (light-cljs-798, November 5, 2026)
 

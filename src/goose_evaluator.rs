@@ -270,6 +270,11 @@ impl GooseSession {
                         }
                         "CLOSED" if parts == ["CLOSED", "1"] => return Some((0, Event::Resumed)),
                         "RESUME" if parts.len() == 2 => Event::Resumed,
+                        // A job waiting for another job's delay claim
+                        // (light-cljs-808): `WAIT id cell`, traced only.
+                        "WAIT" if parts.len() == 3 && parts[2].parse::<u64>().is_ok() => {
+                            Event::Resumed
+                        }
                         "PRODUCE" if parts.len() == 3 && parts[2].parse::<u64>().is_ok() => {
                             Event::Resumed
                         }

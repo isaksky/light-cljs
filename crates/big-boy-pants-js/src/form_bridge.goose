@@ -182,7 +182,12 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
 // private graph, then validates and commits the complete independently owned
 // result. Session teardown cannot invalidate any byte/child/source in out.
 fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&, c: Control&, call: source::Value = source::Value.Undefined) -> bool {
-    var g = Graph {}; var ids: i64[>..] = [];
+    var rows: i64[>..] = []; return export_rows(heap, roots, out, c, call, rows);
+}
+// export_graph, and the heap row each graph node came from (-1 for a
+// primitive), for the identities of a cell value's nodes (cells.goose).
+fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, c: Control&, call: source::Value, rows: i64[>..]&) -> bool {
+    var g = Graph {}; var ids: i64[>..] = []; rows.clear();
     if !poll(c, heap.nodes.len + heap.source_bytes.len + heap.source_ranges.len) { return false; }
     if heap.source_bytes.len > c.bytes { return reject(c, Error.Bytes); }
     ids.resize(heap.nodes.len, -1); g.bytes.append(heap.source_bytes); g.sources.append(heap.source_ranges);
@@ -225,7 +230,7 @@ fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&,
         var id: i64 = if v.tag() == 5 { ids[v.id()] } else { -1 };
         if id < 0 {
             if g.nodes.len >= c.nodes { return reject(c, Error.Nodes); }
-            id = g.nodes.len; if v.tag() == 5 { ids[v.id()] = id; }
+            id = g.nodes.len; if v.tag() == 5 { ids[v.id()] = id; } rows.push(if v.tag() == 5 { v.id() } else { -1 });
             var n = Form {}; var node = source::Node { kind: 11, value: v };
             if v.tag() == 5 { node = source::node(heap, v.id()); }
             else {

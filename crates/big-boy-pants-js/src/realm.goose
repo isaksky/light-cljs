@@ -44,11 +44,13 @@ enum Builtin {
     ArrayPrototypeMap, ArrayPrototypeForEach,
     // Atoms, volatiles and cells (light-cljs-799; cells.goose).
     Atom, Deref, Reset, Swap, CompareAndSet, SwapVals, ResetVals, Volatile, Vreset, AddWatch, RemoveWatch, SetValidator,
+    // Delays (light-cljs-808; cells.goose).
+    Delay, Force, Realized, IsDelay, NativeConstruct,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[58] = [
+let BUILTINS: BuiltinInfo[63] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -78,6 +80,9 @@ let BUILTINS: BuiltinInfo[58] = [
     BuiltinInfo { which: Builtin.ResetVals, name: "resetVals", length: 2 }, BuiltinInfo { which: Builtin.Volatile, name: "volatile", length: 1 },
     BuiltinInfo { which: Builtin.Vreset, name: "vreset", length: 2 }, BuiltinInfo { which: Builtin.AddWatch, name: "addWatch", length: 3 },
     BuiltinInfo { which: Builtin.RemoveWatch, name: "removeWatch", length: 2 }, BuiltinInfo { which: Builtin.SetValidator, name: "setValidator", length: 2 },
+    BuiltinInfo { which: Builtin.Delay, name: "Delay", length: 2 }, BuiltinInfo { which: Builtin.Force, name: "force", length: 1 },
+    BuiltinInfo { which: Builtin.Realized, name: "realized", length: 1 }, BuiltinInfo { which: Builtin.IsDelay, name: "isDelay", length: 1 },
+    BuiltinInfo { which: Builtin.NativeConstruct, name: "nativeConstruct", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -158,7 +163,7 @@ let TYPE_NAMES: Name[8] = [Name { text: "undefined" }, Name { text: "object" }, 
 // The light-cljs runtime leaves boot_runtime installs on `rt` (core false)
 // or `rt.core`, in this order.
 struct Leaf { core: bool, key: u8[..24], which: Builtin }
-let RUNTIME_LEAVES: Leaf[31] = [
+let RUNTIME_LEAVES: Leaf[36] = [
     Leaf { core: true, key: "macroReaderFunction", which: Builtin.MacroReaderFunction }, Leaf { core: true, key: "inc", which: Builtin.Inc },
     Leaf { core: true, key: "mapv", which: Builtin.Mapv }, Leaf { core: true, key: "vec", which: Builtin.Vec }, Leaf { core: true, key: "into", which: Builtin.Into },
     Leaf { core: true, key: "sequence", which: Builtin.Sequence }, Leaf { core: true, key: "mapSeq", which: Builtin.MapSeq }, Leaf { core: true, key: "list", which: Builtin.List },
@@ -182,6 +187,13 @@ let RUNTIME_LEAVES: Leaf[31] = [
     Leaf { core: true, key: "removeWatch", which: Builtin.RemoveWatch }, Leaf { core: true, key: "setValidator", which: Builtin.SetValidator },
     // -deref and -vreset!, which vswap! expands to.
     Leaf { core: true, key: "derefProtocol", which: Builtin.Deref }, Leaf { core: true, key: "vresetProtocol", which: Builtin.Vreset },
+    // Delays (cells.goose): what the compiler emits for (delay ...), new
+    // rt.core.Delay(thunk, null), force, realized? and delay?.
+    Leaf { core: true, key: "Delay", which: Builtin.Delay }, Leaf { core: true, key: "force", which: Builtin.Force },
+    Leaf { core: true, key: "realized", which: Builtin.Realized }, Leaf { core: true, key: "isDelay", which: Builtin.IsDelay },
+    // What a native compile-time unit emits for (C. args) when C is no
+    // struct type: only a constructor whose construction is its call.
+    Leaf { core: false, key: "nativeConstruct", which: Builtin.NativeConstruct },
 ];
 
 // A built-in's code: its position in BUILTINS.
@@ -590,6 +602,12 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         NativeCoreBinding => { return core_binding(job, b, arg(args, 0)); },
         Atom, Deref, Reset, CompareAndSet, ResetVals, Volatile, Vreset, AddWatch, RemoveWatch, SetValidator => { return cell_builtin(job, b, args); },
         Swap, SwapVals => { return unsupported_step(job, b, "called from a native frame"); },
+        Delay, Force, Realized, IsDelay => { return delay_builtin(job, b, args); },
+        NativeConstruct => {
+            if !constructible(heap, arg(args, 0)) { return unsupported_step(job, b, "constructing a value other than a Delay"); }
+            var rest: Value[>..] = []; if args.len > 1 { rest.append(args[1..]); }
+            return delay_builtin(job, Builtin.Delay, rest);
+        },
         _ => { return native_value(heap, id, args); },
     }
 }

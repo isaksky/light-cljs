@@ -343,10 +343,11 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     var has_memo = false; var array_holes: i64 = 0;
     for n in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < 0 || n.kind > 18 { return reject(c, Error.Unsupported); }
-        // An atom or volatile (17) and a cell reference (18, no state of its
-        // own) have a flavor, 0 or 1 (source::Node, cells.goose).
-        if (n.kind == 17 || n.kind == 18) && n.length > 1 || n.kind == 18 && (n.value.tag() != 0 || n.function > 2147483647) { return reject(c, Error.Link); }
+        if n.kind < 0 || n.kind > 19 { return reject(c, Error.Unsupported); }
+        // An atom or volatile (17) has a flavor, 0 or 1; a cell reference (18,
+        // no state of its own) 0, 1 or 2, a delay, whose value is its thunk
+        // or nothing; a job's own delay (19) none (source::Node, cells.goose).
+        if n.kind == 17 && n.length > 1 || n.kind == 18 && (n.length > 2 || n.value.tag() != 0 && (n.length != 2 || n.value.tag() != 5) || n.function > 2147483647) || n.kind == 19 && n.length != 0 { return reject(c, Error.Link); }
         if n.kind == 1 && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
         // A key list (source::Node kind 16): its walk position lies in its
         // records, and it walks an object or nothing.

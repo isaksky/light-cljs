@@ -119,7 +119,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, ToPrimitive t => 3 + (t.op as i64) * 4 + (t.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, ToPrimitive t => 3 + (t.op as i64) * 4 + (t.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -151,6 +151,10 @@ enum Ins {
     InitCell, ReadCell, WriteCell, GetNamed { k: u32 }, GetIndexed, SetNamed { k: u32, strict: bool }, DefineNamed { k: u32, half: u8 },
     SetIndexed { strict: bool }, DefineIndexed { half: u8 }, SetProto, Delete { strict: bool }, In, Append, CheckValue, This { sloppy: bool }, Global, GetGlobal { k: u32, throws: bool },
     Literal { kind: u8, count: u32 }, Form { op: u32 }, Unsupported { opcode: u8 },
+    // new f(...) (94): only a built-in constructor whose construction is its
+    // call (Delay, light-cljs-808); any other callee fails Unsupported, as an
+    // unimplemented opcode does.
+    Construct { argc: u32 },
     // Finally blocks and completion records (light-cljs-786): the Pants
     // opcodes, with their stack contracts in rust/src/vm/instr.rs. Pending
     // is PendingThrow (118), PendingException (170) or PendingCancel (172).
@@ -203,7 +207,10 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // (a for-in walk's or an object spread's own keys, job-local; see "Key
 // enumeration"), a job's own atom or volatile=17 (value=state,
 // length=flavor, 0 atom or 1 volatile) and a process-wide cell's
-// reference=18 (function=cell, length=flavor; cells.goose).
+// reference=18 (function=cell, length=flavor: 0 atom, 1 volatile or 2
+// delay, whose value is its thunk when the job holds it; cells.goose) and a
+// job's own delay=19 (value=thunk, pending while truthy, namespace_value=the
+// value it realized, light-cljs-808).
 // Closure immutable marks fnApplyNull's immutable receiver convention.
 // Errors preserve object identity/truthiness;
 // property access/coercion and form transport reject unsupported inspection.
@@ -310,7 +317,9 @@ root struct Heap {
 //                (array_callbacks.goose, which gives its fields and phases).
 //   Swap         swap! and swap-vals! (light-cljs-799; cells.goose, which
 //                gives its fields and phases), its Builtin the payload.
-enum Native { None, Mapv, MapSeq, Setter, CopyData, ToPrimitive { op: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin } }
+//   Force        force, deref and derefProtocol of a delay (light-cljs-808;
+//                cells.goose, which gives its fields and phases).
+enum Native { None, Mapv, MapSeq, Setter, CopyData, ToPrimitive { op: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, argument_count: i64 = 0, input: Value = Value.Undefined, output: Value = Value.Undefined, index: i64 = 0, native: Native = Native.None }
@@ -357,10 +366,16 @@ root struct Job {
     // a cell (cells.goose), so it imports each once; saved with its
     // continuation.
     cell_rows: CellRow[>..] = [],
+    // The compiler id of the macro job this is, which holds its delay claims
+    // (0: no macro job, which claims none), and how many it holds unsettled
+    // (light-cljs-808; cells.goose).
+    cell_holder: i64 = 0, claims: i64 = 0,
 }
 // A row a job holds that names a process-wide cell (a cell reference) or
-// has a process-wide identity (a value loaded from or stored in a cell).
-struct CellRow { row: i64, cell: i64 = -1, identity: i64 = 0 }
+// has a process-wide identity (a value loaded from or stored in a cell, or
+// a node of a publication it installed). count > 1: the rows row..row +
+// count, a publication's, whose identities are identity..identity + count.
+struct CellRow { row: i64, cell: i64 = -1, identity: i64 = 0, count: i64 = 1 }
 inline fn number(n: f64) -> Value { return Value.Number { v: n }; }
 inline fn boolean(b: bool) -> Value { return Value.Bool { v: b }; }
 // A code constant's units: Code keeps its own string headers over its units.
@@ -403,7 +418,7 @@ fn instruction(op: Op) -> Ins {
         // Method (102), an object literal's method, getter or setter: obj c1..cn
         // → obj f, a closure like Function's; its home object only serves
         // `super`, whose opcodes are not implemented (light-cljs-787).
-        43, 102 => Ins.Closure { child: a }, 44 => Ins.Call { argc: a }, 83 => Ins.CallMethod { argc: a },
+        43, 102 => Ins.Closure { child: a }, 44 => Ins.Call { argc: a }, 94 => Ins.Construct { argc: a }, 83 => Ins.CallMethod { argc: a },
         101 => Ins.Arguments, 179 => Ins.Rest { skip: a }, 45 => Ins.Callee, 46 => Ins.Capture { slot: a },
         47, 198 => Ins.NewCell { immutable: false }, 197 => Ins.NewCell { immutable: true },
         48 => Ins.InitCell, 49 => Ins.ReadCell, 50 => Ins.WriteCell,
@@ -2206,6 +2221,9 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             return allocate(heap, row);
         },
         93 => { return if a.tag() == 5 && node(heap, a.id()).kind == 2 && node(heap, a.id()).immutable { nil() } else { a }; },
+        // cljRealized of a delay (light-cljs-808; a lazy sequence stays a
+        // boundary here).
+        49 => { return delay_realized(heap, a); },
         _ => { heap.fault = Fault.NativeBoundary; return Value.Undefined; },
     }
 }
@@ -2360,6 +2378,7 @@ fn native_step(job: Job&) {
         CopyData => { copy_step(job, frame); },
         ArrayCallbacks a => { array_callbacks_step(job, frame, a.which); },
         Swap s => { swap_step(job, frame, s.which); },
+        Force x => { force_step(job, frame, x.which); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -2880,6 +2899,12 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 },
                 RequireCoercible => { if job.operands[job.operands.len - 1].tag() <= 1 { heap.fault = Fault.TypeError; break; } },
                 Unsupported => { heap.fault = Fault.Unsupported; break; },
+                Construct c => {
+                    if !constructible(heap, job.operands[job.operands.len - c.argc - 1]) { heap.fault = Fault.Unsupported; break; }
+                    settle(job, ran, used);
+                    if !invoke(job, top, at, c.argc, false) { break; }
+                    left = fuel(job, allowance, used);
+                },
             }
         }
         // A fault an arm raised on its own counts its instruction, as before:
@@ -2951,6 +2976,7 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
                 job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: callback, receiver: Value.Undefined, input: input, output: out, native: Native.Mapv });
                 job.operands.resize(base);
             }
+        } else if forces(heap, BUILTINS[id].which, args) { let d = args[0]; start_force(job, BUILTINS[id].which, d, base);
         } else if native_builtin(BUILTINS[id].which) { native_start(job, BUILTINS[id].which, receiver, args, base);
         } else if id == 5 && job.gensym_next > 0 { let value = gensym(job, args); job.operands.resize(base); job.operands.push(value); }
         else if id >= 5 && id <= 8 { request_effect(job, id, args, frame_at(job, top, at)); job.operands.resize(base); }

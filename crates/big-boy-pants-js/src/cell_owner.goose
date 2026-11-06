@@ -1,6 +1,7 @@
 import std;
 import os;
 import slice_pool;
+import .readiness;
 
 namespace cells;
 
@@ -40,15 +41,32 @@ namespace cells;
 
 // kind: 0 undefined, 1 null, 2 boolean (number 0 or 1), 3 number, 4 string
 // (UTF-16 little-endian units in data), 5 a form graph (GFB1 in data).
-struct Flat { kind: i64 = 0, number: f64 = 0, identity: i64 = 0, data: u8[] = [] }
-// Operations: 1 new cell of `flavor` (0 atom, 1 volatile) holding `value`;
-// 2 load; 3 store `value`; 4 compare-and-set: store `value` if the cell holds
-// `expected`, otherwise answer the value it holds; 9 stop (the coordinator,
-// after every job worker is joined; the owner answers with Stats).
-struct Request { slot: i64 = -1, op: i64 = 0, cell: i64 = -1, flavor: i64 = 0, expected: Flat = Flat {}, value: Flat = Flat {} }
+// A graph's nodes have identities (light-cljs-808): `nodes` holds one per
+// graph node, 0 for one the owner numbers when it is first stored and -1
+// for one that has none (a primitive child), and `root` is the root's
+// index; `identity` is the root's.
+struct Flat { kind: i64 = 0, number: f64 = 0, identity: i64 = 0, data: u8[] = [], root: i64 = 0, nodes: i64[] = [] }
+// Operations: 1 new cell of `flavor` (0 atom, 1 volatile, 2 delay) holding
+// `value`; 2 load; 3 store `value` (a delay's: realized); 4 compare-and-set:
+// store `value` if the cell holds `expected`, otherwise answer the value it
+// holds; 9 stop (the coordinator, after every job worker is joined; the
+// owner answers with Stats). A delay's (light-cljs-808): 5 force, claimed
+// by `holder` (a macro job's compiler id) when pending; 6 settle the claim
+// with `value`, its thunk's result or, `failed`, what it threw; 7 release
+// every claim `holder` holds (or just its claim of `cell`), for a job
+// that ended or a force that failed without settling.
+struct Request { slot: i64 = -1, op: i64 = 0, cell: i64 = -1, flavor: i64 = 0, expected: Flat = Flat {}, value: Flat = Flat {}, holder: i64 = 0, failed: bool = false }
 // error: 0 none, 1 the session's cell budget, 2 no such cell, 3 the session
-// is halting, 4 no owner (a program that runs no cell owner).
-struct Answer { ok: bool = true, error: i64 = 0, cell: i64 = -1, value: Flat = Flat {} }
+// is halting, 4 no owner (a program that runs no cell owner), 6 a cycle of
+// delay claims, 7 not a delay or not this holder's claim. A delay's state
+// (force and load answers): 0 pending, 1 claimed by the requester, 2
+// realized (value), 3 failed (value, what the thunk threw), 4 claimed by
+// another job, which the requester waits for: `epoch` names the claim, and
+// the coordinator hears Settled with it when the claim ends.
+struct Answer { ok: bool = true, error: i64 = 0, cell: i64 = -1, value: Flat = Flat {}, state: i64 = 0, epoch: i64 = 0 }
+// A delay claim that ended (settled or released) while jobs waited for it,
+// for the coordinator, which resumes them (compiler_session.goose).
+struct Settled { cell: i64, epoch: i64 }
 struct Reply<M> { answer: Answer, marker: M }
 struct S0 {}
 struct S1 {}
@@ -64,7 +82,8 @@ struct Slot { slot: i64 }
 struct Halt {}
 // The owner's totals for the JOBS line: cells made, identities numbered,
 // operations served, compare-and-sets refused (each a swap! rerun), delay
-// waits (none yet) and the nanoseconds it spent serving.
+// waits (forces answered "claimed by another job") and the nanoseconds it
+// spent serving.
 struct Stats { cells: i64 = 0, identities: i64 = 0, operations: i64 = 0, conflicts: i64 = 0, waits: i64 = 0, owner_ns: i64 = 0 }
 inline fn slots() -> i64 { return 8; }
 // Set by the coordinator once its owner runs, before it spawns any other
@@ -72,8 +91,17 @@ inline fn slots() -> i64 { return 8; }
 // (the serial control, the test programs), where a cell fails by name.
 var enabled: bool = false;
 
-// One cell: its flavor and value, the value's bytes a run of `bytes`.
-struct Entry { flavor: i64 = 0, kind: i64 = 0, number: f64 = 0, identity: i64 = 0, start: i64 = 0, len: i64 = 0 }
+// One cell: its flavor and value, the value's bytes a run of `bytes` and its
+// graph's node identities a run of `ids` (root the root's index). A delay
+// (flavor 2) also has its state (Answer's), the holder of its claim, the
+// claim's epoch and how many jobs wait for it.
+struct Entry { flavor: i64 = 0, kind: i64 = 0, number: f64 = 0, identity: i64 = 0, start: i64 = 0, len: i64 = 0, ids_start: i64 = 0, ids_len: i64 = 0, root: i64 = 0, state: i64 = 0, holder: i64 = 0, epoch: i64 = 0, waiters: i64 = 0 }
+// A job waiting for a delay another job claimed: the cycle check follows
+// these from a claim's holder.
+struct WaitEdge { holder: i64, cell: i64 }
+// The owner's tables (its cells' bytes and identities are the pools
+// beside it, which a root struct cannot hold).
+root struct Store { entries: Entry[>..] = [], edges: WaitEdge[>..] = [], stats: Stats = Stats {}, held: i64 = 0, next: i64 = 1, limit: i64 = 0 }
 fn byte_budget() -> i64 { return 268435456; }
 // BBP_CELL_BUDGET: cells plus identities a session may number.
 fn budget() -> i64 {
@@ -97,45 +125,117 @@ fn matches(e: const Entry&, data: const u8[:], x: const Flat&) -> bool {
     return bytes_of([e.number]) == bytes_of([x.number]) && data == x.data;
 }
 fn serve(limit: i64) {
-    var entries: Entry[>..] = []; var bytes = slice_pool<u8> {}; var stats = Stats {}; var held: i64 = 0; var next: i64 = 1;
+    var s = Store { limit: limit }; var bytes = slice_pool<u8> {}; var ids = slice_pool<i64> {};
     loop {
         let r = qget<Request>();
-        if r.op == 9 { assert(qput(stats)); return; }
-        let started = clock_ns(); stats.operations += 1;
-        let value .= r.value;
-        if r.op != 1 && (r.cell < 0 || r.cell >= entries.len) { reply(r.slot, Answer { ok: false, error: 2, cell: r.cell }); stats.owner_ns += clock_ns() - started; continue; }
-        // A load, or a compare-and-set the cell refuses, answers what the
-        // cell holds; it numbers and charges nothing.
-        if r.op == 2 || r.op == 4 {
-            let e .= entries[r.cell]; let current = bytes.items[e.start..(e.start + e.len)];
-            if r.op == 2 || !matches(e, current, r.expected) {
-                if r.op == 4 { stats.conflicts += 1; }
-                stats.owner_ns += clock_ns() - started;
-                reply(r.slot, Answer { ok: r.op == 2, cell: r.cell, value: Flat { kind: e.kind, number: e.number, identity: e.identity, data: current } });
-                continue;
-            }
-        }
-        // A graph stored for the first time gets its identity here.
-        let numbered = value.kind == 5 && value.identity == 0;
-        let numbers = (if r.op == 1 { 1 } else { 0 }) + (if numbered { 1 } else { 0 });
-        let freed = if r.op == 1 { 0 } else { entries[r.cell].len };
-        if numbers > 0 && entries.len + stats.identities + numbers > limit || held - freed + value.data.len > byte_budget() { reply(r.slot, Answer { ok: false, error: 1, cell: r.cell }); }
-        else {
-            var identity = value.identity; if numbered { identity = next; next += 1; stats.identities += 1; }
-            var cell = r.cell; if r.op == 1 { entries.push(Entry { flavor: r.flavor }); cell = entries.len - 1; stats.cells += 1; }
-            let e .= entries[cell];
-            let current = bytes.items[e.start..(e.start + e.len)];
-            held -= e.len; if e.len > 0 { bytes.free_slice(current); }
-            var start: i64 = 0; if value.data.len > 0 { let run = bytes.alloc_copy(value.data); start = bytes.items.range_index(run, "cell bytes"); }
-            e = Entry { flavor: e.flavor, kind: value.kind, number: value.number, identity: identity, start: start, len: value.data.len }; held += value.data.len;
-            stats.owner_ns += clock_ns() - started;
-            reply(r.slot, Answer { cell: cell, value: Flat { kind: value.kind, number: value.number, identity: identity } });
-            continue;
-        }
-        stats.owner_ns += clock_ns() - started;
+        if r.op == 9 { assert(qput(s.stats)); return; }
+        let started = clock_ns(); s.stats.operations += 1;
+        let a = answer(s, bytes, ids, r);
+        s.stats.owner_ns += clock_ns() - started;
+        reply(r.slot, a);
     }
 }
-fn reply(slot: i64, a: Answer) {
+// The value cell `cell` holds, with its data and node identities.
+fn held_value(s: const Store&, bytes: const slice_pool<u8>&, ids: const slice_pool<i64>&, cell: i64) -> Flat {
+    let e .= s.entries[cell];
+    return Flat { kind: e.kind, number: e.number, identity: e.identity, data: bytes.items[e.start..(e.start + e.len)], root: e.root, nodes: ids.items[e.ids_start..(e.ids_start + e.ids_len)] };
+}
+fn answer(s: Store&, bytes: slice_pool<u8>&, ids: slice_pool<i64>&, r: const Request&) -> Answer {
+    if r.op == 7 { release(s, r.holder, r.cell); return Answer {}; }
+    if r.op != 1 && (r.cell < 0 || r.cell >= s.entries.len) { return Answer { ok: false, error: 2, cell: r.cell }; }
+    if r.op >= 5 && s.entries[r.cell].flavor != 2 { return Answer { ok: false, error: 7, cell: r.cell }; }
+    // A load, or a compare-and-set the cell refuses, answers what the cell
+    // holds; it numbers and charges nothing.
+    if r.op == 2 || r.op == 4 {
+        let e .= s.entries[r.cell];
+        if r.op == 2 || !matches(e, bytes.items[e.start..(e.start + e.len)], r.expected) {
+            if r.op == 4 { s.stats.conflicts += 1; }
+            return Answer { ok: r.op == 2, cell: r.cell, value: held_value(s, bytes, ids, r.cell), state: e.state, epoch: e.epoch };
+        }
+    }
+    if r.op == 5 { return force(s, bytes, ids, r.cell, r.holder); }
+    if r.op == 6 {
+        let e .= s.entries[r.cell];
+        if e.state != 1 || e.holder != r.holder { return Answer { ok: false, error: 7, cell: r.cell }; }
+    }
+    var cell = r.cell;
+    if r.op == 1 {
+        if s.entries.len + s.stats.identities + 1 > s.limit { return Answer { ok: false, error: 1, cell: -1 }; }
+        s.entries.push(Entry { flavor: r.flavor }); cell = s.entries.len - 1; s.stats.cells += 1;
+    }
+    let stored = store(s, bytes, ids, cell, r.value);
+    if !stored.ok { return stored; }
+    // A delay's stored value realizes it (publication); a settled claim
+    // ends, and its waiters hear of it.
+    let e .= s.entries[cell];
+    if e.flavor == 2 && (r.op == 3 || r.op == 6) {
+        e.state = if r.op == 6 && r.failed { 3 } else { 2 };
+        if r.op == 6 { end_claim(s, cell); }
+    }
+    return stored;
+}
+// Store `value` into `cell`: a graph's unnumbered nodes get identities here.
+fn store(s: Store&, bytes: slice_pool<u8>&, ids: slice_pool<i64>&, cell: i64, value: const Flat&) -> Answer {
+    var numbers: i64 = 0;
+    if value.kind == 5 { if value.nodes.len > 0 { for n in value.nodes { if n == 0 { numbers += 1; } } } else if value.identity == 0 { numbers = 1; } }
+    let freed = s.entries[cell].len;
+    if numbers > 0 && s.entries.len + s.stats.identities + numbers > s.limit || s.held - freed + value.data.len > byte_budget() { return Answer { ok: false, error: 1, cell: cell }; }
+    var nodes: i64[>..] = []; nodes.append(value.nodes);
+    var identity = value.identity;
+    for n, i in nodes { if n == 0 { nodes[i] = s.next; s.next += 1; s.stats.identities += 1; } }
+    if value.kind == 5 { if nodes.len > 0 { identity = nodes[value.root]; } else if identity == 0 { identity = s.next; s.next += 1; s.stats.identities += 1; } }
+    let e .= s.entries[cell];
+    s.held -= e.len; if e.len > 0 { bytes.free_slice(bytes.items[e.start..(e.start + e.len)]); }
+    if e.ids_len > 0 { ids.free_slice(ids.items[e.ids_start..(e.ids_start + e.ids_len)]); }
+    var start:     i64 = 0; if value.data.len > 0 { let run = bytes.alloc_copy(value.data); start = bytes.items.range_index(run, "cell bytes"); }
+    var ids_start: i64 = 0; if nodes.len > 0 { let run = ids.alloc_copy(nodes); ids_start = ids.items.range_index(run, "cell identities"); }
+    e.kind = value.kind; e.number = value.number; e.identity = identity; e.start = start; e.len = value.data.len; e.ids_start = ids_start; e.ids_len = nodes.len; e.root = value.root;
+    s.held += value.data.len;
+    return Answer { cell: cell, value: Flat { kind: value.kind, number: value.number, identity: identity, root: value.root, nodes: nodes } };
+}
+// A force of delay `cell` by `holder` (Clojure's Delay.deref): its value
+// when realized (or what its thunk threw), the claim when pending, and
+// otherwise a wait for the claim's holder, unless that wait closes a cycle
+// of claims (the holder waits, directly or through others, for one of
+// `holder`'s claims), which fails by name.
+fn force(s: Store&, bytes: const slice_pool<u8>&, ids: const slice_pool<i64>&, cell: i64, holder: i64) -> Answer {
+    // A retry ends the requester's earlier wait.
+    drop_edges(s, holder, -1);
+    let e .= s.entries[cell];
+    if e.state == 2 || e.state == 3 { return Answer { cell: cell, value: held_value(s, bytes, ids, cell), state: e.state, epoch: e.epoch }; }
+    if e.state == 0 { e.state = 1; e.holder = holder; e.epoch += 1; return Answer { cell: cell, state: 1, epoch: e.epoch }; }
+    var at = e.holder; var steps: i64 = 0;
+    while steps <= s.edges.len {
+        if at == holder { return Answer { ok: false, error: 6, cell: cell }; }
+        var next: i64 = -1;
+        for w in s.edges { if w.holder == at { next = w.cell; break; } }
+        if next < 0 || s.entries[next].state != 1 { break; }
+        at = s.entries[next].holder; steps += 1;
+    }
+    s.edges.push(WaitEdge { holder: holder, cell: cell }); e.waiters += 1; s.stats.waits += 1;
+    return Answer { cell: cell, state: 4, epoch: e.epoch };
+}
+// The claim of `cell` ended: its waiters hear of it, and no edge points at it.
+fn end_claim(s: Store&, cell: i64) {
+    let e .= s.entries[cell];
+    e.holder = 0;
+    if e.waiters > 0 { assert(qput(Settled { cell: cell, epoch: e.epoch })); readiness::notify(); e.waiters = 0; }
+    drop_edges(s, -1, cell);
+}
+// Every claim `holder` holds (`cell` < 0), or its claim of `cell`, goes
+// back to pending: its job ended without settling them (a fault its thunk
+// could not catch, a cancellation) or could not settle one.
+fn release(s: Store&, holder: i64, cell: i64) {
+    if cell < 0 { drop_edges(s, holder, -1); }
+    for i in s.entries.len { if (cell < 0 || i == cell) && s.entries[i].flavor == 2 && s.entries[i].state == 1 && s.entries[i].holder == holder { s.entries[i].state = 0; end_claim(s, i); } }
+}
+// Drop the wait edges of `holder`, or those into `cell`.
+fn drop_edges(s: Store&, holder: i64, cell: i64) {
+    var kept: WaitEdge[>..] = [];
+    for w in s.edges { if w.holder != holder && w.cell != cell { kept.push(w); } }
+    if kept.len != s.edges.len { s.edges.clear(); s.edges.append(kept); }
+}
+fn reply(slot: i64, a: const Answer&) {
     let sent = match slot {
         0 => qput(Reply<S0> { answer: copy(a), marker: S0 {} }), 1 => qput(Reply<S1> { answer: copy(a), marker: S1 {} }),
         2 => qput(Reply<S2> { answer: copy(a), marker: S2 {} }), 3 => qput(Reply<S3> { answer: copy(a), marker: S3 {} }),

@@ -44,8 +44,9 @@ struct Saved {
     // continuation keeps the rows its job did not allocate read-only.
     owned: i64 = 0, foreign: u32[] = [],
     // The rows the job knows as cells or by process-wide identity
-    // (source::Job.cell_rows, light-cljs-799).
-    cell_rows: source::CellRow[] = [],
+    // (source::Job.cell_rows, light-cljs-799), and how many delay claims it
+    // holds unsettled (source::Job.claims, light-cljs-808).
+    cell_rows: source::CellRow[] = [], claims: i64 = 0,
 }
 struct Command { id: i64 }
 struct Cancel {}
@@ -56,14 +57,16 @@ fn cancelled() -> bool { let token, present = qpoll<Cancel>(); if present { asse
 // 6 reaped (key = thread, address = worker; aborted with its message in
 // name), 7 a worker's job ended (retired: it exits, otherwise it is idle;
 // timing: reset ns, the clock, table bytes at the job's end; image: the
-// image digest in checked runs), 10 blocked wait. address names the job (its
+// image digest in checked runs), 10 blocked wait, 11 blocked delay wait
+// (light-cljs-808: delay the cell, epoch its claim; a kind 1 save of a
+// delay wait carries them too). address names the job (its
 // first checkpoint) and worker the job worker serving it. census: table rows at
 // the worker's exit, then the restored image's rows, then unreachable rows
 // (nodes, values, properties, units of both unit tables each; instrumented
 // runs only). timing:
 // spawn-to-start latency, the clock at this publication, restore bytes and ns.
 // installs (kind 7): the job's worker_installs.
-struct Event { id: i64, kind: i64, saved: Saved = Saved {}, gensym_next: i64 = 0, sequence: i64 = 0, key: i64 = -1, name: u8[] = [], data: u8[] = [], steps: i64 = 0, writes: i64 = 0, metrics: u8[] = [], callable: bool = false, address: i64 = 0, aborted: bool = false, census: i64[12] = [-1; 12], timing: i64[4] = [0; 4], worker: i64 = -1, retired: bool = false, image: u64 = 0, installs: i64[3] = [0; 3] }
+struct Event { id: i64, kind: i64, saved: Saved = Saved {}, gensym_next: i64 = 0, sequence: i64 = 0, key: i64 = -1, name: u8[] = [], data: u8[] = [], steps: i64 = 0, writes: i64 = 0, metrics: u8[] = [], callable: bool = false, address: i64 = 0, aborted: bool = false, census: i64[12] = [-1; 12], timing: i64[4] = [0; 4], worker: i64 = -1, retired: bool = false, image: u64 = 0, installs: i64[3] = [0; 3], delay: i64 = -1, epoch: i64 = 0 }
 // A job worker's serial (Setup.worker), set in its own thread program's copy
 // of this global; -1 in every other program.
 var worker_serial: i64 = -1;
@@ -74,18 +77,23 @@ fn publish(event: Event) { if event.worker < 0 { event.worker = worker_serial; }
 // One job, from the one Work queue every idle job worker takes from
 // (light-cljs-795). blocking: the worker may wait for a dependency in place;
 // spawned: the coordinator's clock when it queued the job; stop: the worker
-// exits instead.
-struct Work { saved: Saved = Saved {}, id: i64 = 0, identity: i64 = 0, mode: i64 = 0, helper: u8[] = [], key: i64 = -1, checkpoint: i64 = 0, callable: bool = false, blocking: bool = false, spawned: i64 = 0, stop: bool = false }
+// exits instead; definition: a start's definition key, which names its
+// publication's identities (light-cljs-808). mode: 0 start, 1 answered
+// continuation, 2 helper production, 3 missing helper, 4 cancelled
+// continuation, 5 a delay wait whose claim ended (light-cljs-808).
+struct Work { saved: Saved = Saved {}, id: i64 = 0, identity: i64 = 0, mode: i64 = 0, helper: u8[] = [], key: i64 = -1, checkpoint: i64 = 0, callable: bool = false, blocking: bool = false, spawned: i64 = 0, stop: bool = false, definition: i64 = -1 }
 // The coordinator's reply to a blocked worker, routed by address: mode 1
-// delivers a produced helper, 3 a missing one, 0 asks the worker to save its
-// continuation and end the job, -1 to end it without a result. checkpoint is the
+// delivers a produced helper, 3 a missing one, 5 ends a delay wait (the
+// claim it waited for ended), 0 asks the worker to save its continuation
+// and end the job, -1 to end it without a result. checkpoint is the
 // worker's next completion barrier (dispatch-test).
 struct Answer { address: i64, mode: i64 = 0, helper: u8[] = [], key: i64 = -1, callable: bool = false, checkpoint: i64 = 0 }
 struct Reap { thread: i64, address: i64 = 0 }
 struct Running { id: i64, thread: i64 = -1, address: i64 = 0, key: i64 = -1, checkpoint: i64 = 0 }
 // address != 0: a blocked worker that keeps its state; otherwise saved holds
-// the flat continuation.
-struct Waiting { id: i64, name: u8[], saved: Saved, key: i64 = -2, active: bool = true, address: i64 = 0, thread: i64 = -1, prefix: u8[..64] = [] }
+// the flat continuation. delay >= 0: a delay wait for that cell's claim
+// `epoch` (light-cljs-808), resumed when the cell owner reports it ended.
+struct Waiting { id: i64, name: u8[], saved: Saved, key: i64 = -2, active: bool = true, address: i64 = 0, thread: i64 = -1, prefix: u8[..64] = [], delay: i64 = -1, epoch: i64 = 0 }
 struct Exit { address: i64, clock: i64 }
 // Session totals for the JOBS line. Byte counts are spawn-argument copies
 // (snapshot and helper) and restore copies inside the workers.
@@ -160,7 +168,7 @@ thread_fn preparer(base: snapshot::Snapshot, directory: u8[], id: i64, key: i64,
     let function, ready = initialize(id, heap, factory, [rt], base.nodes.len, report, prefix, next); if !ready { assert(qput(Preparation { report: copy(report) })); return; }
     if !source::valid(heap, function) || function.tag() != 5 || source::node(heap, function.id()).kind != 2 { format(report, "ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
     // Every atom the definition reaches becomes a process-wide cell (light-cljs-799).
-    let refused = source::publish_cells(heap, function, base.nodes.len);
+    var thunks = false; let refused = source::publish_cells(heap, function, base.nodes.len, thunks);
     if refused.len > 0 { format(report, "ERROR ", id, " preparation-", refused, " function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
     heap.initializer_count += 1;
     let result = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: function }], sc); assert(sc.error == snapshot::Error.None);
@@ -198,9 +206,11 @@ fn leaf(id: i64, heap: source::Heap&, callee: source::Value, args: const source:
     source::start(job, callee, args); if source::run(job, -1) != tiny::Outcome.Complete { fail(id, heap, job, address, timing); return source::Value.Undefined, false; } return job.result, true;
 }
 fn save(job: source::Job&, rt: source::Value, call: source::Value, control: bridge::Control, sequence: i64, costs: i64[2], checkpoint: i64) -> Saved {
-    assert(!job.claimed && job.effect_pending && job.status == tiny::Status.Ready && job.effect_kind == 9 && job.effect_count == 3);
+    assert(!job.claimed && job.effect_pending && job.status == tiny::Status.Ready && (job.effect_kind == 9 && job.effect_count == 3 || job.effect_kind == 10 && job.effect_count == 2));
+    // The continuation carries the job's delay claims; this worker no longer does.
+    let claims = job.claims; job.claims = 0;
     assert(source::retire(job, true)); var c = snapshot::Control {}; let heap = snapshot::capture(job.heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: call }], c, checkpoint); assert(c.error == snapshot::Error.None);
-    return Saved { heap: copy(heap), frames: copy(job.frames), locals: copy(job.locals), operands: copy(job.operands), writes: copy(job.writes), handlers: copy(job.handlers), steps: job.steps, args: job.effect_args, frame: job.effect_frame, bridge: control, sequence: sequence, costs: costs, protected: job.protected_nodes, gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next, owned: job.owned_nodes, foreign: copy(job.foreign), cell_rows: copy(job.cell_rows) };
+    return Saved { heap: copy(heap), frames: copy(job.frames), locals: copy(job.locals), operands: copy(job.operands), writes: copy(job.writes), handlers: copy(job.handlers), steps: job.steps, args: job.effect_args, frame: job.effect_frame, bridge: control, sequence: sequence, costs: costs, protected: job.protected_nodes, gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next, owned: job.owned_nodes, foreign: copy(job.foreign), cell_rows: copy(job.cell_rows), claims: claims };
 }
 fn fail(id: i64, heap: source::Heap&, job: source::Job&, address: i64 = 0, timing: i64[4] = [0; 4]) {
     let pc = job.fault_pc; var start: i64 = -1; var end: i64 = -1;
@@ -277,6 +287,10 @@ fn serve(work: const Work&, directory: const u8[:], setup: const Setup&, base: c
     let started = clock_ns();
     var job = source::Job { heap: heap }; var args: source::Value[>..] = []; var graph = bridge::Graph {}; var bytes: u8[>..] = [];
     execute(work, directory, started, setup, base, service, code, heap, bindings, job, args, graph, bytes);
+    // A job that ended holding delay claims (a fault its thunk could not
+    // catch, a cancellation) releases them, so the jobs waiting for them
+    // force again (light-cljs-808).
+    if job.claims > 0 && job.cell_holder > 0 { cells::exchange(cells::Request { op: 7, holder: job.cell_holder }); job.claims = 0; }
 }
 // The bytes a worker's VM tables hold: the retirement measure.
 fn table_bytes(code: const source::Code&, heap: const source::Heap&) -> i64 {
@@ -319,13 +333,17 @@ fn rows(work: const Work&, heap: const source::Heap&, job: const source::Job&, b
     return [c.nodes, c.values, c.properties, c.units, s.nodes.len, s.values.len, s.properties.len, s.units.len + s.latin1.len, c.dead_nodes, c.dead_values, c.dead_properties, c.dead_units];
 }
 // A published callable helper, from the session cache or installed once.
-fn published(helper: const u8[:], base: snapshot::Header, key: i64, code: source::Code&, heap: source::Heap&) -> source::Value, bool {
+// Its rows are the publication's (source::install_publication): the job
+// knows their identities and cells, and maps those it held already.
+fn published(helper: const u8[:], base: snapshot::Header, key: i64, code: source::Code&, heap: source::Heap&, rows: source::CellRow[>..]&) -> source::Value, bool {
     let cache = source::get(heap, heap.global, source::text(heap, "__lightPublishedHelpers")); let name = source::text(heap, str(key));
     let prior, found = source::own_property(heap, cache, name);
     if found { return prior, true; }
     let installing = clock_ns(); defer { worker_installs[1] += clock_ns() - installing; worker_installs[2] += 1; }
-    var publication = snapshot::Control {}; let imported = callable::decode_install(helper, base, code, heap, publication);
-    if publication.error != snapshot::Error.None { return imported, false; }
+    let start = heap.nodes.len; let values = heap.values.len; let constants = heap.constants.len;
+    var publication = snapshot::Control {}; let installed = callable::decode_install(helper, base, code, heap, publication);
+    if publication.error != snapshot::Error.None { return installed, false; }
+    let imported = source::install_publication(heap, rows, start, heap.nodes.len - start, values, constants, source::helper_publication(key), installed);
     return imported, source::put(heap, cache, name, imported);
 }
 fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const Setup&, base: const snapshot::Snapshot&, service: const i64[:], code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding[>..]&, job: source::Job&, args: source::Value[>..]&, graph: bridge::Graph&, bytes: u8[>..]&) {
@@ -344,7 +362,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
     assert(snapshot::extend(saved.heap, base, service, code, heap, bindings, identity, sc)); worker_installs[0] += sc.restore_ns; let rt = bindings[0].value;
     // Rows below this are the image's and the definition's (a continuation
     // keeps its job's boundary).
-    let owned = if mode == 1 || mode == 3 || mode == 4 { saved.owned } else { heap.nodes.len };
+    let owned = if mode == 1 || mode == 3 || mode == 4 || mode == 5 { saved.owned } else { heap.nodes.len };
     var costs = saved.costs; var control = saved.bridge; var call = source::Value.Undefined; var function = source::Value.Undefined; var next = saved.gensym_next;
     if mode == 0 { function = bindings[1].value; let importing = clock_ns();
         assert(read_file(str(directory, "/", id, ".gfb"), bytes)); assert(bridge::decode(graph, bytes, control)); assert(bridge::import_graph(heap, graph, args, control)); assert(args.len >= 2); call = args[0]; costs[1] += clock_ns() - importing;
@@ -353,28 +371,35 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
         let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], saved.protected, saved.gensym_prefix, next, address, timing(work, started, sc)); if !loaded { return; }
         let value, initialized = leaf(id, heap, factory, [rt], saved.protected, saved.gensym_prefix, next, address, timing(work, started, sc)); if !initialized { return; } function = value;
         if mode == 2 { let exporting = clock_ns();
-            let closure = function.tag() == 5 && source::node(heap, function.id()).kind == 2;
+            let is_closure = function.tag() == 5 && source::node(heap, function.id()).kind == 2;
             var publication = snapshot::Control {};
             // Every atom the helper reaches becomes a process-wide cell, and a
             // form helper's graph names it (light-cljs-799).
-            let refused = source::publish_cells(heap, function, base.nodes.len);
+            var thunks = false; let refused = source::publish_cells(heap, function, base.nodes.len, thunks);
             if refused.len > 0 { publish(Event { id: id, kind: 3, name: str("helper-", refused), address: address, timing: timing(work, started, sc) }); return; }
+            // A value that reaches a pending delay goes as a callable
+            // publication, which carries the delay's thunk (light-cljs-808).
+            let closure = is_closure || thunks;
             control.cells = true;
             let ok = if closure { callable::encode(heap, saved.heap, function, bytes, publication, checkpoint) } else { bridge::export_graph(heap, [function], graph, control) && bridge::encode(graph, bytes, control) };
             if !ok {
-                let function_id = if closure { source::node(heap, function.id()).function } else { entry }; let pc = code.functions[function_id].start; let op = code.ops[pc];
+                let function_id = if is_closure { source::node(heap, function.id()).function } else { entry }; let pc = code.functions[function_id].start; let op = code.ops[pc];
                 publish(Event { id: id, kind: 3, name: str("helper-", heap.fault, "-", control.error, "-", publication.error, " function=", function_id, " pc=", pc, " emitted-span=", op.start, ":", op.end), address: address, timing: timing(work, started, sc) }); return;
             } costs[1] += clock_ns() - exporting; publish(Event { id: id, kind: 5, key: key, name: str(costs[0], " ", costs[1]), data: copy(bytes), metrics: str(sc.restore_ns, " 0 ", clock_ns() - worker_started, " ", storage(saved, heap, sc, bytes.len), " ", mode), callable: closure, address: address, census: rows(work, heap, job, bindings, function), timing: timing(work, started, sc) }); return;
         }
     } else { call = bindings[1].value; }
     // Import before re-registering the suspended job; failed publication is
     // transactional and delivered at the original effect instruction.
+    // The rows the job knows as cells or by identity: its continuation's, or
+    // a start's definition, a publication (light-cljs-808).
+    for r in saved.cell_rows { job.cell_rows.push(r); } job.claims = saved.claims;
+    if mode == 0 { source::install_publication(heap, job.cell_rows, base.nodes.len, owned - base.nodes.len, heap.values.len, heap.constants.len, source::definition_publication(work.definition), source::Value.Undefined); }
     var imported = source::Value.Undefined; var import_ok = false; let installing = heap.nodes.len;
     if mode == 1 && work.callable {
-        let importing = clock_ns(); let value, ok = published(work.helper, saved.base, key, code, heap); imported = value; import_ok = ok; costs[1] += clock_ns() - importing;
+        let importing = clock_ns(); let value, ok = published(work.helper, saved.base, key, code, heap, job.cell_rows); imported = value; import_ok = ok; costs[1] += clock_ns() - importing;
     }
     let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")); job.effects_enabled = true; job.helpers_enabled = true; job.protected_nodes = saved.protected; job.root_receiver = roots; defer { source::retire(job); } scope(job, saved.gensym_prefix, next);
-    job.owned_nodes = owned; for r in saved.foreign { job.foreign.push(r); } for r in saved.cell_rows { job.cell_rows.push(r); } source::install_foreign(job, installing);
+    job.owned_nodes = owned; for r in saved.foreign { job.foreign.push(r); } job.cell_holder = id; source::install_foreign(job, installing);
     if mode == 0 { source::start(job, function, args); } else {
         // Saved rows link the restored heap's rows by index: copied verbatim.
         for f in saved.frames { job.frames.push(f); } job.locals.append(saved.locals); job.operands.append(saved.operands);
@@ -384,20 +409,29 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
         // or it was cancelled while this resume was queued (light-cljs-803).
         // Its finally blocks run under its limits; nothing is published.
         if mode == 4 || cancelled() { publish(Event { id: id, kind: 3, name: clean_up(job), address: address, timing: timing(work, started, sc) }); return; }
-        if mode == 1 && !work.callable { let start = heap.nodes.len; let installing = clock_ns(); defer { worker_installs[1] += clock_ns() - installing; worker_installs[2] += 1; } control.cells = true; import_ok = bridge::decode(graph, work.helper, control) && source::import_cells(heap, job.cell_rows, graph, args, control) && args.len == 1; if import_ok { imported = args[0]; } source::install_foreign(job, start); }
-        if !import_ok { source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], imported); assert(source::deliver_effect(job, imported)); }
+        if mode == 1 && !work.callable { let start = heap.nodes.len; let installing = clock_ns(); defer { worker_installs[1] += clock_ns() - installing; worker_installs[2] += 1; } control.cells = true; import_ok = bridge::decode(graph, work.helper, control) && source::import_publication(heap, job.cell_rows, graph, args, control, source::helper_publication(key)) && args.len == 1; if import_ok { imported = args[0]; } source::install_foreign(job, start); }
+        if mode == 5 { assert(source::deliver_effect(job, source::Value.Undefined)); }
+        else if !import_ok { source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], imported); assert(source::deliver_effect(job, imported)); }
     }
-    let execution_started = clock_ns(); var sequence = if mode == 0 { 0 } else { saved.sequence + 1 };
+    // A delay wait (mode 5) took no helper, so its root reads go on at the same sequence.
+    let execution_started = clock_ns(); var sequence = if mode == 0 { 0 } else if mode == 5 { saved.sequence } else { saved.sequence + 1 };
     loop {
         if cancelled() { publish(Event { id: id, kind: 3, name: clean_up(job), address: address, timing: timing(work, started, sc) }); return; }
         let outcome = source::run(job, 10000); if outcome == tiny::Outcome.Complete { break; } if outcome == tiny::Outcome.Failed { fail(id, heap, job, address, timing(work, started, sc)); return; }
         if !job.effect_pending { continue; }
-        if job.effect_kind != 9 || job.effect_count != 3 { source::deliver_effect(job, source::Value.Undefined, source::Fault.NativeBoundary); continue; }
-        let v = job.effect_args[2]; var name: u8[>..] = []; if v.tag() != 4 { source::deliver_effect(job, source::Value.Undefined, source::Fault.TypeError); continue; }
-        for u in source::utf16(heap, v) { if u <= 32 || u > 127 { source::deliver_effect(job, source::Value.Undefined, source::Fault.NativeBoundary); break; } name.push(u as u8); } if !job.effect_pending { continue; }
+        // A force waiting for another job's delay claim (kind 10: the cell and
+        // the claim's epoch, light-cljs-808) waits as a dependency does, and
+        // forces again when the coordinator hears the claim ended.
+        var delay: i64 = -1; var epoch: i64 = 0; var name: u8[>..] = [];
+        if job.effect_kind == 10 && job.effect_count == 2 { delay = job.effect_args[0].num() as i64; epoch = job.effect_args[1].num() as i64; }
+        else {
+            if job.effect_kind != 9 || job.effect_count != 3 { source::deliver_effect(job, source::Value.Undefined, source::Fault.NativeBoundary); continue; }
+            let v = job.effect_args[2]; if v.tag() != 4 { source::deliver_effect(job, source::Value.Undefined, source::Fault.TypeError); continue; }
+            for u in source::utf16(heap, v) { if u <= 32 || u > 127 { source::deliver_effect(job, source::Value.Undefined, source::Fault.NativeBoundary); break; } name.push(u as u8); } if !job.effect_pending { continue; }
+        }
         if work.blocking {
             // Wait in place: the job's state stays in this thread program.
-            publish(Event { id: id, kind: 10, saved: Saved { gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next }, sequence: sequence, name: copy(name), steps: job.steps, writes: job.writes.len, address: address, timing: timing(work, started, sc) });
+            publish(Event { id: id, kind: if delay >= 0 { 11 } else { 10 }, saved: Saved { gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next }, sequence: sequence, name: copy(name), steps: job.steps, writes: job.writes.len, address: address, timing: timing(work, started, sc), delay: delay, epoch: epoch });
             if deterministic { assert(write_file(str(directory, "/ready-", barrier), "ready")); }
             // Deterministic regression: a contained abort while blocked.
             if cleanup_test && id == 3 { assert(false); }
@@ -409,6 +443,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
             if !present { publish(Event { id: id, kind: 3, name: clean_up(job), address: address, timing: timing(work, started, sc) }); return; }
             barrier = answer.checkpoint;
             if answer.mode == -1 { return; }
+            if answer.mode == 5 { assert(source::deliver_effect(job, source::Value.Undefined)); continue; }
             if answer.mode != 0 {
                 // A helper produced for this wait numbered in its own scope.
                 let importing = clock_ns(); var value = source::Value.Undefined; var ok = false; let start = heap.nodes.len;
@@ -417,11 +452,11 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
                     // suspended job holds only values into the append-only
                     // prefix, as a saved continuation does before restore.
                     job.registered = false; heap.live_jobs -= 1;
-                    let installed, valid = published(answer.helper, saved.base, answer.key, code, heap); value = installed; ok = valid;
+                    let installed, valid = published(answer.helper, saved.base, answer.key, code, heap, job.cell_rows); value = installed; ok = valid;
                     job.registered = true; heap.live_jobs += 1;
                 } else if answer.mode == 1 {
                     reset(graph); var helper: source::Value[>..] = []; let installing = clock_ns(); defer { worker_installs[1] += clock_ns() - installing; worker_installs[2] += 1; }
-                    control.cells = true; ok = bridge::decode(graph, answer.helper, control) && source::import_cells(heap, job.cell_rows, graph, helper, control) && helper.len == 1; if ok { for h in helper { value = h; } }
+                    control.cells = true; ok = bridge::decode(graph, answer.helper, control) && source::import_publication(heap, job.cell_rows, graph, helper, control, source::helper_publication(answer.key)) && helper.len == 1; if ok { for h in helper { value = h; } }
                 }
                 costs[1] += clock_ns() - importing; source::install_foreign(job, start);
                 if !ok { source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], value); assert(source::deliver_effect(job, value)); }
@@ -430,7 +465,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
             // Over the retention budget: save the continuation and end the job.
         }
         let counted = rows(work, heap, job, bindings, call);
-        let state = save(job, rt, call, control, sequence, costs, checkpoint); state.storage = saved.storage; state.base = saved.base; publish(Event { id: id, kind: 1, saved: copy(state), name: copy(name), steps: job.steps, metrics: str(sc.restore_ns, " ", clock_ns() - execution_started, " ", clock_ns() - worker_started, " ", storage(saved, heap, sc, 0), " ", mode), address: address, census: counted, timing: timing(work, started, sc) }); return;
+        let state = save(job, rt, call, control, sequence, costs, checkpoint); state.storage = saved.storage; state.base = saved.base; publish(Event { id: id, kind: 1, saved: copy(state), name: copy(name), steps: job.steps, metrics: str(sc.restore_ns, " ", clock_ns() - execution_started, " ", clock_ns() - worker_started, " ", storage(saved, heap, sc, 0), " ", mode), address: address, census: counted, timing: timing(work, started, sc), delay: delay, epoch: epoch }); return;
     }
     let exporting = clock_ns(); let execution_ns = exporting - execution_started; let result = job.result; let steps = job.steps; assert(source::retire(job)); reset(graph); bytes.clear();
     let counted = rows(work, heap, job, bindings, call);
@@ -564,6 +599,8 @@ fn resume(w: Waiting&, mode: i64, helper: const u8[:], key: i64, is_callable: bo
     }
     print("RESUME ", w.id); flush_stdout(); w.active = false; return true;
 }
+// Whether the cell owner reported that `cell`'s claim `epoch` ended.
+fn claim_ended(settled: const cells::Settled[:], cell: i64, epoch: i64) -> bool { for s in settled { if s.cell == cell && s.epoch == epoch { return true; } } return false; }
 // Whether a saved continuation still waits (for its answer or, cancelling,
 // for its cleanup).
 fn saved_waiters(waiting: const Waiting[:]) -> bool { for w in waiting { if w.active && w.address == 0 { return true; } } return false; }
@@ -610,7 +647,7 @@ fn main() {
     // never refuse a publish.
     // Each live worker also has at most one unconsumed Answer (a resume or,
     // over the retention budget, a save), so the re-queue never fails either.
-    qlimit<Command>(128); qlimit<readiness::InputCredit>(128); for i in 128 { assert(qput(readiness::InputCredit {})); } qlimit<Event>(6 * counts.reapers + 8); qlimit<Answer>(counts.reapers + 1); qlimit<Reap>(counts.reapers); qlimit<Cancel>(1); qlimit<readiness::Wake>(1); cells::prepare(); let owner = thread_spawn(cell_owner, cells::budget()); cells::enabled = true; let reader = thread_spawn(input, copy(directory), deterministic); var running: Running[>..] = []; var queue: i64[>..] = []; var received: i64 = 0; var waiting: Waiting[>..] = []; var produced: Produced[>..] = []; var prepared: Prepared[>..] = []; var closing = false; var cancelling = false; var poisoned = false; var retained: i64 = 0; var sleep_ns: i64 = 0; var turns: i64 = 0; var progress_turns: i64 = 0; var backoffs: i64 = 0; var commands: i64 = 0; var events: i64 = 0; var max_commands: i64 = 0; var max_events: i64 = 0; var exits: Exit[>..] = []; var finals: i64 = 0; var since_trim: i64 = 0;
+    qlimit<Command>(128); qlimit<readiness::InputCredit>(128); for i in 128 { assert(qput(readiness::InputCredit {})); } qlimit<Event>(6 * counts.reapers + 8); qlimit<Answer>(counts.reapers + 1); qlimit<Reap>(counts.reapers); qlimit<Cancel>(1); qlimit<readiness::Wake>(1); cells::prepare(); let owner = thread_spawn(cell_owner, cells::budget()); cells::enabled = true; let reader = thread_spawn(input, copy(directory), deterministic); var running: Running[>..] = []; var queue: i64[>..] = []; var received: i64 = 0; var waiting: Waiting[>..] = []; var produced: Produced[>..] = []; var prepared: Prepared[>..] = []; var closing = false; var cancelling = false; var poisoned = false; var retained: i64 = 0; var sleep_ns: i64 = 0; var turns: i64 = 0; var progress_turns: i64 = 0; var backoffs: i64 = 0; var commands: i64 = 0; var events: i64 = 0; var max_commands: i64 = 0; var max_events: i64 = 0; var exits: Exit[>..] = []; var finals: i64 = 0; var since_trim: i64 = 0; var settled: cells::Settled[>..] = [];
     var reapers: i64[>..] = []; for slot in counts.reapers { reapers.push(thread_spawn(supervise)); }
     print("READY 1 ", heap.boot_count, " ", loaded - beginning, " ", booted - loaded, " ", clock_ns() - booted); flush_stdout();
     // The deterministic fixture queues a complete batch before the first turn.
@@ -643,15 +680,17 @@ fn main() {
             // cancellation, which is no job result; its report is traced.
             if !owned { unblock(waiting, event.address, -1, counts); if event.kind == 3 && !poisoned { print("ERROR ", event.id, " ", event.name); flush_stdout(); } continue; }
             event_count += 1; events += 1; if poisoned { continue; }
-            if event.kind == 10 { stats.waits += 1;
+            // A dependency wait (10), or a delay wait (11, light-cljs-808),
+            // which the cell owner's Settled ends instead of an answer.
+            if event.kind == 10 || event.kind == 11 { stats.waits += 1;
                 if waiting.len >= 128 { print("ERROR ", event.id, " waiter-budget"); flush_stdout(); assert(qput(Answer { address: event.address, mode: -1 })); continue; }
-                if counts.blocked < retention { counts.blocked += 1; stats.peak_blocked = max(stats.peak_blocked, counts.blocked); waiting.push(Waiting { id: event.id, name: copy(event.name), saved: Saved { sequence: event.sequence, gensym_prefix: copy(event.saved.gensym_prefix), gensym_next: event.saved.gensym_next }, address: event.address, thread: owner.thread }); print("NEED ", event.id, " ", event.sequence, " ", event.name, " ", event.steps, " ", event.writes); flush_stdout(); continue; }
+                if counts.blocked < retention { counts.blocked += 1; stats.peak_blocked = max(stats.peak_blocked, counts.blocked); waiting.push(Waiting { id: event.id, name: copy(event.name), saved: Saved { sequence: event.sequence, gensym_prefix: copy(event.saved.gensym_prefix), gensym_next: event.saved.gensym_next }, address: event.address, thread: owner.thread, delay: event.delay, epoch: event.epoch }); if event.kind == 11 { print("WAIT ", event.id, " ", event.delay); } else { print("NEED ", event.id, " ", event.sequence, " ", event.name, " ", event.steps, " ", event.writes); } flush_stdout(); continue; }
                 // Over the retention budget: the worker saves its continuation and ends the job.
                 let checkpoint = source::reserve_identity(); assert(qput(Answer { address: event.address, mode: 0, checkpoint: checkpoint })); running.push(Running { id: event.id, thread: owner.thread, address: event.address, checkpoint: checkpoint }); continue;
             }
             let bytes = if event.kind == 1 { footprint(event.saved) } else { event.data.len }; if bytes > 67108864 - retained { print("ERROR ", event.id, " retained-budget"); flush_stdout(); continue; } retained += bytes; if event.metrics.len > 0 { print("METRIC ", event.id, " ", event.metrics, " ", sleep_ns, " ", clock_ns() - beginning); } if event.kind == 2 || event.kind == 5 { print("COST ", event.id, " ", event.name); }
             if event.census[0] >= 0 { var text: u8[>..] = []; format(text, "CENSUS 0 ", event.id, " ", event.kind); for n in event.census { format(text, " ", n); } print(text); }
-            if event.kind == 1 { stats.saves += 1; if waiting.len >= 128 { print("ERROR ", event.id, " waiter-budget"); } else { waiting.push(Waiting { id: event.id, name: copy(event.name), saved: copy(event.saved) }); print("NEED ", event.id, " ", event.saved.sequence, " ", event.name, " ", event.steps, " ", event.saved.writes.len); } }
+            if event.kind == 1 { stats.saves += 1; if waiting.len >= 128 { print("ERROR ", event.id, " waiter-budget"); } else { waiting.push(Waiting { id: event.id, name: copy(event.name), saved: copy(event.saved), delay: event.delay, epoch: event.epoch }); if event.delay >= 0 { print("WAIT ", event.id, " ", event.delay); } else { print("NEED ", event.id, " ", event.saved.sequence, " ", event.name, " ", event.steps, " ", event.saved.writes.len); } } }
             else if event.kind == 5 { produced.push(Produced { key: event.key, data: copy(event.data), callable: event.callable });
                 // The helper numbered in its own frozen scope, not the wait's.
                 print("PRODUCED ", event.id, " ", event.key); }
@@ -671,7 +710,10 @@ fn main() {
         // Closing: every idle worker exits once no saved continuation waits
         // for its cleanup; busy ones get a stop when idle.
         if closing && !saved_waiters(waiting) { while counts.idle > 0 { assert(qput(Work { stop: true })); counts.idle -= 1; } }
+        // Delay claims that ended while jobs waited for them (light-cljs-808).
+        loop { let ended, present = qpoll<cells::Settled>(); if !present { break; } settled.push(ended); progress = true; }
         if !closing { for w in waiting { if running.len >= limit { break; } if !w.active { continue; }
+            if w.delay >= 0 { if claim_ended(settled, w.delay, w.epoch) && resume(w, 5, [], -1, false, running, base, pool, counts, stats) { progress = true; } continue; }
             if w.key == -2 { var bytes: u8[>..] = []; if !read_file(str(directory, "/", w.id, "-", w.saved.sequence, ".key"), bytes) { continue; } let key, prefix = helper_key(bytes); w.key = key; w.prefix.append(prefix); }
             let key = w.key; if key == -1 { if resume(w, 3, [], -1, false, running, base, pool, counts, stats) { progress = true; } continue; } var found = false;
             for p in produced { if p.key == key { found = true; if resume(w, 1, p.data, key, p.callable, running, base, pool, counts, stats) { progress = true; } break; } }
@@ -683,7 +725,7 @@ fn main() {
         while !closing && received < queue.len && running.len < limit && available(counts) { progress = true; let id = queue[received]; received += 1; let key, prefix, first = definition(directory, id); var next = first; var index: i64 = -1;
             for p, i in prepared { if p.key == key { index = i; break; } }
             if index < 0 { let checkpoint, ok = prepare(base, directory, id, key, prefix, next); if !ok { continue; } let bytes = snapshot::footprint(checkpoint); if prepared.len >= 1024 || bytes > 67108864 - retained { print("ERROR ", id, " definition-budget"); flush_stdout(); continue; } retained += bytes; index = prepared.len; prepared.push(Prepared { key: key, heap: copy(checkpoint) }); }
-            for p in prepared { if p.key != key { continue; } let handing = clock_ns(); let spawning = stats.spawn_ns; let initial = Saved { heap: copy(p.heap), base: base.header, protected: base.nodes.len, storage: instrumented, gensym_prefix: copy(prefix), gensym_next: next }; let checkpoint = source::reserve_identity(); var work = Work { saved: copy(initial), id: id, identity: identity(initial), mode: 0, helper: [], key: -1, checkpoint: checkpoint, blocking: retention > 0 }; dispatch(work, base, pool, counts, stats); stats.handoff_ns += clock_ns() - handing - (stats.spawn_ns - spawning); running.push(Running { id: id, address: checkpoint, checkpoint: checkpoint }); since_trim += 1; print("START ", id); flush_stdout(); break; } }
+            for p in prepared { if p.key != key { continue; } let handing = clock_ns(); let spawning = stats.spawn_ns; let initial = Saved { heap: copy(p.heap), base: base.header, protected: base.nodes.len, storage: instrumented, gensym_prefix: copy(prefix), gensym_next: next }; let checkpoint = source::reserve_identity(); var work = Work { saved: copy(initial), id: id, identity: identity(initial), mode: 0, helper: [], key: -1, checkpoint: checkpoint, blocking: retention > 0, definition: key }; dispatch(work, base, pool, counts, stats); stats.handoff_ns += clock_ns() - handing - (stats.spawn_ns - spawning); running.push(Running { id: id, address: checkpoint, checkpoint: checkpoint }); since_trim += 1; print("START ", id); flush_stdout(); break; } }
         // Release inactive continuation owners and their budget after dispatch.
         { var inactive: i64 = 0; for w in waiting { if !w.active { inactive += 1; if w.address == 0 { retained -= footprint(w.saved); } } } if inactive == waiting.len { waiting.clear(); } else if inactive > 0 { var active: Waiting[>..] = []; for w in waiting { if w.active { active.push(copy(w)); } } waiting = copy(active); } }
         if received == queue.len { queue.clear(); received = 0; }

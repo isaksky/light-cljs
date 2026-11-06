@@ -95,7 +95,12 @@ fn edge(s: const snapshot::Snapshot&, n: source::Node, i: i64, c: snapshot::Cont
 fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, ids: i64[>..]&, slots: i64[>..]&, c: snapshot::Control&) -> bool {
     if p.version != 1 || bytes_of([p.base]) != bytes_of([expected]) { return fail(c, snapshot::Error.Version); }
     let s .= p.image; let base = expected.ends[6];
-    if base < 0 || base > s.nodes.len || s.bindings.len != 1 || s.bindings[0].value.tag() != 5 || s.nodes[s.bindings[0].value.id()].kind != 2 { return fail(c, snapshot::Error.Link); }
+    // The root is a closure, or a value that reaches a pending delay cell
+    // whose thunk only this transport carries (light-cljs-808): a form or a
+    // cell reference.
+    if base < 0 || base > s.nodes.len || s.bindings.len != 1 || s.bindings[0].value.tag() != 5 { return fail(c, snapshot::Error.Link); }
+    let root_kind = s.nodes[s.bindings[0].value.id()].kind;
+    if root_kind != 2 && root_kind != 18 && (root_kind < 5 || root_kind > 12) { return fail(c, snapshot::Error.Link); }
     if !code_matches(p, heap, c) { return false; }
     if !snapshot::range(0, expected.ends[9], s.units.len) || !snapshot::range(0, expected.ends[9], heap.units.len) || !snapshot::poll(c, expected.ends[9]) { return fail(c, snapshot::Error.Link); }
     if s.units[..expected.ends[9]] != heap.units[..expected.ends[9]] { return fail(c, snapshot::Error.Link); }
