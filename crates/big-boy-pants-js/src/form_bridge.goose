@@ -16,8 +16,11 @@ enum Error { None, Malformed, Nodes, Depth, Bytes, Work, Cancelled, Unsupported,
 // count its flavor; light-cljs-799, cells.goose): a cell's value or a
 // produced helper, which stay inside the Goose session. A job's result for
 // the compiler never does, so a cell there is Unsupported, as the V8 build's
-// form bridge refuses an atom.
-struct Control { nodes: i64 = 100000, depth: i64 = 128, bytes: i64 = 16777216, work: i64 = 10000000, cancel_after: i64 = -1, visits: i64 = 0, error: Error = Error.None, cancelled: bool = false, cells: bool = false }
+// form bridge refuses an atom. spans: an export carries the heap's source
+// text and each form's source span; a cell value, which outlives its call,
+// carries neither (light-cljs-809), so a store exports only what the value
+// reaches.
+struct Control { nodes: i64 = 100000, depth: i64 = 128, bytes: i64 = 16777216, work: i64 = 10000000, cancel_after: i64 = -1, visits: i64 = 0, error: Error = Error.None, cancelled: bool = false, cells: bool = false, spans: bool = true }
 inline fn collection(tag: i64) -> bool { return tag >= 6 && tag <= 9; }
 fn poll(c: Control&, count: i64 = 1) -> bool {
     if c.error != Error.None { return false; }
@@ -188,14 +191,17 @@ fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&,
 // primitive), for the identities of a cell value's nodes (cells.goose).
 fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, c: Control&, call: source::Value, rows: i64[>..]&) -> bool {
     var g = Graph {}; var ids: i64[>..] = []; rows.clear();
-    if !poll(c, heap.nodes.len + heap.source_bytes.len + heap.source_ranges.len) { return false; }
-    if heap.source_bytes.len > c.bytes { return reject(c, Error.Bytes); }
-    ids.resize(heap.nodes.len, -1); g.bytes.append(heap.source_bytes); g.sources.append(heap.source_ranges);
+    if c.spans {
+        if !poll(c, heap.nodes.len + heap.source_bytes.len + heap.source_ranges.len) { return false; }
+        if heap.source_bytes.len > c.bytes { return reject(c, Error.Bytes); }
+        g.bytes.append(heap.source_bytes); g.sources.append(heap.source_ranges);
+    }
+    ids.resize(heap.nodes.len, -1);
     // Match the compiler's current primitive-result compatibility contract:
     // a newly computed bare primitive can recover the latest argument's span.
     // Explicit occurrence handles bypass this fallback and remain distinct.
     var origins:        source::Value[>..] = []; var pending: Retain[>..<] = [];
-    var retained_nodes: i64                = 0; var retained_bytes: i64 = heap.source_bytes.len;
+    var retained_nodes: i64                = 0; var retained_bytes: i64 = if c.spans { heap.source_bytes.len } else { 0 };
     if call.tag() != 0 { pending.push(Retain { value: call, depth: 1 }); }
     while pending.len > 0 {
         if !poll(c) { return false; }
@@ -260,7 +266,7 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
                 if x.tag() == 4 { let count = source::str_len(heap, x); if !poll(c, count) { return false; } n.start = g.units.len; n.count = count; source::append_utf16(heap, x, g.units); }
                 if n.tag == 4 || n.tag == 5 { let ns = node.namespace_value; if ns.tag() == 4 { if !source::valid(heap, ns) || !poll(c, source::str_len(heap, ns)) { return reject(c); } n.ns_start = g.units.len; n.ns_count = source::str_len(heap, ns); source::append_utf16(heap, ns, g.units); } }
             }
-            n.origin = node.origin; n.source = graph_source(node.source); n.span_start = node.span_start; n.span_end = node.span_end;
+            n.origin = node.origin; if c.spans { n.source = graph_source(node.source); n.span_start = node.span_start; n.span_end = node.span_end; }
             if n.origin == -1 && call.tag() == 5 && source::valid(heap, call) { let context = source::node(heap, call.id()); n.source = graph_source(context.source); n.span_start = context.span_start; n.span_end = context.span_end; }
             g.nodes.push(n);
             if node.metadata.tag() != 0 { queue.push(Edge { value: node.metadata, parent: id, field: -1 }); }

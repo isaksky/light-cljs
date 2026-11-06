@@ -4,6 +4,7 @@ import .realm;
 import .snapshot;
 import .form_bridge;
 import .cell_owner;
+import .callable;
 
 namespace source;
 
@@ -38,13 +39,18 @@ namespace source;
 // it when the claim ends) and then takes the value, or the error the thunk
 // threw, as Clojure's Delay; a cycle of claims fails by name.
 //
-// A value stored into a cell is a primitive or a form graph: forms (lists,
-// vectors, maps, sets, symbols, keywords and scalar occurrences), atoms (each
-// becomes a cell first) and cell references. Anything else, a mutable
-// JavaScript object or array above all, fails the operation with a named
-// error before anything changes; so do functions and a job's own delays (not
-// yet shareable), watches and validators. An error a delay's thunk threw is
-// kept as its type and message.
+// A value stored into a cell is a primitive, a form graph (forms: lists,
+// vectors, maps, sets, symbols, keywords and scalar occurrences; atoms, each
+// a cell first; and cell references) or, when it reaches a function or a
+// job's own delay, a callable graph (light-cljs-809): published as
+// callable::encode publishes a helper, its reachable immutable captures and
+// forms with cells for its atoms and delays, and installed in a loading job
+// as callable::decode_install installs one, once per identity. A built-in
+// or another function of the image is its row. Anything else, a mutable
+// JavaScript object or array above all, a function with own properties or
+// one capturing a variable it may assign, fails the operation with a named
+// error before anything changes; so do watches and validators. An error a
+// delay's thunk threw is kept as its type and message.
 //
 // Identity (light-cljs-808). Every object of a stored graph has a
 // process-wide identity: the owner numbers one when the object is first
@@ -58,6 +64,12 @@ namespace source;
 // holds to the row it holds, so `identical?` answers what one shared heap
 // would.
 
+// The header of the session's image (the coordinator's base snapshot,
+// which every worker and preparer inherits), against which a function in a
+// cell is published and installed (light-cljs-809). Set by the coordinator
+// before it spawns any program; `base` 0 elsewhere, where a function
+// stored into a cell fails as any cell operation does without an owner.
+var cell_base: snapshot::Header = snapshot::Header {};
 inline fn atom_kind() -> i64 { return 17; }
 inline fn cell_kind() -> i64 { return 18; }
 inline fn delay_kind() -> i64 { return 19; }
@@ -136,11 +148,24 @@ fn remember_stored(rows: CellRow[>..]&, stored: const i64[:], nodes: const i64[:
     for row, i in stored { if row >= 0 && i < nodes.len && nodes[i] > 0 && !is_cell_identity(nodes[i]) && identity_of(rows, row) == 0 { rows.push(CellRow { row: row, identity: nodes[i] }); } }
 }
 
-// Whether a value can be stored in a cell: what the walk from `roots`
-// reaches is primitives (no symbols), forms, atoms (collected in `atoms`,
-// with their states) and cell references. Otherwise the description of the
-// first value that is not shareable.
+// Whether a value can be stored in a cell: "" when it can, otherwise the
+// description of the first value that is not shareable. A value that
+// reaches no function or delay of the job must be a form graph
+// (form_unshareable); one that does goes by the callable transport
+// (callable_unshareable, light-cljs-809). `atoms` gets the atoms (and job
+// delays) to make cells of.
 fn unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&) -> const u8[:] {
+    var functions = false; let bad = form_unshareable(heap, roots, atoms, functions);
+    if !functions { return bad; }
+    atoms.clear(); return callable_unshareable(heap, roots, atoms);
+}
+// Whether `v` reaches a function or a delay of the job, and so travels by
+// the callable transport.
+fn reaches_function(heap: Heap&, v: Value) -> bool { var atoms: i64[>..] = []; var functions = false; form_unshareable(heap, [v], atoms, functions); return functions; }
+// The form walk: what `roots` reaches is primitives (no symbols), forms,
+// atoms (collected in `atoms`, with their states) and cell references.
+// Reaching a function or a delay of the job sets `functions` and stops.
+fn form_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, functions: bool&) -> const u8[:] {
     var marks: bool[>..]   = []; marks.resize(heap.nodes.len, false);
     var work:  Value[>..<] = []; for v in roots { work.push(v); }
     while work.len > 0 {
@@ -153,10 +178,37 @@ fn unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&) -> const u8
         if n.metadata.tag() == 5 { work.push(n.metadata); }
         if n.kind >= 5 && n.kind <= 8 || n.kind == 12 { for i in n.count { work.push(slot(heap, n.start + i)); } }
         else if n.kind == atom_kind() { atoms.push(v.id()); work.push(n.value); }
-        else if n.kind == 2 || n.kind == 4 { return "a function (functions are not shareable yet)"; }
-        else if n.kind == delay_kind() { return "a delay of this job (functions are not shareable yet)"; }
+        else if n.kind == 2 || n.kind == 4 || n.kind == delay_kind() { functions = true; return ""; }
         else if n.kind == 15 { return "an unrealized lazy sequence"; }
         else if n.kind != 9 && n.kind != 10 && n.kind != 11 && n.kind != cell_kind() { return "a mutable JavaScript object"; }
+    }
+    return "";
+}
+// The callable walk (callable::graph's rules, named): above the image,
+// forms, closures without own properties, the constant variables they
+// capture, cell references (a delay's with its thunk), atoms and job
+// delays (collected in `atoms`, which become cells, a delay's reference
+// keeping its thunk), and built-ins; the image's own rows as they are, but
+// for arrays and assignable variables.
+fn callable_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&) -> const u8[:] {
+    let floor = cell_base.ends[6];
+    var marks: bool[>..]   = []; marks.resize(heap.nodes.len, false);
+    var work:  Value[>..<] = []; for v in roots { work.push(v); }
+    while work.len > 0 {
+        let v = work.pop();
+        if !valid(heap, v) { heap.fault = Fault.None; return "a value this job cannot read"; }
+        if v.tag() == 6 || v.tag() == 7 { return "a symbol or bigint value"; }
+        if v.tag() != 5 || marks[v.id()] { continue; }
+        marks[v.id()] = true; let n = node(heap, v.id());
+        if !charge(heap) { return "a value past the work limit"; }
+        if n.kind == 3 && (!n.immutable || !n.initialized) { return "a function that captures a variable it may assign"; }
+        if v.id() < floor { if n.kind == 1 { return "a mutable JavaScript object"; } continue; }
+        if n.kind == 15 { return "an unrealized lazy sequence"; }
+        if n.kind == 0 || n.kind == 1 || n.kind > 12 && n.kind != atom_kind() && n.kind != cell_kind() && n.kind != delay_kind() { return "a mutable JavaScript object"; }
+        if n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.proto.tag() != -1 { return if n.kind == 2 { "a function with properties (a mutable JavaScript object)" } else { "a mutable JavaScript object" }; }
+        if n.kind == atom_kind() || n.kind == delay_kind() { atoms.push(v.id()); }
+        work.push(n.value); work.push(n.namespace_value); work.push(n.metadata);
+        if snapshot::has_values(n.kind) { for i in n.count { work.push(slot(heap, n.start + i)); } }
     }
     return "";
 }
@@ -211,14 +263,15 @@ fn encode(heap: Heap&, rows: const CellRow[:], v: Value, failure: i64&, stored: 
         var bytes: u8[>..] = []; for u in utf16(heap, v) { bytes.push((u & 255) as u8); bytes.push((u >> 8) as u8); }
         return cells::Flat { kind: 4, data: bytes }, true;
     }
-    var graph = bridge::Graph {}; var c = bridge::Control { cells: true }; var bytes: u8[>..] = [];
-    if t != 5 || !bridge::export_rows(heap, [v], graph, c, Value.Undefined, stored) { failure = 5; return cells::Flat {}, false; }
+    if t == 5 && valid(heap, v) && reaches_function(heap, v) { let f, ok = encode_callable(heap, rows, v, failure, stored, places, publication); return copy(f), ok; }
     // A value outlives the call it was made in: the compiler occurrences and
     // source spans of that call's forms mean nothing to a later job, which
     // sees the value as one built afresh, as the V8 build's form bridge sees
-    // an object it did not hand out.
-    for n, i in graph.nodes { graph.nodes[i].origin = -1; graph.nodes[i].source = -1; graph.nodes[i].span_start = 0; graph.nodes[i].span_end = 0; }
-    graph.sources.clear(); graph.bytes.clear();
+    // an object it did not hand out. The export leaves out the job's source
+    // text and spans (light-cljs-809), so it costs what the value reaches.
+    var graph = bridge::Graph {}; var c = bridge::Control { cells: true, spans: false }; var bytes: u8[>..] = [];
+    if t != 5 || !bridge::export_rows(heap, [v], graph, c, Value.Undefined, stored) { failure = 5; return cells::Flat {}, false; }
+    for n, i in graph.nodes { graph.nodes[i].origin = -1; }
     if !bridge::encode(graph, bytes, c) { failure = 5; return cells::Flat {}, false; }
     // Each object's identity, 0 for one the owner numbers; a primitive has
     // none, and a cell reference its cell's.
@@ -226,6 +279,66 @@ fn encode(heap: Heap&, rows: const CellRow[:], v: Value, failure: i64&, stored: 
     for row, i in stored { nodes.push(if row < 0 { -1 } else if graph.nodes[i].tag == 10 { cell_identity(graph.nodes[i].number as i64) } else if publication >= 0 && row < places.len && places[row] >= 0 { publication_identity(publication, places[row]) } else { identity_of(rows, row) }); }
     let root = graph.roots[0];
     return cells::Flat { kind: 5, identity: nodes[root], data: bytes, root: root, nodes: nodes }, true;
+}
+// A value that reaches a function or a job delay (light-cljs-809): a
+// built-in or other function of the image is its row (kind 8: every program
+// holds the same image); anything else is published as a callable helper is
+// (kind 7: callable::encode_cell's bytes, `nodes` the identities of its
+// installed slots in install order, the root's first), its atoms made cells
+// already. `stored` gets each slot's row.
+fn encode_callable(heap: Heap&, rows: const CellRow[:], v: Value, failure: i64&, stored: i64[>..]&, places: const i64[:], publication: i64) -> cells::Flat, bool {
+    stored.clear();
+    if cell_base.base <= 0 { failure = 4; return cells::Flat {}, false; }
+    let n = node(heap, v.id());
+    if v.id() < cell_base.ends[6] {
+        if n.kind != 2 && n.kind != 4 { failure = 5; return cells::Flat {}, false; }
+        return cells::Flat { kind: 8, number: v.id() }, true;
+    }
+    var c = snapshot::Control {}; var bytes: u8[>..] = [];
+    if !callable::encode_cell(heap, cell_base, v, bytes, c, stored) { failure = 5; return cells::Flat {}, false; }
+    var nodes: i64[>..] = [];
+    for row in stored {
+        let m = node(heap, row);
+        nodes.push(if m.kind == cell_kind() { cell_identity(m.function) } else if publication >= 0 && row < places.len && places[row] >= 0 { publication_identity(publication, places[row]) } else { identity_of(rows, row) });
+    }
+    return cells::Flat { kind: 7, identity: nodes[0], data: bytes, root: 0, nodes: nodes }, true;
+}
+// A callable cell value (kind 7) in the job: installed once per identity,
+// as callable::decode_install installs a helper, while the job runs. Its
+// cell references and objects the job holds already map to the rows it
+// holds (as install_publication maps a publication's), new ones are
+// remembered, and its rows are foreign to the job's writes.
+fn decode_callable(job: Job&, b: Builtin, f: const cells::Flat&) -> Value {
+    let heap .= job.heap;
+    let held = row_of(job.cell_rows, f.identity);
+    if held >= 0 { return object(held); }
+    if cell_base.base <= 0 { return owner_fail(job, b, 4); }
+    let code = job.cell_code;
+    if code == null { return cell_fail(job, b, "a function loaded outside a macro expansion"); }
+    let start = heap.nodes.len; let values = heap.values.len; let constants = heap.constants.len;
+    var c = snapshot::Control {};
+    let root = callable::decode_install(f.data, cell_base, code, heap, c, true);
+    if c.error != snapshot::Error.None || root.tag() != 5 || heap.nodes.len - start != f.nodes.len {
+        if heap.fault == Fault.None { return cell_fail(job, b, "a cell value does not import"); }
+        return Value.Undefined;
+    }
+    var prior: i64[>..] = []; var any = false;
+    for i in f.nodes.len {
+        let n = node(heap, start + i); var p: i64 = -1;
+        if n.kind == cell_kind() {
+            p = cell_row(job.cell_rows, n.function);
+            if p < 0 { job.cell_rows.push(CellRow { row: start + i, cell: n.function }); }
+            else if n.length == delay_flavor() && n.value.tag() == 5 && node(heap, p).value.tag() == 0 { node_mut(heap, p).value = n.value; }
+        } else if f.nodes[i] > 0 {
+            p = row_of(job.cell_rows, f.nodes[i]);
+            if p < 0 { job.cell_rows.push(CellRow { row: start + i, identity: f.nodes[i] }); }
+        }
+        prior.push(p); if p >= 0 { any = true; }
+    }
+    install_foreign(job, start);
+    if !any { return root; }
+    relink(heap, start, prior, values, constants);
+    return mapped(root, start, prior);
 }
 // An error a delay's thunk threw, as its type and message (kind 6; number
 // the type's index in ERROR_NAMES, plus 8 when it has no own message, root
@@ -281,6 +394,13 @@ fn decode(job: Job&, b: Builtin, f: const cells::Flat&) -> Value {
             let e = error_object(heap, t, f.root as u32, message);
             if heap.fault == Fault.None && f.identity > 0 { job.cell_rows.push(CellRow { row: e.id(), identity: f.identity }); }
             return e;
+        },
+        7 => { return decode_callable(job, b, f); },
+        8 => {
+            // A function of the image: the same row in every program.
+            let row = f.number as i64;
+            if row < 0 || row >= cell_base.ends[6] || row >= heap.nodes.len || node(heap, row).kind != 2 && node(heap, row).kind != 4 { return cell_fail(job, b, "a cell value does not import"); }
+            return object(row);
         },
         _ => {},
     }
@@ -373,7 +493,11 @@ fn import_publication(heap: Heap&, rows: CellRow[>..]&, g: const bridge::Graph&,
 // for a graph, by value for a primitive.
 fn expected(job: Job&, v: Value) -> cells::Flat {
     let heap .= job.heap;
-    if v.tag() == 5 { let n = node(heap, v.id()); return cells::Flat { kind: 5, identity: if n.kind == cell_kind() { cell_identity(n.function) } else { identity_of(job.cell_rows, v.id()) } }; }
+    if v.tag() == 5 {
+        let n = node(heap, v.id());
+        if v.id() < cell_base.ends[6] && (n.kind == 2 || n.kind == 4) { return cells::Flat { kind: 8, number: v.id() }; }
+        return cells::Flat { kind: 5, identity: if n.kind == cell_kind() { cell_identity(n.function) } else { identity_of(job.cell_rows, v.id()) } };
+    }
     var failure: i64 = 0; var stored: i64[>..] = []; let f, ok = encode(heap, job.cell_rows, v, failure, stored);
     return f;
 }

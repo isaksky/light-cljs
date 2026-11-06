@@ -864,6 +864,43 @@ census remain light-cljs-809's.
   same vector inside a stored vector; a cell captured by a callable helper
   and the same cell inside a cell value are one object in a job.
 
+**Implemented, third slice (light-cljs-809): functions in cells, and the
+cell census.**
+
+- *Functions.* A value that reaches a function or a job's own delay goes
+  by the callable transport (`cells.goose` `encode_callable`, cell value
+  kind 7): `callable::encode_cell` publishes it as `callable::encode`
+  publishes a helper, against the session's image header (`cell_base`,
+  which the coordinator sets before it spawns any program), from the job's
+  heap while the storing built-in runs; its atoms and delays become cells
+  first, a delay's reference keeping its thunk. Each installed slot has an
+  identity (a cell reference its cell's, a publication's object its place,
+  otherwise the owner numbers it). A loading job installs it as
+  `callable::decode_install` installs a helper, once per identity, with
+  the rows it holds already mapped (`decode_callable`, as
+  `install_publication` maps a publication's) and the new rows foreign to
+  its writes. A function of the image (a built-in such as `inc`) is its
+  row (kind 8). The owner compares the two graph kinds by identity, so
+  `swap!` of a function value stores without a rerun. Before anything
+  changes, a store fails by name for a mutable JavaScript object, a
+  function with own properties and a function capturing a variable it may
+  assign (`callable_unshareable`, callable::graph's rules). A definition's
+  or helper's atom may start out holding a function (`store_initial`).
+- *Code while a job runs.* Loading a function appends its code, so the
+  dispatch loop takes its instruction view per frame activation, not per
+  run, and `source::decode` only grows the instruction tables. A load
+  outside a macro expansion (a preparation, a helper production) fails by
+  name: only a macro job holds its code writable (`Job.cell_code`).
+- *Limits.* The publication is the whole job heap's tables above the
+  image, as a helper's is, so storing a function copies the job's source
+  text, strings and code above the image, and each first load in a job
+  installs that code again. A function with own properties (light-cljs-805)
+  cannot be stored, as it cannot be published as a callable helper.
+- *Encoding cost.* A form value's export (`bridge::export_rows` with
+  `spans` off) no longer copies the job's source text and spans, which the
+  cell encoding dropped anyway. Measured by `goose_compiler_cell_swap_cost`
+  (evidence, "Cell census and swap cost").
+
 
 ### Runtime gensym in the compiler's scopes (light-cljs-798, November 5, 2026)
 

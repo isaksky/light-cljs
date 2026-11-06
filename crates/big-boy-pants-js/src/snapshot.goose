@@ -402,9 +402,12 @@ fn borrow(heap: const source::Heap&, bindings: const Binding[:], checkpoint: i64
         shapes: heap.shapes, accessors: heap.accessors, keys: heap.keys };
     v.header.ends = ends(v); return v;
 }
-fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&, checkpoint: i64 = 0) -> Snapshot {
+// `live`: the heap's one job is running a built-in that only reads it (a
+// function stored into a cell, cells.goose encode_callable), so its rows
+// hold no half-made state.
+fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&, checkpoint: i64 = 0, live: bool = false) -> Snapshot {
     let started = clock_ns(); defer { c.capture_ns += clock_ns() - started; }
-    if heap.live_jobs != 0 || heap.fault != source::Fault.None || !heap.code.valid { reject(c, Error.Boundary); return Snapshot {}; }
+    if heap.live_jobs != 0 && !(live && heap.live_jobs == 1) || heap.fault != source::Fault.None || !heap.code.valid { reject(c, Error.Boundary); return Snapshot {}; }
     var s = borrow(heap, bindings, if heap.identity == 1 { 2 } else { 1 });
     if !validate(s, c) { return Snapshot {}; }
     // Snapshot identities and private arena identities share the coordinator's

@@ -287,7 +287,7 @@
                       (zipmap [:retention :spawned :finals :spawn-ns :start-ns :join-ns :argument-bytes :restore-bytes
                                :peak-live :peak-blocked :waits :saves :answers :live :blocked :jobs :retired :reset-ns
                                :restore-ns :install-ns :installs :handoff-ns
-                               :cells :identities :cell-operations :conflicts :delay-waits :owner-ns]))
+                               :cells :identities :cell-operations :conflicts :delay-waits :owner-ns :cell-bytes]))
         reapers (+ workers (:retention jobs 0))]
     (assert (str/includes? text "CLOSED 1") "Native Goose session did not close")
     (assert jobs "Missing job worker diagnostics")

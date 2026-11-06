@@ -36,12 +36,16 @@ namespace cells;
 // Cells and identities stay until the session ends, counted against one
 // budget (BBP_CELL_BUDGET, a count of cells plus identities); their bytes
 // against byte_budget(). Past either an operation fails with the named error
-// "cell budget". No compaction: the 200k project makes no cell, and no
-// measured workload needs one (light-cljs-799's census).
+// "cell budget". No compaction: the 200k project, the expanded fixture and
+// the conformance cases make no cell, so no measured workload needs one
+// (light-cljs-809's census; the JOBS line ends with the bytes held).
 
 // kind: 0 undefined, 1 null, 2 boolean (number 0 or 1), 3 number, 4 string
 // (UTF-16 little-endian units in data), 5 a form graph (GFB1 in data), 6
-// an error a delay's thunk threw (cells.goose error_flat), with an identity.
+// an error a delay's thunk threw (cells.goose error_flat), with an identity;
+// 7 a callable graph (light-cljs-809: a value that reaches a function, as
+// callable::encode_cell publishes it, in data), numbered as a form graph;
+// 8 a function of the session's image, its row in number.
 // A graph's nodes have identities (light-cljs-808): `nodes` holds one per
 // graph node, 0 for one the owner numbers when it is first stored and -1
 // for one that has none (a primitive child), and `root` is the root's
@@ -83,9 +87,10 @@ struct Slot { slot: i64 }
 struct Halt {}
 // The owner's totals for the JOBS line: cells made, identities numbered,
 // operations served, compare-and-sets refused (each a swap! rerun), delay
-// waits (forces answered "claimed by another job") and the nanoseconds it
-// spent serving.
-struct Stats { cells: i64 = 0, identities: i64 = 0, operations: i64 = 0, conflicts: i64 = 0, waits: i64 = 0, owner_ns: i64 = 0 }
+// waits (forces answered "claimed by another job"), the nanoseconds it
+// spent serving and the bytes of cell values it holds at the end (the
+// census, light-cljs-809).
+struct Stats { cells: i64 = 0, identities: i64 = 0, operations: i64 = 0, conflicts: i64 = 0, waits: i64 = 0, owner_ns: i64 = 0, bytes: i64 = 0 }
 inline fn slots() -> i64 { return 8; }
 // Set by the coordinator once its owner runs, before it spawns any other
 // program, so every preparer and job worker inherits it; false elsewhere
@@ -120,16 +125,19 @@ fn halt() { qput(Halt {}); }
 fn halted() -> bool { let h, present = qpoll<Halt>(); if present { assert(qput(h)); } return present; }
 // Whether a held value matches the expected one: the same identity for a
 // graph, the same primitive otherwise.
+// A job's expected value names an object by identity whichever transport
+// held it (source::expected), so the two graph kinds compare as one.
+fn graph(kind: i64) -> bool { return kind == 5 || kind == 7; }
 fn matches(e: const Entry&, data: const u8[:], x: const Flat&) -> bool {
+    if graph(e.kind) && graph(x.kind) { return e.identity == x.identity; }
     if e.kind != x.kind { return false; }
-    if e.kind == 5 { return e.identity == x.identity; }
     return bytes_of([e.number]) == bytes_of([x.number]) && data == x.data;
 }
 fn serve(limit: i64) {
     var s = Store { limit: limit }; var bytes = slice_pool<u8> {}; var ids = slice_pool<i64> {};
     loop {
         let r = qget<Request>();
-        if r.op == 9 { assert(qput(s.stats)); return; }
+        if r.op == 9 { s.stats.bytes = s.held; assert(qput(s.stats)); return; }
         let started = clock_ns(); s.stats.operations += 1;
         let a = answer(s, bytes, ids, r);
         s.stats.owner_ns += clock_ns() - started;
@@ -180,14 +188,14 @@ fn store(s: Store&, bytes: slice_pool<u8>&, ids: slice_pool<i64>&, cell: i64, va
     var numbers: i64 = 0;
     // A graph's unnumbered objects, or a thrown error (kind 6) stored for the
     // first time, get identities here.
-    if value.kind == 5 { if value.nodes.len > 0 { for n in value.nodes { if n == 0 { numbers += 1; } } } else if value.identity == 0 { numbers = 1; } }
+    if graph(value.kind) { if value.nodes.len > 0 { for n in value.nodes { if n == 0 { numbers += 1; } } } else if value.identity == 0 { numbers = 1; } }
     if value.kind == 6 && value.identity == 0 { numbers = 1; }
     let freed = s.entries[cell].len;
     if numbers > 0 && s.entries.len + s.stats.identities + numbers > s.limit || s.held - freed + value.data.len > byte_budget() { return Answer { ok: false, error: 1, cell: cell }; }
     var nodes: i64[>..] = []; nodes.append(value.nodes);
     var identity = value.identity;
     for n, i in nodes { if n == 0 { nodes[i] = s.next; s.next += 1; s.stats.identities += 1; } }
-    if value.kind == 5 && nodes.len > 0 { identity = nodes[value.root]; } else if (value.kind == 5 || value.kind == 6) && identity == 0 { identity = s.next; s.next += 1; s.stats.identities += 1; }
+    if graph(value.kind) && nodes.len > 0 { identity = nodes[value.root]; } else if (graph(value.kind) || value.kind == 6) && identity == 0 { identity = s.next; s.next += 1; s.stats.identities += 1; }
     let e .= s.entries[cell];
     s.held -= e.len; if e.len > 0 { bytes.free_slice(bytes.items[e.start..(e.start + e.len)]); }
     if e.ids_len > 0 { ids.free_slice(ids.items[e.ids_start..(e.ids_start + e.ids_len)]); }

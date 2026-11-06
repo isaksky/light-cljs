@@ -907,13 +907,15 @@ pub(super) struct JobsLine {
     pub handoff_ns: u64,
     /// The cell owner's totals (light-cljs-799, cell_owner.goose `Stats`):
     /// cells made, identities numbered, operations served, refused
-    /// compare-and-sets (swap! reruns), delay waits and serving time.
+    /// compare-and-sets (swap! reruns), delay waits and serving time; then
+    /// the bytes of cell values it held at the end (light-cljs-809).
     pub cells: u64,
     pub identities: u64,
     pub cell_operations: u64,
     pub conflicts: u64,
     pub delay_waits: u64,
     pub owner_ns: u64,
+    pub cell_bytes: u64,
 }
 pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
     let line = trace
@@ -925,7 +927,7 @@ pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
         .skip(2)
         .map(|n| n.parse::<u64>().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(n.len(), 28, "{line}");
+    assert_eq!(n.len(), 29, "{line}");
     JobsLine {
         retention: n[0],
         spawned: n[1],
@@ -949,6 +951,7 @@ pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
         conflicts: n[25],
         delay_waits: n[26],
         owner_ns: n[27],
+        cell_bytes: n[28],
     }
 }
 /// Threads: the coordinator, the input thread, the cell owner
@@ -4596,6 +4599,251 @@ fn goose_compiler_cells_preserve_published_alias_identity() {
             "workers={workers} {env:?}"
         );
     }
+}
+
+/// light-cljs-809: functions in cells. One expansion stores a closure that
+/// captures a cell (a published atom) and a number into an atom; a later
+/// one changes the captured cell, and a later one, each on a fresh worker
+/// in the retiring variants, calls the stored closure and gets the cell's
+/// current value plus the number, and two loads are one function. Storing
+/// a closure that captures a mutable object, or a variable it may assign,
+/// fails by name before the cell changes. A stored function is a swap!
+/// function in any job, swap! may store a closure over the closure it read,
+/// a published callable helper stored in a cell is the helper's value in a
+/// later job (whichever it reads first), a built-in stored is the built-in,
+/// and a definition's atom may start out holding a closure.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cells_hold_functions() {
+    let helpers = [
+        ("fixture/box", "rt => rt.core.atom(10)"),
+        (
+            "fixture/adder",
+            "rt => { const k = 100; return (x) => x + k; }",
+        ),
+    ];
+    let boxed = root("fixture/box");
+    let adder = root("fixture/adder");
+    let jobs: [(String, &[&str]); 15] = [
+        (
+            format!(
+                "const b = {boxed}; const n = 5; rt.core.reset(a, () => rt.core.deref(b) + n); return 0;"
+            ),
+            &["fixture/box"],
+        ),
+        (
+            format!("rt.core.reset({boxed}, 20); return 0;"),
+            &["fixture/box"],
+        ),
+        (
+            "const f = rt.core.deref(a); return f() * 10 + (rt.core.deref(a) === f ? 1 : 0);"
+                .to_owned(),
+            &[],
+        ),
+        (
+            "const o = {x: 1}; rt.core.reset(a, () => o.x); return 0;".to_owned(),
+            &[],
+        ),
+        (
+            "let m = 1; const g = () => m; m = 2; rt.core.reset(a, g); return 0;".to_owned(),
+            &[],
+        ),
+        ("return rt.core.deref(a)();".to_owned(), &[]),
+        (
+            "const n = 2; rt.core.reset(a, (x) => x + n); return 0;".to_owned(),
+            &[],
+        ),
+        (
+            "const c = rt.core.atom(1); rt.core.swap(c, rt.core.deref(a)); rt.core.swap(c, rt.core.deref(a)); return rt.core.deref(c);"
+                .to_owned(),
+            &[],
+        ),
+        (
+            "rt.core.swap(a, (f) => (x) => f(x) * 10); return rt.core.deref(a)(1);".to_owned(),
+            &[],
+        ),
+        (
+            format!("rt.core.reset(a, {adder}); return rt.core.deref(a)(1);"),
+            &["fixture/adder"],
+        ),
+        (
+            format!(
+                "const s = rt.core.deref(a); const g = {adder}; return (s === g ? 1000 : 0) + s(1);"
+            ),
+            &["fixture/adder"],
+        ),
+        (
+            "rt.core.reset(a, rt.core.inc); return 0;".to_owned(),
+            &[],
+        ),
+        (
+            "const f = rt.core.deref(a); return f(41) + (f === rt.core.inc ? 1000 : 0);"
+                .to_owned(),
+            &[],
+        ),
+        // Stored while a for-in walk and a catch handler are live.
+        (
+            "const o = {x: 1, y: 2}; let r = 0; try { for (const k in o) { const n = r + 1; rt.core.reset(a, () => n); r = rt.core.deref(a)(); } } catch (e) { r = -1; } return r;"
+                .to_owned(),
+            &[],
+        ),
+        ("return rt.core.deref(a)();".to_owned(), &[]),
+    ];
+    let jobs = jobs
+        .iter()
+        .map(|(body, reads)| (body.as_str(), *reads))
+        .collect::<Vec<_>>();
+    for (workers, env) in delay_variants() {
+        let (outcomes, line) = cell_session_roots(workers, &env, &helpers, &jobs);
+        let at = |i: usize| (i, outcomes[i].clone());
+        let ok = |i: usize, value: &str| (i, Ok(value.to_owned()));
+        assert_eq!(at(0), ok(0, "Double(0.0)"), "workers={workers} {env:?}");
+        assert_eq!(at(2), ok(2, "Double(251.0)"), "workers={workers} {env:?}");
+        for (i, what) in [
+            (
+                3,
+                "Fault.NativeBoundary:reset:-cannot-share-a-mutable-JavaScript-object",
+            ),
+            (
+                4,
+                "Fault.NativeBoundary:reset:-cannot-share-a-function-that-captures-a-variable-it-may-assign",
+            ),
+        ] {
+            assert!(
+                outcomes[i].as_ref().is_err_and(|e| e.contains(what)),
+                "{i}: workers={workers} {env:?}: {outcomes:?}"
+            );
+        }
+        // Neither refused store changed the cell.
+        assert_eq!(at(5), ok(5, "Double(25.0)"), "workers={workers} {env:?}");
+        assert_eq!(at(7), ok(7, "Double(5.0)"), "workers={workers} {env:?}");
+        assert_eq!(at(8), ok(8, "Double(30.0)"), "workers={workers} {env:?}");
+        assert_eq!(at(9), ok(9, "Double(101.0)"), "workers={workers} {env:?}");
+        assert_eq!(
+            at(10),
+            ok(10, "Double(1101.0)"),
+            "workers={workers} {env:?}"
+        );
+        assert_eq!(
+            at(12),
+            ok(12, "Double(1042.0)"),
+            "workers={workers} {env:?}"
+        );
+        assert_eq!(at(13), ok(13, "Double(2.0)"), "workers={workers} {env:?}");
+        assert_eq!(at(14), ok(14, "Double(2.0)"), "workers={workers} {env:?}");
+        // The counter and the box; no swap! here met a conflicting write.
+        assert_eq!((line.cells, line.conflicts), (2, 0), "{line:?}");
+        if !env.is_empty() {
+            assert_eq!(line.retired, line.spawned, "{line:?}");
+        }
+        // A definition's atom holding a closure from the start, in two jobs.
+        let session =
+            GooseSession::start_env(&runner(), workers, Some("readiness-test"), &env).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let raw = raw_inputs(&e);
+        let mut outcomes = Vec::new();
+        for id in 1..=2u64 {
+            session
+                .export(
+                    &session.directory.join("definition-101.gsp"),
+                    "rt => { const k = 7; const g = () => k; const c = rt.core.atom(g); return (form, env) => (rt.core.deref(c) === g ? 10 : 0) + rt.core.deref(c)(); }",
+                )
+                .unwrap();
+            let rx = submit_key(&session, &raw.bytes, id, 101);
+            outcomes.push(raw_outcome(&session, &raw, &rx, id));
+        }
+        raw_close(&session, workers, 2);
+        assert_eq!(
+            outcomes,
+            [Ok("Double(17.0)".to_owned()), Ok("Double(17.0)".to_owned())],
+            "workers={workers} {env:?}"
+        );
+    }
+}
+
+/// light-cljs-809: what a swap! on a cell costs in a macro job, for a number
+/// (no graph: the fixed cost), a value encoding to about 64 bytes (a
+/// one-number vector, 136 bytes of GFB) and to 64 KB (1,260 numbers),
+/// against probe P18's flat-byte figures (9.6 to 9.8 and 28.8 to 33.8
+/// microseconds a swap at one worker). The call's
+/// source file is 100 KB, as a real namespace's is: a cell store exports
+/// only what the value reaches, not the job's source text. Each swap loads
+/// the value it stored (an identity the job holds, so no import), encodes
+/// the value again and compare-and-sets it. Prints the figures; the
+/// assertion is only that the swaps ran.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cell_swap_cost() {
+    let session = GooseSession::start_env(
+        &runner(),
+        1,
+        Some("readiness-test"),
+        &[("BBP_RESET_CHECK", "0".to_owned())],
+    )
+    .unwrap();
+    let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+    let mut raw = raw_inputs(&e);
+    let mut text = String::from("nil\n");
+    while text.len() < 100_000 {
+        text.push_str(";; a namespace's source text\n");
+    }
+    let source = Source::new("large.cljs", &text);
+    let call = Form::from_data(
+        Datum::new(DatumKind::Nil),
+        source.span(0..3).unwrap(),
+        Origin::Source,
+    );
+    let call_id = e.import_form(&call, Default::default()).unwrap();
+    let env = e
+        .import_data(&Datum::new(DatumKind::Nil), Default::default())
+        .unwrap();
+    let values = [call_id, env]
+        .iter()
+        .map(|&id| e.get(id).unwrap())
+        .collect::<Vec<_>>();
+    raw.graph = bridge::Graph::arguments(&values, raw.limits, &raw.budget).unwrap();
+    raw.bytes = raw.graph.encode().unwrap();
+    raw.call = call;
+    assert!(raw.bytes.len() > 100_000);
+    let mut id = 0;
+    let mut timed = |value: &str, swaps: usize| {
+        id += 1;
+        let body = format!(
+            "const xs = []; for (let i = 0; i < 1260; i++) xs[i] = i; const v = {value}; rt.core.reset(a, v); const g = (x) => v; for (let i = 0; i < {swaps}; i++) rt.core.swap(a, g); return 0;"
+        );
+        let started = Instant::now();
+        let rx = raw_job(&session, &raw, id, &body);
+        assert_eq!(
+            raw_outcome(&session, &raw, &rx, id).as_deref(),
+            Ok("Double(0.0)")
+        );
+        started.elapsed()
+    };
+    // The last, a closure capturing a number, is published from the whole
+    // job heap, as a callable helper is (callable::encode_cell).
+    for (what, value, swaps) in [
+        ("a number", "1", 4000),
+        ("a one-number vector", "rt.vectorFromArray([1])", 4000),
+        ("a 1,260-number vector", "rt.vectorFromArray(xs)", 1000),
+        (
+            "a closure",
+            "(() => { const n = 1; return () => n; })()",
+            1000,
+        ),
+    ] {
+        // Seven samples, sorted: the fixed cost is two owner round trips,
+        // whose thread wake-ups vary from run to run.
+        let mut per_swap = Vec::new();
+        for _ in 0..7 {
+            let base = timed(value, 0);
+            let run = timed(value, swaps);
+            per_swap.push(run.saturating_sub(base).as_secs_f64() * 1e6 / swaps as f64);
+        }
+        per_swap.sort_by(f64::total_cmp);
+        assert!(per_swap[0] > 0.0);
+        println!("cell swap: {what}, {swaps} swaps: {per_swap:.1?} microseconds a swap");
+    }
+    session.close();
 }
 
 /// light-cljs-808: a job's own delay follows the V8 build's deferredValue

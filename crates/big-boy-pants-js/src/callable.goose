@@ -158,6 +158,28 @@ fn encode(heap: const source::Heap&, base: const snapshot::Snapshot&, root: sour
     if bytes.len > c.bytes || !snapshot::poll(c, bytes.len) { return fail(c, snapshot::Error.Bytes); }
     out.append(bytes); return true;
 }
+// A function stored into a cell (cells.goose, light-cljs-809): published as
+// a helper is, against the session's image header `base`, from a heap whose
+// job may be running the storing built-in. Its image rows are the image's
+// (the write rule keeps them), so the self-check runs against the heap
+// itself and every consumer's install checks them against its own.
+// `installed` gets the producer row of each installed slot, in install
+// order, the root first.
+fn encode_cell(heap: const source::Heap&, base: snapshot::Header, root: source::Value, out: u8[>..]&, c: snapshot::Control&, installed: i64[>..]&) -> bool {
+    let bindings = [snapshot::Binding { id: 0, generation: 1, value: root }];
+    let view = snapshot::borrow(heap, bindings, 1);
+    if 5 * snapshot::footprint(view) > c.bytes { return fail(c, snapshot::Error.Bytes); }
+    let image = snapshot::capture(heap, bindings, c, if heap.identity == 1 { 2 } else { 1 }, true);
+    if c.error != snapshot::Error.None { return false; }
+    let p = Publication { base: base, image: copy(image) };
+    var ids: i64[>..] = []; var slots: i64[>..] = [];
+    if !graph(p, base, heap, ids, slots, c) { return false; }
+    if slots.len == 0 || slots[0] != root.id() { return fail(c, snapshot::Error.Link); }
+    installed.clear(); installed.append(slots);
+    var bytes: u8[>..] = []; to_bytes([p], bytes);
+    if bytes.len > c.bytes || !snapshot::poll(c, bytes.len) { return fail(c, snapshot::Error.Bytes); }
+    out.append(bytes); return true;
+}
 // Installing a publication above the consumer's rows is linking, not restore:
 // an object maps through the installed-slot table, a string to its header
 // appended after the consumer's.
@@ -166,8 +188,10 @@ fn relocated(v: source::Value, ids: const i64[:], base: i64, strings: i64) -> so
     return match v { Object o => source::object(ids[o.o]), String x => if x.s < base { v } else { source::Value.String { s: (x.s + strings) as u32 } }, _ => v };
 }
 fn shifted(n: i64, base: i64, delta: i64) -> i64 { return if n < base { n } else { n + delta }; }
-fn install(p: const Publication&, expected: snapshot::Header, code: source::Code&, heap: source::Heap&, c: snapshot::Control&) -> source::Value {
-    if !(heap.code .== code) || !code.valid || heap.fault != source::Fault.None || heap.live_jobs != 0 { fail(c, snapshot::Error.Boundary); return source::Value.Undefined; }
+// `live`: as encode_cell, a running job loads a function from a cell; its
+// frames hold rows and code indices, which installing only appends to.
+fn install(p: const Publication&, expected: snapshot::Header, code: source::Code&, heap: source::Heap&, c: snapshot::Control&, live: bool = false) -> source::Value {
+    if !(heap.code .== code) || !code.valid || heap.fault != source::Fault.None || heap.live_jobs != 0 && !(live && heap.live_jobs == 1) { fail(c, snapshot::Error.Boundary); return source::Value.Undefined; }
     if !snapshot::validate(p.image, c) { return source::Value.Undefined; }
     var ids: i64[>..] = []; var slots: i64[>..] = [];
     if !graph(p, expected, heap, ids, slots, c) { return source::Value.Undefined; }
@@ -206,10 +230,10 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     }
     c.copied_bytes += snapshot::payload_bytes(s); return relocated(s.bindings[0].value, ids, expected.ends[15], strings);
 }
-fn decode_install(bytes: const u8[:], base: snapshot::Header, code: source::Code&, heap: source::Heap&, c: snapshot::Control&) -> source::Value {
+fn decode_install(bytes: const u8[:], base: snapshot::Header, code: source::Code&, heap: source::Heap&, c: snapshot::Control&, live: bool = false) -> source::Value {
     if bytes.len > c.bytes || !snapshot::poll(c, bytes.len) { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; }
     let records, ok = from_bytes<Publication[>..]>(bytes);
     if !ok || records.len != 1 { fail(c, snapshot::Error.Length); return source::Value.Undefined; }
-    for p in records { return install(p, base, code, heap, c); }
+    for p in records { return install(p, base, code, heap, c, live); }
     return source::Value.Undefined;
 }

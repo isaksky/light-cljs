@@ -1503,3 +1503,77 @@ wrapper running `/usr/bin/time -l RUNNER "$@" readiness-test`,
 C="bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs"
 $C --backend all --runner RUNNER --phase check --runs 1
 ```
+
+## Cell census and swap cost
+
+November 6, 2026 (light-cljs-809; design in
+[javascript-coverage.md](../docs/javascript-coverage.md), "Implemented,
+third slice (light-cljs-809)"). Functions may now be stored in cells, a
+cell store exports only what its value reaches, and the `JOBS` line ends
+with the bytes of cell values the owner holds at the end of the session.
+**No measured workload makes a cell: the 200k project, the expanded fixture
+and the conformance cases end with 0 cells, 0 identities and 0 bytes held,
+so the owner builds no compaction of its cell graph (decision 3).**
+
+Binaries: light-cljs `--release --locked --features goose-macros` at this
+branch (SHA-256 `3f053a4d…`), runner `compiler_session.goose` at this
+branch (`72de9951…`) and at master `c9d4d3c0` (`ce940a27…`). Goose
+v2026.3-267, seed 42, 199,129 lines. Samples, the traced `JOBS` lines and
+the swap figures: `generated-200k-cell-census.edn.gz`.
+
+**Check gate**, `compare.bb --backend all --phase check --runs 1`, one
+sample after one warmup a cell: passes, byte-identical with its five
+oracles. Goose 1/2/4/8 15.528 / 10.483 / 7.220 / 7.315 s, V8 5.885 s. The
+dispatch loop now takes its instruction view per frame activation (a
+function loaded from a cell appends code while its job runs); back to back,
+`--backend goose` with master's runner and this branch's: 15.330 / 10.337 /
+7.143 / 7.256 s against 15.214 / 10.693 / 7.153 / 7.251 s, within one
+check sample's spread, so no regression is measurable.
+
+**Census**, the cell fields of the `JOBS` line (cells, identities,
+operations, refused compare-and-sets, delay waits, owner nanoseconds, bytes
+held):
+
+| Workload | Sessions | Jobs a session | Cell fields |
+| --- | --- | ---: | --- |
+| 200k project, `compare.bb --backend all --phase instrument --runs 1` | Goose 1/2/4/8, warmup and sample | 5,283 | all 0 |
+| Expanded fixture (light, medium, heavier), its compiler test traced (the runner in `readiness-test` mode through a wrapper) | Goose 1/2/4/8 each, output identical with V8's | 121 | all 0 |
+| Conformance, `conformance.bb --check` (209 cases, 28 expected passes, 0 regressions) | `src/conformance.goose`, no cell owner | — | none: a case cannot make a cell |
+
+The 200k project and the expanded fixture keep no compile-time state; their
+macros make no atom, volatile or delay, and only a publication makes a cell.
+
+**Swap cost.** `goose_compiler_cell_swap_cost` (src/goose/compiler_tests.rs)
+runs, in one macro job at one worker whose call comes from a 100 KB source
+file, swaps that load the value the job stored (an identity it holds, so no
+import), encode it again and compare-and-set it; microseconds a swap, the
+median of seven samples (the range of three sessions after the change).
+Before is this branch's cell code before the export change. Probe P18
+(flat bytes, no VM): 9.6-9.8 µs at 64 bytes, 28.8-33.8 µs at 64 KB.
+
+| Value | Encoded | Before | After |
+| --- | ---: | ---: | ---: |
+| a number (the fixed cost) | 8 bytes, no graph | 24.8 | 11.0-11.3 |
+| a one-number vector | 136 bytes of GFB | 77.3 | 11.9-26.9 |
+| a 1,260-number vector | 65.6 KB of GFB | 135.2 | 81.1-90.1 |
+| a closure capturing a number | the job heap's tables | 131.4 | 127.0-138.7 |
+
+Before, every form store copied and checked the job's 100 KB of source text
+and dropped it; now a 64-byte value costs what a number does, about P18's
+figure plus one or two microseconds, and a 64 KB value 2.5 to 3 times P18's (the
+export walks and encodes 1,261 forms, the owner copies the bytes in and out).
+The fixed cost is bimodal: some sessions take about 14 µs more a swap
+(24-27 µs) throughout, which follows where the owner and the worker threads
+run, not the value. A closure is published from the whole job heap, as a
+callable helper is, so its cost follows the job's tables and source text,
+not the closure.
+
+Reproduce:
+
+```sh
+C="bb benchmarks/generated-project/compare.bb target/generated-200k --light target/release/light-cljs"
+$C --backend all --runner RUNNER --phase check --runs 1
+$C --backend all --runner RUNNER --phase instrument --runs 1
+GOOSE_COMPILER_RUNNER=RUNNER cargo test --locked --features goose-macros --lib \
+  goose_compiler_cell_swap_cost -- --include-ignored --nocapture
+```

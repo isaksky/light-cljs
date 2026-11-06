@@ -370,6 +370,10 @@ root struct Job {
     // (0: no macro job, which claims none), and how many it holds unsettled
     // (light-cljs-808; cells.goose).
     cell_holder: i64 = 0, claims: i64 = 0,
+    // The heap's code, writable, in a macro job: a function loaded from a
+    // cell installs its code there (light-cljs-809; null elsewhere, where
+    // such a load fails by name).
+    cell_code: Code? = null,
 }
 // A row a job holds that names a process-wide cell (a cell reference) or
 // has a process-wide identity (a value loaded from or stored in a cell, or
@@ -445,7 +449,7 @@ fn decode(code: Code&) {
     // heights[i] is function i's: a Code reset (snapshot::reset) clears it
     // with the functions it describes.
     assert(code.heights.len == code.decoded);
-    if code.ins.len < code.ops.len { code.ins.resize(code.ops.len, Ins.Pop); code.effects.resize(code.ops.len, Effect { pop: -1, push: -1 }); }
+    while code.ins.len < code.ops.len { code.ins.push(Ins.Pop); code.effects.push(Effect { pop: -1, push: -1 }); }
     for i in code.decoded..code.functions.len {
         let f = code.functions[i]; var height: i64 = 0;
         for pc in f.start..(f.start + f.count) {
@@ -2583,10 +2587,12 @@ inline fn arithmetic(op: i64, x: f64, y: f64) -> Value {
 // and one that only started a demand.
 fn execute(job: Job&, allowance: i64) -> i64 {
     let heap .= job.heap; let code .= heap.code;
-    // The instructions do not change while a job runs.
-    let program = code.ins[..];
     var used: i64 = 0;
     while job.status == tiny::Status.Ready && !job.effect_pending && job.frames.len > 0 && job.frames[job.frames.len - 1].function >= 0 && (allowance < 0 || used < allowance) {
+        // Instructions only grow while a job runs: a function loaded from a
+        // cell appends its code (cells.goose decode_callable), which a frame
+        // entered after the load reaches through this view.
+        let program = code.ins[..];
         let top = job.frames.len - 1;
         let fid = job.frames[top].function; let lb = job.frames[top].local_base; let ob = job.frames[top].operand_base;
         var pc = job.frames[top].pc;
