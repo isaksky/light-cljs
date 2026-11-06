@@ -789,10 +789,11 @@ function that gensyms: the V8 build's JavaScript at slots 1/2/4/8),
 `goose_compiler_gensym_helper_production_numbers_in_its_own_scope`
 (waits in place and saved continuations; since light-cljs-802 a helper is
 produced in its own frozen initializer scope, not the demander's) and the scope case of
-`goose_compiler_assembly_leaf_boundaries`. A `def` initializer that calls
-`gensym` cannot run on Goose yet: the emitted initializer reads core through
-`rt.nativeCoreBinding` with object destructuring, which the realm and
-property-model pellets provide.
+`goose_compiler_assembly_leaf_boundaries`. Since light-cljs-807 a compiled
+`def` initializer that calls `gensym` runs on Goose:
+`goose_compiler_helper_initializer_gensym_names_alike_at_every_slot_count`
+compiles such a helper namespace, used from eight namespaces, to the V8
+build's JavaScript at slots 1/2/4/8 and under the scheduler's stress seeds.
 
 ## Decision 4: control flow
 

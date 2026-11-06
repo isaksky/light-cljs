@@ -615,9 +615,9 @@ fn goose_compiler_assembly_leaf_boundaries() {
 /// number of the job's scope, whose count the job goes on with, whether it
 /// waits in place or saves its continuation; later jobs reuse the produced
 /// helper (light-cljs-798, light-cljs-802). The helper's names are the same
-/// whichever scope first demands it and at every worker count; a `def`
-/// whose compiled initializer calls `gensym` (through `nativeCoreBinding`)
-/// does not run on Goose yet, so the helper here is hand-written.
+/// whichever scope first demands it and at every worker count. The helper
+/// here is hand-written; goose_compiler_helper_initializer_gensym_names_alike_at_every_slot_count
+/// compiles one from CLJS.
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_gensym_helper_production_numbers_in_its_own_scope() {
@@ -3118,6 +3118,23 @@ fn pooled_build(
     crate::compile_stats::CompileStats,
     crate::engine_census::EngineCensus,
 ) {
+    pooled_build_seeded(files, slots, goose, options, 0)
+}
+
+/// [`pooled_build`] under the scheduler's stress perturbation with `seed`
+/// (one job to a batch) when it is not zero, in builds that have it.
+fn pooled_build_seeded(
+    files: &HashMap<String, String>,
+    slots: usize,
+    goose: Option<&Arc<GooseSession>>,
+    options: EvaluatorOptions,
+    seed: u64,
+) -> (
+    Result<String, String>,
+    crate::compile_stats::CompileStats,
+    crate::engine_census::EngineCensus,
+) {
+    let _ = seed;
     let before = crate::engine_census::EngineCensus::now();
     let provider = |request: &crate::source_provider::LoadRequest| {
         let name = String::from_utf16_lossy(request.namespace.name());
@@ -3148,6 +3165,15 @@ fn pooled_build(
         crate::compiler::EntryRecorders {
             stats: Some(&mut stats),
             slots: crate::scheduler::Slots::new(slots).unwrap(),
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            perturbation: (seed > 0).then(|| crate::scheduler::Perturbation {
+                seed,
+                limits: Some(crate::scheduler::Limits {
+                    batch_jobs: 1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
             ..Default::default()
         },
     )
@@ -3245,14 +3271,97 @@ fn goose_compiler_def_gensym_used_by_a_macro() {
     );
     let (reference, _, _) = pooled_build(&files, 1, None, Default::default());
     let reference = reference.unwrap();
-    // y is the quoted symbol the definition's gensym made.
-    assert!(reference.contains("rt.symbol(null, \"G__"), "{reference}");
+    // y is the quoted symbol the definition's gensym made, numbered in the
+    // bundle's own initializer scope (light-cljs-802).
+    let quoted = reference
+        .split("rt.symbol(null, \"G__")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("{reference}"));
+    assert!(quoted.ends_with("_i1"), "{reference}");
     for slots in [1, 4] {
         let session = GooseSession::start(&runner(), slots).unwrap();
         let (output, _, _) = pooled_build(&files, slots, Some(&session), Default::default());
         assert_eq!(output.as_deref(), Ok(reference.as_str()), "slots={slots}");
         session.close();
         cleaned(&session);
+    }
+}
+
+/// A CLJS helper namespace whose definitions call `gensym`, used by a macro
+/// from eight namespaces: on the Goose path at compiler slots 1/2/4/8, and
+/// under the scheduler's stress seeds, the JavaScript is the V8 build's,
+/// since the helper's initializers number in their bundle's own frozen
+/// scope (`_iN`) whichever job demands them first (light-cljs-802).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_helper_initializer_gensym_names_alike_at_every_slot_count() {
+    let mut files = HashMap::new();
+    files.insert(
+        "m.gen".to_owned(),
+        r#"(ns m.gen)
+(def tag (gensym "t"))
+(def pair [(gensym "p") (gensym "p")])
+(defmacro tagged [x] (list 'quote [tag (first pair) (second pair) x (gensym "e")]))"#
+            .to_owned(),
+    );
+    let mut main = String::from("(ns app.main (:require");
+    for n in 0..8 {
+        files.insert(
+            format!("app.w{n}"),
+            format!(
+                "(ns app.w{n} (:require [m.gen :as g]))\n(def v (g/tagged {n}))\n(defn f [] (g/tagged :f))\n"
+            ),
+        );
+        main.push_str(&format!(" [app.w{n}]"));
+    }
+    main.push_str("))\n(def all [");
+    for n in 0..8 {
+        main.push_str(&format!(" app.w{n}/v (app.w{n}/f)"));
+    }
+    main.push_str("])\n");
+    files.insert("app.main".to_owned(), main);
+    let (reference, _, _) = pooled_build(&files, 1, None, Default::default());
+    let reference = reference.unwrap();
+    // Every expansion quotes the helper's one set of names, from its own
+    // scope.
+    for (prefix, count) in [("t", 1), ("p", 2)] {
+        let needle = format!("rt.symbol(null, \"{prefix}");
+        let quoted = reference
+            .match_indices(&needle)
+            .map(|(at, _)| {
+                reference[at + needle.len() - prefix.len()..]
+                    .split('"')
+                    .next()
+                    .unwrap()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(quoted.len(), count, "{prefix}: {reference}");
+        assert!(quoted.iter().all(|q| q.contains("_i")), "{quoted:?}");
+    }
+    let seeds = if cfg!(any(debug_assertions, feature = "scheduling-stress")) {
+        std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1)
+    } else {
+        0
+    };
+    for slots in [1, 2, 4, 8] {
+        for seed in 0..=seeds {
+            let session = GooseSession::start(&runner(), slots).unwrap();
+            let (output, _, census) =
+                pooled_build_seeded(&files, slots, Some(&session), Default::default(), seed);
+            assert_eq!(
+                output.as_deref(),
+                Ok(reference.as_str()),
+                "slots={slots} seed={seed}"
+            );
+            assert!(census.is_empty(), "slots={slots} seed={seed}: {census:?}");
+            session.close();
+            cleaned(&session);
+        }
     }
 }
 
