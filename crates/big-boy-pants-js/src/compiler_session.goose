@@ -14,8 +14,8 @@ extern fn peak_memory() -> i64 = "goose_measure_peak_rss";
 extern fn resident_memory() -> i64 = "goose_measure_resident";
 extern fn observe(bytes: const u8&, count: i64) -> i64 = "goose_measure_observe";
 fn consume<T>(values: const T[:]) -> i64 { let bytes = bytes_of(values); return if bytes.len == 0 { 0 } else { observe(bytes[0], bytes.len) }; }
-fn consume(s: const snapshot::Snapshot&) -> i64 { return s.header.work + consume(s.code_bytes) + consume(s.functions) + consume(s.code_constants) + consume(s.children) + consume(s.ops) + consume(s.code_units) + consume(s.nodes) + consume(s.values) + consume(s.properties) + consume(s.units) + consume(s.constants) + consume(s.bytes) + consume(s.sources) + consume(s.bindings) + consume(s.code_strings) + consume(s.strings) + consume(s.latin1); }
-fn retained(heap: const source::Heap&) -> i64 { return bytes_of(heap.nodes).len + bytes_of(heap.values).len + bytes_of(heap.properties).len + bytes_of(heap.units).len + heap.latin1.len + bytes_of(heap.constants).len + heap.source_bytes.len + bytes_of(heap.source_ranges).len; }
+fn consume(s: const snapshot::Snapshot&) -> i64 { return s.header.work + consume(s.code_bytes) + consume(s.functions) + consume(s.code_constants) + consume(s.children) + consume(s.ops) + consume(s.code_units) + consume(s.nodes) + consume(s.values) + consume(s.properties) + consume(s.units) + consume(s.constants) + consume(s.bytes) + consume(s.sources) + consume(s.bindings) + consume(s.code_strings) + consume(s.strings) + consume(s.latin1) + consume(s.shapes) + consume(s.accessors) + consume(s.keys); }
+fn retained(heap: const source::Heap&) -> i64 { return bytes_of(heap.nodes).len + bytes_of(heap.values).len + bytes_of(heap.properties).len + bytes_of(heap.units).len + heap.latin1.len + bytes_of(heap.constants).len + heap.source_bytes.len + bytes_of(heap.source_ranges).len + bytes_of(heap.shapes).len + bytes_of(heap.accessors).len + bytes_of(heap.keys).len; }
 
 // GCS2 (light-cljs-784, light-cljs-795; docs/javascript-coverage.md,
 // decision 3): one input thread, the coordinator, `limit + retention` reapers
@@ -263,7 +263,7 @@ fn heap_digest(heap: const source::Heap&, bindings: const snapshot::Binding[:]) 
 fn digest<T>(s: const T&) -> u64 {
     var h: u64 = 14695981039346656037;
     h = mix(h, bytes_of(s.code_bytes)); h = mix(h, bytes_of(s.functions)); h = mix(h, bytes_of(s.code_constants)); h = mix(h, bytes_of(s.children)); h = mix(h, bytes_of(s.ops)); h = mix(h, bytes_of(s.code_units)); h = mix(h, bytes_of(s.code_strings));
-    h = mix(h, bytes_of(s.nodes)); h = mix(h, bytes_of(s.values)); h = mix(h, bytes_of(s.properties)); h = mix(h, bytes_of(s.units)); h = mix(h, bytes_of(s.strings)); h = mix(h, bytes_of(s.constants)); h = mix(h, bytes_of(s.bytes)); h = mix(h, bytes_of(s.sources)); h = mix(h, bytes_of(s.latin1));
+    h = mix(h, bytes_of(s.nodes)); h = mix(h, bytes_of(s.values)); h = mix(h, bytes_of(s.properties)); h = mix(h, bytes_of(s.units)); h = mix(h, bytes_of(s.strings)); h = mix(h, bytes_of(s.constants)); h = mix(h, bytes_of(s.bytes)); h = mix(h, bytes_of(s.sources)); h = mix(h, bytes_of(s.latin1)); h = mix(h, bytes_of(s.shapes)); h = mix(h, bytes_of(s.accessors)); h = mix(h, bytes_of(s.keys));
     return h;
 }
 // A blocked worker takes answers from the one process-wide Answer queue and

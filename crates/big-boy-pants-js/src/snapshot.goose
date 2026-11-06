@@ -14,16 +14,17 @@ namespace snapshot;
 struct Binding { id: i64, generation: i64, value: source::Value }
 struct Header {
     version: i64     = 2, allocator: i64 = 1, base: i64 = 0, checkpoint: i64 = 1,
-    ends:    i64[17] = [0; 17], limits: source::Limits = source::Limits {},
+    ends:    i64[20] = [0; 20], limits: source::Limits = source::Limits {},
     work:    i64     = 0, global: source::Value = source::Value.Undefined, call_method: source::Value = source::Value.Undefined,
     boot:    i64     = 0, initializers: i64 = 0, producers: i64 = 0, property_rows: i64 = 0,
 }
 struct Snapshot {
-    header:     Header         = Header {},
-    code_bytes: u8[]           = [], functions: source::Function[] = [], code_constants: source::Value[] = [],
-    children:   u32[]          = [], ops: source::Op[] = [], code_units: u16[] = [], code_strings: source::Str[] = [],
-    nodes:      source::Node[] = [], values: source::Value[] = [], properties: source::Property[] = [],
-    units:      u16[]          = [], strings: source::Str[] = [], constants: source::Value[] = [], bytes: u8[] = [], sources: source::SourceRange[] = [], bindings: Binding[] = [], latin1: u8[] = [],
+    header:     Header          = Header {},
+    code_bytes: u8[]            = [], functions: source::Function[] = [], code_constants: source::Value[] = [],
+    children:   u32[]           = [], ops: source::Op[] = [], code_units: u16[] = [], code_strings: source::Str[] = [],
+    nodes:      source::Node[]  = [], values: source::Value[] = [], properties: source::Property[] = [],
+    units:      u16[]           = [], strings: source::Str[] = [], constants: source::Value[] = [], bytes: u8[] = [], sources: source::SourceRange[] = [], bindings: Binding[] = [], latin1: u8[] = [],
+    shapes:     source::Shape[] = [], accessors: source::Pair[] = [], keys: source::KeySlot[] = [],
 }
 // A borrowing counterpart lets capture validate before allocating a copy.
 struct View {
@@ -32,6 +33,7 @@ struct View {
     children:   const u32[:], ops: const source::Op[:], code_units: const u16[:], code_strings: const source::Str[:],
     nodes:      const source::Node[:], values: const source::Value[:], properties: const source::Property[:],
     units:      const u16[:], strings: const source::Str[:], constants: const source::Value[:], bytes: const u8[:], sources: const source::SourceRange[:], bindings: const Binding[:], latin1: const u8[:],
+    shapes:     const source::Shape[:], accessors: const source::Pair[:], keys: const source::KeySlot[:],
 }
 enum Error { None, Boundary, Version, Allocator, Identity, Length, Link, Code, Unsupported, Bytes, Work, Destination }
 struct Control {
@@ -57,6 +59,12 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
     var used: u8[>..] = []; used.resize(s.values.len, 0);
     for n in s.nodes {
         if !poll(c) { return false; }
+        // A shape-mode object's overflow run is exclusive (light-cljs-787).
+        if shaped(n) {
+            if !range(n.keys, n.key_capacity, s.values.len) { return reject(c, Error.Link); }
+            if !poll(c, n.key_capacity) { return false; }
+            for slot in n.keys..(n.keys + n.key_capacity) { if used[slot] != 0 { return reject(c, Error.Link); } used[slot] = 2; }
+        }
         if !has_values(n.kind) { continue; }
         if !poll(c, n.count) { return false; }
         for slot in n.start..(n.start + n.count) {
@@ -71,10 +79,20 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
     }
     return true;
 }
-// Key runs are exclusive (an object writes its run in place) and hold string
-// keys for the records past the inline slots; their records were charged to
-// property_rows. Inline slots hold string keys up to key_count and are
-// cleared past it (source::Property).
+// A shape-mode object (source::Node): kind 0 without `initialized`.
+fn shaped(n: const source::Node&) -> bool { return n.kind == 0 && !n.initialized; }
+// A dictionary-mode object or a dictionary array.
+fn dictionary(n: const source::Node&) -> bool { return (n.kind == 0 || n.kind == 1) && n.initialized; }
+// A property key: an interned string (source::intern) or a well-known symbol.
+fn key_value<T>(s: const T&, k: source::Value) -> bool {
+    return match k { String x => range(x.s, 1, s.strings.len) && s.strings[x.s].key, Symbol x => export_well_known_symbol(x.s).len > 0, _ => false };
+}
+// Own properties (light-cljs-787, source::Node). Dictionary runs of records
+// are exclusive (an object writes its run in place), hold keyed records up to
+// key_count and cleared rows past it, and were charged to property_rows. A
+// shape-mode object's shape has key_count properties, its overflow run (in
+// values, memo_ranges) holds those past the inline slots, and inline slots
+// past key_count are cleared. Other nodes keep no properties.
 fn key_runs<T>(s: const T&, c: Control&) -> bool {
     if s.properties.len > c.bytes - footprint(s) { return reject(c, Error.Bytes); }
     if !poll(c, s.properties.len) { return false; }
@@ -82,27 +100,96 @@ fn key_runs<T>(s: const T&, c: Control&) -> bool {
     var used: bool[>..] = []; used.resize(s.properties.len, false); var records: i64 = 0;
     for n in s.nodes {
         if !poll(c, 1 + n.key_capacity) { return false; }
+        if n.key_count > n.key_capacity + (if shaped(n) { source::inline_slots() } else { 0 }) { return reject(c, Error.Link); }
+        if !shaped(n) && n.shape != 0 { return reject(c, Error.Link); }
+        for v, i in n.slots { if (if shaped(n) && i < n.key_count { !slot_value(s, v) } else { v.tag() != 0 }) { return reject(c, Error.Link); } }
+        if shaped(n) {
+            if !range(n.keys, n.key_capacity, s.values.len) || n.shape != 0 && !range(n.shape, 1, s.shapes.len) || (if n.shape == 0 { 0 } else { s.shapes[n.shape].count }) != n.key_count { return reject(c, Error.Link); }
+            continue;
+        }
+        if !dictionary(n) && (n.key_count != 0 || n.key_capacity != 0) { return reject(c, Error.Link); }
+        if !range(n.keys, n.key_capacity, s.properties.len) { return reject(c, Error.Link); }
         for row in n.keys..(n.keys + n.key_capacity) { if used[row] { return reject(c, Error.Link); } used[row] = true; }
-        let spilled = source::overflow(n);
-        for row in n.keys..(n.keys + spilled) { if s.properties[row].key.tag() != 4 { return reject(c, Error.Link); } }
-        for p, i in n.slots { if (if i < n.key_count { p.key.tag() != 4 } else { p.key.tag() != 0 || p.value.tag() != 0 }) || !value(s, p.key) || !value(s, p.value) { return reject(c, Error.Link); } }
-        records += spilled;
+        for row in n.keys..(n.keys + n.key_capacity) {
+            let p = s.properties[row];
+            if (if row < n.keys + n.key_count { !key_value(s, p.key) || !slot_value(s, p.value) || p.attrs > 7 } else { p.key.tag() != 0 || p.value.tag() != 0 || p.attrs != 0 }) { return reject(c, Error.Link); }
+        }
+        records += n.key_capacity;
     }
     return if records <= s.header.property_rows { true } else { reject(c, Error.Allocator) };
 }
+// Shapes, accessor pairs and the interned-key index (light-cljs-787): row 0
+// of a non-empty shape table is the empty shape; every other row extends an
+// earlier parent by one interned key, with its older sibling and its newest
+// child among that parent's and its own children. Pairs hold functions or
+// Undefined. The index holds every key header once, at its hash's probe
+// sequence, at most half full.
+fn key_hash<T>(s: const T&, r: source::Str) -> u32 {
+    var h: u32 = 2166136261;
+    if r.wide { for u in s.units[r.start..(r.start + r.len)] { h = (h ^ u) * 16777619; } } else { for b in s.latin1[r.start..(r.start + r.len)] { h = (h ^ b) * 16777619; } }
+    return h;
+}
+fn property_model<T>(s: const T&, c: Control&) -> bool {
+    if !poll(c, s.shapes.len + s.accessors.len + s.keys.len) { return false; }
+    for e, r in s.shapes {
+        if r == 0 { if e.parent != 0 || e.key.tag() != 0 || e.attrs != 0 || e.count != 0 || e.sibling != source::no_row() || e.child != source::no_row() && !range(e.child, 1, s.shapes.len) { return reject(c, Error.Link); } continue; }
+        if e.parent >= r || !key_value(s, e.key) || e.attrs > 7 || e.count != s.shapes[e.parent].count + 1 { return reject(c, Error.Link); }
+        if e.sibling != source::no_row() && (e.sibling >= r || s.shapes[e.sibling].parent != e.parent) { return reject(c, Error.Link); }
+        if e.child != source::no_row() && (e.child <= r || e.child >= s.shapes.len || s.shapes[e.child].parent != r) { return reject(c, Error.Link); }
+    }
+    if s.shapes.len > 0 && s.shapes[0].child != source::no_row() && s.shapes[s.shapes[0].child].parent != 0 { return reject(c, Error.Link); }
+    for p in s.accessors { if !accessor_half(s, p.get) || !accessor_half(s, p.set) { return reject(c, Error.Link); } }
+    if s.keys.len != 0 && (s.keys.len < 64 || (s.keys.len & (s.keys.len - 1)) != 0) { return reject(c, Error.Link); }
+    var seen: bool[>..] = []; seen.resize(s.strings.len, false); var occupied: i64 = 0;
+    for e, i in s.keys {
+        if e.row == source::no_row() { continue; }
+        if !range(e.row, 1, s.strings.len) || !s.strings[e.row].key || seen[e.row] { return reject(c, Error.Link); }
+        let r = s.strings[e.row];
+        if !poll(c, r.len + 1) { return false; }
+        if key_hash(s, r) != e.hash { return reject(c, Error.Link); }
+        // Linear probing: no empty slot between the hash's slot and this one.
+        var at = e.hash & (s.keys.len - 1);
+        while at != i { if !poll(c) { return false; } if s.keys[at].row == source::no_row() { return reject(c, Error.Link); } at = (at + 1) & (s.keys.len - 1); }
+        seen[e.row] = true; occupied += 1;
+    }
+    var flagged: i64 = 0; for r in s.strings { if r.key { flagged += 1; } }
+    if flagged != occupied || 2 * occupied > s.keys.len { return reject(c, Error.Link); }
+    // Prototype chains end (source::set_prototype refuses a cycle): each
+    // walk stops at a node an earlier walk finished.
+    if !poll(c, 2 * s.nodes.len) { return false; }
+    var state: u8[>..] = []; state.resize(s.nodes.len, 0); var path: i64[>..] = [];
+    for n, i in s.nodes {
+        var at: i64 = i; path.clear();
+        while state[at] == 0 {
+            state[at] = 1; path.push(at);
+            let p = s.nodes[at].proto;
+            if p.tag() != 5 { break; }
+            at = p.id();
+            if state[at] == 1 { return reject(c, Error.Link); }
+        }
+        for r in path { state[r] = 2; }
+    }
+    return true;
+}
+fn accessor_half<T>(s: const T&, v: source::Value) -> bool { return v.tag() == 0 || v.tag() == 5 && value(s, v); }
+// A property's value: any value, or an accessor naming a pair.
+fn slot_value<T>(s: const T&, v: source::Value) -> bool { return match v { Accessor a => range(a.a, 1, s.accessors.len), _ => value(s, v) }; }
+// The number of occupied index slots.
+fn interned<T>(s: const T&) -> i64 { var n: i64 = 0; for e in s.keys { if e.row != source::no_row() { n += 1; } } return n; }
 // A heap string run equals these UTF-16 units.
 fn same_units<T>(s: const T&, r: source::Str, units: const u16[:]) -> bool {
     if r.wide { return s.units[r.start..(r.start + r.len)] == units; }
     for b, i in s.latin1[r.start..(r.start + r.len)] { if units[i] != b { return false; } }
     return true;
 }
-fn ends<T>(s: const T&) -> i64[17] {
+fn ends<T>(s: const T&) -> i64[20] {
     return [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len,
-            s.nodes.len, s.values.len, s.properties.len, s.units.len, s.constants.len, s.bytes.len, s.sources.len, s.bindings.len, s.code_strings.len, s.strings.len, s.latin1.len];
+            s.nodes.len, s.values.len, s.properties.len, s.units.len, s.constants.len, s.bytes.len, s.sources.len, s.bindings.len, s.code_strings.len, s.strings.len, s.latin1.len, s.shapes.len, s.accessors.len, s.keys.len];
 }
 fn payload_bytes<T>(s: const T&) -> i64 {
     return bytes_of(s.code_bytes).len + bytes_of(s.functions).len + bytes_of(s.code_constants).len + bytes_of(s.children).len + bytes_of(s.ops).len + bytes_of(s.code_units).len
-         + bytes_of(s.nodes).len + bytes_of(s.values).len + bytes_of(s.properties).len + bytes_of(s.units).len + bytes_of(s.constants).len + bytes_of(s.bytes).len + bytes_of(s.sources).len + bytes_of(s.bindings).len + bytes_of(s.latin1).len + bytes_of(s.code_strings).len + bytes_of(s.strings).len;
+         + bytes_of(s.nodes).len + bytes_of(s.values).len + bytes_of(s.properties).len + bytes_of(s.units).len + bytes_of(s.constants).len + bytes_of(s.bytes).len + bytes_of(s.sources).len + bytes_of(s.bindings).len + bytes_of(s.latin1).len + bytes_of(s.code_strings).len + bytes_of(s.strings).len
+         + bytes_of(s.shapes).len + bytes_of(s.accessors).len + bytes_of(s.keys).len;
 }
 fn footprint<T>(s: const T&) -> i64 { let empty: Snapshot[] = [Snapshot {}]; return bytes_of(empty).len + payload_bytes(s); }
 fn value<T>(s: const T&, v: source::Value, code: bool = false, constant: bool = false) -> bool {
@@ -110,7 +197,7 @@ fn value<T>(s: const T&, v: source::Value, code: bool = false, constant: bool = 
     return match v {
         Symbol x => (code || constant) && export_well_known_symbol(x.s).len > 0,
         BigInt x => (code || constant) && x.b == 0,
-        Empty => false,
+        Empty, Accessor => false,
         Object o => !code && range(o.o, 1, s.nodes.len),
         String x => range(x.s, 1, if code { s.code_strings.len } else { s.strings.len }),
         _ => true,
@@ -197,7 +284,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     if c.snapshot_bytes > c.bytes { return reject(c, Error.Bytes); }
     if !poll(c, s.code_bytes.len + s.code_units.len + s.units.len + s.latin1.len + s.bytes.len) { return false; }
     let l = s.header.limits;
-    if l.nodes < 0 || l.values < 0 || l.units < 0 || l.properties < 0 || l.work < 0 || l.steps < 0 || l.frames < 0 || l.stack < 0 || s.header.work < 0 || s.header.work > l.work || s.header.property_rows < 0 || s.header.property_rows > s.properties.len || s.header.boot < 0 || s.header.boot > 1 || s.header.initializers < 0 || s.header.producers < 0 { return reject(c, Error.Allocator); }
+    if l.nodes < 0 || l.values < 0 || l.units < 0 || l.properties < 0 || l.shapes < 0 || l.work < 0 || l.steps < 0 || l.frames < 0 || l.stack < 0 || s.header.work < 0 || s.header.work > l.work || s.header.property_rows < 0 || s.header.property_rows > s.properties.len || s.header.boot < 0 || s.header.boot > 1 || s.header.initializers < 0 || s.header.producers < 0 { return reject(c, Error.Allocator); }
     if !code_valid(s, c) { return false; }
     if !value(s, s.header.global) || s.header.global.tag() != 5 || s.nodes[s.header.global.id()].kind != 0 { return reject(c, Error.Link); }
     if !value(s, s.header.call_method) || s.header.call_method.tag() != 5 || s.nodes[s.header.call_method.id()].kind != 4 || s.nodes[s.header.call_method.id()].function != 14 { return reject(c, Error.Link); }
@@ -210,7 +297,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     }
     // Holes (Empty) may appear only inside array element runs, counted below.
     var holes: i64 = 0;
-    for v in s.values { if !poll(c) { return false; } if v.tag() == -1 { holes += 1; continue; } if !value(s, v) { return reject(c, Error.Link); } }
+    for v in s.values { if !poll(c) { return false; } if v.tag() == -1 { holes += 1; continue; } if !slot_value(s, v) { return reject(c, Error.Link); } }
     if s.constants.len != s.code_constants.len { return reject(c, Error.Length); }
     for v, i in s.constants {
         if !poll(c) { return false; }
@@ -229,8 +316,8 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     }
     for p, i in s.properties {
         if !poll(c) { return false; }
-        // A row is a record (string key) or cleared; key runs are checked below.
-        if p.key.tag() != 0 && p.key.tag() != 4 || !value(s, p.key) || !value(s, p.value) { return reject(c, Error.Link); }
+        // A row is a record (interned key) or cleared; key runs are checked below.
+        if p.key.tag() != 0 && !key_value(s, p.key) || !slot_value(s, p.value) { return reject(c, Error.Link); }
     }
     for r in s.sources {
         if !range(r.start, r.count, s.bytes.len) { return reject(c, Error.Link); }
@@ -242,7 +329,8 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if !poll(c) { return false; }
         if n.kind < 0 || n.kind > 15 { return reject(c, Error.Unsupported); }
         if n.kind == 1 && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
-        if n.key_count > n.key_capacity + source::inline_slots() || !range(n.keys, n.key_capacity, s.properties.len) || !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source != source::no_row() && n.source >= s.sources.len || n.origin < -1 { return reject(c, Error.Link); }
+        if !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source != source::no_row() && n.source >= s.sources.len || n.origin < -1 || n.proto.tag() != -1 && n.proto.tag() != 1 && (n.proto.tag() != 5 || !value(s, n.proto)) { return reject(c, Error.Link); }
+        has_memo = has_memo || shaped(n) && n.key_capacity > 0;
         if n.source != source::no_row() && (n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
         if n.source != source::no_row() {
             let r = s.sources[n.source]; let text = s.bytes[r.start..(r.start + r.count)];
@@ -270,7 +358,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if n.metadata.tag() != 0 && n.metadata.tag() != 1 && (n.metadata.tag() != 5 || s.nodes[n.metadata.id()].kind != 7) { return reject(c, Error.Link); }
     }
     if has_memo && !memo_ranges(s, c) { return false; }
-    if !key_runs(s, c) { return false; }
+    if !property_model(s, c) || !key_runs(s, c) { return false; }
     if holes != array_holes { return reject(c, Error.Link); }
     var previous: i64 = -1;
     for b in s.bindings {
@@ -283,7 +371,8 @@ fn borrow(heap: const source::Heap&, bindings: const Binding[:], checkpoint: i64
     let code .= heap.code;
     var v = View { header: Header { base: heap.identity, checkpoint: checkpoint, limits: heap.limits, work: heap.work, global: heap.global, call_method: heap.call_method, boot: heap.boot_count, initializers: heap.initializer_count, producers: heap.producer_count, property_rows: heap.property_rows },
         code_bytes: code.source_bytes, functions: code.functions, code_constants: code.constants, children: code.children, ops: code.ops, code_units: code.units, code_strings: code.strings,
-        nodes: heap.nodes, values: heap.values, properties: heap.properties, units: heap.units, strings: heap.strings, constants: heap.constants, bytes: heap.source_bytes, sources: heap.source_ranges, bindings: bindings, latin1: heap.latin1 };
+        nodes:      heap.nodes, values: heap.values, properties: heap.properties, units: heap.units, strings: heap.strings, constants: heap.constants, bytes: heap.source_bytes, sources: heap.source_ranges, bindings: bindings, latin1: heap.latin1,
+        shapes: heap.shapes, accessors: heap.accessors, keys: heap.keys };
     v.header.ends = ends(v); return v;
 }
 fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&, checkpoint: i64 = 0) -> Snapshot {
@@ -299,7 +388,7 @@ fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&, c
     if s.header.checkpoint <= 0 || s.header.checkpoint > 2147483647 || s.header.checkpoint == heap.identity { reject(c, Error.Identity); return Snapshot {}; }
     c.copied_bytes += footprint(s);
     return Snapshot { header: s.header, code_bytes: s.code_bytes, functions: s.functions, code_constants: s.code_constants, children: s.children, ops: s.ops, code_units: s.code_units, code_strings: s.code_strings,
-        nodes: s.nodes, values: s.values, properties: s.properties, units: s.units, strings: s.strings, constants: s.constants, bytes: s.bytes, sources: s.sources, bindings: s.bindings, latin1: s.latin1 };
+        nodes: s.nodes, values: s.values, properties: s.properties, units: s.units, strings: s.strings, constants: s.constants, bytes: s.bytes, sources: s.sources, bindings: s.bindings, latin1: s.latin1, shapes: s.shapes, accessors: s.accessors, keys: s.keys };
 }
 // Reset only after the dispatch's job has retired. This reestablishes every
 // restore destination invariant; restore still validates the entire image and
@@ -308,6 +397,7 @@ fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> b
     if !(heap.code .== code) || heap.live_jobs != 0 { return false; }
     bindings.clear();
     heap.nodes.clear(); heap.values.clear(); heap.properties.clear(); heap.units.clear(); heap.latin1.clear(); heap.strings.clear(); heap.constants.clear(); heap.source_bytes.clear(); heap.source_ranges.clear();
+    heap.shapes.clear(); heap.accessors.clear(); heap.keys.clear(); heap.interned = 0; heap.image_written = false;
     code.source_bytes.clear(); code.functions.clear(); code.constants.clear(); code.children.clear(); code.ops.clear(); code.units.clear(); code.strings.clear(); code.ins.clear(); code.effects.clear(); code.heights.clear(); code.decoded = 0;
     code.valid = false; code.error = tiny::LoadError.None; code.error_pc = -1;
     heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value.Undefined; heap.call_method = source::Value.Undefined;
@@ -316,7 +406,7 @@ fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> b
 }
 fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&, identity: i64, c: Control&) -> bool {
     let started = clock_ns(); defer { c.restore_ns += clock_ns() - started; }
-    if !(heap.code .== code) || heap.identity != 0 || heap.live_jobs != 0 || heap.nodes.len != 0 || heap.values.len != 0 || heap.properties.len != 0 || heap.units.len != 0 || heap.latin1.len != 0 || heap.strings.len != 0 || heap.constants.len != 0 || heap.source_bytes.len != 0 || heap.source_ranges.len != 0 || code.valid || code.source_bytes.len != 0 || code.functions.len != 0 || code.constants.len != 0 || code.children.len != 0 || code.ops.len != 0 || code.units.len != 0 || code.strings.len != 0 || bindings.len != 0 { return reject(c, Error.Destination); }
+    if !(heap.code .== code) || heap.identity != 0 || heap.live_jobs != 0 || heap.nodes.len != 0 || heap.values.len != 0 || heap.properties.len != 0 || heap.units.len != 0 || heap.latin1.len != 0 || heap.strings.len != 0 || heap.constants.len != 0 || heap.source_bytes.len != 0 || heap.source_ranges.len != 0 || heap.shapes.len != 0 || heap.accessors.len != 0 || heap.keys.len != 0 || code.valid || code.source_bytes.len != 0 || code.functions.len != 0 || code.constants.len != 0 || code.children.len != 0 || code.ops.len != 0 || code.units.len != 0 || code.strings.len != 0 || bindings.len != 0 { return reject(c, Error.Destination); }
     if identity <= 0 || identity > 2147483647 || identity == s.header.base || identity == s.header.checkpoint { return reject(c, Error.Identity); }
     if !validate(s, c) { return false; }
     // No initialization, producer, publication cache, claim or waiter code.
@@ -330,8 +420,9 @@ fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, binding
     heap.nodes.append(s.nodes); heap.values.append(s.values); heap.properties.append(s.properties);
     heap.units.append(s.units); heap.latin1.append(s.latin1); heap.strings.append(s.strings); heap.constants.append(s.constants);
     heap.source_bytes.append(s.bytes); heap.source_ranges.append(s.sources);
+    heap.shapes.append(s.shapes); heap.accessors.append(s.accessors); heap.keys.append(s.keys); heap.interned = interned(s); heap.image_written = false;
     // The restored rows are the image: table limits count rows added above it.
-    heap.image = source::Tops { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len, strings: heap.strings.len, latin1: heap.latin1.len };
+    heap.image = source::tops(heap);
     bindings.append(s.bindings);
     c.copied_bytes += payload_bytes(s); return true;
 }
@@ -354,11 +445,23 @@ fn truncate(twin: const Snapshot&, service: const i64[:], identity: i64, code: s
     heap.nodes.resize(twin.nodes.len); heap.values.resize(twin.values.len); heap.properties.resize(twin.properties.len);
     heap.units.resize(twin.units.len); heap.latin1.resize(twin.latin1.len); heap.strings.resize(twin.strings.len); heap.constants.resize(twin.constants.len);
     heap.source_bytes.resize(twin.bytes.len); heap.source_ranges.resize(twin.sources.len);
-    for r in service { let n = twin.nodes[r]; heap.nodes[r] = n; for k in n.keys..(n.keys + n.key_capacity) { heap.properties[k] = twin.properties[k]; } }
+    heap.shapes.resize(twin.shapes.len); heap.accessors.resize(twin.accessors.len);
+    for r in service { service_row(heap, twin, twin, r); }
+    // A job's transitions from image shapes and its interned keys wrote the
+    // image's shape rows and key index (source::Heap.image_written): both
+    // come back whole from the twin.
+    if heap.image_written { for e, i in twin.shapes { heap.shapes[i] = e; } heap.keys.clear(); heap.keys.append(twin.keys); heap.interned = interned(twin); heap.image_written = false; }
     state(twin.header, identity, heap);
-    heap.image = source::Tops { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len, strings: heap.strings.len, latin1: heap.latin1.len };
+    heap.image = source::tops(heap);
     bindings.clear(); bindings.append(twin.bindings);
     return true;
+}
+// Service row r and the property rows of its image run (twin's: in values
+// for a shape-mode object, in properties for a dictionary-mode one), as
+// `from` has them.
+fn service_row(heap: source::Heap&, from: const Snapshot&, twin: const Snapshot&, r: i64) {
+    heap.nodes[r] = from.nodes[r]; let n = twin.nodes[r];
+    for k in n.keys..(n.keys + n.key_capacity) { if shaped(n) { heap.values[k] = from.values[k]; } else { heap.properties[k] = from.properties[k]; } }
 }
 // The heap's state fields, as a restore of this header sets them.
 fn state(h: const Header&, identity: i64, heap: source::Heap&) {
@@ -374,7 +477,8 @@ fn pristine(twin: const Snapshot&, identity: i64, code: const source::Code&, hea
     if heap.boot_count != h.boot || heap.initializer_count != h.initializers || heap.producer_count != h.producers || heap.property_rows != h.property_rows || code.decoded != twin.functions.len || code.heights.len != twin.functions.len || code.ins.len != twin.ops.len { return false; }
     return same_rows(code.source_bytes, twin.code_bytes) && same_rows(code.functions, twin.functions) && same_rows(code.constants, twin.code_constants) && same_rows(code.children, twin.children) && same_rows(code.ops, twin.ops) && same_rows(code.units, twin.code_units) && same_rows(code.strings, twin.code_strings)
         && same_rows(heap.nodes, twin.nodes) && same_rows(heap.values, twin.values) && same_rows(heap.properties, twin.properties) && same_rows(heap.units, twin.units) && same_rows(heap.latin1, twin.latin1) && same_rows(heap.strings, twin.strings) && same_rows(heap.constants, twin.constants)
-        && same_rows(heap.source_bytes, twin.bytes) && same_rows(heap.source_ranges, twin.sources) && same_rows(bindings, twin.bindings);
+        && same_rows(heap.source_bytes, twin.bytes) && same_rows(heap.source_ranges, twin.sources) && same_rows(bindings, twin.bindings)
+        && same_rows(heap.shapes, twin.shapes) && same_rows(heap.accessors, twin.accessors) && same_rows(heap.keys, twin.keys) && heap.interned == interned(twin);
 }
 fn same_bits(a: source::Limits, b: source::Limits) -> bool { let x: source::Limits[] = [a]; let y: source::Limits[] = [b]; return bytes_of(x) == bytes_of(y); }
 // Whether a job snapshot's rows below the twin's lengths are the image's,
@@ -383,12 +487,17 @@ fn same_bits(a: source::Limits, b: source::Limits) -> bool { let x: source::Limi
 // otherwise this holds by construction.
 fn over_image(s: const Snapshot&, twin: const Snapshot&, service: const i64[:]) -> bool {
     let a = ends(s); let b = ends(twin); for n, i in b { if a[i] < n { return false; } }
-    var keys: i64[>..] = []; for r in service { let n = twin.nodes[r]; for k in n.keys..(n.keys + n.key_capacity) { keys.push(k); } }
+    var keys: i64[>..] = []; var slots: i64[>..] = [];
+    for r in service { let n = twin.nodes[r]; for k in n.keys..(n.keys + n.key_capacity) { if shaped(n) { slots.push(k); } else { keys.push(k); } } }
     for row, i in twin.nodes { var skip = false; for r in service { if r == i { skip = true; } } if !skip && !same_rows(s.nodes[i..(i + 1)], twin.nodes[i..(i + 1)]) { return false; } }
     for row, i in twin.properties { var skip = false; for k in keys { if k == i { skip = true; } } if !skip && !same_rows(s.properties[i..(i + 1)], twin.properties[i..(i + 1)]) { return false; } }
+    for row, i in twin.values { var skip = false; for k in slots { if k == i { skip = true; } } if !skip && !same_rows(s.values[i..(i + 1)], twin.values[i..(i + 1)]) { return false; } }
+    // Image shapes keep their layout; only their newest child may differ.
+    for e, i in twin.shapes { var x = s.shapes[i]; x.child = e.child; if !same_rows([x], [e]) { return false; } }
+    if !same_rows(s.accessors[..twin.accessors.len], twin.accessors) { return false; }
     return same_rows(s.code_bytes[..twin.code_bytes.len], twin.code_bytes) && same_rows(s.functions[..twin.functions.len], twin.functions) && same_rows(s.code_constants[..twin.code_constants.len], twin.code_constants) && same_rows(s.children[..twin.children.len], twin.children)
         && same_rows(s.ops[..twin.ops.len], twin.ops) && same_rows(s.code_units[..twin.code_units.len], twin.code_units) && same_rows(s.code_strings[..twin.code_strings.len], twin.code_strings)
-        && same_rows(s.values[..twin.values.len], twin.values) && same_rows(s.units[..twin.units.len], twin.units) && same_rows(s.latin1[..twin.latin1.len], twin.latin1) && same_rows(s.strings[..twin.strings.len], twin.strings)
+        && same_rows(s.units[..twin.units.len], twin.units) && same_rows(s.latin1[..twin.latin1.len], twin.latin1) && same_rows(s.strings[..twin.strings.len], twin.strings)
         && same_rows(s.constants[..twin.constants.len], twin.constants) && same_rows(s.bytes[..twin.bytes.len], twin.bytes) && same_rows(s.sources[..twin.sources.len], twin.sources);
 }
 // Install a job's snapshot over the image (light-cljs-795): validate all of
@@ -409,8 +518,12 @@ fn extend(s: const Snapshot&, twin: const Snapshot&, service: const i64[:], code
     heap.nodes.append(s.nodes[twin.nodes.len..]); heap.values.append(s.values[twin.values.len..]); heap.properties.append(s.properties[twin.properties.len..]);
     heap.units.append(s.units[twin.units.len..]); heap.latin1.append(s.latin1[twin.latin1.len..]); heap.strings.append(s.strings[twin.strings.len..]); heap.constants.append(s.constants[twin.constants.len..]);
     heap.source_bytes.append(s.bytes[twin.bytes.len..]); heap.source_ranges.append(s.sources[twin.sources.len..]);
-    for r in service { heap.nodes[r] = s.nodes[r]; let n = twin.nodes[r]; for k in n.keys..(n.keys + n.key_capacity) { heap.properties[k] = s.properties[k]; } }
-    heap.image = source::Tops { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len, strings: heap.strings.len, latin1: heap.latin1.len };
+    heap.accessors.append(s.accessors[twin.accessors.len..]);
+    // The job's shapes and key index replace the image's whole (truncate
+    // restores the image's).
+    heap.shapes.clear(); heap.shapes.append(s.shapes); heap.keys.clear(); heap.keys.append(s.keys); heap.interned = interned(s); heap.image_written = true;
+    for r in service { service_row(heap, s, twin, r); }
+    heap.image = source::tops(heap);
     bindings.clear(); bindings.append(s.bindings);
     c.copied_bytes += payload_bytes(s) - payload_bytes(twin); return true;
 }

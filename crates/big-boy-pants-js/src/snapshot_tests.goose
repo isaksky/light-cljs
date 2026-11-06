@@ -70,7 +70,7 @@ thread_fn isolation_parent() {
 }
 fn malformed() {
     heap_program::join(thread_spawn(malformed_parent)); let saved = qget<Saved>(); let original .= saved.image;
-    for mode in 33 { heap_program::join(thread_spawn(malformed_target, copy(original), mode)); }
+    for mode in 38 { heap_program::join(thread_spawn(malformed_target, copy(original), mode)); }
     for mode in 2 { heap_program::join(thread_spawn(malformed_budget, copy(original), mode)); }
     key_run_budgets(original);
     for identity in [0, original.header.base, original.header.checkpoint, 2147483648] { heap_program::join(thread_spawn(malformed_identity, copy(original), identity)); }
@@ -95,7 +95,7 @@ thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
             0 => { bad.header.version = 1; }, 1 => { bad.header.allocator = 0; }, 2 => { bad.header.ends[6] -= 1; },
             3 => { bad.header.base = 0; }, 4 => { bad.bindings[0].generation = 0; }, 5 => { bad.bindings[1].id = bad.bindings[0].id; },
             6 => { bad.values[0] = source::object(bad.nodes.len); }, 7 => { bad.nodes[bad.bindings[4].value.id()].function = bad.functions.len as u32; },
-            8 => { bad.nodes[bad.header.global.id()].key_count = bad.nodes[bad.header.global.id()].key_capacity + source::inline_slots() as u32 + 1; }, 9 => { bad.properties[0].value = source::object(bad.nodes.len); },
+            8 => { bad.nodes[bad.header.global.id()].key_count = bad.nodes[bad.header.global.id()].key_capacity + source::inline_slots() as u32 + 1; }, 9 => { let g = bad.header.global.id(); assert(source::overflow(bad.nodes[g]) > 0); bad.values[bad.nodes[g].keys] = source::object(bad.nodes.len); },
             10 => { bad.nodes[bad.bindings[7].value.id()].count = 9999999; }, 11 => { bad.sources[0].count = 9999999; },
             12 => { bad.header.work = bad.header.limits.work + 1; }, 13 => { bad.children[0] = bad.functions.len as u32; },
             14 => { bad.ops[0].depth = 1; }, 15 => { bad.nodes[0].kind = 13; }, 16 => { bad.header.ends[13] += 1; },
@@ -107,13 +107,22 @@ thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
             // Key runs are exclusive over their whole capacity: another node
             // claiming the global's run, even only its spare rows, is refused.
             28 => { let g = bad.header.global.id(); let o = if g == 0 { 1 } else { 0 }; bad.nodes[o].keys = bad.nodes[g].keys; bad.nodes[o].key_capacity = bad.nodes[g].key_capacity; },
-            29 => { let g = bad.header.global.id(); assert(source::overflow(bad.nodes[g]) > 0); bad.header.property_rows = source::overflow(bad.nodes[g]) - 1; },
+            // A shape-mode object has its shape's key count (light-cljs-787).
+            29 => { let g = bad.header.global.id(); assert(source::overflow(bad.nodes[g]) > 0); bad.nodes[g].key_count -= 1; },
             // Strings keep a canonical encoding (light-cljs-800): a wide run
             // whose units all fit Latin-1, or a Latin-1 run past its table, is refused.
             30 => { var at: i64 = -1; for r, i in bad.strings { if r.wide && r.len > 0 { at = i; } } assert(at >= 0); let r = bad.strings[at]; for i in r.start..(r.start + r.len) { bad.units[i] = 97; } },
             31 => { var at: i64 = -1; for r, i in bad.strings { if !r.wide && r.len > 0 { at = i; } } assert(at >= 0); bad.strings[at].start = bad.latin1.len as u32; },
             // An inline slot past key_count must be cleared (light-cljs-800).
-            32 => { var at: i64 = -1; for n, i in bad.nodes { if n.key_count < 2 { at = i; } } assert(at >= 0); bad.nodes[at].slots[1] = source::Property { value: source::number(1) }; },
+            32 => { var at: i64 = -1; for n, i in bad.nodes { if n.key_count < 2 { at = i; } } assert(at >= 0); bad.nodes[at].slots[1] = source::number(1); },
+            // Shapes extend an earlier parent; the key index holds each key at
+            // its hash's probe sequence; prototype chains end (light-cljs-787).
+            33 => { assert(bad.shapes.len > 2); bad.shapes[1].parent = 2; },
+            34 => { var at: i64 = -1; for e, i in bad.keys { if e.row != source::no_row() { at = i; } } assert(at >= 0); bad.keys[at].hash += 1; },
+            35 => { let g = bad.header.global.id(); bad.nodes[g].proto = bad.header.global; },
+            // A shaped object's overflow run past the values table.
+            37 => { let g = bad.header.global.id(); assert(bad.nodes[g].key_capacity > 0); bad.nodes[g].keys = bad.values.len as u32; },
+            36 => { var at: i64 = -1; for r, i in bad.strings { if !r.key && r.len > 0 { at = i; } } assert(at >= 0); bad.strings[at].key = true; },
             _ => { abort("unexpected mode"); },
         }
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
@@ -347,8 +356,55 @@ thread_fn truncated_worker(base: snapshot::Snapshot, derived: snapshot::Snapshot
     var changed = copy(derived); changed.nodes[0].immutable = !changed.nodes[0].immutable; assert(!snapshot::over_image(changed, base, rows));
     print("reused worker image: install over the image equals restore, truncation and service rows restore the twin");
 }
+// Shapes and interned keys on a reused worker (light-cljs-787, amended by
+// light-cljs-792): jobs add transitions to image shapes and keys to the
+// image's key index, and the reset restores both, so two jobs building the
+// same layouts get the same shapes, keys, key order and results, and the
+// reset check passes after each.
+fn reused_layouts() {
+    heap_program::join(thread_spawn(layout_parent)); let base = qget<snapshot::Snapshot>();
+    heap_program::join(thread_spawn(layout_worker, copy(base)));
+    print("reused worker layouts: identical shapes, keys, key order and results in two jobs; the reset restores image shapes and keys");
+}
+thread_fn layout_parent() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/accessors.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    // An image object whose shapes and keys are image rows.
+    let point = source::allocate(heap, source::Node { kind: 0 }); assert(source::install_field(heap, heap.global, "point", point));
+    assert(source::install_field(heap, point, "x", source::number(1)) && source::install_field(heap, point, "y", source::number(2)));
+    var bindings: snapshot::Binding[>..] = [snapshot::Binding { id: 1, generation: 1, value: source::closure(heap, 0, []) }, snapshot::Binding { id: 2, generation: 1, value: point }];
+    var c = snapshot::Control {}; let base = snapshot::capture(heap, bindings, c);
+    assert(c.error == snapshot::Error.None && base.shapes.len > 2 && base.keys.len > 0);
+    assert(qput(base));
+}
+thread_fn layout_worker(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    let identity = source::reserve_identity(); let rows: i64[] = [];
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, bindings, identity, r) && snapshot::truncate(base, rows, identity, code, heap, bindings));
+    let point = bindings[1].value; let image = heap.image;
+    var first: u8[>..] = [];
+    for run in 2 {
+        var job = source::Job { heap: heap };
+        assert(source::start(job, bindings[0].value, []) && source::run(job, -1) == tiny::Outcome.Complete && job.result.tag() == 2 && job.result.flag());
+        assert(source::retire(job));
+        // The same keys in the same order share the image object's shape; a
+        // new key extends it above the image, and the image shape gets a child.
+        let p = source::allocate(heap, source::Node { kind: 0 });
+        assert(source::put(heap, p, source::text(heap, "x"), source::number(3)) && source::put(heap, p, source::text(heap, "y"), source::number(4)));
+        assert(source::node(heap, p.id()).shape == source::node(heap, point.id()).shape && source::node(heap, p.id()).shape < image.shapes);
+        assert(source::put(heap, p, source::text(heap, "z"), source::number(5)) && source::node(heap, p.id()).shape >= image.shapes && heap.image_written);
+        var keys:  source::Value[>..] = []; assert(source::own_keys(heap, p, keys) && keys.len == 3);
+        var state: u8[>..]            = source::plain_rows(heap.shapes); state.append(bytes_of(heap.keys)); state.append(bytes_of(heap.strings)); state.append(source::plain_rows(keys));
+        for k in keys { for u in source::utf16(heap, k) { state.push(u as u8); } }
+        assert(source::key_is(heap, keys[0], "x") && source::key_is(heap, keys[1], "y") && source::key_is(heap, keys[2], "z"));
+        if run == 0 { first.append(state); } else { assert(state[..] == first[..]); }
+        assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings) && !heap.image_written);
+    }
+}
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); truncated_image(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); heap_program::join(thread_spawn(live_boundary)); }
 
 // The finite map's parent handles that restored heaps look up by index.
 struct FiniteMap { image: snapshot::Snapshot, input: source::Value, tail: source::Value, mapped: source::Value, callback: source::Value, alias: source::Value, other: source::Value, later_tail: source::Value }
@@ -437,7 +493,7 @@ thread_fn finite_map_malformed(parent: FiniteMap, mode: i64) {
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
         assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), restore) && restore.error == snapshot::Error.Link && restore.copied_bytes == 0);
         let empty = snapshot::borrow(target, roots, 1);
-        assert(snapshot::ends(empty) == [0; 17] && target.identity == 0 && !dest.valid && target.fault == source::Fault.None);
+        assert(snapshot::ends(empty) == [0; 20] && target.identity == 0 && !dest.valid && target.fault == source::Fault.None);
         var retry = snapshot::Control {}; assert(snapshot::restore(saved, dest, target, roots, source::reserve_identity(), retry));
     }
 }

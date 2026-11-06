@@ -64,7 +64,7 @@ fn perform(base: const snapshot::Snapshot&, work: const Work&, options: Options,
     heap.limits.steps = min(heap.limits.steps, options.steps); heap.limits.work = min(heap.limits.work, heap.work + options.work);
     // Table limits count the rows this job adds above the restored image.
     heap.limits.nodes = min(heap.limits.nodes, 8192); heap.limits.values = min(heap.limits.values, 32768);
-    heap.limits.properties = min(heap.limits.properties, 4096); heap.limits.units = min(heap.limits.units, 65536);
+    heap.limits.properties = min(heap.limits.properties, 4096); heap.limits.shapes = min(heap.limits.shapes, 4096); heap.limits.units = min(heap.limits.units, 65536);
     heap.limits.stack = min(heap.limits.stack, 1024); heap.limits.frames = min(heap.limits.frames, 64);
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
     var definitions = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots"));

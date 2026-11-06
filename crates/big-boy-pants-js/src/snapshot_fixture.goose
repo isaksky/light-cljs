@@ -61,6 +61,9 @@ fn prepare(code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding
     // Neither the cell nor its payload has a direct binding: these are
     // retained solely through the two closure environments after return.
     let hidden = source::allocate(heap, source::Node { kind: 0 }); assert(source::install_field(heap, hidden, "payload", source::number(73)));
+    // A deleted property leaves it in dictionary mode (light-cljs-787), so
+    // the image has property records too.
+    assert(source::install_field(heap, hidden, "scratch", source::number(1)) && source::delete_property(heap, hidden, source::key_named(heap, "scratch")) && source::node(heap, hidden.id()).initialized);
     let hidden_cell = source::allocate(heap, source::Node { kind: 3, initialized: true, value: hidden });
     bindings.push(snapshot::Binding { id: 9, generation: 1, value: source::closure(heap, setter, [hidden_cell]) });
     bindings.push(snapshot::Binding { id: 10, generation: 1, value: source::closure(heap, setter, [hidden_cell]) });

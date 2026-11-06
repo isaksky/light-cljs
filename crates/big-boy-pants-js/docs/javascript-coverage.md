@@ -185,6 +185,33 @@ inline property slots, not four, so a header (121 bytes) stays below its
 size before the change (125 bytes) while most form nodes, which have no
 properties, pay for them; shapes and attributes remain light-cljs-787's.
 
+*As landed by light-cljs-787 (the property model):* `source_vm.goose` adds
+three tables, all plain `u32` rows like the others. `shapes` holds
+immutable layout records (parent, interned key, attribute bits, property
+count) with their transitions as a newest-child link and an older-sibling
+link, so objects built with the same keys in the same order share one
+shape. `accessors` holds getter/setter pairs; an accessor property's slot is
+the internal `Value.Accessor` naming its pair, never written in place (a
+merge makes a new pair). `keys` is an open-addressed index of interned key
+headers (`Str.key`); string constants are interned when code is installed,
+so a named access compares one `u32` per shape entry and hashes nothing.
+An ordinary object stores its shape, its prototype (`Null`, an object, or
+`Empty` for the realm's pending %Object.prototype%, whose own names fail
+`UnsupportedOperand` until light-cljs-788) and its values: two inline, the
+rest in an overflow run of `values`. A delete, an attribute change or more
+than 64 keys moves it to dictionary mode, records of key, value and
+attributes in `properties`. The internal methods (`own_entry`, `lookup`,
+`assign`, `define_property`, `has_property`, `delete_property`, `own_keys`)
+dispatch on the object kind with `match`; arrays, read-only arguments and
+functions' `call` override the ordinary ones, other kinds fail by name. A
+getter runs as a frame entered from the read; a setter runs under a
+`Setter` native frame that drops its return value. Reused workers: a job
+that adds a transition to an image shape or a key to the index marks the
+image written, and the reset copies both back from the twin
+(`snapshot::truncate`), so a job's shapes and keys vanish with its rows.
+Array-index keys of ordinary objects stay shape keys, ordered first by
+`own_keys`; element runs for them are later work.
+
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the
 real exported bytecode with this model; its map benchmark result is in

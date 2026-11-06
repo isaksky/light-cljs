@@ -13,7 +13,7 @@ struct Request { id: i64, identity: i64, exhaust: bool = false }
 fn cap(heap: source::Heap&, s: const snapshot::Snapshot&, exhaust: bool) {
     heap.limits.nodes = min(heap.limits.nodes, if exhaust { 0 } else { 512 });
     heap.limits.values = min(heap.limits.values, 4096);
-    heap.limits.properties = min(heap.limits.properties, 128);
+    heap.limits.properties = min(heap.limits.properties, 128); heap.limits.shapes = min(heap.limits.shapes, 128);
     heap.limits.units = min(heap.limits.units, 256);
     heap.limits.work = min(heap.limits.work, heap.work + 100000);
 }
@@ -21,6 +21,7 @@ fn heap_ceiling(s: const snapshot::Snapshot&) -> i64 {
     return (s.nodes.len + 512) * bytes_of([source::Node { kind: 0 }]).len
          + (s.values.len + 4096 + s.constants.len) * bytes_of([source::Value.Undefined]).len
          + (s.properties.len + 128) * bytes_of([source::Property {}]).len
+         + (s.shapes.len + s.accessors.len + 129) * bytes_of([source::Shape {}]).len + (2 * s.keys.len + 1088) * bytes_of([source::KeySlot {}]).len
          + (s.units.len + 256) * 2 + s.bytes.len + bytes_of(s.sources).len;
 }
 fn charge(s: const snapshot::Snapshot&) -> i64 {

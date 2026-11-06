@@ -23,6 +23,10 @@ fn mark(heap: const source::Heap&, v: source::Value, nodes: bool[>..]&, units: b
         if r.len > 0 && r.len <= length - r.start { for i in r.start..(r.start + r.len) { units[base + i] = true; } }
     }
 }
+// A property's value: an accessor marks its pair's functions.
+fn mark_slot(heap: const source::Heap&, v: source::Value, nodes: bool[>..]&, units: bool[>..]&, work: i64[>..<]&) {
+    if v.tag() == -2 { let p = source::pair(heap, v); mark(heap, p.get, nodes, units, work); mark(heap, p.set, nodes, units, work); } else { mark(heap, v, nodes, units, work); }
+}
 fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
     var nodes:      bool[>..] = []; nodes.resize(heap.nodes.len, false);
     var values:     bool[>..] = []; values.resize(heap.values.len, false);
@@ -38,12 +42,21 @@ fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
         if snapshot::has_values(n.kind) {
             for row in n.start..(n.start + n.count) { if row < values.len { values[row] = true; mark(heap, source::slot(heap, row), nodes, units, work); } }
         }
-        for p, i in n.slots { if i < n.key_count { mark(heap, p.key, nodes, units, work); mark(heap, p.value, nodes, units, work); } }
-        for p in n.keys..min(n.keys + source::overflow(n), properties.len) {
-            properties[p] = true; let record = source::property_row(heap, p);
-            mark(heap, record.key, nodes, units, work); mark(heap, record.value, nodes, units, work);
+        // Own properties (light-cljs-787): a shape-mode object's slots and
+        // overflow run, a dictionary's records, accessors' functions, and
+        // the prototype. Every shape's key is live.
+        mark(heap, n.proto, nodes, units, work);
+        if snapshot::shaped(n) {
+            for v, i in n.slots { if i < n.key_count { mark_slot(heap, v, nodes, units, work); } }
+            for row in n.keys..min(n.keys + source::overflow(n), values.len) { values[row] = true; mark_slot(heap, source::slot(heap, row), nodes, units, work); }
+        } else if snapshot::dictionary(n) {
+            for p in n.keys..min((n.keys + n.key_count) as i64, properties.len) {
+                properties[p] = true; let record = source::property_row(heap, p);
+                mark(heap, record.key, nodes, units, work); mark_slot(heap, record.value, nodes, units, work);
+            }
         }
     }
+    for s in heap.shapes { mark(heap, s.key, nodes, units, work); }
     var c = Census { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len + heap.latin1.len };
     for live in nodes { if !live { c.dead_nodes += 1; } }
     for live in values { if !live { c.dead_values += 1; } }

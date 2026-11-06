@@ -15,12 +15,14 @@ struct State {
     thrown:     bool = false, status: tiny::Status = tiny::Status.Ready, steps: i64 = 0, claimed: bool = false, fault: source::Fault = source::Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1,
     registered: bool = false, live_jobs: i64 = 0, result: u8[] = [], frames: u8[] = [], locals: u8[] = [], operands: u8[] = [], writes: u8[] = [],
     nodes:      u8[] = [], values: u8[] = [], properties: u8[] = [], units: u16[] = [], latin1: u8[] = [], identity: i64 = 0, work: i64 = 0, heap_fault: source::Fault = source::Fault.None,
+    shapes:     u8[] = [], accessors: u8[] = [], keys: u8[] = [],
 }
 fn state(a: source::Job&) -> State {
     return State {
         thrown:     a.thrown, status: a.status, steps: a.steps, claimed: a.claimed, fault: a.fault, fault_pc: a.fault_pc, fault_function: a.fault_function,
         registered: a.registered, live_jobs: a.heap.live_jobs, result: source::plain_rows([a.result]), frames: source::plain_rows(a.frames), locals: source::plain_rows(a.locals), operands: source::plain_rows(a.operands), writes: source::plain_rows(a.writes),
         nodes:      source::plain_rows(a.heap.nodes), values: source::plain_rows(a.heap.values), properties: source::plain_rows(a.heap.properties), units: copy(a.heap.units), latin1: copy(a.heap.latin1), identity: a.heap.identity, work: a.heap.work, heap_fault: a.heap.fault,
+        shapes:     source::plain_rows(a.heap.shapes), accessors: source::plain_rows(a.heap.accessors), keys: str(bytes_of(a.heap.keys)),
     };
 }
 fn same_state(a: const State&, b: const State&) {
@@ -35,6 +37,7 @@ fn same_state(a: const State&, b: const State&) {
     assert(a.nodes == b.nodes);
     assert(a.values == b.values);
     assert(a.properties == b.properties);
+    assert(a.shapes == b.shapes && a.accessors == b.accessors && a.keys == b.keys);
     assert(a.units[..] == b.units[..] && a.latin1[..] == b.latin1[..] && a.identity == b.identity && a.work == b.work && a.heap_fault == b.heap_fault);
 }
 struct Run { status: tiny::Status, steps: i64 }
@@ -255,6 +258,11 @@ struct WrongRow { family: i64 }
 thread_fn wrong_row(probe: WrongRow) {
     var code = source::Code {}; decode(code, embed_file("../corpus/serial/calls.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); source::boot_runtime(heap);
+    // Interned keys add string headers over existing units (light-cljs-787):
+    // pad the Latin-1 table so its length stays past every other table's,
+    // and overflow value runs: pad the nodes past values and source ranges.
+    while heap.nodes.len <= heap.values.len + heap.source_ranges.len { heap.nodes.push(source::Node { kind: 0 }); }
+    while heap.latin1.len <= heap.strings.len + heap.nodes.len + heap.properties.len + heap.constants.len { heap.latin1.push(97); }
     let f = code.functions[0]; let big = heap.latin1.len;
     match probe.family {
         0 => { assert(heap.nodes.len < big); source::node(heap, heap.nodes.len); },
@@ -295,32 +303,34 @@ thread_fn latin1_strings() {
     let k = source::key(heap, source::number(42)); assert(!source::header(heap, k.sid()).wide && source::index(heap, k) == 42 && source::key_is(heap, k, "42"));
     print("serial source VM: Latin-1 and UTF-16 strings stay canonical through make, concatenate, compare, index and print");
 }
-// Small objects keep their first two properties in the header's inline
-// slots; the third spills into an overflow run (light-cljs-800).
+// Small objects keep their first two property values in the header's
+// inline slots; the third spills into an overflow run of values, and the keys
+// live in shared shapes (light-cljs-800, light-cljs-787).
 thread_fn inline_slots() {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, embed_file("../corpus/serial/calls.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
-    let o = source::allocate(heap, source::Node { kind: 0 }); let rows = heap.properties.len;
+    let o = source::allocate(heap, source::Node { kind: 0 }); let rows = heap.properties.len; let slots = heap.values.len;
     let a = source::text(heap, "a"); let b = source::text(heap, "b"); let c = source::text(heap, "c");
     assert(source::put(heap, o, a, source::number(1)) && source::put(heap, o, b, source::number(2)));
-    assert(heap.properties.len == rows && source::node(heap, o.id()).key_count == 2 && source::node(heap, o.id()).key_capacity == 0);
-    // Overwriting an inline record allocates nothing.
-    assert(source::put(heap, o, a, source::number(10)) && heap.properties.len == rows);
+    assert(heap.properties.len == rows && heap.values.len == slots && source::node(heap, o.id()).key_count == 2 && source::node(heap, o.id()).key_capacity == 0);
+    // Overwriting an inline value allocates nothing.
+    let shapes = heap.shapes.len;
+    assert(source::put(heap, o, a, source::number(10)) && heap.properties.len == rows && heap.shapes.len == shapes);
     assert(source::put(heap, o, c, source::number(3)));
     let n = source::node(heap, o.id());
-    assert(n.key_count == 3 && n.key_capacity == 4 && heap.properties.len == rows + 4 && source::overflow(n) == 1);
+    assert(n.key_count == 3 && n.key_capacity == 4 && heap.properties.len == rows && heap.values.len == slots + 4 && source::overflow(n) == 1 && source::shape_row(heap, n.shape).count == 3);
     for k, i in [a, b, c] { let v, found = source::own_property(heap, o, k); assert(found && v.num() == [10.0, 2.0, 3.0][i]); }
     let none, missing = source::own_property(heap, o, source::text(heap, "d")); assert(!missing && none.tag() == 0);
-    // A sparse write turns an array into a dictionary array, its first two
-    // records inline; cutting its length clears the cut-off inline slot.
+    // A sparse write turns an array into a dictionary array of records;
+    // cutting its length clears the cut-off record.
     let array = source::allocate(heap, source::Node { kind: 1 }); let before = heap.properties.len;
     assert(source::set_element(heap, array, 0, source::number(5)) && source::set_element(heap, array, 5000, source::number(6)));
-    let d = source::node(heap, array.id()); assert(d.initialized && d.key_count == 2 && d.key_capacity == 0 && heap.properties.len == before);
+    let d = source::node(heap, array.id()); assert(d.initialized && d.key_count == 2 && d.key_capacity == 4 && heap.properties.len == before + 4);
     assert(source::put(heap, array, source::text(heap, "length"), source::number(1)));
-    let cut = source::node(heap, array.id()); assert(cut.key_count == 1 && cut.length == 1 && cut.slots[1].key.tag() == 0);
+    let cut = source::node(heap, array.id()); assert(cut.key_count == 1 && cut.length == 1 && source::dict_at(heap, array.id(), 1).key.tag() == 0);
     let kept, present = source::own_element(heap, array, 0); assert(present && kept.num() == 5);
-    print("serial source VM: two inline property slots, then an overflow run; dictionary arrays share them");
+    print("serial source VM: two inline property slots, then an overflow run; dictionary arrays keep records");
 }
 fn wrong_rows() {
     let tables = ["table nodes", "table nodes", "table values", "table values", "table properties", "table strings", "table constants", "table source_ranges", "table units", "table latin1"];
@@ -376,6 +386,7 @@ fn main() {
     malformed(embed_file("../corpus/serial/captures.gsp"));
     heap_program::join(thread_spawn(instruction_limit));
     control_flow();
+    properties();
     // Image comparisons are bit-exact: NaN matches itself, -0 differs from +0.
     assert(source::same_bits(source::number(0.0 / 0.0), source::number(0.0 / 0.0)) && !source::same_bits(source::number(0.0), source::number(-0.0)));
     print("serial source VM: calls/captures/cells/properties/truth/UTF16/errors, exact slices and limits passed");
@@ -402,6 +413,113 @@ fn control_flow() {
     }
     heap_program::join(thread_spawn(pending_completions, str(embed_file("../corpus/serial/calls.gsp"))));
     print("serial source VM: finally/completions, native ToPrimitive frames, 10,000-frame depth and cancellation passed");
+}
+// The property model (light-cljs-787): accessors (a getter's frame, a
+// setter's native frame, an exception through it), prototype chains, `in`,
+// delete and a strict assignment without a setter, every budget cut
+// matching the uncut run; then the model's Goose functions.
+fn properties() {
+    check(embed_file("../corpus/serial/accessors.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/prototypes.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/deletes.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/getter-only.gsp"), "", source::Fault.TypeError);
+    heap_program::join(thread_spawn(property_model));
+    print("serial source VM: shapes, interned keys, attributes, accessors, dictionary mode, own-key order and prototype chains passed");
+}
+fn key(heap: source::Heap&, name: const u8[:]) -> source::Value { return source::key_named(heap, name); }
+thread_fn property_model() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, embed_file("../corpus/serial/calls.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    // Objects built with the same keys in the same order share their shapes;
+    // another order makes other shapes. Keys are interned: a new string of
+    // the same text names the same key.
+    let p = source::allocate(heap, source::Node { kind: 0 }); let q = source::allocate(heap, source::Node { kind: 0 }); let r = source::allocate(heap, source::Node { kind: 0 });
+    assert(source::put(heap, p, source::text(heap, "x"), source::number(1)) && source::put(heap, p, source::text(heap, "y"), source::number(2)));
+    let shapes = heap.shapes.len;
+    assert(source::put(heap, q, source::text(heap, "x"), source::number(3)) && source::put(heap, q, source::text(heap, "y"), source::number(4)) && heap.shapes.len == shapes);
+    assert(source::put(heap, r, source::text(heap, "y"), source::number(5)) && source::put(heap, r, source::text(heap, "x"), source::number(6)) && heap.shapes.len == shapes + 2);
+    assert(source::node(heap, p.id()).shape == source::node(heap, q.id()).shape && source::node(heap, p.id()).shape != source::node(heap, r.id()).shape);
+    let fresh = source::text(heap, "x"); assert(source::intern(heap, fresh) == key(heap, "x") && fresh != key(heap, "x"));
+    assert(source::get(heap, q, source::text(heap, "y")).num() == 4 && source::get(heap, r, source::text(heap, "y")).num() == 5);
+    // Attributes: a non-writable, non-configurable property refuses
+    // assignment (a TypeError for put, as in strict code; no fault from
+    // write, which sloppy code ignores), a changed value or attribute and
+    // delete, and accepts a definition that changes nothing.
+    let o = source::allocate(heap, source::Node { kind: 0 }); let x = key(heap, "x");
+    assert(source::define_own(heap, o.id(), x, source::number(1), source::attr_enumerable()));
+    assert(!source::put(heap, o, source::text(heap, "x"), source::number(2)) && heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
+    let setter, accepted = source::write(heap, o, source::text(heap, "x"), source::number(2)); assert(!accepted && setter.tag() == 0 && heap.fault == source::Fault.None);
+    assert(source::define_own(heap, o.id(), x, source::number(1), source::attr_enumerable()) && !source::node(heap, o.id()).initialized);
+    assert(!source::define_own(heap, o.id(), x, source::number(2), source::attr_enumerable()) && !source::define_own(heap, o.id(), x, source::number(1), source::attrs_data()));
+    assert(!source::delete_property(heap, o, x) && heap.fault == source::Fault.None && source::get(heap, o, x).num() == 1);
+    // Changing a configurable property's attributes moves the object to
+    // dictionary mode, keeping values and order.
+    let y = key(heap, "y"); assert(source::define_own(heap, o.id(), y, source::number(7), source::attrs_data()));
+    assert(source::define_own(heap, o.id(), y, source::number(8), source::attr_writable() | source::attr_configurable()) && source::node(heap, o.id()).initialized && source::node(heap, o.id()).shape == 0);
+    assert(source::get(heap, o, x).num() == 1 && source::get(heap, o, y).num() == 8 && source::dict_at(heap, o.id(), 1).attrs == 5);
+    // Accessors, own and inherited: lookup returns the getter and assign the
+    // setter, for the dispatch loop to run with the original receiver; a
+    // getter-only property refuses assignment; a Goose get of an accessor
+    // fails UnsupportedOperand (no frame can run there).
+    let getter = source::closure(heap, 0, []); let setter_fn = source::closure(heap, 0, []);
+    let base = source::allocate(heap, source::Node { kind: 0 }); let a = key(heap, "a"); let g = key(heap, "g");
+    assert(source::define_own(heap, base.id(), a, getter, source::attrs_accessor(), 1) && source::define_own(heap, base.id(), a, setter_fn, source::attrs_accessor(), 2));
+    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 3);
+    let child = source::allocate(heap, source::Node { kind: 0 }); assert(source::set_prototype(heap, child.id(), base));
+    for target in [base, child] {
+        let v, found = source::lookup(heap, target, a); assert(v.tag() == 0 && found == getter);
+        let f, ok = source::assign(heap, target, a, source::number(1)); assert(ok && f == setter_fn);
+        let none, refused = source::assign(heap, target, g, source::number(1)); assert(!refused && none.tag() == 0 && heap.fault == source::Fault.None);
+    }
+    source::get(heap, child, a); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    assert(!source::node(heap, child.id()).initialized && source::node(heap, child.id()).key_count == 0);
+    // Deletion moves a shaped object to dictionary mode; later records move
+    // down and new ones append, in creation order.
+    let d = source::allocate(heap, source::Node { kind: 0 });
+    for name in ["a", "b", "c"] { assert(source::put(heap, d, source::text(heap, name), source::number(1))); }
+    assert(source::delete_property(heap, d, key(heap, "b")) && source::node(heap, d.id()).initialized && source::node(heap, d.id()).key_count == 2);
+    assert(source::delete_property(heap, d, key(heap, "missing")) && source::put(heap, d, source::text(heap, "e"), source::number(2)));
+    var order: source::Value[>..] = []; assert(source::own_keys(heap, d, order) && order.len == 3 && source::key_is(heap, order[0], "a") && source::key_is(heap, order[1], "c") && source::key_is(heap, order[2], "e"));
+    // Own-key order: array indices ascending, then strings in creation
+    // order, then symbols in creation order.
+    let mixed = source::allocate(heap, source::Node { kind: 0 }); let iterator: source::Value = source::Value.Symbol { s: 0 };
+    for name in ["b", "10", "a"] { assert(source::put(heap, mixed, source::text(heap, name), source::number(1))); }
+    assert(source::define_own(heap, mixed.id(), iterator, source::number(1), source::attrs_data()) && source::define_own(heap, mixed.id(), source::Value.Symbol { s: 2 }, source::number(2), source::attrs_data()));
+    for name in ["2", "4294967295", "c", "01"] { assert(source::put(heap, mixed, source::text(heap, name), source::number(1))); }
+    var all: source::Value[>..] = []; assert(source::own_keys(heap, mixed, all) && all.len == 9);
+    let expected = ["2", "10", "b", "a", "4294967295", "c", "01"];
+    for name, i in expected { assert(source::key_is(heap, all[i], name)); }
+    assert(source::symbol_index(all[7]) == 0 && source::symbol_index(all[8]) == 2);
+    // Symbol keys through the public entry points: get, put, has, delete and
+    // an inherited read.
+    let heir = source::allocate(heap, source::Node { kind: 0 }); assert(source::set_prototype(heap, heir.id(), mixed));
+    assert(source::get(heap, mixed, iterator).num() == 1 && source::put(heap, mixed, iterator, source::number(5)) && source::get(heap, heir, iterator).num() == 5);
+    assert(source::has_property(heap, heir, iterator) && source::put(heap, heir, iterator, source::number(6)) && source::get(heap, mixed, iterator).num() == 5);
+    assert(source::delete_property(heap, heir, iterator) && source::get(heap, heir, iterator).num() == 5 && heap.fault == source::Fault.None);
+    // A non-configurable accessor accepts its own getter again and refuses
+    // another function or attributes.
+    let fixed = source::allocate(heap, source::Node { kind: 0 }); let pairs = heap.accessors.len;
+    assert(source::define_own(heap, fixed.id(), g, getter, source::attr_enumerable(), 1) && heap.accessors.len == pairs + 1);
+    assert(source::define_own(heap, fixed.id(), g, getter, source::attr_enumerable(), 1) && heap.accessors.len == pairs + 1);
+    assert(!source::define_own(heap, fixed.id(), g, setter_fn, source::attr_enumerable(), 1) && !source::define_own(heap, fixed.id(), g, getter, source::attrs_accessor(), 1));
+    assert(!source::define_own(heap, fixed.id(), g, setter_fn, source::attr_enumerable(), 2) && heap.fault == source::Fault.None);
+    // A three-object chain: reads find each level's property and the nearest
+    // shadowing one; a cycle is refused.
+    let c1 = source::allocate(heap, source::Node { kind: 0 }); let c2 = source::allocate(heap, source::Node { kind: 0 }); let c3 = source::allocate(heap, source::Node { kind: 0 });
+    assert(source::set_prototype(heap, c2.id(), c1) && source::set_prototype(heap, c3.id(), c2));
+    assert(source::put(heap, c1, source::text(heap, "deep"), source::number(1)) && source::put(heap, c1, source::text(heap, "s"), source::number(1)) && source::put(heap, c2, source::text(heap, "s"), source::number(2)));
+    assert(source::get(heap, c3, source::text(heap, "deep")).num() == 1 && source::get(heap, c3, source::text(heap, "s")).num() == 2 && source::has_property(heap, c3, key(heap, "deep")));
+    assert(source::get(heap, c3, source::text(heap, "nothing")).tag() == 0 && heap.fault == source::Fault.None);
+    assert(!source::set_prototype(heap, c1.id(), c3) && source::node(heap, c1.id()).proto.tag() == -1);
+    // An inherited name of the realm's pending %Object.prototype% fails by
+    // name; under a null prototype it is simply absent.
+    source::get(heap, c3, source::text(heap, "toString")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    assert(source::set_prototype(heap, c1.id(), source::nil()) && source::get(heap, c3, source::text(heap, "toString")).tag() == 0 && heap.fault == source::Fault.None);
+    // Past shape_limit() keys an object turns to dictionary mode.
+    let big = source::allocate(heap, source::Node { kind: 0 });
+    for i in source::shape_limit() + 1 { assert(source::put(heap, big, source::text(heap, str("k", i)), source::number(i))); }
+    assert(source::node(heap, big.id()).initialized && source::get(heap, big, source::text(heap, "k3")).num() == 3 && source::get(heap, big, source::text(heap, "k64")).num() == 64);
 }
 thread_fn depth_limit(bytes: u8[], frames: i64, fault: source::Fault) {
     defer { heap_program::finish(); }

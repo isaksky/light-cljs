@@ -15,7 +15,7 @@ fn same(a: source::Value, b: source::Value) -> bool { return source::same_bits(a
 fn same(a: source::Node, b: source::Node) -> bool {
     return a.kind == b.kind && a.function == b.function && a.start == b.start && a.count == b.count && a.keys == b.keys && a.key_count == b.key_count && a.key_capacity == b.key_capacity && a.length == b.length && a.initialized == b.initialized && a.immutable == b.immutable
         && same(a.value, b.value) && same(a.namespace_value, b.namespace_value) && same(a.metadata, b.metadata) && a.origin == b.origin && a.source == b.source && a.span_start == b.span_start && a.span_end == b.span_end
-        && source::plain_rows(a.slots) == source::plain_rows(b.slots);
+        && a.shape == b.shape && same(a.proto, b.proto) && source::plain_rows(a.slots) == source::plain_rows(b.slots);
 }
 fn code_prefix(p: const Publication&, bytes: const u8[:], functions: const source::Function[:], constants: const source::Value[:], children: const u32[:], ops: const source::Op[:], units: const u16[:], strings: const source::Str[:], c: snapshot::Control&) -> bool {
     let s .= p.image; let e = p.base.ends;
@@ -49,27 +49,48 @@ fn base_node<H>(p: const Publication&, heap: const H&, id: i64, c: snapshot::Con
         if !snapshot::range(n.start, n.count, heap.values.len) { return fail(c, snapshot::Error.Link); }
         for i in n.count { if !snapshot::poll(c) { return false; } if !same(s.values[n.start + i], heap.values[n.start + i]) { return fail(c, snapshot::Error.Link); } }
     }
-    // Inline slots were compared with the header (same); the overflow run here.
-    let spilled = source::overflow(n);
-    if !snapshot::range(n.keys, spilled, heap.properties.len) { return fail(c, snapshot::Error.Link); }
-    for at in n.keys..(n.keys + spilled) {
-        if !snapshot::poll(c) { return false; }
-        let a = s.properties[at]; let b = heap.properties[at];
-        if !same(a.key, b.key) || !same(a.value, b.value) { return fail(c, snapshot::Error.Link); }
+    // Inline slots were compared with the header (same); the overflow run of
+    // a shape-mode object, its shape chain and accessor pairs, or a
+    // dictionary's records, here (light-cljs-787).
+    if snapshot::shaped(n) {
+        let spilled = source::overflow(n);
+        if !snapshot::range(n.keys, spilled, heap.values.len) { return fail(c, snapshot::Error.Link); }
+        for at in n.keys..(n.keys + spilled) { if !snapshot::poll(c) { return false; } if !same(s.values[at], heap.values[at]) || !same_pair(s, heap, s.values[at]) { return fail(c, snapshot::Error.Link); } }
+        for v, i in n.slots { if i < n.key_count && !same_pair(s, heap, v) { return fail(c, snapshot::Error.Link); } }
+        var at: i64 = n.shape;
+        while at != 0 {
+            if !snapshot::poll(c) { return false; }
+            if at >= heap.shapes.len { return fail(c, snapshot::Error.Link); }
+            let a = s.shapes[at]; let b = heap.shapes[at];
+            if a.parent != b.parent || !same(a.key, b.key) || a.attrs != b.attrs || a.count != b.count { return fail(c, snapshot::Error.Link); }
+            at = a.parent;
+        }
+    } else if snapshot::dictionary(n) {
+        if !snapshot::range(n.keys, n.key_count, heap.properties.len) { return fail(c, snapshot::Error.Link); }
+        for at in n.keys..(n.keys + n.key_count) {
+            if !snapshot::poll(c) { return false; }
+            let a = s.properties[at]; let b = heap.properties[at];
+            if !same(a.key, b.key) || !same(a.value, b.value) || a.attrs != b.attrs || !same_pair(s, heap, a.value) { return fail(c, snapshot::Error.Link); }
+        }
     }
     return true;
 }
+// An accessor property's pair is the same row with the same functions.
+fn same_pair<H>(s: const snapshot::Snapshot&, heap: const H&, v: source::Value) -> bool {
+    return match v { Accessor x => x.a < heap.accessors.len && same(s.accessors[x.a].get, heap.accessors[x.a].get) && same(s.accessors[x.a].set, heap.accessors[x.a].set), _ => true };
+}
 fn edge_count(s: const snapshot::Snapshot&, n: source::Node, c: snapshot::Control&) -> i64 {
-    var count = 3 + (if snapshot::has_values(n.kind) { n.count } else { 0 });
+    var count = 4 + (if snapshot::has_values(n.kind) { n.count } else { 0 });
     if !snapshot::poll(c, n.key_count) { return -1; } return count + 2 * n.key_count;
 }
 fn edge(s: const snapshot::Snapshot&, n: source::Node, i: i64, c: snapshot::Control&) -> source::Value {
-    if i < 3 { return match i { 0 => n.value, 1 => n.namespace_value, _ => n.metadata }; }
-    var rest = i - 3;
+    if i < 4 { return match i { 0 => n.value, 1 => n.namespace_value, 2 => n.proto, _ => n.metadata }; }
+    var rest = i - 4;
     if snapshot::has_values(n.kind) { if rest < n.count { return s.values[n.start + rest]; } rest -= n.count; }
-    let i = rest / 2;
-    let p = if i < source::inline_slots() { n.slots[i] } else { s.properties[n.keys + i - source::inline_slots()] };
-    return if rest % 2 == 0 { p.key } else { p.value };
+    // Each own property: its value, or an accessor's getter and setter.
+    let k = rest / 2;
+    let v = if snapshot::dictionary(n) { s.properties[n.keys + k].value } else if k < source::inline_slots() { n.slots[k] } else { s.values[n.keys + k - source::inline_slots()] };
+    return match v { Accessor x => if rest % 2 == 0 { s.accessors[x.a].get } else { s.accessors[x.a].set }, _ => if rest % 2 == 0 { v } else { source::Value.Undefined } };
 }
 fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, ids: i64[>..]&, slots: i64[>..]&, c: snapshot::Control&) -> bool {
     if p.version != 1 || bytes_of([p.base]) != bytes_of([expected]) { return fail(c, snapshot::Error.Version); }
@@ -92,7 +113,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
                 if n.kind == 1 || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
                 if !base_node(p, heap, id, c) { return false; } ids[id] = id;
             } else {
-                if n.kind == 0 || n.kind == 1 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || source::plain_rows(n.slots) != source::plain_rows([source::Property {}, source::Property {}]) || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
+                if n.kind == 0 || n.kind == 1 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.proto.tag() != -1 || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
                 ids[id] = heap.nodes.len + slots.len; slots.push(id);
             }
         }

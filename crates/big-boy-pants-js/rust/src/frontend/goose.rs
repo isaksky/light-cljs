@@ -812,6 +812,12 @@ mod serial_tests {
             ("cancel", "limit"),
             ("cancel-break", "limit"),
             ("cancel-fault", "limit"),
+            // The property model (light-cljs-787): accessors, prototype
+            // chains, deletion and a strict assignment without a setter.
+            ("accessors", "boolean:true"),
+            ("prototypes", "boolean:true"),
+            ("deletes", "boolean:true"),
+            ("getter-only", "exception:TypeError"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));

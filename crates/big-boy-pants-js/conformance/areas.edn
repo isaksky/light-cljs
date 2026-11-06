@@ -42,10 +42,14 @@
  ;; execution case here (every quickjs/test_loop.js/* entry compiles it).
  :cases
  {;; ---- bbp-authored slices (conformance/cases/)
+  "bbp/accessor_own_inherited" {:area :objects-classes}
   "bbp/arithmetic_function" {:area :operators-values}
   "bbp/closure_counter" {:area :functions-scope}
   "bbp/completion_declarations_only" {:area :statements-loops}
+  "bbp/delete_dictionary" {:area :objects-classes}
   "bbp/driver_names_are_free" {:area :functions-scope}
+  "bbp/getter_only_strict" {:area :objects-classes}
+  "bbp/prototype_chain_three" {:area :objects-classes}
   "bbp/to_primitive_value_of" {:area :operators-values}
   "bbp/try_catch_finally" {:area :exceptions}
   "bbp/try_catch_normal" {:area :exceptions}
