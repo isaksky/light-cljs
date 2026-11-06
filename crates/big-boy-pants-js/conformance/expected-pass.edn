@@ -16,6 +16,7 @@
  "bbp/realm_errors"
  "bbp/realm_prototypes"
  "bbp/realm_uncaught_error"
+ "bbp/realm_well_known_symbols"
  "bbp/to_primitive_getter"
  "bbp/to_primitive_value_of"
  "bbp/try_catch_finally"

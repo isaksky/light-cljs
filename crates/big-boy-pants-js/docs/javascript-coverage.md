@@ -950,9 +950,12 @@ error), 12 to 22 their constructors and `Object`, `Function` and `Array`,
 then one built-in function per method: `Function.prototype.call`,
 `Object.getPrototypeOf`, `Object.is`, `Object.hasOwn`,
 `Object.prototype.hasOwnProperty`, `valueOf` and `toString`,
-`Array.isArray`, `Error.prototype.toString`. Each built-in has `length` and
-`name` (configurable only), a constructor its `prototype` (no attributes)
-and the prototype its `constructor`; the global object has the
+`Array.isArray`, `Error.prototype.toString` and `Symbol`, whose
+non-writable, non-configurable properties are the fifteen well-known symbols
+(`Value.Symbol`, the exporter's fixed indices, now admitted as values;
+calling `Symbol` is unsupported). Each built-in, the runtime leaves too, has
+`length` and `name` (configurable only), a constructor its `prototype` (no
+attributes) and the prototype its `constructor`; the global object has the
 constructors, `globalThis`, `NaN`, `Infinity` and `undefined`.
 
 - *Built-ins (decision 5).* A built-in function is a node of kind 4 whose
@@ -973,15 +976,18 @@ constructors, `globalThis`, `NaN`, `Infinity` and `undefined`.
   `initialize` (hand-made test heaps) has none.
 - *Pending properties.* A name the specification puts on a realm object and
   this VM does not implement yet (`Array.prototype.map`, `Object.keys`,
-  `Math`, `JSON`, `Symbol`, `Function.prototype.bind`, `@@iterator`: 124
-  entries of `PENDING`) is an accessor property whose slot names accessor row 0,
+  `Math`, `JSON`, `Symbol.for`, `Function.prototype.bind`, `@@iterator`:
+  126 entries of `PENDING`) is an accessor property whose slot names accessor row 0,
   the realm's pending pair. `in` and `hasOwnProperty` see it; reading,
   assigning or defining through it fails `UnsupportedOperand` (decision 1),
   so a case that needs it is explicit-unsupported, not wrong. An area
   replaces its entries by built-ins. A built-in step not implemented (a
   primitive wrapper, a `@@toStringTag` getter, dynamic `Function`) fails
-  `UnsupportedOperand` and names the built-in in `Job.detail`, which the
-  conformance runner prints.
+  `UnsupportedOperand` and names the built-in in `Job.detail`, as a pending
+  property names its key (`Heap.pending`); `describe_fault` appends the
+  name to the fault, so compiler diagnostics carry it
+  (`Fault.UnsupportedOperand:pending-map`), and the conformance runner
+  prints it.
 - *Errors.* A catchable VM fault (TypeError, ReferenceError, the new
   RangeError of `Array(-1)`, HostEffect, a stack overflow) raises an error
   object (kind 13, an ordinary object for properties) with its type's
@@ -997,24 +1003,23 @@ constructors, `globalThis`, `NaN`, `Infinity` and `undefined`.
   never sees another's change. A job reads realm objects other than the
   global through their prototype chains; the global object keeps the rule of
   protected rows (a name it lacks is a `NativeBoundary`, since the V8 build
-  has many more globals). The well-known symbols remain the exporter's fixed
-  indices (`Value.Symbol`); the `Symbol` global is pending.
+  has many more globals).
 
 Measured on a native release build (November 5, 2026, one process, the
-calls image of `corpus/serial`, no code strings): the realm is 32 node rows
-(3,712 bytes), 428 value rows (3,852 bytes; overflow runs with their spare
-capacity), 156 shapes (4,056 bytes), 1 accessor pair (18 bytes), 300 string
-headers (3,000 bytes), 1,289 Latin-1 units and a 512-slot key index
-(4,096 bytes), no property records: about 20 KB, and 6,166 work units.
-`initialize` takes 7.8 µs, mean of 2,000. With `boot_runtime` the image is
-50 nodes and 26,429 bytes of payload. Each reused job worker copies the
-realm once with its spawn (about 20 KB more per spawn; a 200k session at the
-16 MiB cap spawns 2 to 8 workers); a restore of the 26 KB image took 67 µs.
-The per-job reset (`snapshot::truncate`) takes 43 ns when the job wrote no
-image row and 390 ns when it did (a transition from an image shape or a new
-interned key, which copies the twin's 174 shapes and 512 key slots back),
-mean of 20,000 each; before the realm the image had 28 nodes and few
-shapes, so the realm adds at most about 0.35 µs to a job's reset, under
+calls image of `corpus/serial`, no code strings, two processes): the realm
+is 33 node rows (3,828 bytes), 488 value rows (4,392 bytes; overflow runs
+with their spare capacity), 174 shapes (4,524 bytes), 1 accessor pair (18
+bytes), 334 string headers (3,340 bytes), 1,438 Latin-1 units and a
+512-slot key index (4,096 bytes), no property records: about 22 KB, and
+6,681 work units. `initialize` takes 8.2 to 8.7 µs, mean of 2,000. With
+`boot_runtime` the image is 51 nodes and 28,322 bytes of payload. Each
+reused job worker copies the realm once with its spawn (about 22 KB more per
+spawn; a 200k session at the 16 MiB cap spawns 2 to 8 workers); a restore of
+the 28 KB image took 81 to 86 µs. The per-job reset (`snapshot::truncate`)
+takes 47 to 50 ns when the job wrote no image row and 416 to 422 ns when it
+did (a transition from an image shape or a new interned key, which copies
+the twin's 192 shapes and 512 key slots back), mean of 20,000 each; before the realm the image had 28 nodes and few
+shapes, so the realm adds at most about 0.4 µs to a job's reset, under
 2 ms over the 200k project's 5,283 jobs.
 
 *Static data at spawn (item 4).* A probe with a 1 MiB static `let` table of

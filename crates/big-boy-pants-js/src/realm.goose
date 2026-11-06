@@ -37,12 +37,12 @@ enum Builtin {
     FunctionPrototype, Object, Function, Array,
     Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError,
     ObjectGetPrototypeOf, ObjectIs, ObjectHasOwn, ObjectPrototypeHasOwnProperty, ObjectPrototypeValueOf, ObjectPrototypeToString,
-    ArrayIsArray, ErrorPrototypeToString,
+    ArrayIsArray, ErrorPrototypeToString, SymbolFunction,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[41] = [
+let BUILTINS: BuiltinInfo[42] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -63,6 +63,7 @@ let BUILTINS: BuiltinInfo[41] = [
     BuiltinInfo { which: Builtin.ObjectHasOwn, name: "hasOwn", length: 2 }, BuiltinInfo { which: Builtin.ObjectPrototypeHasOwnProperty, name: "hasOwnProperty", length: 1 },
     BuiltinInfo { which: Builtin.ObjectPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.ObjectPrototypeToString, name: "toString" },
     BuiltinInfo { which: Builtin.ArrayIsArray, name: "isArray", length: 1 }, BuiltinInfo { which: Builtin.ErrorPrototypeToString, name: "toString" },
+    BuiltinInfo { which: Builtin.SymbolFunction, name: "Symbol" },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -82,17 +83,21 @@ let ERROR_NAMES:    Name[8]    = [Name { text: "Error" }, Name { text: "EvalErro
 let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[9] = [
+let REALM_FUNCTIONS: Method[10] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
     Method { which: Builtin.ArrayIsArray, holder: 14 }, Method { which: Builtin.ErrorPrototypeToString, holder: 4 },
+    // The Symbol function, row symbol_row(), holds the well-known symbols.
+    Method { which: Builtin.SymbolFunction, holder: 0 },
 ];
 inline fn realm_nodes() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
+// The Symbol function's row: the last REALM_FUNCTIONS entry.
+inline fn symbol_row() -> i64 { return fixed_rows() + 9; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[124] = [
+let PENDING: PendingName[126] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
@@ -114,6 +119,8 @@ let PENDING: PendingName[124] = [
     PendingName { holder: 12, key: "getOwnPropertyDescriptors" }, PendingName { holder: 12, key: "getOwnPropertyNames" }, PendingName { holder: 12, key: "getOwnPropertySymbols" }, PendingName { holder: 12, key: "groupBy" },
     PendingName { holder: 12, key: "isExtensible" }, PendingName { holder: 12, key: "isFrozen" }, PendingName { holder: 12, key: "isSealed" }, PendingName { holder: 12, key: "keys" },
     PendingName { holder: 12, key: "preventExtensions" }, PendingName { holder: 12, key: "seal" }, PendingName { holder: 12, key: "setPrototypeOf" }, PendingName { holder: 12, key: "values" },
+    // Symbol (symbol_row(); its well-known symbols are real)
+    PendingName { holder: 32, key: "prototype" }, PendingName { holder: 32, key: "for" }, PendingName { holder: 32, key: "keyFor" },
     // Array
     PendingName { holder: 14, key: "from" }, PendingName { holder: 14, key: "of" }, PendingName { holder: 14, key: "fromAsync" }, PendingName { holder: 14, key: "", symbol: 8 },
     // The global object's other standard names.
@@ -123,7 +130,7 @@ let PENDING: PendingName[124] = [
     PendingName { holder: 0, key: "Int8Array" }, PendingName { holder: 0, key: "Int16Array" }, PendingName { holder: 0, key: "Int32Array" }, PendingName { holder: 0, key: "Iterator" },
     PendingName { holder: 0, key: "JSON" }, PendingName { holder: 0, key: "Map" }, PendingName { holder: 0, key: "Math" }, PendingName { holder: 0, key: "Number" },
     PendingName { holder: 0, key: "Promise" }, PendingName { holder: 0, key: "Proxy" }, PendingName { holder: 0, key: "Reflect" }, PendingName { holder: 0, key: "RegExp" },
-    PendingName { holder: 0, key: "Set" }, PendingName { holder: 0, key: "SharedArrayBuffer" }, PendingName { holder: 0, key: "String" }, PendingName { holder: 0, key: "Symbol" },
+    PendingName { holder: 0, key: "Set" }, PendingName { holder: 0, key: "SharedArrayBuffer" }, PendingName { holder: 0, key: "String" },
     PendingName { holder: 0, key: "Uint8Array" }, PendingName { holder: 0, key: "Uint8ClampedArray" }, PendingName { holder: 0, key: "Uint16Array" }, PendingName { holder: 0, key: "Uint32Array" },
     PendingName { holder: 0, key: "WeakMap" }, PendingName { holder: 0, key: "WeakRef" }, PendingName { holder: 0, key: "WeakSet" }, PendingName { holder: 0, key: "decodeURI" },
     PendingName { holder: 0, key: "decodeURIComponent" }, PendingName { holder: 0, key: "encodeURI" }, PendingName { holder: 0, key: "encodeURIComponent" }, PendingName { holder: 0, key: "escape" },
@@ -168,6 +175,14 @@ fn effect_builtin(b: Builtin) -> bool { return b == Builtin.Gensym || b == Built
 // The pending property's slot: an accessor naming the realm's pending pair.
 inline fn pending() -> Value { return Value.Accessor { a: 0 }; }
 inline fn is_pending(v: Value) -> bool { return match v { Accessor x => x.a == 0, _ => false }; }
+// A read, write or definition reached pending property k: UnsupportedOperand,
+// naming k for the report (Heap.pending, fail).
+fn pending_fault(heap: Heap&, k: Value) { if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; heap.pending = k; } }
+fn pending_detail(job: Job&) {
+    let k = job.heap.pending; job.detail.clear();
+    for c in "pending " { job.detail.push(c); }
+    if k.tag() == 4 { append_utf16(job.heap, k, job.detail); } else { for c in "@@" { job.detail.push(c); } for c in export_well_known_symbol(symbol_index(k)) { job.detail.push(c); } }
+}
 // The [[Prototype]] of node o: its own link, or for Empty, the realm's
 // default prototype for its kind (Object.prototype for ordinary objects,
 // errors and arguments objects, Array.prototype for arrays,
@@ -228,11 +243,7 @@ fn build_realm(heap: Heap&) -> bool {
     if !charge(heap, rows.len) || add_nodes(heap, rows) != 0 { if heap.fault == Fault.None { memory(heap); } return false; }
     heap.global = object(global_row());
     // Every built-in function's `length` and `name`.
-    for o in rows.len {
-        if rows[o].kind != 4 { continue; }
-        let info = BUILTINS[rows[o].function];
-        if !realm_value(heap, o, "length", number(info.length), attr_configurable()) || !realm_value(heap, o, "name", key_named(heap, info.name), attr_configurable()) { return false; }
-    }
+    for o in rows.len { if rows[o].kind == 4 && !builtin_metadata(heap, o) { return false; } }
     // Constructors and their prototypes.
     let pairs: i64[] = [object_constructor_row(), object_prototype_row(), function_constructor_row(), function_prototype_row(), array_constructor_row(), array_prototype_row()];
     var i: i64 = 0;
@@ -245,6 +256,12 @@ fn build_realm(heap: Heap&) -> bool {
         if !realm_value(heap, m.holder, BUILTINS[code(m.which)].name, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; }
         if m.which == Builtin.FunctionPrototypeCall { heap.call_method = object(fixed_rows() + j); }
     }
+    // The well-known symbols, Symbol's non-writable, non-enumerable,
+    // non-configurable data properties; their values are the exporter's
+    // fixed indices (decision 2), so they take no rows.
+    assert(REALM_FUNCTIONS[symbol_row() - fixed_rows()].which == Builtin.SymbolFunction);
+    var s: i64 = 0;
+    while export_well_known_symbol(s).len > 0 { if !realm_value(heap, symbol_row(), export_well_known_symbol(s), Value.Symbol { s: s as u32 }, 0) { return false; } s += 1; }
     // The global object's own properties.
     if !realm_value(heap, global_row(), "globalThis", heap.global, attr_writable() | attr_configurable()) { return false; }
     let globals: i64[] = [object_constructor_row(), function_constructor_row(), array_constructor_row()];
@@ -259,6 +276,11 @@ fn build_realm(heap: Heap&) -> bool {
     if heap.fault != Fault.None { return false; }
     assert(heap.nodes.len == realm_nodes());
     return true;
+}
+// Built-in function o's `length` and `name` from BUILTINS (configurable only).
+fn builtin_metadata(heap: Heap&, o: i64) -> bool {
+    let info = BUILTINS[node(heap, o).function];
+    return realm_value(heap, o, "length", number(info.length), attr_configurable()) && realm_value(heap, o, "name", key_named(heap, info.name), attr_configurable());
 }
 fn realm_value(heap: Heap&, o: i64, name: const u8[:], v: Value, attrs: u8) -> bool {
     let k = key_named(heap, name);
@@ -276,7 +298,11 @@ fn boot_runtime(heap: Heap&) -> Value {
     let rt = allocate(heap, Node { kind: 0 }); let core = allocate(heap, Node { kind: 0 });
     install_field(heap, rt, "core", core);
     install_field(heap, heap.global, "__lightNativeRuntime", rt);
-    for leaf in RUNTIME_LEAVES { install_field(heap, if leaf.core { core } else { rt }, leaf.key, allocate(heap, Node { kind: 4, function: code(leaf.which) })); }
+    for leaf in RUNTIME_LEAVES {
+        let f = allocate(heap, Node { kind: 4, function: code(leaf.which) });
+        if f.tag() != 5 || !builtin_metadata(heap, f.id()) { return Value.Undefined; }
+        install_field(heap, if leaf.core { core } else { rt }, leaf.key, f);
+    }
     if heap.fault == Fault.None { heap.boot_count += 1; }
     return rt;
 }
@@ -477,6 +503,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         ArrayIsArray => { let v = arg(args, 0); return boolean(v.tag() == 5 && node(heap, v.id()).kind == 1); },
         ErrorPrototypeToString => { return error_to_string(job, receiver); },
         FunctionPrototypeCall => { return unsupported_step(job, b, "called from a native frame"); },
+        SymbolFunction => { return unsupported_step(job, b, "creating symbols"); },
         _ => { return native_value(heap, id, args); },
     }
 }

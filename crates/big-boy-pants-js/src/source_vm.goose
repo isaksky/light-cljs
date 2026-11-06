@@ -258,8 +258,11 @@ root struct Heap {
     units:         u16[>..]   = [], latin1: u8[>..] = [], strings: Str[>..] = [], constants: Value[>..] = [], work: i64 = 0,
     source_bytes:  u8[>..]    = [], source_ranges: SourceRange[>..] = [],
     property_rows: i64        = 0, image: Tops = Tops {},
-    fault:         Fault      = Fault.None, global: Value = Value.Undefined, call_method: Value = Value.Undefined, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
-    live_jobs:     i64        = 0,
+    // pending: the key of the pending property (realm.goose) an
+    // UnsupportedOperand reached, for its report; fail() takes and clears it.
+    pending:   Value = Value.Undefined,
+    fault:     Fault = Fault.None, global: Value = Value.Undefined, call_method: Value = Value.Undefined, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
+    live_jobs: i64   = 0,
 }
 // Native frames (light-cljs-786, decision 4): an operation that must run
 // JavaScript from inside an instruction or built-in pushes a frame of
@@ -504,7 +507,9 @@ fn tops(heap: const Heap&) -> Tops { return Tops { nodes: heap.nodes.len, values
 fn valid(heap: Heap&, v: Value) -> bool {
     if heap.fault != Fault.None { return false; }
     return match v {
-        Empty, Symbol, BigInt, Accessor => { heap.fault = Fault.InvalidState; false },
+        // A well-known symbol (the realm's Symbol properties) is a value.
+        Symbol x => if export_well_known_symbol(x.s).len > 0 { true } else { heap.fault = Fault.InvalidState; false },
+        Empty, BigInt, Accessor => { heap.fault = Fault.InvalidState; false },
         Object o => if o.o < heap.nodes.len { true } else { heap.fault = Fault.StaleID; false },
         String s => if s.s < heap.strings.len { true } else { heap.fault = Fault.StaleID; false },
         _ => true,
@@ -1235,7 +1240,7 @@ fn lookup(heap: Heap&, object: Value, k: Value) -> Value, Value {
         let p = own_entry(heap, at, k);
         if heap.fault != Fault.None { return Value.Undefined, Value.Undefined; }
         if p.found {
-            if is_pending(p.value) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, Value.Undefined; }
+            if is_pending(p.value) { pending_fault(heap, k); return Value.Undefined, Value.Undefined; }
             return if is_accessor(p.value) { Value.Undefined } else { p.value }, if is_accessor(p.value) { pair(heap, p.value).get } else { Value.Undefined };
         }
         let proto = prototype(heap, at.id());
@@ -1298,7 +1303,7 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     let own = find_own(heap, o, k);
     if heap.fault != Fault.None { return Value.Undefined, false; }
     if own.found {
-        if is_pending(own.value) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; }
+        if is_pending(own.value) { pending_fault(heap, k); return Value.Undefined, false; }
         if is_accessor(own.value) { let f = pair(heap, own.value).set; return f, f.tag() == 5; }
         if own.attrs & attr_writable() == 0 { return Value.Undefined, false; }
         write_own(heap, o, own.index, value); return Value.Undefined, true;
@@ -1311,7 +1316,7 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
         let p = own_entry(heap, proto, k);
         if heap.fault != Fault.None { return Value.Undefined, false; }
         if p.found {
-            if is_pending(p.value) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; }
+            if is_pending(p.value) { pending_fault(heap, k); return Value.Undefined, false; }
             if is_accessor(p.value) { let f = pair(heap, p.value).set; return f, f.tag() == 5; }
             if p.attrs & attr_writable() == 0 { return Value.Undefined, false; }
             break;
@@ -1571,6 +1576,8 @@ fn terminate(job: Job&, reason: Fault, frame: Frame) {
 // Job.detail for its report (the built-in step it did not implement).
 fn fail(job: Job&, fault: Fault, frame: Frame) {
     job.heap.fault = Fault.None;
+    if fault == Fault.UnsupportedOperand && job.detail.len == 0 && job.heap.pending.tag() != 0 { pending_detail(job); }
+    job.heap.pending = Value.Undefined;
     var reported = fault;
     if catchable(fault) && catches(job) {
         let message = fault_message(job, fault, frame);
@@ -1592,9 +1599,13 @@ fn unwind_to(job: Job&, h: Handler) -> bool {
 }
 // The fault with the unimplemented operation's registry name, for example
 // `Fault.Unsupported:construct` or `Fault.Unsupported:const(BigInt)`.
+// A built-in step or pending property an UnsupportedOperand did not
+// implement follows, its spaces as dashes (Job.detail):
+// `Fault.UnsupportedOperand:Object:-primitive-wrapper-objects`.
 fn describe_fault(out: u8[>..]&, code: const Code&, job: const Job&) {
     format(out, job.fault);
     if job.fault == Fault.Unsupported && job.fault_opcode >= 0 { out.push(':'); unsupported_operation(out, code, job); }
+    if job.fault != Fault.Unsupported && job.detail.len > 0 { out.push(':'); for u in job.detail { out.push(if u == 32 { 45 } else if u > 126 { 63 } else { u as u8 }); } }
 }
 // Just the operation: `construct`, `const(BigInt)`.
 fn unsupported_operation(out: u8[>..]&, code: const Code&, job: const Job&) {
@@ -3331,6 +3342,7 @@ fn canonical(heap: Heap&, v: Value, out: u8[>..]&) {
         3 => { if v.num() != v.num() { out.append("number:NaN"); } else if v.num() == 0 && 1.0 / v.num() < 0 { out.append("number:-0"); } else { format(out, "number:", v.num()); } },
         4 => { out.append("utf16:["); for i in str_len(heap, v) { if i > 0 { out.push(','); } format(out, unit(heap, v, i)); } out.push(']'); },
         5 => { format(out, "identity:", heap.identity, ":", v.id(), ":", node(heap, v.id()).kind); },
+        6 => { out.append("symbol"); },
         _ => { out.append("invalid:tag"); },
     }
 }

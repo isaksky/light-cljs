@@ -391,6 +391,7 @@ fn main() {
     properties();
     key_enumeration();
     named_properties();
+    heap_program::join(thread_spawn(realm_model, str(embed_file("../corpus/serial/calls.gsp"))));
     // Image comparisons are bit-exact: NaN matches itself, -0 differs from +0.
     assert(source::same_bits(source::number(0.0 / 0.0), source::number(0.0 / 0.0)) && !source::same_bits(source::number(0.0), source::number(-0.0)));
     print("serial source VM: calls/captures/cells/properties/truth/UTF16/errors, exact slices and limits passed");
@@ -431,6 +432,34 @@ fn properties() {
     print("serial source VM: shapes, interned keys, attributes, accessors, dictionary mode, own-key order and prototype chains passed");
 }
 fn key(heap: source::Heap&, name: const u8[:]) -> source::Value { return source::key_named(heap, name); }
+// The realm (light-cljs-788): its fixed rows and default prototypes, a
+// built-in's and a runtime leaf's own `length` and `name` (configurable
+// only), the well-known symbols as values, and a pending property that
+// fails by name.
+thread_fn realm_model(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    assert(heap.nodes.len == source::realm_nodes() && source::realm_valid(heap.nodes, heap.accessors, heap.global, heap.call_method));
+    let a = source::allocate(heap, source::Node { kind: 1 }); let o = source::allocate(heap, source::Node { kind: 0 });
+    assert(source::prototype(heap, a.id()) == source::object(source::array_prototype_row()) && source::prototype(heap, o.id()) == source::object(source::object_prototype_row()));
+    assert(source::prototype(heap, source::object_prototype_row()).tag() == 1 && source::prototype(heap, heap.call_method.id()) == source::object(source::function_prototype_row()));
+    let rt = source::boot_runtime(heap);
+    let core = source::get(heap, rt, source::text(heap, "core")); let inc = source::get(heap, core, source::text(heap, "inc"));
+    for f in [inc, heap.call_method] {
+        let name = source::own_entry(heap, f, key(heap, "name")); let length = source::own_entry(heap, f, key(heap, "length"));
+        assert(name.found && length.found && name.attrs == source::attr_configurable() && length.attrs == source::attr_configurable() && length.value.num() == 1);
+    }
+    assert(source::key_is(heap, source::get(heap, inc, source::text(heap, "name")), "inc") && source::key_is(heap, source::get(heap, heap.call_method, source::text(heap, "name")), "call"));
+    let symbol = source::get(heap, heap.global, source::text(heap, "Symbol"));
+    let iterator = source::get(heap, symbol, source::text(heap, "iterator"));
+    assert(heap.fault == source::Fault.None && iterator.tag() == 6 && source::valid(heap, iterator) && source::equal(heap, iterator, source::Value.Symbol { s: 0 }));
+    var text: u8[>..] = []; source::canonical(heap, iterator, text); assert(text[..] == "symbol");
+    source::get(heap, a, source::text(heap, "map")); assert(heap.fault == source::Fault.UnsupportedOperand);
+    heap.fault = source::Fault.None; assert(source::key_is(heap, heap.pending, "map")); heap.pending = source::Value.Undefined;
+    assert(source::has_property(heap, a, key(heap, "map")) && !source::has_property(heap, o, key(heap, "map")));
+    print("serial source VM: realm rows, prototypes, built-in and runtime leaf metadata, well-known symbols and pending names passed");
+}
 thread_fn property_model() {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, embed_file("../corpus/serial/calls.gsp"));

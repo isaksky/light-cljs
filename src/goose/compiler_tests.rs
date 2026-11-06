@@ -1538,6 +1538,34 @@ fn goose_compiler_rejects_shared_writes_before_mutation() {
     }
 }
 
+/// A built-in step or a realm property the VM does not implement yet
+/// (light-cljs-788) fails by name, even under a `catch`, and the compiler's
+/// diagnostic names it; the V8 build runs both.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_names_unsupported_builtin_steps() {
+    for (body, name) in [
+        ("Object(1)", "Object:-primitive-wrapper-objects"),
+        ("[1].map((x) => x)", "pending-map"),
+    ] {
+        let source = format!(
+            "(defmacro m [] (js* \"(() => {{ try {{ {body}; return 1; }} catch (e) {{ return 2; }} }})()\")) (m)"
+        );
+        assert!(crate::compile_with_macros(&source, &mut crate::MacroHost::new()).is_ok());
+        let session = GooseSession::start(&runner(), 1).unwrap();
+        let mut host = crate::MacroHost::new();
+        host.use_goose_source_macros(session.clone()).unwrap();
+        let error = crate::compile_with_macros(&source, &mut host)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Fault.UnsupportedOperand") && error.contains(name),
+            "{error}"
+        );
+        cleaned(&session);
+    }
+}
+
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_rejects_root_reads_that_bypass_the_compiler_intrinsic() {
@@ -1834,7 +1862,10 @@ fn reuse_session(
         // sees the intrinsics as built, its literals' prototypes, a built-in
         // method, and a VM fault's error object with its type's prototype
         // and a message.
-        (15, "rt => (form, env) => { Array.prototype.leak = 1; return 1; }"),
+        (
+            15,
+            "rt => (form, env) => { Array.prototype.leak = 1; return 1; }",
+        ),
         (
             16,
             "rt => (form, env) => { let n = 0; if (Object.getPrototypeOf([]) === Array.prototype && Object.getPrototypeOf({}) === Object.prototype) n += 1; if (typeof Object.prototype.hasOwnProperty === 'function') n += 2; if ([].leak === undefined && !Array.prototype.hasOwnProperty('leak')) n += 4; try { const o = null; o.x; } catch (e) { if (Object.getPrototypeOf(e) === TypeError.prototype && typeof e.message === 'string' && e.message.length > 0) n += 8; } return n; }",
@@ -1943,8 +1974,8 @@ fn goose_compiler_reused_workers_start_every_job_from_the_image() {
     // which retires the worker after every job (a fresh worker each): every
     // job's result, events, steps and limit outcome are the same.
     let plan = [
-        1, 2, 1, 3, 1, 4, 1, 5, 1, 6, 1, 7, 1, 8, 8, 1, 9, 9, 1, 11, 1, 12, 1, 13, 1, 14, 14, 1, 16,
-        15, 16, 1,
+        1, 2, 1, 3, 1, 4, 1, 5, 1, 6, 1, 7, 1, 8, 8, 1, 9, 9, 1, 11, 1, 12, 1, 13, 1, 14, 14, 1,
+        16, 15, 16, 1,
     ];
     for workers in [1, 4] {
         let (reused, jobs) = reuse_session(workers, Some(16 << 20), None, &plan);

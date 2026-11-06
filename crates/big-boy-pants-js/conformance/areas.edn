@@ -60,6 +60,7 @@
   "bbp/realm_errors" {:area :exceptions}
   "bbp/realm_prototypes" {:area :objects-classes}
   "bbp/realm_uncaught_error" {:area :exceptions}
+  "bbp/realm_well_known_symbols" {:area :core-builtins}
   "bbp/to_primitive_getter" {:area :operators-values}
   "bbp/to_primitive_value_of" {:area :operators-values}
   "bbp/try_catch_finally" {:area :exceptions}

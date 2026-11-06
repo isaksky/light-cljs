@@ -208,7 +208,9 @@ fn footprint<T>(s: const T&) -> i64 { let empty: Snapshot[] = [Snapshot {}]; ret
 fn value<T>(s: const T&, v: source::Value, code: bool = false, constant: bool = false) -> bool {
     // Symbol (6) and BigInt (7) constants carry no runtime value (source::load).
     return match v {
-        Symbol x => (code || constant) && export_well_known_symbol(x.s).len > 0,
+        // A well-known symbol is also a row value (the realm's Symbol
+        // properties, light-cljs-788).
+        Symbol x => export_well_known_symbol(x.s).len > 0,
         BigInt x => (code || constant) && x.b == 0,
         Empty, Accessor => false,
         Object o => !code && range(o.o, 1, s.nodes.len),
