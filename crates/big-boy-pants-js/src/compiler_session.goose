@@ -8,6 +8,7 @@ import .vm;
 import .readiness;
 import .callable;
 import .census;
+import .cell_owner;
 
 // Process high-water RSS, in native getrusage units; see measurement.h.
 extern fn peak_memory() -> i64 = "goose_measure_peak_rss";
@@ -42,6 +43,9 @@ struct Saved {
     // The job's write boundary (source::Job.owned_nodes and foreign): a
     // continuation keeps the rows its job did not allocate read-only.
     owned: i64 = 0, foreign: u32[] = [],
+    // The rows the job knows as cells or by process-wide identity
+    // (source::Job.cell_rows, light-cljs-799).
+    cell_rows: source::CellRow[] = [],
 }
 struct Command { id: i64 }
 struct Cancel {}
@@ -155,6 +159,9 @@ thread_fn preparer(base: snapshot::Snapshot, directory: u8[], id: i64, key: i64,
     let factory, loaded = initialize(id, heap, source::closure(heap, entry, []), [], base.nodes.len, report, prefix, next); if !loaded { assert(qput(Preparation { report: copy(report) })); return; }
     let function, ready = initialize(id, heap, factory, [rt], base.nodes.len, report, prefix, next); if !ready { assert(qput(Preparation { report: copy(report) })); return; }
     if !source::valid(heap, function) || function.tag() != 5 || source::node(heap, function.id()).kind != 2 { format(report, "ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
+    // Every atom the definition reaches becomes a process-wide cell (light-cljs-799).
+    let refused = source::publish_cells(heap, function, base.nodes.len);
+    if refused.len > 0 { format(report, "ERROR ", id, " preparation-", refused, " function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
     heap.initializer_count += 1;
     let result = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: function }], sc); assert(sc.error == snapshot::Error.None);
     assert(qput(Preparation { ok: true, image: copy(result), gensym_next: next }));
@@ -193,7 +200,7 @@ fn leaf(id: i64, heap: source::Heap&, callee: source::Value, args: const source:
 fn save(job: source::Job&, rt: source::Value, call: source::Value, control: bridge::Control, sequence: i64, costs: i64[2], checkpoint: i64) -> Saved {
     assert(!job.claimed && job.effect_pending && job.status == tiny::Status.Ready && job.effect_kind == 9 && job.effect_count == 3);
     assert(source::retire(job, true)); var c = snapshot::Control {}; let heap = snapshot::capture(job.heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: call }], c, checkpoint); assert(c.error == snapshot::Error.None);
-    return Saved { heap: copy(heap), frames: copy(job.frames), locals: copy(job.locals), operands: copy(job.operands), writes: copy(job.writes), handlers: copy(job.handlers), steps: job.steps, args: job.effect_args, frame: job.effect_frame, bridge: control, sequence: sequence, costs: costs, protected: job.protected_nodes, gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next, owned: job.owned_nodes, foreign: copy(job.foreign) };
+    return Saved { heap: copy(heap), frames: copy(job.frames), locals: copy(job.locals), operands: copy(job.operands), writes: copy(job.writes), handlers: copy(job.handlers), steps: job.steps, args: job.effect_args, frame: job.effect_frame, bridge: control, sequence: sequence, costs: costs, protected: job.protected_nodes, gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next, owned: job.owned_nodes, foreign: copy(job.foreign), cell_rows: copy(job.cell_rows) };
 }
 fn fail(id: i64, heap: source::Heap&, job: source::Job&, address: i64 = 0, timing: i64[4] = [0; 4]) {
     let pc = job.fault_pc; var start: i64 = -1; var end: i64 = -1;
@@ -203,6 +210,11 @@ fn fail(id: i64, heap: source::Heap&, job: source::Job&, address: i64 = 0, timin
     publish(Event { id: id, kind: 3, name: copy(text), address: address, timing: timing });
 }
 fn reset(graph: bridge::Graph&) { graph.nodes.clear(); graph.children.clear(); graph.units.clear(); graph.sources.clear(); graph.bytes.clear(); graph.roots.clear(); }
+// The session's cell owner (light-cljs-799, cell_owner.goose): a program
+// with no VM tables that holds every process-wide cell. The coordinator
+// spawns it before any preparer or job worker, which inherit
+// cells::enabled, and stops it after the last worker is reaped.
+thread_fn cell_owner(budget: i64) { cells::serve(budget); }
 // Reapers only join job workers and report how each ended. Each holds one
 // Reap notice at a time and the coordinator keeps at most `reapers` job
 // workers live, so every live worker's notice is taken at once and a
@@ -343,6 +355,11 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
         if mode == 2 { let exporting = clock_ns();
             let closure = function.tag() == 5 && source::node(heap, function.id()).kind == 2;
             var publication = snapshot::Control {};
+            // Every atom the helper reaches becomes a process-wide cell, and a
+            // form helper's graph names it (light-cljs-799).
+            let refused = source::publish_cells(heap, function, base.nodes.len);
+            if refused.len > 0 { publish(Event { id: id, kind: 3, name: str("helper-", refused), address: address, timing: timing(work, started, sc) }); return; }
+            control.cells = true;
             let ok = if closure { callable::encode(heap, saved.heap, function, bytes, publication, checkpoint) } else { bridge::export_graph(heap, [function], graph, control) && bridge::encode(graph, bytes, control) };
             if !ok {
                 let function_id = if closure { source::node(heap, function.id()).function } else { entry }; let pc = code.functions[function_id].start; let op = code.ops[pc];
@@ -357,7 +374,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
         let importing = clock_ns(); let value, ok = published(work.helper, saved.base, key, code, heap); imported = value; import_ok = ok; costs[1] += clock_ns() - importing;
     }
     let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")); job.effects_enabled = true; job.helpers_enabled = true; job.protected_nodes = saved.protected; job.root_receiver = roots; defer { source::retire(job); } scope(job, saved.gensym_prefix, next);
-    job.owned_nodes = owned; for r in saved.foreign { job.foreign.push(r); } source::install_foreign(job, installing);
+    job.owned_nodes = owned; for r in saved.foreign { job.foreign.push(r); } for r in saved.cell_rows { job.cell_rows.push(r); } source::install_foreign(job, installing);
     if mode == 0 { source::start(job, function, args); } else {
         // Saved rows link the restored heap's rows by index: copied verbatim.
         for f in saved.frames { job.frames.push(f); } job.locals.append(saved.locals); job.operands.append(saved.operands);
@@ -367,7 +384,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
         // or it was cancelled while this resume was queued (light-cljs-803).
         // Its finally blocks run under its limits; nothing is published.
         if mode == 4 || cancelled() { publish(Event { id: id, kind: 3, name: clean_up(job), address: address, timing: timing(work, started, sc) }); return; }
-        if mode == 1 && !work.callable { let start = heap.nodes.len; let installing = clock_ns(); defer { worker_installs[1] += clock_ns() - installing; worker_installs[2] += 1; } import_ok = bridge::decode(graph, work.helper, control) && bridge::import_graph(heap, graph, args, control) && args.len == 1; if import_ok { imported = args[0]; } source::install_foreign(job, start); }
+        if mode == 1 && !work.callable { let start = heap.nodes.len; let installing = clock_ns(); defer { worker_installs[1] += clock_ns() - installing; worker_installs[2] += 1; } control.cells = true; import_ok = bridge::decode(graph, work.helper, control) && source::import_cells(heap, job.cell_rows, graph, args, control) && args.len == 1; if import_ok { imported = args[0]; } source::install_foreign(job, start); }
         if !import_ok { source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], imported); assert(source::deliver_effect(job, imported)); }
     }
     let execution_started = clock_ns(); var sequence = if mode == 0 { 0 } else { saved.sequence + 1 };
@@ -404,7 +421,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
                     job.registered = true; heap.live_jobs += 1;
                 } else if answer.mode == 1 {
                     reset(graph); var helper: source::Value[>..] = []; let installing = clock_ns(); defer { worker_installs[1] += clock_ns() - installing; worker_installs[2] += 1; }
-                    ok = bridge::decode(graph, answer.helper, control) && bridge::import_graph(heap, graph, helper, control) && helper.len == 1; if ok { for h in helper { value = h; } }
+                    control.cells = true; ok = bridge::decode(graph, answer.helper, control) && source::import_cells(heap, job.cell_rows, graph, helper, control) && helper.len == 1; if ok { for h in helper { value = h; } }
                 }
                 costs[1] += clock_ns() - importing; source::install_foreign(job, start);
                 if !ok { source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect); } else { source::put(heap, job.effect_args[0], job.effect_args[2], value); assert(source::deliver_effect(job, value)); }
@@ -417,7 +434,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
     }
     let exporting = clock_ns(); let execution_ns = exporting - execution_started; let result = job.result; let steps = job.steps; assert(source::retire(job)); reset(graph); bytes.clear();
     let counted = rows(work, heap, job, bindings, call);
-    if !bridge::export_graph(heap, [result], graph, control, call) || !bridge::encode(graph, bytes, control) { publish(Event { id: id, kind: 3, name: str("bridge-", control.error), address: address, timing: timing(work, started, sc) }); return; }
+    control.cells = false; if !bridge::export_graph(heap, [result], graph, control, call) || !bridge::encode(graph, bytes, control) { publish(Event { id: id, kind: 3, name: str("bridge-", control.error), address: address, timing: timing(work, started, sc) }); return; }
     assert(write_file(str(directory, "/", id, ".out"), bytes)); costs[1] += clock_ns() - exporting; publish(Event { id: id, kind: 2, gensym_next: job.gensym_next, name: str(costs[0], " ", costs[1]), steps: steps, writes: job.writes.len, metrics: str(sc.restore_ns, " ", execution_ns, " ", clock_ns() - worker_started, " ", storage(saved, heap, sc, bytes.len), " ", mode), address: address, census: counted, timing: timing(work, started, sc) });
 }
 // Session cancellation reaching a job, at the dispatch poll point, while it
@@ -593,7 +610,7 @@ fn main() {
     // never refuse a publish.
     // Each live worker also has at most one unconsumed Answer (a resume or,
     // over the retention budget, a save), so the re-queue never fails either.
-    qlimit<Command>(128); qlimit<readiness::InputCredit>(128); for i in 128 { assert(qput(readiness::InputCredit {})); } qlimit<Event>(6 * counts.reapers + 8); qlimit<Answer>(counts.reapers + 1); qlimit<Reap>(counts.reapers); qlimit<Cancel>(1); qlimit<readiness::Wake>(1); let reader = thread_spawn(input, copy(directory), deterministic); var running: Running[>..] = []; var queue: i64[>..] = []; var received: i64 = 0; var waiting: Waiting[>..] = []; var produced: Produced[>..] = []; var prepared: Prepared[>..] = []; var closing = false; var cancelling = false; var poisoned = false; var retained: i64 = 0; var sleep_ns: i64 = 0; var turns: i64 = 0; var progress_turns: i64 = 0; var backoffs: i64 = 0; var commands: i64 = 0; var events: i64 = 0; var max_commands: i64 = 0; var max_events: i64 = 0; var exits: Exit[>..] = []; var finals: i64 = 0; var since_trim: i64 = 0;
+    qlimit<Command>(128); qlimit<readiness::InputCredit>(128); for i in 128 { assert(qput(readiness::InputCredit {})); } qlimit<Event>(6 * counts.reapers + 8); qlimit<Answer>(counts.reapers + 1); qlimit<Reap>(counts.reapers); qlimit<Cancel>(1); qlimit<readiness::Wake>(1); cells::prepare(); let owner = thread_spawn(cell_owner, cells::budget()); cells::enabled = true; let reader = thread_spawn(input, copy(directory), deterministic); var running: Running[>..] = []; var queue: i64[>..] = []; var received: i64 = 0; var waiting: Waiting[>..] = []; var produced: Produced[>..] = []; var prepared: Prepared[>..] = []; var closing = false; var cancelling = false; var poisoned = false; var retained: i64 = 0; var sleep_ns: i64 = 0; var turns: i64 = 0; var progress_turns: i64 = 0; var backoffs: i64 = 0; var commands: i64 = 0; var events: i64 = 0; var max_commands: i64 = 0; var max_events: i64 = 0; var exits: Exit[>..] = []; var finals: i64 = 0; var since_trim: i64 = 0;
     var reapers: i64[>..] = []; for slot in counts.reapers { reapers.push(thread_spawn(supervise)); }
     print("READY 1 ", heap.boot_count, " ", loaded - beginning, " ", booted - loaded, " ", clock_ns() - booted); flush_stdout();
     // The deterministic fixture queues a complete batch before the first turn.
@@ -611,7 +628,7 @@ fn main() {
                 if !event.aborted { continue; }
                 var reason: u8[>..] = []; for b in event.name { if reason.len >= 1024 { break; } reason.push(if b < 32 { ' ' } else { b }); } for r, i in running { if r.thread == event.key { running.swap_remove(i); break; } }
                 unblock(waiting, -1, event.key, counts); closing = true; poisoned = true;
-                if !cancelling { assert(qput(Cancel {})); cancelling = true; }
+                if !cancelling { assert(qput(Cancel {})); cells::halt(); cancelling = true; }
                 print("FAULT 0 worker-abort ", reason); flush_stdout(); continue; }
             // A worker's job ended: it is idle, or it retired and exits.
             if event.kind == 7 { stats.reset_ns += event.timing[0]; stats.restore_ns += event.installs[0]; stats.install_ns += event.installs[1]; stats.installs += event.installs[2];
@@ -642,7 +659,7 @@ fn main() {
             else { print("ERROR ", event.id, " ", event.name); }
             flush_stdout();
         }
-        if closing && !cancelling { assert(qput(Cancel {})); cancelling = true; }
+        if closing && !cancelling { assert(qput(Cancel {})); cells::halt(); cancelling = true; }
         // Cancelling: every saved continuation still waiting is restored in a
         // worker to run its finally blocks (mode 4, light-cljs-803), within the
         // execution slots, as the Pants contract has a cancelled task
@@ -685,19 +702,21 @@ fn main() {
     // Every job worker has been reaped; the reapers are idle.
     for i in counts.reapers { assert(qput(Reap { thread: -1 })); }
     for thread in reapers { assert(thread_wait(thread)); }
+    // No job runs any more: the cell owner reports and exits.
+    let cell_stats = cells::stop(); assert(thread_wait(owner));
     assert(thread_wait(reader));
     // The coordinator's VM tables did not change after READY.
     if check { assert(image == heap_digest(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }])); }
     if tracing {
         // spawned counts job workers; jobs the jobs they ran, retired the
         // workers that left at the table-byte cap (light-cljs-795).
-        print("JOBS 0 ", retention, " ", stats.spawned, " ", finals, " ", stats.spawn_ns, " ", stats.start_ns, " ", stats.join_ns, " ", stats.argument_bytes, " ", stats.restore_bytes, " ", stats.peak_live, " ", stats.peak_blocked, " ", stats.waits, " ", stats.saves, " ", stats.answers, " ", counts.live, " ", counts.blocked, " ", stats.jobs, " ", stats.retired, " ", stats.reset_ns, " ", stats.restore_ns, " ", stats.install_ns, " ", stats.installs, " ", stats.handoff_ns);
+        print("JOBS 0 ", retention, " ", stats.spawned, " ", finals, " ", stats.spawn_ns, " ", stats.start_ns, " ", stats.join_ns, " ", stats.argument_bytes, " ", stats.restore_bytes, " ", stats.peak_live, " ", stats.peak_blocked, " ", stats.waits, " ", stats.saves, " ", stats.answers, " ", counts.live, " ", counts.blocked, " ", stats.jobs, " ", stats.retired, " ", stats.reset_ns, " ", stats.restore_ns, " ", stats.install_ns, " ", stats.installs, " ", stats.handoff_ns, " ", cell_stats.cells, " ", cell_stats.identities, " ", cell_stats.operations, " ", cell_stats.conflicts, " ", cell_stats.waits, " ", cell_stats.owner_ns);
         if instrumented { print("TRIM 0 ", stats.trims, " ", stats.trim_before, " ", stats.trim_after, " ", stats.trim_ns); }
         // The coordinator, the input thread, the reapers and every job worker;
         // all but the coordinator are joined. Preparers (one per PREPARED or
         // preparation ERROR line, each joined before the coordinator goes on)
         // and the profile restore are not job-path threads and are not counted.
-        print("THREADS 0 ", 2 + counts.reapers + stats.spawned, " ", 2 + counts.reapers + stats.peak_live, " ", 1 + counts.reapers + stats.spawned);
+        print("THREADS 0 ", 3 + counts.reapers + stats.spawned, " ", 3 + counts.reapers + stats.peak_live, " ", 2 + counts.reapers + stats.spawned);
     }
     print("CLOSED 1"); flush_stdout();
 }

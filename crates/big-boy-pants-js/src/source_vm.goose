@@ -6,6 +6,7 @@ import .vm;
 import .export_schema;
 import .realm;
 import .array_callbacks;
+import .cells;
 
 namespace source;
 
@@ -118,7 +119,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, ToPrimitive t => 3 + (t.op as i64) * 4 + (t.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, ToPrimitive t => 3 + (t.op as i64) * 4 + (t.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -200,7 +201,9 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // finite deferred map=15 (value=callback, namespace_value=input,
 // start/count=reserved memo range, length=completed callbacks), key list=16
 // (a for-in walk's or an object spread's own keys, job-local; see "Key
-// enumeration").
+// enumeration"), a job's own atom or volatile=17 (value=state,
+// length=flavor, 0 atom or 1 volatile) and a process-wide cell's
+// reference=18 (function=cell, length=flavor; cells.goose).
 // Closure immutable marks fnApplyNull's immutable receiver convention.
 // Errors preserve object identity/truthiness;
 // property access/coercion and form transport reject unsupported inspection.
@@ -305,7 +308,9 @@ root struct Heap {
 //   ArrayCallbacks  a built-in that calls back into JavaScript, its Builtin
 //                the payload: Array.prototype.map and forEach
 //                (array_callbacks.goose, which gives its fields and phases).
-enum Native { None, Mapv, MapSeq, Setter, CopyData, ToPrimitive { op: u8, method: u8 }, ArrayCallbacks { which: Builtin } }
+//   Swap         swap! and swap-vals! (light-cljs-799; cells.goose, which
+//                gives its fields and phases), its Builtin the payload.
+enum Native { None, Mapv, MapSeq, Setter, CopyData, ToPrimitive { op: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, argument_count: i64 = 0, input: Value = Value.Undefined, output: Value = Value.Undefined, index: i64 = 0, native: Native = Native.None }
@@ -348,7 +353,14 @@ root struct Job {
     // UnsupportedOperand did not implement (realm.goose); cleared by fail.
     detail:      u16[>..] = [],
     effect_args: Value[8] = [Value.Undefined; 8], effect_count: i64 = 0, effect_frame: Frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined },
+    // The cell and identity of every row the job loaded from or stored into
+    // a cell (cells.goose), so it imports each once; saved with its
+    // continuation.
+    cell_rows: CellRow[>..] = [],
 }
+// A row a job holds that names a process-wide cell (a cell reference) or
+// has a process-wide identity (a value loaded from or stored in a cell).
+struct CellRow { row: i64, cell: i64 = -1, identity: i64 = 0 }
 inline fn number(n: f64) -> Value { return Value.Number { v: n }; }
 inline fn boolean(b: bool) -> Value { return Value.Bool { v: b }; }
 // A code constant's units: Code keeps its own string headers over its units.
@@ -1966,6 +1978,8 @@ recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool
     let n = node(heap, x.id()); let m = node(heap, y.id());
     if n.kind == 15 || m.kind == 15 { heap.fault = Fault.NativeBoundary; return false; }
     if n.kind < 5 || m.kind < 5 || n.kind == 13 || m.kind == 13 || n.kind == 14 || m.kind == 14 { return x == y; }
+    // An atom is equal only to itself; two references to one cell are one atom.
+    if n.kind >= 16 || m.kind >= 16 { return x == y || n.kind == 18 && m.kind == 18 && n.function == m.function; }
     if n.kind != m.kind && !((n.kind == 5 || n.kind == 6 || n.kind == 12) && (m.kind == 5 || m.kind == 6 || m.kind == 12)) { return false; }
     if n.kind == 9 || n.kind == 10 { return equal(heap, n.value, m.value) && equal(heap, n.namespace_value, m.namespace_value); }
     if n.count != m.count { return false; }
@@ -2345,6 +2359,7 @@ fn native_step(job: Job&) {
         Setter => { job.operands.pop(); finish_native(job, frame, frame.output); },
         CopyData => { copy_step(job, frame); },
         ArrayCallbacks a => { array_callbacks_step(job, frame, a.which); },
+        Swap s => { swap_step(job, frame, s.which); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }

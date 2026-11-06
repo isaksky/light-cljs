@@ -751,6 +751,48 @@ restores a session was a worker per job; with 795's reuse they are 131.8 MB
 the image). Revisit only if a workload's definitions are much larger than
 the 200k project's (19 KB of restore a job).
 
+**Implemented, first slice (light-cljs-799, `src/cells.goose`,
+`src/cell_owner.goose`).** Atoms and volatiles; delays, functions as cell
+values and the identity of published values are the follow-up pellets'.
+
+- *Rows.* `atom`, `deref`, `reset!`, `reset-vals!`, `swap!`, `swap-vals!`,
+  `compare-and-set!`, `volatile!` and `vreset!` are `rt.core` leaves
+  (Builtin variants, decision 5). A job's own atom or volatile is a node of
+  kind 17 (state in `value`, flavor in `length`) and follows the V8 build's
+  runtime: `swap!` calls its function once. `swap!` and `swap-vals!` are a
+  native frame (`Native.Swap`), so the function may be a closure that
+  suspends. Watches, validators and atom options fail by name.
+- *Publication.* The preparer and a helper production call
+  `source::publish_cells` before they encode: every atom the published value
+  reaches through any link becomes a cell, its row a reference of kind 18
+  (the cell in `function`), which `callable::graph` and the snapshots accept
+  and GFB1 carries as tag 10 inside the session only (`bridge::Control.cells`;
+  a job's result for the compiler refuses one, as the V8 build's form bridge
+  refuses an atom).
+- *Values.* A cell holds a primitive or a form graph: forms, cell references
+  and atoms, which become cells first. Anything else fails the operation by
+  name before it changes anything (`cannot share a mutable JavaScript
+  object`, `a function (functions are not shareable yet)`). A stored graph
+  loses its call's compiler occurrences and spans: a later job sees it as a
+  value built afresh.
+- *Identity.* The owner numbers a graph the first time it is stored; the job
+  records every row it loaded or stored with its cell or identity
+  (`Job.cell_rows`, saved with a continuation) and imports each once, so a
+  value stored back keeps its identity and two loads are one object.
+  `swap!` on a cell compare-and-sets against the identity of the value it
+  read (for a primitive, the same primitive), so a function that resets the
+  cell to that value still ends without a rerun. Only the root of a stored
+  graph has an identity in this slice.
+- *Owner.* `cell_owner` is a thread program the coordinator spawns before
+  any other, with no VM tables, holding each cell's encoding in a
+  `slice_pool<u8>`. A requester takes one of eight slot tokens and receives
+  on `Reply<S0>`..`Reply<S7>`; a cancelled or poisoned session posts `Halt`,
+  which releases every waiter. Cells and identities count against
+  `BBP_CELL_BUDGET` (default 1,048,576) and their bytes against 256 MiB;
+  past either an operation fails `cell budget`. The THREADS line counts the
+  owner, and the JOBS line ends with its cells, identities, operations,
+  refused compare-and-sets, delay waits (none yet) and serving nanoseconds.
+
 ### Runtime gensym in the compiler's scopes (light-cljs-798, November 5, 2026)
 
 `rt.core.gensym` on the Goose path gives the name V8's native mode gives:

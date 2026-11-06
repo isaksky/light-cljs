@@ -905,6 +905,15 @@ pub(super) struct JobsLine {
     pub install_ns: u64,
     pub installs: u64,
     pub handoff_ns: u64,
+    /// The cell owner's totals (light-cljs-799, cell_owner.goose `Stats`):
+    /// cells made, identities numbered, operations served, refused
+    /// compare-and-sets (swap! reruns), delay waits and serving time.
+    pub cells: u64,
+    pub identities: u64,
+    pub cell_operations: u64,
+    pub conflicts: u64,
+    pub delay_waits: u64,
+    pub owner_ns: u64,
 }
 pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
     let line = trace
@@ -916,7 +925,7 @@ pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
         .skip(2)
         .map(|n| n.parse::<u64>().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(n.len(), 22, "{line}");
+    assert_eq!(n.len(), 28, "{line}");
     JobsLine {
         retention: n[0],
         spawned: n[1],
@@ -934,11 +943,18 @@ pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
         install_ns: n[19],
         installs: n[20],
         handoff_ns: n[21],
+        cells: n[22],
+        identities: n[23],
+        cell_operations: n[24],
+        conflicts: n[25],
+        delay_waits: n[26],
+        owner_ns: n[27],
     }
 }
-/// Threads: the coordinator, the input thread, `workers + retention` reapers
-/// and the contained job workers it spawned, which serve many jobs each
-/// (light-cljs-795); every thread but the coordinator joined.
+/// Threads: the coordinator, the input thread, the cell owner
+/// (light-cljs-799), `workers + retention` reapers and the contained job
+/// workers it spawned, which serve many jobs each (light-cljs-795); every
+/// thread but the coordinator joined.
 pub(super) fn assert_threads(trace: &[String], workers: usize) -> JobsLine {
     let jobs = jobs_line(trace);
     let reapers = workers as u64 + jobs.retention;
@@ -946,9 +962,9 @@ pub(super) fn assert_threads(trace: &[String], workers: usize) -> JobsLine {
         trace.iter().find(|s| s.starts_with("THREADS ")).unwrap(),
         &format!(
             "THREADS 0 {} {} {}",
-            2 + reapers + jobs.spawned,
-            2 + reapers + jobs.peak_live,
-            1 + reapers + jobs.spawned
+            3 + reapers + jobs.spawned,
+            3 + reapers + jobs.peak_live,
+            2 + reapers + jobs.spawned
         ),
         "{jobs:?}"
     );
@@ -1825,7 +1841,7 @@ fn reuse_session(
     retained: Option<usize>,
     plan: &[u64],
 ) -> (Vec<(u64, String)>, JobsLine) {
-    let definitions: [(u64, &str); 16] = [
+    let definitions: [(u64, &str); 17] = [
         // Pure: garbage in every table, a fresh object and array.
         (
             1,
@@ -1899,6 +1915,13 @@ fn reuse_session(
         (
             16,
             "rt => (form, env) => { let n = 0; if (Object.getPrototypeOf([]) === Array.prototype && Object.getPrototypeOf({}) === Object.prototype) n += 1; if (typeof Object.prototype.hasOwnProperty === 'function') n += 2; if ([].leak === undefined && !Array.prototype.hasOwnProperty('leak')) n += 4; try { const o = null; o.x; } catch (e) { if (Object.getPrototypeOf(e) === TypeError.prototype && typeof e.message === 'string' && e.message.length > 0) n += 8; } return n; }",
+        ),
+        // A pure job's own atom and volatile (light-cljs-799) are rows like
+        // any other: swap! with a built-in and with a closure and extra
+        // arguments, reset!, vreset!, compare-and-set!.
+        (
+            17,
+            "rt => (form, env) => { const a = rt.core.atom(0); rt.core.swap(a, rt.core.inc); rt.core.swap(a, (x, y) => x + y, 5); rt.core.reset(a, rt.core.deref(a) + 1); const v = rt.core.volatile(5); rt.core.vreset(v, rt.core.deref(v) + rt.core.deref(a)); return rt.core.deref(v) + (rt.core.compareAndSet(a, 7, 10) ? 100 : 0) + (rt.core.compareAndSet(a, 7, 11) ? 1000 : 0); }",
         ),
     ];
     let mut env = vec![];
@@ -2005,7 +2028,7 @@ fn goose_compiler_reused_workers_start_every_job_from_the_image() {
     // job's result, events, steps and limit outcome are the same.
     let plan = [
         1, 2, 1, 3, 1, 4, 1, 5, 1, 6, 1, 7, 1, 8, 8, 1, 9, 9, 1, 11, 1, 12, 1, 13, 1, 14, 14, 1,
-        16, 15, 16, 1,
+        16, 15, 16, 1, 17, 1, 17,
     ];
     for workers in [1, 4] {
         let (reused, jobs) = reuse_session(workers, Some(16 << 20), None, &plan);
@@ -2018,6 +2041,7 @@ fn goose_compiler_reused_workers_start_every_job_from_the_image() {
                 1 => "Double(53.0)",
                 2..=5 | 11..=13 | 15 => "Fault.NativeBoundary",
                 16 => "Double(15.0)",
+                17 => "Double(112.0)",
                 14 => "Double(7.0)",
                 6 => "Fault.InstructionLimit",
                 7 => "Fault.TypeError",
@@ -3562,4 +3586,281 @@ fn goose_compiler_profile_restore_worker() {
         field("restore-copy-bytes") * field("raw-copy-repeats"),
         field("raw-copy-payload-bytes")
     );
+}
+
+/// The integers `return N;` of the emitted namespaces' initializers, after
+/// the runtime (which ends at the first namespace switch), in order.
+fn initializer_numbers(js: &str) -> Vec<u64> {
+    let start = js
+        .find("rt.core.currentNs = ")
+        .unwrap_or_else(|| panic!("{js}"));
+    js[start..]
+        .split("return ")
+        .skip(1)
+        .filter_map(|rest| rest.split(';').next()?.parse().ok())
+        .collect()
+}
+
+/// light-cljs-799: blocker_affinity.rs's counter fixture on the Goose path.
+/// The macro namespace's atom becomes one process-wide cell when its helper
+/// is published, so `dep`'s expansion and `main`'s each take the next value
+/// at every slot count: never `1 1` (the V8 build's worker isolates without
+/// `--cache-blocker`), two distinct values.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cells_counter_fixture() {
+    let mut files = HashMap::new();
+    files.insert(
+        "m.state".to_owned(),
+        "(ns m.state) (def counter (atom 0)) (defmacro next-value [] (swap! counter inc))"
+            .to_owned(),
+    );
+    files.insert(
+        "app.dep".to_owned(),
+        "(ns app.dep (:require [m.state :refer [next-value]])) (def value (next-value))".to_owned(),
+    );
+    files.insert(
+        "app.main".to_owned(),
+        "(ns app.main (:require [app.dep :as d] [m.state :refer [next-value]])) (js/console.log d/value (next-value))".to_owned(),
+    );
+    for slots in [1, 2, 4, 8] {
+        let session = GooseSession::start(&runner(), slots).unwrap();
+        let (output, _, _) = pooled_build(&files, slots, Some(&session), Default::default());
+        let js = output.unwrap();
+        let value = initializer_numbers(&js);
+        let logged = js
+            .split("[\"log\"])(")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+            .unwrap_or_else(|| panic!("{js}"));
+        let last: u64 = logged.rsplit(", ").next().unwrap().parse().unwrap();
+        assert_eq!(value.len(), 1, "slots={slots}: {value:?}");
+        let mut both = [value[0], last];
+        both.sort();
+        assert_eq!(both, [1, 2], "slots={slots}: {logged}");
+        session.close();
+        cleaned(&session);
+    }
+}
+
+/// A registry macro (light-cljs-799): eight namespaces register an entry in
+/// the macro namespace's atom, and a consumer that requires all of them sees
+/// every entry, at every slot count; 64 expansions across the job workers
+/// take 64 distinct values of one counter, so the cell ends at exactly 64.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cells_registry_and_shared_increments() {
+    let mut files = HashMap::new();
+    files.insert(
+        "m.reg".to_owned(),
+        "(ns m.reg)
+         (def registry (atom []))
+         (def counter (atom 0))
+         (defmacro register [k] (swap! registry into [k]) nil)
+         (defmacro bump [] (swap! counter inc))
+         (defmacro entries [] (list 'quote @registry))"
+            .to_owned(),
+    );
+    let mut main = String::from("(ns app.main (:require [m.reg :refer [entries]]");
+    let mut uses = String::new();
+    for n in 0..8 {
+        let mut source = format!(
+            "(ns app.r{n} (:require [m.reg :refer [register bump]]))\n(register {})\n",
+            1000 + n
+        );
+        for d in 0..8 {
+            source.push_str(&format!("(def v{d} (bump))\n"));
+            uses.push_str(&format!(" app.r{n}/v{d}"));
+        }
+        files.insert(format!("app.r{n}"), source);
+        main.push_str(&format!(" [app.r{n}]"));
+    }
+    main.push_str(&format!("))\n(js/console.log (entries){uses})\n"));
+    files.insert("app.main".to_owned(), main);
+    for slots in [1, 2, 4, 8] {
+        let session = GooseSession::start(&runner(), slots).unwrap();
+        let (output, _, _) = pooled_build(&files, slots, Some(&session), Default::default());
+        let js = output.unwrap();
+        let mut values = initializer_numbers(&js);
+        values.retain(|&n| n < 1000);
+        values.sort();
+        assert_eq!(values, (1..=64).collect::<Vec<_>>(), "slots={slots}");
+        let consumer = &js[js.rfind("rt.core.currentNs = ").unwrap()..];
+        for n in 0..8 {
+            assert!(
+                consumer.contains(&format!("{}", 1000 + n)),
+                "slots={slots}: {consumer}"
+            );
+        }
+        session.close();
+        cleaned(&session);
+    }
+}
+
+/// One session (traced, so it prints its JOBS line), the fixture's root
+/// `fixture/counter` a helper whose initializer makes an atom, a cell once
+/// published, produced once for the session; each job of `bodies` in turn,
+/// as the raw protocol submits them, so a failing job does not retire the
+/// session (the evaluator retires it, as the V8 build retires an isolate):
+/// its result or failure, and the JOBS line.
+fn cell_session(
+    workers: usize,
+    env: &[(&str, String)],
+    bodies: &[&str],
+) -> (Vec<Result<String, String>>, JobsLine) {
+    let session = GooseSession::start_env(&runner(), workers, Some("readiness-test"), env).unwrap();
+    let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+    let (_, args, call) = inputs(&e, "rt => (form, env) => 0");
+    let values = args
+        .iter()
+        .map(|&id| e.get(id).unwrap())
+        .collect::<Vec<_>>();
+    let limits = ConversionLimits::default();
+    let budget = bridge::Budget::new(limits.nodes, e.control.clone());
+    let graph = bridge::Graph::arguments(&values, limits, &budget).unwrap();
+    let bytes = graph.encode().unwrap();
+    let mut outcomes = Vec::new();
+    for (index, body) in bodies.iter().enumerate() {
+        let id = index as u64 + 1;
+        let key = 100 + id;
+        session
+            .export(
+                &session.directory.join(format!("definition-{key}.gsp")),
+                &format!(
+                    "rt => (form, env) => {{ const a = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/counter'); {body} }}"
+                ),
+            )
+            .unwrap();
+        session
+            .export(
+                &session.directory.join(format!("{id}-0.helper")),
+                "rt => rt.core.atom(0)",
+            )
+            .unwrap();
+        session.answer_key(id, 0, "42").unwrap();
+        let rx = submit_key(&session, &bytes, id, key);
+        outcomes.push(loop {
+            match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
+                Event::Done(_) => {
+                    let out = std::fs::read(session.directory.join(format!("{id}.out"))).unwrap();
+                    let output = bridge::Graph::decode(&out, limits, &budget)
+                        .unwrap()
+                        .expansion(&call, origin(&call), &graph.originals, limits, &budget)
+                        .unwrap();
+                    break Ok(format!("{:?}", output.data()));
+                }
+                Event::Failure(message) => break Err(message),
+                _ => {}
+            }
+        });
+        thread::sleep(Duration::from_millis(20));
+    }
+    session.close();
+    cleaned(&session);
+    let trace = session.trace();
+    assert!(
+        !String::from_utf8_lossy(&session.stderr.lock().unwrap()).contains("assert failed"),
+        "{trace:?}"
+    );
+    // A start and a resume per job, and the one production.
+    let jobs = assert_jobs(&trace, workers, 2 * bodies.len() as u64 + 1);
+    (outcomes, jobs)
+}
+
+/// A job that faults after its swap! leaves the swap in place for the next
+/// job (an effect, as in shadow-cljs); storing a mutable JavaScript object
+/// and adding a watch fail by name before they change the cell.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cell_effects_and_named_errors() {
+    for workers in [1, 2, 4, 8] {
+        let (outcomes, jobs) = cell_session(
+            workers,
+            &[],
+            &[
+                "rt.core.swap(a, rt.core.inc); const o = null; return o.x;",
+                "return rt.core.deref(a);",
+                "rt.core.reset(a, {n: 1}); return 0;",
+                "rt.core.addWatch(a, 1, () => 0); return 0;",
+                "return rt.core.compareAndSet(a, 1, 5) ? rt.core.deref(a) : -1;",
+            ],
+        );
+        assert!(
+            outcomes[0]
+                .as_ref()
+                .unwrap_err()
+                .contains("Fault.TypeError"),
+            "{outcomes:?}"
+        );
+        assert_eq!(outcomes[1].as_deref(), Ok("Double(1.0)"), "{outcomes:?}");
+        assert!(
+            outcomes[2]
+                .as_ref()
+                .unwrap_err()
+                .contains("Fault.NativeBoundary:reset:-cannot-share-a-mutable-JavaScript-object"),
+            "{outcomes:?}"
+        );
+        assert!(
+            outcomes[3].as_ref().unwrap_err().contains(
+                "Fault.NativeBoundary:addWatch:-watches-and-validators-are-not-supported"
+            ),
+            "{outcomes:?}"
+        );
+        // Neither changed the cell: it still holds the faulting job's 1.
+        assert_eq!(outcomes[4].as_deref(), Ok("Double(5.0)"), "{outcomes:?}");
+        assert_eq!((jobs.cells, jobs.conflicts), (1, 0), "{jobs:?}");
+        assert!(
+            jobs.cell_operations >= 6 && jobs.owner_ns > 0 && jobs.delay_waits == 0,
+            "{jobs:?}"
+        );
+    }
+}
+
+/// `(swap! a (fn [x] (reset! a x) (inc x)))` on an atom holding 0: the
+/// function's reset! stores the value it read, so the cell still holds that
+/// value's identity and the swap stores 1 without rerunning (Clojure's
+/// Atom.swap, not a version counter). A stored vector keeps its identity:
+/// storing back what was read is no conflict either, and a later load in the
+/// job is the same object.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cell_swap_same_value_reset() {
+    let (outcomes, jobs) = cell_session(
+        1,
+        &[],
+        &[
+            "let calls = 0; const r = rt.core.swap(a, (x) => { calls++; rt.core.reset(a, x); return x + 1; }); return r * 100 + calls * 10 + rt.core.deref(a);",
+            "rt.core.reset(a, rt.vectorFromArray([1, 2])); let calls = 0; const v = rt.core.deref(a); rt.core.swap(a, (x) => { calls++; rt.core.reset(a, x); return x; }); return (rt.core.deref(a) === v ? 1 : 0) + calls * 10;",
+        ],
+    );
+    assert_eq!(outcomes[0].as_deref(), Ok("Double(111.0)"), "{outcomes:?}");
+    assert_eq!(outcomes[1].as_deref(), Ok("Double(11.0)"), "{outcomes:?}");
+    assert_eq!((jobs.cells, jobs.conflicts), (1, 0), "{jobs:?}");
+}
+
+/// Cells and identities past the session budget (BBP_CELL_BUDGET) fail the
+/// operation with the named error, and the session closes cleanly.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cell_budget() {
+    let (outcomes, jobs) = cell_session(
+        1,
+        &[("BBP_CELL_BUDGET", "2".to_owned())],
+        &[
+            "rt.core.reset(a, rt.vectorFromArray([1])); return 1;",
+            "rt.core.reset(a, rt.vectorFromArray([2])); return 2;",
+            "return 3;",
+        ],
+    );
+    assert_eq!(outcomes[0].as_deref(), Ok("Double(1.0)"), "{outcomes:?}");
+    assert!(
+        outcomes[1]
+            .as_ref()
+            .unwrap_err()
+            .contains("Fault.NativeBoundary:reset:-cell-budget"),
+        "{outcomes:?}"
+    );
+    assert_eq!(outcomes[2].as_deref(), Ok("Double(3.0)"), "{outcomes:?}");
+    // The cell and the first vector's identity; the second was refused.
+    assert_eq!((jobs.cells, jobs.identities), (1, 1), "{jobs:?}");
 }

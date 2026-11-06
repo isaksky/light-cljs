@@ -42,11 +42,13 @@ enum Builtin {
     NativeCoreBinding,
     // Array.prototype built-ins that run user code (light-cljs-789; array_callbacks.goose).
     ArrayPrototypeMap, ArrayPrototypeForEach,
+    // Atoms, volatiles and cells (light-cljs-799; cells.goose).
+    Atom, Deref, Reset, Swap, CompareAndSet, SwapVals, ResetVals, Volatile, Vreset, AddWatch, RemoveWatch, SetValidator,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[46] = [
+let BUILTINS: BuiltinInfo[58] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -70,6 +72,12 @@ let BUILTINS: BuiltinInfo[46] = [
     BuiltinInfo { which: Builtin.SymbolFunction, name: "Symbol" }, BuiltinInfo { which: Builtin.ObjectGetOwnPropertyDescriptor, name: "getOwnPropertyDescriptor", length: 2 },
     BuiltinInfo { which: Builtin.NativeCoreBinding, name: "nativeCoreBinding", length: 1 },
     BuiltinInfo { which: Builtin.ArrayPrototypeMap, name: "map", length: 1 }, BuiltinInfo { which: Builtin.ArrayPrototypeForEach, name: "forEach", length: 1 },
+    BuiltinInfo { which: Builtin.Atom, name: "atom", length: 1 }, BuiltinInfo { which: Builtin.Deref, name: "deref", length: 1 },
+    BuiltinInfo { which: Builtin.Reset, name: "reset", length: 2 }, BuiltinInfo { which: Builtin.Swap, name: "swap", length: 2 },
+    BuiltinInfo { which: Builtin.CompareAndSet, name: "compareAndSet", length: 3 }, BuiltinInfo { which: Builtin.SwapVals, name: "swapVals", length: 2 },
+    BuiltinInfo { which: Builtin.ResetVals, name: "resetVals", length: 2 }, BuiltinInfo { which: Builtin.Volatile, name: "volatile", length: 1 },
+    BuiltinInfo { which: Builtin.Vreset, name: "vreset", length: 2 }, BuiltinInfo { which: Builtin.AddWatch, name: "addWatch", length: 3 },
+    BuiltinInfo { which: Builtin.RemoveWatch, name: "removeWatch", length: 2 }, BuiltinInfo { which: Builtin.SetValidator, name: "setValidator", length: 2 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -150,7 +158,7 @@ let TYPE_NAMES: Name[8] = [Name { text: "undefined" }, Name { text: "object" }, 
 // The light-cljs runtime leaves boot_runtime installs on `rt` (core false)
 // or `rt.core`, in this order.
 struct Leaf { core: bool, key: u8[..24], which: Builtin }
-let RUNTIME_LEAVES: Leaf[17] = [
+let RUNTIME_LEAVES: Leaf[29] = [
     Leaf { core: true, key: "macroReaderFunction", which: Builtin.MacroReaderFunction }, Leaf { core: true, key: "inc", which: Builtin.Inc },
     Leaf { core: true, key: "mapv", which: Builtin.Mapv }, Leaf { core: true, key: "vec", which: Builtin.Vec }, Leaf { core: true, key: "into", which: Builtin.Into },
     Leaf { core: true, key: "sequence", which: Builtin.Sequence }, Leaf { core: true, key: "mapSeq", which: Builtin.MapSeq }, Leaf { core: true, key: "list", which: Builtin.List },
@@ -165,6 +173,13 @@ let RUNTIME_LEAVES: Leaf[17] = [
     Leaf { core: false, key: "fnRest", which: Builtin.FnRest },
     // The emitted prologue reads the core operations it calls through it.
     Leaf { core: false, key: "nativeCoreBinding", which: Builtin.NativeCoreBinding },
+    // Atoms, volatiles and cells (cells.goose), by their cljs.core runtime names.
+    Leaf { core: true, key: "atom", which: Builtin.Atom }, Leaf { core: true, key: "deref", which: Builtin.Deref },
+    Leaf { core: true, key: "reset", which: Builtin.Reset }, Leaf { core: true, key: "swap", which: Builtin.Swap },
+    Leaf { core: true, key: "compareAndSet", which: Builtin.CompareAndSet }, Leaf { core: true, key: "swapVals", which: Builtin.SwapVals },
+    Leaf { core: true, key: "resetVals", which: Builtin.ResetVals }, Leaf { core: true, key: "volatile", which: Builtin.Volatile },
+    Leaf { core: true, key: "vreset", which: Builtin.Vreset }, Leaf { core: true, key: "addWatch", which: Builtin.AddWatch },
+    Leaf { core: true, key: "removeWatch", which: Builtin.RemoveWatch }, Leaf { core: true, key: "setValidator", which: Builtin.SetValidator },
 ];
 
 // A built-in's code: its position in BUILTINS.
@@ -571,6 +586,8 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         ArrayPrototypeMap, ArrayPrototypeForEach => { return unsupported_step(job, b, "called from a native frame"); },
         SymbolFunction => { return unsupported_step(job, b, "creating symbols"); },
         NativeCoreBinding => { return core_binding(job, b, arg(args, 0)); },
+        Atom, Deref, Reset, CompareAndSet, ResetVals, Volatile, Vreset, AddWatch, RemoveWatch, SetValidator => { return cell_builtin(job, b, args); },
+        Swap, SwapVals => { return unsupported_step(job, b, "called from a native frame"); },
         _ => { return native_value(heap, id, args); },
     }
 }

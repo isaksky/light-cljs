@@ -249,7 +249,7 @@ impl GooseSession {
                                     == (match kind {
                                         "SCHED" => 13,
                                         "THREADS" => 5,
-                                        "JOBS" => 24,
+                                        "JOBS" => 30,
                                         "TRIM" => 6,
                                         "CENSUS" => 16,
                                         _ => 3,

@@ -280,18 +280,24 @@
         ;; compiler_session.goose's `Jobs` totals: :spawned workers ran :jobs
         ;; jobs, :retired of them at the table-byte cap, resetting for :reset-ns;
         ;; then the workers' snapshot and helper installs and the coordinator's
-        ;; definition hand-off (light-cljs-796).
+        ;; definition hand-off (light-cljs-796); then the cell owner's cells,
+        ;; identities, operations, refused compare-and-sets, delay waits and
+        ;; serving time (light-cljs-799).
         jobs (some->> (re-find #"(?m)^JOBS 0 ([\d ]+)$" text) second (#(str/split % #" ")) (map parse-long)
                       (zipmap [:retention :spawned :finals :spawn-ns :start-ns :join-ns :argument-bytes :restore-bytes
                                :peak-live :peak-blocked :waits :saves :answers :live :blocked :jobs :retired :reset-ns
-                               :restore-ns :install-ns :installs :handoff-ns]))
+                               :restore-ns :install-ns :installs :handoff-ns
+                               :cells :identities :cell-operations :conflicts :delay-waits :owner-ns]))
         reapers (+ workers (:retention jobs 0))]
     (assert (str/includes? text "CLOSED 1") "Native Goose session did not close")
     (assert jobs "Missing job worker diagnostics")
     (assert (<= (:retired jobs) (:spawned jobs) (max 1 (:jobs jobs))) "Native Goose job workers were not reused")
-    (assert (= [(+ 2 reapers (:spawned jobs)) (+ 2 reapers (:peak-live jobs))] [created peak]) "Native Goose thread total differs")
+    ;; The coordinator, the input thread and the cell owner (light-cljs-799).
+    (assert (= [(+ 3 reapers (:spawned jobs)) (+ 3 reapers (:peak-live jobs))] [created peak]) "Native Goose thread total differs")
     ;; Native total includes its coordinator; every other thread is joined.
-    (assert (= (+ 1 reapers (:spawned jobs)) joined) "Native Goose spawned threads did not all join")
+    (assert (= (+ 2 reapers (:spawned jobs)) joined) "Native Goose spawned threads did not all join")
+    ;; The generated project keeps no compile-time state.
+    (assert (zero? (:cell-operations jobs 0)) "Generated project made cell operations")
     (assert (= [0 0] ((juxt :live :blocked) jobs)) "Native Goose job workers or retention slots outlived the session")
     ;; The Goose compiler path creates no compile-time engine (light-cljs-779).
     (assert (= ["ENGINES v8-platform=0 v8-isolates=0 quickjs-runtimes=0 pants-runtimes=0"]

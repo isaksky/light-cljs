@@ -344,13 +344,13 @@
         (is (thrown-with-msg? AssertionError #"identities/counts differ"
                              (compare/verify-macro-counts (str dir) "goose" counts))))
       (let [native (fs/path dir "native.txt")]
-        (spit (str native) "JOBS 0 2 5 5 100 200 300 4000 5000 2 1 3 1 2 0 0\nTHREADS 0 10 7 9\nENGINES v8-platform=0 v8-isolates=0 quickjs-runtimes=0 pants-runtimes=0\nCLOSED 1\n")
-        (is (= [10 9] ((juxt :native-thread-total :spawned-threads-joined)
+        (spit (str native) "JOBS 0 2 5 5 100 200 300 4000 5000 2 1 3 1 2 0 0 7 0 10 20 30 7 40 0 0 0 0 0 0\nTHREADS 0 11 8 10\nENGINES v8-platform=0 v8-isolates=0 quickjs-runtimes=0 pants-runtimes=0\nCLOSED 1\n")
+        (is (= [11 10] ((juxt :native-thread-total :spawned-threads-joined)
                       (compare/goose-diagnostics native 1))))
-        (spit (str native) "JOBS 0 2 5 5 100 200 300 4000 5000 2 1 3 1 2 0 0\nTHREADS 0 10 7 8\nCLOSED 1\n")
+        (spit (str native) "JOBS 0 2 5 5 100 200 300 4000 5000 2 1 3 1 2 0 0 7 0 10 20 30 7 40 0 0 0 0 0 0\nTHREADS 0 11 8 9\nCLOSED 1\n")
         (is (thrown-with-msg? AssertionError #"spawned threads did not all join"
                              (compare/goose-diagnostics native 1)))
-        (spit (str native) "JOBS 0 2 5 5 100 200 300 4000 5000 2 1 3 1 2 0 0\nTHREADS 0 10 7 9\nENGINES v8-platform=1 v8-isolates=2 quickjs-runtimes=0 pants-runtimes=0\nCLOSED 1\n")
+        (spit (str native) "JOBS 0 2 5 5 100 200 300 4000 5000 2 1 3 1 2 0 0 7 0 10 20 30 7 40 0 0 0 0 0 0\nTHREADS 0 11 8 10\nENGINES v8-platform=1 v8-isolates=2 quickjs-runtimes=0 pants-runtimes=0\nCLOSED 1\n")
         (is (thrown-with-msg? AssertionError #"engine census is not all zero"
                              (compare/goose-diagnostics native 1))))
       (finally (fs/delete-tree dir)))))

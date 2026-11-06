@@ -12,7 +12,13 @@ namespace bridge;
 struct Form { tag: i64 = 0, number: f64 = 0, start: i64 = 0, count: i64 = 0, ns_start: i64 = 0, ns_count: i64 = -1, metadata: i64 = -1, origin: i64 = -1, source: i64 = -1, span_start: i64 = 0, span_end: i64 = 0 }
 root struct Graph { nodes: Form[>..] = [], children: i64[>..] = [], units: u16[>..] = [], sources: source::SourceRange[>..] = [], bytes: u8[>..] = [], roots: i64[>..] = [] }
 enum Error { None, Malformed, Nodes, Depth, Bytes, Work, Cancelled, Unsupported, Heap }
-struct Control { nodes: i64 = 100000, depth: i64 = 128, bytes: i64 = 16777216, work: i64 = 10000000, cancel_after: i64 = -1, visits: i64 = 0, error: Error = Error.None, cancelled: bool = false }
+// cells: the graph may hold cell references, tag 10 (number the cell,
+// count its flavor; light-cljs-799, cells.goose): a cell's value or a
+// produced helper, which stay inside the Goose session. A job's result for
+// the compiler never does, so a cell there is Unsupported, as the V8 build's
+// form bridge refuses an atom.
+struct Control { nodes: i64 = 100000, depth: i64 = 128, bytes: i64 = 16777216, work: i64 = 10000000, cancel_after: i64 = -1, visits: i64 = 0, error: Error = Error.None, cancelled: bool = false, cells: bool = false }
+inline fn collection(tag: i64) -> bool { return tag >= 6 && tag <= 9; }
 fn poll(c: Control&, count: i64 = 1) -> bool {
     if c.error != Error.None { return false; }
     if c.cancelled { c.error = Error.Cancelled; return false; }
@@ -52,7 +58,8 @@ fn validate(g: const Graph&, c: Control&) -> bool {
     for id in g.roots { if id < 0 || id >= g.nodes.len { return reject(c); } }
     for n in g.nodes {
         if !poll(c) { return false; }
-        if n.tag < 0 || n.tag > 9 || n.metadata < -1 || n.metadata >= g.nodes.len || n.source < -1 || n.source >= g.sources.len || n.origin < -1 { return reject(c); }
+        if n.tag == 10 && (!c.cells || n.number < 0 || n.number > 2147483647 || n.number != (n.number as i64) || n.count < 0 || n.count > 1 || n.metadata >= 0) { return reject(c, Error.Unsupported); }
+        if n.tag < 0 || n.tag > 10 || n.metadata < -1 || n.metadata >= g.nodes.len || n.source < -1 || n.source >= g.sources.len || n.origin < -1 { return reject(c); }
         if n.source >= 0 && !range(n.span_start, n.span_end - n.span_start, g.sources[n.source].count) { return reject(c); }
         if n.source >= 0 {
             let s = g.sources[n.source]; let text = g.bytes[s.start..(s.start + s.count)];
@@ -68,7 +75,7 @@ fn validate(g: const Graph&, c: Control&) -> bool {
             } else { for i in n.count { if !poll(c) { return false; } if g.units[n.start + i] == 47 && n.count != 1 { return reject(c, Error.Unsupported); } } }
         }
         if n.metadata >= 0 && g.nodes[n.metadata].tag != 8 { return reject(c, Error.Unsupported); }
-        if n.tag >= 6 && (!range(n.start, n.count, g.children.len) || n.tag == 8 && n.count % 2 != 0) { return reject(c); }
+        if collection(n.tag) && (!range(n.start, n.count, g.children.len) || n.tag == 8 && n.count % 2 != 0) { return reject(c); }
     }
     for id in g.children { if id < 0 || id >= g.nodes.len { return reject(c); } }
     for root in g.nodes.len {
@@ -77,7 +84,7 @@ fn validate(g: const Graph&, c: Control&) -> bool {
         while stack.len > 0 {
             if !poll(c) { return false; }
             let w = stack[stack.len - 1]; let n = g.nodes[w.id]; states[w.id] = 1;
-            let edge_count = (if n.tag >= 6 { n.count } else { 0 }) + (if n.metadata >= 0 { 1 } else { 0 });
+            let edge_count = (if collection(n.tag) { n.count } else { 0 }) + (if n.metadata >= 0 { 1 } else { 0 });
             let next = w.edge + 1;
             if next < edge_count {
                 stack[stack.len - 1].edge = next;
@@ -87,7 +94,7 @@ fn validate(g: const Graph&, c: Control&) -> bool {
             } else {
                 var height: i64 = 1;
                 if n.metadata >= 0 { height = max(height, 1 + heights[n.metadata]); }
-                if n.tag >= 6 { for i in n.count { if !poll(c) { return false; } height = max(height, 1 + heights[g.children[n.start + i]]); } }
+                if collection(n.tag) { for i in n.count { if !poll(c) { return false; } height = max(height, 1 + heights[g.children[n.start + i]]); } }
                 if height > c.depth { return reject(c, Error.Depth); }
                 heights[w.id] = height; states[w.id] = 2; stack.pop();
             }
@@ -160,7 +167,8 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     for n, i in g.nodes {
         var node = source::Node { kind: 11, origin: n.origin, source: if n.source < 0 { source::no_row() } else { (sources + n.source) as u32 }, span_start: n.span_start as u32, span_end: n.span_end as u32 };
         if n.metadata >= 0 { node.metadata = source::object(base + n.metadata); }
-        if n.tag >= 6 { node.kind = n.tag - 1; node.start = (children + n.start) as u32; node.count = n.count as u32; }
+        if collection(n.tag) { node.kind = n.tag - 1; node.start = (children + n.start) as u32; node.count = n.count as u32; }
+        else if n.tag == 10 { node = source::Node { kind: 18, function: n.number as u32, length: n.count as u32 }; }
         else if n.tag == 4 || n.tag == 5 {
             node.kind = n.tag + 5; node.value = source::import_text(heap, g.units[n.start..(n.start + n.count)]);
             if n.ns_count >= 0 { node.namespace_value = source::import_text(heap, g.units[n.ns_start..(n.ns_start + n.ns_count)]); }
@@ -235,6 +243,10 @@ fn export_graph(heap: source::Heap&, roots: const source::Value[:], out: Graph&,
                 if !poll(c, node.count) { return false; }
                 if !range(node.start, node.count, heap.values.len) { return reject(c); }
                 for i in node.count { let field = g.children.len; g.children.push(-1); queue.push(Edge { value: source::slot(heap, node.start + i), parent: id, field: field }); }
+            } else if node.kind == 18 {
+                // A cell reference, inside the session only (Control.cells).
+                if !c.cells { return reject(c, Error.Unsupported); }
+                n.tag = 10; n.number = node.function; n.count = node.length;
             } else {
                 if node.kind == 9 || node.kind == 10 { n.tag = node.kind - 5; x = node.value; }
                 else { n.tag = if x.tag() == 1 { 0 } else if x.tag() == 2 { 1 } else if x.tag() == 3 { 2 } else if x.tag() == 4 { 3 } else { -1 }; }

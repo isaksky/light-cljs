@@ -113,7 +113,9 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
                 if n.kind == 1 || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
                 if !base_node(p, heap, id, c) { return false; } ids[id] = id;
             } else {
-                if n.kind == 0 || n.kind == 1 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.proto.tag() != -1 || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
+                // A cell reference (18) is shareable; an atom was made one
+                // before the publication (source::publish_cells).
+                if n.kind == 0 || n.kind == 1 || n.kind > 12 && n.kind != 18 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.proto.tag() != -1 || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
                 ids[id] = heap.nodes.len + slots.len; slots.push(id);
             }
         }

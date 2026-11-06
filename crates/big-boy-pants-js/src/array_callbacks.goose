@@ -52,12 +52,14 @@ namespace source;
 // native_step dispatches by `match` on its Native variant.
 
 // Whether built-in b runs as a native frame (native_start).
-fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach; }
+fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals; }
 // Start built-in b, called with `receiver` and `args`, as a native frame
 // whose operand base is `base`, where the call's operands began: the
 // dispatch loop's `call` cuts the operands to it and the finished frame
 // pushes its result there.
 fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
+    // swap! and swap-vals! (cells.goose).
+    if b == Builtin.Swap || b == Builtin.SwapVals { var copied: Value[>..] = []; copied.append(args); start_swap(job, b, copied, base); return; }
     let callback = arg(args, 0); let this_arg = arg(args, 1);
     job.operands.resize(base);
     start_array_callbacks(job, b, receiver, callback, this_arg, base);
