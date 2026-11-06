@@ -360,8 +360,8 @@ struct Write { object: Value, key: Value, value: Value }
 // async function's completion boundary, its frame's first entry, `value`
 // its promise: an exception that reaches it rejects the promise, and a
 // return resolves it (continuations.goose). Every entry is plain data: a
-// suspended job saves its handlers with its frames, and a detached
-// activation its own (Cont.Saved).
+// detached activation, a generator's frame or a suspended job's whole
+// stack, saves its frames' handlers (Cont.Saved).
 enum HandlerKind { Catch, Finally, Normal, Return, Throw, Cancel, Jump, Async }
 struct Handler { frame: i64, pc: i64, operands: i64, locals: i64, kind: HandlerKind = HandlerKind.Catch, value: Value = Value.Undefined }
 root struct Job {

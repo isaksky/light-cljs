@@ -32,7 +32,7 @@ fn retained(heap: const source::Heap&) -> i64 { return bytes_of(heap.nodes).len 
 // otherwise it saves a flat continuation and goes idle, and any worker
 // restores it later.
 struct Saved {
-    heap:    snapshot::Snapshot = snapshot::Snapshot {}, frames: source::Frame[] = [], locals: source::Value[] = [], operands: source::Value[] = [], writes: source::Write[] = [], handlers: source::Handler[] = [],
+    heap:    snapshot::Snapshot = snapshot::Snapshot {}, writes: source::Write[] = [],
     steps:   i64                = 0, args: source::Value[8] = [source::Value.Undefined; 8], frame: source::Frame = source::Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: source::Value.Undefined, receiver: source::Value.Undefined },
     bridge:  bridge::Control    = bridge::Control {}, sequence: i64 = 0, costs: i64[2] = [0; 2], protected: i64 = 0,
     storage: bool               = false, base: snapshot::Header = snapshot::Header {},
@@ -47,6 +47,10 @@ struct Saved {
     // (source::Job.cell_rows, light-cljs-799), and how many delay claims it
     // holds unsettled (source::Job.claims, light-cljs-808).
     cell_rows: source::CellRow[] = [], claims: i64 = 0,
+    // The job's stack (light-cljs-813): every frame, native frames included,
+    // with its locals, operands and handlers, detached into one activation
+    // row of heap.conts (source::suspend_stack), no_row() for none.
+    stack: u32 = 4294967295,
     // The job's promise jobs (light-cljs-790; source::Job.queue and the rest):
     // its suspended activations are rows of `heap`.
     queue: source::Task[] = [], queue_head: i64 = 0, draining: bool = false, entry: source::Value = source::Value.Undefined, rejections: u32[] = [],
@@ -215,12 +219,16 @@ fn leaf(id: i64, heap: source::Heap&, callee: source::Value, args: const source:
     let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")); var job = source::Job { heap: heap, protected_nodes: protected, root_receiver: roots }; defer { source::retire(job); } scope(job, prefix, next); defer { next = job.gensym_next; }
     source::start(job, callee, args); if source::run(job, -1) != tiny::Outcome.Complete { fail(id, heap, job, address, timing); return source::Value.Undefined, false; } return job.result, true;
 }
-fn save(job: source::Job&, rt: source::Value, call: source::Value, control: bridge::Control, sequence: i64, costs: i64[2], checkpoint: i64) -> Saved {
+// The job's continuation, its stack detached into activation row `reuse`
+// (-1 for a new one): false, with heap.fault set and the job unchanged, when
+// its rows pass the job's limits.
+fn save(job: source::Job&, rt: source::Value, call: source::Value, control: bridge::Control, sequence: i64, costs: i64[2], checkpoint: i64, reuse: i64) -> Saved, bool {
     assert(!job.claimed && job.effect_pending && job.status == tiny::Status.Ready && (job.effect_kind == 9 && job.effect_count == 3 || job.effect_kind == 10 && job.effect_count == 2));
+    let stack = source::suspend_stack(job, reuse); if stack < 0 { return Saved {}, false; }
     // The continuation carries the job's delay claims; this worker no longer does.
     let claims = job.claims; job.claims = 0;
     assert(source::retire(job, true)); var c = snapshot::Control {}; let heap = snapshot::capture(job.heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: call }], c, checkpoint); assert(c.error == snapshot::Error.None);
-    return Saved { heap: copy(heap), frames: copy(job.frames), locals: copy(job.locals), operands: copy(job.operands), writes: copy(job.writes), handlers: copy(job.handlers), steps: job.steps, args: job.effect_args, frame: job.effect_frame, bridge: control, sequence: sequence, costs: costs, protected: job.protected_nodes, gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next, owned: job.owned_nodes, foreign: copy(job.foreign), cell_rows: copy(job.cell_rows), claims: claims, queue: copy(job.queue), queue_head: job.queue_head, draining: job.draining, entry: job.entry, rejections: copy(job.rejections) };
+    return Saved { heap: copy(heap), writes: copy(job.writes), steps: job.steps, args: job.effect_args, frame: job.effect_frame, bridge: control, sequence: sequence, costs: costs, protected: job.protected_nodes, gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next, owned: job.owned_nodes, foreign: copy(job.foreign), cell_rows: copy(job.cell_rows), claims: claims, stack: stack as u32, queue: copy(job.queue), queue_head: job.queue_head, draining: job.draining, entry: job.entry, rejections: copy(job.rejections) }, true;
 }
 fn fail(id: i64, heap: source::Heap&, job: source::Job&, address: i64 = 0, timing: i64[4] = [0; 4]) {
     let pc = job.fault_pc; var start: i64 = -1; var end: i64 = -1;
@@ -418,10 +426,11 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
     let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")); job.effects_enabled = true; job.helpers_enabled = true; job.protected_nodes = saved.protected; job.root_receiver = roots; defer { source::retire(job); } scope(job, saved.gensym_prefix, next);
     job.owned_nodes = owned; for r in saved.foreign { job.foreign.push(r); } job.cell_holder = id; source::install_foreign(job, installing);
     if mode == 0 { source::start(job, function, args); } else {
-        // Saved rows link the restored heap's rows by index: copied verbatim.
-        for f in saved.frames { job.frames.push(f); } job.locals.append(saved.locals); job.operands.append(saved.operands);
+        // The stack attaches at the heights it left (the saved rows link the
+        // restored heap's rows by index).
+        assert(source::resume_stack(job, saved.stack));
         job.writes.append(saved.writes);
-        for h in saved.handlers { job.handlers.push(h); } for t in saved.queue { job.queue.push(t); } job.queue_head = saved.queue_head; job.draining = saved.draining; job.entry = saved.entry; for r in saved.rejections { job.rejections.push(r); } job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = 9; job.effect_count = 3; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+        for t in saved.queue { job.queue.push(t); } job.queue_head = saved.queue_head; job.draining = saved.draining; job.entry = saved.entry; for r in saved.rejections { job.rejections.push(r); } job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = 9; job.effect_count = 3; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
         // Mode 4: the session was cancelled while this continuation waited;
         // or it was cancelled while this resume was queued (light-cljs-803).
         // Its finally blocks run under its limits; nothing is published.
@@ -482,7 +491,10 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
             // Over the retention budget: save the continuation and end the job.
         }
         let counted = rows(work, heap, job, bindings, call);
-        let state = save(job, rt, call, control, sequence, costs, checkpoint); state.storage = saved.storage; state.base = saved.base; publish(Event { id: id, kind: 1, saved: copy(state), name: copy(name), steps: job.steps, metrics: str(sc.restore_ns, " ", clock_ns() - execution_started, " ", clock_ns() - worker_started, " ", storage(saved, heap, sc, 0), " ", mode), address: address, census: counted, timing: timing(work, started, sc), delay: delay, epoch: epoch }); return;
+        // A continuation's rows past the job's limits end it as any fault does.
+        let state, saved_ok = save(job, rt, call, control, sequence, costs, checkpoint, source::reuse_row(saved.stack));
+        if !saved_ok { let fault = heap.fault; heap.fault = source::Fault.None; source::deliver_effect(job, source::Value.Undefined, fault); continue; }
+        state.storage = saved.storage; state.base = saved.base; publish(Event { id: id, kind: 1, saved: copy(state), name: copy(name), steps: job.steps, metrics: str(sc.restore_ns, " ", clock_ns() - execution_started, " ", clock_ns() - worker_started, " ", storage(saved, heap, sc, 0), " ", mode), address: address, census: counted, timing: timing(work, started, sc), delay: delay, epoch: epoch }); return;
     }
     let exporting = clock_ns(); let execution_ns = exporting - execution_started; let result = job.result; let steps = job.steps; assert(source::retire(job)); reset(graph); bytes.clear();
     let counted = rows(work, heap, job, bindings, call);
@@ -513,7 +525,7 @@ fn storage(saved: const Saved&, heap: const source::Heap&, sc: snapshot::Control
     return str(sc.copied_bytes, " ", if saved.heap.nodes.len == 0 { 0 } else { snapshot::footprint(saved.heap) }, " ", output, " ", heap.nodes.len, " ", heap.values.len, " ", peak_memory(), " ", retained(heap));
 }
 fn release(running: Running[>..]&, address: i64) -> Running, bool { for r, i in running { if r.address == address { let out = r; running.swap_remove(i); return out, true; } } return Running { id: 0 }, false; }
-fn footprint(saved: const Saved&) -> i64 { return snapshot::footprint(saved.heap) + bytes_of(saved.frames).len + bytes_of(saved.locals).len + bytes_of(saved.operands).len + bytes_of(saved.writes).len + bytes_of(saved.handlers).len + bytes_of(saved.queue).len + bytes_of(saved.rejections).len; }
+fn footprint(saved: const Saved&) -> i64 { return snapshot::footprint(saved.heap) + bytes_of(saved.writes).len + bytes_of(saved.queue).len + bytes_of(saved.rejections).len; }
 fn identity(saved: const Saved&) -> i64 { var id = source::reserve_identity(); while id == saved.heap.header.base || id == saved.heap.header.checkpoint { id = source::reserve_identity(); } return id; }
 // Measurement control: a single retained heap, no snapshots or execution
 // threads. The bounded benchmark's pure shared helper is emitted on demand by

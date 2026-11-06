@@ -1038,9 +1038,26 @@ carries the activations in its snapshot (`snapshot.goose` validates every
 next job. Not yet (the generators area, light-cljs-768): `yield*`, async
 generators, the Promise constructor and methods, thenable objects (a named
 UnsupportedOperand), %GeneratorFunction.prototype% (generator functions
-inherit Function.prototype); and (light-cljs-813) the helper-suspension
-continuation (`compiler_session.goose`, `Saved`) still copies the whole
-job stack rather than detaching it into continuation rows.
+inherit Function.prototype).
+
+**As implemented (light-cljs-813, November 6, 2026).** An `Activation` is
+a run of frames, so one record serves a generator, an async function and
+the compiler session's helper-suspension continuation. Its rows: a run of
+`Frame` rows (a fifth `Cont` variant holding a frame's fields, native
+frames' `Native` state, input, output and index included, with bases
+relative to the run's), its locals and operands in a run of `heap.values`,
+and its handlers as `Saved` rows that name their frame in the run. A yield
+or await detaches a run of one frame; a dependency wait that saves its
+continuation detaches the job's whole stack (`suspend_stack`) into one
+row named by `Saved.stack` in `compiler_session.goose`, which replaces
+`Saved`'s copies of the job's frames, locals, operands and handlers. The
+restoring worker attaches it at the heights it left (`resume_stack`), and
+the job's next save reuses its rows. A save charges no work (it is the
+session's step), but its rows count against the job's limits: a save past
+them ends the job with that fault at its wait. `snapshot.goose`
+(`activation_valid`) checks every activation's runs, frame order and
+bases, bytecode frames' code, pc and locals, native frames' operation and
+handlers' frames and heights.
 
 **Rejected.** *Goose recursion per call with `exception::try` for throw*:
 the native stack is 8 MB on the macOS main thread, a handler cannot be

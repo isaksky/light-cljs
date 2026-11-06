@@ -14,8 +14,8 @@ namespace source;
 // its saved handlers (rust/src/frontend/lower.rs, ExprKind::Yield).
 //
 // Suspension is data (rule 5). A yield or await *detaches* the top frame's
-// activation: its frame row, its locals and operands (copied into a run of
-// heap.values, the activation's slot run) and its handlers (copied into
+// activation: its frame (a Frame row of heap.conts), its locals and
+// operands (copied into a run of heap.values, the activation's slot run) and its handlers (copied into
 // Saved rows of heap.conts, their heights relative to the frame's bases)
 // become one Activation row of heap.conts, and the frame leaves the job's
 // stacks. Resumption *attaches* it: the rows are copied back on top of the
@@ -86,20 +86,33 @@ namespace source;
 // a compiler dependency keeps its suspended activations where they are, in
 // its tables: a wait in place keeps them in its worker, and a saved
 // continuation carries them in its snapshot (and its queue in Saved,
-// compiler_session.goose). Cancellation unwinds the running frames, running
+// compiler_session.goose). A saved continuation detaches the job's whole
+// stack the same way (suspend_stack, light-cljs-813): every frame, native
+// frames included, with its locals, operands and handlers becomes one more
+// Activation row, which the restoring worker attaches at the same heights
+// (resume_stack) and the job's next save reuses. Cancellation unwinds the running frames, running
 // their finally blocks, and drops suspended activations and queued jobs
 // with the job's tables; a yield or await reached by a finally block that a
 // cancellation runs abandons that block and goes on to the next one, as the
 // Pants engine's does.
 
-// A detached activation (Cont.Activation): the frame row's fields, its
-// locals then operands at heap.values[values..values + locals + operands]
-// in a run of `capacity` rows, and its handlers at heap.conts[handlers..
-// handlers + handler_count] (Saved rows) in a run of handler_capacity.
-struct Activation { function: u32, pc: u32, callee: Value, receiver: Value, argument_count: u32, values: u32, locals: u32, operands: u32, capacity: u32, handlers: u32, handler_count: u32, handler_capacity: u32 }
-// A handler of a detached activation, its heights relative to the frame's
-// local and operand bases.
-struct SavedHandler { pc: i64 = 0, operands: u32 = 0, locals: u32 = 0, kind: HandlerKind = HandlerKind.Catch, value: Value = Value.Undefined }
+// A detached activation (Cont.Activation): a run of frames, bottom first,
+// with their locals, operands and handlers. The frames are Frame rows at
+// heap.conts[frames..frames + frame_count] in a run of frame_capacity;
+// their locals then operands are at heap.values[values..values + locals +
+// operands] in a run of `capacity` rows; their handlers are Saved rows at
+// heap.conts[handlers..handlers + handler_count] in a run of
+// handler_capacity. A generator's or an async function's activation is one
+// frame; a dependency wait's saved continuation is the job's whole stack,
+// native frames included (light-cljs-813, suspend_stack).
+struct Activation { frames: u32, frame_count: u32, frame_capacity: u32, values: u32, locals: u32, operands: u32, capacity: u32, handlers: u32, handler_count: u32, handler_capacity: u32 }
+// A frame of a detached run (Cont.Frame): source::Frame's fields, its bases
+// relative to the run's; function no_row() for a native frame, whose Native
+// names its operation and whose input, output and index hold its state.
+struct SavedFrame { function: u32 = 4294967295, pc: u32 = 0, local_base: u32 = 0, operand_base: u32 = 0, argument_count: u32 = 0, index: i64 = 0, callee: Value = Value.Undefined, receiver: Value = Value.Undefined, input: Value = Value.Undefined, output: Value = Value.Undefined, native: Native = Native.None }
+// A handler of a detached activation: its frame's index in the run and its
+// heights relative to the run's local and operand bases.
+struct SavedHandler { frame: u32 = 0, pc: i64 = 0, operands: u32 = 0, locals: u32 = 0, kind: HandlerKind = HandlerKind.Catch, value: Value = Value.Undefined }
 // A promise's internal slots (Cont.Promise); first and last name its
 // pending reactions, activation an async function's detached activation
 // (no_row() for none). handled: a reaction was registered
@@ -110,7 +123,7 @@ struct PromiseState { state: u8 = 0, result: Value = Value.Undefined, first: u32
 // adoption); next is the promise's next reaction.
 struct Reaction { target: u32, resume: bool, next: u32 = 4294967295 }
 // A row of the continuation table heap.conts (decision 2's `conts`).
-enum Cont { Activation { a: Activation }, Saved { h: SavedHandler }, Promise { p: PromiseState }, Reaction { r: Reaction } }
+enum Cont { Activation { a: Activation }, Saved { h: SavedHandler }, Promise { p: PromiseState }, Reaction { r: Reaction }, Frame { f: SavedFrame } }
 // A promise job (Job.queue): reaction `target`/`resume` with the settled
 // value, or, with `thenable` a promise row, the registration of target's
 // adoption of that promise.
@@ -121,10 +134,11 @@ struct Task { target: u32, resume: bool = false, value: Value = Value.Undefined,
 fn handler_code(k: HandlerKind) -> u8 { return match k { Catch => 0, Finally => 1, Normal => 2, Return => 3, Throw => 4, Cancel => 5, Jump => 6, Async => 7 }; }
 fn plain_bytes(c: Cont, out: u8[>..]&) {
     match c {
-        Activation x => { let a = x.a; out.push(0); out.append(bytes_of([a.function, a.pc, a.argument_count, a.values, a.locals, a.operands, a.capacity, a.handlers, a.handler_count, a.handler_capacity])); plain_bytes(a.callee, out); plain_bytes(a.receiver, out); },
-        Saved x => { out.push(1); out.append(bytes_of([x.h.pc])); out.append(bytes_of([x.h.operands, x.h.locals])); out.push(handler_code(x.h.kind)); plain_bytes(x.h.value, out); },
+        Activation x => { let a = x.a; out.push(0); out.append(bytes_of([a.frames, a.frame_count, a.frame_capacity, a.values, a.locals, a.operands, a.capacity, a.handlers, a.handler_count, a.handler_capacity])); },
+        Saved x => { out.push(1); out.append(bytes_of([x.h.pc])); out.append(bytes_of([x.h.frame, x.h.operands, x.h.locals])); out.push(handler_code(x.h.kind)); plain_bytes(x.h.value, out); },
         Promise x => { out.push(2); out.push(x.p.state); plain_bytes(x.p.result, out); out.append(bytes_of([x.p.first, x.p.last, x.p.activation])); out.push(if x.p.handled { 1 } else { 0 }); },
         Reaction x => { out.push(3); out.append(bytes_of([x.r.target, x.r.next])); out.push(if x.r.resume { 1 } else { 0 }); },
+        Frame x => { let f = x.f; out.push(4); out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count])); out.append(bytes_of([f.index, native_code(f.native)])); plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out); },
     }
 }
 fn plain_bytes(t: Task, out: u8[>..]&) { out.append(bytes_of([t.target, t.thenable])); out.push(if t.resume { 1 } else { 0 }); out.push(if t.rejected { 1 } else { 0 }); plain_bytes(t.value, out); }
@@ -136,7 +150,8 @@ inline fn is_promise(heap: const Heap&, v: Value) -> bool { return v.tag() == 5 
 // Rows of heap.conts, named like every table's (light-cljs-800).
 fn cont_row(heap: const Heap&, r: i64) -> Cont { if r < 0 || r >= heap.conts.len { abort("row is not in table conts"); } return heap.conts[r]; }
 fn set_cont(heap: Heap&, r: i64, c: Cont) { if r < 0 || r >= heap.conts.len { abort("row is not in table conts"); } heap.conts[r] = c; }
-fn activation(heap: const Heap&, r: i64) -> Activation { return match cont_row(heap, r) { Activation x => x.a, _ => { abort("row is not an activation"); Activation { function: 0, pc: 0, callee: Value.Undefined, receiver: Value.Undefined, argument_count: 0, values: 0, locals: 0, operands: 0, capacity: 0, handlers: 0, handler_count: 0, handler_capacity: 0 } } }; }
+fn activation(heap: const Heap&, r: i64) -> Activation { return match cont_row(heap, r) { Activation x => x.a, _ => { abort("row is not an activation"); Activation { frames: 0, frame_count: 0, frame_capacity: 0, values: 0, locals: 0, operands: 0, capacity: 0, handlers: 0, handler_count: 0, handler_capacity: 0 } } }; }
+fn saved_frame(heap: const Heap&, r: i64) -> SavedFrame { return match cont_row(heap, r) { Frame x => x.f, _ => { abort("row is not a saved frame"); SavedFrame {} } }; }
 fn promise_state(heap: const Heap&, p: i64) -> PromiseState { return match cont_row(heap, node(heap, p).function) { Promise x => x.p, _ => { abort("row is not a promise"); PromiseState {} } }; }
 fn set_promise_state(heap: Heap&, p: i64, s: PromiseState) { set_cont(heap, node(heap, p).function, Cont.Promise { p: s }); }
 fn reaction(heap: const Heap&, r: i64) -> Reaction { return match cont_row(heap, r) { Reaction x => x.r, _ => { abort("row is not a reaction"); Reaction { target: 0, resume: false } } }; }
@@ -164,60 +179,92 @@ inline fn reuse_row(r: u32) -> i64 { return if r == no_row() { -1 } else { r }; 
 // Detach the activation of the frame at `top`, the job's top frame (see
 // above), into row `reuse` (an Activation row, or -1 for a new one), and pop
 // it. Returns its row, or -1 with heap.fault set and nothing changed.
-fn detach(job: Job&, top: i64, reuse: i64) -> i64 {
+fn detach(job: Job&, top: i64, reuse: i64) -> i64 { return detach_run(job, top, reuse, true); }
+// Detach the job's whole stack, every frame with its locals, operands and
+// handlers, into row `reuse` (-1 for a new one): a dependency wait's saved
+// continuation (compiler_session.goose, save), resumed by resume_stack at
+// the same heights. It is the compiler session's step, not JavaScript's, so
+// it charges no work; its rows count against the job's limits like every
+// row. Returns its row, or -1 with heap.fault set and nothing changed.
+fn suspend_stack(job: Job&, reuse: i64) -> i64 { return detach_run(job, 0, reuse, false); }
+// Attach a whole stack suspend_stack detached on a job with empty stacks.
+// False, with heap.fault set and nothing changed, when it does not fit.
+fn resume_stack(job: Job&, row: i64) -> bool {
+    if job.frames.len != 0 || job.locals.len != 0 || job.operands.len != 0 || job.handlers.len != 0 { job.heap.fault = Fault.InvalidState; return false; }
+    return attach_run(job, row, false);
+}
+// Detach frames from..top of the job, the top of its stacks, with the locals
+// and operands above frame `from`'s bases and the handlers of those frames,
+// into an Activation row (see Activation). A run that no longer fits its
+// reused row is replaced by one twice the old size.
+fn detach_run(job: Job&, from: i64, reuse: i64, charged: bool) -> i64 {
     let heap .= job.heap;
-    let f = job.frames[top];
-    let nl = job.locals.len - f.local_base; let no = job.operands.len - f.operand_base;
-    var hb = job.handlers.len; while hb > 0 && job.handlers[hb - 1].frame == top { hb -= 1; }
+    let nf = job.frames.len - from;
+    if from < 0 || nf < 0 { heap.fault = Fault.InvalidState; return -1; }
+    let lb = if nf > 0 { job.frames[from].local_base } else { job.locals.len }; let ob = if nf > 0 { job.frames[from].operand_base } else { job.operands.len };
+    // The job's stacks hold nothing below its first frame.
+    if from == 0 && (lb != 0 || ob != 0) { heap.fault = Fault.InvalidState; return -1; }
+    let nl = job.locals.len - lb; let no = job.operands.len - ob;
+    var hb = job.handlers.len; while hb > 0 && job.handlers[hb - 1].frame >= from { hb -= 1; }
     let nh = job.handlers.len - hb;
     // Stacks never hold a hole (Empty); a run never does either (snapshot::validate).
-    for v in job.locals[f.local_base..] { if v.tag() == -1 { heap.fault = Fault.InvalidState; return -1; } }
-    for v in job.operands[f.operand_base..] { if v.tag() == -1 { heap.fault = Fault.InvalidState; return -1; } }
-    var a = Activation { function: f.function as u32, pc: f.pc as u32, callee: f.callee, receiver: f.receiver, argument_count: f.argument_count as u32, values: 0, locals: nl as u32, operands: no as u32, capacity: 0, handlers: no_row(), handler_count: nh as u32, handler_capacity: 0 };
-    if reuse >= 0 { let old = activation(heap, reuse); a.values = old.values; a.capacity = old.capacity; a.handlers = old.handlers; a.handler_capacity = old.handler_capacity; }
-    // A run that no longer fits is replaced by one twice the old size.
+    for v in job.locals[lb..] { if v.tag() == -1 { heap.fault = Fault.InvalidState; return -1; } }
+    for v in job.operands[ob..] { if v.tag() == -1 { heap.fault = Fault.InvalidState; return -1; } }
+    // Frame bases only rise up the stack, and every pc is an instruction or a native step.
+    for f in job.frames[from..] { if f.pc < 0 || f.local_base < lb || f.operand_base < ob { heap.fault = Fault.InvalidState; return -1; } }
+    var a = Activation { frames: no_row(), frame_count: nf as u32, frame_capacity: 0, values: 0, locals: nl as u32, operands: no as u32, capacity: 0, handlers: no_row(), handler_count: nh as u32, handler_capacity: 0 };
+    if reuse >= 0 { let old = activation(heap, reuse); a.frames = old.frames; a.frame_capacity = old.frame_capacity; a.values = old.values; a.capacity = old.capacity; a.handlers = old.handlers; a.handler_capacity = old.handler_capacity; }
+    let frames = if a.frame_capacity >= nf { 0 } else { max(nf, 2 * (a.frame_capacity as i64)) };
     let values = if a.capacity >= nl + no { 0 } else { max(nl + no, 2 * (a.capacity as i64)) };
     let handlers = if a.handler_capacity >= nh { 0 } else { max(nh, 2 * (a.handler_capacity as i64)) };
-    let rows = handlers + (if reuse >= 0 { 0 } else { 1 });
+    let rows = frames + handlers + (if reuse >= 0 { 0 } else { 1 });
     if !values_fit(heap, values) || !conts_fit(heap, rows) { memory(heap); return -1; }
-    if !charge(heap, 1 + nl + no + nh) { return -1; }
+    if charged && !charge(heap, nf + nl + no + nh) { return -1; }
+    if frames > 0 { a.frames = add_conts(heap, Cont.Frame { f: SavedFrame {} }, frames) as u32; a.frame_capacity = frames as u32; }
     if values > 0 { a.values = add_values(heap, [], values) as u32; a.capacity = values as u32; }
     if handlers > 0 { a.handlers = add_conts(heap, Cont.Saved { h: SavedHandler {} }, handlers) as u32; a.handler_capacity = handlers as u32; }
-    for i in nl { set_slot(heap, a.values + i, job.locals[f.local_base + i]); }
-    for i in no { set_slot(heap, a.values + nl + i, job.operands[f.operand_base + i]); }
+    for i in nf {
+        let f = job.frames[from + i];
+        set_cont(heap, a.frames + i, Cont.Frame { f: SavedFrame { function: if f.function < 0 { no_row() } else { f.function as u32 }, pc: f.pc as u32, local_base: (f.local_base - lb) as u32, operand_base: (f.operand_base - ob) as u32, argument_count: f.argument_count as u32, index: f.index, callee: f.callee, receiver: f.receiver, input: f.input, output: f.output, native: f.native } });
+    }
+    for i in nl { set_slot(heap, a.values + i, job.locals[lb + i]); }
+    for i in no { set_slot(heap, a.values + nl + i, job.operands[ob + i]); }
     for i in nh {
         let h = job.handlers[hb + i];
-        set_cont(heap, a.handlers + i, Cont.Saved { h: SavedHandler { pc: h.pc, operands: (h.operands - f.operand_base) as u32, locals: (h.locals - f.local_base) as u32, kind: h.kind, value: h.value } });
+        set_cont(heap, a.handlers + i, Cont.Saved { h: SavedHandler { frame: (h.frame - from) as u32, pc: h.pc, operands: (h.operands - ob) as u32, locals: (h.locals - lb) as u32, kind: h.kind, value: h.value } });
     }
     var row = reuse;
     if reuse >= 0 { set_cont(heap, reuse, Cont.Activation { a: a }); } else { row = add_conts(heap, Cont.Activation { a: a }, 1); }
-    job.frames.pop(); job.locals.resize(f.local_base); job.operands.resize(f.operand_base); job.handlers.resize(hb);
+    job.frames.resize(from); job.locals.resize(lb); job.operands.resize(ob); job.handlers.resize(hb);
     return row;
 }
-// Attach activation `row` on top of the job's stacks, at their current
-// heights. False, with StackLimit set and nothing changed, when its frame,
-// values or handlers would pass the call limits (Limits).
 // Whether activation `row` and `extra` more operands fit the call limits.
 fn attach_fits(job: const Job&, row: i64, extra: i64) -> bool {
     let heap .= job.heap;
     let a = activation(heap, row);
-    let n: i64 = a.locals; let m: i64 = a.operands; let need = n + m + extra;
-    return job.frames.len < heap.limits.frames && need <= heap.limits.stack - job.locals.len - job.operands.len && job.handlers.len + a.handler_count <= heap.limits.stack;
+    let n: i64 = a.locals; let m: i64 = a.operands; let need = n + m + extra; let frames: i64 = a.frame_count; let handlers: i64 = a.handler_count;
+    return frames <= heap.limits.frames - job.frames.len && need <= heap.limits.stack - job.locals.len - job.operands.len && handlers <= heap.limits.stack - job.handlers.len;
 }
-fn attach(job: Job&, row: i64) -> bool {
+// Attach activation `row` on top of the job's stacks, at their current
+// heights. False, with StackLimit set and nothing changed, when its frames,
+// values or handlers would pass the call limits (Limits).
+fn attach(job: Job&, row: i64) -> bool { return attach_run(job, row, true); }
+fn attach_run(job: Job&, row: i64, charged: bool) -> bool {
     let heap .= job.heap;
     let a = activation(heap, row);
     let n = (a.locals + a.operands) as i64;
     if !attach_fits(job, row, 0) { heap.fault = Fault.StackLimit; return false; }
-    if !charge(heap, 1 + n) { return false; }
-    let lb = job.locals.len; let ob = job.operands.len;
+    if charged && !charge(heap, a.frame_count + n) { return false; }
+    let lb = job.locals.len; let ob = job.operands.len; let fb = job.frames.len;
     for i in a.locals { job.locals.push(slot(heap, a.values + i)); }
     for i in a.operands { job.operands.push(slot(heap, a.values + a.locals + i)); }
-    job.frames.push(Frame { function: a.function, pc: a.pc, local_base: lb, operand_base: ob, callee: a.callee, receiver: a.receiver, argument_count: a.argument_count });
-    let at = job.frames.len - 1;
+    for i in a.frame_count {
+        let f = saved_frame(heap, a.frames + i);
+        job.frames.push(Frame { function: if f.function == no_row() { -1 } else { f.function }, pc: f.pc, local_base: lb + f.local_base, operand_base: ob + f.operand_base, callee: f.callee, receiver: f.receiver, argument_count: f.argument_count, input: f.input, output: f.output, index: f.index, native: f.native });
+    }
     for i in a.handler_count {
         match cont_row(heap, a.handlers + i) {
-            Saved s => { job.handlers.push(Handler { frame: at, pc: s.h.pc, operands: ob + s.h.operands, locals: lb + s.h.locals, kind: s.h.kind, value: s.h.value }); },
+            Saved s => { job.handlers.push(Handler { frame: fb + s.h.frame, pc: s.h.pc, operands: ob + s.h.operands, locals: lb + s.h.locals, kind: s.h.kind, value: s.h.value }); },
             _ => { abort("row is not a saved handler"); },
         }
     }
@@ -471,8 +518,8 @@ fn await_value(job: Job&, top: i64, at: i64) {
 }
 // A location for a fault after the frame at `at` detached.
 fn frame_at_row(job: const Job&, row: i64, at: i64) -> Frame {
-    let a = activation(job.heap, row);
-    return Frame { function: a.function, pc: at, local_base: 0, operand_base: 0, callee: a.callee, receiver: a.receiver };
+    let f = saved_frame(job.heap, activation(job.heap, row).frames);
+    return Frame { function: f.function, pc: at, local_base: 0, operand_base: 0, callee: f.callee, receiver: f.receiver };
 }
 
 // ---------------------------------------------------------------- the job queue

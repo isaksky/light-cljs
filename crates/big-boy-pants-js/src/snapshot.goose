@@ -189,25 +189,60 @@ fn accessor_half<T>(s: const T&, v: source::Value) -> bool { return v.tag() == 0
 fn slot_value<T>(s: const T&, v: source::Value) -> bool { return match v { Accessor a => range(a.a, 1, s.accessors.len), _ => value(s, v) }; }
 // The number of occupied index slots.
 // Continuation rows (light-cljs-790, source::Cont): whether row r of conts
-// is variant `kind` (0 Activation, 1 Saved, 2 Promise, 3 Reaction).
-fn cont_kind(c: source::Cont) -> i64 { return match c { Activation => 0, Saved => 1, Promise => 2, Reaction => 3 }; }
+// is variant `kind` (0 Activation, 1 Saved, 2 Promise, 3 Reaction, 4 Frame).
+fn cont_kind(c: source::Cont) -> i64 { return match c { Activation => 0, Saved => 1, Promise => 2, Reaction => 3, Frame => 4 }; }
 fn cont_is<T>(s: const T&, r: u32, kind: i64) -> bool { return r < s.conts.len && cont_kind(s.conts[r]) == kind; }
 fn link_or_none<T>(s: const T&, r: u32, kind: i64) -> bool { return r == source::no_row() || cont_is(s, r, kind); }
-// Every row's links: an activation's code and pc, its values, its run in
-// values and its handler run of Saved rows; a promise's result, reactions
-// and activation; a reaction's promise and next reaction.
+// A run of `capacity` rows of kind `kind` at `first`, no_row() when empty.
+fn cont_run<T>(s: const T&, first: u32, capacity: u32, kind: i64) -> bool {
+    if capacity == 0 { return first == source::no_row(); }
+    if !range(first, capacity, s.conts.len) { return false; }
+    for i in capacity { if !cont_is(s, first + i, kind) { return false; } }
+    return true;
+}
+// An activation (light-cljs-813, source::Activation): its runs of Frame,
+// value and Saved rows; its frames bottom first, the first at the run's
+// bases and every base within the run, never below the frame's under it; a
+// bytecode frame's code, pc, locals and arguments, a native frame's
+// operation; and its handlers' frames and heights.
+fn activation_valid<T>(s: const T&, a: source::Activation, c: Control&) -> bool {
+    let locals: i64 = a.locals; let operands: i64 = a.operands; let count: i64 = a.frame_count;
+    if a.frame_count > a.frame_capacity || a.handler_count > a.handler_capacity || locals + operands > a.capacity || !range(a.values, a.capacity, s.values.len) { return reject(c, Error.Link); }
+    if !cont_run(s, a.frames, a.frame_capacity, 4) || !cont_run(s, a.handlers, a.handler_capacity, 1) { return reject(c, Error.Link); }
+    if count == 0 && (locals != 0 || operands != 0 || a.handler_count != 0) { return reject(c, Error.Link); }
+    if !poll(c, count + a.handler_count) { return false; }
+    var below = source::SavedFrame {};
+    for i in count {
+        let f = match s.conts[a.frames + i] { Frame y => y.f, _ => source::SavedFrame {} };
+        if i == 0 && (f.local_base != 0 || f.operand_base != 0) || i > 0 && (f.local_base < below.local_base || f.operand_base < below.operand_base) || f.local_base > a.locals || f.operand_base > a.operands { return reject(c, Error.Link); }
+        let end: i64 = if i + 1 < count { match s.conts[a.frames + i + 1] { Frame y => y.f.local_base, _ => 0 } } else { locals };
+        let span = end - f.local_base;
+        let native = match f.native { None => false, _ => true };
+        if f.function == source::no_row() {
+            if !native { return reject(c, Error.Link); }
+        } else {
+            if f.function >= s.functions.len || native { return reject(c, Error.Link); }
+            let code = s.functions[f.function];
+            if f.pc < code.start || f.pc >= code.start + code.count || span < code.locals || f.argument_count > span - code.locals { return reject(c, Error.Link); }
+        }
+        below = f;
+    }
+    for i in a.handler_count {
+        let h = match s.conts[a.handlers + i] { Saved y => y.h, _ => source::SavedHandler {} };
+        if h.frame >= a.frame_count || h.locals > a.locals || h.operands > a.operands { return reject(c, Error.Link); }
+    }
+    return true;
+}
+// Every row's links: an activation's (activation_valid); a frame's values;
+// a handler's value; a promise's result, reactions and activation; a
+// reaction's promise and next reaction.
 fn conts_valid<T>(s: const T&, c: Control&) -> bool {
     for row in s.conts {
         if !poll(c) { return false; }
         match row {
-            Activation x => {
-                let a = x.a;
-                if a.function >= s.functions.len { return reject(c, Error.Link); }
-                let f = s.functions[a.function];
-                if a.pc < f.start || a.pc >= f.start + f.count || a.locals < f.locals || a.locals + a.operands > a.capacity || !range(a.values, a.capacity, s.values.len) || a.handler_count > a.handler_capacity || !value(s, a.callee) || !value(s, a.receiver) || a.argument_count > a.locals - f.locals { return reject(c, Error.Link); }
-                if a.handler_capacity > 0 && !range(a.handlers, a.handler_capacity, s.conts.len) || a.handler_capacity == 0 && a.handlers != source::no_row() { return reject(c, Error.Link); }
-                for i in a.handler_capacity { if !cont_is(s, a.handlers + i, 1) { return reject(c, Error.Link); } }
-            },
+            Activation x => { if !activation_valid(s, x.a, c) { return false; } },
+            // A frame's values; the activation that runs it checks the rest.
+            Frame x => { let f = x.f; if !value(s, f.callee) || !value(s, f.receiver) || !value(s, f.input) || !value(s, f.output) { return reject(c, Error.Link); } },
             // An async function's boundary names its promise.
             Saved x => { if !value(s, x.h.value) || x.h.pc < -1 || x.h.kind == source::HandlerKind.Async && (x.h.value.tag() != 5 || s.nodes[x.h.value.id()].kind != 21) { return reject(c, Error.Link); } },
             Promise x => {

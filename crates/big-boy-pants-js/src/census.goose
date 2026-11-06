@@ -29,7 +29,7 @@ fn mark_slot(heap: const source::Heap&, v: source::Value, nodes: bool[>..]&, uni
 }
 fn mark_activation(heap: const source::Heap&, row: u32, values: bool[>..]&, nodes: bool[>..]&, units: bool[>..]&, work: i64[>..<]&) {
     let a = source::activation(heap, row);
-    mark(heap, a.callee, nodes, units, work); mark(heap, a.receiver, nodes, units, work);
+    for i in a.frame_count { let f = source::saved_frame(heap, a.frames + i); mark(heap, f.callee, nodes, units, work); mark(heap, f.receiver, nodes, units, work); mark(heap, f.input, nodes, units, work); mark(heap, f.output, nodes, units, work); }
     let first: i64 = a.values; for r in first..min(first + a.capacity, values.len) { values[r] = true; mark(heap, source::slot(heap, r), nodes, units, work); }
     for i in a.handler_count { match source::cont_row(heap, a.handlers + i) { Saved s => { mark(heap, s.h.value, nodes, units, work); }, _ => {} } }
 }

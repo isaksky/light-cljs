@@ -850,6 +850,7 @@ mod serial_tests {
             ("unsettled", "goose"),
             ("suspended-wait", "goose"),
             ("suspended-generator", "goose"),
+            ("suspended-stack", "goose"),
             ("cancel-suspended", "goose"),
             ("generator-limit", "goose"),
             ("promise-then", "goose"),
