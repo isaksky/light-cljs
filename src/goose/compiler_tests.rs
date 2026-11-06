@@ -5060,3 +5060,407 @@ fn goose_compiler_delays_in_jobs_and_cell_references() {
         assert_eq!(line.conflicts, 0, "{line:?}");
     }
 }
+
+/// `m.macros` declares `declared` macros besides the ones `main` calls,
+/// each of which adds an entry to every expansion's whole `&env` (the
+/// macro inventory, `:light-cljs/macros`): `blind` reads no `&env`,
+/// `or-local` reads only `(:locals &env)`, `counted` reads all of it with
+/// `count` and `passed` passes it to a function.
+fn environment_sources(declared: usize, main: &str) -> HashMap<String, String> {
+    let mut macros = String::from("(ns m.macros)\n");
+    for n in 0..declared {
+        macros.push_str(&format!("(defmacro filler{n} [x] x)\n"));
+    }
+    macros.push_str(
+        "(defn size [e] (count e))
+         (defmacro blind [] 42)
+         (defmacro or-local [sym fallback] (if (contains? (:locals &env) sym) sym fallback))
+         (defmacro counted [] (count &env))
+         (defmacro passed [] (size &env))",
+    );
+    HashMap::from([
+        ("m.macros".to_owned(), macros),
+        (
+            "app.main".to_owned(),
+            format!("(ns app.main (:require [m.macros :as m]))\n{main}"),
+        ),
+    ])
+}
+/// The Goose build of `files` at `slots` compiler slots, which must
+/// succeed and create no other engine, and its session's statistics; in the
+/// V8 build, its JavaScript must be V8's.
+fn goose_environment_build(
+    files: &HashMap<String, String>,
+    slots: usize,
+) -> (String, crate::goose_evaluator::SessionStats) {
+    let session = GooseSession::start(&runner(), slots).unwrap();
+    let (output, _, census) = pooled_build(files, slots, Some(&session), Default::default());
+    let output = output.unwrap_or_else(|e| panic!("slots={slots}: {e}"));
+    assert!(census.is_empty(), "slots={slots}: {census:?}");
+    session.close();
+    cleaned(&session);
+    #[cfg(light_v8)]
+    {
+        let (reference, _, _) = pooled_build(files, 1, None, Default::default());
+        assert_eq!(Ok(output.as_str()), reference.as_deref(), "slots={slots}");
+    }
+    (output, session.stats())
+}
+/// The end of a build's JavaScript, where `app.main` is, for a message.
+fn tail(output: &str) -> &str {
+    let mut at = output.len().saturating_sub(2000);
+    while !output.is_char_boundary(at) {
+        at += 1;
+    }
+    &output[at..]
+}
+/// The argument graph nodes each source-macro call of `stats` sent.
+fn nodes_per_call(stats: &crate::goose_evaluator::SessionStats) -> u64 {
+    assert!(stats.calls > 0, "{stats:?}");
+    assert!(
+        stats.argument_bytes > stats.argument_source_bytes,
+        "{stats:?}"
+    );
+    assert!(stats.result_bytes > 0, "{stats:?}");
+    stats.argument_nodes / stats.calls
+}
+
+/// A source macro that reads no `&env`, or only `(:locals &env)`, is given
+/// only `:ns`, `:light-cljs/reader-context` and the entries it reads on
+/// Goose, as on V8 (light-cljs-815): it expands as V8 expands it, and
+/// what each call sends does not grow with the macros the compilation
+/// declared. Without the Goose evaluator's extension tracking every call
+/// sends the whole environment, the inventory of every declared macro.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_source_macros_get_only_the_environment_entries_they_read() {
+    let main = "(def f (let [a 5] [(m/blind) (m/or-local a 1) (m/or-local b 2)]))
+(def g (let [c 3] [(m/or-local c 4) (m/blind)]))";
+    for slots in [1, 4] {
+        let (few_output, few) = goose_environment_build(&environment_sources(10, main), slots);
+        let (many_output, many) = goose_environment_build(&environment_sources(200, main), slots);
+        for output in [&few_output, &many_output] {
+            let main = tail(output);
+            assert!(main.contains("rt.vectorFromArray([42, l"), "{main}");
+            assert!(main.contains(", 2]);"), "{main}");
+            assert!(main.contains(", 42]);"), "{main}");
+        }
+        assert_eq!((few.calls, many.calls), (5, 5), "slots={slots}");
+        assert_eq!(nodes_per_call(&few), nodes_per_call(&many), "slots={slots}");
+        assert!(nodes_per_call(&many) < 200, "slots={slots}: {many:?}");
+    }
+}
+
+/// A source macro that may read all of its `&env`, with `count` or by
+/// passing it to a function, still gets the whole environment on Goose,
+/// whose macro inventory grows with the macros declared (light-cljs-815).
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_source_macros_that_may_read_all_of_env_get_all_of_it() {
+    let main = "(def counts [(m/counted) (m/passed) (let [x 1] [(m/counted) x])])";
+    let (few_output, few) = goose_environment_build(&environment_sources(10, main), 1);
+    let (many_output, many) = goose_environment_build(&environment_sources(200, main), 1);
+    for output in [&few_output, &many_output] {
+        // `&env` has the same eight entries, whatever the inventory holds.
+        let main = tail(output);
+        assert!(main.contains("rt.vectorFromArray([8, 8, "), "{main}");
+        assert!(main.contains("rt.vectorFromArray([8, l"), "{main}");
+    }
+    assert_eq!((few.calls, many.calls), (3, 3));
+    // Each of the 190 more declarations adds at least its name and metadata.
+    assert!(
+        nodes_per_call(&many) > nodes_per_call(&few) + 190 * 4,
+        "{few:?} {many:?}"
+    );
+}
+
+/// A registered extension of a core protocol that environment data could
+/// reach, a top-level `extend-type` of `string`, keeps the whole
+/// environment for every source macro on Goose too (light-cljs-433, 815).
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_a_registered_core_extension_keeps_the_whole_environment() {
+    for extension in [
+        "(extend-type string IHash (-hash [_] 1))",
+        "(extend-protocol ICounted Symbol (-count [_] 0))",
+    ] {
+        let main = format!("{extension}\n(def f (let [a 5] [(m/blind) (m/or-local a 1)]))");
+        let (_, few) = goose_environment_build(&environment_sources(10, &main), 1);
+        let (_, many) = goose_environment_build(&environment_sources(200, &main), 1);
+        assert_eq!((few.calls, many.calls), (2, 2), "{extension}");
+        assert!(
+            nodes_per_call(&many) > nodes_per_call(&few) + 190 * 4,
+            "{extension}: {few:?} {many:?}"
+        );
+    }
+}
+
+/// Goose compile-time code cannot install an extension that environment
+/// data could reach, or any other: the job that tries fails with an
+/// uncatchable fault before it writes anything, and with it the
+/// compilation, so the evaluator never notes one (light-cljs-815,
+/// `GooseEvaluator::track_environment_extensions`). The same programs
+/// install the extension on V8 (light-cljs-433's cases).
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_compile_time_code_installs_no_extension() {
+    for body in [
+        "(extend-type Symbol IEquiv (-equiv [a b] (identical? (str a) (str b))))",
+        "(extend-type string IHash (-hash [_] 1))",
+        "(specify! (js-obj) ICounted (-count [_] 0))",
+        "(specify! (T. 1) IEquiv (-equiv [a b] true))",
+        "(extend-protocol ILookup PersistentArrayMap (-lookup ([m k] 1) ([m k d] 1)))",
+        "(extend-type T IEquiv (-equiv [a b] true))",
+        "(extend-protocol P string (f [x] x) default (f [x] x) nil (f [x] x))",
+        "(try (extend-type Symbol IEquiv (-equiv [a b] true)) (catch :default e nil))",
+        "(reify ILookup (-lookup [_ k] 1))",
+        "(set! (.-x js/Object) 1)",
+    ] {
+        let main = format!(
+            "(defprotocol P (f [x])) (deftype T [v])
+             (defn install [] {body}) (defmacro setup [] (install) nil) (setup)"
+        );
+        let files = HashMap::from([("app.main".to_owned(), format!("(ns app.main)\n{main}"))]);
+        let session = GooseSession::start(&runner(), 1).unwrap();
+        let (output, _, census) = pooled_build(&files, 1, Some(&session), Default::default());
+        let error = output.unwrap_err();
+        assert!(census.is_empty(), "{body}: {census:?}");
+        assert!(
+            error.contains("macro app.main/setup: Goose: ERROR"),
+            "{body}: {error}"
+        );
+        assert!(
+            ["Fault.UnsupportedOperand", "Fault.NativeBoundary"]
+                .iter()
+                .any(|fault| error.contains(fault)),
+            "{body}: {error}"
+        );
+        session.close();
+        cleaned(&session);
+        #[cfg(light_v8)]
+        {
+            let (reference, _, _) = pooled_build(&files, 1, None, Default::default());
+            assert!(reference.is_ok(), "{body}: {reference:?}");
+        }
+    }
+}
+
+/// A source macro that reads no `&env` still fails at its call on Goose
+/// when the environment holds a macro's metadata that cannot be converted,
+/// since that environment is not narrowed (`elidable_map_environment`),
+/// and with the message it had with the whole environment; and corrected
+/// source compiles (light-cljs-433, 815). On V8 the invalid regular
+/// expression `#"["` fails and a valid one compiles; the Goose form bridge
+/// carries no regular expression, so on Goose both fail alike, and the
+/// correction that compiles there is metadata without one.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_a_blind_source_macro_still_reports_an_unconvertible_environment() {
+    let files = |probe: &str| {
+        HashMap::from([(
+            "app.main".to_owned(),
+            format!(
+                "(ns app.main)\n(defmacro ignored {{:probe {probe}}} [] nil)\n(defmacro blind [] 42)\n(js/console.log (blind))\n"
+            ),
+        )])
+    };
+    for probe in [r#"#"[""#, r#"#"\[""#] {
+        let session = GooseSession::start(&runner(), 1).unwrap();
+        let (output, _, _) = pooled_build(&files(probe), 1, Some(&session), Default::default());
+        let error = output.unwrap_err();
+        assert!(
+            error.starts_with("app/main.cljs:4:17: macro expansion: while expanding blind: app/main.cljs:4:17: macro app.main/blind: Goose malformed or unsupported form graph"),
+            "{probe}: {error}"
+        );
+        session.close();
+        cleaned(&session);
+    }
+    #[cfg(light_v8)]
+    {
+        let (reference, _, _) = pooled_build(&files(r#"#"[""#), 1, None, Default::default());
+        let reference = reference.unwrap_err();
+        assert!(reference.contains("main.cljs:4:17"), "{reference}");
+        assert!(reference.contains("macro app.main/blind"), "{reference}");
+    }
+    let (output, stats) = goose_environment_build(&files(r#""[""#), 1);
+    assert!(tail(&output).contains("42"), "{}", tail(&output));
+    assert_eq!(stats.calls, 1);
+}
+
+/// `source` compiled on Goose with `nodes` as the generated-node limit if
+/// given: its JavaScript or its error.
+fn goose_compile(source: &str, nodes: Option<usize>) -> Result<String, String> {
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let mut host = crate::MacroHost::new();
+    if let Some(nodes) = nodes {
+        host.limits.generated_nodes = nodes;
+    }
+    host.use_goose_source_macros(session.clone()).unwrap();
+    let result = crate::compile_with_macros(source, &mut host).map_err(|e| e.to_string());
+    drop(host);
+    session.close();
+    cleaned(&session);
+    result
+}
+
+/// Data Goose cannot convert, which V8 can, still fails a call whose
+/// macro is given a narrowed environment when the entries left out hold
+/// it, here a character or an integer no double holds in a macro's
+/// metadata, with the whole environment's error (light-cljs-815).
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_a_narrowed_environment_still_refuses_what_goose_cannot_convert() {
+    for probe in ["\\a", "9007199254740993"] {
+        for blind in [
+            "(defmacro blind [] 42)",
+            "(defmacro blind [] (count &env) 42)",
+        ] {
+            let source = format!("(defmacro ignored {{:probe {probe}}} [] nil)\n{blind}\n(blind)");
+            let error = goose_compile(&source, None).unwrap_err();
+            assert!(
+                error.contains(
+                    ":3:1: macro cljs.user/blind: Goose malformed or unsupported form graph"
+                ),
+                "{probe} {blind}: {error}"
+            );
+        }
+    }
+    let output = goose_compile(
+        "(defmacro ignored {:probe \"a\"} [] nil)\n(defmacro blind [] 42)\n(def x (blind))",
+        None,
+    )
+    .unwrap();
+    assert!(output.contains("42"));
+}
+
+/// The entries a narrowed environment leaves out still take the call's
+/// conversion budget, which its argument, environment, nested calls and
+/// result share on Goose, so a call that fits only without them still
+/// fails at its macro with the conversion limit (light-cljs-815): also
+/// after an earlier call measured what leaving the macro inventory out
+/// costs, which a later call charges at once only when it fits.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_environment_narrowing_preserves_shared_conversion_limits() {
+    let numbers = |count: usize| {
+        (0..count)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let source = |count: usize| {
+        format!(
+            "(defmacro ignored {{:probe [{}]}} [] nil)\n(defmacro blind [x] 42)\n(def y [(blind [1]) (blind [2])])\n(def x (blind [{}]))",
+            numbers(1000),
+            numbers(count)
+        )
+    };
+    let error = goose_compile(&source(2100), Some(10000)).unwrap_err();
+    assert!(
+        error.contains(":4:8: macro cljs.user/blind: Goose conversion limit exceeded"),
+        "{error}"
+    );
+    assert!(goose_compile(&source(1500), Some(10000)).is_ok());
+}
+
+/// The session's transport counters count what each job's call sent and
+/// received: its argument graph's nodes, encoded bytes and source text
+/// (UTF-8 bytes), and its result's bytes, summed over calls
+/// (light-cljs-815).
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_transport_counters_count_wire_payloads() {
+    let s = GooseSession::start(&runner(), 1).unwrap();
+    let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+    let function = e.evaluate_unit("rt => (form, env) => form").unwrap();
+    let source = Source::new("counted.cljs", "\"λ\"");
+    let text = Datum::new(DatumKind::String(
+        "λ".encode_utf16().collect::<Vec<_>>().into(),
+    ));
+    let form = Form::from_data(text.clone(), source.span(0..4).unwrap(), Origin::Source);
+    let call = e.import_form(&form, Default::default()).unwrap();
+    let env = e
+        .import_data(&Datum::new(DatumKind::Nil), Default::default())
+        .unwrap();
+    // Two nodes, one code unit of string text, one source of four bytes
+    // and two roots, after the 32-byte header.
+    let argument_bytes = 32 + 2 * 48 + 2 + 8 + 4 + 2 * 4;
+    let mut result_bytes = 0;
+    for calls in 1..=2 {
+        let result = e.call(function, &[call, env]).unwrap();
+        let Stored::Result(bytes, ..) = e.get(result).unwrap() else {
+            panic!("not a result");
+        };
+        result_bytes += bytes.len() as u64;
+        let stats = s.stats();
+        assert_eq!(
+            (
+                stats.calls,
+                stats.argument_nodes,
+                stats.argument_bytes,
+                stats.argument_source_bytes,
+                stats.result_bytes
+            ),
+            (
+                calls,
+                2 * calls,
+                argument_bytes * calls,
+                4 * calls,
+                result_bytes
+            ),
+            "{stats:?}"
+        );
+        let returned = e
+            .export_form(result, &form, origin(&form), Default::default())
+            .unwrap();
+        assert!(returned.data().value_eq(&text));
+    }
+    assert!(result_bytes > 0);
+    s.close();
+    cleaned(&s);
+}
+
+/// An environment that Goose's own import would refuse, here for a macro's
+/// metadata string past a job's text capacity, is sent whole even to a
+/// macro that reads none of it, so the call fails as with the whole
+/// environment (light-cljs-815).
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_environment_narrowing_preserves_goose_import_limits() {
+    let probe = "a".repeat(1_048_577);
+    let failure = |call: &str| {
+        let mut files = environment_sources(0, &format!("(def x ({call}))"));
+        files.get_mut("m.macros").unwrap().push_str(&format!(
+            "\n(defmacro ignored {{:probe \"{probe}\"}} [] nil)"
+        ));
+        let session = GooseSession::start(&runner(), 1).unwrap();
+        let (output, _, _) = pooled_build(&files, 1, Some(&session), Default::default());
+        let error = output.unwrap_err();
+        let stats = session.stats();
+        session.close();
+        cleaned(&session);
+        (error, stats)
+    };
+    let (narrowed, narrowed_stats) = failure("m/blind");
+    let (whole, whole_stats) = failure("m/counted");
+    // The same failure of Goose's import, but for the macro's own name
+    // and definition.
+    let cause = |error: &str| {
+        let (_, after) = error.split_once("macro m.macros/").unwrap();
+        let (_, cause) = after.split_once(": ").unwrap();
+        cause.split_once("; definition").unwrap().0.to_owned()
+    };
+    assert!(cause(&whole).contains("worker-abort"), "{whole}");
+    assert_eq!(cause(&narrowed), cause(&whole));
+    // Both calls sent the inventory, the metadata string included.
+    assert_eq!(narrowed_stats.calls, 1);
+    assert!(narrowed_stats.argument_source_bytes < narrowed_stats.argument_bytes);
+    assert!(
+        narrowed_stats.argument_bytes > 2 * 1_048_577,
+        "{narrowed_stats:?}"
+    );
+    assert!(
+        whole_stats.argument_bytes > 2 * 1_048_577,
+        "{whole_stats:?}"
+    );
+}

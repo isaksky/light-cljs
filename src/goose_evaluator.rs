@@ -60,6 +60,7 @@ pub struct GooseSession {
     preparations: Arc<AtomicU64>,
     export_ns: AtomicU64,
     bytes: AtomicU64,
+    transport: Transport,
     started: Instant,
     spawn_ns: u64,
     bridge_ns: AtomicU64,
@@ -73,6 +74,16 @@ pub struct GooseSession {
     terminal: Arc<Mutex<Option<EvalError>>>,
     claimed: AtomicBool,
     compiling: AtomicBool,
+}
+/// What the session sent its jobs and received from them, as counts only:
+/// one call for each job submitted ([`GooseSession::execute`]).
+#[derive(Default)]
+struct Transport {
+    calls: AtomicU64,
+    argument_nodes: AtomicU64,
+    argument_bytes: AtomicU64,
+    argument_source_bytes: AtomicU64,
+    result_bytes: AtomicU64,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct SessionStats {
@@ -92,6 +103,14 @@ pub struct SessionStats {
     pub goose_snapshot_ns: u64,
     pub goose_job_load_ns: u64,
     pub goose_bridge_ns: u64,
+    /// The source-macro jobs submitted; in all their argument graphs, the
+    /// nodes, the encoded bytes and the source-text bytes those include;
+    /// and the bytes of the results received.
+    pub calls: u64,
+    pub argument_nodes: u64,
+    pub argument_bytes: u64,
+    pub argument_source_bytes: u64,
+    pub result_bytes: u64,
 }
 impl GooseSession {
     pub fn start(executable: &Path, workers: usize) -> Result<Arc<Self>, EvalError> {
@@ -116,6 +135,7 @@ impl GooseSession {
             preparations: Default::default(),
             export_ns: AtomicU64::new(0),
             bytes: AtomicU64::new(0),
+            transport: Transport::default(),
             started: Instant::now(),
             spawn_ns: 0,
             bridge_ns: AtomicU64::new(0),
@@ -391,6 +411,7 @@ impl GooseSession {
             preparations,
             export_ns: AtomicU64::new(0),
             bytes: AtomicU64::new(0),
+            transport: Transport::default(),
             started,
             spawn_ns,
             bridge_ns: AtomicU64::new(0),
@@ -434,6 +455,11 @@ impl GooseSession {
             goose_snapshot_ns: costs[2],
             goose_job_load_ns: costs[3],
             goose_bridge_ns: costs[4],
+            calls: self.transport.calls.load(Ordering::Relaxed),
+            argument_nodes: self.transport.argument_nodes.load(Ordering::Relaxed),
+            argument_bytes: self.transport.argument_bytes.load(Ordering::Relaxed),
+            argument_source_bytes: self.transport.argument_source_bytes.load(Ordering::Relaxed),
+            result_bytes: self.transport.result_bytes.load(Ordering::Relaxed),
         }
     }
     pub fn trace(&self) -> Vec<String> {
@@ -592,6 +618,14 @@ impl GooseSession {
             let bridged = Instant::now();
             let input = graph.encode()?;
             self.bytes.fetch_add(input.len() as u64, Ordering::Relaxed);
+            let t = &self.transport;
+            t.calls.fetch_add(1, Ordering::Relaxed);
+            t.argument_nodes
+                .fetch_add(graph.node_count() as u64, Ordering::Relaxed);
+            t.argument_bytes
+                .fetch_add(input.len() as u64, Ordering::Relaxed);
+            t.argument_source_bytes
+                .fetch_add(graph.source_bytes() as u64, Ordering::Relaxed);
             std::fs::write(stem.with_extension("gfb"), input).map_err(error)?;
             self.bridge_ns
                 .fetch_add(bridged.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -627,6 +661,9 @@ impl GooseSession {
                             }
                         }
                         self.bytes.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                        self.transport
+                            .result_bytes
+                            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
                         return Ok((bytes, next));
                     }
                     Ok(Event::Need(sequence, name)) => {
@@ -703,6 +740,9 @@ enum Stored {
     Source(DefinitionKey, String),
     Form(Form, ConversionLimits),
     Data(Datum, ConversionLimits),
+    /// A narrowed environment and the one it was narrowed from, whose
+    /// conversion still checks and charges what it leaves out.
+    Environment(Datum, Datum, ConversionLimits),
     Result(
         Vec<u8>,
         Arc<HashMap<i32, bridge::Input>>,
@@ -746,6 +786,14 @@ pub struct GooseEvaluator {
     /// serial and prefix, or `None` outside every scope, where `gensym`
     /// stays an explicit fault (light-cljs-798).
     gensym: RefCell<Option<(u64, String)>>,
+    /// Whether compile-time code installed an extension environment data
+    /// could reach ([`crate::evaluator::EnvironmentExtensions`]): unknown
+    /// until a compilation prepares the evaluator
+    /// ([`Self::track_environment_extensions`]), then `None` for good, as
+    /// Goose installs no extension (light-cljs-815).
+    environment_extensions: crate::evaluator::EnvironmentTracking,
+    /// What the collections narrowed environments left out cost to omit.
+    omitted: bridge::OmitCache,
     #[cfg(test)]
     pub(crate) helper_delay: Cell<Duration>,
 }
@@ -769,6 +817,8 @@ impl GooseEvaluator {
             budget: RefCell::new(None),
             functions: RefCell::new(HashMap::new()),
             gensym: RefCell::new(None),
+            environment_extensions: Rc::default(),
+            omitted: Default::default(),
             #[cfg(test)]
             helper_delay: Cell::new(Duration::ZERO),
         })
@@ -822,6 +872,23 @@ impl GooseEvaluator {
         *self.helper.borrow_mut() = Some((owner, helper()));
         self.helper_installs.set(self.helper_installs.get() + 1);
     }
+    /// Start reporting, for the compilation that prepares this evaluator,
+    /// that its compile-time code has installed no extension environment
+    /// data could reach, which it never will on Goose
+    /// ([`crate::evaluator::EnvironmentExtensions`], light-cljs-815): the
+    /// Goose runtime has no `extendType` or `extendInstance` leaf, so
+    /// `extend-type`, `extend-protocol`, `specify!`, `reify` and a `deftype`
+    /// or `defrecord` with methods fail their job with an uncatchable fault
+    /// before they write anything, as a write to a realm row or to a form
+    /// does; each job starts again from the session image; and the core
+    /// operations on form nodes, keyword invocation included, are Goose
+    /// `match` code that dispatches to no JavaScript.
+    pub(crate) fn track_environment_extensions(&self) {
+        let tracking = &self.environment_extensions;
+        if tracking.get() == crate::evaluator::EnvironmentExtensions::Untracked {
+            tracking.set(crate::evaluator::EnvironmentExtensions::None);
+        }
+    }
     /// How many times a helper service was installed.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn helper_installs(&self) -> usize {
@@ -855,6 +922,9 @@ impl MacroEvaluator for GooseEvaluator {
     }
     fn has_native_bridge(&self) -> bool {
         true
+    }
+    fn environment_extensions(&self) -> Option<crate::evaluator::EnvironmentTracking> {
+        Some(self.environment_extensions.clone())
     }
     fn compiler_frontier(&self, _: Option<usize>) -> Result<(), EvalError> {
         Ok(())
@@ -913,7 +983,7 @@ impl MacroEvaluator for GooseEvaluator {
             .collect::<Result<Vec<_>, _>>()?;
         let mut limits = ConversionLimits::default();
         for value in &values {
-            if let Stored::Form(_, l) | Stored::Data(_, l) = value {
+            if let Stored::Form(_, l) | Stored::Data(_, l) | Stored::Environment(_, _, l) = value {
                 limits.nodes = limits.nodes.min(l.nodes);
                 limits.depth = limits.depth.min(l.depth);
             }
@@ -929,7 +999,7 @@ impl MacroEvaluator for GooseEvaluator {
                 crate::generated_names::GensymWindow::open(*serial).map(|w| (prefix.as_str(), w))
             });
             let bridged = Instant::now();
-            let graph = bridge::Graph::arguments(&values, limits, &budget)?;
+            let graph = bridge::Graph::arguments_omitting(&values, limits, &budget, &self.omitted)?;
             budget.finish()?;
             self.session
                 .bridge_ns
@@ -973,6 +1043,23 @@ impl MacroEvaluator for GooseEvaluator {
     fn import_data(&self, d: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {
         self.available()?;
         Ok(self.store(Stored::Data(d.clone(), limits)))
+    }
+    /// The narrowed environment `view` with the whole one, `environment`,
+    /// whose left-out entries its conversion checks and charges as if it
+    /// converted them, since one budget covers every conversion of the
+    /// call and Goose refuses data V8 converts (light-cljs-815).
+    fn import_environment_view(
+        &self,
+        view: &Datum,
+        environment: &Datum,
+        limits: ConversionLimits,
+    ) -> Result<ValueId, EvalError> {
+        self.available()?;
+        Ok(self.store(Stored::Environment(
+            view.clone(),
+            environment.clone(),
+            limits,
+        )))
     }
     fn export_form(
         &self,
@@ -1208,8 +1295,16 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         let declaration = format!("(defmacro wide [] (list (quote quote) [{values}])) ");
+        // `caught`'s own argument takes most of the limited budget, which
+        // its whole `&env` took before source macros that read none were
+        // given only the entries they read (light-cljs-815), so that the
+        // nested expansion is the one past the limit.
+        let filler = (0..800)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
         let nested = format!(
-            "{declaration} (def helper (wide)) (defmacro caught [] (try helper (catch :default ignored 42))) (caught)"
+            "{declaration} (def helper (wide)) (defmacro caught [_] (try helper (catch :default ignored 42))) (caught [{filler}])"
         );
         for (source, limited, expect_error) in [
             (format!("{declaration} (wide)"), true, false),
@@ -1229,7 +1324,7 @@ mod tests {
                 let error = result.unwrap_err().to_string();
                 assert!(
                     session.terminal.lock().unwrap().is_some(),
-                    "failure must happen inside the nested compiler callback: {trace:?}"
+                    "failure must happen inside the nested compiler callback: {error} {trace:?}"
                 );
                 assert!(error.contains("Goose conversion limit"), "{error}");
                 assert!(

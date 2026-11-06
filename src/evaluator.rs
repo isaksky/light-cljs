@@ -1461,6 +1461,25 @@ pub struct CompilerRoot<'a> {
 /// given only the entries it reads while it is [`Self::None`]: unknown
 /// until a compilation prepares the engine to report it, and once noted it
 /// stays so for the engine's life, as the extension does.
+///
+/// On the Goose compiler path it is never noted (light-cljs-815): it is
+/// [`Self::None`] once a compilation prepares the Goose evaluator for an
+/// expansion (`prepare_goose`), since compile-time code in Goose cannot
+/// install an extension that environment data could reach. The Goose
+/// runtime has no `extendType` or `extendInstance`, so `extend-type`,
+/// `extend-protocol`, `specify!`, `reify` and protocol methods of a
+/// `deftype` fail their job with a fault JavaScript cannot catch before
+/// they write anything, and the compilation with it; writes to the realm's
+/// rows (`Object`, its prototype) and to form nodes fail the same way; and
+/// every job starts again from the session's image. Arguments reach Goose
+/// as form nodes the bridge builds directly (`import_graph` in
+/// form_bridge.goose), calling no compile-time code, and keyword
+/// invocation and the other core operations on them are Goose `match`
+/// code that dispatches to no JavaScript. Extensions in declarations still
+/// count as registered bundles, which keep the whole environment
+/// ([`crate::compilation_session::reaches_environment_data`]) and which
+/// Goose never runs. A Goose runtime that gains protocol extensions must
+/// report them here as V8's `noteEnvironmentExtension` does.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EnvironmentExtensions {
     #[default]
@@ -1661,6 +1680,19 @@ pub trait MacroEvaluator {
         limits: ConversionLimits,
     ) -> Result<ValueId, EvalError> {
         self.import_data(data, limits)
+    }
+    /// Import `view`, the environment a source macro is given in place of
+    /// `environment` (`MacroHost::reader_view`), as
+    /// [`Self::import_environment`]; an engine whose conversion of the
+    /// left-out entries could fail, or whose budget they would have
+    /// taken, still checks and charges them.
+    fn import_environment_view(
+        &self,
+        view: &Datum,
+        _environment: &Datum,
+        limits: ConversionLimits,
+    ) -> Result<ValueId, EvalError> {
+        self.import_environment(view, limits)
     }
     fn export_form(
         &self,

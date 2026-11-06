@@ -382,7 +382,11 @@
                                                                   "LIGHT_CLJS_GOOSE_WORKERS" (str (:workers cell)))
                                (= "instrument" phase) (assoc "GENERATED_COMPARE_TREE" (str tree))
                                (#{"instrument" "cached" "leaf" "leaf-uncached"} phase) (assoc "LIGHT_CLJS_MACRO_PROBE" (str (fs/path results (str stem ".macros.tsv")))
-                                                              "LIGHT_CLJS_GOOSE_REPORT" (str (fs/path results (str stem ".goose.txt")))))
+                                                              "LIGHT_CLJS_GOOSE_REPORT" (str (fs/path results (str stem ".goose.txt"))))
+                               ;; A check cell keeps the session's report, with its transport
+                               ;; counters (light-cljs-815), which it writes after the build.
+                               (and (= "check" phase) (= "goose" (:backend cell)))
+                               (assoc "LIGHT_CLJS_GOOSE_REPORT" (str (fs/path results (str stem ".goose.txt")))))
                          command (cond-> (cmd cell) (#{"instrument" "cached" "leaf" "leaf-uncached"} phase) (into ["--stats-file" (str trace)]))
                          _ (fs/delete-tree (fs/path dir "out/light"))
                          quiet (when (= "measure" phase) (quiet! environment))

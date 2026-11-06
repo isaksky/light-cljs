@@ -10,6 +10,9 @@ pub(super) struct Budget {
     bytes: Cell<usize>,
     pending: Cell<u64>,
     control: ExecutionControl,
+    /// Whether checks and charges count; a budget that does not only
+    /// rebuilds a graph whose conversion was already charged.
+    metered: bool,
 }
 // No fuel is reserved. At most 127 logical checks per active Budget can be
 // unpaid between checkpoints; all are paid before VM use/publication. Thus
@@ -25,9 +28,24 @@ impl Budget {
             bytes: Cell::new(MAX_BYTES * 4),
             pending: Cell::new(0),
             control,
+            metered: true,
+        }
+    }
+    /// A budget that charges nothing, for rebuilding a graph whose
+    /// conversion was charged in full ([`Graph::arguments_omitting`]).
+    fn unmetered(control: ExecutionControl) -> Self {
+        Self {
+            remaining: Cell::new(usize::MAX),
+            bytes: Cell::new(usize::MAX),
+            pending: Cell::new(0),
+            control,
+            metered: false,
         }
     }
     fn poll(&self) -> Result<(), EvalError> {
+        if !self.metered {
+            return Ok(());
+        }
         let pending = self.pending.get();
         if pending == 0 {
             self.control.poll_many(0)?;
@@ -52,6 +70,20 @@ impl Budget {
         self.remaining.set(next);
         Ok(())
     }
+    /// Charge `checks` node checks, `polls` polls and `bytes` bytes at
+    /// once, as that many [`Self::check`]s and byte charges would, if they
+    /// all fit; `false`, charging nothing, if one would fail.
+    fn debit(&self, checks: usize, polls: usize, bytes: usize) -> Result<bool, EvalError> {
+        if self.remaining.get() < checks || self.bytes.get() < bytes {
+            return Ok(false);
+        }
+        self.control.poll_many(0)?;
+        self.pending.set(self.pending.get() + polls as u64);
+        self.finish()?;
+        self.remaining.set(self.remaining.get() - checks);
+        self.bytes.set(self.bytes.get() - bytes);
+        Ok(true)
+    }
     fn bytes(&self, count: usize) -> Result<(), EvalError> {
         self.poll()?;
         let Some(left) = self.bytes.get().checked_sub(count) else {
@@ -72,6 +104,12 @@ impl Drop for Budget {
 }
 
 const MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Goose's default per-job graph nodes, value rows, text units and bridge
+/// work (form_bridge.goose `Control`, source_vm.goose `Limits`).
+const GOOSE_NODES: usize = 100_000;
+const GOOSE_VALUES: usize = 1_048_576;
+const GOOSE_UNITS: usize = 1_048_576;
+const GOOSE_WORK: usize = 10_000_000;
 fn bad() -> EvalError {
     EvalError("Goose malformed or unsupported form graph".into())
 }
@@ -101,7 +139,40 @@ pub(super) struct Graph {
     pub originals: HashMap<i32, Input>,
     memo: HashMap<(usize, usize), u32>,
     source_ids: HashMap<crate::compiler_data::SourceId, usize>,
+    /// The nodes and encoded bytes the environment entries a narrowed
+    /// environment leaves out would have added ([`Self::omit`]), which the
+    /// graph's limits still count.
+    omitted_nodes: usize,
+    omitted_size: usize,
+    /// The byte charges of the omitted entries, their bytes, and the
+    /// deepest depth an omission reached, which [`Omitted`] summarizes.
+    omitted_charges: usize,
+    omitted_bytes: usize,
+    omitted_children: usize,
+    omitted_units: usize,
+    omitted_depth: usize,
 }
+/// What omitting one collection cost when an exact walk ([`Graph::omit`])
+/// passed: its budget checks, polls and bytes, its nodes, encoded size and
+/// height, which depend on its data alone.
+#[derive(Clone, Copy)]
+pub(super) struct Omitted {
+    checks: usize,
+    polls: usize,
+    bytes: usize,
+    nodes: usize,
+    children: usize,
+    units: usize,
+    size: usize,
+    height: usize,
+}
+/// The [`Omitted`] costs of the collections a session's narrowed
+/// environments left out most recently, by identity, most recently used
+/// last, with the collection kept so that its identity is not reused: the
+/// macro inventory is the same collection call after call.
+pub(super) type OmitCache = std::cell::RefCell<Vec<(Datum, Omitted)>>;
+/// How many collections an [`OmitCache`] keeps.
+const OMIT_CACHE: usize = 8;
 #[derive(Clone)]
 pub(super) struct Input {
     data: Datum,
@@ -183,6 +254,15 @@ fn tag(d: &Datum) -> Result<u32, EvalError> {
     })
 }
 impl Graph {
+    /// The graph's nodes, for the session's transport counters.
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+    /// The bytes of source text the graph carries, which its encoding
+    /// includes, for the session's transport counters.
+    pub fn source_bytes(&self) -> usize {
+        self.bytes.len()
+    }
     fn charge(
         &self,
         depth: usize,
@@ -190,12 +270,20 @@ impl Graph {
         control: &Budget,
     ) -> Result<(), EvalError> {
         control.check()?;
-        if depth > limits.depth || self.nodes.len() >= limits.nodes || self.size() > MAX_BYTES {
+        if depth > limits.depth
+            || self.nodes.len() + self.omitted_nodes >= limits.nodes
+            || self.size() > MAX_BYTES
+        {
             return Err(EvalError("Goose conversion limit exceeded".into()));
         }
         Ok(())
     }
+    /// The encoding's size, and what the entries a narrowed environment
+    /// leaves out would have added to it.
     fn size(&self) -> usize {
+        self.encoded_size() + self.omitted_size
+    }
+    fn encoded_size(&self) -> usize {
         32 + self.nodes.len() * 48
             + self.children.len() * 4
             + self.units.len() * 2
@@ -274,6 +362,197 @@ impl Graph {
         self.nodes.push(n);
         Ok(id)
     }
+    /// What [`Self::datum`] does for `d`, without the node: the same
+    /// budget checks, byte charges and refusals in the same order, and the
+    /// nodes and bytes it would add counted against the graph's limits, so
+    /// that leaving an entry out of a narrowed environment neither hides a
+    /// conversion failure nor frees budget for the rest of the call
+    /// (light-cljs-815).
+    fn omit(
+        &mut self,
+        d: &Datum,
+        depth: usize,
+        limits: ConversionLimits,
+        c: &Budget,
+    ) -> Result<(), EvalError> {
+        self.omitted_depth = self.omitted_depth.max(depth);
+        self.charge(depth, limits, c)?;
+        tag(d)?;
+        let mut units = 0;
+        match d.kind() {
+            DatumKind::Integer(v) => {
+                if *v as f64 >= i64::MAX as f64 || (*v as f64) as i64 != *v {
+                    return Err(bad());
+                }
+            }
+            DatumKind::String(v) => {
+                c.bytes(v.len() * 2)?;
+                units = v.len();
+                self.omitted_charges += 1;
+            }
+            DatumKind::Symbol(v) | DatumKind::Keyword(v) => {
+                units = v.name().len() + v.namespace().map_or(0, <[u16]>::len);
+                c.bytes(units * 2)?;
+                self.omitted_charges += 1;
+            }
+            DatumKind::Collection { children, .. } => {
+                for child in children.iter() {
+                    self.omit(child, depth + 1, limits, c)?;
+                }
+                self.omitted_size += children.len() * 4;
+                self.omitted_children += children.len();
+            }
+            _ => {}
+        }
+        self.omitted_size += units * 2;
+        self.omitted_bytes += units * 2;
+        self.omitted_units += units;
+        if let Some(meta) = d.metadata() {
+            self.omit(&meta, depth + 1, limits, c)?;
+        }
+        self.charge(depth, limits, c)?;
+        self.omitted_nodes += 1;
+        self.omitted_size += 48;
+        Ok(())
+    }
+    /// [`Self::omit`] for an entry of a narrowed environment: a collection
+    /// whose cost `cache` knows is charged at once when it fits what is
+    /// left of every limit, as each of its checks would have passed, and
+    /// otherwise walked, so that it fails where and as the walk fails.
+    fn omit_entry(
+        &mut self,
+        d: &Datum,
+        depth: usize,
+        limits: ConversionLimits,
+        c: &Budget,
+        cache: &OmitCache,
+    ) -> Result<(), EvalError> {
+        if !matches!(d.kind(), DatumKind::Collection { .. }) {
+            return self.omit(d, depth, limits, c);
+        }
+        let known = {
+            let mut cache = cache.borrow_mut();
+            let found = cache.iter().position(|(e, _)| e.identity() == d.identity());
+            found.map(|i| {
+                let entry = cache.remove(i);
+                let cost = entry.1;
+                cache.push(entry);
+                cost
+            })
+        };
+        if let Some(o) = known
+            && depth + o.height <= limits.depth
+            && self.nodes.len() + self.omitted_nodes + o.nodes < limits.nodes
+            && self.size() + o.size <= MAX_BYTES
+            && c.debit(o.checks, o.polls, o.bytes)?
+        {
+            self.omitted_nodes += o.nodes;
+            self.omitted_size += o.size;
+            self.omitted_children += o.children;
+            self.omitted_units += o.units;
+            return Ok(());
+        }
+        let before = (
+            self.omitted_nodes,
+            self.omitted_size,
+            self.omitted_charges,
+            self.omitted_bytes,
+            std::mem::replace(&mut self.omitted_depth, depth),
+            self.omitted_children,
+            self.omitted_units,
+        );
+        self.omit(d, depth, limits, c)?;
+        let nodes = self.omitted_nodes - before.0;
+        let charges = self.omitted_charges - before.2;
+        let cost = Omitted {
+            checks: 2 * nodes,
+            polls: 2 * nodes + charges,
+            bytes: self.omitted_bytes - before.3,
+            nodes,
+            children: self.omitted_children - before.5,
+            units: self.omitted_units - before.6,
+            size: self.omitted_size - before.1,
+            height: self.omitted_depth - depth + 1,
+        };
+        self.omitted_depth = self.omitted_depth.max(before.4);
+        if known.is_none() {
+            let mut cache = cache.borrow_mut();
+            if cache.len() == OMIT_CACHE {
+                cache.remove(0);
+            }
+            cache.push((d.clone(), cost));
+        }
+        Ok(())
+    }
+    /// The map `view` that [`crate::compiler_bootstrap`]'s reader view
+    /// narrows the environment `whole` to: converted as [`Self::datum`]
+    /// converts `whole`, entry by entry in its order, except that an entry
+    /// whose key `view` lacks, and the metadata, are [`Self::omit`]ted.
+    fn environment(
+        &mut self,
+        view: &Datum,
+        whole: &Datum,
+        depth: usize,
+        limits: ConversionLimits,
+        c: &Budget,
+        cache: &OmitCache,
+    ) -> Result<u32, EvalError> {
+        let (
+            DatumKind::Collection {
+                kind: CollectionKind::Map,
+                children: kept,
+                ..
+            },
+            DatumKind::Collection {
+                kind: CollectionKind::Map,
+                children,
+                ..
+            },
+        ) = (view.kind(), whole.kind())
+        else {
+            return self.datum(whole, depth, limits, c);
+        };
+        self.charge(depth, limits, c)?;
+        let mut ids = Vec::with_capacity(kept.len());
+        for entry in children.chunks(2) {
+            let keep = kept
+                .iter()
+                .step_by(2)
+                .any(|key| crate::form_bridge::exact(key, &entry[0]));
+            for d in entry {
+                if keep {
+                    ids.push(self.datum(d, depth + 1, limits, c)?);
+                } else {
+                    self.omit_entry(d, depth + 1, limits, c, cache)?;
+                }
+            }
+        }
+        self.omitted_size += (children.len() - ids.len()) * 4;
+        self.omitted_children += children.len() - ids.len();
+        if let Some(meta) = whole.metadata() {
+            self.omit(&meta, depth + 1, limits, c)?;
+        }
+        let mut n = Node {
+            tag: 8,
+            ..Default::default()
+        };
+        n.fields[0] = self.children.len() as i32;
+        n.fields[1] = ids.len() as i32;
+        self.children.extend(ids);
+        self.charge(depth, limits, c)?;
+        let occurrence = self.originals.len() as i32;
+        self.originals.insert(
+            occurrence,
+            Input {
+                data: view.clone(),
+                form: None,
+            },
+        );
+        n.fields[5] = occurrence;
+        let id = self.nodes.len() as u32;
+        self.nodes.push(n);
+        Ok(id)
+    }
     fn form(
         &mut self,
         f: &Form,
@@ -342,27 +621,75 @@ impl Graph {
         self.memo.insert(key, id);
         Ok(id)
     }
+    /// [`Self::arguments_omitting`] without a cache, for fixtures.
+    #[cfg(test)]
     pub fn arguments(
         forms: &[super::Stored],
         limits: ConversionLimits,
         c: &Budget,
+    ) -> Result<Self, EvalError> {
+        Self::arguments_omitting(forms, limits, c, &OmitCache::default())
+    }
+    /// [`Self::arguments`], with the omission costs `cache` knows.
+    pub fn arguments_omitting(
+        forms: &[super::Stored],
+        limits: ConversionLimits,
+        c: &Budget,
+        cache: &OmitCache,
     ) -> Result<Self, EvalError> {
         let mut g = Self::default();
         for form in forms {
             let id = match form {
                 super::Stored::Form(f, _) => g.form(f, 1, limits, c)?,
                 super::Stored::Data(d, _) => g.datum(d, 1, limits, c)?,
+                super::Stored::Environment(view, whole, _) => {
+                    g.environment(view, whole, 1, limits, c, cache)?
+                }
                 _ => return Err(bad()),
             };
             g.roots.push(id);
         }
+        // Goose checks its own capacities when it imports the graph, against
+        // a job heap that may already hold the macro's definitions: near
+        // them, Goose is sent the whole environment, so that it fails where
+        // it failed. This graph charged what the whole one charges.
+        if g.omitted_nodes > 0 && g.near_goose_capacity() {
+            let whole = forms
+                .iter()
+                .map(|form| match form {
+                    super::Stored::Environment(_, whole, l) => {
+                        super::Stored::Data(whole.clone(), *l)
+                    }
+                    form => form.clone(),
+                })
+                .collect::<Vec<_>>();
+            let unmetered = Budget::unmetered(c.control.clone());
+            return Self::arguments_omitting(&whole, limits, &unmetered, cache);
+        }
         Ok(g)
+    }
+    /// Whether the graph, with the entries a narrowed environment left
+    /// out, would take more than half of a capacity Goose checks when it
+    /// decodes and imports a job's arguments: its nodes, child values and
+    /// text units, its work and its bytes (`Control` in form_bridge.goose,
+    /// `Limits` in source_vm.goose).
+    fn near_goose_capacity(&self) -> bool {
+        let nodes = self.nodes.len() + self.omitted_nodes;
+        let children = self.children.len() + self.omitted_children;
+        let units = self.units.len() + self.omitted_units;
+        let work =
+            nodes + children + units + self.bytes.len() + self.sources.len() + self.roots.len();
+        2 * nodes > GOOSE_NODES
+            || 2 * children > GOOSE_VALUES
+            || 2 * units > GOOSE_UNITS
+            || 2 * work > GOOSE_WORK
+            || 2 * self.size() > MAX_BYTES
     }
     pub fn encode(&self) -> Result<Vec<u8>, EvalError> {
         if self.size() > MAX_BYTES {
             return Err(bad());
         }
-        let mut out = Vec::with_capacity(self.size());
+        let mut out = Vec::with_capacity(self.encoded_size());
         out.extend(b"GFB1");
         out.extend(1u32.to_le_bytes());
         for n in [

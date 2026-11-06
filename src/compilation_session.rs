@@ -2989,6 +2989,9 @@ impl CompilationSession {
         self: &Rc<Self>,
         evaluator: &crate::goose_evaluator::GooseEvaluator,
     ) -> Result<(), String> {
+        // As `install_catalog_services` starts V8's report: from now on the
+        // evaluator says whether an extension is reachable (light-cljs-815).
+        evaluator.track_environment_extensions();
         let session = Rc::downgrade(self);
         evaluator.install_helper(self.helper_owner, || {
             Rc::new(move |active, name| {
@@ -4625,6 +4628,7 @@ impl WorkerView {
         self: &Rc<Self>,
         evaluator: &crate::goose_evaluator::GooseEvaluator,
     ) -> Result<(), String> {
+        evaluator.track_environment_extensions();
         let view = Rc::downgrade(self);
         evaluator.install_helper(self.helper_owner, || {
             Rc::new(move |active, name| {
@@ -8708,8 +8712,23 @@ mod goose_root_cursor_tests {
         let evaluator =
             crate::goose_evaluator::GooseEvaluator::new(goose.clone(), &Default::default())
                 .unwrap();
+        // Whether an extension environment data could reach is installed is
+        // unknown, so source macros get their whole `&env`, until a
+        // compilation prepares the evaluator; from then on it is known that
+        // none is, as Goose installs none (light-cljs-815).
+        let tracking = || evaluator.environment_extensions().unwrap().get();
+        assert_eq!(
+            tracking(),
+            crate::evaluator::EnvironmentExtensions::Untracked
+        );
         let view = WorkerView::new(shared.clone(), MacroHost::new()).unwrap();
         view.prepare_goose(&evaluator).unwrap();
+        assert_eq!(tracking(), crate::evaluator::EnvironmentExtensions::None);
+        let compiled = host.engine.goose.as_ref().unwrap();
+        assert_eq!(
+            compiled.environment_extensions().unwrap().get(),
+            crate::evaluator::EnvironmentExtensions::None
+        );
         view.installed.set(redefinition);
         let source = Source::new("cursor.cljs", "nil");
         let form = Form::from_data(

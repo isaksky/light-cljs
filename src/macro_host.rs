@@ -1186,7 +1186,35 @@ impl MacroHost {
         environment: &crate::compiler_data::Datum,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
-        self.expand_javascript_arguments::<true>(evaluator, function, call, environment, origin)
+        self.expand_javascript_arguments::<true>(
+            evaluator,
+            function,
+            call,
+            environment,
+            None,
+            origin,
+        )
+    }
+    /// [`Self::expand_javascript`] given `view` in place of `environment`
+    /// ([`crate::compiler_bootstrap`]'s reader view), which the engine
+    /// imports knowing both ([`crate::evaluator::MacroEvaluator::import_environment_view`]).
+    pub(crate) fn expand_javascript_view(
+        &mut self,
+        evaluator: &dyn crate::evaluator::MacroEvaluator,
+        function: crate::evaluator::ValueId,
+        call: &Form,
+        view: &crate::compiler_data::Datum,
+        environment: &crate::compiler_data::Datum,
+        origin: crate::compiler_data::ExpansionOrigin,
+    ) -> Result<Form, String> {
+        self.expand_javascript_arguments::<true>(
+            evaluator,
+            function,
+            call,
+            view,
+            Some(environment),
+            origin,
+        )
     }
     /// Native bootstrap builders consume the rooted &form directly. Do not
     /// also spread its operands into a call frame with a bounded VM stack.
@@ -1199,7 +1227,14 @@ impl MacroHost {
         environment: &crate::compiler_data::Datum,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
-        self.expand_javascript_arguments::<false>(evaluator, function, call, environment, origin)
+        self.expand_javascript_arguments::<false>(
+            evaluator,
+            function,
+            call,
+            environment,
+            None,
+            origin,
+        )
     }
     fn expand_javascript_arguments<const ARGUMENTS: bool>(
         &mut self,
@@ -1207,6 +1242,7 @@ impl MacroHost {
         function: crate::evaluator::ValueId,
         call: &Form,
         environment: &crate::compiler_data::Datum,
+        whole: Option<&crate::compiler_data::Datum>,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
         #[cfg(feature = "goose-macros")]
@@ -1256,7 +1292,10 @@ impl MacroHost {
             let mut result = None;
             let expanded = (|| {
                 args.push(evaluator.import_macro_form(call, limits)?);
-                args.push(evaluator.import_environment(environment, limits)?);
+                args.push(match whole {
+                    Some(whole) => evaluator.import_environment_view(environment, whole, limits)?,
+                    None => evaluator.import_environment(environment, limits)?,
+                });
                 if ARGUMENTS {
                     args.extend(evaluator.macro_arguments(args[0], call, limits)?);
                 }

@@ -272,6 +272,43 @@ transit, rumext, promesa and beicon extend core protocols on computed
 targets early in the build (benchmarks/generated-shadow-vs-light.md, "The
 narrowed environment's gate").
 
+As built (light-cljs-815): the Goose compiler path opens the same gate. The
+Goose evaluator keeps an `EnvironmentExtensions` too, unknown until a
+compilation prepares it for an expansion (`prepare_goose`) and then `None`
+for good, because compile-time code in Goose cannot install an extension
+that environment data could reach. The Goose runtime has no `extendType` or
+`extendInstance`: `extend-type`, `extend-protocol`, `specify!`, `reify` and
+the protocol methods of a `deftype` fail their job with a fault JavaScript
+cannot catch, before anything is written, and the compilation fails with
+it; writes to the realm's objects and to forms fail the same way; and each
+job starts again from the session's image. Arguments, the environment
+included, reach Goose as form nodes that the bridge builds directly, calling
+no compile-time code, and keyword invocation and the other core operations
+on forms are Goose code that calls no JavaScript. Registered bundles and
+the other conditions (conversion budget, cache measurement) keep the whole
+environment as on V8. Since one Goose conversion budget covers a call's
+arguments, its environment, its nested calls and its result, and Goose
+refuses data V8 converts (characters, integers no double holds), the
+evaluator is given the whole environment beside the narrowed one
+(`import_environment_view`): the bridge converts the entries the macro
+reads and walks the others without building them, with the same checks,
+charges and refusals in the same order, so a call fails where and as it
+failed with the whole environment. A left-out collection walked before,
+such as the macro inventory, is charged its measured cost at once when
+that fits what is left of every limit, and walked again otherwise. Goose
+also checks its own per-job capacities when it imports a job's arguments
+(nodes, value rows, text units, bridge work), against a heap that may
+already hold the macro's definitions, so a graph that with the left-out
+entries would take more than half of any of them is sent with the whole
+environment, and fails where it failed. What remains different is the
+headroom a job has after the import: one that would run out of heap rows
+or work only because the left-out entries took their share no longer
+does, as a V8 isolate given fewer entries has more heap. On the seed-42 200k project this cuts the argument
+graph from about 30.5 million nodes to about 0.54 million. The Goose
+session counts what it sends (`SessionStats`: calls, argument nodes,
+argument bytes, the source text in them, result bytes), and
+`LIGHT_CLJS_GOOSE_REPORT` prints them.
+
 Finite canonical lists, sequences, vectors, maps and sets are readable results.
 Lazy sequences may realize under the same engine control and conversion bounds;
 functions, Vars, atoms, type/protocol objects, promises, arbitrary objects,

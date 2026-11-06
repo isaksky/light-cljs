@@ -1951,26 +1951,17 @@ impl MacroHost {
             (None, None) => return Err("macro session failed".into()),
         };
         let function = declaration.function(engine, &self.engine)?;
-        let reader_view;
-        let env = match self.reader_view(&declaration, env, engine) {
-            Some(view) => {
-                reader_view = view;
-                &reader_view
-            }
-            None => env,
+        let view = self.reader_view(&declaration, env, engine);
+        let origin = ExpansionOrigin {
+            macro_name: Name::new(Some(ns), name),
+            call: call.span(),
+            definition: Some(declaration.definition),
+            helpers: vec![],
         };
-        self.expand_javascript(
-            engine,
-            function,
-            call,
-            env,
-            ExpansionOrigin {
-                macro_name: Name::new(Some(ns), name),
-                call: call.span(),
-                definition: Some(declaration.definition),
-                helpers: vec![],
-            },
-        )
+        match view {
+            Some(view) => self.expand_javascript_view(engine, function, call, &view, env, origin),
+            None => self.expand_javascript(engine, function, call, env, origin),
+        }
     }
     /// The environment a source macro that reads only some keys of its
     /// `&env`, or none, is given instead of `env` (light-cljs-427): only
@@ -1988,7 +1979,10 @@ impl MacroHost {
     /// environment's conversion charged, or once the compilation registered
     /// an extension bundle that converting the rest could demand or call
     /// ([`crate::compilation_session::reaches_environment_data`],
-    /// light-cljs-433).
+    /// light-cljs-433). The engine imports the view knowing `env`
+    /// ([`crate::evaluator::MacroEvaluator::import_environment_view`]):
+    /// Goose, whose one budget covers the whole call and which refuses
+    /// data V8 converts, still checks and charges the rest (light-cljs-815).
     fn reader_view(
         &self,
         declaration: &CompiledMacro,
