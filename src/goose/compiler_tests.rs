@@ -1592,7 +1592,7 @@ fn goose_compiler_rejects_shared_writes_before_mutation() {
 fn goose_compiler_names_unsupported_builtin_steps() {
     for (body, name) in [
         ("Object(1)", "Object:-primitive-wrapper-objects"),
-        ("[1].map((x) => x)", "pending-map"),
+        ("[1].filter((x) => x)", "pending-filter"),
     ] {
         let source = format!(
             "(defmacro m [] (js* \"(() => {{ try {{ {body}; return 1; }} catch (e) {{ return 2; }} }})()\")) (m)"
