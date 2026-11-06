@@ -800,6 +800,20 @@ fn goose_compiler_wrapper_conventions_and_boundaries() {
         ),
         ("return rt.intrinsicRegExp();", Some("Fault.NativeBoundary")),
         ("return rt.core.inc.call(null,40)===41;", None),
+        // The emitted prologue's core binding is V8's own-property
+        // descriptor of rt.core, its value the leaf itself (light-cljs-807).
+        (
+            "const d=rt.nativeCoreBinding('gensym'); const {value: g, get: h}=d; return g===rt.core.gensym && h===undefined && d.writable===true && d.enumerable===true && d.configurable===true && Object.getPrototypeOf(d)===Object.prototype && rt.nativeCoreBinding('gensym')!==d;",
+            None,
+        ),
+        (
+            "return rt.nativeCoreBinding('notACoreLeaf');",
+            Some("Fault.NativeBoundary:nativeCoreBinding:-no-core-leaf-notACoreLeaf"),
+        ),
+        (
+            "try { return rt.nativeCoreBinding(); } catch (e) { return null; }",
+            Some("Fault.NativeBoundary:nativeCoreBinding:-no-core-leaf"),
+        ),
         (
             "const call=(function(){}).call; return call();",
             Some("Fault.TypeError"),
@@ -3193,6 +3207,34 @@ fn goose_compiler_gensym_numbers_in_compiler_scopes() {
         assert_eq!(output.as_deref(), Ok(reference.as_str()), "slots={slots}");
         assert!(census.is_empty(), "slots={slots}: {census:?}");
         assert_eq!(session.stats().jobs, 96, "slots={slots}");
+        session.close();
+        cleaned(&session);
+    }
+}
+
+/// A macro that quotes a compiled `(def x (gensym))`: the definition's
+/// prologue reads `rt.nativeCoreBinding("gensym")` (light-cljs-807).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_def_gensym_used_by_a_macro() {
+    let mut files = HashMap::new();
+    files.insert(
+        "m.gen".to_owned(),
+        "(ns m.gen)\n(def x (gensym))\n(defmacro m [] (list 'quote x))".to_owned(),
+    );
+    files.insert(
+        "app.main".to_owned(),
+        "(ns app.main (:require [m.gen :as g]))\n(def y (g/m))\n".to_owned(),
+    );
+    let (reference, _, _) = pooled_build(&files, 1, None, Default::default());
+    let reference = reference.unwrap();
+    // y is the quoted symbol the definition's gensym made.
+    assert!(reference.contains("rt.symbol(null, \"G__"), "{reference}");
+    for slots in [1, 4] {
+        let session = GooseSession::start(&runner(), slots).unwrap();
+        let (output, _, _) = pooled_build(&files, slots, Some(&session), Default::default());
+        assert_eq!(output.as_deref(), Ok(reference.as_str()), "slots={slots}");
         session.close();
         cleaned(&session);
     }

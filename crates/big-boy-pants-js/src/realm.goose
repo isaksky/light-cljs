@@ -38,11 +38,13 @@ enum Builtin {
     Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError,
     ObjectGetPrototypeOf, ObjectIs, ObjectHasOwn, ObjectPrototypeHasOwnProperty, ObjectPrototypeValueOf, ObjectPrototypeToString,
     ArrayIsArray, ErrorPrototypeToString, SymbolFunction, ObjectGetOwnPropertyDescriptor,
+    // A runtime leaf added after the realm's functions (light-cljs-807).
+    NativeCoreBinding,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[43] = [
+let BUILTINS: BuiltinInfo[44] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -64,6 +66,7 @@ let BUILTINS: BuiltinInfo[43] = [
     BuiltinInfo { which: Builtin.ObjectPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.ObjectPrototypeToString, name: "toString" },
     BuiltinInfo { which: Builtin.ArrayIsArray, name: "isArray", length: 1 }, BuiltinInfo { which: Builtin.ErrorPrototypeToString, name: "toString" },
     BuiltinInfo { which: Builtin.SymbolFunction, name: "Symbol" }, BuiltinInfo { which: Builtin.ObjectGetOwnPropertyDescriptor, name: "getOwnPropertyDescriptor", length: 2 },
+    BuiltinInfo { which: Builtin.NativeCoreBinding, name: "nativeCoreBinding", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -143,7 +146,7 @@ let TYPE_NAMES: Name[8] = [Name { text: "undefined" }, Name { text: "object" }, 
 // The light-cljs runtime leaves boot_runtime installs on `rt` (core false)
 // or `rt.core`, in this order.
 struct Leaf { core: bool, key: u8[..24], which: Builtin }
-let RUNTIME_LEAVES: Leaf[16] = [
+let RUNTIME_LEAVES: Leaf[17] = [
     Leaf { core: true, key: "macroReaderFunction", which: Builtin.MacroReaderFunction }, Leaf { core: true, key: "inc", which: Builtin.Inc },
     Leaf { core: true, key: "mapv", which: Builtin.Mapv }, Leaf { core: true, key: "vec", which: Builtin.Vec }, Leaf { core: true, key: "into", which: Builtin.Into },
     Leaf { core: true, key: "sequence", which: Builtin.Sequence }, Leaf { core: true, key: "mapSeq", which: Builtin.MapSeq }, Leaf { core: true, key: "list", which: Builtin.List },
@@ -156,6 +159,8 @@ let RUNTIME_LEAVES: Leaf[16] = [
     Leaf { core: false, key: "vectorFromArray", which: Builtin.VectorFromArray }, Leaf { core: false, key: "listFromArray", which: Builtin.ListFromArray },
     Leaf { core: false, key: "mapFromArray", which: Builtin.MapFromArray }, Leaf { core: false, key: "setFromArray", which: Builtin.SetFromArray },
     Leaf { core: false, key: "fnRest", which: Builtin.FnRest },
+    // The emitted prologue reads the core operations it calls through it.
+    Leaf { core: false, key: "nativeCoreBinding", which: Builtin.NativeCoreBinding },
 ];
 
 // A built-in's code: its position in BUILTINS.
@@ -405,6 +410,28 @@ fn own_descriptor(job: Job&, b: Builtin, o: Value, kv: Value) -> Value {
     if !realm_value(heap, d.id(), "enumerable", boolean(p.attrs & attr_enumerable() != 0), attrs_data()) || !realm_value(heap, d.id(), "configurable", boolean(p.attrs & attr_configurable() != 0), attrs_data()) { return Value.Undefined; }
     return d;
 }
+// rt.nativeCoreBinding(name) (light-cljs-807): the V8 build's
+// Object.getOwnPropertyDescriptor(core, name), core being the image's
+// `rt.core` (reached through the global, which no job may write): a new
+// ordinary object whose `value` is the leaf itself, `get` absent (no Goose
+// core leaf is an accessor). A name the Goose runtime has no core leaf for
+// fails NativeBoundary naming it (Job.detail), never undefined.
+fn core_binding(job: Job&, b: Builtin, name: Value) -> Value {
+    let heap .= job.heap;
+    let rt = data_get(job, b, heap.global, "__lightNativeRuntime");
+    if heap.fault != Fault.None { return Value.Undefined; }
+    let core = if rt.tag() == 5 { data_get(job, b, rt, "core") } else { Value.Undefined };
+    if heap.fault != Fault.None { return Value.Undefined; }
+    if core.tag() != 5 { heap.fault = Fault.InvalidState; return Value.Undefined; }
+    let d = if name.tag() == 4 { own_descriptor(job, b, core, name) } else { Value.Undefined };
+    if heap.fault != Fault.None || d.tag() == 5 { return d; }
+    job.detail.clear();
+    for c in BUILTINS[code(b)].name { job.detail.push(c); }
+    for c in ": no core leaf " { job.detail.push(c); }
+    if name.tag() == 4 { append_utf16(heap, name, job.detail); }
+    heap.fault = Fault.NativeBoundary;
+    return Value.Undefined;
+}
 // Units of `[object Tag]`.
 fn object_tag(job: Job&, receiver: Value) -> Value {
     let heap .= job.heap;
@@ -536,6 +563,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         ErrorPrototypeToString => { return error_to_string(job, receiver); },
         FunctionPrototypeCall => { return unsupported_step(job, b, "called from a native frame"); },
         SymbolFunction => { return unsupported_step(job, b, "creating symbols"); },
+        NativeCoreBinding => { return core_binding(job, b, arg(args, 0)); },
         _ => { return native_value(heap, id, args); },
     }
 }
