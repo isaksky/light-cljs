@@ -296,7 +296,7 @@ fn fail(id: i64, heap: source::Heap&, job: source::Job&, address: i64 = 0, timin
     let text = str(fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end, " writes=", job.writes.len);
     publish(Event { id: id, kind: 3, name: copy(text), address: address, timing: timing });
 }
-fn reset(graph: bridge::Graph&) { graph.nodes.clear(); graph.children.clear(); graph.units.clear(); graph.sources.clear(); graph.bytes.clear(); graph.roots.clear(); }
+fn reset(graph: bridge::Graph&) { graph.nodes.clear(); graph.children.clear(); graph.units.clear(); graph.sources.clear(); graph.bytes.clear(); graph.roots.clear(); graph.omitted = bridge::Omitted {}; }
 // The session's cell owner (light-cljs-799, cell_owner.goose): a program
 // with no VM tables that holds every process-wide cell. The coordinator
 // spawns it before any preparer or job worker, which inherit

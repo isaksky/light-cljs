@@ -235,7 +235,7 @@ fn direct_update_boundaries() {
 // main builds no heap; each heap-building test is its own thread program.
 fn main() {
     heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality));
-    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources));
+    direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources)); heap_program::join(thread_spawn(omission));
     print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
 
 // light-cljs-817: the compiler sends a source's identity and byte length, no
@@ -333,6 +333,85 @@ thread_fn spanless_export() {
     for n in out.nodes { assert(n.source == -1 && n.span_start == 0 && n.span_end == 0); }
     var bytes: u8[>..]            = []; assert(bridge::encode(out, bytes, c)); var decoded = bridge::Graph {}; assert(bridge::decode(decoded, bytes, c));
     var back:  source::Value[>..] = []; var again = bridge::Control {}; assert(bridge::import_graph(heap, decoded, back, again) && back.len == 1 && source::form_equal(heap, back[0], roots[0]));
+}
+// An environment map {:a 1, :ns/b ^{} ["xyz" s]} (light-cljs-820), and the
+// same map narrowed to {:a 1} with the omission record of the left-out
+// entry: five nodes, four child slots (two the map's, two the vector's), seven
+// units, four string rows, three units of names (`ns`, `s`) and depth 3.
+fn whole_environment(g: bridge::Graph&) {
+    g.units.append([97, 98, 110, 115, 120, 121, 122, 115]);
+    g.nodes.push(bridge::Form { tag: 5, start: 0, count: 1 }); g.nodes.push(bridge::Form { tag: 2, number: 1 });
+    g.nodes.push(bridge::Form { tag: 5, start: 1, count: 1, ns_start: 2, ns_count: 2 }); g.nodes.push(bridge::Form { tag: 3, start: 4, count: 3 });
+    g.nodes.push(bridge::Form { tag: 4, start: 7, count: 1 }); g.nodes.push(bridge::Form { tag: 8, start: 0, count: 0 });
+    g.children.append([3, 4]); g.nodes.push(bridge::Form { tag: 7, start: 0, count: 2, metadata: 5 });
+    g.children.append([0, 1, 2, 6]); g.nodes.push(bridge::Form { tag: 8, start: 2, count: 4 }); g.roots.push(7);
+}
+fn narrowed_environment(g: bridge::Graph&) {
+    g.units.push(97); g.nodes.push(bridge::Form { tag: 5, start: 0, count: 1 }); g.nodes.push(bridge::Form { tag: 2, number: 1 });
+    g.children.append([0, 1]); g.nodes.push(bridge::Form { tag: 8, start: 0, count: 2 }); g.roots.push(2);
+    g.omitted = bridge::Omitted { nodes: 5, children: 4, units: 7, strings: 4, names: 3, depth: 3 };
+}
+// The rows a heap's limits count as the job's: nodes, values, code units
+// and strings above its image tops.
+fn taken(heap: const source::Heap&) -> i64[4] { return [heap.nodes.len - heap.image.nodes, heap.values.len - heap.image.values, source::unit_rows(heap), heap.strings.len - heap.image.strings]; }
+// What decoding and importing `bytes` into `heap` cost and took, under
+// `limit` (0 nodes, 1 depth, 2 bytes, 3 work, 4/5/6 heap nodes/values/units
+// one short of the whole graph's, or -1 for none; `budget` is the work for
+// 3): its error, the
+// control's visits, the heap's work and its rows taken.
+struct Imported { error: bridge::Error, visits: i64, work: i64, taken: i64[4] }
+fn import_wire(heap: source::Heap&, bytes: const u8[:], limit: i64, whole: const bridge::Graph&, budget: i64 = 0) -> Imported {
+    let before = taken(heap); let work = heap.work; let limits = heap.limits;
+    var c = bridge::Control {};
+    if limit == 0 { c.nodes = whole.nodes.len - 1; } if limit == 1 { c.depth = 2; } if limit == 2 { c.bytes = bridge::footprint(whole) - 1; } if limit == 3 { c.work = budget; }
+    if limit == 4 { heap.limits.nodes = before[0] + whole.nodes.len - 1; } if limit == 5 { heap.limits.values = before[1] + whole.children.len - 1; } if limit == 6 { heap.limits.units = before[2] + whole.units.len - 1; }
+    var g = bridge::Graph {}; var roots: source::Value[>..] = [];
+    let ok = bridge::decode(g, bytes, c) && bridge::import_graph(heap, g, roots, c);
+    let after = taken(heap); heap.limits = limits;
+    if !ok { assert(after == before && heap.work == work && roots.len == 0); }
+    return Imported { error: c.error, visits: c.visits, work: heap.work - work, taken: [after[0] - before[0], after[1] - before[1], after[2] - before[2], after[3] - before[3]] };
+}
+// A narrowed graph's omission record decodes, validates, imports and is
+// charged as the entries it left out would be: the same polls, work, limit
+// failures and rows taken as the whole graph, whose headroom it leaves
+// (light-cljs-820); a malformed count, or a record in a cell graph, is
+// refused.
+thread_fn omission() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var whole = bridge::Graph {}; whole_environment(whole); var narrowed = bridge::Graph {}; narrowed_environment(narrowed);
+    var wire:  u8[>..] = []; var w = bridge::Control {}; assert(bridge::encode(whole, wire, w));
+    var bytes: u8[>..] = []; var n = bridge::Control {}; assert(bridge::encode(narrowed, bytes, n));
+    assert(bridge::word(wire, 4) == 2 && bridge::word(bytes, 4) == 3 && bytes.len == 56 + 3 * 48 + 2 * 4 + 2 + 4 && bridge::footprint(narrowed) == wire.len && w.visits == n.visits);
+    var decoded = bridge::Graph {}; var d = bridge::Control {}; assert(bridge::decode(decoded, bytes, d));
+    assert(bytes_of([decoded.omitted]) == bytes_of([narrowed.omitted]) && decoded.nodes.len == 3);
+    var again: u8[>..] = []; assert(bridge::encode(decoded, again, d) && again == bytes);
+    var vw = bridge::Control {}; var vn = bridge::Control {}; assert(bridge::validate(whole, vw) && bridge::validate(narrowed, vn) && vw.visits == vn.visits);
+    let full = import_wire(heap, wire, -1, whole); let part = import_wire(heap, bytes, -1, whole);
+    assert(full.error == bridge::Error.None && part.error == bridge::Error.None && full.visits == part.visits && full.work == part.work && full.taken == part.taken);
+    assert(full.taken == [8 as i64, 6, 8, 5]);
+    for limit in 7 {
+        let a = import_wire(heap, wire, limit, whole, full.visits - 1); let b = import_wire(heap, bytes, limit, whole, full.visits - 1);
+        let expected = if limit == 0 { bridge::Error.Nodes } else if limit == 1 { bridge::Error.Depth } else if limit == 2 { bridge::Error.Bytes } else if limit == 3 { bridge::Error.Work } else { bridge::Error.Heap };
+        assert(a.error == expected && b.error == expected && b.taken == [0 as i64; 4]);
+    }
+    // Cancellation at every visit before the last refuses it with no change.
+    for cut in part.visits {
+        let before = taken(heap); var c = bridge::Control { cancel_after: cut }; var g = bridge::Graph {}; var roots: source::Value[>..] = [];
+        assert(!(bridge::decode(g, bytes, c) && bridge::import_graph(heap, g, roots, c)) && c.error == bridge::Error.Cancelled && taken(heap) == before);
+    }
+    // Malformed counts: no nodes, more child slots than nodes, fewer units
+    // than name units, more than two string rows a node, units without a
+    // string row, a depth without a kept ancestor or past every node.
+    for mode in 8 {
+        var bad = copy(bytes);
+        let at = [32, 36, 40, 44, 44, 52, 52, 48][mode]; let value = [0, 6, 2, 11, 0, 1, 9, 8][mode];
+        for i in 4 { bad[at + i] = ((value >> (i * 8)) & 255) as u8; }
+        var c = bridge::Control {}; var g = bridge::Graph {}; assert(!bridge::decode(g, bad, c) && c.error == bridge::Error.Malformed && g.nodes.len == 0);
+    }
+    var cells = bridge::Control { cells: true }; var g = bridge::Graph {}; assert(!bridge::decode(g, bytes, cells) && cells.error == bridge::Error.Malformed);
+    var valid = bridge::Control {}; narrowed.omitted.children = 6; assert(!bridge::validate(narrowed, valid) && valid.error == bridge::Error.Malformed);
+    print("omission record: same polls, work, limit failures and rows taken as the whole graph; malformed counts refused");
 }
 // Fifty strings sharing one 100-unit range copy 5,000 units on import, and
 // the import is charged for them: one visit short refuses it with no change.

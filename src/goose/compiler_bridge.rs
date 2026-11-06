@@ -107,12 +107,10 @@ impl Drop for Budget {
 }
 
 pub(super) const MAX_BYTES: usize = 16 * 1024 * 1024;
-/// Goose's default per-job graph nodes, value rows, text units and bridge
-/// work (form_bridge.goose `Control`, source_vm.goose `Limits`).
-const GOOSE_NODES: usize = 100_000;
-const GOOSE_VALUES: usize = 1_048_576;
-const GOOSE_UNITS: usize = 1_048_576;
-const GOOSE_WORK: usize = 10_000_000;
+/// The words of a narrowed graph's omission record (version 3), after the
+/// six counts: [`Graph::omitted_nodes`] and the rest, as
+/// form_bridge.goose's `Omitted` reads them.
+const OMISSION_WORDS: usize = 6;
 fn bad() -> EvalError {
     EvalError("Goose malformed or unsupported form graph".into())
 }
@@ -172,6 +170,17 @@ pub(super) struct Graph {
     omitted_children: usize,
     omitted_units: usize,
     omitted_depth: usize,
+    /// The string rows Goose's import would add for the omitted entries
+    /// (one a string, one or two a symbol or keyword), and the code units
+    /// its validation reads in their symbols and keywords (the namespace's
+    /// if any, otherwise the name's): what the omission record carries
+    /// besides nodes, child values, text units and depth (light-cljs-820).
+    omitted_strings: usize,
+    omitted_names: usize,
+    /// Whether an omitted entry holds data Goose's validation refuses as
+    /// unsupported, which the compiler does not refuse itself: then Goose
+    /// is sent the whole environment, so that it refuses it.
+    omitted_refused: bool,
 }
 /// What omitting one collection cost when an exact walk ([`Graph::omit`])
 /// passed: its budget checks, polls and bytes, its nodes, encoded size and
@@ -184,8 +193,11 @@ pub(super) struct Omitted {
     nodes: usize,
     children: usize,
     units: usize,
+    strings: usize,
+    names: usize,
     size: usize,
     height: usize,
+    refused: bool,
 }
 /// The [`Omitted`] costs of the collections a session's narrowed
 /// environments left out most recently, by identity, most recently used
@@ -409,11 +421,27 @@ impl Graph {
                 c.bytes(v.len() * 2)?;
                 units = v.len();
                 self.omitted_charges += 1;
+                self.omitted_strings += 1;
             }
             DatumKind::Symbol(v) | DatumKind::Keyword(v) => {
                 units = v.name().len() + v.namespace().map_or(0, <[u16]>::len);
                 c.bytes(units * 2)?;
                 self.omitted_charges += 1;
+                self.omitted_strings += 1 + usize::from(v.namespace().is_some());
+                // What form_bridge.goose's `validate` reads and refuses: a
+                // `/` in a namespace, or in a name of more than one unit
+                // without one, and an empty namespace with an empty name.
+                let slash = |text: &[u16]| text.contains(&47);
+                match v.namespace() {
+                    Some(ns) => {
+                        self.omitted_names += ns.len();
+                        self.omitted_refused |= slash(ns) || ns.is_empty() && v.name().is_empty();
+                    }
+                    None => {
+                        self.omitted_names += v.name().len();
+                        self.omitted_refused |= v.name().len() != 1 && slash(v.name());
+                    }
+                }
             }
             DatumKind::Collection { children, .. } => {
                 for child in children.iter() {
@@ -428,12 +456,29 @@ impl Graph {
         self.omitted_bytes += units * 2;
         self.omitted_units += units;
         if let Some(meta) = d.metadata() {
-            self.omit(&meta, depth + 1, limits, c)?;
+            self.omit_metadata(&meta, depth + 1, limits, c)?;
         }
         self.charge(depth, limits, c)?;
         self.omitted_nodes += 1;
         self.omitted_size += 48;
         Ok(())
+    }
+    /// [`Self::omit`] for metadata, which Goose refuses unless it is a map.
+    fn omit_metadata(
+        &mut self,
+        meta: &Datum,
+        depth: usize,
+        limits: ConversionLimits,
+        c: &Budget,
+    ) -> Result<(), EvalError> {
+        self.omitted_refused |= !matches!(
+            meta.kind(),
+            DatumKind::Collection {
+                kind: CollectionKind::Map,
+                ..
+            }
+        );
+        self.omit(meta, depth, limits, c)
     }
     /// [`Self::omit`] for an entry of a narrowed environment: a collection
     /// whose cost `cache` knows is charged at once when it fits what is
@@ -470,6 +515,10 @@ impl Graph {
             self.omitted_size += o.size;
             self.omitted_children += o.children;
             self.omitted_units += o.units;
+            self.omitted_strings += o.strings;
+            self.omitted_names += o.names;
+            self.omitted_depth = self.omitted_depth.max(depth + o.height - 1);
+            self.omitted_refused |= o.refused;
             return Ok(());
         }
         let before = (
@@ -480,6 +529,9 @@ impl Graph {
             std::mem::replace(&mut self.omitted_depth, depth),
             self.omitted_children,
             self.omitted_units,
+            self.omitted_strings,
+            self.omitted_names,
+            std::mem::replace(&mut self.omitted_refused, false),
         );
         self.omit(d, depth, limits, c)?;
         let nodes = self.omitted_nodes - before.0;
@@ -491,10 +543,14 @@ impl Graph {
             nodes,
             children: self.omitted_children - before.5,
             units: self.omitted_units - before.6,
+            strings: self.omitted_strings - before.7,
+            names: self.omitted_names - before.8,
             size: self.omitted_size - before.1,
             height: self.omitted_depth - depth + 1,
+            refused: self.omitted_refused,
         };
         self.omitted_depth = self.omitted_depth.max(before.4);
+        self.omitted_refused |= before.9;
         if known.is_none() {
             let mut cache = cache.borrow_mut();
             if cache.len() == OMIT_CACHE {
@@ -550,7 +606,7 @@ impl Graph {
         self.omitted_size += (children.len() - ids.len()) * 4;
         self.omitted_children += children.len() - ids.len();
         if let Some(meta) = whole.metadata() {
-            self.omit(&meta, depth + 1, limits, c)?;
+            self.omit_metadata(&meta, depth + 1, limits, c)?;
         }
         let mut n = Node {
             tag: 8,
@@ -676,11 +732,12 @@ impl Graph {
             };
             g.roots.push(id);
         }
-        // Goose checks its own capacities when it imports the graph, against
-        // a job heap that may already hold the macro's definitions: near
-        // them, Goose is sent the whole environment, so that it fails where
-        // it failed. This graph charged what the whole one charges.
-        if g.omitted_nodes > 0 && g.near_goose_capacity() {
+        // Goose checks, charges and reserves the omitted entries from the
+        // graph's omission record (light-cljs-820), but cannot refuse data
+        // it is not sent: when an omitted entry holds data Goose's
+        // validation refuses, Goose is sent the whole environment, so that
+        // it refuses it. This graph charged what the whole one charges.
+        if g.omitted_refused {
             let whole = forms
                 .iter()
                 .map(|form| match form {
@@ -695,29 +752,31 @@ impl Graph {
         }
         Ok(g)
     }
-    /// Whether the graph, with the entries a narrowed environment left
-    /// out, would take more than half of a capacity Goose checks when it
-    /// decodes and imports a job's arguments: its nodes, child values and
-    /// text units, its work and its bytes (`Control` in form_bridge.goose,
-    /// `Limits` in source_vm.goose).
-    fn near_goose_capacity(&self) -> bool {
-        let nodes = self.nodes.len() + self.omitted_nodes;
-        let children = self.children.len() + self.omitted_children;
-        let units = self.units.len() + self.omitted_units;
-        let work = nodes + children + units + self.sources.len() + self.roots.len();
-        2 * nodes > GOOSE_NODES
-            || 2 * children > GOOSE_VALUES
-            || 2 * units > GOOSE_UNITS
-            || 2 * work > GOOSE_WORK
-            || 2 * self.size() > MAX_BYTES
+    /// The graph's omission record, which version 3 of the encoding writes
+    /// after its counts when a narrowed environment left entries out: their
+    /// nodes, child values, text units, string rows, the units Goose's
+    /// validation reads in their symbols and keywords, and the deepest
+    /// depth among them (a root at 1). Goose checks, polls and charges them
+    /// as if they were present and reserves their rows for the rest of the
+    /// job (form_bridge.goose `Omitted`, light-cljs-820).
+    fn omission(&self) -> Option<[usize; OMISSION_WORDS]> {
+        (self.omitted_nodes > 0).then_some([
+            self.omitted_nodes,
+            self.omitted_children,
+            self.omitted_units,
+            self.omitted_strings,
+            self.omitted_names,
+            self.omitted_depth,
+        ])
     }
     pub fn encode(&self) -> Result<Vec<u8>, EvalError> {
         if self.size() > MAX_BYTES {
             return Err(bad());
         }
-        let mut out = Vec::with_capacity(self.encoded_size());
+        let omission = self.omission();
+        let mut out = Vec::with_capacity(self.encoded_size() + OMISSION_WORDS * 4);
         out.extend(b"GFB2");
-        out.extend(2u32.to_le_bytes());
+        out.extend(if omission.is_some() { 3u32 } else { 2 }.to_le_bytes());
         for n in [
             self.nodes.len(),
             self.children.len(),
@@ -725,8 +784,11 @@ impl Graph {
             self.sources.len(),
             0,
             self.roots.len(),
-        ] {
-            out.extend((n as u32).to_le_bytes());
+        ]
+        .into_iter()
+        .chain(omission.into_iter().flatten())
+        {
+            out.extend(u32::try_from(n).map_err(|_| bad())?.to_le_bytes());
         }
         for n in &self.nodes {
             out.extend(n.tag.to_le_bytes());
@@ -1577,5 +1639,153 @@ mod tests {
             .expansion(&call, origin(), &graph.originals, limits, &budget)
             .unwrap();
         assert!(matches!(form.data().kind(), DatumKind::Integer(7)));
+    }
+
+    fn text(s: &str) -> Datum {
+        Datum::new(DatumKind::String(
+            s.encode_utf16().collect::<Vec<_>>().into(),
+        ))
+    }
+    fn keyword(ns: Option<&str>, name: &str) -> Datum {
+        Datum::new(DatumKind::Keyword(Name::new(ns, name)))
+    }
+    fn symbol(ns: Option<&str>, name: &str) -> Datum {
+        Datum::new(DatumKind::Symbol(Name::new(ns, name)))
+    }
+    fn collection(kind: CollectionKind, children: Vec<Datum>) -> Datum {
+        Datum::new(DatumKind::Collection {
+            kind,
+            children: children.into(),
+        })
+    }
+    /// An environment whose macro inventory, which a narrowed view leaves
+    /// out, holds `probe` in a macro's metadata, and the view.
+    fn environment_with(probe: Datum) -> (Datum, Datum) {
+        use CollectionKind::{Map, Vector};
+        let ns = [keyword(None, "ns"), symbol(None, "app.main")];
+        let locals = [keyword(None, "locals"), collection(Map, vec![])];
+        let meta = collection(
+            Map,
+            vec![
+                keyword(None, "doc"),
+                text("λx"),
+                keyword(Some("light-cljs"), "probe"),
+                probe,
+            ],
+        );
+        let macros = collection(
+            Map,
+            vec![
+                symbol(Some("m"), "a").with_metadata(meta),
+                collection(Vector, vec![text(""), symbol(None, "s")]),
+            ],
+        );
+        let mut entries = ns.to_vec();
+        entries.extend([keyword(Some("light-cljs"), "macros"), macros]);
+        entries.extend(locals.clone());
+        let whole = collection(Map, entries)
+            .with_metadata(collection(Map, vec![keyword(None, "file"), text("f")]));
+        let mut kept = ns.to_vec();
+        kept.extend(locals);
+        (collection(Map, kept), whole)
+    }
+    /// A graph's string rows Goose's import adds and the units its
+    /// validation reads in names, and its height from `id`.
+    fn strings_and_names(g: &Graph) -> (usize, usize) {
+        g.nodes.iter().fold((0, 0), |(s, n), node| match node.tag {
+            3 => (s + 1, n),
+            4 | 5 if node.fields[3] >= 0 => (s + 2, n + node.fields[3] as usize),
+            4 | 5 => (s + 1, n + node.fields[1] as usize),
+            _ => (s, n),
+        })
+    }
+    fn height(g: &Graph, id: u32) -> usize {
+        let n = &g.nodes[id as usize];
+        let mut edges = if n.tag >= 6 {
+            g.children[n.fields[0] as usize..][..n.fields[1] as usize].to_vec()
+        } else {
+            vec![]
+        };
+        edges.extend((n.fields[4] >= 0).then_some(n.fields[4] as u32));
+        1 + edges.iter().map(|&c| height(g, c)).max().unwrap_or(0)
+    }
+
+    /// A narrowed environment's omission record holds exactly what the
+    /// left-out entries add to the whole environment's graph: its nodes,
+    /// child values, text units, string rows, name units and depth, after
+    /// a walk and from the cached cost alike, and the encoding writes it
+    /// as version 3 (light-cljs-820).
+    #[test]
+    fn goose_compiler_bridge_omission_record_counts_what_the_whole_graph_adds() {
+        let limits = ConversionLimits::default();
+        let deep = (0..5).fold(text("deep"), |d, _| {
+            collection(CollectionKind::Vector, vec![d])
+        });
+        let (view, whole) = environment_with(collection(
+            CollectionKind::Vector,
+            vec![keyword(Some("k"), "v"), symbol(None, "/"), deep],
+        ));
+        let budget = Budget::new(limits.nodes, control(1_000_000));
+        let mut full = Graph::default();
+        let root = full.datum(&whole, 1, limits, &budget).unwrap();
+        let cache = OmitCache::default();
+        for _ in 0..2 {
+            let mut g = Graph::default();
+            let id = g
+                .environment(&view, &whole, 1, limits, &budget, &cache)
+                .unwrap();
+            assert!(!g.omitted_refused);
+            assert_eq!(full.nodes.len(), g.nodes.len() + g.omitted_nodes);
+            assert_eq!(full.children.len(), g.children.len() + g.omitted_children);
+            assert_eq!(full.units.len(), g.units.len() + g.omitted_units);
+            let (s, n) = strings_and_names(&full);
+            let (ks, kn) = strings_and_names(&g);
+            assert_eq!((s, n), (ks + g.omitted_strings, kn + g.omitted_names));
+            assert!(g.omitted_depth > height(&g, id));
+            assert_eq!(height(&full, root), g.omitted_depth);
+            assert_eq!(g.size(), full.encoded_size());
+            g.roots.push(id);
+            let bytes = g.encode().unwrap();
+            let word = |i: usize| u32::from_le_bytes(bytes[i * 4..][..4].try_into().unwrap());
+            assert_eq!(word(1), 3);
+            assert_eq!(bytes.len(), g.encoded_size() + OMISSION_WORDS * 4);
+            let record: Vec<_> = (8..14).map(|i| word(i) as usize).collect();
+            assert_eq!(record, g.omission().unwrap());
+        }
+        // A whole graph stays version 2.
+        full.roots.push(root);
+        assert_eq!(full.encode().unwrap()[4], 2);
+    }
+
+    /// Data Goose's validation refuses as unsupported in a left-out entry
+    /// sends the whole environment, which Goose refuses (light-cljs-820).
+    #[test]
+    fn goose_compiler_bridge_refused_omitted_data_sends_the_whole_environment() {
+        let limits = ConversionLimits::default();
+        let refused = [
+            symbol(None, "a/b"),
+            keyword(Some("a/b"), "c"),
+            Datum::new(DatumKind::Symbol(Name::from_utf16(Some(&[]), &[]))),
+            text("x").with_metadata(collection(CollectionKind::Vector, vec![])),
+        ];
+        let accepted = [symbol(None, "/"), keyword(Some("a"), "b/c"), text("x")];
+        for (probe, refuse) in refused
+            .into_iter()
+            .map(|p| (p, true))
+            .chain(accepted.into_iter().map(|p| (p, false)))
+        {
+            let (view, whole) = environment_with(probe.clone());
+            let budget = Budget::new(limits.nodes, control(1_000_000));
+            let mut full = Graph::default();
+            full.datum(&whole, 1, limits, &budget).unwrap();
+            let g = Graph::arguments(
+                &[super::super::Stored::Environment(view, whole, limits)],
+                limits,
+                &budget,
+            )
+            .unwrap();
+            assert_eq!(g.omission().is_none(), refuse, "{probe:?}");
+            assert_eq!(g.nodes.len() == full.nodes.len(), refuse, "{probe:?}");
+        }
     }
 }

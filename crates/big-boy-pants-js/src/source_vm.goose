@@ -643,6 +643,16 @@ fn nodes_fit(heap: const Heap&, count: i64) -> bool { return count >= 0 && count
 // unit limit counts them together.
 fn unit_rows(heap: const Heap&) -> i64 { return heap.units.len - heap.image.units + heap.latin1.len - heap.image.latin1; }
 fn units_fit(heap: const Heap&, count: i64) -> bool { return count >= 0 && count <= heap.limits.units - unit_rows(heap); }
+// Take node, value, code-unit and string rows of the heap's headroom
+// without adding them (light-cljs-820: the entries a narrowed argument
+// graph left out, bridge::Omitted). The limits count rows above the image
+// tops, so lowered tops count these as rows the job added, in every check,
+// until a restore, extend or reset sets the tops again (snapshot), as it
+// does for the rows the job did add.
+fn reserve_rows(heap: Heap&, nodes: i64, values: i64, units: i64, strings: i64) {
+    assert(nodes >= 0 && values >= 0 && units >= 0 && strings >= 0);
+    heap.image.nodes -= nodes; heap.image.values -= values; heap.image.latin1 -= units; heap.image.strings -= strings;
+}
 fn add_units(heap: Heap&, units: const u16[:]) -> i64 {
     if !units_fit(heap, units.len) { memory(heap); return -1; }
     let at = heap.units.len; heap.units.append(units); return at;

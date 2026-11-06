@@ -15,7 +15,20 @@ namespace bridge;
 // (light-cljs-817); a source with identity -1 carries its text in `bytes`
 // (Goose's own fixtures). GFB1, which carried every source's text, is refused.
 struct Form { tag: i64 = 0, number: f64 = 0, start: i64 = 0, count: i64 = 0, ns_start: i64 = 0, ns_count: i64 = -1, metadata: i64 = -1, origin: i64 = -1, source: i64 = -1, span_start: i64 = 0, span_end: i64 = 0 }
-root struct Graph { nodes: Form[>..] = [], children: i64[>..] = [], units: u16[>..] = [], sources: source::SourceRange[>..] = [], bytes: u8[>..] = [], roots: i64[>..] = [] }
+// The omission record (light-cljs-820): what the entries the compiler left
+// out of a narrowed environment (light-cljs-815) would have added to an
+// argument graph, which version 3 of the encoding carries after the six
+// counts, six words in this order: their nodes, child value rows, text
+// units, string rows (one a string, one or two a symbol or keyword), the
+// units validate reads in their symbols and keywords (the namespace's if
+// any, otherwise the name's), and the deepest depth among them, the root's
+// nodes at 1. Every omitted node has one parent edge, a child slot or a
+// metadata edge, so the omission adds `nodes - children` metadata edges.
+// validate and import_graph check, poll and charge it as if the entries
+// were present, and import_graph reserves its rows for the rest of the job
+// (source::reserve_rows). A graph without one has nodes 0.
+struct Omitted { nodes: i64 = 0, children: i64 = 0, units: i64 = 0, strings: i64 = 0, names: i64 = 0, depth: i64 = 0 }
+root struct Graph { nodes: Form[>..] = [], children: i64[>..] = [], units: u16[>..] = [], sources: source::SourceRange[>..] = [], bytes: u8[>..] = [], roots: i64[>..] = [], omitted: Omitted = Omitted {} }
 enum Error { None, Malformed, Nodes, Depth, Bytes, Work, Cancelled, Unsupported, Heap }
 // cells: the graph may hold cell references, tag 10 (number the cell,
 // count its flavor; light-cljs-799, cells.goose): a cell's value or a
@@ -36,7 +49,17 @@ fn poll(c: Control&, count: i64 = 1) -> bool {
 }
 fn reject(c: Control&, error: Error = Error.Malformed) -> bool { if c.error == Error.None { c.error = error; } return false; }
 fn range(start: i64, count: i64, len: i64) -> bool { return start >= 0 && count >= 0 && start <= len && count <= len - start; }
-fn footprint(g: const Graph&) -> i64 { return 32 + g.nodes.len * 48 + g.children.len * 4 + g.units.len * 2 + g.sources.len * 12 + g.bytes.len + g.roots.len * 4; }
+// The graph's encoded size, with the rows its omission would add (not the
+// record's own words): the size of the graph the omission narrowed.
+fn footprint(g: const Graph&) -> i64 { let o = g.omitted; return 32 + (g.nodes.len + o.nodes) * 48 + (g.children.len + o.children) * 4 + (g.units.len + o.units) * 2 + g.sources.len * 12 + g.bytes.len + g.roots.len * 4; }
+// Whether omission `o` can describe entries left out of a graph of `nodes`
+// nodes: at least one node, at most one child slot and two string rows a
+// node, name units among its units, a string row for any unit, and a depth
+// of at least one kept ancestor and one omitted node, at most every node
+// on one path. A cell value or helper (c.cells) is never narrowed.
+fn omission_ok(o: Omitted, nodes: i64, c: const Control&) -> bool {
+    return !c.cells && o.nodes > 0 && o.children >= 0 && o.children <= o.nodes && o.units >= 0 && o.strings >= 0 && o.strings <= 2 * o.nodes && o.names >= 0 && o.names <= o.units && (o.units == 0 || o.strings > 0) && o.depth >= 2 && o.depth <= nodes + o.nodes;
+}
 struct Edge { value: source::Value, parent: i64, field: i64 }
 struct Retain { value: source::Value, depth: i64, argument: bool = false }
 fn scalar_equal(heap: source::Heap&, a: source::Value, b: source::Value, c: Control&) -> bool {
@@ -52,11 +75,16 @@ fn scalar_equal(heap: source::Heap&, a: source::Value, b: source::Value, c: Cont
 struct Walk { id: i64, edge: i64 = -1 }
 // Validate every node, including unreachable metadata and shared subgraphs.
 // Explicit postorder computes longest path without an unbudgeted retain walk.
+// An omission (Omitted) counts as the nodes it left out would: in the
+// limits, and in the polls each of its nodes, child slots, units and name
+// units would take, which follow the graph's own.
 fn validate(g: const Graph&, c: Control&) -> bool {
-    if g.nodes.len > c.nodes { return reject(c, Error.Nodes); }
+    let o = g.omitted;
+    if o.nodes != 0 && !omission_ok(o, g.nodes.len, c) { return reject(c); }
+    if g.nodes.len + o.nodes > c.nodes { return reject(c, Error.Nodes); }
     if footprint(g) > c.bytes { return reject(c, Error.Bytes); }
     var states: i64[>..] = []; var heights: i64[>..] = [];
-    if !poll(c, g.nodes.len + g.children.len + g.units.len + g.sources.len + g.bytes.len + g.roots.len) { return false; }
+    if !poll(c, g.nodes.len + o.nodes + g.children.len + o.children + g.units.len + o.units + g.sources.len + g.bytes.len + g.roots.len) { return false; }
     states.resize(g.nodes.len, 0); heights.resize(g.nodes.len, 0);
     for s in g.sources {
         if !source::source_row_ok(s, g.bytes.len) { return reject(c); }
@@ -89,6 +117,8 @@ fn validate(g: const Graph&, c: Control&) -> bool {
         if n.metadata >= 0 && g.nodes[n.metadata].tag != 8 { return reject(c, Error.Unsupported); }
         if collection(n.tag) && (!range(n.start, n.count, g.children.len) || n.tag == 8 && n.count % 2 != 0) { return reject(c); }
     }
+    // The omitted nodes' own polls and their names' units.
+    if !poll(c, o.nodes + o.names) { return false; }
     for id in g.children { if id < 0 || id >= g.nodes.len { return reject(c); } }
     for root in g.nodes.len {
         if states[root] == 2 { continue; }
@@ -112,22 +142,34 @@ fn validate(g: const Graph&, c: Control&) -> bool {
             }
         }
     }
+    // The walk's steps over the omitted nodes, two each (its own and its
+    // parent's edge to it) and one a child slot, and their deepest path.
+    if !poll(c, 2 * o.nodes + o.children) { return false; }
+    if o.depth > c.depth { return reject(c, Error.Depth); }
     return true;
 }
 fn word(bytes: const u8[:], at: i64) -> i64 { let n, ok = binary::read_u32le(bytes, at); assert(ok); return n; }
 fn signed(bytes: const u8[:], at: i64) -> i64 { let n = word(bytes, at); return if n >= 2147483648 { n - 4294967296 } else { n }; }
 fn append_graph(out: Graph&, g: const Graph&) {
-    assert(out.nodes.len == 0 && out.children.len == 0 && out.units.len == 0 && out.sources.len == 0 && out.bytes.len == 0 && out.roots.len == 0);
-    out.nodes.append(g.nodes); out.children.append(g.children); out.units.append(g.units); out.sources.append(g.sources); out.bytes.append(g.bytes); out.roots.append(g.roots);
+    assert(out.nodes.len == 0 && out.children.len == 0 && out.units.len == 0 && out.sources.len == 0 && out.bytes.len == 0 && out.roots.len == 0 && out.omitted.nodes == 0);
+    out.nodes.append(g.nodes); out.children.append(g.children); out.units.append(g.units); out.sources.append(g.sources); out.bytes.append(g.bytes); out.roots.append(g.roots); out.omitted = g.omitted;
 }
+// Version 2, or version 3: version 2 with an omission record (Omitted)
+// after the counts, whose rows count in the byte limit and polls as the
+// graph's own would.
 fn decode(out: Graph&, bytes: const u8[:], c: Control&) -> bool {
-    if bytes.len > c.bytes { return reject(c, Error.Bytes); }
-    if !poll(c, bytes.len) { return false; }
-    if bytes.len < 32 || bytes[..4] != "GFB2" || word(bytes, 4) != 2 { return reject(c); }
+    let extended = bytes.len >= 56 && bytes[..4] == "GFB2" && word(bytes, 4) == 3;
+    var o = Omitted {}; let header: i64 = if extended { 56 } else { 32 };
+    if extended { o = Omitted { nodes: word(bytes, 32), children: word(bytes, 36), units: word(bytes, 40), strings: word(bytes, 44), names: word(bytes, 48), depth: word(bytes, 52) }; }
+    let whole = bytes.len - header + 32 + o.nodes * 48 + o.children * 4 + o.units * 2;
+    if whole > c.bytes { return reject(c, Error.Bytes); }
+    if !poll(c, whole) { return false; }
+    if bytes.len < 32 || bytes[..4] != "GFB2" || (word(bytes, 4) != 2 && !extended) { return reject(c); }
     let nodes = word(bytes, 8); let children = word(bytes, 12); let units = word(bytes, 16); let sources = word(bytes, 20); let text = word(bytes, 24); let roots = word(bytes, 28);
-    if nodes > c.nodes { return reject(c, Error.Nodes); }
-    if 32 + nodes * 48 + children * 4 + units * 2 + sources * 12 + text + roots * 4 != bytes.len { return reject(c); }
-    var g = Graph {}; var at: i64 = 32;
+    if extended && !omission_ok(o, nodes, c) { return reject(c); }
+    if nodes + o.nodes > c.nodes { return reject(c, Error.Nodes); }
+    if header + nodes * 48 + children * 4 + units * 2 + sources * 12 + text + roots * 4 != bytes.len { return reject(c); }
+    var g = Graph { omitted: o }; var at: i64 = header;
     for i in nodes {
         if !poll(c) { return false; }
         let number, ok = binary::read_f64le(bytes, at + 4); assert(ok);
@@ -138,14 +180,17 @@ fn decode(out: Graph&, bytes: const u8[:], c: Control&) -> bool {
     for i in sources { if !poll(c) { return false; } g.sources.push(source::SourceRange { start: word(bytes, at + 4) as u32, count: word(bytes, at + 8) as u32, identity: signed(bytes, at) }); at += 12; }
     for i in text { if !poll(c) { return false; } g.bytes.push(bytes[at]); at += 1; }
     for i in roots { if !poll(c) { return false; } g.roots.push(word(bytes, at)); at += 4; }
+    // The omitted nodes', child slots' and units' reads.
+    if !poll(c, o.nodes + o.children + o.units) { return false; }
     if !validate(g, c) { return false; } append_graph(out, g); return true;
 }
 fn put_word(out: u8[>..]&, n: i64) { for i in 4 { out.push(((n >> (i * 8)) & 255) as u8); } }
 fn encode(g: const Graph&, out: u8[>..]&, c: Control&) -> bool {
     if !validate(g, c) { return false; }
     if !poll(c, footprint(g)) { return false; }
-    var bytes: u8[>..] = []; bytes.append("GFB2"); put_word(bytes, 2);
+    let o = g.omitted; var bytes: u8[>..] = []; bytes.append("GFB2"); put_word(bytes, if o.nodes > 0 { 3 } else { 2 });
     for n in [g.nodes.len, g.children.len, g.units.len, g.sources.len, g.bytes.len, g.roots.len] { put_word(bytes, n); }
+    if o.nodes > 0 { for n in [o.nodes, o.children, o.units, o.strings, o.names, o.depth] { put_word(bytes, n); } }
     for n in g.nodes {
         put_word(bytes, n.tag); for byte in bytes_of([n.number]) { bytes.push(byte); }
         for x in [n.start, n.count, n.ns_start, n.ns_count, n.metadata, n.origin, n.source, n.span_start, n.span_end] { put_word(bytes, x); }
@@ -182,13 +227,17 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     if !validate(g, c) { return false; }
     // Each string occurrence is copied into its own canonical run (Latin-1 or
     // UTF-16), so work counts the units copied, not the shared input table.
-    var text: i64 = 0;
+    // An omission's rows (Omitted) count as the graph's own would.
+    let o = g.omitted; var text: i64 = o.units;
     for n in g.nodes { if n.tag == 3 || n.tag == 4 || n.tag == 5 { text += n.count; } if (n.tag == 4 || n.tag == 5) && n.ns_count >= 0 { text += n.ns_count; } }
-    let work = g.nodes.len + g.children.len + max(g.units.len, text) + g.bytes.len + g.sources.len + g.roots.len;
+    let nodes = g.nodes.len + o.nodes; let children = g.children.len + o.children;
+    let work = nodes + children + max(g.units.len + o.units, text) + g.bytes.len + g.sources.len + g.roots.len;
     // Final cancellation and capacity checks precede any session installation.
     if !poll(c, work) { return false; }
-    if !source::nodes_fit(heap, g.nodes.len) || !source::values_fit(heap, g.children.len) || !source::units_fit(heap, text) || 2 * g.nodes.len > heap.limits.units - (heap.strings.len - heap.image.strings) || g.bytes.len > c.bytes - heap.source_bytes.len { return reject(c, Error.Heap); }
+    if !source::nodes_fit(heap, nodes) || !source::values_fit(heap, children) || !source::units_fit(heap, text) || 2 * nodes > heap.limits.units - (heap.strings.len - heap.image.strings) || g.bytes.len > c.bytes - heap.source_bytes.len { return reject(c, Error.Heap); }
     if !source::charge(heap, work) { heap.fault = source::Fault.None; return reject(c, Error.Heap); }
+    // The omitted rows are the job's for the rest of it, as if imported.
+    source::reserve_rows(heap, o.nodes, o.children, o.units, o.strings);
     // The preflight above reserved every row, so no allocation below fails.
     let sources = heap.source_ranges.len;
     let bytes = source::add_source_bytes(heap, g.bytes);

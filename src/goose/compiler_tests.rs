@@ -5769,9 +5769,10 @@ fn goose_compiler_transport_counters_count_wire_payloads() {
 }
 
 /// An environment that Goose's own import would refuse, here for a macro's
-/// metadata string past a job's text capacity, is sent whole even to a
-/// macro that reads none of it, so the call fails as with the whole
-/// environment (light-cljs-815).
+/// metadata string past a job's text capacity, fails a call to a macro
+/// that reads none of it as with the whole environment (light-cljs-815):
+/// the narrowed graph's omission record carries the string's units, which
+/// Goose's import preflight counts, not the string (light-cljs-820).
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_environment_narrowing_preserves_goose_import_limits() {
@@ -5800,17 +5801,91 @@ fn goose_compiler_environment_narrowing_preserves_goose_import_limits() {
     };
     assert!(cause(&whole).contains("worker-abort"), "{whole}");
     assert_eq!(cause(&narrowed), cause(&whole));
-    // Both calls sent the inventory, the metadata string included.
+    // Only the whole environment's call sent the metadata string.
     assert_eq!(narrowed_stats.calls, 1);
     assert!(narrowed_stats.argument_source_bytes < narrowed_stats.argument_bytes);
-    assert!(
-        narrowed_stats.argument_bytes > 2 * 1_048_577,
-        "{narrowed_stats:?}"
-    );
+    assert!(narrowed_stats.argument_bytes < 10_000, "{narrowed_stats:?}");
     assert!(
         whole_stats.argument_bytes > 2 * 1_048_577,
         "{whole_stats:?}"
     );
+}
+
+/// The Goose build of `files` at one compiler slot: its JavaScript or its
+/// error, and its session's statistics.
+fn goose_build_at_one_slot(
+    files: &HashMap<String, String>,
+) -> (Result<String, String>, crate::goose_evaluator::SessionStats) {
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let (output, _, _) = pooled_build(files, 1, Some(&session), Default::default());
+    let stats = session.stats();
+    session.close();
+    cleaned(&session);
+    (output, stats)
+}
+
+/// A job given a narrowed environment has the heap headroom it would
+/// have with the whole one (light-cljs-820): Goose reserves the rows of the
+/// entries left out for the rest of the job. `fill` reads no `&env` and
+/// allocates ten arrays 9,700 times when `n` is 1; `fill-counted` does the
+/// same after reading all of `&env` with `count`. Their 97,000 arrays fit a job's
+/// 100,000 heap nodes beside the call's own few hundred nodes, but not
+/// beside an unused macro's metadata of 6,000 more: given the narrowed
+/// environment, which carries the metadata only as an omission record,
+/// `fill` fails as `fill-counted` given the whole environment fails. The
+/// reservation ends with its job: twenty narrowed calls in one worker,
+/// which together reserve 120,000 nodes, all succeed.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_environment_narrowing_reserves_the_left_out_heap_capacity() {
+    let files = |probe: usize, main: &str| {
+        let mut files = environment_sources(0, main);
+        let numbers = (0..probe).map(|n| n.to_string()).collect::<Vec<_>>();
+        let allocate = "(loop [i 0 a nil] (if (< i (* n 9700)) (recur (inc i) #js [a #js [] #js [] #js [] #js [] #js [] #js [] #js [] #js [] #js []]) (* 10 i)))";
+        files.get_mut("m.macros").unwrap().push_str(&format!(
+            "\n(defmacro ignored {{:probe [{}]}} [] nil)
+(defmacro fill [n] {allocate})
+(defmacro fill-counted [n] (count &env) {allocate})",
+            numbers.join(" ")
+        ));
+        files
+    };
+    let call = |name: &str| format!("(def x (m/{name} 1))");
+    // Without the metadata both fit, and the narrowed call is small.
+    for name in ["fill", "fill-counted"] {
+        let (output, stats) = goose_build_at_one_slot(&files(0, &call(name)));
+        let output = output.unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(tail(&output).contains("97000"), "{name}: {}", tail(&output));
+        assert_eq!(stats.calls, 1, "{name}");
+    }
+    let (narrowed, narrowed_stats) = goose_build_at_one_slot(&files(6000, &call("fill")));
+    let (whole, whole_stats) = goose_build_at_one_slot(&files(6000, &call("fill-counted")));
+    let (narrowed, whole) = (narrowed.unwrap_err(), whole.unwrap_err());
+    // The narrowed call sent a few hundred nodes, the whole one the
+    // metadata too.
+    assert!(narrowed_stats.argument_nodes < 1000, "{narrowed_stats:?}");
+    assert!(
+        whole_stats.argument_nodes > narrowed_stats.argument_nodes + 6000,
+        "{whole_stats:?}"
+    );
+    // The same failure of the job, but for the macro's own name,
+    // definition and code position (`fill-counted` has one more call).
+    let cause = |error: &str| {
+        let (_, after) = error.split_once("macro m.macros/").unwrap();
+        let cause = after.split_once(": ").unwrap().1;
+        let cause = cause.split("; definition").next().unwrap();
+        cause
+            .split(' ')
+            .filter(|field| !field.starts_with("pc=") && !field.starts_with("emitted-span="))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    assert!(cause(&whole).contains("MemoryLimit"), "{whole}");
+    assert_eq!(cause(&narrowed), cause(&whole));
+    let calls = vec!["(m/fill 0)"; 20].join(" ");
+    let (output, stats) = goose_build_at_one_slot(&files(6000, &format!("(def x [{calls}])")));
+    output.unwrap();
+    assert_eq!(stats.calls, 20);
 }
 
 /// The fixture of [`goose_compiler_pins_per_call_transport_volume`]:
@@ -5946,14 +6021,16 @@ fn goose_compiler_pins_per_call_transport_volume() {
     // 21 calls in each of three namespaces. With the whole environment
     // sent to every call (815 reverted), the nodes and bytes grow by the
     // 120-macro inventory about 60 times over.
-    assert_eq!(pinned[0], (63, 8337, 515_208, 12_288), "{pinned:?}");
+    // The 60 narrowed graphs carry a 24-byte omission record each
+    // (light-cljs-820).
+    assert_eq!(pinned[0], (63, 8337, 516_648, 12_288), "{pinned:?}");
     // At four slots a build's graphs held 12 or 15 more nodes (56 encoded
     // bytes each) than at one, from run to run; the calls and results are
     // the same.
     let (calls, nodes, bytes, results) = pinned[1];
     assert_eq!((calls, results), (63, 12_288), "{pinned:?}");
     assert!(
-        (8337..=8337 + 32).contains(&nodes) && (515_208..=515_208 + 32 * 56).contains(&bytes),
+        (8337..=8337 + 32).contains(&nodes) && (516_648..=516_648 + 32 * 56).contains(&bytes),
         "{pinned:?}"
     );
 }

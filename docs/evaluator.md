@@ -297,13 +297,17 @@ failed with the whole environment. A left-out collection walked before,
 such as the macro inventory, is charged its measured cost at once when
 that fits what is left of every limit, and walked again otherwise. Goose
 also checks its own per-job capacities when it imports a job's arguments
-(nodes, value rows, text units, bridge work), against a heap that may
-already hold the macro's definitions, so a graph that with the left-out
-entries would take more than half of any of them is sent with the whole
-environment, and fails where it failed. What remains different is the
-headroom a job has after the import: one that would run out of heap rows
-or work only because the left-out entries took their share no longer
-does, as a V8 isolate given fewer entries has more heap. On the seed-42 200k project this cuts the argument
+(nodes, value rows, text units, string rows, bridge work and bytes, poll
+by poll), so the narrowed graph carries an omission record (version 3 of
+the graph encoding, light-cljs-820): the left-out entries' nodes, child
+values, text units, string rows, the units Goose reads in their names,
+and their depth. Goose's decode, validation and import check, poll and
+charge these as if the entries were present, and the import reserves
+their rows for the rest of the job, which ends with the job when the
+worker resets, so a job runs out of heap rows where it ran out with the
+whole environment. Goose refuses some data the compiler does not (a `/`
+in a symbol's namespace, non-map metadata); a left-out entry that holds
+such data sends the whole environment instead, so Goose refuses it. On the seed-42 200k project this cuts the argument
 graph from about 30.5 million nodes to about 0.54 million. The Goose
 session counts what it sends (`SessionStats`: calls, argument nodes,
 argument bytes, the source text in them, result bytes), and
