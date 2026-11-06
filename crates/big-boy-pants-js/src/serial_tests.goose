@@ -527,7 +527,8 @@ thread_fn property_model() {
 // Named properties of arrays and functions (light-cljs-805): arrays' names
 // through sparse, length-cut and dictionary arrays, closures' properties and
 // an ordinary function's lazy `prototype`, ToPrimitive through getters, and
-// the gaps that still fail by name (a function's `name`, an array method),
+// the gaps that still fail by name (a function's `name`, an array method, a
+// generator's `prototype`),
 // every budget cut matching the uncut run; then the Goose functions.
 fn named_properties() {
     check(embed_file("../corpus/serial/array-names.gsp"), "boolean:true");
@@ -535,6 +536,7 @@ fn named_properties() {
     check(embed_file("../corpus/serial/getter-value-of.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/unsupported-function-name.gsp"), "", source::Fault.UnsupportedOperand);
     check(embed_file("../corpus/serial/unsupported-array-method.gsp"), "", source::Fault.UnsupportedOperand);
+    check(embed_file("../corpus/serial/unsupported-generator-prototype.gsp"), "", source::Fault.UnsupportedOperand);
     heap_program::join(thread_spawn(named_model));
     print("serial source VM: arrays' and functions' named properties, lazy prototypes and ToPrimitive getters passed");
 }
@@ -572,6 +574,9 @@ thread_fn named_model() {
     assert(ordinary > 0 && arrow > 0);
     let f = source::closure(heap, ordinary, []); let g = source::closure(heap, arrow, []);
     assert(source::lazy_prototype(heap, f.id()) && !source::lazy_prototype(heap, g.id()));
+    // `in` and delete answer a lazy prototype without making it (the Pants
+    // engine's function::probe).
+    assert(source::has_property(heap, f, key(heap, "prototype")) && !source::delete_property(heap, f, key(heap, "prototype")) && source::lazy_prototype(heap, f.id()) && heap.fault == source::Fault.None);
     source::get(heap, f, source::text(heap, "prototype")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     assert(!source::put(heap, f, source::text(heap, "x"), source::number(1)) && heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     assert(source::materialize_prototype(heap, f.id()) && !source::lazy_prototype(heap, f.id()));

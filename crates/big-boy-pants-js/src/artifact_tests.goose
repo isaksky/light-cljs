@@ -166,6 +166,19 @@ thread_fn invalid(base: snapshot::Snapshot, a: artifact::Artifact) {
     let cycle: i64[3] = [map.id(), nested.id(), mutable.id()]; assert(c.path[..] == cycle);
     let map_key = source::form_collection(heap, 7, [nested, source::number(1)]); var kc = artifact::Control {}; artifact::export_graph(heap, base, imports, map_key, 31, 1, kc); assert(kc.error == artifact::Error.Mutable && kc.path.len == 3);
     let closure = source::closure(heap, roots[4].value.num() as i64, [mutable]); var cc = artifact::Control {}; artifact::export_graph(heap, base, imports, closure, 32, 1, cc); assert(cc.error == artifact::Error.Mutable && cc.path.len == 2);
+    // A closure with own properties (light-cljs-805) is mutable, in shape
+    // mode (a property or a made `prototype`) and in dictionary mode after a
+    // delete; nothing is registered.
+    {
+        let owned = source::closure(heap, roots[4].value.num() as i64, [source::number(1)]);
+        if source::lazy_prototype(heap, owned.id()) { assert(source::materialize_prototype(heap, owned.id())); }
+        assert(source::put(heap, owned, source::text(heap, "x"), source::number(1)));
+        let definitions = imports.definitions.len; let before = state(heap, imports);
+        var shaped = artifact::Control {}; let none = artifact::export_graph(heap, base, imports, owned, 34, 1, shaped);
+        assert(shaped.error == artifact::Error.Mutable && shaped.path.len == 1 && none.nodes.len == 0 && imports.definitions.len == definitions && state(heap, imports) == before);
+        assert(source::delete_property(heap, owned, source::key_named(heap, "x")) && source::node(heap, owned.id()).initialized);
+        var dictionary = artifact::Control {}; artifact::export_graph(heap, base, imports, owned, 35, 1, dictionary); assert(dictionary.error == artifact::Error.Mutable && imports.definitions.len == definitions);
+    }
     // An occurrence is scalar-only, but its metadata still participates.
     let metadata = source::form_collection(heap, 7, [source::number(1), mutable]); source::node_mut(heap, wrapped.id()).metadata = metadata; var oc = artifact::Control {}; artifact::export_graph(heap, base, imports, wrapped, 33, 1, oc); assert(oc.error == artifact::Error.Mutable && oc.path.len >= 3);
     source::node_mut(heap, wrapped.id()).metadata = source::nil();
