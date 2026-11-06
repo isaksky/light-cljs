@@ -1699,11 +1699,20 @@ bytes plus 127,734,100 result bytes, with 30,519,098 argument nodes. The table
 shows Goose1. Goose4 and Goose8 carry 4% and 7% more argument bytes (37.1 and
 38.1 MB, with 560,111 and 574,866 nodes) and the same result bytes.
 
+The Goose reports count no result nodes, so result nodes are counted from the
+instrument protocols instead. Each of the 5,226 `DONE` replies is followed by
+a GFB2 result graph, and the count reads the node total from each graph's
+header. The payloads add up to exactly the reports' `result_bytes`. Every
+integrated and Goose-build session at every worker count returns the same
+214,646 nodes. The predecessor has no counter for this, and neither does
+light-cljs-760's diagnostic.
+
 | Per session (per call) | Predecessor | Integrated | Change |
 | --- | ---: | ---: | ---: |
 | Argument nodes | 30,519,098 (5,840) | 538,205 (103) | −98.2% |
 | Argument bytes | 2,088,147,692 (399,569) | 35,524,524 (6,798) | −98.3% |
 | of which source text | not counted | 0 (0) | — |
+| Result nodes | not counted | 214,646 (41.1) | — |
 | Result bytes | 127,734,100 (24,442) | 13,501,102 (2,583) | −89.4% |
 | `bridge_bytes` | 2,215,881,792 (424,012) | 49,025,626 (9,381) | −97.8% |
 
@@ -1788,7 +1797,9 @@ The [raw archive](generated-200k-transport.edn.gz) holds, in order:
 - one `{:kind :stats}` line per `--stats` run, with its `pool.*` and
   `engines.*` lines;
 - one `{:kind :native-overlap}` line with the overlap counts for every
-  instrument protocol and the Babashka script that computed them.
+  instrument protocol and the Babashka script that computed them;
+- one `{:kind :result-nodes}` line with each integrated and Goose-build
+  protocol's result-graph node and byte totals, and its script.
 
 To reproduce, build the binaries and both runners as in
 benchmarks/generated-project/README.md, the predecessor and its runner from a
