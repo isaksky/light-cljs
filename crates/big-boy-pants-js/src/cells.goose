@@ -161,7 +161,7 @@ fn decode(job: Job&, b: Builtin, f: const cells::Flat&) -> Value {
     let heap .= job.heap;
     match f.kind {
         0 => { return Value.Undefined; }, 1 => { return Value.Null; }, 2 => { return boolean(f.number != 0); }, 3 => { return number(f.number); },
-        4 => { var units: u16[>..] = []; var i: i64 = 0; while i + 1 < f.data.len { units.push(f.data[i] | (f.data[i + 1] << 8)); i += 2; } return string(heap, units); },
+        4 => { var units: u16[>..] = []; var i: i64 = 0; while i + 1 < f.data.len { let low: u16 = f.data[i]; let high: u16 = f.data[i + 1]; units.push(low | (high << 8)); i += 2; } return string(heap, units); },
         _ => {},
     }
     for r in job.cell_rows { if r.identity == f.identity && f.identity > 0 { return object(r.row); } }
@@ -288,17 +288,23 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
                 if !writable(job, a.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
                 node_mut(heap, a.id()).value = v; return boolean(true);
             }
-            let f, ok = store_value(job, b, v); if !ok { return Value.Undefined; }
+            // Compare first, as cljs.core does: a miss neither checks nor
+            // shares the replacement (its atoms stay the job's).
             let cell: i64 = node(heap, a.id()).function;
+            let current = cells::exchange(cells::Request { op: 2, cell: cell });
+            if !current.ok { return owner_fail(job, b, current.error); }
+            var held = decode(job, b, current.value); if heap.fault != Fault.None { return Value.Undefined; }
+            let same = form_equal(heap, held, old); if heap.fault != Fault.None { return Value.Undefined; }
+            if !same { return boolean(false); }
+            let f, ok = store_value(job, b, v); if !ok { return Value.Undefined; }
             loop {
-                let current = cells::exchange(cells::Request { op: 2, cell: cell });
-                if !current.ok { return owner_fail(job, b, current.error); }
-                let held = decode(job, b, current.value); if heap.fault != Fault.None { return Value.Undefined; }
-                let same = form_equal(heap, held, old); if heap.fault != Fault.None { return Value.Undefined; }
-                if !same { return boolean(false); }
                 let r = cells::exchange(cells::Request { op: 4, cell: cell, expected: expected(job, held), value: copy(f) });
                 if r.ok { if v.tag() == 5 { remember(job.cell_rows, v.id(), -1, r.value.identity); } return boolean(true); }
                 if r.error != 0 { return owner_fail(job, b, r.error); }
+                // Another write came first: compare again with what it stored.
+                held = decode(job, b, r.value); if heap.fault != Fault.None { return Value.Undefined; }
+                let still = form_equal(heap, held, old); if heap.fault != Fault.None { return Value.Undefined; }
+                if !still { return boolean(false); }
             }
             return Value.Undefined;
         },
@@ -349,28 +355,34 @@ fn swap_step(job: Job&, frame: Frame, b: Builtin) {
         let value, done = swap_call(job, at, b); if !done { return; } r = value;
     }
 }
-// Call the frame's function with the value read and the extra arguments: a
-// plain built-in runs here (true with its result), a closure gets a frame
+// Call the frame's function with the value read and the extra arguments,
+// `this` null as the V8 build's `fn.call(null, ...)`: a plain built-in (and
+// gensym in a scope) runs here (true with its result); a closure or a
+// native-frame built-in (swap! itself, Array.prototype.map) gets a frame
 // above this one (false; its result comes back at pc 1).
 fn swap_call(job: Job&, at: i64, b: Builtin) -> Value, bool {
     let heap .= job.heap; let frame = job.frames[at];
     var args: Value[>..] = [frame.output]; args.append(job.operands[frame.operand_base..(frame.operand_base + frame.argument_count)]);
     if node(heap, frame.callee.id()).kind == 4 {
         let cb = builtin_of(heap, frame.callee.id());
-        if effect_builtin(cb) || cb == Builtin.Mapv || cb == Builtin.MapSeq || native_builtin(cb) { unsupported_step(job, b, "a host-effect or native-frame built-in function"); return Value.Undefined, false; }
-        return call_builtin(job, node(heap, frame.callee.id()).function, Value.Undefined, args), true;
+        if cb == Builtin.Gensym && job.gensym_next > 0 { return gensym(job, args), true; }
+        if native_builtin(cb) { job.frames[at].pc = 1; native_start(job, cb, Value.Null, args, job.operands.len); return Value.Undefined, false; }
+        if effect_builtin(cb) || cb == Builtin.Mapv || cb == Builtin.MapSeq { unsupported_step(job, b, "a host-effect or mapv built-in function"); return Value.Undefined, false; }
+        return call_builtin(job, node(heap, frame.callee.id()).function, Value.Null, args), true;
     }
     job.frames[at].pc = 1;
-    push_frame(job, frame.callee, Value.Undefined, args, false, job.operands.len);
+    push_frame(job, frame.callee, Value.Null, args, false, job.operands.len);
     return Value.Undefined, false;
 }
 // Store result r: true when the frame finished (or failed), false when the
 // cell held another value, which the frame now holds as the value read.
 fn swap_commit(job: Job&, at: i64, b: Builtin, r: Value) -> bool {
-    let heap .= job.heap; let frame = job.frames[at]; let a = frame.input;
+    let heap .= job.heap; let frame = job.frames[at]; let a = frame.input; var old = frame.output;
     if node(heap, a.id()).kind == atom_kind() {
+        // The V8 build's swap-vals! pairs the state replaced at the store,
+        // which the function itself may have reset.
         if !writable(job, a.id()) { heap.fault = Fault.NativeBoundary; return true; }
-        node_mut(heap, a.id()).value = r;
+        old = node(heap, a.id()).value; node_mut(heap, a.id()).value = r;
     } else {
         let f, ok = store_value(job, b, r); if !ok { return true; }
         let answer = cells::exchange(cells::Request { op: 4, cell: node(heap, a.id()).function, expected: expected(job, frame.output), value: copy(f) });
@@ -381,7 +393,7 @@ fn swap_commit(job: Job&, at: i64, b: Builtin, r: Value) -> bool {
         }
         if r.tag() == 5 { remember(job.cell_rows, r.id(), -1, answer.value.identity); }
     }
-    let result = if b == Builtin.SwapVals { form_collection(heap, 6, [frame.output, r]) } else { r };
+    let result = if b == Builtin.SwapVals { form_collection(heap, 6, [old, r]) } else { r };
     if heap.fault == Fault.None { finish_native(job, frame, result); }
     return true;
 }

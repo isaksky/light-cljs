@@ -103,22 +103,28 @@ fn serve(limit: i64) {
         if r.op == 9 { assert(qput(stats)); return; }
         let started = clock_ns(); stats.operations += 1;
         let value .= r.value;
+        if r.op != 1 && (r.cell < 0 || r.cell >= entries.len) { reply(r.slot, Answer { ok: false, error: 2, cell: r.cell }); stats.owner_ns += clock_ns() - started; continue; }
+        // A load, or a compare-and-set the cell refuses, answers what the
+        // cell holds; it numbers and charges nothing.
+        if r.op == 2 || r.op == 4 {
+            let e .= entries[r.cell]; let current = bytes.items[e.start..(e.start + e.len)];
+            if r.op == 2 || !matches(e, current, r.expected) {
+                if r.op == 4 { stats.conflicts += 1; }
+                stats.owner_ns += clock_ns() - started;
+                reply(r.slot, Answer { ok: r.op == 2, cell: r.cell, value: Flat { kind: e.kind, number: e.number, identity: e.identity, data: current } });
+                continue;
+            }
+        }
         // A graph stored for the first time gets its identity here.
-        let numbered = r.op != 2 && value.kind == 5 && value.identity == 0;
+        let numbered = value.kind == 5 && value.identity == 0;
         let numbers = (if r.op == 1 { 1 } else { 0 }) + (if numbered { 1 } else { 0 });
-        if numbers > 0 && entries.len + stats.identities + numbers > limit || r.op != 2 && held + value.data.len > byte_budget() { reply(r.slot, Answer { ok: false, error: 1, cell: r.cell }); }
-        else if r.op != 1 && (r.cell < 0 || r.cell >= entries.len) { reply(r.slot, Answer { ok: false, error: 2, cell: r.cell }); }
+        let freed = if r.op == 1 { 0 } else { entries[r.cell].len };
+        if numbers > 0 && entries.len + stats.identities + numbers > limit || held - freed + value.data.len > byte_budget() { reply(r.slot, Answer { ok: false, error: 1, cell: r.cell }); }
         else {
             var identity = value.identity; if numbered { identity = next; next += 1; stats.identities += 1; }
             var cell = r.cell; if r.op == 1 { entries.push(Entry { flavor: r.flavor }); cell = entries.len - 1; stats.cells += 1; }
             let e .= entries[cell];
             let current = bytes.items[e.start..(e.start + e.len)];
-            if r.op == 2 || r.op == 4 && !matches(e, current, r.expected) {
-                if r.op == 4 { stats.conflicts += 1; }
-                stats.owner_ns += clock_ns() - started;
-                reply(r.slot, Answer { ok: r.op == 2, cell: cell, value: Flat { kind: e.kind, number: e.number, identity: e.identity, data: current } });
-                continue;
-            }
             held -= e.len; if e.len > 0 { bytes.free_slice(current); }
             var start: i64 = 0; if value.data.len > 0 { let run = bytes.alloc_copy(value.data); start = bytes.items.range_index(run, "cell bytes"); }
             e = Entry { flavor: e.flavor, kind: value.kind, number: value.number, identity: identity, start: start, len: value.data.len }; held += value.data.len;

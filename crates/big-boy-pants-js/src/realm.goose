@@ -158,7 +158,7 @@ let TYPE_NAMES: Name[8] = [Name { text: "undefined" }, Name { text: "object" }, 
 // The light-cljs runtime leaves boot_runtime installs on `rt` (core false)
 // or `rt.core`, in this order.
 struct Leaf { core: bool, key: u8[..24], which: Builtin }
-let RUNTIME_LEAVES: Leaf[29] = [
+let RUNTIME_LEAVES: Leaf[31] = [
     Leaf { core: true, key: "macroReaderFunction", which: Builtin.MacroReaderFunction }, Leaf { core: true, key: "inc", which: Builtin.Inc },
     Leaf { core: true, key: "mapv", which: Builtin.Mapv }, Leaf { core: true, key: "vec", which: Builtin.Vec }, Leaf { core: true, key: "into", which: Builtin.Into },
     Leaf { core: true, key: "sequence", which: Builtin.Sequence }, Leaf { core: true, key: "mapSeq", which: Builtin.MapSeq }, Leaf { core: true, key: "list", which: Builtin.List },
@@ -180,6 +180,8 @@ let RUNTIME_LEAVES: Leaf[29] = [
     Leaf { core: true, key: "resetVals", which: Builtin.ResetVals }, Leaf { core: true, key: "volatile", which: Builtin.Volatile },
     Leaf { core: true, key: "vreset", which: Builtin.Vreset }, Leaf { core: true, key: "addWatch", which: Builtin.AddWatch },
     Leaf { core: true, key: "removeWatch", which: Builtin.RemoveWatch }, Leaf { core: true, key: "setValidator", which: Builtin.SetValidator },
+    // -deref and -vreset!, which vswap! expands to.
+    Leaf { core: true, key: "derefProtocol", which: Builtin.Deref }, Leaf { core: true, key: "vresetProtocol", which: Builtin.Vreset },
 ];
 
 // A built-in's code: its position in BUILTINS.

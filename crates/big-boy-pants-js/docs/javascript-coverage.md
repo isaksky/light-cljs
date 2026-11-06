@@ -757,11 +757,17 @@ values and the identity of published values are the follow-up pellets'.
 
 - *Rows.* `atom`, `deref`, `reset!`, `reset-vals!`, `swap!`, `swap-vals!`,
   `compare-and-set!`, `volatile!` and `vreset!` are `rt.core` leaves
-  (Builtin variants, decision 5). A job's own atom or volatile is a node of
-  kind 17 (state in `value`, flavor in `length`) and follows the V8 build's
-  runtime: `swap!` calls its function once. `swap!` and `swap-vals!` are a
-  native frame (`Native.Swap`), so the function may be a closure that
-  suspends. Watches, validators and atom options fail by name.
+  (Builtin variants, decision 5), and so are `derefProtocol` and
+  `vresetProtocol`, which `vswap!` expands to. A job's own atom or volatile
+  is a node of kind 17 (state in `value`, flavor in `length`) and follows
+  the V8 build's runtime: `swap!` calls its function once and `swap-vals!`
+  pairs the state it replaced at the store. `swap!` and `swap-vals!` are a
+  native frame (`Native.Swap`) that calls the function with a null `this`,
+  so it may be a closure that suspends or a native-frame built-in (`swap!`
+  itself). `compare-and-set!` on a cell compares before it shares its
+  replacement. A volatile cell's `vswap!` reads and then writes, so two
+  jobs at once may lose an increment, as in Clojure. Watches, validators
+  and atom options fail by name.
 - *Publication.* The preparer and a helper production call
   `source::publish_cells` before they encode: every atom the published value
   reaches through any link becomes a cell, its row a reference of kind 18

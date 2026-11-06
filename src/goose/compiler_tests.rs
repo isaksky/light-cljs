@@ -3605,41 +3605,51 @@ fn initializer_numbers(js: &str) -> Vec<u64> {
 /// The macro namespace's atom becomes one process-wide cell when its helper
 /// is published, so `dep`'s expansion and `main`'s each take the next value
 /// at every slot count: never `1 1` (the V8 build's worker isolates without
-/// `--cache-blocker`), two distinct values.
+/// `--cache-blocker`), two distinct values. The same with a published
+/// volatile and `vswap!` (which expands to `-deref` and `-vreset!`), whose
+/// expansion also uses a job's own volatile.
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_cells_counter_fixture() {
-    let mut files = HashMap::new();
-    files.insert(
-        "m.state".to_owned(),
-        "(ns m.state) (def counter (atom 0)) (defmacro next-value [] (swap! counter inc))"
-            .to_owned(),
-    );
-    files.insert(
-        "app.dep".to_owned(),
-        "(ns app.dep (:require [m.state :refer [next-value]])) (def value (next-value))".to_owned(),
-    );
-    files.insert(
+    for provider in [
+        "(ns m.state) (def counter (atom 0)) (defmacro next-value [] (swap! counter inc))",
+        "(ns m.state) (def counter (volatile! 0)) (defmacro next-value [] (let [w (volatile! 10)] (vswap! w inc) (- (vswap! counter inc) (- @w 11))))",
+    ] {
+        let mut files = HashMap::new();
+        files.insert("m.state".to_owned(), provider.to_owned());
+        files.insert(
+            "app.dep".to_owned(),
+            "(ns app.dep (:require [m.state :refer [next-value]])) (def value (next-value))"
+                .to_owned(),
+        );
+        files.insert(
         "app.main".to_owned(),
         "(ns app.main (:require [app.dep :as d] [m.state :refer [next-value]])) (js/console.log d/value (next-value))".to_owned(),
     );
-    for slots in [1, 2, 4, 8] {
-        let session = GooseSession::start(&runner(), slots).unwrap();
-        let (output, _, _) = pooled_build(&files, slots, Some(&session), Default::default());
-        let js = output.unwrap();
-        let value = initializer_numbers(&js);
-        let logged = js
-            .split("[\"log\"])(")
-            .nth(1)
-            .and_then(|rest| rest.split(')').next())
-            .unwrap_or_else(|| panic!("{js}"));
-        let last: u64 = logged.rsplit(", ").next().unwrap().parse().unwrap();
-        assert_eq!(value.len(), 1, "slots={slots}: {value:?}");
-        let mut both = [value[0], last];
-        both.sort();
-        assert_eq!(both, [1, 2], "slots={slots}: {logged}");
-        session.close();
-        cleaned(&session);
+        for slots in [1, 2, 4, 8] {
+            let session = GooseSession::start(&runner(), slots).unwrap();
+            let (output, _, _) = pooled_build(&files, slots, Some(&session), Default::default());
+            let js = output.unwrap();
+            let value = initializer_numbers(&js);
+            let logged = js
+                .split("[\"log\"])(")
+                .nth(1)
+                .and_then(|rest| rest.split(')').next())
+                .unwrap_or_else(|| panic!("{js}"));
+            let last: u64 = logged.rsplit(", ").next().unwrap().parse().unwrap();
+            assert_eq!(value.len(), 1, "slots={slots}: {value:?}");
+            let mut both = [value[0], last];
+            both.sort();
+            if provider.contains("volatile!") && slots > 1 {
+                // vswap! reads and then writes, as a volatile does in
+                // Clojure: two expansions at once may both take 1.
+                assert!(both[0] == 1 && both[1] <= 2, "slots={slots}: {logged}");
+            } else {
+                assert_eq!(both, [1, 2], "slots={slots}: {logged}");
+            }
+            session.close();
+            cleaned(&session);
+        }
     }
 }
 
@@ -3738,6 +3748,17 @@ fn cell_session(
             )
             .unwrap();
         session.answer_key(id, 0, "42").unwrap();
+        // A body may read `fixture/number` (unit 43, the number 41) after
+        // the counter: the job's second dependency wait.
+        if body.contains("fixture/number") {
+            session
+                .export(
+                    &session.directory.join(format!("{id}-1.helper")),
+                    "rt => 41",
+                )
+                .unwrap();
+            session.answer_key(id, 1, "43").unwrap();
+        }
         let rx = submit_key(&session, &bytes, id, key);
         outcomes.push(loop {
             match rx.recv_timeout(Duration::from_secs(20)).unwrap() {
@@ -3762,8 +3783,17 @@ fn cell_session(
         !String::from_utf8_lossy(&session.stderr.lock().unwrap()).contains("assert failed"),
         "{trace:?}"
     );
-    // A start and a resume per job, and the one production.
-    let jobs = assert_jobs(&trace, workers, 2 * bodies.len() as u64 + 1);
+    // A start and a resume per root read of each job, and one production
+    // per root the session produced.
+    let numbers = bodies
+        .iter()
+        .filter(|b| b.contains("fixture/number"))
+        .count() as u64;
+    let jobs = assert_jobs(
+        &trace,
+        workers,
+        2 * bodies.len() as u64 + numbers + 1 + (numbers > 0) as u64,
+    );
     (outcomes, jobs)
 }
 
@@ -3863,4 +3893,94 @@ fn goose_compiler_cell_budget() {
     assert_eq!(outcomes[2].as_deref(), Ok("Double(3.0)"), "{outcomes:?}");
     // The cell and the first vector's identity; the second was refused.
     assert_eq!((jobs.cells, jobs.identities), (1, 1), "{jobs:?}");
+    // A compare-and-set the cell refuses numbers nothing: a swap whose
+    // first attempt loses to a write stores its vector within the budget.
+    let (outcomes, jobs) = cell_session(
+        1,
+        &[("BBP_CELL_BUDGET", "2".to_owned())],
+        &[
+            "const v = rt.vectorFromArray([1]); let calls = 0; rt.core.swap(a, (x) => { calls++; if (calls === 1) rt.core.reset(a, 5); return v; }); return calls * 10 + (rt.core.deref(a) === v ? 1 : 0);",
+        ],
+    );
+    assert_eq!(outcomes[0].as_deref(), Ok("Double(21.0)"), "{outcomes:?}");
+    assert_eq!((jobs.identities, jobs.conflicts), (1, 1), "{jobs:?}");
+}
+
+/// Strings keep every UTF-16 unit through a cell (non-Latin-1 units,
+/// surrogate pairs and a lone surrogate); compare-and-set! compares before
+/// it shares its replacement, so a miss is false and leaves a job's own
+/// atom unshared; swap-vals! and reset-vals! answer the exact pair, the
+/// one of the attempt that stored after a conflicting write; the V8 build's
+/// local swap-vals! pairs the state replaced at the store; swap! calls its
+/// function with a null `this` and may call swap! itself.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cell_values_pairs_and_callbacks() {
+    for workers in [1, 2, 4, 8] {
+        let (outcomes, jobs) = cell_session(
+            workers,
+            &[],
+            &[
+                "rt.core.reset(a, '\\u0100\\ud83d\\ude00\\ud800x'); return 0;",
+                "const s = rt.core.deref(a); return s === '\\u0100\\ud83d\\ude00\\ud800x' ? s.length : -1;",
+                "rt.core.reset(a, 0); const miss = rt.core.compareAndSet(a, 1, {n: 1}); const b = rt.core.atom(0); const local = rt.core.compareAndSet(a, 1, b); rt.core.reset(b, {n: 1}); return (miss ? 1 : 0) + (local ? 1 : 0) + rt.core.deref(a) + 7;",
+                "let calls = 0; return rt.core.swapVals(a, (x) => { calls++; if (calls === 1) rt.core.reset(a, 7); return x + 1; });",
+                "return rt.core.resetVals(a, 3);",
+                "const b = rt.core.atom(0); return rt.core.swapVals(b, (x) => { rt.core.reset(b, 10); return 2; });",
+                "const inner = rt.core.atom(0); const outer = rt.core.atom(inner); const local = rt.core.swap(outer, rt.core.swap, rt.core.inc); const shared = rt.core.atom(a); const n = rt.core.swap(shared, rt.core.swap, rt.core.inc); return local * 10 + n;",
+                "const s = rt.core.swap(rt.core.atom(0), Object.prototype.toString); const t = rt.core.swap(rt.core.atom(0), function (x) { 'use strict'; return this === null ? 1 : 0; }); return s === '[object Null]' ? t + 1 : -1;",
+            ],
+        );
+        let ok = |i: usize| {
+            outcomes[i]
+                .as_deref()
+                .unwrap_or_else(|e| panic!("{i}: {e}"))
+        };
+        assert_eq!(ok(0), "Double(0.0)", "{outcomes:?}");
+        assert_eq!(ok(1), "Double(5.0)", "{outcomes:?}");
+        assert_eq!(ok(2), "Double(7.0)", "{outcomes:?}");
+        for (i, pair) in [
+            (3, ["7.0", "8.0"]),
+            (4, ["8.0", "3.0"]),
+            (5, ["10.0", "2.0"]),
+        ] {
+            let text = ok(i);
+            let first = text.find(&format!("Double({})", pair[0]));
+            let second = text.rfind(&format!("Double({})", pair[1]));
+            assert!(
+                matches!((first, second), (Some(f), Some(s)) if f < s),
+                "{i}: {text}"
+            );
+        }
+        assert_eq!(ok(6), "Double(14.0)", "{outcomes:?}");
+        assert_eq!(ok(7), "Double(2.0)", "{outcomes:?}");
+        assert_eq!(jobs.conflicts, 1, "{jobs:?}");
+    }
+}
+
+/// A swap! whose function waits for a helper resumes from a saved
+/// continuation (retention 0) in a fresh worker (every worker retires after
+/// its job): the value it read keeps its identity, the function is not
+/// called again without a conflicting write, and the cell holds its result,
+/// the helper's value itself (a form, kept by identity).
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_cell_swap_across_helper_suspension() {
+    for workers in [1, 2, 4, 8] {
+        let (outcomes, jobs) = cell_session(
+            workers,
+            &[
+                ("BBP_RETAINED_WORKERS", "0".to_owned()),
+                ("BBP_WORKER_TABLE_BYTES", "0".to_owned()),
+            ],
+            &[
+                "rt.core.reset(a, rt.vectorFromArray([1])); const v = rt.core.deref(a); let calls = 0; const r = rt.core.swap(a, (x) => { calls++; const n = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/number'); return x === v ? n : -1; }); return r * 100 + calls * 10 + (rt.core.deref(a) === r ? 1 : 0);",
+                "return rt.core.deref(a);",
+            ],
+        );
+        assert_eq!(outcomes[0].as_deref(), Ok("Double(4111.0)"), "{outcomes:?}");
+        assert_eq!(outcomes[1].as_deref(), Ok("Double(41.0)"), "{outcomes:?}");
+        assert_eq!(jobs.conflicts, 0, "{jobs:?}");
+        assert!(jobs.saves >= 3 && jobs.retired == jobs.spawned, "{jobs:?}");
+    }
 }
