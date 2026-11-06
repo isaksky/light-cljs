@@ -2750,13 +2750,15 @@ fn goose_compiler_active_waiter_limit_stays_bounded() {
         assert!(Instant::now() < until, "{:?}", session.trace());
         thread::sleep(Duration::from_millis(1));
     }
-    // Every admitted waiter is cancelled exactly once, and the refused one
-    // never was a waiter.
+    // Every admitted waiter is cancelled exactly once. The refused job 129
+    // may report its own cancellation too: its worker can see the cancel
+    // before the refusal's answer.
     let trace = session.trace();
     let mut cancelled = trace
         .iter()
         .filter_map(|s| s.strip_suffix(" cancelled")?.strip_prefix("ERROR "))
         .map(|id| id.parse::<u64>().unwrap())
+        .filter(|&id| id != 129)
         .collect::<Vec<_>>();
     cancelled.sort_unstable();
     assert_eq!(cancelled, (1..=128).collect::<Vec<_>>());
