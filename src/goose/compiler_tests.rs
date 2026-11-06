@@ -1242,6 +1242,55 @@ fn goose_compiler_exit_and_malformed_replies_cleanup() {
         cleaned(&session);
     }
 }
+/// close()'s watchdog (light-cljs-812) with fake runners: one that goes
+/// silent after the close request is killed at the quiet bound; one that
+/// keeps replying past the quiet bound and then exits is waited for; one
+/// that replies forever is killed at the overall bound. Each kill is
+/// reported, and the last handle's drop is bounded too.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_close_watchdog_bounds_the_wait() {
+    let killed = |s: &GooseSession| s.trace().iter().any(|l| l.starts_with("KILLED "));
+    let quiet = Duration::from_millis(300);
+    let session = fake("read stop\nexec sleep 30");
+    let started = Instant::now();
+    session.close_within(quiet, Duration::from_secs(20));
+    let elapsed = started.elapsed();
+    assert!(killed(&session), "{:?}", session.trace());
+    assert!(
+        elapsed >= quiet && elapsed < Duration::from_secs(5),
+        "{elapsed:?}"
+    );
+    cleaned(&session);
+    // Replies every 100 ms for about 1.5 s, five times the quiet bound.
+    let session = fake(
+        "read stop\ni=0\nwhile [ $i -lt 15 ]; do printf 'CLOSED 1\\n'; sleep 0.1; i=$((i+1)); done\nexit 0",
+    );
+    let started = Instant::now();
+    session.close_within(quiet, Duration::from_secs(20));
+    let elapsed = started.elapsed();
+    assert!(!killed(&session), "{:?}", session.trace());
+    assert!(elapsed >= Duration::from_secs(1), "{elapsed:?}");
+    cleaned(&session);
+    let session = fake("read stop\nwhile true; do printf 'CLOSED 1\\n'; sleep 0.05; done");
+    let limit = Duration::from_secs(1);
+    let started = Instant::now();
+    session.close_within(quiet, limit);
+    let elapsed = started.elapsed();
+    assert!(killed(&session), "{:?}", session.trace());
+    assert!(
+        elapsed >= limit && elapsed < Duration::from_secs(5),
+        "{elapsed:?}"
+    );
+    cleaned(&session);
+    // Dropping the last handle closes with the production bounds.
+    let session = fake("read stop\nexec sleep 30");
+    let directory = session.directory.clone();
+    let started = Instant::now();
+    drop(session);
+    assert!(started.elapsed() < CLOSE_QUIET + Duration::from_secs(5));
+    assert!(!directory.exists());
+}
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_worker_failure_and_owned_diagnostic() {
@@ -1780,7 +1829,7 @@ fn goose_compiler_cleanup_abort_cancels_a_started_replacement() {
             writeln!(input, "0").unwrap();
             input.flush().unwrap();
         }
-        // Observe native closure before calling close: the host's 100 ms kill
+        // Observe native closure before calling close: close()'s kill
         // fallback must not turn a deadlocked native shutdown into a pass.
         wait(&|| session.trace().iter().any(|s| s == "CLOSED 1"));
         assert!(!session.directory.join("2.out").exists());
@@ -2737,8 +2786,8 @@ fn goose_compiler_active_waiter_limit_stays_bounded() {
     // waiters blocked in place and runs every one of the 96 saved
     // continuations as a cleanup job, one per execution slot (light-cljs-803):
     // 60-110 ms on the release runner alone, more on the debug runner or under
-    // load. GooseSession::close() kills the runner 100 ms after its close
-    // request, so it may not be what ends this session.
+    // load. The test observes the native close itself rather than through
+    // GooseSession::close(), whose kill fallback could end the session.
     {
         let mut process = session.process.lock().unwrap();
         let input = &mut process.as_mut().unwrap().input;
@@ -2765,6 +2814,55 @@ fn goose_compiler_active_waiter_limit_stays_bounded() {
     session.close();
     cleaned(&session);
     assert!(!String::from_utf8_lossy(&session.stderr.lock().unwrap()).contains("assert failed"));
+}
+
+/// `GooseSession::close()` itself lets the runner finish cancellation
+/// cleanup (light-cljs-812): saved waiters whose finally blocks together
+/// take well over 100 ms all run before the runner exits, and close() does
+/// not kill it. Before the fix close() killed the runner 100 ms after its
+/// close request: about 56 of the 128 cleanups ran on the release runner.
+/// Each finally block stays under the default instruction limit.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_close_waits_for_slow_cancellation_cleanup() {
+    const JOBS: u64 = 128;
+    let session = GooseSession::start_retaining(&runner(), 1, None, Some(0)).unwrap();
+    let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+    let (_, args, _) = inputs(&e, "rt => (form, env) => 0");
+    let values = args
+        .iter()
+        .map(|&id| e.get(id).unwrap())
+        .collect::<Vec<_>>();
+    let limits = ConversionLimits::default();
+    let budget = bridge::Budget::new(limits.nodes, e.control.clone());
+    let bytes = bridge::Graph::arguments(&values, limits, &budget)
+        .unwrap()
+        .encode()
+        .unwrap();
+    // Each job's finally block spins before it records its write.
+    session.export(&session.directory.join("definition-1.gsp"), "rt => (form, env) => { const rec = {}; try { __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value'); } finally { let n = 0; for (let i = 0; i < 40000; i++) { n = n + i; } rec.slow = n; } return 0; }").unwrap();
+    for id in 1..=JOBS {
+        await_need(&submit(&session, &bytes, id));
+    }
+    let started = Instant::now();
+    session.close();
+    let elapsed = started.elapsed();
+    cleaned(&session);
+    let trace = session.trace();
+    assert!(trace.iter().any(|s| s == "CLOSED 1"), "{trace:?}");
+    assert!(!trace.iter().any(|s| s.starts_with("KILLED")), "{trace:?}");
+    let mut cleaned_up = trace
+        .iter()
+        .filter_map(|s| {
+            s.strip_suffix(" cancelled cleanup=slow")?
+                .strip_prefix("ERROR ")
+        })
+        .map(|id| id.parse::<u64>().unwrap())
+        .collect::<Vec<_>>();
+    cleaned_up.sort_unstable();
+    assert_eq!(cleaned_up, (1..=JOBS).collect::<Vec<_>>(), "{trace:?}");
+    // The cleanup is slow enough that the old 100 ms kill cut it short.
+    assert!(elapsed > Duration::from_millis(200), "{elapsed:?}");
 }
 
 #[test]

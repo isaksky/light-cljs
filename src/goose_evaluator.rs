@@ -23,6 +23,10 @@ use std::{
 #[path = "goose/compiler_bridge.rs"]
 mod bridge;
 static NEXT: AtomicU64 = AtomicU64::new(1);
+/// How long a closing runner may go without a reply before close() kills it.
+const CLOSE_QUIET: Duration = Duration::from_secs(5);
+/// How long close() waits in all for a closing runner to exit.
+const CLOSE_LIMIT: Duration = Duration::from_secs(60);
 fn error(e: impl std::fmt::Display) -> EvalError {
     EvalError(format!("Goose: {e}"))
 }
@@ -61,6 +65,8 @@ pub struct GooseSession {
     bridge_ns: AtomicU64,
     control: Mutex<Option<ExecutionControl>>,
     trace: Arc<Mutex<Vec<String>>>,
+    /// Lines the runner has written, for close()'s progress check.
+    lines: Arc<AtomicU64>,
     costs: Arc<Mutex<[u64; 5]>>,
     definitions: Mutex<HashMap<DefinitionKey, (u64, String)>>,
     stderr: Arc<Mutex<Vec<u8>>>,
@@ -115,6 +121,7 @@ impl GooseSession {
             bridge_ns: AtomicU64::new(0),
             control: Mutex::new(None),
             trace: Default::default(),
+            lines: Default::default(),
             costs: Default::default(),
             definitions: Mutex::new(HashMap::new()),
             stderr: Default::default(),
@@ -207,6 +214,8 @@ impl GooseSession {
         let mailboxes = pending.clone();
         let trace = Arc::new(Mutex::new(Vec::new()));
         let traces = trace.clone();
+        let lines = Arc::new(AtomicU64::new(0));
+        let read = lines.clone();
         let costs = Arc::new(Mutex::new([0u64; 5]));
         let measured = costs.clone();
         let preparations = Arc::new(AtomicU64::new(0));
@@ -227,6 +236,7 @@ impl GooseSession {
                         break;
                     }
                 }
+                read.fetch_add(1, Ordering::Relaxed);
                 let parts = line.split_whitespace().collect::<Vec<_>>();
                 let parsed = (|| {
                     let kind = *parts.first()?;
@@ -381,6 +391,7 @@ impl GooseSession {
             bridge_ns: AtomicU64::new(0),
             control: Mutex::new(None),
             trace,
+            lines,
             costs,
             definitions: Mutex::new(HashMap::new()),
             stderr: errors,
@@ -437,13 +448,50 @@ impl GooseSession {
         }
     }
     /// Terminal failures retire the entire compilation, including every worker.
+    ///
+    /// The close request cancels every job; the runner then runs each saved
+    /// waiter's pending finally blocks as a cleanup job (light-cljs-803)
+    /// before it prints `CLOSED 1` and exits. close() waits for that exit as
+    /// long as the runner keeps replying (each cleanup reports a line),
+    /// bounded by [`CLOSE_QUIET`] without a reply and [`CLOSE_LIMIT`] in all,
+    /// and only then kills it, reporting the kill as a `KILLED` trace line
+    /// and on stderr. Drop closes the same way, so it cannot hang either.
     pub fn close(&self) {
+        self.close_within(CLOSE_QUIET, CLOSE_LIMIT);
+    }
+    /// close() with these bounds on the wait for the runner to exit.
+    fn close_within(&self, quiet_limit: Duration, limit: Duration) {
         if let Some(mut process) = self.process.lock().unwrap().take() {
             let _ = writeln!(process.input, "0");
             let _ = process.input.flush();
-            let until = Instant::now() + Duration::from_millis(100);
-            while process.child.try_wait().ok().flatten().is_none() && Instant::now() < until {
+            let started = Instant::now();
+            let mut seen = self.lines.load(Ordering::Relaxed);
+            let mut quiet = started;
+            let exited = loop {
+                if process.child.try_wait().ok().flatten().is_some() {
+                    break true;
+                }
+                let now = Instant::now();
+                let lines = self.lines.load(Ordering::Relaxed);
+                if lines != seen {
+                    seen = lines;
+                    quiet = now;
+                }
+                if now - quiet >= quiet_limit || now - started >= limit {
+                    break false;
+                }
                 thread::sleep(Duration::from_millis(1));
+            };
+            if !exited {
+                let waited = started.elapsed().as_millis();
+                eprintln!(
+                    "light-cljs: the Goose runner did not finish closing within {waited} ms; killing it, so some cancellation cleanup may not have run"
+                );
+                let mut trace = self.trace.lock().unwrap();
+                if trace.len() == 4096 {
+                    trace.remove(0);
+                }
+                trace.push(format!("KILLED {waited}"));
             }
             let _ = process.child.kill();
             let _ = process.child.wait();
