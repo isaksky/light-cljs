@@ -1893,7 +1893,7 @@ fn reuse_session(
     retained: Option<usize>,
     plan: &[u64],
 ) -> (Vec<(u64, String)>, JobsLine) {
-    let definitions: [(u64, &str); 17] = [
+    let definitions: [(u64, &str); 18] = [
         // Pure: garbage in every table, a fresh object and array.
         (
             1,
@@ -1975,6 +1975,17 @@ fn reuse_session(
             17,
             "rt => (form, env) => { const a = rt.core.atom(0); rt.core.swap(a, rt.core.inc); rt.core.swap(a, (x, y) => x + y, 5); rt.core.reset(a, rt.core.deref(a) + 1); const v = rt.core.volatile(5); rt.core.vreset(v, rt.core.deref(v) + rt.core.deref(a)); return rt.core.deref(v) + (rt.core.compareAndSet(a, 7, 10) ? 100 : 0) + (rt.core.compareAndSet(a, 7, 11) ? 1000 : 0); }",
         ),
+        // A synchronous entry returns 42 while two async side tasks await
+        // (light-cljs-814): the first asks the compiler for a root during
+        // the promise-job drain, after its await, then awaits again and
+        // settles with a value of its own; the second, queued behind it,
+        // runs in between. Each side task rejects, unhandled, with the
+        // effects it saw (two decimal digits each) unless they are in FIFO
+        // order, so a lost or replayed queue entry fails the job.
+        (
+            18,
+            "rt => (form, env) => { const log = []; const first = async () => { log[log.length] = 1; await null; log[log.length] = 4; const v = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value'); log[log.length] = v; await null; let seen = 0; for (let i = 0; i < log.length; i++) seen = seen * 100 + log[i]; if (seen !== 10203044105) throw seen; return 'side'; }; const second = async () => { log[log.length] = 2; await null; let seen = 0; for (let i = 0; i < log.length; i++) seen = seen * 100 + log[i]; if (seen !== 102030441) throw seen; log[log.length] = 5; return 'other'; }; first(); second(); log[log.length] = 3; return 42; }",
+        ),
     ];
     let mut env = vec![];
     if let Some(cap) = cap {
@@ -2009,7 +2020,7 @@ fn reuse_session(
         if key == 14 {
             session.answer_key(id, 0, "-1").unwrap();
         }
-        if key == 8 || key == 9 {
+        if key == 8 || key == 9 || key == 18 {
             let helper = if key == 8 {
                 "rt => {const result=41; return function(){return result;};}"
             } else {
@@ -2018,7 +2029,9 @@ fn reuse_session(
             session
                 .export(&session.directory.join(format!("{id}-0.helper")), helper)
                 .unwrap();
-            session.answer_key(id, 0, &key.to_string()).unwrap();
+            session
+                .answer_key(id, 0, if key == 8 { "8" } else { "9" })
+                .unwrap();
         }
         let rx = submit_key(&session, &bytes, id, key);
         let result = loop {
@@ -2065,8 +2078,13 @@ fn reuse_session(
     );
     // A start per job, a resume per root read and one helper production per
     // root the session produced.
-    let reads = plan.iter().filter(|&&k| [8, 9, 14].contains(&k)).count() as u64;
-    let productions = [8, 9].iter().filter(|k| plan.contains(k)).count() as u64;
+    let reads = plan
+        .iter()
+        .filter(|&&k| [8, 9, 14, 18].contains(&k))
+        .count() as u64;
+    // Definitions 9 and 18 read the same root: one production serves both.
+    let productions =
+        (plan.contains(&8) as u64) + (plan.iter().any(|k| [9, 18].contains(k)) as u64);
     let jobs = assert_jobs(&trace, workers, plan.len() as u64 + reads + productions);
     (outcomes, jobs)
 }
@@ -2142,6 +2160,37 @@ fn goose_compiler_missing_dependency_resume_keeps_the_jobs_rows_writable() {
             if retained == Some(0) { 2 } else { 0 },
             "{jobs:?}"
         );
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_saved_continuation_during_promise_drain() {
+    // The entry has returned and the promise-job queue is draining when an
+    // async side task waits for a helper (light-cljs-814). With retention 0
+    // the wait saves the continuation (Saved.queue, draining and entry) and
+    // resumes it from the snapshot on a reused worker; with retention it
+    // resumes in place. Either way the result is the entry's 42, not a side
+    // task's value or a rejection over effects out of FIFO order, and a pure
+    // job between the two runs sees the image as built.
+    let expected = "Double(42.0)";
+    for retained in [Some(0), None] {
+        let (outcomes, jobs) = reuse_session(1, Some(16 << 20), retained, &[18, 1, 18]);
+        for (key, outcome) in &outcomes {
+            if *key == 18 {
+                assert!(outcome.contains(expected), "{retained:?}: {outcome}");
+                assert!(outcome.contains("NEED "), "{retained:?}: {outcome}");
+            } else {
+                assert!(outcome.contains("Double(53.0)"), "{retained:?}: {outcome}");
+            }
+        }
+        assert_eq!(outcomes[0], outcomes[2], "{retained:?}");
+        assert_eq!(
+            jobs.saves,
+            if retained == Some(0) { 2 } else { 0 },
+            "{jobs:?}"
+        );
+        assert_eq!(jobs.retired, 0, "{jobs:?}");
     }
 }
 
