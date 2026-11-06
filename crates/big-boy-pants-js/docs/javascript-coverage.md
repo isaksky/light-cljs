@@ -230,6 +230,28 @@ nearer the operand had, and stops at `Null` or the pending
 `RequireCoercible` run object rest; `CopyDataProperties` runs as a
 `CopyData` native frame, one key a step, a getter entered above it.
 
+*As landed by light-cljs-805 (arrays' and functions' named properties):* a
+dense array keeps its named properties in a shape beside its element run,
+as an ordinary object does (the header's key fields were free); a
+dictionary array keeps them as records after its index records, and the
+move to dictionary mode (a far write, a delete, an attribute change, more
+than 64 names) carries them along, as a shorter `length` keeps them. A
+closure keeps its own properties the same way beside its captures. An
+ordinary function's `prototype` (constructor kind 1) is made on its first
+observation, a read, `in` or delete of `prototype` or the first property
+added, as the Pants engine's `vm/function.rs` does: an ordinary object whose
+non-enumerable `constructor` is the function, stored as a writable,
+non-enumerable, non-configurable property that comes first and never goes,
+so a function without own properties has not made it yet. Only the job
+that allocated the function makes it; reading another's fails
+`UnsupportedOperand`, as the Pants engine fails for a published function. A
+function's `length` and `name`, a class constructor's `prototype` and a
+function's key list still fail by name, as do the names and symbol keys
+%Array.prototype% and %Function.prototype% will define (a lookup reaching an
+array's or function's pending prototype). ToPrimitive runs a `valueOf` or
+`toString` getter in its native frame (pc 2), then calls the method it
+returned. Publication rejects a closure with own properties as mutable.
+
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the
 real exported bytecode with this model; its map benchmark result is in

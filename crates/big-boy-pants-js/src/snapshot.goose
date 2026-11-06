@@ -85,10 +85,13 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
     }
     return true;
 }
-// A shape-mode object (source::Node): kind 0 without `initialized`.
-fn shaped(n: const source::Node&) -> bool { return n.kind == 0 && !n.initialized; }
-// A dictionary-mode object or a dictionary array.
-fn dictionary(n: const source::Node&) -> bool { return (n.kind == 0 || n.kind == 1) && n.initialized; }
+// The kinds with own properties by name (source::Node): ordinary objects,
+// arrays and closures (light-cljs-805).
+fn named(kind: i64) -> bool { return kind >= 0 && kind <= 2; }
+// A shape-mode object, dense array or closure: without `initialized`.
+fn shaped(n: const source::Node&) -> bool { return named(n.kind) && !n.initialized; }
+// A dictionary-mode object, a dictionary array or a closure's records.
+fn dictionary(n: const source::Node&) -> bool { return named(n.kind) && n.initialized; }
 // A run of property records: a dictionary's, or a key list's (kind 16, the
 // keys a for-in walk or an object spread visits; source::Node).
 fn record_run(n: const source::Node&) -> bool { return dictionary(n) || n.kind == 16; }
@@ -352,9 +355,10 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if has_values(n.kind) { if !range(n.start, n.count, s.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); } }
         if elements(n.kind) {
             // A dictionary array (initialized) has records and no run; a dense
-            // one has a run and no records. An ordinary object's element run
+            // one has a run, and its named properties in a shape
+            // (light-cljs-805, key_runs). An ordinary object's element run
             // (light-cljs-804) has no length.
-            if n.kind == 1 && ((n.initialized && n.count != 0) || (!n.initialized && n.key_count != 0)) { return reject(c, Error.Link); }
+            if n.kind == 1 && n.initialized && n.count != 0 { return reject(c, Error.Link); }
             has_memo = has_memo || n.count > 0;
             if !poll(c, n.count) { return false; }
             // Slots at or past an array's length are holes (source::array_length).

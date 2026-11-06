@@ -3,6 +3,7 @@ import .program;
 import .source_vm;
 import .vm;
 import .heap_program;
+import .snapshot;
 
 fn decode(code: source::Code&, bytes: const u8[:]) {
     var image = program::Image {}; assert(program::install(image, bytes) == program::Error.None);
@@ -388,6 +389,7 @@ fn main() {
     control_flow();
     properties();
     key_enumeration();
+    named_properties();
     // Image comparisons are bit-exact: NaN matches itself, -0 differs from +0.
     assert(source::same_bits(source::number(0.0 / 0.0), source::number(0.0 / 0.0)) && !source::same_bits(source::number(0.0), source::number(-0.0)));
     print("serial source VM: calls/captures/cells/properties/truth/UTF16/errors, exact slices and limits passed");
@@ -521,6 +523,70 @@ thread_fn property_model() {
     let big = source::allocate(heap, source::Node { kind: 0 });
     for i in source::shape_limit() + 1 { assert(source::put(heap, big, source::text(heap, str("k", i)), source::number(i))); }
     assert(source::node(heap, big.id()).initialized && source::get(heap, big, source::text(heap, "k3")).num() == 3 && source::get(heap, big, source::text(heap, "k64")).num() == 64);
+}
+// Named properties of arrays and functions (light-cljs-805): arrays' names
+// through sparse, length-cut and dictionary arrays, closures' properties and
+// an ordinary function's lazy `prototype`, ToPrimitive through getters, and
+// the gaps that still fail by name (a function's `name`, an array method),
+// every budget cut matching the uncut run; then the Goose functions.
+fn named_properties() {
+    check(embed_file("../corpus/serial/array-names.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/function-names.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/getter-value-of.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/unsupported-function-name.gsp"), "", source::Fault.UnsupportedOperand);
+    check(embed_file("../corpus/serial/unsupported-array-method.gsp"), "", source::Fault.UnsupportedOperand);
+    heap_program::join(thread_spawn(named_model));
+    print("serial source VM: arrays' and functions' named properties, lazy prototypes and ToPrimitive getters passed");
+}
+thread_fn named_model() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, embed_file("../corpus/serial/function-names.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    // A dense array keeps names in a shape beside its run; listing gives
+    // indices, `length`, then names. A sparse write moves it to dictionary
+    // mode with its names after its index records, and a shorter length
+    // keeps them.
+    let a = source::allocate(heap, source::Node { kind: 1 });
+    assert(source::put(heap, a, source::text(heap, "0"), source::number(0)) && source::put(heap, a, source::text(heap, "tag"), source::number(1)) && source::put(heap, a, source::text(heap, "more"), source::number(2)));
+    let n = source::node(heap, a.id()); assert(!n.initialized && n.key_count == 2 && n.shape != 0 && n.length == 1);
+    var keys: source::Value[>..] = []; assert(source::own_keys(heap, a, keys) && keys.len == 4);
+    for name, i in ["0", "length", "tag", "more"] { assert(source::key_is(heap, keys[i], name)); }
+    assert(source::put(heap, a, source::text(heap, "9000"), source::number(9)));
+    let d = source::node(heap, a.id()); assert(d.initialized && d.shape == 0 && d.key_count == 4 && d.count == 0 && source::get(heap, a, source::text(heap, "more")).num() == 2);
+    assert(source::put(heap, a, source::text(heap, "length"), source::number(1)) && source::node(heap, a.id()).key_count == 3 && source::get(heap, a, source::text(heap, "tag")).num() == 1);
+    assert(source::get(heap, a, source::text(heap, "9000")).tag() == 0 && source::delete_property(heap, a, key(heap, "tag")) && source::node(heap, a.id()).key_count == 2);
+    // A delete of a dense array's name moves its elements to records too.
+    let b = source::allocate(heap, source::Node { kind: 1 });
+    assert(source::put(heap, b, source::text(heap, "0"), source::number(5)) && source::put(heap, b, source::text(heap, "x"), source::number(6)) && source::put(heap, b, source::text(heap, "y"), source::number(7)));
+    assert(source::delete_property(heap, b, key(heap, "x")) && source::node(heap, b.id()).initialized && source::get(heap, b, source::text(heap, "0")).num() == 5 && source::get(heap, b, source::text(heap, "y")).num() == 7);
+    // The pending %Array.prototype%: its names and symbol keys fail by name,
+    // other names are absent.
+    source::get(heap, b, source::text(heap, "push")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    source::get(heap, b, source::Value.Symbol { s: 0 }); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    assert(source::get(heap, b, source::text(heap, "other")).tag() == 0 && heap.fault == source::Fault.None);
+    // A closure: a lazy `prototype` fails until made; once made it is
+    // non-configurable and first in creation order. `name` and `length`
+    // fail by name; an arrow (constructor kind 0) has no `prototype`.
+    var ordinary: i64 = -1; var arrow: i64 = -1;
+    for f, i in heap.code.functions { if f.captures == 0 && f.kind == 1 && ordinary < 0 && i > 0 { ordinary = i; } if f.captures == 0 && f.kind == 0 && arrow < 0 && i > 0 { arrow = i; } }
+    assert(ordinary > 0 && arrow > 0);
+    let f = source::closure(heap, ordinary, []); let g = source::closure(heap, arrow, []);
+    assert(source::lazy_prototype(heap, f.id()) && !source::lazy_prototype(heap, g.id()));
+    source::get(heap, f, source::text(heap, "prototype")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    assert(!source::put(heap, f, source::text(heap, "x"), source::number(1)) && heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    assert(source::materialize_prototype(heap, f.id()) && !source::lazy_prototype(heap, f.id()));
+    let p = source::get(heap, f, source::text(heap, "prototype"));
+    assert(p.tag() == 5 && source::get(heap, p, source::text(heap, "constructor")) == f && source::own_entry(heap, f, key(heap, "prototype")).attrs == source::attr_writable());
+    assert(source::put(heap, f, source::text(heap, "x"), source::number(1)) && source::get(heap, f, source::text(heap, "x")).num() == 1 && !source::delete_property(heap, f, key(heap, "prototype")));
+    assert(source::delete_property(heap, f, key(heap, "x")) && source::node(heap, f.id()).initialized && source::get(heap, f, source::text(heap, "x")).tag() == 0 && source::get(heap, f, source::text(heap, "prototype")) == p);
+    assert(source::get(heap, g, source::text(heap, "prototype")).tag() == 0 && source::put(heap, g, source::text(heap, "y"), source::number(2)) && source::get(heap, g, source::text(heap, "call")) == heap.call_method);
+    for name in ["name", "length"] { source::get(heap, g, source::text(heap, name)); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None; }
+    source::get(heap, g, source::text(heap, "bind")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    var none: source::Value[>..] = []; assert(!source::own_keys(heap, g, none) && heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    // Snapshots validate arrays' and closures' shapes and records.
+    var c = snapshot::Control {};
+    let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: f }, snapshot::Binding { id: 1, generation: 1, value: g }, snapshot::Binding { id: 2, generation: 1, value: a }, snapshot::Binding { id: 3, generation: 1, value: b }], c);
+    assert(c.error == snapshot::Error.None && snapshot::validate(saved, c) && c.error == snapshot::Error.None);
 }
 // Key enumeration (light-cljs-804): for-in over a three-object chain with
 // shadowing and deletion during the loop, object rest and spread (a getter

@@ -823,6 +823,15 @@ mod serial_tests {
             ("for-in", "boolean:true"),
             ("object-rest", "boolean:true"),
             ("index-keys", "boolean:true"),
+            // Arrays' and functions' named properties, a function's lazy
+            // `prototype` and ToPrimitive through getters (light-cljs-805);
+            // a function's `name` and an array method stay explicit gaps
+            // until the realm (serial_tests.goose).
+            ("array-names", "boolean:true"),
+            ("function-names", "boolean:true"),
+            ("getter-value-of", "boolean:true"),
+            ("unsupported-function-name", "string:f"),
+            ("unsupported-array-method", "number:1"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));

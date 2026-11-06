@@ -218,7 +218,11 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // %Object.prototype% (%Array.prototype% for an array, %Function.prototype%
 // for a function), which light-cljs-788 builds; until then a lookup that
 // reaches it finds nothing, except the names it will define, which fail
-// UnsupportedOperand (see on_intrinsic). Other kinds keep no own properties.
+// UnsupportedOperand (see on_intrinsic). An array (kind 1) and a closure
+// (kind 2) keep named properties the same way (light-cljs-805): a dense
+// array and a closure in shape mode (their `start` and `count` are the
+// elements or the captures), a dictionary array's names among its index
+// records. Other kinds keep no own properties.
 struct Node { kind: i64, function: u32 = 0, start: u32 = 0, count: u32 = 0, keys: u32 = 0, key_count: u32 = 0, key_capacity: u32 = 0, length: u32 = 0, initialized: bool = false, immutable: bool = false, value: Value = Value.Undefined, namespace_value: Value = Value.Null, metadata: Value = Value.Undefined, origin: i64 = -1, source: u32 = 4294967295, span_start: u32 = 0, span_end: u32 = 0, shape: u32 = 0, proto: Value = Value.Empty, slots: Value[2] = [Value.Undefined; 2] }
 struct SourceRange { start: u32, count: u32 }
 // A dictionary-mode property record (see Node): an interned key, the value
@@ -275,7 +279,8 @@ root struct Heap {
 //   ToPrimitive  OrdinaryToPrimitive of the ordinary-object operands of the
 //                binary operator `op`, left (input) then right (output),
 //                index the operand being converted, method 0 valueOf and 1
-//                toString; pc 1 awaits the method's result. The operator
+//                toString; pc 1 awaits the method's result, pc 2 the
+//                method from its getter (light-cljs-805). The operator
 //                then runs on the converted operands.
 //   Setter       [[Set]] through an accessor's setter (light-cljs-787):
 //                output the assignment's result for the frame below; pc 1
@@ -806,13 +811,16 @@ fn put_element(heap: Heap&, o: i64, i: i64, value: Value) -> bool {
 // becomes an element rather than a shape key.
 fn as_element(heap: const Heap&, o: i64, i: i64) -> bool { return i >= 0 && !sparse_write(node(heap, o).count, i); }
 // Move a dense array's elements into index-keyed property records, a new key
-// run at the table's end. Every failure point precedes the header change, so
-// a rejection leaves the array as it was (records and keys built so far stay
-// charged, unowned).
+// run at the table's end, followed by its named properties (light-cljs-805),
+// in creation order with their attributes; its inline slots and overflow run
+// are cleared. Every failure point precedes the header change, so a rejection
+// leaves the array as it was (records and keys built so far stay charged,
+// unowned).
 fn array_to_dictionary(heap: Heap&, array: Value) -> bool {
     let o = array.id(); let start = node(heap, o).start; let count = node(heap, o).count; let end = min(node(heap, o).length, count);
+    let named: i64 = node(heap, o).key_count;
     var records: i64 = 0; for i in end { if slot(heap, start + i).tag() != -1 { records += 1; } }
-    let capacity = max(4, records);
+    let capacity = max(4, records + named);
     let run = add_properties(heap, capacity);
     if run < 0 { return false; }
     // Records are built aside: the header changes only after every failure point.
@@ -824,9 +832,13 @@ fn array_to_dictionary(heap: Heap&, array: Value) -> bool {
         if heap.fault != Fault.None { return false; }
         built.push(Property { key: k, value: v, attrs: attrs_data() });
     }
-    if !charge(heap, count) { return false; }
+    let base = built.len; built.resize(base + named, Property {});
+    var s: i64 = node(heap, o).shape;
+    while s != 0 { let e = shape_row(heap, s); built[base + e.count - 1] = Property { key: e.key, value: slot_value(heap, o, e.count - 1), attrs: e.attrs }; s = e.parent; }
+    if !charge(heap, count + named) { return false; }
     for row in start..(start + count) { set_slot(heap, row, Value.Undefined); }
-    node_mut(heap, o).keys = run as u32; node_mut(heap, o).key_count = records as u32; node_mut(heap, o).key_capacity = capacity as u32; node_mut(heap, o).initialized = true; node_mut(heap, o).count = 0;
+    for i in named { set_slot_value(heap, o, i, Value.Undefined); }
+    node_mut(heap, o).keys = run as u32; node_mut(heap, o).key_count = built.len as u32; node_mut(heap, o).key_capacity = capacity as u32; node_mut(heap, o).initialized = true; node_mut(heap, o).count = 0; node_mut(heap, o).shape = 0;
     for p, i in built { set_dict_at(heap, o, i, p); }
     return true;
 }
@@ -1009,8 +1021,10 @@ fn add_own(heap: Heap&, o: i64, k: Value, v: Value, attrs: u8) -> bool {
 }
 // Move a shape-mode object's properties into dictionary records, in order,
 // with their attributes; its slots and overflow run are cleared (the run
-// stays charged). A rejection leaves the object as it was.
+// stays charged). An array moves its elements too (array_to_dictionary),
+// since `initialized` marks both. A rejection leaves the object as it was.
 fn to_dictionary(heap: Heap&, o: i64) -> bool {
+    if node(heap, o).kind == 1 { return array_to_dictionary(heap, object(o)); }
     let count: i64 = node(heap, o).key_count;
     if !charge(heap, count) { return false; }
     let capacity = max(4, count + 1);
@@ -1021,6 +1035,17 @@ fn to_dictionary(heap: Heap&, o: i64) -> bool {
     for i in count { set_slot_value(heap, o, i, Value.Undefined); }
     node_mut(heap, o).initialized = true; node_mut(heap, o).shape = 0; node_mut(heap, o).keys = at as u32; node_mut(heap, o).key_capacity = capacity as u32;
     return true;
+}
+// The record of own property i (find_own's position) once node o is in
+// dictionary mode, moving it there first: a shape-mode object's property i
+// is its record i, a dense array's follows its element records
+// (array_to_dictionary, light-cljs-805). -1 on a rejection, which leaves the
+// node as it was.
+fn dictionary_at(heap: Heap&, o: i64, i: i64) -> i64 {
+    if node(heap, o).initialized { return i; }
+    let named: i64 = node(heap, o).key_count;
+    if !to_dictionary(heap, o) { return -1; }
+    return node(heap, o).key_count - named + i;
 }
 // SameValue (descriptor validation): numbers by bits but NaN equal to NaN,
 // strings by text, everything else by identity.
@@ -1081,8 +1106,9 @@ fn define_own(heap: Heap&, o: i64, k: Value, value: Value, attrs: u8, half: i64 
         if p.attrs & attr_writable() == 0 && (attrs & attr_writable() != 0 || !same_value(heap, p.value, value)) { return false; }
     }
     if attrs != p.attrs {
-        if !node(heap, o).initialized && !to_dictionary(heap, o) { return false; }
-        set_dict_at(heap, o, p.index, Property { key: k, value: v, attrs: attrs });
+        let at = dictionary_at(heap, o, p.index);
+        if at < 0 { return false; }
+        set_dict_at(heap, o, at, Property { key: k, value: v, attrs: attrs });
         return true;
     }
     write_own(heap, o, p.index, v); return true;
@@ -1096,19 +1122,62 @@ fn delete_own(heap: Heap&, o: i64, k: Value) -> bool {
     if heap.fault != Fault.None { return false; }
     if !p.found { return true; }
     if p.attrs & attr_configurable() == 0 { return false; }
-    if !node(heap, o).initialized && !to_dictionary(heap, o) { return false; }
+    let at = dictionary_at(heap, o, p.index);
+    if at < 0 { return false; }
     let count: i64 = node(heap, o).key_count;
-    if !charge(heap, count - p.index) { return false; }
-    for i in (p.index + 1)..count { set_dict_at(heap, o, i - 1, dict_at(heap, o, i)); }
+    if !charge(heap, count - at) { return false; }
+    for i in (at + 1)..count { set_dict_at(heap, o, i - 1, dict_at(heap, o, i)); }
     set_dict_at(heap, o, count - 1, Property {}); node_mut(heap, o).key_count = (count - 1) as u32;
     return true;
 }
+// Functions' own properties (light-cljs-805; the Pants engine's
+// rust/src/vm/function.rs). A closure (kind 2) keeps its properties as an
+// ordinary object does, in a shape or dictionary records beside its captures
+// (`start`, `count`). Code from a `function` declaration or expression
+// (constructor kind 1, Function.kind) has an own `prototype`, writable, not
+// enumerable, not configurable, made on its first observation
+// (prepare_function, materialize_prototype): a new ordinary object whose
+// non-enumerable `constructor` is the function. It is made before any other
+// property and never removed, so an ordinary function without own
+// properties has not made it yet (lazy_prototype). Arrows, methods,
+// generators and async functions have none. Not implemented, failing
+// UnsupportedOperand by name: `length` and `name`, which code metadata would
+// supply; a class constructor's eager `prototype`; the key list of a
+// function (own_property_keys). Built-ins (kind 4) answer only `call` until
+// light-cljs-788 gives them `name` and `length`.
+fn constructor_kind(heap: const Heap&, o: i64) -> i64 { return heap.code.functions[node(heap, o).function].kind; }
+fn lazy_prototype(heap: const Heap&, o: i64) -> bool {
+    let n .= node(heap, o);
+    return n.kind == 2 && n.key_count == 0 && !n.initialized && constructor_kind(heap, o) == 1;
+}
+// Whether closure o's own properties answer key k; otherwise it fails
+// UnsupportedOperand (see above). An ordinary function's `prototype` must
+// exist already: the job's operations make it first (prepare_function).
+fn function_key(heap: Heap&, o: i64, k: Value) -> bool {
+    if heap.fault != Fault.None { return false; }
+    if k.tag() != 4 { return true; }
+    if key_is(heap, k, "length") || key_is(heap, k, "name") || key_is(heap, k, "prototype") && (constructor_kind(heap, o) >= 2 || lazy_prototype(heap, o)) {
+        if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; }
+    }
+    return heap.fault == Fault.None;
+}
+// Make ordinary function o's `prototype`. A rejection (MemoryLimit) leaves
+// the function without one.
+fn materialize_prototype(heap: Heap&, o: i64) -> bool {
+    let constructor = key_named(heap, "constructor"); let prototype = key_named(heap, "prototype");
+    if heap.fault != Fault.None { return false; }
+    let p = allocate(heap, Node { kind: 0 });
+    if heap.fault != Fault.None || !add_own(heap, p.id(), constructor, object(o), attr_writable() | attr_configurable()) { return false; }
+    return add_own(heap, o, prototype, p, attr_writable());
+}
 // [[GetOwnProperty]] by object kind (interned key k): ordinary objects their
 // shapes or records; arrays their writable, non-enumerable, non-configurable
-// `length` and their elements; read-only unmapped arguments their `length`
-// and indices; functions and built-ins `call` (Function.prototype's, until
-// the realm). Every other kind, and an array's named properties, fail
-// UnsupportedOperand: they are not implemented yet.
+// `length`, their elements and their named properties (light-cljs-805: shape
+// keys of a dense array, records of a dictionary array); read-only unmapped
+// arguments their `length` and indices; closures their own properties (see
+// above) and, failing those, `call` (Function.prototype's, until the realm),
+// built-ins only `call`. Every other kind fails UnsupportedOperand: it is
+// not implemented yet.
 fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
     let o: i64 = object.id();
     match node(heap, o).kind {
@@ -1124,8 +1193,8 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
         1 => {
             if key_is(heap, k, "length") { return Own { found: true, value: number(node(heap, o).length), attrs: attr_writable() }; }
             let i = index(heap, k);
-            if i < 0 { if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; } return Own {}; }
-            if node(heap, o).initialized { return find_own(heap, o, k); }
+            if heap.fault != Fault.None { return Own {}; }
+            if i < 0 || node(heap, o).initialized { return find_own(heap, o, k); }
             let v, found = own_element(heap, object, i);
             return Own { found: found, index: i, value: v, attrs: attrs_data() };
         },
@@ -1139,7 +1208,13 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             if i >= node(heap, o).count { return Own {}; }
             return Own { found: true, index: i, value: slot(heap, node(heap, o).start + i), attrs: attrs_data() };
         },
-        2, 4 => {
+        2 => {
+            if !function_key(heap, o, k) { return Own {}; }
+            let p = find_own(heap, o, k);
+            if p.found || heap.fault != Fault.None || !key_is(heap, k, "call") { return p; }
+            return Own { found: true, value: heap.call_method, attrs: attr_writable() | attr_configurable() };
+        },
+        4 => {
             if key_is(heap, k, "call") { return Own { found: true, value: heap.call_method, attrs: attr_writable() | attr_configurable() }; }
             if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; }
             return Own {};
@@ -1150,12 +1225,25 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
 // A lookup that reaches the realm's pending %Object.prototype% (a Node's
 // Empty proto) finds nothing, except the names that prototype will define
 // (light-cljs-788): those fail UnsupportedOperand rather than read as absent.
-fn on_intrinsic(heap: Heap&, k: Value) -> bool {
-    return key_is(heap, k, "__proto__") || key_is(heap, k, "constructor") || key_is(heap, k, "toString") || key_is(heap, k, "valueOf") || key_is(heap, k, "call") || key_is(heap, k, "apply") || key_is(heap, k, "hasOwnProperty") || key_is(heap, k, "isPrototypeOf") || key_is(heap, k, "propertyIsEnumerable") || key_is(heap, k, "toLocaleString") || key_is(heap, k, "__defineGetter__") || key_is(heap, k, "__defineSetter__") || key_is(heap, k, "__lookupGetter__") || key_is(heap, k, "__lookupSetter__");
+// An array's pending prototype is %Array.prototype% and a function's
+// %Function.prototype% (light-cljs-805), each in front of %Object.prototype%:
+// their names fail too, and so does every symbol key (@@iterator,
+// @@unscopables, @@hasInstance). `kind` is the kind of the object whose
+// prototype is pending.
+fn on_intrinsic(heap: Heap&, k: Value, kind: i64 = 0) -> bool {
+    if key_is(heap, k, "__proto__") || key_is(heap, k, "constructor") || key_is(heap, k, "toString") || key_is(heap, k, "valueOf") || key_is(heap, k, "call") || key_is(heap, k, "apply") || key_is(heap, k, "hasOwnProperty") || key_is(heap, k, "isPrototypeOf") || key_is(heap, k, "propertyIsEnumerable") || key_is(heap, k, "toLocaleString") || key_is(heap, k, "__defineGetter__") || key_is(heap, k, "__defineSetter__") || key_is(heap, k, "__lookupGetter__") || key_is(heap, k, "__lookupSetter__") { return true; }
+    if kind != 1 && kind != 2 { return false; }
+    if k.tag() == 6 { return true; }
+    if kind == 2 { return key_is(heap, k, "bind") || key_is(heap, k, "length") || key_is(heap, k, "name") || key_is(heap, k, "arguments") || key_is(heap, k, "caller"); }
+    for name in ["at", "concat", "copyWithin", "entries", "every", "fill", "filter", "find", "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "forEach", "includes", "indexOf", "join", "keys", "lastIndexOf", "map", "pop", "push", "reduce", "reduceRight", "reverse", "shift", "slice", "some", "sort", "splice", "toReversed", "toSorted", "toSpliced", "unshift", "values", "with"] {
+        if key_is(heap, k, name) { return true; }
+    }
+    return false;
 }
 // The end of a prototype chain: Null finds nothing; Empty, the pending
-// realm prototype, finds nothing but fails for its own names (on_intrinsic).
-fn chain_end(heap: Heap&, proto: Value, k: Value) { if proto.tag() == -1 && on_intrinsic(heap, k) && heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; } }
+// realm prototype of an object of `kind`, finds nothing but fails for its
+// own names (on_intrinsic).
+fn chain_end(heap: Heap&, proto: Value, k: Value, kind: i64) { if proto.tag() == -1 && on_intrinsic(heap, k, kind) && heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; } }
 // [[Get]] of interned key k (OrdinaryGet through the prototype chain, each
 // object's own lookup by kind), without running JavaScript: the value, or,
 // for an accessor property with a getter, Undefined and the getter, which
@@ -1168,7 +1256,7 @@ fn lookup(heap: Heap&, object: Value, k: Value) -> Value, Value {
         if heap.fault != Fault.None { return Value.Undefined, Value.Undefined; }
         if p.found { return if is_accessor(p.value) { Value.Undefined } else { p.value }, if is_accessor(p.value) { pair(heap, p.value).get } else { Value.Undefined }; }
         let proto = node(heap, at.id()).proto;
-        if proto.tag() != 5 { chain_end(heap, proto, k); return Value.Undefined, Value.Undefined; }
+        if proto.tag() != 5 { chain_end(heap, proto, k, node(heap, at.id()).kind); return Value.Undefined, Value.Undefined; }
         if !charge(heap) { return Value.Undefined, Value.Undefined; }
         at = proto;
     }
@@ -1182,7 +1270,7 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
         if heap.fault != Fault.None { return false; }
         if p.found { return true; }
         let proto = node(heap, at.id()).proto;
-        if proto.tag() != 5 { chain_end(heap, proto, k); return false; }
+        if proto.tag() != 5 { chain_end(heap, proto, k, node(heap, at.id()).kind); return false; }
         if !charge(heap) { return false; }
         at = proto;
     }
@@ -1194,24 +1282,31 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
 // whether the assignment was accepted: a non-writable data property, own or
 // inherited, or an accessor without a setter refuses it (a TypeError in
 // strict code). An own writable data property is written; otherwise the
-// object gets a new data property. Arrays write `length` or an element;
-// other kinds, and Object.prototype's `__proto__` setter (light-cljs-788),
-// fail UnsupportedOperand.
+// object gets a new data property. Arrays write `length`, an element or a
+// named property, closures their own properties (light-cljs-805); other
+// kinds, a function's keys function_key refuses, and the accessors the
+// pending realm prototypes define (Object.prototype's `__proto__`,
+// Function.prototype's `arguments` and `caller`; light-cljs-788) fail
+// UnsupportedOperand.
 fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
-    let o: i64 = object.id();
-    match node(heap, o).kind {
+    let o: i64 = object.id(); let kind = node(heap, o).kind;
+    match kind {
         0 => {},
         1 => {
             if key_is(heap, k, "length") { return Value.Undefined, array_length(heap, object, value); }
             let i = index(heap, k);
             if heap.fault != Fault.None { return Value.Undefined, false; }
-            if i < 0 { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; }
-            return Value.Undefined, set_element(heap, object, i, value);
+            if i >= 0 { return Value.Undefined, set_element(heap, object, i, value); }
+        },
+        2 => {
+            if !function_key(heap, o, k) { return Value.Undefined, false; }
+            if lazy_prototype(heap, o) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; }
         },
         _ => { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; },
     }
-    // An element is a writable data property (light-cljs-804).
-    let i = element_key(heap, k);
+    // An element is a writable data property (light-cljs-804); only an
+    // ordinary object keeps index keys outside its shape or records here.
+    let i = if kind == 0 { element_key(heap, k) } else { -1 };
     if heap.fault != Fault.None { return Value.Undefined, false; }
     if object_element(heap, o, i).tag() != -1 { set_slot(heap, node(heap, o).start + i, value); return Value.Undefined, true; }
     let own = find_own(heap, o, k);
@@ -1221,7 +1316,8 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
         if own.attrs & attr_writable() == 0 { return Value.Undefined, false; }
         write_own(heap, o, own.index, value); return Value.Undefined, true;
     }
-    var proto = node(heap, o).proto;
+    // `end`: the kind of the object whose prototype the walk reads next.
+    var proto = node(heap, o).proto; var end = kind;
     while proto.tag() == 5 {
         if !charge(heap) { return Value.Undefined, false; }
         let p = own_entry(heap, proto, k);
@@ -1231,27 +1327,37 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
             if p.attrs & attr_writable() == 0 { return Value.Undefined, false; }
             break;
         }
-        proto = node(heap, proto.id()).proto;
+        end = node(heap, proto.id()).kind; proto = node(heap, proto.id()).proto;
     }
-    if proto.tag() == -1 && key_is(heap, k, "__proto__") { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; }
+    if proto.tag() == -1 && (key_is(heap, k, "__proto__") || end == 2 && (key_is(heap, k, "arguments") || key_is(heap, k, "caller"))) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; }
     return Value.Undefined, if as_element(heap, o, i) { put_element(heap, o, i, value) } else { add_own(heap, o, k, value, attrs_data()) };
 }
-// [[DefineOwnProperty]] by object kind: ordinary objects (define_own) and an
-// array's elements as data properties; other kinds fail UnsupportedOperand.
+// [[DefineOwnProperty]] by object kind: ordinary objects (define_own), an
+// array's elements as data properties and its named properties, a closure's
+// own properties (light-cljs-805); an array's `length`, its elements with
+// other descriptors, other kinds and a function's keys function_key refuses
+// fail UnsupportedOperand.
 fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8, half: i64 = 0) -> bool {
-    let o: i64 = object.id();
-    if node(heap, o).kind == 0 { return define_own(heap, o, k, value, attrs, half); }
-    if node(heap, o).kind == 1 && half == 0 && attrs == attrs_data() {
+    let o: i64 = object.id(); let kind = node(heap, o).kind;
+    if kind == 0 { return define_own(heap, o, k, value, attrs, half); }
+    if kind == 1 && !key_is(heap, k, "length") {
         let i = index(heap, k);
-        if i >= 0 { return set_element(heap, object, i, value); }
+        if heap.fault != Fault.None { return false; }
+        if i < 0 { return define_own(heap, o, k, value, attrs, half); }
+        if half == 0 && attrs == attrs_data() { return set_element(heap, object, i, value); }
+    }
+    if kind == 2 {
+        if !function_key(heap, o, k) { return false; }
+        if !lazy_prototype(heap, o) { return define_own(heap, o, k, value, attrs, half); }
     }
     if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; }
     return false;
 }
 // [[Delete]] by object kind: ordinary objects (delete_own); an array's
 // element becomes a hole (a dictionary array's record is removed), its
-// `length` is non-configurable, and it has no other own property. Other
-// kinds fail UnsupportedOperand.
+// `length` is non-configurable, and a named property goes as an ordinary
+// object's does, as does a closure's (light-cljs-805). Other kinds, and a
+// function's keys function_key refuses, fail UnsupportedOperand.
 fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
     let o: i64 = object.id();
     match node(heap, o).kind {
@@ -1265,12 +1371,12 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
             if key_is(heap, k, "length") { return false; }
             let i = index(heap, k);
             if heap.fault != Fault.None { return false; }
-            if i < 0 { return true; }
-            if node(heap, o).initialized { return delete_own(heap, o, k); }
+            if i < 0 || node(heap, o).initialized { return delete_own(heap, o, k); }
             if !charge(heap) { return false; }
             if i < node(heap, o).count && i < node(heap, o).length { set_slot(heap, node(heap, o).start + i, hole()); }
             return true;
         },
+        2 => { return function_key(heap, o, k) && delete_own(heap, o, k); },
         _ => { heap.fault = Fault.UnsupportedOperand; return false; },
     }
 }
@@ -1292,15 +1398,17 @@ fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     if kind == 1 && !node(heap, o).initialized {
         let end = min(node(heap, o).length, node(heap, o).count);
         for i in end { if slot(heap, node(heap, o).start + i).tag() != -1 { keys.push(OwnKey { key: index_key(heap, i), attrs: attrs_data(), index: i }); } }
+    } else if kind == 0 {
+        for i in node(heap, o).count { if slot(heap, node(heap, o).start + i).tag() != -1 { keys.push(OwnKey { key: index_key(heap, i), attrs: attrs_data(), index: i }); } }
+    }
+    // Shape keys or records: a dense array's are its named properties
+    // (light-cljs-805), a dictionary array's its elements and names.
+    if node(heap, o).initialized {
+        for i in node(heap, o).key_count { let p = dict_at(heap, o, i); keys.push(OwnKey { key: p.key, attrs: p.attrs, index: -2 }); }
     } else {
-        if kind == 0 { for i in node(heap, o).count { if slot(heap, node(heap, o).start + i).tag() != -1 { keys.push(OwnKey { key: index_key(heap, i), attrs: attrs_data(), index: i }); } } }
-        if node(heap, o).initialized {
-            for i in node(heap, o).key_count { let p = dict_at(heap, o, i); keys.push(OwnKey { key: p.key, attrs: p.attrs, index: -2 }); }
-        } else {
-            let base = keys.len; keys.resize(base + node(heap, o).key_count, OwnKey { key: Value.Undefined, index: -2 });
-            var s: i64 = node(heap, o).shape;
-            while s != 0 { let e .= shape_row(heap, s); keys[base + e.count - 1].key = e.key; keys[base + e.count - 1].attrs = e.attrs; s = e.parent; }
-        }
+        let base = keys.len; keys.resize(base + node(heap, o).key_count, OwnKey { key: Value.Undefined, index: -2 });
+        var s: i64 = node(heap, o).shape;
+        while s != 0 { let e .= shape_row(heap, s); keys[base + e.count - 1].key = e.key; keys[base + e.count - 1].attrs = e.attrs; s = e.parent; }
     }
     if heap.fault != Fault.None || !charge(heap, keys.len) { return false; }
     // A shape key or record (index -2 until decoded) may be an index too.
@@ -1405,22 +1513,18 @@ fn array_length(heap: Heap&, object: Value, value: Value) -> bool {
 fn dictionary_length(heap: Heap&, object: Value, length: i64) -> bool {
     if length < node(heap, object.id()).length {
         let o = object.id(); let count = node(heap, o).key_count;
+        // Each record's array index, -1 for a named property (light-cljs-805),
+        // which stays; the preflight decodes them all, so mutation below
+        // cannot fail.
+        var indices: i64[>..] = [];
         for r in count {
             if !charge(heap, 2 + str_len(heap, dict_at(heap, o, r).key)) { return false; }
-            let i = index(heap, dict_at(heap, o, r).key);
+            indices.push(index(heap, dict_at(heap, o, r).key));
             if heap.fault != Fault.None { return false; }
-            if i < 0 { heap.fault = Fault.UnsupportedOperand; return false; }
         }
         // Compact the kept records in order; the cut-off rows are cleared.
         var kept: i64 = 0;
-        for r in count {
-            let p = dict_at(heap, o, r);
-            // set_element admitted canonical indices. The preflight charged
-            // this second decode, so mutation below cannot fail.
-            var i: i64 = 0;
-            for c in narrow_run(heap, header(heap, p.key.sid())) { i = i * 10 + (c - 48); }
-            if i < length { set_dict_at(heap, o, kept, p); kept += 1; }
-        }
+        for r in count { if indices[r] < length { set_dict_at(heap, o, kept, dict_at(heap, o, r)); kept += 1; } }
         for r in kept..count { set_dict_at(heap, o, r, Property {}); }
         node_mut(heap, o).key_count = kept as u32;
     }
@@ -2294,8 +2398,10 @@ fn key_named(heap: Heap&, name: const u8[:]) -> Value {
 // callable method, own or inherited ([[Get]], light-cljs-787), is called with
 // the object as receiver; a primitive result replaces the operand, an object
 // result tries the next method, and a missing or non-callable one is
-// skipped. A method the realm's pending %Object.prototype% would supply fails
-// UnsupportedOperand (on_intrinsic), as does a method behind an accessor; an
+// skipped. A method behind an accessor comes from its getter, run with the
+// object as receiver (light-cljs-805): pc 2 awaits its result, the method. A
+// method the realm's pending %Object.prototype% would supply fails
+// UnsupportedOperand (on_intrinsic), as does a built-in method or getter; an
 // object that converts by neither method is a TypeError.
 fn to_primitive_step(job: Job&, frame: Frame, op: u8, method: u8) {
     let heap .= job.heap; let at = job.frames.len - 1;
@@ -2317,11 +2423,19 @@ fn to_primitive_step(job: Job&, frame: Frame, op: u8, method: u8) {
     let v = if frame.index == 0 { frame.input } else { frame.output };
     if !ordinary(heap, v) { job.frames[at].index += 1; return; }
     if method >= 2 { heap.fault = Fault.TypeError; return; }
-    let k = key_named(heap, if method == 0 { "valueOf" } else { "toString" });
-    if heap.fault != Fault.None { return; }
-    let m, getter = lookup(heap, v, k);
-    if heap.fault != Fault.None { return; }
-    if getter.tag() != 0 { heap.fault = Fault.UnsupportedOperand; return; }
+    var m = Value.Undefined;
+    if frame.pc == 2 { m = job.operands.pop(); job.frames[at].pc = 0; }
+    else {
+        let k = key_named(heap, if method == 0 { "valueOf" } else { "toString" });
+        if heap.fault != Fault.None { return; }
+        let value, getter = lookup(heap, v, k);
+        if heap.fault != Fault.None { return; }
+        if getter.tag() == 5 {
+            if node(heap, getter.id()).kind != 2 { heap.fault = Fault.UnsupportedOperand; return; }
+            job.frames[at].pc = 2; enter(job, getter, v, []); return;
+        }
+        m = value;
+    }
     if m.tag() == 5 && node(heap, m.id()).kind == 4 { heap.fault = Fault.UnsupportedOperand; return; }
     if m.tag() == 5 && node(heap, m.id()).kind == 2 { job.frames[at].pc = 1; enter(job, m, v, []); return; }
     job.frames[at].native = Native.ToPrimitive { op: op, method: method + 1 };
@@ -2814,6 +2928,7 @@ fn get_property(job: Job&, k: Value) {
     } else {
         // An accessor's getter runs as a frame entered directly: its return
         // value is the read's result for this frame (light-cljs-787).
+        prepare_function(job, object, k, false);
         let value, getter = read(heap, object, k);
         if heap.fault != Fault.None || getter.tag() != 5 { job.operands.push(value); }
         else if node(heap, getter.id()).kind != 2 { heap.fault = Fault.UnsupportedOperand; job.operands.push(value); }
@@ -2828,6 +2943,22 @@ fn writable(job: const Job&, o: i64) -> bool {
     var i: i64 = 0;
     while i + 1 < job.foreign.len { if o >= job.foreign[i] && o < job.foreign[i + 1] { return false; } i += 2; }
     return true;
+}
+// Before a job's operation on key k of `object` (light-cljs-805): an
+// ordinary function's lazy `prototype` (lazy_prototype) is made on its first
+// observation, a read, `in` or delete of `prototype`, or, `adding`, an
+// assignment or definition of any key, so that `prototype` comes first in
+// creation order (the Pants engine's function.rs). Only a function the job
+// allocated is changed: making another's would write a row the reset does
+// not restore, so a read fails UnsupportedOperand (a read has no JavaScript
+// failure for it), as the Pants engine does for a published function; a
+// write has already failed NativeBoundary. A lookup that meets a lazy
+// prototype further along a chain fails in function_key.
+fn prepare_function(job: Job&, object: Value, k: Value, adding: bool) {
+    let heap .= job.heap;
+    if heap.fault != Fault.None || object.tag() != 5 || object.id() >= heap.nodes.len || !lazy_prototype(heap, object.id()) || !adding && !key_is(heap, k, "prototype") { return; }
+    if !writable(job, object.id()) { heap.fault = Fault.UnsupportedOperand; return; }
+    materialize_prototype(heap, object.id());
 }
 // Mark the node rows a publication installed in this job, from `start` to
 // the table's end, as rows the job did not allocate.
@@ -2859,6 +2990,7 @@ fn set_property(job: Job&, value: Value, k: Value, chain: bool, strict: bool) {
     let object = job.operands.pop();
     let result = if chain { object } else { value };
     if object.tag() == 5 && !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; job.operands.push(result); return; }
+    prepare_function(job, object, k, true);
     let setter, ok = write(heap, object, k, value);
     if heap.fault == Fault.None && setter.tag() == 5 { call_setter(job, setter, object, value, result); return; }
     if heap.fault == Fault.None { if ok { record(job, object, k, value); } else if strict { heap.fault = Fault.TypeError; } }
@@ -2877,6 +3009,7 @@ fn define_field(job: Job&, k: Value, value: Value, half: u8) {
     if !valid(heap, object) || !key_valid(heap, k) || !valid(heap, value) { return; }
     if object.tag() != 5 || k.tag() != 4 && k.tag() != 6 { heap.fault = if object.tag() == 5 { Fault.UnsupportedOperand } else { Fault.TypeError }; return; }
     if !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; return; }
+    prepare_function(job, object, k, true);
     let key = intern(heap, k);
     if heap.fault != Fault.None { return; }
     let ok = define_property(heap, object, key, value, if half == 0 { attrs_data() } else { attrs_accessor() }, half);
@@ -2910,6 +3043,7 @@ fn delete_op(job: Job&, strict: bool) {
     if object.tag() == 4 { let i = index(heap, k); ok = !(key_is(heap, k, "length") || i >= 0 && i < str_len(heap, object)); }
     else if object.tag() == 5 {
         if !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; return; }
+        prepare_function(job, object, k, false);
         let key = intern(heap, k);
         if heap.fault != Fault.None { return; }
         ok = delete_property(heap, object, key);
@@ -2928,6 +3062,7 @@ fn in_op(job: Job&) {
     if object.tag() != 5 { heap.fault = Fault.TypeError; return; }
     let k = key(heap, kv);
     if heap.fault != Fault.None { return; }
+    prepare_function(job, object, k, false);
     let key = intern(heap, k);
     if heap.fault != Fault.None { return; }
     let found = has_property(heap, object, key);

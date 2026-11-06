@@ -55,7 +55,8 @@ fn valid_value(a: const Artifact&, v: source::Value) -> bool {
     return match v { Empty, Symbol, BigInt, Accessor => false, String x => snapshot::range(x.s, 1, a.strings.len) && snapshot::range(a.strings[x.s].start, a.strings[x.s].len, a.units.len), Object o => snapshot::range(o.o, 1, a.nodes.len), _ => true };
 }
 fn shape(a: const Artifact&, n: source::Node, base: const snapshot::Snapshot&, c: Control&) -> bool {
-    if n.kind == 0 || n.kind == 1 || n.kind == 3 && (!n.immutable || !n.initialized) { return reject(c, Error.Mutable); }
+    // A closure with own properties (light-cljs-805) is mutable like an object.
+    if n.kind == 0 || n.kind == 1 || n.kind == 2 && (n.key_count != 0 || n.initialized) || n.kind == 3 && (!n.immutable || !n.initialized) { return reject(c, Error.Mutable); }
     if n.kind < 2 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.proto.tag() != -1 || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) { return reject(c, Error.Link); }
     if has_values(n) && !snapshot::range(n.start, n.count, a.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); }
     if n.kind == 2 && (!snapshot::range(n.function, 1, base.functions.len) || n.count != base.functions[n.function].captures) || n.kind == 4 && (n.function > 13 || n.function == 9) { return reject(c, Error.Link); }
