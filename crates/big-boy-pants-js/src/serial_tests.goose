@@ -520,6 +520,7 @@ fn main() {
     heap_program::join(thread_spawn(instruction_limit));
     control_flow();
     continuations();
+    duplicates();
 
     properties();
     scripts();
@@ -1363,4 +1364,42 @@ thread_fn runtime_boundary(bytes: u8[]) {
     assert(source::run(job, -1) == tiny::Outcome.Complete);
     assert(source::form_kind(heap, job.result) == 6 && source::form_count(heap, job.result) == 2);
     assert(source::form_nth(heap, job.result, 0).num() == 2 && source::form_nth(heap, job.result, 1).num() == 3);
+}
+// dup2 and dup3 (light-cljs-830). A hand-assembled one-function image (the
+// layout source_tests.goose's depth_limit writes) pushes three distinct
+// values, an object, undefined and an array; dup2 or dup3 copies the top two
+// or three in order, which the test reads one instruction at a time; then
+// width - 1 pops leave the lowest copy on top, and the function returns it.
+fn push_word(bytes: u8[>..]&, value: i64) { for i in 4 { bytes.push(((value >> (8 * i)) & 255) as u8); } }
+fn duplicate_image(dup: i64, width: i64) -> u8[] {
+    var ops: i64[>..] = [opcode::NewObject, opcode::Undefined, opcode::NewArray, dup];
+    for i in (width - 1) { ops.push(opcode::Pop); }
+    ops.push(opcode::Return);
+    var bytes: u8[>..] = []; bytes.append("GSP\0");
+    // Version 3, no source, one function, no constants or children.
+    for n in [3, 0, 1, 0, 0, ops.len, 0] { push_word(bytes, n); }
+    // The function: its instruction run, no constants, children, parameters,
+    // locals, captures or name; flags 1 marks it strict.
+    for n in [0, ops.len, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] { push_word(bytes, n); }
+    for op, i in ops { for n in [export_descriptor(op), 0, 0, 0, i] { push_word(bytes, n); } }
+    return str(bytes);
+}
+thread_fn duplicate_run(bytes: u8[], width: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    assert(match code.ins[3] { Dup2 => width == 2, Dup3 => width == 3, _ => false });
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let entry = source::closure(heap, 0, []); var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
+    for i in 4 { assert(source::run(job, 1) == tiny::Outcome.Yielded); }
+    var seen: source::Value[>..] = []; for v in job.operands { seen.push(v); }
+    assert(seen.len == 3 + width);
+    assert(seen[0].is_object() && seen[1].is_undefined() && seen[2].is_object() && !source::same_value(heap, seen[0], seen[2]));
+    for i in width { assert(source::same_value(heap, seen[3 - width + i], seen[3 + i])); }
+    while source::run(job, 1) == tiny::Outcome.Yielded {}
+    assert(job.status == tiny::Status.Complete && job.fault == source::Fault.None);
+    assert(source::same_value(heap, job.result, seen[3]));
+}
+fn duplicates() {
+    heap_program::join(thread_spawn(duplicate_run, duplicate_image(opcode::Dup2, 2), 2));
+    heap_program::join(thread_spawn(duplicate_run, duplicate_image(opcode::Dup3, 3), 3));
 }

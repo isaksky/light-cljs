@@ -31,4 +31,7 @@ row(name(() => { let u; u["k"] ??= 1; }) === "TypeError");
 // A getter-only target is a TypeError in strict code when the write happens.
 { let log = ""; const o = {get k() { log += "g"; return 0; }}; let r = (o["k"] &&= 1);
   row(r === 0 && name(() => { o["k"] ||= 1; }) === "TypeError" && name(() => { o.k ??= 1; }) === "none" && log === "ggg"); }
+// So is a non-writable data property (a function's length); a short circuit does not write.
+{ let n = 0; function f() {} const k = "length"; let r = (f[k] &&= (n++, 1));
+  row(r === 0 && n === 0 && name(() => { f[k] ||= (n++, 1); }) === "TypeError" && n === 1 && name(() => { f.length ??= 1; }) === "none" && f.length === 0); }
 failed === 0 ? rows : -failed;

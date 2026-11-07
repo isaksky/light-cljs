@@ -65,4 +65,7 @@ row(name(() => { let o = null; o.x += 1; }) === "TypeError");
 // A getter-only target is a TypeError in strict code, after the right operand.
 { let log = ""; const o = {get k() { log += "g"; return 1; }};
   try { o["k"] += (log += "r", 1); } catch (e) { log += e.name; } row(log === "grTypeError" && o.k === 1); }
+// So is a non-writable data property (a function's length), after the right operand.
+{ let log = ""; function f(a, b) {} const k = "length";
+  try { f[k] *= (log += "r", 3); } catch (e) { log += e.name; } row(log === "rTypeError" && f.length === 2); }
 failed === 0 ? rows : -failed;

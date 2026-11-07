@@ -53,4 +53,6 @@ row(name(() => { let u; --u[0]; }) === "TypeError");
 { let log = ""; let u; const k = {toString() { log += "k"; return "p"; }}; row(name(() => u[k]++) === "TypeError" && log === ""); }
 // A getter-only target is a TypeError in strict code, after the read.
 { let log = ""; const o = {get k() { log += "g"; return 1; }}; row(name(() => o.k++) === "TypeError" && name(() => --o["k"]) === "TypeError" && log === "gg" && o.k === 1); }
+// So is a non-writable data property (a function's length); it keeps its value.
+{ function f(a) {} const k = "length"; row(name(() => f[k]++) === "TypeError" && name(() => --f.length) === "TypeError" && f.length === 1); }
 failed === 0 ? rows : -failed;
