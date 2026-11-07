@@ -62,6 +62,13 @@
   "bbp/eval_direct_call" {:area :functions-scope}
   "bbp/for_in_chain_order" {:area :statements-loops}
   "bbp/for_in_forms" {:area :statements-loops}
+  "bbp/for_heads" {:area :statements-loops}
+  "bbp/for_in_targets_and_arrays" {:area :statements-loops}
+  "bbp/for_in_var_initializer" {:area :statements-loops :mode :sloppy}
+  "bbp/labelled_jumps" {:area :statements-loops}
+  "bbp/long_loop" {:area :statements-loops}
+  "bbp/switch_statements" {:area :statements-loops}
+  "bbp/while_do_while" {:area :statements-loops}
   "bbp/function_name_length" {:area :functions-scope}
   "bbp/function_properties_prototype" {:area :functions-scope}
   "bbp/generator_finally" {:area :generators-async}

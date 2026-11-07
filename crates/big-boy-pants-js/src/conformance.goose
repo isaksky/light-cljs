@@ -6,8 +6,13 @@ import .vm;
 import .census;
 
 // Conformance runner (scripts/conformance.bb): load one exported program
-// image, run its top level once with the VM's default limits, and print one
-// EDN outcome map. It never changes VM behaviour; it only names what happened.
+// image, run its top level once, and print one EDN outcome map. It never
+// changes VM behaviour; it only names what happened. The job keeps the VM's
+// default table, frame and value limits, but no instruction (steps) or work
+// budget ends a case: the Pants command line runs scripts with an unlimited
+// budget and QuickJS has none, so the harness's per-engine timeout
+// (conformance.bb --timeout) bounds a runaway case for all three engines
+// alike (light-cljs-840). Compiler jobs keep their own budgets.
 //   {:status :returned :value V}        the script completed with value V
 //   {:status :rejected :value V}        a promise rejected with V that no
 //                                       reaction ever handled
@@ -26,6 +31,9 @@ import .census;
 // table rows at the end and how many no root reaches (census.goose).
 //   {:heap {:nodes N :values V :properties P :units U :dead-nodes ...}}
 extern fn process_exit(status: i32) = "exit";
+// A steps and work limit no case reaches before the timeout; well below
+// i64's maximum, so the VM's budget arithmetic cannot overflow.
+let unbounded: i64 = 1 << 62;
 fn infrastructure(reason: const u8[:], detail: const u8[:] = "") {
     var out: u8[>..] = []; format(out, "{:status :infrastructure :reason \"", reason, detail, "\"}");
     print(out); flush_stdout(); process_exit(1);
@@ -50,7 +58,7 @@ fn main() {
     if failure != program::Error.None { var detail: u8[>..] = []; format(detail, failure); infrastructure("load:", detail); return; }
     var code = source::Code {};
     if !source::load(code, image) { var detail: u8[>..] = []; format(detail, code.error, ":", code.error_pc); infrastructure("flow:", detail); return; }
-    var heap = source::Heap { code: code };
+    var heap = source::Heap { code: code, limits: source::Limits { steps: unbounded, work: unbounded } };
     if !source::initialize(heap) { var detail: u8[>..] = []; format(detail, heap.fault); infrastructure("heap:", detail); return; }
     let entry = source::closure(heap, 0, []);
     var job = source::Job { heap: heap };
