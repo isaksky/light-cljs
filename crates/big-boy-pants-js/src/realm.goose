@@ -401,7 +401,7 @@ fn fault_message(job: Job&, fault: Fault, frame: Frame) -> Value {
         StackLimit => "stack overflow",
         RangeError => "invalid array length",
         ReferenceError => if op == opcode::CellInit || op == opcode::CellGet || op == opcode::CellSet { "lexical variable is not initialized" } else { "variable is not defined" },
-        TypeError => match op { opcode::Call, opcode::CallMethod => "not a function", opcode::GetField, opcode::GetElem => "cannot read property of undefined or null", opcode::PutField, opcode::PutElem, opcode::PutFieldStrict, opcode::PutElemStrict => "cannot set property", opcode::In => "invalid 'in' operand", _ => "invalid operand" },
+        TypeError => match op { opcode::Call, opcode::CallMethod => "not a function", opcode::GetField, opcode::GetElem => "cannot read property of undefined or null", opcode::PutField, opcode::PutElem, opcode::PutFieldStrict, opcode::PutElemStrict => "cannot set property", opcode::In => "invalid 'in' operand", opcode::Plus, opcode::ToString => "Cannot convert a Symbol value to a string", _ => "invalid operand" },
         SyntaxError => "invalid global declaration",
         _ => "host effect failed",
     };
@@ -426,21 +426,17 @@ fn type_error(job: Job&, message: const u8[:]) -> Value {
     return Value.Undefined;
 }
 inline fn arg(args: const Value[:], i: i64) -> Value { return if i < args.len { args[i] } else { Value.Undefined }; }
-// ToString of a primitive without user code: strings, undefined, null,
-// booleans and integral numbers (the Number area owns the rest); -2 tag
-// (Undefined result with UnsupportedOperand) otherwise.
+// ToString without user code: a primitive's (source_vm.goose to_string,
+// light-cljs-826; a symbol is a TypeError). An object's ToPrimitive is not
+// run here: it fails UnsupportedOperand, naming built-in b.
 fn primitive_string(job: Job&, b: Builtin, v: Value) -> Value {
-    let heap .= job.heap;
-    return match v {
-        String => v, Undefined => key_named(heap, "undefined"), Null => key_named(heap, "null"),
-        Bool x => key_named(heap, if x.v { "true" } else { "false" }),
-        Number x => if x.v != x.v { key_named(heap, "NaN") } else if x.v == trunc(x.v) && x.v > -9007199254740992.0 && x.v < 9007199254740992.0 && !(x.v == 0 && 1.0 / x.v < 0) { text(heap, str(x.v as i64)) } else { unsupported_step(job, b, "ToString of a non-integral number") },
-        _ => unsupported_step(job, b, "ToString of an object"),
-    };
+    if v.is_object() { return unsupported_step(job, b, "ToString of an object"); }
+    if v.is_symbol() { return type_error(job, "Cannot convert a Symbol value to a string"); }
+    return to_string(job.heap, v);
 }
 // ToPropertyKey without user code (an object's ToPrimitive is not run here).
 fn property_key(job: Job&, b: Builtin, v: Value) -> Value {
-    let k = if v.is_number() && v.num() >= 0 && v.num() < 4294967295.0 && v.num() == trunc(v.num()) { key(job.heap, v) } else { primitive_string(job, b, v) };
+    let k = if v.is_object() { primitive_string(job, b, v) } else { key(job.heap, v) };
     return if job.heap.fault == Fault.None { intern(job.heap, k) } else { Value.Undefined };
 }
 // Whether ToObject(o) has own property k (interned): strings their indices

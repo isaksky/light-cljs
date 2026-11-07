@@ -145,7 +145,10 @@ thread_fn callbacks_and_failures() {
         let vector = source::form_nth(heap, job.result, 1);
         assert(source::form_nth(heap, source::form_nth(heap, vector, 0), 0).id() == a.id() && source::form_nth(heap, source::form_nth(heap, vector, 1), 0).id() == b.id());
     }
-    let invalid = source::form_collection(heap, 6, [source::text(heap, "not a number")]); var bad = source::Job { heap: heap };
+    // A vector beside a number: `+` has no string operand, and ToNumber of
+    // a form collection is not implemented (a string operand would
+    // concatenate since light-cljs-826).
+    let invalid = source::form_collection(heap, 6, [source::form_collection(heap, 6, [])]); var bad = source::Job { heap: heap };
     assert(source::start(bad, macro, [source::nil(), source::nil(), source::number(7), invalid])); assert(source::run(bad, -1) == tiny::Outcome.Failed && bad.fault == source::Fault.UnsupportedOperand);
     let good = invoke(heap, macro, params); assert(source::form_equal(heap, whole.result, good));
     source::boot_runtime(heap); assert(heap.fault == source::Fault.InvalidState && heap.boot_count == 1); heap.fault = source::Fault.None;

@@ -351,6 +351,41 @@ thread_fn latin1_strings() {
     let k = source::key(heap, source::number(42)); assert(!source::header(heap, k.sid()).wide && source::index(heap, k) == 42 && source::key_is(heap, k, "42"));
     print("serial source VM: Latin-1 and UTF-16 strings stay canonical through make, concatenate, compare, index and print");
 }
+// ToString of primitives and `+` with a string operand (light-cljs-826)
+// take exactly their result's units from the unit limit; without the room
+// they fail MemoryLimit and add no rows. Converted primitives are Latin-1;
+// a wide string operand keeps the result wide.
+thread_fn primitive_to_string_limits() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, embed_file("../corpus/serial/calls.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let narrow = source::text(heap, "ab"); let wide = source::string(heap, [0x263A as u16]);
+    var strings = heap.strings.len; var latin1 = heap.latin1.len; let units = heap.units.len;
+    heap.limits.units = source::unit_rows(heap) + 2;
+    assert(source::to_string(heap, source::number(1.5)).is_undefined() && heap.fault == source::Fault.MemoryLimit && heap.strings.len == strings && heap.latin1.len == latin1);
+    heap.fault = source::Fault.None; heap.limits.units = source::unit_rows(heap) + 3;
+    let s = source::to_string(heap, source::number(1.5));
+    assert(heap.fault == source::Fault.None && !source::header(heap, s.sid()).wide && source::key_is(heap, s, "1.5") && heap.strings.len == strings + 1 && heap.latin1.len == latin1 + 3);
+    strings = heap.strings.len; latin1 = heap.latin1.len;
+    heap.limits.units = source::unit_rows(heap) + 5;
+    assert(source::binary_value(heap, opcode::Plus, narrow, source::boolean(true)).is_undefined() && heap.fault == source::Fault.MemoryLimit && heap.strings.len == strings && heap.latin1.len == latin1);
+    heap.fault = source::Fault.None; heap.limits.units = source::unit_rows(heap) + 6;
+    let t = source::binary_value(heap, opcode::Plus, narrow, source::boolean(true));
+    assert(heap.fault == source::Fault.None && !source::header(heap, t.sid()).wide && source::key_is(heap, t, "abtrue") && heap.latin1.len == latin1 + 6 && heap.units.len == units);
+    strings = heap.strings.len; latin1 = heap.latin1.len;
+    heap.limits.units = source::unit_rows(heap) + 4;
+    assert(source::binary_value(heap, opcode::Plus, source::nil(), wide).is_undefined() && heap.fault == source::Fault.MemoryLimit && heap.strings.len == strings && heap.units.len == units);
+    heap.fault = source::Fault.None; heap.limits.units = source::unit_rows(heap) + 5;
+    let w = source::binary_value(heap, opcode::Plus, source::nil(), wide);
+    assert(heap.fault == source::Fault.None && source::header(heap, w.sid()).wide && source::utf16(heap, w) == [110 as u16, 117, 108, 108, 0x263A] && heap.units.len == units + 5 && heap.latin1.len == latin1);
+    // Without a string operand `+` adds; a symbol beside a string is a
+    // TypeError that adds nothing.
+    assert(source::binary_value(heap, opcode::Plus, source::boolean(true), source::nil()).num() == 1);
+    strings = heap.strings.len;
+    assert(source::binary_value(heap, opcode::Plus, narrow, source::Value.Symbol { s: 0 }).is_undefined() && heap.fault == source::Fault.TypeError && heap.strings.len == strings);
+    heap.fault = source::Fault.None;
+    print("serial source VM: primitive ToString and mixed + take exactly their units; Latin-1 unless a string side is wide");
+}
 // Small objects keep their first two property values in the header's
 // inline slots; the third spills into an overflow run of values, and the keys
 // live in shared shapes (light-cljs-800, light-cljs-787).
@@ -391,7 +426,7 @@ fn wrong_rows() {
 fn main() {
     array_lengths(); latin1_state_check();
     wrong_rows();
-    heap_program::join(thread_spawn(latin1_strings)); heap_program::join(thread_spawn(inline_slots));
+    heap_program::join(thread_spawn(latin1_strings)); heap_program::join(thread_spawn(primitive_to_string_limits)); heap_program::join(thread_spawn(inline_slots));
     check(embed_file("../corpus/synthetic/arithmetic.gsp"), "number:27.5");
     check(embed_file("../corpus/synthetic/control_flow.gsp"), "number:7307.0");
     check(embed_file("../corpus/synthetic/wide.gsp"), "number:299.0");

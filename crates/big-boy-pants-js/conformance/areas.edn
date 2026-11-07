@@ -93,6 +93,12 @@
   "bbp/typeof_operator" {:area :operators-values}
   "bbp/update_and_compound_bindings" {:area :operators-values}
   "bbp/void_comma_conditional" {:area :operators-values}
+  "bbp/addition_concatenates_strings" {:area :operators-values}
+  "bbp/number_to_string" {:area :operators-values}
+  "bbp/number_to_string_differential" {:area :operators-values}
+  "bbp/primitive_property_keys" {:area :operators-values}
+  "bbp/symbol_to_string_throws" {:area :operators-values}
+  "bbp/template_literal_values" {:area :operators-values}
 
   ;; ---- Pants engine fixtures (rust/tests/fixtures/js)
   "pants/arithmetic" {:area :operators-values :origin :pants-authored}

@@ -8,6 +8,7 @@ import .realm;
 import .array_callbacks;
 import .cells;
 import .continuations;
+import .number_text;
 
 namespace source;
 
@@ -178,7 +179,7 @@ enum Ins {
     Arguments, Rest { skip: u32 }, Callee, Capture { slot: u32 }, NewCell { immutable: bool },
     InitCell, ReadCell, WriteCell, GetNamed { k: u32 }, GetIndexed, SetNamed { k: u32, strict: bool }, DefineNamed { k: u32, half: u8 },
     SetIndexed { strict: bool }, DefineIndexed { half: u8 }, SetProto, Delete { strict: bool }, In, Append, CheckValue, This { sloppy: bool }, Global, GetGlobal { k: u32, throws: bool },
-    Literal { kind: u8, count: u32 }, Form { op: u32 }, Unsupported { opcode: u8 },
+    Literal { kind: u8, count: u32 }, Form { op: u32 }, ToString, Unsupported { opcode: u8 },
     // new f(...) (94): only a built-in constructor whose construction is its
     // call (Delay, light-cljs-808); any other callee fails Unsupported, as an
     // unimplemented opcode does.
@@ -546,7 +547,7 @@ fn instruction(op: Op) -> Ins {
         opcode::FormOp => Ins.Form { op: a },
         opcode::PushFinally => Ins.PushFinally { to: a }, opcode::PopFinally => Ins.PopFinally, opcode::EndFinally => Ins.EndFinally, opcode::CallFinally => Ins.CallFinally, opcode::DropCompletion => Ins.DropCompletion,
         opcode::PendingThrow, opcode::PendingException, opcode::PendingCancel => Ins.Pending { what: op.code as u8 },
-        opcode::Typeof => Ins.TypeOf, opcode::ForInStart => Ins.ForInStart, opcode::ForInNext => Ins.ForInNext, opcode::OwnKeys => Ins.OwnKeys, opcode::IsEnumerable => Ins.IsEnumerable, opcode::CopyDataProperties => Ins.CopyData, opcode::ToPropertyKey => Ins.ToPropertyKey, opcode::RequireCoercible => Ins.RequireCoercible,
+        opcode::Typeof => Ins.TypeOf, opcode::ToString => Ins.ToString, opcode::ForInStart => Ins.ForInStart, opcode::ForInNext => Ins.ForInNext, opcode::OwnKeys => Ins.OwnKeys, opcode::IsEnumerable => Ins.IsEnumerable, opcode::CopyDataProperties => Ins.CopyData, opcode::ToPropertyKey => Ins.ToPropertyKey, opcode::RequireCoercible => Ins.RequireCoercible,
         opcode::GeneratorStart => Ins.GeneratorStart, opcode::GeneratorInitialYield => Ins.GeneratorInitialYield, opcode::GeneratorYield => Ins.GeneratorYield, opcode::AsyncStart => Ins.AsyncStart, opcode::Await => Ins.Await,
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
@@ -848,11 +849,67 @@ fn key_valid(heap: Heap&, k: Value) -> bool {
     if export_well_known_symbol(symbol_index(k)).len == 0 { heap.fault = Fault.InvalidState; return false; }
     return true;
 }
+// ToPropertyKey of a primitive (light-cljs-826; the Pants engine's
+// vm/property.rs to_property_key): a string or symbol is its own key and any
+// other primitive its ToString, so `-0` gives "0", 1.5 "1.5", true "true" and
+// null "null"; an index number takes the integer spelling directly. An
+// object key needs ToPrimitive, which no caller runs yet (UnsupportedOperand).
 fn key(heap: Heap&, value: Value) -> Value {
     if !key_valid(heap, value) { return Value.Undefined; }
     if value.is_string() || value.is_symbol() { return value; }
     if value.is_number() && value.num() >= 0 && value.num() < 4294967295.0 && value.num() == (value.num() as i64) { let bytes = str(value.num() as i64); return text(heap, bytes); }
-    heap.fault = Fault.UnsupportedOperand; return Value.Undefined;
+    if value.is_object() { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
+    return to_string(heap, value);
+}
+// ECMAScript ToString of a primitive other than a string, as the Latin-1
+// bytes it appends to out (light-cljs-826; the Pants engine's
+// vm/dispatch.rs to_js_string): "undefined", "null", "true" or "false", and
+// Number::toString in radix 10 (number_text.goose). No user code runs
+// (decision 5). A symbol is a TypeError; a BigInt fails Unsupported (the
+// BigInt area, light-cljs-771) and an object UnsupportedOperand (its
+// ToPrimitive runs before this, in the callers that have one).
+fn primitive_text(heap: Heap&, v: Value, out: u8[>..]&) -> bool {
+    match v {
+        Undefined => { out.append("undefined"); },
+        Null => { out.append("null"); },
+        Bool b => { out.append(if b.v { "true" } else { "false" }); },
+        Number n => { number::append_decimal(out, n.v); },
+        Symbol => { heap.fault = Fault.TypeError; return false; },
+        BigInt => { heap.fault = Fault.Unsupported; return false; },
+        Object => { heap.fault = Fault.UnsupportedOperand; return false; },
+        _ => { heap.fault = Fault.InvalidState; return false; },
+    }
+    return true;
+}
+// ToString of a primitive as a string value: a string itself, otherwise a
+// new Latin-1 string of primitive_text's bytes, charged to the unit limit.
+fn to_string(heap: Heap&, v: Value) -> Value {
+    if !valid(heap, v) { return Value.Undefined; }
+    if v.is_string() { return v; }
+    var bytes: u8[>..] = [];
+    if !primitive_text(heap, v, bytes) { return Value.Undefined; }
+    return text(heap, bytes);
+}
+// `+` with a string operand: the ToString of both operands, concatenated.
+// A string side keeps its units; any other primitive converts to ASCII
+// (primitive_text). The result is Latin-1 unless a string side is wide.
+fn concat_mixed(heap: Heap&, a: Value, b: Value) -> Value {
+    if !valid(heap, a) || !valid(heap, b) { return Value.Undefined; }
+    var left: u8[>..] = []; var right: u8[>..] = [];
+    if !a.is_string() && !primitive_text(heap, a, left) { return Value.Undefined; }
+    if !b.is_string() && !primitive_text(heap, b, right) { return Value.Undefined; }
+    let n = (if a.is_string() { str_len(heap, a) } else { left.len }) + (if b.is_string() { str_len(heap, b) } else { right.len });
+    if !units_fit(heap, n) { memory(heap); return Value.Undefined; }
+    if a.is_string() && header(heap, a.sid()).wide || b.is_string() && header(heap, b.sid()).wide {
+        var units: u16[>..] = [];
+        if a.is_string() { append_utf16(heap, a, units); } else { for c in left { units.push(c); } }
+        if b.is_string() { append_utf16(heap, b, units); } else { for c in right { units.push(c); } }
+        return string(heap, units);
+    }
+    var bytes: u8[>..] = [];
+    if a.is_string() { bytes.append(narrow_run(heap, header(heap, a.sid()))); } else { bytes.append(left); }
+    if b.is_string() { bytes.append(narrow_run(heap, header(heap, b.sid()))); } else { bytes.append(right); }
+    return text(heap, bytes);
 }
 fn key_is(heap: Heap&, value: Value, bytes: const u8[:]) -> bool {
     if !value.is_string() || str_len(heap, value) != bytes.len || !charge(heap, bytes.len) { return false; }
@@ -2066,6 +2123,13 @@ fn binary_value(heap: Heap&, op: i64, a: Value, b: Value) -> Value {
         }
         var units: u16[>..] = []; append_utf16(heap, a, units); append_utf16(heap, b, units); return string(heap, units);
     }
+    // After ToPrimitive (the caller's native frame for objects; a scalar
+    // form is its primitive, as numeric() reads it), a string on either side
+    // concatenates the ToString of both; otherwise numbers add.
+    if op == opcode::Plus {
+        let x = form_value(heap, a); let y = form_value(heap, b);
+        if x.is_string() || y.is_string() { return concat_mixed(heap, x, y); }
+    }
     if (op == opcode::CompareLt || op == opcode::CompareGt || op == opcode::CompareLe || op == opcode::CompareGe) && a.is_string() && b.is_string() {
         if !valid(heap, a) || !valid(heap, b) || !charge(heap, str_len(heap, a) + str_len(heap, b)) { return Value.Undefined; }
         let p = str_len(heap, a); let q = str_len(heap, b);
@@ -2650,6 +2714,10 @@ fn to_primitive_step(job: Job&, frame: Frame, op: u8, method: u8) {
     }
     if frame.index >= 2 {
         let value = binary_value(heap, op, frame.input, frame.output);
+        // binary_value's one TypeError is a symbol's ToString (`+` with a
+        // string operand); this native frame names no instruction for
+        // fault_message, so the message goes in Job.detail.
+        if heap.fault == Fault.TypeError && job.detail.len == 0 { for c in "Cannot convert a Symbol value to a string" { job.detail.push(c); } }
         if heap.fault == Fault.None { finish_native(job, frame, value); }
         return;
     }
@@ -2975,6 +3043,20 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     let v = job.operands.pop(); job.operands.push(type_name(heap, v));
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
+                },
+                // ToString (an untagged template's substitution): a string
+                // stays as it is; another primitive converts (to_string). An
+                // object needs ToPrimitive with hint string, not implemented
+                // yet: it fails by name.
+                ToString => {
+                    let v = job.operands[job.operands.len - 1];
+                    if !v.is_string() {
+                        settle(job, ran, used); job.frames[top].pc = pc;
+                        if v.is_object() && valid(heap, v) { unsupported_detail(job, "ToString of an object (ToPrimitive with hint string)"); }
+                        else { job.operands.pop(); job.operands.push(to_string(heap, v)); }
+                        if !in_place(job, top, at) { break; }
+                        left = fuel(job, allowance, used);
+                    }
                 },
                 Literal l => {
                     settle(job, ran, used); job.frames[top].pc = pc;
