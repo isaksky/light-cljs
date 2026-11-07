@@ -935,6 +935,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Keyword::Throw) => self.parse_throw(),
             TokenKind::Keyword(Keyword::Try) => self.parse_try(),
             TokenKind::Keyword(Keyword::Switch) => self.parse_switch(),
+            TokenKind::Keyword(Keyword::Debugger) => self.parse_debugger(),
             TokenKind::Keyword(Keyword::Break | Keyword::Continue) => self.parse_break_continue(),
             TokenKind::Identifier(_) if self.at_label() => self.parse_labelled(),
             _ => match self.statement_start_error() {
@@ -1564,6 +1565,16 @@ impl<'a> Parser<'a> {
         };
         self.expect_semi()?;
         Ok(StmtKind::Return(argument))
+    }
+
+    /// DebuggerStatement: `debugger` `;` (ECMAScript 14.16). With no debugger
+    /// attached it completes normally with an empty value, so it is parsed
+    /// as an empty statement: it lowers to no instructions and leaves the
+    /// completion value as it was.
+    fn parse_debugger(&mut self) -> PResult<StmtKind> {
+        self.advance()?;
+        self.expect_semi()?;
+        Ok(StmtKind::Empty)
     }
 
     /// ThrowStatement: `throw` [no LineTerminator here] Expression `;`
@@ -4648,7 +4659,6 @@ fn unsupported_statement(k: Keyword) -> Option<&'static str> {
     Some(match k {
         Keyword::Import => "modules (`import`) are",
         Keyword::Export => "modules (`export`) are",
-        Keyword::Debugger => "`debugger` is",
         _ => return None,
     })
 }

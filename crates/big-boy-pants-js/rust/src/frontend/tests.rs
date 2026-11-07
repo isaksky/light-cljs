@@ -5167,7 +5167,6 @@ fn rejects_unsupported_syntax_with_positions() {
     use SyntaxErrorKind::Unsupported;
     let cases: &[(&str, u32, u32, &str)] = &[
         ("await x;", 1, 1, "await"),
-        ("debugger;", 1, 1, "debugger"),
         ("import x from 'y';", 1, 1, "import"),
         ("export const x = 1;", 1, 1, "export"),
         ("x = import('y');", 1, 5, "import"),
@@ -5177,6 +5176,63 @@ fn rejects_unsupported_syntax_with_positions() {
     }
     parse_script("function f(...a) {}").unwrap();
     rejects_with("x = super.y;", SyntaxErrorKind::Invalid, 1, 5, "super");
+}
+
+/// DebuggerStatement (ECMAScript 14.16): `debugger` with `;` or automatic
+/// semicolon insertion is a statement wherever one may appear, and parses as
+/// an empty statement; `debugger` stays a reserved word.
+#[test]
+fn debugger_statement_positions() {
+    for (src, expected) in [
+        ("debugger;", "(empty)"),
+        ("debugger", "(empty)"),
+        ("debugger\n1;", "(empty) 1"),
+        ("5; debugger; 6;", "5 (empty) 6"),
+    ] {
+        assert_eq!(ast(src), expected, "{src:?}");
+    }
+    for src in [
+        "{ debugger; }",
+        "{ debugger }",
+        "if (a) debugger; else debugger;",
+        "if (a) debugger\nelse debugger",
+        "while (a) debugger;",
+        "do debugger; while (a)",
+        "do debugger\nwhile (a)",
+        "for (;;) debugger;",
+        "for (const k in o) debugger;",
+        "for (const x of a) debugger;",
+        "L: debugger;",
+        "L: { debugger; break L; }",
+        "switch (a) { case 1: debugger; default: debugger }",
+        "function f() { debugger; return 1; }",
+        "function f() { \"use strict\"; debugger; }",
+        "const g = () => { debugger; };",
+        "try { debugger; } catch (e) { debugger; } finally { debugger; }",
+        "class C { m() { debugger; } static { debugger; } }",
+    ] {
+        parse_script(src).unwrap_or_else(|e| panic!("{src:?} failed: {e}"));
+    }
+    for src in ["debugger; 1;", "with (o) debugger;", "debugger\n"] {
+        parse_script_with(src, ScriptOptions::SLOPPY)
+            .unwrap_or_else(|e| panic!("{src:?} failed: {e}"));
+    }
+    // No automatic semicolon on the same line.
+    rejects("debugger 1;", SyntaxErrorKind::UnexpectedToken, 1, 10);
+    rejects("debugger();", SyntaxErrorKind::UnexpectedToken, 1, 9);
+    // Still a reserved word, in strict and sloppy code.
+    for src in [
+        "var debugger = 1;",
+        "let debugger;",
+        "function debugger() {}",
+        "debugger = 1;",
+    ] {
+        assert!(parse_script(src).is_err(), "{src:?}");
+        assert!(
+            parse_script_with(src, ScriptOptions::SLOPPY).is_err(),
+            "{src:?} (sloppy)"
+        );
+    }
 }
 
 #[test]

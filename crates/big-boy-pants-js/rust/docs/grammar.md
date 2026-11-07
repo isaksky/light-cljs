@@ -30,7 +30,7 @@ identified in [attribution.md](attribution.md).
 | --- | --- | --- |
 | Lexical forms | Unicode/escaped identifiers, decimal/binary/octal/hex numbers and numeric separators, BigInt, quoted strings and escapes, templates/tagged templates, RegExp lexical goal, ASI | `tests/quickjs_language.rs`, `src/frontend/tests.rs`, `tests/js_source.rs` |
 | Expressions | Arithmetic/bitwise/shift/exponentiation, comparisons/equality, coercions, comma/conditional/logical/nullish, assignments including logical and compound, updates, `typeof`, `void`, `delete`, `in`, `instanceof`, optional chains | `tests/quickjs_language.rs`; `tests/fixtures/js/logical_assignment.js`; `tests/js_source.rs` |
-| Statements and bindings | Blocks, lexical/var hoisting and TDZ, if/switch, while/do/for, labels and abrupt completion, for-in/prototype enumeration, for-of and async iteration, patterns/defaults/rest in supported binding heads | `tests/js_source.rs`, `tests/quickjs_functions.rs`, `tests/async_iteration.rs`, `tests/exception_waits.rs` |
+| Statements and bindings | Blocks, lexical/var hoisting and TDZ, if/switch, while/do/for, labels and abrupt completion, `debugger` (an empty statement), for-in/prototype enumeration, for-of and async iteration, patterns/defaults/rest in supported binding heads | `tests/js_source.rs`, `tests/quickjs_functions.rs`, `tests/async_iteration.rs`, `tests/exception_waits.rs` |
 | Functions and scope | Declarations/expressions/arrows, nested calls/recursion/closures, parameters/defaults/rest, lexical this/super/new.target, unmapped arguments, call/apply/bind, strict/sloppy globals, sloppy with, direct/indirect eval and Function compilation; sloppy receiver limits below | `tests/js_functions.rs`, `tests/quickjs_functions.rs`, `tests/closures.rs`, `tests/quickjs_objects.rs` |
 | Objects | Named/computed/string/symbol keys, literals/methods/accessors/spread, descriptors, prototypes, extensibility, freeze/seal, own/inherited enumeration, reflection, resumable coercion including Symbol.toPrimitive and Symbol.toStringTag | `tests/quickjs_objects.rs`, `tests/object_statics.rs`, `tests/object_to_string.rs`, `tests/reflect.rs`, `tests/need.rs` |
 | Classes | Base/derived construction, super calls/properties, public fields, private fields/methods/accessors and private-in, static blocks, supported built-in subclasses | `tests/fixtures/js/private_classes.js`, `tests/class_static_blocks.rs`, `tests/builtin_subclasses.rs`, `tests/js_source.rs` |
@@ -235,7 +235,7 @@ checked examples. Runtime API rejections are asserted in `tests/js_source.rs`,
 | `for (using x in o)`, `for (using [x] of a)`, `for (using {x} of a)` (clj-quickjs-238) | Invalid at `using` |
 | classic `for (using x = r; ;)` heads | Unsupported at `using` |
 | `for await` or `for (await using ... of ...)` outside async functions | Unsupported at `await`; module top-level await is absent |
-| a property as a for-of target (`for (a.b of o)`), `debugger` | Unsupported |
+| a property as a for-of target (`for (a.b of o)`) | Unsupported |
 | `with` in strict code (clj-quickjs-110) | Invalid at `with` |
 | `await using` outside async functions, including module top level; patterns, missing initializers, switch clauses or single-statement bodies | SyntaxError (Invalid or Unsupported according to the rejected token) |
 | `import`/`export` in scripts, dynamic `import` | Unsupported |

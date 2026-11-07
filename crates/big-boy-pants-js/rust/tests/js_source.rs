@@ -9312,6 +9312,43 @@ fn script_completion_value_follows_javascript() {
     assert_eq!(num("5; L: switch (1) { case 1: 6; { break L; } }"), 6.0);
 }
 
+/// DebuggerStatement (ECMAScript 14.16): with no debugger attached it
+/// completes normally with an empty value, so it leaves the completion value
+/// as it was, in every statement position.
+#[test]
+fn debugger_statement_completes_empty() {
+    assert_eq!(num("5; debugger;"), 5.0);
+    assert_eq!(num("5; debugger"), 5.0);
+    assert_eq!(eval("debugger;"), ValueView::Undefined);
+    assert_eq!(num("5; debugger\n6"), 6.0);
+    assert_eq!(num("5; { debugger; }"), 5.0);
+    // `if` turns its branch's empty completion into undefined (UpdateEmpty).
+    assert_eq!(eval("5; if (true) debugger; else 6;"), ValueView::Undefined);
+    assert_eq!(
+        num("let i = 0; while (i < 3) { i = i + 1; debugger; }"),
+        3.0
+    );
+    assert_eq!(
+        num("let i = 0; do debugger; while ((i = i + 1) < 3) i"),
+        3.0
+    );
+    assert_eq!(
+        num("for (let i = 0; i < 2; i = i + 1) { 7; debugger; }"),
+        7.0
+    );
+    assert_eq!(num("5; L: debugger;"), 5.0);
+    assert_eq!(num("5; L: { 6; debugger; break L; }"), 6.0);
+    assert_eq!(num("switch (1) { case 1: 4; debugger; }"), 4.0);
+    assert_eq!(num("try { 2; debugger; } finally { debugger; }"), 2.0);
+    assert_eq!(num("function f(x) { debugger; return x + 1; } f(1);"), 2.0);
+    assert_eq!(
+        num("function f() { 'use strict'; debugger\nreturn 3; } f();"),
+        3.0
+    );
+    assert_eq!(num("const g = () => { debugger; return 4; }; g();"), 4.0);
+    assert_eq!(sloppy_eval("5; debugger;"), ValueView::Number(5.0));
+}
+
 /// Unlabelled `break` and `continue` in `while` loops (clj-quickjs-78).
 /// `TEST_WHILE_BREAK` is adapted from `test_while_break` in
 /// `research/quickjs/tests/test_loop.js` (QuickJS, revision 7d1c13c5d8f8;

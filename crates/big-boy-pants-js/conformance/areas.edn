@@ -56,6 +56,27 @@
   "bbp/array_named_properties" {:area :objects-classes}
   "bbp/closure_counter" {:area :functions-scope}
   "bbp/completion_declarations_only" {:area :statements-loops}
+  "bbp/completion_break_keeps_value" {:area :statements-loops}
+  "bbp/completion_break_nested_loop" {:area :statements-loops}
+  "bbp/completion_debugger" {:area :statements-loops}
+  "bbp/completion_do_while_continue" {:area :statements-loops}
+  "bbp/completion_finally_break_empty" {:area :statements-loops}
+  "bbp/completion_finally_break_value" {:area :statements-loops}
+  "bbp/completion_for_continue_keeps_value" {:area :statements-loops}
+  "bbp/completion_for_head_update" {:area :statements-loops}
+  "bbp/completion_for_in_continue_if" {:area :statements-loops}
+  "bbp/completion_for_in_var_initializer" {:area :statements-loops :mode :sloppy}
+  "bbp/completion_if_empty_block" {:area :statements-loops}
+  "bbp/completion_if_keeps_block_value" {:area :statements-loops}
+  "bbp/completion_label_break_block" {:area :statements-loops}
+  "bbp/completion_label_break_nested_loop" {:area :statements-loops}
+  "bbp/completion_switch_fallthrough" {:area :statements-loops}
+  "bbp/completion_switch_nested_break" {:area :statements-loops}
+  "bbp/completion_try_catch_empty" {:area :statements-loops}
+  "bbp/completion_try_empty_finally" {:area :statements-loops}
+  "bbp/completion_try_finally_normal" {:area :statements-loops}
+  "bbp/completion_while_body_without_value" {:area :statements-loops}
+  "bbp/completion_while_if_resets" {:area :statements-loops}
   "bbp/delete_dictionary" {:area :objects-classes}
   "bbp/driver_names_are_free" {:area :functions-scope}
   "bbp/eval_dead_site" {:area :functions-scope}
