@@ -68,10 +68,10 @@ struct Retain { value: source::Value, depth: i64, argument: bool = false }
 fn scalar_equal(heap: source::Heap&, a: source::Value, b: source::Value, c: Control&) -> bool {
     if !source::valid(heap, a) || !source::valid(heap, b) { heap.fault = source::Fault.None; reject(c, Error.Heap); return false; }
     if a.tag() != b.tag() { return false; }
-    match a.tag() {
-        0, 1 => { return true; }, 2 => { return a.flag() == b.flag(); },
-        3 => { return a.num() == b.num() && (a.num() != 0 || 1.0 / a.num() == 1.0 / b.num()) || a.num() != a.num() && b.num() != b.num(); },
-        4 => { if !poll(c, source::str_len(heap, a) + source::str_len(heap, b)) { return false; } return source::same_text(heap, a, b); },
+    match a {
+        Undefined, Null => { return true; }, Bool => { return a.flag() == b.flag(); },
+        Number => { return a.num() == b.num() && (a.num() != 0 || 1.0 / a.num() == 1.0 / b.num()) || a.num() != a.num() && b.num() != b.num(); },
+        String => { if !poll(c, source::str_len(heap, a) + source::str_len(heap, b)) { return false; } return source::same_text(heap, a, b); },
         _ => { return false; },
     }
 }

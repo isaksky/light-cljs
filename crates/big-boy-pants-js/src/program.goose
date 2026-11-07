@@ -115,7 +115,7 @@ fn validate(bytes: const u8[:]) -> Error {
             if span_start > span_end || !boundary(source, span_start) || !boundary(source, span_end) { return Error.Source; }
             if size == 0 && arg != 0 || size == 2 && arg > 65535 { return Error.Limits; }
             if kind == operand::Const && arg >= constant_count || kind == operand::Local && arg >= locals || kind == operand::Function && arg >= child_count || kind == operand::Capture && arg >= captures { return Error.Reference; }
-            if kind == operand::Const && export_name_operand(op) && word(bytes, l.constants + (constants + arg) * 12) != 4 { return Error.Reference; }
+            if kind == operand::Const && export_name_operand(op) && word(bytes, l.constants + (constants + arg) * 12) != constant::String { return Error.Reference; }
             if kind == operand::Target && !branch(bytes, base, count, arg) { return Error.Branch; }
         }
     }

@@ -131,9 +131,9 @@ fn fits_latin1(units: const u16[:]) -> bool { for u in units { if u > 255 { retu
 struct Plain { tag: i64, number: f64 = 0, payload: i64 = 0 }
 fn plain(v: Value) -> Plain {
     return match v {
-        Number n => Plain { tag: 3, number: n.v }, Bool b => Plain { tag: 2, payload: if b.v { 1 } else { 0 } },
-        String s => Plain { tag: 4, payload: s.s }, Object o => Plain { tag: 5, payload: o.o },
-        Symbol s => Plain { tag: 6, payload: s.s }, BigInt b => Plain { tag: 7, payload: b.b }, Accessor a => Plain { tag: -2, payload: a.a }, _ => Plain { tag: v.tag() },
+        Number n => Plain { tag: value_tag::Number, number: n.v }, Bool b => Plain { tag: value_tag::Bool, payload: if b.v { 1 } else { 0 } },
+        String s => Plain { tag: value_tag::String, payload: s.s }, Object o => Plain { tag: value_tag::Object, payload: o.o },
+        Symbol s => Plain { tag: value_tag::Symbol, payload: s.s }, BigInt b => Plain { tag: value_tag::BigInt, payload: b.b }, Accessor a => Plain { tag: value_tag::Accessor, payload: a.a }, _ => Plain { tag: v.tag() },
     };
 }
 fn plain_bytes(v: Value, out: u8[>..]&) { out.append(bytes_of([plain(v)])); }
@@ -829,16 +829,16 @@ fn reserve_identity() -> i64 {
 inline fn truthy(heap: const Heap&, v: Value) -> bool { return match v { Undefined, Null, Empty => false, Bool b => b.v, Number n => n.v != 0 && n.v == n.v, String s => heap.strings[s.s].len != 0, _ => true }; }
 fn equal(heap: Heap&, a: Value, b: Value) -> bool {
     if !valid(heap, a) || !valid(heap, b) || a.tag() != b.tag() { return false; }
-    return match a.tag() {
-        0, 1 => true, 2 => a.flag() == b.flag(), 3 => a.num() == b.num(),
-        4 => { if !charge(heap, str_len(heap, a) + str_len(heap, b)) { return false; } same_text(heap, a, b) },
+    return match a {
+        Undefined, Null => true, Bool => a.flag() == b.flag(), Number => a.num() == b.num(),
+        String => { if !charge(heap, str_len(heap, a) + str_len(heap, b)) { return false; } same_text(heap, a, b) },
         _ => a == b,
     };
 }
 fn numeric(heap: Heap&, v: Value) -> f64 {
     if !valid(heap, v) { return 0; }
     let x = form_value(heap, v);
-    return match x.tag() { 0 => 0.0 / 0.0, 1 => 0.0, 2 => if x.flag() { 1.0 } else { 0.0 }, 3 => x.num(), _ => { heap.fault = Fault.UnsupportedOperand; 0.0 } };
+    return match x { Undefined => 0.0 / 0.0, Null => 0.0, Bool => if x.flag() { 1.0 } else { 0.0 }, Number => x.num(), _ => { heap.fault = Fault.UnsupportedOperand; 0.0 } };
 }
 // A property key (light-cljs-787): a string, or a well-known symbol, which
 // valid() refuses as a value but which is a key like any other.
@@ -3850,12 +3850,12 @@ fn run(job: Job&, budget: i64) -> tiny::Outcome {
 // Canonical scalar/identity output, never a lossy JS print/read bridge.
 fn canonical(heap: Heap&, v: Value, out: u8[>..]&) {
     if !valid(heap, v) { format(out, "invalid:", heap.fault); return; }
-    match v.tag() {
-        0 => { out.append("undefined"); }, 1 => { out.append("null"); }, 2 => { out.append(if v.flag() { "boolean:true" } else { "boolean:false" }); },
-        3 => { if v.num() != v.num() { out.append("number:NaN"); } else if v.num() == 0 && 1.0 / v.num() < 0 { out.append("number:-0"); } else { format(out, "number:", v.num()); } },
-        4 => { out.append("utf16:["); for i in str_len(heap, v) { if i > 0 { out.push(','); } format(out, unit(heap, v, i)); } out.push(']'); },
-        5 => { format(out, "identity:", heap.identity, ":", v.id(), ":", node(heap, v.id()).kind); },
-        6 => { out.append("symbol"); },
+    match v {
+        Undefined => { out.append("undefined"); }, Null => { out.append("null"); }, Bool => { out.append(if v.flag() { "boolean:true" } else { "boolean:false" }); },
+        Number => { if v.num() != v.num() { out.append("number:NaN"); } else if v.num() == 0 && 1.0 / v.num() < 0 { out.append("number:-0"); } else { format(out, "number:", v.num()); } },
+        String => { out.append("utf16:["); for i in str_len(heap, v) { if i > 0 { out.push(','); } format(out, unit(heap, v, i)); } out.push(']'); },
+        Object => { format(out, "identity:", heap.identity, ":", v.id(), ":", node(heap, v.id()).kind); },
+        Symbol => { out.append("symbol"); },
         _ => { out.append("invalid:tag"); },
     }
 }

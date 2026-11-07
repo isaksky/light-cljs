@@ -263,23 +263,22 @@ fn encode(heap: Heap&, rows: const CellRow[:], v: Value, failure: i64&, stored: 
 // With `places` (by row, -1 for none): a publication's object has the
 // identity its place in `publication` names.
 fn encode(heap: Heap&, rows: const CellRow[:], v: Value, failure: i64&, stored: i64[>..]&, places: const i64[:], publication: i64) -> cells::Flat, bool {
-    let t = v.tag();
-    if t == 0 { return cells::Flat {}, true; }
-    if t == 1 { return cells::Flat { kind: 1 }, true; }
-    if t == 2 { return cells::Flat { kind: 2, number: if v.flag() { 1.0 } else { 0.0 } }, true; }
-    if t == 3 { return cells::Flat { kind: 3, number: v.num() }, true; }
-    if t == 4 {
+    if v.is_undefined() { return cells::Flat {}, true; }
+    if v.is_null() { return cells::Flat { kind: 1 }, true; }
+    if v.is_bool() { return cells::Flat { kind: 2, number: if v.flag() { 1.0 } else { 0.0 } }, true; }
+    if v.is_number() { return cells::Flat { kind: 3, number: v.num() }, true; }
+    if v.is_string() {
         var bytes: u8[>..] = []; for u in utf16(heap, v) { bytes.push((u & 255) as u8); bytes.push((u >> 8) as u8); }
         return cells::Flat { kind: 4, data: bytes }, true;
     }
-    if t == 5 && valid(heap, v) && reaches_function(heap, v) { let f, ok = encode_callable(heap, rows, v, failure, stored, places, publication); return copy(f), ok; }
+    if v.is_object() && valid(heap, v) && reaches_function(heap, v) { let f, ok = encode_callable(heap, rows, v, failure, stored, places, publication); return copy(f), ok; }
     // A value outlives the call it was made in: the compiler occurrences and
     // source spans of that call's forms mean nothing to a later job, which
     // sees the value as one built afresh, as the V8 build's form bridge sees
     // an object it did not hand out. The export leaves out the job's source
     // text and spans (light-cljs-809), so it costs what the value reaches.
     var graph = bridge::Graph {}; var c = bridge::Control { cells: true, spans: false }; var bytes: u8[>..] = [];
-    if t != 5 || !bridge::export_rows(heap, [v], graph, c, Value.Undefined, stored) { failure = 5; return cells::Flat {}, false; }
+    if !v.is_object() || !bridge::export_rows(heap, [v], graph, c, Value.Undefined, stored) { failure = 5; return cells::Flat {}, false; }
     for n, i in graph.nodes { graph.nodes[i].origin = -1; }
     if !bridge::encode(graph, bytes, c) { failure = 5; return cells::Flat {}, false; }
     // Each object's identity, 0 for one the owner numbers; a primitive has

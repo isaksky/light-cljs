@@ -225,7 +225,7 @@ struct NodeSig { kind: i64, function: i64, count: i64, keys: i64, key_count: i64
 fn node_sig(n: source::Node) -> NodeSig { return NodeSig { kind: n.kind, function: n.function, count: n.count, keys: n.keys, key_count: n.key_count, key_capacity: n.key_capacity, length: n.length, initialized: n.initialized, immutable: n.immutable, origin: n.origin, source: if n.source == source::no_row() { -1 } else { 0 }, span_start: n.span_start, span_end: n.span_end }; }
 fn scalar_sig(v: source::Value, length: i64) -> ValueSig { return ValueSig { tag: v.tag(), number: v.num(), a: if v.flag() { 1 } else { 0 }, b: length }; }
 fn signature_value(a: const Artifact&, v: source::Value, out: u8[>..]&, c: Control&) -> bool {
-    if v.is_object() { return signature_bytes([ValueSig { tag: 5, a: a.keys[v.id()].slot, b: a.keys[v.id()].arena }], out, c); }
+    if v.is_object() { return signature_bytes([ValueSig { tag: value_tag::Object, a: a.keys[v.id()].slot, b: a.keys[v.id()].arena }], out, c); }
     if !v.is_string() { return signature_bytes([scalar_sig(v, 0)], out, c); }
     let r = a.strings[v.sid()];
     return signature_bytes([scalar_sig(v, r.len)], out, c) && signature_bytes(a.units[r.start..(r.start + r.len)], out, c);
@@ -254,7 +254,7 @@ fn base_signature<T>(s: const T&, slot: i64, checkpoint: i64, out: u8[>..]&, c: 
     if has_values(original) && !snapshot::range(original.start, original.count, s.values.len) { return reject(c, Error.Link); }
     for i in edge_count(original) {
         if !poll(c) { return false; } let v = edge(s, original, i);
-        if v.is_object() { if !signature_bytes([ValueSig { tag: 5, a: v.id(), b: checkpoint }], out, c) { return false; } }
+        if v.is_object() { if !signature_bytes([ValueSig { tag: value_tag::Object, a: v.id(), b: checkpoint }], out, c) { return false; } }
         else if v.is_string() {
             if !snapshot::range(v.sid(), 1, s.strings.len) { return reject(c, Error.Link); }
             let r = s.strings[v.sid()];
