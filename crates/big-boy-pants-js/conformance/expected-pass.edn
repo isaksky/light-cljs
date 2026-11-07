@@ -114,6 +114,7 @@
  "bbp/reclaim_string_loop"
  "bbp/sloppy_globals"
  "bbp/sloppy_implicit_global_delete"
+ "bbp/spread_calls"
  "bbp/strict_directives_sloppy"
  "bbp/strict_equality_same_value"
  "bbp/strict_unresolvable_assignment"

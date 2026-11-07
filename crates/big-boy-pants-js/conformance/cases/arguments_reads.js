@@ -10,8 +10,7 @@
 // element writes (light-cljs-854); Object.getOwnPropertyDescriptor and
 // Object.keys of the object (light-cljs-854 and the objects area,
 // light-cljs-766); `apply`, `Reflect.apply` and `bind` (light-cljs-851,
-// -852; the `call` part is kept); spread of `arguments` into an array or a
-// call (light-cljs-850). Each row is a `row(...)` check; the script
+// -852; the `call` part is kept). Each row is a `row(...)` check; the script
 // completes with the number of rows, or minus the first failing row's number.
 var rows = 0, failed = 0;
 function row(ok) { rows++; if (ok !== true && failed === 0) failed = rows; }
@@ -37,6 +36,8 @@ function name(thunk) { try { thunk(); return "none"; } catch (e) { return e.name
   for (let i = 0; i < items.length; i++) acc = callback(acc, items[i]);
   row(acc === 7);
 }
+{ function f() { return [...arguments]; } const a = f(1, 2); row(Array.isArray(a) && a.length === 2 && a[0] === 1 && a[1] === 2); }
+{ function g(x, y, z) { return x + y + z; } function f() { return g(...arguments); } row(f(1, 2, 3) === 6); }
 { function f() { return arguments[Symbol.iterator] === Array.prototype.values; } row(f()); }
 { function f() { let s = 0; for (const x of arguments) s += x; return s; } row(f(1, 2, 3) === 6); }
 { function f() { return typeof arguments; } row(f() === "object"); }

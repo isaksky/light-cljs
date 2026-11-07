@@ -132,6 +132,7 @@
   "bbp/arguments_reads_sloppy" {:area :functions-scope :mode :sloppy}
   "bbp/sloppy_globals" {:area :functions-scope :mode :sloppy}
   "bbp/function_metadata" {:area :functions-scope}
+  "bbp/spread_calls" {:area :functions-scope}
   "bbp/getter_only_strict" {:area :objects-classes}
   "bbp/index_keys_order" {:area :objects-classes}
   "bbp/object_rest_spread" {:area :objects-classes}

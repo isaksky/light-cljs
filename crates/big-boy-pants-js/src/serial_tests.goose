@@ -531,12 +531,11 @@ fn main() {
     // Direct eval (light-cljs-823): reached, it fails by name even under a
     // `catch`; replacing the global `eval` makes the marked call ordinary; an
     // indirect eval is an unimplemented step of %eval%. Spread arguments
-    // from a generator are collected (light-cljs-843), then stop at their
-    // unimplemented check_spread_arguments (spread calls, light-cljs-764)
-    // before the marked call_spread runs, so the spread variants are checked
-    // at decode (direct_eval_decode).
+    // from a generator are collected (light-cljs-843) and checked
+    // (light-cljs-850); the marked call_spread of %eval% then fails by name,
+    // and the spread variants are checked at decode (direct_eval_decode).
     check(embed_file("../corpus/serial/direct-eval-reached.gsp"), "Fault.Unsupported:direct_eval", source::Fault.Unsupported);
-    check(embed_file("../corpus/serial/direct-eval-spread.gsp"), "Fault.Unsupported:check_spread_arguments", source::Fault.Unsupported);
+    check(embed_file("../corpus/serial/direct-eval-spread.gsp"), "Fault.Unsupported:direct_eval", source::Fault.Unsupported);
     direct_eval_decode(embed_file("../corpus/serial/direct-eval-spread.gsp"));
     check(embed_file("../corpus/serial/direct-eval-replaced.gsp"), "number:2.0");
     check(embed_file("../corpus/serial/indirect-eval.gsp"), "Fault.UnsupportedOperand:eval:-indirect-eval", source::Fault.UnsupportedOperand);
@@ -1704,7 +1703,7 @@ fn direct_eval_decode(bytes: const u8[:]) {
             let ins = source::instruction(source::Op { code: n, arg: 0, offset: 0, start: 0, end: 0, direct_eval: flag });
             let ok = match ins {
                 DirectEval d => flag && d.method == (n == opcode::CallMethod || n == opcode::CallMethodSpread) && d.spread == (n == opcode::CallSpread || n == opcode::CallMethodSpread),
-                Call => !flag && n == opcode::Call, CallMethod => !flag && n == opcode::CallMethod, Unsupported u => !flag && (n == opcode::CallSpread || n == opcode::CallMethodSpread) && u.opcode == n,
+                Call => !flag && n == opcode::Call, CallMethod => !flag && n == opcode::CallMethod, CallSpread s => !flag && (n == opcode::CallSpread || n == opcode::CallMethodSpread) && s.method == (n == opcode::CallMethodSpread),
                 _ => false,
             };
             assert(ok);

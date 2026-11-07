@@ -216,9 +216,16 @@ enum Ins {
     // The Call, CallMethod, CallSpread or CallMethodSpread of a direct-eval
     // site (light-cljs-823): when its callee is the realm's %eval% it fails
     // Unsupported naming `direct_eval` (decision 1); any other callee is an
-    // ordinary call, which for the unimplemented spread calls fails
-    // Unsupported naming their opcode.
+    // ordinary call, spread or not.
     DirectEval { argc: u32, method: bool, spread: bool },
+    // Spread arguments (light-cljs-850; rust/src/vm/dispatch.rs
+    // spread_arguments and call_spread): CheckSpread (CheckSpreadArguments)
+    // args → args, a RangeError above 65,535 packed elements; CallSpread
+    // (CallSpread, CallMethodSpread) f args → result and this f args →
+    // result; ConstructSpread f args → result. The packed array is the
+    // compiler's private array: its elements replace it on the operand stack
+    // and the call runs as Call, CallMethod or Construct (spread_unpack).
+    CheckSpread, CallSpread { method: bool }, ConstructSpread,
     // Script declarations and global names (light-cljs-824, global_op), `op`
     // the opcode and `k` its name constant: PutGlobal, PutGlobalStrict,
     // DeclareGlobalVar, DeclareGlobalFunction, DeclareGlobalLet,
@@ -647,7 +654,8 @@ fn instruction(op: Op) -> Ins {
         opcode::Function, opcode::Method => Ins.Closure { child: a }, opcode::Construct => Ins.Construct { argc: a },
         opcode::Call => if op.direct_eval { Ins.DirectEval { argc: a, method: false, spread: false } } else { Ins.Call { argc: a } },
         opcode::CallMethod => if op.direct_eval { Ins.DirectEval { argc: a, method: true, spread: false } } else { Ins.CallMethod { argc: a } },
-        opcode::CallSpread, opcode::CallMethodSpread => if op.direct_eval { Ins.DirectEval { argc: 0, method: op.code == opcode::CallMethodSpread, spread: true } } else { Ins.Unsupported { opcode: op.code as u8 } },
+        opcode::CallSpread, opcode::CallMethodSpread => if op.direct_eval { Ins.DirectEval { argc: 0, method: op.code == opcode::CallMethodSpread, spread: true } } else { Ins.CallSpread { method: op.code == opcode::CallMethodSpread } },
+        opcode::ConstructSpread => Ins.ConstructSpread, opcode::CheckSpreadArguments => Ins.CheckSpread,
         opcode::NewArguments => Ins.Arguments, opcode::Rest => Ins.Rest { skip: a }, opcode::CurrentFunction => Ins.Callee, opcode::GetCapture => Ins.Capture { slot: a },
         opcode::NewCell, opcode::NewSealableCell => Ins.NewCell { immutable: false }, opcode::NewFixedCell => Ins.NewCell { immutable: true },
         opcode::CellInit => Ins.InitCell, opcode::CellGet => Ins.ReadCell, opcode::CellSet => Ins.WriteCell,
@@ -3661,22 +3669,36 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     // packed array), above a method's receiver.
                     let below = if c.spread { 1 } else { c.argc as i64 };
                     if realm_eval(heap, job.operands[job.operands.len - below - 1]) { job.direct_eval = true; heap.fault = Fault.Unsupported; break; }
-                    if c.spread { heap.fault = Fault.Unsupported; break; }
                     settle(job, ran, used);
-                    if !invoke(job, top, at, c.argc, c.method) { break; }
+                    let argc: i64 = if c.spread { spread_unpack(job, top, at, c.method, false) } else { c.argc };
+                    if argc < 0 { if heap.fault == Fault.None { in_place(job, top, at); } break; }
+                    if !invoke(job, top, at, argc, c.method) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                CheckSpread => {
+                    let a = job.operands[job.operands.len - 1];
+                    if !a.is_object() || node(heap, a.id()).kind != node_kind::Array { heap.fault = Fault.TypeError; break; }
+                    if node(heap, a.id()).length > 65535 { heap.fault = Fault.RangeError; break; }
+                },
+                CallSpread s => {
+                    settle(job, ran, used);
+                    let argc = spread_unpack(job, top, at, s.method, false);
+                    if argc < 0 { if heap.fault == Fault.None { in_place(job, top, at); } break; }
+                    if !invoke(job, top, at, argc, s.method) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                ConstructSpread => {
+                    settle(job, ran, used);
+                    let argc = spread_unpack(job, top, at, false, true);
+                    if argc < 0 { if heap.fault == Fault.None { in_place(job, top, at); } break; }
+                    if !construct_at(job, top, at, argc) { break; }
                     left = fuel(job, allowance, used);
                 },
                 // A Delay constructs as its call (light-cljs-808, with its
                 // map demand); every other callee takes construct.
                 Construct c => {
                     settle(job, ran, used);
-                    let callee = job.operands[job.operands.len - c.argc - 1];
-                    // new Number(o), new String(o): the construction runs
-                    // again on the primitive (light-cljs-832).
-                    let converts, hint = argument_converts(heap, callee, job.operands[(job.operands.len - c.argc)..]);
-                    if constructible(heap, callee) { if !invoke(job, top, at, c.argc, false) { break; } }
-                    else if converts { job.frames[top].pc = at; start_convert(job, hint, hint == Hint.String, 1, c.argc); in_place(job, top, at); break; }
-                    else { job.frames[top].pc = pc; construct(job, c.argc); if !in_place(job, top, at) { break; } }
+                    if !construct_at(job, top, at, c.argc) { break; }
                     left = fuel(job, allowance, used);
                 },
                 NewTarget => { job.operands.push(job.frames[top].input); },
@@ -3693,6 +3715,82 @@ fn execute(job: Job&, allowance: i64) -> i64 {
         if heap.fault != Fault.None { settle(job, ran, used); job.frames[top].pc = pc; fail(job, heap.fault, frame_at(job, top, at)); }
     }
     return used;
+}
+// Construct and ConstructSpread at `at`, with the instruction's counts
+// settled and f a1..an the top argc + 1 operands. Returns whether the frame
+// continues in place.
+inline fn construct_at(job: Job&, top: i64, at: i64, argc: i64) -> bool {
+    let heap .= job.heap;
+    let callee = job.operands[job.operands.len - argc - 1];
+    if constructible(heap, callee) { return invoke(job, top, at, argc, false); }
+    // new Number(o), new String(o): the construction runs again on the
+    // primitive (light-cljs-832).
+    let converts, hint = argument_converts(heap, callee, job.operands[(job.operands.len - argc)..]);
+    if converts { job.frames[top].pc = at; start_convert(job, hint, hint == Hint.String, 1, argc); in_place(job, top, at); return false; }
+    job.frames[top].pc = at + 1; construct(job, argc);
+    return in_place(job, top, at);
+}
+// A spread call's arguments (light-cljs-850; the Pants engine's
+// spread_arguments and call_spread): the packed array on the operand top,
+// the compiler's private array built by AppendElement and checked by
+// CheckSpread, is replaced by its elements, read straight from its element
+// run with no observable property access, and the call then runs as Call,
+// CallMethod or Construct of that many arguments (the same frame entry,
+// receiver and new.target, built-ins included). Elements that would pass
+// the value limit are a catchable StackLimit before anything changes.
+// A built-in callee that would run the instruction again from `at` first
+// (invoke's map demand, a Number or String conversion of its first
+// argument) does so with the packed array still in place, so the call
+// stays one instruction: a map demand realizes the map in its own row, and
+// a conversion converts a copy of the first argument pushed above the
+// array, which the next run writes back into the array (a primitive on top
+// marks it: the packed array is always an Array). Returns the argument
+// count, or -1 when the call does not run now (heap.fault set, or a demand
+// or conversion started with the pc at `at`).
+fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool) -> i64 {
+    let heap .= job.heap;
+    let last = job.operands[job.operands.len - 1];
+    let converted = !last.is_object() || node(heap, last.id()).kind != node_kind::Array;
+    let primitive = if converted { job.operands.pop() } else { Value.Undefined };
+    let array = job.operands[job.operands.len - 1];
+    if !array.is_object() || node(heap, array.id()).kind != node_kind::Array { heap.fault = Fault.InvalidState; return -1; }
+    let base = job.operands.len - 1 - (if method { 2 } else { 1 });
+    var callee = job.operands[base + (if method { 1 } else { 0 })];
+    // Function.prototype.call forwards its receiver as callee (call).
+    var skip: i64 = 0;
+    if !constructs && callee.is_object() && node(heap, callee.id()).kind == node_kind::Builtin && builtin_of(heap, callee.id()) == Builtin.FunctionPrototypeCall {
+        callee = if method { job.operands[base] } else { Value.Undefined }; skip = 1;
+    }
+    let count = node(heap, array.id()).length as i64;
+    if converted {
+        if !set_element(heap, array, skip, primitive) { return -1; }
+    } else if callee.is_object() && node(heap, callee.id()).kind == node_kind::Builtin && !(constructs && constructible(heap, callee)) && count > skip {
+        let b = builtin_of(heap, callee.id());
+        let first, _ = own_element(heap, array, skip);
+        if heap.fault != Fault.None { return -1; }
+        if (b == Builtin.Number || b == Builtin.String) && convertible(heap, first) {
+            job.operands.push(first); job.frames[top].pc = at;
+            start_convert(job, if b == Builtin.String { Hint.String } else { Hint.Number }, b == Builtin.String, 1, 1);
+            return -1;
+        }
+        if !constructs && (b == Builtin.Vec || b == Builtin.Into) {
+            for i in skip..count {
+                let v, _ = own_element(heap, array, i);
+                if heap.fault != Fault.None { return -1; }
+                if demand_map(job, v) { job.steps -= 1; job.frames[top].pc = at; return -1; }
+                if heap.fault != Fault.None { return -1; }
+            }
+        }
+    }
+    if count - 1 > heap.limits.stack - job.locals.len - job.operands.len { heap.fault = Fault.StackLimit; return -1; }
+    if !charge(heap, count) { return -1; }
+    job.operands.pop();
+    for i in count {
+        let v, _ = own_element(heap, array, i);
+        if heap.fault != Fault.None { return -1; }
+        job.operands.push(v);
+    }
+    return count;
 }
 // new f(a1, ..., an) (Construct, light-cljs-831; the Pants engine's
 // vm/dispatch.rs construct_target, QuickJS's JS_CallConstructorInternal),
