@@ -111,6 +111,10 @@
   "bbp/bitwise_operators_follow_to_int32" {:area :operators-values}
   "bbp/exponent_operator" {:area :operators-values}
   "bbp/compound_bitwise_assignment" {:area :operators-values}
+  "bbp/update_expressions_on_properties" {:area :operators-values}
+  "bbp/compound_assignment_on_properties" {:area :operators-values}
+  "bbp/logical_assignment_on_properties" {:area :operators-values}
+  "bbp/property_update_sloppy_ignored" {:area :operators-values :mode :sloppy}
 
   ;; ---- Pants engine fixtures (rust/tests/fixtures/js)
   "pants/arithmetic" {:area :operators-values :origin :pants-authored}

@@ -173,7 +173,7 @@ struct Op { code: i64, arg: i64, offset: i64, start: i64, end: i64, depth: i64 =
 // (source spans, byte offsets, the opcode a fault names). An opcode this VM
 // does not implement decodes to `Unsupported` and fails by name when it runs.
 enum Ins {
-    Const { k: u32 }, Undefined, Load { slot: u32 }, Store { slot: u32 }, Pop, Dup, Binary { op: u8 }, Not,
+    Const { k: u32 }, Undefined, Load { slot: u32 }, Store { slot: u32 }, Pop, Dup, Dup2, Dup3, Binary { op: u8 }, Not,
     Jump { to: u32 }, JumpUnless { to: u32 }, Return, NewObject, NewArray, Try { to: u32 }, Throw, EndTry,
     Unary { op: u8 }, Numeric2, Closure { child: u32 }, Call { argc: u32 }, CallMethod { argc: u32 },
     Arguments, Rest { skip: u32 }, Callee, Capture { slot: u32 }, NewCell { immutable: bool },
@@ -528,7 +528,7 @@ fn instruction(op: Op) -> Ins {
     let a = op.arg as u32;
     return match op.code {
         opcode::Const => Ins.Const { k: a }, opcode::Undefined => Ins.Undefined, opcode::GetLocal => Ins.Load { slot: a }, opcode::SetLocal => Ins.Store { slot: a },
-        opcode::Pop => Ins.Pop, opcode::Dup => Ins.Dup,
+        opcode::Pop => Ins.Pop, opcode::Dup => Ins.Dup, opcode::Dup2 => Ins.Dup2, opcode::Dup3 => Ins.Dup3,
         opcode::Add, opcode::Sub, opcode::Mul, opcode::Lt, opcode::StrictEq, opcode::Div, opcode::Rem, opcode::Gt, opcode::Le, opcode::Ge, opcode::LooseEq, opcode::Plus, opcode::CompareLt, opcode::CompareGt, opcode::CompareLe, opcode::CompareGe => Ins.Binary { op: op.code as u8 },
         opcode::BitAnd, opcode::BitOr, opcode::BitXor, opcode::Shl, opcode::Sar, opcode::UShr, opcode::Pow => Ins.Binary { op: op.code as u8 },
         opcode::Not => Ins.Not, opcode::Jump => Ins.Jump { to: a }, opcode::JumpIfFalse => Ins.JumpUnless { to: a }, opcode::Return => Ins.Return,
@@ -3019,6 +3019,10 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Store s => { job.locals[lb + s.slot] = job.operands.pop(); },
                 Pop => { job.operands.pop(); },
                 Dup => { let v = job.operands[job.operands.len - 1]; job.operands.push(v); },
+                // a b → a b a b: a computed reference read before it is written.
+                Dup2 => { let n = job.operands.len; let a = job.operands[n - 2]; let b = job.operands[n - 1]; job.operands.push(a); job.operands.push(b); },
+                // a b c → a b c a b c: the super-reference form (its own opcodes stay Unsupported).
+                Dup3 => { let n = job.operands.len; let a = job.operands[n - 3]; let b = job.operands[n - 2]; let c = job.operands[n - 1]; job.operands.push(a); job.operands.push(b); job.operands.push(c); },
                 Binary b => {
                     let y = job.operands.pop(); let x = job.operands.pop();
                     if x.is_number() && y.is_number() { job.operands.push(arithmetic(b.op, x.num(), y.num())); }
