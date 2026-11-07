@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "6d003c9fd903965cd237a7fa422d2bdbae948423b1b95cbf81ccefdd924c6b04",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "de1f029207ce61b2f1ea5f5f9ed1c1cff46f880bfb1f9fd81529fc4eaa2bcfa7",
+  "818278ee2cf7150aff94ebeb020c9f7823ec6d2ba2c47ff9dac7e5402aee5a44",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "1a2108185dffceee40083c348fb8b306d46c392910ab5036cfe75b0ae45a205b",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -237,6 +237,10 @@
   "c2af7dae125c0e3e4f23b912f54e43b87f4a980fc1f7fe33c35762dd303f78bc",
   "corpus/serial/cancel-fault.js"
   "e2c34495ef35ab5f9afce52b824a58da83bb016bba00bfac294c14f851bfd6a6",
+  "corpus/serial/cancel-for-of.gsp"
+  "e3886d1b571f8cb50a640e14f5dd68b9d6106d24834201b5bbe734263645dd52",
+  "corpus/serial/cancel-for-of.js"
+  "3860c38705eccd13220b56695224d7ec55d7144a3bcdd1134544975f8cde5750",
   "corpus/serial/cancel-suspended.gsp"
   "af4796a14f03d5f28fb1761e58f2a0a902156b5bd0fed1a4bbe9c3e326356019",
   "corpus/serial/cancel-suspended.js"
@@ -278,9 +282,9 @@
   "corpus/serial/direct-eval-replaced.js"
   "47317eb2e644531ca42083dae251f95ad3b2e7398bf1ef87726a2ff198896821",
   "corpus/serial/direct-eval-spread.gsp"
-  "558a133516e12d4fd2f6b889997431d864e68e949d0e9d95097ddc02b155bbb5",
+  "ade4b311757acf742c2a1462029b641525fd82eb331752fbdf24046265ff2d4b",
   "corpus/serial/direct-eval-spread.js"
-  "19ce7dae35a8cfb762d5b1f44fa7ea9a1559d0f804cf92a44a69af81763bbbfb",
+  "53473fa8b2eb481ba1130eef7d037b98d46b0e29790c937adf63a46df77fca39",
   "corpus/serial/dormant-constants.gsp"
   "c9ab79b50cdf58ca9495bb3fa5c6c5cee78a6a30d98947e50382bd8f40b99eb8",
   "corpus/serial/dormant-constants.js"
@@ -293,6 +297,14 @@
   "e23aa092ca22728ff8e9f2d2af0192e1ec827efbd8e30bb453074dd1db45d1f5",
   "corpus/serial/for-in.js"
   "7e694131eea33dd80c6377b40bf3060dd3b8a190961cf3361d2aa56da41fa87e",
+  "corpus/serial/for-of-wait.gsp"
+  "00eee9707551d76b4bf2453c5ca72dd859ba7887eb3518c1277f13c0ce6137af",
+  "corpus/serial/for-of-wait.js"
+  "3a7cb1abfc3d6902c252117a246a5fdd1c94937b6b1d7074ca1932493566096f",
+  "corpus/serial/for-of.gsp"
+  "7a0388f9e15d76325648b2926413e4f57d8e0cd110f578c3e1bf947c230338d7",
+  "corpus/serial/for-of.js"
+  "3418e8ced7028ff0064a34e4deec8634180d36c86a4ed8d115264f0c400a6921",
   "corpus/serial/function-keys.gsp"
   "8800f6614dca351ab1a599542015acdbe88933e2d5ffbf5d0ebd5da82e10ef5f",
   "corpus/serial/function-keys.js"
@@ -498,9 +510,9 @@
   "corpus/serial/unsupported-prototype.js"
   "cc6c5a73c0397c5fa7c930846537e9b32d76bac4469adebc6de30c4834c4d3d9",
   "corpus/serial/unsupported-reached.gsp"
-  "eb5dcbba5e9ba935ab5801b0e8430073a8b42337310795149d96354b8ae9b8cf",
+  "c3cb06cf1ece6674fb28155ebc9de217382d931e6f2419b00ca8888e30fb75ae",
   "corpus/serial/unsupported-reached.js"
-  "672e1dfb7887aae2204fbcb37e91c25f7c047515ca1bf96434707c419cd5ab14",
+  "84a9f0f7c43a3874d5b1b45b3b49282f1366e9f8f79e06bb3bedc86fcc7ec294",
   "corpus/synthetic/arithmetic.function.js"
   "a48171116d7fa39dd0029f65a28ac9c9bcc44bddd010457d828181f0a7f05958",
   "corpus/synthetic/arithmetic.gsp"

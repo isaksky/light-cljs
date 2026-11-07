@@ -68,6 +68,7 @@
   "bbp/completion_for_head_update" {:area :statements-loops}
   "bbp/completion_for_in_continue_if" {:area :statements-loops}
   "bbp/completion_for_in_var_initializer" {:area :statements-loops :mode :sloppy}
+  "bbp/completion_for_of_empty" {:area :statements-loops}
   "bbp/completion_if_empty_block" {:area :statements-loops}
   "bbp/completion_if_keeps_block_value" {:area :statements-loops}
   "bbp/completion_label_break_block" {:area :statements-loops}
@@ -88,6 +89,10 @@
   "bbp/for_heads" {:area :statements-loops}
   "bbp/for_in_targets_and_arrays" {:area :statements-loops}
   "bbp/for_in_var_initializer" {:area :statements-loops :mode :sloppy}
+  "bbp/for_of_user_iterables" {:area :statements-loops}
+  "bbp/for_of_abrupt_completions" {:area :statements-loops}
+  "bbp/for_of_generators" {:area :statements-loops}
+  "bbp/for_of_heads_and_completion" {:area :statements-loops}
   "bbp/labelled_jumps" {:area :statements-loops}
   "bbp/long_loop" {:area :statements-loops}
   "bbp/switch_statements" {:area :statements-loops}

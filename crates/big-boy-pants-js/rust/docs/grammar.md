@@ -235,7 +235,6 @@ checked examples. Runtime API rejections are asserted in `tests/js_source.rs`,
 | `for (using x in o)`, `for (using [x] of a)`, `for (using {x} of a)` (clj-quickjs-238) | Invalid at `using` |
 | classic `for (using x = r; ;)` heads | Unsupported at `using` |
 | `for await` or `for (await using ... of ...)` outside async functions | Unsupported at `await`; module top-level await is absent |
-| a property as a for-of target (`for (a.b of o)`) | Unsupported |
 | `with` in strict code (clj-quickjs-110) | Invalid at `with` |
 | `await using` outside async functions, including module top level; patterns, missing initializers, switch clauses or single-statement bodies | SyntaxError (Invalid or Unsupported according to the rejected token) |
 | `import`/`export` in scripts, dynamic `import` | Unsupported |
@@ -1399,8 +1398,16 @@ for (f() in o) ;
 for (__rt.count in o) ;
 ```
 
-```js reject Unsupported 1:6
+```js accept
+// A property reference is a for-of target too (light-cljs-843), evaluated
+// each iteration after `next` and before the body.
 for (a.b of o) {}
+for (a[0] of o) ;
+for ((a.x) of o) ;
+```
+
+```js reject Invalid 1:6
+for (f() of o) ;
 ```
 
 ```js accept
@@ -1697,8 +1704,9 @@ for (var x of new Uint8Array([1, 2])) {}
 for (let x of a, b) {}
 ```
 
-```js reject Unsupported 1:6
-for (obj.x of a) {}
+```js accept
+let obj = {}; for (obj.x of [1, 2]) {}
+obj.x === 2;
 ```
 
 ```js accept

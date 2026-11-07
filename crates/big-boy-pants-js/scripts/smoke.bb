@@ -76,7 +76,7 @@
                    ["corpus/serial/loop.gsp" 0 {:status :limit :fault "Fault.InstructionLimit"}]
                    ["corpus/serial/type-error.gsp" 0 {:status :thrown :value "error:TypeError"}]
                    ["corpus/serial/global-missing.gsp" 0 {:status :thrown :value "error:ReferenceError"}]
-                   ["corpus/serial/unsupported-reached.gsp" 0 {:status :unsupported :fault "Fault.Unsupported" :operation "get_iterator"}]
+                   ["corpus/serial/unsupported-reached.gsp" 0 {:status :unsupported :fault "Fault.Unsupported" :operation "using_check"}]
                    [path 1 {:status :infrastructure :reason "load:Error.Version"}]
                    ["corpus/missing.gsp" 1 {:status :infrastructure :reason "cannot read program"}]]]
             (let [result (process/shell {:continue true :out :string :err :string} conformance (if (fs/absolute? image) image (str (fs/path root image))))

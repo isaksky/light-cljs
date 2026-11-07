@@ -3894,6 +3894,27 @@ fn for_of_abrupt_completions() {
     );
 }
 
+/// Synthetic fixtures, not light-cljs output. A property reference as a
+/// for-of target (light-cljs-843) is evaluated anew each iteration, after
+/// `next` and before the body, as a for-in member target is; a store that
+/// throws closes the iterator.
+#[test]
+fn for_of_assigns_member_targets() {
+    for source in [
+        "let a = {x:0}, tab = []; for (a.x of [1, 2]) tab.push(a.x); tab.toString() === '1,2' && a.x === 2",
+        "let a = [0], tab = []; for (a[0] of ['p', 'q']) tab.push(a[0]); tab.toString() === 'p,q' && a[0] === 'q'",
+        "let a = {}; for (((a.x)) of [1, 2]) ; for ((a[0]) of [3, 4]) ; a.x === 2 && a[0] === 4",
+        "let log = '', a = {}; function obj() { log += 'o'; return a; } let it = { n: 0, next() { log += 'n'; return { value: ++this.n, done: this.n > 2 }; } }; it[Symbol.iterator] = function() { return this; }; for (obj().k of it) log += a.k; log === 'no1no2n' && a.k === 2",
+        "let log = '', a = {set k(v) { log += v; }}; function obj() { log += 'o'; return a; } function key() { log += 'k'; return {toString() { log += 'c'; return 'k'; }}; } for (obj()[key()] of ['a', 'b']) log += '!'; log === 'okca!okcb!'",
+        "let a = {}, b = {}, target = a; for (target.x of [1, 2]) target = b; a.x === 1 && b.x === 2",
+        "let closed = 0, n = 0, caught; let it = { next() { return { value: 1, done: false }; }, return() { closed++; return {}; } }; it[Symbol.iterator] = function() { return this; }; let a = {}; Object.defineProperty(a, 'x', {set(v) { throw 'set'; }}); try { for (a.x of it) n++; } catch (e) { caught = e; } caught === 'set' && closed === 1 && n === 0",
+        "let closed = 0, caught; let it = { next() { return { value: 1, done: false }; }, return() { closed++; return {}; } }; it[Symbol.iterator] = function() { return this; }; let a = null; try { for (a.x of it) ; } catch (e) { caught = e; } caught instanceof TypeError && closed === 1",
+        "let closed = 0, caught; let it = { next() { return { value: 1, done: false }; }, return() { closed++; return {}; } }; it[Symbol.iterator] = function() { return this; }; let a = {}; Object.freeze(a); try { for (a.x of it) ; } catch (e) { caught = e; } caught instanceof TypeError && closed === 1",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
 #[test]
 fn for_of_close_preserves_exception_diagnostics() {
     let src = "let it = {\nnext() { return {value: 1, done: false}; },\nreturn() { throw 99; }\n};\nit[Symbol.iterator] = function() { return this; };\nfor (let x of it) break;";

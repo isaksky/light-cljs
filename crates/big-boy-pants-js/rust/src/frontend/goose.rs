@@ -1005,9 +1005,9 @@ mod serial_tests {
             // `==` (light-cljs-827; its work limits in serial_tests.goose).
             ("string-to-number", "boolean:true"),
             ("unsupported-prototype", "string:[object Object]"),
-            // Unimplemented operations: `new Date` on a dead path, and
-            // for-of iteration reached under a `catch` that cannot swallow its
-            // fault there (serial_tests.goose).
+            // Unimplemented operations: `new Date` on a dead path, and a
+            // `using` declaration reached under a `catch` that cannot swallow
+            // its fault there (serial_tests.goose).
             ("unsupported-dead", "number:7"),
             ("unsupported-reached", "number:1"),
             // [[Construct]] of ordinary functions and the realm's
@@ -1043,6 +1043,12 @@ mod serial_tests {
             // onto rows the job did not allocate, join's work and unit limits.
             ("array-push-receiver", "goose"),
             ("array-join-strings", "goose"),
+            // for-of over user iterables and generators (light-cljs-843): at
+            // every budget cut, dependency waits in its protocol calls and
+            // body (snapshot_tests.goose), and cancellation inside it.
+            ("for-of", "boolean:true"),
+            ("for-of-wait", "goose"),
+            ("cancel-for-of", "limit"),
             ("depth", "boolean:true"),
             ("cancel", "limit"),
             ("cancel-break", "limit"),

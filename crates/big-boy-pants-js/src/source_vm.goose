@@ -146,7 +146,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7 }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -198,6 +198,10 @@ enum Ins {
     TypeOf, ToObject,
     // v target → bool, `v instanceof target` (96; light-cljs-834, instanceof_op).
     Instanceof,
+    // The iteration protocol (light-cljs-843): GetIterator (116) iterable →
+    // record, an object with own `iterator` and `next` (get_iterator_op);
+    // RequireObject (117) v → v, a TypeError unless v is an object.
+    GetIterator, RequireObject,
     // Generators and async functions (light-cljs-790, continuations.goose):
     // GeneratorStart only marks code; GeneratorInitialYield, GeneratorYield,
     // AsyncStart and Await detach and settle activations.
@@ -426,10 +430,17 @@ root struct Heap {
 //   ArrayMethod  Array.prototype.push, join and toString (light-cljs-842;
 //                array_methods.goose, which gives their fields and phases),
 //                its Builtin the payload.
+//   GetIterator  GetIterator(v, sync) (light-cljs-843; get_iterator_op):
+//                receiver the iterable v, input the iterator once called;
+//                pc 1 awaits v[@@iterator] from its getter, pc 2 the
+//                iterator from the method (a user function's frame or a
+//                native-frame built-in's), pc 3 the iterator's `next` from
+//                its getter. Its result, the iterator record, goes where
+//                the operation's operand was (operand_base).
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin } }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -582,6 +593,7 @@ fn instruction(op: Op) -> Ins {
         opcode::Typeof => Ins.TypeOf, opcode::ToString => Ins.ToString, opcode::ForInStart => Ins.ForInStart, opcode::ForInNext => Ins.ForInNext, opcode::OwnKeys => Ins.OwnKeys, opcode::IsEnumerable => Ins.IsEnumerable, opcode::CopyDataProperties => Ins.CopyData, opcode::ToPropertyKey => Ins.ToPropertyKey, opcode::RequireCoercible => Ins.RequireCoercible,
         opcode::GeneratorStart => Ins.GeneratorStart, opcode::GeneratorInitialYield => Ins.GeneratorInitialYield, opcode::GeneratorYield => Ins.GeneratorYield, opcode::AsyncStart => Ins.AsyncStart, opcode::Await => Ins.Await,
         opcode::GetNewTarget => Ins.NewTarget, opcode::ToObject => Ins.ToObject, opcode::Instanceof => Ins.Instanceof,
+        opcode::GetIterator => Ins.GetIterator, opcode::RequireObject => Ins.RequireObject,
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -2780,6 +2792,7 @@ fn native_step(job: Job&) {
         Force x => { force_step(job, frame, x.which); },
         Resume => { resume_step(job, frame); },
         HasInstance => { has_instance_step(job, frame); },
+        GetIterator => { get_iterator_step(job, frame); },
         ArrayMethod m => { array_method_step(job, frame, m.which); },
         None => {},
     }
@@ -3360,6 +3373,17 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     settle(job, ran, used); job.frames[top].pc = pc; instanceof_op(job);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
+                },
+                // A getter or the @@iterator method runs above a GetIterator
+                // native frame, which delivers the record.
+                GetIterator => {
+                    settle(job, ran, used); job.frames[top].pc = pc; get_iterator_op(job);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                // An iterator method's result (a scalar form is its primitive).
+                RequireObject => {
+                    if !form_value(heap, job.operands[job.operands.len - 1]).is_object() { type_error(job, "iterator must return an object"); break; }
                 },
                 Append => {
                     settle(job, ran, used); job.frames[top].pc = pc;
@@ -4331,6 +4355,167 @@ fn has_instance_step(job: Job&, frame: Frame) {
 fn start_function_has_instance(job: Job&, receiver: Value, v: Value, base: i64) {
     job.operands.resize(base);
     ordinary_has_instance(job, -1, receiver, v);
+}
+
+// ---- The iteration protocol (light-cljs-843; ECMAScript 7.4.3
+// GetIterator and 7.4.2 GetIteratorFromMethod, the Pants engine's
+// vm/native/iterator.rs State::get_iterator and State::with_method,
+// QuickJS's JS_GetIterator).
+//
+// GetIterator: v → record. method = GetMethod(v, @@iterator), read through
+// [[Get]] (a primitive's through its realm prototype); undefined, null or
+// a value that is not callable is a TypeError; iterator = Call(method, v),
+// which must be an object; next = Get(iterator, "next"), read once. The
+// record is a new ordinary object, a job row, with own data properties
+// `iterator` and `next`, which the Rust compiler's lowering reads into
+// hidden frame locals (rust/src/frontend/lower.rs
+// iterator_acquire_value_mode) and never lets JavaScript see. Stepping
+// (`next`), IteratorClose (`return`) and RequireObject on their results are
+// ordinary bytecode around this one operation.
+//
+// User code (a getter of @@iterator or `next`, a user @@iterator method)
+// runs as a frame above a GetIterator native frame (decision 4), which the
+// operation's operand leaves first; with a data property holding the realm's
+// %IteratorPrototype%[@@iterator] or another built-in that runs to
+// completion, everything completes in the instruction. A native-frame
+// built-in method (a generator's next, Array.prototype.map) runs above the
+// frame too. get_iterator and get_iterator_from_method are the entries
+// native consumers reuse (Array.from, Promise.all, the Map and Set
+// constructors, `yield*`): the record arrives on the operand stack, now or
+// when the GetIterator frame they leave above their own finishes, so the
+// consumer's next step pops it either way.
+//
+// Failing by name (decision 1): a Symbol or BigInt iterable (their
+// prototypes are the objects and BigInt areas'), an arguments object
+// (%Array.prototype.values%, light-cljs-844), a light-cljs runtime value as
+// the iterable or the iterator, a built-in getter, and a host-effect or map
+// built-in as the method. Array.prototype[@@iterator] and
+// String.prototype[@@iterator] are pending realm properties until
+// light-cljs-844 and fail by name when read.
+fn get_iterator_op(job: Job&) {
+    let heap .= job.heap;
+    let v = job.operands.pop();
+    if !valid(heap, v) { return; }
+    get_iterator(job, v);
+}
+// GetIterator(v, sync) for the frame at the top: the record goes on the
+// operands, or a GetIterator frame above it delivers the record there.
+fn get_iterator(job: Job&, iterable: Value) {
+    let heap .= job.heap;
+    // A scalar form (a primitive with its provenance) is its primitive.
+    let v = form_value(heap, iterable);
+    if heap.fault != Fault.None { return; }
+    if v.tag() <= value_tag::Null { type_error(job, "value is not iterable"); return; }
+    if !iteration_object(job, v, "the iterable") { return; }
+    let m, getter = read(heap, v, Value.Symbol { s: well_known::Iterator });
+    if heap.fault == Fault.UnsupportedOperand { primitive_gap(job, v); }
+    if heap.fault != Fault.None { return; }
+    if getter.is_object() { get_iterator_await(job, -1, 1, v, Value.Undefined, getter, v); return; }
+    get_iterator_method(job, -1, v, m);
+}
+// GetIteratorFromMethod(v, method) with an already-read method, for native
+// consumers (the Pants engine's with_method); the record arrives as
+// get_iterator's does.
+fn get_iterator_from_method(job: Job&, v: Value, method: Value) { get_iterator_method(job, -1, v, method); }
+// Whether object v (an iterable or an iterator) is one this VM iterates; a
+// primitive is. Otherwise a named fault.
+fn iteration_object(job: Job&, v: Value, what: const u8[:]) -> bool {
+    let heap .= job.heap;
+    if !v.is_object() { return true; }
+    // The compiler roots object and protected rows answer only their own
+    // names (get_property).
+    if job.root_receiver.is_object() && v == job.root_receiver || !realm_intrinsic(v.id()) && v.id() < job.protected_nodes { heap.fault = Fault.NativeBoundary; return false; }
+    if node(heap, v.id()).kind == 14 { unsupported_detail(job, "GetIterator: an arguments object (%Array.prototype.values%)"); return false; }
+    if !convertible(heap, v) {
+        job.detail.clear(); for c in "GetIterator: a light-cljs runtime value as " { job.detail.push(c); } for c in what { job.detail.push(c); }
+        heap.fault = Fault.UnsupportedOperand; return false;
+    }
+    return true;
+}
+// GetIteratorFromMethod from its step 1, m = v[@@iterator]. `at` is the
+// GetIterator frame's row, -1 while the operation runs without one.
+fn get_iterator_method(job: Job&, at: i64, v: Value, method: Value) {
+    let heap .= job.heap;
+    var f = form_value(heap, method);
+    if heap.fault != Fault.None { return; }
+    if !callable(heap, f) { type_error(job, "value is not iterable"); return; }
+    // Call(method, v). Function.prototype.call as the method forwards its
+    // receiver v as the callee with an undefined `this`, as the dispatch
+    // loop's call does; a second forward then finds no callee.
+    var receiver = v;
+    loop {
+        if node(heap, f.id()).kind == 2 { get_iterator_await(job, at, 2, v, Value.Undefined, f, receiver); return; }
+        if builtin_of(heap, f.id()) != Builtin.FunctionPrototypeCall { break; }
+        f = receiver; receiver = Value.Undefined;
+        if !callable(heap, f) { type_error(job, "not a function"); return; }
+    }
+    let b = builtin_of(heap, f.id());
+    // %IteratorPrototype%[@@iterator] returns its receiver.
+    if b == Builtin.IteratorPrototypeIterator { get_iterator_next(job, at, receiver); return; }
+    if effect_builtin(b) || b == Builtin.Mapv || b == Builtin.MapSeq { unsupported_step(job, b, "as a Symbol.iterator method"); return; }
+    if native_builtin(b) {
+        let row = get_iterator_frame(job, at, 2, v, Value.Undefined);
+        if row >= 0 { native_start(job, b, receiver, [], job.operands.len); }
+        return;
+    }
+    let it = call_builtin(job, node(heap, f.id()).function, receiver, []);
+    if heap.fault != Fault.None { return; }
+    get_iterator_next(job, at, it);
+}
+// GetIteratorFromMethod from step 3: the iterator must be an object; its
+// `next`, read once.
+fn get_iterator_next(job: Job&, at: i64, iterator: Value) {
+    let heap .= job.heap;
+    let it = form_value(heap, iterator);
+    if heap.fault != Fault.None { return; }
+    if !it.is_object() { type_error(job, "iterator must be an object"); return; }
+    if !iteration_object(job, it, "the iterator") { return; }
+    let k = key_named(heap, "next");
+    if heap.fault != Fault.None { return; }
+    let next, getter = lookup(heap, it, k);
+    if heap.fault != Fault.None { return; }
+    if getter.is_object() { get_iterator_await(job, at, 3, Value.Undefined, it, getter, it); return; }
+    get_iterator_done(job, at, it, next);
+}
+// The iterator record {iterator, next}: pushed by the operation, or
+// delivered by its finished GetIterator frame.
+fn get_iterator_done(job: Job&, at: i64, it: Value, next: Value) {
+    let heap .= job.heap;
+    let record = allocate(heap, Node { kind: 0 });
+    if heap.fault != Fault.None || !realm_value(heap, record.id(), "iterator", it, attrs_data()) || !realm_value(heap, record.id(), "next", next, attrs_data()) { return; }
+    if at >= 0 { finish_native(job, job.frames[at], record); return; }
+    if job.operands.len >= heap.limits.stack - job.locals.len { heap.fault = Fault.StackLimit; return; }
+    job.operands.push(record);
+}
+// Run f (a user method or getter) with `receiver` above the GetIterator
+// frame, pushed first when the operation has none; its result arrives at
+// `phase`. Only an ordinary function can be a getter here.
+fn get_iterator_await(job: Job&, at: i64, phase: i64, v: Value, it: Value, f: Value, receiver: Value) {
+    let heap .= job.heap;
+    if node(heap, f.id()).kind != 2 { unsupported_detail(job, "GetIterator: a built-in getter"); return; }
+    let fresh = at < 0;
+    if get_iterator_frame(job, at, phase, v, it) < 0 { return; }
+    if !push_frame(job, f, receiver, [], false, job.operands.len) && fresh { job.frames.pop(); }
+}
+// The GetIterator frame, at row `at` or pushed when the operation has none,
+// awaiting `phase` with iterable v and iterator `it` (Undefined until
+// called); its row, or -1 at the frame limit.
+fn get_iterator_frame(job: Job&, at: i64, phase: i64, v: Value, it: Value) -> i64 {
+    if at >= 0 { job.frames[at].pc = phase; job.frames[at].input = it; return at; }
+    if job.frames.len >= job.heap.limits.frames { job.heap.fault = Fault.StackLimit; return -1; }
+    job.frames.push(Frame { function: -1, pc: phase, local_base: job.locals.len, operand_base: job.operands.len, callee: Value.Undefined, receiver: v, input: it, native: Native.GetIterator });
+    return job.frames.len - 1;
+}
+// One step of a GetIterator frame (see Native): the awaited value arrived.
+fn get_iterator_step(job: Job&, frame: Frame) {
+    let heap .= job.heap; let at = job.frames.len - 1;
+    let r = job.operands.pop();
+    match frame.pc {
+        1 => { get_iterator_method(job, at, frame.receiver, r); },
+        2 => { get_iterator_next(job, at, r); },
+        3 => { get_iterator_done(job, at, frame.input, r); },
+        _ => { heap.fault = Fault.InvalidState; },
+    }
 }
 
 // ---- Key enumeration (light-cljs-804; the Pants engine's vm/keys.rs and

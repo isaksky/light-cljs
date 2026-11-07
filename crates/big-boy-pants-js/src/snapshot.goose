@@ -216,6 +216,9 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         HasInstance => f.pc != 4 || object_of(s, f.callee, 4),
         // Array.prototype.push, join and toString read their object (light-cljs-842).
         ArrayMethod => object_of(s, f.input, -1),
+        // A GetIterator frame awaits one of its three phases; from `next`'s
+        // getter on, it holds the iterator (light-cljs-843).
+        GetIterator => f.pc >= 1 && f.pc <= 3 && (f.pc != 3 || object_of(s, f.input, -1)),
         _ => true,
     };
 }

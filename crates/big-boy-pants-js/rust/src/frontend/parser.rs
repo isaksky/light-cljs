@@ -1471,8 +1471,14 @@ impl<'a> Parser<'a> {
                             "`async` cannot be a for-of target",
                         ));
                     }
-                    let target = self.for_of_target(&init)?;
-                    return self.parse_for_of_rest(ForInHead::Binding(target));
+                    // A property reference is evaluated anew each
+                    // iteration, as a for-in member target is.
+                    let head = if is_property_target(&init) {
+                        ForInHead::Member(Box::new(init))
+                    } else {
+                        ForInHead::Binding(self.simple_target(&init, TargetUse::Assign)?)
+                    };
+                    return self.parse_for_of_rest(head);
                 }
                 Some(ForInit::Expr(init))
             }
@@ -1501,20 +1507,6 @@ impl<'a> Parser<'a> {
         let object = self.parse_expression()?;
         self.expect_punct(Punct::RParen)?;
         Ok(ForHead::In(head, object))
-    }
-
-    /// The binding that the left-hand side `left` of a for-of head assigns:
-    /// an identifier, possibly parenthesized. A property reference is
-    /// unsupported; anything else is rejected as the
-    /// target of `=` is (`for (1 in o)` is `Invalid`).
-    #[inline(never)]
-    fn for_of_target(&self, left: &Expr) -> PResult<Ident> {
-        if is_property_target(left) {
-            return Err(
-                self.unsupported(left.span, "property references as `for`-`of` targets are")
-            );
-        }
-        self.simple_target(left, TargetUse::Assign)
     }
 
     /// Contextual `of` is a separator only after the head's first binding.

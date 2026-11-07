@@ -100,6 +100,13 @@ fn install(heap: source::Heap&, setup: i64) {
         let hooked = source::allocate(heap, source::Node { kind: 0 });
         assert(source::define_own(heap, hooked.id(), source::Value.Symbol { s: well_known::HasInstance }, source::closure(heap, named_function(heap.code, "hookGet"), []), attrs, 1));
         assert(source::define_own(heap, global, source::key_named(heap, "hooked"), hooked, source::attr_writable() | source::attr_configurable()));
+    } else if setup == 7 {
+        // for-of's @@iterator getter (for-of.js, light-cljs-843): `hooked`,
+        // an ordinary object whose Symbol.iterator is an accessor with
+        // hookGet as its getter.
+        let hooked = source::allocate(heap, source::Node { kind: 0 });
+        assert(source::define_own(heap, hooked.id(), source::Value.Symbol { s: well_known::Iterator }, source::closure(heap, named_function(heap.code, "hookGet"), []), source::attr_configurable(), 1));
+        assert(source::define_own(heap, global, source::key_named(heap, "hooked"), hooked, source::attr_writable() | source::attr_configurable()));
     } else {
         let k = source::key_named(heap, "reserved");
         assert(source::define_own(heap, global, k, source::number(1), if setup == 2 { 0 } else { source::attr_writable() | source::attr_enumerable() }));
@@ -510,23 +517,26 @@ fn main() {
     // ({}).toString() is the realm's Object.prototype.toString (light-cljs-788).
     check(embed_file("../corpus/serial/unsupported-prototype.gsp"), "utf16:[91,111,98,106,101,99,116,32,79,98,106,101,99,116,93]");
     // Every opcode exports (light-cljs-783): `new Date` on a dead path and in
-    // a dead nested function never runs; for-of iteration reached (after a
-    // construction, light-cljs-831; `instanceof` runs since light-cljs-834)
-    // fails by name even under a `catch`. A class constructor cannot be
-    // called.
+    // a dead nested function never runs; a `using` declaration reached
+    // (explicit resource management, light-cljs-772; after a construction,
+    // light-cljs-831, and inside a for-of loop over a user iterable,
+    // light-cljs-843, where `instanceof` would run, light-cljs-834) fails by
+    // name even under a `catch`. A class constructor cannot be called.
     check(embed_file("../corpus/serial/unsupported-dead.gsp"), "number:7.0");
-    check(embed_file("../corpus/serial/unsupported-reached.gsp"), "Fault.Unsupported:get_iterator", source::Fault.Unsupported);
+    check(embed_file("../corpus/serial/unsupported-reached.gsp"), "Fault.Unsupported:using_check", source::Fault.Unsupported);
     class_kinds(embed_file("../corpus/serial/calls.gsp"));
     check(embed_file("../corpus/serial/dormant-constants.gsp"), "number:7.0");
     check(embed_file("../corpus/serial/bigint-reached.gsp"), "Fault.Unsupported:const(BigInt)", source::Fault.Unsupported);
     bigint_constants(embed_file("../corpus/serial/dormant-constants.gsp"));
     // Direct eval (light-cljs-823): reached, it fails by name even under a
     // `catch`; replacing the global `eval` makes the marked call ordinary; an
-    // indirect eval is an unimplemented step of %eval%. Spread arguments stop
-    // at their unimplemented iteration before the marked call_spread runs,
-    // so the spread variants are checked at decode (direct_eval_decode).
+    // indirect eval is an unimplemented step of %eval%. Spread arguments
+    // from a generator are collected (light-cljs-843), then stop at their
+    // unimplemented check_spread_arguments (spread calls, light-cljs-764)
+    // before the marked call_spread runs, so the spread variants are checked
+    // at decode (direct_eval_decode).
     check(embed_file("../corpus/serial/direct-eval-reached.gsp"), "Fault.Unsupported:direct_eval", source::Fault.Unsupported);
-    check(embed_file("../corpus/serial/direct-eval-spread.gsp"), "Fault.Unsupported:get_iterator", source::Fault.Unsupported);
+    check(embed_file("../corpus/serial/direct-eval-spread.gsp"), "Fault.Unsupported:check_spread_arguments", source::Fault.Unsupported);
     direct_eval_decode(embed_file("../corpus/serial/direct-eval-spread.gsp"));
     check(embed_file("../corpus/serial/direct-eval-replaced.gsp"), "number:2.0");
     check(embed_file("../corpus/serial/indirect-eval.gsp"), "Fault.UnsupportedOperand:eval:-indirect-eval", source::Fault.UnsupportedOperand);
@@ -575,6 +585,15 @@ fn control_flow() {
     // `prototype` the test installs, user methods and their exceptions run
     // above the operator's HasInstance native frame at every cut.
     check(embed_file("../corpus/serial/instanceof-hooks.gsp"), "boolean:true", source::Fault.None, 6);
+    // for-of (light-cljs-843): GetIterator's phases (a user @@iterator
+    // method, a `next` getter and, with setup 7, an @@iterator getter the
+    // test installs), `next`, the body and `return`, each cut resuming with
+    // the same result; each limit met uncut or one instruction a slice stops
+    // at the same point.
+    check(embed_file("../corpus/serial/for-of.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/for-of.gsp"), "boolean:true", source::Fault.None, 7);
+    heap_program::join(thread_spawn(iterator_getter_ran, str(embed_file("../corpus/serial/for-of.gsp"))));
+    limit_points(embed_file("../corpus/serial/for-of.gsp"));
     // map and forEach (light-cljs-789): their callbacks, getters and the
     // length's valueOf run in the built-in's native frame.
     check(embed_file("../corpus/serial/array-callbacks.gsp"), "boolean:true");
@@ -602,6 +621,7 @@ fn control_flow() {
         heap_program::join(thread_spawn(cancelled_job, str(embed_file("../corpus/serial/loop.gsp")), sliced, 2));
         heap_program::join(thread_spawn(cancelled_job, str(embed_file("../corpus/serial/cancel-fault.gsp")), sliced, 3));
         heap_program::join(thread_spawn(cancelled_job, str(embed_file("../corpus/serial/cancel.gsp")), sliced, 4));
+        for mode in 3 { heap_program::join(thread_spawn(cancelled_for_of, str(embed_file("../corpus/serial/cancel-for-of.gsp")), sliced, mode)); }
     }
     heap_program::join(thread_spawn(pending_completions, str(embed_file("../corpus/serial/calls.gsp"))));
     print("serial source VM: finally/completions, native ToPrimitive frames, 10,000-frame depth and cancellation passed");
@@ -1247,7 +1267,8 @@ thread_fn depth_limit(bytes: u8[], frames: i64, fault: source::Fault) {
 // The keys of the job's named writes, in order, as one string.
 fn written(heap: source::Heap&, job: const source::Job&) -> u8[>..] {
     var out: u8[>..] = [];
-    for w in job.writes { for u in source::utf16(heap, w.key) { out.push(u as u8); } out.push(' '); }
+    // A Symbol key (`it[Symbol.iterator] = ...`) reads as @@.
+    for w in job.writes { if w.key.is_symbol() { out.append("@@"); } else { for u in source::utf16(heap, w.key) { out.push(u as u8); } } out.push(' '); }
     return out;
 }
 // mode 0 cancel.js, 1 cancel-break.js, 2 loop.js (no finally block), 3
@@ -1280,6 +1301,38 @@ thread_fn cancelled_job(bytes: u8[], sliced: bool, mode: i64) {
     let keys = written(heap, job);
     var expected: u8[>..] = []; for i in looped { expected.append("looped "); }
     expected.append(if mode == 0 { "inner outer " } else if mode == 4 { "" } else { "inner " });
+    assert(keys[..] == expected[..]);
+}
+// With setup 7, for-of.js iterates `hooked`: its @@iterator getter ran once
+// (the job wrote `reads` on the object the test installed).
+thread_fn iterator_getter_ran(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap)); install(heap, 7);
+    var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
+    assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.flag());
+    let hooked = source::get(heap, heap.global, source::key_named(heap, "hooked"));
+    assert(source::get(heap, hooked, source::key_named(heap, "reads")).num() == 1);
+}
+// Cancellation inside a for-of loop (cancel-for-of.js, light-cljs-843;
+// decision 4): mode 0 in the body, 1 inside `next`, 2 in the body with a
+// `return` that throws. The cleanup runs the body's finally block (not in
+// mode 1), then `return` once, never the catch block around the loop; the
+// job fails Cancelled whatever `return` did.
+thread_fn cancelled_for_of(bytes: u8[], sliced: bool, mode: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), [source::number(mode)]));
+    assert(source::run(job, 500) == tiny::Outcome.Yielded);
+    // The keys written before the cancellation: the iterator's, then the
+    // loop's.
+    var expected = written(heap, job); assert(find(expected[..], "looped ") >= 0);
+    assert(source::cancel(job) && job.status == tiny::Status.Ready);
+    if sliced { while source::run(job, 1) == tiny::Outcome.Yielded {} } else { source::run(job, -1); }
+    assert(job.status == tiny::Status.Failed && job.fault == source::Fault.Cancelled && !job.thrown);
+    let keys = written(heap, job);
+    expected.append(if mode == 1 { "closed " } else { "inner closed " });
     assert(keys[..] == expected[..]);
 }
 // PendingThrow, PendingException and PendingCancel read the frame's

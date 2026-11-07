@@ -1,1 +1,1 @@
-function unsupportedReached() { function Point() {} try { const p = new Point(); for (const q of [p]) { return q instanceof Point ? 1 : 0; } return 0; } catch (e) { return -1; } }
+function unsupportedReached() { function Point() {} try { const p = new Point(); const it = { next() { return { value: p, done: false }; } }; it[Symbol.iterator] = function () { return this; }; for (const q of it) { using r = null; return q instanceof Point ? 1 : 0; } return 0; } catch (e) { return -1; } }

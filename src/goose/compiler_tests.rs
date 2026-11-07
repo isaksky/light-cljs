@@ -487,8 +487,8 @@ fn goose_compiler_assembly_leaf_boundaries() {
         // Every opcode exports; one the Goose VM does not implement fails the
         // macro by name when it runs, uncatchably (light-cljs-783).
         (
-            "function P(){} try { for (const x of [new P()]) { return x instanceof P; } return 0; } catch (e) { return null; }",
-            "Fault.Unsupported:get_iterator",
+            "function P(){} try { const it = {next(){ return {value: new P(), done: false}; }}; it[Symbol.iterator] = function(){ return this; }; for (const x of it) { using r = null; return x instanceof P; } return 0; } catch (e) { return null; }",
+            "Fault.Unsupported:using_check",
         ),
         (
             "return rt.core.sequence(null,null);",

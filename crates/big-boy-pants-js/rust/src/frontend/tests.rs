@@ -1815,7 +1815,7 @@ fn labelled_statements() {
 /// head (clj-quickjs-81). `_` renders an absent part.
 #[test]
 fn for_statements() {
-    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedEnd, UnexpectedToken, Unsupported};
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedEnd, UnexpectedToken};
     assert_eq!(ast("for (;;) x;"), "(for _ _ _ x)");
     assert_eq!(
         ast("for (i = 0; i < 3; i = i + 1) {}"),
@@ -1856,13 +1856,12 @@ fn for_statements() {
     rejects("for (;;) function f() {}", Invalid, 1, 10);
     assert_eq!(ast("for (x of y) {}"), "(for-of x y (block))");
     assert_eq!(ast("for (let x of y) {}"), "(for-of (let x) y (block))");
-    rejects_with(
-        "for (a.b of y) {}",
-        Unsupported,
-        1,
-        6,
-        "property references",
-    );
+    // Property references are for-of targets (light-cljs-843), as they
+    // are for-in targets.
+    assert_eq!(ast("for (a.b of y) {}"), "(for-of (. a b) y (block))");
+    assert_eq!(ast("for (a[0] of y) ;"), "(for-of ([] a 0) y (empty))");
+    assert_eq!(ast("for ((a.b) of y) ;"), "(for-of (. a b) y (empty))");
+    rejects("for (f() of y) ;", Invalid, 1, 6);
     parse_script("for (let [a] = b; ;) {}").unwrap();
     // `[~In]` (clj-quickjs-74): the `in` operator is not taken at the top
     // level of the init, so an `in` after any init starts a for-in head

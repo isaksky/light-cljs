@@ -294,8 +294,6 @@ fn rejected_forms_fail_with_documented_kinds() {
             Invalid,
         ),
         ("await using x = r;", STRICT, Unsupported),
-        // statements outside the subset
-        ("for (a.b of o) {}", STRICT, Unsupported),
         // `debugger` is a statement (ECMAScript 14.16) and a reserved word
         // `debugger` is a statement (ECMAScript 14.16) and a reserved word
         ("var debugger = 1;", STRICT, ReservedWord),
