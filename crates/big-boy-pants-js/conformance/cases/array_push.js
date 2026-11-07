@@ -14,7 +14,7 @@
 // Object.create, Object.preventExtensions or Object.freeze, and
 // `a.length = 4294967295` (dense runs refuse it). `{__proto__: ...}` stands
 // in for Object.create, and holes come from `Array(n)` because array
-// literal holes (the append_hole opcode) are not implemented on Goose yet.
+// literal holes (the append_hole opcode) were not implemented on Goose then.
 var rows = 0, failed = 0;
 function row(ok) { rows++; if (ok !== true && failed === 0) failed = rows; }
 function throwsType(f) { try { f(); } catch (e) { return e instanceof TypeError; } return false; }

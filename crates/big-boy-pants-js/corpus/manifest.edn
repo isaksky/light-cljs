@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "6d003c9fd903965cd237a7fa422d2bdbae948423b1b95cbf81ccefdd924c6b04",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "818278ee2cf7150aff94ebeb020c9f7823ec6d2ba2c47ff9dac7e5402aee5a44",
+  "992d7aee469ce29b1d6fcacd17b9d14c9b3ad66eff92f6ec8693a66d3d369003",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "1a2108185dffceee40083c348fb8b306d46c392910ab5036cfe75b0ae45a205b",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -225,6 +225,18 @@
   "746a93d2adc6bc7134bd66a4f0b3beaca85686bb4faeb3c2bf401b5fb888c0e4",
   "corpus/serial/bigint-reached.js"
   "cd4ad8d14c80c40354ebcb96deef37950d4007180704c8c105077b4f0d444428",
+  "corpus/serial/builtin-iterator-receiver.gsp"
+  "c7f20891c1227d320b7ed4b028a8b55407cd29103e76ddbe7342d7bc032f6fd3",
+  "corpus/serial/builtin-iterator-receiver.js"
+  "15ae20d6b445e7fb70a95184913145118ac186f330b43f2e0e3ade66d28f084f",
+  "corpus/serial/builtin-iterator-wait.gsp"
+  "c590a38cfe4632f003e790d945950810714a97383e892e88ff8126fae83e5f07",
+  "corpus/serial/builtin-iterator-wait.js"
+  "9d9b876b884de51f53d81d4b0ca93f6c0709f0a87902006464713b6a35877444",
+  "corpus/serial/builtin-iterators.gsp"
+  "89638c9c4b8a4aa39c59596ed3fb910eb84bb13837c25c3db44b73ca53fcabd7",
+  "corpus/serial/builtin-iterators.js"
+  "15689f28845857cf79c58d523d39bcf68a8abfb013eed23b014e03ec993f9fdd",
   "corpus/serial/calls.gsp"
   "e759a66f1f19c198d41c6965ca4489e70807cd1ac5200e5437606fafaf7b4828",
   "corpus/serial/calls.js"

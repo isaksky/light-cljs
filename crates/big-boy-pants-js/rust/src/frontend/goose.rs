@@ -1049,6 +1049,13 @@ mod serial_tests {
             ("for-of", "boolean:true"),
             ("for-of-wait", "goose"),
             ("cancel-for-of", "limit"),
+            // The built-in array and string iterators (light-cljs-844): at
+            // every budget cut, dependency waits in an element getter and
+            // loop bodies (snapshot_tests.goose), and sources in rows the
+            // job did not allocate (serial_tests.goose).
+            ("builtin-iterators", "boolean:true"),
+            ("builtin-iterator-wait", "goose"),
+            ("builtin-iterator-receiver", "goose"),
             ("depth", "boolean:true"),
             ("cancel", "limit"),
             ("cancel-break", "limit"),

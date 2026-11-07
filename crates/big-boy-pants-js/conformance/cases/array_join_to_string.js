@@ -16,7 +16,7 @@
 // Object.setPrototypeOf (an inherited element behind a hole, a `join`
 // accessor defined on an array, `[Object.create(null)].join()`). Holes come
 // from `Array(n)` because array literal holes (the append_hole opcode) are
-// not implemented on Goose yet.
+// not implemented on Goose when this case was written (light-cljs-844).
 var rows = 0, failed = 0;
 function row(ok) { rows++; if (ok !== true && failed === 0) failed = rows; }
 function throwsType(f) { try { f(); } catch (e) { return e instanceof TypeError; } return false; }

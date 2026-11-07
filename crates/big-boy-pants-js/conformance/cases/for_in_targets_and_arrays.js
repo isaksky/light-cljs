@@ -12,7 +12,7 @@
 // added during the loop not visited, an element deleted and put back before
 // it is reached visited. `push` and `toString` are replaced by
 // `a[a.length] = v` and `+=`, and the elision holes (`[1, , 3]`, which Goose
-// does not build yet: light-cljs-844) by `delete`.
+// did not build before light-cljs-844) by `delete`.
 // Not ported:
 // - the `for (using[0] in ...)` rows (three spellings): QuickJS rejects them
 //   with "invalid destructuring target", though `using` followed by `[` is a

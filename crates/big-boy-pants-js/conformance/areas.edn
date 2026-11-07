@@ -93,6 +93,9 @@
   "bbp/for_of_abrupt_completions" {:area :statements-loops}
   "bbp/for_of_generators" {:area :statements-loops}
   "bbp/for_of_heads_and_completion" {:area :statements-loops}
+  "bbp/for_of_builtin_iterators" {:area :statements-loops}
+  "bbp/array_iterator_kinds" {:area :statements-loops}
+  "bbp/array_literal_holes" {:area :statements-loops}
   "bbp/labelled_jumps" {:area :statements-loops}
   "bbp/long_loop" {:area :statements-loops}
   "bbp/switch_statements" {:area :statements-loops}

@@ -506,6 +506,15 @@ fn suspended_continuations() {
     var waits: i64 = 1;
     while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(for_of_resumed, copy(w))); waits += 1; }
     assert(waits == 6);
+    // The built-in iterators (light-cljs-844): three waits, in an element
+    // getter above %ArrayIteratorPrototype%.next's frame and in two loop
+    // bodies, each cursor resuming at its index.
+    let cursors = embed_file("../corpus/serial/builtin-iterator-wait.gsp");
+    heap_program::join(thread_spawn(builtin_iterator_wait, str(cursors), false));
+    heap_program::join(thread_spawn(builtin_iterator_wait, str(cursors), true));
+    waits = 1;
+    while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(builtin_iterator_resumed, copy(w))); waits += 1; }
+    assert(waits == 4);
     print("suspended continuations: a dependency wait keeps them in place or carries them, with its whole stack as rows (native frames included), in a saved continuation; a reused worker's next job cannot reach them");
 }
 // Run suspended-wait.js to its dependency wait, with a generator and an
@@ -650,6 +659,81 @@ thread_fn for_of_resumed(saved: Waiting) {
     let outcome = source::run(job, -1);
     if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); for_of_save(job, heap); return; }
     assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "iDnDbDRDgD12"));
+    assert(source::retire(job));
+    assert(qput(false));
+}
+// Dependency waits inside built-in iteration (builtin-iterator-wait.js,
+// light-cljs-844): in an element getter above the array iterator's native
+// frame, in the body of a loop over an array and over a string, answered in
+// place, or each after the whole stack was saved as a continuation and
+// restored in a fresh heap (builtin_iterator_resumed); each cursor resumes
+// at the index where it waited.
+thread_fn builtin_iterator_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    // The first wait is in the element getter, above next's native frame.
+    var natives: i64 = 0; for f in job.frames { match f.native { BuiltinIterator => { natives += 1; }, _ => {} } }
+    assert(natives == 1 && job.frames.len == 3);
+    if save { iterator_frame_refusals(job, heap); return; }
+    var waits: i64 = 1;
+    loop {
+        assert(source::deliver_effect(job, source::text(heap, "D")));
+        let outcome = source::run(job, -1);
+        if outcome == tiny::Outcome.Complete { break; }
+        assert(outcome == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8); waits += 1;
+    }
+    assert(waits == 3 && source::key_is(heap, job.result, "agDbc1wD23xsDy"));
+    assert(source::retire(job));
+}
+// Save the first wait (as for_of_save does), checking that its saved
+// %ArrayIteratorPrototype%.next frame is refused when its cursor is a string
+// iteration's (mode 0) or its source is not an object (mode 1).
+fn iterator_frame_refusals(job: source::Job&, heap: source::Heap&) {
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    for mode in 2 {
+        var bad = copy(image); var changed = false;
+        for i in a.frame_count {
+            let r = a.frames + i;
+            match image.conts[r] {
+                Frame x => {
+                    var f = x.f;
+                    match f.native {
+                        BuiltinIterator => {
+                            if mode == 0 { bad.nodes[f.input.id()].function = iteration::CodePoints; bad.nodes[f.input.id()].value = source::Value.Undefined; } else { f.receiver = source::Value.Undefined; }
+                            changed = true;
+                        },
+                        _ => {},
+                    }
+                    bad.conts[r] = source::Cont.Frame { f: f };
+                },
+                _ => {},
+            }
+        }
+        assert(changed);
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+        var dest = source::Code {}; var target_heap = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var refused = snapshot::Control {};
+        assert(!snapshot::restore(bad, dest, target_heap, roots, source::reserve_identity(), refused) && refused.error == snapshot::Error.Link && target_heap.nodes.len == 0);
+    }
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+thread_fn builtin_iterator_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack));
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    let outcome = source::run(job, -1);
+    if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); for_of_save(job, heap); return; }
+    assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "agDbc1wD23xsDy"));
     assert(source::retire(job));
     assert(qput(false));
 }

@@ -88,7 +88,7 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
 // The kinds with own properties by name (source::Node): ordinary objects,
 // arrays and closures (light-cljs-805), built-in functions and error objects
 // (light-cljs-788), generators, promises and primitive wrappers.
-fn named(kind: i64) -> bool { return kind >= 0 && kind <= 2 || kind == 4 || kind == 13 || kind == 20 || kind == 21 || kind == 22; }
+fn named(kind: i64) -> bool { return kind >= 0 && kind <= 2 || kind == 4 || kind == 13 || kind == 20 || kind == 21 || kind == 22 || kind == node_kind::Iterator; }
 // A shape-mode object, dense array or closure: without `initialized`.
 fn shaped(n: const source::Node&) -> bool { return named(n.kind) && !n.initialized; }
 // A dictionary-mode object, a dictionary array or a closure's records.
@@ -219,6 +219,10 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // A GetIterator frame awaits one of its three phases; from `next`'s
         // getter on, it holds the iterator (light-cljs-843).
         GetIterator => f.pc >= 1 && f.pc <= 3 && (f.pc != 3 || object_of(s, f.input, -1)),
+        // An array iterator's `next` awaits its length or an element and
+        // holds an array cursor, its source object and index;
+        // String.prototype[@@iterator] awaits its string (light-cljs-844).
+        BuiltinIterator m => if m.which == source::Builtin.ArrayIteratorPrototypeNext { f.pc >= 0 && f.pc <= 1 && f.index >= 0 && object_of(s, f.input, node_kind::Iterator) && s.nodes[f.input.id()].function != iteration::CodePoints && object_of(s, f.receiver, -1) } else { m.which == source::Builtin.StringPrototypeIterator && f.pc == 0 },
         _ => true,
     };
 }
@@ -442,7 +446,11 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     var has_memo = false; var array_holes: i64 = 0;
     for n in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < 0 || n.kind > 22 { return reject(c, Error.Unsupported); }
+        if n.kind < 0 || n.kind > node_kind::Iterator { return reject(c, Error.Unsupported); }
+        // A built-in iterator (light-cljs-844, iterators.goose) has an
+        // iteration and no element run, and iterates an object, a string
+        // (a string iteration) or, done, nothing.
+        if n.kind == node_kind::Iterator && (n.function > iteration::CodePoints || n.count != 0 || n.start != 0 || !n.value.is_undefined() && (if n.function == iteration::CodePoints { !n.value.is_string() } else { !n.value.is_object() })) { return reject(c, Error.Link); }
         // A primitive wrapper (22, light-cljs-832) holds a number, string or
         // boolean and keeps no element run.
         if n.kind == 22 && (source::wrapper_type(n.value) < 0 || n.count != 0 || n.start != 0) { return reject(c, Error.Link); }

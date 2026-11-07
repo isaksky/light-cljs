@@ -7,6 +7,7 @@ import .export_schema;
 import .realm;
 import .array_callbacks;
 import .array_methods;
+import .iterators;
 import .cells;
 import .continuations;
 import .number_text;
@@ -146,7 +147,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7 }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -202,6 +203,9 @@ enum Ins {
     // record, an object with own `iterator` and `next` (get_iterator_op);
     // RequireObject (117) v → v, a TypeError unless v is an object.
     GetIterator, RequireObject,
+    // AppendHole (89; light-cljs-844) arr → arr: an array literal's elided
+    // element, the length one more and no element (a hole).
+    AppendHole,
     // Generators and async functions (light-cljs-790, continuations.goose):
     // GeneratorStart only marks code; GeneratorInitialYield, GeneratorYield,
     // AsyncStart and Await detach and settle activations.
@@ -430,6 +434,10 @@ root struct Heap {
 //   ArrayMethod  Array.prototype.push, join and toString (light-cljs-842;
 //                array_methods.goose, which gives their fields and phases),
 //                its Builtin the payload.
+//   BuiltinIterator  %ArrayIteratorPrototype%.next and
+//                String.prototype[@@iterator] (light-cljs-844;
+//                iterators.goose, which gives their fields and phases),
+//                its Builtin the payload.
 //   GetIterator  GetIterator(v, sync) (light-cljs-843; get_iterator_op):
 //                receiver the iterable v, input the iterator once called;
 //                pc 1 awaits v[@@iterator] from its getter, pc 2 the
@@ -440,7 +448,7 @@ root struct Heap {
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -593,7 +601,7 @@ fn instruction(op: Op) -> Ins {
         opcode::Typeof => Ins.TypeOf, opcode::ToString => Ins.ToString, opcode::ForInStart => Ins.ForInStart, opcode::ForInNext => Ins.ForInNext, opcode::OwnKeys => Ins.OwnKeys, opcode::IsEnumerable => Ins.IsEnumerable, opcode::CopyDataProperties => Ins.CopyData, opcode::ToPropertyKey => Ins.ToPropertyKey, opcode::RequireCoercible => Ins.RequireCoercible,
         opcode::GeneratorStart => Ins.GeneratorStart, opcode::GeneratorInitialYield => Ins.GeneratorInitialYield, opcode::GeneratorYield => Ins.GeneratorYield, opcode::AsyncStart => Ins.AsyncStart, opcode::Await => Ins.Await,
         opcode::GetNewTarget => Ins.NewTarget, opcode::ToObject => Ins.ToObject, opcode::Instanceof => Ins.Instanceof,
-        opcode::GetIterator => Ins.GetIterator, opcode::RequireObject => Ins.RequireObject,
+        opcode::GetIterator => Ins.GetIterator, opcode::RequireObject => Ins.RequireObject, opcode::AppendHole => Ins.AppendHole,
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -1550,7 +1558,7 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             if i < 0 { return Own { found: true, value: number(str_len(heap, s)), attrs: 0 }; }
             return Own { found: true, index: i, value: unit_string(heap, s, i), attrs: attr_enumerable() };
         },
-        0, 13, 20, 21 => {
+        0, 13, 20, 21, node_kind::Iterator => {
             if node(heap, o).count > 0 {
                 let i = element_key(heap, k);
                 if heap.fault != Fault.None { return Own {}; }
@@ -1572,6 +1580,8 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             // prototypes fail explicitly; no frame slot or parameter alias
             // escapes to the heap.
             if key_is(heap, k, "length") { return Own { found: true, value: number(node(heap, o).count), attrs: attr_writable() | attr_configurable() }; }
+            // Its @@iterator is %Array.prototype.values% (ECMAScript 10.4.4.6, light-cljs-844).
+            if k.is_symbol() && symbol_index(k) == well_known::Iterator && heap.global.is_object() { return Own { found: true, value: Value.Object { o: realm_function_row(Builtin.ArrayPrototypeValues) as u32 }, attrs: attr_writable() | attr_configurable() }; }
             let i = index(heap, k);
             if i < 0 { if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; } return Own {}; }
             if i >= node(heap, o).count { return Own {}; }
@@ -1650,7 +1660,7 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
 fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
     match kind {
-        0, 4, 13, 20, 21 => {},
+        0, 4, 13, 20, 21, node_kind::Iterator => {},
         1 => {
             if key_is(heap, k, "length") { return Value.Undefined, array_length(heap, object, value); }
             let i = index(heap, k);
@@ -1704,7 +1714,7 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
 // fail UnsupportedOperand.
 fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8, half: i64 = 0) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind == 0 || kind == 4 || kind == 13 || kind == 20 || kind == 21 { return define_own(heap, o, k, value, attrs, half); }
+    if kind == 0 || kind == 4 || kind == 13 || kind == 20 || kind == 21 || kind == node_kind::Iterator { return define_own(heap, o, k, value, attrs, half); }
     if kind == 1 && !key_is(heap, k, "length") {
         let i = index(heap, k);
         if heap.fault != Fault.None { return false; }
@@ -1737,7 +1747,7 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
     let o: i64 = object.id();
     match node(heap, o).kind {
         4 => { return delete_own(heap, o, k); },
-        0, 13, 20, 21 => {
+        0, 13, 20, 21, node_kind::Iterator => {
             let i = element_key(heap, k);
             if heap.fault != Fault.None { return false; }
             if !object_element(heap, o, i).is_hole() { if !charge(heap) { return false; } set_slot(heap, node(heap, o).start + i, hole()); return true; }
@@ -1781,7 +1791,7 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
 struct OwnKey { key: Value, attrs: u8 = 0, index: i64 = -1 }
 fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 20 && kind != 21 && kind != 22 || kind == 2 && unsupported_prototype(heap, o) { heap.fault = Fault.UnsupportedOperand; return false; }
+    if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 20 && kind != 21 && kind != 22 && kind != node_kind::Iterator || kind == 2 && unsupported_prototype(heap, o) { heap.fault = Fault.UnsupportedOperand; return false; }
     // A lazy closure's are `length`, `name` and, for an ordinary function,
     // `prototype`, not yet made (light-cljs-806).
     if kind == 2 && lazy_function(heap, o) {
@@ -2794,6 +2804,7 @@ fn native_step(job: Job&) {
         HasInstance => { has_instance_step(job, frame); },
         GetIterator => { get_iterator_step(job, frame); },
         ArrayMethod m => { array_method_step(job, frame, m.which); },
+        BuiltinIterator m => { iterator_step(job, frame, m.which); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -2871,7 +2882,7 @@ fn finish_native(job: Job&, frame: Frame, result: Value) {
 fn convertible(heap: const Heap&, v: Value) -> bool {
     if !v.is_object() { return false; }
     let kind = node(heap, v.id()).kind;
-    return kind == 0 || kind == 1 || kind == 2 || kind == 4 || kind == 13 || kind == 20 || kind == 21 || kind == 22;
+    return kind == 0 || kind == 1 || kind == 2 || kind == 4 || kind == 13 || kind == 20 || kind == 21 || kind == 22 || kind == node_kind::Iterator;
 }
 // Whether call or construction of f with arguments `args` converts the
 // first argument first, and with which hint (light-cljs-832): Number(o) and
@@ -3384,6 +3395,15 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 // An iterator method's result (a scalar form is its primitive).
                 RequireObject => {
                     if !form_value(heap, job.operands[job.operands.len - 1]).is_object() { type_error(job, "iterator must return an object"); break; }
+                },
+                // An elided element: a dense array the job may write grows
+                // by one, its new slot a hole (array_length), for the
+                // instruction's own work unit.
+                AppendHole => {
+                    let object = job.operands[job.operands.len - 1];
+                    if !dense(job, object) { heap.fault = Fault.TypeError; break; }
+                    if !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; break; }
+                    if !array_length(heap, object, number((node(heap, object.id()).length as f64) + 1)) { break; }
                 },
                 Append => {
                     settle(job, ran, used); job.frames[top].pc = pc;
@@ -4385,13 +4405,14 @@ fn start_function_has_instance(job: Job&, receiver: Value, v: Value, base: i64) 
 // when the GetIterator frame they leave above their own finishes, so the
 // consumer's next step pops it either way.
 //
-// Failing by name (decision 1): a Symbol or BigInt iterable (their
-// prototypes are the objects and BigInt areas'), an arguments object
-// (%Array.prototype.values%, light-cljs-844), a light-cljs runtime value as
-// the iterable or the iterator, a built-in getter, and a host-effect or map
-// built-in as the method. Array.prototype[@@iterator] and
-// String.prototype[@@iterator] are pending realm properties until
-// light-cljs-844 and fail by name when read.
+// A symbol is not iterable: %Symbol.prototype% (the objects area's,
+// light-cljs-766) has no @@iterator, and no JavaScript can reach it to add
+// one while it is pending. Arrays, strings and arguments objects iterate
+// with the realm's built-in iterators (light-cljs-844, iterators.goose).
+//
+// Failing by name (decision 1): a BigInt iterable (the BigInt area's), a
+// light-cljs runtime value as the iterable or the iterator, a built-in
+// getter, and a host-effect or map built-in as the method.
 fn get_iterator_op(job: Job&) {
     let heap .= job.heap;
     let v = job.operands.pop();
@@ -4405,7 +4426,7 @@ fn get_iterator(job: Job&, iterable: Value) {
     // A scalar form (a primitive with its provenance) is its primitive.
     let v = form_value(heap, iterable);
     if heap.fault != Fault.None { return; }
-    if v.tag() <= value_tag::Null { type_error(job, "value is not iterable"); return; }
+    if v.tag() <= value_tag::Null || v.is_symbol() { type_error(job, "value is not iterable"); return; }
     if !iteration_object(job, v, "the iterable") { return; }
     let m, getter = read(heap, v, Value.Symbol { s: well_known::Iterator });
     if heap.fault == Fault.UnsupportedOperand { primitive_gap(job, v); }
@@ -4423,10 +4444,10 @@ fn iteration_object(job: Job&, v: Value, what: const u8[:]) -> bool {
     let heap .= job.heap;
     if !v.is_object() { return true; }
     // The compiler roots object and protected rows answer only their own
-    // names (get_property).
-    if job.root_receiver.is_object() && v == job.root_receiver || !realm_intrinsic(v.id()) && v.id() < job.protected_nodes { heap.fault = Fault.NativeBoundary; return false; }
-    if node(heap, v.id()).kind == 14 { unsupported_detail(job, "GetIterator: an arguments object (%Array.prototype.values%)"); return false; }
-    if !convertible(heap, v) {
+    // names (get_property). A protected array is iterated: its @@iterator is
+    // the realm's and its cursor only reads it (light-cljs-844).
+    if job.root_receiver.is_object() && v == job.root_receiver || !realm_intrinsic(v.id()) && v.id() < job.protected_nodes && node(heap, v.id()).kind != 1 { heap.fault = Fault.NativeBoundary; return false; }
+    if !convertible(heap, v) && node(heap, v.id()).kind != 14 {
         job.detail.clear(); for c in "GetIterator: a light-cljs runtime value as " { job.detail.push(c); } for c in what { job.detail.push(c); }
         heap.fault = Fault.UnsupportedOperand; return false;
     }
@@ -4453,6 +4474,8 @@ fn get_iterator_method(job: Job&, at: i64, v: Value, method: Value) {
     // %IteratorPrototype%[@@iterator] returns its receiver.
     if b == Builtin.IteratorPrototypeIterator { get_iterator_next(job, at, receiver); return; }
     if effect_builtin(b) || b == Builtin.Mapv || b == Builtin.MapSeq { unsupported_step(job, b, "as a Symbol.iterator method"); return; }
+    // A string's own cursor (light-cljs-844) needs no frame.
+    if b == Builtin.StringPrototypeIterator && receiver.is_string() { let it = string_cursor(job, b, receiver); if heap.fault == Fault.None { get_iterator_next(job, at, it); } return; }
     if native_builtin(b) {
         let row = get_iterator_frame(job, at, 2, v, Value.Undefined);
         if row >= 0 { native_start(job, b, receiver, [], job.operands.len); }

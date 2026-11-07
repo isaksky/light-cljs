@@ -594,6 +594,13 @@ fn control_flow() {
     check(embed_file("../corpus/serial/for-of.gsp"), "boolean:true", source::Fault.None, 7);
     heap_program::join(thread_spawn(iterator_getter_ran, str(embed_file("../corpus/serial/for-of.gsp"))));
     limit_points(embed_file("../corpus/serial/for-of.gsp"));
+    // The built-in iterators (light-cljs-844): `length` getters, valueOf and
+    // element getters above %ArrayIteratorPrototype%.next's native frame,
+    // keys and entries, a string's code points and a String object's
+    // ToString above String.prototype[@@iterator]'s, at every cut and limit.
+    check(embed_file("../corpus/serial/builtin-iterators.gsp"), "boolean:true");
+    limit_points(embed_file("../corpus/serial/builtin-iterators.gsp"));
+    for shape in 2 { for boundary in 4 { heap_program::join(thread_spawn(iterator_source, str(embed_file("../corpus/serial/builtin-iterator-receiver.gsp")), shape, boundary)); } }
     // map and forEach (light-cljs-789): their callbacks, getters and the
     // length's valueOf run in the built-in's native frame.
     check(embed_file("../corpus/serial/array-callbacks.gsp"), "boolean:true");
@@ -661,6 +668,30 @@ thread_fn push_receiver(bytes: u8[], receiver: i64, boundary: i64, n: i64) {
     // The refusal is push's (its native frame, function -1), not a read's.
     assert(outcome == tiny::Outcome.Failed && job.fault == source::Fault.NativeBoundary && job.fault_function == -1);
     assert(source::plain_rows(heap.nodes) == nodes && source::plain_rows(heap.values) == values && source::plain_rows(heap.properties) == properties);
+}
+// The built-in array iterators over a source the job did not allocate
+// (builtin-iterator-receiver.js, light-cljs-844, decision 3): a dense array
+// (shape 0) or an array-like (1) below the job's protected or owned rows,
+// in a foreign range, or the job's own (boundary 3). A cursor only reads
+// its source: values(), entries() and, for the array, for-of complete with
+// the same result and leave every row the source had as it was.
+thread_fn iterator_source(bytes: u8[], shape: i64, boundary: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let start = heap.nodes.len;
+    let o = source::allocate(heap, source::Node { kind: if shape == 0 { 1 } else { 0 } });
+    assert(source::put(heap, o, source::text(heap, "0"), source::number(1)) && source::put(heap, o, source::text(heap, "1"), source::number(2)));
+    if shape == 1 { assert(source::put(heap, o, source::text(heap, "length"), source::number(2))); }
+    let end = heap.nodes.len;
+    let entry = source::closure(heap, 0, []);
+    var job = source::Job { heap: heap };
+    if boundary == 0 { job.protected_nodes = end; } else if boundary == 1 { job.owned_nodes = end; } else if boundary == 2 { job.foreign.push(start as u32); job.foreign.push(end as u32); }
+    assert(source::start(job, entry, [o]));
+    let nodes = source::plain_rows(heap.nodes[..end]); let values = source::plain_rows(heap.values); let properties = source::plain_rows(heap.properties);
+    assert(source::run(job, -1) == tiny::Outcome.Complete);
+    assert(source::key_is(heap, job.result, if shape == 0 { "120112" } else { "1201" }));
+    assert(source::plain_rows(heap.nodes[..end]) == nodes && source::plain_rows(heap.values)[..values.len] == values[..] && source::plain_rows(heap.properties)[..properties.len] == properties[..]);
 }
 // Array.prototype.join's pieces (light-cljs-842): long Latin-1 and UTF-16
 // elements and separators, a null element. The uncut join gives the
@@ -1113,9 +1144,10 @@ thread_fn named_model() {
     assert(source::put(heap, b, source::text(heap, "0"), source::number(5)) && source::put(heap, b, source::text(heap, "x"), source::number(6)) && source::put(heap, b, source::text(heap, "y"), source::number(7)));
     assert(source::delete_property(heap, b, key(heap, "x")) && source::node(heap, b.id()).initialized && source::get(heap, b, source::text(heap, "0")).num() == 5 && source::get(heap, b, source::text(heap, "y")).num() == 7);
     // The pending %Array.prototype%: its names and symbol keys fail by name,
-    // other names are absent.
+    // other names are absent; its @@iterator is `values` (light-cljs-844).
     source::get(heap, b, source::text(heap, "pop")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
-    source::get(heap, b, source::Value.Symbol { s: 0 }); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    source::get(heap, b, source::Value.Symbol { s: well_known::Unscopables }); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    assert(source::get(heap, b, source::Value.Symbol { s: well_known::Iterator }) == source::get(heap, b, source::text(heap, "values")) && heap.fault == source::Fault.None);
     assert(source::get(heap, b, source::text(heap, "other")).is_undefined() && heap.fault == source::Fault.None);
     // A closure (light-cljs-806): `length` and `name` come from its code row
     // and are configurable only; while lazy, reads, `in` and key listing

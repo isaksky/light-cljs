@@ -11,7 +11,7 @@
 // primitive is a TypeError and an exception from the method or a `next`
 // getter propagates, without running the body or closing; Function.prototype
 // .call as the method calls the iterable itself. Arrays and strings as
-// iterables wait for their built-in iterators (light-cljs-844).
+// iterables are bbp/for_of_builtin_iterators (light-cljs-844).
 // Completes with
 // "4:0:4,1:1,1:2:42,1:3:17,17:1,99:2,TypeError,TypeError,TypeError,3:1,TypeError;method;getter;0,3".
 (function () {
