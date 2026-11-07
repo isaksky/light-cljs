@@ -1081,6 +1081,9 @@ mod serial_tests {
             ("cancel-suspended", "goose"),
             ("generator-limit", "goose"),
             ("promise-then", "goose"),
+            // Reads and calls on primitive bases through their prototypes
+            // (light-cljs-833); serial_tests.goose compares node rows.
+            ("primitive-methods", "number:400"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));
@@ -1124,7 +1127,8 @@ mod serial_tests {
         // exported as the conformance harness exports a strict script. Run
         // as they are, the Pants engine gives the expectation; Goose also
         // runs them over global properties it installs first, and runs the
-        // "goose" case only that way (serial_tests.goose).
+        // "goose" case only that way (serial_tests.goose). A "sloppy-" script
+        // is exported as a sloppy one.
         for (name, expected) in [
             ("script-declarations", "boolean:true"),
             ("script-setter", "goose"),
@@ -1135,10 +1139,20 @@ mod serial_tests {
             ("script-reserved-var", "boolean:false"),
             ("script-throw-messages", "boolean:true"),
             ("script-suspension", "boolean:true"),
+            // Primitive receivers (light-cljs-833): accessors Goose installs
+            // on realm prototypes, and a sloppy `this`, which the Pants
+            // engine fails by name.
+            ("primitive-receiver", "goose"),
+            ("sloppy-this", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
-            let export =
-                export_source(name, &source).unwrap_or_else(|error| panic!("{name}: {error}"));
+            let options = if name.starts_with("sloppy-") {
+                ScriptOptions::SLOPPY
+            } else {
+                ScriptOptions::STRICT
+            };
+            let export = export_source_with(name, &source, options)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
             let path = root.join(format!("{name}.gsp"));
             if regenerate {
                 std::fs::write(path, &export.bytes).unwrap();

@@ -1833,21 +1833,32 @@ fn own_property(heap: Heap&, object: Value, k: Value) -> Value, bool {
 }
 // [[Get]] of a string key on any value, without running JavaScript: the
 // value and, for an accessor with a getter, the getter its caller must run
-// with `object` as receiver. A string primitive has its `length` and
-// indices; other primitives' prototypes are not implemented
-// (UnsupportedOperand), and undefined and null are a TypeError.
+// with `object` as receiver. An object's lookup comes first. A primitive
+// base (GetValue's ToObject, ECMAScript 6.2.5.5; QuickJS's
+// JS_GetPrototypePrimitive) makes no wrapper (decision 2): a string first
+// answers its own `length` and indices, then the lookup starts at the
+// primitive's realm prototype (primitive_prototype), and a getter found
+// there runs with the primitive itself as receiver. Undefined and null are
+// a TypeError; a Symbol or BigInt base has no prototype here yet
+// (UnsupportedOperand, which get_property names).
 fn read(heap: Heap&, object: Value, k: Value) -> Value, Value {
     if !valid(heap, object) || !key_valid(heap, k) { return Value.Undefined, Value.Undefined; }
     if !k.is_string() && !k.is_symbol() { heap.fault = Fault.InvalidState; return Value.Undefined, Value.Undefined; }
+    if object.is_object() {
+        let key = intern(heap, k);
+        if heap.fault != Fault.None { return Value.Undefined, Value.Undefined; }
+        return lookup(heap, object, key);
+    }
     if object.is_string() {
         if key_is(heap, k, "length") { return number(str_len(heap, object)), Value.Undefined; }
-        let i = index(heap, k); if i >= 0 { if i >= str_len(heap, object) { return Value.Undefined, Value.Undefined; } return unit_string(heap, object, i), Value.Undefined; }
-        heap.fault = Fault.UnsupportedOperand; return Value.Undefined, Value.Undefined;
+        let i = index(heap, k); if i >= 0 && i < str_len(heap, object) { return unit_string(heap, object, i), Value.Undefined; }
+        if heap.fault != Fault.None { return Value.Undefined, Value.Undefined; }
     }
-    if !object.is_object() { heap.fault = if object.tag() <= value_tag::Null { Fault.TypeError } else { Fault.UnsupportedOperand }; return Value.Undefined, Value.Undefined; }
+    let proto = primitive_prototype(object);
+    if !proto.is_object() { heap.fault = if object.tag() <= value_tag::Null { Fault.TypeError } else { Fault.UnsupportedOperand }; return Value.Undefined, Value.Undefined; }
     let key = intern(heap, k);
     if heap.fault != Fault.None { return Value.Undefined, Value.Undefined; }
-    return lookup(heap, object, key);
+    return lookup(heap, proto, key);
 }
 // [[Get]] for Goose callers: an accessor's getter fails UnsupportedOperand,
 // since only the dispatch loop can run it (get_property).
@@ -1857,14 +1868,42 @@ fn get(heap: Heap&, object: Value, k: Value) -> Value {
     return v;
 }
 // [[Set]] of a string key: the setter to run (see assign) and whether the
-// assignment was accepted. Only objects have properties to set: a primitive
-// is a TypeError (undefined, null) or not implemented yet.
+// assignment was accepted. Undefined and null are a TypeError. A number,
+// string or boolean base (PutValue's ToObject, ECMAScript 6.2.5.6) is the
+// receiver of OrdinarySet from its realm prototype, without a wrapper: a
+// setter found on the chain runs with the primitive as receiver; anything
+// else refuses the write (a TypeError in strict code), since a primitive
+// takes no own property and a string's `length` and indices are read-only.
+// A Symbol or BigInt base fails UnsupportedOperand (set_property names it).
 fn write(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     if !valid(heap, object) || !key_valid(heap, k) || !valid(heap, value) { return Value.Undefined, false; }
-    if !object.is_object() || !k.is_string() && !k.is_symbol() { heap.fault = if object.is_object() { Fault.UnsupportedOperand } else { Fault.TypeError }; return Value.Undefined, false; }
+    if !k.is_string() && !k.is_symbol() { heap.fault = if object.tag() <= value_tag::Null { Fault.TypeError } else { Fault.UnsupportedOperand }; return Value.Undefined, false; }
+    if object.is_object() {
+        let key = intern(heap, k);
+        if heap.fault != Fault.None { return Value.Undefined, false; }
+        return assign(heap, object, key, value);
+    }
+    let proto = primitive_prototype(object);
+    if !proto.is_object() { heap.fault = if object.tag() <= value_tag::Null { Fault.TypeError } else { Fault.UnsupportedOperand }; return Value.Undefined, false; }
+    if object.is_string() {
+        if key_is(heap, k, "length") { return Value.Undefined, false; }
+        let i = index(heap, k);
+        if heap.fault != Fault.None || i >= 0 && i < str_len(heap, object) { return Value.Undefined, false; }
+    }
     let key = intern(heap, k);
-    if heap.fault != Fault.None { return Value.Undefined, false; }
-    return assign(heap, object, key, value);
+    var at = proto;
+    while at.is_object() && heap.fault == Fault.None {
+        let p = own_entry(heap, at, key);
+        if heap.fault != Fault.None { break; }
+        if p.found {
+            if is_pending(p.value) { pending_fault(heap, key); break; }
+            if is_accessor(p.value) { let f = pair(heap, p.value).set; return f, f.is_object(); }
+            break;
+        }
+        if !charge(heap) { break; }
+        at = prototype(heap, at.id());
+    }
+    return Value.Undefined, false;
 }
 // [[Set]] for Goose callers: a setter fails UnsupportedOperand and a refused
 // assignment is a TypeError.
@@ -3311,11 +3350,21 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     if heap.fault != Fault.None { break; }
                 },
                 This t => {
-                    var receiver = job.frames[top].receiver;
-                    if t.sloppy && !f.strict && (receiver.is_undefined() || receiver.is_null()) { receiver = heap.global; }
-                    else if t.sloppy && !f.strict && !receiver.is_object() { heap.fault = Fault.UnsupportedOperand; }
-                    job.operands.push(receiver);
-                    if heap.fault != Fault.None { break; }
+                    let receiver = job.frames[top].receiver;
+                    if receiver.is_object() || !t.sloppy || f.strict { job.operands.push(receiver); }
+                    else if receiver.is_undefined() || receiver.is_null() { job.operands.push(heap.global); }
+                    else {
+                        // OrdinaryCallBindThis: sloppy code sees a primitive
+                        // receiver boxed (ToObject, light-cljs-832). The frame
+                        // keeps the wrapper, so every `this` of the call is
+                        // the same object; strict code keeps the primitive.
+                        settle(job, ran, used); job.frames[top].pc = pc;
+                        let boxed = to_object(job, receiver);
+                        if heap.fault == Fault.None { job.frames[top].receiver = boxed; }
+                        job.operands.push(boxed);
+                        if !in_place(job, top, at) { break; }
+                        left = fuel(job, allowance, used);
+                    }
                 },
                 Global => { job.operands.push(heap.global); },
                 GetGlobal g => {
@@ -3680,13 +3729,23 @@ fn get_property(job: Job&, k: Value) {
         if !found && !optional { heap.fault = Fault.NativeBoundary; } job.operands.push(value);
     } else {
         // An accessor's getter runs as a frame entered directly: its return
-        // value is the read's result for this frame (light-cljs-787).
+        // value is the read's result for this frame (light-cljs-787). On a
+        // primitive base (read) the getter's receiver is the primitive.
         prepare_function(job, object, k, false);
         let value, getter = read(heap, object, k);
+        if heap.fault == Fault.UnsupportedOperand { primitive_gap(job, object); }
         if heap.fault != Fault.None || !getter.is_object() { job.operands.push(value); }
         else if node(heap, getter.id()).kind != 2 { heap.fault = Fault.UnsupportedOperand; job.operands.push(value); }
         else { enter(job, getter, object, []); }
     }
+}
+// A property access on a Symbol or BigInt base fails by name (decision 1):
+// %Symbol.prototype% and %BigInt.prototype% are the objects and BigInt
+// areas' (light-cljs-766, light-cljs-771).
+fn primitive_gap(job: Job&, base: Value) {
+    if !base.is_symbol() && !base.is_bigint() { return; }
+    job.detail.clear();
+    for c in (if base.is_symbol() { "property access on a Symbol: %Symbol.prototype%" } else { "property access on a BigInt: %BigInt.prototype%" }) { job.detail.push(c); }
 }
 // A ReferenceError for global name k: "k is not defined".
 fn not_defined(job: Job&, k: Value) {
@@ -3987,7 +4046,8 @@ inline fn object_hit(job: const Job&, object: Value, i: i64) -> bool {
 // [[Set]] from an assignment (light-cljs-787): chain, the expression yields
 // the object (88), else the value. A setter runs through a Setter native
 // frame; a refused assignment is a TypeError in strict code and does nothing
-// in sloppy code.
+// in sloppy code. On a primitive base (write) a setter's receiver is the
+// primitive, and a refusal says why (the Pants engine's wording).
 fn set_property(job: Job&, value: Value, k: Value, chain: bool, strict: bool) {
     let heap .= job.heap;
     let object = job.operands.pop();
@@ -3996,8 +4056,21 @@ fn set_property(job: Job&, value: Value, k: Value, chain: bool, strict: bool) {
     prepare_function(job, object, k, true);
     let setter, ok = write(heap, object, k, value);
     if heap.fault == Fault.None && setter.is_object() { call_setter(job, setter, object, value, result); return; }
-    if heap.fault == Fault.None { if ok { record(job, object, k, value); } else if strict { heap.fault = Fault.TypeError; } }
+    if heap.fault == Fault.None { if ok { record(job, object, k, value); } else if strict { refused_write(job, object, k); } }
+    else if heap.fault == Fault.UnsupportedOperand { primitive_gap(job, object); }
     job.operands.push(result);
+}
+// The TypeError of a strict assignment to key k of `object` that [[Set]]
+// refused: for a number, string or boolean base, the read-only own property
+// of its string or the own property a primitive cannot take.
+fn refused_write(job: Job&, object: Value, k: Value) {
+    let heap .= job.heap;
+    let t = wrapper_type(object);
+    if object.is_object() || t < 0 || !k.is_string() { heap.fault = Fault.TypeError; return; }
+    let i = index(heap, k);
+    if heap.fault != Fault.None { return; }
+    if object.is_string() && (key_is(heap, k, "length") || i >= 0 && i < str_len(heap, object)) { named_error(job, Fault.TypeError, "cannot assign to read-only property '", k, "' of a string"); return; }
+    named_error(job, Fault.TypeError, "cannot create property '", k, if t == 0 { "' on a number: primitive values have no own properties" } else if t == 1 { "' on a string: primitive values have no own properties" } else { "' on a boolean: primitive values have no own properties" });
 }
 // DefineField, DefineGetter and DefineSetter (81, 103, 104; key k) and
 // DefineElem, DefineGetterElem and DefineSetterElem (130, 133, 134; k the

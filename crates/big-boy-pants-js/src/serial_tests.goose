@@ -80,6 +80,15 @@ fn install(heap: source::Heap&, setup: i64) {
         let hooked = source::allocate(heap, source::Node { kind: 0 }); let attrs = source::attr_configurable();
         assert(source::define_own(heap, hooked.id(), source::Value.Symbol { s: well_known::ToPrimitive }, source::closure(heap, named_function(heap.code, "hookGet"), []), attrs, 1));
         assert(source::define_own(heap, global, source::key_named(heap, "hooked"), hooked, source::attr_writable() | source::attr_configurable()));
+    } else if setup == 5 {
+        // `probe` on Number.prototype and String.prototype: an accessor of
+        // probeGet and probeSet (primitive-receiver.js).
+        let k = source::key_named(heap, "probe"); let attrs = source::attr_configurable();
+        for t in [0, 1] {
+            let proto = source::wrapper_prototype_row(t);
+            assert(source::define_own(heap, proto, k, source::closure(heap, named_function(heap.code, "probeGet"), []), attrs, 1));
+            assert(source::define_own(heap, proto, k, source::closure(heap, named_function(heap.code, "probeSet"), []), attrs, 2));
+        }
     } else {
         let k = source::key_named(heap, "reserved");
         assert(source::define_own(heap, global, k, source::number(1), if setup == 2 { 0 } else { source::attr_writable() | source::attr_enumerable() }));
@@ -525,6 +534,7 @@ fn main() {
 
     properties();
     scripts();
+    primitive_methods();
     key_enumeration();
     named_properties();
     heap_program::join(thread_spawn(realm_model, str(embed_file("../corpus/serial/calls.gsp"))));
@@ -683,8 +693,35 @@ fn key(heap: source::Heap&, name: const u8[:]) -> source::Value { return source:
 // cannot make the oracles agree there, since the Pants engine reserves
 // `undefined`, `NaN` and `Infinity` at compile time where QuickJS throws at
 // run time.
+// Reads and calls on primitive bases make no wrapper (light-cljs-833,
+// decision 2): primitive-methods.js run for `rounds` rounds of number,
+// string and boolean method calls; publishes its result and the node rows
+// the job added.
+struct Rounds { result: f64, rows: i64 }
+thread_fn primitive_rounds(bytes: u8[], rounds: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let entry = source::closure(heap, 0, []);
+    let nodes = heap.nodes.len;
+    var job = source::Job { heap: heap }; assert(source::start(job, entry, [source::number(rounds)]));
+    assert(source::run(job, -1) == tiny::Outcome.Complete && job.fault == source::Fault.None);
+    assert(qput(Rounds { result: job.result.num(), rows: heap.nodes.len - nodes }));
+}
+fn primitive_methods() {
+    let bytes = embed_file("../corpus/serial/primitive-methods.gsp");
+    check(bytes, "number:400.0");
+    heap_program::join(thread_spawn(primitive_rounds, str(bytes), 0)); let none = qget<Rounds>();
+    heap_program::join(thread_spawn(primitive_rounds, str(bytes), 300)); let many = qget<Rounds>();
+    assert(none.result == 0 && many.result == 600 && many.rows == none.rows);
+}
 fn scripts() {
     check(embed_file("../corpus/serial/script-declarations.gsp"), "boolean:true");
+    // Primitive receivers (light-cljs-833): realm-prototype accessors
+    // installed for the script see the primitive itself, and a sloppy
+    // script's functions box a primitive `this`.
+    check(embed_file("../corpus/serial/primitive-receiver.gsp"), "boolean:true", source::Fault.None, 5);
+    check(embed_file("../corpus/serial/sloppy-this.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/script-setter.gsp"), "boolean:true", source::Fault.None, 1);
     let function = embed_file("../corpus/serial/script-reserved-function.gsp");
     check(function, "number:1.0");

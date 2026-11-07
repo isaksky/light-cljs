@@ -124,6 +124,12 @@
   "bbp/conversion_functions" {:area :operators-values}
   "bbp/logical_assignment_on_properties" {:area :operators-values}
   "bbp/property_update_sloppy_ignored" {:area :operators-values :mode :sloppy}
+  "bbp/methods_on_primitive_bases" {:area :operators-values}
+  "bbp/primitive_base_writes" {:area :operators-values}
+  "bbp/primitive_base_writes_sloppy" {:area :operators-values :mode :sloppy}
+  ;; The Pants engine fails a sloppy primitive `this` by name (checked_this),
+  ;; so its oracles disagree; serial_tests.goose checks Goose's boxing.
+  "bbp/sloppy_this_boxing" {:area :operators-values :mode :sloppy}
 
   ;; ---- Pants engine fixtures (rust/tests/fixtures/js)
   "pants/arithmetic" {:area :operators-values :origin :pants-authored}
