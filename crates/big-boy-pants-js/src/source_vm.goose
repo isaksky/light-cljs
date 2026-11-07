@@ -836,10 +836,44 @@ fn equal(heap: Heap&, a: Value, b: Value) -> bool {
         _ => a == b,
     };
 }
+// ECMAScript ToNumber of a primitive (light-cljs-827; the Pants engine's
+// vm/dispatch.rs to_number): undefined NaN, null +0, a boolean 0 or 1, a
+// string by StringToNumber. No user code runs (decision 5). A symbol is a
+// TypeError, a BigInt fails Unsupported (the BigInt area, light-cljs-771)
+// and an object UnsupportedOperand (ToPrimitive runs before this in the
+// callers that have one). A scalar form (kind 11) converts as its primitive.
 fn numeric(heap: Heap&, v: Value) -> f64 {
     if !valid(heap, v) { return 0; }
     let x = form_value(heap, v);
-    return match x { Undefined => 0.0 / 0.0, Null => 0.0, Bool => if x.flag() { 1.0 } else { 0.0 }, Number => x.num(), _ => { heap.fault = Fault.UnsupportedOperand; 0.0 } };
+    return match x {
+        Undefined => 0.0 / 0.0, Null => 0.0, Bool => if x.flag() { 1.0 } else { 0.0 }, Number => x.num(), String => string_to_number(heap, x),
+        Symbol => { heap.fault = Fault.TypeError; 0.0 }, BigInt => { heap.fault = Fault.Unsupported; 0.0 }, _ => { heap.fault = Fault.UnsupportedOperand; 0.0 },
+    };
+}
+// StrWhiteSpaceChar (ECMAScript 7.1.4.1.1; the Pants engine's
+// value/string.rs is_str_white_space): WhiteSpace (TAB, VT, FF, U+FEFF and
+// the Zs characters) or a LineTerminator. All are BMP, so one unit decides.
+fn str_white_space(u: u16) -> bool {
+    return u >= 0x09 && u <= 0x0D || u == 0x20 || u == 0xA0 || u == 0x1680 || u >= 0x2000 && u <= 0x200A || u == 0x2028 || u == 0x2029 || u == 0x202F || u == 0x205F || u == 0x3000 || u == 0xFEFF;
+}
+// StringToNumber of a string value: StrWhiteSpace trimmed from both ends,
+// then number::parse_literal (number_text.goose) of what remains, which must
+// be ASCII (a unit above 127 is NaN). The scan is charged to the work
+// budget, one unit a code unit.
+fn string_to_number(heap: Heap&, s: Value) -> f64 {
+    let n = str_len(heap, s);
+    if !charge(heap, n) { return 0; }
+    var start: i64 = 0; while start < n && str_white_space(unit(heap, s, start)) { start += 1; }
+    var end = n; while end > start && str_white_space(unit(heap, s, end - 1)) { end -= 1; }
+    let h = header(heap, s.sid());
+    if !h.wide {
+        let run = narrow_run(heap, h)[start..end];
+        for c in run { if c > 127 { return 0.0 / 0.0; } }
+        return number::parse_literal(run);
+    }
+    var text: u8[>..] = [];
+    var i = start; while i < end { let u = unit(heap, s, i); if u > 127 { return 0.0 / 0.0; } text.push(u as u8); i += 1; }
+    return number::parse_literal(text);
 }
 // A property key (light-cljs-787): a string, or a well-known symbol, which
 // valid() refuses as a value but which is a key like any other.
@@ -2104,11 +2138,20 @@ fn record(job: Job&, object: Value, k: Value, value: Value) {
 }
 fn binary_value(heap: Heap&, op: i64, a: Value, b: Value) -> Value {
     if op == opcode::StrictEq { return boolean(equal(heap, a, b)); }
+    // IsLooselyEqual of primitives (light-cljs-827; the Pants engine's
+    // vm/dispatch.rs loose_equals): null and undefined equal each other only;
+    // one type compares strictly; numbers, strings and booleans of different
+    // types compare their ToNumber values (a boolean first converts, then
+    // the comparison repeats, which comes to the same); a symbol equals no
+    // other type. An object beside another type needs ToPrimitive, not
+    // implemented here: UnsupportedOperand.
     if op == opcode::LooseEq {
         if (a.is_undefined() || a.is_null()) && (b.is_undefined() || b.is_null()) { return boolean(true); }
         if a.tag() == b.tag() { return boolean(equal(heap, a, b)); }
         if a.tag() <= value_tag::Null || b.tag() <= value_tag::Null { return boolean(false); }
-        if (a.tag() <= value_tag::Number && b.tag() <= value_tag::Number) { return boolean(numeric(heap, a) == numeric(heap, b)); }
+        if a.tag() <= value_tag::String && b.tag() <= value_tag::String { let x = numeric(heap, a); let y = numeric(heap, b); return if heap.fault == Fault.None { boolean(x == y) } else { Value.Undefined }; }
+        if a.is_object() || b.is_object() { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
+        if a.is_symbol() || b.is_symbol() { return if valid(heap, a) && valid(heap, b) { boolean(false) } else { Value.Undefined }; }
         heap.fault = Fault.UnsupportedOperand; return Value.Undefined;
     }
     if op == opcode::Plus && a.is_string() && b.is_string() {
@@ -2130,11 +2173,18 @@ fn binary_value(heap: Heap&, op: i64, a: Value, b: Value) -> Value {
         let x = form_value(heap, a); let y = form_value(heap, b);
         if x.is_string() || y.is_string() { return concat_mixed(heap, x, y); }
     }
-    if (op == opcode::CompareLt || op == opcode::CompareGt || op == opcode::CompareLe || op == opcode::CompareGe) && a.is_string() && b.is_string() {
-        if !valid(heap, a) || !valid(heap, b) || !charge(heap, str_len(heap, a) + str_len(heap, b)) { return Value.Undefined; }
-        let p = str_len(heap, a); let q = str_len(heap, b);
-        var c: i64 = 0; for i in min(p, q) { let x = unit(heap, a, i); let y = unit(heap, b, i); if x != y { c = if x < y { -1 } else { 1 }; break; } } if c == 0 { c = if p < q { -1 } else if p > q { 1 } else { 0 }; }
-        return boolean(if op == opcode::CompareLt { c < 0 } else if op == opcode::CompareGt { c > 0 } else if op == opcode::CompareLe { c <= 0 } else { c >= 0 });
+    // IsLessThan of primitives (light-cljs-827; the Pants engine's
+    // vm/dispatch.rs is_less_than): two strings (a scalar form counting as
+    // its primitive) compare by code units; any other pair compares the
+    // ToNumber values below, where NaN makes every comparison false.
+    if op == opcode::CompareLt || op == opcode::CompareGt || op == opcode::CompareLe || op == opcode::CompareGe {
+        let s = form_value(heap, a); let t = form_value(heap, b);
+        if s.is_string() && t.is_string() {
+            if !charge(heap, str_len(heap, s) + str_len(heap, t)) { return Value.Undefined; }
+            let p = str_len(heap, s); let q = str_len(heap, t);
+            var c: i64 = 0; for i in min(p, q) { let x = unit(heap, s, i); let y = unit(heap, t, i); if x != y { c = if x < y { -1 } else { 1 }; break; } } if c == 0 { c = if p < q { -1 } else if p > q { 1 } else { 0 }; }
+            return boolean(if op == opcode::CompareLt { c < 0 } else if op == opcode::CompareGt { c > 0 } else if op == opcode::CompareLe { c <= 0 } else { c >= 0 });
+        }
     }
     let x = numeric(heap, a); let y = numeric(heap, b);
     if heap.fault != Fault.None { return Value.Undefined; }
@@ -2483,7 +2533,9 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
         return form_construct(heap, if id == 10 { 6 } else if id == 11 { 5 } else if id == 12 { 7 } else { 8 }, values);
     }
     if id == 0 && args.len == 1 { return args[0]; }
-    if id == 1 && args.len == 1 { return number(numeric(heap, args[0]) + 1); }
+    // inc is the runtime's `x => x + 1`: a string concatenates "1" (it does
+    // not convert by ToNumber), as `+` does.
+    if id == 1 && args.len == 1 { return binary_value(heap, opcode::Plus, args[0], number(1)); }
     if id == 3 && args.len == 1 {
         let kind = form_kind(heap, args[0]); if kind == 6 { return args[0]; }
         if kind == 5 || kind == 12 { let n = node(heap, args[0].id()); return form_collection(heap, 6, run(heap, n.start, n.count)); }
@@ -2688,6 +2740,19 @@ fn key_named(heap: Heap&, name: const u8[:]) -> Value {
     let k = text(heap, name);
     return if heap.fault == Fault.None { intern(heap, k) } else { Value.Undefined };
 }
+// After binary_value of operator op on a and b failed with a TypeError, a
+// symbol's conversion, its message in Job.detail: ToString when op is `+`
+// with a string operand (a scalar form counting as its primitive, as there),
+// otherwise ToNumber. Reads no table row through valid(), which refuses
+// every value once a fault is set.
+fn symbol_detail(job: Job&, op: i64, a: Value, b: Value) {
+    if job.heap.fault != Fault.TypeError || job.detail.len > 0 { return; }
+    let words: const u8[:] = if op == opcode::Plus && (holds_string(job.heap, a) || holds_string(job.heap, b)) { "Cannot convert a Symbol value to a string" } else { "Cannot convert a Symbol value to a number" };
+    for c in words { job.detail.push(c); }
+}
+fn holds_string(heap: const Heap&, v: Value) -> bool {
+    return v.is_string() || v.is_object() && v.id() < heap.nodes.len && heap.nodes[v.id()].kind == 11 && heap.nodes[v.id()].value.is_string();
+}
 // One step of OrdinaryToPrimitive with hint default (number order: valueOf,
 // then toString), the Pants engine's Convert native (rust/src/vm/native.rs).
 // The operand being converted is index 0 (input) or 1 (output); an operand
@@ -2714,10 +2779,9 @@ fn to_primitive_step(job: Job&, frame: Frame, op: u8, method: u8) {
     }
     if frame.index >= 2 {
         let value = binary_value(heap, op, frame.input, frame.output);
-        // binary_value's one TypeError is a symbol's ToString (`+` with a
-        // string operand); this native frame names no instruction for
-        // fault_message, so the message goes in Job.detail.
-        if heap.fault == Fault.TypeError && job.detail.len == 0 { for c in "Cannot convert a Symbol value to a string" { job.detail.push(c); } }
+        // This native frame names no instruction for fault_message, so a
+        // symbol's message goes in Job.detail.
+        symbol_detail(job, op, frame.input, frame.output);
         if heap.fault == Fault.None { finish_native(job, frame, value); }
         return;
     }
@@ -2859,6 +2923,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     } else {
                         settle(job, ran, used); job.frames[top].pc = pc;
                         let v = binary_value(heap, b.op, x, y); job.operands.push(v);
+                        if heap.fault == Fault.TypeError && b.op == opcode::Plus { symbol_detail(job, b.op, x, y); }
                         if !in_place(job, top, at) { break; }
                         left = fuel(job, allowance, used);
                     }
@@ -2893,16 +2958,30 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     if !own(job, top, HandlerKind.Catch) { heap.fault = Fault.InvalidState; break; }
                     job.handlers.pop();
                 },
+                // A number converts in place; any other operand runs ToNumber
+                // (numeric), which may charge work (StringToNumber), so the
+                // counts settle first and the fuel is recomputed after.
                 Unary u => {
-                    let v = job.operands.pop(); let n = if v.is_number() { v.num() } else { numeric(heap, v) };
-                    job.operands.push(number(if u.op == opcode::Neg { -n } else if u.op == opcode::Inc { n + 1 } else if u.op == opcode::Dec { n - 1 } else { n }));
-                    if heap.fault != Fault.None { break; }
+                    let v = job.operands.pop();
+                    if v.is_number() { let n = v.num(); job.operands.push(number(if u.op == opcode::Neg { -n } else if u.op == opcode::Inc { n + 1 } else if u.op == opcode::Dec { n - 1 } else { n })); }
+                    else {
+                        settle(job, ran, used); job.frames[top].pc = pc;
+                        let n = numeric(heap, v);
+                        job.operands.push(number(if u.op == opcode::Neg { -n } else if u.op == opcode::Inc { n + 1 } else if u.op == opcode::Dec { n - 1 } else { n }));
+                        if !in_place(job, top, at) { break; }
+                        left = fuel(job, allowance, used);
+                    }
                 },
                 Numeric2 => {
                     let b = job.operands.pop(); let a = job.operands.pop();
-                    let x = if a.is_number() { a.num() } else { numeric(heap, a) }; let y = if b.is_number() { b.num() } else { numeric(heap, b) };
-                    job.operands.push(number(x)); job.operands.push(number(y));
-                    if heap.fault != Fault.None { break; }
+                    if a.is_number() && b.is_number() { job.operands.push(a); job.operands.push(b); }
+                    else {
+                        settle(job, ran, used); job.frames[top].pc = pc;
+                        let x = numeric(heap, a); let y = numeric(heap, b);
+                        job.operands.push(number(x)); job.operands.push(number(y));
+                        if !in_place(job, top, at) { break; }
+                        left = fuel(job, allowance, used);
+                    }
                 },
                 Closure c => {
                     settle(job, ran, used); job.frames[top].pc = pc;

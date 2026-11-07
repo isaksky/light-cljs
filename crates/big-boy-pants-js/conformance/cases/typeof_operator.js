@@ -10,6 +10,7 @@ function row(ok) { rows++; if (ok !== true && failed === 0) failed = rows; }
 row(typeof 1 === "number");
 row(typeof NaN === "number");
 row(typeof -0 === "number");
+row(typeof -"1" === "number");
 row(typeof true === "boolean");
 row(typeof false === "boolean");
 row(typeof "s" === "string");

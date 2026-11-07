@@ -1001,6 +1001,9 @@ mod serial_tests {
             ("type-error", "exception:TypeError"),
             ("not-callable", "exception:TypeError"),
             ("unsupported-coercion", "number:3"),
+            // StringToNumber in unary and binary operators, `++`, `<` and
+            // `==` (light-cljs-827; its work limits in serial_tests.goose).
+            ("string-to-number", "boolean:true"),
             ("unsupported-prototype", "string:[object Object]"),
             // Goose does not implement `construct`: dead here, and reached
             // under a `catch` that cannot swallow its fault there

@@ -3,8 +3,7 @@
 // template_literal_values (bbp-57, the evaluation of untagged templates):
 // each substitution converts by ToString, its own instruction, and joins
 // the text so far. The rows with an object substitution (ToPrimitive with
-// hint string) and with `*` of a string (StringToNumber) are left out; tagged
-// templates stay with the lexing area. Infinity and NaN are spelled 1 / 0 and
+// hint string) are left out; tagged templates stay with the lexing area. Infinity and NaN are spelled 1 / 0 and
 // 0 / 0. Each row is a `row(...)` check; the script completes with the
 // number of rows, or minus the first failing row's number.
 var rows = 0, failed = 0;
@@ -48,4 +47,6 @@ row(`ā${2}Ă` === "ā2Ă");
 // A template is a string value like any other.
 row(`ab` === "ab");
 row(`${1}` + 1 === "11");
+// `*` converts both templates by StringToNumber (light-cljs-827).
+row(`2` * `${3}` === 6);
 failed === 0 ? rows : -failed;

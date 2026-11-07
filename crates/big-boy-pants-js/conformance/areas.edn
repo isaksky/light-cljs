@@ -99,6 +99,10 @@
   "bbp/primitive_property_keys" {:area :operators-values}
   "bbp/symbol_to_string_throws" {:area :operators-values}
   "bbp/template_literal_values" {:area :operators-values}
+  "bbp/primitive_relational_comparison" {:area :operators-values}
+  "bbp/strings_compare_loosely_with_numbers" {:area :operators-values}
+  "bbp/strings_convert_with_string_to_number" {:area :operators-values}
+  "bbp/symbol_to_number_throws" {:area :operators-values}
 
   ;; ---- Pants engine fixtures (rust/tests/fixtures/js)
   "pants/arithmetic" {:area :operators-values :origin :pants-authored}

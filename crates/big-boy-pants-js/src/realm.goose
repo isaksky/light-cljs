@@ -401,7 +401,12 @@ fn fault_message(job: Job&, fault: Fault, frame: Frame) -> Value {
         StackLimit => "stack overflow",
         RangeError => "invalid array length",
         ReferenceError => if op == opcode::CellInit || op == opcode::CellGet || op == opcode::CellSet { "lexical variable is not initialized" } else { "variable is not defined" },
-        TypeError => match op { opcode::Call, opcode::CallMethod => "not a function", opcode::GetField, opcode::GetElem => "cannot read property of undefined or null", opcode::PutField, opcode::PutElem, opcode::PutFieldStrict, opcode::PutElemStrict => "cannot set property", opcode::In => "invalid 'in' operand", opcode::Plus, opcode::ToString => "Cannot convert a Symbol value to a string", _ => "invalid operand" },
+        TypeError => match op { opcode::Call, opcode::CallMethod => "not a function", opcode::GetField, opcode::GetElem => "cannot read property of undefined or null", opcode::PutField, opcode::PutElem, opcode::PutFieldStrict, opcode::PutElemStrict => "cannot set property", opcode::In => "invalid 'in' operand", opcode::Plus, opcode::ToString => "Cannot convert a Symbol value to a string",
+            // ToNumber of a symbol (light-cljs-827); `+` without a string
+            // operand names its conversion in Job.detail (symbol_detail).
+            opcode::Neg, opcode::ToNumber, opcode::ToNumeric, opcode::Inc, opcode::Dec, opcode::ToNumberPair, opcode::Sub, opcode::Mul, opcode::Div, opcode::Rem, opcode::Lt, opcode::Gt, opcode::Le, opcode::Ge, opcode::CompareLt, opcode::CompareGt, opcode::CompareLe, opcode::CompareGe => "Cannot convert a Symbol value to a number",
+            _ => "invalid operand",
+        },
         SyntaxError => "invalid global declaration",
         _ => "host effect failed",
     };

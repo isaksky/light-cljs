@@ -386,6 +386,32 @@ thread_fn primitive_to_string_limits() {
     heap.fault = source::Fault.None;
     print("serial source VM: primitive ToString and mixed + take exactly their units; Latin-1 unless a string side is wide");
 }
+// StringToNumber (light-cljs-827) charges one work unit a code unit of the
+// string, Latin-1 or UTF-16 alike, and fails WorkLimit without the room;
+// ToNumber of a symbol is a TypeError, and `==` with one converts nothing.
+thread_fn string_to_number_budget() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, embed_file("../corpus/serial/calls.gsp"));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let narrow = source::text(heap, " 0x1f\n"); let wide = source::string(heap, [0x3000 as u16, 52, 50, 0xFEFF]);
+    for s, i in [narrow, wide] {
+        let n = source::str_len(heap, s); let expected = [31.0, 42.0][i];
+        heap.limits.work = heap.work + n - 1;
+        source::numeric(heap, s); assert(heap.fault == source::Fault.WorkLimit);
+        heap.fault = source::Fault.None; heap.limits.work = heap.work + n;
+        assert(source::numeric(heap, s) == expected && heap.fault == source::Fault.None && heap.work == heap.limits.work);
+    }
+    heap.limits.work = heap.work + 1000;
+    let x = source::numeric(heap, source::string(heap, [49 as u16, 0x0661])); assert(x != x && heap.fault == source::Fault.None);
+    let symbol = source::Value.Symbol { s: 0 };
+    source::numeric(heap, symbol); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
+    assert(!source::binary_value(heap, opcode::LooseEq, symbol, source::number(1)).flag() && heap.fault == source::Fault.None);
+    assert(source::binary_value(heap, opcode::LooseEq, narrow, source::number(31)).flag() && source::binary_value(heap, opcode::CompareGt, narrow, source::boolean(true)).flag());
+    // The runtime's inc is `x + 1`: a string concatenates, not converts.
+    let inc = source::native_value(heap, 1, [source::text(heap, "4")]); assert(heap.fault == source::Fault.None && source::key_is(heap, inc, "41"));
+    assert(source::native_value(heap, 1, [source::boolean(true)]).num() == 2);
+    print("serial source VM: StringToNumber charges its units, Latin-1 or UTF-16; a symbol's ToNumber is a TypeError");
+}
 // Small objects keep their first two property values in the header's
 // inline slots; the third spills into an overflow run of values, and the keys
 // live in shared shapes (light-cljs-800, light-cljs-787).
@@ -426,7 +452,7 @@ fn wrong_rows() {
 fn main() {
     array_lengths(); latin1_state_check();
     wrong_rows();
-    heap_program::join(thread_spawn(latin1_strings)); heap_program::join(thread_spawn(primitive_to_string_limits)); heap_program::join(thread_spawn(inline_slots));
+    heap_program::join(thread_spawn(latin1_strings)); heap_program::join(thread_spawn(primitive_to_string_limits)); heap_program::join(thread_spawn(string_to_number_budget)); heap_program::join(thread_spawn(inline_slots));
     check(embed_file("../corpus/synthetic/arithmetic.gsp"), "number:27.5");
     check(embed_file("../corpus/synthetic/control_flow.gsp"), "number:7307.0");
     check(embed_file("../corpus/synthetic/wide.gsp"), "number:299.0");
@@ -447,7 +473,14 @@ fn main() {
     check(embed_file("../corpus/serial/tdz.gsp"), "", source::Fault.ReferenceError);
     check(embed_file("../corpus/serial/type-error.gsp"), "", source::Fault.TypeError);
     check(embed_file("../corpus/serial/not-callable.gsp"), "", source::Fault.TypeError);
-    check(embed_file("../corpus/serial/unsupported-coercion.gsp"), "", source::Fault.UnsupportedOperand);
+    // +"3" converts by StringToNumber since light-cljs-827 (the Pants
+    // engine's expectation in rust/src/frontend/goose.rs is the same).
+    check(embed_file("../corpus/serial/unsupported-coercion.gsp"), "number:3.0");
+    // StringToNumber charges work inside the dispatch loop's unary,
+    // ToNumberPair and binary arms: at every work limit an uncut run and a
+    // run in one-instruction slices stop alike and never overrun it.
+    check(embed_file("../corpus/serial/string-to-number.gsp"), "boolean:true");
+    limit_points(embed_file("../corpus/serial/string-to-number.gsp"));
     // ({}).toString() is the realm's Object.prototype.toString (light-cljs-788).
     check(embed_file("../corpus/serial/unsupported-prototype.gsp"), "utf16:[91,111,98,106,101,99,116,32,79,98,106,101,99,116,93]");
     // Every opcode exports (light-cljs-783): `construct` on a dead path and in
