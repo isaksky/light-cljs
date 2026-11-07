@@ -9,7 +9,21 @@ use crate::vm::instr::{Opcode, OperandKind};
 
 /// Version 3 (light-cljs-823) adds the direct-eval site bit of instruction
 /// descriptors ([`DIRECT_EVAL_SITE`]); version-2 readers refuse it explicitly.
-pub const VERSION: u32 = 3;
+/// Version 4 (light-cljs-853) adds each function's source text: function
+/// flags bit 18 ([`SOURCE_TEXT`]) and the function row's words 13 and 14,
+/// so the row is [`FUNCTION_WORDS`] words; version-3 readers refuse it.
+pub const VERSION: u32 = 4;
+/// The u32 words of a function row (60 bytes): instruction start/count,
+/// constant start/count, child start/count, params, locals, captures,
+/// name-unit start/count, JS length, flags, source-text byte start/end.
+pub const FUNCTION_WORDS: usize = 15;
+/// Function flags bit 18: the function has source text (ECMAScript
+/// [[SourceText]], `Executable::source_text_span`), the half-open byte range
+/// of the image's source in words 13 and 14, which start and end on UTF-8
+/// boundaries. Without it both words are 0: a script, eval code or a
+/// synthesized function, whose `Function.prototype.toString` is the
+/// native-code form.
+pub const SOURCE_TEXT: u32 = 1 << 18;
 pub const MAX_SOURCE: usize = 8 * 1024 * 1024;
 pub const MAX_RECORDS: usize = 1_048_576;
 pub const MAX_FUNCTIONS: usize = 65_536;
@@ -258,7 +272,7 @@ fn stack_effect_word(op: Opcode) -> u32 {
 
 #[derive(Default)]
 struct Tables {
-    functions: Vec<[u32; 13]>,
+    functions: Vec<[u32; FUNCTION_WORDS]>,
     constants: Vec<[u32; 3]>,
     children: Vec<u32>,
     instructions: Vec<[u32; 5]>,
@@ -295,7 +309,7 @@ impl Tables {
             ));
         }
         let id = bounded(self.functions.len(), MAX_FUNCTIONS - 1, source)?;
-        self.functions.push([0; 13]);
+        self.functions.push([0; FUNCTION_WORDS]);
         let spec = executable.to_spec();
         // Direct-eval sites export as marked calls (light-cljs-823): the
         // program runs, and only a direct eval that executes fails, by name.
@@ -439,6 +453,28 @@ impl Tables {
             .as_ref()
             .map_or(&[][..], |s| s.code_units());
         let (name_start, name_len) = self.string(name, source)?;
+        let (text_flag, text_start, text_end) = match executable.source_text_span() {
+            Some(span) => {
+                if span.start >= span.end
+                    || !source.is_char_boundary(span.start)
+                    || !source.is_char_boundary(span.end)
+                    || span.end > source.len()
+                {
+                    return Err(problem(
+                        source,
+                        SyntaxErrorKind::Internal,
+                        Span::new(0, 0),
+                        "invalid function source text in Goose export",
+                    ));
+                }
+                (
+                    SOURCE_TEXT,
+                    bounded(span.start, MAX_SOURCE, source)?,
+                    bounded(span.end, MAX_SOURCE, source)?,
+                )
+            }
+            None => (0, 0, 0),
+        };
         self.functions[id as usize] = [
             instruction_start,
             index as u32,
@@ -452,7 +488,9 @@ impl Tables {
             name_start,
             name_len,
             u32::from(spec.function_length.unwrap_or(spec.params)),
-            function_flags(&spec),
+            function_flags(&spec) | text_flag,
+            text_start,
+            text_end,
         ];
         Ok(id)
     }
@@ -597,6 +635,13 @@ pub fn inspection_schema() -> String {
             text.push_str(&format!("let flow::{flow:?} = {};\n", flow_code(flow)));
         }
     }
+    text.push_str(&format!(
+        "\n// A function row's bytes and its source-text flag (function flags\n\
+         // bit 18, GSP version 4): words 13 and 14 hold the text's byte range.\n\
+         let function_row::Bytes = {};\n\
+         let function_row::SourceText = {SOURCE_TEXT};\n",
+        FUNCTION_WORDS * 4
+    ));
     text.push_str(
         "\n// Every opcode's tables; -1, false or \"\" for an unassigned byte.\n\
          fn export_descriptor(op: i64) -> i64 {\n    return match op {\n",
@@ -690,7 +735,7 @@ mod tests {
     /// Rows of one GSP table: (byte offset, record count, words per record).
     fn rows(export: &Export, table: usize) -> Vec<Vec<u32>> {
         let word = |at: usize| u32::from_le_bytes(export.bytes[at..at + 4].try_into().unwrap());
-        let widths = [13, 3, 1, 5];
+        let widths = [FUNCTION_WORDS, 3, 1, 5];
         let mut at = 32 + word(8) as usize;
         for (t, width) in widths.iter().enumerate().take(table) {
             at += word(12 + 4 * t) as usize * width * 4;
@@ -706,7 +751,7 @@ mod tests {
     fn units(export: &Export, start: u32, len: u32) -> Vec<u16> {
         let word = |at: usize| u32::from_le_bytes(export.bytes[at..at + 4].try_into().unwrap());
         let mut at = 32 + word(8) as usize;
-        for (t, width) in [13, 3, 1, 5].into_iter().enumerate() {
+        for (t, width) in [FUNCTION_WORDS, 3, 1, 5].into_iter().enumerate() {
             at += word(12 + 4 * t) as usize * width * 4;
         }
         (start..start + len)
@@ -758,11 +803,80 @@ mod tests {
         }
         // No descriptor sets bits 25..31.
         assert!(rows(&export, 3).iter().all(|row| row[0] >> 24 <= 1));
-        assert_eq!(VERSION, 3);
+        assert_eq!(VERSION, 4);
         assert_eq!(
             u32::from_le_bytes(export.bytes[4..8].try_into().unwrap()),
-            3
+            4
         );
+    }
+    /// Each function's source text is QuickJS's `debug.source` (probed with
+    /// qjs at 7d1c13c, light-cljs-853): declarations and expressions from
+    /// `function`/`async`, methods and accessors from their property name
+    /// with `get`/`set`/`async`/`*` (never `static`), arrows whole, a class
+    /// constructor the whole class; the script and a class's synthesized
+    /// field initializer have none.
+    #[test]
+    fn function_source_text_is_exported() {
+        let source = r#"function  f ( a, b ) { return a; }
+(function (x) { return x });
+(function* g(x) { yield x });
+(async function h(x) { await x });
+(async function* ag(x) { });
+(async (x) => x);
+(x => x * 2);
+((a, b) => { return a; });
+var o = { m(a) { return a; }, get p() { return 1; }, set p(v) {}, *gen() {}, async am() {}, async *agm() {}, ['comp' + 1](z) {}, 'str'(q) {}, 42(n) {}, f: function() {}, a: () => 1 };
+class A { constructor(x) { this.x = x; } m() {} static s() {} get g() { return 1 } static t = 1; u = 2; }
+class B extends A {}
+var C = class Named { };
+(function /*a*/ named /*b*/ (/*c*/) /*d*/ {/*e*/});
+var μ = function μ() { return "é"; };"#;
+        let export = export_source("text.js", source).unwrap();
+        let mut texts = Vec::new();
+        let mut without = 0;
+        for row in rows(&export, 0) {
+            if row[12] & SOURCE_TEXT == 0 {
+                assert_eq!((row[13], row[14]), (0, 0));
+                without += 1;
+                continue;
+            }
+            texts.push(&source[row[13] as usize..row[14] as usize]);
+        }
+        texts.sort_unstable();
+        let mut expected = vec![
+            "function  f ( a, b ) { return a; }",
+            "function (x) { return x }",
+            "function* g(x) { yield x }",
+            "async function h(x) { await x }",
+            "async function* ag(x) { }",
+            "async (x) => x",
+            "x => x * 2",
+            "(a, b) => { return a; }",
+            "m(a) { return a; }",
+            "get p() { return 1; }",
+            "set p(v) {}",
+            "*gen() {}",
+            "async am() {}",
+            "async *agm() {}",
+            "['comp' + 1](z) {}",
+            "'str'(q) {}",
+            "42(n) {}",
+            "function() {}",
+            "() => 1",
+            "class A { constructor(x) { this.x = x; } m() {} static s() {} get g() { return 1 } static t = 1; u = 2; }",
+            "m() {}",
+            "s() {}",
+            "get g() { return 1 }",
+            "class B extends A {}",
+            "class Named { }",
+            "function /*a*/ named /*b*/ (/*c*/) /*d*/ {/*e*/}",
+            "function μ() { return \"é\"; }",
+        ];
+        expected.sort_unstable();
+        assert_eq!(texts, expected);
+        // The script, A's instance and static field initializers and B's
+        // instance initializer (a derived class gets one too).
+        assert!(without >= 3, "{without}");
     }
     #[test]
     fn symbol_bigint_constants_and_function_kinds_are_encoded() {
@@ -795,10 +909,14 @@ mod tests {
             bigints.contains(&std::iter::once(0).chain(digits).collect()),
             "{bigints:?}"
         );
-        let mut kinds: Vec<u32> = rows(&export, 0).iter().map(|f| f[12] >> 8).collect();
+        let mut kinds: Vec<u32> = rows(&export, 0)
+            .iter()
+            .map(|f| (f[12] & !SOURCE_TEXT) >> 8)
+            .collect();
         kinds.sort();
         // Script (0); A, B, C, the default derived B's (2, 4, 3); g, h, k, o:
-        // ordinary (1) only for o; generator 1 << 8, async 2 << 8 above the kind.
+        // ordinary (1) only for o; generator 1 << 8, async 2 << 8 above the kind
+        // (the source-text bit, 18, masked).
         for kind in [0, 1, 2, 3, 4, 0x100, 0x200, 0x300] {
             assert!(kinds.contains(&kind), "{kind:#x} in {kinds:x?}");
         }
@@ -889,7 +1007,8 @@ mod tests {
         let word = |offset: usize| {
             u32::from_le_bytes(export.bytes[offset..offset + 4].try_into().unwrap()) as usize
         };
-        let instructions = 32 + source.len() + word(12) * 52 + word(16) * 12 + word(20) * 4;
+        let instructions =
+            32 + source.len() + word(12) * FUNCTION_WORDS * 4 + word(16) * 12 + word(20) * 4;
         let mut found = false;
         for i in 0..word(24) {
             let at = instructions + i * 20;
@@ -1195,6 +1314,10 @@ mod serial_tests {
             // Targets of bind with `length` and `name` getters and odd
             // values Goose installs (light-cljs-852).
             ("bound-metadata", "goose"),
+            // Function.prototype.toString and caller/arguments, which the
+            // Pants engine keeps unsupported (light-cljs-853).
+            ("sloppy-function-text", "goose"),
+            ("function-text-kinds", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let options = if name.starts_with("sloppy-") {

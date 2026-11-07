@@ -708,7 +708,7 @@ fn reclamation() {
     heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/async.gsp")), source::Fault.None, 0, 0));
     // Forced collections at every budget cut and at other phases.
     for image in [embed_file("../corpus/serial/generators.gsp"), embed_file("../corpus/serial/async.gsp"), embed_file("../corpus/serial/generator-loop.gsp"), embed_file("../corpus/serial/for-of.gsp"), embed_file("../corpus/serial/builtin-iterators.gsp"),
-                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
+                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
                   embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp")] {
@@ -777,6 +777,12 @@ fn control_flow() {
     // the Bind frame, a throwing getter, non-number lengths, a non-string
     // name, at every cut.
     check(embed_file("../corpus/serial/bound-metadata.gsp"), "boolean:true", source::Fault.None, 8);
+    // Function.prototype.toString from the image's source text and
+    // %ThrowTypeError% as the caller/arguments accessors (light-cljs-853),
+    // at every cut and limit point.
+    check(embed_file("../corpus/serial/sloppy-function-text.gsp"), "boolean:true");
+    limit_points(embed_file("../corpus/serial/sloppy-function-text.gsp"));
+    text_kinds(embed_file("../corpus/serial/function-text-kinds.gsp"));
     // [[Construct]] (light-cljs-831): ordinary functions with new.target and
     // the return override, through finally and a generator yielding inside
     // the constructor, the realm's constructors and a non-constructor's
@@ -1211,7 +1217,7 @@ thread_fn property_model() {
     let getter = source::closure(heap, 0, []); let setter_fn = source::closure(heap, 0, []);
     let base = source::allocate(heap, source::Node { kind: node_kind::Object }); let a = key(heap, "a"); let g = key(heap, "g");
     assert(source::define_own(heap, base.id(), a, getter, source::attrs_accessor(), 1) && source::define_own(heap, base.id(), a, setter_fn, source::attrs_accessor(), 2));
-    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 4); // after the realm's pending pair
+    assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 5); // after the realm's pending pair and its caller/arguments pair (light-cljs-853)
     let child = source::allocate(heap, source::Node { kind: node_kind::Object }); assert(source::set_prototype(heap, child.id(), base));
     for target in [base, child] {
         let v, found = source::lookup(heap, target, a); assert(v.is_undefined() && found == getter);
@@ -1351,7 +1357,10 @@ thread_fn named_model() {
     assert(source::get(heap, g, source::text(heap, "prototype")).is_undefined() && source::materialize_function(heap, g.id()) && source::put(heap, g, source::text(heap, "y"), source::number(2)) && source::get(heap, g, source::text(heap, "call")) == heap.call_method);
     var arrow_keys: source::Value[>..] = []; assert(source::own_keys(heap, g, arrow_keys) && arrow_keys.len == 3);
     for name, i in ["length", "name", "y"] { assert(source::key_is(heap, arrow_keys[i], name)); }
-    source::get(heap, g, source::text(heap, "toString")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    // Inherited: Function.prototype.toString (light-cljs-853), and a pending
+    // Object.prototype name fails by name.
+    let to_text = source::get(heap, g, source::text(heap, "toString")); assert(heap.fault == source::Fault.None && to_text.is_object() && source::builtin_of(heap, to_text.id()) == source::Builtin.FunctionPrototypeToString);
+    source::get(heap, g, source::text(heap, "propertyIsEnumerable")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     // Snapshots validate arrays' and closures' shapes and records.
     var c = snapshot::Control {};
     let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: f }, snapshot::Binding { id: 1, generation: 1, value: g }, snapshot::Binding { id: 2, generation: 1, value: a }, snapshot::Binding { id: 3, generation: 1, value: b }], c);
@@ -1714,7 +1723,8 @@ fn class_kinds(bytes: const u8[:]) {
     var image = program::Image {};
     for kind in [2, 3, 4, 5] {
         var patched: u8[>..] = []; patched.append(bytes);
-        for id in 1..functions { set_word(patched[..], l.functions + id * 52 + 48, 1 | (kind << 8)); }
+        // The source-text bit (light-cljs-853) stays as exported.
+        for id in 1..functions { let at = l.functions + id * function_row::Bytes + 48; set_word(patched[..], at, 1 | (kind << 8) | (program::word(bytes, at) & function_row::SourceText)); }
         if kind == 5 { assert(program::install(image, patched) == program::Error.Operation); continue; }
         check(patched, "", source::Fault.TypeError);
     }
@@ -1733,13 +1743,31 @@ fn class_kinds(bytes: const u8[:]) {
 // kind (a method's or an arrow's) it is a TypeError, here uncaught.
 fn construct_kinds(bytes: const u8[:]) {
     var code = source::Code {}; decode(code, bytes);
-    let id = named_function(code, "F"); let l = program::layout(bytes); let at = l.functions + id * 52 + 48;
+    let id = named_function(code, "F"); let l = program::layout(bytes); let at = l.functions + id * function_row::Bytes + 48;
     for kind in [constructor::BaseClass, constructor::DerivedClass, constructor::None] {
         var patched: u8[>..] = []; patched.append(bytes);
         set_word(patched[..], at, (program::word(bytes, at) & ~(255 << 8)) | (kind << 8));
         if kind == constructor::None { check(patched, "", source::Fault.TypeError); }
         else { check(patched, "Fault.UnsupportedOperand:construct:-class-constructors", source::Fault.UnsupportedOperand); }
     }
+}
+// Function.prototype.toString by function kind (light-cljs-853): the image
+// as exported gives each source text; with every function row's source text
+// cleared (flag and range), QuickJS's native form with its prefix by kind.
+fn utf16_text(t: const u8[:]) -> u8[] {
+    var out: u8[>..] = []; out.append("utf16:[");
+    for c, i in t { if i > 0 { out.push(44); } format(out, c as i64); }
+    out.push(93); return str(out);
+}
+fn text_kinds(bytes: const u8[:]) {
+    check(bytes, utf16_text("function a() {}|function* b() {}|async function c() {}|async function* d() {}"));
+    let l = program::layout(bytes); var patched: u8[>..] = []; patched.append(bytes);
+    for id in program::word(bytes, 12) {
+        let at = l.functions + id * function_row::Bytes;
+        set_word(patched[..], at + 48, program::word(bytes, at + 48) & ~function_row::SourceText); set_word(patched[..], at + 52, 0); set_word(patched[..], at + 56, 0);
+    }
+    let native = "() {\n    [native code]\n}";
+    check(patched, utf16_text(str("function a", native, "|function *b", native, "|async function c", native, "|async function *d", native)));
 }
 fn set_unit(bytes: u8[:], at: i64, n: i64) { bytes[at] = (n & 255) as u8; bytes[at + 1] = ((n >> 8) & 255) as u8; }
 // The image's direct-eval mark (light-cljs-823) survives load on exactly the
@@ -1838,11 +1866,11 @@ fn duplicate_image(dup: i64, width: i64) -> u8[] {
     for i in (width - 1) { ops.push(opcode::Pop); }
     ops.push(opcode::Return);
     var bytes: u8[>..] = []; bytes.append("GSP\0");
-    // Version 3, no source, one function, no constants or children.
-    for n in [3, 0, 1, 0, 0, ops.len, 0] { push_word(bytes, n); }
+    // Version 4, no source, one function, no constants or children.
+    for n in [4, 0, 1, 0, 0, ops.len, 0] { push_word(bytes, n); }
     // The function: its instruction run, no constants, children, parameters,
-    // locals, captures or name; flags 1 marks it strict.
-    for n in [0, ops.len, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] { push_word(bytes, n); }
+    // locals, captures, name or source text; flags 1 marks it strict.
+    for n in [0, ops.len, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0] { push_word(bytes, n); }
     for op, i in ops { for n in [export_descriptor(op), 0, 0, 0, i] { push_word(bytes, n); } }
     return str(bytes);
 }

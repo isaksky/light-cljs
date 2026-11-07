@@ -259,6 +259,7 @@ fn forward_run(job: Job&, at: i64, constructs: bool) {
     if b == Builtin.Mapv && args.len == 2 { unsupported_step(job, b, "called through a forwarding built-in"); return; }
     job.frames.pop();
     if forces(heap, b, args) { start_force(job, b, args[0], base); return; }
+    if b == Builtin.FunctionPrototypeToString { start_function_text(job, receiver, base); return; }
     if native_builtin(b) { native_start(job, b, receiver, args, base); return; }
     if b == Builtin.Gensym && job.gensym_next > 0 { let v = gensym(job, args); job.operands.resize(base); job.operands.push(v); return; }
     if effect_builtin(b) { request_effect(job, id, args, frame); job.operands.resize(base); return; }
@@ -378,4 +379,150 @@ fn bind_step(job: Job&, frame: Frame) {
             finish_native(job, frame, frame.receiver);
         },
     }
+}
+
+// ---- Function.prototype.toString and %ThrowTypeError% (light-cljs-853)
+// Semantics from QuickJS (7d1c13c): js_function_toString (quickjs.c
+// 42191) and js_throw_type_error (16343), with ECMAScript 20.2.3.5 and
+// 10.2.4.1. The Pants engine implements neither (rust/src/vm/function.rs
+// FUNCTION_PROTOTYPE_NAMES), so QuickJS is the oracle.
+//
+// toString of a function compiled from source is its source text
+// ([[SourceText]], QuickJS's debug.source): the byte range the Rust
+// frontend records for it (GSP version 4, Function.has_text), decoded from
+// the image's immutable UTF-8 source to the UTF-16 string returned; Goose
+// never re-parses source. Any other function (a built-in, a bound function,
+// a proxy of a function, a function without text) gives QuickJS's
+// "function " + ToString(Get(F, "name")) + "() {\n    [native code]\n}",
+// with "function *", "async function " or "async function *" for a
+// generator, async or async generator closure without text. A receiver
+// that is not callable is a TypeError. The name's [[Get]] can run a getter
+// and its ToString a user method, so the dispatch loop, a Forward frame and
+// a Convert frame run it as the FunctionText native frame
+// (start_function_text); run to completion (function_text, call_builtin's)
+// such a name fails by name, as a proxy's [[Get]] does everywhere.
+//
+// %ThrowTypeError% is a realm built-in (decision 6) installed as the getter
+// and setter of Function.prototype's `caller` and `arguments` accessors
+// (configurable, not enumerable), with `length` 0 and `name` "" both
+// non-configurable and no other property: QuickJS seals it, so it is not
+// extensible (sealed; a write or definition of a new key is refused and
+// IsExtensible answers false). Called, it throws TypeError
+// "invalid property access", except with no argument and a sloppy ordinary
+// function (a closure of a non-strict `function` declaration or expression,
+// QuickJS's has_prototype) as its receiver, where it returns undefined: so
+// reading `f.caller` or `f.arguments` of such a function gives undefined,
+// QuickJS's ES5 compatibility, and any write throws. It runs no JavaScript,
+// so a property read or write reaching it as an accessor half runs it in
+// place (accessor_builtin), never as a frame.
+
+// Whether f is the realm's %ThrowTypeError%.
+fn is_throw_type_error(heap: const Heap&, f: Value) -> bool {
+    return f.is_object() && node(heap, f.id()).kind == node_kind::Builtin && builtin_of(heap, f.id()) == Builtin.ThrowTypeError;
+}
+// Whether node o is not extensible: only %ThrowTypeError%, which QuickJS
+// seals (Object.preventExtensions is pending, so no other object is).
+fn sealed(heap: const Heap&, o: i64) -> bool { return is_throw_type_error(heap, object(o)); }
+// %ThrowTypeError% called with `receiver` and `argc` arguments.
+fn throw_type_error(job: Job&, receiver: Value, argc: i64) -> Value {
+    let heap .= job.heap;
+    if argc == 0 && receiver.is_object() && node(heap, receiver.id()).kind == node_kind::Closure {
+        let f .= heap.code.functions[node(heap, receiver.id()).function];
+        if !f.strict && f.kind == constructor::Ordinary { return Value.Undefined; }
+    }
+    return type_error(job, "invalid property access");
+}
+// Run accessor half `f` in place when it is a built-in that runs no
+// JavaScript (%ThrowTypeError%), with `receiver` and `argc` arguments:
+// true and its result (or a fault); false for any other function, which
+// the caller runs as a frame or fails by name.
+fn accessor_builtin(job: Job&, f: Value, receiver: Value, argc: i64) -> bool, Value {
+    if !is_throw_type_error(job.heap, f) { return false, Value.Undefined; }
+    return true, throw_type_error(job, receiver, argc);
+}
+// The source text of closure f, if it has one: true and the string.
+fn source_text(job: Job&, f: Value) -> bool, Value {
+    let heap .= job.heap;
+    if node(heap, f.id()).kind != node_kind::Closure { return false, Value.Undefined; }
+    let code .= heap.code.functions[node(heap, f.id()).function];
+    if !code.has_text { return false, Value.Undefined; }
+    if !charge(heap, code.text_end - code.text_start) { return true, Value.Undefined; }
+    // The loader and snapshot validation checked the range and the source's
+    // UTF-8.
+    var units: u16[>..] = [];
+    if !append_utf8(units, heap.code.source_bytes[code.text_start..code.text_end]) { heap.fault = Fault.InvalidState; return true, Value.Undefined; }
+    return true, string(heap, units);
+}
+// The native form's prefix for function f: QuickJS's by function kind for
+// a closure (one without source text), "function " for any other.
+fn native_prefix(heap: const Heap&, f: Value) -> const u8[:] {
+    if node(heap, f.id()).kind != node_kind::Closure { return "function "; }
+    let code .= heap.code.functions[node(heap, f.id()).function];
+    return if code.generator && code.asynchronous { "async function *" } else if code.generator { "function *" } else if code.asynchronous { "async function " } else { "function " };
+}
+// The native form of function f with `name`, a primitive: undefined gives
+// "", a string itself, any other primitive its ToString (a Symbol's
+// TypeError).
+fn native_text(job: Job&, f: Value, name: Value) -> Value {
+    let heap .= job.heap;
+    var units: u16[>..] = [];
+    for c in native_prefix(heap, f) { units.push(c); }
+    if name.is_string() { append_utf16(heap, name, units); }
+    else if !name.is_undefined() {
+        var bytes: u8[>..] = [];
+        if !primitive_text(heap, name, bytes) {
+            if heap.fault == Fault.TypeError && job.detail.len == 0 { for c in "Cannot convert a Symbol value to a string" { job.detail.push(c); } }
+            return Value.Undefined;
+        }
+        for c in bytes { units.push(c); }
+    }
+    for c in "() {\n    [native code]\n}" { units.push(c); }
+    return string(heap, units);
+}
+// Function.prototype.toString with `receiver` as its this value, run to
+// completion (call_builtin: a callback or a host's call). A name behind a
+// getter or an object name needs the FunctionText frame, which only the
+// dispatch loop, a forwarded call and a ToPrimitive method start; here it
+// fails by name.
+fn function_text(job: Job&, receiver: Value) -> Value {
+    let heap .= job.heap; let b = Builtin.FunctionPrototypeToString;
+    if !is_callable(heap, receiver) { return type_error(job, "not a function"); }
+    let has, text = source_text(job, receiver);
+    if has { return text; }
+    let k = key_named(heap, "name");
+    if heap.fault != Fault.None { return Value.Undefined; }
+    let name, getter = lookup(heap, receiver, k);
+    if heap.fault != Fault.None { return Value.Undefined; }
+    if getter.is_object() || name.is_object() { return unsupported_step(job, b, "a name getter or object name outside a native frame"); }
+    return native_text(job, receiver, name);
+}
+// Function.prototype.toString called from the dispatch loop, a Forward
+// frame or a Convert frame, its operand base `base`: the source text at
+// once, or else the FunctionText frame (decision 4), whose fields are
+//   callee     the function
+//   pc 0       awaits Get(F, "name") (a getter runs above the frame); an
+//              object converts by ToString in a Convert frame above it
+//              (hint string, light-cljs-828), and this step runs again on
+//              the string; a primitive gives the native form.
+fn start_function_text(job: Job&, receiver: Value, base: i64) {
+    let heap .= job.heap;
+    if !is_callable(heap, receiver) { type_error(job, "not a function"); return; }
+    let has, text = source_text(job, receiver);
+    if heap.fault != Fault.None { return; }
+    if has { job.operands.resize(base); deliver(job, text); return; }
+    if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
+    job.operands.resize(base);
+    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: receiver, receiver: Value.Undefined, native: Native.FunctionText });
+    get_named(job, Builtin.FunctionPrototypeToString, receiver, "name");
+}
+// One step of the FunctionText frame at the top (see above).
+fn function_text_step(job: Job&, frame: Frame) {
+    let heap .= job.heap;
+    let name = job.operands.pop();
+    if name.is_object() {
+        if !convertible(heap, name) { unsupported_step(job, Builtin.FunctionPrototypeToString, "a light-cljs runtime value as the name"); return; }
+        job.operands.push(name); start_convert(job, Hint.String, true, 1, 1); return;
+    }
+    let v = native_text(job, frame.callee, name);
+    if heap.fault == Fault.None { finish_native(job, frame, v); }
 }

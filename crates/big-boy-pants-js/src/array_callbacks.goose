@@ -96,6 +96,9 @@ fn start_array_callbacks(job: Job&, b: Builtin, receiver: Value, callback: Value
 // Enter getter `g` with receiver o; its value arrives at the frame's
 // current phase. Only an ordinary function can be a getter here.
 fn run_getter(job: Job&, b: Builtin, g: Value, o: Value) {
+    // %ThrowTypeError% runs in place; its value arrives as a getter's would.
+    let done, v = accessor_builtin(job, g, o, 0);
+    if done { if job.heap.fault == Fault.None { push_operand(job, v); } return; }
     if node(job.heap, g.id()).kind != node_kind::Closure { unsupported_step(job, b, "a built-in getter"); return; }
     push_frame(job, g, o, [], false, job.operands.len);
 }

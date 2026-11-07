@@ -262,6 +262,13 @@ pub(crate) struct DebugInfo {
     pub(crate) locations: Box<[SourceLocation]>,
     /// Callee spans are independent of the `new` operator's error position.
     pub(crate) construct_callees: std::collections::HashMap<usize, crate::frontend::Span>,
+    /// The function's source text (ECMAScript [[SourceText]], what QuickJS
+    /// keeps as `debug.source`): from `function`/`async`/`class`, an arrow's
+    /// first token or a method's property name (with `get`, `set`, `async`,
+    /// `*`) to its end. `None` for a script, eval code or a synthesized
+    /// function. Metadata only: this VM does not implement
+    /// `Function.prototype.toString`; the Goose exporter reads it.
+    pub(crate) text: Option<crate::frontend::Span>,
 }
 
 impl Code {
@@ -417,6 +424,7 @@ impl Executable {
         source: Arc<str>,
         locations: Vec<SourceLocation>,
         construct_callees: std::collections::HashMap<usize, crate::frontend::Span>,
+        text: Option<crate::frontend::Span>,
     ) -> Result<Executable, ValidationError> {
         Executable::load_with(
             spec,
@@ -425,6 +433,7 @@ impl Executable {
                 source,
                 locations: locations.into(),
                 construct_callees,
+                text,
             }),
         )
     }
@@ -742,6 +751,12 @@ impl Executable {
     /// range.
     pub fn source_location(&self, index: usize) -> Option<SourceLocation> {
         self.0.location(index)
+    }
+
+    /// The byte span of the function's source text in the compiled source
+    /// ([`DebugInfo`]'s `text`), for compiled code that has one.
+    pub fn source_text_span(&self) -> Option<crate::frontend::Span> {
+        self.0.debug.as_ref()?.text
     }
 
     /// The code re-encoded in the byte format, as a spec that
@@ -1270,6 +1285,7 @@ mod tests {
             "x".into(),
             vec![at],
             Default::default(),
+            None,
         )
         .unwrap_err();
         assert_eq!(
@@ -1285,6 +1301,7 @@ mod tests {
             "x".into(),
             vec![at, at],
             Default::default(),
+            None,
         )
         .unwrap();
         assert_eq!(exe.source_location(1), Some(at));

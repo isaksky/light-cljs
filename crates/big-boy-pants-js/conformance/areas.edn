@@ -138,6 +138,8 @@
   "bbp/reflect_apply_construct" {:area :functions-scope}
   "bbp/bound_functions" {:area :functions-scope}
   "bbp/bound_function_metadata" {:area :functions-scope}
+  "bbp/function_to_string" {:area :functions-scope :pants-gap "the Pants engine keeps Function.prototype.toString unsupported (rust/src/vm/function.rs FUNCTION_PROTOTYPE_NAMES)"}
+  "bbp/function_caller_arguments" {:area :functions-scope :mode :sloppy :pants-gap "the Pants engine keeps Function.prototype.caller and .arguments unsupported (rust/src/vm/function.rs FUNCTION_PROTOTYPE_NAMES)"}
   "bbp/getter_only_strict" {:area :objects-classes}
   "bbp/index_keys_order" {:area :objects-classes}
   "bbp/object_rest_spread" {:area :objects-classes}

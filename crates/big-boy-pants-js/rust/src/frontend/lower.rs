@@ -328,6 +328,7 @@ fn lower_function_kind(
         lower.enter_function(self_name, false, function.strict);
         lower.cur_mut().own_arguments = true;
         lower.cur_mut().constructor_kind = constructor_kind(function);
+        lower.cur_mut().text = Some(function.span);
         lower.function_body(function)?;
         let end = Span::new(function.span.end.saturating_sub(1), function.span.end);
         lower.out().op(Opcode::Undefined, end);
@@ -622,6 +623,9 @@ struct FnCtx {
     /// Internal module entry points have no JavaScript new.target binding.
     module: bool,
     eval_sites: Vec<EvalSite>,
+    /// The function's source text span ([`Sealed::text`]); set by
+    /// [`Lowerer::closure_with_fields`] for a function written in the source.
+    text: Option<Span>,
     in_parameters: bool,
     /// Only the original script registers lexicals; eval and functions use
     /// ordinary scope-local bindings for their own lexical declarations.
@@ -748,6 +752,12 @@ struct Sealed {
     construct_callees: HashMap<usize, Span>,
     constants: Vec<Primitive>,
     children: Vec<usize>,
+    /// The function's source text (ECMAScript [[SourceText]], QuickJS's
+    /// `debug.source`), compiled-function metadata the Goose exporter reads
+    /// for `Function.prototype.toString` (light-cljs-853); `None` for a
+    /// script, eval code and synthesized functions (class field
+    /// initializers).
+    text: Option<Span>,
 }
 
 struct Lowerer<'s> {
@@ -758,6 +768,9 @@ struct Lowerer<'s> {
     eval_variable_bindings: Vec<String>,
     eval_lexical_conflicts: Vec<String>,
     sloppy_eval: bool,
+    /// The class whose constructor [`Self::closure_with_fields`] lowers
+    /// next: a class constructor's source text is the whole class.
+    class_text: Option<Span>,
     eval_bindings: HashMap<String, Access>,
     eval_this: Option<u16>,
     eval_new_target: Option<u16>,
@@ -788,6 +801,7 @@ impl<'s> Lowerer<'s> {
             eval_variable_bindings: Vec::new(),
             eval_lexical_conflicts: Vec::new(),
             sloppy_eval: false,
+            class_text: None,
             eval_bindings: HashMap::new(),
             eval_this: None,
             eval_new_target: None,
@@ -955,6 +969,7 @@ impl<'s> Lowerer<'s> {
             parameter_environment_key,
             module: false,
             eval_sites: Vec::new(),
+            text: None,
             in_parameters: false,
             script_lexicals: false,
             global_declarations: script,
@@ -1025,6 +1040,7 @@ impl<'s> Lowerer<'s> {
             constructor_kind,
             children,
             eval_sites,
+            text,
             ..
         } = ctx;
         if u32::try_from(out.code.len()).is_err() {
@@ -1057,6 +1073,7 @@ impl<'s> Lowerer<'s> {
             construct_callees: out.construct_callees,
             constants: out.constants,
             children,
+            text,
         });
         Ok(self.sealed.len() - 1)
     }
@@ -1115,6 +1132,7 @@ impl<'s> Lowerer<'s> {
                 shared,
                 locations,
                 f.construct_callees,
+                f.text,
             )
             .map_err(|e| {
                 self.error(
@@ -3092,6 +3110,16 @@ impl<'s> Lowerer<'s> {
         let parent_super_call = self.cur().super_call;
         self.enter_function(self_name, false, f.strict);
         self.cur_mut().constructor_kind = constructor_kind(f);
+        // [[SourceText]]: the function's own span, the whole class for a
+        // class constructor, none for a synthesized field initializer.
+        let class_text = self.class_text.take();
+        self.cur_mut().text = if fields.is_some() {
+            None
+        } else if self.cur().constructor_kind.is_class() {
+            class_text
+        } else {
+            Some(f.span)
+        };
         if self.cur().constructor_kind.is_class() {
             let fields = self.resolve("*instance-fields*");
             self.cur_mut().instance_fields = Some(fields);
@@ -6501,6 +6529,7 @@ impl<'s> Lowerer<'s> {
                 .op_u16(Opcode::NewPrivateName, index, p.name_span);
             self.pattern_store(&Pattern::ident(ident), true, false)?;
         }
+        self.class_text = Some(class.span);
         self.closure(&class.constructor, None, Some(name))?;
         if let Some(parent) = heritage {
             self.out().op_u16(Opcode::GetLocal, parent, span);

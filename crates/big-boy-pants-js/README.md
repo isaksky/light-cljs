@@ -384,7 +384,7 @@ Selected runtime source is reference material, **not executable Goose export**;
 its classes, private stores, protocol/reader machinery and host hooks are outside
 the scalar VM. Complete ECMAScript/cljs.core are excluded.
 
-## GSP version 3
+## GSP version 4
 
 Integers are little endian. An image owns one exact immutable UTF-8 source
 buffer (source ID 0), fixed-stride tables and variable payload pools. There are
@@ -393,13 +393,13 @@ exact UTF-16 code-unit ranges, including lone surrogates, separate from source
 UTF-8. Source spans are half-open **byte** ranges. Diagnostic line/column work
 is outside ordinary execution.
 
-The 32-byte header is `GSP\0`, `u32 version=3`, then six u32 lengths: source
+The 32-byte header is `GSP\0`, `u32 version=4`, then six u32 lengths: source
 bytes, functions, constants, child IDs, instructions, UTF-16 units. Sections
 follow in that order:
 
 | Table | Record | Fields |
 | --- | --- | --- |
-| Functions | 13 × u32, 52 bytes | instruction start/count; constant start/count; child start/count; params; locals; captures; name-unit start/count; JS length; flags |
+| Functions | 15 × u32, 60 bytes | instruction start/count; constant start/count; child start/count; params; locals; captures; name-unit start/count; JS length; flags; source-text byte start/end |
 | Constants | 3 × u32, 12 bytes | tag and two words: undefined=0, null=1, boolean=2, f64 bits=3, UTF-16 range=4, well-known Symbol index=6, BigInt UTF-16 range=7 (5 is never used) |
 | Child IDs | u32 | Absolute function IDs; function operands index their parent's child range |
 | Instructions | 5 × u32, 20 bytes | descriptor; operand; source-byte start/end; original function-code byte offset |
@@ -426,7 +426,17 @@ always `call`, `call_method`, `call_spread` or `call_method_spread`
 (`export_direct_eval_call`); the sites' scope descriptors are not exported.
 The VM decodes each marked call to `Ins.DirectEval`, which
 fails `Fault.Unsupported` naming `direct_eval` when its callee is the realm's
-%eval% and is an ordinary call otherwise.
+%eval% and is an ordinary call otherwise. Version 4 (light-cljs-853) adds
+each function's source text (ECMAScript [[SourceText]], what QuickJS keeps
+as `debug.source`, which `Function.prototype.toString` returns): flags bit
+18 (`function_row::SourceText`) marks it, and the row's last two words are
+its half-open byte range of the image's source, non-empty and on UTF-8
+boundaries; without the bit both are 0 (a script, eval code or a
+synthesized function such as a class field initializer). The Rust lowerer
+records the range (`Executable::source_text_span`): a declaration or
+expression from `function`/`async`, a method or accessor from its property
+name with `get`, `set`, `async` or `*`, an arrow whole and a class
+constructor the whole class. Version-3 readers refuse version 4.
 `export_schema.goose` is compiled reader code generated from the registry
 (descriptors, selectors, name operands, direct-eval call opcodes, each
 opcode's stack effect and control flow, opcode and well-known symbol names);

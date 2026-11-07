@@ -38,9 +38,11 @@ fn main() {
     let original = copy(image.bytes);
     set_word(bad[..], 4, 1); assert(program::install(image, bad) == program::Error.Version);
     assert(image.valid && image.bytes[..] == original[..]);
-    // Version 2 predates the direct-eval site bit (light-cljs-823).
+    // Version 2 predates the direct-eval site bit (light-cljs-823), version 3
+    // the function source text (light-cljs-853).
     set_word(bad[..], 4, 2); assert(program::validate(bad) == program::Error.Version);
-    set_word(bad[..], 4, 3); set_word(bad[..], 12, 65537); assert(program::validate(bad) == program::Error.Limits);
+    set_word(bad[..], 4, 3); assert(program::validate(bad) == program::Error.Version);
+    set_word(bad[..], 4, 4); set_word(bad[..], 12, 65537); assert(program::validate(bad) == program::Error.Limits);
     set_word(bad[..], 12, program::word(macro, 12));
     let l = program::layout(macro);
     set_word(bad[..], l.functions, 4294967295); assert(program::validate(bad) == program::Error.Range);
@@ -69,6 +71,30 @@ fn main() {
         set_word(bad[..], at, descriptor | 33554432); assert(program::validate(bad) == program::Error.Operation);
         set_word(bad[..], at, descriptor);
     }
+    // Function source text (light-cljs-853): flags bit 18 with a non-empty
+    // byte range on UTF-8 boundaries, or neither.
+    var texts: i64 = 0;
+    for i in program::word(macro, 12) {
+        let at = l.functions + i * function_row::Bytes; let flags = program::word(macro, at + 48);
+        let start = program::word(macro, at + 52); let end = program::word(macro, at + 56);
+        if (flags & function_row::SourceText) == 0 {
+            set_word(bad[..], at + 56, 1); assert(program::validate(bad) == program::Error.Source); set_word(bad[..], at + 56, 0);
+            continue;
+        }
+        texts += 1;
+        set_word(bad[..], at + 48, flags & ~function_row::SourceText); assert(program::validate(bad) == program::Error.Source); set_word(bad[..], at + 48, flags);
+        set_word(bad[..], at + 56, start); assert(program::validate(bad) == program::Error.Source);
+        set_word(bad[..], at + 56, program::word(macro, 8) + 1); assert(program::validate(bad) == program::Error.Source); set_word(bad[..], at + 56, end);
+    }
+    assert(texts > 0);
+    var split: u8[>..] = []; split.append(unicode);
+    for i in program::word(unicode, 12) {
+        let at = ul.functions + i * function_row::Bytes;
+        if (program::word(unicode, at + 48) & function_row::SourceText) == 0 || program::word(unicode, at + 52) > emoji || program::word(unicode, at + 56) <= emoji { continue; }
+        set_word(split[..], at + 56, emoji + 1); assert(program::validate(split) == program::Error.Source); set_word(split[..], at + 56, program::word(unicode, at + 56));
+        texts = -1;
+    }
+    assert(texts == -1 && program::validate(split) == program::Error.None);
     assert(program::validate(bad) == program::Error.None);
     depth_limit(257, program::Error.None); depth_limit(258, program::Error.Limits);
     bad.push(0); assert(program::validate(bad) == program::Error.Trailing);
@@ -91,9 +117,9 @@ fn main() {
 fn push_word(bytes: u8[>..]&, value: i64) { for i in 4 { bytes.push(((value >> (8 * i)) & 255) as u8); } }
 fn depth_limit(count: i64, expected: program::Error) {
     var bytes: u8[>..] = []; bytes.append("GSP\0");
-    for n in [3, 0, count, 0, count - 1, count * 2, 0] { push_word(bytes, n); }
+    for n in [4, 0, count, 0, count - 1, count * 2, 0] { push_word(bytes, n); }
     for i in count {
-        for n in [i * 2, 2, 0, 0, i, if i + 1 < count { 1 } else { 0 }, 0, 0, 0, 0, 0, 0, 0] { push_word(bytes, n); }
+        for n in [i * 2, 2, 0, 0, i, if i + 1 < count { 1 } else { 0 }, 0, 0, 0, 0, 0, 0, 0, 0, 0] { push_word(bytes, n); }
     }
     for i in (count - 1) { push_word(bytes, i + 1); }
     for i in count { for n in [export_descriptor(opcode::Undefined), 0, 0, 0, 0, export_descriptor(opcode::Return), 0, 0, 0, 1] { push_word(bytes, n); } }

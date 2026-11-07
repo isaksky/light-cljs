@@ -392,6 +392,11 @@ let flow::Branch = 2;
 let flow::Catch = 3;
 let flow::End = 4;
 
+// A function row's bytes and its source-text flag (function flags
+// bit 18, GSP version 4): words 13 and 14 hold the text's byte range.
+let function_row::Bytes = 60;
+let function_row::SourceText = 262144;
+
 // Every opcode's tables; -1, false or "" for an unassigned byte.
 fn export_descriptor(op: i64) -> i64 {
     return match op {

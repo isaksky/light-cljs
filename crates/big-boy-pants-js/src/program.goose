@@ -17,7 +17,7 @@ fn unit(bytes: const u8[:], units: i64, index: i64) -> i64 { return bytes[units 
 fn layout(bytes: const u8[:]) -> Layout {
     let source = 32;
     let functions = source + word(bytes, 8);
-    let constants = functions + word(bytes, 12) * 52;
+    let constants = functions + word(bytes, 12) * function_row::Bytes;
     let children = constants + word(bytes, 16) * 12;
     let instructions = children + word(bytes, 20) * 4;
     let units = instructions + word(bytes, 24) * 20;
@@ -43,7 +43,9 @@ fn validate(bytes: const u8[:]) -> Error {
     if bytes.len < 32 { return Error.Truncated; }
     if bytes[..4] != "GSP\0" { return Error.Header; }
     // Version 3 (light-cljs-823): descriptor bit 24 marks a direct-eval call.
-    if word(bytes, 4) != 3 { return Error.Version; }
+    // Version 4 (light-cljs-853): function flags bit 18 marks source text,
+    // whose byte range is the function row's words 13 and 14.
+    if word(bytes, 4) != 4 { return Error.Version; }
     if word(bytes, 8) > 8388608 || word(bytes, 12) == 0 || word(bytes, 12) > 65536 { return Error.Limits; }
     for offset in [16, 20, 24, 28] { if word(bytes, offset) > 1048576 { return Error.Limits; } }
     let l = layout(bytes);
@@ -79,7 +81,7 @@ fn validate(bytes: const u8[:]) -> Error {
     var child_used: bool[>..] = []; child_used.resize(nf, false); child_used[0] = true;
     var depths:     i64[>..]  = []; depths.resize(nf, 0);
     for id in nf {
-        let f = l.functions + id * 52;
+        let f = l.functions + id * function_row::Bytes;
         let start = word(bytes, f); let count = word(bytes, f + 4);
         let constants = word(bytes, f + 8); let constant_count = word(bytes, f + 12);
         let children = word(bytes, f + 16); let child_count = word(bytes, f + 20);
@@ -88,8 +90,14 @@ fn validate(bytes: const u8[:]) -> Error {
         if params > locals || locals > 65535 || captures > 65535 || constant_count > 65536 || child_count > 65536 || word(bytes, f + 44) > 65535 { return Error.Limits; }
         let flags = word(bytes, f + 48);
         // Strict bit 0; constructor kind bits 8..15 (none, ordinary, base,
-        // derived, default derived class); generator bit 16, async bit 17.
-        if (flags & 255) > 1 || ((flags >> 8) & 255) > constructor::DefaultDerivedClass || (flags >> 16) > 3 { return Error.Operation; }
+        // derived, default derived class); generator bit 16, async bit 17;
+        // source text bit 18 (function_row::SourceText).
+        if (flags & 255) > 1 || ((flags >> 8) & 255) > constructor::DefaultDerivedClass || (flags >> 16) > 7 { return Error.Operation; }
+        // The source text: a non-empty byte range of the image's source on
+        // UTF-8 boundaries, or both words 0 without the flag.
+        let text_start = word(bytes, f + 52); let text_end = word(bytes, f + 56);
+        if (flags & function_row::SourceText) == 0 { if text_start != 0 || text_end != 0 { return Error.Source; } }
+        else if text_start >= text_end || !boundary(source, text_start) || !boundary(source, text_end) { return Error.Source; }
         for child in child_count {
             let target = word(bytes, l.children + (children + child) * 4);
             if target <= id || target >= nf || child_used[target] { return Error.Reference; }

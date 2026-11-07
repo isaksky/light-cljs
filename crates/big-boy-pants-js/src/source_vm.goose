@@ -150,7 +150,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001 }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001 }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -167,7 +167,11 @@ fn plain_rows<T>(rows: const T[:]) -> u8[>..] { var out: u8[>..] = []; for r in 
 // name_start and name_len: the function's `name` (SetFunctionName, the
 // Rust compiler's inferred name included) as a run of Code.units; length:
 // its `length` (ExpectedArgumentCount) (light-cljs-806).
-struct Function { start: u32, count: u32, constants: u32, children: u32, params: u32, locals: u32, captures: u32, strict: bool, kind: i64 = 0, generator: bool = false, asynchronous: bool = false, name_start: u32 = 0, name_len: u32 = 0, length: u32 = 0 }
+// has_text, text_start and text_end: the function's source text
+// ([[SourceText]], Function.prototype.toString; light-cljs-853), a byte
+// range of Code.source_bytes on UTF-8 boundaries (both 0 without text: a
+// script or a synthesized function).
+struct Function { start: u32, count: u32, constants: u32, children: u32, params: u32, locals: u32, captures: u32, strict: bool, kind: i64 = 0, generator: bool = false, asynchronous: bool = false, name_start: u32 = 0, name_len: u32 = 0, length: u32 = 0, has_text: bool = false, text_start: u32 = 0, text_end: u32 = 0 }
 // direct_eval: the image marks the row as the call of a direct-eval site
 // (descriptor bit 24, light-cljs-823); only the four call opcodes carry it.
 struct Op { code: i64, arg: i64, offset: i64, start: i64, end: i64, depth: i64 = -1, direct_eval: bool = false }
@@ -532,10 +536,13 @@ root struct Heap {
 //                (light-cljs-852), `construct` for the latter.
 //   Bind         Function.prototype.bind (light-cljs-852; function_calls.goose,
 //                which gives its fields and phases).
+//   FunctionText Function.prototype.toString of a function without source
+//                text (light-cljs-853; function_calls.goose, which gives its
+//                fields and phase).
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -727,8 +734,8 @@ fn load(code: Code&, image: const program::Image&) -> bool {
     let bytes = image.bytes[..]; let l = program::layout(bytes);
     code.source_bytes.append(bytes[l.source..l.functions]);
     for i in program::word(bytes, 12) {
-        let at = l.functions + i * 52; let flags = program::word(bytes, at + 48);
-        code.functions.push(Function { start: program::word(bytes, at) as u32, count: program::word(bytes, at + 4) as u32, constants: program::word(bytes, at + 8) as u32, children: program::word(bytes, at + 16) as u32, params: program::word(bytes, at + 24) as u32, locals: program::word(bytes, at + 28) as u32, captures: program::word(bytes, at + 32) as u32, strict: (flags & 1) == 1, kind: (flags >> 8) & 255, generator: ((flags >> 16) & 1) == 1, asynchronous: ((flags >> 17) & 1) == 1, name_start: program::word(bytes, at + 36) as u32, name_len: program::word(bytes, at + 40) as u32, length: program::word(bytes, at + 44) as u32 });
+        let at = l.functions + i * function_row::Bytes; let flags = program::word(bytes, at + 48);
+        code.functions.push(Function { start: program::word(bytes, at) as u32, count: program::word(bytes, at + 4) as u32, constants: program::word(bytes, at + 8) as u32, children: program::word(bytes, at + 16) as u32, params: program::word(bytes, at + 24) as u32, locals: program::word(bytes, at + 28) as u32, captures: program::word(bytes, at + 32) as u32, strict: (flags & 1) == 1, kind: (flags >> 8) & 255, generator: ((flags >> 16) & 1) == 1, asynchronous: ((flags >> 17) & 1) == 1, name_start: program::word(bytes, at + 36) as u32, name_len: program::word(bytes, at + 40) as u32, length: program::word(bytes, at + 44) as u32, has_text: (flags & function_row::SourceText) != 0, text_start: program::word(bytes, at + 52) as u32, text_end: program::word(bytes, at + 56) as u32 });
     }
     for i in program::word(bytes, 16) {
         let at = l.constants + i * 12; let tag = program::word(bytes, at);
@@ -791,7 +798,7 @@ fn append_code(out: Code&, other: const Code&) -> i64 {
     assert(other.valid);
     let functions = out.functions.len; let ops = out.ops.len; let constants = out.constants.len;
     let children = out.children.len; let units = out.units.len; let bytes = out.source_bytes.len;
-    for f in other.functions { var n = f; n.start += ops as u32; n.constants += constants as u32; n.children += children as u32; n.name_start += units as u32; out.functions.push(n); }
+    for f in other.functions { var n = f; n.start += ops as u32; n.constants += constants as u32; n.children += children as u32; n.name_start += units as u32; if n.has_text { n.text_start += bytes as u32; n.text_end += bytes as u32; } out.functions.push(n); }
     for op in other.ops { var n = op; n.start += bytes; n.end += bytes; if branches(n.code) { n.arg += ops; } out.ops.push(n); }
     let strings = out.strings.len;
     for s in other.strings { out.strings.push(Str { start: s.start + units as u32, len: s.len }); }
@@ -1793,8 +1800,8 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
         if own.attrs & attr_writable() == 0 { return Value.Undefined, false; }
         write_own(heap, o, own.index, value); return Value.Undefined, true;
     }
-    // A pending property on the chain (Object.prototype's `__proto__`,
-    // Function.prototype's `arguments` and `caller`) fails by name.
+    // A pending property on the chain (Object.prototype's `__proto__`)
+    // fails by name.
     var proto = prototype(heap, o);
     while proto.is_object() {
         if !charge(heap) { return Value.Undefined, false; }
@@ -1808,6 +1815,8 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
         }
         proto = prototype(heap, proto.id());
     }
+    // %ThrowTypeError% is not extensible (light-cljs-853): a new property is refused.
+    if sealed(heap, o) { return Value.Undefined, false; }
     return Value.Undefined, if as_element(heap, o, i) { put_element(heap, o, i, value) } else { add_own(heap, o, k, value, attrs_data()) };
 }
 // [[DefineOwnProperty]] by object kind: ordinary objects (define_own), an
@@ -1817,6 +1826,9 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
 // fail UnsupportedOperand.
 fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8, half: i64 = 0) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
+    // %ThrowTypeError% is not extensible (light-cljs-853): only its own
+    // properties can be defined again, by their attributes.
+    if sealed(heap, o) { let own = find_own(heap, o, k); if heap.fault != Fault.None || !own.found { return false; } }
     if kind == node_kind::Object || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Iterator { return define_own(heap, o, k, value, attrs, half); }
     if kind == node_kind::Array && !key_is(heap, k, "length") {
         let i = index(heap, k);
@@ -2925,6 +2937,7 @@ fn native_step(job: Job&) {
         Proxy p => { proxy_step(job, frame, p.method); },
         Forward w => { forward_step(job, frame, w.construct); },
         Bind => { bind_step(job, frame); },
+        FunctionText => { function_text_step(job, frame); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -2934,6 +2947,8 @@ fn native_step(job: Job&) {
 // the object as receiver and the value as its argument.
 fn call_setter(job: Job&, setter: Value, object: Value, value: Value, result: Value) {
     let heap .= job.heap;
+    // %ThrowTypeError% (Function.prototype.caller and .arguments) throws in place.
+    if is_throw_type_error(heap, setter) { throw_type_error(job, object, 1); return; }
     if !setter.is_object() || node(heap, setter.id()).kind != node_kind::Closure { heap.fault = Fault.UnsupportedOperand; return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
     job.frames.push(Frame { function: -1, pc: 1, local_base: job.locals.len, operand_base: job.operands.len, callee: setter, receiver: object, output: result, native: Native.Setter });
@@ -3155,6 +3170,8 @@ fn conversion_call(job: Job&, at: i64, m: Value, v: Value, args: const Value[:])
     // An Array.prototype native frame (Array.prototype.toString, light-cljs-842)
     // runs above this one; its result arrives at pc 1.
     if array_native(b) || forwarding(b) { native_start(job, b, v, args, job.operands.len); return; }
+    // Function.prototype.toString (light-cljs-853): its FunctionText frame, if it needs one.
+    if b == Builtin.FunctionPrototypeToString { start_function_text(job, v, job.operands.len); return; }
     if effect_builtin(b) || native_builtin(b) || b == Builtin.Mapv || b == Builtin.MapSeq || forces(heap, b, args) { unsupported_step(job, b, "as a ToPrimitive method"); return; }
     let r = call_builtin(job, node(heap, m.id()).function, v, args);
     if heap.fault == Fault.None { job.operands.push(r); }
@@ -3993,6 +4010,7 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
                 job.operands.resize(base);
             }
         } else if forces(heap, BUILTINS[id].which, args) { let d = args[0]; start_force(job, BUILTINS[id].which, d, base);
+        } else if BUILTINS[id].which == Builtin.FunctionPrototypeToString { start_function_text(job, receiver, base);
         } else if native_builtin(BUILTINS[id].which) { native_start(job, BUILTINS[id].which, receiver, args, base);
         } else if id == 5 && job.gensym_next > 0 { let value = gensym(job, args); job.operands.resize(base); job.operands.push(value); }
         else if id >= 5 && id <= 8 { request_effect(job, id, args, frame_at(job, top, at)); job.operands.resize(base); }
@@ -4056,7 +4074,10 @@ fn get_property(job: Job&, k: Value) {
         prepare_function(job, object, k, false);
         let value, getter = read(heap, object, k);
         if heap.fault == Fault.UnsupportedOperand { primitive_gap(job, object); }
-        if heap.fault != Fault.None || !getter.is_object() { job.operands.push(value); }
+        if heap.fault != Fault.None || !getter.is_object() { job.operands.push(value); return; }
+        // %ThrowTypeError% (Function.prototype.caller and .arguments) runs in place.
+        let done, v = accessor_builtin(job, getter, object, 0);
+        if done { job.operands.push(v); }
         else if node(heap, getter.id()).kind != node_kind::Closure { heap.fault = Fault.UnsupportedOperand; job.operands.push(value); }
         else { enter(job, getter, object, []); }
     }

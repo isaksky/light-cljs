@@ -239,6 +239,8 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // A Bind frame (light-cljs-852) holds its target and the bound
         // function it is making.
         Bind => f.pc >= 0 && f.pc <= 2 && object_of(s, f.callee, node_kind::None) && object_of(s, f.receiver, node_kind::BoundFunction) && f.output.is_number(),
+        // A FunctionText frame (light-cljs-853) awaits its function's name.
+        FunctionText => f.pc == 0 && object_of(s, f.callee, node_kind::None) && callable_kind(s.nodes[f.callee.id()].kind),
         _ => true,
     };
 }
@@ -350,6 +352,9 @@ fn code_valid<T>(s: const T&, c: Control&) -> bool {
     for f in s.functions {
         if !poll(c) { return false; }
         if f.count <= 0 || !range(f.start, f.count, s.ops.len) || !range(f.constants, 0, s.code_constants.len) || !range(f.children, 0, s.children.len) || f.params < 0 || f.params > f.locals || f.locals > 65535 || f.captures < 0 || f.captures > 65535 || f.kind < 0 || f.kind > constructor::DefaultDerivedClass || !range(f.name_start, f.name_len, s.code_units.len) || f.length > 65535 { return reject(c, Error.Code); }
+        // Source text (light-cljs-853): a non-empty range of the code bytes on
+        // UTF-8 boundaries, or none.
+        if f.has_text && (f.text_start >= f.text_end || !range(f.text_start, f.text_end - f.text_start, s.code_bytes.len) || !program::boundary(s.code_bytes, f.text_start) || !program::boundary(s.code_bytes, f.text_end)) || !f.has_text && (f.text_start != 0 || f.text_end != 0) { return reject(c, Error.Code); }
         if s.ops[f.start].depth != 0 { return reject(c, Error.Code); }
         var offset: i64 = 0;
         for pc in f.start..(f.start + f.count) {

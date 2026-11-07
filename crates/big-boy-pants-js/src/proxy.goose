@@ -142,7 +142,7 @@ fn proxy_invoke(heap: Heap&, f: Value, method: i64) { if proxy_callable(heap, f)
 // (light-cljs-766).
 fn extensible(heap: Heap&, target: Value) -> bool {
     if is_proxy(heap, target) { proxy_fault(heap, proxy_method::IsExtensible); return false; }
-    return true;
+    return !(target.is_object() && sealed(heap, target.id()));
 }
 
 // ---- The Proxy constructor

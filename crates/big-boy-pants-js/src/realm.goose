@@ -75,11 +75,15 @@ enum Builtin {
     // Function.prototype.bind (light-cljs-852; function_calls.goose), a
     // native frame that makes a bound function object.
     FunctionPrototypeBind,
+    // Function.prototype.toString and %ThrowTypeError%, the getter and
+    // setter of Function.prototype's `caller` and `arguments`
+    // (light-cljs-853; function_calls.goose).
+    FunctionPrototypeToString, ThrowTypeError,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[92] = [
+let BUILTINS: BuiltinInfo[94] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -129,6 +133,7 @@ let BUILTINS: BuiltinInfo[92] = [
     BuiltinInfo { which: Builtin.FunctionPrototypeApply, name: "apply", length: 2 }, BuiltinInfo { which: Builtin.ReflectApply, name: "apply", length: 3 },
     BuiltinInfo { which: Builtin.ReflectConstruct, name: "construct", length: 2 },
     BuiltinInfo { which: Builtin.FunctionPrototypeBind, name: "bind", length: 1 },
+    BuiltinInfo { which: Builtin.FunctionPrototypeToString, name: "toString" }, BuiltinInfo { which: Builtin.ThrowTypeError, name: "" },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -167,7 +172,7 @@ let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalEr
 let ERROR_BUILTINS:   Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[39] = [
+let REALM_FUNCTIONS: Method[41] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -203,6 +208,10 @@ let REALM_FUNCTIONS: Method[39] = [
     Method { which: Builtin.FunctionPrototypeApply, holder: 2 }, Method { which: Builtin.ReflectApply, holder: 34 }, Method { which: Builtin.ReflectConstruct, holder: 34 },
     // Function.prototype.bind (light-cljs-852).
     Method { which: Builtin.FunctionPrototypeBind, holder: 2 },
+    // Function.prototype.toString, and %ThrowTypeError%, which is no
+    // property: Function.prototype's `caller` and `arguments` accessors hold
+    // it as getter and setter (light-cljs-853).
+    Method { which: Builtin.FunctionPrototypeToString, holder: 2 }, Method { which: Builtin.ThrowTypeError, holder: 2 },
 ];
 inline fn realm_nodes() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
 // The node row of built-in b's REALM_FUNCTIONS entry.
@@ -215,12 +224,10 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[205] = [
+let PENDING: PendingName[202] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
-    // Function.prototype
-    PendingName { holder: 2, key: "toString" }, PendingName { holder: 2, key: "arguments" }, PendingName { holder: 2, key: "caller" },
     // Array.prototype
     PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "every" },
     PendingName { holder: 3, key: "fill" }, PendingName { holder: 3, key: "filter" }, PendingName { holder: 3, key: "find" }, PendingName { holder: 3, key: "findIndex" }, PendingName { holder: 3, key: "findLast" },
@@ -452,6 +459,17 @@ fn build_realm(heap: Heap&) -> bool {
         if m.which == Builtin.IteratorPrototypeIterator || m.which == Builtin.StringPrototypeIterator { if !add_own(heap, m.holder, Value.Symbol { s: well_known::Iterator }, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; } continue; }
         // Non-writable, non-enumerable, non-configurable (ECMAScript 20.2.3.6).
         if m.which == Builtin.FunctionPrototypeHasInstance { if !add_own(heap, m.holder, Value.Symbol { s: well_known::HasInstance }, object(fixed_rows() + j), 0) { return false; } continue; }
+        // Function.prototype.caller and .arguments: one accessor pair with
+        // %ThrowTypeError% as getter and setter, configurable, not
+        // enumerable (QuickJS's JS_AddIntrinsicBaseObjects).
+        if m.which == Builtin.ThrowTypeError {
+            let thrower = object(fixed_rows() + j);
+            let a = add_accessor(heap, Pair { get: thrower, set: thrower });
+            if a < 0 { if heap.fault == Fault.None { memory(heap); } return false; }
+            let names: Name[2] = [Name { text: "caller" }, Name { text: "arguments" }];
+            for n in names { let k = key_named(heap, n.text); if heap.fault != Fault.None || !add_own(heap, m.holder, k, Value.Accessor { a: a as u32 }, attr_configurable()) { return false; } }
+            continue;
+        }
         if !realm_value(heap, m.holder, BUILTINS[code(m.which)].name, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; }
         if m.which == Builtin.FunctionPrototypeCall { heap.call_method = object(fixed_rows() + j); }
         // Array.prototype[@@iterator] is the `values` function object (ECMAScript 23.1.3.40).
@@ -488,10 +506,12 @@ fn build_realm(heap: Heap&) -> bool {
     assert(heap.nodes.len == realm_nodes());
     return true;
 }
-// Built-in function o's `length` and `name` from BUILTINS (configurable only).
+// Built-in function o's `length` and `name` from BUILTINS (configurable
+// only; %ThrowTypeError%'s are not configurable either, QuickJS sealing it).
 fn builtin_metadata(heap: Heap&, o: i64) -> bool {
     let info = BUILTINS[node(heap, o).function];
-    return realm_value(heap, o, "length", number(info.length), attr_configurable()) && realm_value(heap, o, "name", key_named(heap, info.name), attr_configurable());
+    let attrs = if info.which == Builtin.ThrowTypeError { 0 } else { attr_configurable() };
+    return realm_value(heap, o, "length", number(info.length), attrs) && realm_value(heap, o, "name", key_named(heap, info.name), attrs);
 }
 fn realm_value(heap: Heap&, o: i64, name: const u8[:], v: Value, attrs: u8) -> bool {
     let k = key_named(heap, name);
@@ -871,6 +891,9 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         // Proxy called without `new` (light-cljs-845; construct makes one).
         Proxy => { return type_error(job, "Proxy: constructor requires 'new'"); },
         ErrorPrototypeToString => { return error_to_string(job, receiver); },
+        // Function.prototype.toString and %ThrowTypeError% (light-cljs-853; function_calls.goose).
+        FunctionPrototypeToString => { return function_text(job, receiver); },
+        ThrowTypeError => { return throw_type_error(job, receiver, args.len); },
         // The forwarding built-ins run as Forward native frames
         // (function_calls.goose, native_start); a caller that runs a
         // built-in to completion here cannot.
