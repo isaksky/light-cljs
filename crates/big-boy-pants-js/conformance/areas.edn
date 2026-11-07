@@ -116,6 +116,22 @@
   "bbp/global_var_function_properties" {:area :functions-scope}
   "bbp/sloppy_implicit_global_delete" {:area :functions-scope :mode :sloppy}
   "bbp/strict_unresolvable_assignment" {:area :functions-scope}
+  "bbp/closures_and_cells" {:area :functions-scope}
+  "bbp/calls_and_parameters" {:area :functions-scope}
+  "bbp/arrows_this_and_new_target" {:area :functions-scope}
+  "bbp/hoisting_and_self_reference" {:area :functions-scope}
+  "bbp/var_statement_completion" {:area :functions-scope}
+  "bbp/function_expression_names" {:area :functions-scope}
+  "bbp/function_expression_names_sloppy" {:area :functions-scope :mode :sloppy}
+  "bbp/strictness_and_unresolved_names" {:area :functions-scope}
+  "bbp/strict_directives_sloppy" {:area :functions-scope :mode :sloppy}
+  "bbp/use_strict_completion_number" {:area :functions-scope}
+  "bbp/use_strict_completion_string" {:area :functions-scope}
+  "bbp/use_strict_completion_single_quoted" {:area :functions-scope}
+  "bbp/arguments_reads" {:area :functions-scope}
+  "bbp/arguments_reads_sloppy" {:area :functions-scope :mode :sloppy}
+  "bbp/sloppy_globals" {:area :functions-scope :mode :sloppy}
+  "bbp/function_metadata" {:area :functions-scope}
   "bbp/getter_only_strict" {:area :objects-classes}
   "bbp/index_keys_order" {:area :objects-classes}
   "bbp/object_rest_spread" {:area :objects-classes}
