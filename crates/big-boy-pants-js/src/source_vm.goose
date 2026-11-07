@@ -530,9 +530,10 @@ fn instruction(op: Op) -> Ins {
         opcode::Const => Ins.Const { k: a }, opcode::Undefined => Ins.Undefined, opcode::GetLocal => Ins.Load { slot: a }, opcode::SetLocal => Ins.Store { slot: a },
         opcode::Pop => Ins.Pop, opcode::Dup => Ins.Dup,
         opcode::Add, opcode::Sub, opcode::Mul, opcode::Lt, opcode::StrictEq, opcode::Div, opcode::Rem, opcode::Gt, opcode::Le, opcode::Ge, opcode::LooseEq, opcode::Plus, opcode::CompareLt, opcode::CompareGt, opcode::CompareLe, opcode::CompareGe => Ins.Binary { op: op.code as u8 },
+        opcode::BitAnd, opcode::BitOr, opcode::BitXor, opcode::Shl, opcode::Sar, opcode::UShr, opcode::Pow => Ins.Binary { op: op.code as u8 },
         opcode::Not => Ins.Not, opcode::Jump => Ins.Jump { to: a }, opcode::JumpIfFalse => Ins.JumpUnless { to: a }, opcode::Return => Ins.Return,
         opcode::NewObject, opcode::NewObjectLiteral => Ins.NewObject, opcode::NewArray => Ins.NewArray, opcode::PushCatch => Ins.Try { to: a }, opcode::Throw => Ins.Throw, opcode::PopCatch => Ins.EndTry,
-        opcode::Neg, opcode::ToNumber, opcode::ToNumeric, opcode::Inc, opcode::Dec => Ins.Unary { op: op.code as u8 }, opcode::ToNumberPair => Ins.Numeric2,
+        opcode::Neg, opcode::ToNumber, opcode::ToNumeric, opcode::Inc, opcode::Dec, opcode::BitNot => Ins.Unary { op: op.code as u8 }, opcode::ToNumberPair => Ins.Numeric2,
         // Method, an object literal's method, getter or setter: obj c1..cn
         // → obj f, a closure like Function's; its home object only serves
         // `super`, whose opcodes are not implemented (light-cljs-787).
@@ -2200,6 +2201,7 @@ fn binary_value(heap: Heap&, op: i64, a: Value, b: Value) -> Value {
     }
     let x = numeric(heap, a); let y = numeric(heap, b);
     if heap.fault != Fault.None { return Value.Undefined; }
+    if op == opcode::BitAnd || op == opcode::BitOr || op == opcode::BitXor || op == opcode::Shl || op == opcode::Sar || op == opcode::UShr || op == opcode::Pow { return arithmetic(op, x, y); }
     return match tiny::number_binary(op, x, y) {
         Number n => number(n.value), Bool b => boolean(b.value), _ => { heap.fault = Fault.InvalidState; Value.Undefined },
     };
@@ -2923,11 +2925,42 @@ inline fn in_place(job: Job&, top: i64, at: i64) -> bool {
     if job.heap.fault != Fault.None { fail(job, job.heap.fault, frame_at(job, top, at)); return false; }
     return job.frames.len == top + 1 && job.status == tiny::Status.Ready && !job.effect_pending;
 }
+// ToUint32 of a Number (ECMAScript 7.1.7; the Pants engine's
+// vm/dispatch.rs to_int32 reads the same bits signed): NaN and the
+// infinities are 0, anything else truncates toward zero, modulo 2^32.
+inline fn to_uint32(x: f64) -> i64 {
+    if !(x - x == 0) { return 0; }
+    var m = trunc(x) % 4294967296.0; if m < 0 { m += 4294967296.0; }
+    return m as i64;
+}
+// ToInt32: ToUint32's bits read as a two's-complement 32-bit integer.
+inline fn to_int32(x: f64) -> i64 { return signed32(to_uint32(x)); }
+inline fn signed32(u: i64) -> i64 { return if u >= 2147483648 { u - 4294967296 } else { u }; }
+// `&`, `|`, `^`, `<<`, `>>` and `>>>` of two Numbers (the Pants engine's
+// BitAnd ... UShr arm): ToInt32 of both (ToUint32 for `>>>`'s left), the
+// shift count ToUint32(y) & 31. Every result is an integer in int32 range
+// (uint32 for `>>>`), exact as a Number and never -0.
+inline fn bitwise(op: i64, x: f64, y: f64) -> f64 {
+    let c = to_uint32(y) & 31;
+    let r: i64 = match op {
+        opcode::BitAnd => to_int32(x) & to_int32(y), opcode::BitOr => to_int32(x) | to_int32(y), opcode::BitXor => to_int32(x) ^ to_int32(y),
+        opcode::Shl => signed32((to_uint32(x) << c) & 4294967295), opcode::Sar => to_int32(x) >> c, _ => to_uint32(x) >> c,
+    };
+    return r;
+}
+// Number::exponentiate (`x ** y`; the Pants engine's exponentiate and
+// QuickJS js_pow): C's pow except that a non-finite exponent with base 1 or
+// -1 is NaN, where pow gives 1.
+inline fn exponentiate(x: f64, y: f64) -> f64 { return if !(y - y == 0) && (x == 1 || x == -1) { 0.0 / 0.0 } else { pow(x, y) }; }
+// A unary operator of a Number: `-`, `++`, `--`, `~` (ToInt32, then the
+// bits inverted) and the conversions, which keep it.
+inline fn unary_number(op: i64, n: f64) -> f64 { return if op == opcode::Neg { -n } else if op == opcode::Inc { n + 1 } else if op == opcode::Dec { n - 1 } else if op == opcode::BitNot { -1 - to_int32(n) } else { n }; }
 // Numbers on both sides of a binary operator: what binary_value computes for
 // them, without its coercions (no charge, no fault).
 inline fn arithmetic(op: i64, x: f64, y: f64) -> Value {
     return match op {
         opcode::Add, opcode::Plus => number(x + y), opcode::Sub => number(x - y), opcode::Mul => number(x * y), opcode::Div => number(x / y), opcode::Rem => number(x % y),
+        opcode::BitAnd, opcode::BitOr, opcode::BitXor, opcode::Shl, opcode::Sar, opcode::UShr => number(bitwise(op, x, y)), opcode::Pow => number(exponentiate(x, y)),
         opcode::StrictEq, opcode::LooseEq => boolean(x == y), opcode::Gt, opcode::CompareGt => boolean(x > y), opcode::Le, opcode::CompareLe => boolean(x <= y), opcode::Ge, opcode::CompareGe => boolean(x >= y), _ => boolean(x < y),
     };
 }
@@ -3038,7 +3071,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 // counts settle first and the fuel is recomputed after.
                 Unary u => {
                     let v = job.operands.pop();
-                    if v.is_number() { let n = v.num(); job.operands.push(number(if u.op == opcode::Neg { -n } else if u.op == opcode::Inc { n + 1 } else if u.op == opcode::Dec { n - 1 } else { n })); }
+                    if v.is_number() { let n = v.num(); job.operands.push(number(unary_number(u.op, n))); }
                     else if convertible(heap, v) {
                         // ToPrimitive with hint number, then ToNumber, in a
                         // Convert frame; this instruction runs again.
@@ -3047,7 +3080,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     } else {
                         settle(job, ran, used); job.frames[top].pc = pc;
                         let n = numeric(heap, v);
-                        job.operands.push(number(if u.op == opcode::Neg { -n } else if u.op == opcode::Inc { n + 1 } else if u.op == opcode::Dec { n - 1 } else { n }));
+                        job.operands.push(number(unary_number(u.op, n)));
                         if !in_place(job, top, at) { break; }
                         left = fuel(job, allowance, used);
                     }

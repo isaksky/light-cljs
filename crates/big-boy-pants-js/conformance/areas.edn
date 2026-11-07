@@ -108,6 +108,9 @@
   "bbp/symbol_to_primitive" {:area :operators-values}
   "bbp/object_property_keys" {:area :operators-values}
   "bbp/to_primitive_order" {:area :operators-values}
+  "bbp/bitwise_operators_follow_to_int32" {:area :operators-values}
+  "bbp/exponent_operator" {:area :operators-values}
+  "bbp/compound_bitwise_assignment" {:area :operators-values}
 
   ;; ---- Pants engine fixtures (rust/tests/fixtures/js)
   "pants/arithmetic" {:area :operators-values :origin :pants-authored}
