@@ -1037,6 +1037,12 @@ mod serial_tests {
             ("to-primitive", "boolean:true"),
             // Array.prototype.map and forEach as native frames (light-cljs-789).
             ("array-callbacks", "boolean:true"),
+            // Array.prototype.push, join and toString as native frames (light-cljs-842).
+            ("array-push-join", "boolean:true"),
+            // Receivers and strings only serial_tests.goose supplies: push
+            // onto rows the job did not allocate, join's work and unit limits.
+            ("array-push-receiver", "goose"),
+            ("array-join-strings", "goose"),
             ("depth", "boolean:true"),
             ("cancel", "limit"),
             ("cancel-break", "limit"),

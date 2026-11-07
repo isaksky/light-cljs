@@ -51,6 +51,8 @@
   "bbp/array_map" {:area :core-builtins}
   "bbp/array_map_length_to_primitive" {:area :core-builtins}
   "bbp/array_map_species" {:area :core-builtins}
+  "bbp/array_push" {:area :core-builtins}
+  "bbp/array_join_to_string" {:area :core-builtins}
   "bbp/async_await_order" {:area :generators-async}
   "bbp/async_unhandled_rejection" {:area :generators-async}
   "bbp/array_named_properties" {:area :objects-classes}

@@ -58,11 +58,14 @@ enum Builtin {
     NumberPrototypeValueOf, NumberPrototypeToString, StringPrototypeValueOf, StringPrototypeToString, BooleanPrototypeValueOf, BooleanPrototypeToString,
     // Function.prototype[@@hasInstance] (light-cljs-834), a native frame (source_vm.goose, instanceof).
     FunctionPrototypeHasInstance,
+    // Array.prototype.push, join and toString (light-cljs-842), native
+    // frames (array_methods.goose).
+    ArrayPrototypePush, ArrayPrototypeJoin, ArrayPrototypeToString,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[78] = [
+let BUILTINS: BuiltinInfo[81] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -103,6 +106,8 @@ let BUILTINS: BuiltinInfo[78] = [
     BuiltinInfo { which: Builtin.StringPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.StringPrototypeToString, name: "toString" },
     BuiltinInfo { which: Builtin.BooleanPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.BooleanPrototypeToString, name: "toString" },
     BuiltinInfo { which: Builtin.FunctionPrototypeHasInstance, name: "[Symbol.hasInstance]", length: 1 },
+    BuiltinInfo { which: Builtin.ArrayPrototypePush, name: "push", length: 1 }, BuiltinInfo { which: Builtin.ArrayPrototypeJoin, name: "join", length: 1 },
+    BuiltinInfo { which: Builtin.ArrayPrototypeToString, name: "toString" },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -135,7 +140,7 @@ let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalEr
 let ERROR_BUILTINS:   Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[25] = [
+let REALM_FUNCTIONS: Method[28] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -157,6 +162,8 @@ let REALM_FUNCTIONS: Method[25] = [
     Method { which: Builtin.BooleanPrototypeToString, holder: 28 }, Method { which: Builtin.BooleanPrototypeValueOf, holder: 28 },
     // Function.prototype[@@hasInstance] (light-cljs-834), keyed by the well-known symbol.
     Method { which: Builtin.FunctionPrototypeHasInstance, holder: 2 },
+    // Array.prototype.push, join and toString (light-cljs-842).
+    Method { which: Builtin.ArrayPrototypePush, holder: 3 }, Method { which: Builtin.ArrayPrototypeJoin, holder: 3 }, Method { which: Builtin.ArrayPrototypeToString, holder: 3 },
 ];
 inline fn realm_nodes() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
 // The Symbol function's row: its REALM_FUNCTIONS entry, the eleventh.
@@ -164,7 +171,7 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[206] = [
+let PENDING: PendingName[203] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
@@ -174,10 +181,10 @@ let PENDING: PendingName[206] = [
     PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "entries" }, PendingName { holder: 3, key: "every" },
     PendingName { holder: 3, key: "fill" }, PendingName { holder: 3, key: "filter" }, PendingName { holder: 3, key: "find" }, PendingName { holder: 3, key: "findIndex" }, PendingName { holder: 3, key: "findLast" },
     PendingName { holder: 3, key: "findLastIndex" }, PendingName { holder: 3, key: "flat" }, PendingName { holder: 3, key: "flatMap" }, PendingName { holder: 3, key: "includes" },
-    PendingName { holder: 3, key: "indexOf" }, PendingName { holder: 3, key: "join" }, PendingName { holder: 3, key: "keys" }, PendingName { holder: 3, key: "lastIndexOf" },
-    PendingName { holder: 3, key: "pop" }, PendingName { holder: 3, key: "push" }, PendingName { holder: 3, key: "reduce" }, PendingName { holder: 3, key: "reduceRight" }, PendingName { holder: 3, key: "reverse" },
+    PendingName { holder: 3, key: "indexOf" }, PendingName { holder: 3, key: "keys" }, PendingName { holder: 3, key: "lastIndexOf" },
+    PendingName { holder: 3, key: "pop" }, PendingName { holder: 3, key: "reduce" }, PendingName { holder: 3, key: "reduceRight" }, PendingName { holder: 3, key: "reverse" },
     PendingName { holder: 3, key: "shift" }, PendingName { holder: 3, key: "slice" }, PendingName { holder: 3, key: "some" }, PendingName { holder: 3, key: "sort" }, PendingName { holder: 3, key: "splice" },
-    PendingName { holder: 3, key: "toLocaleString" }, PendingName { holder: 3, key: "toReversed" }, PendingName { holder: 3, key: "toSorted" }, PendingName { holder: 3, key: "toSpliced" }, PendingName { holder: 3, key: "toString" },
+    PendingName { holder: 3, key: "toLocaleString" }, PendingName { holder: 3, key: "toReversed" }, PendingName { holder: 3, key: "toSorted" }, PendingName { holder: 3, key: "toSpliced" },
     PendingName { holder: 3, key: "unshift" }, PendingName { holder: 3, key: "values" }, PendingName { holder: 3, key: "with" }, PendingName { holder: 3, key: "", symbol: 0 }, PendingName { holder: 3, key: "", symbol: 7 },
     // Object
     PendingName { holder: 12, key: "assign" }, PendingName { holder: 12, key: "create" }, PendingName { holder: 12, key: "defineProperties" }, PendingName { holder: 12, key: "defineProperty" },
@@ -800,7 +807,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         FunctionPrototypeCall => { return unsupported_step(job, b, "called from a native frame"); },
         // The dispatch loop runs these as native frames (native_start); a
         // caller that runs a built-in to completion here cannot.
-        ArrayPrototypeMap, ArrayPrototypeForEach => { return unsupported_step(job, b, "called from a native frame"); },
+        ArrayPrototypeMap, ArrayPrototypeForEach, ArrayPrototypePush, ArrayPrototypeJoin, ArrayPrototypeToString => { return unsupported_step(job, b, "called from a native frame"); },
         SymbolFunction => { return unsupported_step(job, b, "creating symbols"); },
         NativeCoreBinding => { return core_binding(job, b, arg(args, 0)); },
         Atom, Deref, Reset, CompareAndSet, ResetVals, Volatile, Vreset, AddWatch, RemoveWatch, SetValidator => { return cell_builtin(job, b, args); },

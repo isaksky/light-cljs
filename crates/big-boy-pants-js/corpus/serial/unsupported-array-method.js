@@ -1,1 +1,1 @@
-function unsupportedArrayMethod() { var a = []; a.tag = 1; return a.push(1); }
+function unsupportedArrayMethod() { var a = [1, 2]; a.tag = 1; a.pop(); return a.length; }

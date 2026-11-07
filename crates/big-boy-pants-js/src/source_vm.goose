@@ -6,6 +6,7 @@ import .vm;
 import .export_schema;
 import .realm;
 import .array_callbacks;
+import .array_methods;
 import .cells;
 import .continuations;
 import .number_text;
@@ -145,7 +146,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6 }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -422,10 +423,13 @@ root struct Heap {
 //                pc 4 V converted by a Convert frame for the built-in
 //                method callee (Number or String). Its result replaces the
 //                operation's operands at operand_base.
+//   ArrayMethod  Array.prototype.push, join and toString (light-cljs-842;
+//                array_methods.goose, which gives their fields and phases),
+//                its Builtin the payload.
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -2776,6 +2780,7 @@ fn native_step(job: Job&) {
         Force x => { force_step(job, frame, x.which); },
         Resume => { resume_step(job, frame); },
         HasInstance => { has_instance_step(job, frame); },
+        ArrayMethod m => { array_method_step(job, frame, m.which); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -2935,10 +2940,11 @@ fn holds_string(heap: const Heap&, v: Value) -> bool {
 // with the object as receiver (pc 2). A user method or getter runs as a
 // frame above this one (decision 4); a plain built-in method (the realm's
 // Object.prototype.valueOf and toString, Error.prototype.toString) runs
-// here and its result is the next step's. A method the realm's pending
-// properties would supply (Array.prototype.toString, light-cljs-788) fails
-// by name, as does a built-in getter or a built-in that needs a native
-// frame or a host effect. Operands that need no conversion are left for
+// here and its result is the next step's; an Array.prototype built-in that
+// runs as a native frame (Array.prototype.toString, light-cljs-842) runs as
+// one above this one. A method the realm's pending properties would supply
+// fails by name, as does a built-in getter or another built-in that needs a
+// native frame or a host effect. Operands that need no conversion are left for
 // the operation, except that with `numeric` each takes ToNumber in turn.
 fn convert_step(job: Job&, frame: Frame, hint: Hint, finish: bool, count: u8, method: u8) {
     let heap .= job.heap; let at = job.frames.len - 1;
@@ -2998,6 +3004,9 @@ fn conversion_call(job: Job&, at: i64, m: Value, v: Value, args: const Value[:])
     job.frames[at].pc = 1;
     if node(heap, m.id()).kind == 2 { enter(job, m, v, args); return; }
     let b = builtin_of(heap, m.id());
+    // An Array.prototype native frame (Array.prototype.toString, light-cljs-842)
+    // runs above this one; its result arrives at pc 1.
+    if array_native(b) { native_start(job, b, v, args, job.operands.len); return; }
     if effect_builtin(b) || native_builtin(b) || b == Builtin.Mapv || b == Builtin.MapSeq || forces(heap, b, args) { unsupported_step(job, b, "as a ToPrimitive method"); return; }
     let r = call_builtin(job, node(heap, m.id()).function, v, args);
     if heap.fault == Fault.None { job.operands.push(r); }
@@ -3601,7 +3610,8 @@ fn construct(job: Job&, argc: i64) {
         FunctionPrototype, ObjectGetPrototypeOf, ObjectIs, ObjectHasOwn, ObjectPrototypeHasOwnProperty, ObjectPrototypeValueOf, ObjectPrototypeToString,
         ArrayIsArray, ErrorPrototypeToString, SymbolFunction, ObjectGetOwnPropertyDescriptor, FunctionPrototypeCall, ArrayPrototypeMap, ArrayPrototypeForEach,
         GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, IteratorPrototypeIterator, Eval,
-        NumberPrototypeValueOf, NumberPrototypeToString, StringPrototypeValueOf, StringPrototypeToString, BooleanPrototypeValueOf, BooleanPrototypeToString, FunctionPrototypeHasInstance => { heap.fault = Fault.TypeError; },
+        NumberPrototypeValueOf, NumberPrototypeToString, StringPrototypeValueOf, StringPrototypeToString, BooleanPrototypeValueOf, BooleanPrototypeToString, FunctionPrototypeHasInstance,
+        ArrayPrototypePush, ArrayPrototypeJoin, ArrayPrototypeToString => { heap.fault = Fault.TypeError; },
         _ => { unsupported_step(job, b, "construct"); },
     }
 }

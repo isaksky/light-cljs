@@ -578,6 +578,13 @@ fn control_flow() {
     // map and forEach (light-cljs-789): their callbacks, getters and the
     // length's valueOf run in the built-in's native frame.
     check(embed_file("../corpus/serial/array-callbacks.gsp"), "boolean:true");
+    // push, join and toString (light-cljs-842): a push onto an array-like
+    // through its `length` getter, valueOf and setters, and joins whose
+    // elements and separator run toString, at every cut.
+    check(embed_file("../corpus/serial/array-push-join.gsp"), "boolean:true");
+    limit_points(embed_file("../corpus/serial/array-push-join.gsp"));
+    push_receivers(embed_file("../corpus/serial/array-push-receiver.gsp"));
+    join_limits(embed_file("../corpus/serial/array-join-strings.gsp"));
     // [[Construct]] (light-cljs-831): ordinary functions with new.target and
     // the return override, through finally and a generator yielding inside
     // the constructor, the realm's constructors and a non-constructor's
@@ -598,6 +605,82 @@ fn control_flow() {
     }
     heap_program::join(thread_spawn(pending_completions, str(embed_file("../corpus/serial/calls.gsp"))));
     print("serial source VM: finally/completions, native ToPrimitive frames, 10,000-frame depth and cancellation passed");
+}
+// Array.prototype.push onto a receiver in rows the job did not allocate
+// (light-cljs-842, decision 3): a dense array, a dictionary array, an
+// array-like object and an empty dense array, below the job's protected or
+// owned rows or in a foreign range, with 0, 1 and 2 items. Each faults
+// NativeBoundary in push's native frame and leaves every node, value and
+// property row as it was; the same receivers the job may write take the push.
+fn push_receivers(bytes: const u8[:]) {
+    for receiver in 4 { for boundary in 4 { for n in 3 { heap_program::join(thread_spawn(push_receiver, str(bytes), receiver, boundary, n)); } } }
+}
+thread_fn push_receiver(bytes: u8[], receiver: i64, boundary: i64, n: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let start = heap.nodes.len;
+    let o = source::allocate(heap, source::Node { kind: if receiver == 2 { 0 } else { 1 } });
+    if receiver <= 1 { assert(source::put(heap, o, source::text(heap, "0"), source::number(1)) && source::put(heap, o, source::text(heap, "1"), source::number(2))); }
+    if receiver == 1 { assert(source::put(heap, o, source::text(heap, "9000"), source::number(3)) && source::node(heap, o.id()).initialized); }
+    if receiver == 2 { assert(source::put(heap, o, source::text(heap, "length"), source::number(1))); }
+    let end = heap.nodes.len;
+    let length: i64 = if receiver == 0 { 2 } else if receiver == 1 { 9001 } else if receiver == 2 { 1 } else { 0 };
+    let entry = source::closure(heap, 0, []);
+    var job = source::Job { heap: heap };
+    if boundary == 0 { job.protected_nodes = end; } else if boundary == 1 { job.owned_nodes = end; } else if boundary == 2 { job.foreign.push(start as u32); job.foreign.push(end as u32); }
+    assert(source::start(job, entry, [o, source::number(n)]));
+    let nodes = source::plain_rows(heap.nodes); let values = source::plain_rows(heap.values); let properties = source::plain_rows(heap.properties);
+    let outcome = source::run(job, -1);
+    if boundary == 3 {
+        assert(outcome == tiny::Outcome.Complete && job.result.num() == length + n);
+        let after = source::get(heap, o, source::text(heap, "length"));
+        assert(heap.fault == source::Fault.None && after.num() == length + n);
+        return;
+    }
+    // The refusal is push's (its native frame, function -1), not a read's.
+    assert(outcome == tiny::Outcome.Failed && job.fault == source::Fault.NativeBoundary && job.fault_function == -1);
+    assert(source::plain_rows(heap.nodes) == nodes && source::plain_rows(heap.values) == values && source::plain_rows(heap.properties) == properties);
+}
+// Array.prototype.join's pieces (light-cljs-842): long Latin-1 and UTF-16
+// elements and separators, a null element. The uncut join gives the
+// expected units in their canonical encoding; a work limit below the pieces'
+// code units fails WorkLimit, and a unit limit below them MemoryLimit, both
+// in join's native frame; exactly enough units completes.
+fn join_limits(bytes: const u8[:]) {
+    for wide in 2 { for mode in 4 { heap_program::join(thread_spawn(join_limit, str(bytes), wide, mode)); } }
+}
+thread_fn join_limit(bytes: u8[], wide: i64, mode: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var narrow_units:    u8[>..]  = []; for i in 400 { narrow_units.push((97 + i % 26) as u8); }
+    var wide_units:      u16[>..] = []; for i in 300 { wide_units.push(((if wide == 1 { 256 } else { 65 }) + i % 50) as u16); }
+    var separator_units: u16[>..] = []; for i in 50 { separator_units.push(if wide == 1 && i == 0 { 8364 } else { 45 }); }
+    let narrow = source::text(heap, narrow_units); let other = source::string(heap, wide_units); let separator = source::string(heap, separator_units);
+    let a = source::allocate(heap, source::Node { kind: 1 });
+    let elements: source::Value[5] = [narrow, other, narrow, source::Value.Null, narrow];
+    for v, i in elements { assert(source::set_element(heap, a, i, v)); }
+    // The joined units, as the join builds them.
+    var expected: u16[>..] = [];
+    for v, i in elements {
+        if i > 0 { expected.append(separator_units); }
+        if v.is_string() { source::append_utf16(heap, v, expected); }
+    }
+    let total = expected.len; assert(total == 3 * 400 + 300 + 4 * 50);
+    let entry = source::closure(heap, 0, []);
+    var job = source::Job { heap: heap };
+    assert(source::start(job, entry, [a, separator]));
+    if mode == 1 { heap.limits.work = heap.work + total - 1; }
+    if mode == 2 { heap.limits.units = source::unit_rows(heap) + total - 1; }
+    if mode == 3 { heap.limits.units = source::unit_rows(heap) + total; }
+    let outcome = source::run(job, -1);
+    if mode == 1 || mode == 2 {
+        assert(outcome == tiny::Outcome.Failed && job.fault == (if mode == 1 { source::Fault.WorkLimit } else { source::Fault.MemoryLimit }) && job.fault_function == -1);
+        return;
+    }
+    assert(outcome == tiny::Outcome.Complete && job.result.is_string());
+    assert(source::utf16(heap, job.result)[..] == expected[..] && source::header(heap, job.result.sid()).wide == (wide == 1));
 }
 // Generators, async functions and promise jobs (light-cljs-790;
 // continuations.goose). Every budget cut matches the uncut run, so
@@ -1011,7 +1094,7 @@ thread_fn named_model() {
     assert(source::delete_property(heap, b, key(heap, "x")) && source::node(heap, b.id()).initialized && source::get(heap, b, source::text(heap, "0")).num() == 5 && source::get(heap, b, source::text(heap, "y")).num() == 7);
     // The pending %Array.prototype%: its names and symbol keys fail by name,
     // other names are absent.
-    source::get(heap, b, source::text(heap, "push")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    source::get(heap, b, source::text(heap, "pop")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     source::get(heap, b, source::Value.Symbol { s: 0 }); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     assert(source::get(heap, b, source::text(heap, "other")).is_undefined() && heap.fault == source::Fault.None);
     // A closure (light-cljs-806): `length` and `name` come from its code row
