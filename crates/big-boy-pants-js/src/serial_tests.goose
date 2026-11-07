@@ -603,6 +603,11 @@ fn scripts() {
     check(lexical, "number:2.0");
     for setup in [2, 3] { check(lexical, "Fault.SyntaxError:cannot-declare-global-lexical-'reserved'", source::Fault.SyntaxError, setup); }
     check(embed_file("../corpus/serial/script-reserved-var.gsp"), "boolean:true", source::Fault.None, 2);
+    // Static throws name the binding by its source text, non-ASCII too; a
+    // generator and an async function keep the script's bindings across a
+    // yield and an await.
+    check(embed_file("../corpus/serial/script-throw-messages.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/script-suspension.gsp"), "boolean:true");
     heap_program::join(thread_spawn(protected_declarations, str(embed_file("../corpus/serial/script-declarations.gsp"))));
     heap_program::join(thread_spawn(lexical_reset, str(embed_file("../corpus/serial/script-declarations.gsp"))));
     print("serial source VM: script declarations, global names, a global accessor and declaration checks passed");

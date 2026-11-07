@@ -3377,32 +3377,43 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool) {
         _ => { heap.fault = Fault.InvalidState; },
     }
 }
+// Append UTF-8 `bytes` as UTF-16 units; false (out partly written) for a
+// malformed sequence.
+fn append_utf8(out: u16[>..]&, bytes: const u8[:]) -> bool {
+    var i: i64 = 0;
+    while i < bytes.len {
+        let b = bytes[i] as u32;
+        let n: i64 = if b < 128 { 1 } else if b >= 194 && b < 224 { 2 } else if b >= 224 && b < 240 { 3 } else if b >= 240 && b < 245 { 4 } else { 0 };
+        if n == 0 || i + n > bytes.len { return false; }
+        var cp: u32 = if n == 1 { b } else if n == 2 { b & 31 } else if n == 3 { b & 15 } else { b & 7 };
+        for j in 1..n { let c = bytes[i + j] as u32; if (c & 192) != 128 { return false; } cp = (cp << 6) | (c & 63); }
+        if cp >= 65536 { let s = cp - 65536; out.push((55296 + (s >> 10)) as u16); out.push((56320 + (s & 1023)) as u16); } else { out.push(cp as u16); }
+        i += n;
+    }
+    return true;
+}
 // ThrowError (42): the compiler's static throw of ThrowKind `kind`, a
 // catchable error with the Pants engine's message (throw_message), naming
-// the binding from the instruction's source span when it is one identifier.
+// the binding by the instruction's source text, as throw_message does (the
+// generic wording only for a span that is not a source range).
 fn throw_error(job: Job&, kind: u8, at: i64) {
     let heap .= job.heap; let code .= heap.code;
-    var name: u8[>..] = [];
+    var name: u16[>..] = []; var named = false;
     if at >= 0 && at < code.ops.len {
         let op = code.ops[at];
-        if op.start >= 0 && op.start < op.end && op.end <= code.source_bytes.len && op.end - op.start <= 256 {
-            for b in code.source_bytes[op.start..op.end] {
-                if !(b == '_' || b == '$' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9') { name.clear(); break; }
-                name.push(b);
-            }
-        }
+        named = op.start >= 0 && op.start <= op.end && op.end <= code.source_bytes.len && append_utf8(name, code.source_bytes[op.start..op.end]);
     }
     job.detail.clear();
     let words: const u8[:] = match kind {
-        0 => if name.len > 0 { "" } else { "reference to an undeclared name" },
-        1 => if name.len > 0 { "cannot access '" } else { "binding accessed before initialization" },
-        2 => if name.len > 0 { "assignment to constant variable '" } else { "assignment to a constant variable" },
+        0 => if named { "" } else { "reference to an undeclared name" },
+        1 => if named { "cannot access '" } else { "binding accessed before initialization" },
+        2 => if named { "assignment to constant variable '" } else { "assignment to a constant variable" },
         3 => "cannot delete a super property",
         4 => "yield* delegate has no throw method",
         _ => "",
     };
     for c in words { job.detail.push(c); }
-    if name.len > 0 && kind <= 2 {
+    if named && kind <= 2 {
         for c in name { job.detail.push(c); }
         let tail: const u8[:] = if kind == 0 { " is not defined" } else if kind == 1 { "' before initialization" } else { "'" };
         for c in tail { job.detail.push(c); }

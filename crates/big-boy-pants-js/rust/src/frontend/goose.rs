@@ -1003,6 +1003,8 @@ mod serial_tests {
             ("script-reserved-function", "number:1"),
             ("script-reserved-let", "number:2"),
             ("script-reserved-var", "boolean:false"),
+            ("script-throw-messages", "boolean:true"),
+            ("script-suspension", "boolean:true"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export =

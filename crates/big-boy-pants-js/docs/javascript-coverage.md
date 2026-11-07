@@ -1274,7 +1274,11 @@ constructors, `globalThis`, `NaN`, `Infinity` and `undefined`.
   a lexical over a non-configurable global property, a function over a
   non-configurable property that is not a writable enumerable data
   property; every global object is extensible until
-  `Object.preventExtensions` exists. `ThrowError` (42) raises its
+  `Object.preventExtensions` exists. The compiler emits no preflight for
+  lexical names, so a lexical's check runs at its own declaration, after
+  the var and function properties declared before it; nothing observes
+  them, since a declaration's SyntaxError ends the job before any of the
+  script's statements runs and one job runs one script. `ThrowError` (42) raises its
   `ThrowKind` error with the Pants engine's message, naming the binding
   from the instruction's source span. In a compiler job, whose global object
   is protected, every one of these faults `NativeBoundary` before it
