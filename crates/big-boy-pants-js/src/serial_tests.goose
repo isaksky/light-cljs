@@ -623,6 +623,23 @@ thread_fn reclaim_run(bytes: u8[], fault: source::Fault, minimum: i64, maximum: 
     source::retire(job);
     assert(heap.slack.nodes == 0 && heap.slack.units == 0 && !heap.reclaim);
 }
+// The write log through a collection: its first `observed` entry, a string
+// only the log still names, survives where the job keeps logged values and
+// reads undefined where it does not.
+thread_fn reclaim_observed(bytes: u8[], logged: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code, limits: source::Limits { steps: 1 << 50, work: 1 << 50 } }; assert(source::initialize(heap));
+    let entry = source::closure(heap, 0, []);
+    var job = source::Job { heap: heap, logged_values: logged }; assert(source::start(job, entry, []));
+    assert(source::run(job, -1) == tiny::Outcome.Complete && heap.reclaims >= 1);
+    var first = source::Value.Null;
+    for w in job.writes { if first.is_null() && source::key_is(heap, w.key, "observed") { first = w.value; } }
+    var text: u8[>..] = []; source::canonical(heap, first, text);
+    assert(text[..] == (if logged { "utf16:[118,49]" } else { "undefined" }));
+    assert(image_valid(heap));
+    source::retire(job);
+}
 fn reclamation() {
     // 600,000 garbage objects, arrays, strings and closures: each loop
     // passes a margin, and the live set stays small.
@@ -631,6 +648,10 @@ fn reclamation() {
     // job with a pending promise and two suspended async functions, a
     // for-of body and map's callbacks: one in each of the eight churns.
     heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/reclaim-roots.gsp")), source::Fault.None, 8, 16));
+    // Strings that pass the unit margin within a few instructions, and a
+    // held set near the node limit that the job drops and then needs freed.
+    heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/reclaim-bursts.gsp")), source::Fault.None, 3, 32));
+    for logged in [false, true] { heap_program::join(thread_spawn(reclaim_observed, str(embed_file("../corpus/serial/reclaim-observed.gsp")), logged)); }
     // A live set over the node limit still ends MemoryLimit, after the
     // collections that could not free enough.
     heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/reclaim-live.gsp")), source::Fault.MemoryLimit, 1, 8));

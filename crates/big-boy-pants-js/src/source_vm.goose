@@ -592,6 +592,9 @@ root struct Job {
     // reclaim.goose): a collection inside the job moves only rows above
     // them. reclaimable: start or resume_stack armed the job's margins.
     floor: Tops = Tops {}, reclaimable: bool = false,
+    // The host reads the write log's values (execute.goose's typed
+    // outcome): a collection keeps them; otherwise they are weak.
+    logged_values: bool = false,
 }
 // A row a job holds that names a process-wide cell (a cell reference) or
 // has a process-wide identity (a value loaded from or stored in a cell, or
@@ -2365,7 +2368,7 @@ fn reset(job: Job&) -> bool {
     job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0; job.detail.clear(); job.heap.proxy_method = -1;
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
     job.queue.clear(); job.queue_head = 0; job.draining = false; job.entry = Value.Undefined; job.rejections.clear();
-    job.lexicals = Value.Undefined; job.direct_eval = false; job.floor = Tops {}; job.reclaimable = false;
+    job.lexicals = Value.Undefined; job.direct_eval = false; job.floor = Tops {}; job.reclaimable = false; job.logged_values = false;
     return true;
 }
 // The write log holds named property writes only: the typed outcome's
@@ -3161,7 +3164,10 @@ fn converted(job: Job&, at: i64, slot: i64, p: Value, hint: Hint, finish: bool, 
 // deepest validated height (Code.heights) cannot underflow or exceed
 // limits.stack, so only a frame without that room checks each instruction's
 // stack effect, as before.
+// A collection asked for (reclaim.goose) spends the fuel at once, so the
+// loop leaves for run_claimed's safe point after the instruction that asked.
 inline fn fuel(job: const Job&, allowance: i64, used: i64) -> i64 {
+    if job.heap.reclaim { return 0; }
     var n = min(job.heap.limits.steps - job.steps, job.heap.limits.work - job.heap.work);
     if allowance >= 0 { n = min(n, allowance - used); }
     return max(n, 0);
@@ -3244,7 +3250,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
         loop {
             if ran == left {
                 settle(job, ran, used);
-                if allowance >= 0 && used >= allowance { job.frames[top].pc = pc; return used; }
+                if allowance >= 0 && used >= allowance || heap.reclaim { job.frames[top].pc = pc; return used; }
                 if job.steps >= heap.limits.steps { heap.fault = Fault.InstructionLimit; } else if heap.work >= heap.limits.work { heap.fault = Fault.WorkLimit; }
                 if heap.fault != Fault.None { job.frames[top].pc = pc; used += 1; fail(job, heap.fault, frame_at(job, top, pc)); return used; }
                 left = fuel(job, allowance, used);

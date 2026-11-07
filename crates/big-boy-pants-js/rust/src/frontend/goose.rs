@@ -1120,6 +1120,8 @@ mod serial_tests {
             // (serial_tests.goose).
             ("reclaim-loops", "boolean:true"),
             ("reclaim-roots", "boolean:true"),
+            ("reclaim-bursts", "boolean:true"),
+            ("reclaim-observed", "number:2"),
             ("reclaim-live", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();

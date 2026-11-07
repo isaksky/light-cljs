@@ -101,6 +101,7 @@
   "bbp/labelled_jumps" {:area :statements-loops}
   "bbp/long_loop" {:area :statements-loops}
   "bbp/reclaim_object_loop" {:area :statements-loops}
+  "bbp/reclaim_bursts_high_water" {:area :statements-loops}
   "bbp/reclaim_string_loop" {:area :statements-loops}
   "bbp/reclaim_closure_loop" {:area :functions-scope}
   "bbp/reclaim_live_roots" {:area :generators-async}

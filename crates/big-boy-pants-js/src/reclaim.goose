@@ -15,8 +15,9 @@ namespace source;
 // remap. Rows stay plain u32 IDs (decision 2); there is no free list, no
 // mark bit in any row and no write barrier.
 //
-// Cost before the trigger: none beyond the limit check every allocation
-// function already makes. Each table's check compares against its limit
+// Cost before the trigger: the limit check every allocation function
+// already makes, against a lowered limit, and a flag the dispatch loop's
+// fuel reads (below). Each table's check compares against its limit
 // less a margin (Heap.slack); passing that soft limit takes the check's cold
 // path (exhausted), which, when the row still fits the real limit, zeroes
 // the table's margin, asks for a collection (Heap.reclaim) and lets the
@@ -25,10 +26,12 @@ namespace source;
 //
 // The collection runs at the next safe point: the top of run_claimed's
 // loop, where every value the job holds is in its own state (frames,
-// operands, handlers ...) or in rows, never in a Goose local. run_claimed
-// runs bytecode in slices of at most reclaim_interval() instructions, so a
-// loop that allocates without calling still reaches one soon; the margin
-// leaves half the remaining rows for that slice.
+// operands, handlers ...) or in rows, never in a Goose local. Asking for a
+// collection also spends the dispatch loop's fuel (source_vm.goose, fuel),
+// so execute returns to that point after the instruction that asked; a
+// native step returns there after every step, and bytecode runs in slices of
+// at most reclaim_interval() instructions besides. The margin leaves half
+// the remaining rows for what that instruction or step still allocates.
 //
 // The floor (Job.floor) is each table's length when the job started: rows
 // below it (the image, a continuation's earlier rows, the arguments the host
@@ -42,9 +45,11 @@ namespace source;
 // frame, promise queue from its head, unhandled rejections, cell rows (a
 // publication's rows whole, so its identities stay consecutive), foreign
 // ranges (whole, so they stay ranges) and the keys of its write log. The
-// write log's objects and values are weak: one that only the log names
-// becomes undefined there (its readers count entries and read keys). The
-// interned-key index is weak too: it is rebuilt from the live key headers.
+// write log's objects are weak, and so are its values unless the job keeps
+// them (Job.logged_values, for a host that reads them: execute.goose's
+// typed outcome): one that only the log names becomes undefined there (the
+// compiler counts entries and reads keys). The interned-key index is weak
+// too: it is rebuilt from the live key headers.
 //
 // The pass reaches the same links snapshot::validate checks: a node's
 // values, element or capture run (has_values), shape-mode overflow run or
@@ -57,9 +62,10 @@ namespace source;
 // than leaving a dangling row.
 //
 // After a collection the margin is half of what is left below each limit,
-// or none (no further collection of that table) once less than an eighth of
-// the limit, or fewer than reclaim_minimum() rows, are left: a job whose
-// live set nears a limit still ends MemoryLimit, as without reclamation.
+// or none (no further collection of that table) once fewer than
+// reclaim_minimum() rows are left: a job whose live set stays that near a
+// limit still ends MemoryLimit, as without reclamation, while one whose live
+// set only came near it collects again and goes on once that set shrinks.
 
 // Each table's margin below its limit (Limits); 0 disables the trigger.
 struct Slack { nodes: i64 = 0, values: i64 = 0, properties: i64 = 0, units: i64 = 0, strings: i64 = 0, shapes: i64 = 0, conts: i64 = 0 }
@@ -77,7 +83,7 @@ fn exhausted(heap: Heap&, used: i64, limit: i64, slack: i64&, count: i64) -> boo
 }
 fn margin(limit: i64, used: i64) -> i64 {
     let left = limit - used;
-    return if left >= reclaim_minimum() && left >= limit / 8 { left / 2 } else { 0 };
+    return if left >= reclaim_minimum() { left / 2 } else { 0 };
 }
 fn set_margins(heap: Heap&) {
     heap.slack = Slack {
@@ -201,7 +207,7 @@ fn mark_roots(e: Evacuation&, job: const Job&) {
     for c in job.cell_rows { mark_range(e, c.row, c.count); }
     var i: i64 = 0;
     while i + 1 < job.foreign.len { mark_range(e, job.foreign[i], job.foreign[i + 1] - job.foreign[i]); i += 2; }
-    for w in job.writes { mark(e, heap, w.key); }
+    for w in job.writes { mark(e, heap, w.key); if job.logged_values { mark(e, heap, w.value); } }
 }
 
 // After marking: entry i becomes the number of marked rows before floor + i,
@@ -341,7 +347,7 @@ fn rewrite_job(e: const Evacuation&, job: Job&) {
     relink(e, job.result); relink(e, job.lexicals); relink(e, job.root_receiver); relink(e, job.entry);
     for i in job.effect_args.len { relink(e, job.effect_args[i]); }
     relink(e, job.effect_frame);
-    for i in job.writes.len { relink_weak(e, job.writes[i].object); relink(e, job.writes[i].key); relink_weak(e, job.writes[i].value); }
+    for i in job.writes.len { relink_weak(e, job.writes[i].object); relink(e, job.writes[i].key); if job.logged_values { relink(e, job.writes[i].value); } else { relink_weak(e, job.writes[i].value); } }
     // The promise queue keeps its tasks from the head on.
     var tasks: Task[>..] = [];
     for t in job.queue[job.queue_head..] { var u = t; u.target = node_link(e, t.target); if t.thenable != no_row() { u.thenable = node_link(e, t.thenable); } relink(e, u.value); tasks.push(u); }

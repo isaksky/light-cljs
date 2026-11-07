@@ -98,6 +98,7 @@
  "bbp/realm_prototypes"
  "bbp/realm_uncaught_error"
  "bbp/realm_well_known_symbols"
+ "bbp/reclaim_bursts_high_water"
  "bbp/reclaim_closure_loop"
  "bbp/reclaim_live_roots"
  "bbp/reclaim_object_loop"

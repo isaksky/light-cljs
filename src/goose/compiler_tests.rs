@@ -2228,6 +2228,46 @@ fn goose_compiler_job_reclaims_past_its_margins() {
 
 #[test]
 #[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_reclamation_keeps_helper_identities() {
+    // A job reads a published helper, allocates past its node margin so its
+    // collections move the rows above its floor (the helper's foreign range
+    // and cell rows, the cache entry naming it, the job's own values), and
+    // reads the helper again: the same identity, the same value
+    // (light-cljs-847). With retention, the wait happens in place and the
+    // helper's rows lie above the job's floor; with none, the job saves its
+    // continuation at each wait and resumes from it.
+    let body = "rt => (form,env) => { const keep = __rt.formVector(7, 8); const a = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/shared'); let o; for (let i = 0; i < 15000; i++) o = [{}, {}, {}, {i}]; const b = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/shared'); for (let i = 0; i < 15000; i++) o = [{}, {}, {}, {i}]; return a === b && __rt.cljCount(a) === 3 && __rt.formValue(__rt.cljNth(b, 2)) === 3 && __rt.formValue(__rt.cljNth(keep, 1)) === 8 && o[3].i === 14999; }";
+    for retained in [None, Some(0)] {
+        let mut env = vec![];
+        if let Some(retained) = retained {
+            env.push(("BBP_RETAINED_WORKERS", retained.to_string()));
+        }
+        let session = GooseSession::start_env(&runner(), 1, Some("readiness-test"), &env).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        serve(&e, &[("fixture/shared", 77)], |_| {
+            Ok("rt => __rt.formVector(1, 2, 3)".into())
+        });
+        let (f, args, call) = inputs(&e, body);
+        let value = e.call(f, &args).unwrap();
+        let form = e
+            .export_form(value, &call, origin(&call), Default::default())
+            .unwrap();
+        assert!(
+            form.data().value_eq(&Datum::new(DatumKind::Boolean(true))),
+            "{retained:?}: {form:?}"
+        );
+        session.close();
+        cleaned(&session);
+        let jobs = assert_threads(&session.trace(), 1);
+        assert!(jobs.reclaims >= 2, "{retained:?}: {jobs:?}");
+        if retained == Some(0) {
+            assert!(jobs.saves >= 1, "{jobs:?}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_every_job_runs_in_its_own_worker() {
     // Each call mutates the prepared definition's closure state: a counter,
     // a new property and an array element. Those rows are the definition's,

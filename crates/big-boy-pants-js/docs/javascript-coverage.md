@@ -432,10 +432,13 @@ limit less a margin (`Heap.slack`), half of what was free when the job
 started. Passing it takes the check's cold path, which, if the rows still
 fit the real limit, zeroes that table's margin, asks for a collection
 (`Heap.reclaim`) and lets the allocation go on. Until then the cost is that
-one subtraction: no write barrier, no mark bits, no allocation counter.
+one subtraction and a flag read when the dispatch loop refuels: no write
+barrier, no mark bits, no allocation counter.
 `run_claimed`, at the top of its loop where the job's whole state is in its
-frames, stacks and rows, runs the collection; it runs bytecode in slices of
-at most 4,096 instructions so a loop without calls reaches that point.
+frames, stacks and rows, runs the collection. The request also empties the
+dispatch loop's fuel (`fuel` reads the flag it already sits beside), so
+execute returns there after the asking instruction; bytecode also runs in
+slices of at most 4,096 instructions.
 
 The collection keeps every row a root reaches above the job's floor (each
 table's length when the job started or resumed), slides the kept rows down
@@ -447,12 +450,14 @@ job's frames, locals, operands, handlers, result, lexicals, root receiver,
 entry, effect arguments and frame, promise queue, unhandled rejections,
 cell rows and foreign ranges (whole, so a publication's identities stay
 consecutive and its range a range) and the write log's keys. The write
-log's objects and values and the interned-key index are weak. The links
+log's objects, its values (unless the host reads them: `Job.logged_values`,
+execute.goose's typed outcome) and the interned-key index are weak. The links
 followed are the ones `snapshot::validate` checks, and a compacted heap
 still validates as a snapshot (`serial_tests.goose` checks it after a
 collection at every budget cut). Afterwards each margin is half of what is
-left, or none once less than an eighth of the limit (or 4,096 rows) is
-left, so a job whose live set nears a limit ends `MemoryLimit` as before.
+left, or none once fewer than 4,096 rows are left, so a job whose live set
+stays that near a limit ends `MemoryLimit` as before, and one whose live
+set only came near it collects again once that set is dropped.
 
 It follows decision 3's rules: rows stay plain `u32` IDs, nothing is freed
 into a list (the tables are compacted, as evacuation compacts an image),
@@ -476,8 +481,10 @@ or write, which the user's condition rules out.
 reaches a margin (an instrumented 4-worker run's JOBS line ends with 0
 collections over 5,283 jobs; the largest job adds 624 node rows against a
 margin of about 50,000), and Goose wall times are within noise of master's
-(medians of two such runs: 1 worker 7.42 s and 7.34 s against 7.53 s and
-7.30 s; 4 workers 4.84 s and 4.66 s against 4.80 s and 4.73 s).
+(medians, 1 worker: 6.98 s against 6.79 s, rounds ranging 6.69 to 7.54 s;
+4 workers: 4.44 s against 4.41 s; two runs before the review fixes gave
+7.42 and 7.34 s against 7.53 and 7.30 s, and 4.84 and 4.66 s against 4.80
+and 4.73 s).
 
 ## State isolation: comparison with shadow-cljs
 
