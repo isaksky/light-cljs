@@ -223,6 +223,12 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // holds an array cursor, its source object and index;
         // String.prototype[@@iterator] awaits its string (light-cljs-844).
         BuiltinIterator m => if m.which == source::Builtin.ArrayIteratorPrototypeNext { f.pc >= 0 && f.pc <= 1 && f.index >= 0 && object_of(s, f.input, node_kind::Iterator) && s.nodes[f.input.id()].function != iteration::CodePoints && object_of(s, f.receiver, -1) } else { m.which == source::Builtin.StringPrototypeIterator && f.pc == 0 },
+        // A ForIn frame awaits one of its three phases over its key list; a
+        // Proxy frame runs one of its three methods on a proxy, from pc 3
+        // with the key list or descriptor it builds and the trap result it
+        // reads (light-cljs-845, proxy.goose).
+        ForIn => f.pc >= 1 && f.pc <= 3 && object_of(s, f.input, node_kind::KeyList),
+        Proxy p => p.method <= proxy_method::GetOwnProperty && f.pc >= 0 && f.pc <= 5 && object_of(s, f.input, node_kind::Proxy) && (f.pc < 3 || (if f.pc == 5 { p.method == proxy_method::GetOwnProperty && f.index >= 0 && f.index < source::FIELD_NAMES.len } else { p.method == proxy_method::OwnPropertyKeys && f.index >= 0 }) && object_of(s, f.callee, node_kind::KeyList) && object_of(s, f.receiver, -1)),
         _ => true,
     };
 }
@@ -444,9 +450,14 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if source::has_text(r) && !utf8(s.bytes[r.start..(r.start + r.count)]) { return reject(c, Error.Link); }
     }
     var has_memo = false; var array_holes: i64 = 0;
-    for n in s.nodes {
+    for n, row in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < 0 || n.kind > node_kind::Iterator { return reject(c, Error.Unsupported); }
+        if n.kind < 0 || n.kind > node_kind::Proxy { return reject(c, Error.Unsupported); }
+        // A proxy (light-cljs-845, proxy.goose) holds an object target, an
+        // earlier row, and an object handler, and nothing else.
+        if n.kind == node_kind::Proxy && (!n.value.is_object() || n.value.id() >= row || !n.namespace_value.is_object() || n.count != 0 || n.start != 0 || !n.proto.is_null()) { return reject(c, Error.Link); }
+        // A key list's keys are listed, or pending for the proxy it walks.
+        if n.kind == node_kind::KeyList && (n.function > key_list::Pending || n.function == key_list::Pending && !(n.value.is_object() && n.value.id() < s.nodes.len && s.nodes[n.value.id()].kind == node_kind::Proxy)) { return reject(c, Error.Link); }
         // A built-in iterator (light-cljs-844, iterators.goose) has an
         // iteration and no element run, and iterates an object, a string
         // (a string iteration) or, done, nothing.

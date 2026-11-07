@@ -1056,6 +1056,13 @@ mod serial_tests {
             ("builtin-iterators", "boolean:true"),
             ("builtin-iterator-wait", "goose"),
             ("builtin-iterator-receiver", "goose"),
+            // for-in over proxies (light-cljs-845): traps, handler getters
+            // and descriptor fields at every budget cut, and a dependency
+            // wait in every trap phase, getPrototypeOf's included, which the
+            // Pants engine does not implement (snapshot_tests.goose).
+            ("proxy-for-in", "boolean:true"),
+            ("proxy-for-in-wait", "goose"),
+            ("proxy-get", "goose"),
             ("depth", "boolean:true"),
             ("cancel", "limit"),
             ("cancel-break", "limit"),

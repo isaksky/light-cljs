@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "6d003c9fd903965cd237a7fa422d2bdbae948423b1b95cbf81ccefdd924c6b04",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "992d7aee469ce29b1d6fcacd17b9d14c9b3ad66eff92f6ec8693a66d3d369003",
+  "9c1e869daba60d02781f82aeb9ee4e37acd46592d956c314128ce3fb90c81659",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "1a2108185dffceee40083c348fb8b306d46c392910ab5036cfe75b0ae45a205b",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -421,6 +421,18 @@
   "9036e1679e512ddd29970e84cdf1c64d48fef6a51ff338efd0a7bd4652ab407b",
   "corpus/serial/prototypes.js"
   "e7054b40cffc45ff197a3bcef4f52a9f827d3eb394ed931f0484c0883272e2e8",
+  "corpus/serial/proxy-for-in-wait.gsp"
+  "fccede29aa34a091f6839a3e636bd783b804d0d8c9c1a8c4e60aa311fdb349d5",
+  "corpus/serial/proxy-for-in-wait.js"
+  "3e889d7f5cac779694c4b011dee474c42a4b11667a90d7b8cf20bc18e1fab8d9",
+  "corpus/serial/proxy-for-in.gsp"
+  "84a099e6cd6de79921f12e3b6cf66f4d240cf0a9ee722ff043105fbf35229e1f",
+  "corpus/serial/proxy-for-in.js"
+  "f444af180cff98472dd3c84d7e14246da491d24325e27d648550ec5478bfca90",
+  "corpus/serial/proxy-get.gsp"
+  "d51e23617f35cd58d4b5750371973db788f9086ee832650f93568c438b6afd23",
+  "corpus/serial/proxy-get.js"
+  "0075164f0276af35f446a74165f57fa1fd2d5cb8d03298ea2fe65bc9f38bef40",
   "corpus/serial/script-declarations.gsp"
   "57746d01a3f83d636ad2ebcc714436d306af29aba4a88801a9ee808cdbf9abe9",
   "corpus/serial/script-declarations.js"

@@ -8,6 +8,7 @@ import .realm;
 import .array_callbacks;
 import .array_methods;
 import .iterators;
+import .proxy;
 import .cells;
 import .continuations;
 import .number_text;
@@ -147,7 +148,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -366,9 +367,13 @@ root struct Heap {
     conts: Cont[>..] = [],
     // pending: the key of the pending property (realm.goose) an
     // UnsupportedOperand reached, for its report; fail() takes and clears it.
-    pending:   Value = Value.Undefined,
-    fault:     Fault = Fault.None, global: Value = Value.Undefined, call_method: Value = Value.Undefined, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
-    live_jobs: i64   = 0,
+    pending: Value = Value.Undefined,
+    // proxy_method: the proxy internal method (proxy.goose, proxy_method::)
+    // an UnsupportedOperand reached, for its report; fail() takes and
+    // clears it (-1: none).
+    proxy_method: i64   = -1,
+    fault:        Fault = Fault.None, global: Value = Value.Undefined, call_method: Value = Value.Undefined, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
+    live_jobs:    i64   = 0,
 }
 // Native frames (light-cljs-786, decision 4): an operation that must run
 // JavaScript from inside an instruction or built-in pushes a frame of
@@ -445,10 +450,19 @@ root struct Heap {
 //                native-frame built-in's), pc 3 the iterator's `next` from
 //                its getter. Its result, the iterator record, goes where
 //                the operation's operand was (operand_base).
+//   ForIn        ForInNext over a proxy, or a walk that reached one
+//                (light-cljs-845; for_in_walk): input the key list; pc 1
+//                awaits the walked proxy's keys, pc 2 the descriptor of the
+//                key just reached, pc 3 the walk's next object. Its results,
+//                the key and whether there is one, go where the key list
+//                was (operand_base).
+//   Proxy        a proxy's [[GetPrototypeOf]], [[OwnPropertyKeys]] or
+//                [[GetOwnProperty]] (light-cljs-845; proxy.goose, which
+//                gives its fields and phases), its proxy_method the payload.
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin } }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -1597,6 +1611,8 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             return find_own(heap, o, k);
         },
         4 => { return find_own(heap, o, k); },
+        // A proxy's runs in a native frame (proxy.goose), not here.
+        node_kind::Proxy => { proxy_fault(heap, proxy_method::GetOwnProperty); return Own {}; },
         _ => { if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; } return Own {}; },
     }
 }
@@ -1609,7 +1625,7 @@ fn lookup(heap: Heap&, object: Value, k: Value) -> Value, Value {
     var at = object;
     loop {
         let p = own_entry(heap, at, k);
-        if heap.fault != Fault.None { return Value.Undefined, Value.Undefined; }
+        if heap.fault != Fault.None { proxy_relabel(heap, at, proxy_method::Get); return Value.Undefined, Value.Undefined; }
         if p.found {
             if is_pending(p.value) { pending_fault(heap, k); return Value.Undefined, Value.Undefined; }
             return if is_accessor(p.value) { Value.Undefined } else { p.value }, if is_accessor(p.value) { pair(heap, p.value).get } else { Value.Undefined };
@@ -1636,7 +1652,7 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
         // made (light-cljs-805; the Pants engine's function::probe).
         if lazy_prototype(heap, at.id()) && key_is(heap, k, "prototype") { return true; }
         let p = own_entry(heap, at, k);
-        if heap.fault != Fault.None { return false; }
+        if heap.fault != Fault.None { proxy_relabel(heap, at, proxy_method::HasProperty); return false; }
         if p.found { return true; }
         let proto = prototype(heap, at.id());
         if !proto.is_object() { return false; }
@@ -1675,6 +1691,7 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
             let exotic, i = string_key(heap, o, k);
             if heap.fault != Fault.None || exotic { return Value.Undefined, false; }
         },
+        node_kind::Proxy => { proxy_fault(heap, proxy_method::Set); return Value.Undefined, false; },
         _ => { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; },
     }
     // An element is a writable data property (light-cljs-804); only an
@@ -1696,7 +1713,7 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     while proto.is_object() {
         if !charge(heap) { return Value.Undefined, false; }
         let p = own_entry(heap, proto, k);
-        if heap.fault != Fault.None { return Value.Undefined, false; }
+        if heap.fault != Fault.None { proxy_relabel(heap, proto, proxy_method::Set); return Value.Undefined, false; }
         if p.found {
             if is_pending(p.value) { pending_fault(heap, k); return Value.Undefined, false; }
             if is_accessor(p.value) { let f = pair(heap, p.value).set; return f, f.is_object(); }
@@ -1735,6 +1752,7 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
         let p = own_entry(heap, object, k);
         return heap.fault == Fault.None && half == 0 && attrs == p.attrs && same_value(heap, p.value, value);
     }
+    if kind == node_kind::Proxy { proxy_fault(heap, proxy_method::DefineOwnProperty); return false; }
     if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; }
     return false;
 }
@@ -1774,6 +1792,7 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
             let exotic, i = string_key(heap, o, k);
             return heap.fault == Fault.None && !exotic && delete_own(heap, o, k);
         },
+        node_kind::Proxy => { proxy_fault(heap, proxy_method::Delete); return false; },
         _ => { heap.fault = Fault.UnsupportedOperand; return false; },
     }
 }
@@ -1791,7 +1810,11 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
 struct OwnKey { key: Value, attrs: u8 = 0, index: i64 = -1 }
 fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 20 && kind != 21 && kind != 22 && kind != node_kind::Iterator || kind == 2 && unsupported_prototype(heap, o) { heap.fault = Fault.UnsupportedOperand; return false; }
+    if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 20 && kind != 21 && kind != 22 && kind != node_kind::Iterator || kind == 2 && unsupported_prototype(heap, o) {
+        // A proxy's runs in a native frame (proxy.goose), not here.
+        if kind == node_kind::Proxy { proxy_fault(heap, proxy_method::OwnPropertyKeys); } else { heap.fault = Fault.UnsupportedOperand; }
+        return false;
+    }
     // A lazy closure's are `length`, `name` and, for an ordinary function,
     // `prototype`, not yet made (light-cljs-806).
     if kind == 2 && lazy_function(heap, o) {
@@ -2042,7 +2065,8 @@ fn terminate(job: Job&, reason: Fault, frame: Frame) {
 fn fail(job: Job&, fault: Fault, frame: Frame) {
     job.heap.fault = Fault.None;
     if fault == Fault.UnsupportedOperand && job.detail.len == 0 && !job.heap.pending.is_undefined() { pending_detail(job); }
-    job.heap.pending = Value.Undefined;
+    if fault == Fault.UnsupportedOperand && job.detail.len == 0 && job.heap.proxy_method >= 0 { proxy_detail(job); }
+    job.heap.pending = Value.Undefined; job.heap.proxy_method = -1;
     var reported = fault;
     if catchable(fault) && catches(job) {
         let message = fault_message(job, fault, frame);
@@ -2238,7 +2262,11 @@ fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -
 // [[Construct]] (construct), undefined in a call.
 fn push_frame(job: Job&, callee: Value, receiver: Value, arguments: const Value[:], checked: bool, operands: i64, new_target: Value = Value.Undefined) -> bool {
     let heap .= job.heap;
-    if !callee.is_object() || node(heap, callee.id()).kind != 2 { heap.fault = Fault.TypeError; return false; }
+    if !callee.is_object() || node(heap, callee.id()).kind != 2 {
+        // A callable proxy's [[Call]] fails by name (proxy.goose).
+        if callee.is_object() && node(heap, callee.id()).kind == node_kind::Proxy { proxy_invoke(heap, callee, proxy_method::Call); return false; }
+        heap.fault = Fault.TypeError; return false;
+    }
     let id = node(heap, callee.id()).function; let f .= heap.code.functions[id];
     // A class constructor has no [[Call]]: calling it throws TypeError.
     if f.kind >= constructor::BaseClass { heap.fault = Fault.TypeError; return false; }
@@ -2277,7 +2305,7 @@ fn reset(job: Job&) -> bool {
     job.frames.clear(); job.locals.clear(); job.operands.clear(); job.writes.clear(); job.handlers.clear();
     job.status = tiny::Status.Ready; job.result = Value.Undefined; job.fault = Fault.None; job.fault_pc = -1; job.fault_function = -1; job.thrown = false;
     job.steps = 0; job.effects_enabled = false; job.helpers_enabled = false; job.effect_pending = false; job.effect_kind = -1; job.cancelling = false;
-    job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0; job.detail.clear();
+    job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0; job.detail.clear(); job.heap.proxy_method = -1;
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
     job.queue.clear(); job.queue_head = 0; job.draining = false; job.entry = Value.Undefined; job.rejections.clear();
     job.lexicals = Value.Undefined; job.direct_eval = false;
@@ -2805,6 +2833,8 @@ fn native_step(job: Job&) {
         GetIterator => { get_iterator_step(job, frame); },
         ArrayMethod m => { array_method_step(job, frame, m.which); },
         BuiltinIterator m => { iterator_step(job, frame, m.which); },
+        ForIn => { for_in_step(job, frame); },
+        Proxy p => { proxy_step(job, frame, p.method); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -2882,7 +2912,7 @@ fn finish_native(job: Job&, frame: Frame, result: Value) {
 fn convertible(heap: const Heap&, v: Value) -> bool {
     if !v.is_object() { return false; }
     let kind = node(heap, v.id()).kind;
-    return kind == 0 || kind == 1 || kind == 2 || kind == 4 || kind == 13 || kind == 20 || kind == 21 || kind == 22 || kind == node_kind::Iterator;
+    return kind == 0 || kind == 1 || kind == 2 || kind == 4 || kind == 13 || kind == 20 || kind == 21 || kind == 22 || kind == node_kind::Iterator || kind == node_kind::Proxy;
 }
 // Whether call or construction of f with arguments `args` converts the
 // first argument first, and with which hint (light-cljs-832): Number(o) and
@@ -3640,9 +3670,14 @@ fn construct(job: Job&, argc: i64) {
         if push_frame(job, f, o, job.operands[(base + 1)..], false, base, f) { job.operands.resize(base); }
         return;
     }
-    if kind != 4 { heap.fault = Fault.TypeError; return; }
+    if kind != 4 { if kind == node_kind::Proxy { proxy_invoke(heap, f, proxy_method::Construct); } else { heap.fault = Fault.TypeError; } return; }
     let b = builtin_of(heap, f.id());
     match b {
+        // new Proxy(target, handler) (light-cljs-845; proxy.goose).
+        Proxy => {
+            let value = construct_proxy(job, job.operands[(base + 1)..]);
+            job.operands.resize(base); job.operands.push(value);
+        },
         Object, Function, Array, Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError => {
             let value = call_builtin(job, node(heap, f.id()).function, Value.Undefined, job.operands[(base + 1)..]);
             job.operands.resize(base); job.operands.push(value);
@@ -4085,6 +4120,8 @@ fn prepare_function(job: Job&, object: Value, k: Value, adding: bool) {
         loop {
             if heap.fault != Fault.None { return; }
             if lazy_prototype(heap, at.id()) { break; }
+            // The read's [[Get]] reaches a proxy (and fails by name there).
+            if node(heap, at.id()).kind == node_kind::Proxy { return; }
             if own_entry(heap, at, key).found || heap.fault != Fault.None { return; }
             let proto = prototype(heap, at.id());
             if !proto.is_object() || !charge(heap) { return; }
@@ -4316,6 +4353,8 @@ fn has_instance_walk(job: Job&, at: i64, o: Value, p: Value) {
     if !p.is_object() { type_error(job, "operand 'prototype' property is not an object"); return; }
     var x = o;
     loop {
+        // A proxy's [[GetPrototypeOf]] fails by name here (proxy.goose).
+        if node(heap, x.id()).kind == node_kind::Proxy { proxy_fault(heap, proxy_method::GetPrototypeOf); return; }
         let q = prototype(heap, x.id());
         if !q.is_object() { has_instance_done(job, at, false); return; }
         if q.id() == p.id() { has_instance_done(job, at, true); return; }
@@ -4597,24 +4636,29 @@ fn key_list(heap: Heap&, object: Value, keys: const OwnKey[:], symbols: bool) ->
 // ForInStart: v → it, a key list of v's own string keys, enumerable or
 // not, in own_keys order (a non-enumerable key is never visited but hides the
 // name further up the chain); a string's indices; none for any other
-// primitive.
+// primitive. A proxy's keys are listed by the first ForInNext
+// (key_list::Pending), which may run its traps.
 fn for_in_start(job: Job&) {
     let heap .= job.heap;
     let v = job.operands.pop();
     if !valid(heap, v) { return; }
     var keys: OwnKey[>..] = []; var walked = Value.Undefined;
-    if v.is_object() { if !listable(job, v) || !own_property_keys(heap, v, keys) { return; } walked = v; }
+    let proxy = v.is_object() && node(heap, v.id()).kind == node_kind::Proxy;
+    if v.is_object() { if !listable(job, v) || !proxy && !own_property_keys(heap, v, keys) { return; } walked = v; }
     else if v.is_string() && !string_keys(heap, v, false, keys) { return; }
     let list = key_list(heap, walked, keys, false);
-    if heap.fault == Fault.None { job.operands.push(list); }
+    if heap.fault != Fault.None { return; }
+    if proxy { node_mut(heap, list.id()).function = key_list::Pending; }
+    job.operands.push(list);
 }
 // Whether key k is among the first `start` records of key list o: the names
-// of the objects a for-in walk has left. One work unit a record.
+// of the objects a for-in walk has left, except a proxy's keys its
+// descriptor reported missing (value Null). One work unit a record.
 fn hidden(heap: Heap&, o: i64, k: Value) -> bool {
     let start: i64 = node(heap, o).start;
     if !charge(heap, start) { return false; }
     let w = key_word(k); let keys: i64 = node(heap, o).keys;
-    for i in start { if key_word(property_row(heap, keys + i).key) == w { return true; } }
+    for i in start { let r .= property_row(heap, keys + i); if key_word(r.key) == w && !r.value.is_null() { return true; } }
     return false;
 }
 // ForInNext: it → key more. The next record that was enumerable when
@@ -4627,39 +4671,71 @@ fn hidden(heap: Heap&, o: i64, k: Value) -> bool {
 // walk ends at Null and at the realm's pending %Object.prototype% (Empty),
 // which has no enumerable property (light-cljs-788 builds it). One work unit
 // a record visited.
+//
+// A proxy on the walk (light-cljs-845; the Pants engine's for_in_request,
+// ECMAScript 14.7.5.9): its keys come from [[OwnPropertyKeys]] once, each
+// key's [[GetOwnProperty]] is asked just before the key would be visited
+// (after the names the walk has left hide it), and the walk's next object
+// is its [[GetPrototypeOf]]. Each runs in a Proxy frame above a ForIn frame
+// (proxy.goose, for_in_step), pushed only then: an ordinary walk keeps this
+// plain path.
 fn for_in_next(job: Job&) {
     let heap .= job.heap;
     let it = job.operands.pop();
     if !valid(heap, it) { return; }
-    if !it.is_object() || node(heap, it.id()).kind != 16 { heap.fault = Fault.InvalidState; return; }
+    if !it.is_object() || node(heap, it.id()).kind != node_kind::KeyList { heap.fault = Fault.InvalidState; return; }
     if !writable(job, it.id()) { heap.fault = Fault.NativeBoundary; return; }
-    let o: i64 = it.id();
+    for_in_walk(job, -1, it.id());
+}
+// The walk of key list o from its position, for the ForIn frame at `at`
+// (-1: ForInNext itself, with no frame yet).
+fn for_in_walk(job: Job&, at: i64, o: i64) {
+    let heap .= job.heap;
     loop {
         if !charge(heap) { return; }
-        let next: i64 = node(heap, o).length;
         let walked = node(heap, o).value;
+        if node(heap, o).function == key_list::Pending { for_in_proxy(job, at, o, 1, proxy_method::OwnPropertyKeys, walked, Value.Undefined); return; }
+        let next: i64 = node(heap, o).length;
         if next < node(heap, o).key_count {
             let r = property_row(heap, node(heap, o).keys + next);
             node_mut(heap, o).length = (next + 1) as u32;
             if r.attrs & attr_enumerable() == 0 || hidden(heap, o, r.key) { if heap.fault != Fault.None { return; } continue; }
             if walked.is_object() {
+                if node(heap, walked.id()).kind == node_kind::Proxy { for_in_proxy(job, at, o, 2, proxy_method::GetOwnProperty, walked, r.key); return; }
                 let e = enumerable_entry(heap, walked, r.key);
                 if heap.fault != Fault.None { return; }
                 if !e.found || e.attrs & attr_enumerable() == 0 { continue; }
             }
-            job.operands.push(r.key); job.operands.push(boolean(true)); return;
+            for_in_yield(job, at, r.key, true); return;
         }
+        if walked.is_object() && node(heap, walked.id()).kind == node_kind::Proxy { for_in_proxy(job, at, o, 3, proxy_method::GetPrototypeOf, walked, Value.Undefined); return; }
         let proto = if walked.is_object() { prototype(heap, walked.id()) } else { Value.Undefined };
-        if !proto.is_object() {
-            node_mut(heap, o).value = Value.Undefined;
-            job.operands.push(Value.Undefined); job.operands.push(boolean(false)); return;
-        }
-        var keys: OwnKey[>..] = [];
-        if !listable(job, proto) || !own_property_keys(heap, proto, keys) { return; }
-        let used: i64 = node(heap, o).key_count;
-        if !list_append(heap, o, keys, false) { return; }
-        node_mut(heap, o).value = proto; node_mut(heap, o).start = used as u32; node_mut(heap, o).length = used as u32;
+        if !for_in_enter(job, at, o, proto) { return; }
     }
+}
+// The walk moves to `proto`: its keys are listed (a proxy's by the next
+// step), or, at Null, the walk ends and its result is delivered. False
+// when the walk ended or failed.
+fn for_in_enter(job: Job&, at: i64, o: i64, proto: Value) -> bool {
+    let heap .= job.heap;
+    if !proto.is_object() {
+        node_mut(heap, o).value = Value.Undefined;
+        for_in_yield(job, at, Value.Undefined, false); return false;
+    }
+    if !listable(job, proto) { return false; }
+    let used: i64 = node(heap, o).key_count;
+    if node(heap, proto.id()).kind == node_kind::Proxy { node_mut(heap, o).function = key_list::Pending; }
+    else {
+        var keys: OwnKey[>..] = [];
+        if !own_property_keys(heap, proto, keys) || !list_append(heap, o, keys, false) { return false; }
+    }
+    node_mut(heap, o).value = proto; node_mut(heap, o).start = used as u32; node_mut(heap, o).length = used as u32;
+    return true;
+}
+// ForInNext's results: pushed, or delivered by the ForIn frame at `at`.
+fn for_in_yield(job: Job&, at: i64, k: Value, more: bool) {
+    if at >= 0 { let base = job.frames[at].operand_base; job.frames.pop(); job.operands.resize(base); }
+    job.operands.push(k); job.operands.push(boolean(more));
 }
 // OwnKeys: source → keys, a new array of the source's own keys,
 // symbols included, before object rest copies them: an index as a number

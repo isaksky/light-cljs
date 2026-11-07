@@ -66,11 +66,13 @@ enum Builtin {
     // and entries, %ArrayIteratorPrototype%.next, String.prototype[@@iterator]
     // and %StringIteratorPrototype%.next.
     ArrayPrototypeValues, ArrayPrototypeKeys, ArrayPrototypeEntries, ArrayIteratorPrototypeNext, StringPrototypeIterator, StringIteratorPrototypeNext,
+    // The Proxy constructor (light-cljs-845; proxy.goose).
+    Proxy,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[87] = [
+let BUILTINS: BuiltinInfo[88] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -116,6 +118,7 @@ let BUILTINS: BuiltinInfo[87] = [
     BuiltinInfo { which: Builtin.ArrayPrototypeValues, name: "values" }, BuiltinInfo { which: Builtin.ArrayPrototypeKeys, name: "keys" },
     BuiltinInfo { which: Builtin.ArrayPrototypeEntries, name: "entries" }, BuiltinInfo { which: Builtin.ArrayIteratorPrototypeNext, name: "next" },
     BuiltinInfo { which: Builtin.StringPrototypeIterator, name: "[Symbol.iterator]" }, BuiltinInfo { which: Builtin.StringIteratorPrototypeNext, name: "next" },
+    BuiltinInfo { which: Builtin.Proxy, name: "Proxy", length: 2 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -152,7 +155,7 @@ let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalEr
 let ERROR_BUILTINS:   Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[34] = [
+let REALM_FUNCTIONS: Method[35] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -181,6 +184,8 @@ let REALM_FUNCTIONS: Method[34] = [
     // well-known symbol, and each iterator prototype holds its `next`.
     Method { which: Builtin.ArrayPrototypeValues, holder: 3 }, Method { which: Builtin.ArrayPrototypeKeys, holder: 3 }, Method { which: Builtin.ArrayPrototypeEntries, holder: 3 },
     Method { which: Builtin.ArrayIteratorPrototypeNext, holder: 32 }, Method { which: Builtin.StringPrototypeIterator, holder: 27 }, Method { which: Builtin.StringIteratorPrototypeNext, holder: 33 },
+    // The global Proxy (light-cljs-845), which has no `prototype`.
+    Method { which: Builtin.Proxy, holder: 0 },
 ];
 inline fn realm_nodes() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
 // The node row of built-in b's REALM_FUNCTIONS entry.
@@ -193,7 +198,7 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[198] = [
+let PENDING: PendingName[197] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
@@ -231,7 +236,7 @@ let PENDING: PendingName[198] = [
     PendingName { holder: 0, key: "Date" }, PendingName { holder: 0, key: "FinalizationRegistry" }, PendingName { holder: 0, key: "Float32Array" }, PendingName { holder: 0, key: "Float64Array" },
     PendingName { holder: 0, key: "Int8Array" }, PendingName { holder: 0, key: "Int16Array" }, PendingName { holder: 0, key: "Int32Array" }, PendingName { holder: 0, key: "Iterator" },
     PendingName { holder: 0, key: "JSON" }, PendingName { holder: 0, key: "Map" }, PendingName { holder: 0, key: "Math" },
-    PendingName { holder: 0, key: "Promise" }, PendingName { holder: 0, key: "Proxy" }, PendingName { holder: 0, key: "Reflect" }, PendingName { holder: 0, key: "RegExp" },
+    PendingName { holder: 0, key: "Promise" }, PendingName { holder: 0, key: "Reflect" }, PendingName { holder: 0, key: "RegExp" },
     PendingName { holder: 0, key: "Set" }, PendingName { holder: 0, key: "SharedArrayBuffer" },
     PendingName { holder: 0, key: "Uint8Array" }, PendingName { holder: 0, key: "Uint8ClampedArray" }, PendingName { holder: 0, key: "Uint16Array" }, PendingName { holder: 0, key: "Uint32Array" },
     PendingName { holder: 0, key: "WeakMap" }, PendingName { holder: 0, key: "WeakRef" }, PendingName { holder: 0, key: "WeakSet" }, PendingName { holder: 0, key: "decodeURI" },
@@ -811,6 +816,8 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
             // ToObject's wrapper inherits its realm prototype; none is made.
             if !v.is_object() { let p = primitive_prototype(v); return if p.is_object() { p } else { unsupported_step(job, b, "Symbol and BigInt prototypes") }; }
             let kind = node(heap, v.id()).kind;
+            // A proxy's [[GetPrototypeOf]] outside for-in fails by name (proxy.goose).
+            if kind == node_kind::Proxy { proxy_fault(heap, proxy_method::GetPrototypeOf); return Value.Undefined; }
             if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 14 && kind != 20 && kind != 21 && kind != 22 && kind != node_kind::Iterator { return unsupported_step(job, b, "a runtime form"); }
             return prototype(heap, v.id());
         },
@@ -831,7 +838,10 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         },
         ObjectPrototypeToString => { return object_tag(job, receiver); },
         ObjectGetOwnPropertyDescriptor => { return own_descriptor(job, b, arg(args, 0), arg(args, 1)); },
-        ArrayIsArray => { let v = arg(args, 0); return boolean(v.is_object() && node(heap, v.id()).kind == 1); },
+        // IsArray: a proxy is its final target's (light-cljs-845).
+        ArrayIsArray => { var v = arg(args, 0); while is_proxy(heap, v) { v = node(heap, v.id()).value; } return boolean(v.is_object() && node(heap, v.id()).kind == 1); },
+        // Proxy called without `new` (light-cljs-845; construct makes one).
+        Proxy => { return type_error(job, "Proxy: constructor requires 'new'"); },
         ErrorPrototypeToString => { return error_to_string(job, receiver); },
         FunctionPrototypeCall => { return unsupported_step(job, b, "called from a native frame"); },
         // The dispatch loop runs these as native frames (native_start); a
@@ -868,9 +878,10 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         _ => { return native_value(heap, id, args); },
     }
 }
-// `typeof v` (Typeof, ECMAScript TypeofOperator): closures and built-in
-// functions are "function", every other object "object".
+// `typeof v` (Typeof, ECMAScript TypeofOperator): closures, built-in
+// functions and proxies of callable targets are "function", every other
+// object "object".
 fn type_name(heap: Heap&, v: Value) -> Value {
-    let t: i64 = match v { Undefined => 0, Null => 1, Bool => 2, Number => 3, String => 4, Symbol => 5, BigInt => 6, Object x => if node(heap, x.o).kind == 2 || node(heap, x.o).kind == 4 { 7 } else { 1 }, _ => 1 };
+    let t: i64 = match v { Undefined => 0, Null => 1, Bool => 2, Number => 3, String => 4, Symbol => 5, BigInt => 6, Object x => if node(heap, x.o).kind == 2 || node(heap, x.o).kind == 4 || node(heap, x.o).kind == node_kind::Proxy && proxy_callable(heap, v) { 7 } else { 1 }, _ => 1 };
     return key_named(heap, TYPE_NAMES[t].text);
 }

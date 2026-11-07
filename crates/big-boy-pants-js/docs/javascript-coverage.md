@@ -260,6 +260,18 @@ array's or function's pending prototype). ToPrimitive runs a `valueOf` or
 `toString` getter in its native frame (pc 2), then calls the method it
 returned. Publication rejects a closure with own properties as mutable.
 
+*As landed by light-cljs-845 (Proxy for for-in):* `src/proxy.goose` adds
+node kind 24 (`node_kind::Proxy`), whose internal slots are its target
+(`value`, always an earlier row) and handler (`namespace_value`). A
+proxy's [[OwnPropertyKeys]], [[GetOwnProperty]] and [[GetPrototypeOf]]
+run as a `Proxy` native frame (decision 4: every trap getter, trap call
+and read of a trap result is a frame above it) that forwards to its target
+without a trap and checks the specification's invariants; a key list is
+their list result and a descriptor is a key list whose records are its
+fields. for-in pushes a `ForIn` frame only when its walk meets a proxy.
+Every other internal method of a proxy fails `UnsupportedOperand` naming
+it (`Proxy: [[Get]]`, `Heap.proxy_method`), for light-cljs-766.
+
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the
 real exported bytecode with this model; its map benchmark result is in

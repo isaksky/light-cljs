@@ -88,6 +88,8 @@
   "bbp/for_in_forms" {:area :statements-loops}
   "bbp/for_heads" {:area :statements-loops}
   "bbp/for_in_targets_and_arrays" {:area :statements-loops}
+  "bbp/for_in_proxy" {:area :statements-loops}
+  "bbp/for_in_proxy_prototype" {:area :statements-loops :pants-gap "the Pants engine implements no getPrototypeOf trap (rust/src/vm/prototype.rs get_prototype_of forwards only a trapless proxy)"}
   "bbp/for_in_var_initializer" {:area :statements-loops :mode :sloppy}
   "bbp/for_of_user_iterables" {:area :statements-loops}
   "bbp/for_of_abrupt_completions" {:area :statements-loops}

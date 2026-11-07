@@ -515,6 +515,14 @@ fn suspended_continuations() {
     waits = 1;
     while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(builtin_iterator_resumed, copy(w))); waits += 1; }
     assert(waits == 4);
+    // for-in over a proxy (light-cljs-845): seventeen waits, one in every trap
+    // phase, each in a frame above a Proxy frame above the ForIn frame.
+    let traps = embed_file("../corpus/serial/proxy-for-in-wait.gsp");
+    heap_program::join(thread_spawn(proxy_wait, str(traps), false));
+    heap_program::join(thread_spawn(proxy_wait, str(traps), true));
+    waits = 1;
+    while qget<bool>() { let w = qget<Waiting>(); heap_program::join(thread_spawn(proxy_resumed, copy(w))); waits += 1; }
+    assert(waits == 18);
     print("suspended continuations: a dependency wait keeps them in place or carries them, with its whole stack as rows (native frames included), in a saved continuation; a reused worker's next job cannot reach them");
 }
 // Run suspended-wait.js to its dependency wait, with a generator and an
@@ -722,6 +730,87 @@ fn iterator_frame_refusals(job: source::Job&, heap: source::Heap&) {
     }
     assert(qput(true));
     assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+// Dependency waits in every trap phase of for-in over a proxy
+// (proxy-for-in-wait.js, light-cljs-845): the handler's getters, both traps,
+// the key list's `length` and element getters, the descriptor's field
+// getters and the getPrototypeOf trap, answered in place, or each after the
+// whole stack was saved as a continuation and restored in a fresh heap
+// (proxy_resumed). The first wait is in the ownKeys getter, above a Proxy
+// frame above the ForIn frame.
+thread_fn proxy_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    var walks: i64 = 0; var traps: i64 = 0;
+    for f in job.frames { match f.native { ForIn => { walks += 1; }, Proxy => { traps += 1; }, _ => {} } }
+    assert(walks == 1 && traps == 1 && job.frames.len == 5);
+    if save { proxy_frame_refusals(job, heap); return; }
+    var waits: i64 = 1;
+    loop {
+        assert(source::deliver_effect(job, source::text(heap, "D")));
+        let outcome = source::run(job, -1);
+        if outcome == tiny::Outcome.Complete { break; }
+        assert(outcome == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8); waits += 1;
+    }
+    assert(waits == 17 && source::key_is(heap, job.result, "ab:gDkDlDiDhDdDeDcDvDwDhDdDeDcDGDSDpD"));
+    assert(source::retire(job));
+}
+// Save the first wait (as for_of_save does), checking that the image is
+// refused when its saved Proxy frame names no proxy (mode 0), its ForIn
+// frame no key list (1), the key list is pending for no proxy (2), or the
+// proxy's target is not an earlier row (3).
+fn proxy_frame_refusals(job: source::Job&, heap: source::Heap&) {
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0 && job.operands.len == 0);
+    assert(source::retire(job, true));
+    let a = source::activation(heap, stack);
+    var c = snapshot::Control {}; let image = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.None);
+    for mode in 4 {
+        var bad = copy(image); var changed = false;
+        for i in a.frame_count {
+            let r = a.frames + i;
+            match image.conts[r] {
+                Frame x => {
+                    var f = x.f;
+                    match f.native {
+                        Proxy => {
+                            if mode == 0 { f.input = f.output; changed = true; }
+                            if mode == 3 { bad.nodes[f.input.id()].value = f.input; changed = true; }
+                        },
+                        ForIn => {
+                            if mode == 1 { f.input = source::Value.Undefined; changed = true; }
+                            if mode == 2 { bad.nodes[f.input.id()].value = source::Value.Undefined; changed = true; }
+                        },
+                        _ => {},
+                    }
+                    bad.conts[r] = source::Cont.Frame { f: f };
+                },
+                _ => {},
+            }
+        }
+        assert(changed);
+        var check = snapshot::Control {}; assert(!snapshot::validate(bad, check) && check.error == snapshot::Error.Link);
+        var dest = source::Code {}; var target_heap = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var refused = snapshot::Control {};
+        assert(!snapshot::restore(bad, dest, target_heap, roots, source::reserve_identity(), refused) && refused.error == snapshot::Error.Link && target_heap.nodes.len == 0);
+    }
+    assert(qput(true));
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+thread_fn proxy_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack));
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    let outcome = source::run(job, -1);
+    if outcome == tiny::Outcome.Yielded { assert(job.effect_pending && job.effect_kind == 8); for_of_save(job, heap); return; }
+    assert(outcome == tiny::Outcome.Complete && source::key_is(heap, job.result, "ab:gDkDlDiDhDdDeDcDvDwDhDdDeDcDGDSDpD"));
+    assert(source::retire(job));
+    assert(qput(false));
 }
 thread_fn builtin_iterator_resumed(saved: Waiting) {
     defer { heap_program::finish(); }

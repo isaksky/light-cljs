@@ -601,6 +601,13 @@ fn control_flow() {
     check(embed_file("../corpus/serial/builtin-iterators.gsp"), "boolean:true");
     limit_points(embed_file("../corpus/serial/builtin-iterators.gsp"));
     for shape in 2 { for boundary in 4 { heap_program::join(thread_spawn(iterator_source, str(embed_file("../corpus/serial/builtin-iterator-receiver.gsp")), shape, boundary)); } }
+    // for-in over proxies (light-cljs-845): handler getters, traps that
+    // loop, a key list's `length` and element getters and a descriptor's
+    // field getters in Proxy frames above a ForIn frame, at every cut and
+    // limit; a proxy's [[Get]] fails by name.
+    check(embed_file("../corpus/serial/proxy-for-in.gsp"), "boolean:true");
+    limit_points(embed_file("../corpus/serial/proxy-for-in.gsp"));
+    check(embed_file("../corpus/serial/proxy-get.gsp"), "Fault.UnsupportedOperand:Proxy:-[[Get]]", source::Fault.UnsupportedOperand);
     // map and forEach (light-cljs-789): their callbacks, getters and the
     // length's valueOf run in the built-in's native frame.
     check(embed_file("../corpus/serial/array-callbacks.gsp"), "boolean:true");
