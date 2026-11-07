@@ -424,7 +424,7 @@ readers refuse explicitly. Version 3 (light-cljs-823) adds descriptor bit 24:
 the exporter sets it on the call at each direct-eval site's offset, which is
 always `call`, `call_method`, `call_spread` or `call_method_spread`
 (`export_direct_eval_call`); the sites' scope descriptors are not exported.
-The VM decodes a marked `call` or `call_method` to `Ins.DirectEval`, which
+The VM decodes each marked call to `Ins.DirectEval`, which
 fails `Fault.Unsupported` naming `direct_eval` when its callee is the realm's
 %eval% and is an ordinary call otherwise.
 `export_schema.goose` is compiled reader code generated from the registry

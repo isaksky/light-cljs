@@ -174,11 +174,12 @@ enum Ins {
     // settle activations. GeneratorYieldStar (126) and AsyncGeneratorStart
     // (181) stay Unsupported.
     GeneratorStart, GeneratorInitialYield, GeneratorYield, AsyncStart, Await,
-    // The Call (44) or CallMethod (83) of a direct-eval site (light-cljs-823):
-    // when its callee is the realm's %eval% it fails Unsupported naming
-    // `direct_eval` (decision 1); any other callee is an ordinary call. A
-    // marked CallSpread or CallMethodSpread stays Unsupported as its opcode.
-    DirectEval { argc: u32, method: bool },
+    // The Call (44), CallMethod (83), CallSpread (119) or CallMethodSpread
+    // (120) of a direct-eval site (light-cljs-823): when its callee is the
+    // realm's %eval% it fails Unsupported naming `direct_eval` (decision 1);
+    // any other callee is an ordinary call, which for the unimplemented
+    // spread calls fails Unsupported naming their opcode.
+    DirectEval { argc: u32, method: bool, spread: bool },
 }
 // The row's stack effect from the generated registry table, resolved once at
 // decode (-1 marks a row the table refuses; load never admits one).
@@ -389,14 +390,17 @@ struct Write { object: Value, key: Value, value: Value }
 enum HandlerKind { Catch, Finally, Normal, Return, Throw, Cancel, Jump, Async }
 struct Handler { frame: i64, pc: i64, operands: i64, locals: i64, kind: HandlerKind = HandlerKind.Catch, value: Value = Value.Undefined }
 root struct Job {
-    heap:            Heap&, frames: Frame[>..<] = [], locals: Value[>..<] = [], operands: Value[>..<] = [],
-    writes:          Write[>..]                 = [], status: tiny::Status = tiny::Status.Ready, result: Value = Value.Undefined,
-    handlers:        Handler[>..<]              = [],
-    fault:           Fault                      = Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1, fault_opcode: i64 = -1, thrown: bool = false,
-    steps:           i64                        = 0, claimed: bool = false, registered: bool = false,
-    effects_enabled: bool                       = false, effect_pending: bool = false, effect_kind: i64 = -1,
-    helpers_enabled: bool                       = false,
-    protected_nodes: i64                        = 0,
+    heap:     Heap&, frames: Frame[>..<] = [], locals: Value[>..<] = [], operands: Value[>..<] = [],
+    writes:   Write[>..]                 = [], status: tiny::Status = tiny::Status.Ready, result: Value = Value.Undefined,
+    handlers: Handler[>..<]              = [],
+    fault:    Fault                      = Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1, fault_opcode: i64 = -1, thrown: bool = false,
+    // The Unsupported fault is a direct eval of %eval% (Ins.DirectEval,
+    // light-cljs-823), named `direct_eval` instead of its call opcode.
+    direct_eval:     bool = false,
+    steps:           i64  = 0, claimed: bool = false, registered: bool = false,
+    effects_enabled: bool = false, effect_pending: bool = false, effect_kind: i64 = -1,
+    helpers_enabled: bool = false,
+    protected_nodes: i64  = 0,
     // The job's write boundary (light-cljs-795, decision 3): node rows below
     // owned_nodes, and the [start, end) node ranges in foreign that
     // publications installed during the job, are rows the job did not
@@ -482,8 +486,9 @@ fn instruction(op: Op) -> Ins {
         // → obj f, a closure like Function's; its home object only serves
         // `super`, whose opcodes are not implemented (light-cljs-787).
         43, 102 => Ins.Closure { child: a }, 94 => Ins.Construct { argc: a },
-        44 => if op.direct_eval { Ins.DirectEval { argc: a, method: false } } else { Ins.Call { argc: a } },
-        83 => if op.direct_eval { Ins.DirectEval { argc: a, method: true } } else { Ins.CallMethod { argc: a } },
+        44 => if op.direct_eval { Ins.DirectEval { argc: a, method: false, spread: false } } else { Ins.Call { argc: a } },
+        83 => if op.direct_eval { Ins.DirectEval { argc: a, method: true, spread: false } } else { Ins.CallMethod { argc: a } },
+        119, 120 => if op.direct_eval { Ins.DirectEval { argc: 0, method: op.code == 120, spread: true } } else { Ins.Unsupported { opcode: op.code as u8 } },
         101 => Ins.Arguments, 179 => Ins.Rest { skip: a }, 45 => Ins.Callee, 46 => Ins.Capture { slot: a },
         47, 198 => Ins.NewCell { immutable: false }, 197 => Ins.NewCell { immutable: true },
         48 => Ins.InitCell, 49 => Ins.ReadCell, 50 => Ins.WriteCell,
@@ -1785,9 +1790,7 @@ fn describe_fault(out: u8[>..]&, code: const Code&, job: const Job&) {
 // Just the operation: `construct`, `const(BigInt)`.
 fn unsupported_operation(out: u8[>..]&, code: const Code&, job: const Job&) {
     if job.fault != Fault.Unsupported || job.fault_opcode < 0 { return; }
-    // Only a direct eval of %eval% faults Unsupported at a DirectEval row.
-    let direct = match code.ins[job.fault_pc] { DirectEval => true, _ => false };
-    if direct { out.append("direct_eval"); return; }
+    if job.direct_eval { out.append("direct_eval"); return; }
     out.append(export_opcode_name(job.fault_opcode));
     if job.fault_opcode == 1 {
         let tag = code.constants[code.functions[job.fault_function].constants + code.ops[job.fault_pc].arg].tag();
@@ -3011,8 +3014,11 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Await => { settle(job, ran, used); job.frames[top].pc = pc; await_value(job, top, at); break; },
                 Unsupported => { heap.fault = Fault.Unsupported; break; },
                 DirectEval c => {
-                    // The callee sits below the arguments, above a method's receiver.
-                    if realm_eval(heap, job.operands[job.operands.len - c.argc - 1]) { heap.fault = Fault.Unsupported; break; }
+                    // The callee sits below the arguments (a spread call's one
+                    // packed array), above a method's receiver.
+                    let below = if c.spread { 1 } else { c.argc as i64 };
+                    if realm_eval(heap, job.operands[job.operands.len - below - 1]) { job.direct_eval = true; heap.fault = Fault.Unsupported; break; }
+                    if c.spread { heap.fault = Fault.Unsupported; break; }
                     settle(job, ran, used);
                     if !invoke(job, top, at, c.argc, c.method) { break; }
                     left = fuel(job, allowance, used);

@@ -72,6 +72,11 @@ thread_fn check_run(bytes: u8[], expected: u8[], fault: source::Fault) {
         // The fault names the unimplemented opcode it stopped at.
         var text: u8[>..] = []; source::describe_fault(text, code, job); assert(text[..] == expected);
         assert(job.fault_opcode == code.ops[job.fault_pc].code && !job.thrown);
+        // A direct eval names itself, not its call opcode (light-cljs-823).
+        assert(job.direct_eval == (expected[..] == "Fault.Unsupported:direct_eval"));
+    } else if expected.len > 0 {
+        // A named built-in step an UnsupportedOperand did not implement.
+        var text: u8[>..] = []; source::describe_fault(text, code, job); assert(text[..] == expected);
     }
     assert(qput(Run { status: job.status, steps: job.steps }));
 }
@@ -386,6 +391,16 @@ fn main() {
     check(embed_file("../corpus/serial/dormant-constants.gsp"), "number:7.0");
     check(embed_file("../corpus/serial/bigint-reached.gsp"), "Fault.Unsupported:const(BigInt)", source::Fault.Unsupported);
     bigint_constants(embed_file("../corpus/serial/dormant-constants.gsp"));
+    // Direct eval (light-cljs-823): reached, it fails by name even under a
+    // `catch`; replacing the global `eval` makes the marked call ordinary; an
+    // indirect eval is an unimplemented step of %eval%. Spread arguments stop
+    // at their unimplemented iteration before the marked call_spread runs,
+    // so the spread variants are checked at decode (direct_eval_decode).
+    check(embed_file("../corpus/serial/direct-eval-reached.gsp"), "Fault.Unsupported:direct_eval", source::Fault.Unsupported);
+    check(embed_file("../corpus/serial/direct-eval-spread.gsp"), "Fault.Unsupported:get_iterator", source::Fault.Unsupported);
+    direct_eval_decode(embed_file("../corpus/serial/direct-eval-spread.gsp"));
+    check(embed_file("../corpus/serial/direct-eval-replaced.gsp"), "number:2.0");
+    check(embed_file("../corpus/serial/indirect-eval.gsp"), "Fault.UnsupportedOperand:eval:-indirect-eval", source::Fault.UnsupportedOperand);
     fixed_cells(embed_file("../corpus/serial/mutations.gsp"));
     heap_program::join(thread_spawn(failed_job_isolation, str(embed_file("../corpus/serial/calls.gsp"))));
     allocation_limits(embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/strings.gsp"));
@@ -1098,6 +1113,31 @@ fn class_kinds(bytes: const u8[:]) {
     }
 }
 fn set_unit(bytes: u8[:], at: i64, n: i64) { bytes[at] = (n & 255) as u8; bytes[at + 1] = ((n >> 8) & 255) as u8; }
+// The image's direct-eval mark (light-cljs-823) survives load on exactly the
+// site's call_spread, which decodes to a spread DirectEval; each marked or
+// unmarked call opcode decodes as its variant.
+fn direct_eval_decode(bytes: const u8[:]) {
+    var code = source::Code {}; decode(code, bytes);
+    var marked: i64 = 0;
+    for op, i in code.ops {
+        if op.direct_eval {
+            marked += 1; assert(op.code == 119);
+            let spread = match code.ins[i] { DirectEval d => d.spread && !d.method, _ => false }; assert(spread);
+        }
+    }
+    assert(marked == 1);
+    for n in [44, 83, 119, 120] {
+        for flag in [false, true] {
+            let ins = source::instruction(source::Op { code: n, arg: 0, offset: 0, start: 0, end: 0, direct_eval: flag });
+            let ok = match ins {
+                DirectEval d => flag && d.method == (n == 83 || n == 120) && d.spread == (n >= 119),
+                Call => !flag && n == 44, CallMethod => !flag && n == 83, Unsupported u => !flag && n >= 119 && u.opcode == n,
+                _ => false,
+            };
+            assert(ok);
+        }
+    }
+}
 // Exported BigInt constants (sign unit, then 16-bit digits without a high
 // zero digit) and selector operands validate before installation, including
 // on dead paths; a failed install keeps the previous image.

@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "6d003c9fd903965cd237a7fa422d2bdbae948423b1b95cbf81ccefdd924c6b04",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "bea69088d7c60ecaf029e3889f7dd4b13c8489521722b075746a8a34d234ecb2",
+  "efb11b66bbc35913d8c467b663297ee074a9a938f160b2ca5b181727f5c268f1",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "1a2108185dffceee40083c348fb8b306d46c392910ab5036cfe75b0ae45a205b",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -249,6 +249,18 @@
   "c3ddb0e9373976885cf65f157c708326b20a4b83f8c6eec853ee480cc3cb0d56",
   "corpus/serial/depth.js"
   "1e77026f2abc20aacb2446b1de627e4fbb0037925659ba19b17f96509575b3ea",
+  "corpus/serial/direct-eval-reached.gsp"
+  "c121f32d990b39af6ebcb8de0ee8cc1a9991218f16862feeff09dcc53ebd7321",
+  "corpus/serial/direct-eval-reached.js"
+  "29702b2c66865f919abf193806172232179c324c6c33a8b3293720178f58ab4a",
+  "corpus/serial/direct-eval-replaced.gsp"
+  "899100bba3983d3c48320abbdd931ef61dfe210723200147e073af4c1e3214fe",
+  "corpus/serial/direct-eval-replaced.js"
+  "47317eb2e644531ca42083dae251f95ad3b2e7398bf1ef87726a2ff198896821",
+  "corpus/serial/direct-eval-spread.gsp"
+  "558a133516e12d4fd2f6b889997431d864e68e949d0e9d95097ddc02b155bbb5",
+  "corpus/serial/direct-eval-spread.js"
+  "19ce7dae35a8cfb762d5b1f44fa7ea9a1559d0f804cf92a44a69af81763bbbfb",
   "corpus/serial/dormant-constants.gsp"
   "c9ab79b50cdf58ca9495bb3fa5c6c5cee78a6a30d98947e50382bd8f40b99eb8",
   "corpus/serial/dormant-constants.js"
@@ -309,6 +321,10 @@
   "3cefc4f30c5e873c1540b4f77861505763270d24be6826dc7d0c8a1f12fb40ee",
   "corpus/serial/index-keys.js"
   "16aab52cbd8aed7b6cf108b6b7168223308a7240939244f60fd5d4806806d438",
+  "corpus/serial/indirect-eval.gsp"
+  "c9ccae78d485ae7397a81b2dd5b6a76925143ae6a8ead2e15bde5d7578e04758",
+  "corpus/serial/indirect-eval.js"
+  "0b4105090ff256c91c3ba72c25aaa0a652dc89fe1764bf0a520fa78dba67dbf9",
   "corpus/serial/loop.gsp"
   "0486dfa3b8db2f5cede21377b539bfd564e783879b9c0d26a67477d58725fcf8",
   "corpus/serial/loop.js"

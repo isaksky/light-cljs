@@ -93,7 +93,7 @@ functions gain the class and generator constructor kinds as their areas need
 them. Direct `eval` is a named execution-time fault, not an export refusal
 (light-cljs-823): the exporter marks the call of each direct-eval site in the
 image (descriptor bit 24, GSP version 3; image metadata, not an opcode), and
-the VM decodes a marked `Call` or `CallMethod` to `Ins.DirectEval`, which
+the VM decodes each marked call to `Ins.DirectEval`, which
 fails `Fault.Unsupported` naming `direct_eval` when its callee is the realm's
 %eval% and is an ordinary call otherwise. The global `eval` is that built-in;
 calling it any other way (indirect eval) is an unimplemented step of it. The

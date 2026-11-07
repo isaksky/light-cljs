@@ -873,6 +873,14 @@ mod serial_tests {
             // Nor BigInt values: constants on dead paths, then one reached.
             ("dormant-constants", "number:7"),
             ("bigint-reached", "string:bigint"),
+            // Direct eval (light-cljs-823): Goose fails a reached one by name
+            // under a `catch`, spread or not; a marked call whose `eval` is
+            // not %eval% is an ordinary call; an indirect eval is a step of
+            // the built-in Goose does not implement (serial_tests.goose).
+            ("direct-eval-reached", "number:2"),
+            ("direct-eval-spread", "number:2"),
+            ("direct-eval-replaced", "number:2"),
+            ("indirect-eval", "number:2"),
             ("loop", "limit"),
             // Control flow (light-cljs-786): finally blocks, native frames,
             // the call depth limit, and an endless loop that only
