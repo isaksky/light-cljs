@@ -920,6 +920,9 @@ pub(super) struct JobsLine {
     pub delay_waits: u64,
     pub owner_ns: u64,
     pub cell_bytes: u64,
+    /// Collections inside jobs (light-cljs-847, reclaim.goose): 0 while
+    /// every job stays below its table margins.
+    pub reclaims: u64,
 }
 pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
     let line = trace
@@ -931,7 +934,7 @@ pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
         .skip(2)
         .map(|n| n.parse::<u64>().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(n.len(), 29, "{line}");
+    assert_eq!(n.len(), 30, "{line}");
     JobsLine {
         retention: n[0],
         spawned: n[1],
@@ -956,6 +959,7 @@ pub(super) fn jobs_line(trace: &[String]) -> JobsLine {
         delay_waits: n[26],
         owner_ns: n[27],
         cell_bytes: n[28],
+        reclaims: n[29],
     }
 }
 /// Threads: the coordinator, the input thread, the cell owner
@@ -998,6 +1002,9 @@ pub(super) fn assert_jobs(trace: &[String], workers: usize, dispatches: u64) -> 
     assert!(jobs.restore_ns == 0 || jobs.jobs > 0, "{jobs:?}");
     assert!(jobs.installs <= jobs.answers + jobs.saves, "{jobs:?}");
     assert_eq!(jobs.installs > 0, jobs.install_ns > 0, "{jobs:?}");
+    // These jobs stay far below their table margins, so none collects
+    // (light-cljs-847).
+    assert_eq!(jobs.reclaims, 0, "{jobs:?}");
     jobs
 }
 #[test]
@@ -2181,6 +2188,42 @@ fn goose_compiler_calls_create_no_per_call_files() {
         assert!(builds[0].contains(expected), "{expected}: {}", builds[0]);
     }
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_job_reclaims_past_its_margins() {
+    // A macro job that allocates 150,000 nodes, five per iteration, keeping
+    // a small live set (its argument forms and a vector it made first)
+    // collects inside the job and completes (light-cljs-847); the JOBS line
+    // counts its collections. One whose live set passes the job's
+    // 100,000-node limit still ends MemoryLimit.
+    let churn = "rt => (form,env) => { const keep = __rt.formVector(1, 2); let o; for (let i = 0; i < 30000; i++) o = [{}, {}, {}, {i}]; return __rt.cljCount(keep) * 100000 + o[3].i; }";
+    let live = "rt => (form,env) => { const kept = []; for (let i = 0; i < 30000; i++) kept[i] = [{}, {}, {}, {i}]; return kept.length; }";
+    for workers in [1, 2] {
+        // Traced, so the session prints its JOBS line.
+        let session = GooseSession::start_mode(&runner(), workers, Some("readiness-test")).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let (f, args, call) = inputs(&e, churn);
+        for _ in 0..2 {
+            let value = e.call(f, &args).unwrap();
+            let form = e
+                .export_form(value, &call, origin(&call), Default::default())
+                .unwrap();
+            assert!(
+                form.data()
+                    .value_eq(&Datum::new(DatumKind::Integer(229999))),
+                "{form:?}"
+            );
+        }
+        let (f, args, _) = inputs(&e, live);
+        let message = e.call(f, &args).unwrap_err().0;
+        assert!(message.contains("Fault.MemoryLimit"), "{message}");
+        session.close();
+        cleaned(&session);
+        let jobs = assert_threads(&session.trace(), workers);
+        assert!(jobs.reclaims >= 2, "{jobs:?}");
+    }
 }
 
 #[test]

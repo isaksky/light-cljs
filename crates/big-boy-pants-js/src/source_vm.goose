@@ -12,6 +12,7 @@ import .proxy;
 import .cells;
 import .continuations;
 import .number_text;
+import .reclaim;
 
 namespace source;
 
@@ -104,7 +105,7 @@ fn wide_run(heap: const Heap&, s: Str) -> const u16[:] {
     return heap.units[s.start..(s.start + s.len)];
 }
 fn narrow_run(heap: const Heap&, s: Str) -> const u8[:] {
-    if s.wide || s.start > heap.latin1.len || s.len > heap.latin1.len - s.start { abort("run is not in table latin1"); }
+    if s.wide || s.start > latin1_len(heap) || s.len > latin1_len(heap) - s.start { abort("run is not in table latin1"); }
     return heap.latin1[s.start..(s.start + s.len)];
 }
 // Unit i of a string value, i < str_len.
@@ -408,6 +409,17 @@ root struct Heap {
     proxy_method: i64   = -1,
     fault:        Fault = Fault.None, global: Value = Value.Undefined, call_method: Value = Value.Undefined, boot_count: i64 = 0, initializer_count: i64 = 0, producer_count: i64 = 0,
     live_jobs:    i64   = 0,
+    // Reclamation inside a job (light-cljs-847, reclaim.goose): each table's
+    // margin below its limit while a job runs; a collection asked for at the
+    // next safe point; and the collections this heap ran (the JOBS line).
+    // None of it is part of a snapshot.
+    slack: Slack = Slack {}, reclaim: bool = false, reclaims: i64 = 0,
+    // The Latin-1 table's last latin1_spare bytes are a collection's
+    // leftovers, not rows: the table's length is latin1.len - latin1_spare,
+    // and add_latin1 writes over them first. (A collection cannot shrink a
+    // byte array it reaches through Job.heap: Goose's shrink check would
+    // then refuse every caller of run that holds a byte view.)
+    latin1_spare: i64 = 0,
 }
 // Native frames (light-cljs-786, decision 4): an operation that must run
 // JavaScript from inside an instruction or built-in pushes a frame of
@@ -576,6 +588,10 @@ root struct Job {
     // reaction was registered on them. All of it is the job's, saved with
     // its continuation and cleared by reset.
     queue: Task[>..] = [], queue_head: i64 = 0, draining: bool = false, entry: Value = Value.Undefined, rejections: u32[>..] = [],
+    // The tables' lengths when the job started or resumed (light-cljs-847,
+    // reclaim.goose): a collection inside the job moves only rows above
+    // them. reclaimable: start or resume_stack armed the job's margins.
+    floor: Tops = Tops {}, reclaimable: bool = false,
 }
 // A row a job holds that names a process-wide cell (a cell reference) or
 // has a process-wide identity (a value loaded from or stored in a cell, or
@@ -755,7 +771,9 @@ fn append_code(out: Code&, other: const Code&) -> i64 {
 }
 fn memory(heap: Heap&) -> bool { heap.fault = Fault.MemoryLimit; return false; }
 // The heap's table lengths, as the image tops a restore or reset sets.
-fn tops(heap: const Heap&) -> Tops { return Tops { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len, strings: heap.strings.len, latin1: heap.latin1.len, shapes: heap.shapes.len, accessors: heap.accessors.len, conts: heap.conts.len }; }
+fn tops(heap: const Heap&) -> Tops { return Tops { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len, strings: heap.strings.len, latin1: latin1_len(heap), shapes: heap.shapes.len, accessors: heap.accessors.len, conts: heap.conts.len }; }
+// The Latin-1 table's rows: its bytes but a collection's leftovers (Heap.latin1_spare).
+inline fn latin1_len(heap: const Heap&) -> i64 { return heap.latin1.len - heap.latin1_spare; }
 fn valid(heap: Heap&, v: Value) -> bool {
     if heap.fault != Fault.None { return false; }
     return match v {
@@ -773,14 +791,16 @@ fn valid(heap: Heap&, v: Value) -> bool {
 // heap's image tops, so a truncation to the image (light-cljs-795) needs a top
 // only here. add_properties is the property table's. Constants and source
 // provenance are installed with code by compiler services, never by a job, so
-// their tables have no job limit.
-fn room(heap: Heap&, length: i64, top: i64, limit: i64, count: i64) -> bool {
-    if count < 0 || count > limit - (length - top) { return memory(heap); }
+// their tables have no job limit. While a job runs, the check compares
+// against the limit less the table's margin (Heap.slack); past that, the
+// cold path asks for a collection inside the job (reclaim.goose, exhausted).
+fn room(heap: Heap&, length: i64, top: i64, limit: i64, slack: i64&, count: i64) -> bool {
+    if count < 0 || count > limit - slack - (length - top) { return exhausted(heap, length - top, limit, slack, count); }
     return true;
 }
 // `nodes` then `extra` copies of `fill`; returns the first row, or -1.
 fn add_nodes(heap: Heap&, nodes: const Node[:], extra: i64 = 0, fill: Node = Node { kind: node_kind::Object }) -> i64 {
-    if extra < 0 || !room(heap, heap.nodes.len, heap.image.nodes, heap.limits.nodes, nodes.len + extra) { return -1; }
+    if extra < 0 || !room(heap, heap.nodes.len, heap.image.nodes, heap.limits.nodes, heap.slack.nodes, nodes.len + extra) { return -1; }
     let at = heap.nodes.len; heap.nodes.append(nodes); for i in extra { heap.nodes.push(fill); }
     return at;
 }
@@ -792,7 +812,7 @@ fn allocate(heap: Heap&, node: Node) -> Value {
 // `values` then `extra` copies of `fill` (array spare capacity is holes);
 // returns the first row, or -1.
 fn add_values(heap: Heap&, values: const Value[:], extra: i64 = 0, fill: Value = Value.Undefined) -> i64 {
-    if extra < 0 || !room(heap, heap.values.len, heap.image.values, heap.limits.values, values.len + extra) { return -1; }
+    if extra < 0 || !room(heap, heap.values.len, heap.image.values, heap.limits.values, heap.slack.values, values.len + extra) { return -1; }
     let at = heap.values.len; heap.values.append(values); for i in extra { heap.values.push(fill); }
     return at;
 }
@@ -802,7 +822,7 @@ fn values_fit(heap: const Heap&, count: i64) -> bool { return count >= 0 && coun
 fn nodes_fit(heap: const Heap&, count: i64) -> bool { return count >= 0 && count <= heap.limits.nodes - (heap.nodes.len - heap.image.nodes); }
 // Code-unit rows the heap added above its image, in both unit tables: the
 // unit limit counts them together.
-fn unit_rows(heap: const Heap&) -> i64 { return heap.units.len - heap.image.units + heap.latin1.len - heap.image.latin1; }
+fn unit_rows(heap: const Heap&) -> i64 { return heap.units.len - heap.image.units + latin1_len(heap) - heap.image.latin1; }
 fn units_fit(heap: const Heap&, count: i64) -> bool { return count >= 0 && count <= heap.limits.units - unit_rows(heap); }
 // Take node, value, code-unit and string rows of the heap's headroom
 // without adding them (light-cljs-820: the entries a narrowed argument
@@ -815,11 +835,12 @@ fn reserve_rows(heap: Heap&, nodes: i64, values: i64, units: i64, strings: i64) 
     heap.image.nodes -= nodes; heap.image.values -= values; heap.image.latin1 -= units; heap.image.strings -= strings;
 }
 fn add_units(heap: Heap&, units: const u16[:]) -> i64 {
-    if !units_fit(heap, units.len) { memory(heap); return -1; }
+    if !room(heap, unit_rows(heap), 0, heap.limits.units, heap.slack.units, units.len) { return -1; }
     let at = heap.units.len; heap.units.append(units); return at;
 }
 fn add_latin1(heap: Heap&, bytes: const u8[:]) -> i64 {
-    if !units_fit(heap, bytes.len) { memory(heap); return -1; }
+    if !room(heap, unit_rows(heap), 0, heap.limits.units, heap.slack.units, bytes.len) { return -1; }
+    if heap.latin1_spare > 0 { return reuse_latin1(heap, bytes); }
     let at = heap.latin1.len; heap.latin1.append(bytes); return at;
 }
 // The string header table's one allocation function, over a run already in
@@ -827,9 +848,9 @@ fn add_latin1(heap: Heap&, bytes: const u8[:]) -> i64 {
 // heap.units, otherwise heap.latin1. Callers keep the encoding canonical.
 // Header rows share the unit limit: an empty string still takes one.
 fn string_ref(heap: Heap&, start: i64, len: i64, wide: bool) -> Value {
-    let length = if wide { heap.units.len } else { heap.latin1.len };
+    let length = if wide { heap.units.len } else { latin1_len(heap) };
     if start < 0 || len < 0 || start > length || len > length - start { heap.fault = Fault.InvalidState; return Value.Undefined; }
-    if !room(heap, heap.strings.len, heap.image.strings, heap.limits.units, 1) { return Value.Undefined; }
+    if !room(heap, heap.strings.len, heap.image.strings, heap.limits.units, heap.slack.strings, 1) { return Value.Undefined; }
     heap.strings.push(Str { start: start as u32, len: len as u32, wide: wide }); return Value.String { s: (heap.strings.len - 1) as u32 };
 }
 // A new string of these UTF-16 units in its canonical encoding, without a
@@ -1247,7 +1268,7 @@ fn accessor_row(heap: const Heap&, a: i64) -> Pair { if a < 0 || a >= heap.acces
 fn pair(heap: const Heap&, v: Value) -> Pair { return match v { Accessor x => accessor_row(heap, x.a), _ => Pair {} }; }
 // Shape and accessor rows count together against limits.shapes (Limits).
 fn shape_room(heap: Heap&, count: i64) -> bool {
-    return room(heap, heap.shapes.len + heap.accessors.len, heap.image.shapes + heap.image.accessors, heap.limits.shapes, count);
+    return room(heap, heap.shapes.len + heap.accessors.len, heap.image.shapes + heap.image.accessors, heap.limits.shapes, heap.slack.shapes, count);
 }
 // The one allocation point of the property table: `count` cleared rows at
 // its end, charged to the rows the heap has added above its image
@@ -1255,7 +1276,7 @@ fn shape_room(heap: Heap&, count: i64) -> bool {
 // records; property_rows is their running total for snapshot validation).
 // Returns the run's first row, or -1 with MemoryLimit.
 fn add_properties(heap: Heap&, count: i64) -> i64 {
-    if !room(heap, heap.properties.len, heap.image.properties, heap.limits.properties, count) { return -1; }
+    if !room(heap, heap.properties.len, heap.image.properties, heap.limits.properties, heap.slack.properties, count) { return -1; }
     let at = heap.properties.len; for i in count { heap.properties.push(Property {}); } heap.property_rows += count;
     return at;
 }
@@ -2316,6 +2337,7 @@ fn push_frame(job: Job&, callee: Value, receiver: Value, arguments: const Value[
 fn start(job: Job&, callee: Value, arguments: const Value[:], receiver: Value = Value.Undefined) -> bool {
     if job.registered || job.status != tiny::Status.Ready { return false; }
     assert(job.frames.len == 0 && job.locals.len == 0 && job.operands.len == 0 && job.steps == 0);
+    arm(job);
     if !enter(job, callee, receiver, arguments) { job.fault = job.heap.fault; job.heap.fault = Fault.None; job.status = tiny::Status.Failed; return false; }
     job.heap.live_jobs += 1; job.registered = true; return true;
 }
@@ -2327,6 +2349,7 @@ fn retire(job: Job&, suspending: bool = false) -> bool {
     if job.claimed { return false; }
     if suspending && (!job.effect_pending || job.status != tiny::Status.Ready) { return false; }
     if !suspending { unwind_natives(job, 0); }
+    disarm(job);
     if job.registered { assert(job.heap.live_jobs > 0); job.heap.live_jobs -= 1; job.registered = false; }
     if job.status == tiny::Status.Ready { job.status = tiny::Status.Failed; job.fault = Fault.InvalidState; }
     return true;
@@ -2342,7 +2365,7 @@ fn reset(job: Job&) -> bool {
     job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0; job.detail.clear(); job.heap.proxy_method = -1;
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
     job.queue.clear(); job.queue_head = 0; job.draining = false; job.entry = Value.Undefined; job.rejections.clear();
-    job.lexicals = Value.Undefined; job.direct_eval = false;
+    job.lexicals = Value.Undefined; job.direct_eval = false; job.floor = Tops {}; job.reclaimable = false;
     return true;
 }
 // The write log holds named property writes only: the typed outcome's
@@ -4883,11 +4906,15 @@ fn run_claimed(job: Job&, budget: i64) -> tiny::Outcome {
     defer { job.claimed = false; }
     var used: i64 = 0;
     while job.status == tiny::Status.Ready && !job.effect_pending && (budget < 0 || used < budget) {
+        // The safe point of reclamation inside a job (reclaim.goose): every
+        // value the job holds is in its state or its rows here. Bytecode runs
+        // in slices of at most reclaim_interval() instructions to reach it.
+        if job.heap.reclaim { reclaim(job); }
         // No frame left once the entry finished: the next promise job runs
         // (continuations.goose).
         if job.frames.len == 0 && job.draining { drain_step(job); used += 1; }
         else if job.frames.len == 0 || job.frames[job.frames.len - 1].function < 0 { native_step(job); used += 1; }
-        else { used += execute(job, if budget < 0 { -1 } else { budget - used }); }
+        else { used += execute(job, if budget < 0 { reclaim_interval() } else { min(budget - used, reclaim_interval()) }); }
     }
     return match job.status { Ready => tiny::Outcome.Yielded, Complete => tiny::Outcome.Complete, Failed => tiny::Outcome.Failed };
 }

@@ -552,6 +552,7 @@ fn main() {
     heap_program::join(thread_spawn(instruction_limit));
     control_flow();
     continuations();
+    reclamation();
     duplicates();
 
     properties();
@@ -564,6 +565,87 @@ fn main() {
     // Image comparisons are bit-exact: NaN matches itself, -0 differs from +0.
     assert(source::same_bits(source::number(0.0 / 0.0), source::number(0.0 / 0.0)) && !source::same_bits(source::number(0.0), source::number(-0.0)));
     print("serial source VM: calls/captures/cells/properties/truth/UTF16/errors, exact slices and limits passed");
+}
+// Reclamation inside a job (light-cljs-847; reclaim.goose). Whether the
+// heap's tables validate as a snapshot does (snapshot::validate): every
+// link in range, runs exclusive, the key index whole.
+fn image_valid(heap: const source::Heap&) -> bool {
+    var c = snapshot::Control { bytes: 1 << 40, work: 1 << 40 };
+    let none: snapshot::Binding[] = [];
+    let view = snapshot::borrow(heap, none, if heap.identity == 1 { 2 } else { 1 }); let ok = snapshot::validate(view, c);
+    if !ok { print("reclaimed heap does not validate: ", c.error); }
+    return ok;
+}
+// A collection after every slice of `slice` instructions (every budget cut
+// for 1), whether or not the job passed a margin: the run ends with the
+// uncut run's value, and the heap validates after every `every`th
+// collection. Every live value a frame, a native frame, a suspended
+// generator or async function, a promise or the job queue holds survives
+// the slides.
+thread_fn reclaim_cuts(bytes: u8[], expected: u8[], slice: i64, every: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let entry = source::closure(heap, 0, []);
+    var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
+    var cuts: i64 = 0;
+    while source::run(job, slice) == tiny::Outcome.Yielded && !job.effect_pending {
+        heap.reclaim = true; source::reclaim(job); cuts += 1;
+        assert(heap.reclaims == cuts && !heap.reclaim);
+        if cuts % every == 0 { assert(image_valid(heap)); }
+    }
+    if job.status != tiny::Status.Complete { var fault: u8[>..] = []; source::describe_fault(fault, code, job); print("reclaim_cuts: slice ", slice, " cut ", cuts, " ", fault, " function=", job.fault_function, " pc=", job.fault_pc, " thrown=", job.thrown); flush_stdout(); }
+    assert(job.status == tiny::Status.Complete && (cuts > 0 || slice > 1));
+    var output: u8[>..] = []; source::canonical(heap, job.result, output); assert(output[..] == expected);
+    assert(image_valid(heap));
+    source::retire(job);
+}
+// An image run without an instruction budget, as the conformance runner
+// runs scripts: it ends with `fault` (true when none) after at least
+// `minimum` collections and at most `maximum`. A job that stays below its
+// margins collects nothing. The margins are the job's: set when it starts,
+// gone once it retires.
+thread_fn reclaim_run(bytes: u8[], fault: source::Fault, minimum: i64, maximum: i64) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code, limits: source::Limits { steps: 1 << 50, work: 1 << 50 } }; assert(source::initialize(heap));
+    let entry = source::closure(heap, 0, []);
+    var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
+    assert(heap.slack.nodes == (heap.limits.nodes - heap.nodes.len) / 2 && heap.slack.values > 0 && heap.slack.units > 0);
+    let outcome = source::run(job, -1);
+    if heap.reclaims < minimum || heap.reclaims > maximum { print("collections: ", heap.reclaims); }
+    assert(job.fault == fault && heap.reclaims >= minimum && heap.reclaims <= maximum);
+    if fault == source::Fault.None {
+        assert(outcome == tiny::Outcome.Complete);
+        var output: u8[>..] = []; source::canonical(heap, job.result, output); assert(output[..] == "boolean:true");
+    } else { assert(outcome == tiny::Outcome.Failed); }
+    assert(image_valid(heap));
+    source::retire(job);
+    assert(heap.slack.nodes == 0 && heap.slack.units == 0 && !heap.reclaim);
+}
+fn reclamation() {
+    // 600,000 garbage objects, arrays, strings and closures: each loop
+    // passes a margin, and the live set stays small.
+    heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/reclaim-loops.gsp")), source::Fault.None, 6, 64));
+    // A collection inside a running and a suspended generator, a promise
+    // job with a pending promise and two suspended async functions, a
+    // for-of body and map's callbacks: one in each of the eight churns.
+    heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/reclaim-roots.gsp")), source::Fault.None, 8, 16));
+    // A live set over the node limit still ends MemoryLimit, after the
+    // collections that could not free enough.
+    heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/reclaim-live.gsp")), source::Fault.MemoryLimit, 1, 8));
+    // Jobs that stay small never collect.
+    heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/generators.gsp")), source::Fault.None, 0, 0));
+    heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/async.gsp")), source::Fault.None, 0, 0));
+    // Forced collections at every budget cut and at other phases.
+    for image in [embed_file("../corpus/serial/generators.gsp"), embed_file("../corpus/serial/async.gsp"), embed_file("../corpus/serial/generator-loop.gsp"), embed_file("../corpus/serial/for-of.gsp"), embed_file("../corpus/serial/builtin-iterators.gsp"),
+                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
+                  embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
+                  embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
+                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp")] {
+        for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
+    }
+    print("serial source VM: reclamation inside a job past its margins, at every budget cut, and MemoryLimit over a live set passed");
 }
 // Control flow (light-cljs-786). Each runs in a thread program of its own.
 fn control_flow() {

@@ -340,7 +340,10 @@ below describe the one-worker-per-job design that light-cljs-784 built.
   workers spawned by a program with empty VM tables. The memory pellet
   first measures unreachable rows at job end on the 200k project and on the
   harness; evacuation is built only if a target workload needs it. There is
-  no mark and sweep over a global table.
+  no mark and sweep over a global table. (*Amended by light-cljs-847:* the
+  workload came, and since reused workers truncate their tables the
+  evacuation happens in the job's own tables; see "Reclamation inside a
+  job" below.)
 - **Accounting.** Each table has a row limit and the job a byte limit
   (today's `Limits`, per table). A job worker reports its peak rows and bytes.
   Waiting job workers count against a retention budget below the thread cap;
@@ -414,6 +417,67 @@ top back, and nothing shrinks.)
 other's mutations. *Copy-on-write of realm objects into a job overlay*: two
 kinds of object link and a lookup on every access. *Reference counting or a
 tracing collector over the tables*: ruled out by the user.
+
+### Reclamation inside a job (light-cljs-847)
+
+light-cljs-840 found a 150,000-iteration loop allocating `{i}` ending
+`MemoryLimit` at the 100,000-node job limit, which V8 and QuickJS run to
+completion. The user approved collection inside a job on one condition:
+jobs that do not need it must not pay for it.
+
+**Choice: evacuation in place, past a soft limit** (`src/reclaim.goose`).
+Every table's allocation function already compares its rows above the
+image against its limit. While a job runs, the comparison is against the
+limit less a margin (`Heap.slack`), half of what was free when the job
+started. Passing it takes the check's cold path, which, if the rows still
+fit the real limit, zeroes that table's margin, asks for a collection
+(`Heap.reclaim`) and lets the allocation go on. Until then the cost is that
+one subtraction: no write barrier, no mark bits, no allocation counter.
+`run_claimed`, at the top of its loop where the job's whole state is in its
+frames, stacks and rows, runs the collection; it runs bytecode in slices of
+at most 4,096 instructions so a loop without calls reaches that point.
+
+The collection keeps every row a root reaches above the job's floor (each
+table's length when the job started or resumed), slides the kept rows down
+over the dead ones in table order and rewrites every link through the
+remap; rows below the floor never move, so values the host holds across a
+run stay valid. Roots: every row below the floor, every shape's key, the
+code constants, the heap's global, call method and pending key, and the
+job's frames, locals, operands, handlers, result, lexicals, root receiver,
+entry, effect arguments and frame, promise queue, unhandled rejections,
+cell rows and foreign ranges (whole, so a publication's identities stay
+consecutive and its range a range) and the write log's keys. The write
+log's objects and values and the interned-key index are weak. The links
+followed are the ones `snapshot::validate` checks, and a compacted heap
+still validates as a snapshot (`serial_tests.goose` checks it after a
+collection at every budget cut). Afterwards each margin is half of what is
+left, or none once less than an eighth of the limit (or 4,096 rows) is
+left, so a job whose live set nears a limit ends `MemoryLimit` as before.
+
+It follows decision 3's rules: rows stay plain `u32` IDs, nothing is freed
+into a list (the tables are compacted, as evacuation compacts an image),
+and the reset after the job is unchanged. Two details are Goose-shaped.
+Shapes are a transition cache and are kept whole. The Latin-1 table is not
+shrunk but keeps a spare tail (`Heap.latin1_spare`) that `add_latin1`
+writes over: Goose's shrink check cannot follow `Job.heap` (a reference in
+a root struct), so shrinking a byte array through it would be refused at
+every caller of `run` that holds a byte view (argv, a directory name).
+
+*Rejected.* *Evacuating into a successor program*, as this decision first
+planned: it existed because tables could not shrink; reused workers
+truncate them now, and a spawn would copy the whole image per collection.
+*Mark and sweep with a free list*: forbidden (rule on free lists), and row
+reuse out of order would break the earlier-row invariants (a proxy's
+target). *A trigger counter or write barrier*: a cost on every allocation
+or write, which the user's condition rules out.
+
+*Measured* (November 7, 2026, the seed-42 200k project, `compare.bb
+--phase check --runs 3` with master's runner in the same rounds): no job
+reaches a margin (an instrumented 4-worker run's JOBS line ends with 0
+collections over 5,283 jobs; the largest job adds 624 node rows against a
+margin of about 50,000), and Goose wall times are within noise of master's
+(medians of two such runs: 1 worker 7.42 s and 7.34 s against 7.53 s and
+7.30 s; 4 workers 4.84 s and 4.66 s against 4.80 s and 4.73 s).
 
 ## State isolation: comparison with shadow-cljs
 

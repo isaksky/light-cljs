@@ -526,7 +526,7 @@ fn borrow(heap: const source::Heap&, bindings: const Binding[:], checkpoint: i64
     let code .= heap.code;
     var v = View { header: Header { base: heap.identity, checkpoint: checkpoint, limits: heap.limits, work: heap.work, global: heap.global, call_method: heap.call_method, boot: heap.boot_count, initializers: heap.initializer_count, producers: heap.producer_count, property_rows: heap.property_rows },
         code_bytes: code.source_bytes, functions: code.functions, code_constants: code.constants, children: code.children, ops: code.ops, code_units: code.units, code_strings: code.strings,
-        nodes:      heap.nodes, values: heap.values, properties: heap.properties, units: heap.units, strings: heap.strings, constants: heap.constants, bytes: heap.source_bytes, sources: heap.source_ranges, bindings: bindings, latin1: heap.latin1,
+        nodes:      heap.nodes, values: heap.values, properties: heap.properties, units: heap.units, strings: heap.strings, constants: heap.constants, bytes: heap.source_bytes, sources: heap.source_ranges, bindings: bindings, latin1: heap.latin1[..source::latin1_len(heap)],
         shapes: heap.shapes, accessors: heap.accessors, keys: heap.keys, conts: heap.conts };
     v.header.ends = ends(v); return v;
 }
@@ -554,7 +554,7 @@ fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&, c
 fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> bool {
     if !(heap.code .== code) || heap.live_jobs != 0 { return false; }
     bindings.clear();
-    heap.nodes.clear(); heap.values.clear(); heap.properties.clear(); heap.units.clear(); heap.latin1.clear(); heap.strings.clear(); heap.constants.clear(); heap.source_bytes.clear(); heap.source_ranges.clear();
+    heap.nodes.clear(); heap.values.clear(); heap.properties.clear(); heap.units.clear(); heap.latin1.clear(); heap.latin1_spare = 0; heap.strings.clear(); heap.constants.clear(); heap.source_bytes.clear(); heap.source_ranges.clear();
     heap.shapes.clear(); heap.accessors.clear(); heap.keys.clear(); heap.interned = 0; heap.image_written = false; heap.conts.clear();
     code.source_bytes.clear(); code.functions.clear(); code.constants.clear(); code.children.clear(); code.ops.clear(); code.units.clear(); code.strings.clear(); code.ins.clear(); code.effects.clear(); code.heights.clear(); code.decoded = 0;
     code.valid = false; code.error = tiny::LoadError.None; code.error_pc = -1;
@@ -601,7 +601,7 @@ fn truncate(twin: const Snapshot&, service: const i64[:], identity: i64, code: s
     code.ops.resize(twin.ops.len); code.units.resize(twin.code_units.len); code.strings.resize(twin.code_strings.len);
     code.ins.resize(twin.ops.len); code.effects.resize(twin.ops.len); code.heights.resize(twin.functions.len); code.decoded = twin.functions.len;
     heap.nodes.resize(twin.nodes.len); heap.values.resize(twin.values.len); heap.properties.resize(twin.properties.len);
-    heap.units.resize(twin.units.len); heap.latin1.resize(twin.latin1.len); heap.strings.resize(twin.strings.len); heap.constants.resize(twin.constants.len);
+    heap.units.resize(twin.units.len); heap.latin1.resize(twin.latin1.len); heap.latin1_spare = 0; heap.strings.resize(twin.strings.len); heap.constants.resize(twin.constants.len);
     heap.source_bytes.resize(twin.bytes.len); heap.source_ranges.resize(twin.sources.len);
     heap.shapes.resize(twin.shapes.len); heap.accessors.resize(twin.accessors.len); heap.conts.resize(twin.conts.len);
     for r in service { service_row(heap, twin, twin, r); }
@@ -666,7 +666,7 @@ fn over_image(s: const Snapshot&, twin: const Snapshot&, service: const i64[:]) 
 // snapshot's state fields and the job's image tops at its lengths.
 fn extend(s: const Snapshot&, twin: const Snapshot&, service: const i64[:], code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&, identity: i64, c: Control&) -> bool {
     let started = clock_ns(); defer { c.restore_ns += clock_ns() - started; }
-    if !(heap.code .== code) || heap.live_jobs != 0 { return reject(c, Error.Destination); }
+    if !(heap.code .== code) || heap.live_jobs != 0 || heap.latin1_spare != 0 { return reject(c, Error.Destination); }
     let current = borrow(heap, bindings, 1); if ends(current) != twin.header.ends { return reject(c, Error.Destination); }
     if identity <= 0 || identity > 2147483647 || identity == s.header.base || identity == s.header.checkpoint { return reject(c, Error.Identity); }
     if !validate(s, c) { return false; }

@@ -1113,6 +1113,14 @@ mod serial_tests {
             // A Symbol base fails by name on Goose (serial_tests.goose).
             ("symbol-base-read", "goose"),
             ("symbol-base-write", "goose"),
+            // Reclamation inside a job (light-cljs-847): loops far past the
+            // Goose job's row limits, live values held by generators,
+            // promises, for-of and a native frame across collections, and
+            // a live set over the node limit, which still ends MemoryLimit
+            // (serial_tests.goose).
+            ("reclaim-loops", "boolean:true"),
+            ("reclaim-roots", "boolean:true"),
+            ("reclaim-live", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));

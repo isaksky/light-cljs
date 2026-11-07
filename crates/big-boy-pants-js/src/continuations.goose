@@ -168,7 +168,7 @@ fn reaction(heap: const Heap&, r: i64) -> Reaction { return match cont_row(heap,
 // with MemoryLimit past the conts limit counted above the image.
 fn conts_fit(heap: const Heap&, count: i64) -> bool { return count >= 0 && count <= heap.limits.conts - (heap.conts.len - heap.image.conts); }
 fn add_conts(heap: Heap&, fill: Cont, count: i64) -> i64 {
-    if !conts_fit(heap, count) { memory(heap); return -1; }
+    if !room(heap, heap.conts.len, heap.image.conts, heap.limits.conts, heap.slack.conts, count) { return -1; }
     let at = heap.conts.len; for i in count { heap.conts.push(fill); }
     return at;
 }
@@ -200,6 +200,9 @@ fn suspend_stack(job: Job&, reuse: i64) -> i64 { return detach_run(job, 0, reuse
 // False, with heap.fault set and nothing changed, when it does not fit.
 fn resume_stack(job: Job&, row: i64) -> bool {
     if job.frames.len != 0 || job.locals.len != 0 || job.operands.len != 0 || job.handlers.len != 0 { job.heap.fault = Fault.InvalidState; return false; }
+    // The resumed job's rows above these lengths are its own to reclaim
+    // (light-cljs-847, reclaim.goose).
+    arm(job);
     return attach_run(job, row, false);
 }
 // Detach frames from..top of the job, the top of its stacks, with the locals

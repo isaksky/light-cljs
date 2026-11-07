@@ -19,7 +19,7 @@ fn mark(heap: const source::Heap&, v: source::Value, nodes: bool[>..]&, units: b
     if v.is_object() && v.id() < nodes.len && !nodes[v.id()] { nodes[v.id()] = true; work.push(v.id()); }
     // Unit rows: the UTF-16 table, then the Latin-1 table.
     if v.is_string() && v.sid() < heap.strings.len {
-        let r = heap.strings[v.sid()]; let base = if r.wide { 0 } else { heap.units.len }; let length = if r.wide { heap.units.len } else { heap.latin1.len };
+        let r = heap.strings[v.sid()]; let base = if r.wide { 0 } else { heap.units.len }; let length = if r.wide { heap.units.len } else { source::latin1_len(heap) };
         if r.len > 0 && r.len <= length - r.start { for i in r.start..(r.start + r.len) { units[base + i] = true; } }
     }
 }
@@ -37,7 +37,7 @@ fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
     var nodes:      bool[>..] = []; nodes.resize(heap.nodes.len, false);
     var values:     bool[>..] = []; values.resize(heap.values.len, false);
     var properties: bool[>..] = []; properties.resize(heap.properties.len, false);
-    var units:      bool[>..] = []; units.resize(heap.units.len + heap.latin1.len, false);
+    var units:      bool[>..] = []; units.resize(heap.units.len + source::latin1_len(heap), false);
     var work:       i64[>..<] = [];
     for v in roots { mark(heap, v, nodes, units, work); }
     for v in heap.constants { mark(heap, v, nodes, units, work); }
@@ -74,7 +74,7 @@ fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
         }
     }
     for s in heap.shapes { mark(heap, s.key, nodes, units, work); }
-    var c = Census { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len + heap.latin1.len };
+    var c = Census { nodes: heap.nodes.len, values: heap.values.len, properties: heap.properties.len, units: heap.units.len + source::latin1_len(heap) };
     for live in nodes { if !live { c.dead_nodes += 1; } }
     for live in values { if !live { c.dead_values += 1; } }
     for live in properties { if !live { c.dead_properties += 1; } }

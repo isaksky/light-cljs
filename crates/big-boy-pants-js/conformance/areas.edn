@@ -100,6 +100,10 @@
   "bbp/array_literal_holes" {:area :statements-loops}
   "bbp/labelled_jumps" {:area :statements-loops}
   "bbp/long_loop" {:area :statements-loops}
+  "bbp/reclaim_object_loop" {:area :statements-loops}
+  "bbp/reclaim_string_loop" {:area :statements-loops}
+  "bbp/reclaim_closure_loop" {:area :functions-scope}
+  "bbp/reclaim_live_roots" {:area :generators-async}
   "bbp/switch_statements" {:area :statements-loops}
   "bbp/while_do_while" {:area :statements-loops}
   "bbp/function_name_length" {:area :functions-scope}

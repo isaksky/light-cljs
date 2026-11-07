@@ -284,12 +284,13 @@
         ;; then the workers' snapshot and helper installs and the coordinator's
         ;; definition hand-off (light-cljs-796); then the cell owner's cells,
         ;; identities, operations, refused compare-and-sets, delay waits and
-        ;; serving time (light-cljs-799).
+        ;; serving time (light-cljs-799); then the collections inside jobs
+        ;; (light-cljs-847), 0 while every job stays below its margins.
         jobs (some->> (re-find #"(?m)^JOBS 0 ([\d ]+)$" text) second (#(str/split % #" ")) (map parse-long)
                       (zipmap [:retention :spawned :finals :spawn-ns :start-ns :join-ns :argument-bytes :restore-bytes
                                :peak-live :peak-blocked :waits :saves :answers :live :blocked :jobs :retired :reset-ns
                                :restore-ns :install-ns :installs :handoff-ns
-                               :cells :identities :cell-operations :conflicts :delay-waits :owner-ns :cell-bytes]))
+                               :cells :identities :cell-operations :conflicts :delay-waits :owner-ns :cell-bytes :reclaims]))
         reapers (+ workers (:retention jobs 0))]
     (assert (str/includes? text "CLOSED 1") "Native Goose session did not close")
     (assert jobs "Missing job worker diagnostics")

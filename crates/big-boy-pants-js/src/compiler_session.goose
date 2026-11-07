@@ -148,8 +148,9 @@ fn cancelled() -> bool { let token, present = qpoll<Cancel>(); if present { asse
 // (nodes, values, properties, units of both unit tables each; instrumented
 // runs only). timing:
 // spawn-to-start latency, the clock at this publication, restore bytes and ns.
-// installs (kind 7): the job's worker_installs.
-struct Event { id: i64, kind: i64, saved: Saved = Saved {}, gensym_next: i64 = 0, sequence: i64 = 0, key: i64 = -1, name: u8[] = [], data: u8[] = [], steps: i64 = 0, writes: i64 = 0, metrics: u8[] = [], callable: bool = false, address: i64 = 0, aborted: bool = false, census: i64[12] = [-1; 12], timing: i64[4] = [0; 4], worker: i64 = -1, retired: bool = false, image: u64 = 0, installs: i64[3] = [0; 3], delay: i64 = -1, epoch: i64 = 0 }
+// installs (kind 7): the job's worker_installs; reclaims (kind 7): the
+// collections inside the job (light-cljs-847, reclaim.goose).
+struct Event { id: i64, kind: i64, saved: Saved = Saved {}, gensym_next: i64 = 0, sequence: i64 = 0, key: i64 = -1, name: u8[] = [], data: u8[] = [], steps: i64 = 0, writes: i64 = 0, metrics: u8[] = [], callable: bool = false, address: i64 = 0, aborted: bool = false, census: i64[12] = [-1; 12], timing: i64[4] = [0; 4], worker: i64 = -1, retired: bool = false, image: u64 = 0, installs: i64[3] = [0; 3], delay: i64 = -1, epoch: i64 = 0, reclaims: i64 = 0 }
 // A job worker's serial (Setup.worker), set in its own thread program's copy
 // of this global; -1 in every other program.
 var worker_serial: i64 = -1;
@@ -195,6 +196,9 @@ struct Jobs {
     // helper installs and how many, and the coordinator's time copying a
     // prepared definition into a job and queueing it (spawns excluded).
     restore_ns: i64 = 0, install_ns: i64 = 0, installs: i64 = 0, handoff_ns: i64 = 0,
+    // Collections inside jobs (light-cljs-847, reclaim.goose): none while every
+    // job stays below its margins.
+    reclaims: i64 = 0,
 }
 struct Produced { key: i64, data: u8[], callable: bool = false }
 struct Prepared { key: i64, heap: snapshot::Snapshot }
@@ -362,12 +366,12 @@ thread_fn run_worker(base: snapshot::Snapshot, directory: u8[], setup: Setup) {
         // Publish the real terminal result, then abort while this worker still
         // runs. The host starts a replacement before releasing the gate.
         if setup.cleanup_test && work.id == 1 { assert(create_file(str(directory, "/cleanup-ready"), "ready")); var gate: u8[>..] = []; while !read_file(str(directory, "/cleanup-abort"), gate) { sleep_ms(1); } assert(false); }
-        let bytes = table_bytes(code, heap);
+        let bytes = table_bytes(code, heap); let reclaims = heap.reclaims; heap.reclaims = 0;
         // Retiring: the exit frees the tables in one step.
-        if bytes > setup.cap { publish(Event { id: 0, kind: 7, timing: [0, clock_ns(), bytes, 0], worker: setup.worker, retired: true, image: image, installs: worker_installs }); return; }
+        if bytes > setup.cap { publish(Event { id: 0, kind: 7, timing: [0, clock_ns(), bytes, 0], worker: setup.worker, retired: true, image: image, installs: worker_installs, reclaims: reclaims }); return; }
         let resetting = clock_ns(); assert(snapshot::truncate(base, service, setup.identity, code, heap, bindings));
         if setup.check { assert(snapshot::pristine(base, setup.identity, code, heap, bindings)); }
-        let reset_ns = clock_ns() - resetting; publish(Event { id: 0, kind: 7, timing: [reset_ns, clock_ns(), bytes, 0], worker: setup.worker, image: image, installs: worker_installs }); worker_installs = [0; 3];
+        let reset_ns = clock_ns() - resetting; publish(Event { id: 0, kind: 7, timing: [reset_ns, clock_ns(), bytes, 0], worker: setup.worker, image: image, installs: worker_installs, reclaims: reclaims }); worker_installs = [0; 3];
     }
 }
 // One job: its VM scratch lives here and goes when it returns.
@@ -789,7 +793,7 @@ fn main() {
                 if !cancelling { assert(qput(Cancel {})); cells::halt(); cancelling = true; }
                 print("FAULT 0 worker-abort ", reason); flush_stdout(); continue; }
             // A worker's job ended: it is idle, or it retired and exits.
-            if event.kind == 7 { stats.reset_ns += event.timing[0]; stats.restore_ns += event.installs[0]; stats.install_ns += event.installs[1]; stats.installs += event.installs[2];
+            if event.kind == 7 { stats.reset_ns += event.timing[0]; stats.restore_ns += event.installs[0]; stats.install_ns += event.installs[1]; stats.installs += event.installs[2]; stats.reclaims += event.reclaims;
                 // Every worker, whenever spawned, inherits the same image.
                 if check && event.image != image { print("FAULT 0 worker-image ", event.worker); flush_stdout(); assert(false); }
                 if event.retired { stats.retired += 1; exits.push(Exit { address: event.worker, clock: event.timing[1] }); }
@@ -887,7 +891,7 @@ fn main() {
     if tracing {
         // spawned counts job workers; jobs the jobs they ran, retired the
         // workers that left at the table-byte cap (light-cljs-795).
-        print("JOBS 0 ", retention, " ", stats.spawned, " ", finals, " ", stats.spawn_ns, " ", stats.start_ns, " ", stats.join_ns, " ", stats.argument_bytes, " ", stats.restore_bytes, " ", stats.peak_live, " ", stats.peak_blocked, " ", stats.waits, " ", stats.saves, " ", stats.answers, " ", counts.live, " ", counts.blocked, " ", stats.jobs, " ", stats.retired, " ", stats.reset_ns, " ", stats.restore_ns, " ", stats.install_ns, " ", stats.installs, " ", stats.handoff_ns, " ", cell_stats.cells, " ", cell_stats.identities, " ", cell_stats.operations, " ", cell_stats.conflicts, " ", cell_stats.waits, " ", cell_stats.owner_ns, " ", cell_stats.bytes);
+        print("JOBS 0 ", retention, " ", stats.spawned, " ", finals, " ", stats.spawn_ns, " ", stats.start_ns, " ", stats.join_ns, " ", stats.argument_bytes, " ", stats.restore_bytes, " ", stats.peak_live, " ", stats.peak_blocked, " ", stats.waits, " ", stats.saves, " ", stats.answers, " ", counts.live, " ", counts.blocked, " ", stats.jobs, " ", stats.retired, " ", stats.reset_ns, " ", stats.restore_ns, " ", stats.install_ns, " ", stats.installs, " ", stats.handoff_ns, " ", cell_stats.cells, " ", cell_stats.identities, " ", cell_stats.operations, " ", cell_stats.conflicts, " ", cell_stats.waits, " ", cell_stats.owner_ns, " ", cell_stats.bytes, " ", stats.reclaims);
         if instrumented { print("TRIM 0 ", stats.trims, " ", stats.trim_before, " ", stats.trim_after, " ", stats.trim_ns); }
         // The coordinator, the input thread, the reapers and every job worker;
         // all but the coordinator are joined. Preparers (one per PREPARED or
