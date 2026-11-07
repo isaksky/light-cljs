@@ -180,10 +180,10 @@ enum Ins {
     InitCell, ReadCell, WriteCell, GetNamed { k: u32 }, GetIndexed, SetNamed { k: u32, strict: bool }, DefineNamed { k: u32, half: u8 },
     SetIndexed { strict: bool }, DefineIndexed { half: u8 }, SetProto, Delete { strict: bool }, In, Append, CheckValue, This { sloppy: bool }, Global, GetGlobal { k: u32, throws: bool },
     Literal { kind: u8, count: u32 }, Form { op: u32 }, ToString, Unsupported { opcode: u8 },
-    // new f(...) (94): only a built-in constructor whose construction is its
-    // call (Delay, light-cljs-808); any other callee fails Unsupported, as an
-    // unimplemented opcode does.
-    Construct { argc: u32 },
+    // new f(...) (94; light-cljs-831, construct): an ordinary function's
+    // [[Construct]] and the realm's constructors. NewTarget (GetNewTarget,
+    // 154) reads the frame's new.target.
+    Construct { argc: u32 }, NewTarget,
     // Finally blocks and completion records (light-cljs-786): the Pants
     // opcodes, with their stack contracts in rust/src/vm/instr.rs. Pending
     // is PendingThrow, PendingException or PendingCancel.
@@ -416,6 +416,11 @@ enum Hint { Default, Number, String }
 enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, numeric: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
+// A bytecode frame's `input` is its new.target (light-cljs-831): undefined
+// in a call; in a [[Construct]] the constructor, with `receiver` the new
+// object that replaces a non-object return value (return_value). Being frame
+// data, the pending substitution survives budget cuts, helper waits and
+// saved continuations with the frame.
 struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, argument_count: i64 = 0, input: Value = Value.Undefined, output: Value = Value.Undefined, index: i64 = 0, native: Native = Native.None }
 struct Write { object: Value, key: Value, value: Value }
 // The handler stack (light-cljs-786; the Pants engine's vm/exception.rs):
@@ -560,6 +565,7 @@ fn instruction(op: Op) -> Ins {
         opcode::PendingThrow, opcode::PendingException, opcode::PendingCancel => Ins.Pending { what: op.code as u8 },
         opcode::Typeof => Ins.TypeOf, opcode::ToString => Ins.ToString, opcode::ForInStart => Ins.ForInStart, opcode::ForInNext => Ins.ForInNext, opcode::OwnKeys => Ins.OwnKeys, opcode::IsEnumerable => Ins.IsEnumerable, opcode::CopyDataProperties => Ins.CopyData, opcode::ToPropertyKey => Ins.ToPropertyKey, opcode::RequireCoercible => Ins.RequireCoercible,
         opcode::GeneratorStart => Ins.GeneratorStart, opcode::GeneratorInitialYield => Ins.GeneratorInitialYield, opcode::GeneratorYield => Ins.GeneratorYield, opcode::AsyncStart => Ins.AsyncStart, opcode::Await => Ins.Await,
+        opcode::GetNewTarget => Ins.NewTarget,
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -1993,8 +1999,11 @@ fn return_value(job: Job&, top: i64, value: Value, at: i64) {
         if h.frame == top && h.kind == HandlerKind.Async { async_settle(job, h, value, false, frame_at(job, top, at)); return; }
     }
     let lb = job.frames[top].local_base; let ob = job.frames[top].operand_base;
+    // A constructed frame (new.target set) gives its new object unless it
+    // returned an object (OrdinaryCallEvaluateBody's [[Construct]] step).
+    let result = if job.frames[top].input.is_object() && !value.is_object() { job.frames[top].receiver } else { value };
     job.frames.pop(); job.locals.resize(lb); job.operands.resize(ob);
-    deliver(job, value);
+    deliver(job, result);
 }
 // Deliver a finished frame's value to the frame below, or, with none left,
 // end the entry (continuations.goose, entry_done).
@@ -2093,7 +2102,9 @@ fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -
 // never removed while a job runs. `operands` is the callee's operand base:
 // the caller's operand height once the call has consumed its operands. The
 // call limits (Limits) count the frame and the values it adds above that.
-fn push_frame(job: Job&, callee: Value, receiver: Value, arguments: const Value[:], checked: bool, operands: i64) -> bool {
+// `new_target` is the frame's new.target: the constructor in a
+// [[Construct]] (construct), undefined in a call.
+fn push_frame(job: Job&, callee: Value, receiver: Value, arguments: const Value[:], checked: bool, operands: i64, new_target: Value = Value.Undefined) -> bool {
     let heap .= job.heap;
     if !callee.is_object() || node(heap, callee.id()).kind != 2 { heap.fault = Fault.TypeError; return false; }
     let id = node(heap, callee.id()).function; let f .= heap.code.functions[id];
@@ -2105,7 +2116,7 @@ fn push_frame(job: Job&, callee: Value, receiver: Value, arguments: const Value[
     let base = job.locals.len; job.locals.resize(base + f.locals, Value.Undefined);
     for value, i in arguments { if i < f.params { job.locals[base + i] = value; } }
     job.locals.append(arguments);
-    job.frames.push(Frame { function: id, pc: f.start, local_base: base, operand_base: operands, callee: callee, receiver: receiver, argument_count: arguments.len });
+    job.frames.push(Frame { function: id, pc: f.start, local_base: base, operand_base: operands, callee: callee, receiver: receiver, argument_count: arguments.len, input: new_target });
     return true;
 }
 fn start(job: Job&, callee: Value, arguments: const Value[:], receiver: Value = Value.Undefined) -> bool {
@@ -3369,12 +3380,15 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     if !invoke(job, top, at, c.argc, c.method) { break; }
                     left = fuel(job, allowance, used);
                 },
+                // A Delay constructs as its call (light-cljs-808, with its
+                // map demand); every other callee takes construct.
                 Construct c => {
-                    if !constructible(heap, job.operands[job.operands.len - c.argc - 1]) { heap.fault = Fault.Unsupported; break; }
                     settle(job, ran, used);
-                    if !invoke(job, top, at, c.argc, false) { break; }
+                    if constructible(heap, job.operands[job.operands.len - c.argc - 1]) { if !invoke(job, top, at, c.argc, false) { break; } }
+                    else { job.frames[top].pc = pc; construct(job, c.argc); if !in_place(job, top, at) { break; } }
                     left = fuel(job, allowance, used);
                 },
+                NewTarget => { job.operands.push(job.frames[top].input); },
             }
         }
         // A fault an arm raised on its own counts its instruction, as before:
@@ -3382,6 +3396,72 @@ fn execute(job: Job&, allowance: i64) -> i64 {
         if heap.fault != Fault.None { settle(job, ran, used); job.frames[top].pc = pc; fail(job, heap.fault, frame_at(job, top, at)); }
     }
     return used;
+}
+// new f(a1, ..., an) (Construct, light-cljs-831; the Pants engine's
+// vm/dispatch.rs construct_target, QuickJS's JS_CallConstructorInternal),
+// f and its arguments the top argc + 1 operands, every argument already
+// evaluated and none used before f is known to be a constructor. An ordinary
+// function (constructor kind Ordinary) gets OrdinaryCreateFromConstructor's
+// object, a job row inheriting F.prototype (made on first observation, as a
+// read makes it) or, when that is not an object, %Object.prototype%; F's
+// frame runs with it as `this` and F as new.target, and return_value
+// substitutes it for a non-object return value. Object, Array, Function and
+// the Error constructors construct as their call (call_builtin), which is
+// their [[Construct]] when new.target is the constructor itself, as it is
+// for `new`: their prototypes are the realm's. Not constructors, a catchable
+// TypeError: primitives, objects without [[Call]], the light-cljs runtime
+// kinds, arrows, methods, accessors, generator and async functions, and the
+// realm's other built-ins (Symbol's [[Construct]] throws). Failing by name
+// (decision 1): class constructors (the objects area, light-cljs-766) and
+// the light-cljs runtime's leaves other than Delay, which the V8 build
+// constructs as ordinary JavaScript functions.
+fn construct(job: Job&, argc: i64) {
+    let heap .= job.heap;
+    let base = job.operands.len - argc - 1;
+    let f = job.operands[base];
+    let kind: i64 = if f.is_object() { node(heap, f.id()).kind } else { -1 };
+    if kind == 2 {
+        let code_kind = constructor_kind(heap, f.id());
+        if code_kind >= constructor::BaseClass { unsupported_detail(job, "construct: class constructors"); return; }
+        if code_kind != constructor::Ordinary { heap.fault = Fault.TypeError; return; }
+        // Making a lazy `prototype` writes F's row (decision 3).
+        if lazy_prototype(heap, f.id()) && !writable(job, f.id()) { unsupported_detail(job, "construct: a function whose lazy prototype is in a row this job did not allocate"); return; }
+        let proto = prototype_from_constructor(job, f, Value.Empty, "a constructor's prototype getter");
+        if heap.fault != Fault.None { return; }
+        let o = allocate(heap, Node { kind: 0, proto: proto });
+        if heap.fault != Fault.None { return; }
+        if push_frame(job, f, o, job.operands[(base + 1)..], false, base, f) { job.operands.resize(base); }
+        return;
+    }
+    if kind != 4 { heap.fault = Fault.TypeError; return; }
+    let b = builtin_of(heap, f.id());
+    match b {
+        Object, Function, Array, Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError => {
+            let value = call_builtin(job, node(heap, f.id()).function, Value.Undefined, job.operands[(base + 1)..]);
+            job.operands.resize(base); job.operands.push(value);
+        },
+        FunctionPrototype, ObjectGetPrototypeOf, ObjectIs, ObjectHasOwn, ObjectPrototypeHasOwnProperty, ObjectPrototypeValueOf, ObjectPrototypeToString,
+        ArrayIsArray, ErrorPrototypeToString, SymbolFunction, ObjectGetOwnPropertyDescriptor, FunctionPrototypeCall, ArrayPrototypeMap, ArrayPrototypeForEach,
+        GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, IteratorPrototypeIterator, Eval => { heap.fault = Fault.TypeError; },
+        _ => { unsupported_step(job, b, "construct"); },
+    }
+}
+// GetPrototypeFromConstructor(F) for a new object of F's (light-cljs-831,
+// light-cljs-790): F's own `prototype` (an ordinary or generator function's,
+// made first if lazy, as a read makes it) when it is an object, else
+// `fallback` (Empty: the kind's realm default). A getter there fails by name
+// (`what`): an ordinary function's `prototype` is a non-configurable data
+// property, so only an inherited one can be an accessor.
+fn prototype_from_constructor(job: Job&, callee: Value, fallback: Value, what: const u8[:]) -> Value {
+    let heap .= job.heap;
+    let k = key_named(heap, "prototype");
+    if heap.fault != Fault.None { return Value.Undefined; }
+    prepare_function(job, callee, k, false);
+    if heap.fault != Fault.None { return Value.Undefined; }
+    let v, getter = lookup(heap, callee, k);
+    if heap.fault != Fault.None { return Value.Undefined; }
+    if getter.is_object() { unsupported_detail(job, what); return Value.Undefined; }
+    return if v.is_object() { v } else { fallback };
 }
 // Call and CallMethod at `at`, with the instruction's counts settled. A map
 // demand (mapv/vec/into over a deferred map) runs first and, when it starts

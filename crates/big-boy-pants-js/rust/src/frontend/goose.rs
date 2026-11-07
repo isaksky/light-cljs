@@ -1005,11 +1005,16 @@ mod serial_tests {
             // `==` (light-cljs-827; its work limits in serial_tests.goose).
             ("string-to-number", "boolean:true"),
             ("unsupported-prototype", "string:[object Object]"),
-            // Goose does not implement `construct`: dead here, and reached
-            // under a `catch` that cannot swallow its fault there
-            // (serial_tests.goose).
+            // Unimplemented operations: `new Date` on a dead path, and
+            // `instanceof` reached under a `catch` that cannot swallow its
+            // fault there (serial_tests.goose).
             ("unsupported-dead", "number:7"),
             ("unsupported-reached", "number:1"),
+            // [[Construct]] of ordinary functions and the realm's
+            // constructors, at every budget cut (light-cljs-831), and a
+            // dependency wait inside a constructor (snapshot_tests.goose).
+            ("construct", "boolean:true"),
+            ("construct-wait", "goose"),
             // Nor BigInt values: constants on dead paths, then one reached.
             ("dormant-constants", "number:7"),
             ("bigint-reached", "string:bigint"),

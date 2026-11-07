@@ -788,9 +788,10 @@ fn delay_now(job: Job&, b: Builtin, d: Value) -> Value {
 // Whether the dispatch loop's call of built-in b with `args` forces a delay,
 // which runs as a native frame (start_force).
 fn forces(heap: Heap&, b: Builtin, args: const Value[:]) -> bool { return (b == Builtin.Deref || b == Builtin.Force) && args.len > 0 && is_delay(heap, args[0]); }
-// Whether `new f(...)` can construct with callee f: a built-in constructor
-// whose construction is its call (Delay). Construct of anything
-// else is not implemented yet.
+// Whether `new f(...)` constructs as its call with callee f, the dispatch
+// loop's map demand included: the Delay built-in, also the only callee
+// rt.nativeConstruct accepts. Every other callee takes source_vm.goose's
+// construct (light-cljs-831).
 fn constructible(heap: Heap&, f: Value) -> bool { return valid(heap, f) && f.is_object() && node(heap, f.id()).kind == 4 && builtin_of(heap, f.id()) == Builtin.Delay; }
 
 // force, deref and derefProtocol of a delay (Native.Force, its Builtin the

@@ -451,6 +451,10 @@ fn suspended_continuations() {
     heap_program::join(thread_spawn(stack_resumed, copy(second), true));
     heap_program::join(thread_spawn(suspension_parent, str(embed_file("../corpus/serial/suspended-generator.gsp")))); let base = qget<snapshot::Snapshot>();
     heap_program::join(thread_spawn(suspension_worker, copy(base)));
+    let constructing = embed_file("../corpus/serial/construct-wait.gsp");
+    heap_program::join(thread_spawn(construct_wait, str(constructing), false));
+    heap_program::join(thread_spawn(construct_wait, str(constructing), true)); let waiting = qget<Waiting>();
+    heap_program::join(thread_spawn(construct_resumed, copy(waiting)));
     print("suspended continuations: a dependency wait keeps them in place or carries them, with its whole stack as rows (native frames included), in a saved continuation; a reused worker's next job cannot reach them");
 }
 // Run suspended-wait.js to its dependency wait, with a generator and an
@@ -512,6 +516,42 @@ thread_fn resumed_wait(saved: Waiting) {
     job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
     assert(source::deliver_effect(job, source::text(heap, "D")));
     assert(source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "axDbfypz"));
+    assert(source::retire(job));
+}
+// A dependency wait inside a constructor (construct-wait.js, light-cljs-831):
+// the constructor's frame holds its new.target and its new object, which
+// replaces the primitive it returns after the wait, answered in place or
+// after the whole stack was saved as a continuation and restored in a fresh
+// heap (construct_resumed).
+thread_fn construct_wait(bytes: u8[], save: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; snapshot_test::append(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, 0, []), [source::builtin(heap, 8)]));
+    assert(source::run(job, -1) == tiny::Outcome.Yielded && job.effect_pending && job.effect_kind == 8);
+    let c = job.frames[job.frames.len - 1];
+    assert(job.frames.len == 2 && c.input.is_object() && c.input == c.callee && c.receiver.is_object() && job.frames[0].input.is_undefined());
+    if !save {
+        assert(source::deliver_effect(job, source::text(heap, "D")));
+        assert(source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "aDb1"));
+        assert(source::retire(job)); return;
+    }
+    let stack = source::suspend_stack(job, -1); assert(stack >= 0 && job.frames.len == 0);
+    let a = source::activation(heap, stack); assert(a.frame_count == 2);
+    assert(source::retire(job, true));
+    var k = snapshot::Control {}; let image = snapshot::capture(heap, [], k); assert(k.error == snapshot::Error.None);
+    assert(qput(Waiting { image: copy(image), stack: stack as u32, steps: job.steps, kind: job.effect_kind, count: job.effect_count, frame: job.effect_frame, args: job.effect_args }));
+}
+thread_fn construct_resumed(saved: Waiting) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved.image, code, heap, bindings, source::reserve_identity(), r));
+    var job = source::Job { heap: heap, effects_enabled: true };
+    assert(source::resume_stack(job, saved.stack) && job.frames.len == 2);
+    let c = job.frames[1]; assert(c.input.is_object() && c.input == c.callee && c.receiver.is_object());
+    job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = saved.kind; job.effect_count = saved.count; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+    assert(source::deliver_effect(job, source::text(heap, "D")));
+    assert(source::run(job, -1) == tiny::Outcome.Complete && source::key_is(heap, job.result, "aDb1"));
     assert(source::retire(job));
 }
 // A saved continuation whose stack holds native frames (light-cljs-813):

@@ -487,8 +487,8 @@ fn goose_compiler_assembly_leaf_boundaries() {
         // Every opcode exports; one the Goose VM does not implement fails the
         // macro by name when it runs, uncatchably (light-cljs-783).
         (
-            "function P(){} try { return new P(); } catch (e) { return null; }",
-            "Fault.Unsupported:construct",
+            "function P(){} try { return new P() instanceof P; } catch (e) { return null; }",
+            "Fault.Unsupported:instanceof",
         ),
         (
             "return rt.core.sequence(null,null);",
@@ -1643,7 +1643,7 @@ fn goose_compiler_control_flow_across_helper_waits_and_cancellation() {
     const ROOTS: [(&str, usize); 3] = [("fixture/a", 1), ("fixture/b", 2), ("fixture/s", 3)];
     // Each body runs inside two finally blocks of the macro's frame; the
     // result is the cleanup order's digits, then the completion values.
-    let cases: [(&str, &str, i64, &[usize]); 6] = [
+    let cases: [(&str, &str, i64, &[usize]); 7] = [
         (
             "return",
             "function f() { try { try { note(1); return 7; } finally { note(2); rec.waited = read('fixture/a'); note(3); } } finally { rec.frame = 1; note(4); } } value = f() + rec.waited;",
@@ -1684,6 +1684,15 @@ fn goose_compiler_control_flow_across_helper_waits_and_cancellation() {
             "let calls = 0; const k = { toString: function () { try { calls += 1; note(1); return read('fixture/s'); } finally { rec.frame = 1; note(4); } } }; const o = {}; const r = (o[k] = 5); value = (o.x === 5 && r === 5 ? 5 : 0) + calls * 100;",
             1489105,
             &[3],
+        ),
+        // A constructor demands the root (light-cljs-831): its frame keeps
+        // the new object and new.target across the wait, and the primitive
+        // it returns afterwards is replaced by the object.
+        (
+            "construct",
+            "function C() { try { note(1); this.v = read('fixture/a'); this.t = new.target === C; return 3; } finally { rec.frame = 1; note(4); } } const c = new C(); value = c.v + (c.t && Object.getPrototypeOf(c) === C.prototype ? 2 : 0);",
+            1489042,
+            &[1],
         ),
     ];
     // fixture/a and fixture/b are the numbers 40 and 50, fixture/s is 'x'.

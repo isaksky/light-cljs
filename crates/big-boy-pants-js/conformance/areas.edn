@@ -113,6 +113,11 @@
   "bbp/compound_bitwise_assignment" {:area :operators-values}
   "bbp/update_expressions_on_properties" {:area :operators-values}
   "bbp/compound_assignment_on_properties" {:area :operators-values}
+  "bbp/new_operator_constructs_objects" {:area :operators-values}
+  "bbp/object_constructor" {:area :operators-values}
+  "bbp/non_constructors_reject_new" {:area :operators-values}
+  "bbp/new_target_in_functions" {:area :operators-values}
+  "bbp/new_error_objects" {:area :operators-values}
   "bbp/logical_assignment_on_properties" {:area :operators-values}
   "bbp/property_update_sloppy_ignored" {:area :operators-values :mode :sloppy}
 

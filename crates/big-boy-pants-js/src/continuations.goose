@@ -288,15 +288,7 @@ fn iter_result(job: Job&, value: Value, done: bool) -> Value {
 // else %GeneratorPrototype% (OrdinaryCreateFromConstructor). F's lazy
 // `prototype` is made first, as a read makes it.
 fn generator_prototype_of(job: Job&, callee: Value) -> Value {
-    let heap .= job.heap;
-    let k = key_named(heap, "prototype");
-    if heap.fault != Fault.None { return Value.Undefined; }
-    prepare_function(job, callee, k, false);
-    if heap.fault != Fault.None { return Value.Undefined; }
-    let v, getter = lookup(heap, callee, k);
-    if heap.fault != Fault.None { return Value.Undefined; }
-    if getter.is_object() { unsupported_detail(job, "a generator function's prototype getter"); return Value.Undefined; }
-    return if v.is_object() { v } else { object(generator_prototype_row()) };
+    return prototype_from_constructor(job, callee, object(generator_prototype_row()), "a generator function's prototype getter");
 }
 // GeneratorInitialYield at `at`, after the parameters are bound.
 fn initial_yield(job: Job&, top: i64, at: i64) {

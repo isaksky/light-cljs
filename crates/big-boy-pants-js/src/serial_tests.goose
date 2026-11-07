@@ -489,11 +489,12 @@ fn main() {
     limit_points(embed_file("../corpus/serial/string-to-number.gsp"));
     // ({}).toString() is the realm's Object.prototype.toString (light-cljs-788).
     check(embed_file("../corpus/serial/unsupported-prototype.gsp"), "utf16:[91,111,98,106,101,99,116,32,79,98,106,101,99,116,93]");
-    // Every opcode exports (light-cljs-783): `construct` on a dead path and in
-    // a dead nested function never runs; reached, it fails by name even under
-    // a `catch`. A class constructor cannot be called.
+    // Every opcode exports (light-cljs-783): `new Date` on a dead path and in
+    // a dead nested function never runs; `instanceof` reached (after a
+    // construction, light-cljs-831) fails by name even under a `catch`. A
+    // class constructor cannot be called.
     check(embed_file("../corpus/serial/unsupported-dead.gsp"), "number:7.0");
-    check(embed_file("../corpus/serial/unsupported-reached.gsp"), "Fault.Unsupported:construct", source::Fault.Unsupported);
+    check(embed_file("../corpus/serial/unsupported-reached.gsp"), "Fault.Unsupported:instanceof", source::Fault.Unsupported);
     class_kinds(embed_file("../corpus/serial/calls.gsp"));
     check(embed_file("../corpus/serial/dormant-constants.gsp"), "number:7.0");
     check(embed_file("../corpus/serial/bigint-reached.gsp"), "Fault.Unsupported:const(BigInt)", source::Fault.Unsupported);
@@ -550,6 +551,12 @@ fn control_flow() {
     // map and forEach (light-cljs-789): their callbacks, getters and the
     // length's valueOf run in the built-in's native frame.
     check(embed_file("../corpus/serial/array-callbacks.gsp"), "boolean:true");
+    // [[Construct]] (light-cljs-831): ordinary functions with new.target and
+    // the return override, through finally and a generator yielding inside
+    // the constructor, the realm's constructors and a non-constructor's
+    // TypeError, at every cut; a class constructor fails by name.
+    check(embed_file("../corpus/serial/construct.gsp"), "boolean:true");
+    construct_kinds(embed_file("../corpus/serial/construct.gsp"));
     // 9,999 frames of f above the entry frame fit the 10,000-frame limit, and
     // a deeper recursion is caught; one frame less fails it uncaught.
     let depth = embed_file("../corpus/serial/depth.gsp");
@@ -1277,6 +1284,19 @@ fn class_kinds(bytes: const u8[:]) {
         set_word(patched[..], at, tag); set_word(patched[..], at + 4, if i == 1 { 15 } else { 7 }); set_word(patched[..], at + 8, 0);
         if i > 0 { assert(program::install(image, patched) == program::Error.Operation); continue; }
         check(patched, "Fault.Unsupported:const(Symbol)", source::Fault.Unsupported);
+    }
+}
+// construct.js with F's constructor kind patched (light-cljs-831): as a
+// class constructor `new F(2)` fails by name, uncaught; with no constructor
+// kind (a method's or an arrow's) it is a TypeError, here uncaught.
+fn construct_kinds(bytes: const u8[:]) {
+    var code = source::Code {}; decode(code, bytes);
+    let id = named_function(code, "F"); let l = program::layout(bytes); let at = l.functions + id * 52 + 48;
+    for kind in [constructor::BaseClass, constructor::DerivedClass, constructor::None] {
+        var patched: u8[>..] = []; patched.append(bytes);
+        set_word(patched[..], at, (program::word(bytes, at) & ~(255 << 8)) | (kind << 8));
+        if kind == constructor::None { check(patched, "", source::Fault.TypeError); }
+        else { check(patched, "Fault.UnsupportedOperand:construct:-class-constructors", source::Fault.UnsupportedOperand); }
     }
 }
 fn set_unit(bytes: u8[:], at: i64, n: i64) { bytes[at] = (n & 255) as u8; bytes[at + 1] = ((n >> 8) & 255) as u8; }
