@@ -12,7 +12,7 @@ var rows = 0, failed = 0;
 function row(ok) { rows++; if (ok !== true && failed === 0) failed = rows; }
 function T() { return new.target; }
 row(T() === undefined);
-row(new T() !== T && typeof new T() === "object");
+row(new T() === T && typeof new T() === "function");
 function C() { this.target = new.target; }
 row(new C().target === C);
 { const o = {m: C}; o.m(); row(o.target === undefined); }
@@ -30,7 +30,7 @@ function Arrow() { this.f = () => new.target; this.g = () => (() => new.target)(
 { const o = {}; Arrow.call(o); row(o.f() === undefined && o.g() === undefined); }
 // A nested function has its own.
 function Outer() { function inner() { return new.target; } this.inner = inner(); this.made = new inner(); this.own = new.target; }
-{ const o = new Outer(); row(o.inner === undefined && o.own === Outer && typeof o.made === "object"); }
+{ const o = new Outer(); row(o.inner === undefined && o.own === Outer && typeof o.made === "function" && o.made.name === "inner"); }
 // Each construction of a recursive constructor sees its own.
 function R(n) { this.t = new.target; this.child = n > 0 ? new R(n - 1) : (function () { return new.target; })(); }
 { const r = new R(2); row(r.t === R && r.child.t === R && r.child.child.t === R && r.child.child.child === undefined); }
