@@ -2,8 +2,9 @@
 // Derives from: crates/big-boy-pants-js/rust/tests/js_source.rs lines 13124-13195,
 // template_literal_values (bbp-57, the evaluation of untagged templates):
 // each substitution converts by ToString, its own instruction, and joins
-// the text so far. The rows with an object substitution (ToPrimitive with
-// hint string) are left out; tagged templates stay with the lexing area. Infinity and NaN are spelled 1 / 0 and
+// the text so far. An object substitution converts by ToPrimitive with hint
+// string, toString first (light-cljs-828; Pants test's failure row
+// predates ToPrimitive and is left out); tagged templates stay with the lexing area. Infinity and NaN are spelled 1 / 0 and
 // 0 / 0. Each row is a `row(...)` check; the script completes with the
 // number of rows, or minus the first failing row's number.
 var rows = 0, failed = 0;
@@ -47,6 +48,11 @@ row(`ā${2}Ă` === "ā2Ă");
 // A template is a string value like any other.
 row(`ab` === "ab");
 row(`${1}` + 1 === "11");
+// Object substitutions: toString before valueOf, then the default
+// Object.prototype.toString, and valueOf when toString gives an object.
+row(`${{ toString() { return "t"; }, valueOf() { return "v"; } }}|${{}}` === "t|[object Object]");
+row(`<${{ toString() { return {}; }, valueOf() { return 2; } }}>` === "<2>");
+{ let log = ""; let o = { toString() { log += "o"; return "x"; } }; row(`${o}${o}` === "xx" && log === "oo"); }
 // `*` converts both templates by StringToNumber (light-cljs-827).
 row(`2` * `${3}` === 6);
 failed === 0 ? rows : -failed;

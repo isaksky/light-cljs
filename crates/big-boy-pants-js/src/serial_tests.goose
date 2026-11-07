@@ -532,6 +532,11 @@ fn control_flow() {
     // through it. Every budget cut matches the uncut run.
     check(embed_file("../corpus/serial/finally.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/native-frame.gsp"), "boolean:true");
+    // ToPrimitive in every operator family (light-cljs-828): arithmetic,
+    // relational, `==`, unary and `++`, a template substitution, property
+    // keys, Symbol.toPrimitive's hints and a getter-supplied method, each
+    // conversion once at every cut.
+    check(embed_file("../corpus/serial/to-primitive.gsp"), "boolean:true");
     // map and forEach (light-cljs-789): their callbacks, getters and the
     // length's valueOf run in the built-in's native frame.
     check(embed_file("../corpus/serial/array-callbacks.gsp"), "boolean:true");

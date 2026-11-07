@@ -1,6 +1,6 @@
 // bbp-authored conformance case.
-// Derives from: none (light-cljs-789 review: map's length converts through @@toPrimitive with hint number before valueOf;
-// the Goose VM does not run @@toPrimitive yet and faults by name rather than call valueOf). Completes with "1:a".
+// Derives from: none (light-cljs-789 review: map's length converts through @@toPrimitive with hint number before valueOf,
+// which the Goose VM runs since light-cljs-828). Completes with "1:a".
 (function () {
   var len = { valueOf: function () { return 2; } };
   len[Symbol.toPrimitive] = function (hint) { return hint === "number" ? 1 : 5; };

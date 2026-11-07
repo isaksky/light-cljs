@@ -1027,6 +1027,9 @@ mod serial_tests {
             // cancellation ends (serial_tests.goose).
             ("finally", "boolean:true"),
             ("native-frame", "boolean:true"),
+            // ToPrimitive with hints and Symbol.toPrimitive in every
+            // operator family (light-cljs-828).
+            ("to-primitive", "boolean:true"),
             // Array.prototype.map and forEach as native frames (light-cljs-789).
             ("array-callbacks", "boolean:true"),
             ("depth", "boolean:true"),

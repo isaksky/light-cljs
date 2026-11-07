@@ -145,7 +145,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, ToPrimitive t => 3 + (t.op as i64) * 4 + (t.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.numeric { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -377,12 +377,19 @@ root struct Heap {
 //                vector so far, index the next element; pc 1 awaits a result.
 //   MapSeq       a deferred map's callbacks (demand_map): input the map,
 //                index the next element; pc 1 awaits a result.
-//   ToPrimitive  OrdinaryToPrimitive of the ordinary-object operands of the
-//                binary operator `op`, left (input) then right (output),
-//                index the operand being converted, method 0 valueOf and 1
-//                toString; pc 1 awaits the method's result, pc 2 the
-//                method from its getter (light-cljs-805). The operator
-//                then runs on the converted operands.
+//   Convert      ToPrimitive with `hint` of `count` consecutive operands of
+//                the frame below (light-cljs-828; the Pants engine's
+//                NativeState::Convert): operand i is
+//                operands[operand_base - argument_count + i], index the
+//                one being converted, left to right. `method` 0 is
+//                GetMethod(@@toPrimitive), 1 and 2 OrdinaryToPrimitive's
+//                methods in the hint's order; pc 1 awaits a method's
+//                result, pc 2 a method from its getter (light-cljs-805).
+//                A primitive replaces its object in place (and, when
+//                `numeric`, its ToNumber, before the next operand
+//                converts); then the frame pops and the operation below,
+//                whose pc was left at its own step, runs again on
+//                primitives. Nothing it completed runs twice.
 //   Setter       [[Set]] through an accessor's setter (light-cljs-787):
 //                output the assignment's result for the frame below; pc 1
 //                awaits the setter's return value, which it drops. (A
@@ -403,7 +410,10 @@ root struct Heap {
 //                (light-cljs-790; continuations.goose): input the
 //                generator, its activation attached above; pc 1 awaits the
 //                value it yields or returns.
-enum Native { None, Mapv, MapSeq, Setter, CopyData, ToPrimitive { op: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 } }
+// ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
+// @@toPrimitive method receives and OrdinaryToPrimitive's method order.
+enum Hint { Default, Number, String }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, numeric: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 struct Frame { function: i64, pc: i64, local_base: i64, operand_base: i64, callee: Value, receiver: Value, argument_count: i64 = 0, input: Value = Value.Undefined, output: Value = Value.Undefined, index: i64 = 0, native: Native = Native.None }
@@ -887,7 +897,8 @@ fn key_valid(heap: Heap&, k: Value) -> bool {
 // vm/property.rs to_property_key): a string or symbol is its own key and any
 // other primitive its ToString, so `-0` gives "0", 1.5 "1.5", true "true" and
 // null "null"; an index number takes the integer spelling directly. An
-// object key needs ToPrimitive, which no caller runs yet (UnsupportedOperand).
+// object key converts before this, in the dispatch loop's Convert frame
+// (light-cljs-828); one that reaches it fails UnsupportedOperand.
 fn key(heap: Heap&, value: Value) -> Value {
     if !key_valid(heap, value) { return Value.Undefined; }
     if value.is_string() || value.is_symbol() { return value; }
@@ -2143,8 +2154,9 @@ fn binary_value(heap: Heap&, op: i64, a: Value, b: Value) -> Value {
     // one type compares strictly; numbers, strings and booleans of different
     // types compare their ToNumber values (a boolean first converts, then
     // the comparison repeats, which comes to the same); a symbol equals no
-    // other type. An object beside another type needs ToPrimitive, not
-    // implemented here: UnsupportedOperand.
+    // other type. An object beside another primitive converts before this
+    // (the Convert frame, light-cljs-828); a light-cljs runtime value there
+    // fails UnsupportedOperand.
     if op == opcode::LooseEq {
         if (a.is_undefined() || a.is_null()) && (b.is_undefined() || b.is_null()) { return boolean(true); }
         if a.tag() == b.tag() { return boolean(equal(heap, a, b)); }
@@ -2636,7 +2648,7 @@ fn native_step(job: Job&) {
     match frame.native {
         MapSeq => { map_seq_step(job, frame); },
         Mapv => { mapv_step(job, frame); },
-        ToPrimitive t => { to_primitive_step(job, frame, t.op, t.method); },
+        Convert c => { convert_step(job, frame, c.hint, c.numeric, c.count, c.method); },
         // The setter returned: drop its value, deliver the assignment's.
         Setter => { job.operands.pop(); finish_native(job, frame, frame.output); },
         CopyData => { copy_step(job, frame); },
@@ -2712,17 +2724,45 @@ fn finish_native(job: Job&, frame: Frame, result: Value) {
     job.frames.pop(); job.operands.resize(frame.operand_base);
     deliver(job, result);
 }
-// Whether a binary operator's operand is an ordinary object, which converts
-// through ToPrimitive before the operator runs.
-fn ordinary(heap: const Heap&, v: Value) -> bool { return v.is_object() && (node(heap, v.id()).kind == 0 || node(heap, v.id()).kind == 13 || node(heap, v.id()).kind == 20 || node(heap, v.id()).kind == 21); }
-// Start the resumable ToPrimitive (hint default) of a binary operator `op`
-// whose operands x and y include an ordinary object (light-cljs-786): a
-// native frame converts them, left to right, and then runs the operator. The
-// frame below has already consumed the operands.
-fn to_primitive(job: Job&, op: i64, x: Value, y: Value) {
-    if job.frames.len >= job.heap.limits.frames { job.heap.fault = Fault.StackLimit; return; }
-    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: job.operands.len, callee: Value.Undefined, receiver: Value.Undefined, input: x, output: y, native: Native.ToPrimitive { op: op as u8, method: 0 } });
+// Whether an operand converts through ToPrimitive (light-cljs-828): an object
+// with a prototype chain, ordinary objects, arrays, closures, built-in
+// functions, errors, generators and promises (the kinds lookup reads). The
+// light-cljs runtime kinds (forms, cells, cursors, key lists) do not: an
+// operator on one fails by name as before, and a scalar form (kind 11) is
+// its primitive.
+fn convertible(heap: const Heap&, v: Value) -> bool {
+    if !v.is_object() { return false; }
+    let kind = node(heap, v.id()).kind;
+    return kind == 0 || kind == 1 || kind == 2 || kind == 4 || kind == 13 || kind == 20 || kind == 21;
 }
+// Start the resumable ToPrimitive with `hint` of the `count` operands whose
+// first lies `depth` below the operand top (Native.Convert): a native frame
+// above the operation's, which converts them in place, left to right, and
+// pops, so the operation, its pc left at its own step, runs again on
+// primitives. With `numeric` each primitive also takes ToNumber before the
+// next operand converts (ToNumberPair, the unary operators, a length).
+fn start_convert(job: Job&, hint: Hint, numeric: bool, count: i64, depth: i64) {
+    if job.frames.len >= job.heap.limits.frames { job.heap.fault = Fault.StackLimit; return; }
+    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: job.operands.len, callee: Value.Undefined, receiver: Value.Undefined, argument_count: depth, native: Native.Convert { hint: hint, numeric: numeric, count: count as u8, method: 0 } });
+}
+// Whether a binary operator's operands convert first: `+` and the
+// relational operators convert both, in source order (binary_hint);
+// IsLooselyEqual only an object beside a primitive other than undefined and
+// null (two objects compare by identity, and an object never equals
+// undefined or null).
+fn binary_converts(heap: const Heap&, op: i64, x: Value, y: Value) -> bool {
+    if op == opcode::Plus || relational(op) { return convertible(heap, x) || convertible(heap, y); }
+    if op == opcode::LooseEq { return convertible(heap, x) && !y.is_object() && y.tag() > value_tag::Null || convertible(heap, y) && !x.is_object() && x.tag() > value_tag::Null; }
+    return false;
+}
+inline fn relational(op: i64) -> bool { return op == opcode::CompareLt || op == opcode::CompareGt || op == opcode::CompareLe || op == opcode::CompareGe; }
+// The hint of a binary operator's conversion: number for the relational
+// operators, default for `+` and `==`.
+inline fn binary_hint(op: i64) -> Hint { return if relational(op) { Hint.Number } else { Hint.Default }; }
+// Whether key operand k of a property operation on `base` converts first
+// (ToPropertyKey of an object, hint string): an undefined or null base is
+// the operation's TypeError before the key's conversion, so it does not.
+inline fn key_converts(heap: const Heap&, base: Value, k: Value) -> bool { return convertible(heap, k) && base.tag() > value_tag::Null; }
 // The interned key of these bytes, made if there is none. A key of Latin-1
 // text is a Latin-1 header (the encoding is canonical), so this compares the
 // bytes without building a string.
@@ -2753,65 +2793,98 @@ fn symbol_detail(job: Job&, op: i64, a: Value, b: Value) {
 fn holds_string(heap: const Heap&, v: Value) -> bool {
     return v.is_string() || v.is_object() && v.id() < heap.nodes.len && heap.nodes[v.id()].kind == 11 && heap.nodes[v.id()].value.is_string();
 }
-// One step of OrdinaryToPrimitive with hint default (number order: valueOf,
-// then toString), the Pants engine's Convert native (rust/src/vm/native.rs).
-// The operand being converted is index 0 (input) or 1 (output); an operand
-// that is not an ordinary object is left as it is for the operator. A
-// callable method, own or inherited ([[Get]], light-cljs-787), is called with
-// the object as receiver; a primitive result replaces the operand, an object
-// result tries the next method, and a missing or non-callable one is
-// skipped. A method behind an accessor comes from its getter, run with the
-// object as receiver (light-cljs-805): pc 2 awaits its result, the method. A
-// method the realm's pending %Object.prototype% would supply fails
-// UnsupportedOperand (on_intrinsic), as does a built-in method or getter; an
-// object that converts by neither method is a TypeError.
-fn to_primitive_step(job: Job&, frame: Frame, op: u8, method: u8) {
+// One step of ToPrimitive (ECMAScript 7.1.1; the Pants engine's Convert,
+// rust/src/vm/native.rs) for the operand at `index` (see Native.Convert):
+// GetMethod(input, @@toPrimitive) first, called with the hint's string and
+// the object as receiver, an object result a TypeError; then
+// OrdinaryToPrimitive, valueOf then toString (toString first for hint
+// string), a callable method's primitive result replacing the operand, an
+// object result or a missing or non-callable method trying the next; an
+// object neither method converts is a TypeError. A method, own or inherited
+// ([[Get]], light-cljs-787), behind an accessor comes from its getter, run
+// with the object as receiver (pc 2). A user method or getter runs as a
+// frame above this one (decision 4); a plain built-in method (the realm's
+// Object.prototype.valueOf and toString, Error.prototype.toString) runs
+// here and its result is the next step's. A method the realm's pending
+// properties would supply (Array.prototype.toString, light-cljs-788) fails
+// by name, as does a built-in getter or a built-in that needs a native
+// frame or a host effect. Operands that need no conversion are left for
+// the operation, except that with `numeric` each takes ToNumber in turn.
+fn convert_step(job: Job&, frame: Frame, hint: Hint, then_number: bool, count: u8, method: u8) {
     let heap .= job.heap; let at = job.frames.len - 1;
+    if frame.index >= count {
+        // Every operand is primitive: the operation below runs again.
+        job.frames.pop(); job.operands.resize(frame.operand_base);
+        return;
+    }
+    let slot = frame.operand_base - frame.argument_count + frame.index;
     if frame.pc == 1 {
         // A scalar form (kind 11: a primitive with its provenance, as a
         // helper's value arrives) is its primitive.
         let result = form_value(heap, job.operands.pop());
         job.frames[at].pc = 0;
-        if result.is_object() { job.frames[at].native = Native.ToPrimitive { op: op, method: method + 1 }; return; }
-        if frame.index == 0 { job.frames[at].input = result; } else { job.frames[at].output = result; }
-        job.frames[at].index += 1; job.frames[at].native = Native.ToPrimitive { op: op, method: 0 };
+        if result.is_object() {
+            if method == 0 { type_error(job, "cannot convert object to primitive value"); return; }
+            job.frames[at].native = Native.Convert { hint: hint, numeric: then_number, count: count, method: method + 1 };
+            return;
+        }
+        converted(job, at, slot, result, hint, then_number, count);
         return;
     }
-    if frame.index >= 2 {
-        let value = binary_value(heap, op, frame.input, frame.output);
-        // This native frame names no instruction for fault_message, so a
-        // symbol's message goes in Job.detail.
-        symbol_detail(job, op, frame.input, frame.output);
-        if heap.fault == Fault.None { finish_native(job, frame, value); }
-        return;
-    }
-    let v = if frame.index == 0 { frame.input } else { frame.output };
-    if !ordinary(heap, v) { job.frames[at].index += 1; return; }
-    if method >= 2 { heap.fault = Fault.TypeError; return; }
+    let v = job.operands[slot];
+    if !convertible(heap, v) { converted(job, at, slot, v, hint, then_number, count); return; }
+    if method >= 3 { type_error(job, "cannot convert object to primitive value"); return; }
     var m = Value.Undefined;
     if frame.pc == 2 { m = job.operands.pop(); job.frames[at].pc = 0; }
     else {
-        let k = key_named(heap, if method == 0 { "valueOf" } else { "toString" });
+        let k: Value = if method == 0 { Value.Symbol { s: well_known::ToPrimitive } } else { key_named(heap, if (method == 1) == (hint == Hint.String) { "toString" } else { "valueOf" }) };
         if heap.fault != Fault.None { return; }
         let value, getter = lookup(heap, v, k);
         if heap.fault != Fault.None { return; }
         if getter.is_object() {
-            if node(heap, getter.id()).kind != 2 { heap.fault = Fault.UnsupportedOperand; return; }
+            if node(heap, getter.id()).kind != 2 { unsupported_detail(job, "ToPrimitive through a built-in getter"); return; }
             job.frames[at].pc = 2; enter(job, getter, v, []); return;
         }
         m = value;
     }
-    // A plain built-in method (Object.prototype.valueOf and toString,
-    // Error.prototype.toString) runs here; its result is the next step's.
-    if m.is_object() && node(heap, m.id()).kind == 4 {
-        let b = builtin_of(heap, m.id());
-        if effect_builtin(b) || b == Builtin.Mapv { heap.fault = Fault.UnsupportedOperand; return; }
-        let r = call_builtin(job, node(heap, m.id()).function, v, []);
-        if heap.fault == Fault.None { job.frames[at].pc = 1; job.operands.push(r); }
+    let next = Native.Convert { hint: hint, numeric: then_number, count: count, method: method + 1 };
+    if method == 0 {
+        // GetMethod: undefined or null is no method; anything else must be
+        // callable.
+        if m.tag() <= value_tag::Null { job.frames[at].native = next; return; }
+        if !callable(heap, m) { type_error(job, "Symbol.toPrimitive is not a function"); return; }
+        let words: const u8[:] = match hint { Default => "default", Number => "number", String => "string" };
+        let h = key_named(heap, words);
+        if heap.fault != Fault.None { return; }
+        conversion_call(job, at, m, v, [h]);
         return;
     }
-    if m.is_object() && node(heap, m.id()).kind == 2 { job.frames[at].pc = 1; enter(job, m, v, []); return; }
-    job.frames[at].native = Native.ToPrimitive { op: op, method: method + 1 };
+    if callable(heap, m) { conversion_call(job, at, m, v, []); return; }
+    job.frames[at].native = next;
+}
+// Call conversion method m with receiver v: its result arrives at pc 1.
+fn conversion_call(job: Job&, at: i64, m: Value, v: Value, args: const Value[:]) {
+    let heap .= job.heap;
+    job.frames[at].pc = 1;
+    if node(heap, m.id()).kind == 2 { enter(job, m, v, args); return; }
+    let b = builtin_of(heap, m.id());
+    if effect_builtin(b) || native_builtin(b) || b == Builtin.Mapv || b == Builtin.MapSeq || forces(heap, b, args) { unsupported_step(job, b, "as a ToPrimitive method"); return; }
+    let r = call_builtin(job, node(heap, m.id()).function, v, args);
+    if heap.fault == Fault.None { job.operands.push(r); }
+}
+// Operand `slot` of the frame at `at` is primitive value p: it replaces the
+// operand (with `numeric`, as its ToNumber, a symbol's TypeError named here,
+// since this frame names no instruction) and the next operand converts.
+fn converted(job: Job&, at: i64, slot: i64, p: Value, hint: Hint, then_number: bool, count: u8) {
+    let heap .= job.heap;
+    if then_number && !p.is_number() {
+        let n = numeric(heap, p);
+        if heap.fault == Fault.TypeError && job.detail.len == 0 { for ch in "Cannot convert a Symbol value to a number" { job.detail.push(ch); } }
+        if heap.fault != Fault.None { return; }
+        job.operands[slot] = number(n);
+    } else { job.operands[slot] = p; }
+    job.frames[at].index += 1;
+    job.frames[at].native = Native.Convert { hint: hint, numeric: then_number, count: count, method: 0 };
 }
 // The dispatch loop runs the active frame in place (light-cljs-801): its
 // function, pc, local and operand bases are locals for the whole loop, not a
@@ -2916,10 +2989,12 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Binary b => {
                     let y = job.operands.pop(); let x = job.operands.pop();
                     if x.is_number() && y.is_number() { job.operands.push(arithmetic(b.op, x.num(), y.num())); }
-                    else if b.op == opcode::Plus && (ordinary(heap, x) || ordinary(heap, y)) {
-                        // `+` on an object: resumable ToPrimitive in a native
-                        // frame, which pushes the sum for this frame.
-                        settle(job, ran, used); job.frames[top].pc = pc; to_primitive(job, b.op, x, y); break;
+                    else if (x.is_object() || y.is_object()) && binary_converts(heap, b.op, x, y) {
+                        // An object operand: the operands go back and a
+                        // Convert frame replaces them with primitives, then
+                        // this instruction runs again (light-cljs-828).
+                        job.operands.push(x); job.operands.push(y);
+                        settle(job, ran, used); job.frames[top].pc = at; start_convert(job, binary_hint(b.op), false, 2, 2); in_place(job, top, at); break;
                     } else {
                         settle(job, ran, used); job.frames[top].pc = pc;
                         let v = binary_value(heap, b.op, x, y); job.operands.push(v);
@@ -2964,7 +3039,12 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Unary u => {
                     let v = job.operands.pop();
                     if v.is_number() { let n = v.num(); job.operands.push(number(if u.op == opcode::Neg { -n } else if u.op == opcode::Inc { n + 1 } else if u.op == opcode::Dec { n - 1 } else { n })); }
-                    else {
+                    else if convertible(heap, v) {
+                        // ToPrimitive with hint number, then ToNumber, in a
+                        // Convert frame; this instruction runs again.
+                        job.operands.push(v);
+                        settle(job, ran, used); job.frames[top].pc = at; start_convert(job, Hint.Number, true, 1, 1); in_place(job, top, at); break;
+                    } else {
                         settle(job, ran, used); job.frames[top].pc = pc;
                         let n = numeric(heap, v);
                         job.operands.push(number(if u.op == opcode::Neg { -n } else if u.op == opcode::Inc { n + 1 } else if u.op == opcode::Dec { n - 1 } else { n }));
@@ -2975,7 +3055,13 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Numeric2 => {
                     let b = job.operands.pop(); let a = job.operands.pop();
                     if a.is_number() && b.is_number() { job.operands.push(a); job.operands.push(b); }
-                    else {
+                    else if convertible(heap, a) || convertible(heap, b) {
+                        // The left operand's ToPrimitive and ToNumber finish
+                        // before the right's start (a Convert frame with
+                        // `numeric`); this instruction runs again on numbers.
+                        job.operands.push(a); job.operands.push(b);
+                        settle(job, ran, used); job.frames[top].pc = at; start_convert(job, Hint.Number, true, 2, 2); in_place(job, top, at); break;
+                    } else {
                         settle(job, ran, used); job.frames[top].pc = pc;
                         let x = numeric(heap, a); let y = numeric(heap, b);
                         job.operands.push(number(x)); job.operands.push(number(y));
@@ -3030,6 +3116,10 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     // A dense run read neither charges nor faults.
                     if i >= 0 && dense(job, object) && !node(heap, object.id()).initialized { job.operands.pop(); job.operands.pop(); let e, found = own_element(heap, object, i); job.operands.push(e); }
                     else if object_hit(job, object, i) { job.operands.pop(); job.operands.pop(); job.operands.push(slot(heap, node(heap, object.id()).start + i)); }
+                    // An object key: ToPropertyKey (ToPrimitive with hint
+                    // string) in a Convert frame, then this instruction runs
+                    // again (light-cljs-828), as in the arms below.
+                    else if key_converts(heap, object, v) { settle(job, ran, used); job.frames[top].pc = at; start_convert(job, Hint.String, false, 1, 1); in_place(job, top, at); break; }
                     else {
                         settle(job, ran, used); job.frames[top].pc = pc; job.operands.pop();
                         if i >= 0 && dense(job, object) { job.operands.pop(); let e, found = own_element(heap, object, i); job.operands.push(e); }
@@ -3049,6 +3139,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     left = fuel(job, allowance, used);
                 },
                 SetIndexed s => {
+                    if key_converts(heap, job.operands[job.operands.len - 3], job.operands[job.operands.len - 2]) { settle(job, ran, used); job.frames[top].pc = at; start_convert(job, Hint.String, false, 1, 2); in_place(job, top, at); break; }
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let value = job.operands.pop(); let v = job.operands.pop(); let object = job.operands[job.operands.len - 1]; let i = number_index(v);
                     if i >= 0 && dense(job, object) && writable(job, object.id()) { job.operands.pop(); if valid(heap, value) { set_element(heap, object, i, value); } job.operands.push(value); }
@@ -3058,6 +3149,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     left = fuel(job, allowance, used);
                 },
                 DefineIndexed d => {
+                    if key_converts(heap, job.operands[job.operands.len - 3], job.operands[job.operands.len - 2]) { settle(job, ran, used); job.frames[top].pc = at; start_convert(job, Hint.String, false, 1, 2); in_place(job, top, at); break; }
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let value = job.operands.pop(); let v = job.operands.pop(); let k = key(heap, v);
                     if heap.fault == Fault.None { define_field(job, k, value, d.half); }
@@ -3070,11 +3162,14 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     left = fuel(job, allowance, used);
                 },
                 Delete d => {
+                    if key_converts(heap, job.operands[job.operands.len - 2], job.operands[job.operands.len - 1]) { settle(job, ran, used); job.frames[top].pc = at; start_convert(job, Hint.String, false, 1, 1); in_place(job, top, at); break; }
                     settle(job, ran, used); job.frames[top].pc = pc; delete_op(job, d.strict || f.strict);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
                 In => {
+                    // `k in o` checks o (the top) before it converts k.
+                    if job.operands[job.operands.len - 1].is_object() && convertible(heap, job.operands[job.operands.len - 2]) { settle(job, ran, used); job.frames[top].pc = at; start_convert(job, Hint.String, false, 1, 2); in_place(job, top, at); break; }
                     settle(job, ran, used); job.frames[top].pc = pc; in_op(job);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
@@ -3125,13 +3220,16 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 },
                 // ToString (an untagged template's substitution): a string
                 // stays as it is; another primitive converts (to_string). An
-                // object needs ToPrimitive with hint string, not implemented
-                // yet: it fails by name.
+                // object runs ToPrimitive with hint string in a Convert frame
+                // and this instruction runs again (light-cljs-828); a
+                // light-cljs runtime value fails by name.
                 ToString => {
                     let v = job.operands[job.operands.len - 1];
                     if !v.is_string() {
-                        settle(job, ran, used); job.frames[top].pc = pc;
-                        if v.is_object() && valid(heap, v) { unsupported_detail(job, "ToString of an object (ToPrimitive with hint string)"); }
+                        settle(job, ran, used);
+                        if convertible(heap, v) { job.frames[top].pc = at; start_convert(job, Hint.String, false, 1, 1); in_place(job, top, at); break; }
+                        job.frames[top].pc = pc;
+                        if v.is_object() && valid(heap, v) { unsupported_detail(job, "ToString of a light-cljs runtime value"); }
                         else { job.operands.pop(); job.operands.push(to_string(heap, v)); }
                         if !in_place(job, top, at) { break; }
                         left = fuel(job, allowance, used);
@@ -3204,6 +3302,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     left = fuel(job, allowance, used);
                 },
                 ToPropertyKey => {
+                    if key_converts(heap, job.operands[job.operands.len - 2], job.operands[job.operands.len - 1]) { settle(job, ran, used); job.frames[top].pc = at; start_convert(job, Hint.String, false, 1, 1); in_place(job, top, at); break; }
                     settle(job, ran, used); job.frames[top].pc = pc; to_property_key(job);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
@@ -3746,8 +3845,8 @@ fn delete_op(job: Job&, strict: bool) {
     job.operands.push(boolean(ok));
 }
 // In: k o → bool, `k in o` ([[HasProperty]]). A non-object o is a
-// TypeError; an object k needs ToPrimitive, not implemented here
-// (UnsupportedOperand).
+// TypeError; an object k converts before this (the Convert frame,
+// light-cljs-828), and a light-cljs runtime value fails UnsupportedOperand.
 fn in_op(job: Job&) {
     let heap .= job.heap;
     let object = job.operands.pop(); let kv = job.operands.pop();
@@ -3974,9 +4073,9 @@ fn copy_step(job: Job&, frame: Frame) {
 }
 // ToPropertyKey: o k → o k', the key converted once for a read and a
 // later write of o[k] or an object pattern's key: an array index as a
-// number, any other name as a string. Undefined or null o is a TypeError; a
-// key needing ToPrimitive (an object) or number-to-string conversion fails
-// UnsupportedOperand, as key() does.
+// number, any other name as a string. Undefined or null o is a TypeError; an
+// object key converts before this (the Convert frame, light-cljs-828), and a
+// light-cljs runtime value fails UnsupportedOperand, as key() does.
 fn to_property_key(job: Job&) {
     let heap .= job.heap;
     let kv = job.operands.pop(); let base = job.operands[job.operands.len - 1];

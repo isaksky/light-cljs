@@ -94,17 +94,13 @@ fn array_callbacks_step(job: Job&, frame: Frame, b: Builtin) {
             // A scalar form (a primitive with its provenance) is its primitive.
             let v = form_value(heap, job.operands.pop());
             if v.is_object() {
-                // ToNumber of an object: its ToPrimitive (valueOf, then
-                // toString) in a native frame above this one, as `v - 0`;
-                // the number comes back to this phase.
-                // The ToPrimitive frame runs OrdinaryToPrimitive only, so a
-                // length with a @@toPrimitive method (own or inherited, even
-                // behind a getter) is a named unsupported step.
-                if !ordinary(heap, v) { unsupported_step(job, b, "ToNumber of a non-ordinary length"); return; }
-                let hook, hook_getter = lookup(heap, v, Value.Symbol { s: well_known::ToPrimitive });
-                if heap.fault != Fault.None { return; }
-                if hook_getter.is_object() || hook.tag() > value_tag::Null { unsupported_step(job, b, "a length's @@toPrimitive"); return; }
-                to_primitive(job, 8, v, number(0)); return;
+                // ToNumber of an object: its ToPrimitive with hint number
+                // (@@toPrimitive, then valueOf and toString) and ToNumber in
+                // a Convert frame above this one (light-cljs-828), which
+                // leaves the number where the length was; this phase then
+                // runs again and takes it.
+                if !convertible(heap, v) { unsupported_step(job, b, "ToNumber of a light-cljs runtime value"); return; }
+                job.operands.push(v); start_convert(job, Hint.Number, true, 1, 1); return;
             }
             let n = numeric(heap, v);
             if heap.fault != Fault.None { return; }
