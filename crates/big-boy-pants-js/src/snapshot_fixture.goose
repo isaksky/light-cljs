@@ -26,7 +26,7 @@ fn prepare(code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding
     // compiler-emitted macro/helper bodies above remain unchanged.
     var synthetic = source::Code {};
     synthetic.functions.push(source::Function { start: 0, count: 6, constants: 0, children: 0, params: 1, locals: 1, captures: 1, strict: true });
-    for op, i in [46, 3, 50, 46, 49, 15] {
+    for op, i in [opcode::GetCapture, opcode::GetLocal, opcode::CellSet, opcode::GetCapture, opcode::CellGet, opcode::Return] {
         synthetic.ops.push(source::Op { code: op, arg: 0, offset: [0, 3, 6, 7, 10, 11][i], start: 0, end: 0, depth: [0, 1, 2, 0, 1, 1][i] });
     }
     synthetic.valid = true; let setter = source::append_code(code, synthetic);

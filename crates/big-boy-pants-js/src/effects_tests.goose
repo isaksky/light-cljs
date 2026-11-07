@@ -19,9 +19,9 @@ fn fixture(code: source::Code&, kinds: const i64[:], fail: bool = false) -> i64 
     let count = kinds.len * 3 + (if fail { 2 } else { 0 });
     part.functions.push(source::Function { start: 0, count: count as u32, constants: 0, children: 0, params: 0, locals: 0, captures: 0, strict: true });
     for kind, i in kinds {
-        for op, j in [106, 44, if i == kinds.len - 1 && !fail { 15 } else { 5 }] { part.ops.push(source::Op { code: op, arg: if j == 0 { kind } else { 0 }, offset: part.ops.len, start: 0, end: 0, depth: if j == 0 { 0 } else { 1 } }); }
+        for op, j in [opcode::GetGlobal, opcode::Call, if i == kinds.len - 1 && !fail { opcode::Return } else { opcode::Pop }] { part.ops.push(source::Op { code: op, arg: if j == 0 { kind } else { 0 }, offset: part.ops.len, start: 0, end: 0, depth: if j == 0 { 0 } else { 1 } }); }
     }
-    if fail { part.ops.push(source::Op { code: 106, arg: 9, offset: part.ops.len, start: 0, end: 0, depth: 0 }); part.ops.push(source::Op { code: 15, arg: 0, offset: part.ops.len, start: 0, end: 0, depth: 1 }); }
+    if fail { part.ops.push(source::Op { code: opcode::GetGlobal, arg: 9, offset: part.ops.len, start: 0, end: 0, depth: 0 }); part.ops.push(source::Op { code: opcode::Return, arg: 0, offset: part.ops.len, start: 0, end: 0, depth: 1 }); }
     var offset: i64 = 0; for &op in part.ops { op.offset = offset; offset += 1 + (export_descriptor(op.code) >> 16); }
     part.valid = true; return source::append_code(code, part);
 }
@@ -30,9 +30,9 @@ fn prepare(code: source::Code&, heap: source::Heap&, roots: snapshot::Binding[>.
     entries.push(snapshot_test::append(code, embed_file("../corpus/serial/mutations.gsp")));
     entries.push(snapshot_test::append(code, embed_file("../corpus/effect-announce.pants.gsp")));
     var captured = source::Code {}; captured.functions.push(source::Function { start: 0, count: 3, constants: 0, children: 0, params: 0, locals: 0, captures: 1, strict: true });
-    for op, i in [46, 49, 15] { captured.ops.push(source::Op { code: op, arg: 0, offset: [0, 3, 4][i], start: 0, end: 0, depth: [0, 1, 1][i] }); } captured.valid = true; entries.push(source::append_code(code, captured));
+    for op, i in [opcode::GetCapture, opcode::CellGet, opcode::Return] { captured.ops.push(source::Op { code: op, arg: 0, offset: [0, 3, 4][i], start: 0, end: 0, depth: [0, 1, 1][i] }); } captured.valid = true; entries.push(source::append_code(code, captured));
     var mapped = source::Code {}; mapped.functions.push(source::Function { start: 0, count: 5, constants: 0, children: 0, params: 3, locals: 3, captures: 0, strict: true });
-    for op, i in [3, 3, 3, 44, 15] { mapped.ops.push(source::Op { code: op, arg: [0, 1, 2, 2, 0][i], offset: [0, 3, 6, 9, 12][i], start: 0, end: 0, depth: [0, 1, 2, 3, 1][i] }); } mapped.valid = true; entries.push(source::append_code(code, mapped));
+    for op, i in [opcode::GetLocal, opcode::GetLocal, opcode::GetLocal, opcode::Call, opcode::Return] { mapped.ops.push(source::Op { code: op, arg: [0, 1, 2, 2, 0][i], offset: [0, 3, 6, 9, 12][i], start: 0, end: 0, depth: [0, 1, 2, 3, 1][i] }); } mapped.valid = true; entries.push(source::append_code(code, mapped));
     assert(source::initialize(heap)); let rt = source::boot_runtime(heap); roots.push(snapshot::Binding { id: 1, generation: 1, value: rt });
     for kind, i in [6, 7, 8] { let leaf = source::builtin(heap, kind); assert(source::install_field(heap, heap.global, ["sharedIncrement", "sharedRead", "external"][i], leaf)); }
 }
@@ -166,7 +166,7 @@ thread_fn caught_error(fault: source::Fault, limited: bool) {
         var code = source::Code {}; code.constants.push(source::nil());
         code.functions.push(source::Function { start: 0, count: 7, constants: 0, children: 0, params: 0, locals: 1, captures: 0, strict: true });
         var offset: i64 = 0;
-        for op, i in [2, 15, 4, 3, 1, 11, 15] { code.ops.push(source::Op { code: op, arg: 0, offset: offset, start: 0, end: 0, depth: [0, 1, 1, 0, 1, 2, 1][i] }); offset += 1 + (export_descriptor(op) >> 16); } source::decode(code); code.valid = true;
+        for op, i in [opcode::Undefined, opcode::Return, opcode::SetLocal, opcode::GetLocal, opcode::Const, opcode::StrictEq, opcode::Return] { code.ops.push(source::Op { code: op, arg: 0, offset: offset, start: 0, end: 0, depth: [0, 1, 1, 0, 1, 2, 1][i] }); offset += 1 + (export_descriptor(op) >> 16); } source::decode(code); code.valid = true;
         var heap = source::Heap { code: code }; assert(source::initialize(heap));
         var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
         job.handlers.push(source::Handler { frame: 0, pc: 2, operands: 0, locals: 1 });

@@ -791,7 +791,7 @@ fn delay_now(job: Job&, b: Builtin, d: Value) -> Value {
 // which runs as a native frame (start_force).
 fn forces(heap: Heap&, b: Builtin, args: const Value[:]) -> bool { return (b == Builtin.Deref || b == Builtin.Force) && args.len > 0 && is_delay(heap, args[0]); }
 // Whether `new f(...)` can construct with callee f: a built-in constructor
-// whose construction is its call (Delay). Construct (opcode 94) of anything
+// whose construction is its call (Delay). Construct of anything
 // else is not implemented yet.
 fn constructible(heap: Heap&, f: Value) -> bool { return valid(heap, f) && f.tag() == 5 && node(heap, f.id()).kind == 4 && builtin_of(heap, f.id()) == Builtin.Delay; }
 

@@ -53,12 +53,12 @@ fn main() {
     set_word(bad[..], l.instructions + 12, program::word(macro, l.instructions + 12));
     for i in program::word(macro, 24) {
         let at = l.instructions + i * 20; let descriptor = program::word(macro, at); let kind = (descriptor >> 8) & 255;
-        if kind >= 1 && kind <= 5 {
+        if kind >= operand::Const && kind <= operand::Capture {
             set_word(bad[..], at + 4, 4294967295);
             assert(program::validate(bad) != program::Error.None);
             set_word(bad[..], at + 4, program::word(macro, at + 4));
         }
-        if (descriptor & 255) == 194 {
+        if (descriptor & 255) == opcode::FormOp {
             set_word(bad[..], at + 4, 65535); assert(program::validate(bad) == program::Error.Operation);
             set_word(bad[..], at + 4, program::word(macro, at + 4));
         }
@@ -96,6 +96,6 @@ fn depth_limit(count: i64, expected: program::Error) {
         for n in [i * 2, 2, 0, 0, i, if i + 1 < count { 1 } else { 0 }, 0, 0, 0, 0, 0, 0, 0] { push_word(bytes, n); }
     }
     for i in (count - 1) { push_word(bytes, i + 1); }
-    for i in count { for n in [2, 0, 0, 0, 0, 15, 0, 0, 0, 1] { push_word(bytes, n); } }
+    for i in count { for n in [export_descriptor(opcode::Undefined), 0, 0, 0, 0, export_descriptor(opcode::Return), 0, 0, 0, 1] { push_word(bytes, n); } }
     assert(program::validate(bytes) == expected);
 }

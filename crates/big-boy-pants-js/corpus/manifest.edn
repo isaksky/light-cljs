@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "6d003c9fd903965cd237a7fa422d2bdbae948423b1b95cbf81ccefdd924c6b04",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "efb11b66bbc35913d8c467b663297ee074a9a938f160b2ca5b181727f5c268f1",
+  "530c6438a78c35d9df9264a457ea2a17574210c35a4555e43ea51266666d3b6f",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "1a2108185dffceee40083c348fb8b306d46c392910ab5036cfe75b0ae45a205b",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -365,6 +365,34 @@
   "9036e1679e512ddd29970e84cdf1c64d48fef6a51ff338efd0a7bd4652ab407b",
   "corpus/serial/prototypes.js"
   "e7054b40cffc45ff197a3bcef4f52a9f827d3eb394ed931f0484c0883272e2e8",
+  "corpus/serial/script-declarations.gsp"
+  "57746d01a3f83d636ad2ebcc714436d306af29aba4a88801a9ee808cdbf9abe9",
+  "corpus/serial/script-declarations.js"
+  "b1e850f75fa3d19fa89805a1ce88be1911c104c0521a5833a39bfd6f4e992ba7",
+  "corpus/serial/script-reserved-function.gsp"
+  "941bfebab07c69f1101ad5eb5afafa1caf741189bac4f01ab74f031a9397930d",
+  "corpus/serial/script-reserved-function.js"
+  "2e0a6ca80cc8d9d8435dbe28aa46c1d4c7cf908ce509ea772dec9dfab5f2f187",
+  "corpus/serial/script-reserved-let.gsp"
+  "bad14c2c3d46b241645a1e1fd19ac4a031535fdfa92eb7bb148f228a0c8c198a",
+  "corpus/serial/script-reserved-let.js"
+  "1a20c5fb05488fbc86498a43f9da2813338ffee4652c19af417817f0c440c13e",
+  "corpus/serial/script-reserved-var.gsp"
+  "4c3c82129da5bd6b6dd0e434e0b4a36f25122a0f26125d0850ef74f332a51220",
+  "corpus/serial/script-reserved-var.js"
+  "d283d5c54c53fb8fd10759ec0ca3519a0dd295c76ecc764839ca57aba97e232b",
+  "corpus/serial/script-setter.gsp"
+  "fa2364c684169b8d91bfc7f342775a07d04166227c4d54778fbf8f3566a982f8",
+  "corpus/serial/script-setter.js"
+  "45c360c9f129ee40037676d1c15e341550caee3477d0ea79914e3770db4b0117",
+  "corpus/serial/script-suspension.gsp"
+  "881251b9a5fff0abff002b60cc983319633ba5a224a049cd247d08b562992fa1",
+  "corpus/serial/script-suspension.js"
+  "d0899aa961eb93a37911ba657e792a77407ecba56434d18c422bfcd0c3783da9",
+  "corpus/serial/script-throw-messages.gsp"
+  "8bf9b104bd67da300440d2c793ddc94660091edb7ed7df34b30a11c0842962ed",
+  "corpus/serial/script-throw-messages.js"
+  "b71111107822f7066479f114111e9c3872766b2a9e367062472fe421f18c4247",
   "corpus/serial/strings.gsp"
   "f3169d002cd98b5c38139c69b205702ad1ce13761f93b7870d3c561b6e22b82d",
   "corpus/serial/strings.js"

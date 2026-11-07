@@ -87,7 +87,7 @@ fn validate(bytes: const u8[:]) -> Error {
         let flags = word(bytes, f + 48);
         // Strict bit 0; constructor kind bits 8..15 (none, ordinary, base,
         // derived, default derived class); generator bit 16, async bit 17.
-        if (flags & 255) > 1 || ((flags >> 8) & 255) > 4 || (flags >> 16) > 3 { return Error.Operation; }
+        if (flags & 255) > 1 || ((flags >> 8) & 255) > constructor::DefaultDerivedClass || (flags >> 16) > 3 { return Error.Operation; }
         for child in child_count {
             let target = word(bytes, l.children + (children + child) * 4);
             if target <= id || target >= nf || child_used[target] { return Error.Reference; }
@@ -103,18 +103,18 @@ fn validate(bytes: const u8[:]) -> Error {
             // a direct-eval site (only export_direct_eval_call's opcodes);
             // bits 25..31 are zero.
             if export_descriptor(op) != descriptor || site > 1 || site == 1 && !export_direct_eval_call(op) { return Error.Operation; }
-            if op == 194 && export_form_arity(word(bytes, at + 4)) < 0 { return Error.Operation; }
+            if op == opcode::FormOp && export_form_arity(word(bytes, at + 4)) < 0 { return Error.Operation; }
             let arg = word(bytes, at + 4); let kind = (descriptor >> 8) & 255; let size = descriptor >> 16;
-            if kind == 6 && !selector(op, arg) { return Error.Operation; }
+            if kind == operand::Immediate && !selector(op, arg) { return Error.Operation; }
             if word(bytes, at + 16) != expected_offset { return Error.Range; }
             expected_offset += size + 1;
             if expected_offset > 4294967295 { return Error.Limits; }
             let span_start = word(bytes, at + 8); let span_end = word(bytes, at + 12);
             if span_start > span_end || !boundary(source, span_start) || !boundary(source, span_end) { return Error.Source; }
             if size == 0 && arg != 0 || size == 2 && arg > 65535 { return Error.Limits; }
-            if kind == 1 && arg >= constant_count || kind == 2 && arg >= locals || kind == 4 && arg >= child_count || kind == 5 && arg >= captures { return Error.Reference; }
-            if kind == 1 && export_name_operand(op) && word(bytes, l.constants + (constants + arg) * 12) != 4 { return Error.Reference; }
-            if kind == 3 && !branch(bytes, base, count, arg) { return Error.Branch; }
+            if kind == operand::Const && arg >= constant_count || kind == operand::Local && arg >= locals || kind == operand::Function && arg >= child_count || kind == operand::Capture && arg >= captures { return Error.Reference; }
+            if kind == operand::Const && export_name_operand(op) && word(bytes, l.constants + (constants + arg) * 12) != 4 { return Error.Reference; }
+            if kind == operand::Target && !branch(bytes, base, count, arg) { return Error.Branch; }
         }
     }
     for flag in used { if !flag { return Error.Range; } }

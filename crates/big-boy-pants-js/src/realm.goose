@@ -320,12 +320,12 @@ fn build_realm(heap: Heap&) -> bool {
         if !link_constructor(heap, error_constructor_row(t), p) || !realm_value(heap, p, "name", key_named(heap, ERROR_NAMES[t].text), attr_writable() | attr_configurable()) || !realm_value(heap, p, "message", key_named(heap, ""), attr_writable() | attr_configurable()) { return false; }
     }
     for m, j in REALM_FUNCTIONS {
-        if m.which == Builtin.IteratorPrototypeIterator { if !add_own(heap, m.holder, Value.Symbol { s: 0 }, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; } continue; }
+        if m.which == Builtin.IteratorPrototypeIterator { if !add_own(heap, m.holder, Value.Symbol { s: well_known::Iterator }, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; } continue; }
         if !realm_value(heap, m.holder, BUILTINS[code(m.which)].name, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; }
         if m.which == Builtin.FunctionPrototypeCall { heap.call_method = object(fixed_rows() + j); }
     }
     // %GeneratorPrototype%[@@toStringTag] and %Promise.prototype%[@@toStringTag].
-    if !add_own(heap, generator_prototype_row(), Value.Symbol { s: 4 }, key_named(heap, "Generator"), attr_configurable()) || !add_own(heap, promise_prototype_row(), Value.Symbol { s: 4 }, key_named(heap, "Promise"), attr_configurable()) { return false; }
+    if !add_own(heap, generator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Generator"), attr_configurable()) || !add_own(heap, promise_prototype_row(), Value.Symbol { s: 4 }, key_named(heap, "Promise"), attr_configurable()) { return false; }
     // The well-known symbols, Symbol's non-writable, non-enumerable,
     // non-configurable data properties; their values are the exporter's
     // fixed indices (decision 2), so they take no rows.
@@ -400,8 +400,8 @@ fn fault_message(job: Job&, fault: Fault, frame: Frame) -> Value {
     let words: const u8[:] = match fault {
         StackLimit => "stack overflow",
         RangeError => "invalid array length",
-        ReferenceError => if op >= 48 && op <= 50 { "lexical variable is not initialized" } else { "variable is not defined" },
-        TypeError => match op { 44, 83 => "not a function", 79, 90 => "cannot read property of undefined or null", 80, 91, 151, 152 => "cannot set property", 98 => "invalid 'in' operand", _ => "invalid operand" },
+        ReferenceError => if op == opcode::CellInit || op == opcode::CellGet || op == opcode::CellSet { "lexical variable is not initialized" } else { "variable is not defined" },
+        TypeError => match op { opcode::Call, opcode::CallMethod => "not a function", opcode::GetField, opcode::GetElem => "cannot read property of undefined or null", opcode::PutField, opcode::PutElem, opcode::PutFieldStrict, opcode::PutElemStrict => "cannot set property", opcode::In => "invalid 'in' operand", _ => "invalid operand" },
         SyntaxError => "invalid global declaration",
         _ => "host effect failed",
     };
@@ -507,7 +507,7 @@ fn object_tag(job: Job&, receiver: Value) -> Value {
     if receiver.tag() == 0 { return text(heap, "[object Undefined]"); }
     if receiver.tag() == 1 { return text(heap, "[object Null]"); }
     if receiver.tag() != 5 { return unsupported_step(job, Builtin.ObjectPrototypeToString, "a primitive receiver"); }
-    let tag, getter = lookup(heap, receiver, Value.Symbol { s: 4 });
+    let tag, getter = lookup(heap, receiver, Value.Symbol { s: well_known::ToStringTag });
     if heap.fault != Fault.None { return Value.Undefined; }
     if getter.tag() == 5 { return unsupported_step(job, Builtin.ObjectPrototypeToString, "a @@toStringTag getter"); }
     var units: u16[>..] = [];
@@ -651,7 +651,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         _ => { return native_value(heap, id, args); },
     }
 }
-// `typeof v` (opcode 78, ECMAScript TypeofOperator): closures and built-in
+// `typeof v` (Typeof, ECMAScript TypeofOperator): closures and built-in
 // functions are "function", every other object "object".
 fn type_name(heap: Heap&, v: Value) -> Value {
     let t: i64 = match v { Undefined => 0, Null => 1, Bool => 2, Number => 3, String => 4, Symbol => 5, BigInt => 6, Object x => if node(heap, x.o).kind == 2 || node(heap, x.o).kind == 4 { 7 } else { 1 }, _ => 1 };

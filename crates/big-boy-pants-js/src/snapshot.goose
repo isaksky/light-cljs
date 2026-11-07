@@ -322,7 +322,7 @@ fn code_valid<T>(s: const T&, c: Control&) -> bool {
     var next: i64       = 0;
     for f in s.functions {
         if !poll(c) { return false; }
-        if f.count <= 0 || !range(f.start, f.count, s.ops.len) || !range(f.constants, 0, s.code_constants.len) || !range(f.children, 0, s.children.len) || f.params < 0 || f.params > f.locals || f.locals > 65535 || f.captures < 0 || f.captures > 65535 || f.kind < 0 || f.kind > 4 || !range(f.name_start, f.name_len, s.code_units.len) || f.length > 65535 { return reject(c, Error.Code); }
+        if f.count <= 0 || !range(f.start, f.count, s.ops.len) || !range(f.constants, 0, s.code_constants.len) || !range(f.children, 0, s.children.len) || f.params < 0 || f.params > f.locals || f.locals > 65535 || f.captures < 0 || f.captures > 65535 || f.kind < 0 || f.kind > constructor::DefaultDerivedClass || !range(f.name_start, f.name_len, s.code_units.len) || f.length > 65535 { return reject(c, Error.Code); }
         if s.ops[f.start].depth != 0 { return reject(c, Error.Code); }
         var offset: i64 = 0;
         for pc in f.start..(f.start + f.count) {
@@ -333,19 +333,19 @@ fn code_valid<T>(s: const T&, c: Control&) -> bool {
             if !program::boundary(s.code_bytes, op.start) || !program::boundary(s.code_bytes, op.end) { return reject(c, Error.Code); }
             let kind = (descriptor >> 8) & 255; let width = descriptor >> 16; offset += width + 1;
             if width == 0 && op.arg != 0 || width == 2 && op.arg > 65535 { return reject(c, Error.Code); }
-            if kind == 1 && !range(op.arg, 1, s.code_constants.len - f.constants) || kind == 2 && op.arg >= f.locals || kind == 4 && !range(op.arg, 1, s.children.len - f.children) || kind == 5 && op.arg >= f.captures { return reject(c, Error.Code); }
-            if kind == 1 && export_name_operand(op.code) && s.code_constants[f.constants + op.arg].tag() != 4 { return reject(c, Error.Code); }
-            if kind == 3 && !range(op.arg - f.start, 1, f.count) || op.code == 194 && export_form_arity(op.arg) < 0 || kind == 6 && !program::selector(op.code, op.arg) { return reject(c, Error.Code); }
+            if kind == operand::Const && !range(op.arg, 1, s.code_constants.len - f.constants) || kind == operand::Local && op.arg >= f.locals || kind == operand::Function && !range(op.arg, 1, s.children.len - f.children) || kind == operand::Capture && op.arg >= f.captures { return reject(c, Error.Code); }
+            if kind == operand::Const && export_name_operand(op.code) && s.code_constants[f.constants + op.arg].tag() != 4 { return reject(c, Error.Code); }
+            if kind == operand::Target && !range(op.arg - f.start, 1, f.count) || op.code == opcode::FormOp && export_form_arity(op.arg) < 0 || kind == operand::Immediate && !program::selector(op.code, op.arg) { return reject(c, Error.Code); }
             // Check stack flow without allocating another decoded Code owner.
             let pop, push = effect(s, f, op);
             if pop < 0 || push < 0 { return reject(c, Error.Code); }
             if op.depth >= 0 {
                 if op.depth < pop || op.depth - pop + push > 65536 { return reject(c, Error.Code); }
                 let next_flow = source::flow(op.code);
-                if next_flow != 4 {
-                    for edge in (if next_flow == 2 || next_flow == 3 { 2 } else { 1 }) {
-                        let target = if next_flow != 0 && edge == 0 { op.arg } else { pc + 1 };
-                        let extra = if next_flow == 3 && edge == 0 { 1 } else { 0 };
+                if next_flow != flow::End {
+                    for edge in (if next_flow == flow::Branch || next_flow == flow::Catch { 2 } else { 1 }) {
+                        let target = if next_flow != flow::Next && edge == 0 { op.arg } else { pc + 1 };
+                        let extra = if next_flow == flow::Catch && edge == 0 { 1 } else { 0 };
                         if !range(target - f.start, 1, f.count) || s.ops[target].depth != op.depth - pop + push + extra { return reject(c, Error.Code); }
                     }
                 }
@@ -376,7 +376,7 @@ fn utf8(bytes: const u8[:]) -> bool {
 // count (child captures) is resolved after validating the child link above.
 fn effect<T>(s: const T&, f: source::Function, op: source::Op) -> i64, i64 {
     let e = export_stack_effect(op.code);
-    let captures = if e >= 0 && ((e >> 24) & 15) == 2 { s.functions[s.children[f.children + op.arg]].captures } else { 0 };
+    let captures = if e >= 0 && ((e >> 24) & 15) == count::Captures { s.functions[s.children[f.children + op.arg]].captures } else { 0 };
     return source::effect_word(e, op, captures);
 }
 fn validate<T>(s: const T&, c: Control&) -> bool {

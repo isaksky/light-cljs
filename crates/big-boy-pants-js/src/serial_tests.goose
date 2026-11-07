@@ -823,7 +823,7 @@ thread_fn named_model() {
     // first in creation order and `prototype` is non-configurable. An arrow
     // (constructor kind 0) has no `prototype`.
     var ordinary: i64 = -1; var arrow: i64 = -1;
-    for f, i in heap.code.functions { if f.captures == 0 && f.kind == 1 && ordinary < 0 && i > 0 { ordinary = i; } if f.captures == 0 && f.kind == 0 && arrow < 0 && i > 0 { arrow = i; } }
+    for f, i in heap.code.functions { if f.captures == 0 && f.kind == constructor::Ordinary && ordinary < 0 && i > 0 { ordinary = i; } if f.captures == 0 && f.kind == constructor::None && arrow < 0 && i > 0 { arrow = i; } }
     assert(ordinary > 0 && arrow > 0);
     let f = source::closure(heap, ordinary, []); let g = source::closure(heap, arrow, []);
     assert(source::lazy_prototype(heap, f.id()) && !source::lazy_prototype(heap, g.id()) && source::lazy_function(heap, g.id()));
@@ -1097,7 +1097,7 @@ thread_fn sparse_array() {
     }
 }
 fn argument_limits(bytes: const u8[:]) {
-    for op in [101, 179] { for limit in 4 { heap_program::join(thread_spawn(argument_limit, str(bytes), op, limit)); } }
+    for op in [opcode::NewArguments, opcode::Rest] { for limit in 4 { heap_program::join(thread_spawn(argument_limit, str(bytes), op, limit)); } }
 }
 thread_fn argument_limit(bytes: u8[], op: i64, limit: i64) {
     defer { heap_program::finish(); }
@@ -1116,7 +1116,7 @@ thread_fn argument_limit(bytes: u8[], op: i64, limit: i64) {
             if limit == 0 { heap.limits.stack = code.functions[function].locals + 2; }
             if limit == 1 { heap.limits.nodes = heap.nodes.len - heap.image.nodes; }
             if limit == 2 {
-                if op == 101 { heap.limits.values = heap.values.len - heap.image.values + 2; }
+                if op == opcode::NewArguments { heap.limits.values = heap.values.len - heap.image.values + 2; }
                 // A rest array keeps its elements in value slots (light-cljs-785).
                 else { heap.limits.values = heap.values.len - heap.image.values; }
             }
@@ -1136,7 +1136,7 @@ fn fixed_cells(bytes: const u8[:]) {
     var changed = false;
     for i in program::word(bytes, 24) {
         let at = l.instructions + i * 20;
-        if program::word(bytes, at) == 47 { variant[at] = 197; changed = true; }
+        if program::word(bytes, at) == export_descriptor(opcode::NewCell) { variant[at] = opcode::NewFixedCell; changed = true; }
     }
     assert(changed); check(variant, "", source::Fault.ConstAssignment);
 }
@@ -1205,17 +1205,17 @@ fn direct_eval_decode(bytes: const u8[:]) {
     var marked: i64 = 0;
     for op, i in code.ops {
         if op.direct_eval {
-            marked += 1; assert(op.code == 119);
+            marked += 1; assert(op.code == opcode::CallSpread);
             let spread = match code.ins[i] { DirectEval d => d.spread && !d.method, _ => false }; assert(spread);
         }
     }
     assert(marked == 1);
-    for n in [44, 83, 119, 120] {
+    for n in [opcode::Call, opcode::CallMethod, opcode::CallSpread, opcode::CallMethodSpread] {
         for flag in [false, true] {
             let ins = source::instruction(source::Op { code: n, arg: 0, offset: 0, start: 0, end: 0, direct_eval: flag });
             let ok = match ins {
-                DirectEval d => flag && d.method == (n == 83 || n == 120) && d.spread == (n >= 119),
-                Call => !flag && n == 44, CallMethod => !flag && n == 83, Unsupported u => !flag && n >= 119 && u.opcode == n,
+                DirectEval d => flag && d.method == (n == opcode::CallMethod || n == opcode::CallMethodSpread) && d.spread == (n == opcode::CallSpread || n == opcode::CallMethodSpread),
+                Call => !flag && n == opcode::Call, CallMethod => !flag && n == opcode::CallMethod, Unsupported u => !flag && (n == opcode::CallSpread || n == opcode::CallMethodSpread) && u.opcode == n,
                 _ => false,
             };
             assert(ok);
@@ -1246,7 +1246,7 @@ fn bigint_constants(bytes: const u8[:]) {
         if mode == 5 {
             // An unknown ThrowError selector in the dead branch.
             var found = false;
-            for i in program::word(bytes, 24) { let at = l.instructions + i * 20; if (program::word(bytes, at) & 255) == 42 { set_word(bad[..], at + 4, 5); found = true; } }
+            for i in program::word(bytes, 24) { let at = l.instructions + i * 20; if (program::word(bytes, at) & 255) == opcode::ThrowError { set_word(bad[..], at + 4, export_selector_count(opcode::ThrowError)); found = true; } }
             assert(found);
         }
         let expected = if mode == 3 || mode == 4 { program::Error.Reference } else { program::Error.Operation };
@@ -1257,16 +1257,16 @@ fn bigint_constants(bytes: const u8[:]) {
 fn flow_errors(bytes: const u8[:]) {
     let l = program::layout(bytes); let start = program::word(bytes, l.functions); let count = program::word(bytes, l.functions + 4);
     var original = source::Code {}; decode(original, bytes);
-    var end: i64 = -1; for i in start..(start + count) { if original.ops[i].code == 15 && original.ops[i].depth >= 0 { end = l.instructions + i * 20; break; } }
+    var end: i64 = -1; for i in start..(start + count) { if original.ops[i].code == opcode::Return && original.ops[i].depth >= 0 { end = l.instructions + i * 20; break; } }
     assert(end >= 0);
-    var bad: u8[>..] = []; bad.append(bytes); for i in start..(start + count) { if original.ops[i].code == 15 { set_word(bad[..], l.instructions + i * 20, 5); } }
+    var bad: u8[>..] = []; bad.append(bytes); for i in start..(start + count) { if original.ops[i].code == opcode::Return { set_word(bad[..], l.instructions + i * 20, export_descriptor(opcode::Pop)); } }
     var image = program::Image {}; assert(program::install(image, bad) == program::Error.None);
     var falling = source::Code {}; assert(!source::load(falling, image) && falling.error == tiny::LoadError.Fallthrough);
     bad.clear(); bad.append(bytes);
     var changed = false;
     for i in count {
         let at = l.instructions + (start + i) * 20;
-        if (program::word(bytes, at) & 255) == 14 { assert(original.ops[start + i + 2].depth == 1); set_word(bad[..], at + 4, original.ops[start + i + 2].offset); changed = true; break; }
+        if (program::word(bytes, at) & 255) == opcode::JumpIfFalse { assert(original.ops[start + i + 2].depth == 1); set_word(bad[..], at + 4, original.ops[start + i + 2].offset); changed = true; break; }
     }
     assert(changed && program::install(image, bad) == program::Error.None);
     var joined = source::Code {}; let accepted = source::load(joined, image); assert(!accepted && joined.error == tiny::LoadError.Join);

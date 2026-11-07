@@ -26,71 +26,71 @@ fn rejected(code: const u8[:], constants: const tiny::Value[:], locals: i64, exp
 fn validation() {
     rejected([], [], 0, tiny::LoadError.Empty, 0);
     rejected([0], [], 0, tiny::LoadError.Unknown, 0);
-    rejected([2, 255], [], 0, tiny::LoadError.Unknown, 1);
-    for op in [1, 3, 4, 13, 14] {
+    rejected([opcode::Undefined, 255], [], 0, tiny::LoadError.Unknown, 1);
+    for op in [opcode::Const, opcode::GetLocal, opcode::SetLocal, opcode::Jump, opcode::JumpIfFalse] {
         for length in (tiny::width(op as u8) - 1) {
             var code: u8[>..] = []; code.push(op as u8);
             code.resize(length + 1, 0);
             rejected(code, [], 0, tiny::LoadError.Truncated, 0);
         }
     }
-    rejected([1, 0, 0, 15], [], 0, tiny::LoadError.Constant, 0);
-    rejected([1, 1, 0, 15], [num(1)], 0, tiny::LoadError.Constant, 0);
-    rejected([3, 1, 0, 15], [], 1, tiny::LoadError.Local, 0);
-    rejected([2, 4, 1, 0, 2, 15], [], 1, tiny::LoadError.Local, 1);
+    rejected([opcode::Const, 0, 0, opcode::Return], [], 0, tiny::LoadError.Constant, 0);
+    rejected([opcode::Const, 1, 0, opcode::Return], [num(1)], 0, tiny::LoadError.Constant, 0);
+    rejected([opcode::GetLocal, 1, 0, opcode::Return], [], 1, tiny::LoadError.Local, 0);
+    rejected([opcode::Undefined, opcode::SetLocal, 1, 0, opcode::Undefined, opcode::Return], [], 1, tiny::LoadError.Local, 1);
     for target in [1, 7, 4294967295] {
         var code: u8[>..] = [];
-        assert(tiny::emit(code, 13, target)); code.append([2, 15]);
+        assert(tiny::emit(code, opcode::Jump, target)); code.append([opcode::Undefined, opcode::Return]);
         rejected(code, [], 0, tiny::LoadError.Branch, 0);
     }
-    rejected([15], [], 0, tiny::LoadError.Underflow, 0);
-    rejected([2, 7, 15], [], 0, tiny::LoadError.Underflow, 1);
-    rejected([2], [], 0, tiny::LoadError.Fallthrough, 0);
-    rejected([2, 14, 0, 0, 0, 0], [], 0, tiny::LoadError.Fallthrough, 1);
-    rejected([2, 14, 7, 0, 0, 0, 2, 2, 15], [], 0, tiny::LoadError.Join, 7);
+    rejected([opcode::Return], [], 0, tiny::LoadError.Underflow, 0);
+    rejected([opcode::Undefined, opcode::Add, opcode::Return], [], 0, tiny::LoadError.Underflow, 1);
+    rejected([opcode::Undefined], [], 0, tiny::LoadError.Fallthrough, 0);
+    rejected([opcode::Undefined, opcode::JumpIfFalse, 0, 0, 0, 0], [], 0, tiny::LoadError.Fallthrough, 1);
+    rejected([opcode::Undefined, opcode::JumpIfFalse, 7, 0, 0, 0, opcode::Undefined, opcode::Undefined, opcode::Return], [], 0, tiny::LoadError.Join, 7);
     let objects: tiny::Value[1] = [tiny::Value.Object { id: 1 }];
-    rejected([1, 0, 0, 15], objects, 0, tiny::LoadError.ConstantType, 0);
-    rejected([2, 15], [], -1, tiny::LoadError.Limits, 0);
-    rejected([2, 15], [], 65537, tiny::LoadError.Limits, 0);
+    rejected([opcode::Const, 0, 0, opcode::Return], objects, 0, tiny::LoadError.ConstantType, 0);
+    rejected([opcode::Undefined, opcode::Return], [], -1, tiny::LoadError.Limits, 0);
+    rejected([opcode::Undefined, opcode::Return], [], 65537, tiny::LoadError.Limits, 0);
     var obsolete = tiny::Program {};
-    assert(!tiny::load(obsolete, [2, 15], [], 0, 1) && obsolete.error == tiny::LoadError.Version);
+    assert(!tiny::load(obsolete, [opcode::Undefined, opcode::Return], [], 0, 1) && obsolete.error == tiny::LoadError.Version);
 
     var constants: tiny::Value[>..] = []; constants.resize(65536, num(42));
     var code:      u8[>..]          = [];
-    assert(tiny::emit(code, 1, 65535)); assert(tiny::emit(code, 4, 65535));
-    assert(tiny::emit(code, 3, 65535)); assert(tiny::emit(code, 15));
+    assert(tiny::emit(code, opcode::Const, 65535)); assert(tiny::emit(code, opcode::SetLocal, 65535));
+    assert(tiny::emit(code, opcode::GetLocal, 65535)); assert(tiny::emit(code, opcode::Return));
     var p = tiny::Program {};
     assert(tiny::load(p, code, constants, 65536));
     var job = tiny::Job { program: p }; tiny::initialize(job, []);
     var session = tiny::Session {};
     assert(tiny::run(session, job, -1) == tiny::Outcome.Complete && number(job.result) == 42);
     constants.push(num(43));
-    rejected([2, 15], constants, 0, tiny::LoadError.Limits, 0);
+    rejected([opcode::Undefined, opcode::Return], constants, 0, tiny::LoadError.Limits, 0);
 
-    var wide: u8[>..] = [2]; assert(tiny::emit(wide, 13, 1024));
+    var wide: u8[>..] = [2]; assert(tiny::emit(wide, opcode::Jump, 1024));
     while wide.len < 1024 { wide.push(2); } wide.push(15);
     var address = tiny::Program {}; assert(tiny::load(address, wide, [], 0));
     var branch = tiny::Job { program: address }; tiny::initialize(branch, []);
     assert(tiny::run(session, branch, -1) == tiny::Outcome.Complete && branch.pc == address.instructions.len);
     var encoded: u8[>..] = [];
-    assert(tiny::emit(encoded, 1, 65535)); assert(tiny::emit(encoded, 13, 4294967295));
+    assert(tiny::emit(encoded, opcode::Const, 65535)); assert(tiny::emit(encoded, opcode::Jump, 4294967295));
     let saved = copy(encoded);
-    for op in [1, 3, 4] { assert(!tiny::emit(encoded, op, 65536)); }
-    assert(!tiny::emit(encoded, 13, 4294967296));
-    assert(!tiny::emit(encoded, 1, -1) && !tiny::emit(encoded, 256));
+    for op in [opcode::Const, opcode::GetLocal, opcode::SetLocal] { assert(!tiny::emit(encoded, op, 65536)); }
+    assert(!tiny::emit(encoded, opcode::Jump, 4294967296));
+    assert(!tiny::emit(encoded, opcode::Const, -1) && !tiny::emit(encoded, 256));
     assert(same(encoded[..], saved[..]));
     print("validation: v2 u16 indices, u32 branches, truncation, overflow, >256-byte code passed");
 }
 fn scalar_operations() {
     var p = tiny::Program {};
     // (6 - 2) + (6 - 2) * 2 = 12; includes dup and all numeric arithmetic.
-    assert(load8(p, [1, 0, 1, 1, 8, 6, 1, 1, 9, 7, 15], [num(6), num(2)], 0));
+    assert(load8(p, [opcode::Const, 0, opcode::Const, 1, opcode::Sub, opcode::Dup, opcode::Const, 1, opcode::Mul, opcode::Add, opcode::Return], [num(6), num(2)], 0));
     var job = tiny::Job { program: p }; tiny::initialize(job, []);
     var session = tiny::Session {};
     assert(tiny::run(session, job, -1) == tiny::Outcome.Complete && number(job.result) == 12);
     var boolean = tiny::Program {};
     let bool_constants: tiny::Value[1] = [tiny::Value.Bool { value: true }];
-    assert(load8(boolean, [2, 12, 1, 0, 11, 6, 5, 15], bool_constants, 0));
+    assert(load8(boolean, [opcode::Undefined, opcode::Not, opcode::Const, 0, opcode::StrictEq, opcode::Dup, opcode::Pop, opcode::Return], bool_constants, 0));
     var b = tiny::Job { program: boolean }; tiny::initialize(b, []);
     assert(tiny::run(session, b, -1) == tiny::Outcome.Complete);
     assert(tiny::equal(b.result, tiny::Value.Bool { value: true }));
@@ -100,7 +100,7 @@ fn scalar_operations() {
     var numeric_loop = tiny::Program {};
     // i=0; sum=0; while(i<10) { sum=sum+i; i=i+1; } return sum;
     assert(load8(numeric_loop,
-        [1, 0, 4, 0, 1, 0, 4, 1, 3, 0, 1, 2, 10, 14, 31, 3, 1, 3, 0, 7, 4, 1, 3, 0, 1, 1, 7, 4, 0, 13, 8, 3, 1, 15],
+        [opcode::Const, 0, opcode::SetLocal, 0, opcode::Const, 0, opcode::SetLocal, 1, opcode::GetLocal, 0, opcode::Const, 2, opcode::Lt, opcode::JumpIfFalse, 31, opcode::GetLocal, 1, opcode::GetLocal, 0, opcode::Add, opcode::SetLocal, 1, opcode::GetLocal, 0, opcode::Const, 1, opcode::Add, opcode::SetLocal, 0, opcode::Jump, 8, opcode::GetLocal, 1, opcode::Return],
         [num(0), num(1), num(10)], 2));
     var sum = tiny::Job { program: numeric_loop }; tiny::initialize(sum, []);
     assert(tiny::run(session, sum, -1) == tiny::Outcome.Complete && number(sum.result) == 45);
@@ -110,7 +110,7 @@ fn scalar_operations() {
 fn identity() {
     var session = tiny::Session {};
     var p = tiny::Program {};
-    assert(load8(p, [16, 4, 0, 3, 0, 15], [], 1));
+    assert(load8(p, [opcode::NewObject, opcode::SetLocal, 0, opcode::GetLocal, 0, opcode::Return], [], 1));
     var retained: tiny::Value = tiny::Value.Undefined;
     {
         var job = tiny::Job { program: p }; tiny::initialize(job, []);
@@ -126,14 +126,14 @@ fn identity() {
     assert(tiny::equal(retained, tiny::Value.Object { id: 1 }));
     assert(session.next_object == 3);
     var compare = tiny::Program {};
-    assert(load8(compare, [16, 6, 11, 16, 16, 11, 12, 11, 15], [], 0));
+    assert(load8(compare, [opcode::NewObject, opcode::Dup, opcode::StrictEq, opcode::NewObject, opcode::NewObject, opcode::StrictEq, opcode::Not, opcode::StrictEq, opcode::Return], [], 0));
     var c = tiny::Job { program: compare }; tiny::initialize(c, []);
     assert(tiny::run(session, c, -1) == tiny::Outcome.Complete && tiny::equal(c.result, tiny::Value.Bool { value: true }));
     print("identity: round trip, fresh IDs, and retained result after job disposal passed");
 }
 fn load_loop(p: tiny::Program&) {
     // i=0; last=undefined; while(i<n) { last=counter(i); i=i+1; } return last;
-    assert(load8(p, [1, 0, 4, 1, 2, 4, 2, 3, 1, 3, 0, 10, 14, 28, 3, 1, 17, 4, 2, 3, 1, 1, 1, 7, 4, 1, 13, 7, 3, 2, 15], [num(0), num(1)], 3));
+    assert(load8(p, [opcode::Const, 0, opcode::SetLocal, 1, opcode::Undefined, opcode::SetLocal, 2, opcode::GetLocal, 1, opcode::GetLocal, 0, opcode::Lt, opcode::JumpIfFalse, 28, opcode::GetLocal, 1, opcode::HostEffect, opcode::SetLocal, 2, opcode::GetLocal, 1, opcode::Const, 1, opcode::Add, opcode::SetLocal, 1, opcode::Jump, 7, opcode::GetLocal, 2, opcode::Return], [num(0), num(1)], 3));
 }
 fn unchanged_at_zero(session: tiny::Session&, job: tiny::Job&) {
     let pc = job.pc; let status = job.status; let result = job.result;
@@ -172,7 +172,7 @@ fn round_robin(budget: i64) {
 }
 fn failures_and_claims() {
     var p = tiny::Program {};
-    assert(load8(p, [2, 1, 0, 7, 15], [num(1)], 0));
+    assert(load8(p, [opcode::Undefined, opcode::Const, 0, opcode::Add, opcode::Return], [num(1)], 0));
     var job = tiny::Job { program: p }; tiny::initialize(job, []);
     var session = tiny::Session {};
     assert(tiny::claim(job) && !tiny::claim(job));
@@ -182,14 +182,14 @@ fn failures_and_claims() {
     let pc = job.pc;
     assert(tiny::run(session, job, -1) == tiny::Outcome.Failed && job.pc == pc && !tiny::claim(job));
     var effect = tiny::Program {};
-    assert(load8(effect, [16, 17, 15], [], 0));
+    assert(load8(effect, [opcode::NewObject, opcode::HostEffect, opcode::Return], [], 0));
     var bad_effect = tiny::Job { program: effect }; tiny::initialize(bad_effect, []);
     assert(tiny::run(session, bad_effect, -1) == tiny::Outcome.Failed && bad_effect.effects.len == 0 && !bad_effect.claimed);
     var good = tiny::Program {};
-    assert(load8(good, [1, 0, 15], [num(99)], 0));
+    assert(load8(good, [opcode::Const, 0, opcode::Return], [num(99)], 0));
     var survivor = tiny::Job { program: good }; tiny::initialize(survivor, []);
     assert(tiny::run(session, survivor, -1) == tiny::Outcome.Complete && number(survivor.result) == 99 && !survivor.claimed);
-    var object = tiny::Program {}; assert(load8(object, [16, 15], [], 0));
+    var object = tiny::Program {}; assert(load8(object, [opcode::NewObject, opcode::Return], [], 0));
     session.next_object = 2147483647;
     var last = tiny::Job { program: object }; tiny::initialize(last, []);
     assert(tiny::run(session, last, -1) == tiny::Outcome.Complete);

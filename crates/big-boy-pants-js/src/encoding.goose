@@ -20,7 +20,7 @@ fn load8(p: tiny::Program&, old: const u8[:], constants: const tiny::Value[:], l
         let op = old[pos]; var arg: i64 = 0;
         if tiny::width(op) > 1 {
             arg = old[pos + 1];
-            if op == 13 || op == 14 { assert(arg < offsets.len && offsets[arg] >= 0); arg = offsets[arg]; }
+            if op == opcode::Jump || op == opcode::JumpIfFalse { assert(arg < offsets.len && offsets[arg] >= 0); arg = offsets[arg]; }
             pos += 1;
         }
         assert(tiny::emit(code, op, arg)); pos += 1;

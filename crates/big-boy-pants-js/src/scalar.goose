@@ -25,9 +25,9 @@ fn scalar(image: const program::Image&, output: tiny::Program&) -> bool {
     var code: u8[>..] = [];
     for i in program::word(bytes, 24) {
         let at = l.instructions + i * 20; let op = program::word(bytes, at) & 255;
-        // Original op 17 is a host selector (and has an operand); tiny's
+        // Original HostEffect is a host selector (and has an operand); tiny's
         // counter is synthetic and must never alias it during source loading.
-        if op == 16 || op == 17 || !tiny::known(op) { return false; }
+        if op == opcode::NewObject || op == opcode::HostEffect || !tiny::known(op) { return false; }
         if !tiny::emit(code, op, program::word(bytes, at + 4)) { return false; }
     }
     return tiny::load(output, code, constants, program::word(bytes, l.functions + 28));

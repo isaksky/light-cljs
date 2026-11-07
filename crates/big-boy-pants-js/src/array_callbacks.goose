@@ -101,7 +101,7 @@ fn array_callbacks_step(job: Job&, frame: Frame, b: Builtin) {
                 // length with a @@toPrimitive method (own or inherited, even
                 // behind a getter) is a named unsupported step.
                 if !ordinary(heap, v) { unsupported_step(job, b, "ToNumber of a non-ordinary length"); return; }
-                let hook, hook_getter = lookup(heap, v, Value.Symbol { s: 2 });
+                let hook, hook_getter = lookup(heap, v, Value.Symbol { s: well_known::ToPrimitive });
                 if heap.fault != Fault.None { return; }
                 if hook_getter.tag() == 5 || hook.tag() > 1 { unsupported_step(job, b, "a length's @@toPrimitive"); return; }
                 to_primitive(job, 8, v, number(0)); return;

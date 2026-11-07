@@ -216,8 +216,8 @@ thread_fn root_reads(base: snapshot::Snapshot) {
     assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), c));
     let receiver = source::allocate(heap, source::Node { kind: 0 }); let name = source::text(heap, "root");
     assert(source::put(heap, receiver, name, source::Value.Undefined));
-    assert(source::form_op(heap, 82, [receiver, source::nil(), name]).tag() == 0 && heap.fault == source::Fault.None);
-    source::form_op(heap, 82, [receiver, source::nil(), source::text(heap, "missing")]); assert(heap.fault == source::Fault.DependencyNeed);
+    assert(source::form_op(heap, form_op::CljReadRoot, [receiver, source::nil(), name]).tag() == 0 && heap.fault == source::Fault.None);
+    source::form_op(heap, form_op::CljReadRoot, [receiver, source::nil(), source::text(heap, "missing")]); assert(heap.fault == source::Fault.DependencyNeed);
 }
 fn budgets_and_control(base: const snapshot::Snapshot&, entries: const i64[:]) {
     for mode in 5 {

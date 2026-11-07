@@ -1,4 +1,5 @@
 import std;
+import .export_schema;
 
 namespace tiny;
 
@@ -33,19 +34,34 @@ root struct Job {
 }
 struct Session { next_object: i64 = 1 }
 
-fn width(op: u8) -> i64 { if op == 1 || op == 3 || op == 4 || op == 13 || op == 14 { if op == 13 || op == 14 { 5 } else { 3 } } else { 1 } }
-fn known(op: i64) -> bool { return (op >= 1 && op <= 17) || (op >= 33 && op <= 40) || (op >= 73 && op <= 77) || op == 112; }
+fn width(op: u8) -> i64 {
+    return match op { opcode::Const, opcode::GetLocal, opcode::SetLocal => 3, opcode::Jump, opcode::JumpIfFalse => 5, _ => 1 };
+}
+fn known(op: i64) -> bool {
+    return match op {
+        opcode::Const, opcode::Undefined, opcode::GetLocal, opcode::SetLocal, opcode::Pop, opcode::Dup, opcode::Add, opcode::Sub, opcode::Mul, opcode::Lt, opcode::StrictEq, opcode::Not, opcode::Jump, opcode::JumpIfFalse, opcode::Return, opcode::NewObject, opcode::HostEffect => true,
+        opcode::Div, opcode::Rem, opcode::Neg, opcode::ToNumber, opcode::ToNumberPair, opcode::Gt, opcode::Le, opcode::Ge => true,
+        opcode::Plus, opcode::CompareLt, opcode::CompareGt, opcode::CompareLe, opcode::CompareGe, opcode::ToNumeric => true,
+        _ => false,
+    };
+}
 fn pops(op: u8) -> i64 {
-    if (op >= 7 && op <= 11) || op == 33 || op == 34 || (op >= 37 && op <= 40) || (op >= 73 && op <= 77) { return 2; }
-    if op == 35 || op == 36 || op == 112 { return 1; }
-    if op == 4 || op == 5 || op == 6 || op == 12 || op == 14 || op == 15 || op == 17 { return 1; }
-    return 0;
+    return match op {
+        opcode::Add, opcode::Sub, opcode::Mul, opcode::Lt, opcode::StrictEq, opcode::Div, opcode::Rem, opcode::ToNumberPair, opcode::Gt, opcode::Le, opcode::Ge => 2,
+        opcode::Plus, opcode::CompareLt, opcode::CompareGt, opcode::CompareLe, opcode::CompareGe => 2,
+        opcode::Neg, opcode::ToNumber, opcode::ToNumeric => 1,
+        opcode::SetLocal, opcode::Pop, opcode::Dup, opcode::Not, opcode::JumpIfFalse, opcode::Return, opcode::HostEffect => 1,
+        _ => 0,
+    };
 }
 fn pushes(op: u8) -> i64 {
-    if op == 6 || op == 37 { return 2; }
-    if (op >= 33 && op <= 40) || (op >= 73 && op <= 77) || op == 112 { return 1; }
-    if op == 1 || op == 2 || op == 3 || (op >= 7 && op <= 12) || op == 16 || op == 17 { return 1; }
-    return 0;
+    return match op {
+        opcode::Dup, opcode::ToNumberPair => 2,
+        opcode::Div, opcode::Rem, opcode::Neg, opcode::ToNumber, opcode::Gt, opcode::Le, opcode::Ge => 1,
+        opcode::Plus, opcode::CompareLt, opcode::CompareGt, opcode::CompareLe, opcode::CompareGe, opcode::ToNumeric => 1,
+        opcode::Const, opcode::Undefined, opcode::GetLocal, opcode::Add, opcode::Sub, opcode::Mul, opcode::Lt, opcode::StrictEq, opcode::Not, opcode::NewObject, opcode::HostEffect => 1,
+        _ => 0,
+    };
 }
 fn reject(p: Program&, error: LoadError, offset: i64) -> bool {
     p.error = error; p.error_offset = offset; return false;
@@ -53,7 +69,7 @@ fn reject(p: Program&, error: LoadError, offset: i64) -> bool {
 
 // Version 2: u16 indices and u32 absolute byte addresses; check before narrowing.
 fn emit(code: u8[>..]&, op: i64, arg: i64 = 0) -> bool {
-    if !known(op) || arg < 0 || arg > (if op == 13 || op == 14 { 4294967295 } else { 65535 }) { return false; }
+    if !known(op) || arg < 0 || arg > (if op == opcode::Jump || op == opcode::JumpIfFalse { 4294967295 } else { 65535 }) { return false; }
     let byte = op as u8;
     if width(byte) == 1 && arg != 0 { return false; }
     if code.len + width(byte) > 16777216 { return false; }
@@ -81,14 +97,14 @@ fn load(p: Program&, code: const u8[:], constants: const Value[:], locals: i64, 
         if pos + size > code.len { return reject(p, LoadError.Truncated, pos); }
         var arg: i64 = 0;
         for i in (size - 1) { arg |= (code[pos + 1 + i] as i64) << (8 * i); }
-        if op == 1 && arg >= constants.len { return reject(p, LoadError.Constant, pos); }
-        if (op == 3 || op == 4) && arg >= locals { return reject(p, LoadError.Local, pos); }
+        if op == opcode::Const && arg >= constants.len { return reject(p, LoadError.Constant, pos); }
+        if (op == opcode::GetLocal || op == opcode::SetLocal) && arg >= locals { return reject(p, LoadError.Local, pos); }
         starts[pos] = p.instructions.len;
         p.instructions.push(Instruction { op: op, arg: arg, offset: pos });
         pos += size;
     }
     for &ins in p.instructions {
-        if ins.op == 13 || ins.op == 14 {
+        if ins.op == opcode::Jump || ins.op == opcode::JumpIfFalse {
             if ins.arg >= code.len || starts[ins.arg] < 0 { return reject(p, LoadError.Branch, ins.offset); }
             ins.arg = starts[ins.arg];
         }
@@ -101,10 +117,10 @@ fn load(p: Program&, code: const u8[:], constants: const Value[:], locals: i64, 
         if ins.depth < pops(ins.op) { return reject(p, LoadError.Underflow, ins.offset); }
         let after = ins.depth - pops(ins.op) + pushes(ins.op);
         if after > p.max_stack { p.max_stack = after; }
-        if ins.op == 15 { continue; }
-        let count = if ins.op == 14 { 2 } else { 1 };
+        if ins.op == opcode::Return { continue; }
+        let count = if ins.op == opcode::JumpIfFalse { 2 } else { 1 };
         for edge in count {
-            let next = if (ins.op == 13 || ins.op == 14) && edge == 0 { ins.arg } else { index + 1 };
+            let next = if (ins.op == opcode::Jump || ins.op == opcode::JumpIfFalse) && edge == 0 { ins.arg } else { index + 1 };
             if next >= p.instructions.len { return reject(p, LoadError.Fallthrough, ins.offset); }
             let depth = p.instructions[next].depth;
             if depth >= 0 && depth != after { return reject(p, LoadError.Join, p.instructions[next].offset); }
@@ -147,14 +163,14 @@ fn fail(job: Job&, fault: Fault) {
 // Shared primitive arithmetic for bootstrap and source-derived frames.
 fn number_binary(op: i64, x: f64, y: f64) -> Value {
     return match op {
-        7, 73 => Value.Number { value: x + y },
-        8 => Value.Number { value: x - y },
-        9 => Value.Number { value: x * y },
-        33 => Value.Number { value: x / y },
-        34 => Value.Number { value: x % y },
-        38, 75 => Value.Bool { value: x > y },
-        39, 76 => Value.Bool { value: x <= y },
-        40, 77 => Value.Bool { value: x >= y },
+        opcode::Add, opcode::Plus => Value.Number { value: x + y },
+        opcode::Sub => Value.Number { value: x - y },
+        opcode::Mul => Value.Number { value: x * y },
+        opcode::Div => Value.Number { value: x / y },
+        opcode::Rem => Value.Number { value: x % y },
+        opcode::Gt, opcode::CompareGt => Value.Bool { value: x > y },
+        opcode::Le, opcode::CompareLe => Value.Bool { value: x <= y },
+        opcode::Ge, opcode::CompareGe => Value.Bool { value: x >= y },
         _ => Value.Bool { value: x < y },
     };
 }
@@ -165,13 +181,13 @@ fn step(session: Session&, job: Job&) {
     job.pc += 1;
     if job.operands.len < pops(ins.op) { fail(job, Fault.InvalidState); return; }
     match ins.op {
-        1 => { job.operands.push(p.constants[ins.arg]); },
-        2 => { job.operands.push(Value.Undefined); },
-        3 => { job.operands.push(job.locals[ins.arg]); },
-        4 => { job.locals[ins.arg] = job.operands.pop(); },
-        5 => { job.operands.pop(); },
-        6 => { let v = job.operands[job.operands.len - 1]; job.operands.push(v); },
-        7, 8, 9, 10, 33, 34, 38, 39, 40, 73, 74, 75, 76, 77 => {
+        opcode::Const => { job.operands.push(p.constants[ins.arg]); },
+        opcode::Undefined => { job.operands.push(Value.Undefined); },
+        opcode::GetLocal => { job.operands.push(job.locals[ins.arg]); },
+        opcode::SetLocal => { job.locals[ins.arg] = job.operands.pop(); },
+        opcode::Pop => { job.operands.pop(); },
+        opcode::Dup => { let v = job.operands[job.operands.len - 1]; job.operands.push(v); },
+        opcode::Add, opcode::Sub, opcode::Mul, opcode::Lt, opcode::Div, opcode::Rem, opcode::Gt, opcode::Le, opcode::Ge, opcode::Plus, opcode::CompareLt, opcode::CompareGt, opcode::CompareLe, opcode::CompareGe => {
             let b = job.operands.pop(); let a = job.operands.pop();
             match a {
                 Number x => match b {
@@ -184,25 +200,25 @@ fn step(session: Session&, job: Job&) {
                 _ => { fail(job, Fault.UnsupportedOperand); },
             }
         },
-        35, 36, 112 => {
+        opcode::Neg, opcode::ToNumber, opcode::ToNumeric => {
             let v = job.operands.pop();
-            match v { Number n => { job.operands.push(Value.Number { value: if ins.op == 35 { -n.value } else { n.value } }); }, _ => { fail(job, Fault.UnsupportedOperand); } }
+            match v { Number n => { job.operands.push(Value.Number { value: if ins.op == opcode::Neg { -n.value } else { n.value } }); }, _ => { fail(job, Fault.UnsupportedOperand); } }
         },
-        37 => {
+        opcode::ToNumberPair => {
             let b = job.operands.pop(); let a = job.operands.pop();
             if (match a { Number => true, _ => false }) && (match b { Number => true, _ => false }) { job.operands.push(a); job.operands.push(b); } else { fail(job, Fault.UnsupportedOperand); }
         },
-        11 => { let b = job.operands.pop(); let a = job.operands.pop(); job.operands.push(Value.Bool { value: equal(a, b) }); },
-        12 => { let v = job.operands.pop(); job.operands.push(Value.Bool { value: !truthy(v) }); },
-        13 => { job.pc = ins.arg; },
-        14 => { let v = job.operands.pop(); if !truthy(v) { job.pc = ins.arg; } },
-        15 => { job.result = job.operands.pop(); job.status = Status.Complete; },
-        16 => {
+        opcode::StrictEq => { let b = job.operands.pop(); let a = job.operands.pop(); job.operands.push(Value.Bool { value: equal(a, b) }); },
+        opcode::Not => { let v = job.operands.pop(); job.operands.push(Value.Bool { value: !truthy(v) }); },
+        opcode::Jump => { job.pc = ins.arg; },
+        opcode::JumpIfFalse => { let v = job.operands.pop(); if !truthy(v) { job.pc = ins.arg; } },
+        opcode::Return => { job.result = job.operands.pop(); job.status = Status.Complete; },
+        opcode::NewObject => {
             if session.next_object > 2147483647 { fail(job, Fault.ObjectLimit); return; }
             let id = session.next_object; session.next_object += 1;
             job.operands.push(Value.Object { id: id });
         },
-        17 => {
+        opcode::HostEffect => {
             let arg = job.operands.pop();
             match arg {
                 Number n => {

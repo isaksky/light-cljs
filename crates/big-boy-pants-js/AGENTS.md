@@ -44,6 +44,13 @@ See [README.md](README.md) for the layout.
   expectations. Unsupported operations must fail explicitly without fallback,
   and the Goose compiler path must not use V8.
 - Use Babashka (`bb`) for new checked-in orchestration and fixture scripts.
+- No raw opcode or descriptor numbers in Goose sources. Use the names
+  `src/export_schema.goose` generates from the Rust registry: `opcode::Add`,
+  `form_op::CljCount`, `throw_kind::Uninitialized`, `constructor::Ordinary`,
+  `well_known::ToPrimitive`, `operand::Target`, `count::Captures`,
+  `flow::Branch`. A new numbering with a Rust-side source gets generated
+  names the same way (`inspection_schema()` in `rust/src/frontend/goose.rs`,
+  then `bb scripts/regenerate.bb`).
 
 ## Storage and branching
 

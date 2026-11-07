@@ -32,8 +32,8 @@ thread_fn roundtrip() {
         let changed = source::form_assoc(heap, old, source::number(1), source::number(8));
         assert(source::form_nth(heap, old, 1).id() == b.id() && source::form_nth(heap, changed, 0).id() == a.id() && source::form_nth(heap, changed, 2).id() == a.id());
         let append = source::form_assoc(heap, old, source::number(7), a); assert(source::form_count(heap, append) == 8 && source::form_nth(heap, append, 7).id() == a.id());
-        let meta = source::form_op(heap, 33, [old]); assert(source::form_kind(heap, meta) == 7);
-        let with_meta = source::form_op(heap, 34, [old, source::nil()]); assert(source::form_op(heap, 33, [with_meta]).tag() == 1 && source::form_op(heap, 33, [old]).id() == meta.id());
+        let meta = source::form_op(heap, form_op::CljMeta, [old]); assert(source::form_kind(heap, meta) == 7);
+        let with_meta = source::form_op(heap, form_op::CljWithMeta, [old, source::nil()]); assert(source::form_op(heap, form_op::CljMeta, [with_meta]).tag() == 1 && source::form_op(heap, form_op::CljMeta, [old]).id() == meta.id());
         let map = source::form_assoc(heap, meta, a, old); let map2 = source::form_assoc(heap, map, b, append);
         assert(source::form_count(heap, map) == 2 && source::form_count(heap, map2) == 2 && source::form_get(heap, map, b, source::nil()).id() == old.id() && source::form_get(heap, map2, a, source::nil()).id() == append.id());
         let constructed = source::form_construct(heap, 7, [a, old, b, append]); let set = source::form_construct(heap, 8, [a, b]);
@@ -62,8 +62,8 @@ thread_fn positional_map_equality() {
     assert(a.id() != b.id() && source::form_equal(heap, a, b));
     // LiteralMap retains duplicate operands; lookup and equality must both
     // stop at the first equal key, even when a later value would match.
-    let first = source::form_op(heap, 65, [source::form_collection(heap, 6, [a, source::number(1), b, source::number(2)])]);
-    let swapped = source::form_op(heap, 65, [source::form_collection(heap, 6, [b, source::number(2), a, source::number(1)])]);
+    let first = source::form_op(heap, form_op::LiteralMap, [source::form_collection(heap, 6, [a, source::number(1), b, source::number(2)])]);
+    let swapped = source::form_op(heap, form_op::LiteralMap, [source::form_collection(heap, 6, [b, source::number(2), a, source::number(1)])]);
     assert(source::form_count(heap, first) == 2 && source::form_count(heap, swapped) == 2);
     assert(source::form_get(heap, first, b, source::nil()).num() == 1 && source::form_get(heap, swapped, a, source::nil()).num() == 2);
     assert(!source::form_equal(heap, first, swapped) && !source::form_equal(heap, swapped, first));
@@ -94,13 +94,13 @@ thread_fn unsupported_values() {
     defer { heap_program::finish(); }
     var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let ns = source::text(heap, "a/b"); let name = source::text(heap, "x");
-    source::form_op(heap, 1, [ns, name]); assert(heap.fault == source::Fault.NativeBoundary); heap.fault = source::Fault.None;
-    let keyword = source::form_op(heap, 0, [source::nil(), name]); source::form_op(heap, 34, [keyword, source::nil()]); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
+    source::form_op(heap, form_op::Symbol, [ns, name]); assert(heap.fault == source::Fault.NativeBoundary); heap.fault = source::Fault.None;
+    let keyword = source::form_op(heap, form_op::Keyword, [source::nil(), name]); source::form_op(heap, form_op::CljWithMeta, [keyword, source::nil()]); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
     let vector = source::form_collection(heap, 6, [source::number(1)]);
     for index in [0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0, 1e100] {
         assert(source::form_get(heap, vector, source::number(index), source::number(99)).num() == 99 && heap.fault == source::Fault.None);
         source::form_assoc(heap, vector, source::number(index), source::nil()); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
-        source::form_op(heap, 25, [vector, source::number(index)]); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
+        source::form_op(heap, form_op::CljNth, [vector, source::number(index)]); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
     }
     let object = source::allocate(heap, source::Node { kind: 0 }); let container = source::form_collection(heap, 6, [object]);
     var c = bridge::Control {}; var out = bridge::Graph {}; assert(!bridge::export_graph(heap, [container], out, c) && c.error == bridge::Error.Unsupported && out.nodes.len == 0);
@@ -448,12 +448,12 @@ thread_fn assembly() {
         let old = roots[0]; let a = source::form_nth(heap, old, 0); let b = source::form_nth(heap, old, 1);
         let left = source::form_collection(heap, 5, [a, b, a]);
         let right = source::form_collection(heap, 6, [b]);
-        let joined = source::form_op(heap, 35, [left, right]);
-        let nested = source::form_op(heap, 36, [source::form_collection(heap, 5, [source::nil(), joined, source::form_collection(heap, 5, []), right])]);
+        let joined = source::form_op(heap, form_op::CljConcat, [left, right]);
+        let nested = source::form_op(heap, form_op::CljConcatAll, [source::form_collection(heap, 5, [source::nil(), joined, source::form_collection(heap, 5, []), right])]);
         assert(source::form_count(heap, nested) == 5 && source::form_count(heap, left) == 3 && source::form_count(heap, right) == 1);
         for i in 5 { assert(source::form_nth(heap, nested, i).id() == (if i == 0 || i == 2 { a.id() } else { b.id() })); }
-        let empty = source::form_op(heap, 35, [source::nil(), source::form_collection(heap, 5, [])]);
-        assert(source::form_count(heap, empty) == 0 && source::form_op(heap, 20, [empty]).tag() == 1);
+        let empty = source::form_op(heap, form_op::CljConcat, [source::nil(), source::form_collection(heap, 5, [])]);
+        assert(source::form_count(heap, empty) == 0 && source::form_op(heap, form_op::CljSeq, [empty]).tag() == 1);
         assert(source::native_value(heap, 16, [nested]).id() == nested.id());
         assert(source::native_value(heap, 16, [left]).id() == left.id());
         assert(source::form_count(heap, source::native_value(heap, 16, [source::nil()])) == 0);

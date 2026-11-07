@@ -161,32 +161,32 @@ enum Ins {
     Construct { argc: u32 },
     // Finally blocks and completion records (light-cljs-786): the Pants
     // opcodes, with their stack contracts in rust/src/vm/instr.rs. Pending
-    // is PendingThrow (118), PendingException (170) or PendingCancel (172).
+    // is PendingThrow, PendingException or PendingCancel.
     PushFinally { to: u32 }, PopFinally, EndFinally, CallFinally, DropCompletion, Pending { what: u8 },
-    // Key enumeration (light-cljs-804): for-in (99, 100), object rest (93,
-    // 127, 128, 129) and spread (180).
+    // Key enumeration (light-cljs-804): for-in (ForInStart, ForInNext),
+    // object rest (ToPropertyKey, RequireCoercible, OwnKeys, IsEnumerable)
+    // and spread (CopyDataProperties).
     ForInStart, ForInNext, OwnKeys, IsEnumerable, CopyData, ToPropertyKey, RequireCoercible,
-    // typeof (78, light-cljs-788).
+    // Typeof (light-cljs-788).
     TypeOf,
     // Generators and async functions (light-cljs-790, continuations.goose):
-    // GeneratorStart (123) only marks code; GeneratorInitialYield (125),
-    // GeneratorYield (124), AsyncStart (131) and Await (132) detach and
-    // settle activations. GeneratorYieldStar (126) and AsyncGeneratorStart
-    // (181) stay Unsupported.
+    // GeneratorStart only marks code; GeneratorInitialYield, GeneratorYield,
+    // AsyncStart and Await detach and settle activations.
+    // GeneratorYieldStar and AsyncGeneratorStart stay Unsupported.
     GeneratorStart, GeneratorInitialYield, GeneratorYield, AsyncStart, Await,
-    // The Call (44), CallMethod (83), CallSpread (119) or CallMethodSpread
-    // (120) of a direct-eval site (light-cljs-823): when its callee is the
-    // realm's %eval% it fails Unsupported naming `direct_eval` (decision 1);
-    // any other callee is an ordinary call, which for the unimplemented
-    // spread calls fails Unsupported naming their opcode.
+    // The Call, CallMethod, CallSpread or CallMethodSpread of a direct-eval
+    // site (light-cljs-823): when its callee is the realm's %eval% it fails
+    // Unsupported naming `direct_eval` (decision 1); any other callee is an
+    // ordinary call, which for the unimplemented spread calls fails
+    // Unsupported naming their opcode.
     DirectEval { argc: u32, method: bool, spread: bool },
     // Script declarations and global names (light-cljs-824, global_op), `op`
-    // the opcode and `k` its name constant: PutGlobal (108), PutGlobalStrict
-    // (150), DeclareGlobalVar (109), DeclareGlobalFunction (110),
-    // DeclareGlobalLet (137), DeclareGlobalConst (138), InitGlobalLexical
-    // (139), CheckGlobalVar (140), CheckGlobalFunction (141), DeleteGlobal
-    // (142), DeclareGlobalConstValue (143) and CheckGlobalLexicalConflict
-    // (144). ThrowError (42): the compiler's static throw of ThrowKind `kind`.
+    // the opcode and `k` its name constant: PutGlobal, PutGlobalStrict,
+    // DeclareGlobalVar, DeclareGlobalFunction, DeclareGlobalLet,
+    // DeclareGlobalConst, InitGlobalLexical, CheckGlobalVar,
+    // CheckGlobalFunction, DeleteGlobal, DeclareGlobalConstValue and
+    // CheckGlobalLexicalConflict. ThrowError: the compiler's static throw of
+    // ThrowKind `kind` (a throw_kind:: selector).
     GlobalOp { op: u8, k: u32 }, ThrowError { kind: u8 },
 }
 // The row's stack effect from the generated registry table, resolved once at
@@ -467,23 +467,23 @@ fn reject(code: Code&, error: tiny::LoadError, pc: i64) -> bool { code.error = e
 // Every opcode's stack effect and control flow come from the generated
 // registry table (export_stack_effect, light-cljs-783); there is no
 // hand-written opcode list. `captures` is the child function's capture count,
-// read only when the effect's multiplied count is that (source 2).
+// read only when the effect's multiplied count is that (count::Captures).
 fn effect_word(e: i64, op: Op, captures: i64) -> i64, i64 {
     if e < 0 { return -1, -1; }
-    let source = (e >> 24) & 15;
-    let n = if source == 1 { op.arg } else if source == 2 { captures } else if source == 3 { export_form_arity(op.arg) } else { 0 };
+    let n = match (e >> 24) & 15 { count::Operand => op.arg, count::Captures => captures, count::FormArity => export_form_arity(op.arg), _ => 0 };
     if n < 0 { return -1, -1; }
     return (e & 255) + ((e >> 16) & 255) * n, (e >> 8) & 255;
 }
 fn stack_effect(code: const Code&, f: Function, op: Op) -> i64, i64 {
     let e = export_stack_effect(op.code);
-    let captures = if e >= 0 && ((e >> 24) & 15) == 2 { code.functions[code.children[f.children + op.arg]].captures } else { 0 };
+    let captures = if e >= 0 && ((e >> 24) & 15) == count::Captures { code.functions[code.children[f.children + op.arg]].captures } else { 0 };
     return effect_word(e, op, captures);
 }
-// Flow: 0 next, 1 jump, 2 branch, 3 catch (target starts with the exception
-// pushed), 4 end. Branching opcodes carry a byte-offset target operand.
+// Flow (flow::): Next, Jump, Branch, Catch (the target starts with the
+// exception pushed) or End. Branching opcodes carry a byte-offset target
+// operand (operand::Target).
 fn flow(code: i64) -> i64 { return export_stack_effect(code) >> 28; }
-fn branches(code: i64) -> bool { return ((export_descriptor(code) >> 8) & 255) == 3; }
+fn branches(code: i64) -> bool { return ((export_descriptor(code) >> 8) & 255) == operand::Target; }
 fn target(code: const Code&, f: Function, offset: i64) -> i64 {
     var lo = f.start; var hi = f.start + f.count;
     while lo < hi { let mid = lo + (hi - lo) / 2; if code.ops[mid].offset < offset { lo = mid + 1; } else { hi = mid; } }
@@ -492,38 +492,38 @@ fn target(code: const Code&, f: Function, offset: i64) -> i64 {
 fn instruction(op: Op) -> Ins {
     let a = op.arg as u32;
     return match op.code {
-        1 => Ins.Const { k: a }, 2 => Ins.Undefined, 3 => Ins.Load { slot: a }, 4 => Ins.Store { slot: a },
-        5 => Ins.Pop, 6 => Ins.Dup,
-        7, 8, 9, 10, 11, 33, 34, 38, 39, 40, 41, 73, 74, 75, 76, 77 => Ins.Binary { op: op.code as u8 },
-        12 => Ins.Not, 13 => Ins.Jump { to: a }, 14 => Ins.JumpUnless { to: a }, 15 => Ins.Return,
-        16, 84 => Ins.NewObject, 87 => Ins.NewArray, 56 => Ins.Try { to: a }, 55 => Ins.Throw, 58 => Ins.EndTry,
-        35, 36, 112, 113, 114 => Ins.Unary { op: op.code as u8 }, 37 => Ins.Numeric2,
-        // Method (102), an object literal's method, getter or setter: obj c1..cn
+        opcode::Const => Ins.Const { k: a }, opcode::Undefined => Ins.Undefined, opcode::GetLocal => Ins.Load { slot: a }, opcode::SetLocal => Ins.Store { slot: a },
+        opcode::Pop => Ins.Pop, opcode::Dup => Ins.Dup,
+        opcode::Add, opcode::Sub, opcode::Mul, opcode::Lt, opcode::StrictEq, opcode::Div, opcode::Rem, opcode::Gt, opcode::Le, opcode::Ge, opcode::LooseEq, opcode::Plus, opcode::CompareLt, opcode::CompareGt, opcode::CompareLe, opcode::CompareGe => Ins.Binary { op: op.code as u8 },
+        opcode::Not => Ins.Not, opcode::Jump => Ins.Jump { to: a }, opcode::JumpIfFalse => Ins.JumpUnless { to: a }, opcode::Return => Ins.Return,
+        opcode::NewObject, opcode::NewObjectLiteral => Ins.NewObject, opcode::NewArray => Ins.NewArray, opcode::PushCatch => Ins.Try { to: a }, opcode::Throw => Ins.Throw, opcode::PopCatch => Ins.EndTry,
+        opcode::Neg, opcode::ToNumber, opcode::ToNumeric, opcode::Inc, opcode::Dec => Ins.Unary { op: op.code as u8 }, opcode::ToNumberPair => Ins.Numeric2,
+        // Method, an object literal's method, getter or setter: obj c1..cn
         // → obj f, a closure like Function's; its home object only serves
         // `super`, whose opcodes are not implemented (light-cljs-787).
-        43, 102 => Ins.Closure { child: a }, 94 => Ins.Construct { argc: a },
-        44 => if op.direct_eval { Ins.DirectEval { argc: a, method: false, spread: false } } else { Ins.Call { argc: a } },
-        83 => if op.direct_eval { Ins.DirectEval { argc: a, method: true, spread: false } } else { Ins.CallMethod { argc: a } },
-        119, 120 => if op.direct_eval { Ins.DirectEval { argc: 0, method: op.code == 120, spread: true } } else { Ins.Unsupported { opcode: op.code as u8 } },
-        101 => Ins.Arguments, 179 => Ins.Rest { skip: a }, 45 => Ins.Callee, 46 => Ins.Capture { slot: a },
-        47, 198 => Ins.NewCell { immutable: false }, 197 => Ins.NewCell { immutable: true },
-        48 => Ins.InitCell, 49 => Ins.ReadCell, 50 => Ins.WriteCell,
-        79 => Ins.GetNamed { k: a }, 90 => Ins.GetIndexed,
-        80 => Ins.SetNamed { k: a, strict: false }, 151 => Ins.SetNamed { k: a, strict: true }, 91 => Ins.SetIndexed { strict: false }, 152 => Ins.SetIndexed { strict: true }, 88 => Ins.Append,
-        81 => Ins.DefineNamed { k: a, half: 0 }, 103 => Ins.DefineNamed { k: a, half: 1 }, 104 => Ins.DefineNamed { k: a, half: 2 },
-        130 => Ins.DefineIndexed { half: 0 }, 133 => Ins.DefineIndexed { half: 1 }, 134 => Ins.DefineIndexed { half: 2 },
-        95 => Ins.SetProto, 97 => Ins.Delete { strict: false }, 153 => Ins.Delete { strict: true }, 98 => Ins.In,
-        161 => Ins.CheckValue, 86 => Ins.This { sloppy: true }, 145 => Ins.This { sloppy: false }, 105 => Ins.Global,
-        106 => Ins.GetGlobal { k: a, throws: true }, 107 => Ins.GetGlobal { k: a, throws: false },
-        108, 109, 110, 137, 138, 139, 140, 141, 142, 143, 144, 150 => Ins.GlobalOp { op: op.code as u8, k: a },
-        42 => Ins.ThrowError { kind: if op.arg >= 0 && op.arg <= 4 { op.arg as u8 } else { 255 } },
-        191 => Ins.Literal { kind: 5, count: a }, 192 => Ins.Literal { kind: 6, count: a },
-        193 => Ins.Literal { kind: 7, count: a * 2 }, 195 => Ins.Literal { kind: 8, count: a },
-        194 => Ins.Form { op: a },
-        57 => Ins.PushFinally { to: a }, 59 => Ins.PopFinally, 60 => Ins.EndFinally, 71 => Ins.CallFinally, 72 => Ins.DropCompletion,
-        118, 170, 172 => Ins.Pending { what: op.code as u8 },
-        78 => Ins.TypeOf, 99 => Ins.ForInStart, 100 => Ins.ForInNext, 128 => Ins.OwnKeys, 129 => Ins.IsEnumerable, 180 => Ins.CopyData, 93 => Ins.ToPropertyKey, 127 => Ins.RequireCoercible,
-        123 => Ins.GeneratorStart, 125 => Ins.GeneratorInitialYield, 124 => Ins.GeneratorYield, 131 => Ins.AsyncStart, 132 => Ins.Await,
+        opcode::Function, opcode::Method => Ins.Closure { child: a }, opcode::Construct => Ins.Construct { argc: a },
+        opcode::Call => if op.direct_eval { Ins.DirectEval { argc: a, method: false, spread: false } } else { Ins.Call { argc: a } },
+        opcode::CallMethod => if op.direct_eval { Ins.DirectEval { argc: a, method: true, spread: false } } else { Ins.CallMethod { argc: a } },
+        opcode::CallSpread, opcode::CallMethodSpread => if op.direct_eval { Ins.DirectEval { argc: 0, method: op.code == opcode::CallMethodSpread, spread: true } } else { Ins.Unsupported { opcode: op.code as u8 } },
+        opcode::NewArguments => Ins.Arguments, opcode::Rest => Ins.Rest { skip: a }, opcode::CurrentFunction => Ins.Callee, opcode::GetCapture => Ins.Capture { slot: a },
+        opcode::NewCell, opcode::NewSealableCell => Ins.NewCell { immutable: false }, opcode::NewFixedCell => Ins.NewCell { immutable: true },
+        opcode::CellInit => Ins.InitCell, opcode::CellGet => Ins.ReadCell, opcode::CellSet => Ins.WriteCell,
+        opcode::GetField => Ins.GetNamed { k: a }, opcode::GetElem => Ins.GetIndexed,
+        opcode::PutField => Ins.SetNamed { k: a, strict: false }, opcode::PutFieldStrict => Ins.SetNamed { k: a, strict: true }, opcode::PutElem => Ins.SetIndexed { strict: false }, opcode::PutElemStrict => Ins.SetIndexed { strict: true }, opcode::AppendElement => Ins.Append,
+        opcode::DefineField => Ins.DefineNamed { k: a, half: 0 }, opcode::DefineGetter => Ins.DefineNamed { k: a, half: 1 }, opcode::DefineSetter => Ins.DefineNamed { k: a, half: 2 },
+        opcode::DefineElem => Ins.DefineIndexed { half: 0 }, opcode::DefineGetterElem => Ins.DefineIndexed { half: 1 }, opcode::DefineSetterElem => Ins.DefineIndexed { half: 2 },
+        opcode::SetProto => Ins.SetProto, opcode::Delete => Ins.Delete { strict: false }, opcode::DeleteStrict => Ins.Delete { strict: true }, opcode::In => Ins.In,
+        opcode::ResolveThis => Ins.CheckValue, opcode::GetThis => Ins.This { sloppy: true }, opcode::GetRawThis => Ins.This { sloppy: false }, opcode::GetGlobalObject => Ins.Global,
+        opcode::GetGlobal => Ins.GetGlobal { k: a, throws: true }, opcode::GetGlobalOrUndefined => Ins.GetGlobal { k: a, throws: false },
+        opcode::PutGlobal, opcode::DeclareGlobalVar, opcode::DeclareGlobalFunction, opcode::DeclareGlobalLet, opcode::DeclareGlobalConst, opcode::InitGlobalLexical, opcode::CheckGlobalVar, opcode::CheckGlobalFunction, opcode::DeleteGlobal, opcode::DeclareGlobalConstValue, opcode::CheckGlobalLexicalConflict, opcode::PutGlobalStrict => Ins.GlobalOp { op: op.code as u8, k: a },
+        opcode::ThrowError => Ins.ThrowError { kind: if op.arg >= 0 && op.arg < export_selector_count(opcode::ThrowError) { op.arg as u8 } else { 255 } },
+        opcode::NewFormList => Ins.Literal { kind: 5, count: a }, opcode::NewFormVector => Ins.Literal { kind: 6, count: a },
+        opcode::NewFormMap => Ins.Literal { kind: 7, count: a * 2 }, opcode::NewFormSet => Ins.Literal { kind: 8, count: a },
+        opcode::FormOp => Ins.Form { op: a },
+        opcode::PushFinally => Ins.PushFinally { to: a }, opcode::PopFinally => Ins.PopFinally, opcode::EndFinally => Ins.EndFinally, opcode::CallFinally => Ins.CallFinally, opcode::DropCompletion => Ins.DropCompletion,
+        opcode::PendingThrow, opcode::PendingException, opcode::PendingCancel => Ins.Pending { what: op.code as u8 },
+        opcode::Typeof => Ins.TypeOf, opcode::ForInStart => Ins.ForInStart, opcode::ForInNext => Ins.ForInNext, opcode::OwnKeys => Ins.OwnKeys, opcode::IsEnumerable => Ins.IsEnumerable, opcode::CopyDataProperties => Ins.CopyData, opcode::ToPropertyKey => Ins.ToPropertyKey, opcode::RequireCoercible => Ins.RequireCoercible,
+        opcode::GeneratorStart => Ins.GeneratorStart, opcode::GeneratorInitialYield => Ins.GeneratorInitialYield, opcode::GeneratorYield => Ins.GeneratorYield, opcode::AsyncStart => Ins.AsyncStart, opcode::Await => Ins.Await,
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -590,10 +590,10 @@ fn load(code: Code&, image: const program::Image&) -> bool {
             let after = op.depth - pop + push;
             if after > 65536 { return reject(code, tiny::LoadError.Limits, pc); }
             let next_flow = flow(op.code);
-            if next_flow == 4 { continue; }
-            for edge in (if next_flow == 2 || next_flow == 3 { 2 } else { 1 }) {
-                let next = if next_flow != 0 && edge == 0 { op.arg } else { pc + 1 };
-                let expected = after + (if next_flow == 3 && edge == 0 { 1 } else { 0 });
+            if next_flow == flow::End { continue; }
+            for edge in (if next_flow == flow::Branch || next_flow == flow::Catch { 2 } else { 1 }) {
+                let next = if next_flow != flow::Next && edge == 0 { op.arg } else { pc + 1 };
+                let expected = after + (if next_flow == flow::Catch && edge == 0 { 1 } else { 0 });
                 if next < f.start || next >= f.start + f.count { return reject(code, tiny::LoadError.Fallthrough, pc); }
                 let depth = code.ops[next].depth;
                 if depth >= 0 && depth != expected { return reject(code, tiny::LoadError.Join, next); }
@@ -1305,11 +1305,11 @@ fn lazy_function(heap: const Heap&, o: i64) -> bool {
 }
 // Whether closure o's code gives it an own `prototype`: an ordinary
 // function's or a (synchronous) generator's.
-fn has_prototype(heap: const Heap&, o: i64) -> bool { let f .= heap.code.functions[node(heap, o).function]; return f.kind == 1 || f.generator && !f.asynchronous; }
+fn has_prototype(heap: const Heap&, o: i64) -> bool { let f .= heap.code.functions[node(heap, o).function]; return f.kind == constructor::Ordinary || f.generator && !f.asynchronous; }
 fn lazy_prototype(heap: const Heap&, o: i64) -> bool { return lazy_function(heap, o) && has_prototype(heap, o); }
 // Whether closure o's `prototype` is one this VM does not make (a class
 // constructor's or an async generator's).
-fn unsupported_prototype(heap: const Heap&, o: i64) -> bool { let f .= heap.code.functions[node(heap, o).function]; return f.kind >= 2 || f.generator && f.asynchronous; }
+fn unsupported_prototype(heap: const Heap&, o: i64) -> bool { let f .= heap.code.functions[node(heap, o).function]; return f.kind >= constructor::BaseClass || f.generator && f.asynchronous; }
 // Closure o's `length` and `name` from its code row.
 fn function_length(heap: const Heap&, o: i64) -> Value { return number(heap.code.functions[node(heap, o).function].length); }
 fn function_name(heap: Heap&, o: i64) -> Value {
@@ -1810,7 +1810,7 @@ fn unsupported_operation(out: u8[>..]&, code: const Code&, job: const Job&) {
     if job.fault != Fault.Unsupported || job.fault_opcode < 0 { return; }
     if job.direct_eval { out.append("direct_eval"); return; }
     out.append(export_opcode_name(job.fault_opcode));
-    if job.fault_opcode == 1 {
+    if job.fault_opcode == opcode::Const {
         let tag = code.constants[code.functions[job.fault_function].constants + code.ops[job.fault_pc].arg].tag();
         out.append(if tag == 6 { "(Symbol)" } else if tag == 7 { "(BigInt)" } else { "" });
     }
@@ -1916,9 +1916,9 @@ fn drop_completion(job: Job&, top: i64, at: i64) {
 // PendingThrow, PendingException and PendingCancel: what the frame's
 // innermost entry says about the running finally block.
 fn pending_value(job: const Job&, top: i64, what: i64) -> Value {
-    if what == 172 { return boolean(own(job, top, HandlerKind.Cancel)); }
+    if what == opcode::PendingCancel { return boolean(own(job, top, HandlerKind.Cancel)); }
     let thrown = own(job, top, HandlerKind.Throw);
-    if what == 118 { return boolean(thrown); }
+    if what == opcode::PendingThrow { return boolean(thrown); }
     return if thrown { job.handlers[job.handlers.len - 1].value } else { Value.Undefined };
 }
 // Cancellation (light-cljs-786; the Pants engine's PendingCancel contract,
@@ -1969,7 +1969,7 @@ fn push_frame(job: Job&, callee: Value, receiver: Value, arguments: const Value[
     if callee.tag() != 5 || node(heap, callee.id()).kind != 2 { heap.fault = Fault.TypeError; return false; }
     let id = node(heap, callee.id()).function; let f .= heap.code.functions[id];
     // A class constructor has no [[Call]]: calling it throws TypeError.
-    if f.kind >= 2 { heap.fault = Fault.TypeError; return false; }
+    if f.kind >= constructor::BaseClass { heap.fault = Fault.TypeError; return false; }
     if job.frames.len >= heap.limits.frames || f.locals + arguments.len > heap.limits.stack - job.locals.len - operands { heap.fault = Fault.StackLimit; return false; }
     if !charge(heap, f.locals + arguments.len) { return false; }
     if checked { for v in arguments { if !valid(heap, v) { return false; } } }
@@ -2020,15 +2020,15 @@ fn record(job: Job&, object: Value, k: Value, value: Value) {
     job.writes.push(Write { object: object, key: k, value: value });
 }
 fn binary_value(heap: Heap&, op: i64, a: Value, b: Value) -> Value {
-    if op == 11 { return boolean(equal(heap, a, b)); }
-    if op == 41 {
+    if op == opcode::StrictEq { return boolean(equal(heap, a, b)); }
+    if op == opcode::LooseEq {
         if (a.tag() == 0 || a.tag() == 1) && (b.tag() == 0 || b.tag() == 1) { return boolean(true); }
         if a.tag() == b.tag() { return boolean(equal(heap, a, b)); }
         if a.tag() <= 1 || b.tag() <= 1 { return boolean(false); }
         if (a.tag() <= 3 && b.tag() <= 3) { return boolean(numeric(heap, a) == numeric(heap, b)); }
         heap.fault = Fault.UnsupportedOperand; return Value.Undefined;
     }
-    if op == 73 && a.tag() == 4 && b.tag() == 4 {
+    if op == opcode::Plus && a.tag() == 4 && b.tag() == 4 {
         if !valid(heap, a) || !valid(heap, b) { return Value.Undefined; }
         if !units_fit(heap, str_len(heap, a) + str_len(heap, b)) { memory(heap); return Value.Undefined; }
         let x = header(heap, a.sid()); let y = header(heap, b.sid());
@@ -2040,11 +2040,11 @@ fn binary_value(heap: Heap&, op: i64, a: Value, b: Value) -> Value {
         }
         var units: u16[>..] = []; append_utf16(heap, a, units); append_utf16(heap, b, units); return string(heap, units);
     }
-    if op >= 74 && op <= 77 && a.tag() == 4 && b.tag() == 4 {
+    if (op == opcode::CompareLt || op == opcode::CompareGt || op == opcode::CompareLe || op == opcode::CompareGe) && a.tag() == 4 && b.tag() == 4 {
         if !valid(heap, a) || !valid(heap, b) || !charge(heap, str_len(heap, a) + str_len(heap, b)) { return Value.Undefined; }
         let p = str_len(heap, a); let q = str_len(heap, b);
         var c: i64 = 0; for i in min(p, q) { let x = unit(heap, a, i); let y = unit(heap, b, i); if x != y { c = if x < y { -1 } else { 1 }; break; } } if c == 0 { c = if p < q { -1 } else if p > q { 1 } else { 0 }; }
-        return boolean(if op == 74 { c < 0 } else if op == 75 { c > 0 } else if op == 76 { c <= 0 } else { c >= 0 });
+        return boolean(if op == opcode::CompareLt { c < 0 } else if op == opcode::CompareGt { c > 0 } else if op == opcode::CompareLe { c <= 0 } else { c >= 0 });
     }
     let x = numeric(heap, a); let y = numeric(heap, b);
     if heap.fault != Fault.None { return Value.Undefined; }
@@ -2275,42 +2275,42 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
     }
     let a = args[0];
     match op {
-        0, 1 => {
+        form_op::Keyword, form_op::Symbol => {
             if (a.tag() > 1 && a.tag() != 4) || args[1].tag() != 4 { heap.fault = Fault.TypeError; return Value.Undefined; }
             if !named_supported(heap, a, args[1]) { if heap.fault == Fault.None { heap.fault = Fault.NativeBoundary; } return Value.Undefined; }
-            return allocate(heap, Node { kind: if op == 0 { 10 } else { 9 }, value: args[1], namespace_value: if a.tag() <= 1 { nil() } else { a } });
+            return allocate(heap, Node { kind: if op == form_op::Keyword { 10 } else { 9 }, value: args[1], namespace_value: if a.tag() <= 1 { nil() } else { a } });
         },
-        2 => { let kind = form_kind(heap, a); return match kind { 5, 12 => text(heap, "list"), 6 => text(heap, "vector"), 7 => text(heap, "map"), 8 => text(heap, "set"), 9 => text(heap, "symbol"), 10 => text(heap, "keyword"), _ => nil() }; },
-        5, 19 => { return number(form_count(heap, a)); },
-        6, 25, 26 => { let i = form_value(heap, args[1]); if i.tag() != 3 || !(i.num() >= -2147483648.0 && i.num() <= 2147483647.0) || i.num() != (i.num() as i64) || (op != 26 && (i.num() < 0 || i.num() >= form_count(heap, a))) { heap.fault = Fault.TypeError; return Value.Undefined; } return form_nth(heap, a, i.num() as i64, if op == 26 { args[2] } else { nil() }); },
-        7, 27 => { return form_get(heap, a, args[1], args[2]); },
-        72 => { return form_get(heap, a, args[1], nil()); },
-        28 => { return boolean(form_contains(heap, a, args[1])); },
-        35 => { return form_concat(heap, args); },
-        36 => {
+        form_op::Kind => { let kind = form_kind(heap, a); return match kind { 5, 12 => text(heap, "list"), 6 => text(heap, "vector"), 7 => text(heap, "map"), 8 => text(heap, "set"), 9 => text(heap, "symbol"), 10 => text(heap, "keyword"), _ => nil() }; },
+        form_op::Count, form_op::CljCount => { return number(form_count(heap, a)); },
+        form_op::Nth, form_op::CljNth, form_op::CljNthOr => { let i = form_value(heap, args[1]); if i.tag() != 3 || !(i.num() >= -2147483648.0 && i.num() <= 2147483647.0) || i.num() != (i.num() as i64) || (op != form_op::CljNthOr && (i.num() < 0 || i.num() >= form_count(heap, a))) { heap.fault = Fault.TypeError; return Value.Undefined; } return form_nth(heap, a, i.num() as i64, if op == form_op::CljNthOr { args[2] } else { nil() }); },
+        form_op::Get, form_op::CljGet => { return form_get(heap, a, args[1], args[2]); },
+        form_op::CljGet2 => { return form_get(heap, a, args[1], nil()); },
+        form_op::CljContains => { return boolean(form_contains(heap, a, args[1])); },
+        form_op::CljConcat => { return form_concat(heap, args); },
+        form_op::CljConcatAll => {
             let x = form_value(heap, a); if x.tag() <= 1 { return form_concat(heap, []); }
             let kind = form_kind(heap, x);
             if kind != 5 && kind != 6 && kind != 12 { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
             let n = node(heap, x.id()); return form_concat(heap, run(heap, n.start, n.count));
         },
-        8, 29 => { return form_assoc(heap, a, args[1], args[2]); },
-        10, 31 => { return form_conj(heap, a, args[1]); },
-        11 => { return boolean(form_equal(heap, a, args[1])); },
-        13, 33 => { return if a.tag() == 5 && node(heap, a.id()).metadata.tag() != 0 { node(heap, a.id()).metadata } else { nil() }; },
-        14, 34 => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= 5 && kind <= 9 || kind == 12) || (meta.tag() > 1 && form_kind(heap, meta) != 7) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= 1 { Value.Undefined } else { args[1] }; n.origin = -1; return allocate(heap, n); },
-        15 => { return form_value(heap, a); },
-        18 => { let v = form_value(heap, a); return boolean(v.tag() > 1 && !(v.tag() == 2 && !v.flag())); },
-        20, 22, 23 => { return form_sequence(heap, a, if op == 20 { 0 } else { 1 }, op != 22); },
-        21 => { return form_nth(heap, a, 0); },
-        65 => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != 5 && kind != 6 { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); return form_collection(heap, 7, run(heap, n.start, n.count)); },
-        69 => { if form_kind(heap, a) != 7 && form_kind(heap, a) != 8 { heap.fault = Fault.TypeError; return Value.Undefined; } return a; },
-        80 => { let kind = form_kind(heap, a); return boolean(kind == 6 || kind == 7 || kind == 8 || kind == 9 || kind == 10); },
-        81 => {
+        form_op::Assoc, form_op::CljAssoc => { return form_assoc(heap, a, args[1], args[2]); },
+        form_op::Conj, form_op::CljConj => { return form_conj(heap, a, args[1]); },
+        form_op::Equals => { return boolean(form_equal(heap, a, args[1])); },
+        form_op::Meta, form_op::CljMeta => { return if a.tag() == 5 && node(heap, a.id()).metadata.tag() != 0 { node(heap, a.id()).metadata } else { nil() }; },
+        form_op::WithMeta, form_op::CljWithMeta => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= 5 && kind <= 9 || kind == 12) || (meta.tag() > 1 && form_kind(heap, meta) != 7) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= 1 { Value.Undefined } else { args[1] }; n.origin = -1; return allocate(heap, n); },
+        form_op::Value => { return form_value(heap, a); },
+        form_op::CljTruth => { let v = form_value(heap, a); return boolean(v.tag() > 1 && !(v.tag() == 2 && !v.flag())); },
+        form_op::CljSeq, form_op::CljRest, form_op::CljNext => { return form_sequence(heap, a, if op == form_op::CljSeq { 0 } else { 1 }, op != form_op::CljRest); },
+        form_op::CljFirst => { return form_nth(heap, a, 0); },
+        form_op::LiteralMap => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != 5 && kind != 6 { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); return form_collection(heap, 7, run(heap, n.start, n.count)); },
+        form_op::ReaderCollection => { if form_kind(heap, a) != 7 && form_kind(heap, a) != 8 { heap.fault = Fault.TypeError; return Value.Undefined; } return a; },
+        form_op::CljCallable => { let kind = form_kind(heap, a); return boolean(kind == 6 || kind == 7 || kind == 8 || kind == 9 || kind == 10); },
+        form_op::CljCallMember => {
             let value = form_value(heap, a);
             if value.tag() == 5 && (node(heap, value.id()).kind == 2 || node(heap, value.id()).kind == 4) { return heap.call_method; }
             heap.fault = Fault.NativeBoundary; return Value.Undefined;
         },
-        60 => {
+        form_op::CljInvoke => {
             let arity = args[3]; let kind = form_kind(heap, a);
             if arity.tag() != 3 || (arity.num() != 1 && arity.num() != 2) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
             if kind == 9 || kind == 10 { return form_get(heap, args[1], a, args[2]); }
@@ -2328,7 +2328,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             }
             heap.fault = Fault.NativeBoundary; return Value.Undefined;
         },
-        82 => {
+        form_op::CljReadRoot => {
             if a.tag() != 5 || node(heap, a.id()).kind != 0 || args[1].tag() > 1 { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
             if args[2].tag() != 4 { heap.fault = Fault.TypeError; return Value.Undefined; }
             let value, found = own_property(heap, a, args[2]);
@@ -2337,15 +2337,15 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             // is supported: prerequisites must be resolved before admission.
             if !found && heap.fault == Fault.None { heap.fault = Fault.DependencyNeed; } return value;
         },
-        92 => {
+        form_op::FnApplyNull => {
             if a.tag() != 5 || node(heap, a.id()).kind != 2 { heap.fault = Fault.TypeError; return Value.Undefined; }
             var row = node(heap, a.id()); row.immutable = true;
             return allocate(heap, row);
         },
-        93 => { return if a.tag() == 5 && node(heap, a.id()).kind == 2 && node(heap, a.id()).immutable { nil() } else { a }; },
+        form_op::FnApplyReceiver => { return if a.tag() == 5 && node(heap, a.id()).kind == 2 && node(heap, a.id()).immutable { nil() } else { a }; },
         // cljRealized of a delay (light-cljs-808; a lazy sequence stays a
         // boundary here).
-        49 => { return delay_realized(heap, a); },
+        form_op::CljRealized => { return delay_realized(heap, a); },
         _ => { heap.fault = Fault.NativeBoundary; return Value.Undefined; },
     }
 }
@@ -2357,7 +2357,7 @@ fn install_field(heap: Heap&, object: Value, name: const u8[:], value: Value) ->
 // RUNTIME_LEAVES; call_builtin dispatches the realm's).
 fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
     if id == 18 { return form_construct(heap, 5, args); }
-    if id == 19 && args.len == 2 { return form_op(heap, 1, args); }
+    if id == 19 && args.len == 2 { return form_op(heap, form_op::Symbol, args); }
     if id == 17 && args.len == 2 {
         // The generated target maps a nonchunked finite rest list. Vectors,
         // transducers, multiple sources and nested lazy inputs have different
@@ -2696,8 +2696,8 @@ inline fn in_place(job: Job&, top: i64, at: i64) -> bool {
 // them, without its coercions (no charge, no fault).
 inline fn arithmetic(op: i64, x: f64, y: f64) -> Value {
     return match op {
-        7, 73 => number(x + y), 8 => number(x - y), 9 => number(x * y), 33 => number(x / y), 34 => number(x % y),
-        11, 41 => boolean(x == y), 38, 75 => boolean(x > y), 39, 76 => boolean(x <= y), 40, 77 => boolean(x >= y), _ => boolean(x < y),
+        opcode::Add, opcode::Plus => number(x + y), opcode::Sub => number(x - y), opcode::Mul => number(x * y), opcode::Div => number(x / y), opcode::Rem => number(x % y),
+        opcode::StrictEq, opcode::LooseEq => boolean(x == y), opcode::Gt, opcode::CompareGt => boolean(x > y), opcode::Le, opcode::CompareLe => boolean(x <= y), opcode::Ge, opcode::CompareGe => boolean(x >= y), _ => boolean(x < y),
     };
 }
 // Run bytecode frames until the job stops or suspends, the active frame is a
@@ -2758,7 +2758,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Binary b => {
                     let y = job.operands.pop(); let x = job.operands.pop();
                     if x.tag() == 3 && y.tag() == 3 { job.operands.push(arithmetic(b.op, x.num(), y.num())); }
-                    else if b.op == 73 && (ordinary(heap, x) || ordinary(heap, y)) {
+                    else if b.op == opcode::Plus && (ordinary(heap, x) || ordinary(heap, y)) {
                         // `+` on an object: resumable ToPrimitive in a native
                         // frame, which pushes the sum for this frame.
                         settle(job, ran, used); job.frames[top].pc = pc; to_primitive(job, b.op, x, y); break;
@@ -2801,7 +2801,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 },
                 Unary u => {
                     let v = job.operands.pop(); let n = if v.tag() == 3 { v.num() } else { numeric(heap, v) };
-                    job.operands.push(number(if u.op == 35 { -n } else if u.op == 113 { n + 1 } else if u.op == 114 { n - 1 } else { n }));
+                    job.operands.push(number(if u.op == opcode::Neg { -n } else if u.op == opcode::Inc { n + 1 } else if u.op == opcode::Dec { n - 1 } else { n }));
                     if heap.fault != Fault.None { break; }
                 },
                 Numeric2 => {
@@ -2960,9 +2960,9 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Form x => {
                     settle(job, ran, used);
                     let op = x.op; let base = job.operands.len - export_form_arity(op);
-                    if op == 5 || op == 19 || op == 35 || op == 36 {
+                    if op == form_op::Count || op == form_op::CljCount || op == form_op::CljConcat || op == form_op::CljConcatAll {
                         // A demand starts before the step counts (see invoke).
-                        let demanded = demand_maps(job, job.operands[(job.operands.len - code.effects[at].pop)..], op == 36);
+                        let demanded = demand_maps(job, job.operands[(job.operands.len - code.effects[at].pop)..], op == form_op::CljConcatAll);
                         if demanded || heap.fault != Fault.None { job.steps -= 1; job.frames[top].pc = at; if !demanded { fail(job, heap.fault, frame_at(job, top, at)); } break; }
                     }
                     job.frames[top].pc = pc;
@@ -2970,7 +2970,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     // intrinsic-call continuation. Sealed-plan users retain the
                     // explicit DependencyNeed failure from form_op below.
                     var waiting = false;
-                    if op == 82 && job.helpers_enabled {
+                    if op == form_op::CljReadRoot && job.helpers_enabled {
                         let args = job.operands[base..];
                         if valid(heap, args[0]) && args[0].tag() == 5 && node(heap, args[0].id()).kind == 0 && args[1].tag() <= 1 && args[2].tag() == 4 {
                             let value, found = own_property(heap, args[0], args[2]);
@@ -3148,19 +3148,19 @@ fn arguments(job: Job&, frame: Frame, f: const Function&, rest: bool, skip_count
         job.operands.push(array);
     }
 }
-// Cell opcodes: 48 initialize, 49 read, 50 write.
+// Cell opcodes: CellInit initializes, CellGet reads, CellSet writes.
 fn cell(job: Job&, op: i64) {
     let heap .= job.heap;
-    let value = if op == 49 { Value.Undefined } else { job.operands.pop() }; let cell = job.operands.pop();
+    let value = if op == opcode::CellGet { Value.Undefined } else { job.operands.pop() }; let cell = job.operands.pop();
     if valid(heap, cell) && cell.tag() == 5 && node(heap, cell.id()).kind == 3 {
         // A closure environment the job did not allocate is read-only.
-        if op != 49 && !writable(job, cell.id()) { heap.fault = Fault.NativeBoundary; return; }
+        if op != opcode::CellGet && !writable(job, cell.id()) { heap.fault = Fault.NativeBoundary; return; }
         // The write log keeps no cell writes (light-cljs-801): nothing reads them.
         let row .= node_mut(heap, cell.id());
-        if op == 49 || op == 50 {
+        if op == opcode::CellGet || op == opcode::CellSet {
             if !row.initialized { heap.fault = Fault.ReferenceError; }
-            else if op == 50 && row.immutable { heap.fault = Fault.ConstAssignment; }
-            else if op == 49 { job.operands.push(row.value); }
+            else if op == opcode::CellSet && row.immutable { heap.fault = Fault.ConstAssignment; }
+            else if op == opcode::CellGet { job.operands.push(row.value); }
             else { row.value = value; }
         } else if row.initialized && row.immutable { heap.fault = Fault.ConstAssignment; }
         else { row.value = value; row.initialized = true; }
@@ -3227,7 +3227,7 @@ fn lexical_entry(job: Job&, key: Value) -> Own {
     return find_own(job.heap, job.lexicals.id(), key);
 }
 fn global_cell(heap: const Heap&, v: Value) -> bool { return v.tag() == 5 && v.id() < heap.nodes.len && node(heap, v.id()).kind == 3; }
-// GetGlobal (106) and GetGlobalOrUndefined (107, `typeof x`) where the job
+// GetGlobal and GetGlobalOrUndefined (`typeof x`) where the job
 // may write the global object: a lexical binding first (uninitialized, a
 // ReferenceError even under `typeof`), then the global object's own or
 // inherited property, a getter running as a frame (get_property). A name
@@ -3298,9 +3298,9 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool) {
         // ReferenceError; sloppy code creates the property (writable,
         // enumerable, configurable). A refused assignment is a TypeError in
         // strict code and nothing in sloppy code (set_property).
-        108, 150 => {
+        opcode::PutGlobal, opcode::PutGlobalStrict => {
             let value = job.operands.pop();
-            let strict_put = strict || op == 150;
+            let strict_put = strict || op == opcode::PutGlobalStrict;
             let lexical = lexical_entry(job, key);
             if heap.fault != Fault.None { return; }
             if lexical.found {
@@ -3316,7 +3316,7 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool) {
         // DeclareGlobalVar: a var the global object lacks as an own property
         // becomes one (writable, enumerable, not configurable); an existing
         // one is kept, whatever it is.
-        109 => {
+        opcode::DeclareGlobalVar => {
             let own = own_entry(heap, g, key);
             if heap.fault == Fault.None && !own.found && !add_own(heap, g.id(), key, Value.Undefined, attr_writable() | attr_enumerable()) && heap.fault == Fault.None { memory(heap); }
         },
@@ -3325,7 +3325,7 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool) {
         // writable, enumerable, non-configurable undefined; a
         // non-configurable writable enumerable data property is kept; any
         // other non-configurable property is a SyntaxError.
-        110 => {
+        opcode::DeclareGlobalFunction => {
             let own = own_entry(heap, g, key);
             if heap.fault != Fault.None { return; }
             if refuses_function(own) { named_error(job, Fault.SyntaxError, "cannot declare global function '", key, "'"); return; }
@@ -3336,9 +3336,9 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool) {
         },
         // DeclareGlobalLet, DeclareGlobalConst: cell → cell, the script's
         // cell registered by name.
-        137, 138 => { declare_lexical(job, key, job.operands[job.operands.len - 1], op == 137); },
+        opcode::DeclareGlobalLet, opcode::DeclareGlobalConst => { declare_lexical(job, key, job.operands[job.operands.len - 1], op == opcode::DeclareGlobalLet); },
         // InitGlobalLexical: value → (the registered cell initialized).
-        139 => {
+        opcode::InitGlobalLexical => {
             let value = job.operands.pop();
             let lexical = lexical_entry(job, key);
             if heap.fault != Fault.None { return; }
@@ -3350,14 +3350,14 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool) {
         // (CanDeclareGlobalVar, CanDeclareGlobalFunction). Every global
         // object is extensible here (Object.preventExtensions is pending), so
         // a var always can be declared.
-        140 => {},
-        141 => {
+        opcode::CheckGlobalVar => {},
+        opcode::CheckGlobalFunction => {
             let own = own_entry(heap, g, key);
             if heap.fault == Fault.None && refuses_function(own) { named_error(job, Fault.SyntaxError, "cannot declare global '", key, "'"); }
         },
         // DeleteGlobal (sloppy `delete x`): → bool, false for a lexical
         // binding or a non-configurable property.
-        142 => {
+        opcode::DeleteGlobal => {
             let lexical = lexical_entry(job, key);
             if heap.fault != Fault.None { return; }
             let deleted = !lexical.found && delete_property(heap, g, key);
@@ -3365,12 +3365,12 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool) {
         },
         // DeclareGlobalConstValue: a const the script keeps as a value gets
         // its record's cell, uninitialized until InitGlobalLexical.
-        143 => {
+        opcode::DeclareGlobalConstValue => {
             let cell = allocate(heap, Node { kind: 3, immutable: true });
             if heap.fault == Fault.None { declare_lexical(job, key, cell, false); }
         },
         // CheckGlobalLexicalConflict: a var or function name the record holds.
-        144 => {
+        opcode::CheckGlobalLexicalConflict => {
             let lexical = lexical_entry(job, key);
             if heap.fault == Fault.None && lexical.found { named_error(job, Fault.SyntaxError, "global declaration conflicts with lexical '", key, "'"); }
         },
@@ -3392,7 +3392,7 @@ fn append_utf8(out: u16[>..]&, bytes: const u8[:]) -> bool {
     }
     return true;
 }
-// ThrowError (42): the compiler's static throw of ThrowKind `kind`, a
+// ThrowError: the compiler's static throw of ThrowKind `kind`, a
 // catchable error with the Pants engine's message (throw_message), naming
 // the binding by the instruction's source text, as throw_message does (the
 // generic wording only for a span that is not a source range).
@@ -3405,20 +3405,20 @@ fn throw_error(job: Job&, kind: u8, at: i64) {
     }
     job.detail.clear();
     let words: const u8[:] = match kind {
-        0 => if named { "" } else { "reference to an undeclared name" },
-        1 => if named { "cannot access '" } else { "binding accessed before initialization" },
-        2 => if named { "assignment to constant variable '" } else { "assignment to a constant variable" },
-        3 => "cannot delete a super property",
-        4 => "yield* delegate has no throw method",
+        throw_kind::Unresolvable => if named { "" } else { "reference to an undeclared name" },
+        throw_kind::Uninitialized => if named { "cannot access '" } else { "binding accessed before initialization" },
+        throw_kind::ConstAssignment => if named { "assignment to constant variable '" } else { "assignment to a constant variable" },
+        throw_kind::DeleteSuper => "cannot delete a super property",
+        throw_kind::YieldStarMissingThrow => "yield* delegate has no throw method",
         _ => "",
     };
     for c in words { job.detail.push(c); }
-    if named && kind <= 2 {
+    if named && kind <= throw_kind::ConstAssignment {
         for c in name { job.detail.push(c); }
-        let tail: const u8[:] = if kind == 0 { " is not defined" } else if kind == 1 { "' before initialization" } else { "'" };
+        let tail: const u8[:] = if kind == throw_kind::Unresolvable { " is not defined" } else if kind == throw_kind::Uninitialized { "' before initialization" } else { "'" };
         for c in tail { job.detail.push(c); }
     }
-    heap.fault = match kind { 0, 1, 3 => Fault.ReferenceError, 2, 4 => Fault.TypeError, _ => Fault.InvalidState };
+    heap.fault = match kind { throw_kind::Unresolvable, throw_kind::Uninitialized, throw_kind::DeleteSuper => Fault.ReferenceError, throw_kind::ConstAssignment, throw_kind::YieldStarMissingThrow => Fault.TypeError, _ => Fault.InvalidState };
 }
 // Whether the job allocated node row o (Job.owned_nodes), so JavaScript may
 // write it: not the realm, the restored image or definition, nor a
@@ -3521,7 +3521,7 @@ fn define_field(job: Job&, k: Value, value: Value, half: u8) {
     if heap.fault != Fault.None { return; }
     if !ok { heap.fault = Fault.TypeError; } else if half == 0 { record(job, object, k, value); }
 }
-// SetProto (95): obj v → obj. An object or null v becomes the literal's
+// SetProto: obj v → obj. An object or null v becomes the literal's
 // prototype ([[SetPrototypeOf]]; a cycle is a TypeError); any other v is
 // ignored.
 fn set_proto(job: Job&) {
@@ -3532,7 +3532,7 @@ fn set_proto(job: Job&) {
     if !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; return; }
     if !set_prototype(heap, object.id(), v) && heap.fault == Fault.None { heap.fault = Fault.TypeError; }
 }
-// Delete (97) and DeleteStrict (153): o k → b, [[Delete]] of the own
+// Delete and DeleteStrict: o k → b, [[Delete]] of the own
 // property (delete_property). Undefined or null o is a TypeError; a string's
 // `length` and indices below it are non-configurable, and other primitives
 // have no own properties. A non-configurable property stays: false in
@@ -3558,7 +3558,7 @@ fn delete_op(job: Job&, strict: bool) {
     if !ok && strict { heap.fault = Fault.TypeError; return; }
     job.operands.push(boolean(ok));
 }
-// In (98): k o → bool, `k in o` ([[HasProperty]]). A non-object o is a
+// In: k o → bool, `k in o` ([[HasProperty]]). A non-object o is a
 // TypeError; an object k needs ToPrimitive, not implemented here
 // (UnsupportedOperand).
 fn in_op(job: Job&) {
@@ -3627,7 +3627,7 @@ fn key_list(heap: Heap&, object: Value, keys: const OwnKey[:], symbols: bool) ->
     if list.tag() != 5 || !list_append(heap, list.id(), keys, symbols) { return Value.Undefined; }
     return list;
 }
-// ForInStart (99): v → it, a key list of v's own string keys, enumerable or
+// ForInStart: v → it, a key list of v's own string keys, enumerable or
 // not, in own_keys order (a non-enumerable key is never visited but hides the
 // name further up the chain); a string's indices; none for any other
 // primitive.
@@ -3650,7 +3650,7 @@ fn hidden(heap: Heap&, o: i64, k: Value) -> bool {
     for i in start { if key_word(property_row(heap, keys + i).key) == w { return true; } }
     return false;
 }
-// ForInNext (100): it → key more. The next record that was enumerable when
+// ForInNext: it → key more. The next record that was enumerable when
 // listed, is not hidden by an object the walk has left, and is still an own
 // enumerable property of the object it was listed from (a key deleted or
 // made non-enumerable before it is reached is skipped; keys added after the
@@ -3694,7 +3694,7 @@ fn for_in_next(job: Job&) {
         node_mut(heap, o).value = proto; node_mut(heap, o).start = used as u32; node_mut(heap, o).length = used as u32;
     }
 }
-// OwnKeys (128): source → keys, a new array of the source's own keys,
+// OwnKeys: source → keys, a new array of the source's own keys,
 // symbols included, before object rest copies them: an index as a number
 // (as ToPropertyKey gives it), a name as a string. A string's are its indices
 // and `length`; undefined and null are a TypeError; other primitives have
@@ -3715,7 +3715,7 @@ fn own_keys_op(job: Job&) {
     }
     job.operands.push(array);
 }
-// IsEnumerable (129): source key → whether the source has an own enumerable
+// IsEnumerable: source key → whether the source has an own enumerable
 // property `key` (already converted by ToPropertyKey): its current
 // attributes, not a snapshot's. A string's indices are enumerable; other
 // primitives have no own properties.
@@ -3738,7 +3738,7 @@ fn is_enumerable(job: Job&) {
     }
     if heap.fault == Fault.None { job.operands.push(boolean(result)); }
 }
-// CopyDataProperties (180): target source → target, an object spread. An
+// CopyDataProperties: target source → target, an object spread. An
 // undefined or null source, or one with no own keys, copies nothing; a
 // CopyData native frame copies the rest, one key a step: each key still an
 // own enumerable property of the source when reached is read ([[Get]], a
@@ -3785,7 +3785,7 @@ fn copy_step(job: Job&, frame: Frame) {
     if node(heap, getter.id()).kind != 2 { heap.fault = Fault.UnsupportedOperand; return; }
     job.frames[at].pc = 1; enter(job, getter, frame.input, []);
 }
-// ToPropertyKey (93): o k → o k', the key converted once for a read and a
+// ToPropertyKey: o k → o k', the key converted once for a read and a
 // later write of o[k] or an object pattern's key: an array index as a
 // number, any other name as a string. Undefined or null o is a TypeError; a
 // key needing ToPrimitive (an object) or number-to-string conversion fails

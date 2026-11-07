@@ -181,7 +181,7 @@ thread_fn live_boundary() {
     // our checkpoint boundary explicitly refuses to copy any live Job.
     var code = source::Code {};
     code.functions.push(source::Function { start: 0, count: 4, constants: 0, children: 0, params: 0, locals: 1, captures: 0, strict: true });
-    for op, i in [16, 4, 3, 15] { code.ops.push(source::Op { code: op, arg: 0, offset: [0, 1, 4, 7][i], start: 0, end: 0, depth: [0, 1, 0, 1][i] }); } source::decode(code); code.valid = true;
+    for op, i in [opcode::NewObject, opcode::SetLocal, opcode::GetLocal, opcode::Return] { code.ops.push(source::Op { code: op, arg: 0, offset: [0, 1, 4, 7][i], start: 0, end: 0, depth: [0, 1, 0, 1][i] }); } source::decode(code); code.valid = true;
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); let entry = source::closure(heap, 0, []);
     var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
     assert(source::claim(job) && !source::retire(job) && job.registered && heap.live_jobs == 1);
@@ -263,7 +263,7 @@ thread_fn dormant_capture() {
     for v, i in code.constants { if v.tag() == 7 { bigints += 1; if symbol < 0 { symbol = i; } } }
     assert(bigints >= 5 && symbol >= 0);
     // One dormant BigInt becomes a well-known Symbol (exported only by sloppy `with`).
-    code.constants[symbol] = source::Value.Symbol { s: 7 };
+    code.constants[symbol] = source::Value.Symbol { s: well_known::Unscopables };
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     var first = snapshot::Control {}; let saved = snapshot::capture(heap, [], first); assert(first.error == snapshot::Error.None);
     assert(qput(Dormant { image: copy(saved), constants: copy(code.constants), entry: entry }));
@@ -790,7 +790,7 @@ thread_fn argument_parent() {
     var keeper: i64 = -1;
     for f, id in code.functions {
         var args = false; var closure = false;
-        for op in code.ops[f.start..(f.start + f.count)] { args = args || op.code == 101; closure = closure || op.code == 43; }
+        for op in code.ops[f.start..(f.start + f.count)] { args = args || op.code == opcode::NewArguments; closure = closure || op.code == opcode::Function; }
         if f.captures == 0 && args && closure { keeper = id; break; }
     }
     assert(keeper >= 0);
@@ -858,10 +858,10 @@ fn extra_code(extra: source::Code&) {
     // Its name, "f", is a run of its own code units (light-cljs-806).
     extra.units.push(102);
     extra.functions.push(source::Function { start: 0, count: 3, constants: 0, children: 0, params: 0, locals: 0, captures: 2, strict: true, name_start: 0, name_len: 1 });
-    for op, i in [46, 49, 15] { extra.ops.push(source::Op { code: op, arg: if i == 0 { 1 } else { 0 }, offset: [0, 3, 4][i], start: 0, end: 1, depth: [0, 1, 1][i] }); }
+    for op, i in [opcode::GetCapture, opcode::CellGet, opcode::Return] { extra.ops.push(source::Op { code: op, arg: if i == 0 { 1 } else { 0 }, offset: [0, 3, 4][i], start: 0, end: 1, depth: [0, 1, 1][i] }); }
     // A second unreachable function must still be validated on publication.
     extra.functions.push(source::Function { start: 3, count: 2, constants: 0, children: 0, params: 0, locals: 0, captures: 0, strict: true });
-    for op, i in [2, 15] { extra.ops.push(source::Op { code: op, arg: 0, offset: i, start: 0, end: 1, depth: i }); } extra.valid = true;
+    for op, i in [opcode::Undefined, opcode::Return] { extra.ops.push(source::Op { code: op, arg: 0, offset: i, start: 0, end: 1, depth: i }); } extra.valid = true;
 }
 fn callable_publication() {
     heap_program::join(thread_spawn(callable_base)); let saved = qget<Saved>(); let base .= saved.image;
@@ -895,7 +895,7 @@ thread_fn callable_producer(base: snapshot::Snapshot, identity: bool) {
     if identity { producer.source_ranges.push(source::SourceRange { start: 0, count: 3, identity: 77 }); } else { producer.source_bytes.append("a b"); producer.source_ranges.push(source::SourceRange { start: 0, count: 3 }); }
     let one = source::allocate(producer, source::Node { kind: 11, value: source::number(7), origin: 1, source: 0, span_start: 0, span_end: 1 });
     let two = source::allocate(producer, source::Node { kind: 11, value: source::number(7), origin: 2, source: 0, span_start: 2, span_end: 3 });
-    let marked = source::form_op(producer, 0, [source::nil(), source::text(producer, "marked")]);
+    let marked = source::form_op(producer, form_op::Keyword, [source::nil(), source::text(producer, "marked")]);
     let metadata = source::form_collection(producer, 7, [marked, source::boolean(true)]); producer.nodes[one.id()].metadata = metadata; producer.nodes[two.id()].metadata = metadata;
     let forms = source::form_collection(producer, 6, [one, two, one]);
     let cell = source::allocate(producer, source::Node { kind: 3, initialized: true, immutable: true, value: forms });

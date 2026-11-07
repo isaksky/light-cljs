@@ -395,7 +395,7 @@ thread_fn base_image() {
     // Synthetic capture getter tests relocation/cycles separately from the
     // unchanged compiler-emitted producer/consumer bodies above.
     var getter = source::Code {}; getter.functions.push(source::Function { start: 0, count: 3, constants: 0, children: 0, params: 0, locals: 0, captures: 1, strict: true });
-    for op, i in [46, 49, 15] { getter.ops.push(source::Op { code: op, arg: 0, offset: [0, 3, 4][i], start: 0, end: 0, depth: [0, 1, 1][i] }); } getter.valid = true; let read = source::append_code(code, getter);
+    for op, i in [opcode::GetCapture, opcode::CellGet, opcode::Return] { getter.ops.push(source::Op { code: op, arg: 0, offset: [0, 3, 4][i], start: 0, end: 0, depth: [0, 1, 1][i] }); } getter.valid = true; let read = source::append_code(code, getter);
     getter.functions[0].captures = 2; assert(source::append_code(code, getter) == read + 1);
     assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let shared = source::allocate(heap, source::Node { kind: 11, value: source::number(9), origin: 90 });
     let named = source::allocate(heap, source::Node { kind: 11, value: source::text(heap, "x"), origin: 91 });
