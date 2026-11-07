@@ -77,6 +77,11 @@
   "bbp/realm_prototypes" {:area :objects-classes}
   "bbp/realm_uncaught_error" {:area :exceptions}
   "bbp/realm_well_known_symbols" {:area :core-builtins}
+  "bbp/in_operator" {:area :operators-values}
+  "bbp/logical_assignment_bindings" {:area :operators-values}
+  "bbp/loose_equality_primitives" {:area :operators-values}
+  "bbp/strict_equality_same_value" {:area :operators-values}
+  "bbp/string_compare_code_units" {:area :operators-values}
   "bbp/to_primitive_getter" {:area :operators-values}
   "bbp/to_primitive_value_of" {:area :operators-values}
   "bbp/try_catch_finally" {:area :exceptions}
@@ -85,6 +90,9 @@
   "bbp/try_finally_break" {:area :exceptions}
   "bbp/try_finally_nested" {:area :exceptions}
   "bbp/try_finally_return" {:area :exceptions}
+  "bbp/typeof_operator" {:area :operators-values}
+  "bbp/update_and_compound_bindings" {:area :operators-values}
+  "bbp/void_comma_conditional" {:area :operators-values}
 
   ;; ---- Pants engine fixtures (rust/tests/fixtures/js)
   "pants/arithmetic" {:area :operators-values :origin :pants-authored}
