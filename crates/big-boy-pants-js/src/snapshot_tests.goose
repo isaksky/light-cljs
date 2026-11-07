@@ -464,8 +464,69 @@ thread_fn wrappers_restored(saved: snapshot::Snapshot) {
     assert(heap.fault == source::Fault.None);
     print("snapshot primitive wrappers: payloads, prototypes, shape and dictionary properties, String exotic keys and identity survive restoration passed");
 }
+// Bound functions a job made (light-cljs-852) survive capture, the byte
+// codec and restoration in another program: target, bound `this`, the
+// bound arguments' run, own `length` and `name`, and a bound function of a
+// bound function. A bound function whose target is a later row, is not
+// callable, or that has code is refused.
+fn bound_roundtrip() {
+    heap_program::join(thread_spawn(bound_parent)); let saved = qget<Saved>();
+    heap_program::join(thread_spawn(bound_restored, copy(saved.image)));
+    for mode in 3 { heap_program::join(thread_spawn(bound_malformed, copy(saved.image), mode)); }
+}
+fn make_bound(heap: source::Heap&, target: source::Value, this_value: source::Value, args: const source::Value[:], name: const u8[:], length: f64) -> source::Value {
+    let at = source::add_values(heap, args); assert(at >= 0);
+    let f = source::allocate(heap, source::Node { kind: node_kind::BoundFunction, start: at as u32, count: args.len as u32, value: target, namespace_value: this_value, proto: source::node(heap, target.id()).proto });
+    assert(source::add_own(heap, f.id(), source::key_named(heap, "length"), source::number(length), source::attr_configurable()));
+    assert(source::add_own(heap, f.id(), source::key_named(heap, "name"), source::text(heap, name), source::attr_configurable()));
+    return f;
+}
+thread_fn bound_parent() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, heap, bindings);
+    let closure = bindings[4].value; let object = bindings[6].value;
+    let two = source::text(heap, "two"); let first: source::Value[2] = [source::number(1), two]; let second: source::Value[1] = [object]; let none: source::Value[0] = [];
+    let zero: f64 = 0; let is_length: f64 = 2; let is = source::object(source::realm_function_row(source::Builtin.ObjectIs));
+    let a = make_bound(heap, closure, object, first[..], "bound ", zero);
+    let b = make_bound(heap, a, source::number(9), second[..], "bound bound ", zero);
+    let c = make_bound(heap, is, source::Value.Undefined, none[..], "bound is", is_length);
+    for v, i in [a, b, c, b] { bindings.push(snapshot::Binding { id: 20 + i, generation: 1, value: v }); }
+    var k = snapshot::Control {}; let saved = snapshot::capture(heap, bindings, k); assert(k.error == snapshot::Error.None);
+    var encoded: u8[>..] = []; var enc = snapshot::Control {}; assert(snapshot::encode(saved, encoded, enc));
+    var dec = snapshot::Control {}; let decoded = snapshot::decode(encoded, dec); assert(dec.error == snapshot::Error.None && decoded.len == 1);
+    for image in decoded { assert(qput(Saved { image: copy(image) })); }
+}
+thread_fn bound_restored(saved: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved, code, heap, roots, source::reserve_identity(), r));
+    let base = roots.len - 4; let a = roots[base].value; let b = roots[base + 1].value; let c = roots[base + 2].value;
+    assert(roots[base + 3].value == b && source::node(heap, b.id()).value == a && source::node(heap, b.id()).namespace_value.num() == 9);
+    let n = source::node(heap, a.id());
+    assert(n.kind == node_kind::BoundFunction && source::node(heap, n.value.id()).kind == node_kind::Closure && source::node(heap, n.namespace_value.id()).kind == node_kind::Object && n.count == 2);
+    assert(source::slot(heap, n.start).num() == 1 && source::key_is(heap, source::slot(heap, n.start + 1), "two"));
+    assert(source::slot(heap, source::node(heap, b.id()).start) == n.namespace_value && source::node(heap, c.id()).count == 0);
+    let length = source::own_entry(heap, c, source::key_named(heap, "length")); let name = source::own_entry(heap, b, source::key_named(heap, "name"));
+    assert(length.found && length.attrs == source::attr_configurable() && length.value.num() == 2 && name.found && source::key_is(heap, name.value, "bound bound "));
+    assert(source::prototype(heap, a.id()) == source::object(source::function_prototype_row()) && heap.fault == source::Fault.None);
+    print("snapshot bound functions: targets, bound this and arguments, own length and name and identity survive restoration passed");
+}
+thread_fn bound_malformed(saved: snapshot::Snapshot, mode: i64) {
+    defer { heap_program::finish(); }
+    {
+        var bad = copy(saved);
+        var at: i64 = -1; for n, i in bad.nodes { if n.kind == node_kind::BoundFunction && at < 0 { at = i; } } assert(at >= 0);
+        match mode {
+            0 => { bad.nodes[at].value = source::object(at + 1); },
+            1 => { bad.nodes[at].value = bad.nodes[at].namespace_value; },
+            _ => { bad.nodes[at].function = 1; },
+        }
+        var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
+        assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), check) && check.error == snapshot::Error.Link && target.nodes.len == 0);
+    }
+}
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); heap_program::join(thread_spawn(live_boundary)); }
 
 // Suspended continuations (light-cljs-790; decision 4, amended by
 // light-cljs-792). A dependency wait while a generator is suspended at its

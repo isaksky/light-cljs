@@ -72,11 +72,14 @@ enum Builtin {
     // (light-cljs-851; function_calls.goose), which with
     // Function.prototype.call forward a call as a native frame.
     FunctionPrototypeApply, ReflectApply, ReflectConstruct,
+    // Function.prototype.bind (light-cljs-852; function_calls.goose), a
+    // native frame that makes a bound function object.
+    FunctionPrototypeBind,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[91] = [
+let BUILTINS: BuiltinInfo[92] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -125,6 +128,7 @@ let BUILTINS: BuiltinInfo[91] = [
     BuiltinInfo { which: Builtin.Proxy, name: "Proxy", length: 2 },
     BuiltinInfo { which: Builtin.FunctionPrototypeApply, name: "apply", length: 2 }, BuiltinInfo { which: Builtin.ReflectApply, name: "apply", length: 3 },
     BuiltinInfo { which: Builtin.ReflectConstruct, name: "construct", length: 2 },
+    BuiltinInfo { which: Builtin.FunctionPrototypeBind, name: "bind", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -163,7 +167,7 @@ let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalEr
 let ERROR_BUILTINS:   Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[38] = [
+let REALM_FUNCTIONS: Method[39] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -197,6 +201,8 @@ let REALM_FUNCTIONS: Method[38] = [
     // Function.prototype.apply and the Reflect object's apply and construct
     // (light-cljs-851); its other eleven methods are pending names.
     Method { which: Builtin.FunctionPrototypeApply, holder: 2 }, Method { which: Builtin.ReflectApply, holder: 34 }, Method { which: Builtin.ReflectConstruct, holder: 34 },
+    // Function.prototype.bind (light-cljs-852).
+    Method { which: Builtin.FunctionPrototypeBind, holder: 2 },
 ];
 inline fn realm_nodes() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
 // The node row of built-in b's REALM_FUNCTIONS entry.
@@ -209,12 +215,12 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[206] = [
+let PENDING: PendingName[205] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
     // Function.prototype
-    PendingName { holder: 2, key: "bind" }, PendingName { holder: 2, key: "toString" }, PendingName { holder: 2, key: "arguments" }, PendingName { holder: 2, key: "caller" },
+    PendingName { holder: 2, key: "toString" }, PendingName { holder: 2, key: "arguments" }, PendingName { holder: 2, key: "caller" },
     // Array.prototype
     PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "every" },
     PendingName { holder: 3, key: "fill" }, PendingName { holder: 3, key: "filter" }, PendingName { holder: 3, key: "find" }, PendingName { holder: 3, key: "findIndex" }, PendingName { holder: 3, key: "findLast" },
@@ -356,7 +362,7 @@ fn prototype(heap: const Heap&, o: i64) -> Value {
     if !p.is_hole() { return p; }
     if !heap.global.is_object() { return Value.Null; }
     return match node(heap, o).kind {
-        node_kind::Object, node_kind::Arguments => object(object_prototype_row()), node_kind::Array => object(array_prototype_row()), node_kind::Closure, node_kind::Builtin => object(function_prototype_row()), node_kind::Error => object(error_prototype_row(0)),
+        node_kind::Object, node_kind::Arguments => object(object_prototype_row()), node_kind::Array => object(array_prototype_row()), node_kind::Closure, node_kind::Builtin, node_kind::BoundFunction => object(function_prototype_row()), node_kind::Error => object(error_prototype_row(0)),
         node_kind::Wrapper => primitive_prototype(node(heap, o).value),
         _ => Value.Null,
     };
@@ -746,7 +752,7 @@ fn object_tag(job: Job&, receiver: Value) -> Value {
     if tag.is_string() { append_utf16(heap, tag, units); }
     else {
         let wrapped = if receiver.is_object() { if node(heap, receiver.id()).kind == node_kind::Wrapper { node(heap, receiver.id()).value } else { Value.Undefined } } else { receiver };
-        let name: const u8[:] = if wrapper_type(wrapped) >= 0 { WRAPPER_NAMES[wrapper_type(wrapped)].text } else { match node(heap, receiver.id()).kind { node_kind::Array => "Array", node_kind::Closure, node_kind::Builtin => "Function", node_kind::Error => "Error", node_kind::Arguments => "Arguments", _ => "Object" } };
+        let name: const u8[:] = if wrapper_type(wrapped) >= 0 { WRAPPER_NAMES[wrapper_type(wrapped)].text } else { match node(heap, receiver.id()).kind { node_kind::Array => "Array", node_kind::Closure, node_kind::Builtin, node_kind::BoundFunction => "Function", node_kind::Error => "Error", node_kind::Arguments => "Arguments", _ => "Object" } };
         for c in name { units.push(c); }
     }
     units.push(93);
@@ -840,7 +846,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
             let kind = node(heap, v.id()).kind;
             // A proxy's [[GetPrototypeOf]] outside for-in fails by name (proxy.goose).
             if kind == node_kind::Proxy { proxy_fault(heap, proxy_method::GetPrototypeOf); return Value.Undefined; }
-            if kind != node_kind::Object && kind != node_kind::Array && kind != node_kind::Closure && kind != node_kind::Builtin && kind != node_kind::Error && kind != node_kind::Arguments && kind != node_kind::Generator && kind != node_kind::Promise && kind != node_kind::Wrapper && kind != node_kind::Iterator { return unsupported_step(job, b, "a runtime form"); }
+            if kind != node_kind::Object && kind != node_kind::Array && kind != node_kind::Closure && kind != node_kind::Builtin && kind != node_kind::BoundFunction && kind != node_kind::Error && kind != node_kind::Arguments && kind != node_kind::Generator && kind != node_kind::Promise && kind != node_kind::Wrapper && kind != node_kind::Iterator { return unsupported_step(job, b, "a runtime form"); }
             return prototype(heap, v.id());
         },
         ObjectIs => { return boolean(same_value(heap, arg(args, 0), arg(args, 1))); },
@@ -868,7 +874,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         // The forwarding built-ins run as Forward native frames
         // (function_calls.goose, native_start); a caller that runs a
         // built-in to completion here cannot.
-        FunctionPrototypeCall, FunctionPrototypeApply, ReflectApply, ReflectConstruct => { return unsupported_step(job, b, "called outside a native frame"); },
+        FunctionPrototypeCall, FunctionPrototypeApply, ReflectApply, ReflectConstruct, FunctionPrototypeBind => { return unsupported_step(job, b, "called outside a native frame"); },
         // The dispatch loop runs these as native frames (native_start); a
         // caller that runs a built-in to completion here cannot.
         ArrayPrototypeMap, ArrayPrototypeForEach, ArrayPrototypePush, ArrayPrototypeJoin, ArrayPrototypeToString, ArrayIteratorPrototypeNext, StringPrototypeIterator => { return unsupported_step(job, b, "called from a native frame"); },
@@ -904,9 +910,9 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
     }
 }
 // `typeof v` (Typeof, ECMAScript TypeofOperator): closures, built-in
-// functions and proxies of callable targets are "function", every other
+// functions, bound functions and proxies of callable targets are "function", every other
 // object "object".
 fn type_name(heap: Heap&, v: Value) -> Value {
-    let t: i64 = match v { Undefined => 0, Null => 1, Bool => 2, Number => 3, String => 4, Symbol => 5, BigInt => 6, Object x => if node(heap, x.o).kind == node_kind::Closure || node(heap, x.o).kind == node_kind::Builtin || node(heap, x.o).kind == node_kind::Proxy && proxy_callable(heap, v) { 7 } else { 1 }, _ => 1 };
+    let t: i64 = match v { Undefined => 0, Null => 1, Bool => 2, Number => 3, String => 4, Symbol => 5, BigInt => 6, Object x => if node(heap, x.o).kind == node_kind::Closure || node(heap, x.o).kind == node_kind::Builtin || node(heap, x.o).kind == node_kind::BoundFunction || node(heap, x.o).kind == node_kind::Proxy && proxy_callable(heap, v) { 7 } else { 1 }, _ => 1 };
     return key_named(heap, TYPE_NAMES[t].text);
 }

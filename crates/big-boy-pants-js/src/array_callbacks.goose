@@ -53,7 +53,7 @@ namespace source;
 // native_step dispatches by `match` on its Native variant.
 
 // Whether built-in b runs as a native frame (native_start).
-fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b); }
+fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind; }
 // Start built-in b, called with `receiver` and `args`, as a native frame
 // whose operand base is `base`, where the call's operands began: the
 // dispatch loop's `call` cuts the operands to it and the finished frame
@@ -64,6 +64,8 @@ fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], ba
     // Function.prototype.call and apply, Reflect.apply and Reflect.construct
     // (light-cljs-851; function_calls.goose).
     if forwarding(b) { start_forward(job, b, receiver, args, base); return; }
+    // Function.prototype.bind (light-cljs-852; function_calls.goose).
+    if b == Builtin.FunctionPrototypeBind { start_bind(job, receiver, args, base); return; }
     // A generator's next, return and throw (continuations.goose).
     if generator_method(b) { start_resume(job, b, receiver, arg(args, 0), base); return; }
     // Function.prototype[@@hasInstance] (light-cljs-834; source_vm.goose).
@@ -139,9 +141,9 @@ fn array_callbacks_step(job: Job&, frame: Frame, b: Builtin) {
         _ => { array_visit(job, at, b); },
     }
 }
-// IsCallable: a closure or a built-in function (a class constructor is
+// IsCallable: a closure, a built-in function or a bound function (a class constructor is
 // callable; calling it throws TypeError when its frame is entered).
-inline fn callable(heap: const Heap&, f: Value) -> bool { return f.is_object() && (node(heap, f.id()).kind == node_kind::Closure || node(heap, f.id()).kind == node_kind::Builtin); }
+inline fn callable(heap: const Heap&, f: Value) -> bool { return f.is_object() && (node(heap, f.id()).kind == node_kind::Closure || node(heap, f.id()).kind == node_kind::Builtin || node(heap, f.id()).kind == node_kind::BoundFunction); }
 // ArraySpeciesCreate(O, len) without species: a new array of length len
 // when O is not an array or its `constructor` is undefined or the realm's
 // Array; any other constructor object is the species step, not implemented.
@@ -200,6 +202,8 @@ fn array_call(job: Job&, at: i64, b: Builtin, v: Value) {
     job.frames[at].pc = 3;
     let f = job.frames[at].callee; let this_arg = job.frames[at].receiver;
     let args: Value[3] = [v, number(job.frames[at].index), job.frames[at].input];
+    // A bound function runs in a Forward frame of its own (light-cljs-852).
+    if is_bound(heap, f) { start_bound(job, f, this_arg, args, job.operands.len); return; }
     if node(heap, f.id()).kind == node_kind::Builtin {
         let cb = builtin_of(heap, f.id());
         // A delay forced as the callback runs in a frame of its own (cells.goose).

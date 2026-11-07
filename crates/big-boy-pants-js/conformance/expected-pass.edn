@@ -18,6 +18,8 @@
  "bbp/async_unhandled_rejection"
  "bbp/bitwise_operators_follow_to_int32"
  "bbp/boolean_constructor_and_boxing"
+ "bbp/bound_function_metadata"
+ "bbp/bound_functions"
  "bbp/calls_and_parameters"
  "bbp/closure_counter"
  "bbp/closures_and_cells"

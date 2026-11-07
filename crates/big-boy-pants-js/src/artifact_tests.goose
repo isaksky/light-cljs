@@ -179,6 +179,22 @@ thread_fn invalid(base: snapshot::Snapshot, a: artifact::Artifact) {
         assert(source::delete_property(heap, owned, source::key_named(heap, "x")) && source::node(heap, owned.id()).initialized);
         var dictionary = artifact::Control {}; artifact::export_graph(heap, base, imports, owned, 35, 1, dictionary); assert(dictionary.error == artifact::Error.Mutable && imports.definitions.len == definitions);
     }
+    // A bound function (light-cljs-852) always has own `length` and `name`,
+    // so it is mutable like a closure with properties, directly or inside a
+    // form; nothing is registered.
+    {
+        let target = source::closure(heap, roots[4].value.num() as i64, [source::number(1)]);
+        let at = source::add_values(heap, [source::number(2)]); assert(at >= 0);
+        let bound = source::allocate(heap, source::Node { kind: node_kind::BoundFunction, start: at as u32, count: 1, value: target, namespace_value: source::Value.Undefined });
+        assert(source::add_own(heap, bound.id(), source::key_named(heap, "length"), source::number(0), source::attr_configurable()));
+        assert(source::add_own(heap, bound.id(), source::key_named(heap, "name"), source::text(heap, "bound "), source::attr_configurable()));
+        let definitions = imports.definitions.len; let before = state(heap, imports);
+        var direct = artifact::Control {}; let none = artifact::export_graph(heap, base, imports, bound, 36, 1, direct);
+        assert(direct.error == artifact::Error.Mutable && direct.path.len == 1 && none.nodes.len == 0 && imports.definitions.len == definitions && state(heap, imports) == before);
+        let inside = source::form_collection(heap, node_kind::Vector, [source::number(1), bound]); let outer = state(heap, imports);
+        var nested_bound = artifact::Control {}; artifact::export_graph(heap, base, imports, inside, 37, 1, nested_bound);
+        assert(nested_bound.error == artifact::Error.Mutable && nested_bound.path.len == 2 && imports.definitions.len == definitions && state(heap, imports) == outer);
+    }
     // An occurrence is scalar-only, but its metadata still participates.
     let metadata = source::form_collection(heap, node_kind::Map, [source::number(1), mutable]); source::node_mut(heap, wrapped.id()).metadata = metadata; var oc = artifact::Control {}; artifact::export_graph(heap, base, imports, wrapped, 33, 1, oc); assert(oc.error == artifact::Error.Mutable && oc.path.len >= 3);
     source::node_mut(heap, wrapped.id()).metadata = source::nil();

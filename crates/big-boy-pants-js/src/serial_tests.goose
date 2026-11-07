@@ -100,6 +100,27 @@ fn install(heap: source::Heap&, setup: i64) {
         let hooked = source::allocate(heap, source::Node { kind: node_kind::Object });
         assert(source::define_own(heap, hooked.id(), source::Value.Symbol { s: well_known::HasInstance }, source::closure(heap, named_function(heap.code, "hookGet"), []), attrs, 1));
         assert(source::define_own(heap, global, source::key_named(heap, "hooked"), hooked, source::attr_writable() | source::attr_configurable()));
+    } else if setup == 8 {
+        // bind's metadata targets (bound-metadata.js, light-cljs-852):
+        // closures of `target` whose own `length` and `name` are replaced.
+        let attrs = source::attr_configurable(); let length = source::key_named(heap, "length"); let name = source::key_named(heap, "name");
+        let names:   const u8[:][7] = ["getters", "throwing", "odd", "wide", "fraction", "nan", "negative"];
+        let lengths: f64[7]         = [0, 0, 0, 1.0 / 0.0, 4.8, 0.0 / 0.0, -1.0 / 0.0];
+        for global_name, i in names {
+            let f = source::closure(heap, named_function(heap.code, "target"), []);
+            assert(source::materialize_function(heap, f.id()));
+            if i == 0 {
+                assert(source::define_own(heap, f.id(), length, source::closure(heap, named_function(heap.code, "lenGet"), []), attrs, 1));
+                assert(source::define_own(heap, f.id(), name, source::closure(heap, named_function(heap.code, "nameGet"), []), attrs, 1));
+            } else if i == 1 {
+                assert(source::define_own(heap, f.id(), length, source::closure(heap, named_function(heap.code, "lenThrow"), []), attrs, 1));
+            } else if i == 2 {
+                assert(source::define_own(heap, f.id(), length, source::text(heap, "3"), attrs) && source::define_own(heap, f.id(), name, source::number(7), attrs));
+            } else {
+                assert(source::define_own(heap, f.id(), length, source::number(lengths[i]), attrs));
+            }
+            assert(source::define_own(heap, global, source::key_named(heap, global_name), f, source::attr_writable() | source::attr_configurable()));
+        }
     } else if setup == 7 {
         // for-of's @@iterator getter (for-of.js, light-cljs-843): `hooked`,
         // an ordinary object whose Symbol.iterator is an accessor with
@@ -687,7 +708,7 @@ fn reclamation() {
     heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/async.gsp")), source::Fault.None, 0, 0));
     // Forced collections at every budget cut and at other phases.
     for image in [embed_file("../corpus/serial/generators.gsp"), embed_file("../corpus/serial/async.gsp"), embed_file("../corpus/serial/generator-loop.gsp"), embed_file("../corpus/serial/for-of.gsp"), embed_file("../corpus/serial/builtin-iterators.gsp"),
-                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
+                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
                   embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp")] {
@@ -748,6 +769,14 @@ fn control_flow() {
     limit_points(embed_file("../corpus/serial/array-push-join.gsp"));
     push_receivers(embed_file("../corpus/serial/array-push-receiver.gsp"));
     join_limits(embed_file("../corpus/serial/array-join-strings.gsp"));
+    // Bound functions (light-cljs-852) through Forward frames, at every
+    // cut and limit point.
+    check(embed_file("../corpus/serial/bound-functions.gsp"), "boolean:true");
+    limit_points(embed_file("../corpus/serial/bound-functions.gsp"));
+    // bind's metadata reads from targets the test prepares: getters above
+    // the Bind frame, a throwing getter, non-number lengths, a non-string
+    // name, at every cut.
+    check(embed_file("../corpus/serial/bound-metadata.gsp"), "boolean:true", source::Fault.None, 8);
     // [[Construct]] (light-cljs-831): ordinary functions with new.target and
     // the return override, through finally and a generator yielding inside
     // the constructor, the realm's constructors and a non-constructor's
@@ -1322,7 +1351,7 @@ thread_fn named_model() {
     assert(source::get(heap, g, source::text(heap, "prototype")).is_undefined() && source::materialize_function(heap, g.id()) && source::put(heap, g, source::text(heap, "y"), source::number(2)) && source::get(heap, g, source::text(heap, "call")) == heap.call_method);
     var arrow_keys: source::Value[>..] = []; assert(source::own_keys(heap, g, arrow_keys) && arrow_keys.len == 3);
     for name, i in ["length", "name", "y"] { assert(source::key_is(heap, arrow_keys[i], name)); }
-    source::get(heap, g, source::text(heap, "bind")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    source::get(heap, g, source::text(heap, "toString")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     // Snapshots validate arrays' and closures' shapes and records.
     var c = snapshot::Control {};
     let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: f }, snapshot::Binding { id: 1, generation: 1, value: g }, snapshot::Binding { id: 2, generation: 1, value: a }, snapshot::Binding { id: 3, generation: 1, value: b }], c);

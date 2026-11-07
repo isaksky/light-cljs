@@ -6,9 +6,9 @@
 // the 65,536-element RangeError row; bbp-130's spread-arguments half
 // (light-cljs-850). Calls, method calls (named and computed), `new`, empty and
 // string spreads, spread `arguments`, built-in callees, Function.prototype.call
-// forwarding and conversion of a spread first argument. Left out: the
-// `bind` half of the `bind` and `Reflect.apply` row (light-cljs-852) and
-// the 128-value stack-limit row (a custom limit of the Pants test
+// forwarding, a bound callee (light-cljs-852) and conversion of a spread
+// first argument. Left out: the 128-value stack-limit row (a custom limit
+// of the Pants test
 // runtime). Each row is a
 // `row(...)` check; the script completes with the number of rows, or minus the
 // first failing row's number.
@@ -70,7 +70,8 @@ row(new Number(...[{ valueOf() { return 5; } }]).valueOf() === 5);
 row(new Array(...[1, 2, 3]).length === 3);
 row(new Error(...['m']).message === 'm');
 { function f(a, b) { return this.n + a + b; } row(f.call(...[{ n: 1 }, 2, 3]) === 6); }
-{ function f(a, b) { return this.n + a + b; } let o = {n: 10}; row(Reflect.apply(f, o, [...[1, 2]]) === 13 && f.apply(...[o, [1, 2]]) === 13); }
+{ function f(a, b) { return this.n + a + b; } let o = {n: 10}; row(f.bind(o, 1)(...[2]) === 13 && Reflect.apply(f, o, [...[1, 2]]) === 13 && f.apply(...[o, [1, 2]]) === 13); }
+{ function C(a, b) { this.s = a + b; } row(new (C.bind(null, 1))(...[2]).s === 3); }
 { var o = { n: 4, m(a) { return this.n + a; } }; row(o.m.call(...[o, 1]) === 5); }
 row(String.call(...[undefined, { toString() { return 'y'; } }]) === 'y');
 {

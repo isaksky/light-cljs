@@ -9,8 +9,8 @@
 // row runs the callback in a loop. Left out until their pellets land:
 // element writes (light-cljs-854); Object.getOwnPropertyDescriptor and
 // Object.keys of the object (light-cljs-854 and the objects area,
-// light-cljs-766); `bind` (light-cljs-852; the `call`, `apply` and
-// `Reflect.apply` parts are kept). Each row is a `row(...)` check; the script
+// light-cljs-766). The `call`, `apply`, `Reflect.apply` and `bind` row
+// is whole (light-cljs-852). Each row is a `row(...)` check; the script
 // completes with the number of rows, or minus the first failing row's number.
 var rows = 0, failed = 0;
 function row(ok) { rows++; if (ok !== true && failed === 0) failed = rows; }
@@ -27,7 +27,7 @@ function name(thunk) { try { thunk(); return "none"; } catch (e) { return e.name
 { function f(a = 7) { return arguments.length === 0 && arguments[0] === undefined; } row(f()); }
 { function f() { return () => this.x + arguments[0]; } const g = f.call({x: 2}, 3); row(g.call({x: 100}) === 5); }
 { function f(a = () => () => arguments[1] + this.x) { return a; } row(f.call({x: 2}, undefined, 9)()() === 11); }
-{ function f() { return arguments[1]; } row(f.call(undefined, 1, 3) === 3 && f.apply(undefined, [1, 4]) === 4 && Reflect.apply(f, undefined, [1, 5]) === 5); }
+{ function f() { return arguments[1]; } row(f.call(undefined, 1, 3) === 3 && f.apply(undefined, [1, 4]) === 4 && Reflect.apply(f, undefined, [1, 5]) === 5 && f.bind(undefined, 1)(6) === 6); }
 { function F() { return arguments; } const a = new F(1, 2); row(a[1] === 2 && a.length === 2); }
 {
   const callback = function (a, x) { return a + x + arguments.length; };

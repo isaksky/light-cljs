@@ -70,10 +70,11 @@ inline fn max_list_arguments() -> i64 { return 65535; }
 fn is_callable(heap: const Heap&, f: Value) -> bool { return callable(heap, f) || is_proxy(heap, f) && proxy_callable(heap, f); }
 // IsConstructor: an ordinary function or a class (not an arrow, method or
 // generator); a built-in with [[Construct]] (constructor_builtin); a proxy
-// of a constructor.
+// or a bound function of a constructor (a target is an earlier row, so the
+// walk ends).
 fn is_constructor(heap: const Heap&, f: Value) -> bool {
     var t = f;
-    while is_proxy(heap, t) { t = node(heap, t.id()).value; }
+    while is_proxy(heap, t) || is_bound(heap, t) { t = node(heap, t.id()).value; }
     if !t.is_object() { return false; }
     let kind = node(heap, t.id()).kind;
     if kind == node_kind::Closure { return constructor_kind(heap, t.id()) != constructor::None; }
@@ -99,13 +100,49 @@ fn runtime_leaf(b: Builtin) -> bool {
 // Start forwarding built-in b called with `receiver` and `args` (which may
 // view the operands), its operand base `base` (native_start): a Forward
 // frame at pc 3 whose callee is b's function object.
-fn start_forward(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
+fn start_forward(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) { start_bound(job, object(realm_function_row(b)), receiver, args, base); }
+// Start a call of bound function f (from start_forward, a forwarding
+// built-in) with `receiver` and `args`, its operand base `base`: a Forward
+// frame at pc 3 whose callee is f. Under `constructs` it is a [[Construct]]
+// and `receiver` is newTarget.
+fn start_bound(job: Job&, f: Value, receiver: Value, args: const Value[:], base: i64, constructs: bool = false) {
     let heap .= job.heap;
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
+    if args.len > heap.limits.stack - job.locals.len - base { heap.fault = Fault.StackLimit; return; }
     var copied: Value[>..] = []; copied.append(args);
     job.operands.resize(base); job.operands.append(copied);
-    let f = object(realm_function_row(b));
-    job.frames.push(Frame { function: -1, pc: 3, local_base: job.locals.len, operand_base: base, callee: f, receiver: receiver, input: f, output: number(0), native: Native.Forward { construct: false } });
+    job.frames.push(Frame { function: -1, pc: 3, local_base: job.locals.len, operand_base: base, callee: f, receiver: receiver, input: f, output: number(0), native: Native.Forward { construct: constructs } });
+}
+// One bound hop of the Forward frame at `at` (BoundFunction [[Call]] and
+// [[Construct]], ECMAScript 10.4.1.1 and 10.4.1.2): the callee becomes the
+// target, the bound arguments go before the frame's, and the receiver
+// becomes the bound `this`, or, constructing, newTarget becomes the target
+// when it was the bound function. A hop counts against the frame limit, and
+// the arguments against the value limit (StackLimit), as in the Pants
+// engine; there is no 65,535-argument cutoff (QuickJS checks only its
+// stack). Returns false on a fault.
+fn bound_hop(job: Job&, at: i64, constructs: bool) -> bool {
+    let heap .= job.heap; let base = job.frames[at].operand_base;
+    let f = job.frames[at].callee;
+    let hops = job.frames[at].output.num() + 1;
+    if hops > heap.limits.frames - job.frames.len { heap.fault = Fault.StackLimit; return false; }
+    job.frames[at].output = number(hops);
+    let n = node(heap, f.id());
+    let count: i64 = n.count; let start: i64 = n.start;
+    if count > heap.limits.stack - job.locals.len - job.operands.len { heap.fault = Fault.StackLimit; return false; }
+    if count > 0 {
+        // A work unit for each argument moved up and each bound one copied.
+        let top = job.operands.len;
+        if !charge(heap, top - base + count) { return false; }
+        job.operands.resize(top + count, Value.Undefined);
+        var i = top - 1;
+        while i >= base { job.operands[i + count] = job.operands[i]; i -= 1; }
+        for k in count { job.operands[base + k] = slot(heap, start + k); }
+    }
+    if !constructs { job.frames[at].receiver = n.namespace_value; }
+    else if job.frames[at].receiver.is_object() && job.frames[at].receiver.id() == f.id() { job.frames[at].receiver = n.value; }
+    job.frames[at].callee = n.value;
+    return true;
 }
 // One step of the Forward frame at the top (see above).
 fn forward_step(job: Job&, frame: Frame, constructs: bool) {
@@ -142,6 +179,7 @@ fn forward_step(job: Job&, frame: Frame, constructs: bool) {
 fn forward_run(job: Job&, at: i64, constructs: bool) {
     let heap .= job.heap; let base = job.frames[at].operand_base;
     loop {
+        if is_bound(heap, job.frames[at].callee) { if !bound_hop(job, at, constructs) { return; } continue; }
         if constructs { break; }
         let f = job.frames[at].callee;
         if !f.is_object() || node(heap, f.id()).kind != node_kind::Builtin { break; }
@@ -249,4 +287,95 @@ fn begin_list(job: Job&, at: i64, list: Value) -> bool {
     job.frames[at].pc = 0;
     get_named(job, Builtin.FunctionPrototypeApply, list, "length");
     return heap.fault == Fault.None;
+}
+
+// ---- Bound functions (light-cljs-852)
+// Function.prototype.bind and bound function exotic objects (ECMAScript
+// 20.2.3.2, 10.4.1; the Pants engine's vm/function.rs BoundFunction and
+// bind_with_metadata, QuickJS's js_function_bind and
+// js_call_bound_function). A bound function is node_kind::BoundFunction
+// (source_vm.goose gives its fields). Every call of one, from the dispatch
+// loop's Call, CallMethod, Construct and spread calls, from call, apply
+// and Reflect, and from the native frames that call a callback (map and
+// forEach, mapv, ToPrimitive, join's toString, @@hasInstance, @@iterator,
+// proxy traps, swap!, a delay's function), starts a Forward frame
+// (start_bound) whose bound_hop steps replace it by its target before the
+// target runs as any forwarded call does: a frame push, never Goose
+// recursion. `new` of one is a TypeError unless its target is a
+// constructor (is_constructor).
+//
+// bind runs as a Bind native frame (decision 5), since the target's
+// `length` and `name` reads can run a getter:
+//   callee     the target
+//   receiver   the new bound function, made at the start
+//   output     its `length`, from pc 1
+//   pc 0       HasOwnProperty(target, "length"), then Get of it (a getter
+//              runs above the frame); its value arrives at pc 1
+//   pc 1       L = max(0, ToIntegerOrInfinity(length) - bound count) for a
+//              Number, else 0; then Get(target, "name"), arriving at pc 2
+//   pc 2       defines `length` and then `name` ("bound " + the name if it
+//              is a string, else "bound "), each non-writable,
+//              non-enumerable and configurable, and delivers the function.
+// A proxy target's [[GetPrototypeOf]] and [[GetOwnProperty]] fail by name
+// (proxy.goose), and so does a built-in getter (run_getter).
+
+// Whether f is a bound function exotic object.
+inline fn is_bound(heap: const Heap&, f: Value) -> bool { return f.is_object() && node(heap, f.id()).kind == node_kind::BoundFunction; }
+// bind called with `target` as its this value and `args` (thisArg, then the
+// bound arguments), its operand base `base`: BoundFunctionCreate, then the
+// Bind frame for the metadata.
+fn start_bind(job: Job&, target: Value, args: const Value[:], base: i64) {
+    let heap .= job.heap;
+    if !is_callable(heap, target) { type_error(job, "not a function"); return; }
+    if is_proxy(heap, target) { proxy_fault(heap, proxy_method::GetPrototypeOf); return; }
+    let first = min(args.len, 1); let count = args.len - first;
+    if !values_fit(heap, count) || !nodes_fit(heap, 1) { memory(heap); return; }
+    if !charge(heap, count) { return; }
+    let at = add_values(heap, args[first..]);
+    if at < 0 { if heap.fault == Fault.None { memory(heap); } return; }
+    let f = allocate(heap, Node { kind: node_kind::BoundFunction, start: at as u32, count: count as u32, value: target, namespace_value: arg(args, 0), proto: node(heap, target.id()).proto });
+    if heap.fault != Fault.None { return; }
+    if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
+    job.operands.resize(base);
+    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: target, receiver: f, output: number(0), native: Native.Bind });
+}
+// One step of the Bind frame at the top (see above).
+fn bind_step(job: Job&, frame: Frame) {
+    let heap .= job.heap; let at = job.frames.len - 1; let b = Builtin.FunctionPrototypeBind;
+    match frame.pc {
+        0 => {
+            let k = key_named(heap, "length");
+            if heap.fault != Fault.None { return; }
+            let own = own_entry(heap, frame.callee, k);
+            if heap.fault != Fault.None { return; }
+            job.frames[at].pc = 1;
+            if !own.found { push_operand(job, Value.Undefined); return; }
+            let v, getter = lookup(heap, frame.callee, k);
+            if heap.fault != Fault.None { return; }
+            if getter.is_object() { run_getter(job, b, getter, frame.callee); return; }
+            push_operand(job, v);
+        },
+        1 => {
+            let v = job.operands.pop();
+            var l: f64 = 0;
+            if v.is_number() {
+                let bound: f64 = node(heap, frame.receiver.id()).count;
+                let d = trunc(v.num()) - bound;
+                if d > 0 { l = d; }
+            }
+            job.frames[at].output = number(l); job.frames[at].pc = 2;
+            get_named(job, b, frame.callee, "name");
+        },
+        _ => {
+            let name = job.operands.pop();
+            let prefix = text(heap, "bound ");
+            if heap.fault != Fault.None { return; }
+            let full = if name.is_string() { concat_mixed(heap, prefix, name) } else { prefix };
+            let length = key_named(heap, "length"); let key = key_named(heap, "name");
+            if heap.fault != Fault.None { return; }
+            let o = frame.receiver.id();
+            if !add_own(heap, o, length, frame.output, attr_configurable()) || !add_own(heap, o, key, full, attr_configurable()) { if heap.fault == Fault.None { memory(heap); } return; }
+            finish_native(job, frame, frame.receiver);
+        },
+    }
 }

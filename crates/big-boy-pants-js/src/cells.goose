@@ -183,6 +183,8 @@ fn form_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, functi
         if n.kind >= node_kind::List && n.kind <= node_kind::Set || n.kind == node_kind::Concat { for i in n.count { work.push(slot(heap, n.start + i)); } }
         else if n.kind == node_kind::Atom { atoms.push(v.id()); work.push(n.value); }
         else if n.kind == node_kind::Closure || n.kind == node_kind::Builtin || n.kind == node_kind::Delay || n.kind == node_kind::Cell && n.length == cell_flavor::Delay && n.value.is_object() { functions = true; return ""; }
+        // A bound function always has own `length` and `name` (light-cljs-852).
+        else if n.kind == node_kind::BoundFunction { return "a bound function (a function with properties, a mutable JavaScript object)"; }
         else if n.kind == node_kind::LazySeq { return "an unrealized lazy sequence"; }
         else if n.kind != node_kind::Symbol && n.kind != node_kind::Keyword && n.kind != node_kind::Scalar && n.kind != node_kind::Cell { return "a mutable JavaScript object"; }
     }
@@ -208,6 +210,7 @@ fn callable_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, cl
         if n.kind == node_kind::Binding && (!n.immutable || !n.initialized) { return "a function that captures a variable it may assign"; }
         if v.id() < floor { if n.kind == node_kind::Array { return "a mutable JavaScript object"; } continue; }
         if n.kind == node_kind::LazySeq { return "an unrealized lazy sequence"; }
+        if n.kind == node_kind::BoundFunction { return "a bound function (a function with properties, a mutable JavaScript object)"; }
         if n.kind == node_kind::Object || n.kind == node_kind::Array || n.kind > node_kind::Concat && n.kind != node_kind::Atom && n.kind != node_kind::Cell && n.kind != node_kind::Delay { return "a mutable JavaScript object"; }
         if n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() { return if n.kind == node_kind::Closure { "a function with properties (a mutable JavaScript object)" } else { "a mutable JavaScript object" }; }
         if n.kind == node_kind::Atom || n.kind == node_kind::Delay { atoms.push(v.id()); }
@@ -714,6 +717,7 @@ fn swap_call(job: Job&, at: i64, b: Builtin) -> Value, bool {
         return call_builtin(job, node(heap, frame.callee.id()).function, Value.Null, args), true;
     }
     job.frames[at].pc = 1;
+    if is_bound(heap, frame.callee) { start_bound(job, frame.callee, Value.Null, args, job.operands.len); return Value.Undefined, false; }
     push_frame(job, frame.callee, Value.Null, args, false, job.operands.len);
     return Value.Undefined, false;
 }
@@ -880,6 +884,7 @@ fn force_call(job: Job&, at: i64, b: Builtin, f: Value) {
         if heap.fault == Fault.None { job.operands.push(v); }
         return;
     }
+    if is_bound(heap, f) { start_bound(job, f, Value.Null, [], job.operands.len); return; }
     push_frame(job, f, Value.Null, [], false, job.operands.len);
 }
 // What a claim settles with: an error of the realm by its type and

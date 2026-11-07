@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "6d003c9fd903965cd237a7fa422d2bdbae948423b1b95cbf81ccefdd924c6b04",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "9c1e869daba60d02781f82aeb9ee4e37acd46592d956c314128ce3fb90c81659",
+  "e60075e7ee9f5d24190a6b489f5973b9687e831ca1fe05f0e5ac1335e47dccd5",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "1a2108185dffceee40083c348fb8b306d46c392910ab5036cfe75b0ae45a205b",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -225,6 +225,14 @@
   "746a93d2adc6bc7134bd66a4f0b3beaca85686bb4faeb3c2bf401b5fb888c0e4",
   "corpus/serial/bigint-reached.js"
   "cd4ad8d14c80c40354ebcb96deef37950d4007180704c8c105077b4f0d444428",
+  "corpus/serial/bound-functions.gsp"
+  "e968c235342f9cdf601e3767cae2540f61256a35163dec83e81f55aaeca8385e",
+  "corpus/serial/bound-functions.js"
+  "378446d9310aa5f1caf6d7f16b52b1d9e685b6a0e3cba430f2dcf6aa8c87e15d",
+  "corpus/serial/bound-metadata.gsp"
+  "ac58e7c39f8948eb65a061edb9828fa589503afb9ae17ae45ec69e94e127b1e7",
+  "corpus/serial/bound-metadata.js"
+  "2f8570a02d3903fa009d87946aa543cde1cefebd8292f0384f48f55e245ed7a5",
   "corpus/serial/builtin-iterator-receiver.gsp"
   "c7f20891c1227d320b7ed4b028a8b55407cd29103e76ddbe7342d7bc032f6fd3",
   "corpus/serial/builtin-iterator-receiver.js"
@@ -433,6 +441,26 @@
   "d51e23617f35cd58d4b5750371973db788f9086ee832650f93568c438b6afd23",
   "corpus/serial/proxy-get.js"
   "0075164f0276af35f446a74165f57fa1fd2d5cb8d03298ea2fe65bc9f38bef40",
+  "corpus/serial/reclaim-bursts.gsp"
+  "7aec6daf1e5f4f1fb72b321b1687c91a467984a34007f55f2ced685702ad8464",
+  "corpus/serial/reclaim-bursts.js"
+  "d7eaa66cae9d5c3781c88f8d8d40e32506e18409dff42d391e6842592305a9c5",
+  "corpus/serial/reclaim-live.gsp"
+  "2343f4ceaf430b9aa39de57b5b6e83e92f3f6466caf8b2ca1de406e816e57cde",
+  "corpus/serial/reclaim-live.js"
+  "906816c816b6d87bd650fb83450b172e2bc99fd5201666ee6ac909259cd1f076",
+  "corpus/serial/reclaim-loops.gsp"
+  "71051dd3d12f4dcd6aea0ad204f561a6bdadab50b40e37a05833b4ac6bc77f75",
+  "corpus/serial/reclaim-loops.js"
+  "27842bd91a1c38937fc062d0f3d5a3cb0c98de3e758ca28d40a17aba74d6d06c",
+  "corpus/serial/reclaim-observed.gsp"
+  "07afc7e61f949e5b0e22997db402b6408caf5d6607678f4a10cdb00e678bb753",
+  "corpus/serial/reclaim-observed.js"
+  "62b1e96c555e6d9aadc0871e8e118e2b474f4d708605fec21f70a621e394cfe1",
+  "corpus/serial/reclaim-roots.gsp"
+  "4009d7b8a9263f64c2ae2a213360decbab4e1183ab21d75698764238d993c49d",
+  "corpus/serial/reclaim-roots.js"
+  "d41bdafa3b4cfc75f66cc2ac9f02ec8a012dcaf0a65a8bc91bf13a531c304b48",
   "corpus/serial/script-declarations.gsp"
   "57746d01a3f83d636ad2ebcc714436d306af29aba4a88801a9ee808cdbf9abe9",
   "corpus/serial/script-declarations.js"
@@ -465,6 +493,10 @@
   "de05c832420cb142299c08e947dddffc46e32c5fddd048b49dd18cf68a9458d3",
   "corpus/serial/sloppy-this.js"
   "298f3ad7d96e6ad88d342e6eaf14d477903570f14580e370d65ce316950a1fc0",
+  "corpus/serial/spread-limits.gsp"
+  "dbc41bf243cbace1e94898c549bc07c7868358560fef3c3c05f15553fe215520",
+  "corpus/serial/spread-limits.js"
+  "91027446d5facdb3de91d10b798026b30eec96818729220296734763bb0ab6e3",
   "corpus/serial/string-to-number.gsp"
   "f7de69b4805678b2b7a11cb0bbc5638b97df7d91a96934b37d3dd2b3a810b85a",
   "corpus/serial/string-to-number.js"

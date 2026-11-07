@@ -118,7 +118,7 @@ inline fn is_proxy(heap: const Heap&, v: Value) -> bool { return v.is_object() &
 fn proxy_callable(heap: const Heap&, v: Value) -> bool {
     var t = v;
     while is_proxy(heap, t) { t = node(heap, t.id()).value; }
-    return t.is_object() && (node(heap, t.id()).kind == node_kind::Closure || node(heap, t.id()).kind == node_kind::Builtin);
+    return t.is_object() && (node(heap, t.id()).kind == node_kind::Closure || node(heap, t.id()).kind == node_kind::Builtin || node(heap, t.id()).kind == node_kind::BoundFunction);
 }
 // An internal method of a proxy this VM does not implement: UnsupportedOperand,
 // naming it for the report (Heap.proxy_method, fail).
@@ -261,6 +261,7 @@ fn proxy_with_trap(job: Job&, at: i64, method: i64, trap: Value) {
         if is_proxy(heap, f) { proxy_invoke(heap, f, proxy_method::Call); return; }
         if !callable(heap, f) { type_error(job, "Proxy: trap is not a function"); return; }
         if node(heap, f.id()).kind == node_kind::Closure { push_frame(job, f, this_value, all[first..count], false, job.operands.len); return; }
+        if is_bound(heap, f) { start_bound(job, f, this_value, all[first..count], job.operands.len); return; }
         if builtin_of(heap, f.id()) != Builtin.FunctionPrototypeCall { break; }
         if !charge(heap) { return; }
         let next_this = if first < count { all[first] } else { Value.Undefined };

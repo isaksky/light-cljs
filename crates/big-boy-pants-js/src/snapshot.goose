@@ -48,9 +48,9 @@ fn poll(c: Control&, n: i64 = 1) -> bool {
 }
 fn range(start: i64, count: i64, len: i64) -> bool { return start >= 0 && count >= 0 && start <= len && count <= len - start; }
 // Kinds whose start/count name a run of values: an ordinary object's or an
-// array's element run (light-cljs-804), captures, form children, arguments
-// and a deferred map's memo.
-fn has_values(kind: i64) -> bool { return kind <= node_kind::Closure || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::Arguments || kind == node_kind::LazySeq; }
+// array's element run (light-cljs-804), captures, form children, arguments,
+// a deferred map's memo and a bound function's arguments (light-cljs-852).
+fn has_values(kind: i64) -> bool { return kind <= node_kind::Closure || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::Arguments || kind == node_kind::LazySeq || kind == node_kind::BoundFunction; }
 // An element run (an ordinary object's or an array's) is exclusive and may
 // hold holes.
 fn elements(kind: i64) -> bool { return kind == node_kind::Object || kind == node_kind::Array; }
@@ -87,8 +87,8 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
 }
 // The kinds with own properties by name (source::Node): ordinary objects,
 // arrays and closures (light-cljs-805), built-in functions and error objects
-// (light-cljs-788), generators, promises and primitive wrappers.
-fn named(kind: i64) -> bool { return kind >= node_kind::Object && kind <= node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator; }
+// (light-cljs-788), generators, promises and primitive wrappers, iterators and bound functions.
+fn named(kind: i64) -> bool { return kind >= node_kind::Object && kind <= node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::BoundFunction; }
 // A shape-mode object, dense array or closure: without `initialized`.
 fn shaped(n: const source::Node&) -> bool { return named(n.kind) && !n.initialized; }
 // A dictionary-mode object, a dictionary array or a closure's records.
@@ -200,6 +200,9 @@ fn cont_run<T>(s: const T&, first: u32, capacity: u32, kind: i64) -> bool {
     for i in capacity { if !cont_is(s, first + i, kind) { return false; } }
     return true;
 }
+// Whether node kind `kind` can be a bound function's target: a closure, a
+// built-in, a proxy (whose [[Call]] decides) or a bound function.
+fn callable_kind(kind: i64) -> bool { return kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::Proxy || kind == node_kind::BoundFunction; }
 // Whether v is an object of node kind `kind` (-1: any kind).
 fn object_of<T>(s: const T&, v: source::Value, kind: i64) -> bool { return v.is_object() && v.id() < s.nodes.len && (kind == node_kind::None || s.nodes[v.id()].kind == kind); }
 // A native frame's state that its steps read by row: a Resume frame's
@@ -233,6 +236,9 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // function it runs, and while it reads its argument list (pc 0 to
         // 2) the list.
         Forward => f.pc >= 0 && f.pc <= 3 && object_of(s, f.callee, node_kind::None) && (f.pc == 3 || object_of(s, f.input, node_kind::None)) && f.index >= 0 && f.output.is_number(),
+        // A Bind frame (light-cljs-852) holds its target and the bound
+        // function it is making.
+        Bind => f.pc >= 0 && f.pc <= 2 && object_of(s, f.callee, node_kind::None) && object_of(s, f.receiver, node_kind::BoundFunction) && f.output.is_number(),
         _ => true,
     };
 }
@@ -456,10 +462,14 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     var has_memo = false; var array_holes: i64 = 0;
     for n, row in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < node_kind::Object || n.kind > node_kind::Proxy { return reject(c, Error.Unsupported); }
+        if n.kind < node_kind::Object || n.kind > node_kind::BoundFunction { return reject(c, Error.Unsupported); }
         // A proxy (light-cljs-845, proxy.goose) holds an object target, an
         // earlier row, and an object handler, and nothing else.
         if n.kind == node_kind::Proxy && (!n.value.is_object() || n.value.id() >= row || !n.namespace_value.is_object() || n.count != 0 || n.start != 0 || !n.proto.is_null()) { return reject(c, Error.Link); }
+        // A bound function (light-cljs-852) binds a callable target, an
+        // earlier row, and has no code or length; its arguments are a run
+        // (has_values) and its bound `this` a value.
+        if n.kind == node_kind::BoundFunction && (!n.value.is_object() || n.value.id() >= row || !callable_kind(s.nodes[n.value.id()].kind) || n.function != 0 || n.length != 0) { return reject(c, Error.Link); }
         // A key list's keys are listed, or pending for the proxy it walks.
         if n.kind == node_kind::KeyList && (n.function > key_list::Pending || n.function == key_list::Pending && !(n.value.is_object() && n.value.id() < s.nodes.len && s.nodes[n.value.id()].kind == node_kind::Proxy)) { return reject(c, Error.Link); }
         // A built-in iterator (light-cljs-844, iterators.goose) has an

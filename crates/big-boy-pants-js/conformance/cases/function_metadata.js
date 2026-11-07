@@ -2,8 +2,8 @@
 // Derives from: crates/big-boy-pants-js/rust/tests/js_functions.rs lines 743-784, 809-830:
 // function_length_and_name (line 743, bbp-101) and
 // function_metadata_property_operations (809, bbp-101); js_source.rs
-// function_own_properties (15720, bbp-125). Rows that need `bind`
-// (light-cljs-852) or Object.getOwnPropertyNames, Object.keys,
+// function_own_properties (15720, bbp-125); the `bind` rows are back
+// (light-cljs-852). Rows that need Object.getOwnPropertyNames, Object.keys,
 // Object.defineProperty, Object.freeze, Object.preventExtensions or
 // Object.create (the objects area, light-cljs-766) are left out, and so are
 // the Pants-only rows (publication, executable round trips, the
@@ -29,6 +29,7 @@ row((function () {}).name === "");
 { const o = {m: function () {}, 'x': () => 1, 3: () => 0}; row(o.m.name === "m" && o.x.name === "x" && o[3].name === "3"); }
 { const o = {'\ud800': () => 0}; row(o['\ud800'].name === '\ud800'); }
 { function f(a = () => {}, b = function () {}) { return a.name === "a" && b.name === "b"; } row(f()); }
+{ function f(a, b = 1, c) {} row(f.bind(null).length === 1 && f.bind(null, 1).length === 0 && f.bind().name === "bound f"); }
 { const f = (a, b = 1) => a; const d = Object.getOwnPropertyDescriptor(f, "length"); row(f.length === 1 && f.name === "f" && !d.writable && !d.enumerable && d.configurable && f(7) === 7); }
 { function entry(a, b = 1, c) { return entry.length === 1 && entry.name === "entry"; } row(entry()); }
 // Their descriptors and operations.
@@ -44,6 +45,7 @@ row((function () {}).name === "");
   row(delete f.length && delete f.name && f.length === 0 && f.name === "" &&
       Object.getOwnPropertyDescriptor(f, "length") === undefined && Object.getOwnPropertyDescriptor(f, "name") === undefined);
 }
+{ function f(a, b) {} delete f.length; delete f.name; const g = f.bind(null, 1); row(g.length === 0 && g.name === "bound "); }
 // Assigning `length` or `name` is a TypeError in strict code.
 { const f = () => 0; row(name(function () { f.length = 7; }) === "TypeError" && f.length === 0); }
 { const f = () => 0; row(name(function () { f.name = 7; }) === "TypeError" && f.name === "f"); }

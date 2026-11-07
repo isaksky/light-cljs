@@ -1043,6 +1043,8 @@ mod serial_tests {
             ("array-callbacks", "boolean:true"),
             // Array.prototype.push, join and toString as native frames (light-cljs-842).
             ("array-push-join", "boolean:true"),
+            // Bound functions through Forward frames (light-cljs-852).
+            ("bound-functions", "boolean:true"),
             // Receivers and strings only serial_tests.goose supplies: push
             // onto rows the job did not allocate, join's work and unit limits.
             ("array-push-receiver", "goose"),
@@ -1190,6 +1192,9 @@ mod serial_tests {
             // Getters of Symbol.hasInstance and `prototype` Goose installs,
             // run by instanceof (light-cljs-834).
             ("instanceof-hooks", "goose"),
+            // Targets of bind with `length` and `name` getters and odd
+            // values Goose installs (light-cljs-852).
+            ("bound-metadata", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let options = if name.starts_with("sloppy-") {

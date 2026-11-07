@@ -150,7 +150,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001 }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -324,6 +324,17 @@ let node_kind::Wrapper = 22;
 let node_kind::Iterator = 23;
 // A proxy: value=target, namespace_value=handler (proxy.goose).
 let node_kind::Proxy = 24;
+// A bound function exotic object (light-cljs-852; function_calls.goose):
+// value=its target (an earlier row, callable), namespace_value=the bound
+// `this`, start/count=the bound arguments, a shared run of heap.values like
+// a closure's captures; proto=the target's [[GetPrototypeOf]] when bound
+// (Empty: %Function.prototype%). Its own properties are a built-in
+// function's (a shape or records): `length` and `name` from bind, then any
+// the job adds. It has no `prototype`. In a cell or a publication it
+// follows the closure rule: a function with own properties is a mutable
+// JavaScript object, refused, and a bound function always has `length`
+// and `name`; a worker snapshot carries it like any row.
+let node_kind::BoundFunction = 25;
 // Errors, generators, promises, wrappers and iterators are ordinary objects
 // with internal slots: their own properties are an Object's, without an
 // element run.
@@ -517,10 +528,14 @@ root struct Heap {
 //                Reflect.construct (light-cljs-851; function_calls.goose,
 //                which gives its fields and phases): `construct` once
 //                Reflect.construct has resolved its target.
+//                A bound function's call or construction runs as one too
+//                (light-cljs-852), `construct` for the latter.
+//   Bind         Function.prototype.bind (light-cljs-852; function_calls.goose,
+//                which gives its fields and phases).
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool } }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -1681,7 +1696,7 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             if !function_key(heap, o, k) { return Own {}; }
             return find_own(heap, o, k);
         },
-        node_kind::Builtin => { return find_own(heap, o, k); },
+        node_kind::Builtin, node_kind::BoundFunction => { return find_own(heap, o, k); },
         // A proxy's runs in a native frame (proxy.goose), not here.
         node_kind::Proxy => { proxy_fault(heap, proxy_method::GetOwnProperty); return Own {}; },
         _ => { if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; } return Own {}; },
@@ -1747,7 +1762,7 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
 fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
     match kind {
-        node_kind::Object, node_kind::Builtin, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {},
+        node_kind::Object, node_kind::Builtin, node_kind::BoundFunction, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {},
         node_kind::Array => {
             if key_is(heap, k, "length") { return Value.Undefined, array_length(heap, object, value); }
             let i = index(heap, k);
@@ -1802,7 +1817,7 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
 // fail UnsupportedOperand.
 fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8, half: i64 = 0) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind == node_kind::Object || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Iterator { return define_own(heap, o, k, value, attrs, half); }
+    if kind == node_kind::Object || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Iterator { return define_own(heap, o, k, value, attrs, half); }
     if kind == node_kind::Array && !key_is(heap, k, "length") {
         let i = index(heap, k);
         if heap.fault != Fault.None { return false; }
@@ -1835,7 +1850,7 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
 fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
     let o: i64 = object.id();
     match node(heap, o).kind {
-        node_kind::Builtin => { return delete_own(heap, o, k); },
+        node_kind::Builtin, node_kind::BoundFunction => { return delete_own(heap, o, k); },
         node_kind::Object, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {
             let i = element_key(heap, k);
             if heap.fault != Fault.None { return false; }
@@ -1881,7 +1896,7 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
 struct OwnKey { key: Value, attrs: u8 = 0, index: i64 = -1 }
 fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind != node_kind::Object && kind != node_kind::Array && kind != node_kind::Closure && kind != node_kind::Builtin && kind != node_kind::Error && kind != node_kind::Generator && kind != node_kind::Promise && kind != node_kind::Wrapper && kind != node_kind::Iterator || kind == node_kind::Closure && unsupported_prototype(heap, o) {
+    if kind != node_kind::Object && kind != node_kind::Array && kind != node_kind::Closure && kind != node_kind::Builtin && kind != node_kind::BoundFunction && kind != node_kind::Error && kind != node_kind::Generator && kind != node_kind::Promise && kind != node_kind::Wrapper && kind != node_kind::Iterator || kind == node_kind::Closure && unsupported_prototype(heap, o) {
         // A proxy's runs in a native frame (proxy.goose), not here.
         if kind == node_kind::Proxy { proxy_fault(heap, proxy_method::OwnPropertyKeys); } else { heap.fault = Fault.UnsupportedOperand; }
         return false;
@@ -2705,7 +2720,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         form_op::CljCallable => { let kind = form_kind(heap, a); return boolean(kind == node_kind::Vector || kind == node_kind::Map || kind == node_kind::Set || kind == node_kind::Symbol || kind == node_kind::Keyword); },
         form_op::CljCallMember => {
             let value = form_value(heap, a);
-            if value.is_object() && (node(heap, value.id()).kind == node_kind::Closure || node(heap, value.id()).kind == node_kind::Builtin) { return heap.call_method; }
+            if value.is_object() && (node(heap, value.id()).kind == node_kind::Closure || node(heap, value.id()).kind == node_kind::Builtin || node(heap, value.id()).kind == node_kind::BoundFunction) { return heap.call_method; }
             heap.fault = Fault.NativeBoundary; return Value.Undefined;
         },
         form_op::CljInvoke => {
@@ -2909,6 +2924,7 @@ fn native_step(job: Job&) {
         ForIn => { for_in_step(job, frame); },
         Proxy p => { proxy_step(job, frame, p.method); },
         Forward w => { forward_step(job, frame, w.construct); },
+        Bind => { bind_step(job, frame); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -2943,6 +2959,7 @@ fn map_seq_step(job: Job&, frame: Frame) {
         let arg = form_nth(heap, row.namespace_value, frame.index);
         job.frames[job.frames.len - 1].pc = 1;
         if frame.callee.is_object() && node(heap, frame.callee.id()).kind == node_kind::Builtin { builtin_callback(job, frame.callee, nil(), arg, frame); }
+        else if is_bound(heap, frame.callee) { start_bound(job, frame.callee, nil(), [arg], job.operands.len); }
         else { enter(job, frame.callee, nil(), [arg]); }
     }
 }
@@ -2959,6 +2976,7 @@ fn mapv_step(job: Job&, frame: Frame) {
         let arg = form_nth(heap, frame.input, frame.index);
         job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 1;
         if frame.callee.is_object() && node(heap, frame.callee.id()).kind == node_kind::Builtin { builtin_callback(job, frame.callee, Value.Undefined, arg, frame); }
+        else if is_bound(heap, frame.callee) { start_bound(job, frame.callee, Value.Undefined, [arg], job.operands.len); }
         else { enter(job, frame.callee, Value.Undefined, [arg]); }
     }
 }
@@ -2987,7 +3005,7 @@ fn finish_native(job: Job&, frame: Frame, result: Value) {
 fn convertible(heap: const Heap&, v: Value) -> bool {
     if !v.is_object() { return false; }
     let kind = node(heap, v.id()).kind;
-    return kind == node_kind::Object || kind == node_kind::Array || kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::Proxy;
+    return kind == node_kind::Object || kind == node_kind::Array || kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::Proxy;
 }
 // Whether call or construction of f with arguments `args` converts the
 // first argument first, and with which hint (light-cljs-832): Number(o) and
@@ -3132,6 +3150,7 @@ fn conversion_call(job: Job&, at: i64, m: Value, v: Value, args: const Value[:])
     let heap .= job.heap;
     job.frames[at].pc = 1;
     if node(heap, m.id()).kind == node_kind::Closure { enter(job, m, v, args); return; }
+    if is_bound(heap, m) { start_bound(job, m, v, args, job.operands.len); return; }
     let b = builtin_of(heap, m.id());
     // An Array.prototype native frame (Array.prototype.toString, light-cljs-842)
     // runs above this one; its result arrives at pc 1.
@@ -3842,6 +3861,13 @@ fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
         if push_frame(job, f, o, job.operands[(base + 1)..], false, base, nt) { job.operands.resize(base); }
         return;
     }
+    // A bound function's [[Construct]] runs in a Forward frame, newTarget
+    // the bound function or Reflect.construct's (light-cljs-852).
+    if kind == node_kind::BoundFunction {
+        if !is_constructor(heap, f) { heap.fault = Fault.TypeError; return; }
+        start_bound(job, f, nt, job.operands[(base + 1)..], base, true);
+        return;
+    }
     if kind != node_kind::Builtin { if kind == node_kind::Proxy { proxy_invoke(heap, f, proxy_method::Construct); } else { heap.fault = Fault.TypeError; } return; }
     let b = builtin_of(heap, f.id());
     if !constructor_builtin(b) || b == Builtin.SymbolFunction { heap.fault = Fault.TypeError; return; }
@@ -3950,6 +3976,8 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
         if first < job.operands.len { first += 1; }
         kind = if valid(heap, callee) && callee.is_object() { node(heap, callee.id()).kind } else { node_kind::None };
     }
+    // A bound function's call runs in a Forward frame (light-cljs-852).
+    if kind == node_kind::BoundFunction { start_bound(job, callee, receiver, job.operands[first..], base); return; }
     if kind == node_kind::Builtin {
         let id = node(heap, callee.id()).function;
         let args = job.operands[first..];
@@ -4492,11 +4520,26 @@ fn has_instance_method(job: Job&, at: i64, c: Value, v: Value, m: Value) {
         if !callable(heap, c) { type_error(job, "invalid 'instanceof' right operand"); return; }
         ordinary_has_instance(job, at, c, v); return;
     }
+    if function_has_instance(heap, m) { ordinary_has_instance(job, at, c, v); return; }
+    has_instance_call(job, at, c, v, m);
+}
+// Whether m is the realm's Function.prototype[@@hasInstance].
+inline fn function_has_instance(heap: const Heap&, m: Value) -> bool { return m.is_object() && node(heap, m.id()).kind == node_kind::Builtin && builtin_of(heap, m.id()) == Builtin.FunctionPrototypeHasInstance; }
+// Call(m, c, [v]) for InstanceofOperator, m not Function.prototype[@@hasInstance]:
+// a user method's frame, a bound function's Forward frame (light-cljs-852)
+// or a native-frame built-in's above the HasInstance frame, or a plain
+// built-in run here.
+fn has_instance_call(job: Job&, at: i64, c: Value, v: Value, m: Value) {
+    let heap .= job.heap;
     if !callable(heap, m) { type_error(job, "Symbol.hasInstance is not a function"); return; }
     let kind = node(heap, m.id()).kind;
     if kind == node_kind::Closure { has_instance_await(job, at, 2, c, v, m, c, [v]); return; }
+    if kind == node_kind::BoundFunction {
+        if has_instance_frame(job, at, 2, c, v, Value.Undefined) < 0 { return; }
+        start_bound(job, m, c, [v], job.operands.len);
+        return;
+    }
     let b = builtin_of(heap, m.id());
-    if b == Builtin.FunctionPrototypeHasInstance { ordinary_has_instance(job, at, c, v); return; }
     let args: Value[1] = [v];
     if effect_builtin(b) || b == Builtin.Mapv || b == Builtin.MapSeq || forces(heap, b, args[..]) { unsupported_step(job, b, "as a Symbol.hasInstance method"); return; }
     // Number(o) and String(o) convert o in a Convert frame first (pc 4); a
@@ -4517,9 +4560,27 @@ fn has_instance_method(job: Job&, at: i64, c: Value, v: Value, m: Value) {
 // still lazy (light-cljs-805) has a prototype no object can inherit yet,
 // since making an object from it (construct, a read) makes it first: O is
 // not an instance, and nothing is made.
-fn ordinary_has_instance(job: Job&, at: i64, c: Value, o: Value) {
+fn ordinary_has_instance(job: Job&, at: i64, bound: Value, o: Value) {
     let heap .= job.heap;
-    if !callable(heap, c) || !o.is_object() { has_instance_done(job, at, false); return; }
+    if !callable(heap, bound) { has_instance_done(job, at, false); return; }
+    // Step 2 (light-cljs-852): for a bound function, InstanceofOperator(O,
+    // its target): the target's @@hasInstance, which for the realm's
+    // continues here with the target as C. Any other method is called from
+    // the HasInstance frame's pc 1, as a getter's result would be.
+    var c = bound;
+    while is_bound(heap, c) {
+        let target = node(heap, c.id()).value;
+        let m, getter = lookup(heap, target, Value.Symbol { s: well_known::HasInstance });
+        if heap.fault != Fault.None { return; }
+        if getter.is_object() { has_instance_await(job, at, 1, target, o, getter, target, []); return; }
+        if m.tag() > value_tag::Null && !function_has_instance(heap, m) {
+            if has_instance_frame(job, at, 1, target, o, Value.Undefined) >= 0 { push_operand(job, m); }
+            return;
+        }
+        if !charge(heap) { return; }
+        c = target;
+    }
+    if !o.is_object() { has_instance_done(job, at, false); return; }
     if !instance_kind(heap, o) { unsupported_detail(job, "instanceof: a light-cljs runtime value"); return; }
     if node(heap, c.id()).kind == node_kind::Closure {
         if unsupported_prototype(heap, c.id()) { unsupported_detail(job, "instanceof: a class constructor's or async generator's prototype"); return; }
@@ -4564,7 +4625,7 @@ fn has_instance_await(job: Job&, at: i64, phase: i64, c: Value, v: Value, f: Val
 // none, awaiting `phase`, with `m` the built-in method a phase 4 calls; its
 // row, or -1 at the frame limit.
 fn has_instance_frame(job: Job&, at: i64, phase: i64, c: Value, v: Value, m: Value) -> i64 {
-    if at >= 0 { job.frames[at].pc = phase; job.frames[at].callee = m; return at; }
+    if at >= 0 { job.frames[at].pc = phase; job.frames[at].callee = m; job.frames[at].receiver = c; return at; }
     if job.frames.len >= job.heap.limits.frames { job.heap.fault = Fault.StackLimit; return -1; }
     job.frames.push(Frame { function: -1, pc: phase, local_base: job.locals.len, operand_base: job.operands.len, callee: m, receiver: c, input: v, native: Native.HasInstance });
     return job.frames.len - 1;
@@ -4692,6 +4753,12 @@ fn get_iterator_method(job: Job&, at: i64, v: Value, method: Value) {
     var receiver = v;
     loop {
         if node(heap, f.id()).kind == node_kind::Closure { get_iterator_await(job, at, 2, v, Value.Undefined, f, receiver); return; }
+        // A bound function runs in a Forward frame above (light-cljs-852).
+        if is_bound(heap, f) {
+            let row = get_iterator_frame(job, at, 2, v, Value.Undefined);
+            if row >= 0 { start_bound(job, f, receiver, [], job.operands.len); }
+            return;
+        }
         if builtin_of(heap, f.id()) != Builtin.FunctionPrototypeCall { break; }
         f = receiver; receiver = Value.Undefined;
         if !callable(heap, f) { type_error(job, "not a function"); return; }

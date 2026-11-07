@@ -4553,6 +4553,7 @@ fn goose_compiler_cell_effects_and_named_errors() {
                 "return rt.core.deref(a);",
                 "rt.core.reset(a, {n: 1}); return 0;",
                 "rt.core.addWatch(a, 1, () => 0); return 0;",
+                "rt.core.reset(a, rt.vectorFromArray([(function f() {}).bind(null)])); return 0;",
                 "return rt.core.compareAndSet(a, 1, 5) ? rt.core.deref(a) : -1;",
             ],
         );
@@ -4577,8 +4578,17 @@ fn goose_compiler_cell_effects_and_named_errors() {
             ),
             "{outcomes:?}"
         );
-        // Neither changed the cell: it still holds the faulting job's 1.
-        assert_eq!(outcomes[4].as_deref(), Ok("Double(5.0)"), "{outcomes:?}");
+        // A bound function (light-cljs-852) always has own `length` and
+        // `name`: a cell refuses it inside a stored vector, by name.
+        assert!(
+            outcomes[4]
+                .as_ref()
+                .unwrap_err()
+                .contains("Fault.NativeBoundary:reset:-cannot-share-a-bound-function"),
+            "{outcomes:?}"
+        );
+        // None changed the cell: it still holds the faulting job's 1.
+        assert_eq!(outcomes[5].as_deref(), Ok("Double(5.0)"), "{outcomes:?}");
         assert_eq!((jobs.cells, jobs.conflicts), (1, 0), "{jobs:?}");
         assert!(
             jobs.cell_operations >= 6 && jobs.owner_ns > 0 && jobs.delay_waits == 0,
