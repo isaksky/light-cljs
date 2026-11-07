@@ -90,7 +90,15 @@ JavaScript exception, so `catch` cannot swallow it and the harness always
 sees it as explicit-unsupported; the same holds for any unimplemented part of
 a built-in. Constants gain Symbol and BigInt tags and
 functions gain the class and generator constructor kinds as their areas need
-them; direct `eval` stays a named refusal until the functions area plans it.
+them. Direct `eval` is a named execution-time fault, not an export refusal
+(light-cljs-823): the exporter marks the call of each direct-eval site in the
+image (descriptor bit 24, GSP version 3; image metadata, not an opcode), and
+the VM decodes a marked `Call` or `CallMethod` to `Ins.DirectEval`, which
+fails `Fault.Unsupported` naming `direct_eval` when its callee is the realm's
+%eval% and is an ordinary call otherwise. The global `eval` is that built-in;
+calling it any other way (indirect eval) is an unimplemented step of it. The
+sites' scope descriptors are not exported; implementing eval stays with the
+functions area.
 
 **Form opcodes.** The light-cljs collection opcodes (`NewFormList`,
 `FormOp`, `NewVector` and the rest) stay in the one append-only registry and

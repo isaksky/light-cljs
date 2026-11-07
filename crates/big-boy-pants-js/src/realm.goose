@@ -48,11 +48,15 @@ enum Builtin {
     Delay, Force, Realized, IsDelay, NativeConstruct,
     // Generators (light-cljs-790; continuations.goose).
     GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, IteratorPrototypeIterator,
+    // %eval% (light-cljs-823): a direct-eval call of it fails Unsupported
+    // naming `direct eval` (source_vm.goose, Ins.DirectEval); any other call,
+    // an indirect eval, is an unimplemented step of the built-in.
+    Eval,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[67] = [
+let BUILTINS: BuiltinInfo[68] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -87,6 +91,7 @@ let BUILTINS: BuiltinInfo[67] = [
     BuiltinInfo { which: Builtin.NativeConstruct, name: "nativeConstruct", length: 1 },
     BuiltinInfo { which: Builtin.GeneratorPrototypeNext, name: "next", length: 1 }, BuiltinInfo { which: Builtin.GeneratorPrototypeReturn, name: "return", length: 1 },
     BuiltinInfo { which: Builtin.GeneratorPrototypeThrow, name: "throw", length: 1 }, BuiltinInfo { which: Builtin.IteratorPrototypeIterator, name: "[Symbol.iterator]" },
+    BuiltinInfo { which: Builtin.Eval, name: "eval", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -111,7 +116,7 @@ let ERROR_NAMES:    Name[8]    = [Name { text: "Error" }, Name { text: "EvalErro
 let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[17] = [
+let REALM_FUNCTIONS: Method[18] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -124,6 +129,8 @@ let REALM_FUNCTIONS: Method[17] = [
     // (light-cljs-790), whose key is the well-known symbol, not its name.
     Method { which: Builtin.GeneratorPrototypeNext, holder: 24 }, Method { which: Builtin.GeneratorPrototypeReturn, holder: 24 },
     Method { which: Builtin.GeneratorPrototypeThrow, holder: 24 }, Method { which: Builtin.IteratorPrototypeIterator, holder: 23 },
+    // The global `eval` (light-cljs-823).
+    Method { which: Builtin.Eval, holder: 0 },
 ];
 inline fn realm_nodes() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
 // The Symbol function's row: its REALM_FUNCTIONS entry, the eleventh.
@@ -131,7 +138,7 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[141] = [
+let PENDING: PendingName[140] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
@@ -175,7 +182,7 @@ let PENDING: PendingName[141] = [
     PendingName { holder: 0, key: "Uint8Array" }, PendingName { holder: 0, key: "Uint8ClampedArray" }, PendingName { holder: 0, key: "Uint16Array" }, PendingName { holder: 0, key: "Uint32Array" },
     PendingName { holder: 0, key: "WeakMap" }, PendingName { holder: 0, key: "WeakRef" }, PendingName { holder: 0, key: "WeakSet" }, PendingName { holder: 0, key: "decodeURI" },
     PendingName { holder: 0, key: "decodeURIComponent" }, PendingName { holder: 0, key: "encodeURI" }, PendingName { holder: 0, key: "encodeURIComponent" }, PendingName { holder: 0, key: "escape" },
-    PendingName { holder: 0, key: "eval" }, PendingName { holder: 0, key: "isFinite" }, PendingName { holder: 0, key: "isNaN" }, PendingName { holder: 0, key: "parseFloat" },
+    PendingName { holder: 0, key: "isFinite" }, PendingName { holder: 0, key: "isNaN" }, PendingName { holder: 0, key: "parseFloat" },
     PendingName { holder: 0, key: "parseInt" }, PendingName { holder: 0, key: "unescape" },
 ];
 // The type names `typeof` gives, interned with the realm.
@@ -400,6 +407,10 @@ fn fault_message(job: Job&, fault: Fault, frame: Frame) -> Value {
     return text(heap, words);
 }
 // Name an unsupported built-in step (Job.detail) and fail UnsupportedOperand.
+// Whether `v` is the realm's %eval% (a direct-eval site's callee check).
+fn realm_eval(heap: Heap&, v: Value) -> bool {
+    return valid(heap, v) && v.tag() == 5 && node(heap, v.id()).kind == 4 && node(heap, v.id()).function == code(Builtin.Eval);
+}
 fn unsupported_step(job: Job&, b: Builtin, what: const u8[:]) -> Value {
     job.detail.clear();
     for c in BUILTINS[code(b)].name { job.detail.push(c); }
@@ -628,6 +639,8 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         Swap, SwapVals, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow => { return unsupported_step(job, b, "called from a native frame"); },
         // %IteratorPrototype%[@@iterator]: returns its receiver.
         IteratorPrototypeIterator => { return receiver; },
+        // A direct-eval site's call of %eval% never reaches here (Ins.DirectEval).
+        Eval => { return unsupported_step(job, b, "indirect eval"); },
         Delay, Force, Realized, IsDelay => { return delay_builtin(job, b, args); },
         NativeConstruct => {
             if !constructible(heap, arg(args, 0)) { return unsupported_step(job, b, "constructing a value other than a Delay"); }

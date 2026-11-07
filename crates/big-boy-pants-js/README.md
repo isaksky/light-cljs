@@ -346,7 +346,8 @@ here proves entry-body execution only. Bootstrap invariants adapt `cc764dbe`,
 parsed/exported true and Goose-executed false. Export walks every function,
 including dead functions, and exports every opcode; an operation the Goose VM
 does not implement, such as a constructor, fails only when it runs, with
-`Fault.Unsupported` naming it (direct eval is still refused at export).
+`Fault.Unsupported` naming it (a direct eval of the global `eval` names
+`direct_eval`).
 These flags describe the export stage. `macros.bb` separately executes the
 supported Pants macro images and compares structured results. The legacy scalar
 adapter still rejects them. The exporter accepts source alone and cannot
@@ -383,7 +384,7 @@ Selected runtime source is reference material, **not executable Goose export**;
 its classes, private stores, protocol/reader machinery and host hooks are outside
 the scalar VM. Complete ECMAScript/cljs.core are excluded.
 
-## GSP version 2
+## GSP version 3
 
 Integers are little endian. An image owns one exact immutable UTF-8 source
 buffer (source ID 0), fixed-stride tables and variable payload pools. There are
@@ -392,7 +393,7 @@ exact UTF-16 code-unit ranges, including lone surrogates, separate from source
 UTF-8. Source spans are half-open **byte** ranges. Diagnostic line/column work
 is outside ordinary execution.
 
-The 32-byte header is `GSP\0`, `u32 version=2`, then six u32 lengths: source
+The 32-byte header is `GSP\0`, `u32 version=3`, then six u32 lengths: source
 bytes, functions, constants, child IDs, instructions, UTF-16 units. Sections
 follow in that order:
 
@@ -406,7 +407,8 @@ follow in that order:
 
 Descriptor bits 0..7 are the engine opcode, 8..15 the operand category (none,
 constant/name, local, byte target, child, capture, selector/count), 16..23 the
-original operand width (0/2/4). Every opcode of the shared registry
+original operand width (0/2/4); bit 24 marks the call of a direct-eval site
+and bits 25..31 are zero. Every opcode of the shared registry
 (`rust/src/vm/instr.rs`) exports, implemented by the Goose VM or not
 (light-cljs-783); one the VM does not implement fails the job when it runs,
 with the uncatchable `Fault.Unsupported` naming it, and a dead one never fails.
@@ -417,13 +419,18 @@ ordinary, base class, derived class, default derived class), generator in bit
 symbol, its first word the index in `export_well_known_symbol` (the frontend
 emits only `Symbol.unscopables`); a BigInt constant's range holds the sign (0
 or 1) then the magnitude in little-endian 16-bit digits with no high zero
-digit. The version stays 2: these are new values of existing fields, which
-earlier readers refuse explicitly, and images without them are byte-identical.
+digit. Those stayed version 2: new values of existing fields, which earlier
+readers refuse explicitly. Version 3 (light-cljs-823) adds descriptor bit 24:
+the exporter sets it on the call at each direct-eval site's offset, which is
+always `call`, `call_method`, `call_spread` or `call_method_spread`
+(`export_direct_eval_call`); the sites' scope descriptors are not exported.
+The VM decodes a marked `call` or `call_method` to `Ins.DirectEval`, which
+fails `Fault.Unsupported` naming `direct_eval` when its callee is the realm's
+%eval% and is an ordinary call otherwise.
 `export_schema.goose` is compiled reader code generated from the registry
-(descriptors, selectors, name operands, each opcode's stack effect and control
-flow, opcode and well-known symbol names); an input image cannot supply its
-own schema. Direct eval sites fail explicitly at export. No source behavior is
-dropped.
+(descriptors, selectors, name operands, direct-eval call opcodes, each
+opcode's stack effect and control flow, opcode and well-known symbol names);
+an input image cannot supply its own schema. No source behavior is dropped.
 
 The existing lowerer supplies u16 constant/local/capture/child indices and u32
 byte addresses. GSP table IDs/ranges are u32. Budgets: 8 MiB source, 65,536

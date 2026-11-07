@@ -7,7 +7,9 @@ use crate::value::Primitive;
 use crate::vm::Executable;
 use crate::vm::instr::{Opcode, OperandKind};
 
-pub const VERSION: u32 = 2;
+/// Version 3 (light-cljs-823) adds the direct-eval site bit of instruction
+/// descriptors ([`DIRECT_EVAL_SITE`]); version-2 readers refuse it explicitly.
+pub const VERSION: u32 = 3;
 pub const MAX_SOURCE: usize = 8 * 1024 * 1024;
 pub const MAX_RECORDS: usize = 1_048_576;
 pub const MAX_FUNCTIONS: usize = 65_536;
@@ -64,6 +66,21 @@ fn operand_tag(kind: OperandKind) -> u32 {
         _ => 6,
     }
 }
+
+/// Descriptor bit 24: the instruction is the call of a direct-eval site
+/// (`eval(...)` written as a plain call; `ExecutableSpec::eval_sites`). Image
+/// metadata, not an opcode: only the four call opcodes of
+/// [`DIRECT_EVAL_CALLS`] carry it, and bits 25..31 stay zero. The site's scope
+/// descriptors (bindings, receiver, super home) are not exported; the Goose VM
+/// fails such a call by name when its callee is the realm's %eval%.
+pub const DIRECT_EVAL_SITE: u32 = 1 << 24;
+/// The opcodes the lowerer emits at a direct-eval site's offset.
+pub const DIRECT_EVAL_CALLS: [Opcode; 4] = [
+    Opcode::Call,
+    Opcode::CallMethod,
+    Opcode::CallSpread,
+    Opcode::CallMethodSpread,
+];
 
 /// Constant tags 6 and 7 (5 is never used: it is the Goose VM's heap-reference
 /// value tag). A Symbol constant names a well-known symbol by its index here.
@@ -229,14 +246,10 @@ impl Tables {
         let id = bounded(self.functions.len(), MAX_FUNCTIONS - 1, source)?;
         self.functions.push([0; 13]);
         let spec = executable.to_spec();
-        if !spec.eval_sites.is_empty() {
-            return Err(problem(
-                source,
-                SyntaxErrorKind::Unsupported,
-                Span::new(0, source.len()),
-                "Goose export does not support direct eval",
-            ));
-        }
+        // Direct-eval sites export as marked calls (light-cljs-823): the
+        // program runs, and only a direct eval that executes fails, by name.
+        let eval_offsets: BTreeSet<u32> = spec.eval_sites.iter().map(|s| s.offset).collect();
+        let mut marked = 0;
         // Children are constructed first, then their IDs form one contiguous
         // range. IDs survive all subsequent table growth.
         let mut children = Vec::new();
@@ -329,9 +342,23 @@ impl Tables {
             // The kind tag lets the inspection decoder validate references
             // without binding its reader to the engine's private enum layout.
             let tag = operand_tag(kind);
+            let site = if eval_offsets.contains(&(offset as u32)) {
+                if !DIRECT_EVAL_CALLS.contains(&opcode) {
+                    return Err(problem(
+                        source,
+                        SyntaxErrorKind::Internal,
+                        Span::new(0, 0),
+                        "direct eval site is not a call in Goose export",
+                    ));
+                }
+                marked += 1;
+                DIRECT_EVAL_SITE
+            } else {
+                0
+            };
             bounded(self.instructions.len() + 1, MAX_RECORDS, source)?;
             self.instructions.push([
-                u32::from(opcode as u8) | (tag << 8) | ((size as u32) << 16),
+                u32::from(opcode as u8) | (tag << 8) | ((size as u32) << 16) | site,
                 arg,
                 bounded(span.start, MAX_SOURCE, source)?,
                 bounded(span.end, MAX_SOURCE, source)?,
@@ -347,6 +374,14 @@ impl Tables {
             }
             offset += 1 + size;
             index += 1;
+        }
+        if marked != eval_offsets.len() {
+            return Err(problem(
+                source,
+                SyntaxErrorKind::Internal,
+                Span::new(0, 0),
+                "direct eval site is not an instruction in Goose export",
+            ));
         }
         let name = spec
             .function_name
@@ -471,6 +506,15 @@ pub fn inspection_schema() -> String {
     }
     text.push_str(
         "        _ => false,\n    };\n}\n\n\
+         // The call opcodes that may carry the direct-eval site bit (descriptor\n\
+         // bit 24, GSP version 3).\n\
+         fn export_direct_eval_call(op: i64) -> bool {\n    return match op {\n",
+    );
+    for op in DIRECT_EVAL_CALLS {
+        text.push_str(&format!("        {} => true,\n", op as u8));
+    }
+    text.push_str(
+        "        _ => false,\n    };\n}\n\n\
          // Stack effect and control flow, from the engine validator's rules:\n\
          // bits 0..7 base pops, 8..15 pushes, 16..23 multiplier, 24..27 source of\n\
          // the multiplied count (0 none, 1 operand, 2 child captures, 3 form arity),\n\
@@ -577,10 +621,37 @@ mod tests {
             .find(|row| row[0] & 255 == Opcode::Construct as u32)
             .unwrap();
         assert!(source[construct[2] as usize..construct[3] as usize].contains("new"));
-        // Direct eval keeps its named refusal until the functions area plans it.
-        let e = export_source("eval.js", "function f(s) { return eval(s); } 1;").unwrap_err();
-        assert_eq!(e.kind, SyntaxErrorKind::Unsupported);
-        assert!(e.message.contains("direct eval"), "{e}");
+    }
+    #[test]
+    fn dead_direct_eval_exports_with_exactly_its_call_marked() {
+        // A dead function's direct eval no longer refuses the program
+        // (light-cljs-823): exactly the site's call carries the marker bit.
+        let source = "function f(s) { g(s); return eval(s); } function h(s) { return eval(...s); } \
+                      var o = { eval(s) { return s; } }; o.eval(1); (0, eval); 1;";
+        let export = export_source("eval.js", source).unwrap();
+        let marked: Vec<Vec<u32>> = rows(&export, 3)
+            .into_iter()
+            .filter(|row| row[0] & DIRECT_EVAL_SITE != 0)
+            .collect();
+        let ops: Vec<u32> = marked.iter().map(|row| row[0] & 255).collect();
+        assert_eq!(
+            ops,
+            [Opcode::Call as u32, Opcode::CallSpread as u32],
+            "{marked:?}"
+        );
+        for row in &marked {
+            // The call's span is its `(`, right after the callee `eval`.
+            let text = &source[row[2] as usize - 4..row[3] as usize];
+            assert!(text.starts_with("eval("), "{text:?}");
+            assert_eq!(row[0] >> 25, 0);
+        }
+        // No descriptor sets bits 25..31.
+        assert!(rows(&export, 3).iter().all(|row| row[0] >> 24 <= 1));
+        assert_eq!(VERSION, 3);
+        assert_eq!(
+            u32::from_le_bytes(export.bytes[4..8].try_into().unwrap()),
+            3
+        );
     }
     #[test]
     fn symbol_bigint_constants_and_function_kinds_are_encoded() {
@@ -907,19 +978,15 @@ mod serial_tests {
         }
         // Constructors and direct const writes now export (light-cljs-783):
         // the Goose VM fails `construct` and `throw_error` by name when they
-        // run (serial_tests.goose). Direct eval stays an export refusal.
+        // run (serial_tests.goose). So does a direct eval (light-cljs-823):
+        // its call is marked, and the VM fails it as `direct_eval`.
         for (source, operation) in [
             ("function f() { return new Date(); }", "construct"),
             ("function f() { const x=1; x=2; return x; }", "throw_error"),
+            ("function f(s) { return eval(s); }", "call"),
         ] {
             let export = export_function(source).unwrap();
             assert!(export.operations.contains(operation), "{source}");
         }
-        assert_eq!(
-            export_function("function f(s) { return eval(s); }")
-                .unwrap_err()
-                .kind,
-            SyntaxErrorKind::Unsupported
-        );
     }
 }

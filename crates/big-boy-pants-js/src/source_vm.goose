@@ -138,7 +138,9 @@ fn plain_rows<T>(rows: const T[:]) -> u8[>..] { var out: u8[>..] = []; for r in 
 // Rust compiler's inferred name included) as a run of Code.units; length:
 // its `length` (ExpectedArgumentCount) (light-cljs-806).
 struct Function { start: u32, count: u32, constants: u32, children: u32, params: u32, locals: u32, captures: u32, strict: bool, kind: i64 = 0, generator: bool = false, asynchronous: bool = false, name_start: u32 = 0, name_len: u32 = 0, length: u32 = 0 }
-struct Op { code: i64, arg: i64, offset: i64, start: i64, end: i64, depth: i64 = -1 }
+// direct_eval: the image marks the row as the call of a direct-eval site
+// (descriptor bit 24, light-cljs-823); only the four call opcodes carry it.
+struct Op { code: i64, arg: i64, offset: i64, start: i64, end: i64, depth: i64 = -1, direct_eval: bool = false }
 // One decoded instruction per validated `Op` row (light-cljs-785; decision 1
 // of docs/javascript-coverage.md): a fixed-mode enum dispatched by `match` in
 // `execute`. Payloads are the row's validated operand; jump targets are absolute
@@ -172,6 +174,11 @@ enum Ins {
     // settle activations. GeneratorYieldStar (126) and AsyncGeneratorStart
     // (181) stay Unsupported.
     GeneratorStart, GeneratorInitialYield, GeneratorYield, AsyncStart, Await,
+    // The Call (44) or CallMethod (83) of a direct-eval site (light-cljs-823):
+    // when its callee is the realm's %eval% it fails Unsupported naming
+    // `direct_eval` (decision 1); any other callee is an ordinary call. A
+    // marked CallSpread or CallMethodSpread stays Unsupported as its opcode.
+    DirectEval { argc: u32, method: bool },
 }
 // The row's stack effect from the generated registry table, resolved once at
 // decode (-1 marks a row the table refuses; load never admits one).
@@ -474,7 +481,9 @@ fn instruction(op: Op) -> Ins {
         // Method (102), an object literal's method, getter or setter: obj c1..cn
         // → obj f, a closure like Function's; its home object only serves
         // `super`, whose opcodes are not implemented (light-cljs-787).
-        43, 102 => Ins.Closure { child: a }, 44 => Ins.Call { argc: a }, 94 => Ins.Construct { argc: a }, 83 => Ins.CallMethod { argc: a },
+        43, 102 => Ins.Closure { child: a }, 94 => Ins.Construct { argc: a },
+        44 => if op.direct_eval { Ins.DirectEval { argc: a, method: false } } else { Ins.Call { argc: a } },
+        83 => if op.direct_eval { Ins.DirectEval { argc: a, method: true } } else { Ins.CallMethod { argc: a } },
         101 => Ins.Arguments, 179 => Ins.Rest { skip: a }, 45 => Ins.Callee, 46 => Ins.Capture { slot: a },
         47, 198 => Ins.NewCell { immutable: false }, 197 => Ins.NewCell { immutable: true },
         48 => Ins.InitCell, 49 => Ins.ReadCell, 50 => Ins.WriteCell,
@@ -542,7 +551,7 @@ fn load(code: Code&, image: const program::Image&) -> bool {
     for i in program::word(bytes, 20) { code.children.push(program::word(bytes, l.children + i * 4) as u32); }
     for i in program::word(bytes, 24) {
         let at = l.instructions + i * 20;
-        code.ops.push(Op { code: program::word(bytes, at) & 255, arg: program::word(bytes, at + 4), offset: program::word(bytes, at + 16), start: program::word(bytes, at + 8), end: program::word(bytes, at + 12) });
+        code.ops.push(Op { code: program::word(bytes, at) & 255, arg: program::word(bytes, at + 4), offset: program::word(bytes, at + 16), start: program::word(bytes, at + 8), end: program::word(bytes, at + 12), direct_eval: (program::word(bytes, at) >> 24) == 1 });
     }
     for i in program::word(bytes, 28) { let at = l.units + i * 2; code.units.push(bytes[at] | ((bytes[at + 1] as u16) << 8)); }
     for f in code.functions {
@@ -1776,6 +1785,9 @@ fn describe_fault(out: u8[>..]&, code: const Code&, job: const Job&) {
 // Just the operation: `construct`, `const(BigInt)`.
 fn unsupported_operation(out: u8[>..]&, code: const Code&, job: const Job&) {
     if job.fault != Fault.Unsupported || job.fault_opcode < 0 { return; }
+    // Only a direct eval of %eval% faults Unsupported at a DirectEval row.
+    let direct = match code.ins[job.fault_pc] { DirectEval => true, _ => false };
+    if direct { out.append("direct_eval"); return; }
     out.append(export_opcode_name(job.fault_opcode));
     if job.fault_opcode == 1 {
         let tag = code.constants[code.functions[job.fault_function].constants + code.ops[job.fault_pc].arg].tag();
@@ -2998,6 +3010,13 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 GeneratorYield => { settle(job, ran, used); job.frames[top].pc = pc; generator_yield(job, top, at); break; },
                 Await => { settle(job, ran, used); job.frames[top].pc = pc; await_value(job, top, at); break; },
                 Unsupported => { heap.fault = Fault.Unsupported; break; },
+                DirectEval c => {
+                    // The callee sits below the arguments, above a method's receiver.
+                    if realm_eval(heap, job.operands[job.operands.len - c.argc - 1]) { heap.fault = Fault.Unsupported; break; }
+                    settle(job, ran, used);
+                    if !invoke(job, top, at, c.argc, c.method) { break; }
+                    left = fuel(job, allowance, used);
+                },
                 Construct c => {
                     if !constructible(heap, job.operands[job.operands.len - c.argc - 1]) { heap.fault = Fault.Unsupported; break; }
                     settle(job, ran, used);

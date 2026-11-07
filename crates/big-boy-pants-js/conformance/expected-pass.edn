@@ -9,6 +9,7 @@
  "bbp/async_unhandled_rejection"
  "bbp/closure_counter"
  "bbp/delete_dictionary"
+ "bbp/eval_dead_site"
  "bbp/for_in_chain_order"
  "bbp/for_in_forms"
  "bbp/function_name_length"

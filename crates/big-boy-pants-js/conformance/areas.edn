@@ -55,6 +55,8 @@
   "bbp/completion_declarations_only" {:area :statements-loops}
   "bbp/delete_dictionary" {:area :objects-classes}
   "bbp/driver_names_are_free" {:area :functions-scope}
+  "bbp/eval_dead_site" {:area :functions-scope}
+  "bbp/eval_direct_call" {:area :functions-scope}
   "bbp/for_in_chain_order" {:area :statements-loops}
   "bbp/for_in_forms" {:area :statements-loops}
   "bbp/function_name_length" {:area :functions-scope}

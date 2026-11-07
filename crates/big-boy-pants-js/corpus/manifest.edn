@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "6d003c9fd903965cd237a7fa422d2bdbae948423b1b95cbf81ccefdd924c6b04",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "dd8472687e4ecd812ab2973c1cac62e4c082aa151afc389f23555cfacd65c982",
+  "bea69088d7c60ecaf029e3889f7dd4b13c8489521722b075746a8a34d234ecb2",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "1a2108185dffceee40083c348fb8b306d46c392910ab5036cfe75b0ae45a205b",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -30,61 +30,61 @@
   "671252f52d062dc270526de0eb2080388547658370779baf854736f0792e49ae"},
  :artifact-sha256
  {"corpus/branches-consume.pants.gsp"
-  "79591f786f72d32f10941be1704df0ca63e6dd32126714aa7cb3fb3386ef679c",
+  "39c8f97de2018bc1100f3bfec0351d47f301f1d2516b7fa2fd842456f245fdc8",
   "corpus/branches-consume.pants.inventory.edn"
   "d167e6de3ecac8e687b08a6e80e05886db00152353542d6c4e824176381e7d6c",
   "corpus/branches-consume.pants.js"
   "abf8ac3abbbac8c9addfaeb293077fd556cb54fdfb977cb5bb13fbe65ef8b994",
   "corpus/branches-consume.v8.gsp"
-  "9008dfcad663b1288da8c61558ee2c0848bfd6df9333878d1f36018c48365c93",
+  "2de1c5aa27e057a981c17d326d126c086f20fd0c31d465b090e91b5b6a9c70f1",
   "corpus/branches-consume.v8.inventory.edn"
   "904d198177c0df758f3737158a5631e66b613f1375ae43be536664376d13cac5",
   "corpus/branches-consume.v8.js"
   "59d474e18894406ab2ff6901225fd1b42b1b9c537c1876f3cea47da774c43eab",
   "corpus/branches-helper-0.pants.gsp"
-  "1ed8dc5b95894f6923b2477cda6e392ad8211c993110f17ab396df5bf86b746f",
+  "a0ac5e5bacf3505feeb94515306bae15a268f7d2b19a2383e4e1d5b7796629ce",
   "corpus/branches-helper-0.pants.inventory.edn"
   "2231a3ed1be44c9085f4f3cf481c49dc8a89b7115965b42233c3283bf21b1e8e",
   "corpus/branches-helper-0.pants.js"
   "f27eb6834bcaaadc7c951a73d303d46ad1e144a54eeee0a98400cf0e01157046",
   "corpus/branches-helper-0.v8.gsp"
-  "aa22bd7a40e370b787f1cafb68241fef7e756c957441dba1d128bb13d8ead117",
+  "75a34d29ba4b729822e8b50f3e8779c754f9d5a9a02235a5150e25ceaa37253c",
   "corpus/branches-helper-0.v8.inventory.edn"
   "616a55ec65262dae3534c2c0a42326b0c47f4354eeefd665ecd3c28de75a4834",
   "corpus/branches-helper-0.v8.js"
   "8f4c8202631111e27c8ffb41c4c5aae9be184b46f3d54c3e4193e266306b4a58",
   "corpus/branches-helper-1.pants.gsp"
-  "d8c686874782fc28bafc17db81c5fe55970c3a3e84643b670c267b9f2983784d",
+  "6d67cc505daeb038c63b939e93881acba04be699b7f1dba5666c33a740b367e6",
   "corpus/branches-helper-1.pants.inventory.edn"
   "2231a3ed1be44c9085f4f3cf481c49dc8a89b7115965b42233c3283bf21b1e8e",
   "corpus/branches-helper-1.pants.js"
   "95f1b3096d5d0fe028bdc548ab31755ee42ef1c63b846c30f8f9e7dbaec04e98",
   "corpus/branches-helper-1.v8.gsp"
-  "74b311bfbcf80a76903df5ea44f1ba0fbf5e0c97dd6ffdcea55515b0ba0f68fe",
+  "a5d8e1bdd03606af1c2c7b34f937a302b7b412e480c0172a19b44ca4fa33bf2c",
   "corpus/branches-helper-1.v8.inventory.edn"
   "616a55ec65262dae3534c2c0a42326b0c47f4354eeefd665ecd3c28de75a4834",
   "corpus/branches-helper-1.v8.js"
   "6a04451e473b9e12451d37178e025d31e2322e888fde01896cafaaaeb996eb2e",
   "corpus/branches-left.pants.gsp"
-  "8c03f0b80e6f1c27647fdb2985d4fdc82bf013ce02ba76960d20ae51fa1c186a",
+  "41702fce2ec0eaf6bd7534052d58c56c67731c1960176ed1c72ab8d38c9b60df",
   "corpus/branches-left.pants.inventory.edn"
   "bf99958ad987de24fe14e4dbea00a96fc5bb9ae45a91e2ae242dadbeef896a89",
   "corpus/branches-left.pants.js"
   "2dd522e85d3f689b728e6d3eba999b0a0f16ad8a45e5946aac0fbd75babd407f",
   "corpus/branches-left.v8.gsp"
-  "dda486e985d88e902a0ad4f21650916b387a782d4502367074b00731dd5ba28e",
+  "8ff173d004b75297947ce6605123af9a6779d89550c5f292458f8d7ed16f60ea",
   "corpus/branches-left.v8.inventory.edn"
   "3f21ce1baaca91f65e60a9a745f314d31f7c7d9f3add84e7179e77397b294f28",
   "corpus/branches-left.v8.js"
   "f4979b93e0572ba734868f3fa872b7a62cc4bccc131986eb1cf45b0530e073f1",
   "corpus/branches-right.pants.gsp"
-  "73f40d9f32bf1111b0816d50ee478e1dfeb4280abe64760bf556866e3581cf3e",
+  "32c9d660e8fc1afe5e612130cd3d70f53da89bb4a568aad742373edfae2134b9",
   "corpus/branches-right.pants.inventory.edn"
   "a5b42c5701071cc002e8e25cd010a24ab80bb4b8a5bdca1b5580b61387fa74cb",
   "corpus/branches-right.pants.js"
   "3b7be6b6dc51999916586f3ab7450ec2ce89eb0df12c0bba0ceac49ac11cd9be",
   "corpus/branches-right.v8.gsp"
-  "8a9406930ffad8d2e2593901fd94bb020724b397a00d682b4cf9cbfde1860f1c",
+  "e16e14b099670db8f890213197ae10fb18c7256ba9d3770fde88c81d9eb5b13f",
   "corpus/branches-right.v8.inventory.edn"
   "8b7c47faa22ae4c89fd7ed62c31aaa30a6d56a3bb354e6027ee47610542456c4",
   "corpus/branches-right.v8.js"
@@ -100,13 +100,13 @@
   "corpus/catch.cljs"
   "abdc96794a6ce3efa21e62c82e7359e246f537865d1196267bac2a932520c553",
   "corpus/churn-churn.pants.gsp"
-  "980dce005663da40919133869148cb15a3b49683c46febf975e5468271431614",
+  "e4fb5f5fd295cd72d5f00437706ee096d29fe30c4a5e24113138735d83902ddb",
   "corpus/churn-churn.pants.inventory.edn"
   "ce9ab0234c0b0fac6c42d1f0ab4f7f38b77daa79b9a3dbf559090fce221621c6",
   "corpus/churn-churn.pants.js"
   "5f2a69d70e4af5de13405e974c2d82cee135536ecd4b11274f4cd1377e3a8192",
   "corpus/churn-churn.v8.gsp"
-  "8e6f84b6540873f46d3927a3d03dc7a315501369e9dbd6a7f7592ea5327ddf5a",
+  "fec82b8706bf9aa48ffc9cd9fa4aee8bc7f5f901ccea7244e53df85fe2d7d8fc",
   "corpus/churn-churn.v8.inventory.edn"
   "aeae258f7869931d7f11964646c2ce7e4360b387152b66a4572d141fa49e46c9",
   "corpus/churn-churn.v8.js"
@@ -120,13 +120,13 @@
   "corpus/churn.v8.jobs.edn"
   "def3866d14615559b22cf3d06a12cd1030c77aeb42bfb1671fbfea1b5b9e552a",
   "corpus/closure-captured.pants.gsp"
-  "dd003050c57f501152a32348b1c05146856b4b9560354adc6f739dd5d95cd61d",
+  "c2579f8fce385330b087afd5c144be3d00ace5421882d64a12ff3884c7110afa",
   "corpus/closure-captured.pants.inventory.edn"
   "ed351df3b86b2fff089a10e432e098fa697d34065f6d41e094b24d76b0de2213",
   "corpus/closure-captured.pants.js"
   "f781e8a0a2ad3f0833b26b9bb9b985b56206fab0e1e63d6e33467aa45520328d",
   "corpus/closure-captured.v8.gsp"
-  "40ad8e9daa191d18276d5f864b27c5e9bcb624d3d5eae512674b48b8ca7a09cf",
+  "22cff047234cf721b802d4a9e9d237366ec66968daa67a5b0be39598dbe170de",
   "corpus/closure-captured.v8.inventory.edn"
   "a5e3d9b65e03d3311818cf85b42ddedca637f8115544bdaf12a61b9c31f806b5",
   "corpus/closure-captured.v8.js"
@@ -140,13 +140,13 @@
   "corpus/closure.v8.jobs.edn"
   "78d5301e196a9d3e56a68ac8396b28e42c62ff0cf2b28047ecae1f6f39cc1a3a",
   "corpus/context-context.pants.gsp"
-  "a3d02bf0a9fee0ceb6b979ff3d872c46b5b731683eb674e64aaefc6e07020ea0",
+  "f2e1f2b9c65f6dbe43aec5f6ea7e420fcac07c358d1e3e289a46adcf9be6b5e3",
   "corpus/context-context.pants.inventory.edn"
   "c070db112f6eab5f235f4137f090f2735b1d085b49f4b541c68c2ce01509cfc6",
   "corpus/context-context.pants.js"
   "ff6e449b78698d0da2993a87f4fb26c1b69f5f97bc96cf028609ae0107a6dbfa",
   "corpus/context-context.v8.gsp"
-  "f918f8f9f03a4482526be0e59204c01504a4b1c25b9c54a8ab4389eb65860e32",
+  "2c8fbef597b3bb6aed9ad48ee5c4507f0ea0139d650a84d9ad7bd8b35e922887",
   "corpus/context-context.v8.inventory.edn"
   "2f8f61ee5d85fe6f12c719ec587af986716805e4224dca3f64c88cebfd469556",
   "corpus/context-context.v8.js"
@@ -160,13 +160,13 @@
   "corpus/context.v8.jobs.edn"
   "3a2130ec50d36ea434365b9c1ae274575a6410e4e698d38dae1855f4f5ae5e8b",
   "corpus/effect-announce.pants.gsp"
-  "a222ec985ed9d60b62f9628747432571de83d6ba3fb14b86aad7be75449b110c",
+  "5c5b3f6539c8934613c22d091d41a52735762cd3a76c8e6939e3ff5b3e397d11",
   "corpus/effect-announce.pants.inventory.edn"
   "745c97961e010125605db5857213099f720e121f3318c0709858f4acb355f9fb",
   "corpus/effect-announce.pants.js"
   "17d5df7e32e7045ca58c4ddac148c68ca1592683bbe28b94d401a36dfe806f80",
   "corpus/effect-announce.v8.gsp"
-  "cbcde0873e3d5ceed25ea0927898ab85ed46586ac8fa5870d61fd55dea8da1ed",
+  "14f3b939fe7762e8c2e3511b96232ef3ab99d4392bf94c82334d73df30a34e83",
   "corpus/effect-announce.v8.inventory.edn"
   "f909e294babeae6fb90777a1dc4cb36228ab70ad3e4dc7a70ffea505f55f8cd5",
   "corpus/effect-announce.v8.js"
@@ -186,238 +186,238 @@
   "corpus/runtime.js"
   "0b4304b3ae4074640c6020013a17afbeb589efbaa43accfd393662fb20d83f56",
   "corpus/serial/accessors.gsp"
-  "cc051fb0944a81f9672edf2fdce3ec0a59b25c2669b21f4a77a1c3c51c27e850",
+  "8cc0bccb1fcb6120c4013a8e480b9eb74fe1a0989af593b96f7fc34d4f5a3e6a",
   "corpus/serial/accessors.js"
   "f4333ca4626655a398ce00f3dcb4ba126c6785124e6f4f47891634c842fe7592",
   "corpus/serial/arguments.gsp"
-  "b729cd19eaa7cba0a30f7eb9281ea501aeb496b89bc48ef76762c654e2d5eee4",
+  "138198ba661b3c11ca65f584847f2baf2d558069699dd3f64efa01f922f36670",
   "corpus/serial/arguments.js"
   "4d1cf4908fff75dd6fdb86d256346603562798519216bd59eb84f9bd06c1d613",
   "corpus/serial/array-callbacks.gsp"
-  "c60cfd55b7bf27e9617d7e0ff6b780b097a76ae36143386f618c4e5ba999a2f7",
+  "bb6ba25fdbe3fa715ebf7b8db3e8ea227cfe22d18b3e3edae4db25b285fbe566",
   "corpus/serial/array-callbacks.js"
   "41b0f59caa4ffe4a39b4c77671dd72419bd4871cbdaa8f0be52e9524a968b96d",
   "corpus/serial/array-names.gsp"
-  "56f507a5544f68b9d20767f244f6cd5059694f542da2bf26dd37341ea5015ef1",
+  "0ed4f90476ac576dc22469646ff29460a514e3c95ca8d79b341093c54a1b723d",
   "corpus/serial/array-names.js"
   "a9dcd0c107903d18ff347ea653db64fb3c4738bfc66e78ee0a82e3d2b452068d",
   "corpus/serial/async-entry.gsp"
-  "f8ba966389ad2ffaa5e923c22d0952308480bbeef01b0b1da2cd49c0418eb5f7",
+  "8029b8d848d3d15750bc5bc60bba89fedb15a33935b1294c59c0945ce600629d",
   "corpus/serial/async-entry.js"
   "443925b27f4b18b0f1aba044ee42533a036a9177d5a31bd36ae8f24047abfb39",
   "corpus/serial/async.gsp"
-  "ac4dda4f720668be870090e33186c0b59221fb65883f49368cea8501e11e7844",
+  "27bbf631cb82b73958982ada07a53e9ae95acf9a9cba50d8dbe53de79aca5979",
   "corpus/serial/async.js"
   "bca6b1a9b3a0aec5437e5433ec824d1bd700dcc427409e4ef41a8f76ee25b335",
   "corpus/serial/bigint-reached.gsp"
-  "7e1c78895bf7a6a54fc3f1f416915232a0362029d51ee435ac29bbb5d2439388",
+  "746a93d2adc6bc7134bd66a4f0b3beaca85686bb4faeb3c2bf401b5fb888c0e4",
   "corpus/serial/bigint-reached.js"
   "cd4ad8d14c80c40354ebcb96deef37950d4007180704c8c105077b4f0d444428",
   "corpus/serial/calls.gsp"
-  "fc85b8724f49dcc317c7a17e9b65dbbc3c5891715b0d7ac03bdedbefcc553eea",
+  "e759a66f1f19c198d41c6965ca4489e70807cd1ac5200e5437606fafaf7b4828",
   "corpus/serial/calls.js"
   "73bea0d580fca5a7e2841e666eb6526796f3466c1780f4a247d5fa09c782f61d",
   "corpus/serial/cancel-break.gsp"
-  "be18412b569891beda4d3e1944423cecc58d44f46216e29dbf06d3552fbf9ee8",
+  "2150437aa172f5e56f104ffe6e823a611db9c73087fd3d46385fa67ab4bffe90",
   "corpus/serial/cancel-break.js"
   "23f8cd070dbb1284b9a6dea5c43cf3e39d038b9d8484dc89f11f36094b8a8c51",
   "corpus/serial/cancel-fault.gsp"
-  "82d283d725f7bd990d4a389590be92633478b4d3c6d03c37a36ddabc57e188e8",
+  "c2af7dae125c0e3e4f23b912f54e43b87f4a980fc1f7fe33c35762dd303f78bc",
   "corpus/serial/cancel-fault.js"
   "e2c34495ef35ab5f9afce52b824a58da83bb016bba00bfac294c14f851bfd6a6",
   "corpus/serial/cancel-suspended.gsp"
-  "331808c2b204463e1f56669707b460aeefa152fba5fb6111a53e8e5dd7a74405",
+  "af4796a14f03d5f28fb1761e58f2a0a902156b5bd0fed1a4bbe9c3e326356019",
   "corpus/serial/cancel-suspended.js"
   "75315ba1aaac8cb8d30cedc6a1f9fc5c0372fa25cda5eb58a7d5ccebd7db0f68",
   "corpus/serial/cancel.gsp"
-  "184c6df8cdbd8bf7a6e36369c7f21ab5d2decbc2f3d55808216883d1e882ca3d",
+  "12f75fa82bfbafa8f9134fe3ca4bc747ee57e7999aeb688fcf8e8623f878413e",
   "corpus/serial/cancel.js"
   "925b18c744ff509197a0ce248af03d3d16c131b0c0a59f22c656cdd85318b8e3",
   "corpus/serial/captures.gsp"
-  "e8d273497743f9d9d40fcfd923207bfd4a0a2e93cb0c27c2fc270740b6d22574",
+  "f42201794f6815e399186a29b138c608b50f87df712449f20ca19d2b27deaedf",
   "corpus/serial/captures.js"
   "79e304164ef42a156c8eb8d1b4edd00fcd5fd62614b804ffd171ae8ccaa01c03",
   "corpus/serial/control.gsp"
-  "77ff717b14c04c886e875dd0d2f41f5038d650b2357bedc690efdfa2b2a26b87",
+  "7359bd450d4233bfed0d40fa150220b26c544b82acc48cc51e31aed8f01c5e29",
   "corpus/serial/control.js"
   "e503ed5568ad0c8f961ecbc5f1d2a417f2d7a6231bc640237b300d307910f029",
   "corpus/serial/deletes.gsp"
-  "a308746a21783a4cc4d4dd7379b6d9babe761225ffe86249ff5a3ec20633a3a6",
+  "b4f56d4cc1e77c3f341d64ebc434add7cc3805ad34742ca0547cb02e878f718c",
   "corpus/serial/deletes.js"
   "1317b64c0b67b73a26b92ff074923d2ca50c9add151011de9e1882131aab0907",
   "corpus/serial/depth.gsp"
-  "5c899651c5bd55f32c97b096d724f87fb38b32b4f0a29c0725487666c44a0af2",
+  "c3ddb0e9373976885cf65f157c708326b20a4b83f8c6eec853ee480cc3cb0d56",
   "corpus/serial/depth.js"
   "1e77026f2abc20aacb2446b1de627e4fbb0037925659ba19b17f96509575b3ea",
   "corpus/serial/dormant-constants.gsp"
-  "54b22c4d33c22df0a8a655c72ab67bfa3230f2322cd28e56437b8a204835a6e9",
+  "c9ab79b50cdf58ca9495bb3fa5c6c5cee78a6a30d98947e50382bd8f40b99eb8",
   "corpus/serial/dormant-constants.js"
   "d1094ee1e2835f30fa27281561b13a474085d6486d7624623fe2c4209e7d34c6",
   "corpus/serial/finally.gsp"
-  "02dc233dfd08aca5d0ef7370ad5bd25a12b34a1093b105955df89d9ecab9dd58",
+  "1b2365648d06be8a2c0bd6b7e235fbde0f6c5168246724079e18dd8117de8106",
   "corpus/serial/finally.js"
   "c5f283cb2c10cff406572b92b7da997e8e1f9197456aaa8bdc49de92fe89d221",
   "corpus/serial/for-in.gsp"
-  "ed5d9b18cfcdf6b46c7e72c9d73fe5e60f695de80b59e975262a579d18b4d09d",
+  "e23aa092ca22728ff8e9f2d2af0192e1ec827efbd8e30bb453074dd1db45d1f5",
   "corpus/serial/for-in.js"
   "7e694131eea33dd80c6377b40bf3060dd3b8a190961cf3361d2aa56da41fa87e",
   "corpus/serial/function-keys.gsp"
-  "c8c4ca4b6d2c7f293669698100a506e4b32cc05849dcf4224cbefd87f5fc0202",
+  "8800f6614dca351ab1a599542015acdbe88933e2d5ffbf5d0ebd5da82e10ef5f",
   "corpus/serial/function-keys.js"
   "f4357aafb87c92f8e7f62ca19fb2202e724d2fd183acf918f8a7157bae3c396c",
   "corpus/serial/function-name.gsp"
-  "51b5f261c0645d24d06d79c18a3f2d2f9fa812b53236db33833427bcc313bebc",
+  "64312f36ad17b6e6428ba14dadb5411b5e61b2143b3a421b6bbd6d0f05ca153b",
   "corpus/serial/function-name.js"
   "8cad7213cf7360d0cc74c6c9ceb6b52ae8dc8e6c0e48d4da002cdde24a6d85b8",
   "corpus/serial/function-names.gsp"
-  "4fa580c0de942e359edc18399ed55caabb8b7ca4c90b3b8e58b4b8696e6da4b0",
+  "ee87014a263f1ca66a2243f04f7d0939484f679fdd0b077c19a6051d4c8b822f",
   "corpus/serial/function-names.js"
   "09b4f81f77d01efa0a645fc15a7c09c4957b24ab023031580a46ce91bcbc1cb4",
   "corpus/serial/generator-limit.gsp"
-  "ac88a2fbca6c85167eb6b917463181910000a433c94ebeaff8153fc9701398a9",
+  "6ac0dc1b4ed5c57b73d49264d6eacd339f9b16fc2381ca7002d7626bf62e4efa",
   "corpus/serial/generator-limit.js"
   "8a0dee34c681366b68687c7e07b2151c57b437dbf91aaa2824a642422fc71dda",
   "corpus/serial/generator-loop.gsp"
-  "b1670b6972029d8b850322247b79b85432f74d16549858772a9091c8c33d526c",
+  "6cc10ed7ff42f42b99c7a6ae5538c4236eea542271791fa82554b0350d44c279",
   "corpus/serial/generator-loop.js"
   "c7836fcc46a7a9884504ec503e74b0780eeeaf8d16e99024f972060b6a70a9bb",
   "corpus/serial/generators.gsp"
-  "8db1f66a9ed76c62f5480ef050146d749530cf15760ce1bb8a5d909d37e2ffb6",
+  "0385a365f7a5157b2a157ea27d6c9651904f6907670b1d2e51635fd46e971f78",
   "corpus/serial/generators.js"
   "29569c742b1030bdbbeea69b9567bf625246004ae2f387cc8165f55bcc1e3151",
   "corpus/serial/getter-only.gsp"
-  "2e6bf74ff22fdcd58fb693c1c935f8f7e85cbcf8cee21eac367297cec46ad47a",
+  "c12b7926c3832ee06b43a943c5cec4b3173bef447c3e69aa4c4de9af00ed0e08",
   "corpus/serial/getter-only.js"
   "1f3834fb1410d70725aea54a26fe0461b969bb71a9f2e39af8549d419cda8e1b",
   "corpus/serial/getter-value-of.gsp"
-  "aac5f00df46f2af2b014c2e83999faa3693264db2645161e948a7a18411d0c0a",
+  "ca3d372373179ad336f5692112201175d5138d7d0f629d78dbaa0993b7687ae4",
   "corpus/serial/getter-value-of.js"
   "0a369e41c28e1adbd6a8f5495b528311bd14de41e7c89809d9feb7ce53b582a0",
   "corpus/serial/global-missing.gsp"
-  "69a0c47520a35293f644c4391991692cb34ccc6f74687a9532659ef18f2b3094",
+  "dc2c7399c80a88b78cea65627f8edc11af3b0039238589004ebe0844d64821fb",
   "corpus/serial/global-missing.js"
   "68a025d8295d3494ea6249b75cee84b9c58ae258f258fd3ac7cb90db0e87559f",
   "corpus/serial/global-this.gsp"
-  "b020ee7b891ea6f6854141b6b9ddbc08784229f54d9560cc05e756d37825b3e8",
+  "7b068642b9e795feaea15face5fd341e3d7f4b255d3fb81cf5acee9f6044ebd1",
   "corpus/serial/global-this.js"
   "61121e0187ba4420056a9f6775586a16812adc408bf8a8b44526362cd6f7b82e",
   "corpus/serial/global-undefined.gsp"
-  "043f738fdffcaae52b5235e82c8cae383b79f0c7fa8cac32f75ecbb7b16e6d2c",
+  "d2ba413cba6f52d05f68efff350c5279c4b90d49d930842a9911e9afdf2acac5",
   "corpus/serial/global-undefined.js"
   "b6987474de9043c9f5b84b824d042f6eff3cae60d825a099817d29243dfc84dd",
   "corpus/serial/index-keys.gsp"
-  "1bc8a3e15efa95512fa7b215b9dcef225aac74db986acd7e5ea2d07906e49d0d",
+  "3cefc4f30c5e873c1540b4f77861505763270d24be6826dc7d0c8a1f12fb40ee",
   "corpus/serial/index-keys.js"
   "16aab52cbd8aed7b6cf108b6b7168223308a7240939244f60fd5d4806806d438",
   "corpus/serial/loop.gsp"
-  "913088d66bb96c348aa90f474de89aae76d4ce386b2e58c2d31e32d210c531c9",
+  "0486dfa3b8db2f5cede21377b539bfd564e783879b9c0d26a67477d58725fcf8",
   "corpus/serial/loop.js"
   "3619774d675665f2e8a68d2e83b601f075cec1b43f51742faa4717aa6a9d4a41",
   "corpus/serial/mutations.gsp"
-  "16eadfb25c60daaf13aa884123e2afab3c3c3b9907836704585a32ea584c4c89",
+  "49be89ce800a8ce622d0f1ecf4730cd29e5286bf531a04c2c46b3e4920222b96",
   "corpus/serial/mutations.js"
   "53dca3d6c06d5fd7c1e72f5e45f5aa0080df845886222237f17a190017702377",
   "corpus/serial/nan.gsp"
-  "36d8a0e9601296e8bbdb09acb5ccfefc66ed726e6e8ceab12b4e43274ba0d326",
+  "f687edc033e36956e19391c54c75a7c7e36d56e01b3f67f49d32ff483187af30",
   "corpus/serial/nan.js"
   "2352f832c8f3eeba660d697e5c73dacb4938520005aa410663f394327d6df7f6",
   "corpus/serial/native-frame.gsp"
-  "6a32ce3f530d58f53aed7157832d7bc58eeb08a1ff4dde704d2e4045bc820a65",
+  "186d9709552d2a4f4dd7e883d78758786e7db4a90c4ed62709ddebf43c4bd6e6",
   "corpus/serial/native-frame.js"
   "23df09be8b629ecfce929a313ac02061592b27754939b17289534fe4d40a96fb",
   "corpus/serial/negative-zero.gsp"
-  "307bc5b9622eda2cb9d4aaae20c75deaaf1bf504c140da19dc57518f24d0cca3",
+  "a25ec21f52f28259144409cad22e64bd8fe6b0c524e94f8da198c6667ed406f9",
   "corpus/serial/negative-zero.js"
   "acecf8a1cd800b6ececba0e990bf8b2745a59dc0559ebba7e3b5f0ce970dcdcd",
   "corpus/serial/not-callable.gsp"
-  "c6fddc04abbd362f3badd7a735e4cd39480c25546f2719fd27c965551cf20d5c",
+  "ad108f223279ff5414eda645fc3944bf5c2945b754521b038f6afa94181cb4df",
   "corpus/serial/not-callable.js"
   "eec3e86ec94f35a7afdca6d06d47ab886d335342e3888d379a376d885de09449",
   "corpus/serial/numbers.gsp"
-  "c5e323edb5ef71cc36bb7a47a3efefadf93bf9b8990669a77d01ac1fc95447ac",
+  "3499ccafaa1bb03d77bf8f06099b34b4f6dba494b8516ac244a8caf3455708b8",
   "corpus/serial/numbers.js"
   "bbda6b66f5e9f0539d956357cea24bd8594809b43cefd5bb8a5311c410bacdcb",
   "corpus/serial/object-rest.gsp"
-  "fa62b7774893306c20ee086dd42737b735bc4b7af95ec0d348f8ddb811087229",
+  "d62f3d59510a3f85c9f4315c676f4e64e7785c8c96b0f317f1ddb40732b1567d",
   "corpus/serial/object-rest.js"
   "7d53bf63de3cb6aa3978a324901c38db5308ac5bb8e582244ba814e219f0a98c",
   "corpus/serial/promise-then.gsp"
-  "a93157a67fc74ace8e6770eb3d6247b95daa7691f69e92acdc1e4bb632169982",
+  "6d234586985169299d7472e3e8a729116209d73133e719b0c0dd75d2a2783c49",
   "corpus/serial/promise-then.js"
   "0d8966e1b0f12373da54fd5285b42f4cd044acc9a745a5eac90a857a76f7b683",
   "corpus/serial/prototypes.gsp"
-  "b7446a543b9ef49428ba26f401f187d48fb666e940237fb920931bcd535ed809",
+  "9036e1679e512ddd29970e84cdf1c64d48fef6a51ff338efd0a7bd4652ab407b",
   "corpus/serial/prototypes.js"
   "e7054b40cffc45ff197a3bcef4f52a9f827d3eb394ed931f0484c0883272e2e8",
   "corpus/serial/strings.gsp"
-  "d45757d9ea74ae429685f621ec0f259dd72ce7a27e7ea0c415e8869504e8932f",
+  "f3169d002cd98b5c38139c69b205702ad1ce13761f93b7870d3c561b6e22b82d",
   "corpus/serial/strings.js"
   "ed7e88de0a3974c5012e388a6676c645b891aa6d94b6e0652488d6956ab0c254",
   "corpus/serial/suspended-generator.gsp"
-  "6865ccf047f61475779034a72f45fcba09d1b1ad2e04a7170bf39d3adeacc3d8",
+  "362daf3a1952fb116cba5b1fb6fb07dd373e25e0ebab368a0e19dcdc9e53c44e",
   "corpus/serial/suspended-generator.js"
   "d241902fa214ca5dd9e1beaa798fdba2c23deba22aba9731f46671429c8c7371",
   "corpus/serial/suspended-stack.gsp"
-  "0002f10ed53133c4b5c96997597866a6e270dc68295ed24468a00d7c114dfcfd",
+  "9d14797e012d713885a7660412a2acdd1aa1cceae5174ab4505083ee9e32b4fc",
   "corpus/serial/suspended-stack.js"
   "ac506f2d638d698953ad3f42fbf4f3fefbddd3bf9f7f0db7a213046009c41ace",
   "corpus/serial/suspended-wait.gsp"
-  "96b8d2c503018f6d3314bfbae69501703b1c6a1e0d784c8ab5253712241c59c9",
+  "c262c4ac4d4906c03c19a846d5c60468720f7cab177e9b333bb4e9fc7b950d5f",
   "corpus/serial/suspended-wait.js"
   "9b140ad77096771a2de0ec9c4e9c1e858eace97f14a5bcf35ce695e9781c0f5f",
   "corpus/serial/tdz.gsp"
-  "5846754451cfc3a3170bf453d34bd89c7799e2594fd2178d615f0e108b88d331",
+  "7232b13aa48947df9373a147fe423047a50d73c1cd7eef6cc0a9e017e13e7a31",
   "corpus/serial/tdz.js"
   "f1dbb09e8c5f266296006c98f401387b54d1c5bfd01611755116625439d21c90",
   "corpus/serial/type-error.gsp"
-  "fdd42503ba272d1f2415b28cc2efa122d41aef85bbbeeecf0b513d55e697b1eb",
+  "79702b9d4a6cfced8f9a397d305ee0019679c720e6ed152d952f6fe63d266496",
   "corpus/serial/type-error.js"
   "20def2aa98ed0a39fdcfa6c43a6fab37f57f02128f981aa3d5e417bf7d7363cb",
   "corpus/serial/unsettled.gsp"
-  "1b0d231c7c44a8974e1ee784ed8b85a18be34e783afad7d1205994396cdf5034",
+  "6f12ecefaea9da977755f9d1f6740329acedac6c8489f20d355d1bee32bf57ad",
   "corpus/serial/unsettled.js"
   "ead804c1e583d80e648ea4b6388d3e999da3a667923dec3cbf03ee306e12cb9d",
   "corpus/serial/unsupported-array-method.gsp"
-  "ebac3d50e17cb8e2fa6eda669a0c841d184e148f91a2c26a2d6cb48ada2305c1",
+  "0591dbb341850376225ec6b9a6e54c1f1fa539ed148c5b44528bd0fd320b96b5",
   "corpus/serial/unsupported-array-method.js"
   "bd1648e532e2444a405e9f52b89290cd423bda0b8057d1feddbb84acb45cf29b",
   "corpus/serial/unsupported-coercion.gsp"
-  "1f1759f3d21998dcfeb56ed761dda512d250217363d720f44710bc2da9033861",
+  "8d386ba676de1f388fc20a49a3cec1234474b12bb92657c12e5fbf01d830c684",
   "corpus/serial/unsupported-coercion.js"
   "645b55c4abdd9c9d34cc0a8a78b1733597c9dfa8382d6fd8880fe31eec42a299",
   "corpus/serial/unsupported-dead.gsp"
-  "20106abe612042c17d3c64ed92cda72b89c0b07340b36cb3f6b1541b9bffc204",
+  "5efe3b441210ac4787c74f6418288a536c80d29234e253658a4f53d15cb81889",
   "corpus/serial/unsupported-dead.js"
   "ebab05b67c4ceeab52993e8dca0aca35a8514a876b789186ae183fa433f76ebe",
   "corpus/serial/unsupported-generator-prototype.gsp"
-  "da74a1f38916805da513cd2747a191982e169ef0120e9fc1709734d7e50e9add",
+  "1ccfa6faec4152b320975930a3d9dc42e2d29c6ccd0706ca5838c03872fe094b",
   "corpus/serial/unsupported-generator-prototype.js"
   "4b473cd7c9366b023962daaa0bcf9a1138160f7b47860e9e021f2016f11a78b7",
   "corpus/serial/unsupported-prototype.gsp"
-  "8e4148bda4401a6159a7ce4f6f20868de668f5af43fa65dd0caa171a37f27f60",
+  "3dbf93799765758ef62feca8eabc0994b90ca6ce1ad7cf06251155ab01000334",
   "corpus/serial/unsupported-prototype.js"
   "cc6c5a73c0397c5fa7c930846537e9b32d76bac4469adebc6de30c4834c4d3d9",
   "corpus/serial/unsupported-reached.gsp"
-  "01049d8391e0b5428600fd184987b4ab159d54f26555c835f11c07ce393d3a40",
+  "a70f9fbaf927e19666757ae3dd55fbb6114fa15b3900a458681cc6d713757542",
   "corpus/serial/unsupported-reached.js"
   "d22740c06c202983e99a36dfc08f2eef68c2464bbe287619bff8a7d8bbe7487d",
   "corpus/synthetic/arithmetic.function.js"
   "a48171116d7fa39dd0029f65a28ac9c9bcc44bddd010457d828181f0a7f05958",
   "corpus/synthetic/arithmetic.gsp"
-  "06df7d346d4729f9593a1694557085dde7c14b924fa0f4edb1d5a51fe844b724",
+  "f4ec125f07e1d03de2d1eeb9e466ccb97703bffe06116c766647a4828c3ee952",
   "corpus/synthetic/arithmetic.js"
   "dc53fdd9ed1b06f34d9bd9dae0a1bf08c51fc4db9bb8ef149f0b5d795b7fe2cd",
   "corpus/synthetic/control_flow.function.js"
   "ccbc1080e2c82e77f099e3acb017069c0423b98c205542dfc9e421ff4e66a535",
   "corpus/synthetic/control_flow.gsp"
-  "d30d9b5a80eea141623f81011af587cb1cbe79d11499086f22995b445bb0e06a",
+  "e6b50ae82ba74a52b945c88f1e748b609e19e2e09443daf1798097e1f8c7fb59",
   "corpus/synthetic/control_flow.js"
   "6d2a4ed754bdb01564e73b8a983bca152edd380eca8cc2db0d2380f88907fcd0",
   "corpus/synthetic/unicode.function.js"
   "d7208714134d40b0570fb96160ce0b09d3f34846936eedc6c8fd951a243f0f39",
   "corpus/synthetic/unicode.gsp"
-  "64b2f657d927f2fdf3f5411f8645b53d23e168ee17c71c7b1c2e2b03391c62e0",
+  "af39faeddb37b752b53e5f28d81aeed626514d8fe61c9bfeaf5808bfd3c3eb40",
   "corpus/synthetic/wide.function.js"
   "bb30fbfabff995c4f388e587acf0f50eefb81d6edaf21e938809ba6e3eab52fc",
   "corpus/synthetic/wide.gsp"
-  "01b70dba92cbfab1903328ae8d2f3f0e14b715ac2769cea8574eed2ae0c07040"}}
+  "a9e0042c56b66bf1eedd6fdd1725b9e25e35f588821f34621dc45241980958c5"}}

@@ -38,7 +38,9 @@ fn main() {
     let original = copy(image.bytes);
     set_word(bad[..], 4, 1); assert(program::install(image, bad) == program::Error.Version);
     assert(image.valid && image.bytes[..] == original[..]);
-    set_word(bad[..], 4, 2); set_word(bad[..], 12, 65537); assert(program::validate(bad) == program::Error.Limits);
+    // Version 2 predates the direct-eval site bit (light-cljs-823).
+    set_word(bad[..], 4, 2); assert(program::validate(bad) == program::Error.Version);
+    set_word(bad[..], 4, 3); set_word(bad[..], 12, 65537); assert(program::validate(bad) == program::Error.Limits);
     set_word(bad[..], 12, program::word(macro, 12));
     let l = program::layout(macro);
     set_word(bad[..], l.functions, 4294967295); assert(program::validate(bad) == program::Error.Range);
@@ -60,6 +62,12 @@ fn main() {
             set_word(bad[..], at + 4, 65535); assert(program::validate(bad) == program::Error.Operation);
             set_word(bad[..], at + 4, program::word(macro, at + 4));
         }
+        // The direct-eval site bit (24) is valid only on the four call
+        // opcodes; bits 25..31 never are.
+        set_word(bad[..], at, descriptor | 16777216);
+        assert((program::validate(bad) == program::Error.None) == export_direct_eval_call(descriptor & 255));
+        set_word(bad[..], at, descriptor | 33554432); assert(program::validate(bad) == program::Error.Operation);
+        set_word(bad[..], at, descriptor);
     }
     assert(program::validate(bad) == program::Error.None);
     depth_limit(257, program::Error.None); depth_limit(258, program::Error.Limits);
@@ -83,7 +91,7 @@ fn main() {
 fn push_word(bytes: u8[>..]&, value: i64) { for i in 4 { bytes.push(((value >> (8 * i)) & 255) as u8); } }
 fn depth_limit(count: i64, expected: program::Error) {
     var bytes: u8[>..] = []; bytes.append("GSP\0");
-    for n in [2, 0, count, 0, count - 1, count * 2, 0] { push_word(bytes, n); }
+    for n in [3, 0, count, 0, count - 1, count * 2, 0] { push_word(bytes, n); }
     for i in count {
         for n in [i * 2, 2, 0, 0, i, if i + 1 < count { 1 } else { 0 }, 0, 0, 0, 0, 0, 0, 0] { push_word(bytes, n); }
     }

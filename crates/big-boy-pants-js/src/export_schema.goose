@@ -363,6 +363,18 @@ fn export_name_operand(op: i64) -> bool {
     };
 }
 
+// The call opcodes that may carry the direct-eval site bit (descriptor
+// bit 24, GSP version 3).
+fn export_direct_eval_call(op: i64) -> bool {
+    return match op {
+        44 => true,
+        83 => true,
+        119 => true,
+        120 => true,
+        _ => false,
+    };
+}
+
 // Stack effect and control flow, from the engine validator's rules:
 // bits 0..7 base pops, 8..15 pushes, 16..23 multiplier, 24..27 source of
 // the multiplied count (0 none, 1 operand, 2 child captures, 3 form arity),

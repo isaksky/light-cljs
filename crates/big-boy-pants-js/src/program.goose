@@ -42,7 +42,8 @@ fn branch(bytes: const u8[:], base: i64, count: i64, target: i64) -> bool {
 fn validate(bytes: const u8[:]) -> Error {
     if bytes.len < 32 { return Error.Truncated; }
     if bytes[..4] != "GSP\0" { return Error.Header; }
-    if word(bytes, 4) != 2 { return Error.Version; }
+    // Version 3 (light-cljs-823): descriptor bit 24 marks a direct-eval call.
+    if word(bytes, 4) != 3 { return Error.Version; }
     if word(bytes, 8) > 8388608 || word(bytes, 12) == 0 || word(bytes, 12) > 65536 { return Error.Limits; }
     for offset in [16, 20, 24, 28] { if word(bytes, offset) > 1048576 { return Error.Limits; } }
     let l = layout(bytes);
@@ -97,8 +98,11 @@ fn validate(bytes: const u8[:]) -> Error {
         var expected_offset: i64 = 0;
         for i in count {
             if used[start + i] { return Error.Range; } used[start + i] = true;
-            let at = base + i * 20; let descriptor = word(bytes, at); let op = descriptor & 255;
-            if export_descriptor(op) != descriptor { return Error.Operation; }
+            let at = base + i * 20; let site = word(bytes, at) >> 24; let descriptor = word(bytes, at) & 16777215; let op = descriptor & 255;
+            // Bits 0..23 are the registry descriptor; bit 24 marks the call of
+            // a direct-eval site (only export_direct_eval_call's opcodes);
+            // bits 25..31 are zero.
+            if export_descriptor(op) != descriptor || site > 1 || site == 1 && !export_direct_eval_call(op) { return Error.Operation; }
             if op == 194 && export_form_arity(word(bytes, at + 4)) < 0 { return Error.Operation; }
             let arg = word(bytes, at + 4); let kind = (descriptor >> 8) & 255; let size = descriptor >> 16;
             if kind == 6 && !selector(op, arg) { return Error.Operation; }

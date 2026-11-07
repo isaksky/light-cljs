@@ -329,7 +329,7 @@ fn code_valid<T>(s: const T&, c: Control&) -> bool {
             if !poll(c) { return false; }
             if used[pc] { return reject(c, Error.Code); } used[pc] = true;
             let op = s.ops[pc]; let descriptor = export_descriptor(op.code);
-            if descriptor < 0 || op.arg < 0 || op.offset != offset || op.start < 0 || op.end < op.start || !range(op.start, op.end - op.start, s.code_bytes.len) || op.depth < -1 || op.depth > 65536 { return reject(c, Error.Code); }
+            if descriptor < 0 || op.direct_eval && !export_direct_eval_call(op.code) || op.arg < 0 || op.offset != offset || op.start < 0 || op.end < op.start || !range(op.start, op.end - op.start, s.code_bytes.len) || op.depth < -1 || op.depth > 65536 { return reject(c, Error.Code); }
             if !program::boundary(s.code_bytes, op.start) || !program::boundary(s.code_bytes, op.end) { return reject(c, Error.Code); }
             let kind = (descriptor >> 8) & 255; let width = descriptor >> 16; offset += width + 1;
             if width == 0 && op.arg != 0 || width == 2 && op.arg > 65535 { return reject(c, Error.Code); }
