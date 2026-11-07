@@ -3762,6 +3762,9 @@ fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool) -
         callee = if method { job.operands[base] } else { Value.Undefined }; skip = 1;
     }
     let count = node(heap, array.id()).length as i64;
+    // The limit comes first, as in the Pants engine: no conversion or
+    // demand runs for a call that cannot enter.
+    if count - 1 > heap.limits.stack - job.locals.len - job.operands.len { heap.fault = Fault.StackLimit; return -1; }
     if converted {
         if !set_element(heap, array, skip, primitive) { return -1; }
     } else if callee.is_object() && node(heap, callee.id()).kind == node_kind::Builtin && !(constructs && constructible(heap, callee)) && count > skip {
@@ -3769,6 +3772,7 @@ fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool) -
         let first, _ = own_element(heap, array, skip);
         if heap.fault != Fault.None { return -1; }
         if (b == Builtin.Number || b == Builtin.String) && convertible(heap, first) {
+            if job.operands.len >= heap.limits.stack - job.locals.len { heap.fault = Fault.StackLimit; return -1; }
             job.operands.push(first); job.frames[top].pc = at;
             start_convert(job, if b == Builtin.String { Hint.String } else { Hint.Number }, b == Builtin.String, 1, 1);
             return -1;
@@ -3782,7 +3786,6 @@ fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool) -
             }
         }
     }
-    if count - 1 > heap.limits.stack - job.locals.len - job.operands.len { heap.fault = Fault.StackLimit; return -1; }
     if !charge(heap, count) { return -1; }
     job.operands.pop();
     for i in count {

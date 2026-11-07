@@ -76,4 +76,16 @@ row(String.call(...[undefined, { toString() { return 'y'; } }]) === 'y');
   a.push(...[2, 3]);
   row(a.length === 3 && a[2] === 3);
 }
+// A direct-eval site whose callee is no longer %eval% is an ordinary spread
+// call (QuickJS's test_eval2 binds `eval` as a sloppy parameter instead).
+{
+  const original = globalThis.eval;
+  globalThis.eval = function (a, b) { return a + b; };
+  const sum = eval(...[1, 2]);
+  let hook = 0;
+  globalThis.eval = String;
+  const text = eval(...[{ toString() { hook++; return 'z'; } }]);
+  globalThis.eval = original;
+  row(sum === 3 && text === 'z' && hook === 1);
+}
 failed === 0 ? rows : -failed;

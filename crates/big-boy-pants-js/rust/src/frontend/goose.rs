@@ -1025,6 +1025,10 @@ mod serial_tests {
             ("direct-eval-reached", "number:2"),
             ("direct-eval-spread", "number:2"),
             ("direct-eval-replaced", "number:2"),
+            // Spread-argument limits (light-cljs-850), the Pants engine's
+            // 65,535 (Node collects the whole iterator): serial_tests.goose
+            // runs it under the default and a 128-value stack limit.
+            ("spread-limits", "goose"),
             ("indirect-eval", "number:2"),
             ("loop", "limit"),
             // Control flow (light-cljs-786): finally blocks, native frames,

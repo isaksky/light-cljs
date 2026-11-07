@@ -146,6 +146,28 @@ thread_fn check_run(bytes: u8[], expected: u8[], fault: source::Fault, setup: i6
     }
     assert(qput(Run { status: job.status, steps: job.steps }));
 }
+// One uncut run of `bytes` with limits.stack `stack` (0: the default) that
+// completes with `expected`; 65,536 `next` calls pass the default
+// instruction and work limits, so those are lifted (as conformance.goose
+// lifts them).
+thread_fn spread_limits(bytes: u8[], stack: i64, expected: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code, limits: source::Limits { steps: 1 << 40, work: 1 << 40 } }; assert(source::initialize(heap));
+    if stack > 0 { heap.limits.stack = stack; }
+    let entry = source::closure(heap, 0, []);
+    var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
+    let outcome = source::run(job, -1);
+    if outcome != tiny::Outcome.Complete { var fault: u8[>..] = []; source::describe_fault(fault, code, job); print("spread_limits: ", fault); }
+    assert(outcome == tiny::Outcome.Complete);
+    // The result is the ASCII text `expected`, canonical as UTF-16 units.
+    var output: u8[>..] = []; source::canonical(heap, job.result, output);
+    var want:   u8[>..] = []; want.append("utf16:[");
+    for c, i in expected { if i > 0 { want.append(","); } format(want, c as i64); }
+    want.append("]");
+    if output[..] != want[..] { print("spread_limits: ", output); }
+    assert(output[..] == want[..]);
+}
 // Side a of one cut: publishes its state at the three comparison points.
 thread_fn check_cut(bytes: u8[], cut: i64, run: Run, fault: source::Fault, setup: i64) {
     defer { heap_program::finish(); }
@@ -536,6 +558,12 @@ fn main() {
     // and the spread variants are checked at decode (direct_eval_decode).
     check(embed_file("../corpus/serial/direct-eval-reached.gsp"), "Fault.Unsupported:direct_eval", source::Fault.Unsupported);
     check(embed_file("../corpus/serial/direct-eval-spread.gsp"), "Fault.Unsupported:direct_eval", source::Fault.Unsupported);
+    // Spread-argument limits (light-cljs-850): collection stops after
+    // exactly 65,536 `next` calls and 65,535 arguments enter; under a
+    // 128-value stack limit both spread calls are a catchable StackLimit
+    // (InternalError), Number's before it converts its first argument.
+    heap_program::join(thread_spawn(spread_limits, str(embed_file("../corpus/serial/spread-limits.gsp")), 0, str("RangeError:65536:65535:1:1")));
+    heap_program::join(thread_spawn(spread_limits, str(embed_file("../corpus/serial/spread-limits.gsp")), 128, str("RangeError:65536:InternalError:InternalError:0")));
     direct_eval_decode(embed_file("../corpus/serial/direct-eval-spread.gsp"));
     check(embed_file("../corpus/serial/direct-eval-replaced.gsp"), "number:2.0");
     check(embed_file("../corpus/serial/indirect-eval.gsp"), "Fault.UnsupportedOperand:eval:-indirect-eval", source::Fault.UnsupportedOperand);
