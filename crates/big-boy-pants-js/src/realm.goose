@@ -68,11 +68,15 @@ enum Builtin {
     ArrayPrototypeValues, ArrayPrototypeKeys, ArrayPrototypeEntries, ArrayIteratorPrototypeNext, StringPrototypeIterator, StringIteratorPrototypeNext,
     // The Proxy constructor (light-cljs-845; proxy.goose).
     Proxy,
+    // Function.prototype.apply, Reflect.apply and Reflect.construct
+    // (light-cljs-851; function_calls.goose), which with
+    // Function.prototype.call forward a call as a native frame.
+    FunctionPrototypeApply, ReflectApply, ReflectConstruct,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[88] = [
+let BUILTINS: BuiltinInfo[91] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -119,6 +123,8 @@ let BUILTINS: BuiltinInfo[88] = [
     BuiltinInfo { which: Builtin.ArrayPrototypeEntries, name: "entries" }, BuiltinInfo { which: Builtin.ArrayIteratorPrototypeNext, name: "next" },
     BuiltinInfo { which: Builtin.StringPrototypeIterator, name: "[Symbol.iterator]" }, BuiltinInfo { which: Builtin.StringIteratorPrototypeNext, name: "next" },
     BuiltinInfo { which: Builtin.Proxy, name: "Proxy", length: 2 },
+    BuiltinInfo { which: Builtin.FunctionPrototypeApply, name: "apply", length: 2 }, BuiltinInfo { which: Builtin.ReflectApply, name: "apply", length: 3 },
+    BuiltinInfo { which: Builtin.ReflectConstruct, name: "construct", length: 2 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -147,7 +153,9 @@ inline fn wrapper_constructor_row(t: i64) -> i64 { return 29 + t; }
 // ordinary objects inheriting %IteratorPrototype%.
 inline fn array_iterator_prototype_row() -> i64 { return 32; }
 inline fn string_iterator_prototype_row() -> i64 { return 33; }
-inline fn fixed_rows() -> i64 { return 34; }
+// The Reflect namespace object (light-cljs-851), an ordinary object.
+inline fn reflect_row() -> i64 { return 34; }
+inline fn fixed_rows() -> i64 { return 35; }
 struct Name { text: u8[..24] }
 let WRAPPER_NAMES:    Name[3]    = [Name { text: "Number" }, Name { text: "String" }, Name { text: "Boolean" }];
 let WRAPPER_BUILTINS: Builtin[3] = [Builtin.Number, Builtin.String, Builtin.Boolean];
@@ -155,7 +163,7 @@ let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalEr
 let ERROR_BUILTINS:   Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[35] = [
+let REALM_FUNCTIONS: Method[38] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -186,6 +194,9 @@ let REALM_FUNCTIONS: Method[35] = [
     Method { which: Builtin.ArrayIteratorPrototypeNext, holder: 32 }, Method { which: Builtin.StringPrototypeIterator, holder: 27 }, Method { which: Builtin.StringIteratorPrototypeNext, holder: 33 },
     // The global Proxy (light-cljs-845), which has no `prototype`.
     Method { which: Builtin.Proxy, holder: 0 },
+    // Function.prototype.apply and the Reflect object's apply and construct
+    // (light-cljs-851); its other eleven methods are pending names.
+    Method { which: Builtin.FunctionPrototypeApply, holder: 2 }, Method { which: Builtin.ReflectApply, holder: 34 }, Method { which: Builtin.ReflectConstruct, holder: 34 },
 ];
 inline fn realm_nodes() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
 // The node row of built-in b's REALM_FUNCTIONS entry.
@@ -198,12 +209,12 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[197] = [
+let PENDING: PendingName[206] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
     // Function.prototype
-    PendingName { holder: 2, key: "apply" }, PendingName { holder: 2, key: "bind" }, PendingName { holder: 2, key: "toString" }, PendingName { holder: 2, key: "arguments" }, PendingName { holder: 2, key: "caller" },
+    PendingName { holder: 2, key: "bind" }, PendingName { holder: 2, key: "toString" }, PendingName { holder: 2, key: "arguments" }, PendingName { holder: 2, key: "caller" },
     // Array.prototype
     PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "every" },
     PendingName { holder: 3, key: "fill" }, PendingName { holder: 3, key: "filter" }, PendingName { holder: 3, key: "find" }, PendingName { holder: 3, key: "findIndex" }, PendingName { holder: 3, key: "findLast" },
@@ -220,7 +231,12 @@ let PENDING: PendingName[197] = [
     PendingName { holder: 12, key: "isExtensible" }, PendingName { holder: 12, key: "isFrozen" }, PendingName { holder: 12, key: "isSealed" }, PendingName { holder: 12, key: "keys" },
     PendingName { holder: 12, key: "preventExtensions" }, PendingName { holder: 12, key: "seal" }, PendingName { holder: 12, key: "setPrototypeOf" }, PendingName { holder: 12, key: "values" },
     // Symbol (symbol_row(); its well-known symbols are real)
-    PendingName { holder: 44, key: "prototype" }, PendingName { holder: 44, key: "for" }, PendingName { holder: 44, key: "keyFor" },
+    PendingName { holder: 45, key: "prototype" }, PendingName { holder: 45, key: "for" }, PendingName { holder: 45, key: "keyFor" },
+    // Reflect (reflect_row()): apply and construct are light-cljs-851's;
+    // the other eleven belong to the objects and classes area (light-cljs-766).
+    PendingName { holder: 34, key: "defineProperty" }, PendingName { holder: 34, key: "deleteProperty" }, PendingName { holder: 34, key: "get" }, PendingName { holder: 34, key: "getOwnPropertyDescriptor" },
+    PendingName { holder: 34, key: "getPrototypeOf" }, PendingName { holder: 34, key: "has" }, PendingName { holder: 34, key: "isExtensible" }, PendingName { holder: 34, key: "ownKeys" },
+    PendingName { holder: 34, key: "preventExtensions" }, PendingName { holder: 34, key: "set" }, PendingName { holder: 34, key: "setPrototypeOf" },
     // %IteratorPrototype% (its helpers), %GeneratorPrototype% and
     // %Promise.prototype% (light-cljs-790; the Promise area makes the last's).
     PendingName { holder: 23, key: "constructor" }, PendingName { holder: 23, key: "drop" }, PendingName { holder: 23, key: "every" }, PendingName { holder: 23, key: "filter" },
@@ -236,7 +252,7 @@ let PENDING: PendingName[197] = [
     PendingName { holder: 0, key: "Date" }, PendingName { holder: 0, key: "FinalizationRegistry" }, PendingName { holder: 0, key: "Float32Array" }, PendingName { holder: 0, key: "Float64Array" },
     PendingName { holder: 0, key: "Int8Array" }, PendingName { holder: 0, key: "Int16Array" }, PendingName { holder: 0, key: "Int32Array" }, PendingName { holder: 0, key: "Iterator" },
     PendingName { holder: 0, key: "JSON" }, PendingName { holder: 0, key: "Map" }, PendingName { holder: 0, key: "Math" },
-    PendingName { holder: 0, key: "Promise" }, PendingName { holder: 0, key: "Reflect" }, PendingName { holder: 0, key: "RegExp" },
+    PendingName { holder: 0, key: "Promise" }, PendingName { holder: 0, key: "RegExp" },
     PendingName { holder: 0, key: "Set" }, PendingName { holder: 0, key: "SharedArrayBuffer" },
     PendingName { holder: 0, key: "Uint8Array" }, PendingName { holder: 0, key: "Uint8ClampedArray" }, PendingName { holder: 0, key: "Uint16Array" }, PendingName { holder: 0, key: "Uint32Array" },
     PendingName { holder: 0, key: "WeakMap" }, PendingName { holder: 0, key: "WeakRef" }, PendingName { holder: 0, key: "WeakSet" }, PendingName { holder: 0, key: "decodeURI" },
@@ -382,6 +398,8 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     // The iterator prototypes inherit %IteratorPrototype%.
     let iterator_prototypes: i64[] = [array_iterator_prototype_row(), string_iterator_prototype_row()];
     for o in iterator_prototypes { if nodes[o].kind != node_kind::Object || !nodes[o].proto.is_object() || nodes[o].proto.id() != iterator_prototype_row() { return false; } }
+    // Reflect is an ordinary object (light-cljs-851).
+    if nodes[reflect_row()].kind != node_kind::Object || !nodes[reflect_row()].proto.is_object() || nodes[reflect_row()].proto.id() != object_prototype_row() { return false; }
     for m, j in REALM_FUNCTIONS { let o = fixed_rows() + j; if nodes[o].kind != node_kind::Builtin || nodes[o].function != code(m.which) || m.which == Builtin.FunctionPrototypeCall && (!call.is_object() || call.id() != o) { return false; } }
     return true;
 }
@@ -408,6 +426,7 @@ fn build_realm(heap: Heap&) -> bool {
     for v in wrapped { rows.push(Node { kind: node_kind::Wrapper, value: v, proto: object(object_prototype_row()) }); }
     for b in WRAPPER_BUILTINS { rows.push(Node { kind: node_kind::Builtin, function: code(b) }); }
     rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) });
+    rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
     if !charge(heap, rows.len) || add_nodes(heap, rows) != 0 { if heap.fault == Fault.None { memory(heap); } return false; }
@@ -436,6 +455,8 @@ fn build_realm(heap: Heap&) -> bool {
     if !add_own(heap, array_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Array Iterator"), attr_configurable()) || !add_own(heap, string_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "String Iterator"), attr_configurable()) { return false; }
     // %GeneratorPrototype%[@@toStringTag] and %Promise.prototype%[@@toStringTag].
     if !add_own(heap, generator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Generator"), attr_configurable()) || !add_own(heap, promise_prototype_row(), Value.Symbol { s: 4 }, key_named(heap, "Promise"), attr_configurable()) { return false; }
+    // Reflect[@@toStringTag] (ECMAScript 28.1.14).
+    if !add_own(heap, reflect_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Reflect"), attr_configurable()) { return false; }
     // The well-known symbols, Symbol's non-writable, non-enumerable,
     // non-configurable data properties; their values are the exporter's
     // fixed indices (decision 2), so they take no rows.
@@ -446,6 +467,7 @@ fn build_realm(heap: Heap&) -> bool {
     if !realm_value(heap, global_row(), "globalThis", heap.global, attr_writable() | attr_configurable()) { return false; }
     let globals: i64[] = [object_constructor_row(), function_constructor_row(), array_constructor_row(), wrapper_constructor_row(0), wrapper_constructor_row(1), wrapper_constructor_row(2)];
     for o in globals { if !realm_value(heap, global_row(), BUILTINS[node(heap, o).function].name, object(o), attr_writable() | attr_configurable()) { return false; } }
+    if !realm_value(heap, global_row(), "Reflect", object(reflect_row()), attr_writable() | attr_configurable()) { return false; }
     for t in ERROR_NAMES.len { if !realm_value(heap, global_row(), ERROR_NAMES[t].text, object(error_constructor_row(t)), attr_writable() | attr_configurable()) { return false; } }
     if !realm_value(heap, global_row(), "NaN", number(0.0 / 0.0), 0) || !realm_value(heap, global_row(), "Infinity", number(1.0 / 0.0), 0) || !realm_value(heap, global_row(), "undefined", Value.Undefined, 0) { return false; }
     for p in PENDING {
@@ -843,7 +865,10 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         // Proxy called without `new` (light-cljs-845; construct makes one).
         Proxy => { return type_error(job, "Proxy: constructor requires 'new'"); },
         ErrorPrototypeToString => { return error_to_string(job, receiver); },
-        FunctionPrototypeCall => { return unsupported_step(job, b, "called from a native frame"); },
+        // The forwarding built-ins run as Forward native frames
+        // (function_calls.goose, native_start); a caller that runs a
+        // built-in to completion here cannot.
+        FunctionPrototypeCall, FunctionPrototypeApply, ReflectApply, ReflectConstruct => { return unsupported_step(job, b, "called outside a native frame"); },
         // The dispatch loop runs these as native frames (native_start); a
         // caller that runs a built-in to completion here cannot.
         ArrayPrototypeMap, ArrayPrototypeForEach, ArrayPrototypePush, ArrayPrototypeJoin, ArrayPrototypeToString, ArrayIteratorPrototypeNext, StringPrototypeIterator => { return unsupported_step(job, b, "called from a native frame"); },

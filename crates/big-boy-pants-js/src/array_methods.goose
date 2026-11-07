@@ -3,6 +3,7 @@ import math;
 import .source_vm;
 import .realm;
 import .array_callbacks;
+import .function_calls;
 
 namespace source;
 
@@ -331,7 +332,7 @@ fn to_string_step(job: Job&, frame: Frame) {
     job.frames[at].pc = 2;
     if node(heap, f.id()).kind == node_kind::Closure { push_frame(job, f, frame.input, [], false, job.operands.len); return; }
     let c = builtin_of(heap, f.id());
-    if array_native(c) { native_start(job, c, frame.input, [], job.operands.len); return; }
+    if array_native(c) || forwarding(c) { native_start(job, c, frame.input, [], job.operands.len); return; }
     if effect_builtin(c) || native_builtin(c) || c == Builtin.Mapv || c == Builtin.MapSeq || c == Builtin.FunctionPrototypeCall || forces(heap, c, []) { unsupported_step(job, b, "a host-effect or native-frame built-in as join"); return; }
     let r = call_builtin(job, node(heap, f.id()).function, frame.input, []);
     if heap.fault == Fault.None { job.operands.push(r); }

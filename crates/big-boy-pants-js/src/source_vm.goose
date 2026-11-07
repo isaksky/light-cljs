@@ -13,6 +13,7 @@ import .cells;
 import .continuations;
 import .number_text;
 import .reclaim;
+import .function_calls;
 
 namespace source;
 
@@ -149,7 +150,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -512,10 +513,14 @@ root struct Heap {
 //   Proxy        a proxy's [[GetPrototypeOf]], [[OwnPropertyKeys]] or
 //                [[GetOwnProperty]] (light-cljs-845; proxy.goose, which
 //                gives its fields and phases), its proxy_method the payload.
+//   Forward      Function.prototype.call and apply, Reflect.apply and
+//                Reflect.construct (light-cljs-851; function_calls.goose,
+//                which gives its fields and phases): `construct` once
+//                Reflect.construct has resolved its target.
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 } }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -2903,6 +2908,7 @@ fn native_step(job: Job&) {
         BuiltinIterator m => { iterator_step(job, frame, m.which); },
         ForIn => { for_in_step(job, frame); },
         Proxy p => { proxy_step(job, frame, p.method); },
+        Forward w => { forward_step(job, frame, w.construct); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -2964,6 +2970,7 @@ fn builtin_callback(job: Job&, callee: Value, receiver: Value, arg: Value, frame
     if b == Builtin.Gensym && job.gensym_next > 0 { job.operands.push(gensym(job, [arg])); }
     else if forces(job.heap, b, [arg]) { start_force(job, b, arg, job.operands.len); }
     else if effect_builtin(b) { request_effect(job, id, [arg], frame); }
+    else if forwarding(b) { native_start(job, b, receiver, [arg], job.operands.len); }
     else { let v = call_builtin(job, id, receiver, [arg]); job.operands.push(v); }
 }
 // Pop a finished native frame and deliver its result to the frame below.
@@ -3128,7 +3135,7 @@ fn conversion_call(job: Job&, at: i64, m: Value, v: Value, args: const Value[:])
     let b = builtin_of(heap, m.id());
     // An Array.prototype native frame (Array.prototype.toString, light-cljs-842)
     // runs above this one; its result arrives at pc 1.
-    if array_native(b) { native_start(job, b, v, args, job.operands.len); return; }
+    if array_native(b) || forwarding(b) { native_start(job, b, v, args, job.operands.len); return; }
     if effect_builtin(b) || native_builtin(b) || b == Builtin.Mapv || b == Builtin.MapSeq || forces(heap, b, args) { unsupported_step(job, b, "as a ToPrimitive method"); return; }
     let r = call_builtin(job, node(heap, m.id()).function, v, args);
     if heap.fault == Fault.None { job.operands.push(r); }
@@ -3816,47 +3823,63 @@ fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool) -
 // (decision 1): class constructors (the objects area, light-cljs-766) and
 // the light-cljs runtime's leaves other than Delay, which the V8 build
 // constructs as ordinary JavaScript functions.
-fn construct(job: Job&, argc: i64) {
+fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
     let heap .= job.heap;
     let base = job.operands.len - argc - 1;
     let f = job.operands[base];
+    // new.target: F itself for `new`, Reflect.construct's newTarget
+    // (light-cljs-851), whose `prototype` the new object takes.
+    let nt = if new_target.is_hole() { f } else { new_target };
     let kind: i64 = if f.is_object() { node(heap, f.id()).kind } else { node_kind::None };
     if kind == node_kind::Closure {
         let code_kind = constructor_kind(heap, f.id());
         if code_kind >= constructor::BaseClass { unsupported_detail(job, "construct: class constructors"); return; }
         if code_kind != constructor::Ordinary { heap.fault = Fault.TypeError; return; }
-        // Making a lazy `prototype` writes F's row (decision 3).
-        if lazy_prototype(heap, f.id()) && !writable(job, f.id()) { unsupported_detail(job, "construct: a function whose lazy prototype is in a row this job did not allocate"); return; }
-        let proto = prototype_from_constructor(job, f, Value.Empty, "a constructor's prototype getter");
+        let proto = construct_prototype(job, nt);
         if heap.fault != Fault.None { return; }
         let o = allocate(heap, Node { kind: node_kind::Object, proto: proto });
         if heap.fault != Fault.None { return; }
-        if push_frame(job, f, o, job.operands[(base + 1)..], false, base, f) { job.operands.resize(base); }
+        if push_frame(job, f, o, job.operands[(base + 1)..], false, base, nt) { job.operands.resize(base); }
         return;
     }
     if kind != node_kind::Builtin { if kind == node_kind::Proxy { proxy_invoke(heap, f, proxy_method::Construct); } else { heap.fault = Fault.TypeError; } return; }
     let b = builtin_of(heap, f.id());
+    if !constructor_builtin(b) || b == Builtin.SymbolFunction { heap.fault = Fault.TypeError; return; }
+    var value = Value.Undefined;
     match b {
         // new Proxy(target, handler) (light-cljs-845; proxy.goose).
-        Proxy => {
-            let value = construct_proxy(job, job.operands[(base + 1)..]);
-            job.operands.resize(base); job.operands.push(value);
+        Proxy => { value = construct_proxy(job, job.operands[(base + 1)..]); },
+        // OrdinaryCreateFromConstructor(newTarget, %Object.prototype%): a
+        // newTarget other than Object makes an ordinary object, whatever
+        // the argument.
+        Object => {
+            if same_value(heap, nt, f) { value = call_builtin(job, node(heap, f.id()).function, Value.Undefined, job.operands[(base + 1)..]); }
+            else { value = allocate(heap, Node { kind: node_kind::Object }); }
         },
-        Object, Function, Array, Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError => {
-            let value = call_builtin(job, node(heap, f.id()).function, Value.Undefined, job.operands[(base + 1)..]);
-            job.operands.resize(base); job.operands.push(value);
+        Function, Array, Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError => {
+            value = call_builtin(job, node(heap, f.id()).function, Value.Undefined, job.operands[(base + 1)..]);
         },
-        Number, String, Boolean => {
-            let value = construct_wrapper(job, b, job.operands[(base + 1)..]);
-            job.operands.resize(base); job.operands.push(value);
-        },
-        FunctionPrototype, ObjectGetPrototypeOf, ObjectIs, ObjectHasOwn, ObjectPrototypeHasOwnProperty, ObjectPrototypeValueOf, ObjectPrototypeToString,
-        ArrayIsArray, ErrorPrototypeToString, SymbolFunction, ObjectGetOwnPropertyDescriptor, FunctionPrototypeCall, ArrayPrototypeMap, ArrayPrototypeForEach,
-        GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, IteratorPrototypeIterator, Eval,
-        NumberPrototypeValueOf, NumberPrototypeToString, StringPrototypeValueOf, StringPrototypeToString, BooleanPrototypeValueOf, BooleanPrototypeToString, FunctionPrototypeHasInstance,
-        ArrayPrototypePush, ArrayPrototypeJoin, ArrayPrototypeToString => { heap.fault = Fault.TypeError; },
-        _ => { unsupported_step(job, b, "construct"); },
+        Number, String, Boolean => { value = construct_wrapper(job, b, job.operands[(base + 1)..]); },
+        _ => { unsupported_step(job, b, "construct"); return; },
     }
+    if heap.fault != Fault.None { return; }
+    // A newTarget other than the constructor gives the new object its
+    // `prototype` (GetPrototypeFromConstructor; the realm's intrinsic when
+    // that is not an object). A proxy ignores it.
+    if b != Builtin.Proxy && !same_value(heap, nt, f) && value.is_object() {
+        let proto = construct_prototype(job, nt);
+        if heap.fault != Fault.None { return; }
+        if proto.is_object() { node_mut(heap, value.id()).proto = proto; }
+    }
+    job.operands.resize(base); job.operands.push(value);
+}
+// GetPrototypeFromConstructor(newTarget) for construct, Empty (the kind's
+// realm default) when it is not an object. Making a closure's lazy
+// `prototype` writes its row (decision 3).
+fn construct_prototype(job: Job&, nt: Value) -> Value {
+    let heap .= job.heap;
+    if node(heap, nt.id()).kind == node_kind::Closure && lazy_prototype(heap, nt.id()) && !writable(job, nt.id()) { unsupported_detail(job, "construct: a function whose lazy prototype is in a row this job did not allocate"); return Value.Undefined; }
+    return prototype_from_constructor(job, nt, Value.Empty, "a constructor's prototype getter");
 }
 // GetPrototypeFromConstructor(F) for a new object of F's (light-cljs-831,
 // light-cljs-790): F's own `prototype` (an ordinary or generator function's,

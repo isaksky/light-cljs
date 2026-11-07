@@ -2,13 +2,13 @@
 // Derives from: crates/big-boy-pants-js/rust/tests/js_functions.rs lines 2093-2200, 334-360:
 // arrow_function_values (line 2093, bbp-98), arrows_capture_this_lexically
 // (2168, bbp-98) and the rows of new_target_in_functions_and_arrows (334,
-// bbp-99) without `bind`, `apply`, `Reflect`, eval or classes; js_source.rs
+// bbp-99) without `bind`, eval or classes; js_source.rs
 // method_calls_bind_this (14597, bbp-116). Rewritten: the `__rt.reduce`
 // callback row runs the arrow in a loop; the ASI row (`() => {}\n+1`) checks
 // the arrow in a `var` initializer instead of the script's completion. Left
 // out: arrows completed by the script and called from another task (Pants
-// runtime API); the `apply`/`Reflect.apply`/`bind` parts of two rows
-// (light-cljs-764's apply/bind child); error messages. Each row is a
+// runtime API); the `bind` parts of two rows
+// (light-cljs-852); error messages. Each row is a
 // `row(...)` check; the script completes with the number of rows, or minus
 // the first failing row's number.
 var rows = 0, failed = 0;
@@ -49,7 +49,7 @@ row((() => {})() === undefined);
   const o = new F(); const first = r; const p = new F();
   row(first() === o && r() === p);
 }
-{ function make() { return () => this; } const a = make.call(7); const o = {a: a}; row(a() === 7 && o.a() === 7 && a.call(8) === 7); }
+{ function make() { return () => this; } const a = make.call(7); const o = {a: a}; row(a() === 7 && o.a() === 7 && a.call(8) === 7 && a.apply(9, []) === 7 && Reflect.apply(a, 10, []) === 7); }
 { function make() { return () => { return function () { return () => this; }; }; } const a = make.call(1)().call(2); row(a.call(3) === 2); }
 { function make() { return (x = this) => x; } const a = make.call(7); row(a.call(8) === 7 && a(9) === 9); }
 { function make(a = () => this) { return a; } row(make.call(7)() === 7); }
@@ -74,7 +74,7 @@ row((() => {})() === undefined);
 { function F() { return function G() { return new.target; }; } const G = new F(); row(G() === undefined && new G() === G); }
 { function F() { this.name = new.target.name; } row(new F().name === "F"); }
 { function F(again) { if (!again) return new new.target(true); this.ok = new.target === F; } row(new F().ok); }
-{ function F() { return new.target; } row(F.call({}) === undefined); }
+{ function F() { return new.target; } row(F.call({}) === undefined && F.apply(null, []) === undefined && Reflect.apply(F, null, []) === undefined); }
 {
   function* G() { yield new.target; return (() => new.target)(); }
   const g = G();

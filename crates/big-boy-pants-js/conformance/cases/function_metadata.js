@@ -68,9 +68,8 @@ row((() => 1).prototype === undefined);
   while (i < 50) { f.prototype.n = f.prototype.n + i; i = i + 1; }
   row(f.prototype.n + (f.prototype.constructor === f ? 1000 : 0) === 2225);
 }
-// `call` and `constructor` are inherited from Function.prototype (`apply`
-// is pending on Goose: light-cljs-851).
-{ let f = function () {}; row(f.call === Function.prototype.call && f.constructor === Function); }
+// `call`, `apply` and `constructor` are inherited from Function.prototype.
+{ let f = function () {}; row(f.call === Function.prototype.call && f.apply === Function.prototype.apply && f.constructor === Function); }
 { let f = () => 1; row(f.call === Function.prototype.call); }
 { let f = function () {}; row(f.length === 0); }
 { let f = function f() {}; row(f.name === "f"); }

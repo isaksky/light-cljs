@@ -2,6 +2,7 @@ import std;
 import math;
 import .source_vm;
 import .realm;
+import .function_calls;
 
 namespace source;
 
@@ -52,7 +53,7 @@ namespace source;
 // native_step dispatches by `match` on its Native variant.
 
 // Whether built-in b runs as a native frame (native_start).
-fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b); }
+fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b); }
 // Start built-in b, called with `receiver` and `args`, as a native frame
 // whose operand base is `base`, where the call's operands began: the
 // dispatch loop's `call` cuts the operands to it and the finished frame
@@ -60,6 +61,9 @@ fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap ||
 fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], base: i64) {
     // swap! and swap-vals! (cells.goose).
     if b == Builtin.Swap || b == Builtin.SwapVals { var copied: Value[>..] = []; copied.append(args); start_swap(job, b, copied, base); return; }
+    // Function.prototype.call and apply, Reflect.apply and Reflect.construct
+    // (light-cljs-851; function_calls.goose).
+    if forwarding(b) { start_forward(job, b, receiver, args, base); return; }
     // A generator's next, return and throw (continuations.goose).
     if generator_method(b) { start_resume(job, b, receiver, arg(args, 0), base); return; }
     // Function.prototype[@@hasInstance] (light-cljs-834; source_vm.goose).
@@ -200,6 +204,8 @@ fn array_call(job: Job&, at: i64, b: Builtin, v: Value) {
         let cb = builtin_of(heap, f.id());
         // A delay forced as the callback runs in a frame of its own (cells.goose).
         if forces(heap, cb, args) { start_force(job, cb, v, job.operands.len); return; }
+        // A forwarding built-in (light-cljs-851) runs in a frame of its own.
+        if forwarding(cb) { native_start(job, cb, this_arg, args, job.operands.len); return; }
         if effect_builtin(cb) || cb == Builtin.Mapv || cb == Builtin.MapSeq || native_builtin(cb) { unsupported_step(job, b, "a host-effect or native-frame built-in callback"); return; }
         let r = call_builtin(job, node(heap, f.id()).function, this_arg, args);
         if heap.fault == Fault.None { job.operands.push(r); }

@@ -229,6 +229,10 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         // reads (light-cljs-845, proxy.goose).
         ForIn => f.pc >= 1 && f.pc <= 3 && object_of(s, f.input, node_kind::KeyList),
         Proxy p => p.method <= proxy_method::GetOwnProperty && f.pc >= 0 && f.pc <= 5 && object_of(s, f.input, node_kind::Proxy) && (f.pc < 3 || (if f.pc == 5 { p.method == proxy_method::GetOwnProperty && f.index >= 0 && f.index < source::FIELD_NAMES.len } else { p.method == proxy_method::OwnPropertyKeys && f.index >= 0 }) && object_of(s, f.callee, node_kind::KeyList) && object_of(s, f.receiver, node_kind::None)),
+        // A Forward frame (light-cljs-851, function_calls.goose) holds the
+        // function it runs, and while it reads its argument list (pc 0 to
+        // 2) the list.
+        Forward => f.pc >= 0 && f.pc <= 3 && object_of(s, f.callee, node_kind::None) && (f.pc == 3 || object_of(s, f.input, node_kind::None)) && f.index >= 0 && f.output.is_number(),
         _ => true,
     };
 }
