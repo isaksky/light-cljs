@@ -52,11 +52,15 @@ enum Builtin {
     // naming `direct eval` (source_vm.goose, Ins.DirectEval); any other call,
     // an indirect eval, is an unimplemented step of the built-in.
     Eval,
+    // The primitive wrapper constructors (light-cljs-832; WRAPPER_NAMES
+    // order) and their prototypes' methods.
+    Number, String, Boolean,
+    NumberPrototypeValueOf, NumberPrototypeToString, StringPrototypeValueOf, StringPrototypeToString, BooleanPrototypeValueOf, BooleanPrototypeToString,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[68] = [
+let BUILTINS: BuiltinInfo[77] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -92,6 +96,10 @@ let BUILTINS: BuiltinInfo[68] = [
     BuiltinInfo { which: Builtin.GeneratorPrototypeNext, name: "next", length: 1 }, BuiltinInfo { which: Builtin.GeneratorPrototypeReturn, name: "return", length: 1 },
     BuiltinInfo { which: Builtin.GeneratorPrototypeThrow, name: "throw", length: 1 }, BuiltinInfo { which: Builtin.IteratorPrototypeIterator, name: "[Symbol.iterator]" },
     BuiltinInfo { which: Builtin.Eval, name: "eval", length: 1 },
+    BuiltinInfo { which: Builtin.Number, name: "Number", length: 1 }, BuiltinInfo { which: Builtin.String, name: "String", length: 1 }, BuiltinInfo { which: Builtin.Boolean, name: "Boolean", length: 1 },
+    BuiltinInfo { which: Builtin.NumberPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.NumberPrototypeToString, name: "toString", length: 1 },
+    BuiltinInfo { which: Builtin.StringPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.StringPrototypeToString, name: "toString" },
+    BuiltinInfo { which: Builtin.BooleanPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.BooleanPrototypeToString, name: "toString" },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -110,13 +118,21 @@ inline fn error_constructor_row(t: i64) -> i64 { return 15 + t; }
 inline fn iterator_prototype_row() -> i64 { return 23; }
 inline fn generator_prototype_row() -> i64 { return 24; }
 inline fn promise_prototype_row() -> i64 { return 25; }
-inline fn fixed_rows() -> i64 { return 26; }
+// The primitive wrappers (light-cljs-832), indexed as WRAPPER_NAMES:
+// %Number.prototype%, %String.prototype% and %Boolean.prototype%, which are
+// themselves wrapper objects (kind 22) of +0, "" and false, then the three
+// constructors.
+inline fn wrapper_prototype_row(t: i64) -> i64 { return 26 + t; }
+inline fn wrapper_constructor_row(t: i64) -> i64 { return 29 + t; }
+inline fn fixed_rows() -> i64 { return 32; }
 struct Name { text: u8[..24] }
-let ERROR_NAMES:    Name[8]    = [Name { text: "Error" }, Name { text: "EvalError" }, Name { text: "RangeError" }, Name { text: "ReferenceError" }, Name { text: "SyntaxError" }, Name { text: "TypeError" }, Name { text: "URIError" }, Name { text: "InternalError" }];
-let ERROR_BUILTINS: Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
+let WRAPPER_NAMES:    Name[3]    = [Name { text: "Number" }, Name { text: "String" }, Name { text: "Boolean" }];
+let WRAPPER_BUILTINS: Builtin[3] = [Builtin.Number, Builtin.String, Builtin.Boolean];
+let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalError" }, Name { text: "RangeError" }, Name { text: "ReferenceError" }, Name { text: "SyntaxError" }, Name { text: "TypeError" }, Name { text: "URIError" }, Name { text: "InternalError" }];
+let ERROR_BUILTINS:   Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[18] = [
+let REALM_FUNCTIONS: Method[24] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -131,6 +147,11 @@ let REALM_FUNCTIONS: Method[18] = [
     Method { which: Builtin.GeneratorPrototypeThrow, holder: 24 }, Method { which: Builtin.IteratorPrototypeIterator, holder: 23 },
     // The global `eval` (light-cljs-823).
     Method { which: Builtin.Eval, holder: 0 },
+    // %Number.prototype%, %String.prototype% and %Boolean.prototype%'s
+    // valueOf and toString (light-cljs-832).
+    Method { which: Builtin.NumberPrototypeToString, holder: 26 }, Method { which: Builtin.NumberPrototypeValueOf, holder: 26 },
+    Method { which: Builtin.StringPrototypeToString, holder: 27 }, Method { which: Builtin.StringPrototypeValueOf, holder: 27 },
+    Method { which: Builtin.BooleanPrototypeToString, holder: 28 }, Method { which: Builtin.BooleanPrototypeValueOf, holder: 28 },
 ];
 inline fn realm_nodes() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
 // The Symbol function's row: its REALM_FUNCTIONS entry, the eleventh.
@@ -138,7 +159,7 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[140] = [
+let PENDING: PendingName[207] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
@@ -161,7 +182,7 @@ let PENDING: PendingName[140] = [
     PendingName { holder: 12, key: "isExtensible" }, PendingName { holder: 12, key: "isFrozen" }, PendingName { holder: 12, key: "isSealed" }, PendingName { holder: 12, key: "keys" },
     PendingName { holder: 12, key: "preventExtensions" }, PendingName { holder: 12, key: "seal" }, PendingName { holder: 12, key: "setPrototypeOf" }, PendingName { holder: 12, key: "values" },
     // Symbol (symbol_row(); its well-known symbols are real)
-    PendingName { holder: 36, key: "prototype" }, PendingName { holder: 36, key: "for" }, PendingName { holder: 36, key: "keyFor" },
+    PendingName { holder: 42, key: "prototype" }, PendingName { holder: 42, key: "for" }, PendingName { holder: 42, key: "keyFor" },
     // %IteratorPrototype% (its helpers), %GeneratorPrototype% and
     // %Promise.prototype% (light-cljs-790; the Promise area makes the last's).
     PendingName { holder: 23, key: "constructor" }, PendingName { holder: 23, key: "drop" }, PendingName { holder: 23, key: "every" }, PendingName { holder: 23, key: "filter" },
@@ -173,17 +194,39 @@ let PENDING: PendingName[140] = [
     PendingName { holder: 14, key: "from" }, PendingName { holder: 14, key: "of" }, PendingName { holder: 14, key: "fromAsync" }, PendingName { holder: 14, key: "", symbol: 8 },
     // The global object's other standard names.
     PendingName { holder: 0, key: "AggregateError" }, PendingName { holder: 0, key: "ArrayBuffer" }, PendingName { holder: 0, key: "Atomics" }, PendingName { holder: 0, key: "BigInt" },
-    PendingName { holder: 0, key: "BigInt64Array" }, PendingName { holder: 0, key: "BigUint64Array" }, PendingName { holder: 0, key: "Boolean" }, PendingName { holder: 0, key: "DataView" },
+    PendingName { holder: 0, key: "BigInt64Array" }, PendingName { holder: 0, key: "BigUint64Array" }, PendingName { holder: 0, key: "DataView" },
     PendingName { holder: 0, key: "Date" }, PendingName { holder: 0, key: "FinalizationRegistry" }, PendingName { holder: 0, key: "Float32Array" }, PendingName { holder: 0, key: "Float64Array" },
     PendingName { holder: 0, key: "Int8Array" }, PendingName { holder: 0, key: "Int16Array" }, PendingName { holder: 0, key: "Int32Array" }, PendingName { holder: 0, key: "Iterator" },
-    PendingName { holder: 0, key: "JSON" }, PendingName { holder: 0, key: "Map" }, PendingName { holder: 0, key: "Math" }, PendingName { holder: 0, key: "Number" },
+    PendingName { holder: 0, key: "JSON" }, PendingName { holder: 0, key: "Map" }, PendingName { holder: 0, key: "Math" },
     PendingName { holder: 0, key: "Promise" }, PendingName { holder: 0, key: "Proxy" }, PendingName { holder: 0, key: "Reflect" }, PendingName { holder: 0, key: "RegExp" },
-    PendingName { holder: 0, key: "Set" }, PendingName { holder: 0, key: "SharedArrayBuffer" }, PendingName { holder: 0, key: "String" },
+    PendingName { holder: 0, key: "Set" }, PendingName { holder: 0, key: "SharedArrayBuffer" },
     PendingName { holder: 0, key: "Uint8Array" }, PendingName { holder: 0, key: "Uint8ClampedArray" }, PendingName { holder: 0, key: "Uint16Array" }, PendingName { holder: 0, key: "Uint32Array" },
     PendingName { holder: 0, key: "WeakMap" }, PendingName { holder: 0, key: "WeakRef" }, PendingName { holder: 0, key: "WeakSet" }, PendingName { holder: 0, key: "decodeURI" },
     PendingName { holder: 0, key: "decodeURIComponent" }, PendingName { holder: 0, key: "encodeURI" }, PendingName { holder: 0, key: "encodeURIComponent" }, PendingName { holder: 0, key: "escape" },
     PendingName { holder: 0, key: "isFinite" }, PendingName { holder: 0, key: "isNaN" }, PendingName { holder: 0, key: "parseFloat" },
     PendingName { holder: 0, key: "parseInt" }, PendingName { holder: 0, key: "unescape" },
+    // Number and %Number.prototype% (light-cljs-832; the core-builtins
+    // area makes them, light-cljs-767).
+    PendingName { holder: 29, key: "parseInt" }, PendingName { holder: 29, key: "parseFloat" }, PendingName { holder: 29, key: "isNaN" }, PendingName { holder: 29, key: "isFinite" },
+    PendingName { holder: 29, key: "isInteger" }, PendingName { holder: 29, key: "isSafeInteger" }, PendingName { holder: 29, key: "MAX_VALUE" }, PendingName { holder: 29, key: "MIN_VALUE" },
+    PendingName { holder: 29, key: "NaN" }, PendingName { holder: 29, key: "NEGATIVE_INFINITY" }, PendingName { holder: 29, key: "POSITIVE_INFINITY" }, PendingName { holder: 29, key: "EPSILON" },
+    PendingName { holder: 29, key: "MAX_SAFE_INTEGER" }, PendingName { holder: 29, key: "MIN_SAFE_INTEGER" },
+    PendingName { holder: 26, key: "toExponential" }, PendingName { holder: 26, key: "toFixed" }, PendingName { holder: 26, key: "toPrecision" }, PendingName { holder: 26, key: "toLocaleString" },
+    // String and %String.prototype%.
+    PendingName { holder: 30, key: "fromCharCode" }, PendingName { holder: 30, key: "fromCodePoint" }, PendingName { holder: 30, key: "raw" },
+    PendingName { holder: 27, key: "at" }, PendingName { holder: 27, key: "charCodeAt" }, PendingName { holder: 27, key: "charAt" }, PendingName { holder: 27, key: "concat" },
+    PendingName { holder: 27, key: "codePointAt" }, PendingName { holder: 27, key: "isWellFormed" }, PendingName { holder: 27, key: "toWellFormed" }, PendingName { holder: 27, key: "indexOf" },
+    PendingName { holder: 27, key: "lastIndexOf" }, PendingName { holder: 27, key: "includes" }, PendingName { holder: 27, key: "endsWith" }, PendingName { holder: 27, key: "startsWith" },
+    PendingName { holder: 27, key: "match" }, PendingName { holder: 27, key: "matchAll" }, PendingName { holder: 27, key: "search" }, PendingName { holder: 27, key: "split" },
+    PendingName { holder: 27, key: "substring" }, PendingName { holder: 27, key: "substr" }, PendingName { holder: 27, key: "slice" }, PendingName { holder: 27, key: "repeat" },
+    PendingName { holder: 27, key: "replace" }, PendingName { holder: 27, key: "replaceAll" }, PendingName { holder: 27, key: "padEnd" }, PendingName { holder: 27, key: "padStart" },
+    PendingName { holder: 27, key: "trim" }, PendingName { holder: 27, key: "trimEnd" }, PendingName { holder: 27, key: "trimRight" }, PendingName { holder: 27, key: "trimStart" },
+    PendingName { holder: 27, key: "trimLeft" }, PendingName { holder: 27, key: "toLowerCase" }, PendingName { holder: 27, key: "toUpperCase" }, PendingName { holder: 27, key: "toLocaleLowerCase" },
+    PendingName { holder: 27, key: "toLocaleUpperCase" }, PendingName { holder: 27, key: "normalize" }, PendingName { holder: 27, key: "localeCompare" }, PendingName { holder: 27, key: "anchor" },
+    PendingName { holder: 27, key: "big" }, PendingName { holder: 27, key: "blink" }, PendingName { holder: 27, key: "bold" }, PendingName { holder: 27, key: "fixed" },
+    PendingName { holder: 27, key: "fontcolor" }, PendingName { holder: 27, key: "fontsize" }, PendingName { holder: 27, key: "italics" }, PendingName { holder: 27, key: "link" },
+    PendingName { holder: 27, key: "small" }, PendingName { holder: 27, key: "strike" }, PendingName { holder: 27, key: "sub" }, PendingName { holder: 27, key: "sup" },
+    PendingName { holder: 27, key: "", symbol: well_known::Iterator },
 ];
 // The type names `typeof` gives, interned with the realm.
 let TYPE_NAMES: Name[8] = [Name { text: "undefined" }, Name { text: "object" }, Name { text: "boolean" }, Name { text: "number" }, Name { text: "string" }, Name { text: "symbol" }, Name { text: "bigint" }, Name { text: "function" }];
@@ -261,9 +304,17 @@ fn prototype(heap: const Heap&, o: i64) -> Value {
     if !heap.global.is_object() { return Value.Null; }
     return match node(heap, o).kind {
         0, 14 => object(object_prototype_row()), 1 => object(array_prototype_row()), 2, 4 => object(function_prototype_row()), 13 => object(error_prototype_row(0)),
+        22 => primitive_prototype(node(heap, o).value),
         _ => Value.Null,
     };
 }
+// The wrapper type (WRAPPER_NAMES) of primitive v, -1 for one without a
+// wrapper here: undefined and null have none, and Symbol and BigInt
+// wrappers belong to their areas (light-cljs-766, light-cljs-771).
+fn wrapper_type(v: Value) -> i64 { return match v { Number => 0, String => 1, Bool => 2, _ => -1 }; }
+// The realm's prototype for primitive v's wrapper (ToObject's), Null for a
+// primitive without one.
+fn primitive_prototype(v: Value) -> Value { let t = wrapper_type(v); return if t < 0 { Value.Null } else { object(wrapper_prototype_row(t)) }; }
 // Whether node o is a realm row: the image owner made it in initialize.
 inline fn realm_row(o: i64) -> bool { return o >= 0 && o < realm_nodes(); }
 // Whether a compiler job reads node o through its prototype chain although
@@ -286,6 +337,11 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     }
     let constructors: Builtin[] = [Builtin.Object, Builtin.Function, Builtin.Array];
     for b, i in constructors { let o = object_constructor_row() + i; if nodes[o].kind != 4 || nodes[o].function != code(b) { return false; } }
+    // The wrapper prototypes hold a primitive of their type.
+    for b, t in WRAPPER_BUILTINS {
+        let p .= nodes[wrapper_prototype_row(t)]; let c .= nodes[wrapper_constructor_row(t)];
+        if p.kind != 22 || wrapper_type(p.value) != t || !p.proto.is_object() || p.proto.id() != object_prototype_row() || c.kind != 4 || c.function != code(b) { return false; }
+    }
     for m, j in REALM_FUNCTIONS { let o = fixed_rows() + j; if nodes[o].kind != 4 || nodes[o].function != code(m.which) || m.which == Builtin.FunctionPrototypeCall && (!call.is_object() || call.id() != o) { return false; } }
     return true;
 }
@@ -296,6 +352,9 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
 fn build_realm(heap: Heap&) -> bool {
     if heap.nodes.len != 0 || heap.accessors.len != 0 { heap.fault = Fault.InvalidState; return false; }
     if add_accessor(heap, Pair {}) != 0 { return false; }
+    // %String.prototype%'s [[StringData]], the empty string.
+    let empty = key_named(heap, "");
+    if heap.fault != Fault.None { return false; }
     var rows: Node[>..] = [];
     rows.push(Node { kind: 0 });
     rows.push(Node { kind: 0, proto: Value.Null });
@@ -305,6 +364,9 @@ fn build_realm(heap: Heap&) -> bool {
     rows.push(Node { kind: 4, function: code(Builtin.Object) }); rows.push(Node { kind: 4, function: code(Builtin.Function) }); rows.push(Node { kind: 4, function: code(Builtin.Array) });
     for b, t in ERROR_BUILTINS { rows.push(if t == 0 { Node { kind: 4, function: code(b) } } else { Node { kind: 4, function: code(b), proto: object(error_constructor_row(0)) } }); }
     rows.push(Node { kind: 0, proto: object(object_prototype_row()) }); rows.push(Node { kind: 0, proto: object(iterator_prototype_row()) }); rows.push(Node { kind: 0, proto: object(object_prototype_row()) });
+    let wrapped: Value[3] = [number(0), empty, boolean(false)];
+    for v in wrapped { rows.push(Node { kind: 22, value: v, proto: object(object_prototype_row()) }); }
+    for b in WRAPPER_BUILTINS { rows.push(Node { kind: 4, function: code(b) }); }
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: 4, function: code(m.which) }); }
     if !charge(heap, rows.len) || add_nodes(heap, rows) != 0 { if heap.fault == Fault.None { memory(heap); } return false; }
@@ -315,6 +377,7 @@ fn build_realm(heap: Heap&) -> bool {
     let pairs: i64[] = [object_constructor_row(), object_prototype_row(), function_constructor_row(), function_prototype_row(), array_constructor_row(), array_prototype_row()];
     var i: i64 = 0;
     while i < pairs.len { if !link_constructor(heap, pairs[i], pairs[i + 1]) { return false; } i += 2; }
+    for t in WRAPPER_NAMES.len { if !link_constructor(heap, wrapper_constructor_row(t), wrapper_prototype_row(t)) { return false; } }
     for t in ERROR_NAMES.len {
         let p = error_prototype_row(t);
         if !link_constructor(heap, error_constructor_row(t), p) || !realm_value(heap, p, "name", key_named(heap, ERROR_NAMES[t].text), attr_writable() | attr_configurable()) || !realm_value(heap, p, "message", key_named(heap, ""), attr_writable() | attr_configurable()) { return false; }
@@ -334,7 +397,7 @@ fn build_realm(heap: Heap&) -> bool {
     while export_well_known_symbol(s).len > 0 { if !realm_value(heap, symbol_row(), export_well_known_symbol(s), Value.Symbol { s: s as u32 }, 0) { return false; } s += 1; }
     // The global object's own properties.
     if !realm_value(heap, global_row(), "globalThis", heap.global, attr_writable() | attr_configurable()) { return false; }
-    let globals: i64[] = [object_constructor_row(), function_constructor_row(), array_constructor_row()];
+    let globals: i64[] = [object_constructor_row(), function_constructor_row(), array_constructor_row(), wrapper_constructor_row(0), wrapper_constructor_row(1), wrapper_constructor_row(2)];
     for o in globals { if !realm_value(heap, global_row(), BUILTINS[node(heap, o).function].name, object(o), attr_writable() | attr_configurable()) { return false; } }
     for t in ERROR_NAMES.len { if !realm_value(heap, global_row(), ERROR_NAMES[t].text, object(error_constructor_row(t)), attr_writable() | attr_configurable()) { return false; } }
     if !realm_value(heap, global_row(), "NaN", number(0.0 / 0.0), 0) || !realm_value(heap, global_row(), "Infinity", number(1.0 / 0.0), 0) || !realm_value(heap, global_row(), "undefined", Value.Undefined, 0) { return false; }
@@ -431,6 +494,100 @@ fn type_error(job: Job&, message: const u8[:]) -> Value {
     return Value.Undefined;
 }
 inline fn arg(args: const Value[:], i: i64) -> Value { return if i < args.len { args[i] } else { Value.Undefined }; }
+
+// Primitive wrappers (light-cljs-832; the Pants engine's realm.rs and
+// vm/builtin.rs, QuickJS's js_number_constructor, js_string_constructor,
+// js_boolean_constructor and JS_ToObject). A wrapper is a node of kind 22
+// holding its primitive (source_vm.goose, string_key); a job's wrappers are
+// job rows (decision 3), the realm's three prototypes image rows.
+//
+// ToObject(v): an object is itself; a number, string or boolean is a new
+// wrapper inheriting its realm prototype; undefined and null are a
+// TypeError. A Symbol or BigInt wrapper fails by name: they are the objects
+// and BigInt areas' (light-cljs-766, light-cljs-771).
+fn to_object(job: Job&, v: Value) -> Value {
+    if v.is_object() { return v; }
+    if v.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
+    return wrap(job, v, primitive_prototype(v));
+}
+fn wrap(job: Job&, v: Value, proto: Value) -> Value {
+    if wrapper_type(v) < 0 { unsupported_detail(job, if v.is_symbol() { "ToObject: Symbol wrapper objects" } else { "ToObject: BigInt wrapper objects" }); return Value.Undefined; }
+    return allocate(job.heap, Node { kind: 22, value: v, proto: proto });
+}
+// thisNumberValue, thisStringValue and thisBooleanValue for built-in b: the
+// primitive of wrapper type t that `receiver` is or wraps; anything else is
+// a TypeError (QuickJS's wording).
+fn this_primitive(job: Job&, b: Builtin, t: i64, receiver: Value) -> Value {
+    let heap .= job.heap;
+    let p = if receiver.is_object() && node(heap, receiver.id()).kind == 22 { node(heap, receiver.id()).value } else { receiver };
+    if wrapper_type(p) == t { return p; }
+    return type_error(job, match t { 0 => "not a number", 1 => "not a string", _ => "not a boolean" });
+}
+// ToNumber of primitive v for built-in b, without user code: a symbol is a
+// TypeError, a BigInt (the BigInt area, light-cljs-771) and an object
+// (converted before this in a call instruction) fail by name.
+fn primitive_number(job: Job&, b: Builtin, v: Value) -> f64 {
+    let heap .= job.heap;
+    let x = form_value(heap, v);
+    if x.is_symbol() { type_error(job, "Cannot convert a Symbol value to a number"); return 0; }
+    if x.is_bigint() { unsupported_step(job, b, "a BigInt argument"); return 0; }
+    if x.is_object() { unsupported_step(job, b, if convertible(heap, x) { "ToNumber of an object outside a call instruction" } else { "ToNumber of a light-cljs runtime value" }); return 0; }
+    return numeric(heap, x);
+}
+// The primitive Number(v), String(v) or Boolean(v) gives (WRAPPER_NAMES
+// type t), and so the one new Number(v), new String(v) or new Boolean(v)
+// wraps: Number is ToNumeric then Number (+0 without an argument); String
+// is ToString ("" without one), but a call of it gives a symbol's
+// SymbolDescriptiveString where a construction throws; Boolean is
+// ToBoolean. An object argument of Number or String converted before this
+// (argument_converts); one that reaches here fails by name.
+fn wrapper_value(job: Job&, b: Builtin, t: i64, args: const Value[:], construct: bool) -> Value {
+    let heap .= job.heap;
+    let v = form_value(heap, arg(args, 0));
+    if t == 2 { return boolean(truthy(heap, v)); }
+    if t == 0 {
+        if args.len == 0 { return number(0); }
+        let n = primitive_number(job, b, v);
+        return if heap.fault == Fault.None { number(n) } else { Value.Undefined };
+    }
+    if args.len == 0 { return key_named(heap, ""); }
+    if v.is_symbol() && !construct {
+        var units: u8[>..] = []; units.append("Symbol(Symbol."); units.append(export_well_known_symbol(symbol_index(v))); units.push(41);
+        return text(heap, units);
+    }
+    if v.is_bigint() { return unsupported_step(job, b, "a BigInt argument"); }
+    if v.is_object() { return unsupported_step(job, b, if convertible(heap, v) { "ToString of an object outside a call instruction" } else { "ToString of a light-cljs runtime value" }); }
+    if v.is_symbol() { return type_error(job, "Cannot convert a Symbol value to a string"); }
+    return to_string(heap, v);
+}
+// new Number(v), new String(v), new Boolean(v): a wrapper of their call's
+// primitive. new.target is the constructor itself (no subclass or
+// Reflect.construct reaches here yet), so the prototype is the realm's.
+fn construct_wrapper(job: Job&, b: Builtin, args: const Value[:]) -> Value {
+    var t: i64 = 0; for w, i in WRAPPER_BUILTINS { if w == b { t = i; } }
+    let v = wrapper_value(job, b, t, args, true);
+    if job.heap.fault != Fault.None { return Value.Undefined; }
+    return wrap(job, v, object(wrapper_prototype_row(t)));
+}
+// Number.prototype.toString(radix): radix 10, or undefined, is the number's
+// ToString; a radix outside 2 to 36 is a RangeError and another one fails
+// by name (bbp-149, the core-builtins area, light-cljs-767).
+fn number_to_string(job: Job&, b: Builtin, receiver: Value, args: const Value[:]) -> Value {
+    let heap .= job.heap;
+    let x = this_primitive(job, b, 0, receiver);
+    if heap.fault != Fault.None { return Value.Undefined; }
+    let r = form_value(heap, arg(args, 0));
+    if !r.is_undefined() {
+        if r.is_object() { return unsupported_step(job, b, "an object radix"); }
+        let n = primitive_number(job, b, r);
+        if heap.fault != Fault.None { return Value.Undefined; }
+        // ToIntegerOrInfinity: NaN is 0.
+        let radix = if n != n { 0.0 } else { trunc(n) };
+        if radix < 2 || radix > 36 { job.detail.clear(); for c in "toString() radix must be between 2 and 36" { job.detail.push(c); } heap.fault = Fault.RangeError; return Value.Undefined; }
+        if radix != 10 { return unsupported_step(job, b, "a radix other than 10"); }
+    }
+    return to_string(heap, x);
+}
 // ToString without user code: a primitive's (source_vm.goose to_string,
 // light-cljs-826; a symbol is a TypeError). An object's ToPrimitive is not
 // run here: it fails UnsupportedOperand, naming built-in b.
@@ -458,15 +615,16 @@ fn has_own(job: Job&, b: Builtin, o: Value, k: Value) -> bool {
 // (FromPropertyDescriptor) with `value` and `writable`, or `get` and `set`,
 // then `enumerable` and `configurable`. An ordinary function's own lazy
 // `prototype` is made first, as a read makes it (prepare_function); an
-// inherited one is not looked at. A
-// primitive o other than undefined and null (ToObject) and a pending
+// inherited one is not looked at. A primitive o is its ToObject wrapper (a
+// string's `length` and indices; light-cljs-832); a Symbol's and a pending
 // property fail by name.
-fn own_descriptor(job: Job&, b: Builtin, o: Value, kv: Value) -> Value {
+fn own_descriptor(job: Job&, b: Builtin, value: Value, kv: Value) -> Value {
     let heap .= job.heap;
-    if o.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
+    if value.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
     let k = property_key(job, b, kv);
     if heap.fault != Fault.None { return Value.Undefined; }
-    if !o.is_object() { return unsupported_step(job, b, "primitive wrapper objects"); }
+    let o = to_object(job, value);
+    if heap.fault != Fault.None { return Value.Undefined; }
     if lazy_prototype(heap, o.id()) && key_is(heap, k, "prototype") { prepare_function(job, o, k, false); }
     let p = own_entry(heap, o, k);
     if heap.fault != Fault.None || !p.found { return Value.Undefined; }
@@ -507,15 +665,19 @@ fn object_tag(job: Job&, receiver: Value) -> Value {
     let heap .= job.heap;
     if receiver.is_undefined() { return text(heap, "[object Undefined]"); }
     if receiver.is_null() { return text(heap, "[object Null]"); }
-    if !receiver.is_object() { return unsupported_step(job, Builtin.ObjectPrototypeToString, "a primitive receiver"); }
-    let tag, getter = lookup(heap, receiver, Value.Symbol { s: well_known::ToStringTag });
+    // A primitive's ToObject is its wrapper, whose @@toStringTag is its
+    // prototype's: the lookup starts there and no wrapper is made.
+    let holder = if receiver.is_object() { receiver } else { primitive_prototype(receiver) };
+    if !holder.is_object() { return unsupported_step(job, Builtin.ObjectPrototypeToString, "a Symbol or BigInt receiver"); }
+    let tag, getter = lookup(heap, holder, Value.Symbol { s: well_known::ToStringTag });
     if heap.fault != Fault.None { return Value.Undefined; }
     if getter.is_object() { return unsupported_step(job, Builtin.ObjectPrototypeToString, "a @@toStringTag getter"); }
     var units: u16[>..] = [];
     for c in "[object " { units.push(c); }
     if tag.is_string() { append_utf16(heap, tag, units); }
     else {
-        let name: const u8[:] = match node(heap, receiver.id()).kind { 1 => "Array", 2, 4 => "Function", 13 => "Error", 14 => "Arguments", _ => "Object" };
+        let wrapped = if receiver.is_object() { if node(heap, receiver.id()).kind == 22 { node(heap, receiver.id()).value } else { Value.Undefined } } else { receiver };
+        let name: const u8[:] = if wrapper_type(wrapped) >= 0 { WRAPPER_NAMES[wrapper_type(wrapped)].text } else { match node(heap, receiver.id()).kind { 1 => "Array", 2, 4 => "Function", 13 => "Error", 14 => "Arguments", _ => "Object" } };
         for c in name { units.push(c); }
     }
     units.push(93);
@@ -593,8 +755,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         Object => {
             let v = arg(args, 0);
             if v.tag() <= value_tag::Null { return allocate(heap, Node { kind: 0 }); }
-            if v.is_object() { return v; }
-            return unsupported_step(job, b, "primitive wrapper objects");
+            return to_object(job, v);
         },
         Function => { return unsupported_step(job, b, "dynamic functions"); },
         Array => { return construct_array(job, args); },
@@ -605,9 +766,10 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         ObjectGetPrototypeOf => {
             let v = arg(args, 0);
             if v.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
-            if !v.is_object() { return unsupported_step(job, b, "primitive wrapper prototypes"); }
+            // ToObject's wrapper inherits its realm prototype; none is made.
+            if !v.is_object() { let p = primitive_prototype(v); return if p.is_object() { p } else { unsupported_step(job, b, "Symbol and BigInt prototypes") }; }
             let kind = node(heap, v.id()).kind;
-            if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 14 && kind != 20 && kind != 21 { return unsupported_step(job, b, "a runtime form"); }
+            if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 14 && kind != 20 && kind != 21 && kind != 22 { return unsupported_step(job, b, "a runtime form"); }
             return prototype(heap, v.id());
         },
         ObjectIs => { return boolean(same_value(heap, arg(args, 0), arg(args, 1))); },
@@ -623,9 +785,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
             return if heap.fault == Fault.None { boolean(found) } else { Value.Undefined };
         },
         ObjectPrototypeValueOf => {
-            if receiver.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
-            if !receiver.is_object() { return unsupported_step(job, b, "primitive wrapper objects"); }
-            return receiver;
+            return to_object(job, receiver);
         },
         ObjectPrototypeToString => { return object_tag(job, receiver); },
         ObjectGetOwnPropertyDescriptor => { return own_descriptor(job, b, arg(args, 0), arg(args, 1)); },
@@ -648,6 +808,17 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
             if !constructible(heap, arg(args, 0)) { return unsupported_step(job, b, "constructing a value other than a Delay"); }
             var rest: Value[>..] = []; if args.len > 1 { rest.append(args[1..]); }
             return delay_builtin(job, Builtin.Delay, rest);
+        },
+        Number => { return wrapper_value(job, b, 0, args, false); },
+        String => { return wrapper_value(job, b, 1, args, false); },
+        Boolean => { return wrapper_value(job, b, 2, args, false); },
+        NumberPrototypeValueOf => { return this_primitive(job, b, 0, receiver); },
+        NumberPrototypeToString => { return number_to_string(job, b, receiver, args); },
+        StringPrototypeValueOf, StringPrototypeToString => { return this_primitive(job, b, 1, receiver); },
+        BooleanPrototypeValueOf => { return this_primitive(job, b, 2, receiver); },
+        BooleanPrototypeToString => {
+            let x = this_primitive(job, b, 2, receiver);
+            return if heap.fault == Fault.None { key_named(heap, if x.flag() { "true" } else { "false" }) } else { Value.Undefined };
         },
         _ => { return native_value(heap, id, args); },
     }

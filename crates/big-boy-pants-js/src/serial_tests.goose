@@ -528,6 +528,7 @@ fn main() {
     key_enumeration();
     named_properties();
     heap_program::join(thread_spawn(realm_model, str(embed_file("../corpus/serial/calls.gsp"))));
+    for which in 4 { heap_program::join(thread_spawn(to_object_opcode, which)); }
     // Image comparisons are bit-exact: NaN matches itself, -0 differs from +0.
     assert(source::same_bits(source::number(0.0 / 0.0), source::number(0.0 / 0.0)) && !source::same_bits(source::number(0.0), source::number(-0.0)));
     print("serial source VM: calls/captures/cells/properties/truth/UTF16/errors, exact slices and limits passed");
@@ -763,7 +764,57 @@ thread_fn realm_model(bytes: u8[]) {
     let map = source::get(heap, a, source::text(heap, "map")); let for_each = source::get(heap, a, source::text(heap, "forEach"));
     assert(heap.fault == source::Fault.None && source::builtin_of(heap, map.id()) == source::Builtin.ArrayPrototypeMap && source::builtin_of(heap, for_each.id()) == source::Builtin.ArrayPrototypeForEach);
     assert(source::key_is(heap, source::get(heap, for_each, source::text(heap, "name")), "forEach") && source::get(heap, map, source::text(heap, "length")).num() == 1);
-    print("serial source VM: realm rows, prototypes, built-in and runtime leaf metadata, well-known symbols and pending names passed");
+    // The primitive wrappers (light-cljs-832): the prototypes are wrapper
+    // objects of +0, "" and false inheriting Object.prototype, each its
+    // constructor's `prototype`.
+    for name, t in ["Number", "String", "Boolean"] {
+        let p = source::object(source::wrapper_prototype_row(t)); let c = source::get(heap, heap.global, source::text(heap, name));
+        assert(source::node(heap, p.id()).kind == 22 && source::wrapper_type(source::node(heap, p.id()).value) == t && source::prototype(heap, p.id()) == source::object(source::object_prototype_row()));
+        assert(c.id() == source::wrapper_constructor_row(t) && source::get(heap, c, source::text(heap, "prototype")) == p && source::get(heap, p, source::text(heap, "constructor")) == c);
+    }
+    // A String object's `length` and indices are exotic own properties: read
+    // from its string, listed first, refused to writes, definitions that
+    // change them and deletes; its other keys are ordinary.
+    let s = source::allocate(heap, source::Node { kind: 22, value: source::text(heap, "ab"), proto: source::object(source::wrapper_prototype_row(1)) });
+    let length = source::own_entry(heap, s, key(heap, "length")); let second = source::own_entry(heap, s, key(heap, "1"));
+    assert(length.found && length.attrs == 0 && length.value.num() == 2 && second.found && second.attrs == source::attr_enumerable() && source::key_is(heap, second.value, "b"));
+    assert(!source::own_entry(heap, s, key(heap, "2")).found && source::has_property(heap, s, key(heap, "0")) && heap.fault == source::Fault.None);
+    let setter, accepted = source::write(heap, s, source::text(heap, "0"), source::number(1)); assert(!accepted && setter.is_undefined() && heap.fault == source::Fault.None);
+    assert(!source::delete_property(heap, s, key(heap, "length")) && !source::delete_property(heap, s, key(heap, "1")) && heap.fault == source::Fault.None);
+    assert(!source::define_property(heap, s, key(heap, "0"), source::text(heap, "z"), source::attr_enumerable()) && source::define_property(heap, s, key(heap, "0"), source::text(heap, "a"), source::attr_enumerable()));
+    assert(source::put(heap, s, source::text(heap, "x"), source::number(3)) && source::put(heap, s, source::text(heap, "7"), source::number(4)));
+    var keys: source::Value[>..] = []; assert(source::own_keys(heap, s, keys) && keys.len == 5);
+    for name, i in ["0", "1", "7", "length", "x"] { assert(source::key_is(heap, keys[i], name)); }
+    assert(source::delete_property(heap, s, key(heap, "7")) && !source::own_entry(heap, s, key(heap, "7")).found && heap.fault == source::Fault.None);
+    print("serial source VM: realm rows, prototypes, built-in and runtime leaf metadata, well-known symbols, pending names and primitive wrappers passed");
+}
+// The ToObject opcode (176, a `with` statement's object; light-cljs-832),
+// in a synthetic function `x => ToObject(x)` (no compiled source reaches it
+// without `with`'s other opcodes): a string becomes a new String object
+// inheriting String.prototype, a number and a boolean their wrappers, an
+// object stays itself, and null is a TypeError (catchable: fault_type).
+thread_fn to_object_opcode(which: i64) {
+    defer { heap_program::finish(); }
+    var synthetic = source::Code {};
+    synthetic.functions.push(source::Function { start: 0, count: 3, constants: 0, children: 0, params: 1, locals: 1, captures: 0, strict: true });
+    for op, i in [opcode::GetLocal, opcode::ToObject, opcode::Return] { synthetic.ops.push(source::Op { code: op, arg: 0, offset: [0, 3, 4][i], start: 0, end: 0, depth: [0, 1, 1][i] }); }
+    synthetic.valid = true;
+    var code = source::Code {}; let f = source::append_code(code, synthetic);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let input = match which { 0 => source::text(heap, "ab"), 1 => source::number(5), 2 => source::object(source::global_row()), _ => source::Value.Null };
+    var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, f, []), [input]));
+    let outcome = source::run(job, -1);
+    if which == 3 {
+        let message = "cannot convert undefined or null to object";
+        assert(outcome == tiny::Outcome.Failed && job.fault == source::Fault.TypeError && job.detail.len == message.len);
+        for c, i in message { assert(job.detail[i] == c); }
+        return;
+    }
+    assert(outcome == tiny::Outcome.Complete && job.result.is_object());
+    let n = source::node(heap, job.result.id());
+    if which == 2 { assert(job.result == input); return; }
+    assert(n.kind == 22 && source::same_value(heap, n.value, input) && source::prototype(heap, job.result.id()) == source::object(source::wrapper_prototype_row(source::wrapper_type(input))));
+    if which == 0 { assert(source::own_entry(heap, job.result, key(heap, "length")).value.num() == 2); }
 }
 thread_fn property_model() {
     defer { heap_program::finish(); }

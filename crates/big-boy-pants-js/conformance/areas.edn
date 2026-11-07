@@ -118,6 +118,10 @@
   "bbp/non_constructors_reject_new" {:area :operators-values}
   "bbp/new_target_in_functions" {:area :operators-values}
   "bbp/new_error_objects" {:area :operators-values}
+  "bbp/primitive_wrappers_convert_with_value_of" {:area :operators-values}
+  "bbp/boolean_constructor_and_boxing" {:area :operators-values}
+  "bbp/string_wrapper_exotic" {:area :operators-values}
+  "bbp/conversion_functions" {:area :operators-values}
   "bbp/logical_assignment_on_properties" {:area :operators-values}
   "bbp/property_update_sloppy_ignored" {:area :operators-values :mode :sloppy}
 

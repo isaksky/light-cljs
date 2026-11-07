@@ -70,7 +70,7 @@ thread_fn isolation_parent() {
 }
 fn malformed() {
     heap_program::join(thread_spawn(malformed_parent)); let saved = qget<Saved>(); let original .= saved.image;
-    for mode in 45 { heap_program::join(thread_spawn(malformed_target, copy(original), mode)); }
+    for mode in 47 { heap_program::join(thread_spawn(malformed_target, copy(original), mode)); }
     for mode in 2 { heap_program::join(thread_spawn(malformed_budget, copy(original), mode)); }
     key_run_budgets(original);
     for identity in [0, original.header.base, original.header.checkpoint, 2147483648] { heap_program::join(thread_spawn(malformed_identity, copy(original), identity)); }
@@ -136,6 +136,10 @@ thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
             42 => { let l = list_row(bad); bad.nodes[l].start = bad.nodes[l].length + 1; },
             43 => { let l = list_row(bad); bad.nodes[l].value = source::number(1); },
             44 => { let l = list_row(bad); bad.properties[bad.nodes[l].keys].key = source::number(1); },
+            // A primitive wrapper (light-cljs-832) holds a number, string or
+            // boolean and no element run.
+            45 => { let w = source::wrapper_prototype_row(1); assert(bad.nodes[w].kind == 22); bad.nodes[w].value = source::Value.Null; },
+            46 => { let w = source::wrapper_prototype_row(0); assert(bad.nodes[w].kind == 22); bad.nodes[w].count = 1; },
             _ => { abort("unexpected mode"); },
         }
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
@@ -421,8 +425,47 @@ thread_fn layout_worker(base: snapshot::Snapshot) {
         assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings) && !heap.image_written);
     }
 }
+// Primitive wrappers a job made (light-cljs-832) survive capture, the byte
+// codec and restoration in another program: their primitives (-0 by bits, a
+// wide string's units), prototypes, own properties in shape and dictionary
+// mode, a String object's exotic `length` and indices first in its keys,
+// and identity across two bindings.
+fn wrappers_roundtrip() {
+    heap_program::join(thread_spawn(wrappers_parent)); let saved = qget<Saved>();
+    heap_program::join(thread_spawn(wrappers_restored, copy(saved.image)));
+}
+thread_fn wrappers_parent() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, heap, bindings);
+    let n = source::allocate(heap, source::Node { kind: 22, value: source::number(-0.0), proto: source::object(source::wrapper_prototype_row(0)) });
+    let b = source::allocate(heap, source::Node { kind: 22, value: source::boolean(true), proto: source::object(source::wrapper_prototype_row(2)) });
+    let s = source::allocate(heap, source::Node { kind: 22, value: source::string(heap, [0xD83D, 0xDE00, 'z']), proto: source::object(source::wrapper_prototype_row(1)) });
+    assert(source::put(heap, n, source::text(heap, "x"), source::number(1)) && source::put(heap, s, source::text(heap, "7"), n));
+    assert(source::put(heap, b, source::text(heap, "a"), source::number(2)) && source::put(heap, b, source::text(heap, "b"), s) && source::delete_property(heap, b, source::key_named(heap, "a")) && source::node(heap, b.id()).initialized);
+    for v, i in [n, b, s, s] { bindings.push(snapshot::Binding { id: 20 + i, generation: 1, value: v }); }
+    var c = snapshot::Control {}; let saved = snapshot::capture(heap, bindings, c); assert(c.error == snapshot::Error.None);
+    var encoded: u8[>..] = []; var enc = snapshot::Control {}; assert(snapshot::encode(saved, encoded, enc));
+    var dec = snapshot::Control {}; let decoded = snapshot::decode(encoded, dec); assert(dec.error == snapshot::Error.None && decoded.len == 1);
+    for image in decoded { assert(qput(Saved { image: copy(image) })); }
+}
+thread_fn wrappers_restored(saved: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(saved, code, heap, roots, source::reserve_identity(), r));
+    let base = roots.len - 4; let n = roots[base].value; let b = roots[base + 1].value; let s = roots[base + 2].value;
+    assert(roots[base + 3].value == s && source::get(heap, s, source::text(heap, "7")) == n && source::get(heap, b, source::text(heap, "b")) == s);
+    for v, t in [n, s, b] { assert(source::node(heap, v.id()).kind == 22 && source::prototype(heap, v.id()) == source::object(source::wrapper_prototype_row([0, 1, 2][t]))); }
+    assert(source::same_bits(source::node(heap, n.id()).value, source::number(-0.0)) && source::node(heap, b.id()).value.flag() && source::get(heap, n, source::text(heap, "x")).num() == 1);
+    assert(source::node(heap, b.id()).initialized && !source::own_entry(heap, b, source::key_named(heap, "a")).found);
+    let length = source::own_entry(heap, s, source::key_named(heap, "length")); let high = source::own_entry(heap, s, source::key_named(heap, "0"));
+    assert(length.found && length.attrs == 0 && length.value.num() == 3 && high.found && high.attrs == source::attr_enumerable() && source::unit(heap, high.value, 0) == 0xD83D);
+    var keys: source::Value[>..] = []; assert(source::own_keys(heap, s, keys) && keys.len == 5);
+    for name, i in ["0", "1", "2", "7", "length"] { assert(source::key_is(heap, keys[i], name)); }
+    assert(heap.fault == source::Fault.None);
+    print("snapshot primitive wrappers: payloads, prototypes, shape and dictionary properties, String exotic keys and identity survive restoration passed");
+}
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); heap_program::join(thread_spawn(live_boundary)); }
 
 // Suspended continuations (light-cljs-790; decision 4, amended by
 // light-cljs-792). A dependency wait while a generator is suspended at its

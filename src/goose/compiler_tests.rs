@@ -1873,7 +1873,10 @@ fn goose_compiler_rejects_shared_writes_before_mutation() {
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_names_unsupported_builtin_steps() {
     for (body, name) in [
-        ("Object(1)", "Object:-primitive-wrapper-objects"),
+        (
+            "Object(Symbol.iterator)",
+            "ToObject:-Symbol-wrapper-objects",
+        ),
         ("[1].filter((x) => x)", "pending-filter"),
     ] {
         let source = format!(

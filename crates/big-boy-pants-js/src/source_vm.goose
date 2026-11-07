@@ -145,7 +145,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.numeric { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64) }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -192,8 +192,9 @@ enum Ins {
     // object rest (ToPropertyKey, RequireCoercible, OwnKeys, IsEnumerable)
     // and spread (CopyDataProperties).
     ForInStart, ForInNext, OwnKeys, IsEnumerable, CopyData, ToPropertyKey, RequireCoercible,
-    // Typeof (light-cljs-788).
-    TypeOf,
+    // Typeof (light-cljs-788). ToObject (176, a `with` statement's object;
+    // light-cljs-832): v → ToObject(v), boxing a primitive.
+    TypeOf, ToObject,
     // Generators and async functions (light-cljs-790, continuations.goose):
     // GeneratorStart only marks code; GeneratorInitialYield, GeneratorYield,
     // AsyncStart and Await detach and settle activations.
@@ -386,8 +387,9 @@ root struct Heap {
 //                methods in the hint's order; pc 1 awaits a method's
 //                result, pc 2 a method from its getter (light-cljs-805).
 //                A primitive replaces its object in place (and, when
-//                `numeric`, its ToNumber, before the next operand
-//                converts); then the frame pops and the operation below,
+//                `finish`, its ToNumber, or under hint string its
+//                ToString (String(o), light-cljs-832), before the next
+//                operand converts); then the frame pops and the operation below,
 //                whose pc was left at its own step, runs again on
 //                primitives. Nothing it completed runs twice.
 //   Setter       [[Set]] through an accessor's setter (light-cljs-787):
@@ -413,7 +415,7 @@ root struct Heap {
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, numeric: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 } }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 } }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -565,7 +567,7 @@ fn instruction(op: Op) -> Ins {
         opcode::PendingThrow, opcode::PendingException, opcode::PendingCancel => Ins.Pending { what: op.code as u8 },
         opcode::Typeof => Ins.TypeOf, opcode::ToString => Ins.ToString, opcode::ForInStart => Ins.ForInStart, opcode::ForInNext => Ins.ForInNext, opcode::OwnKeys => Ins.OwnKeys, opcode::IsEnumerable => Ins.IsEnumerable, opcode::CopyDataProperties => Ins.CopyData, opcode::ToPropertyKey => Ins.ToPropertyKey, opcode::RequireCoercible => Ins.RequireCoercible,
         opcode::GeneratorStart => Ins.GeneratorStart, opcode::GeneratorInitialYield => Ins.GeneratorInitialYield, opcode::GeneratorYield => Ins.GeneratorYield, opcode::AsyncStart => Ins.AsyncStart, opcode::Await => Ins.Await,
-        opcode::GetNewTarget => Ins.NewTarget,
+        opcode::GetNewTarget => Ins.NewTarget, opcode::ToObject => Ins.ToObject,
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -1485,17 +1487,43 @@ fn materialize_function(heap: Heap&, o: i64) -> bool {
     if heap.fault != Fault.None || ordinary && !add_own(heap, p.id(), constructor, object(o), attr_writable() | attr_configurable()) { return false; }
     return add_own(heap, o, prototype, p, attr_writable());
 }
+// Primitive wrapper objects (light-cljs-832; decision 2): kind 22, whose
+// `value` is the number, string or boolean it wraps ([[NumberData]],
+// [[StringData]], [[BooleanData]]) and whose own properties are an ordinary
+// object's, without an element run. A String object is exotic
+// (ECMAScript 10.4.3): its `length` (non-writable, non-enumerable,
+// non-configurable) and each index below it (an enumerable, non-writable,
+// non-configurable one-unit string) are own properties read from the
+// string, never stored. string_key: whether interned key k is one of them,
+// and which (-1 for `length`, else the index).
+fn string_key(heap: Heap&, o: i64, k: Value) -> bool, i64 {
+    let s = node(heap, o).value;
+    if !s.is_string() || !k.is_string() { return false, 0; }
+    if key_is(heap, k, "length") { return true, -1; }
+    let i = index(heap, k);
+    return i >= 0 && i < str_len(heap, s), i;
+}
 // [[GetOwnProperty]] by object kind (interned key k): ordinary objects their
 // shapes or records; arrays their writable, non-enumerable, non-configurable
 // `length`, their elements and their named properties (light-cljs-805: shape
 // keys of a dense array, records of a dictionary array); read-only unmapped
 // arguments their `length` and indices; closures their own properties (see
 // above) and, failing those, `call` (Function.prototype's, until the realm),
-// built-ins only `call`. Every other kind fails UnsupportedOperand: it is
+// built-ins only `call`; primitive wrappers (kind 22) their ordinary
+// properties and, for a String object, its exotic `length` and indices
+// first (string_key). Every other kind fails UnsupportedOperand: it is
 // not implemented yet.
 fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
     let o: i64 = object.id();
     match node(heap, o).kind {
+        22 => {
+            let exotic, i = string_key(heap, o, k);
+            if heap.fault != Fault.None { return Own {}; }
+            if !exotic { return find_own(heap, o, k); }
+            let s = node(heap, o).value;
+            if i < 0 { return Own { found: true, value: number(str_len(heap, s)), attrs: 0 }; }
+            return Own { found: true, index: i, value: unit_string(heap, s, i), attrs: attr_enumerable() };
+        },
         0, 13, 20, 21 => {
             if node(heap, o).count > 0 {
                 let i = element_key(heap, k);
@@ -1606,6 +1634,11 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
         2 => {
             if !function_key(heap, o, k) || lazy_change(heap, o) { return Value.Undefined, false; }
         },
+        // A String object's `length` and indices are not writable.
+        22 => {
+            let exotic, i = string_key(heap, o, k);
+            if heap.fault != Fault.None || exotic { return Value.Undefined, false; }
+        },
         _ => { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; },
     }
     // An element is a writable data property (light-cljs-804); only an
@@ -1656,6 +1689,16 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
         if !function_key(heap, o, k) || lazy_change(heap, o) { return false; }
         return define_own(heap, o, k, value, attrs, half);
     }
+    if kind == 22 {
+        // A String object's `length` and indices are non-configurable and
+        // non-writable: only a definition that changes nothing is accepted
+        // (ValidateAndApplyPropertyDescriptor).
+        let exotic, i = string_key(heap, o, k);
+        if heap.fault != Fault.None { return false; }
+        if !exotic { return define_own(heap, o, k, value, attrs, half); }
+        let p = own_entry(heap, object, k);
+        return heap.fault == Fault.None && half == 0 && attrs == p.attrs && same_value(heap, p.value, value);
+    }
     if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; }
     return false;
 }
@@ -1690,6 +1733,11 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
             }
             return function_key(heap, o, k) && delete_own(heap, o, k);
         },
+        // A String object's `length` and indices are non-configurable.
+        22 => {
+            let exotic, i = string_key(heap, o, k);
+            return heap.fault == Fault.None && !exotic && delete_own(heap, o, k);
+        },
         _ => { heap.fault = Fault.UnsupportedOperand; return false; },
     }
 }
@@ -1700,13 +1748,14 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
 // object's elements (light-cljs-804) are index keys like its index-keyed
 // shape keys; a closure's are its own properties in creation order, `length`,
 // `name` and `prototype` first (light-cljs-806), except a class constructor's
-// or a generator's. Other kinds fail UnsupportedOperand. Index keys of elements are
+// or a generator's; a String object's indices first and then `length`
+// (light-cljs-832). Other kinds fail UnsupportedOperand. Index keys of elements are
 // interned strings the call creates. own_property_keys gives each key's
 // attribute bits and array index (-1 for a name or symbol) too.
 struct OwnKey { key: Value, attrs: u8 = 0, index: i64 = -1 }
 fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 20 && kind != 21 || kind == 2 && unsupported_prototype(heap, o) { heap.fault = Fault.UnsupportedOperand; return false; }
+    if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 20 && kind != 21 && kind != 22 || kind == 2 && unsupported_prototype(heap, o) { heap.fault = Fault.UnsupportedOperand; return false; }
     // A lazy closure's are `length`, `name` and, for an ordinary function,
     // `prototype`, not yet made (light-cljs-806).
     if kind == 2 && lazy_function(heap, o) {
@@ -1743,8 +1792,16 @@ fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     var indices: OwnKey[>..] = [];
     for e in keys { if e.index >= 0 { indices.push(e); } }
     stable_sort(indices) { a, b => a.index < b.index };
+    // A String object's indices come before its other index keys, and its
+    // `length` before its other names (StringExoticObject [[OwnPropertyKeys]]).
+    let wrapped = if kind == 22 { node(heap, o).value } else { Value.Undefined };
+    if wrapped.is_string() {
+        let n = str_len(heap, wrapped);
+        if !charge(heap, n) { return false; }
+        for i in n { out.push(OwnKey { key: index_key(heap, i), attrs: attr_enumerable(), index: i }); }
+    }
     out.append(indices);
-    if kind == 1 { let length = text(heap, "length"); out.push(OwnKey { key: intern(heap, length), attrs: attr_writable() }); }
+    if kind == 1 || wrapped.is_string() { let length = text(heap, "length"); out.push(OwnKey { key: intern(heap, length), attrs: if kind == 1 { attr_writable() } else { 0 } }); }
     for e in keys { if e.key.is_string() && e.index < 0 { out.push(e); } }
     for e in keys { if e.key.is_symbol() { out.push(e); } }
     return heap.fault == Fault.None;
@@ -2661,7 +2718,7 @@ fn native_step(job: Job&) {
     match frame.native {
         MapSeq => { map_seq_step(job, frame); },
         Mapv => { mapv_step(job, frame); },
-        Convert c => { convert_step(job, frame, c.hint, c.numeric, c.count, c.method); },
+        Convert c => { convert_step(job, frame, c.hint, c.finish, c.count, c.method); },
         // The setter returned: drop its value, deliver the assignment's.
         Setter => { job.operands.pop(); finish_native(job, frame, frame.output); },
         CopyData => { copy_step(job, frame); },
@@ -2739,24 +2796,34 @@ fn finish_native(job: Job&, frame: Frame, result: Value) {
 }
 // Whether an operand converts through ToPrimitive (light-cljs-828): an object
 // with a prototype chain, ordinary objects, arrays, closures, built-in
-// functions, errors, generators and promises (the kinds lookup reads). The
-// light-cljs runtime kinds (forms, cells, cursors, key lists) do not: an
-// operator on one fails by name as before, and a scalar form (kind 11) is
-// its primitive.
+// functions, errors, generators, promises and primitive wrappers (the kinds
+// lookup reads). The light-cljs runtime kinds (forms, cells, cursors, key
+// lists) do not: an operator on one fails by name as before, and a scalar
+// form (kind 11) is its primitive.
 fn convertible(heap: const Heap&, v: Value) -> bool {
     if !v.is_object() { return false; }
     let kind = node(heap, v.id()).kind;
-    return kind == 0 || kind == 1 || kind == 2 || kind == 4 || kind == 13 || kind == 20 || kind == 21;
+    return kind == 0 || kind == 1 || kind == 2 || kind == 4 || kind == 13 || kind == 20 || kind == 21 || kind == 22;
+}
+// Whether call or construction of f with arguments `args` converts the
+// first argument first, and with which hint (light-cljs-832): Number(o) and
+// String(o) of an object run its ToPrimitive (hint number; hint string, then
+// ToString) in a Convert frame, and the call runs again on the primitive.
+fn argument_converts(heap: const Heap&, f: Value, args: const Value[:]) -> bool, Hint {
+    if args.len == 0 || !convertible(heap, args[0]) || !f.is_object() || f.id() >= heap.nodes.len || node(heap, f.id()).kind != 4 { return false, Hint.Default; }
+    let b = builtin_of(heap, f.id());
+    return b == Builtin.Number || b == Builtin.String, if b == Builtin.String { Hint.String } else { Hint.Number };
 }
 // Start the resumable ToPrimitive with `hint` of the `count` operands whose
 // first lies `depth` below the operand top (Native.Convert): a native frame
 // above the operation's, which converts them in place, left to right, and
 // pops, so the operation, its pc left at its own step, runs again on
-// primitives. With `numeric` each primitive also takes ToNumber before the
-// next operand converts (ToNumberPair, the unary operators, a length).
-fn start_convert(job: Job&, hint: Hint, numeric: bool, count: i64, depth: i64) {
+// primitives. With `finish` each primitive also takes ToNumber before the
+// next operand converts (ToNumberPair, the unary operators, a length), or
+// under hint string ToString (String(o) and new String(o), light-cljs-832).
+fn start_convert(job: Job&, hint: Hint, finish: bool, count: i64, depth: i64) {
     if job.frames.len >= job.heap.limits.frames { job.heap.fault = Fault.StackLimit; return; }
-    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: job.operands.len, callee: Value.Undefined, receiver: Value.Undefined, argument_count: depth, native: Native.Convert { hint: hint, numeric: numeric, count: count as u8, method: 0 } });
+    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: job.operands.len, callee: Value.Undefined, receiver: Value.Undefined, argument_count: depth, native: Native.Convert { hint: hint, finish: finish, count: count as u8, method: 0 } });
 }
 // Whether a binary operator's operands convert first: `+` and the
 // relational operators convert both, in source order (binary_hint);
@@ -2823,7 +2890,7 @@ fn holds_string(heap: const Heap&, v: Value) -> bool {
 // by name, as does a built-in getter or a built-in that needs a native
 // frame or a host effect. Operands that need no conversion are left for
 // the operation, except that with `numeric` each takes ToNumber in turn.
-fn convert_step(job: Job&, frame: Frame, hint: Hint, then_number: bool, count: u8, method: u8) {
+fn convert_step(job: Job&, frame: Frame, hint: Hint, finish: bool, count: u8, method: u8) {
     let heap .= job.heap; let at = job.frames.len - 1;
     if frame.index >= count {
         // Every operand is primitive: the operation below runs again.
@@ -2838,14 +2905,14 @@ fn convert_step(job: Job&, frame: Frame, hint: Hint, then_number: bool, count: u
         job.frames[at].pc = 0;
         if result.is_object() {
             if method == 0 { type_error(job, "cannot convert object to primitive value"); return; }
-            job.frames[at].native = Native.Convert { hint: hint, numeric: then_number, count: count, method: method + 1 };
+            job.frames[at].native = Native.Convert { hint: hint, finish: finish, count: count, method: method + 1 };
             return;
         }
-        converted(job, at, slot, result, hint, then_number, count);
+        converted(job, at, slot, result, hint, finish, count);
         return;
     }
     let v = job.operands[slot];
-    if !convertible(heap, v) { converted(job, at, slot, v, hint, then_number, count); return; }
+    if !convertible(heap, v) { converted(job, at, slot, v, hint, finish, count); return; }
     if method >= 3 { type_error(job, "cannot convert object to primitive value"); return; }
     var m = Value.Undefined;
     if frame.pc == 2 { m = job.operands.pop(); job.frames[at].pc = 0; }
@@ -2860,7 +2927,7 @@ fn convert_step(job: Job&, frame: Frame, hint: Hint, then_number: bool, count: u
         }
         m = value;
     }
-    let next = Native.Convert { hint: hint, numeric: then_number, count: count, method: method + 1 };
+    let next = Native.Convert { hint: hint, finish: finish, count: count, method: method + 1 };
     if method == 0 {
         // GetMethod: undefined or null is no method; anything else must be
         // callable.
@@ -2886,18 +2953,24 @@ fn conversion_call(job: Job&, at: i64, m: Value, v: Value, args: const Value[:])
     if heap.fault == Fault.None { job.operands.push(r); }
 }
 // Operand `slot` of the frame at `at` is primitive value p: it replaces the
-// operand (with `numeric`, as its ToNumber, a symbol's TypeError named here,
-// since this frame names no instruction) and the next operand converts.
-fn converted(job: Job&, at: i64, slot: i64, p: Value, hint: Hint, then_number: bool, count: u8) {
+// operand (with `finish`, as its ToString under hint string and otherwise
+// its ToNumber, a symbol's TypeError named here, since this frame names no
+// instruction) and the next operand converts.
+fn converted(job: Job&, at: i64, slot: i64, p: Value, hint: Hint, finish: bool, count: u8) {
     let heap .= job.heap;
-    if then_number && !p.is_number() {
+    if finish && hint == Hint.String && !p.is_string() {
+        let s = to_string(heap, p);
+        if heap.fault == Fault.TypeError && job.detail.len == 0 { for ch in "Cannot convert a Symbol value to a string" { job.detail.push(ch); } }
+        if heap.fault != Fault.None { return; }
+        job.operands[slot] = s;
+    } else if finish && hint != Hint.String && !p.is_number() {
         let n = numeric(heap, p);
         if heap.fault == Fault.TypeError && job.detail.len == 0 { for ch in "Cannot convert a Symbol value to a number" { job.detail.push(ch); } }
         if heap.fault != Fault.None { return; }
         job.operands[slot] = number(n);
     } else { job.operands[slot] = p; }
     job.frames[at].index += 1;
-    job.frames[at].native = Native.Convert { hint: hint, numeric: then_number, count: count, method: 0 };
+    job.frames[at].native = Native.Convert { hint: hint, finish: finish, count: count, method: 0 };
 }
 // The dispatch loop runs the active frame in place (light-cljs-801): its
 // function, pc, local and operand bases are locals for the whole loop, not a
@@ -3384,11 +3457,22 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 // map demand); every other callee takes construct.
                 Construct c => {
                     settle(job, ran, used);
-                    if constructible(heap, job.operands[job.operands.len - c.argc - 1]) { if !invoke(job, top, at, c.argc, false) { break; } }
+                    let callee = job.operands[job.operands.len - c.argc - 1];
+                    // new Number(o), new String(o): the construction runs
+                    // again on the primitive (light-cljs-832).
+                    let converts, hint = argument_converts(heap, callee, job.operands[(job.operands.len - c.argc)..]);
+                    if constructible(heap, callee) { if !invoke(job, top, at, c.argc, false) { break; } }
+                    else if converts { job.frames[top].pc = at; start_convert(job, hint, hint == Hint.String, 1, c.argc); in_place(job, top, at); break; }
                     else { job.frames[top].pc = pc; construct(job, c.argc); if !in_place(job, top, at) { break; } }
                     left = fuel(job, allowance, used);
                 },
                 NewTarget => { job.operands.push(job.frames[top].input); },
+                ToObject => {
+                    settle(job, ran, used); job.frames[top].pc = pc;
+                    let v = job.operands.pop(); job.operands.push(to_object(job, v));
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
             }
         }
         // A fault an arm raised on its own counts its instruction, as before:
@@ -3408,7 +3492,10 @@ fn execute(job: Job&, allowance: i64) -> i64 {
 // substitutes it for a non-object return value. Object, Array, Function and
 // the Error constructors construct as their call (call_builtin), which is
 // their [[Construct]] when new.target is the constructor itself, as it is
-// for `new`: their prototypes are the realm's. Not constructors, a catchable
+// for `new`: their prototypes are the realm's. Number, String and Boolean
+// make a wrapper object of their conversion (construct_wrapper,
+// light-cljs-832; an object argument converted first, in the dispatch
+// loop's Convert frame). Not constructors, a catchable
 // TypeError: primitives, objects without [[Call]], the light-cljs runtime
 // kinds, arrows, methods, accessors, generator and async functions, and the
 // realm's other built-ins (Symbol's [[Construct]] throws). Failing by name
@@ -3440,9 +3527,14 @@ fn construct(job: Job&, argc: i64) {
             let value = call_builtin(job, node(heap, f.id()).function, Value.Undefined, job.operands[(base + 1)..]);
             job.operands.resize(base); job.operands.push(value);
         },
+        Number, String, Boolean => {
+            let value = construct_wrapper(job, b, job.operands[(base + 1)..]);
+            job.operands.resize(base); job.operands.push(value);
+        },
         FunctionPrototype, ObjectGetPrototypeOf, ObjectIs, ObjectHasOwn, ObjectPrototypeHasOwnProperty, ObjectPrototypeValueOf, ObjectPrototypeToString,
         ArrayIsArray, ErrorPrototypeToString, SymbolFunction, ObjectGetOwnPropertyDescriptor, FunctionPrototypeCall, ArrayPrototypeMap, ArrayPrototypeForEach,
-        GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, IteratorPrototypeIterator, Eval => { heap.fault = Fault.TypeError; },
+        GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, IteratorPrototypeIterator, Eval,
+        NumberPrototypeValueOf, NumberPrototypeToString, StringPrototypeValueOf, StringPrototypeToString, BooleanPrototypeValueOf, BooleanPrototypeToString => { heap.fault = Fault.TypeError; },
         _ => { unsupported_step(job, b, "construct"); },
     }
 }
@@ -3518,6 +3610,9 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
     if kind == 4 {
         let id = node(heap, callee.id()).function;
         let args = job.operands[first..];
+        let converts, hint = argument_converts(heap, callee, args);
+        // Number(o), String(o): the call runs again on the primitive.
+        if converts { job.frames[top].pc = at; start_convert(job, hint, hint == Hint.String, 1, args.len); return; }
         if id == 2 && args.len == 2 {
             if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; }
             else {
