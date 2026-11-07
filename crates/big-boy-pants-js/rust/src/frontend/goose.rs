@@ -831,6 +831,26 @@ mod serial_tests {
     #[test]
     fn source_cases_export_and_match_reference_engines() {
         use crate::{RunOutcome, Runtime, ValueView, VmErrorKind};
+        fn outcome(outcome: RunOutcome) -> String {
+            match outcome {
+                RunOutcome::Complete(value) => match value.view() {
+                    ValueView::Undefined => "undefined:undefined".into(),
+                    ValueView::Bool(b) => format!("boolean:{b}"),
+                    ValueView::Number(n) if n == 0.0 && n.is_sign_negative() => "number:-0".into(),
+                    ValueView::Number(n) => format!("number:{n}"),
+                    ValueView::String => {
+                        format!("string:{}", value.string().unwrap().to_string_lossy())
+                    }
+                    other => panic!("unexpected {other:?}"),
+                },
+                RunOutcome::Failed(error) => match error.kind() {
+                    VmErrorKind::ReferenceError => "exception:ReferenceError".into(),
+                    VmErrorKind::TypeError => "exception:TypeError".into(),
+                    other => panic!("unexpected {other:?}"),
+                },
+                other => panic!("unexpected {other:?}"),
+            }
+        }
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../corpus/serial");
         let regenerate = std::env::var_os("GOOSE_REGENERATE").is_some();
         let schema = root
@@ -962,32 +982,55 @@ mod serial_tests {
                     "{name}"
                 );
             }
-            let rt = Runtime::new();
             let executable = crate::frontend::compile_function(&source).unwrap();
-            let actual = match rt.spawn(&executable, &[]).unwrap().run().unwrap() {
-                RunOutcome::Complete(value) => match value.view() {
-                    ValueView::Undefined => "undefined:undefined".into(),
-                    ValueView::Bool(b) => format!("boolean:{b}"),
-                    ValueView::Number(n) if n == 0.0 && n.is_sign_negative() => "number:-0".into(),
-                    ValueView::Number(n) => format!("number:{n}"),
-                    ValueView::String => {
-                        format!("string:{}", value.string().unwrap().to_string_lossy())
-                    }
-                    other => panic!("unexpected {other:?}"),
-                },
-                RunOutcome::Failed(error) => match error.kind() {
-                    VmErrorKind::ReferenceError => "exception:ReferenceError".into(),
-                    VmErrorKind::TypeError => "exception:TypeError".into(),
-                    other => panic!("unexpected {other:?}"),
-                },
-                other => panic!("unexpected {other:?}"),
-            };
+            let actual = outcome(
+                Runtime::new()
+                    .spawn(&executable, &[])
+                    .unwrap()
+                    .run()
+                    .unwrap(),
+            );
+            assert_eq!(actual, expected, "{name}");
+        }
+        // Scripts (light-cljs-824): top-level declarations and global names,
+        // exported as the conformance harness exports a strict script. Run
+        // as they are, the Pants engine gives the expectation; Goose also
+        // runs them over global properties it installs first, and runs the
+        // "goose" case only that way (serial_tests.goose).
+        for (name, expected) in [
+            ("script-declarations", "boolean:true"),
+            ("script-setter", "goose"),
+            ("script-reserved-function", "number:1"),
+            ("script-reserved-let", "number:2"),
+            ("script-reserved-var", "boolean:false"),
+        ] {
+            let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
+            let export =
+                export_source(name, &source).unwrap_or_else(|error| panic!("{name}: {error}"));
+            let path = root.join(format!("{name}.gsp"));
+            if regenerate {
+                std::fs::write(path, &export.bytes).unwrap();
+            } else {
+                assert_eq!(std::fs::read(path).unwrap(), export.bytes, "{name}");
+            }
+            if expected == "goose" {
+                continue;
+            }
+            let executable = compile_script_with(name, &source, ScriptOptions::STRICT).unwrap();
+            let actual = outcome(
+                Runtime::new()
+                    .spawn(&executable, &[])
+                    .unwrap()
+                    .run()
+                    .unwrap(),
+            );
             assert_eq!(actual, expected, "{name}");
         }
         // Constructors and direct const writes now export (light-cljs-783):
-        // the Goose VM fails `construct` and `throw_error` by name when they
-        // run (serial_tests.goose). So does a direct eval (light-cljs-823):
-        // its call is marked, and the VM fails it as `direct_eval`.
+        // the Goose VM fails `construct` by name when it runs, and runs
+        // `throw_error` (light-cljs-824; serial_tests.goose). So does a
+        // direct eval (light-cljs-823): its call is marked, and the VM fails
+        // it as `direct_eval`.
         for (source, operation) in [
             ("function f() { return new Date(); }", "construct"),
             ("function f() { const x=1; x=2; return x; }", "throw_error"),

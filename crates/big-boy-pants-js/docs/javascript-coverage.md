@@ -1256,6 +1256,33 @@ constructors, `globalThis`, `NaN`, `Infinity` and `undefined`.
   instruction (`not a function`, `stack overflow`). Uncaught, it still
   reports its fault; an error JavaScript made (`TypeError("m")`, called as a
   function) is a thrown value. `typeof` (opcode 78) is implemented here.
+- *Script declarations and global names* (light-cljs-824). Every global
+  opcode runs (`Ins.GlobalOp`, `global_op` in `source_vm.goose`), with the
+  Pants engine's semantics (`vm/dispatch.rs` global_step, `realm.rs`
+  declare_global_with and check_global_declaration). The object record is
+  the global object, read and written on every access, so accessors (a
+  getter as a frame, a setter in a `Setter` native frame) and later
+  redefinitions are seen. The declarative record is `Job.lexicals`: a
+  dictionary-mode node the job allocates, one record per script `let`,
+  `const` or `class` name whose value is the binding's cell and whose
+  writable attribute marks `let`; a job state field, so the reset drops it,
+  and a suspended compiler job's continuation keeps its row
+  (`compiler_session.goose` Saved). `GetGlobal` reads it first (an
+  uninitialized binding is a ReferenceError, also under `typeof`), then the
+  global object. The declaration checks are a catchable SyntaxError
+  (`Fault.SyntaxError`, new here): a var or function name a lexical holds,
+  a lexical over a non-configurable global property, a function over a
+  non-configurable property that is not a writable enumerable data
+  property; every global object is extensible until
+  `Object.preventExtensions` exists. `ThrowError` (42) raises its
+  `ThrowKind` error with the Pants engine's message, naming the binding
+  from the instruction's source span. In a compiler job, whose global object
+  is protected, every one of these faults `NativeBoundary` before it
+  changes anything, so no compiler script declares a binding and its
+  `GetGlobal` keeps the protected path. The checks have no harness slice:
+  the Pants engine reserves `undefined`, `NaN` and `Infinity` at compile
+  time where QuickJS throws at run time, so `serial_tests.goose` checks them
+  over global properties it installs.
 - *Compiler jobs.* The realm rows are image rows below `Job.owned_nodes`, so
   a job's write into an intrinsic (`Array.prototype.leak = 1`) faults
   `NativeBoundary` before it mutates (decision 3, light-cljs-797), and its
@@ -1413,6 +1440,12 @@ for the runner (main 59 data stacks plus 1 global stack, `run_worker` 53,
 A recursion of 9,999 frames above the entry frame runs in the dispatch loop
 without native recursion (`corpus/serial/depth.js`, `serial_tests.goose`),
 so the JavaScript depth limit is independent of the 8 MB native stack.
+
+With script declarations and global names (light-cljs-824), `goose check
+--stacks` is unchanged from master: the runner's main program 93 data
+stacks plus 1 global stack, `run_worker` 90, `preparer` 71,
+`profile_restore` 27, `cell_owner` 9, `input` 4, `supervise` 2 (thread cap
+180), and the conformance runner 72 plus 1.
 
 The conformance harness (light-cljs-782, decision 7) runs one Goose runner
 process per case, `src/conformance.goose`, at most `--jobs` (default 4) at

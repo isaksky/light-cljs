@@ -54,6 +54,10 @@ struct Saved {
     // The job's promise jobs (light-cljs-790; source::Job.queue and the rest):
     // its suspended activations are rows of `heap`.
     queue: source::Task[] = [], queue_head: i64 = 0, draining: bool = false, entry: source::Value = source::Value.Undefined, rejections: u32[] = [],
+    // The job's global lexical record (source::Job.lexicals, light-cljs-824),
+    // a row of `heap`. A compiler job's scripts declare no bindings (their
+    // global object is protected), so it is Undefined there today.
+    lexicals: source::Value = source::Value.Undefined,
 }
 // The compiler's commands on stdin (light-cljs-816), one line each:
 //   `C id definition bytes` or `C id definition bytes prefix next`, then
@@ -294,7 +298,7 @@ fn save(job: source::Job&, rt: source::Value, call: source::Value, control: brid
     // The continuation carries the job's delay claims; this worker no longer does.
     let claims = job.claims; job.claims = 0;
     assert(source::retire(job, true)); var c = snapshot::Control {}; let heap = snapshot::capture(job.heap, [snapshot::Binding { id: 0, generation: 1, value: rt }, snapshot::Binding { id: 1, generation: 1, value: call }], c, checkpoint); assert(c.error == snapshot::Error.None);
-    return Saved { heap: copy(heap), writes: copy(job.writes), steps: job.steps, args: job.effect_args, frame: job.effect_frame, bridge: control, sequence: sequence, costs: costs, protected: job.protected_nodes, gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next, owned: job.owned_nodes, foreign: copy(job.foreign), cell_rows: copy(job.cell_rows), claims: claims, stack: stack as u32, queue: copy(job.queue), queue_head: job.queue_head, draining: job.draining, entry: job.entry, rejections: copy(job.rejections) }, true;
+    return Saved { heap: copy(heap), writes: copy(job.writes), steps: job.steps, args: job.effect_args, frame: job.effect_frame, bridge: control, sequence: sequence, costs: costs, protected: job.protected_nodes, gensym_prefix: copy(job.gensym_prefix), gensym_next: job.gensym_next, owned: job.owned_nodes, foreign: copy(job.foreign), cell_rows: copy(job.cell_rows), claims: claims, stack: stack as u32, queue: copy(job.queue), queue_head: job.queue_head, draining: job.draining, entry: job.entry, rejections: copy(job.rejections), lexicals: job.lexicals }, true;
 }
 fn fail(id: i64, heap: source::Heap&, job: source::Job&, address: i64 = 0, timing: i64[4] = [0; 4]) {
     let pc = job.fault_pc; var start: i64 = -1; var end: i64 = -1;
@@ -496,7 +500,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
         // restored heap's rows by index).
         assert(source::resume_stack(job, saved.stack));
         job.writes.append(saved.writes);
-        for t in saved.queue { job.queue.push(t); } job.queue_head = saved.queue_head; job.draining = saved.draining; job.entry = saved.entry; for r in saved.rejections { job.rejections.push(r); } job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = 9; job.effect_count = 3; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
+        for t in saved.queue { job.queue.push(t); } job.queue_head = saved.queue_head; job.draining = saved.draining; job.entry = saved.entry; for r in saved.rejections { job.rejections.push(r); } job.lexicals = saved.lexicals; job.steps = saved.steps; job.registered = true; heap.live_jobs += 1; job.effect_pending = true; job.effect_kind = 9; job.effect_count = 3; job.effect_frame = saved.frame; for v, i in saved.args { job.effect_args[i] = v; }
         // Mode 4: the session was cancelled while this continuation waited;
         // or it was cancelled while this resume was queued (light-cljs-803).
         // Its finally blocks run under its limits; nothing is published.

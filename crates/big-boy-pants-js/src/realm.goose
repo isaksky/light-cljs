@@ -381,7 +381,7 @@ fn boot_runtime(heap: Heap&) -> Value {
 }
 
 // The error type (ERROR_NAMES) a catchable fault raises.
-fn fault_type(fault: Fault) -> i64 { return match fault { TypeError => 5, ReferenceError => 3, RangeError => 2, StackLimit => 7, _ => 0 }; }
+fn fault_type(fault: Fault) -> i64 { return match fault { TypeError => 5, ReferenceError => 3, RangeError => 2, SyntaxError => 4, StackLimit => 7, _ => 0 }; }
 // An error object (kind 13): `code` is error_code of the VM fault it was
 // raised for, 0 for one JavaScript made; its prototype is its type's.
 fn error_object(heap: Heap&, t: i64, code: u32, message: Value) -> Value {
@@ -402,6 +402,7 @@ fn fault_message(job: Job&, fault: Fault, frame: Frame) -> Value {
         RangeError => "invalid array length",
         ReferenceError => if op >= 48 && op <= 50 { "lexical variable is not initialized" } else { "variable is not defined" },
         TypeError => match op { 44, 83 => "not a function", 79, 90 => "cannot read property of undefined or null", 80, 91, 151, 152 => "cannot set property", 98 => "invalid 'in' operand", _ => "invalid operand" },
+        SyntaxError => "invalid global declaration",
         _ => "host effect failed",
     };
     return text(heap, words);

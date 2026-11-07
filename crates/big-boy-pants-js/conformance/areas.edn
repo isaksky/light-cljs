@@ -62,6 +62,12 @@
   "bbp/function_name_length" {:area :functions-scope}
   "bbp/function_properties_prototype" {:area :functions-scope}
   "bbp/generator_finally" {:area :generators-async}
+  "bbp/global_const_assignment" {:area :functions-scope}
+  "bbp/global_let_not_property" {:area :functions-scope}
+  "bbp/global_let_tdz" {:area :functions-scope}
+  "bbp/global_var_function_properties" {:area :functions-scope}
+  "bbp/sloppy_implicit_global_delete" {:area :functions-scope :mode :sloppy}
+  "bbp/strict_unresolvable_assignment" {:area :functions-scope}
   "bbp/getter_only_strict" {:area :objects-classes}
   "bbp/index_keys_order" {:area :objects-classes}
   "bbp/object_rest_spread" {:area :objects-classes}

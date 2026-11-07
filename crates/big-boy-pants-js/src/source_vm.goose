@@ -180,6 +180,14 @@ enum Ins {
     // any other callee is an ordinary call, which for the unimplemented
     // spread calls fails Unsupported naming their opcode.
     DirectEval { argc: u32, method: bool, spread: bool },
+    // Script declarations and global names (light-cljs-824, global_op), `op`
+    // the opcode and `k` its name constant: PutGlobal (108), PutGlobalStrict
+    // (150), DeclareGlobalVar (109), DeclareGlobalFunction (110),
+    // DeclareGlobalLet (137), DeclareGlobalConst (138), InitGlobalLexical
+    // (139), CheckGlobalVar (140), CheckGlobalFunction (141), DeleteGlobal
+    // (142), DeclareGlobalConstValue (143) and CheckGlobalLexicalConflict
+    // (144). ThrowError (42): the compiler's static throw of ThrowKind `kind`.
+    GlobalOp { op: u8, k: u32 }, ThrowError { kind: u8 },
 }
 // The row's stack effect from the generated registry table, resolved once at
 // decode (-1 marks a row the table refuses; load never admits one).
@@ -197,14 +205,15 @@ root struct Code {
 }
 // Unsupported: an exported opcode (or constant kind) this VM does not
 // implement ran; Job.fault_opcode names it. Like every fault except the
-// TypeError, ReferenceError, RangeError, HostEffect and StackLimit throws
-// (catchable(), light-cljs-786), JavaScript cannot catch it. Cancelled: the job's consumer
+// TypeError, ReferenceError, RangeError, SyntaxError, HostEffect and StackLimit throws
+// (catchable(), light-cljs-786), JavaScript cannot catch it. SyntaxError is
+// a script declaration's run-time check (light-cljs-824, global_op). Cancelled: the job's consumer
 // cancelled it (cancel()); its finally blocks ran first. UnhandledRejection
 // and Unsettled end a job whose promise jobs have drained (light-cljs-790,
 // continuations.goose): a promise was rejected with no reaction, the
 // result its thrown value; or the entry returned a promise that can never
 // settle, since nothing is left to run.
-enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed, EffectContract, HostEffect, Unsupported, Cancelled, RangeError, UnhandledRejection, Unsettled }
+enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLimit, StackLimit, TypeError, ReferenceError, ConstAssignment, UnsupportedOperand, NativeBoundary, DependencyNeed, EffectContract, HostEffect, Unsupported, Cancelled, RangeError, UnhandledRejection, Unsettled, SyntaxError }
 // Table limits count the rows a heap added above its image (Heap.image),
 // not table lengths (light-cljs-792 constraint 4); each table checks its limit
 // in its one allocation function. The call limits are the Pants engine's
@@ -396,11 +405,18 @@ root struct Job {
     fault:    Fault                      = Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1, fault_opcode: i64 = -1, thrown: bool = false,
     // The Unsupported fault is a direct eval of %eval% (Ins.DirectEval,
     // light-cljs-823), named `direct_eval` instead of its call opcode.
-    direct_eval:     bool = false,
-    steps:           i64  = 0, claimed: bool = false, registered: bool = false,
-    effects_enabled: bool = false, effect_pending: bool = false, effect_kind: i64 = -1,
-    helpers_enabled: bool = false,
-    protected_nodes: i64  = 0,
+    direct_eval: bool = false,
+    // The script's global lexical record (light-cljs-824): a dictionary-mode
+    // node the job allocated by its first DeclareGlobalLet, DeclareGlobalConst
+    // or DeclareGlobalConstValue, one record per script `let`, `const` or
+    // `class` binding, its value the binding's cell and its attributes
+    // writable for `let` (global_op); Undefined while the job has none.
+    // JavaScript never sees the node. The reset drops it with the rows.
+    lexicals:        Value = Value.Undefined,
+    steps:           i64   = 0, claimed: bool = false, registered: bool = false,
+    effects_enabled: bool  = false, effect_pending: bool = false, effect_kind: i64 = -1,
+    helpers_enabled: bool  = false,
+    protected_nodes: i64   = 0,
     // The job's write boundary (light-cljs-795, decision 3): node rows below
     // owned_nodes, and the [start, end) node ranges in foreign that
     // publications installed during the job, are rows the job did not
@@ -499,6 +515,8 @@ fn instruction(op: Op) -> Ins {
         95 => Ins.SetProto, 97 => Ins.Delete { strict: false }, 153 => Ins.Delete { strict: true }, 98 => Ins.In,
         161 => Ins.CheckValue, 86 => Ins.This { sloppy: true }, 145 => Ins.This { sloppy: false }, 105 => Ins.Global,
         106 => Ins.GetGlobal { k: a, throws: true }, 107 => Ins.GetGlobal { k: a, throws: false },
+        108, 109, 110, 137, 138, 139, 140, 141, 142, 143, 144, 150 => Ins.GlobalOp { op: op.code as u8, k: a },
+        42 => Ins.ThrowError { kind: if op.arg >= 0 && op.arg <= 4 { op.arg as u8 } else { 255 } },
         191 => Ins.Literal { kind: 5, count: a }, 192 => Ins.Literal { kind: 6, count: a },
         193 => Ins.Literal { kind: 7, count: a * 2 }, 195 => Ins.Literal { kind: 8, count: a },
         194 => Ins.Form { op: a },
@@ -1726,12 +1744,12 @@ fn unwind_natives(job: Job&, keep: i64) {
 // own `message`, whose `function` is error_code of the catchable fault it was
 // raised for, or 0 for one JavaScript made (Error(...)). Uncaught, a fault's
 // error reports that fault again; JavaScript's is a thrown value.
-fn error_code(fault: Fault) -> u32 { return match fault { TypeError => 1, ReferenceError => 2, HostEffect => 3, StackLimit => 4, RangeError => 5, _ => 0 }; }
-fn error_fault(code: i64) -> Fault { return match code { 1 => Fault.TypeError, 2 => Fault.ReferenceError, 3 => Fault.HostEffect, 4 => Fault.StackLimit, 5 => Fault.RangeError, _ => Fault.InvalidState }; }
+fn error_code(fault: Fault) -> u32 { return match fault { TypeError => 1, ReferenceError => 2, HostEffect => 3, StackLimit => 4, RangeError => 5, SyntaxError => 6, _ => 0 }; }
+fn error_fault(code: i64) -> Fault { return match code { 1 => Fault.TypeError, 2 => Fault.ReferenceError, 3 => Fault.HostEffect, 4 => Fault.StackLimit, 5 => Fault.RangeError, 6 => Fault.SyntaxError, _ => Fault.InvalidState }; }
 // The JavaScript error name of a catchable fault, as the Pants engine and
 // QuickJS name it (a call-depth or value-stack overflow is QuickJS's
 // InternalError "stack overflow").
-fn error_name(fault: Fault) -> const u8[:] { return match fault { TypeError => "TypeError", ReferenceError => "ReferenceError", RangeError => "RangeError", StackLimit => "InternalError", _ => "Error" }; }
+fn error_name(fault: Fault) -> const u8[:] { return match fault { TypeError => "TypeError", ReferenceError => "ReferenceError", RangeError => "RangeError", SyntaxError => "SyntaxError", StackLimit => "InternalError", _ => "Error" }; }
 fn catchable(fault: Fault) -> bool { return error_code(fault) != 0; }
 // Whether an exception raised now would reach a catch or finally block.
 fn catches(job: const Job&) -> bool {
@@ -1990,6 +2008,7 @@ fn reset(job: Job&) -> bool {
     job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0; job.detail.clear();
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
     job.queue.clear(); job.queue_head = 0; job.draining = false; job.entry = Value.Undefined; job.rejections.clear();
+    job.lexicals = Value.Undefined; job.direct_eval = false;
     return true;
 }
 // The write log holds named property writes only: the typed outcome's
@@ -2913,17 +2932,15 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 GetGlobal g => {
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let k = heap.constants[f.constants + g.k];
-                    var v, found = own_property(heap, heap.global, k);
                     // A compiler job's global names are the V8 build's; one
-                    // the image lacks is a boundary, never a ReferenceError. A
-                    // name the global object inherits (Object.prototype's) is
-                    // found there; a pending one fails by name.
-                    if !found && heap.fault == Fault.None {
-                        if job.protected_nodes > 0 { heap.fault = Fault.NativeBoundary; }
-                        else if has_property(heap, heap.global, intern(heap, k)) { v = get(heap, heap.global, k); }
-                        else if g.throws && heap.fault == Fault.None { not_defined(job, k); }
-                    }
-                    job.operands.push(v);
+                    // the image lacks is a boundary, never a ReferenceError.
+                    // Its scripts declare no bindings (global_op). Any other
+                    // job resolves the name (get_global).
+                    if job.protected_nodes > 0 {
+                        let v, found = own_property(heap, heap.global, k);
+                        if !found && heap.fault == Fault.None { heap.fault = Fault.NativeBoundary; }
+                        job.operands.push(v);
+                    } else { get_global(job, k, g.throws); }
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
@@ -3013,6 +3030,12 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 GeneratorYield => { settle(job, ran, used); job.frames[top].pc = pc; generator_yield(job, top, at); break; },
                 Await => { settle(job, ran, used); job.frames[top].pc = pc; await_value(job, top, at); break; },
                 Unsupported => { heap.fault = Fault.Unsupported; break; },
+                GlobalOp x => {
+                    settle(job, ran, used); job.frames[top].pc = pc; global_op(job, x.op, heap.constants[f.constants + x.k], f.strict);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
+                ThrowError t => { throw_error(job, t.kind, at); break; },
                 DirectEval c => {
                     // The callee sits below the arguments (a spread call's one
                     // packed array), above a method's receiver.
@@ -3172,6 +3195,219 @@ fn not_defined(job: Job&, k: Value) {
     job.detail.clear(); append_utf16(job.heap, k, job.detail);
     for c in " is not defined" { job.detail.push(c); }
     job.heap.fault = Fault.ReferenceError;
+}
+// A catchable `fault` whose message names global name k between `before`
+// and `after` (the Pants engine's wording).
+fn named_error(job: Job&, fault: Fault, before: const u8[:], k: Value, after: const u8[:]) {
+    job.detail.clear(); for c in before { job.detail.push(c); }
+    append_utf16(job.heap, k, job.detail);
+    for c in after { job.detail.push(c); }
+    job.heap.fault = fault;
+}
+// Script declarations and global name resolution (light-cljs-824): the
+// global environment of GlobalDeclarationInstantiation, as the Pants engine's
+// vm/dispatch.rs global_step and realm.rs declare_global_with and
+// check_global_declaration implement it, and QuickJS's
+// JS_CheckDefineGlobalVar, OP_get_var and OP_put_var. Its declarative record
+// is Job.lexicals; its object record is the global object, read and written
+// on every access, so accessors and later redefinitions are seen.
+//
+// A global object the job may not write (a compiler job's, Job.protected_nodes)
+// faults every one of these NativeBoundary before it changes anything, as a
+// property write into it does; a compiler job's script therefore never
+// declares a binding, and its GetGlobal keeps the compiler's own path.
+//
+// The record is a dictionary-mode node the job allocates: one record per
+// lexical name (interned key), its value the binding's cell (kind 3) and its
+// attributes writable for `let` and none for `const` and `class`. Its rows
+// are the job's, so a reused worker's reset drops it; a suspended compiler
+// job keeps the row ID in its continuation (compiler_session.goose Saved).
+fn lexical_entry(job: Job&, key: Value) -> Own {
+    if job.lexicals.tag() != 5 { return Own {}; }
+    return find_own(job.heap, job.lexicals.id(), key);
+}
+fn global_cell(heap: const Heap&, v: Value) -> bool { return v.tag() == 5 && v.id() < heap.nodes.len && node(heap, v.id()).kind == 3; }
+// GetGlobal (106) and GetGlobalOrUndefined (107, `typeof x`) where the job
+// may write the global object: a lexical binding first (uninitialized, a
+// ReferenceError even under `typeof`), then the global object's own or
+// inherited property, a getter running as a frame (get_property). A name
+// neither has is a ReferenceError, or undefined for `typeof`.
+fn get_global(job: Job&, k: Value, throws: bool) {
+    let heap .= job.heap;
+    let key = intern(heap, k);
+    if heap.fault != Fault.None { return; }
+    let lexical = lexical_entry(job, key);
+    if heap.fault != Fault.None { return; }
+    if lexical.found {
+        if !global_cell(heap, lexical.value) { heap.fault = Fault.InvalidState; return; }
+        let cell .= node(heap, lexical.value.id());
+        if !cell.initialized { named_error(job, Fault.ReferenceError, "cannot access '", key, "' before initialization"); return; }
+        job.operands.push(cell.value); return;
+    }
+    let own = own_entry(heap, heap.global, key);
+    if heap.fault != Fault.None { return; }
+    if own.found && !is_accessor(own.value) { job.operands.push(own.value); return; }
+    if !own.found && !has_property(heap, heap.global, key) {
+        if heap.fault != Fault.None { return; }
+        if throws { not_defined(job, key); return; }
+        job.operands.push(Value.Undefined); return;
+    }
+    job.operands.push(heap.global); get_property(job, key);
+}
+// Whether global property `own` refuses a function declaration over it
+// (CanDeclareGlobalFunction): a non-configurable property that is not a
+// writable, enumerable data property.
+fn refuses_function(own: Own) -> bool {
+    return own.found && own.attrs & attr_configurable() == 0 && (is_accessor(own.value) || own.attrs & attr_writable() == 0 || own.attrs & attr_enumerable() == 0);
+}
+// Register lexical binding `key` with `cell` (DeclareGlobalLet,
+// DeclareGlobalConst, DeclareGlobalConstValue): a SyntaxError for a name the
+// global object holds as a non-configurable property (HasRestrictedGlobalProperty)
+// or the record already holds.
+fn declare_lexical(job: Job&, key: Value, cell: Value, mutable: bool) {
+    let heap .= job.heap;
+    if !global_cell(heap, cell) { heap.fault = Fault.InvalidState; return; }
+    let own = own_entry(heap, heap.global, key);
+    if heap.fault != Fault.None { return; }
+    if own.found && own.attrs & attr_configurable() == 0 { named_error(job, Fault.SyntaxError, "cannot declare global lexical '", key, "'"); return; }
+    let prior = lexical_entry(job, key);
+    if heap.fault != Fault.None { return; }
+    if prior.found { named_error(job, Fault.SyntaxError, "global lexical '", key, "' is already declared"); return; }
+    if job.lexicals.tag() != 5 {
+        let record = allocate(heap, Node { kind: 0, initialized: true, proto: Value.Null });
+        if heap.fault != Fault.None { return; }
+        job.lexicals = record;
+    }
+    if !dict_append(heap, job.lexicals.id(), Property { key: key, value: cell, attrs: if mutable { attr_writable() } else { 0 } }) && heap.fault == Fault.None { memory(heap); }
+}
+// One GlobalOp instruction (Ins.GlobalOp) with name constant k, in a
+// function whose code is `strict` or not; the stack contracts are
+// rust/src/vm/instr.rs's.
+fn global_op(job: Job&, op: u8, k: Value, strict: bool) {
+    let heap .= job.heap;
+    if k.tag() != 4 { heap.fault = Fault.InvalidState; return; }
+    let g = heap.global;
+    if g.tag() != 5 || !writable(job, g.id()) { heap.fault = Fault.NativeBoundary; return; }
+    let key = intern(heap, k);
+    if heap.fault != Fault.None { return; }
+    match op {
+        // PutGlobal, PutGlobalStrict: v → v. A lexical binding is assigned
+        // (uninitialized, a ReferenceError; const, a TypeError); otherwise
+        // the global object's [[Set]], a setter running in a Setter native
+        // frame. Strict code assigning a name the global object lacks is a
+        // ReferenceError; sloppy code creates the property (writable,
+        // enumerable, configurable). A refused assignment is a TypeError in
+        // strict code and nothing in sloppy code (set_property).
+        108, 150 => {
+            let value = job.operands.pop();
+            let strict_put = strict || op == 150;
+            let lexical = lexical_entry(job, key);
+            if heap.fault != Fault.None { return; }
+            if lexical.found {
+                if !global_cell(heap, lexical.value) { heap.fault = Fault.InvalidState; return; }
+                if !node(heap, lexical.value.id()).initialized { named_error(job, Fault.ReferenceError, "cannot access '", key, "' before initialization"); return; }
+                if lexical.attrs & attr_writable() == 0 { named_error(job, Fault.TypeError, "assignment to constant variable '", key, "'"); return; }
+                if !writable(job, lexical.value.id()) { heap.fault = Fault.NativeBoundary; return; }
+                node_mut(heap, lexical.value.id()).value = value; job.operands.push(value); return;
+            }
+            if strict_put && !has_property(heap, g, key) { if heap.fault == Fault.None { not_defined(job, key); } return; }
+            job.operands.push(g); set_property(job, value, key, false, strict_put);
+        },
+        // DeclareGlobalVar: a var the global object lacks as an own property
+        // becomes one (writable, enumerable, not configurable); an existing
+        // one is kept, whatever it is.
+        109 => {
+            let own = own_entry(heap, g, key);
+            if heap.fault == Fault.None && !own.found && !add_own(heap, g.id(), key, Value.Undefined, attr_writable() | attr_enumerable()) && heap.fault == Fault.None { memory(heap); }
+        },
+        // DeclareGlobalFunction: the property the function's value is put
+        // into (PutGlobal follows): a new or configurable one becomes a
+        // writable, enumerable, non-configurable undefined; a
+        // non-configurable writable enumerable data property is kept; any
+        // other non-configurable property is a SyntaxError.
+        110 => {
+            let own = own_entry(heap, g, key);
+            if heap.fault != Fault.None { return; }
+            if refuses_function(own) { named_error(job, Fault.SyntaxError, "cannot declare global function '", key, "'"); return; }
+            if own.found && own.attrs & attr_configurable() == 0 { return; }
+            let attrs = attr_writable() | attr_enumerable();
+            let ok = if own.found { define_own(heap, g.id(), key, Value.Undefined, attrs) } else { add_own(heap, g.id(), key, Value.Undefined, attrs) };
+            if !ok && heap.fault == Fault.None { named_error(job, Fault.SyntaxError, "cannot declare global '", key, "'"); }
+        },
+        // DeclareGlobalLet, DeclareGlobalConst: cell → cell, the script's
+        // cell registered by name.
+        137, 138 => { declare_lexical(job, key, job.operands[job.operands.len - 1], op == 137); },
+        // InitGlobalLexical: value → (the registered cell initialized).
+        139 => {
+            let value = job.operands.pop();
+            let lexical = lexical_entry(job, key);
+            if heap.fault != Fault.None { return; }
+            if !lexical.found || !global_cell(heap, lexical.value) { heap.fault = Fault.InvalidState; return; }
+            if !writable(job, lexical.value.id()) { heap.fault = Fault.NativeBoundary; return; }
+            let cell .= node_mut(heap, lexical.value.id()); cell.value = value; cell.initialized = true;
+        },
+        // CheckGlobalVar, CheckGlobalFunction: before any declaration effect
+        // (CanDeclareGlobalVar, CanDeclareGlobalFunction). Every global
+        // object is extensible here (Object.preventExtensions is pending), so
+        // a var always can be declared.
+        140 => {},
+        141 => {
+            let own = own_entry(heap, g, key);
+            if heap.fault == Fault.None && refuses_function(own) { named_error(job, Fault.SyntaxError, "cannot declare global '", key, "'"); }
+        },
+        // DeleteGlobal (sloppy `delete x`): → bool, false for a lexical
+        // binding or a non-configurable property.
+        142 => {
+            let lexical = lexical_entry(job, key);
+            if heap.fault != Fault.None { return; }
+            let deleted = !lexical.found && delete_property(heap, g, key);
+            if heap.fault == Fault.None { job.operands.push(boolean(deleted)); }
+        },
+        // DeclareGlobalConstValue: a const the script keeps as a value gets
+        // its record's cell, uninitialized until InitGlobalLexical.
+        143 => {
+            let cell = allocate(heap, Node { kind: 3, immutable: true });
+            if heap.fault == Fault.None { declare_lexical(job, key, cell, false); }
+        },
+        // CheckGlobalLexicalConflict: a var or function name the record holds.
+        144 => {
+            let lexical = lexical_entry(job, key);
+            if heap.fault == Fault.None && lexical.found { named_error(job, Fault.SyntaxError, "global declaration conflicts with lexical '", key, "'"); }
+        },
+        _ => { heap.fault = Fault.InvalidState; },
+    }
+}
+// ThrowError (42): the compiler's static throw of ThrowKind `kind`, a
+// catchable error with the Pants engine's message (throw_message), naming
+// the binding from the instruction's source span when it is one identifier.
+fn throw_error(job: Job&, kind: u8, at: i64) {
+    let heap .= job.heap; let code .= heap.code;
+    var name: u8[>..] = [];
+    if at >= 0 && at < code.ops.len {
+        let op = code.ops[at];
+        if op.start >= 0 && op.start < op.end && op.end <= code.source_bytes.len && op.end - op.start <= 256 {
+            for b in code.source_bytes[op.start..op.end] {
+                if !(b == '_' || b == '$' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9') { name.clear(); break; }
+                name.push(b);
+            }
+        }
+    }
+    job.detail.clear();
+    let words: const u8[:] = match kind {
+        0 => if name.len > 0 { "" } else { "reference to an undeclared name" },
+        1 => if name.len > 0 { "cannot access '" } else { "binding accessed before initialization" },
+        2 => if name.len > 0 { "assignment to constant variable '" } else { "assignment to a constant variable" },
+        3 => "cannot delete a super property",
+        4 => "yield* delegate has no throw method",
+        _ => "",
+    };
+    for c in words { job.detail.push(c); }
+    if name.len > 0 && kind <= 2 {
+        for c in name { job.detail.push(c); }
+        let tail: const u8[:] = if kind == 0 { " is not defined" } else if kind == 1 { "' before initialization" } else { "'" };
+        for c in tail { job.detail.push(c); }
+    }
+    heap.fault = match kind { 0, 1, 3 => Fault.ReferenceError, 2, 4 => Fault.TypeError, _ => Fault.InvalidState };
 }
 // Whether the job allocated node row o (Job.owned_nodes), so JavaScript may
 // write it: not the realm, the restored image or definition, nor a

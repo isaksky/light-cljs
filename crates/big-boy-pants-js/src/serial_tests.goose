@@ -19,6 +19,8 @@ struct State {
     shapes:     u8[] = [], accessors: u8[] = [], keys: u8[] = [],
     // Continuations and promise jobs (light-cljs-790).
     conts: u8[] = [], queue: u8[] = [], draining: bool = false, entry: u8[] = [], handlers: u8[] = [],
+    // The global lexical record (light-cljs-824).
+    lexicals: u8[] = [],
 }
 fn state(a: source::Job&) -> State {
     return State {
@@ -27,6 +29,7 @@ fn state(a: source::Job&) -> State {
         nodes:      source::plain_rows(a.heap.nodes), values: source::plain_rows(a.heap.values), properties: source::plain_rows(a.heap.properties), units: copy(a.heap.units), latin1: copy(a.heap.latin1), identity: a.heap.identity, work: a.heap.work, heap_fault: a.heap.fault,
         shapes:     source::plain_rows(a.heap.shapes), accessors: source::plain_rows(a.heap.accessors), keys: str(bytes_of(a.heap.keys)),
         conts:      source::plain_rows(a.heap.conts), queue: source::plain_rows(a.queue[a.queue_head..]), draining: a.draining, entry: source::plain_rows([a.entry]), handlers: handler_rows(a.handlers),
+        lexicals:   source::plain_rows([a.lexicals]),
     };
 }
 fn handler_rows(handlers: const source::Handler[:]) -> u8[] {
@@ -47,7 +50,7 @@ fn same_state(a: const State&, b: const State&) {
     assert(a.values == b.values);
     assert(a.properties == b.properties);
     assert(a.shapes == b.shapes && a.accessors == b.accessors && a.keys == b.keys);
-    assert(a.conts == b.conts && a.queue == b.queue && a.draining == b.draining && a.entry == b.entry && a.handlers == b.handlers);
+    assert(a.conts == b.conts && a.queue == b.queue && a.draining == b.draining && a.entry == b.entry && a.handlers == b.handlers && a.lexicals == b.lexicals);
     assert(a.units[..] == b.units[..] && a.latin1[..] == b.latin1[..] && a.identity == b.identity && a.work == b.work && a.heap_fault == b.heap_fault);
 }
 struct Run { status: tiny::Status, steps: i64 }
@@ -58,10 +61,40 @@ fn latin1_state_check() {
     assert(thread_wait(thread_spawn_contained(latin1_state_differs, copy(a), copy(a))));
     assert(!thread_wait(thread_spawn_contained(latin1_state_differs, copy(a), copy(b))));
 }
-thread_fn check_run(bytes: u8[], expected: u8[], fault: source::Fault) {
+// Global properties a script case runs over (light-cljs-824), defined
+// before its job starts as Object.defineProperty would (the realm does not
+// implement it yet): 1, `probe`, a configurable, enumerable accessor of the
+// image's functions probeGet and probeSet; 2, `reserved` = 1, neither
+// writable, enumerable nor configurable; 3, `reserved` = 1, writable and
+// enumerable but not configurable.
+fn install(heap: source::Heap&, setup: i64) {
+    if setup == 0 { return; }
+    let global = heap.global.id();
+    if setup == 1 {
+        let k = source::key_named(heap, "probe"); let attrs = source::attr_enumerable() | source::attr_configurable();
+        assert(source::define_own(heap, global, k, source::closure(heap, named_function(heap.code, "probeGet"), []), attrs, 1));
+        assert(source::define_own(heap, global, k, source::closure(heap, named_function(heap.code, "probeSet"), []), attrs, 2));
+    } else {
+        let k = source::key_named(heap, "reserved");
+        assert(source::define_own(heap, global, k, source::number(1), if setup == 2 { 0 } else { source::attr_writable() | source::attr_enumerable() }));
+    }
+    assert(heap.fault == source::Fault.None);
+}
+// The function whose code is named `name`, which captures nothing.
+fn named_function(code: const source::Code&, name: const u8[:]) -> i64 {
+    for f, i in code.functions {
+        if f.name_len != name.len || f.captures != 0 { continue; }
+        var same = true;
+        for c, j in name { if code.units[f.name_start + j] != c { same = false; } }
+        if same { return i; }
+    }
+    abort("no function of that name");
+    return -1;
+}
+thread_fn check_run(bytes: u8[], expected: u8[], fault: source::Fault, setup: i64) {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
-    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var heap = source::Heap { code: code }; assert(source::initialize(heap)); install(heap, setup);
     let entry = source::closure(heap, 0, []);
     var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
     assert(source::run(job, -1) == (if fault == source::Fault.None { tiny::Outcome.Complete } else { tiny::Outcome.Failed }));
@@ -81,10 +114,10 @@ thread_fn check_run(bytes: u8[], expected: u8[], fault: source::Fault) {
     assert(qput(Run { status: job.status, steps: job.steps }));
 }
 // Side a of one cut: publishes its state at the three comparison points.
-thread_fn check_cut(bytes: u8[], cut: i64, run: Run, fault: source::Fault) {
+thread_fn check_cut(bytes: u8[], cut: i64, run: Run, fault: source::Fault, setup: i64) {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
-    var h1 = source::Heap { code: code }; assert(source::initialize(h1));
+    var h1 = source::Heap { code: code }; assert(source::initialize(h1)); install(h1, setup);
     let e1 = source::closure(h1, 0, []);
     var a = source::Job { heap: h1 };
     assert(source::start(a, e1, []));
@@ -103,11 +136,11 @@ thread_fn check_cut(bytes: u8[], cut: i64, run: Run, fault: source::Fault) {
     let stable = a.steps; source::run(a, -1); assert(a.steps == stable);
 }
 // Side b of the same cut, one instruction per slice, against side a's states.
-thread_fn check_steps(bytes: u8[], cut: i64) {
+thread_fn check_steps(bytes: u8[], cut: i64, setup: i64) {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
     let first = qget<State>();
-    var h2 = source::Heap { code: code }; assert(source::initialize(h2));
+    var h2 = source::Heap { code: code }; assert(source::initialize(h2)); install(h2, setup);
     // Two differential executions of one logical session image.
     // Values carry no session, so only the heap's arena label differs.
     h2.identity = first.identity;
@@ -119,11 +152,11 @@ thread_fn check_steps(bytes: u8[], cut: i64) {
     let cut_a = qget<State>(); let cut_b = state(b); same_state(cut_a, cut_b);
     source::run(b, -1); let done_a = qget<State>(); let done_b = state(b); same_state(done_a, done_b);
 }
-fn check(bytes: const u8[:], expected: const u8[:], fault: source::Fault = source::Fault.None) {
-    heap_program::join(thread_spawn(check_run, str(bytes), str(expected), fault)); let run = qget<Run>();
+fn check(bytes: const u8[:], expected: const u8[:], fault: source::Fault = source::Fault.None, setup: i64 = 0) {
+    heap_program::join(thread_spawn(check_run, str(bytes), str(expected), fault, setup)); let run = qget<Run>();
     for cut in (run.steps + 1) {
-        heap_program::join(thread_spawn(check_cut, str(bytes), cut, run, fault));
-        heap_program::join(thread_spawn(check_steps, str(bytes), cut));
+        heap_program::join(thread_spawn(check_cut, str(bytes), cut, run, fault, setup));
+        heap_program::join(thread_spawn(check_steps, str(bytes), cut, setup));
     }
 }
 // Limit points (light-cljs-801). The dispatch loop runs a frame in place and
@@ -415,6 +448,7 @@ fn main() {
     continuations();
 
     properties();
+    scripts();
     key_enumeration();
     named_properties();
     heap_program::join(thread_spawn(realm_model, str(embed_file("../corpus/serial/calls.gsp"))));
@@ -552,6 +586,51 @@ fn properties() {
     print("serial source VM: shapes, interned keys, attributes, accessors, dictionary mode, own-key order and prototype chains passed");
 }
 fn key(heap: source::Heap&, name: const u8[:]) -> source::Value { return source::key_named(heap, name); }
+// Scripts (light-cljs-824): top-level declarations, global name resolution
+// and the declaration checks, every budget cut matching the uncut run. The
+// checks run over global properties the test installs (install): one script
+// cannot make the oracles agree there, since the Pants engine reserves
+// `undefined`, `NaN` and `Infinity` at compile time where QuickJS throws at
+// run time.
+fn scripts() {
+    check(embed_file("../corpus/serial/script-declarations.gsp"), "boolean:true");
+    check(embed_file("../corpus/serial/script-setter.gsp"), "boolean:true", source::Fault.None, 1);
+    let function = embed_file("../corpus/serial/script-reserved-function.gsp");
+    check(function, "number:1.0");
+    check(function, "Fault.SyntaxError:cannot-declare-global-'reserved'", source::Fault.SyntaxError, 2);
+    check(function, "number:1.0", source::Fault.None, 3);
+    let lexical = embed_file("../corpus/serial/script-reserved-let.gsp");
+    check(lexical, "number:2.0");
+    for setup in [2, 3] { check(lexical, "Fault.SyntaxError:cannot-declare-global-lexical-'reserved'", source::Fault.SyntaxError, setup); }
+    check(embed_file("../corpus/serial/script-reserved-var.gsp"), "boolean:true", source::Fault.None, 2);
+    heap_program::join(thread_spawn(protected_declarations, str(embed_file("../corpus/serial/script-declarations.gsp"))));
+    heap_program::join(thread_spawn(lexical_reset, str(embed_file("../corpus/serial/script-declarations.gsp"))));
+    print("serial source VM: script declarations, global names, a global accessor and declaration checks passed");
+}
+// A compiler job's global object is protected (Job.protected_nodes): the
+// script's first declaration instruction faults NativeBoundary and nothing
+// is declared.
+thread_fn protected_declarations(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap }; job.protected_nodes = heap.nodes.len;
+    assert(source::start(job, source::closure(heap, 0, []), []));
+    let properties = heap.properties.len; let nodes = heap.nodes.len;
+    assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.NativeBoundary && job.steps == 1);
+    assert(!source::own_entry(heap, heap.global, key(heap, "count")).found && job.lexicals.tag() == 0);
+    assert(heap.properties.len == properties && heap.nodes.len == nodes);
+    assert(source::retire(job));
+}
+// The record is the job's: a reused job's reset drops it.
+thread_fn lexical_reset(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
+    assert(source::run(job, -1) == tiny::Outcome.Complete && job.lexicals.tag() == 5);
+    assert(source::retire(job) && source::reset(job) && job.lexicals.tag() == 0);
+}
 // The realm (light-cljs-788): its fixed rows and default prototypes, a
 // built-in's and a runtime leaf's own `length` and `name` (configurable
 // only), the well-known symbols as values, and a pending property that
