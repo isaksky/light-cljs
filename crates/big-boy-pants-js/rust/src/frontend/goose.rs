@@ -1084,6 +1084,9 @@ mod serial_tests {
             // Reads and calls on primitive bases through their prototypes
             // (light-cljs-833); serial_tests.goose compares node rows.
             ("primitive-methods", "number:400"),
+            // A Symbol base fails by name on Goose (serial_tests.goose).
+            ("symbol-base-read", "goose"),
+            ("symbol-base-write", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));

@@ -714,6 +714,10 @@ fn primitive_methods() {
     heap_program::join(thread_spawn(primitive_rounds, str(bytes), 0)); let none = qget<Rounds>();
     heap_program::join(thread_spawn(primitive_rounds, str(bytes), 300)); let many = qget<Rounds>();
     assert(none.result == 0 && many.result == 600 && many.rows == none.rows);
+    // A Symbol base's read or write fails by name, past a `catch`.
+    for image in [embed_file("../corpus/serial/symbol-base-read.gsp"), embed_file("../corpus/serial/symbol-base-write.gsp")] {
+        check(image, "Fault.UnsupportedOperand:property-access-on-a-Symbol:-%Symbol.prototype%", source::Fault.UnsupportedOperand);
+    }
 }
 fn scripts() {
     check(embed_file("../corpus/serial/script-declarations.gsp"), "boolean:true");
