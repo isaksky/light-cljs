@@ -51,13 +51,13 @@ fn take(heap: const source::Heap&, roots: const source::Value[:]) -> Census {
         // Own properties (light-cljs-787): a shape-mode object's slots and
         // overflow run, a dictionary's records, accessors' functions, and
         // the prototype. Every shape's key is live. A key list's records
-        // (kind 16) are a dictionary's; element runs are value runs.
+        // (node_kind::KeyList) are a dictionary's; element runs are value runs.
         mark(heap, n.proto, nodes, units, work);
         // A generator's activation or a promise's state (light-cljs-790):
         // the activation's slot run and handlers, the promise's result,
         // reactions' promises and an async function's activation.
-        if n.kind == source::generator_kind() && n.function != source::no_row() { mark_activation(heap, n.function, values, nodes, units, work); }
-        if n.kind == source::promise_kind() {
+        if n.kind == node_kind::Generator && n.function != source::no_row() { mark_activation(heap, n.function, values, nodes, units, work); }
+        if n.kind == node_kind::Promise {
             let s = source::promise_state(heap, id);
             mark(heap, s.result, nodes, units, work);
             if s.activation != source::no_row() { mark_activation(heap, s.activation, values, nodes, units, work); }

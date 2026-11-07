@@ -265,25 +265,59 @@ enum Fault { None, InvalidState, StaleID, MemoryLimit, WorkLimit, InstructionLim
 // `conts` the continuation table's rows (light-cljs-790).
 struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576, properties: i64 = 1048576, work: i64 = 10000000, steps: i64 = 1000000, frames: i64 = 10000, stack: i64 = 1048576, shapes: i64 = 1048576, conts: i64 = 1048576 }
 // All heap tables append until session teardown; IDs are never recycled.
-// kind: plain=0, array=1, closure=2, cell=3. Captures and cell values never
-// reference frame scratch. Property chains are indices, not Goose references.
-// Runtime additions: builtin=4, list/vector/map/set=5/6/7/8,
-// symbol/keyword=9/10, scalar occurrence=11, sequence cursor=12,
-// opaque caught runtime error=13, read-only unmapped arguments=14,
-// finite deferred map=15 (value=callback, namespace_value=input,
-// start/count=reserved memo range, length=completed callbacks), key list=16
-// (a for-in walk's or an object spread's own keys, job-local; see "Key
-// enumeration"), a job's own atom or volatile=17 (value=state,
-// length=flavor, 0 atom or 1 volatile) and a process-wide cell's
-// reference=18 (function=cell, length=flavor: 0 atom, 1 volatile or 2
-// delay, whose value is its thunk when the job holds it; cells.goose) and a
-// job's own delay=19 (value=thunk, pending while truthy, namespace_value=the
-// value it realized, light-cljs-808), a generator object=20 (function=its
-// Activation row in heap.conts or no_row(), length=its state) and a
-// promise=21 (function=its Promise row in heap.conts) (light-cljs-790;
-// continuations.goose). Errors, generators and promises are ordinary
-// objects with internal slots: their own properties are kind 0's, without
-// an element run.
+// kind: a node_kind:: name below (Goose-private; light-cljs-838). The
+// numbers are stored in snapshots and artifacts, so a new kind takes the
+// next number and none is renumbered; ordered tests (`kind <
+// node_kind::List`) rely on the grouping. Captures and binding cell values
+// never reference frame scratch. Property chains are indices, not Goose
+// references.
+let node_kind::None = -1;      // not an object (a sentinel, never stored)
+let node_kind::Object = 0;     // an ordinary object
+let node_kind::Array = 1;
+let node_kind::Closure = 2;
+let node_kind::Binding = 3;    // a closure's captured binding cell
+let node_kind::Builtin = 4;
+let node_kind::List = 5;       // List .. Set: collection forms
+let node_kind::Vector = 6;
+let node_kind::Map = 7;
+let node_kind::Set = 8;
+let node_kind::Symbol = 9;
+let node_kind::Keyword = 10;
+let node_kind::Scalar = 11;    // a scalar form occurrence
+// A concatenated sequence (form_concat, a rest), read as a list.
+let node_kind::Concat = 12;
+let node_kind::Error = 13;     // an opaque caught runtime error
+let node_kind::Arguments = 14; // read-only unmapped arguments
+// A finite lazy (deferred) map: value=callback, namespace_value=input,
+// start/count=reserved memo range, length=completed callbacks.
+let node_kind::LazySeq = 15;
+// A key list: a for-in walk's or an object spread's own keys, job-local;
+// see "Key enumeration" and proxy.goose.
+let node_kind::KeyList = 16;
+// A job's own atom or volatile: value=state, length=flavor (0 atom or 1
+// volatile).
+let node_kind::Atom = 17;
+// A process-wide cell's reference: function=cell, length=flavor (0 atom,
+// 1 volatile or 2 delay, whose value is its thunk when the job holds it);
+// cells.goose.
+let node_kind::Cell = 18;
+// A job's own delay: value=thunk, pending while truthy, namespace_value=the
+// value it realized (light-cljs-808).
+let node_kind::Delay = 19;
+// A generator object: function=its Activation row in heap.conts or
+// no_row(), length=its state (light-cljs-790; continuations.goose).
+let node_kind::Generator = 20;
+// A promise: function=its Promise row in heap.conts.
+let node_kind::Promise = 21;
+// A primitive wrapper object (light-cljs-832): value=the primitive.
+let node_kind::Wrapper = 22;
+// A built-in iterator object (iterators.goose).
+let node_kind::Iterator = 23;
+// A proxy: value=target, namespace_value=handler (proxy.goose).
+let node_kind::Proxy = 24;
+// Errors, generators, promises, wrappers and iterators are ordinary objects
+// with internal slots: their own properties are an Object's, without an
+// element run.
 // Closure immutable marks fnApplyNull's immutable receiver convention.
 // Errors preserve object identity/truthiness;
 // property access/coercion and form transport reject unsupported inspection.
@@ -293,7 +327,7 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // occurrence the node came from, not a VM row, and stays -1 when absent.
 //
 // Own properties (light-cljs-787; decision 2 of docs/javascript-coverage.md).
-// An ordinary object (kind 0) keeps its key_count properties in one of two
+// An ordinary object (node_kind::Object) keeps its key_count properties in one of two
 // modes. Shape mode (`initialized` clear): `shape` names a row of
 // heap.shapes whose chain holds every key and its attributes, oldest first;
 // property i's value is slots[i] for i < inline_slots() and otherwise
@@ -309,8 +343,8 @@ struct Limits { nodes: i64 = 100000, values: i64 = 1048576, units: i64 = 1048576
 // %Object.prototype% (%Array.prototype% for an array, %Function.prototype%
 // for a function), which light-cljs-788 builds; until then a lookup that
 // reaches it finds nothing, except the names it will define, which fail
-// UnsupportedOperand (see on_intrinsic). An array (kind 1) and a closure
-// (kind 2) keep named properties the same way (light-cljs-805): a dense
+// UnsupportedOperand (see on_intrinsic). An array (node_kind::Array) and a closure
+// (node_kind::Closure) keep named properties the same way (light-cljs-805): a dense
 // array and a closure in shape mode (their `start` and `count` are the
 // elements or the captures), a dictionary array's names among its index
 // records. Other kinds keep no own properties.
@@ -424,7 +458,7 @@ root struct Heap {
 //                gives its fields and phases), its Builtin the payload.
 //   Force        force, deref and derefProtocol of a delay (light-cljs-808;
 //                cells.goose, which gives its fields and phases).
-//   Resume       a generator's next (kind 0), return (1) or throw (2)
+//   Resume       a generator's next, return or throw (resume_kind::, continuations.goose)
 //                (light-cljs-790; continuations.goose): input the
 //                generator, its activation attached above; pc 1 awaits the
 //                value it yields or returns.
@@ -607,8 +641,8 @@ fn instruction(op: Op) -> Ins {
         opcode::GetGlobal => Ins.GetGlobal { k: a, throws: true }, opcode::GetGlobalOrUndefined => Ins.GetGlobal { k: a, throws: false },
         opcode::PutGlobal, opcode::DeclareGlobalVar, opcode::DeclareGlobalFunction, opcode::DeclareGlobalLet, opcode::DeclareGlobalConst, opcode::InitGlobalLexical, opcode::CheckGlobalVar, opcode::CheckGlobalFunction, opcode::DeleteGlobal, opcode::DeclareGlobalConstValue, opcode::CheckGlobalLexicalConflict, opcode::PutGlobalStrict => Ins.GlobalOp { op: op.code as u8, k: a },
         opcode::ThrowError => Ins.ThrowError { kind: if op.arg >= 0 && op.arg < export_selector_count(opcode::ThrowError) { op.arg as u8 } else { 255 } },
-        opcode::NewFormList => Ins.Literal { kind: 5, count: a }, opcode::NewFormVector => Ins.Literal { kind: 6, count: a },
-        opcode::NewFormMap => Ins.Literal { kind: 7, count: a * 2 }, opcode::NewFormSet => Ins.Literal { kind: 8, count: a },
+        opcode::NewFormList => Ins.Literal { kind: node_kind::List, count: a }, opcode::NewFormVector => Ins.Literal { kind: node_kind::Vector, count: a },
+        opcode::NewFormMap => Ins.Literal { kind: node_kind::Map, count: a * 2 }, opcode::NewFormSet => Ins.Literal { kind: node_kind::Set, count: a },
         opcode::FormOp => Ins.Form { op: a },
         opcode::PushFinally => Ins.PushFinally { to: a }, opcode::PopFinally => Ins.PopFinally, opcode::EndFinally => Ins.EndFinally, opcode::CallFinally => Ins.CallFinally, opcode::DropCompletion => Ins.DropCompletion,
         opcode::PendingThrow, opcode::PendingException, opcode::PendingCancel => Ins.Pending { what: op.code as u8 },
@@ -745,7 +779,7 @@ fn room(heap: Heap&, length: i64, top: i64, limit: i64, count: i64) -> bool {
     return true;
 }
 // `nodes` then `extra` copies of `fill`; returns the first row, or -1.
-fn add_nodes(heap: Heap&, nodes: const Node[:], extra: i64 = 0, fill: Node = Node { kind: 0 }) -> i64 {
+fn add_nodes(heap: Heap&, nodes: const Node[:], extra: i64 = 0, fill: Node = Node { kind: node_kind::Object }) -> i64 {
     if extra < 0 || !room(heap, heap.nodes.len, heap.image.nodes, heap.limits.nodes, nodes.len + extra) { return -1; }
     let at = heap.nodes.len; heap.nodes.append(nodes); for i in extra { heap.nodes.push(fill); }
     return at;
@@ -908,7 +942,7 @@ fn equal(heap: Heap&, a: Value, b: Value) -> bool {
 // string by StringToNumber. No user code runs (decision 5). A symbol is a
 // TypeError, a BigInt fails Unsupported (the BigInt area, light-cljs-771)
 // and an object UnsupportedOperand (ToPrimitive runs before this in the
-// callers that have one). A scalar form (kind 11) converts as its primitive.
+// callers that have one). A scalar form (node_kind::Scalar) converts as its primitive.
 fn numeric(heap: Heap&, v: Value) -> f64 {
     if !valid(heap, v) { return 0; }
     let x = form_value(heap, v);
@@ -1031,7 +1065,7 @@ fn index(heap: Heap&, k: Value) -> i64 {
     for c, i in digits { if c < 48 || c > 57 || (i == 0 && c == 48 && digits.len > 1) { return -1; } n = n * 10 + (c - 48); }
     return if n < 4294967295 { n } else { -1 };
 }
-// Arrays (light-cljs-785). A dense array (kind 1) keeps its elements in its
+// Arrays (light-cljs-785). A dense array (node_kind::Array) keeps its elements in its
 // own run heap.values[start..start + count], indexed by integer; count is the
 // run's capacity and `length` the JavaScript length, which may exceed it. A
 // slot never written, or cut off by a shorter length, holds a hole. A hole
@@ -1353,7 +1387,7 @@ fn add_own(heap: Heap&, o: i64, k: Value, v: Value, attrs: u8) -> bool {
 // stays charged). An array moves its elements too (array_to_dictionary),
 // since `initialized` marks both. A rejection leaves the object as it was.
 fn to_dictionary(heap: Heap&, o: i64) -> bool {
-    if node(heap, o).kind == 1 { return array_to_dictionary(heap, object(o)); }
+    if node(heap, o).kind == node_kind::Array { return array_to_dictionary(heap, object(o)); }
     let count: i64 = node(heap, o).key_count;
     if !charge(heap, count) { return false; }
     let capacity = max(4, count + 1);
@@ -1398,7 +1432,7 @@ fn same_value(heap: Heap&, a: Value, b: Value) -> bool {
 // value; any other turns it into a shape key or record, the element becoming
 // a hole only once that property exists.
 fn define_own(heap: Heap&, o: i64, k: Value, value: Value, attrs: u8, half: i64 = 0) -> bool {
-    let i = if node(heap, o).kind == 0 { element_key(heap, k) } else { -1 };
+    let i = if node(heap, o).kind == node_kind::Object { element_key(heap, k) } else { -1 };
     if heap.fault != Fault.None { return false; }
     let data = half == 0 && attrs == attrs_data();
     if i >= 0 && !object_element(heap, o, i).is_hole() {
@@ -1460,7 +1494,7 @@ fn delete_own(heap: Heap&, o: i64, k: Value) -> bool {
     return true;
 }
 // Functions' own properties (light-cljs-805, light-cljs-806; the Pants
-// engine's rust/src/vm/function.rs). A closure (kind 2) keeps its properties
+// engine's rust/src/vm/function.rs). A closure (node_kind::Closure) keeps its properties
 // as an ordinary object does, in a shape or dictionary records beside its
 // captures (`start`, `count`). Every closure has `length` (its code's
 // ExpectedArgumentCount) and then `name` (its SetFunctionName name), both
@@ -1482,11 +1516,11 @@ fn delete_own(heap: Heap&, o: i64, k: Value) -> bool {
 // `constructor`. Not implemented, failing UnsupportedOperand by name: a class
 // constructor's eager `prototype` and an async generator's, and therefore
 // those functions' key lists; computed names (SetComputedName). Built-ins
-// (kind 4) have their own `length` and `name` from the realm (light-cljs-788).
+// (node_kind::Builtin) have their own `length` and `name` from the realm (light-cljs-788).
 fn constructor_kind(heap: const Heap&, o: i64) -> i64 { return heap.code.functions[node(heap, o).function].kind; }
 fn lazy_function(heap: const Heap&, o: i64) -> bool {
     let n .= node(heap, o);
-    return n.kind == 2 && n.key_count == 0 && !n.initialized;
+    return n.kind == node_kind::Closure && n.key_count == 0 && !n.initialized;
 }
 // Whether closure o's code gives it an own `prototype`: an ordinary
 // function's or a (synchronous) generator's.
@@ -1530,12 +1564,12 @@ fn materialize_function(heap: Heap&, o: i64) -> bool {
     if !has_prototype(heap, o) { return true; }
     let constructor = key_named(heap, "constructor"); let prototype = key_named(heap, "prototype");
     if heap.fault != Fault.None { return false; }
-    let ordinary = constructor_kind(heap, o) == 1;
-    let p = allocate(heap, if ordinary { Node { kind: 0 } } else { Node { kind: 0, proto: object(generator_prototype_row()) } });
+    let ordinary = constructor_kind(heap, o) == constructor::Ordinary;
+    let p = allocate(heap, if ordinary { Node { kind: node_kind::Object } } else { Node { kind: node_kind::Object, proto: object(generator_prototype_row()) } });
     if heap.fault != Fault.None || ordinary && !add_own(heap, p.id(), constructor, object(o), attr_writable() | attr_configurable()) { return false; }
     return add_own(heap, o, prototype, p, attr_writable());
 }
-// Primitive wrapper objects (light-cljs-832; decision 2): kind 22, whose
+// Primitive wrapper objects (light-cljs-832; decision 2): node_kind::Wrapper, whose
 // `value` is the number, string or boolean it wraps ([[NumberData]],
 // [[StringData]], [[BooleanData]]) and whose own properties are an ordinary
 // object's, without an element run. A String object is exotic
@@ -1557,14 +1591,14 @@ fn string_key(heap: Heap&, o: i64, k: Value) -> bool, i64 {
 // keys of a dense array, records of a dictionary array); read-only unmapped
 // arguments their `length` and indices; closures their own properties (see
 // above) and, failing those, `call` (Function.prototype's, until the realm),
-// built-ins only `call`; primitive wrappers (kind 22) their ordinary
+// built-ins only `call`; primitive wrappers (node_kind::Wrapper) their ordinary
 // properties and, for a String object, its exotic `length` and indices
 // first (string_key). Every other kind fails UnsupportedOperand: it is
 // not implemented yet.
 fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
     let o: i64 = object.id();
     match node(heap, o).kind {
-        22 => {
+        node_kind::Wrapper => {
             let exotic, i = string_key(heap, o, k);
             if heap.fault != Fault.None { return Own {}; }
             if !exotic { return find_own(heap, o, k); }
@@ -1572,7 +1606,7 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             if i < 0 { return Own { found: true, value: number(str_len(heap, s)), attrs: 0 }; }
             return Own { found: true, index: i, value: unit_string(heap, s, i), attrs: attr_enumerable() };
         },
-        0, 13, 20, 21, node_kind::Iterator => {
+        node_kind::Object, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {
             if node(heap, o).count > 0 {
                 let i = element_key(heap, k);
                 if heap.fault != Fault.None { return Own {}; }
@@ -1581,7 +1615,7 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             }
             return find_own(heap, o, k);
         },
-        1 => {
+        node_kind::Array => {
             if key_is(heap, k, "length") { return Own { found: true, value: number(node(heap, o).length), attrs: attr_writable() }; }
             let i = index(heap, k);
             if heap.fault != Fault.None { return Own {}; }
@@ -1589,7 +1623,7 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             let v, found = own_element(heap, object, i);
             return Own { found: found, index: i, value: v, attrs: attrs_data() };
         },
-        14 => {
+        node_kind::Arguments => {
             // Unmapped, read-only arguments subset. Mutation, callee and
             // prototypes fail explicitly; no frame slot or parameter alias
             // escapes to the heap.
@@ -1601,7 +1635,7 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             if i >= node(heap, o).count { return Own {}; }
             return Own { found: true, index: i, value: slot(heap, node(heap, o).start + i), attrs: attrs_data() };
         },
-        2 => {
+        node_kind::Closure => {
             // A lazy closure's `length` and `name` come from its code row.
             if k.is_string() && lazy_function(heap, o) {
                 if key_is(heap, k, "length") { return Own { found: true, value: function_length(heap, o), attrs: attr_configurable() }; }
@@ -1610,7 +1644,7 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             if !function_key(heap, o, k) { return Own {}; }
             return find_own(heap, o, k);
         },
-        4 => { return find_own(heap, o, k); },
+        node_kind::Builtin => { return find_own(heap, o, k); },
         // A proxy's runs in a native frame (proxy.goose), not here.
         node_kind::Proxy => { proxy_fault(heap, proxy_method::GetOwnProperty); return Own {}; },
         _ => { if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; } return Own {}; },
@@ -1676,18 +1710,18 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
 fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
     match kind {
-        0, 4, 13, 20, 21, node_kind::Iterator => {},
-        1 => {
+        node_kind::Object, node_kind::Builtin, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {},
+        node_kind::Array => {
             if key_is(heap, k, "length") { return Value.Undefined, array_length(heap, object, value); }
             let i = index(heap, k);
             if heap.fault != Fault.None { return Value.Undefined, false; }
             if i >= 0 { return Value.Undefined, set_element(heap, object, i, value); }
         },
-        2 => {
+        node_kind::Closure => {
             if !function_key(heap, o, k) || lazy_change(heap, o) { return Value.Undefined, false; }
         },
         // A String object's `length` and indices are not writable.
-        22 => {
+        node_kind::Wrapper => {
             let exotic, i = string_key(heap, o, k);
             if heap.fault != Fault.None || exotic { return Value.Undefined, false; }
         },
@@ -1696,7 +1730,7 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     }
     // An element is a writable data property (light-cljs-804); only an
     // ordinary object keeps index keys outside its shape or records here.
-    let i = if kind == 0 { element_key(heap, k) } else { -1 };
+    let i = if kind == node_kind::Object { element_key(heap, k) } else { -1 };
     if heap.fault != Fault.None { return Value.Undefined, false; }
     if !object_element(heap, o, i).is_hole() { set_slot(heap, node(heap, o).start + i, value); return Value.Undefined, true; }
     let own = find_own(heap, o, k);
@@ -1731,18 +1765,18 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
 // fail UnsupportedOperand.
 fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8, half: i64 = 0) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind == 0 || kind == 4 || kind == 13 || kind == 20 || kind == 21 || kind == node_kind::Iterator { return define_own(heap, o, k, value, attrs, half); }
-    if kind == 1 && !key_is(heap, k, "length") {
+    if kind == node_kind::Object || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Iterator { return define_own(heap, o, k, value, attrs, half); }
+    if kind == node_kind::Array && !key_is(heap, k, "length") {
         let i = index(heap, k);
         if heap.fault != Fault.None { return false; }
         if i < 0 { return define_own(heap, o, k, value, attrs, half); }
         if half == 0 && attrs == attrs_data() { return set_element(heap, object, i, value); }
     }
-    if kind == 2 {
+    if kind == node_kind::Closure {
         if !function_key(heap, o, k) || lazy_change(heap, o) { return false; }
         return define_own(heap, o, k, value, attrs, half);
     }
-    if kind == 22 {
+    if kind == node_kind::Wrapper {
         // A String object's `length` and indices are non-configurable and
         // non-writable: only a definition that changes nothing is accepted
         // (ValidateAndApplyPropertyDescriptor).
@@ -1764,14 +1798,14 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
 fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
     let o: i64 = object.id();
     match node(heap, o).kind {
-        4 => { return delete_own(heap, o, k); },
-        0, 13, 20, 21, node_kind::Iterator => {
+        node_kind::Builtin => { return delete_own(heap, o, k); },
+        node_kind::Object, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {
             let i = element_key(heap, k);
             if heap.fault != Fault.None { return false; }
             if !object_element(heap, o, i).is_hole() { if !charge(heap) { return false; } set_slot(heap, node(heap, o).start + i, hole()); return true; }
             return delete_own(heap, o, k);
         },
-        1 => {
+        node_kind::Array => {
             if key_is(heap, k, "length") { return false; }
             let i = index(heap, k);
             if heap.fault != Fault.None { return false; }
@@ -1780,7 +1814,7 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
             if i < node(heap, o).count && i < node(heap, o).length { set_slot(heap, node(heap, o).start + i, hole()); }
             return true;
         },
-        2 => {
+        node_kind::Closure => {
             if lazy_function(heap, o) && k.is_string() {
                 if lazy_prototype(heap, o) && key_is(heap, k, "prototype") { return false; }
                 if (key_is(heap, k, "length") || key_is(heap, k, "name")) && lazy_change(heap, o) { return false; }
@@ -1788,7 +1822,7 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
             return function_key(heap, o, k) && delete_own(heap, o, k);
         },
         // A String object's `length` and indices are non-configurable.
-        22 => {
+        node_kind::Wrapper => {
             let exotic, i = string_key(heap, o, k);
             return heap.fault == Fault.None && !exotic && delete_own(heap, o, k);
         },
@@ -1810,14 +1844,14 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
 struct OwnKey { key: Value, attrs: u8 = 0, index: i64 = -1 }
 fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 20 && kind != 21 && kind != 22 && kind != node_kind::Iterator || kind == 2 && unsupported_prototype(heap, o) {
+    if kind != node_kind::Object && kind != node_kind::Array && kind != node_kind::Closure && kind != node_kind::Builtin && kind != node_kind::Error && kind != node_kind::Generator && kind != node_kind::Promise && kind != node_kind::Wrapper && kind != node_kind::Iterator || kind == node_kind::Closure && unsupported_prototype(heap, o) {
         // A proxy's runs in a native frame (proxy.goose), not here.
         if kind == node_kind::Proxy { proxy_fault(heap, proxy_method::OwnPropertyKeys); } else { heap.fault = Fault.UnsupportedOperand; }
         return false;
     }
     // A lazy closure's are `length`, `name` and, for an ordinary function,
     // `prototype`, not yet made (light-cljs-806).
-    if kind == 2 && lazy_function(heap, o) {
+    if kind == node_kind::Closure && lazy_function(heap, o) {
         for name in ["length", "name", "prototype"] {
             if name == "prototype" && !has_prototype(heap, o) { break; }
             let k = key_named(heap, name);
@@ -1828,11 +1862,11 @@ fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     }
     var keys: OwnKey[>..] = [];
     // An element run's scan costs a work unit a slot, holes included.
-    if (kind == 0 || !node(heap, o).initialized) && !charge(heap, if kind == 0 { node(heap, o).count as i64 } else { min(node(heap, o).length, node(heap, o).count) as i64 }) { return false; }
-    if kind == 1 && !node(heap, o).initialized {
+    if (kind == node_kind::Object || !node(heap, o).initialized) && !charge(heap, if kind == node_kind::Object { node(heap, o).count as i64 } else { min(node(heap, o).length, node(heap, o).count) as i64 }) { return false; }
+    if kind == node_kind::Array && !node(heap, o).initialized {
         let end = min(node(heap, o).length, node(heap, o).count);
         for i in end { if !slot(heap, node(heap, o).start + i).is_hole() { keys.push(OwnKey { key: index_key(heap, i), attrs: attrs_data(), index: i }); } }
-    } else if kind == 0 {
+    } else if kind == node_kind::Object {
         for i in node(heap, o).count { if !slot(heap, node(heap, o).start + i).is_hole() { keys.push(OwnKey { key: index_key(heap, i), attrs: attrs_data(), index: i }); } }
     }
     // Shape keys or records: a dense array's are its named properties
@@ -1853,14 +1887,14 @@ fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     stable_sort(indices) { a, b => a.index < b.index };
     // A String object's indices come before its other index keys, and its
     // `length` before its other names (StringExoticObject [[OwnPropertyKeys]]).
-    let wrapped = if kind == 22 { node(heap, o).value } else { Value.Undefined };
+    let wrapped = if kind == node_kind::Wrapper { node(heap, o).value } else { Value.Undefined };
     if wrapped.is_string() {
         let n = str_len(heap, wrapped);
         if !charge(heap, n) { return false; }
         for i in n { out.push(OwnKey { key: index_key(heap, i), attrs: attr_enumerable(), index: i }); }
     }
     out.append(indices);
-    if kind == 1 || wrapped.is_string() { let length = text(heap, "length"); out.push(OwnKey { key: intern(heap, length), attrs: if kind == 1 { attr_writable() } else { 0 } }); }
+    if kind == node_kind::Array || wrapped.is_string() { let length = text(heap, "length"); out.push(OwnKey { key: intern(heap, length), attrs: if kind == node_kind::Array { attr_writable() } else { 0 } }); }
     for e in keys { if e.key.is_string() && e.index < 0 { out.push(e); } }
     for e in keys { if e.key.is_symbol() { out.push(e); } }
     return heap.fault == Fault.None;
@@ -2016,7 +2050,7 @@ fn closure(heap: Heap&, function: i64, captures: const Value[:]) -> Value {
     if !values_fit(heap, captures.len) || !charge(heap, captures.len) { if heap.fault == Fault.None { memory(heap); } return Value.Undefined; }
     for v in captures { if !valid(heap, v) { return Value.Undefined; } }
     let start = add_values(heap, captures);
-    return allocate(heap, Node { kind: 2, function: function as u32, start: start as u32, count: captures.len as u32 });
+    return allocate(heap, Node { kind: node_kind::Closure, function: function as u32, start: start as u32, count: captures.len as u32 });
 }
 // The native frames from `keep` up release their state as an unwind passes
 // them (see Native): a deferred map gives up its claim, so a later demand
@@ -2131,7 +2165,7 @@ fn raise(job: Job&, value: Value, frame: Frame) {
 // An exception no handler caught ends the job: an error object a fault
 // raised reports that fault, any other value is a thrown result.
 fn uncaught(job: Job&, value: Value, frame: Frame) {
-    if value.is_object() && node(job.heap, value.id()).kind == 13 && node(job.heap, value.id()).function != 0 { terminate(job, error_fault(node(job.heap, value.id()).function), frame); return; }
+    if value.is_object() && node(job.heap, value.id()).kind == node_kind::Error && node(job.heap, value.id()).function != 0 { terminate(job, error_fault(node(job.heap, value.id()).function), frame); return; }
     job.result = value; job.thrown = true; terminate(job, Fault.HostEffect, frame);
 }
 // Return `value` from the frame at `top` (light-cljs-786): its innermost
@@ -2262,7 +2296,7 @@ fn enter(job: Job&, callee: Value, receiver: Value, arguments: const Value[:]) -
 // [[Construct]] (construct), undefined in a call.
 fn push_frame(job: Job&, callee: Value, receiver: Value, arguments: const Value[:], checked: bool, operands: i64, new_target: Value = Value.Undefined) -> bool {
     let heap .= job.heap;
-    if !callee.is_object() || node(heap, callee.id()).kind != 2 {
+    if !callee.is_object() || node(heap, callee.id()).kind != node_kind::Closure {
         // A callable proxy's [[Call]] fails by name (proxy.goose).
         if callee.is_object() && node(heap, callee.id()).kind == node_kind::Proxy { proxy_invoke(heap, callee, proxy_method::Call); return false; }
         heap.fault = Fault.TypeError; return false;
@@ -2383,14 +2417,14 @@ fn binary_value(heap: Heap&, op: i64, a: Value, b: Value) -> Value {
 fn nil() -> Value { return Value.Null; }
 fn form_value(heap: Heap&, v: Value) -> Value {
     if !valid(heap, v) { return Value.Undefined; }
-    return if v.is_object() && node(heap, v.id()).kind == 11 { node(heap, v.id()).value } else { v };
+    return if v.is_object() && node(heap, v.id()).kind == node_kind::Scalar { node(heap, v.id()).value } else { v };
 }
 fn form_kind(heap: Heap&, v: Value) -> i64 {
     let x = form_value(heap, v);
-    return if x.is_object() { node(heap, x.id()).kind } else { -1 };
+    return if x.is_object() { node(heap, x.id()).kind } else { node_kind::None };
 }
-fn form_collection(heap: Heap&, kind: i64, children: const Value[:], template: Node = Node { kind: 0 }) -> Value {
-    if kind < 5 || kind > 8 || (kind == 7 && children.len % 2 != 0) { heap.fault = Fault.TypeError; return Value.Undefined; }
+fn form_collection(heap: Heap&, kind: i64, children: const Value[:], template: Node = Node { kind: node_kind::Object }) -> Value {
+    if kind < node_kind::List || kind > node_kind::Set || (kind == node_kind::Map && children.len % 2 != 0) { heap.fault = Fault.TypeError; return Value.Undefined; }
     if !values_fit(heap, children.len) || !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
     if !charge(heap, children.len) { return Value.Undefined; }
     for child in children { if !valid(heap, child) { return Value.Undefined; } }
@@ -2400,8 +2434,8 @@ fn form_collection(heap: Heap&, kind: i64, children: const Value[:], template: N
 // Ordinary constructors normalize equal keys/members. LiteralMap and the
 // compiler occurrence bridge deliberately retain positional source operands.
 fn form_construct(heap: Heap&, kind: i64, children: const Value[:]) -> Value {
-    if kind != 7 && kind != 8 { return form_collection(heap, kind, children); }
-    let stride: i64 = if kind == 7 { 2 } else { 1 };
+    if kind != node_kind::Map && kind != node_kind::Set { return form_collection(heap, kind, children); }
+    let stride: i64 = if kind == node_kind::Map { 2 } else { 1 };
     if children.len % stride != 0 { heap.fault = Fault.TypeError; return Value.Undefined; }
     if !charge(heap, children.len) { return Value.Undefined; }
     var normalized: Value[>..] = [];
@@ -2409,8 +2443,8 @@ fn form_construct(heap: Heap&, kind: i64, children: const Value[:]) -> Value {
         let key = children[i * stride]; var found: i64 = -1;
         for j in (normalized.len / stride) { if form_equal(heap, normalized[j * stride], key) { found = j * stride; break; } }
         if heap.fault != Fault.None { return Value.Undefined; }
-        if found >= 0 { if kind == 7 { normalized[found + 1] = children[i * stride + 1]; } }
-        else { normalized.push(key); if kind == 7 { normalized.push(children[i * stride + 1]); } }
+        if found >= 0 { if kind == node_kind::Map { normalized[found + 1] = children[i * stride + 1]; } }
+        else { normalized.push(key); if kind == node_kind::Map { normalized.push(children[i * stride + 1]); } }
     }
     return form_collection(heap, kind, normalized);
 }
@@ -2418,14 +2452,14 @@ fn form_count(heap: Heap&, v: Value) -> i64 {
     let x = form_value(heap, v);
     if x.tag() <= value_tag::Null { return 0; }
     if x.is_string() { return str_len(heap, x); }
-    if x.is_object() { let n = node(heap, x.id()); if n.kind >= 5 && n.kind <= 8 || n.kind == 12 { return if n.kind == 7 { n.count / 2 } else { n.count }; } }
+    if x.is_object() { let n = node(heap, x.id()); if n.kind >= node_kind::List && n.kind <= node_kind::Set || n.kind == node_kind::Concat { return if n.kind == node_kind::Map { n.count / 2 } else { n.count }; } }
     heap.fault = Fault.TypeError; return 0;
 }
 fn form_nth(heap: Heap&, v: Value, i: i64, fallback: Value = Value.Null) -> Value {
     let x = form_value(heap, v);
     if x.tag() <= value_tag::Null { return fallback; }
     if x.is_string() { return if i >= 0 && i < str_len(heap, x) { unit_string(heap, x, i) } else { fallback }; }
-    if x.is_object() { let n = node(heap, x.id()); if n.kind == 5 || n.kind == 6 || n.kind == 12 { return if i >= 0 && i < n.count { slot(heap, n.start + i) } else { fallback }; } }
+    if x.is_object() { let n = node(heap, x.id()); if n.kind == node_kind::List || n.kind == node_kind::Vector || n.kind == node_kind::Concat { return if i >= 0 && i < n.count { slot(heap, n.start + i) } else { fallback }; } }
     heap.fault = Fault.TypeError; return Value.Undefined;
 }
 recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool {
@@ -2438,15 +2472,15 @@ recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool
     if x.tag() != y.tag() { return false; }
     if !x.is_object() { return equal(heap, x, y); }
     let n = node(heap, x.id()); let m = node(heap, y.id());
-    if n.kind == 15 || m.kind == 15 { heap.fault = Fault.NativeBoundary; return false; }
-    if n.kind < 5 || m.kind < 5 || n.kind == 13 || m.kind == 13 || n.kind == 14 || m.kind == 14 || n.kind >= 20 || m.kind >= 20 { return x == y; }
+    if n.kind == node_kind::LazySeq || m.kind == node_kind::LazySeq { heap.fault = Fault.NativeBoundary; return false; }
+    if n.kind < node_kind::List || m.kind < node_kind::List || n.kind == node_kind::Error || m.kind == node_kind::Error || n.kind == node_kind::Arguments || m.kind == node_kind::Arguments || n.kind >= node_kind::Generator || m.kind >= node_kind::Generator { return x == y; }
     // An atom is equal only to itself; two references to one cell are one atom.
-    if n.kind >= 16 || m.kind >= 16 { return x == y || n.kind == 18 && m.kind == 18 && n.function == m.function; }
-    if n.kind != m.kind && !((n.kind == 5 || n.kind == 6 || n.kind == 12) && (m.kind == 5 || m.kind == 6 || m.kind == 12)) { return false; }
-    if n.kind == 9 || n.kind == 10 { return equal(heap, n.value, m.value) && equal(heap, n.namespace_value, m.namespace_value); }
+    if n.kind >= node_kind::KeyList || m.kind >= node_kind::KeyList { return x == y || n.kind == node_kind::Cell && m.kind == node_kind::Cell && n.function == m.function; }
+    if n.kind != m.kind && !((n.kind == node_kind::List || n.kind == node_kind::Vector || n.kind == node_kind::Concat) && (m.kind == node_kind::List || m.kind == node_kind::Vector || m.kind == node_kind::Concat)) { return false; }
+    if n.kind == node_kind::Symbol || n.kind == node_kind::Keyword { return equal(heap, n.value, m.value) && equal(heap, n.namespace_value, m.namespace_value); }
     if n.count != m.count { return false; }
-    if n.kind == 7 || n.kind == 8 {
-        let stride: i64 = if n.kind == 7 { 2 } else { 1 };
+    if n.kind == node_kind::Map || n.kind == node_kind::Set {
+        let stride: i64 = if n.kind == node_kind::Map { 2 } else { 1 };
         for i in (n.count / stride) {
             var found = false;
             for j in (m.count / stride) {
@@ -2466,9 +2500,9 @@ recursive fn form_equal(heap: Heap&, a: Value, b: Value, depth: i64 = 0) -> bool
 }
 fn form_assoc(heap: Heap&, v: Value, k: Value, value: Value) -> Value {
     let x = form_value(heap, v); let kind = form_kind(heap, x);
-    if kind != 6 && kind != 7 { heap.fault = Fault.TypeError; return Value.Undefined; }
+    if kind != node_kind::Vector && kind != node_kind::Map { heap.fault = Fault.TypeError; return Value.Undefined; }
     let n = node(heap, x.id()); var at: i64 = -1;
-    if kind == 6 {
+    if kind == node_kind::Vector {
         let i = form_value(heap, k);
         if !i.is_number() || !(i.num() >= 0 && i.num() <= n.count) || i.num() != (i.num() as i64) { heap.fault = Fault.TypeError; return Value.Undefined; }
         at = i.num() as i64;
@@ -2477,7 +2511,7 @@ fn form_assoc(heap: Heap&, v: Value, k: Value, value: Value) -> Value {
     }
     if !charge(heap, n.count + 2) { return Value.Undefined; }
     let replacing = at >= 0 && at < n.count;
-    let count = n.count + (if replacing { 0 } else if kind == 7 { 2 } else { 1 });
+    let count = n.count + (if replacing { 0 } else if kind == node_kind::Map { 2 } else { 1 });
     if !values_fit(heap, count) || !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
     if !charge(heap, count) { return Value.Undefined; }
     // Validate exactly the resulting children, including only retained old
@@ -2488,7 +2522,7 @@ fn form_assoc(heap: Heap&, v: Value, k: Value, value: Value) -> Value {
         for child in run(heap, n.start + at + 1, n.count - at - 1) { if !valid(heap, child) { return Value.Undefined; } }
     } else {
         for child in run(heap, n.start, n.count) { if !valid(heap, child) { return Value.Undefined; } }
-        if kind == 7 && !valid(heap, k) { return Value.Undefined; } if !valid(heap, value) { return Value.Undefined; }
+        if kind == node_kind::Map && !valid(heap, k) { return Value.Undefined; } if !valid(heap, value) { return Value.Undefined; }
     }
     var made = n; made.kind = kind; made.origin = -1; made.start = heap.values.len as u32; made.count = count;
     // allocate charges the final work unit before any child append. Nothing
@@ -2500,36 +2534,36 @@ fn form_assoc(heap: Heap&, v: Value, k: Value, value: Value) -> Value {
         add_values(heap, run(heap, n.start + at + 1, n.count - at - 1));
     } else {
         add_values(heap, run(heap, n.start, n.count));
-        if kind == 7 { add_values(heap, [k, value]); } else { add_values(heap, [value]); }
+        if kind == node_kind::Map { add_values(heap, [k, value]); } else { add_values(heap, [value]); }
     }
     return result;
 }
 fn form_conj(heap: Heap&, v: Value, value: Value) -> Value {
-    let x = form_value(heap, v); let kind = if x.tag() <= value_tag::Null { 5 } else { form_kind(heap, x) };
-    if kind != 5 && kind != 6 { heap.fault = Fault.TypeError; return Value.Undefined; }
-    let n = if x.tag() <= value_tag::Null { Node { kind: 5 } } else { node(heap, x.id()) };
+    let x = form_value(heap, v); let kind = if x.tag() <= value_tag::Null { node_kind::List } else { form_kind(heap, x) };
+    if kind != node_kind::List && kind != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; }
+    let n = if x.tag() <= value_tag::Null { Node { kind: node_kind::List } } else { node(heap, x.id()) };
     if !charge(heap, n.count + 1) { return Value.Undefined; }
     let count = n.count + 1;
     if !values_fit(heap, count) || !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
     if !charge(heap, count) { return Value.Undefined; }
-    if kind == 5 && !valid(heap, value) { return Value.Undefined; }
+    if kind == node_kind::List && !valid(heap, value) { return Value.Undefined; }
     for child in run(heap, n.start, n.count) { if !valid(heap, child) { return Value.Undefined; } }
-    if kind == 6 && !valid(heap, value) { return Value.Undefined; }
+    if kind == node_kind::Vector && !valid(heap, value) { return Value.Undefined; }
     var made = n; made.kind = kind; made.origin = -1; made.start = heap.values.len as u32; made.count = count;
     let result = allocate(heap, made); if heap.fault != Fault.None { return Value.Undefined; }
-    if kind == 5 { add_values(heap, [value]); }
+    if kind == node_kind::List { add_values(heap, [value]); }
     add_values(heap, run(heap, n.start, n.count));
-    if kind == 6 { add_values(heap, [value]); }
+    if kind == node_kind::Vector { add_values(heap, [value]); }
     return result;
 }
 fn form_get(heap: Heap&, v: Value, k: Value, fallback: Value) -> Value {
     let x = form_value(heap, v); let kind = form_kind(heap, x);
     if x.tag() <= value_tag::Null { return fallback; }
-    if kind == 6 || x.is_string() {
+    if kind == node_kind::Vector || x.is_string() {
         let i = form_value(heap, k); if !i.is_number() || !(i.num() >= 0 && i.num() < form_count(heap, x)) || i.num() != (i.num() as i64) { return fallback; }
         return form_nth(heap, x, i.num() as i64, fallback);
     }
-    if kind != 7 { heap.fault = Fault.TypeError; return Value.Undefined; }
+    if kind != node_kind::Map { heap.fault = Fault.TypeError; return Value.Undefined; }
     let n = node(heap, x.id());
     for i in (n.count / 2) { if form_equal(heap, slot(heap, n.start + i * 2), k) { return slot(heap, n.start + i * 2 + 1); } }
     return fallback;
@@ -2537,12 +2571,12 @@ fn form_get(heap: Heap&, v: Value, k: Value, fallback: Value) -> Value {
 fn form_contains(heap: Heap&, v: Value, k: Value) -> bool {
     let x = form_value(heap, v); let kind = form_kind(heap, x);
     if x.tag() <= value_tag::Null { return false; }
-    if kind == 6 || x.is_string() {
+    if kind == node_kind::Vector || x.is_string() {
         let i = form_value(heap, k);
         return i.is_number() && i.num() >= 0 && i.num() < form_count(heap, x) && i.num() == trunc(i.num());
     }
-    if kind == 7 || kind == 8 {
-        let n = node(heap, x.id()); let stride: i64 = if kind == 7 { 2 } else { 1 };
+    if kind == node_kind::Map || kind == node_kind::Set {
+        let n = node(heap, x.id()); let stride: i64 = if kind == node_kind::Map { 2 } else { 1 };
         for i in (n.count / stride) { if form_equal(heap, slot(heap, n.start + i * stride), k) { return true; } if heap.fault != Fault.None { return false; } }
         return false;
     }
@@ -2558,7 +2592,7 @@ fn form_concat(heap: Heap&, colls: const Value[:]) -> Value {
         let x = form_value(heap, coll); if heap.fault != Fault.None { return Value.Undefined; }
         if x.tag() <= value_tag::Null { continue; }
         let kind = form_kind(heap, x);
-        if kind != 5 && kind != 6 && kind != 12 { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
+        if kind != node_kind::List && kind != node_kind::Vector && kind != node_kind::Concat { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
         let n = node(heap, x.id());
         if !values_fit(heap, count + n.count) { memory(heap); return Value.Undefined; }
         if !charge(heap, n.count * 2) { return Value.Undefined; }
@@ -2566,7 +2600,7 @@ fn form_concat(heap: Heap&, colls: const Value[:]) -> Value {
         count += n.count;
     }
     let start = heap.values.len;
-    let result = allocate(heap, Node { kind: 12, start: start as u32, count: count as u32 });
+    let result = allocate(heap, Node { kind: node_kind::Concat, start: start as u32, count: count as u32 });
     if heap.fault != Fault.None { return Value.Undefined; }
     // Preflight above accounted both validation and copying. Append only
     // after every failure point; the inputs are immutable stable ranges.
@@ -2579,10 +2613,10 @@ fn form_concat(heap: Heap&, colls: const Value[:]) -> Value {
 fn form_sequence(heap: Heap&, v: Value, skip: i64, empty_nil: bool) -> Value {
     let x = form_value(heap, v); let count = form_count(heap, x);
     if heap.fault != Fault.None { return Value.Undefined; }
-    if count <= skip { return if empty_nil { nil() } else { form_collection(heap, 5, []) }; }
+    if count <= skip { return if empty_nil { nil() } else { form_collection(heap, node_kind::List, []) }; }
     let kind = form_kind(heap, x);
-    if kind != 5 && kind != 6 && kind != 12 { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
-    let n = node(heap, x.id()); return allocate(heap, Node { kind: 12, start: (n.start + skip) as u32, count: (n.count - skip) as u32 });
+    if kind != node_kind::List && kind != node_kind::Vector && kind != node_kind::Concat { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    let n = node(heap, x.id()); return allocate(heap, Node { kind: node_kind::Concat, start: (n.start + skip) as u32, count: (n.count - skip) as u32 });
 }
 fn named_supported(heap: Heap&, ns: Value, name: Value) -> bool {
     let n = utf16(heap, name);
@@ -2596,7 +2630,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         if !valid(heap, v) { return Value.Undefined; }
         // Partial/lazy protocol operations are outside this full-demand
         // target slice. Never inspect an uninitialized memo as a form.
-        if v.is_object() && node(heap, v.id()).kind == 15 { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+        if v.is_object() && node(heap, v.id()).kind == node_kind::LazySeq { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
     }
     let a = args[0];
     match op {
@@ -2605,7 +2639,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             if !named_supported(heap, a, args[1]) { if heap.fault == Fault.None { heap.fault = Fault.NativeBoundary; } return Value.Undefined; }
             return allocate(heap, Node { kind: if op == form_op::Keyword { 10 } else { 9 }, value: args[1], namespace_value: if a.tag() <= value_tag::Null { nil() } else { a } });
         },
-        form_op::Kind => { let kind = form_kind(heap, a); return match kind { 5, 12 => text(heap, "list"), 6 => text(heap, "vector"), 7 => text(heap, "map"), 8 => text(heap, "set"), 9 => text(heap, "symbol"), 10 => text(heap, "keyword"), _ => nil() }; },
+        form_op::Kind => { let kind = form_kind(heap, a); return match kind { node_kind::List, node_kind::Concat => text(heap, "list"), node_kind::Vector => text(heap, "vector"), node_kind::Map => text(heap, "map"), node_kind::Set => text(heap, "set"), node_kind::Symbol => text(heap, "symbol"), node_kind::Keyword => text(heap, "keyword"), _ => nil() }; },
         form_op::Count, form_op::CljCount => { return number(form_count(heap, a)); },
         form_op::Nth, form_op::CljNth, form_op::CljNthOr => { let i = form_value(heap, args[1]); if !i.is_number() || !(i.num() >= -2147483648.0 && i.num() <= 2147483647.0) || i.num() != (i.num() as i64) || (op != form_op::CljNthOr && (i.num() < 0 || i.num() >= form_count(heap, a))) { heap.fault = Fault.TypeError; return Value.Undefined; } return form_nth(heap, a, i.num() as i64, if op == form_op::CljNthOr { args[2] } else { nil() }); },
         form_op::Get, form_op::CljGet => { return form_get(heap, a, args[1], args[2]); },
@@ -2615,37 +2649,37 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         form_op::CljConcatAll => {
             let x = form_value(heap, a); if x.tag() <= value_tag::Null { return form_concat(heap, []); }
             let kind = form_kind(heap, x);
-            if kind != 5 && kind != 6 && kind != 12 { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
+            if kind != node_kind::List && kind != node_kind::Vector && kind != node_kind::Concat { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
             let n = node(heap, x.id()); return form_concat(heap, run(heap, n.start, n.count));
         },
         form_op::Assoc, form_op::CljAssoc => { return form_assoc(heap, a, args[1], args[2]); },
         form_op::Conj, form_op::CljConj => { return form_conj(heap, a, args[1]); },
         form_op::Equals => { return boolean(form_equal(heap, a, args[1])); },
         form_op::Meta, form_op::CljMeta => { return if a.is_object() && !node(heap, a.id()).metadata.is_undefined() { node(heap, a.id()).metadata } else { nil() }; },
-        form_op::WithMeta, form_op::CljWithMeta => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= 5 && kind <= 9 || kind == 12) || (meta.tag() > value_tag::Null && form_kind(heap, meta) != 7) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= value_tag::Null { Value.Undefined } else { args[1] }; n.origin = -1; return allocate(heap, n); },
+        form_op::WithMeta, form_op::CljWithMeta => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= node_kind::List && kind <= node_kind::Symbol || kind == node_kind::Concat) || (meta.tag() > value_tag::Null && form_kind(heap, meta) != 7) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= value_tag::Null { Value.Undefined } else { args[1] }; n.origin = -1; return allocate(heap, n); },
         form_op::Value => { return form_value(heap, a); },
         form_op::CljTruth => { let v = form_value(heap, a); return boolean(v.tag() > value_tag::Null && !(v.is_bool() && !v.flag())); },
         form_op::CljSeq, form_op::CljRest, form_op::CljNext => { return form_sequence(heap, a, if op == form_op::CljSeq { 0 } else { 1 }, op != form_op::CljRest); },
         form_op::CljFirst => { return form_nth(heap, a, 0); },
-        form_op::LiteralMap => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != 5 && kind != 6 { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); return form_collection(heap, 7, run(heap, n.start, n.count)); },
+        form_op::LiteralMap => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != node_kind::List && kind != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); return form_collection(heap, node_kind::Map, run(heap, n.start, n.count)); },
         form_op::ReaderCollection => { if form_kind(heap, a) != 7 && form_kind(heap, a) != 8 { heap.fault = Fault.TypeError; return Value.Undefined; } return a; },
-        form_op::CljCallable => { let kind = form_kind(heap, a); return boolean(kind == 6 || kind == 7 || kind == 8 || kind == 9 || kind == 10); },
+        form_op::CljCallable => { let kind = form_kind(heap, a); return boolean(kind == node_kind::Vector || kind == node_kind::Map || kind == node_kind::Set || kind == node_kind::Symbol || kind == node_kind::Keyword); },
         form_op::CljCallMember => {
             let value = form_value(heap, a);
-            if value.is_object() && (node(heap, value.id()).kind == 2 || node(heap, value.id()).kind == 4) { return heap.call_method; }
+            if value.is_object() && (node(heap, value.id()).kind == node_kind::Closure || node(heap, value.id()).kind == node_kind::Builtin) { return heap.call_method; }
             heap.fault = Fault.NativeBoundary; return Value.Undefined;
         },
         form_op::CljInvoke => {
             let arity = args[3]; let kind = form_kind(heap, a);
             if !arity.is_number() || (arity.num() != 1 && arity.num() != 2) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
-            if kind == 9 || kind == 10 { return form_get(heap, args[1], a, args[2]); }
-            if kind == 7 { return form_get(heap, a, args[1], args[2]); }
-            if kind == 8 {
+            if kind == node_kind::Symbol || kind == node_kind::Keyword { return form_get(heap, args[1], a, args[2]); }
+            if kind == node_kind::Map { return form_get(heap, a, args[1], args[2]); }
+            if kind == node_kind::Set {
                 let n = node(heap, a.id());
                 for i in n.count { if !charge(heap) { return Value.Undefined; } let v = slot(heap, n.start + i); if form_equal(heap, v, args[1]) { return v; } if heap.fault != Fault.None { return Value.Undefined; } }
                 return args[2];
             }
-            if kind == 6 {
+            if kind == node_kind::Vector {
                 let i = form_value(heap, args[1]);
                 if !i.is_number() || !(i.num() >= 0 && i.num() < form_count(heap, a)) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
                 // Legacy vector calls truncate after bounds validation.
@@ -2654,7 +2688,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             heap.fault = Fault.NativeBoundary; return Value.Undefined;
         },
         form_op::CljReadRoot => {
-            if !a.is_object() || node(heap, a.id()).kind != 0 || args[1].tag() > value_tag::Null { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+            if !a.is_object() || node(heap, a.id()).kind != node_kind::Object || args[1].tag() > value_tag::Null { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
             if !args[2].is_string() { heap.fault = Fault.TypeError; return Value.Undefined; }
             let value, found = own_property(heap, a, args[2]);
             // A compiler root read is a dependency request, even if the JS
@@ -2663,11 +2697,11 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
             if !found && heap.fault == Fault.None { heap.fault = Fault.DependencyNeed; } return value;
         },
         form_op::FnApplyNull => {
-            if !a.is_object() || node(heap, a.id()).kind != 2 { heap.fault = Fault.TypeError; return Value.Undefined; }
+            if !a.is_object() || node(heap, a.id()).kind != node_kind::Closure { heap.fault = Fault.TypeError; return Value.Undefined; }
             var row = node(heap, a.id()); row.immutable = true;
             return allocate(heap, row);
         },
-        form_op::FnApplyReceiver => { return if a.is_object() && node(heap, a.id()).kind == 2 && node(heap, a.id()).immutable { nil() } else { a }; },
+        form_op::FnApplyReceiver => { return if a.is_object() && node(heap, a.id()).kind == node_kind::Closure && node(heap, a.id()).immutable { nil() } else { a }; },
         // cljRealized of a delay (light-cljs-808; a lazy sequence stays a
         // boundary here).
         form_op::CljRealized => { return delay_realized(heap, a); },
@@ -2676,40 +2710,40 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
 }
 // A bare built-in function object of code `id` (realm.goose BUILTINS), for
 // compiler services and tests; the realm and boot_runtime make their own.
-fn builtin(heap: Heap&, id: i64) -> Value { return allocate(heap, Node { kind: 4, function: id as u32 }); }
+fn builtin(heap: Heap&, id: i64) -> Value { return allocate(heap, Node { kind: node_kind::Builtin, function: id as u32 }); }
 fn install_field(heap: Heap&, object: Value, name: const u8[:], value: Value) -> bool { let k = text(heap, name); return put(heap, object, k, value); }
 // The runtime leaves that run no JavaScript, by code (realm.goose
 // RUNTIME_LEAVES; call_builtin dispatches the realm's).
 fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
-    if id == 18 { return form_construct(heap, 5, args); }
+    if id == 18 { return form_construct(heap, node_kind::List, args); }
     if id == 19 && args.len == 2 { return form_op(heap, form_op::Symbol, args); }
     if id == 17 && args.len == 2 {
         // The generated target maps a nonchunked finite rest list. Vectors,
         // transducers, multiple sources and nested lazy inputs have different
         // demand/chunk semantics and remain explicit boundaries.
         let input = args[1]; let kind = form_kind(heap, input);
-        if input.tag() > value_tag::Null && kind != 5 && kind != 12 { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+        if input.tag() > value_tag::Null && kind != node_kind::List && kind != node_kind::Concat { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
         let count = form_count(heap, input);
         if heap.fault != Fault.None { return Value.Undefined; }
         if !values_fit(heap, count) || !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
         if !charge(heap, count) { return Value.Undefined; }
         let start = add_values(heap, [], count);
-        return allocate(heap, Node { kind: 15, start: start as u32, count: count as u32, value: args[0], namespace_value: input });
+        return allocate(heap, Node { kind: node_kind::LazySeq, start: start as u32, count: count as u32, value: args[0], namespace_value: input });
     }
     if id == 16 && args.len == 1 {
         let kind = form_kind(heap, args[0]); if heap.fault != Fault.None { return Value.Undefined; }
-        if kind == 5 || kind == 12 || kind == 15 { return args[0]; }
+        if kind == node_kind::List || kind == node_kind::Concat || kind == node_kind::LazySeq { return args[0]; }
         return form_sequence(heap, args[0], 0, false);
     }
     if id == 15 && args.len == 2 {
         let object = args[0]; let skip = args[1];
-        if !valid(heap, object) || !object.is_object() || node(heap, object.id()).kind != 14 || !skip.is_number() || !(skip.num() >= 0 && skip.num() <= 65535) || skip.num() != (skip.num() as i64) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
+        if !valid(heap, object) || !object.is_object() || node(heap, object.id()).kind != node_kind::Arguments || !skip.is_number() || !(skip.num() >= 0 && skip.num() <= 65535) || skip.num() != (skip.num() as i64) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
         let n = node(heap, object.id()); let offset = min(n.count as i64, skip.num() as i64);
-        return form_collection(heap, 5, run(heap, n.start + offset, n.count - offset));
+        return form_collection(heap, node_kind::List, run(heap, n.start + offset, n.count - offset));
     }
     if id >= 10 && id <= 13 && args.len == 1 {
         let array = args[0];
-        if !valid(heap, array) || !array.is_object() || node(heap, array.id()).kind != 1 { heap.fault = Fault.TypeError; return Value.Undefined; }
+        if !valid(heap, array) || !array.is_object() || node(heap, array.id()).kind != node_kind::Array { heap.fault = Fault.TypeError; return Value.Undefined; }
         let count = node(heap, array.id()).length;
         if !values_fit(heap, count) { memory(heap); return Value.Undefined; }
         if !charge(heap, count) { return Value.Undefined; }
@@ -2722,8 +2756,8 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
     // not convert by ToNumber), as `+` does.
     if id == 1 && args.len == 1 { return binary_value(heap, opcode::Plus, args[0], number(1)); }
     if id == 3 && args.len == 1 {
-        let kind = form_kind(heap, args[0]); if kind == 6 { return args[0]; }
-        if kind == 5 || kind == 12 { let n = node(heap, args[0].id()); return form_collection(heap, 6, run(heap, n.start, n.count)); }
+        let kind = form_kind(heap, args[0]); if kind == node_kind::Vector { return args[0]; }
+        if kind == node_kind::List || kind == node_kind::Concat { let n = node(heap, args[0].id()); return form_collection(heap, node_kind::Vector, run(heap, n.start, n.count)); }
     }
     if id == 4 && args.len == 2 {
         var out = args[0]; let count = form_count(heap, args[1]);
@@ -2746,10 +2780,10 @@ fn gensym(job: Job&, args: const Value[:]) -> Value {
     if args.len == 0 { units.append([71, 95, 95]); } else {
         // A prefix read from a form arrives as its scalar occurrence.
         let a = form_value(heap, args[0]); if !valid(heap, a) { return Value.Undefined; }
-        let kind = if a.is_object() { node(heap, a.id()).kind } else { -1 };
+        let kind = if a.is_object() { node(heap, a.id()).kind } else { node_kind::None };
         if a.is_string() { append_utf16(heap, a, units); }
-        else if kind == 9 || kind == 10 {
-            let n = node(heap, a.id()); if kind == 10 { units.push(58); }
+        else if kind == node_kind::Symbol || kind == node_kind::Keyword {
+            let n = node(heap, a.id()); if kind == node_kind::Keyword { units.push(58); }
             if n.namespace_value.is_string() { append_utf16(heap, n.namespace_value, units); units.push(47); }
             append_utf16(heap, n.value, units);
         } else { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
@@ -2759,7 +2793,7 @@ fn gensym(job: Job&, args: const Value[:]) -> Value {
     // V8 reads a name with a slash as a namespace and a name; not supported here.
     for u in units { if u == 47 { heap.fault = Fault.NativeBoundary; return Value.Undefined; } }
     if !charge(heap, units.len) { return Value.Undefined; }
-    let name = allocate(heap, Node { kind: 9, value: string(heap, units), namespace_value: nil() });
+    let name = allocate(heap, Node { kind: node_kind::Symbol, value: string(heap, units), namespace_value: nil() });
     if heap.fault == Fault.None { job.gensym_next += 1; }
     return name;
 }
@@ -2786,7 +2820,7 @@ fn deliver_effect(job: Job&, value: Value, fault: Fault = Fault.None) -> bool {
 fn demand_map(job: Job&, value: Value) -> bool {
     let heap .= job.heap;
     if !charge(heap) { return false; }
-    if !valid(heap, value) || !value.is_object() || node(heap, value.id()).kind != 15 { return false; }
+    if !valid(heap, value) || !value.is_object() || node(heap, value.id()).kind != node_kind::LazySeq { return false; }
     if node(heap, value.id()).initialized { heap.fault = Fault.NativeBoundary; return false; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return false; }
     let row = node(heap, value.id());
@@ -2800,7 +2834,7 @@ fn demand_maps(job: Job&, values: const Value[:], nested: bool = false) -> bool 
         if job.heap.fault != Fault.None { return false; }
         if nested && value.is_object() {
             let n = node(job.heap, value.id());
-            if n.kind == 5 || n.kind == 6 || n.kind == 12 {
+            if n.kind == node_kind::List || n.kind == node_kind::Vector || n.kind == node_kind::Concat {
                 for i in n.count { if demand_map(job, slot(job.heap, n.start + i)) { return true; } if job.heap.fault != Fault.None { return false; } }
             }
         }
@@ -2844,7 +2878,7 @@ fn native_step(job: Job&) {
 // the object as receiver and the value as its argument.
 fn call_setter(job: Job&, setter: Value, object: Value, value: Value, result: Value) {
     let heap .= job.heap;
-    if !setter.is_object() || node(heap, setter.id()).kind != 2 { heap.fault = Fault.UnsupportedOperand; return; }
+    if !setter.is_object() || node(heap, setter.id()).kind != node_kind::Closure { heap.fault = Fault.UnsupportedOperand; return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
     job.frames.push(Frame { function: -1, pc: 1, local_base: job.locals.len, operand_base: job.operands.len, callee: setter, receiver: object, output: result, native: Native.Setter });
     if !enter(job, setter, object, [value]) { job.frames.pop(); }
@@ -2860,7 +2894,7 @@ fn map_seq_step(job: Job&, frame: Frame) {
     } else if frame.index == row.count {
         // Completed maps become ordinary cursors without copying or
         // replacing their identity; all aliases see the same memo range.
-        node_mut(heap, frame.input.id()).kind = 12;
+        node_mut(heap, frame.input.id()).kind = node_kind::Concat;
         node_mut(heap, frame.input.id()).initialized = false;
         node_mut(heap, frame.input.id()).value = Value.Undefined; node_mut(heap, frame.input.id()).namespace_value = nil();
         job.frames.pop();
@@ -2868,7 +2902,7 @@ fn map_seq_step(job: Job&, frame: Frame) {
         if job.operands.len >= heap.limits.stack - job.locals.len { heap.fault = Fault.StackLimit; return; }
         let arg = form_nth(heap, row.namespace_value, frame.index);
         job.frames[job.frames.len - 1].pc = 1;
-        if frame.callee.is_object() && node(heap, frame.callee.id()).kind == 4 { builtin_callback(job, frame.callee, nil(), arg, frame); }
+        if frame.callee.is_object() && node(heap, frame.callee.id()).kind == node_kind::Builtin { builtin_callback(job, frame.callee, nil(), arg, frame); }
         else { enter(job, frame.callee, nil(), [arg]); }
     }
 }
@@ -2884,7 +2918,7 @@ fn mapv_step(job: Job&, frame: Frame) {
     } else {
         let arg = form_nth(heap, frame.input, frame.index);
         job.frames[job.frames.len - 1].index += 1; job.frames[job.frames.len - 1].pc = 1;
-        if frame.callee.is_object() && node(heap, frame.callee.id()).kind == 4 { builtin_callback(job, frame.callee, Value.Undefined, arg, frame); }
+        if frame.callee.is_object() && node(heap, frame.callee.id()).kind == node_kind::Builtin { builtin_callback(job, frame.callee, Value.Undefined, arg, frame); }
         else { enter(job, frame.callee, Value.Undefined, [arg]); }
     }
 }
@@ -2908,18 +2942,18 @@ fn finish_native(job: Job&, frame: Frame, result: Value) {
 // functions, errors, generators, promises and primitive wrappers (the kinds
 // lookup reads). The light-cljs runtime kinds (forms, cells, cursors, key
 // lists) do not: an operator on one fails by name as before, and a scalar
-// form (kind 11) is its primitive.
+// form (node_kind::Scalar) is its primitive.
 fn convertible(heap: const Heap&, v: Value) -> bool {
     if !v.is_object() { return false; }
     let kind = node(heap, v.id()).kind;
-    return kind == 0 || kind == 1 || kind == 2 || kind == 4 || kind == 13 || kind == 20 || kind == 21 || kind == 22 || kind == node_kind::Iterator || kind == node_kind::Proxy;
+    return kind == node_kind::Object || kind == node_kind::Array || kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::Proxy;
 }
 // Whether call or construction of f with arguments `args` converts the
 // first argument first, and with which hint (light-cljs-832): Number(o) and
 // String(o) of an object run its ToPrimitive (hint number; hint string, then
 // ToString) in a Convert frame, and the call runs again on the primitive.
 fn argument_converts(heap: const Heap&, f: Value, args: const Value[:]) -> bool, Hint {
-    if args.len == 0 || !convertible(heap, args[0]) || !f.is_object() || f.id() >= heap.nodes.len || node(heap, f.id()).kind != 4 { return false, Hint.Default; }
+    if args.len == 0 || !convertible(heap, args[0]) || !f.is_object() || f.id() >= heap.nodes.len || node(heap, f.id()).kind != node_kind::Builtin { return false, Hint.Default; }
     let b = builtin_of(heap, f.id());
     return b == Builtin.Number || b == Builtin.String, if b == Builtin.String { Hint.String } else { Hint.Number };
 }
@@ -2980,7 +3014,7 @@ fn symbol_detail(job: Job&, op: i64, a: Value, b: Value) {
     for c in words { job.detail.push(c); }
 }
 fn holds_string(heap: const Heap&, v: Value) -> bool {
-    return v.is_string() || v.is_object() && v.id() < heap.nodes.len && heap.nodes[v.id()].kind == 11 && heap.nodes[v.id()].value.is_string();
+    return v.is_string() || v.is_object() && v.id() < heap.nodes.len && heap.nodes[v.id()].kind == node_kind::Scalar && heap.nodes[v.id()].value.is_string();
 }
 // One step of ToPrimitive (ECMAScript 7.1.1; the Pants engine's Convert,
 // rust/src/vm/native.rs) for the operand at `index` (see Native.Convert):
@@ -3009,7 +3043,7 @@ fn convert_step(job: Job&, frame: Frame, hint: Hint, finish: bool, count: u8, me
     }
     let slot = frame.operand_base - frame.argument_count + frame.index;
     if frame.pc == 1 {
-        // A scalar form (kind 11: a primitive with its provenance, as a
+        // A scalar form (node_kind::Scalar: a primitive with its provenance, as a
         // helper's value arrives) is its primitive.
         let result = form_value(heap, job.operands.pop());
         job.frames[at].pc = 0;
@@ -3032,7 +3066,7 @@ fn convert_step(job: Job&, frame: Frame, hint: Hint, finish: bool, count: u8, me
         let value, getter = lookup(heap, v, k);
         if heap.fault != Fault.None { return; }
         if getter.is_object() {
-            if node(heap, getter.id()).kind != 2 { unsupported_detail(job, "ToPrimitive through a built-in getter"); return; }
+            if node(heap, getter.id()).kind != node_kind::Closure { unsupported_detail(job, "ToPrimitive through a built-in getter"); return; }
             job.frames[at].pc = 2; enter(job, getter, v, []); return;
         }
         m = value;
@@ -3056,7 +3090,7 @@ fn convert_step(job: Job&, frame: Frame, hint: Hint, finish: bool, count: u8, me
 fn conversion_call(job: Job&, at: i64, m: Value, v: Value, args: const Value[:]) {
     let heap .= job.heap;
     job.frames[at].pc = 1;
-    if node(heap, m.id()).kind == 2 { enter(job, m, v, args); return; }
+    if node(heap, m.id()).kind == node_kind::Closure { enter(job, m, v, args); return; }
     let b = builtin_of(heap, m.id());
     // An Array.prototype native frame (Array.prototype.toString, light-cljs-842)
     // runs above this one; its result arrives at pc 1.
@@ -3246,12 +3280,12 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     break;
                 },
                 NewObject => {
-                    settle(job, ran, used); job.frames[top].pc = pc; let v = allocate(heap, Node { kind: 0 }); job.operands.push(v);
+                    settle(job, ran, used); job.frames[top].pc = pc; let v = allocate(heap, Node { kind: node_kind::Object }); job.operands.push(v);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
                 NewArray => {
-                    settle(job, ran, used); job.frames[top].pc = pc; let v = allocate(heap, Node { kind: 1 }); job.operands.push(v);
+                    settle(job, ran, used); job.frames[top].pc = pc; let v = allocate(heap, Node { kind: node_kind::Array }); job.operands.push(v);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
@@ -3333,7 +3367,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 Callee => { job.operands.push(job.frames[top].callee); },
                 Capture c => { let row .= node(heap, job.frames[top].callee.id()); job.operands.push(slot(heap, row.start + c.slot)); },
                 NewCell c => {
-                    settle(job, ran, used); job.frames[top].pc = pc; let v = allocate(heap, Node { kind: 3, immutable: c.immutable }); job.operands.push(v);
+                    settle(job, ran, used); job.frames[top].pc = pc; let v = allocate(heap, Node { kind: node_kind::Binding, immutable: c.immutable }); job.operands.push(v);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
@@ -3440,14 +3474,14 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     let value = job.operands.pop(); let object = job.operands[job.operands.len - 1];
                     if dense(job, object) && writable(job, object.id()) { let end = node(heap, object.id()).length; if valid(heap, value) { set_element(heap, object, end, value); } }
                     else {
-                        let k = if valid(heap, object) && object.is_object() && node(heap, object.id()).kind == 1 { key(heap, number(node(heap, object.id()).length)) } else { heap.fault = Fault.TypeError; Value.Undefined };
+                        let k = if valid(heap, object) && object.is_object() && node(heap, object.id()).kind == node_kind::Array { key(heap, number(node(heap, object.id()).length)) } else { heap.fault = Fault.TypeError; Value.Undefined };
                         set_property(job, value, k, true, true);
                     }
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
                 CheckValue => {
-                    let value = job.operands.pop(); if valid(heap, value) && value.is_object() && node(heap, value.id()).kind == 3 { heap.fault = Fault.UnsupportedOperand; } job.operands.push(value);
+                    let value = job.operands.pop(); if valid(heap, value) && value.is_object() && node(heap, value.id()).kind == node_kind::Binding { heap.fault = Fault.UnsupportedOperand; } job.operands.push(value);
                     if heap.fault != Fault.None { break; }
                 },
                 This t => {
@@ -3528,7 +3562,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     var waiting = false;
                     if op == form_op::CljReadRoot && job.helpers_enabled {
                         let args = job.operands[base..];
-                        if valid(heap, args[0]) && args[0].is_object() && node(heap, args[0].id()).kind == 0 && args[1].tag() <= value_tag::Null && args[2].is_string() {
+                        if valid(heap, args[0]) && args[0].is_object() && node(heap, args[0].id()).kind == node_kind::Object && args[1].tag() <= value_tag::Null && args[2].is_string() {
                             let value, found = own_property(heap, args[0], args[2]);
                             // The answer is written into the receiver: only the
                             // compiler roots object or a row the job allocated
@@ -3656,8 +3690,8 @@ fn construct(job: Job&, argc: i64) {
     let heap .= job.heap;
     let base = job.operands.len - argc - 1;
     let f = job.operands[base];
-    let kind: i64 = if f.is_object() { node(heap, f.id()).kind } else { -1 };
-    if kind == 2 {
+    let kind: i64 = if f.is_object() { node(heap, f.id()).kind } else { node_kind::None };
+    if kind == node_kind::Closure {
         let code_kind = constructor_kind(heap, f.id());
         if code_kind >= constructor::BaseClass { unsupported_detail(job, "construct: class constructors"); return; }
         if code_kind != constructor::Ordinary { heap.fault = Fault.TypeError; return; }
@@ -3665,12 +3699,12 @@ fn construct(job: Job&, argc: i64) {
         if lazy_prototype(heap, f.id()) && !writable(job, f.id()) { unsupported_detail(job, "construct: a function whose lazy prototype is in a row this job did not allocate"); return; }
         let proto = prototype_from_constructor(job, f, Value.Empty, "a constructor's prototype getter");
         if heap.fault != Fault.None { return; }
-        let o = allocate(heap, Node { kind: 0, proto: proto });
+        let o = allocate(heap, Node { kind: node_kind::Object, proto: proto });
         if heap.fault != Fault.None { return; }
         if push_frame(job, f, o, job.operands[(base + 1)..], false, base, f) { job.operands.resize(base); }
         return;
     }
-    if kind != 4 { if kind == node_kind::Proxy { proxy_invoke(heap, f, proxy_method::Construct); } else { heap.fault = Fault.TypeError; } return; }
+    if kind != node_kind::Builtin { if kind == node_kind::Proxy { proxy_invoke(heap, f, proxy_method::Construct); } else { heap.fault = Fault.TypeError; } return; }
     let b = builtin_of(heap, f.id());
     match b {
         // new Proxy(target, handler) (light-cljs-845; proxy.goose).
@@ -3720,7 +3754,7 @@ fn prototype_from_constructor(job: Job&, callee: Value, fallback: Value, what: c
 inline fn invoke(job: Job&, top: i64, at: i64, argc: i64, method: bool) -> bool {
     let base = job.operands.len - argc - (if method { 2 } else { 1 });
     let callee = job.operands[base + (if method { 1 } else { 0 })];
-    if callee.is_object() && node(job.heap, callee.id()).kind == 2 {
+    if callee.is_object() && node(job.heap, callee.id()).kind == node_kind::Closure {
         job.frames[top].pc = at + 1;
         let receiver = if method { job.operands[base] } else { Value.Undefined };
         if push_frame(job, callee, receiver, job.operands[(job.operands.len - argc)..], false, base) { job.operands.resize(base); }
@@ -3739,10 +3773,10 @@ fn demand_call(job: Job&, argc: i64, method: bool) -> bool {
     let base = job.operands.len - argc - (if method { 2 } else { 1 });
     var callee = job.operands[base + (if method { 1 } else { 0 })];
     var first = job.operands.len - argc;
-    if valid(heap, callee) && callee.is_object() && node(heap, callee.id()).kind == 4 && node(heap, callee.id()).function == 14 && method {
+    if valid(heap, callee) && callee.is_object() && node(heap, callee.id()).kind == node_kind::Builtin && node(heap, callee.id()).function == 14 && method {
         callee = job.operands[base]; if first < job.operands.len { first += 1; }
     }
-    if valid(heap, callee) && callee.is_object() && node(heap, callee.id()).kind == 4 {
+    if valid(heap, callee) && callee.is_object() && node(heap, callee.id()).kind == node_kind::Builtin {
         let id = node(heap, callee.id()).function;
         if id == 3 || id == 4 { return demand_maps(job, job.operands[first..]); }
     }
@@ -3757,13 +3791,13 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
     var first = job.operands.len - argc;
     // Function.prototype.call forwards its method receiver as callee.
     // Detached calls fail; missing thisArg is exactly undefined.
-    var kind: i64 = if valid(heap, callee) && callee.is_object() { node(heap, callee.id()).kind } else { -1 };
-    if kind == 4 && node(heap, callee.id()).function == 14 {
+    var kind: i64 = if valid(heap, callee) && callee.is_object() { node(heap, callee.id()).kind } else { node_kind::None };
+    if kind == node_kind::Builtin && node(heap, callee.id()).function == 14 {
         callee = receiver; receiver = if first < job.operands.len { job.operands[first] } else { Value.Undefined };
         if first < job.operands.len { first += 1; }
-        kind = if valid(heap, callee) && callee.is_object() { node(heap, callee.id()).kind } else { -1 };
+        kind = if valid(heap, callee) && callee.is_object() { node(heap, callee.id()).kind } else { node_kind::None };
     }
-    if kind == 4 {
+    if kind == node_kind::Builtin {
         let id = node(heap, callee.id()).function;
         let args = job.operands[first..];
         let converts, hint = argument_converts(heap, callee, args);
@@ -3772,7 +3806,7 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
         if id == 2 && args.len == 2 {
             if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; }
             else {
-                let input = args[1]; let callback = args[0]; let out = form_collection(heap, 6, []);
+                let input = args[1]; let callback = args[0]; let out = form_collection(heap, node_kind::Vector, []);
                 form_count(heap, input);
                 job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: callback, receiver: Value.Undefined, input: input, output: out, native: Native.Mapv });
                 job.operands.resize(base);
@@ -3794,10 +3828,10 @@ fn arguments(job: Job&, frame: Frame, f: const Function&, rest: bool, skip_count
         if !values_fit(heap, args.len) || !nodes_fit(heap, 1) { memory(heap); }
         else if charge(heap, args.len) {
             let offset = add_values(heap, args);
-            job.operands.push(allocate(heap, Node { kind: 14, start: offset as u32, count: args.len as u32 }));
+            job.operands.push(allocate(heap, Node { kind: node_kind::Arguments, start: offset as u32, count: args.len as u32 }));
         }
     } else {
-        let array = allocate(heap, Node { kind: 1 });
+        let array = allocate(heap, Node { kind: node_kind::Array });
         if array.is_object() { for value, i in args { if !valid(heap, value) || !set_element(heap, array, i, value) { break; } } }
         job.operands.push(array);
     }
@@ -3806,7 +3840,7 @@ fn arguments(job: Job&, frame: Frame, f: const Function&, rest: bool, skip_count
 fn cell(job: Job&, op: i64) {
     let heap .= job.heap;
     let value = if op == opcode::CellGet { Value.Undefined } else { job.operands.pop() }; let cell = job.operands.pop();
-    if valid(heap, cell) && cell.is_object() && node(heap, cell.id()).kind == 3 {
+    if valid(heap, cell) && cell.is_object() && node(heap, cell.id()).kind == node_kind::Binding {
         // A closure environment the job did not allocate is read-only.
         if op != opcode::CellGet && !writable(job, cell.id()) { heap.fault = Fault.NativeBoundary; return; }
         // The write log keeps no cell writes (light-cljs-801): nothing reads them.
@@ -3828,7 +3862,7 @@ fn get_property(job: Job&, k: Value) {
         // Only the compiler root intrinsic may suspend and demand a
         // definition. A raw JS bypass must not observe stale undefined.
         if !found { heap.fault = Fault.DependencyNeed; } job.operands.push(value);
-    } else if valid(heap, object) && object.is_object() && (node(heap, object.id()).kind == 4 || node(heap, object.id()).kind == 2 && node(heap, object.id()).key_count == 0 && !node(heap, object.id()).initialized) && key_is(heap, k, "call") {
+    } else if valid(heap, object) && object.is_object() && (node(heap, object.id()).kind == node_kind::Builtin || node(heap, object.id()).kind == node_kind::Closure && node(heap, object.id()).key_count == 0 && !node(heap, object.id()).initialized) && key_is(heap, k, "call") {
         job.operands.push(get(heap, object, k));
     } else if object.is_object() && !realm_intrinsic(object.id()) && object.id() < job.protected_nodes {
         let value, found = own_property(heap, object, k);
@@ -3842,7 +3876,7 @@ fn get_property(job: Job&, k: Value) {
         let value, getter = read(heap, object, k);
         if heap.fault == Fault.UnsupportedOperand { primitive_gap(job, object); }
         if heap.fault != Fault.None || !getter.is_object() { job.operands.push(value); }
-        else if node(heap, getter.id()).kind != 2 { heap.fault = Fault.UnsupportedOperand; job.operands.push(value); }
+        else if node(heap, getter.id()).kind != node_kind::Closure { heap.fault = Fault.UnsupportedOperand; job.operands.push(value); }
         else { enter(job, getter, object, []); }
     }
 }
@@ -3882,7 +3916,7 @@ fn named_error(job: Job&, fault: Fault, before: const u8[:], k: Value, after: co
 // declares a binding, and its GetGlobal keeps the compiler's own path.
 //
 // The record is a dictionary-mode node the job allocates: one record per
-// lexical name (interned key), its value the binding's cell (kind 3) and its
+// lexical name (interned key), its value the binding's cell (node_kind::Binding) and its
 // attributes writable for `let` and none for `const` and `class`. Its rows
 // are the job's, so a reused worker's reset drops it; a suspended compiler
 // job keeps the row ID in its continuation (compiler_session.goose Saved).
@@ -3890,7 +3924,7 @@ fn lexical_entry(job: Job&, key: Value) -> Own {
     if !job.lexicals.is_object() { return Own {}; }
     return find_own(job.heap, job.lexicals.id(), key);
 }
-fn global_cell(heap: const Heap&, v: Value) -> bool { return v.is_object() && v.id() < heap.nodes.len && node(heap, v.id()).kind == 3; }
+fn global_cell(heap: const Heap&, v: Value) -> bool { return v.is_object() && v.id() < heap.nodes.len && node(heap, v.id()).kind == node_kind::Binding; }
 // GetGlobal and GetGlobalOrUndefined (`typeof x`) where the job
 // may write the global object: a lexical binding first (uninitialized, a
 // ReferenceError even under `typeof`), then the global object's own or
@@ -3938,7 +3972,7 @@ fn declare_lexical(job: Job&, key: Value, cell: Value, mutable: bool) {
     if heap.fault != Fault.None { return; }
     if prior.found { named_error(job, Fault.SyntaxError, "global lexical '", key, "' is already declared"); return; }
     if !job.lexicals.is_object() {
-        let record = allocate(heap, Node { kind: 0, initialized: true, proto: Value.Null });
+        let record = allocate(heap, Node { kind: node_kind::Object, initialized: true, proto: Value.Null });
         if heap.fault != Fault.None { return; }
         job.lexicals = record;
     }
@@ -4030,7 +4064,7 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool) {
         // DeclareGlobalConstValue: a const the script keeps as a value gets
         // its record's cell, uninitialized until InitGlobalLexical.
         opcode::DeclareGlobalConstValue => {
-            let cell = allocate(heap, Node { kind: 3, immutable: true });
+            let cell = allocate(heap, Node { kind: node_kind::Binding, immutable: true });
             if heap.fault == Fault.None { declare_lexical(job, key, cell, false); }
         },
         // CheckGlobalLexicalConflict: a var or function name the record holds.
@@ -4140,7 +4174,7 @@ fn install_foreign(job: Job&, start: i64) {
 // read and write its run directly, without building key strings.
 fn dense(job: Job&, object: Value) -> bool {
     let heap .= job.heap;
-    if !object.is_object() || !valid(heap, object) || object.id() < job.protected_nodes || node(heap, object.id()).kind != 1 { return false; }
+    if !object.is_object() || !valid(heap, object) || object.id() < job.protected_nodes || node(heap, object.id()).kind != node_kind::Array { return false; }
     return !(job.root_receiver.is_object() && object == job.root_receiver);
 }
 // An unprotected ordinary object other than the compiler roots object with
@@ -4150,7 +4184,7 @@ inline fn object_hit(job: const Job&, object: Value, i: i64) -> bool {
     let heap .= job.heap;
     if i < 0 || !object.is_object() || object.id() >= heap.nodes.len || object.id() < job.protected_nodes || job.root_receiver.is_object() && object == job.root_receiver { return false; }
     let n .= node(heap, object.id());
-    return n.kind == 0 && i < n.count && !slot(heap, n.start + i).is_hole();
+    return n.kind == node_kind::Object && i < n.count && !slot(heap, n.start + i).is_hole();
 }
 // [[Set]] from an assignment (light-cljs-787): chain, the expression yields
 // the object (88), else the value. A setter runs through a Setter native
@@ -4208,7 +4242,7 @@ fn set_proto(job: Job&) {
     let heap .= job.heap;
     let v = job.operands.pop(); let object = job.operands[job.operands.len - 1];
     if !valid(heap, object) || !valid(heap, v) || !v.is_object() && !v.is_null() { return; }
-    if !object.is_object() || node(heap, object.id()).kind != 0 { heap.fault = Fault.UnsupportedOperand; return; }
+    if !object.is_object() || node(heap, object.id()).kind != node_kind::Object { heap.fault = Fault.UnsupportedOperand; return; }
     if !writable(job, object.id()) { heap.fault = Fault.NativeBoundary; return; }
     if !set_prototype(heap, object.id(), v) && heap.fault == Fault.None { heap.fault = Fault.TypeError; }
 }
@@ -4287,7 +4321,7 @@ fn instanceof_op(job: Job&) {
     if !target.is_object() { type_error(job, "invalid 'instanceof' right operand"); return; }
     // An arguments object's non-index keys (its @@hasInstance and its
     // prototype's) are not implemented (own_entry, light-cljs-764).
-    if node(heap, target.id()).kind == 14 { unsupported_detail(job, "instanceof: an arguments object as the right operand"); return; }
+    if node(heap, target.id()).kind == node_kind::Arguments { unsupported_detail(job, "instanceof: an arguments object as the right operand"); return; }
     if !convertible(heap, target) { unsupported_detail(job, "instanceof: a light-cljs runtime value as the right operand"); return; }
     let m, getter = lookup(heap, target, Value.Symbol { s: well_known::HasInstance });
     if heap.fault != Fault.None { return; }
@@ -4296,7 +4330,7 @@ fn instanceof_op(job: Job&) {
 }
 // The JavaScript object kinds instanceof reads the prototype of: those
 // ToPrimitive converts (convertible) and arguments objects.
-inline fn instance_kind(heap: const Heap&, v: Value) -> bool { return convertible(heap, v) || node(heap, v.id()).kind == 14; }
+inline fn instance_kind(heap: const Heap&, v: Value) -> bool { return convertible(heap, v) || node(heap, v.id()).kind == node_kind::Arguments; }
 // InstanceofOperator from step 3, with m = target[@@hasInstance]. `at` is
 // the HasInstance frame's row, -1 while the instruction runs without one.
 fn has_instance_method(job: Job&, at: i64, c: Value, v: Value, m: Value) {
@@ -4307,7 +4341,7 @@ fn has_instance_method(job: Job&, at: i64, c: Value, v: Value, m: Value) {
     }
     if !callable(heap, m) { type_error(job, "Symbol.hasInstance is not a function"); return; }
     let kind = node(heap, m.id()).kind;
-    if kind == 2 { has_instance_await(job, at, 2, c, v, m, c, [v]); return; }
+    if kind == node_kind::Closure { has_instance_await(job, at, 2, c, v, m, c, [v]); return; }
     let b = builtin_of(heap, m.id());
     if b == Builtin.FunctionPrototypeHasInstance { ordinary_has_instance(job, at, c, v); return; }
     let args: Value[1] = [v];
@@ -4334,7 +4368,7 @@ fn ordinary_has_instance(job: Job&, at: i64, c: Value, o: Value) {
     let heap .= job.heap;
     if !callable(heap, c) || !o.is_object() { has_instance_done(job, at, false); return; }
     if !instance_kind(heap, o) { unsupported_detail(job, "instanceof: a light-cljs runtime value"); return; }
-    if node(heap, c.id()).kind == 2 {
+    if node(heap, c.id()).kind == node_kind::Closure {
         if unsupported_prototype(heap, c.id()) { unsupported_detail(job, "instanceof: a class constructor's or async generator's prototype"); return; }
         if lazy_prototype(heap, c.id()) { has_instance_done(job, at, false); return; }
     }
@@ -4368,7 +4402,7 @@ fn has_instance_walk(job: Job&, at: i64, o: Value, p: Value) {
 // arrives at `phase`. Only an ordinary function can be a getter here.
 fn has_instance_await(job: Job&, at: i64, phase: i64, c: Value, v: Value, f: Value, receiver: Value, args: const Value[:]) {
     let heap .= job.heap;
-    if node(heap, f.id()).kind != 2 { unsupported_detail(job, "instanceof: a built-in getter"); return; }
+    if node(heap, f.id()).kind != node_kind::Closure { unsupported_detail(job, "instanceof: a built-in getter"); return; }
     let fresh = at < 0;
     if has_instance_frame(job, at, phase, c, v, Value.Undefined) < 0 { return; }
     if !push_frame(job, f, receiver, args, false, job.operands.len) && fresh { job.frames.pop(); }
@@ -4485,8 +4519,8 @@ fn iteration_object(job: Job&, v: Value, what: const u8[:]) -> bool {
     // The compiler roots object and protected rows answer only their own
     // names (get_property). A protected array is iterated: its @@iterator is
     // the realm's and its cursor only reads it (light-cljs-844).
-    if job.root_receiver.is_object() && v == job.root_receiver || !realm_intrinsic(v.id()) && v.id() < job.protected_nodes && node(heap, v.id()).kind != 1 { heap.fault = Fault.NativeBoundary; return false; }
-    if !convertible(heap, v) && node(heap, v.id()).kind != 14 {
+    if job.root_receiver.is_object() && v == job.root_receiver || !realm_intrinsic(v.id()) && v.id() < job.protected_nodes && node(heap, v.id()).kind != node_kind::Array { heap.fault = Fault.NativeBoundary; return false; }
+    if !convertible(heap, v) && node(heap, v.id()).kind != node_kind::Arguments {
         job.detail.clear(); for c in "GetIterator: a light-cljs runtime value as " { job.detail.push(c); } for c in what { job.detail.push(c); }
         heap.fault = Fault.UnsupportedOperand; return false;
     }
@@ -4504,7 +4538,7 @@ fn get_iterator_method(job: Job&, at: i64, v: Value, method: Value) {
     // loop's call does; a second forward then finds no callee.
     var receiver = v;
     loop {
-        if node(heap, f.id()).kind == 2 { get_iterator_await(job, at, 2, v, Value.Undefined, f, receiver); return; }
+        if node(heap, f.id()).kind == node_kind::Closure { get_iterator_await(job, at, 2, v, Value.Undefined, f, receiver); return; }
         if builtin_of(heap, f.id()) != Builtin.FunctionPrototypeCall { break; }
         f = receiver; receiver = Value.Undefined;
         if !callable(heap, f) { type_error(job, "not a function"); return; }
@@ -4543,7 +4577,7 @@ fn get_iterator_next(job: Job&, at: i64, iterator: Value) {
 // delivered by its finished GetIterator frame.
 fn get_iterator_done(job: Job&, at: i64, it: Value, next: Value) {
     let heap .= job.heap;
-    let record = allocate(heap, Node { kind: 0 });
+    let record = allocate(heap, Node { kind: node_kind::Object });
     if heap.fault != Fault.None || !realm_value(heap, record.id(), "iterator", it, attrs_data()) || !realm_value(heap, record.id(), "next", next, attrs_data()) { return; }
     if at >= 0 { finish_native(job, job.frames[at], record); return; }
     if job.operands.len >= heap.limits.stack - job.locals.len { heap.fault = Fault.StackLimit; return; }
@@ -4554,7 +4588,7 @@ fn get_iterator_done(job: Job&, at: i64, it: Value, next: Value) {
 // `phase`. Only an ordinary function can be a getter here.
 fn get_iterator_await(job: Job&, at: i64, phase: i64, v: Value, it: Value, f: Value, receiver: Value) {
     let heap .= job.heap;
-    if node(heap, f.id()).kind != 2 { unsupported_detail(job, "GetIterator: a built-in getter"); return; }
+    if node(heap, f.id()).kind != node_kind::Closure { unsupported_detail(job, "GetIterator: a built-in getter"); return; }
     let fresh = at < 0;
     if get_iterator_frame(job, at, phase, v, it) < 0 { return; }
     if !push_frame(job, f, receiver, [], false, job.operands.len) && fresh { job.frames.pop(); }
@@ -4584,7 +4618,7 @@ fn get_iterator_step(job: Job&, frame: Frame) {
 // vm/native/copy_properties.rs, QuickJS's build_for_in_iterator and
 // js_for_in_next).
 //
-// A key list is a node of kind 16 a job allocates and only its own frames
+// A key list is node_kind::KeyList a job allocates and only its own frames
 // hold (a for-in loop's scratch local, a CopyData native frame's callee), so
 // JavaScript never reaches it and the reset truncates it with the job's rows.
 // Its records heap.properties[keys..keys + key_count), in a run of
@@ -4629,7 +4663,7 @@ fn list_append(heap: Heap&, o: i64, keys: const OwnKey[:], symbols: bool) -> boo
     return true;
 }
 fn key_list(heap: Heap&, object: Value, keys: const OwnKey[:], symbols: bool) -> Value {
-    let list = allocate(heap, Node { kind: 16, value: object });
+    let list = allocate(heap, Node { kind: node_kind::KeyList, value: object });
     if !list.is_object() || !list_append(heap, list.id(), keys, symbols) { return Value.Undefined; }
     return list;
 }
@@ -4750,7 +4784,7 @@ fn own_keys_op(job: Job&) {
     var keys: OwnKey[>..] = [];
     if source.is_object() { if !listable(job, source) || !own_property_keys(heap, source, keys) { return; } }
     else if source.is_string() && !string_keys(heap, source, true, keys) { return; }
-    let array = allocate(heap, Node { kind: 1 });
+    let array = allocate(heap, Node { kind: node_kind::Array });
     if !array.is_object() { return; }
     for e, i in keys {
         if !e.key.is_string() { heap.fault = Fault.UnsupportedOperand; return; }
@@ -4791,7 +4825,7 @@ fn copy_data(job: Job&) {
     let heap .= job.heap;
     let source = job.operands.pop(); let target = job.operands[job.operands.len - 1];
     if !valid(heap, source) || !valid(heap, target) || source.tag() <= value_tag::Null { return; }
-    if !target.is_object() || node(heap, target.id()).kind != 0 { heap.fault = Fault.UnsupportedOperand; return; }
+    if !target.is_object() || node(heap, target.id()).kind != node_kind::Object { heap.fault = Fault.UnsupportedOperand; return; }
     if !writable(job, target.id()) { heap.fault = Fault.NativeBoundary; return; }
     var keys: OwnKey[>..] = []; var walked = Value.Undefined;
     if source.is_object() { if !listable(job, source) || !own_property_keys(heap, source, keys) { return; } walked = source; }
@@ -4825,7 +4859,7 @@ fn copy_step(job: Job&, frame: Frame) {
     if !is_accessor(e.value) { copy_define(job, frame.output, k, e.value); return; }
     let getter = pair(heap, e.value).get;
     if !getter.is_object() { copy_define(job, frame.output, k, Value.Undefined); return; }
-    if node(heap, getter.id()).kind != 2 { heap.fault = Fault.UnsupportedOperand; return; }
+    if node(heap, getter.id()).kind != node_kind::Closure { heap.fault = Fault.UnsupportedOperand; return; }
     job.frames[at].pc = 1; enter(job, getter, frame.input, []);
 }
 // ToPropertyKey: o k → o k', the key converted once for a read and a

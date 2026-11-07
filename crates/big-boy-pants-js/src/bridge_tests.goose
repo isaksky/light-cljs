@@ -36,7 +36,7 @@ thread_fn roundtrip() {
         let with_meta = source::form_op(heap, form_op::CljWithMeta, [old, source::nil()]); assert(source::form_op(heap, form_op::CljMeta, [with_meta]).is_null() && source::form_op(heap, form_op::CljMeta, [old]).id() == meta.id());
         let map = source::form_assoc(heap, meta, a, old); let map2 = source::form_assoc(heap, map, b, append);
         assert(source::form_count(heap, map) == 2 && source::form_count(heap, map2) == 2 && source::form_get(heap, map, b, source::nil()).id() == old.id() && source::form_get(heap, map2, a, source::nil()).id() == append.id());
-        let constructed = source::form_construct(heap, 7, [a, old, b, append]); let set = source::form_construct(heap, 8, [a, b]);
+        let constructed = source::form_construct(heap, node_kind::Map, [a, old, b, append]); let set = source::form_construct(heap, node_kind::Set, [a, b]);
         assert(source::form_count(heap, constructed) == 1 && source::form_get(heap, constructed, a, source::nil()).id() == append.id());
         assert(source::slot(heap, source::node(heap, constructed.id()).start).id() == a.id() && source::form_count(heap, set) == 1 && source::slot(heap, source::node(heap, set.id()).start).id() == a.id());
         assert(bridge::export_graph(heap, [old, changed, append], output, c));
@@ -57,24 +57,24 @@ thread_fn roundtrip() {
 thread_fn positional_map_equality() {
     defer { heap_program::finish(); }
     var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
-    let a = source::allocate(heap, source::Node { kind: 11, value: source::number(7) });
-    let b = source::allocate(heap, source::Node { kind: 11, value: source::number(7) });
+    let a = source::allocate(heap, source::Node { kind: node_kind::Scalar, value: source::number(7) });
+    let b = source::allocate(heap, source::Node { kind: node_kind::Scalar, value: source::number(7) });
     assert(a.id() != b.id() && source::form_equal(heap, a, b));
     // LiteralMap retains duplicate operands; lookup and equality must both
     // stop at the first equal key, even when a later value would match.
-    let first = source::form_op(heap, form_op::LiteralMap, [source::form_collection(heap, 6, [a, source::number(1), b, source::number(2)])]);
-    let swapped = source::form_op(heap, form_op::LiteralMap, [source::form_collection(heap, 6, [b, source::number(2), a, source::number(1)])]);
+    let first = source::form_op(heap, form_op::LiteralMap, [source::form_collection(heap, node_kind::Vector, [a, source::number(1), b, source::number(2)])]);
+    let swapped = source::form_op(heap, form_op::LiteralMap, [source::form_collection(heap, node_kind::Vector, [b, source::number(2), a, source::number(1)])]);
     assert(source::form_count(heap, first) == 2 && source::form_count(heap, swapped) == 2);
     assert(source::form_get(heap, first, b, source::nil()).num() == 1 && source::form_get(heap, swapped, a, source::nil()).num() == 2);
     assert(!source::form_equal(heap, first, swapped) && !source::form_equal(heap, swapped, first));
-    assert(!source::form_equal(heap, source::form_collection(heap, 8, [first]), source::form_collection(heap, 8, [swapped])));
-    let outer = source::form_construct(heap, 7, [first, source::number(10), swapped, source::number(20)]);
+    assert(!source::form_equal(heap, source::form_collection(heap, node_kind::Set, [first]), source::form_collection(heap, node_kind::Set, [swapped])));
+    let outer = source::form_construct(heap, node_kind::Map, [first, source::number(10), swapped, source::number(20)]);
     assert(source::form_count(heap, outer) == 2);
     assert(source::form_get(heap, outer, first, source::nil()).num() == 10 && source::form_get(heap, outer, swapped, source::nil()).num() == 20);
     let changed = source::form_assoc(heap, outer, swapped, source::number(30));
     assert(source::form_get(heap, changed, first, source::nil()).num() == 10 && source::form_get(heap, changed, swapped, source::nil()).num() == 30 && source::form_get(heap, outer, swapped, source::nil()).num() == 20);
-    let ordered = source::form_construct(heap, 7, [a, source::number(1), source::number(8), source::number(2)]);
-    let reordered = source::form_construct(heap, 7, [source::number(8), source::number(2), b, source::number(1)]);
+    let ordered = source::form_construct(heap, node_kind::Map, [a, source::number(1), source::number(8), source::number(2)]);
+    let reordered = source::form_construct(heap, node_kind::Map, [source::number(8), source::number(2), b, source::number(1)]);
     assert(source::form_equal(heap, ordered, reordered) && source::form_equal(heap, reordered, ordered) && heap.fault == source::Fault.None);
     print("positional map equality: first matching key agrees with lookup, nested keys and persistent assoc passed");
 }
@@ -96,13 +96,13 @@ thread_fn unsupported_values() {
     let ns = source::text(heap, "a/b"); let name = source::text(heap, "x");
     source::form_op(heap, form_op::Symbol, [ns, name]); assert(heap.fault == source::Fault.NativeBoundary); heap.fault = source::Fault.None;
     let keyword = source::form_op(heap, form_op::Keyword, [source::nil(), name]); source::form_op(heap, form_op::CljWithMeta, [keyword, source::nil()]); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
-    let vector = source::form_collection(heap, 6, [source::number(1)]);
+    let vector = source::form_collection(heap, node_kind::Vector, [source::number(1)]);
     for index in [0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0, 1e100] {
         assert(source::form_get(heap, vector, source::number(index), source::number(99)).num() == 99 && heap.fault == source::Fault.None);
         source::form_assoc(heap, vector, source::number(index), source::nil()); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
         source::form_op(heap, form_op::CljNth, [vector, source::number(index)]); assert(heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
     }
-    let object = source::allocate(heap, source::Node { kind: 0 }); let container = source::form_collection(heap, 6, [object]);
+    let object = source::allocate(heap, source::Node { kind: node_kind::Object }); let container = source::form_collection(heap, node_kind::Vector, [object]);
     var c = bridge::Control {}; var out = bridge::Graph {}; assert(!bridge::export_graph(heap, [container], out, c) && c.error == bridge::Error.Unsupported && out.nodes.len == 0);
     var g = bridge::Graph {}; g.units.append([97, 47, 98]); g.nodes.push(bridge::Form { tag: form_tag::Symbol, start: 0, count: 3 }); g.roots.push(0);
     var bad = bridge::Control {}; var roots: source::Value[>..] = []; let before = heap.nodes.len;
@@ -113,10 +113,10 @@ thread_fn primitive_fallback() {
     var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
     heap.source_bytes.append("one two"); heap.source_ranges.push(source::SourceRange { start: 0, count: 7 });
     let text = source::string(heap, [233, 55357, 56832, 55296]);
-    let argument = source::allocate(heap, source::Node { kind: 11, value: text, origin: 0, source: 0, span_start: 0, span_end: 3 });
-    let annotation = source::allocate(heap, source::Node { kind: 11, value: text, origin: 0, source: 0, span_start: 4, span_end: 7 });
-    let metadata = source::form_collection(heap, 7, [source::number(1), annotation]);
-    let call = source::form_collection(heap, 5, [source::nil(), argument]); source::node_mut(heap, call.id()).metadata = metadata;
+    let argument = source::allocate(heap, source::Node { kind: node_kind::Scalar, value: text, origin: 0, source: 0, span_start: 0, span_end: 3 });
+    let annotation = source::allocate(heap, source::Node { kind: node_kind::Scalar, value: text, origin: 0, source: 0, span_start: 4, span_end: 7 });
+    let metadata = source::form_collection(heap, node_kind::Map, [source::number(1), annotation]);
+    let call = source::form_collection(heap, node_kind::List, [source::nil(), argument]); source::node_mut(heap, call.id()).metadata = metadata;
     var c = bridge::Control {}; var out = bridge::Graph {}; assert(bridge::export_graph(heap, [text], out, c, call));
     // Bare primitive compatibility starts from arguments, not &form metadata.
     assert(out.nodes[out.roots[0]].span_start == 0 && out.nodes[out.roots[0]].origin == 0);
@@ -179,10 +179,10 @@ thread_fn update_boundary(operation: i64, mode: i64, cost: i64) {
     {
         {
             var heap = source::Heap { code: code }; assert(source::initialize(heap));
-            let key = source::allocate(heap, source::Node { kind: 11, value: source::number(7) });
-            let equal_key = source::allocate(heap, source::Node { kind: 11, value: source::number(7) });
-            let metadata = source::form_collection(heap, 7, []);
-            let old = if operation == 2 || operation == 3 { source::form_collection(heap, 7, [key, source::number(1), equal_key, source::number(2)]) } else { source::form_collection(heap, if operation == 4 { 5 } else { 6 }, [key, equal_key]) };
+            let key = source::allocate(heap, source::Node { kind: node_kind::Scalar, value: source::number(7) });
+            let equal_key = source::allocate(heap, source::Node { kind: node_kind::Scalar, value: source::number(7) });
+            let metadata = source::form_collection(heap, node_kind::Map, []);
+            let old = if operation == 2 || operation == 3 { source::form_collection(heap, node_kind::Map, [key, source::number(1), equal_key, source::number(2)]) } else { source::form_collection(heap, if operation == 4 { 5 } else { 6 }, [key, equal_key]) };
             source::node_mut(heap, old.id()).metadata = metadata; source::node_mut(heap, old.id()).origin = 17; source::node_mut(heap, old.id()).source = 3; source::node_mut(heap, old.id()).span_start = 11; source::node_mut(heap, old.id()).span_end = 22;
             let n = source::node(heap, old.id()); let nodes = heap.nodes.len; let values = heap.values.len; let work = heap.work;
             let count: i64 = if operation == 0 { 2 } else if operation == 1 { 3 } else if operation == 2 { 4 } else if operation == 3 { 6 } else if operation == 6 { 1 } else { 3 };
@@ -221,7 +221,7 @@ thread_fn replaced_child() {
     defer { heap_program::finish(); }
     var code = source::Code {}; code_init(code);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
-    let old = source::form_collection(heap, 6, [source::number(1)]); source::set_slot(heap, source::node(heap, old.id()).start, source::object(heap.nodes.len));
+    let old = source::form_collection(heap, node_kind::Vector, [source::number(1)]); source::set_slot(heap, source::node(heap, old.id()).start, source::object(heap.nodes.len));
     let fixed = source::form_assoc(heap, old, source::number(0), source::number(2)); assert(heap.fault == source::Fault.None && source::form_nth(heap, fixed, 0).num() == 2);
 }
 fn direct_update_boundaries() {
@@ -267,7 +267,7 @@ thread_fn identity_sources() {
     var decoded = bridge::Graph {}; var roots: source::Value[>..] = []; assert(bridge::decode(decoded, bytes, c) && bridge::import_graph(heap, decoded, roots, c));
     assert(heap.source_bytes.len == 0 && heap.source_ranges.len == 3 && heap.source_ranges[1].identity == 9 && heap.source_ranges[1].count == 5);
     let vector = roots[0];
-    let fresh = source::form_collection(heap, 6, [source::form_nth(heap, vector, 2), source::form_nth(heap, vector, 0)]);
+    let fresh = source::form_collection(heap, node_kind::Vector, [source::form_nth(heap, vector, 2), source::form_nth(heap, vector, 0)]);
     var out = bridge::Graph {}; var e = bridge::Control {}; assert(bridge::export_graph(heap, [fresh], out, e, vector));
     assert(out.bytes.len == 0 && out.sources.len == 2 && out.sources[0].identity == 7 && out.sources[0].count == 21 && out.sources[1].identity == 9 && out.sources[1].count == 5);
     let root = out.nodes[out.roots[0]]; let first = out.nodes[out.children[root.start]]; let second = out.nodes[out.children[root.start + 1]];
@@ -446,20 +446,20 @@ thread_fn assembly() {
         var graph = bridge::Graph {}; graph_init(graph);
         var roots: source::Value[>..] = []; var c = bridge::Control {}; assert(bridge::import_graph(heap, graph, roots, c));
         let old = roots[0]; let a = source::form_nth(heap, old, 0); let b = source::form_nth(heap, old, 1);
-        let left = source::form_collection(heap, 5, [a, b, a]);
-        let right = source::form_collection(heap, 6, [b]);
+        let left = source::form_collection(heap, node_kind::List, [a, b, a]);
+        let right = source::form_collection(heap, node_kind::Vector, [b]);
         let joined = source::form_op(heap, form_op::CljConcat, [left, right]);
-        let nested = source::form_op(heap, form_op::CljConcatAll, [source::form_collection(heap, 5, [source::nil(), joined, source::form_collection(heap, 5, []), right])]);
+        let nested = source::form_op(heap, form_op::CljConcatAll, [source::form_collection(heap, node_kind::List, [source::nil(), joined, source::form_collection(heap, node_kind::List, []), right])]);
         assert(source::form_count(heap, nested) == 5 && source::form_count(heap, left) == 3 && source::form_count(heap, right) == 1);
         for i in 5 { assert(source::form_nth(heap, nested, i).id() == (if i == 0 || i == 2 { a.id() } else { b.id() })); }
-        let empty = source::form_op(heap, form_op::CljConcat, [source::nil(), source::form_collection(heap, 5, [])]);
+        let empty = source::form_op(heap, form_op::CljConcat, [source::nil(), source::form_collection(heap, node_kind::List, [])]);
         assert(source::form_count(heap, empty) == 0 && source::form_op(heap, form_op::CljSeq, [empty]).is_null());
         assert(source::native_value(heap, 16, [nested]).id() == nested.id());
         assert(source::native_value(heap, 16, [left]).id() == left.id());
         assert(source::form_count(heap, source::native_value(heap, 16, [source::nil()])) == 0);
-        let map = source::form_collection(heap, 7, [a, source::boolean(false), source::number(8), source::nil()]);
+        let map = source::form_collection(heap, node_kind::Map, [a, source::boolean(false), source::number(8), source::nil()]);
         assert(source::form_contains(heap, map, b) && source::form_contains(heap, map, source::number(8)) && !source::form_contains(heap, map, source::number(9)));
-        let set = source::form_collection(heap, 8, [a]); assert(source::form_contains(heap, set, b));
+        let set = source::form_collection(heap, node_kind::Set, [a]); assert(source::form_contains(heap, set, b));
         assert(source::form_contains(heap, right, source::number(0)) && !source::form_contains(heap, right, source::number(1)) && !source::form_contains(heap, source::nil(), a));
         assert(bridge::export_graph(heap, [nested, old], out, c));
         // Every limit is checked before publishing a partial concatenation.

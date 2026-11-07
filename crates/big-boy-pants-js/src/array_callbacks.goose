@@ -90,7 +90,7 @@ fn start_array_callbacks(job: Job&, b: Builtin, receiver: Value, callback: Value
 // Enter getter `g` with receiver o; its value arrives at the frame's
 // current phase. Only an ordinary function can be a getter here.
 fn run_getter(job: Job&, b: Builtin, g: Value, o: Value) {
-    if node(job.heap, g.id()).kind != 2 { unsupported_step(job, b, "a built-in getter"); return; }
+    if node(job.heap, g.id()).kind != node_kind::Closure { unsupported_step(job, b, "a built-in getter"); return; }
     push_frame(job, g, o, [], false, job.operands.len);
 }
 // One step of the frame at the top (see above), dispatched on its phase.
@@ -137,13 +137,13 @@ fn array_callbacks_step(job: Job&, frame: Frame, b: Builtin) {
 }
 // IsCallable: a closure or a built-in function (a class constructor is
 // callable; calling it throws TypeError when its frame is entered).
-inline fn callable(heap: const Heap&, f: Value) -> bool { return f.is_object() && (node(heap, f.id()).kind == 2 || node(heap, f.id()).kind == 4); }
+inline fn callable(heap: const Heap&, f: Value) -> bool { return f.is_object() && (node(heap, f.id()).kind == node_kind::Closure || node(heap, f.id()).kind == node_kind::Builtin); }
 // ArraySpeciesCreate(O, len) without species: a new array of length len
 // when O is not an array or its `constructor` is undefined or the realm's
 // Array; any other constructor object is the species step, not implemented.
 fn array_species_create(job: Job&, b: Builtin, o: Value, len: f64) -> Value {
     let heap .= job.heap;
-    if node(heap, o.id()).kind == 1 {
+    if node(heap, o.id()).kind == node_kind::Array {
         let k = key_named(heap, "constructor");
         if heap.fault != Fault.None { return Value.Undefined; }
         let c, getter = lookup(heap, o, k);
@@ -154,12 +154,12 @@ fn array_species_create(job: Job&, b: Builtin, o: Value, len: f64) -> Value {
     }
     // ArrayCreate(len).
     if len > 4294967295.0 { job.detail.clear(); for c in "invalid array length" { job.detail.push(c); } heap.fault = Fault.RangeError; return Value.Undefined; }
-    let a = allocate(heap, Node { kind: 1 });
+    let a = allocate(heap, Node { kind: node_kind::Array });
     if heap.fault != Fault.None || !array_length(heap, a, number(len)) { return Value.Undefined; }
     // A dense receiver whose element run holds len slots gets a result run of
     // len holes at once, so map's stores never copy a growing run. Any other
     // length (a generic array-like may claim 2^32 - 1) grows as stores come.
-    if len > 0 && node(heap, o.id()).kind == 1 && !node(heap, o.id()).initialized && len <= node(heap, o.id()).count && !element_room(heap, a.id(), (len as i64) - 1) { return Value.Undefined; }
+    if len > 0 && node(heap, o.id()).kind == node_kind::Array && !node(heap, o.id()).initialized && len <= node(heap, o.id()).count && !element_room(heap, a.id(), (len as i64) - 1) { return Value.Undefined; }
     return a;
 }
 // Visit index k of the frame at `at`: finish at the length; otherwise
@@ -172,7 +172,7 @@ fn array_visit(job: Job&, at: i64, b: Builtin) {
         finish_native(job, job.frames[at], if b == Builtin.ArrayPrototypeMap { job.frames[at].output } else { Value.Undefined });
         return;
     }
-    if node(heap, o.id()).kind == 1 && !node(heap, o.id()).initialized {
+    if node(heap, o.id()).kind == node_kind::Array && !node(heap, o.id()).initialized {
         let v, found = own_element(heap, o, k);
         if found { array_call(job, at, b, v); return; }
     }
@@ -196,7 +196,7 @@ fn array_call(job: Job&, at: i64, b: Builtin, v: Value) {
     job.frames[at].pc = 3;
     let f = job.frames[at].callee; let this_arg = job.frames[at].receiver;
     let args: Value[3] = [v, number(job.frames[at].index), job.frames[at].input];
-    if node(heap, f.id()).kind == 4 {
+    if node(heap, f.id()).kind == node_kind::Builtin {
         let cb = builtin_of(heap, f.id());
         // A delay forced as the callback runs in a frame of its own (cells.goose).
         if forces(heap, cb, args) { start_force(job, cb, v, job.operands.len); return; }

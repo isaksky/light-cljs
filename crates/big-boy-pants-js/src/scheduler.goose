@@ -68,7 +68,7 @@ fn perform(base: const snapshot::Snapshot&, work: const Work&, options: Options,
     heap.limits.stack = min(heap.limits.stack, 1024); heap.limits.frames = min(heap.limits.frames, 64);
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
     var definitions = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots"));
-    if definitions.is_undefined() { definitions = source::allocate(heap, source::Node { kind: 0 }); source::install_field(heap, heap.global, "__lightCompilerRoots", definitions); }
+    if definitions.is_undefined() { definitions = source::allocate(heap, source::Node { kind: node_kind::Object }); source::install_field(heap, heap.global, "__lightCompilerRoots", definitions); }
     // This is a clean heap boundary: no Job exists while prerequisites import.
     for input in work.inputs {
         var c = artifact::Control { bytes: options.packet_bytes }; let value = artifact::import_graph(input.artifact, base, heap, imports, c);

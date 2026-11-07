@@ -50,10 +50,10 @@ fn range(start: i64, count: i64, len: i64) -> bool { return start >= 0 && count 
 // Kinds whose start/count name a run of values: an ordinary object's or an
 // array's element run (light-cljs-804), captures, form children, arguments
 // and a deferred map's memo.
-fn has_values(kind: i64) -> bool { return kind <= 2 || kind >= 5 && kind <= 8 || kind == 12 || kind == 14 || kind == 15; }
+fn has_values(kind: i64) -> bool { return kind <= node_kind::Closure || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::Arguments || kind == node_kind::LazySeq; }
 // An element run (an ordinary object's or an array's) is exclusive and may
 // hold holes.
-fn elements(kind: i64) -> bool { return kind == 0 || kind == 1; }
+fn elements(kind: i64) -> bool { return kind == node_kind::Object || kind == node_kind::Array; }
 // All ranges have already passed bounds validation. Immutable views may share
 // slots, but an unrealized map owns its entire writable memo exclusively,
 // including the completed prefix. Charge both scratch initialization and each
@@ -74,7 +74,7 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
         if !has_values(n.kind) { continue; }
         if !poll(c, n.count) { return false; }
         for slot in n.start..(n.start + n.count) {
-            if n.kind == 15 || elements(n.kind) {
+            if n.kind == node_kind::LazySeq || elements(n.kind) {
                 if used[slot] != 0 { return reject(c, Error.Link); }
                 used[slot] = 2;
             } else {
@@ -88,14 +88,14 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
 // The kinds with own properties by name (source::Node): ordinary objects,
 // arrays and closures (light-cljs-805), built-in functions and error objects
 // (light-cljs-788), generators, promises and primitive wrappers.
-fn named(kind: i64) -> bool { return kind >= 0 && kind <= 2 || kind == 4 || kind == 13 || kind == 20 || kind == 21 || kind == 22 || kind == node_kind::Iterator; }
+fn named(kind: i64) -> bool { return kind >= node_kind::Object && kind <= node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator; }
 // A shape-mode object, dense array or closure: without `initialized`.
 fn shaped(n: const source::Node&) -> bool { return named(n.kind) && !n.initialized; }
 // A dictionary-mode object, a dictionary array or a closure's records.
 fn dictionary(n: const source::Node&) -> bool { return named(n.kind) && n.initialized; }
-// A run of property records: a dictionary's, or a key list's (kind 16, the
+// A run of property records: a dictionary's, or a key list's (node_kind::KeyList, the
 // keys a for-in walk or an object spread visits; source::Node).
-fn record_run(n: const source::Node&) -> bool { return dictionary(n) || n.kind == 16; }
+fn record_run(n: const source::Node&) -> bool { return dictionary(n) || n.kind == node_kind::KeyList; }
 // A property key: an interned string (source::intern) or a well-known symbol.
 fn key_value<T>(s: const T&, k: source::Value) -> bool {
     return match k { String x => range(x.s, 1, s.strings.len) && s.strings[x.s].key, Symbol x => export_well_known_symbol(x.s).len > 0, _ => false };
@@ -201,34 +201,34 @@ fn cont_run<T>(s: const T&, first: u32, capacity: u32, kind: i64) -> bool {
     return true;
 }
 // Whether v is an object of node kind `kind` (-1: any kind).
-fn object_of<T>(s: const T&, v: source::Value, kind: i64) -> bool { return v.is_object() && v.id() < s.nodes.len && (kind < 0 || s.nodes[v.id()].kind == kind); }
+fn object_of<T>(s: const T&, v: source::Value, kind: i64) -> bool { return v.is_object() && v.id() < s.nodes.len && (kind == node_kind::None || s.nodes[v.id()].kind == kind); }
 // A native frame's state that its steps read by row: a Resume frame's
 // generator, a MapSeq frame's deferred map, a Force frame's delay, a Swap
 // frame's function and a CopyData frame's key list.
 fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
     return match f.native {
-        Resume => object_of(s, f.input, source::generator_kind()),
-        MapSeq => object_of(s, f.input, 15),
-        Force => object_of(s, f.input, -1),
-        Swap => object_of(s, f.callee, -1),
-        CopyData => object_of(s, f.callee, 16),
+        Resume => object_of(s, f.input, node_kind::Generator),
+        MapSeq => object_of(s, f.input, node_kind::LazySeq),
+        Force => object_of(s, f.input, node_kind::None),
+        Swap => object_of(s, f.callee, node_kind::None),
+        CopyData => object_of(s, f.callee, node_kind::KeyList),
         // A HasInstance frame at pc 4 calls its built-in method (light-cljs-834).
-        HasInstance => f.pc != 4 || object_of(s, f.callee, 4),
+        HasInstance => f.pc != 4 || object_of(s, f.callee, node_kind::Builtin),
         // Array.prototype.push, join and toString read their object (light-cljs-842).
-        ArrayMethod => object_of(s, f.input, -1),
+        ArrayMethod => object_of(s, f.input, node_kind::None),
         // A GetIterator frame awaits one of its three phases; from `next`'s
         // getter on, it holds the iterator (light-cljs-843).
-        GetIterator => f.pc >= 1 && f.pc <= 3 && (f.pc != 3 || object_of(s, f.input, -1)),
+        GetIterator => f.pc >= 1 && f.pc <= 3 && (f.pc != 3 || object_of(s, f.input, node_kind::None)),
         // An array iterator's `next` awaits its length or an element and
         // holds an array cursor, its source object and index;
         // String.prototype[@@iterator] awaits its string (light-cljs-844).
-        BuiltinIterator m => if m.which == source::Builtin.ArrayIteratorPrototypeNext { f.pc >= 0 && f.pc <= 1 && f.index >= 0 && object_of(s, f.input, node_kind::Iterator) && s.nodes[f.input.id()].function != iteration::CodePoints && object_of(s, f.receiver, -1) } else { m.which == source::Builtin.StringPrototypeIterator && f.pc == 0 },
+        BuiltinIterator m => if m.which == source::Builtin.ArrayIteratorPrototypeNext { f.pc >= 0 && f.pc <= 1 && f.index >= 0 && object_of(s, f.input, node_kind::Iterator) && s.nodes[f.input.id()].function != iteration::CodePoints && object_of(s, f.receiver, node_kind::None) } else { m.which == source::Builtin.StringPrototypeIterator && f.pc == 0 },
         // A ForIn frame awaits one of its three phases over its key list; a
         // Proxy frame runs one of its three methods on a proxy, from pc 3
         // with the key list or descriptor it builds and the trap result it
         // reads (light-cljs-845, proxy.goose).
         ForIn => f.pc >= 1 && f.pc <= 3 && object_of(s, f.input, node_kind::KeyList),
-        Proxy p => p.method <= proxy_method::GetOwnProperty && f.pc >= 0 && f.pc <= 5 && object_of(s, f.input, node_kind::Proxy) && (f.pc < 3 || (if f.pc == 5 { p.method == proxy_method::GetOwnProperty && f.index >= 0 && f.index < source::FIELD_NAMES.len } else { p.method == proxy_method::OwnPropertyKeys && f.index >= 0 }) && object_of(s, f.callee, node_kind::KeyList) && object_of(s, f.receiver, -1)),
+        Proxy p => p.method <= proxy_method::GetOwnProperty && f.pc >= 0 && f.pc <= 5 && object_of(s, f.input, node_kind::Proxy) && (f.pc < 3 || (if f.pc == 5 { p.method == proxy_method::GetOwnProperty && f.index >= 0 && f.index < source::FIELD_NAMES.len } else { p.method == proxy_method::OwnPropertyKeys && f.index >= 0 }) && object_of(s, f.callee, node_kind::KeyList) && object_of(s, f.receiver, node_kind::None)),
         _ => true,
     };
 }
@@ -276,10 +276,10 @@ fn conts_valid<T>(s: const T&, c: Control&) -> bool {
             // A frame's values; the activation that runs it checks the rest.
             Frame x => { let f = x.f; if !value(s, f.callee) || !value(s, f.receiver) || !value(s, f.input) || !value(s, f.output) { return reject(c, Error.Link); } },
             // An async function's boundary names its promise.
-            Saved x => { if !value(s, x.h.value) || x.h.pc < -1 || x.h.kind == source::HandlerKind.Async && (!x.h.value.is_object() || s.nodes[x.h.value.id()].kind != 21) { return reject(c, Error.Link); } },
+            Saved x => { if !value(s, x.h.value) || x.h.pc < -1 || x.h.kind == source::HandlerKind.Async && (!x.h.value.is_object() || s.nodes[x.h.value.id()].kind != node_kind::Promise) { return reject(c, Error.Link); } },
             Promise x => {
                 let p = x.p;
-                if p.state > 2 || !value(s, p.result) || !link_or_none(s, p.first, 3) || !link_or_none(s, p.last, 3) || (p.first == source::no_row()) != (p.last == source::no_row()) || p.state != 0 && p.first != source::no_row() || !link_or_none(s, p.activation, 0) { return reject(c, Error.Link); }
+                if p.state > promise_status::Rejected || !value(s, p.result) || !link_or_none(s, p.first, 3) || !link_or_none(s, p.last, 3) || (p.first == source::no_row()) != (p.last == source::no_row()) || p.state != promise_status::Pending && p.first != source::no_row() || !link_or_none(s, p.activation, 0) { return reject(c, Error.Link); }
                 // The pending reactions end, at `last`, within the table.
                 var at = p.first; var tail = source::no_row(); var steps: i64 = 0;
                 while at != source::no_row() {
@@ -291,7 +291,7 @@ fn conts_valid<T>(s: const T&, c: Control&) -> bool {
             },
             Reaction x => {
                 let r = x.r;
-                if r.target >= s.nodes.len || s.nodes[r.target].kind != 21 || !link_or_none(s, r.next, 3) { return reject(c, Error.Link); }
+                if r.target >= s.nodes.len || s.nodes[r.target].kind != node_kind::Promise || !link_or_none(s, r.next, 3) { return reject(c, Error.Link); }
             },
         }
     }
@@ -410,8 +410,8 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     let l = s.header.limits;
     if l.nodes < 0 || l.values < 0 || l.units < 0 || l.properties < 0 || l.shapes < 0 || l.work < 0 || l.steps < 0 || l.frames < 0 || l.stack < 0 || s.header.work < 0 || s.header.work > l.work || s.header.property_rows < 0 || s.header.property_rows > s.properties.len || s.header.boot < 0 || s.header.boot > 1 || s.header.initializers < 0 || s.header.producers < 0 { return reject(c, Error.Allocator); }
     if !code_valid(s, c) { return false; }
-    if !value(s, s.header.global) || !s.header.global.is_object() || s.nodes[s.header.global.id()].kind != 0 { return reject(c, Error.Link); }
-    if !value(s, s.header.call_method) || !s.header.call_method.is_object() || s.nodes[s.header.call_method.id()].kind != 4 || s.nodes[s.header.call_method.id()].function != 14 { return reject(c, Error.Link); }
+    if !value(s, s.header.global) || !s.header.global.is_object() || s.nodes[s.header.global.id()].kind != node_kind::Object { return reject(c, Error.Link); }
+    if !value(s, s.header.call_method) || !s.header.call_method.is_object() || s.nodes[s.header.call_method.id()].kind != node_kind::Builtin || s.nodes[s.header.call_method.id()].function != 14 { return reject(c, Error.Link); }
     if !source::realm_valid(s.nodes, s.accessors, s.header.global, s.header.call_method) { return reject(c, Error.Link); }
     // A header names a run of its own table; a wide run must need two bytes
     // (some unit above 255), so the encoding stays canonical (source::Str).
@@ -452,7 +452,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     var has_memo = false; var array_holes: i64 = 0;
     for n, row in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < 0 || n.kind > node_kind::Proxy { return reject(c, Error.Unsupported); }
+        if n.kind < node_kind::Object || n.kind > node_kind::Proxy { return reject(c, Error.Unsupported); }
         // A proxy (light-cljs-845, proxy.goose) holds an object target, an
         // earlier row, and an object handler, and nothing else.
         if n.kind == node_kind::Proxy && (!n.value.is_object() || n.value.id() >= row || !n.namespace_value.is_object() || n.count != 0 || n.start != 0 || !n.proto.is_null()) { return reject(c, Error.Link); }
@@ -464,18 +464,18 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if n.kind == node_kind::Iterator && (n.function > iteration::CodePoints || n.count != 0 || n.start != 0 || !n.value.is_undefined() && (if n.function == iteration::CodePoints { !n.value.is_string() } else { !n.value.is_object() })) { return reject(c, Error.Link); }
         // A primitive wrapper (22, light-cljs-832) holds a number, string or
         // boolean and keeps no element run.
-        if n.kind == 22 && (source::wrapper_type(n.value) < 0 || n.count != 0 || n.start != 0) { return reject(c, Error.Link); }
+        if n.kind == node_kind::Wrapper && (source::wrapper_type(n.value) < 0 || n.count != 0 || n.start != 0) { return reject(c, Error.Link); }
         // A generator (20) names its activation or nothing and has a state,
         // 0 to 3; a promise (21) names its state row (light-cljs-790).
-        if n.kind == 20 && (n.length > 3 || n.function != source::no_row() && !cont_is(s, n.function, 0) || n.length != 3 && n.function == source::no_row()) || n.kind == 21 && !cont_is(s, n.function, 2) { return reject(c, Error.Link); }
+        if n.kind == node_kind::Generator && (n.length > generator_state::Completed || n.function != source::no_row() && !cont_is(s, n.function, 0) || n.length != generator_state::Completed && n.function == source::no_row()) || n.kind == node_kind::Promise && !cont_is(s, n.function, 2) { return reject(c, Error.Link); }
         // An atom or volatile (17) has a flavor, 0 or 1; a cell reference (18,
         // no state of its own) 0, 1 or 2, a delay, whose value is its thunk
         // or nothing; a job's own delay (19) none (source::Node, cells.goose).
-        if n.kind == 17 && n.length > 1 || n.kind == 18 && (n.length > 2 || !n.value.is_undefined() && (n.length != 2 || !n.value.is_object()) || n.function > 2147483647) || n.kind == 19 && n.length != 0 { return reject(c, Error.Link); }
-        if n.kind == 1 && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
-        // A key list (source::Node kind 16): its walk position lies in its
+        if n.kind == node_kind::Atom && n.length > 1 || n.kind == node_kind::Cell && (n.length > 2 || !n.value.is_undefined() && (n.length != 2 || !n.value.is_object()) || n.function > 2147483647) || n.kind == node_kind::Delay && n.length != 0 { return reject(c, Error.Link); }
+        if n.kind == node_kind::Array && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
+        // A key list (node_kind::KeyList): its walk position lies in its
         // records, and it walks an object or nothing.
-        if n.kind == 0 && n.length != 0 || n.kind == 16 && (n.count != 0 || n.initialized || n.start > n.length || n.length > n.key_count || !n.value.is_undefined() && !n.value.is_object()) { return reject(c, Error.Link); }
+        if n.kind == node_kind::Object && n.length != 0 || n.kind == node_kind::KeyList && (n.count != 0 || n.initialized || n.start > n.length || n.length > n.key_count || !n.value.is_undefined() && !n.value.is_object()) { return reject(c, Error.Link); }
         if !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source != source::no_row() && n.source >= s.sources.len || n.origin < -1 || !n.proto.is_hole() && !n.proto.is_null() && (!n.proto.is_object() || !value(s, n.proto)) { return reject(c, Error.Link); }
         has_memo = has_memo || shaped(n) && n.key_capacity > 0;
         if n.source != source::no_row() && (n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
@@ -484,30 +484,30 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
             let r = s.sources[n.source]; let text = s.bytes[r.start..(r.start + r.count)];
             if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c, Error.Link); }
         }
-        if n.kind == 2 && (!range(n.function, 1, s.functions.len) || n.count != s.functions[n.function].captures) { return reject(c, Error.Link); }
-        if has_values(n.kind) { if !range(n.start, n.count, s.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); } }
+        if n.kind == node_kind::Closure && (!range(n.function, 1, s.functions.len) || n.count != s.functions[n.function].captures) { return reject(c, Error.Link); }
+        if has_values(n.kind) { if !range(n.start, n.count, s.values.len) || n.kind == node_kind::Map && n.count % 2 != 0 { return reject(c, Error.Link); } }
         if elements(n.kind) {
             // A dictionary array (initialized) has records and no run; a dense
             // one has a run, and its named properties in a shape
             // (light-cljs-805, key_runs). An ordinary object's element run
             // (light-cljs-804) has no length.
-            if n.kind == 1 && n.initialized && n.count != 0 { return reject(c, Error.Link); }
+            if n.kind == node_kind::Array && n.initialized && n.count != 0 { return reject(c, Error.Link); }
             has_memo = has_memo || n.count > 0;
             if !poll(c, n.count) { return false; }
             // Slots at or past an array's length are holes (source::array_length).
-            for v, i in s.values[n.start..(n.start + n.count)] { if v.is_hole() { array_holes += 1; } else if n.kind == 1 && i >= n.length { return reject(c, Error.Link); } }
+            for v, i in s.values[n.start..(n.start + n.count)] { if v.is_hole() { array_holes += 1; } else if n.kind == node_kind::Array && i >= n.length { return reject(c, Error.Link); } }
         }
-        if n.kind == 15 {
+        if n.kind == node_kind::LazySeq {
             has_memo = has_memo || n.count > 0;
             if n.length > n.count { return reject(c, Error.Link); }
             let input = n.namespace_value;
-            if input.tag() > value_tag::Null && (!input.is_object() || (s.nodes[input.id()].kind != 5 && s.nodes[input.id()].kind != 12) || s.nodes[input.id()].count != n.count) || input.tag() <= value_tag::Null && n.count != 0 { return reject(c, Error.Link); }
+            if input.tag() > value_tag::Null && (!input.is_object() || (s.nodes[input.id()].kind != node_kind::List && s.nodes[input.id()].kind != node_kind::Concat) || s.nodes[input.id()].count != n.count) || input.tag() <= value_tag::Null && n.count != 0 { return reject(c, Error.Link); }
         }
         // A built-in function's code names a Builtin (source::BUILTINS); an
         // error object's, the catchable fault it was raised for or 0.
-        if n.kind == 4 && (n.function >= source::builtin_count() || n.function == 9) || n.kind == 13 && n.function > 5 { return reject(c, Error.Unsupported); }
-        if (n.kind == 9 || n.kind == 10) && (!n.value.is_string() || !n.namespace_value.is_null() && !n.namespace_value.is_string()) || n.kind == 11 && n.value.tag() > value_tag::String { return reject(c, Error.Link); }
-        if !n.metadata.is_undefined() && !n.metadata.is_null() && (!n.metadata.is_object() || s.nodes[n.metadata.id()].kind != 7) { return reject(c, Error.Link); }
+        if n.kind == node_kind::Builtin && (n.function >= source::builtin_count() || n.function == 9) || n.kind == node_kind::Error && n.function > 5 { return reject(c, Error.Unsupported); }
+        if (n.kind == node_kind::Symbol || n.kind == node_kind::Keyword) && (!n.value.is_string() || !n.namespace_value.is_null() && !n.namespace_value.is_string()) || n.kind == node_kind::Scalar && n.value.tag() > value_tag::String { return reject(c, Error.Link); }
+        if !n.metadata.is_undefined() && !n.metadata.is_null() && (!n.metadata.is_object() || s.nodes[n.metadata.id()].kind != node_kind::Map) { return reject(c, Error.Link); }
     }
     if has_memo && !memo_ranges(s, c) { return false; }
     if !property_model(s, c) || !key_runs(s, c) { return false; }
@@ -620,7 +620,7 @@ fn truncate(twin: const Snapshot&, service: const i64[:], identity: i64, code: s
 fn service_row(heap: source::Heap&, from: const Snapshot&, twin: const Snapshot&, r: i64) {
     heap.nodes[r] = from.nodes[r]; let n = twin.nodes[r];
     for k in n.keys..(n.keys + n.key_capacity) { if shaped(n) { heap.values[k] = from.values[k]; } else { heap.properties[k] = from.properties[k]; } }
-    if n.kind == 0 { for k in n.start..(n.start + n.count) { heap.values[k] = from.values[k]; } }
+    if n.kind == node_kind::Object { for k in n.start..(n.start + n.count) { heap.values[k] = from.values[k]; } }
 }
 // The heap's state fields, as a restore of this header sets them.
 fn state(h: const Header&, identity: i64, heap: source::Heap&) {
@@ -647,7 +647,7 @@ fn same_bits(a: source::Limits, b: source::Limits) -> bool { let x: source::Limi
 fn over_image(s: const Snapshot&, twin: const Snapshot&, service: const i64[:]) -> bool {
     let a = ends(s); let b = ends(twin); for n, i in b { if a[i] < n { return false; } }
     var keys: i64[>..] = []; var slots: i64[>..] = [];
-    for r in service { let n = twin.nodes[r]; for k in n.keys..(n.keys + n.key_capacity) { if shaped(n) { slots.push(k); } else { keys.push(k); } } if n.kind == 0 { for k in n.start..(n.start + n.count) { slots.push(k); } } }
+    for r in service { let n = twin.nodes[r]; for k in n.keys..(n.keys + n.key_capacity) { if shaped(n) { slots.push(k); } else { keys.push(k); } } if n.kind == node_kind::Object { for k in n.start..(n.start + n.count) { slots.push(k); } } }
     for row, i in twin.nodes { var skip = false; for r in service { if r == i { skip = true; } } if !skip && !same_rows(s.nodes[i..(i + 1)], twin.nodes[i..(i + 1)]) { return false; } }
     for row, i in twin.properties { var skip = false; for k in keys { if k == i { skip = true; } } if !skip && !same_rows(s.properties[i..(i + 1)], twin.properties[i..(i + 1)]) { return false; } }
     for row, i in twin.values { var skip = false; for k in slots { if k == i { skip = true; } } if !skip && !same_rows(s.values[i..(i + 1)], twin.values[i..(i + 1)]) { return false; } }

@@ -214,7 +214,7 @@ thread_fn root_reads(base: snapshot::Snapshot) {
     defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var c = snapshot::Control {};
     assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), c));
-    let receiver = source::allocate(heap, source::Node { kind: 0 }); let name = source::text(heap, "root");
+    let receiver = source::allocate(heap, source::Node { kind: node_kind::Object }); let name = source::text(heap, "root");
     assert(source::put(heap, receiver, name, source::Value.Undefined));
     assert(source::form_op(heap, form_op::CljReadRoot, [receiver, source::nil(), name]).is_undefined() && heap.fault == source::Fault.None);
     source::form_op(heap, form_op::CljReadRoot, [receiver, source::nil(), source::text(heap, "missing")]); assert(heap.fault == source::Fault.DependencyNeed);

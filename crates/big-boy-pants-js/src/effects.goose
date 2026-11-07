@@ -63,7 +63,7 @@ fn service(a: Authority&, job: source::Job&, owner: i64, sequence: i64&) -> bool
     var value = source::number(r.value);
     if g.kind == 5 {
         let suffix = str(r.value); var units: u16[>..] = []; units.append(prefix); for byte in suffix { units.push(byte); }
-        value = source::allocate(job.heap, source::Node { kind: 9, value: source::string(job.heap, units), namespace_value: source::nil() });
+        value = source::allocate(job.heap, source::Node { kind: node_kind::Symbol, value: source::string(job.heap, units), namespace_value: source::nil() });
         if job.heap.fault != source::Fault.None { return source::deliver_effect(job, source::Value.Undefined, job.heap.fault); }
     }
     sequence += 1; return source::deliver_effect(job, value);

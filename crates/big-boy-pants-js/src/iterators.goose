@@ -59,9 +59,6 @@ namespace source;
 // String.prototype[@@iterator], a light-cljs runtime value as a source, and
 // a built-in getter.
 
-// The node kind of a built-in iterator object (the first named node kind;
-// light-cljs-838 names the others).
-let node_kind::Iterator = 23;
 // A cursor's iteration, its node's `function`.
 let iteration::Values = 0;
 let iteration::Keys = 1;
@@ -93,7 +90,7 @@ fn array_iterator(job: Job&, b: Builtin, receiver: Value) -> Value {
     let o = to_object(job, v);
     if heap.fault != Fault.None { return Value.Undefined; }
     if job.root_receiver.is_object() && o == job.root_receiver { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
-    if !convertible(heap, o) && node(heap, o.id()).kind != 14 { return unsupported_step(job, b, "a light-cljs runtime value as the receiver"); }
+    if !convertible(heap, o) && node(heap, o.id()).kind != node_kind::Arguments { return unsupported_step(job, b, "a light-cljs runtime value as the receiver"); }
     let iteration = if b == Builtin.ArrayPrototypeKeys { iteration::Keys } else if b == Builtin.ArrayPrototypeEntries { iteration::Entries } else { iteration::Values };
     return new_cursor(job, o, iteration);
 }
@@ -139,7 +136,7 @@ fn array_next(job: Job&, receiver: Value) {
     if !writable(job, receiver.id()) { heap.fault = Fault.NativeBoundary; return; }
     let i: i64 = node(heap, receiver.id()).length;
     // An array's `length` is its own data property.
-    if node(heap, source.id()).kind == 1 { let len: f64 = node(heap, source.id()).length; array_next_at(job, -1, receiver, source, i, len); return; }
+    if node(heap, source.id()).kind == node_kind::Array { let len: f64 = node(heap, source.id()).length; array_next_at(job, -1, receiver, source, i, len); return; }
     let at = push_iterator_frame(job, b, receiver, source);
     if at < 0 { return; }
     job.frames[at].index = i;
@@ -156,7 +153,7 @@ fn array_next_at(job: Job&, at: i64, cursor: Value, source: Value, i: i64, len: 
     if node(heap, c).function == iteration::Keys { next_result(job, at, number(i), false); return; }
     // Get(source, i): an array's own element from its run or records, any
     // other through the prototype chain.
-    if node(heap, source.id()).kind == 1 {
+    if node(heap, source.id()).kind == node_kind::Array {
         let v, found = own_element(heap, source, i);
         if heap.fault != Fault.None { return; }
         if found { array_element(job, at, cursor, i, v); return; }
@@ -176,7 +173,7 @@ fn array_next_at(job: Job&, at: i64, cursor: Value, source: Value, i: i64, len: 
 fn array_element(job: Job&, at: i64, cursor: Value, i: i64, v: Value) {
     let heap .= job.heap;
     if node(heap, cursor.id()).function != iteration::Entries { next_result(job, at, v, false); return; }
-    let pair = allocate(heap, Node { kind: 1 });
+    let pair = allocate(heap, Node { kind: node_kind::Array });
     if heap.fault != Fault.None || !set_element(heap, pair, 0, number(i)) || !set_element(heap, pair, 1, v) { return; }
     next_result(job, at, pair, false);
 }

@@ -28,7 +28,7 @@ fn session(arguments: u8[:][>..]&) -> i64 {
     let loaded = clock_ns(); var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap);
     var macros: source::Value[>..] = [];
     for entry in entries { let factory, _ = invoke(heap, source::closure(heap, entry, []), []); let value, _ = invoke(heap, factory, [rt]); macros.push(value); heap.initializer_count += 1; }
-    let roots = source::allocate(heap, source::Node { kind: 0 }); source::install_field(heap, heap.global, "__lightCompilerRoots", roots);
+    let roots = source::allocate(heap, source::Node { kind: node_kind::Object }); source::install_field(heap, heap.global, "__lightCompilerRoots", roots);
     for entry, i in helpers {
         let factory, _ = invoke(heap, source::closure(heap, entry, []), []); let value, _ = invoke(heap, factory, [rt]); heap.producer_count += 1;
         assert(i < 2); source::install_field(heap, roots, if i == 0 { "cljs.user/left-result" } else { "cljs.user/right-result" }, value);

@@ -100,7 +100,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
     // cell reference.
     if base < 0 || base > s.nodes.len || s.bindings.len != 1 || !s.bindings[0].value.is_object() { return fail(c, snapshot::Error.Link); }
     let root_kind = s.nodes[s.bindings[0].value.id()].kind;
-    if root_kind != 2 && root_kind != 18 && (root_kind < 5 || root_kind > 12) { return fail(c, snapshot::Error.Link); }
+    if root_kind != node_kind::Closure && root_kind != node_kind::Cell && (root_kind < node_kind::List || root_kind > node_kind::Concat) { return fail(c, snapshot::Error.Link); }
     if !code_matches(p, heap, c) { return false; }
     if !snapshot::range(0, expected.ends[9], s.units.len) || !snapshot::range(0, expected.ends[9], heap.units.len) || !snapshot::poll(c, expected.ends[9]) { return fail(c, snapshot::Error.Link); }
     if s.units[..expected.ends[9]] != heap.units[..expected.ends[9]] { return fail(c, snapshot::Error.Link); }
@@ -115,12 +115,12 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
         if colors[id] == 0 {
             colors[id] = 1;
             if id < base {
-                if n.kind == 1 || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
+                if n.kind == node_kind::Array || n.kind == node_kind::Binding && (!n.immutable || !n.initialized) { return fail(c); }
                 if !base_node(p, heap, id, c) { return false; } ids[id] = id;
             } else {
                 // A cell reference (18) is shareable; an atom was made one
                 // before the publication (source::publish_cells).
-                if n.kind == 0 || n.kind == 1 || n.kind > 12 && n.kind != 18 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
+                if n.kind == node_kind::Object || n.kind == node_kind::Array || n.kind > node_kind::Concat && n.kind != node_kind::Cell || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) || n.kind == node_kind::Binding && (!n.immutable || !n.initialized) { return fail(c); }
                 ids[id] = heap.nodes.len + slots.len; slots.push(id);
             }
         }
@@ -134,7 +134,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
         if id < base && v.id() >= base { return fail(c, snapshot::Error.Link); }
         if colors[v.id()] == 1 {
             var inside = false;
-            for f in stack { if !snapshot::poll(c) { return false; } if f.id == v.id() { inside = true; } if inside && s.nodes[f.id].kind != 2 && s.nodes[f.id].kind != 3 { return fail(c); } }
+            for f in stack { if !snapshot::poll(c) { return false; } if f.id == v.id() { inside = true; } if inside && s.nodes[f.id].kind != node_kind::Closure && s.nodes[f.id].kind != node_kind::Binding { return fail(c); } }
         } else if colors[v.id()] == 0 { stack.push(Visit { id: v.id() }); }
     }
     return true;
@@ -231,7 +231,7 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     for r in s.sources { source::add_source_range(heap, source::shifted_source(r, bytes)); }
     for id in slots {
         var n = s.nodes[id]; n.value = relocated(n.value, ids, expected.ends[15], strings); n.namespace_value = relocated(n.namespace_value, ids, expected.ends[15], strings); n.metadata = relocated(n.metadata, ids, expected.ends[15], strings);
-        if n.kind == 2 { n.function = shifted(n.function, e[1], delta[1]) as u32; }
+        if n.kind == node_kind::Closure { n.function = shifted(n.function, e[1], delta[1]) as u32; }
         if snapshot::has_values(n.kind) { n.start = heap.values.len as u32; for v in s.values[s.nodes[id].start..(s.nodes[id].start + n.count)] { source::add_values(heap, [relocated(v, ids, expected.ends[15], strings)]); } }
         if n.source != source::no_row() { n.source += sources as u32; } source::add_nodes(heap, [n]);
     }

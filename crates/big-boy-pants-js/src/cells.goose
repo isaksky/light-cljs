@@ -12,9 +12,9 @@ namespace source;
 // light-cljs-808; decision 3 of docs/javascript-coverage.md, "Cells"; the
 // owner is cell_owner.goose).
 //
-// A job's own atom or volatile is a row: a node of kind 17 whose `value` is
+// A job's own atom or volatile is a row: node_kind::Atom whose `value` is
 // its state and whose `length` is its flavor (cell_flavor::Atom or Volatile). A job's
-// own delay is a node of kind 19: `value` its thunk, pending while truthy,
+// own delay is node_kind::Delay: `value` its thunk, pending while truthy,
 // and `namespace_value` the value it realized. They are reclaimed with the
 // job's other rows, and their operations follow the V8 build's runtime
 // (src/js_runtime.js, `swapState`, `resetAtom`, `deferredValue`): swap!
@@ -25,7 +25,7 @@ namespace source;
 // Publishing a value (a prepared definition, a produced helper) turns every
 // atom, volatile or delay it reaches into a cell (publish_cells): the owner
 // makes the cell and holds its state's flat encoding, and the row becomes a
-// cell reference, kind 18, whose `function` is the cell and `length` its
+// cell reference, node_kind::Cell, whose `function` is the cell and `length` its
 // flavor (cell_flavor::Delay for a delay, whose `value` keeps the thunk). Every job that
 // installs the publication holds the reference; its operations are messages
 // to the owner, made while the job runs (effects of the job: a job that
@@ -70,9 +70,6 @@ namespace source;
 // before it spawns any program; `base` 0 elsewhere, where a function
 // stored into a cell fails as any cell operation does without an owner.
 var cell_base: snapshot::Header = snapshot::Header {};
-inline fn atom_kind() -> i64 { return 17; }
-inline fn cell_kind() -> i64 { return 18; }
-inline fn delay_kind() -> i64 { return 19; }
 // The flavor names built-ins use in their errors.
 fn flavor_name(flavor: i64) -> const u8[:] { return if flavor == cell_flavor::Atom { "an atom" } else if flavor == cell_flavor::Volatile { "a volatile" } else { "a delay" }; }
 // A named failure the macro cannot catch: NativeBoundary, `name: what`.
@@ -92,14 +89,14 @@ fn owner_fail(job: Job&, b: Builtin, error: i64) -> Value {
 fn reference_flavor(heap: Heap&, a: Value) -> i64 {
     if !valid(heap, a) || !a.is_object() { return -1; }
     let n = node(heap, a.id());
-    return if n.kind == atom_kind() || n.kind == cell_kind() { n.length } else { -1 };
+    return if n.kind == node_kind::Atom || n.kind == node_kind::Cell { n.length } else { -1 };
 }
 // Whether `v` is a delay: a job's own or a delay cell's reference.
 fn is_delay(heap: Heap&, v: Value) -> bool {
     if !valid(heap, v) { heap.fault = Fault.None; return false; }
     if !v.is_object() { return false; }
     let n = node(heap, v.id());
-    return n.kind == delay_kind() || n.kind == cell_kind() && n.length == cell_flavor::Delay;
+    return n.kind == node_kind::Delay || n.kind == node_kind::Cell && n.length == cell_flavor::Delay;
 }
 
 // Process-wide identities of publications' objects: the object at place
@@ -183,11 +180,11 @@ fn form_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, functi
         marks[v.id()] = true; let n = node(heap, v.id());
         if !charge(heap) { return "a value past the work limit"; }
         if n.metadata.is_object() { work.push(n.metadata); }
-        if n.kind >= 5 && n.kind <= 8 || n.kind == 12 { for i in n.count { work.push(slot(heap, n.start + i)); } }
-        else if n.kind == atom_kind() { atoms.push(v.id()); work.push(n.value); }
-        else if n.kind == 2 || n.kind == 4 || n.kind == delay_kind() || n.kind == cell_kind() && n.length == cell_flavor::Delay && n.value.is_object() { functions = true; return ""; }
-        else if n.kind == 15 { return "an unrealized lazy sequence"; }
-        else if n.kind != 9 && n.kind != 10 && n.kind != 11 && n.kind != cell_kind() { return "a mutable JavaScript object"; }
+        if n.kind >= node_kind::List && n.kind <= node_kind::Set || n.kind == node_kind::Concat { for i in n.count { work.push(slot(heap, n.start + i)); } }
+        else if n.kind == node_kind::Atom { atoms.push(v.id()); work.push(n.value); }
+        else if n.kind == node_kind::Closure || n.kind == node_kind::Builtin || n.kind == node_kind::Delay || n.kind == node_kind::Cell && n.length == cell_flavor::Delay && n.value.is_object() { functions = true; return ""; }
+        else if n.kind == node_kind::LazySeq { return "an unrealized lazy sequence"; }
+        else if n.kind != node_kind::Symbol && n.kind != node_kind::Keyword && n.kind != node_kind::Scalar && n.kind != node_kind::Cell { return "a mutable JavaScript object"; }
     }
     return "";
 }
@@ -208,13 +205,13 @@ fn callable_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, cl
         if !v.is_object() || marks[v.id()] { continue; }
         marks[v.id()] = true; let n = node(heap, v.id());
         if !charge(heap) { return "a value past the work limit"; }
-        if n.kind == 3 && (!n.immutable || !n.initialized) { return "a function that captures a variable it may assign"; }
-        if v.id() < floor { if n.kind == 1 { return "a mutable JavaScript object"; } continue; }
-        if n.kind == 15 { return "an unrealized lazy sequence"; }
-        if n.kind == 0 || n.kind == 1 || n.kind > 12 && n.kind != atom_kind() && n.kind != cell_kind() && n.kind != delay_kind() { return "a mutable JavaScript object"; }
-        if n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() { return if n.kind == 2 { "a function with properties (a mutable JavaScript object)" } else { "a mutable JavaScript object" }; }
-        if n.kind == atom_kind() || n.kind == delay_kind() { atoms.push(v.id()); }
-        if n.kind == 2 { closures.push(v.id()); }
+        if n.kind == node_kind::Binding && (!n.immutable || !n.initialized) { return "a function that captures a variable it may assign"; }
+        if v.id() < floor { if n.kind == node_kind::Array { return "a mutable JavaScript object"; } continue; }
+        if n.kind == node_kind::LazySeq { return "an unrealized lazy sequence"; }
+        if n.kind == node_kind::Object || n.kind == node_kind::Array || n.kind > node_kind::Concat && n.kind != node_kind::Atom && n.kind != node_kind::Cell && n.kind != node_kind::Delay { return "a mutable JavaScript object"; }
+        if n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() { return if n.kind == node_kind::Closure { "a function with properties (a mutable JavaScript object)" } else { "a mutable JavaScript object" }; }
+        if n.kind == node_kind::Atom || n.kind == node_kind::Delay { atoms.push(v.id()); }
+        if n.kind == node_kind::Closure { closures.push(v.id()); }
         work.push(n.value); work.push(n.namespace_value); work.push(n.metadata);
         if snapshot::has_values(n.kind) { for i in n.count { work.push(slot(heap, n.start + i)); } }
     }
@@ -234,12 +231,12 @@ fn make_cells(heap: Heap&, rows: CellRow[>..]&, atoms: const i64[:], failure: i6
     var states: Value[>..] = []; var made: i64[>..] = []; var realized: bool[>..] = [];
     for o in atoms {
         let n = node(heap, o);
-        if n.kind != atom_kind() && n.kind != delay_kind() { states.push(Value.Undefined); made.push(-1); realized.push(false); continue; }
-        let delay = n.kind == delay_kind(); let done = delay && !truthy(heap, n.value);
+        if n.kind != node_kind::Atom && n.kind != node_kind::Delay { states.push(Value.Undefined); made.push(-1); realized.push(false); continue; }
+        let delay = n.kind == node_kind::Delay; let done = delay && !truthy(heap, n.value);
         let a = cells::exchange(cells::Request { op: cell_op::New, flavor: if delay { cell_flavor::Delay } else { n.length } });
         if !a.ok { failure = a.error; return false; }
         states.push(if delay { n.namespace_value } else { n.value }); made.push(a.cell); realized.push(done);
-        var r = n; r.kind = cell_kind(); r.function = a.cell as u32; r.namespace_value = Value.Null;
+        var r = n; r.kind = node_kind::Cell; r.function = a.cell as u32; r.namespace_value = Value.Null;
         if delay { r.length = cell_flavor::Delay; r.value = if done { Value.Undefined } else { n.value }; } else { r.value = Value.Undefined; }
         set_node(heap, o, r);
         remember(rows, o, a.cell, 0);
@@ -298,7 +295,7 @@ fn encode_callable(heap: Heap&, rows: const CellRow[:], v: Value, failure: i64&,
     if cell_base.base <= 0 { failure = cell_error::NoOwner; return cells::Flat {}, false; }
     let n = node(heap, v.id());
     if v.id() < cell_base.ends[6] {
-        if n.kind != 2 && n.kind != 4 { failure = cell_error::Encode; return cells::Flat {}, false; }
+        if n.kind != node_kind::Closure && n.kind != node_kind::Builtin { failure = cell_error::Encode; return cells::Flat {}, false; }
         return cells::Flat { kind: flat_kind::Function, number: v.id() }, true;
     }
     var c = snapshot::Control {}; var bytes: u8[>..] = [];
@@ -306,7 +303,7 @@ fn encode_callable(heap: Heap&, rows: const CellRow[:], v: Value, failure: i64&,
     var nodes: i64[>..] = [];
     for row in stored {
         let m = node(heap, row);
-        nodes.push(if m.kind == cell_kind() { cell_identity(m.function) } else if publication >= 0 && row < places.len && places[row] >= 0 { publication_identity(publication, places[row]) } else { identity_of(rows, row) });
+        nodes.push(if m.kind == node_kind::Cell { cell_identity(m.function) } else if publication >= 0 && row < places.len && places[row] >= 0 { publication_identity(publication, places[row]) } else { identity_of(rows, row) });
     }
     return cells::Flat { kind: flat_kind::Callable, identity: nodes[0], data: bytes, root: 0, nodes: nodes }, true;
 }
@@ -332,7 +329,7 @@ fn decode_callable(job: Job&, b: Builtin, f: const cells::Flat&) -> Value {
     var prior: i64[>..] = []; var any = false;
     for i in f.nodes.len {
         let n = node(heap, start + i); var p: i64 = -1;
-        if n.kind == cell_kind() {
+        if n.kind == node_kind::Cell {
             p = cell_row(job.cell_rows, n.function);
             if p < 0 { job.cell_rows.push(CellRow { row: start + i, cell: n.function }); }
             else if n.length == cell_flavor::Delay && n.value.is_object() && node(heap, p).value.is_undefined() { node_mut(heap, p).value = n.value; }
@@ -352,7 +349,7 @@ fn decode_callable(job: Job&, b: Builtin, f: const cells::Flat&) -> Value {
 // its fault code, identity its own, 0 until the owner numbers it), or false
 // for an object that is no error of the realm.
 fn error_flat(heap: Heap&, rows: const CellRow[:], e: Value) -> cells::Flat, bool {
-    if !e.is_object() || node(heap, e.id()).kind != 13 { return cells::Flat {}, false; }
+    if !e.is_object() || node(heap, e.id()).kind != node_kind::Error { return cells::Flat {}, false; }
     let n = node(heap, e.id()); var t: i64 = -1;
     for i in ERROR_NAMES.len { if n.proto == object(error_prototype_row(i)) { t = i; } }
     if t < 0 { return cells::Flat {}, false; }
@@ -406,7 +403,7 @@ fn decode(job: Job&, b: Builtin, f: const cells::Flat&) -> Value {
         flat_kind::Function => {
             // A function of the image: the same row in every program.
             let row = f.number as i64;
-            if row < 0 || row >= cell_base.ends[6] || row >= heap.nodes.len || node(heap, row).kind != 2 && node(heap, row).kind != 4 { return cell_fail(job, b, "a cell value does not import"); }
+            if row < 0 || row >= cell_base.ends[6] || row >= heap.nodes.len || node(heap, row).kind != node_kind::Closure && node(heap, row).kind != node_kind::Builtin { return cell_fail(job, b, "a cell value does not import"); }
             return object(row);
         },
         _ => {},
@@ -473,7 +470,7 @@ fn install_publication(heap: Heap&, rows: CellRow[>..]&, start: i64, count: i64,
     var prior: i64[>..] = []; var any = false;
     for i in count {
         let n = node(heap, start + i); var p: i64 = -1;
-        if n.kind == cell_kind() {
+        if n.kind == node_kind::Cell {
             p = cell_row(rows, n.function);
             if p < 0 { rows.push(CellRow { row: start + i, cell: n.function }); }
             else if n.length == cell_flavor::Delay && n.value.is_object() && node(heap, p).value.is_undefined() { node_mut(heap, p).value = n.value; }
@@ -502,8 +499,8 @@ fn expected(job: Job&, v: Value) -> cells::Flat {
     let heap .= job.heap;
     if v.is_object() {
         let n = node(heap, v.id());
-        if v.id() < cell_base.ends[6] && (n.kind == 2 || n.kind == 4) { return cells::Flat { kind: flat_kind::Function, number: v.id() }; }
-        return cells::Flat { kind: flat_kind::Graph, identity: if n.kind == cell_kind() { cell_identity(n.function) } else { identity_of(job.cell_rows, v.id()) } };
+        if v.id() < cell_base.ends[6] && (n.kind == node_kind::Closure || n.kind == node_kind::Builtin) { return cells::Flat { kind: flat_kind::Function, number: v.id() }; }
+        return cells::Flat { kind: flat_kind::Graph, identity: if n.kind == node_kind::Cell { cell_identity(n.function) } else { identity_of(job.cell_rows, v.id()) } };
     }
     var failure: i64 = 0; var stored: i64[>..] = []; let f, ok = encode(heap, job.cell_rows, v, failure, stored);
     return f;
@@ -521,7 +518,7 @@ fn publish_cells(heap: Heap&, root: Value, floor: i64, thunks: bool&, initial: I
     if root.is_object() && root.id() < heap.nodes.len { work.push(root.id()); marks[root.id()] = true; }
     while work.len > 0 {
         let o = work.pop(); let n = node(heap, o);
-        if n.kind == atom_kind() || n.kind == delay_kind() { atoms.push(o); }
+        if n.kind == node_kind::Atom || n.kind == node_kind::Delay { atoms.push(o); }
         var edges: Value[>..] = [n.value, n.namespace_value, n.metadata, n.proto];
         if snapshot::has_values(n.kind) { for i in n.count { edges.push(slot(heap, n.start + i)); } }
         if snapshot::shaped(n) {
@@ -541,13 +538,13 @@ fn publish_cells(heap: Heap&, root: Value, floor: i64, thunks: bool&, initial: I
     var nested: i64[>..] = [];
     for o in atoms {
         let n = node(heap, o);
-        if n.kind == delay_kind() && truthy(heap, n.value) { thunks = true; continue; }
-        let bad = unshareable(heap, [if n.kind == delay_kind() { n.namespace_value } else { n.value }], nested);
+        if n.kind == node_kind::Delay && truthy(heap, n.value) { thunks = true; continue; }
+        let bad = unshareable(heap, [if n.kind == node_kind::Delay { n.namespace_value } else { n.value }], nested);
         if bad.len > 0 { return str("cell-unshareable ", bad); }
     }
     var rows: CellRow[>..] = []; var failure: i64 = 0;
     if !make_cells(heap, rows, atoms, failure, initial, true) { return str("cell-error ", failure); }
-    for o in nested { if node(heap, o).kind == atom_kind() { return str("cell-error 5"); } }
+    for o in nested { if node(heap, o).kind == node_kind::Atom { return str("cell-error 5"); } }
     return [];
 }
 // Store the initial states of a publication's cells: an object of the
@@ -583,7 +580,7 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
     match b {
         Atom, Volatile => {
             if args.len > 1 { return cell_fail(job, b, "options (metadata and validators) are not supported"); }
-            return allocate(heap, Node { kind: atom_kind(), length: if b == Builtin.Atom { cell_flavor::Atom } else { cell_flavor::Volatile }, value: arg(args, 0) });
+            return allocate(heap, Node { kind: node_kind::Atom, length: if b == Builtin.Atom { cell_flavor::Atom } else { cell_flavor::Volatile }, value: arg(args, 0) });
         },
         AddWatch, RemoveWatch, SetValidator => { return cell_fail(job, b, "watches and validators are not supported"); },
         Deref => {
@@ -598,10 +595,10 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
             let a = arg(args, 0); let v = arg(args, 1); let flavor = reference_flavor(heap, a);
             if heap.fault != Fault.None { return Value.Undefined; }
             if flavor != (if b == Builtin.Vreset { cell_flavor::Volatile } else { cell_flavor::Atom }) { return type_error(job, if b == Builtin.Vreset { "vreset! needs a volatile" } else { "reset! needs an atom" }); }
-            if node(heap, a.id()).kind == atom_kind() {
+            if node(heap, a.id()).kind == node_kind::Atom {
                 if !writable(job, a.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
                 let old = node(heap, a.id()).value; node_mut(heap, a.id()).value = v;
-                return if b == Builtin.ResetVals { form_collection(heap, 6, [old, v]) } else { v };
+                return if b == Builtin.ResetVals { form_collection(heap, node_kind::Vector, [old, v]) } else { v };
             }
             var stored: i64[>..] = [];
             let f, ok = store_value(job, b, v, stored); if !ok { return Value.Undefined; }
@@ -618,7 +615,7 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
                 if !current.ok { return owner_fail(job, b, current.error); }
                 let old = decode(job, b, current.value); if heap.fault != Fault.None { return Value.Undefined; }
                 let r = cells::exchange(cells::Request { op: cell_op::CompareAndSet, cell: cell, expected: expected(job, old), value: copy(f) });
-                if r.ok { remember_stored(job.cell_rows, stored, r.value.nodes); return form_collection(heap, 6, [old, v]); }
+                if r.ok { remember_stored(job.cell_rows, stored, r.value.nodes); return form_collection(heap, node_kind::Vector, [old, v]); }
                 if r.error != 0 { return owner_fail(job, b, r.error); }
             }
             return Value.Undefined;
@@ -626,7 +623,7 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
         CompareAndSet => {
             let a = arg(args, 0); let old = arg(args, 1); let v = arg(args, 2);
             if reference_flavor(heap, a) != cell_flavor::Atom { if heap.fault == Fault.None { type_error(job, "compare-and-set! needs an atom"); } return Value.Undefined; }
-            if node(heap, a.id()).kind == atom_kind() {
+            if node(heap, a.id()).kind == node_kind::Atom {
                 let same = form_equal(heap, node(heap, a.id()).value, old); if heap.fault != Fault.None { return Value.Undefined; }
                 if !same { return boolean(false); }
                 if !writable(job, a.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
@@ -659,7 +656,7 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
 // deref of an atom, volatile or cell.
 fn load(job: Job&, b: Builtin, a: Value) -> Value {
     let n = node(job.heap, a.id());
-    if n.kind == atom_kind() { return n.value; }
+    if n.kind == node_kind::Atom { return n.value; }
     let r = cells::exchange(cells::Request { op: cell_op::Load, cell: n.function });
     if !r.ok { return owner_fail(job, b, r.error); }
     return decode(job, b, r.value);
@@ -708,7 +705,7 @@ fn swap_step(job: Job&, frame: Frame, b: Builtin) {
 fn swap_call(job: Job&, at: i64, b: Builtin) -> Value, bool {
     let heap .= job.heap; let frame = job.frames[at];
     var args: Value[>..] = [frame.output]; args.append(job.operands[frame.operand_base..(frame.operand_base + frame.argument_count)]);
-    if node(heap, frame.callee.id()).kind == 4 {
+    if node(heap, frame.callee.id()).kind == node_kind::Builtin {
         let cb = builtin_of(heap, frame.callee.id());
         if cb == Builtin.Gensym && job.gensym_next > 0 { return gensym(job, args), true; }
         if forces(heap, cb, args) { job.frames[at].pc = 1; start_force(job, cb, args[0], job.operands.len); return Value.Undefined, false; }
@@ -724,7 +721,7 @@ fn swap_call(job: Job&, at: i64, b: Builtin) -> Value, bool {
 // cell held another value, which the frame now holds as the value read.
 fn swap_commit(job: Job&, at: i64, b: Builtin, r: Value) -> bool {
     let heap .= job.heap; let frame = job.frames[at]; let a = frame.input; var old = frame.output;
-    if node(heap, a.id()).kind == atom_kind() {
+    if node(heap, a.id()).kind == node_kind::Atom {
         // The V8 build's swap-vals! pairs the state replaced at the store,
         // which the function itself may have reset.
         if !writable(job, a.id()) { heap.fault = Fault.NativeBoundary; return true; }
@@ -740,7 +737,7 @@ fn swap_commit(job: Job&, at: i64, b: Builtin, r: Value) -> bool {
         }
         remember_stored(job.cell_rows, stored, answer.value.nodes);
     }
-    let result = if b == Builtin.SwapVals { form_collection(heap, 6, [old, r]) } else { r };
+    let result = if b == Builtin.SwapVals { form_collection(heap, node_kind::Vector, [old, r]) } else { r };
     if heap.fault == Fault.None { finish_native(job, frame, result); }
     return true;
 }
@@ -751,13 +748,13 @@ fn swap_commit(job: Job&, at: i64, b: Builtin, r: Value) -> bool {
 fn delay_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
     let heap .= job.heap; let d = arg(args, 0);
     match b {
-        Delay => { return allocate(heap, Node { kind: delay_kind(), value: d, namespace_value: arg(args, 1) }); },
+        Delay => { return allocate(heap, Node { kind: node_kind::Delay, value: d, namespace_value: arg(args, 1) }); },
         IsDelay => { return boolean(is_delay(heap, d)); },
         Force => { return if is_delay(heap, d) { delay_now(job, b, d) } else { d }; },
         Realized => {
             if !is_delay(heap, d) { return unsupported_step(job, b, "a value that is not a delay"); }
             let n = node(heap, d.id());
-            if n.kind == delay_kind() { return boolean(!truthy(heap, n.value)); }
+            if n.kind == node_kind::Delay { return boolean(!truthy(heap, n.value)); }
             let a = cells::exchange(cells::Request { op: cell_op::Load, cell: n.function });
             if !a.ok { return owner_fail(job, b, a.error); }
             return boolean(a.state == delay_state::Realized || a.state == delay_state::Failed);
@@ -770,7 +767,7 @@ fn delay_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
 fn delay_realized(heap: Heap&, d: Value) -> Value {
     if !is_delay(heap, d) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
     let n = node(heap, d.id());
-    if n.kind == delay_kind() { return boolean(!truthy(heap, n.value)); }
+    if n.kind == node_kind::Delay { return boolean(!truthy(heap, n.value)); }
     let a = cells::exchange(cells::Request { op: cell_op::Load, cell: n.function });
     if !a.ok { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
     return boolean(a.state == delay_state::Realized || a.state == delay_state::Failed);
@@ -779,7 +776,7 @@ fn delay_realized(heap: Heap&, d: Value) -> Value {
 // callback): its value when realized, otherwise a named failure.
 fn delay_now(job: Job&, b: Builtin, d: Value) -> Value {
     let heap .= job.heap; let n = node(heap, d.id());
-    if n.kind == delay_kind() { return if truthy(heap, n.value) { unsupported_step(job, b, "a pending delay forced by a built-in's callback") } else { n.namespace_value }; }
+    if n.kind == node_kind::Delay { return if truthy(heap, n.value) { unsupported_step(job, b, "a pending delay forced by a built-in's callback") } else { n.namespace_value }; }
     let a = cells::exchange(cells::Request { op: cell_op::Load, cell: n.function });
     if !a.ok { return owner_fail(job, b, a.error); }
     if a.state != delay_state::Realized { return unsupported_step(job, b, "a delay forced by a built-in's callback before it realized"); }
@@ -792,7 +789,7 @@ fn forces(heap: Heap&, b: Builtin, args: const Value[:]) -> bool { return (b == 
 // loop's map demand included: the Delay built-in, also the only callee
 // rt.nativeConstruct accepts. Every other callee takes source_vm.goose's
 // construct (light-cljs-831).
-fn constructible(heap: Heap&, f: Value) -> bool { return valid(heap, f) && f.is_object() && node(heap, f.id()).kind == 4 && builtin_of(heap, f.id()) == Builtin.Delay; }
+fn constructible(heap: Heap&, f: Value) -> bool { return valid(heap, f) && f.is_object() && node(heap, f.id()).kind == node_kind::Builtin && builtin_of(heap, f.id()) == Builtin.Delay; }
 
 // force, deref and derefProtocol of a delay (Native.Force, its Builtin the
 // payload): a native frame, so a thunk that suspends the job (a helper
@@ -820,7 +817,7 @@ fn force_step(job: Job&, frame: Frame, b: Builtin) {
     if frame.pc == 3 { job.operands.pop(); job.frames[at].pc = 0; return; }
     if frame.pc == 1 {
         let r = job.operands.pop();
-        if n.kind == delay_kind() {
+        if n.kind == node_kind::Delay {
             if !writable(job, d.id()) { heap.fault = Fault.NativeBoundary; return; }
             node_mut(heap, d.id()).value = Value.Null; node_mut(heap, d.id()).namespace_value = r;
             finish_native(job, frame, r); return;
@@ -836,7 +833,7 @@ fn force_step(job: Job&, frame: Frame, b: Builtin) {
         if settle(job, b, frame, e, true) { raise(job, e, frame); }
         return;
     }
-    if n.kind == delay_kind() {
+    if n.kind == node_kind::Delay {
         if !truthy(heap, n.value) { finish_native(job, frame, n.namespace_value); return; }
         force_call(job, at, b, n.value); return;
     }
@@ -876,7 +873,7 @@ fn force_call(job: Job&, at: i64, b: Builtin, f: Value) {
     let heap .= job.heap;
     if !callable(heap, f) { type_error(job, "not a function"); return; }
     job.frames[at].pc = 1;
-    if node(heap, f.id()).kind == 4 {
+    if node(heap, f.id()).kind == node_kind::Builtin {
         let cb = builtin_of(heap, f.id());
         if native_builtin(cb) || effect_builtin(cb) || cb == Builtin.Mapv || cb == Builtin.MapSeq || cb == Builtin.Gensym { unsupported_step(job, b, "a host-effect or native-frame built-in as a delay's function"); return; }
         let v = call_builtin(job, node(heap, f.id()).function, Value.Null, []);

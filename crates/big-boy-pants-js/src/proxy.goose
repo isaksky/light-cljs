@@ -77,9 +77,6 @@ namespace source;
 // setter, but not where a built-in takes a callback (a TypeError there, as
 // for any non-function).
 
-// The node kinds this file names (light-cljs-838 names the others).
-let node_kind::KeyList = 16;
-let node_kind::Proxy = 24;
 // A key list's `function`: Pending while the keys of the proxy it walks
 // (its `value`) are not listed yet (for-in, source_vm.goose).
 let key_list::Listed = 0;
@@ -121,7 +118,7 @@ inline fn is_proxy(heap: const Heap&, v: Value) -> bool { return v.is_object() &
 fn proxy_callable(heap: const Heap&, v: Value) -> bool {
     var t = v;
     while is_proxy(heap, t) { t = node(heap, t.id()).value; }
-    return t.is_object() && (node(heap, t.id()).kind == 2 || node(heap, t.id()).kind == 4);
+    return t.is_object() && (node(heap, t.id()).kind == node_kind::Closure || node(heap, t.id()).kind == node_kind::Builtin);
 }
 // An internal method of a proxy this VM does not implement: UnsupportedOperand,
 // naming it for the report (Heap.proxy_method, fail).
@@ -263,7 +260,7 @@ fn proxy_with_trap(job: Job&, at: i64, method: i64, trap: Value) {
     loop {
         if is_proxy(heap, f) { proxy_invoke(heap, f, proxy_method::Call); return; }
         if !callable(heap, f) { type_error(job, "Proxy: trap is not a function"); return; }
-        if node(heap, f.id()).kind == 2 { push_frame(job, f, this_value, all[first..count], false, job.operands.len); return; }
+        if node(heap, f.id()).kind == node_kind::Closure { push_frame(job, f, this_value, all[first..count], false, job.operands.len); return; }
         if builtin_of(heap, f.id()) != Builtin.FunctionPrototypeCall { break; }
         if !charge(heap) { return; }
         let next_this = if first < count { all[first] } else { Value.Undefined };
@@ -335,7 +332,7 @@ fn own_keys_elements(job: Job&, at: i64) {
     while job.frames[at].index < job.frames[at].argument_count {
         if !charge(heap) { return; }
         let r = job.frames[at].receiver; let i = job.frames[at].index;
-        if node(heap, r.id()).kind == 1 {
+        if node(heap, r.id()).kind == node_kind::Array {
             let v, found = own_element(heap, r, i);
             if heap.fault != Fault.None { return; }
             if found { if !own_keys_element(job, at, v) { return; } continue; }

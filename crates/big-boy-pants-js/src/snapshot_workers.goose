@@ -18,7 +18,7 @@ fn cap(heap: source::Heap&, s: const snapshot::Snapshot&, exhaust: bool) {
     heap.limits.work = min(heap.limits.work, heap.work + 100000);
 }
 fn heap_ceiling(s: const snapshot::Snapshot&) -> i64 {
-    return (s.nodes.len + 512) * bytes_of([source::Node { kind: 0 }]).len
+    return (s.nodes.len + 512) * bytes_of([source::Node { kind: node_kind::Object }]).len
          + (s.values.len + 4096 + s.constants.len) * bytes_of([source::Value.Undefined]).len
          + (s.properties.len + 128) * bytes_of([source::Property {}]).len
          + (s.shapes.len + s.accessors.len + 129) * bytes_of([source::Shape {}]).len + (2 * s.keys.len + 1088) * bytes_of([source::KeySlot {}]).len

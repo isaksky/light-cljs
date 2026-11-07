@@ -35,14 +35,14 @@ fn prepare(code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding
     bindings.push(snapshot::Binding { id: 2, generation: 9, value: factory(heap, closure, rt) }); heap.initializer_count += 1;
     bindings.push(snapshot::Binding { id: 3, generation: 2, value: factory(heap, left, rt) }); heap.producer_count += 1;
     bindings.push(snapshot::Binding { id: 4, generation: 3, value: factory(heap, right, rt) }); heap.producer_count += 1;
-    let definitions = source::allocate(heap, source::Node { kind: 0 });
+    let definitions = source::allocate(heap, source::Node { kind: node_kind::Object });
     assert(source::install_field(heap, heap.global, "__lightCompilerRoots", definitions));
     assert(source::install_field(heap, definitions, "cljs.user/left-result", bindings[2].value));
     assert(source::install_field(heap, definitions, "cljs.user/right-result", bindings[3].value));
-    let cell = source::allocate(heap, source::Node { kind: 3, initialized: true, value: source::number(40) });
+    let cell = source::allocate(heap, source::Node { kind: node_kind::Binding, initialized: true, value: source::number(40) });
     bindings.push(snapshot::Binding { id: 5, generation: 1, value: source::closure(heap, setter, [cell]) });
     bindings.push(snapshot::Binding { id: 6, generation: 1, value: cell });
-    let object = source::allocate(heap, source::Node { kind: 0 });
+    let object = source::allocate(heap, source::Node { kind: node_kind::Object });
     assert(source::install_field(heap, object, "self", object)); assert(source::install_field(heap, object, "cell", cell));
     assert(source::install_field(heap, object, "nan", source::number(0.0 / 0.0)));
     assert(source::install_field(heap, object, "negativeZero", source::number(-0.0)));
@@ -65,11 +65,11 @@ fn prepare(code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding
     bindings.push(snapshot::Binding { id: 8, generation: 12, value: roots[0] });
     // Neither the cell nor its payload has a direct binding: these are
     // retained solely through the two closure environments after return.
-    let hidden = source::allocate(heap, source::Node { kind: 0 }); assert(source::install_field(heap, hidden, "payload", source::number(73)));
+    let hidden = source::allocate(heap, source::Node { kind: node_kind::Object }); assert(source::install_field(heap, hidden, "payload", source::number(73)));
     // A deleted property leaves it in dictionary mode (light-cljs-787), so
     // the image has property records too.
     assert(source::install_field(heap, hidden, "scratch", source::number(1)) && source::delete_property(heap, hidden, source::key_named(heap, "scratch")) && source::node(heap, hidden.id()).initialized);
-    let hidden_cell = source::allocate(heap, source::Node { kind: 3, initialized: true, value: hidden });
+    let hidden_cell = source::allocate(heap, source::Node { kind: node_kind::Binding, initialized: true, value: hidden });
     bindings.push(snapshot::Binding { id: 9, generation: 1, value: source::closure(heap, setter, [hidden_cell]) });
     bindings.push(snapshot::Binding { id: 10, generation: 1, value: source::closure(heap, setter, [hidden_cell]) });
     assert(heap.live_jobs == 0 && heap.boot_count == 1 && heap.initializer_count == 2 && heap.producer_count == 2);
@@ -86,9 +86,9 @@ fn verify(heap: source::Heap&, bindings: const snapshot::Binding[:], n: i64) -> 
     assert(source::node(heap, cell.id()).value.num() == 40);
     let nodes = heap.nodes.len; assert(invoke(heap, bindings[4].value, [source::number(n)]).num() == n);
     assert(source::node(heap, cell.id()).value.num() == n);
-    for i in 32 { assert(source::allocate(heap, source::Node { kind: 0 }).id() == nodes + i); }
+    for i in 32 { assert(source::allocate(heap, source::Node { kind: node_kind::Object }).id() == nodes + i); }
     let a = invoke(heap, bindings[0].value, [source::nil(), source::nil(), source::number(16)]); assert(a.num() == 168);
-    let input = source::form_collection(heap, 6, [source::number(1), source::number(2)]);
+    let input = source::form_collection(heap, node_kind::Vector, [source::number(1), source::number(2)]);
     let expanded = invoke(heap, bindings[1].value, [source::nil(), source::nil(), source::number(n), input]);
     let out = source::form_nth(heap, expanded, 1); assert(source::form_count(heap, out) == 2);
     assert(source::form_nth(heap, source::form_nth(heap, out, 0), 1).num() == n + 4);
@@ -101,7 +101,7 @@ fn verify(heap: source::Heap&, bindings: const snapshot::Binding[:], n: i64) -> 
     assert(x.id() == source::form_nth(heap, form, 2).id() && x.id() != y.id() && source::form_equal(heap, x, y));
     assert(source::node(heap, x.id()).origin == 10 && source::node(heap, y.id()).span_start == 4 && heap.source_bytes[..] == "one two");
     let text = source::form_value(heap, source::form_nth(heap, form, 3)); assert(source::utf16(heap, text) == [0xD83D as u16, 0xDE00, 0xD800]);
-    let named = source::node(heap, source::form_nth(heap, form, 4).id()); assert(named.kind == 9 && source::node(heap, named.metadata.id()).kind == 7);
+    let named = source::node(heap, source::form_nth(heap, form, 4).id()); assert(named.kind == node_kind::Symbol && source::node(heap, named.metadata.id()).kind == node_kind::Map);
     assert(source::utf16(heap, named.namespace_value) == ['n' as u16, 's']);
     assert(source::utf16(heap, named.value)[0] == 'x');
     let first = source::node(heap, bindings[8].value.id()); let second = source::node(heap, bindings[9].value.id());

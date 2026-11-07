@@ -31,12 +31,12 @@ namespace source;
 // tables per step; a run that no longer fits is replaced by one twice as
 // large (never a free list: the old run stays the job's until the reset).
 //
-// Generators (kind 20, `function` its Activation row, `length` its state):
+// Generators (node_kind::Generator, `function` its Activation row, `length` its state):
 // GeneratorInitialYield makes the generator object (its [[Prototype]] the
 // function's `prototype`, else %GeneratorPrototype%), detaches the
 // initialized activation in state 0 (suspended start) and returns the
 // object to the caller. next, return and throw push a Resume native frame
-// (Native.Resume, its kind 0, 1 or 2): state 2 (executing) attaches the
+// (Native.Resume, its kind a resume_kind::): state 2 (executing) attaches the
 // activation above it, pushing [value, kind] at a yield; GeneratorYield
 // detaches it again (state 1, suspended yield) and gives the value to the
 // Resume frame, which returns {value, done: false}; the generator frame's
@@ -46,8 +46,16 @@ namespace source;
 // suspended start complete it without running it. GeneratorYieldStar and
 // async generators stay explicit Unsupported for the generators area
 // (light-cljs-768).
+let generator_state::SuspendedStart = 0;
+let generator_state::SuspendedYield = 1;
+let generator_state::Executing = 2;
+let generator_state::Completed = 3;
+// A Resume frame's operation (Native.Resume's kind).
+let resume_kind::Next = 0;
+let resume_kind::Return = 1;
+let resume_kind::Throw = 2;
 //
-// Async functions: AsyncStart makes the function's promise (kind 21) and
+// Async functions: AsyncStart makes the function's promise (node_kind::Promise) and
 // pushes its Async handler, the frame's completion boundary (HandlerKind):
 // an exception that reaches it rejects the promise and a return resolves it;
 // either way the frame ends delivering the promise. Await resolves its
@@ -58,8 +66,8 @@ namespace source;
 // frame below: the caller at the first await, nothing for an activation a
 // promise job resumed.
 //
-// Promises (kind 21, `function` its Promise row): a state (0 pending, 1
-// fulfilled, 2 rejected), a result, the reactions registered while pending
+// Promises (node_kind::Promise, `function` its Promise row): a state (promise_status:: Pending,
+// Fulfilled or Rejected), a result, the reactions registered while pending
 // (Reaction rows, a list in registration order) and, for an async
 // function's, its activation. Settling queues one promise job per reaction,
 // in order; registering a reaction on a settled promise queues its job at
@@ -68,6 +76,9 @@ namespace source;
 // order is QuickJS's); resolving a promise with itself rejects it with a
 // TypeError. The Promise constructor, its methods and thenable objects
 // belong to the promises area (light-cljs-768).
+let promise_status::Pending = 0;
+let promise_status::Fulfilled = 1;
+let promise_status::Rejected = 2;
 //
 // The promise job queue (Job.queue) is the job's FIFO of Tasks. When the
 // entry finishes (entry_done), the job keeps its value and drains the queue
@@ -143,9 +154,7 @@ fn plain_bytes(c: Cont, out: u8[>..]&) {
 }
 fn plain_bytes(t: Task, out: u8[>..]&) { out.append(bytes_of([t.target, t.thenable])); out.push(if t.resume { 1 } else { 0 }); out.push(if t.rejected { 1 } else { 0 }); plain_bytes(t.value, out); }
 
-inline fn generator_kind() -> i64 { return 20; }
-inline fn promise_kind() -> i64 { return 21; }
-inline fn is_promise(heap: const Heap&, v: Value) -> bool { return v.is_object() && node(heap, v.id()).kind == promise_kind(); }
+inline fn is_promise(heap: const Heap&, v: Value) -> bool { return v.is_object() && node(heap, v.id()).kind == node_kind::Promise; }
 
 // Rows of heap.conts, named like every table's (light-cljs-800).
 fn cont_row(heap: const Heap&, r: i64) -> Cont { if r < 0 || r >= heap.conts.len { abort("row is not in table conts"); } return heap.conts[r]; }
@@ -276,11 +285,11 @@ fn attach_run(job: Job&, row: i64, charged: bool) -> bool {
 // Whether built-in b is a generator's next, return or throw (a native frame).
 fn generator_method(b: Builtin) -> bool { return b == Builtin.GeneratorPrototypeNext || b == Builtin.GeneratorPrototypeReturn || b == Builtin.GeneratorPrototypeThrow; }
 // The generator a yield or an exception completes.
-fn complete_generator(heap: Heap&, g: i64) { if node(heap, g).kind == generator_kind() { node_mut(heap, g).length = 3; } }
+fn complete_generator(heap: Heap&, g: i64) { if node(heap, g).kind == node_kind::Generator { node_mut(heap, g).length = generator_state::Completed; } }
 // {value, done}, a new ordinary object (CreateIterResultObject).
 fn iter_result(job: Job&, value: Value, done: bool) -> Value {
     let heap .= job.heap;
-    let o = allocate(heap, Node { kind: 0 });
+    let o = allocate(heap, Node { kind: node_kind::Object });
     if heap.fault != Fault.None || !realm_value(heap, o.id(), "value", value, attrs_data()) || !realm_value(heap, o.id(), "done", boolean(done), attrs_data()) { return Value.Undefined; }
     return o;
 }
@@ -295,7 +304,7 @@ fn initial_yield(job: Job&, top: i64, at: i64) {
     let heap .= job.heap;
     let proto = generator_prototype_of(job, job.frames[top].callee);
     if heap.fault != Fault.None { return; }
-    let g = allocate(heap, Node { kind: generator_kind(), function: no_row(), proto: proto });
+    let g = allocate(heap, Node { kind: node_kind::Generator, function: no_row(), proto: proto });
     if heap.fault != Fault.None { return; }
     let row = detach(job, top, -1);
     if row < 0 { return; }
@@ -312,7 +321,7 @@ fn generator_yield(job: Job&, top: i64, at: i64) {
     let value = job.operands.pop();
     let row = detach(job, top, node(heap, g).function);
     if row < 0 { job.operands.push(value); return; }
-    node_mut(heap, g).function = row as u32; node_mut(heap, g).length = 1;
+    node_mut(heap, g).function = row as u32; node_mut(heap, g).length = generator_state::SuspendedYield;
     job.operands.push(value);
 }
 // next(v), return(v) or throw(v) called on `receiver`: a Resume frame whose
@@ -320,40 +329,40 @@ fn generator_yield(job: Job&, top: i64, at: i64) {
 fn start_resume(job: Job&, b: Builtin, receiver: Value, v: Value, base: i64) {
     let heap .= job.heap;
     job.operands.resize(base);
-    if !receiver.is_object() || node(heap, receiver.id()).kind != generator_kind() { type_error(job, "not a generator"); return; }
-    if node(heap, receiver.id()).length == 2 { type_error(job, "cannot invoke a running generator"); return; }
+    if !receiver.is_object() || node(heap, receiver.id()).kind != node_kind::Generator { type_error(job, "not a generator"); return; }
+    if node(heap, receiver.id()).length == generator_state::Executing { type_error(job, "cannot invoke a running generator"); return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
-    let kind: u8 = if b == Builtin.GeneratorPrototypeNext { 0 } else if b == Builtin.GeneratorPrototypeReturn { 1 } else { 2 };
+    let kind: u8 = if b == Builtin.GeneratorPrototypeNext { resume_kind::Next } else if b == Builtin.GeneratorPrototypeReturn { resume_kind::Return } else { resume_kind::Throw };
     job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: Value.Undefined, receiver: receiver, input: receiver, output: v, native: Native.Resume { kind: kind } });
 }
 // The Resume frame's steps: pc 0 starts the resumption, pc 1 takes the
 // value the generator yielded (state 1) or returned (still 2).
 fn resume_step(job: Job&, frame: Frame) {
     let heap .= job.heap; let at = job.frames.len - 1; let g: i64 = frame.input.id();
-    let kind: i64 = match frame.native { Resume r => r.kind, _ => 0 };
+    let kind: i64 = match frame.native { Resume r => r.kind, _ => resume_kind::Next };
     if frame.pc == 0 {
         var state = node(heap, g).length;
-        if state == 2 { type_error(job, "cannot invoke a running generator"); return; }
+        if state == generator_state::Executing { type_error(job, "cannot invoke a running generator"); return; }
         if !writable(job, g) { heap.fault = Fault.NativeBoundary; return; }
-        if state == 0 && kind != 0 { complete_generator(heap, g); state = 3; }
-        if state == 3 {
-            if kind == 2 { raise(job, frame.output, frame); return; }
-            let r = iter_result(job, if kind == 1 { frame.output } else { Value.Undefined }, true);
+        if state == generator_state::SuspendedStart && kind != resume_kind::Next { complete_generator(heap, g); state = generator_state::Completed; }
+        if state == generator_state::Completed {
+            if kind == resume_kind::Throw { raise(job, frame.output, frame); return; }
+            let r = iter_result(job, if kind == resume_kind::Return { frame.output } else { Value.Undefined }, true);
             if heap.fault == Fault.None { finish_native(job, frame, r); }
             return;
         }
         // A resumption past the call limits leaves the generator suspended:
         // the Resume frame goes first, so the unwind does not complete it.
-        if !attach_fits(job, node(heap, g).function, if state == 1 { 2 } else { 0 }) {
+        if !attach_fits(job, node(heap, g).function, if state == generator_state::SuspendedYield { 2 } else { 0 }) {
             job.frames.pop(); job.operands.resize(frame.operand_base); heap.fault = Fault.StackLimit; return;
         }
-        node_mut(heap, g).length = 2; job.frames[at].pc = 1;
+        node_mut(heap, g).length = generator_state::Executing; job.frames[at].pc = 1;
         if !attach(job, node(heap, g).function) { return; }
-        if state == 1 { job.operands.push(frame.output); job.operands.push(number(kind)); }
+        if state == generator_state::SuspendedYield { job.operands.push(frame.output); job.operands.push(number(kind)); }
         return;
     }
     let value = job.operands.pop();
-    let done = node(heap, g).length != 1;
+    let done = node(heap, g).length != generator_state::SuspendedYield;
     if done { complete_generator(heap, g); }
     let r = iter_result(job, value, done);
     if heap.fault == Fault.None { finish_native(job, frame, r); }
@@ -366,7 +375,7 @@ fn new_promise(heap: Heap&) -> Value {
     if !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
     let row = add_conts(heap, Cont.Promise { p: PromiseState {} }, 1);
     if row < 0 { return Value.Undefined; }
-    return allocate(heap, Node { kind: promise_kind(), function: row as u32, proto: object(promise_prototype_row()) });
+    return allocate(heap, Node { kind: node_kind::Promise, function: row as u32, proto: object(promise_prototype_row()) });
 }
 fn queue_task(job: Job&, t: Task) {
     if job.queue.len - job.queue_head >= job.heap.limits.conts { memory(job.heap); return; }
@@ -376,9 +385,9 @@ fn queue_task(job: Job&, t: Task) {
 fn add_reaction(job: Job&, q: i64, target: u32, resume: bool) {
     let heap .= job.heap;
     var s = promise_state(heap, q);
-    if s.state != 0 {
-        if s.state == 2 && !s.handled { if !writable(job, q) { heap.fault = Fault.NativeBoundary; return; } s.handled = true; set_promise_state(heap, q, s); }
-        queue_task(job, Task { target: target, resume: resume, value: s.result, rejected: s.state == 2 });
+    if s.state != promise_status::Pending {
+        if s.state == promise_status::Rejected && !s.handled { if !writable(job, q) { heap.fault = Fault.NativeBoundary; return; } s.handled = true; set_promise_state(heap, q, s); }
+        queue_task(job, Task { target: target, resume: resume, value: s.result, rejected: s.state == promise_status::Rejected });
         return;
     }
     if !writable(job, q) { heap.fault = Fault.NativeBoundary; return; }
@@ -391,12 +400,12 @@ fn add_reaction(job: Job&, q: i64, target: u32, resume: bool) {
 fn settle_promise(job: Job&, p: i64, value: Value, rejected: bool) {
     let heap .= job.heap;
     var s = promise_state(heap, p);
-    if s.state != 0 { return; }
+    if s.state != promise_status::Pending { return; }
     if !writable(job, p) { heap.fault = Fault.NativeBoundary; return; }
     var at = s.first;
     while at != no_row() && heap.fault == Fault.None { let x = reaction(heap, at); queue_task(job, Task { target: x.target, resume: x.resume, value: value, rejected: rejected }); at = x.next; }
     if heap.fault != Fault.None { return; }
-    s.state = if rejected { 2 } else { 1 }; s.result = value; s.first = no_row(); s.last = no_row();
+    s.state = if rejected { promise_status::Rejected } else { promise_status::Fulfilled }; s.result = value; s.first = no_row(); s.last = no_row();
     set_promise_state(heap, p, s);
     if rejected && !s.handled { job.rejections.push(p as u32); }
 }
@@ -499,7 +508,7 @@ fn await_value(job: Job&, top: i64, at: i64) {
     // Registering the reaction writes q's state unless q is fulfilled or a
     // handled rejection: a row the job did not allocate fails first.
     let qs = promise_state(heap, q.id());
-    if (qs.state == 0 || qs.state == 2 && !qs.handled) && !writable(job, q.id()) { heap.fault = Fault.NativeBoundary; return; }
+    if (qs.state == promise_status::Pending || qs.state == promise_status::Rejected && !qs.handled) && !writable(job, q.id()) { heap.fault = Fault.NativeBoundary; return; }
     job.operands.pop();
     let row = detach(job, top, reuse_row(promise_state(heap, p.id()).activation));
     if row < 0 { job.operands.push(v); return; }
@@ -552,7 +561,7 @@ fn finish_jobs(job: Job&) {
     }
     if entry < 0 { job.result = e; job.status = tiny::Status.Complete; return; }
     let s = promise_state(heap, entry);
-    if s.state == 0 { terminate(job, Fault.Unsettled, nowhere()); return; }
-    if s.state == 2 { uncaught(job, s.result, nowhere()); return; }
+    if s.state == promise_status::Pending { terminate(job, Fault.Unsettled, nowhere()); return; }
+    if s.state == promise_status::Rejected { uncaught(job, s.result, nowhere()); return; }
     job.result = s.result; job.status = tiny::Status.Complete;
 }

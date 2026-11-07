@@ -46,7 +46,7 @@ fn origin(heap: const source::Heap&, base: const snapshot::Snapshot&, imports: c
     for e in imports.entries { if !poll(c) { return Key { arena: 0, slot: 0 }; } if e.target == slot { return e.key; } }
     return Key { arena: heap.identity, slot: slot };
 }
-fn has_values(n: source::Node) -> bool { return n.kind == 2 || n.kind >= 5 && n.kind <= 8 || n.kind == 12; }
+fn has_values(n: source::Node) -> bool { return n.kind == node_kind::Closure || n.kind >= node_kind::List && n.kind <= node_kind::Set || n.kind == node_kind::Concat; }
 fn edge_count(n: source::Node) -> i64 { return 3 + (if has_values(n) { n.count } else { 0 }); }
 fn edge<T>(a: const T&, n: source::Node, i: i64) -> source::Value {
     return match i { 0 => n.value, 1 => n.namespace_value, 2 => n.metadata, _ => a.values[n.start + i - 3] };
@@ -56,13 +56,13 @@ fn valid_value(a: const Artifact&, v: source::Value) -> bool {
 }
 fn shape(a: const Artifact&, n: source::Node, base: const snapshot::Snapshot&, c: Control&) -> bool {
     // A closure with own properties (light-cljs-805) is mutable like an object.
-    if n.kind == 0 || n.kind == 1 || n.kind == 2 && (n.key_count != 0 || n.initialized) || n.kind == 3 && (!n.immutable || !n.initialized) { return reject(c, Error.Mutable); }
-    if n.kind < 2 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) { return reject(c, Error.Link); }
-    if has_values(n) && !snapshot::range(n.start, n.count, a.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); }
-    if n.kind == 2 && (!snapshot::range(n.function, 1, base.functions.len) || n.count != base.functions[n.function].captures) || n.kind == 4 && (n.function > 13 || n.function == 9) { return reject(c, Error.Link); }
+    if n.kind == node_kind::Object || n.kind == node_kind::Array || n.kind == node_kind::Closure && (n.key_count != 0 || n.initialized) || n.kind == node_kind::Binding && (!n.immutable || !n.initialized) { return reject(c, Error.Mutable); }
+    if n.kind < node_kind::Closure || n.kind > node_kind::Concat || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) { return reject(c, Error.Link); }
+    if has_values(n) && !snapshot::range(n.start, n.count, a.values.len) || n.kind == node_kind::Map && n.count % 2 != 0 { return reject(c, Error.Link); }
+    if n.kind == node_kind::Closure && (!snapshot::range(n.function, 1, base.functions.len) || n.count != base.functions[n.function].captures) || n.kind == node_kind::Builtin && (n.function > 13 || n.function == 9) { return reject(c, Error.Link); }
     if !valid_value(a, n.value) || !valid_value(a, n.namespace_value) || !valid_value(a, n.metadata) { return reject(c, Error.Link); }
-    if n.metadata.tag() > value_tag::Null && (!n.metadata.is_object() || a.nodes[n.metadata.id()].kind != 7) { return reject(c, Error.Link); }
-    if (n.kind == 9 || n.kind == 10) && (!n.value.is_string() || !n.namespace_value.is_null() && !n.namespace_value.is_string()) || n.kind == 11 && n.value.tag() > value_tag::String { return reject(c, Error.Link); }
+    if n.metadata.tag() > value_tag::Null && (!n.metadata.is_object() || a.nodes[n.metadata.id()].kind != node_kind::Map) { return reject(c, Error.Link); }
+    if (n.kind == node_kind::Symbol || n.kind == node_kind::Keyword) && (!n.value.is_string() || !n.namespace_value.is_null() && !n.namespace_value.is_string()) || n.kind == node_kind::Scalar && n.value.tag() > value_tag::String { return reject(c, Error.Link); }
     if n.source != source::no_row() && n.source >= a.sources.len || n.origin < -1 { return reject(c, Error.Link); }
     if n.source != source::no_row() && (n.span_end < n.span_start || !snapshot::range(n.span_start, n.span_end - n.span_start, a.sources[n.source].count)) { return reject(c, Error.Link); }
     // The compiler checks an identity source's UTF-8 boundaries.
@@ -121,7 +121,7 @@ fn validate(a: const Artifact&, base: const snapshot::Snapshot&, c: Control&) ->
                 loop {
                     if !poll(c) { return false; }
                     let member = component[component.len - 1]; component.pop(); color[member] = 2; count += 1;
-                    if a.nodes[member].kind != 2 && a.nodes[member].kind != 3 { forbidden = member; }
+                    if a.nodes[member].kind != node_kind::Closure && a.nodes[member].kind != node_kind::Binding { forbidden = member; }
                     if member == id { break; }
                 }
                 if count > 1 && forbidden >= 0 {
@@ -142,7 +142,7 @@ fn validate(a: const Artifact&, base: const snapshot::Snapshot&, c: Control&) ->
         let v = edge(a, n, i); if !valid_value(a, v) { return reject(c, Error.Link); }
         if !v.is_object() || color[v.id()] == 2 { continue; }
         if color[v.id()] == 1 {
-            if v.id() == id && n.kind != 2 && n.kind != 3 { c.path.push(id); return reject(c, Error.Cycle); }
+            if v.id() == id && n.kind != node_kind::Closure && n.kind != node_kind::Binding { c.path.push(id); return reject(c, Error.Cycle); }
             low[id] = min(low[id], index[v.id()]);
         } else { parent[v.id()] = id; stack.push(Cursor { id: v.id() }); }
     }
@@ -328,7 +328,7 @@ fn import_graph(a: const Artifact&, base: const snapshot::Snapshot&, heap: sourc
     // Count actual installed pool/cache records. Existing aliased nodes are
     // excluded; unused appended value/text ranges remain visible in the cost.
     c.copied_nodes += new_nodes;
-    c.copied_bytes += new_nodes * bytes_of([source::Node { kind: 0 }]).len + bytes_of(a.values).len + bytes_of(a.units).len + a.bytes.len + bytes_of(a.sources).len + signatures.len + bytes_of(added).len + delivery.len + bytes_of([Definition { id: 0, version: 1, root: root, start: 0, count: 0 }]).len;
+    c.copied_bytes += new_nodes * bytes_of([source::Node { kind: node_kind::Object }]).len + bytes_of(a.values).len + bytes_of(a.units).len + a.bytes.len + bytes_of(a.sources).len + signatures.len + bytes_of(added).len + delivery.len + bytes_of([Definition { id: 0, version: 1, root: root, start: 0, count: 0 }]).len;
     return root;
 }
 // Local checked Goose ABI codec, versioned semantically before publication.

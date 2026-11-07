@@ -34,7 +34,7 @@ namespace source;
 //   pc 1  Set(O, len + i, item i, true), then Set(O, "length", len + n, true)
 //   pc 2  awaits an index setter's return (dropped)
 //   pc 3  awaits the `length` setter's return (dropped); the result is len + n
-// A dense array (kind 1 in element-run mode) the job may write, with the
+// A dense array (node_kind::Array in element-run mode) the job may write, with the
 // realm's prototype chain, appends to its run at the call: Array.prototype
 // and Object.prototype are realm rows a job cannot give an index accessor
 // (no definition built-in reaches them yet, light-cljs-766), so Set of a new
@@ -201,7 +201,7 @@ fn set_or_throw(job: Job&, b: Builtin, o: Value, k: Value, v: Value) -> bool {
     let setter, ok = write(heap, o, k, v);
     if heap.fault != Fault.None { return false; }
     if setter.is_object() {
-        if node(heap, setter.id()).kind != 2 { unsupported_step(job, b, "a built-in setter"); return false; }
+        if node(heap, setter.id()).kind != node_kind::Closure { unsupported_step(job, b, "a built-in setter"); return false; }
         push_frame(job, setter, o, [v], false, job.operands.len);
         return heap.fault == Fault.None;
     }
@@ -248,7 +248,7 @@ fn join_visit(job: Job&, at: i64) {
     let k = job.frames[at].index; let o = job.frames[at].input;
     if k >= job.frames[at].argument_count { join_finish(job, at); return; }
     if k > 0 && !join_piece(job, at, job.frames[at].receiver) { return; }
-    if node(heap, o.id()).kind == 1 && !node(heap, o.id()).initialized {
+    if node(heap, o.id()).kind == node_kind::Array && !node(heap, o.id()).initialized {
         let v, found = own_element(heap, o, k);
         if found { join_element(job, at, v); return; }
     }
@@ -329,7 +329,7 @@ fn to_string_step(job: Job&, frame: Frame) {
         return;
     }
     job.frames[at].pc = 2;
-    if node(heap, f.id()).kind == 2 { push_frame(job, f, frame.input, [], false, job.operands.len); return; }
+    if node(heap, f.id()).kind == node_kind::Closure { push_frame(job, f, frame.input, [], false, job.operands.len); return; }
     let c = builtin_of(heap, f.id());
     if array_native(c) { native_start(job, c, frame.input, [], job.operands.len); return; }
     if effect_builtin(c) || native_builtin(c) || c == Builtin.Mapv || c == Builtin.MapSeq || c == Builtin.FunctionPrototypeCall || forces(heap, c, []) { unsupported_step(job, b, "a host-effect or native-frame built-in as join"); return; }

@@ -11,15 +11,15 @@ fn main() {
     var code = source::Code {}; var heap = source::Heap { code: code };
     for u in "abcdef" { heap.units.push(u); }
     // 0: dictionary-mode object (light-cljs-787): records 3..6, the last -> closure 1.
-    heap.nodes.push(source::Node { kind: 0, keys: 3, key_count: 3, key_capacity: 3, initialized: true });
+    heap.nodes.push(source::Node { kind: node_kind::Object, keys: 3, key_count: 3, key_capacity: 3, initialized: true });
     // 1: closure whose slots 0..2 hold the cell and a string.
-    heap.nodes.push(source::Node { kind: 2, start: 0, count: 2 });
+    heap.nodes.push(source::Node { kind: node_kind::Closure, start: 0, count: 2 });
     // 2: cell pointing back at the closure (a cycle).
-    heap.nodes.push(source::Node { kind: 3, value: node(1) });
+    heap.nodes.push(source::Node { kind: node_kind::Binding, value: node(1) });
     // 3: disconnected dictionary-mode object with records 0..3;
     // 4: disconnected, empty.
-    heap.nodes.push(source::Node { kind: 0, keys: 0, key_count: 3, key_capacity: 3, initialized: true });
-    heap.nodes.push(source::Node { kind: 0 });
+    heap.nodes.push(source::Node { kind: node_kind::Object, keys: 0, key_count: 3, key_capacity: 3, initialized: true });
+    heap.nodes.push(source::Node { kind: node_kind::Object });
     heap.values.push(node(2)); heap.values.push(text(heap, 0, 3)); heap.values.push(source::number(7));
     heap.properties.push(source::Property { key: text(heap, 3, 2), value: source::number(1) });
     heap.properties.push(source::Property { key: text(heap, 3, 1), value: source::number(8) });
@@ -50,13 +50,13 @@ fn elements_and_key_lists() {
     var code = source::Code {}; var heap = source::Heap { code: code };
     for u in "xy" { heap.units.push(u); }
     // 0: ordinary object, element run values 0..3: hole, node 1, hole.
-    heap.nodes.push(source::Node { kind: 0, start: 0, count: 3 });
-    heap.nodes.push(source::Node { kind: 0 });
+    heap.nodes.push(source::Node { kind: node_kind::Object, start: 0, count: 3 });
+    heap.nodes.push(source::Node { kind: node_kind::Object });
     // 2: key list walking node 3, one record keyed "x" in properties 0..2.
-    heap.nodes.push(source::Node { kind: 16, keys: 0, key_count: 1, key_capacity: 2, value: node(3) });
-    heap.nodes.push(source::Node { kind: 0 });
+    heap.nodes.push(source::Node { kind: node_kind::KeyList, keys: 0, key_count: 1, key_capacity: 2, value: node(3) });
+    heap.nodes.push(source::Node { kind: node_kind::Object });
     // 4: unlinked; value 3 unowned.
-    heap.nodes.push(source::Node { kind: 0 });
+    heap.nodes.push(source::Node { kind: node_kind::Object });
     heap.values.push(source::hole()); heap.values.push(node(1)); heap.values.push(source::hole()); heap.values.push(source::number(1));
     heap.properties.push(source::Property { key: text(heap, 0, 1) }); heap.properties.push(source::Property {});
     let c = census::take(heap, [node(0), node(2)]);
@@ -71,10 +71,10 @@ fn elements_and_key_lists() {
 // an accessor pair's getter and setter are live; one unlinked node is dead.
 fn shaped() {
     var code = source::Code {}; var heap = source::Heap { code: code };
-    let root = source::allocate(heap, source::Node { kind: 0 }); let proto = source::allocate(heap, source::Node { kind: 0 });
-    let inline = source::allocate(heap, source::Node { kind: 3 }); let spilled = source::allocate(heap, source::Node { kind: 3 });
-    let getter = source::allocate(heap, source::Node { kind: 3 }); let setter = source::allocate(heap, source::Node { kind: 3 });
-    let unlinked = source::allocate(heap, source::Node { kind: 3 });
+    let root = source::allocate(heap, source::Node { kind: node_kind::Object }); let proto = source::allocate(heap, source::Node { kind: node_kind::Object });
+    let inline = source::allocate(heap, source::Node { kind: node_kind::Binding }); let spilled = source::allocate(heap, source::Node { kind: node_kind::Binding });
+    let getter = source::allocate(heap, source::Node { kind: node_kind::Binding }); let setter = source::allocate(heap, source::Node { kind: node_kind::Binding });
+    let unlinked = source::allocate(heap, source::Node { kind: node_kind::Binding });
     assert(source::put(heap, root, source::text(heap, "a"), inline) && source::put(heap, root, source::text(heap, "b"), source::number(1)) && source::put(heap, root, source::text(heap, "c"), spilled));
     let g = source::key_named(heap, "g");
     assert(source::define_own(heap, root.id(), g, getter, source::attrs_accessor(), 1) && source::define_own(heap, root.id(), g, setter, source::attrs_accessor(), 2));

@@ -75,7 +75,7 @@ fn main() {
         var value: u8[>..] = []; source::canonical(heap, job.result, value);
         // An error object JavaScript made is named by its `name` (a data
         // property, own or inherited), as the QuickJS driver names it.
-        if job.thrown && job.result.is_object() && source::node(heap, job.result.id()).kind == 13 {
+        if job.thrown && job.result.is_object() && source::node(heap, job.result.id()).kind == node_kind::Error {
             let name = source::get(heap, job.result, source::text(heap, "name"));
             if heap.fault == source::Fault.None && name.is_string() { value.clear(); value.append("error:"); for i in source::str_len(heap, name) { value.push(source::unit(heap, name, i) as u8); } }
             heap.fault = source::Fault.None;

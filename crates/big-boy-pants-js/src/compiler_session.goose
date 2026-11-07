@@ -238,7 +238,7 @@ thread_fn preparer(base: snapshot::Snapshot, directory: u8[], id: i64, key: i64,
     let entry = append(code, heap, str(directory, "/definition-", key, ".gsp")); assert(entry >= 0);
     let factory, loaded = initialize(id, heap, source::closure(heap, entry, []), [], base.nodes.len, report, prefix, next); if !loaded { assert(qput(Preparation { report: copy(report) })); return; }
     let function, ready = initialize(id, heap, factory, [rt], base.nodes.len, report, prefix, next); if !ready { assert(qput(Preparation { report: copy(report) })); return; }
-    if !source::valid(heap, function) || !function.is_object() || source::node(heap, function.id()).kind != 2 { format(report, "ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
+    if !source::valid(heap, function) || !function.is_object() || source::node(heap, function.id()).kind != node_kind::Closure { format(report, "ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
     // Every atom the definition reaches becomes a process-wide cell (light-cljs-799).
     var thunks = false; var initial: source::Initial[>..] = []; let refused = source::publish_cells(heap, function, base.nodes.len, thunks, initial);
     if refused.len > 0 { format(report, "ERROR ", id, " preparation-", refused, " function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
@@ -459,7 +459,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
         let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], saved.protected, saved.gensym_prefix, next, address, timing(work, started, sc)); if !loaded { return; }
         let value, initialized = leaf(id, heap, factory, [rt], saved.protected, saved.gensym_prefix, next, address, timing(work, started, sc)); if !initialized { return; } function = value;
         if mode == 2 { let exporting = clock_ns();
-            let is_closure = function.is_object() && source::node(heap, function.id()).kind == 2;
+            let is_closure = function.is_object() && source::node(heap, function.id()).kind == node_kind::Closure;
             var publication = snapshot::Control {};
             // Every atom the helper reaches becomes a process-wide cell, and a
             // form helper's graph names it (light-cljs-799).
@@ -733,8 +733,8 @@ thread_fn profile_restore(base: snapshot::Snapshot, identity: i64) {
 // every job run in thread programs it spawns.
 fn main() {
     let arguments = args(); assert(arguments.len == 3 || arguments.len == 4); var directory: u8[>..] = []; directory.append(arguments[1]); let limit, valid = parse_int(arguments[2]); assert(valid && limit >= 1 && limit <= 8);
-    let beginning = clock_ns(); var code = source::Code {}; assert(load(code, str(directory, "/base.gsp")) >= 0); let loaded = clock_ns(); var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let roots = source::allocate(heap, source::Node { kind: 0 }); assert(source::install_field(heap, heap.global, "__lightCompilerRoots", roots));
-    let published = source::allocate(heap, source::Node { kind: 0 }); assert(source::install_field(heap, heap.global, "__lightPublishedHelpers", published));
+    let beginning = clock_ns(); var code = source::Code {}; assert(load(code, str(directory, "/base.gsp")) >= 0); let loaded = clock_ns(); var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let roots = source::allocate(heap, source::Node { kind: node_kind::Object }); assert(source::install_field(heap, heap.global, "__lightCompilerRoots", roots));
+    let published = source::allocate(heap, source::Node { kind: node_kind::Object }); assert(source::install_field(heap, heap.global, "__lightPublishedHelpers", published));
     let instrumented = arguments.len == 4 && (arguments[3] == "instrumented" || arguments[3] == "serial-instrumented");
     let booted = clock_ns(); if arguments.len == 4 && (arguments[3] == "serial" || arguments[3] == "serial-instrumented") { assert(limit == 1); print("READY 1 ", heap.boot_count, " ", loaded - beginning, " ", booted - loaded, " 0"); flush_stdout(); serial(directory, code, heap, rt, instrumented); return; }
     var sc = snapshot::Control {}; let base = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: rt }], sc); assert(sc.error == snapshot::Error.None);

@@ -30,7 +30,7 @@ thread_fn closure() {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, embed_file("../corpus/closure-captured.pants.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let macro = macro_factory(heap, rt);
-    let input = source::form_collection(heap, 6, [source::number(1), source::number(2), source::number(3)]);
+    let input = source::form_collection(heap, node_kind::Vector, [source::number(1), source::number(2), source::number(3)]);
     for base in [7, 10] {
         let result = invoke(heap, macro, [source::nil(), source::nil(), source::number(base), input]);
         let out = source::form_nth(heap, result, 1); assert(source::form_count(heap, out) == 3);
@@ -56,13 +56,13 @@ thread_fn finite_map_cut(cut: i64) {
     {
         var heap = source::Heap { code: code }; assert(source::initialize(heap));
         let callback = source::builtin(heap, 1);
-        let input = source::form_collection(heap, 5, [source::number(1), source::number(2), source::number(3)]);
+        let input = source::form_collection(heap, node_kind::List, [source::number(1), source::number(2), source::number(3)]);
         let mapped = source::native_value(heap, 17, [callback, input]);
-        assert(source::node(heap, mapped.id()).kind == 15 && source::node(heap, mapped.id()).length == 0);
+        assert(source::node(heap, mapped.id()).kind == node_kind::LazySeq && source::node(heap, mapped.id()).length == 0);
         var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
         assert(source::demand_map(job, mapped)); source::run(job, cut);
         while job.frames.len > 1 { assert(source::run(job, 1) == tiny::Outcome.Yielded); }
-        assert(job.steps == 7 && source::node(heap, mapped.id()).kind == 12 && source::node(heap, mapped.id()).length == 3);
+        assert(job.steps == 7 && source::node(heap, mapped.id()).kind == node_kind::Concat && source::node(heap, mapped.id()).length == 3);
         for i in 3 { assert(source::form_nth(heap, mapped, i).num() == i + 2); }
         assert(!source::demand_map(job, mapped)); source::retire(job);
     }
@@ -72,7 +72,7 @@ thread_fn finite_map_limit(mode: i64) {
     var code = source::Code {}; decode(code, embed_file("../corpus/closure-captured.pants.gsp"));
     {
         var heap = source::Heap { code: code }; assert(source::initialize(heap));
-        let callback = source::builtin(heap, 1); let input = source::form_collection(heap, 5, [source::number(1), source::number(2)]);
+        let callback = source::builtin(heap, 1); let input = source::form_collection(heap, node_kind::List, [source::number(1), source::number(2)]);
         let values = heap.values.len;
         if mode == 0 { heap.limits.values = values + 1; }
         if mode == 1 { heap.limits.work = heap.work + 1; }
@@ -94,7 +94,7 @@ thread_fn finite_map_reset() {
     var code = source::Code {}; decode(code, embed_file("../corpus/closure-captured.pants.gsp"));
     {
         var heap = source::Heap { code: code }; assert(source::initialize(heap));
-        let input = source::form_collection(heap, 5, [source::number(1), source::number(2), source::number(3)]);
+        let input = source::form_collection(heap, node_kind::List, [source::number(1), source::number(2), source::number(3)]);
         let mapped = source::native_value(heap, 17, [source::builtin(heap, 1), input]);
         let entry = source::closure(heap, 0, []); var job = source::Job { heap: heap };
         assert(source::start(job, entry, []) && source::demand_map(job, mapped));
@@ -135,9 +135,9 @@ thread_fn callbacks_and_failures() {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, embed_file("../corpus/closure-captured.pants.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap); let macro = macro_factory(heap, rt);
-    let a = source::allocate(heap, source::Node { kind: 11, value: source::number(1), origin: 0, span_start: 0, span_end: 1 });
-    let b = source::allocate(heap, source::Node { kind: 11, value: source::number(1), origin: 0, span_start: 2, span_end: 3 });
-    let input = source::form_collection(heap, 6, [a, b]); let params: source::Value[4] = [source::nil(), source::nil(), source::number(7), input];
+    let a = source::allocate(heap, source::Node { kind: node_kind::Scalar, value: source::number(1), origin: 0, span_start: 0, span_end: 1 });
+    let b = source::allocate(heap, source::Node { kind: node_kind::Scalar, value: source::number(1), origin: 0, span_start: 2, span_end: 3 });
+    let input = source::form_collection(heap, node_kind::Vector, [a, b]); let params: source::Value[4] = [source::nil(), source::nil(), source::number(7), input];
     let before = heap.nodes.len; var whole = source::Job { heap: heap }; assert(source::start(whole, macro, params)); assert(source::run(whole, -1) == tiny::Outcome.Complete); let allocated = heap.nodes.len - before;
     for cut in (whole.steps + 1) {
         let before = heap.nodes.len; var job = source::Job { heap: heap }; assert(source::start(job, macro, params)); source::run(job, cut); source::run(job, -1);
@@ -148,7 +148,7 @@ thread_fn callbacks_and_failures() {
     // A vector beside a number: `+` has no string operand, and ToNumber of
     // a form collection is not implemented (a string operand would
     // concatenate since light-cljs-826).
-    let invalid = source::form_collection(heap, 6, [source::form_collection(heap, 6, [])]); var bad = source::Job { heap: heap };
+    let invalid = source::form_collection(heap, node_kind::Vector, [source::form_collection(heap, node_kind::Vector, [])]); var bad = source::Job { heap: heap };
     assert(source::start(bad, macro, [source::nil(), source::nil(), source::number(7), invalid])); assert(source::run(bad, -1) == tiny::Outcome.Failed && bad.fault == source::Fault.UnsupportedOperand);
     let good = invoke(heap, macro, params); assert(source::form_equal(heap, whole.result, good));
     source::boot_runtime(heap); assert(heap.fault == source::Fault.InvalidState && heap.boot_count == 1); heap.fault = source::Fault.None;

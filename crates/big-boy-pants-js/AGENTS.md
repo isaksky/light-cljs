@@ -60,7 +60,13 @@ See [README.md](README.md) for the layout.
   `src/goose/compiler_bridge.rs` mirrors as `form_tag::KEYWORD` and a Rust
   test keeps equal. The cell owner's numbers are Goose-private names in
   `src/cell_owner.goose`: `flat_kind::Graph`, `cell_op::CompareAndSet`,
-  `cell_flavor::Delay`, `delay_state::Realized`, `cell_error::Budget`.
+  `cell_flavor::Delay`, `delay_state::Realized`, `cell_error::Budget`. A VM
+  heap node's kind (`source::Node.kind`) is a Goose-private `node_kind::`
+  name from `src/source_vm.goose` (`node_kind::Vector`, `node_kind::Cell`,
+  `node_kind::None` for "not an object"); a new kind takes the next number
+  there, and none is renumbered. Generator and promise states and a Resume
+  frame's operation are `generator_state::`, `promise_status::` and
+  `resume_kind::` names from `src/continuations.goose`.
 
 ## Storage and branching
 

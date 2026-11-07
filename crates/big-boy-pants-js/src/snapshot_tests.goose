@@ -56,7 +56,7 @@ thread_fn isolation_parent() {
     // Parent changes *after* capture, including code growth and private cycles.
     parent.nodes[bindings[5].value.id()].value = source::number(900);
     assert(source::install_field(parent, bindings[6].value, "parentOnly", source::number(99)));
-    source::allocate(parent, source::Node { kind: 0 }); code.source_bytes.append(" ");
+    source::allocate(parent, source::Node { kind: node_kind::Object }); code.source_bytes.append(" ");
     assert(qput(Saved { image: copy(saved), identity: parent.identity }));
     assert(parent.nodes[bindings[5].value.id()].value.num() == 900);
     var encoded: u8[>..] = []; var enc = snapshot::Control {}; assert(snapshot::encode(saved, encoded, enc));
@@ -87,8 +87,8 @@ thread_fn malformed_parent() {
     assert(!snapshot::restore(original, code, heap, bindings, source::reserve_identity(), occupied) && occupied.error == snapshot::Error.Destination);
     assert(heap.nodes.len == before_nodes && heap.work == before_work && heap.identity == before_identity && code.valid);
 }
-// The fixture's key list row (kind 16).
-fn list_row(s: const snapshot::Snapshot&) -> i64 { for n, i in s.nodes { if n.kind == 16 { assert(n.key_count > 0); return i; } } abort("no key list"); return -1; }
+// The fixture's key list row (node_kind::KeyList).
+fn list_row(s: const snapshot::Snapshot&) -> i64 { for n, i in s.nodes { if n.kind == node_kind::KeyList { assert(n.key_count > 0); return i; } } abort("no key list"); return -1; }
 thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
     defer { heap_program::finish(); }
     {
@@ -100,7 +100,7 @@ thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
             8 => { bad.nodes[bad.header.global.id()].key_count = bad.nodes[bad.header.global.id()].key_capacity + source::inline_slots() as u32 + 1; }, 9 => { let g = bad.header.global.id(); assert(source::overflow(bad.nodes[g]) > 0); bad.values[bad.nodes[g].keys] = source::object(bad.nodes.len); },
             10 => { bad.nodes[bad.bindings[7].value.id()].count = 9999999; }, 11 => { bad.sources[0].count = 9999999; },
             12 => { bad.header.work = bad.header.limits.work + 1; }, 13 => { bad.children[0] = bad.functions.len as u32; },
-            14 => { bad.ops[0].depth = 1; }, 15 => { bad.nodes[0].kind = 13; }, 16 => { bad.header.ends[13] += 1; },
+            14 => { bad.ops[0].depth = 1; }, 15 => { bad.nodes[0].kind = node_kind::Error; }, 16 => { bad.header.ends[13] += 1; },
             17 => { bad.header.base = 2147483648; },
             18 => { bad.code_bytes[0] = 255; }, 19 => { bad.nodes[bad.bindings[7].value.id()].span_start = 4294967295; bad.nodes[bad.bindings[7].value.id()].source = 0; },
             20 => { bad.ops[0].arg = 9223372036854775807; }, 21 => { bad.values[0] = source::Value.Symbol { s: 99 }; }, 22 => { bad.header.checkpoint = 0; },
@@ -138,8 +138,8 @@ thread_fn malformed_target(original: snapshot::Snapshot, mode: i64) {
             44 => { let l = list_row(bad); bad.properties[bad.nodes[l].keys].key = source::number(1); },
             // A primitive wrapper (light-cljs-832) holds a number, string or
             // boolean and no element run.
-            45 => { let w = source::wrapper_prototype_row(1); assert(bad.nodes[w].kind == 22); bad.nodes[w].value = source::Value.Null; },
-            46 => { let w = source::wrapper_prototype_row(0); assert(bad.nodes[w].kind == 22); bad.nodes[w].count = 1; },
+            45 => { let w = source::wrapper_prototype_row(1); assert(bad.nodes[w].kind == node_kind::Wrapper); bad.nodes[w].value = source::Value.Null; },
+            46 => { let w = source::wrapper_prototype_row(0); assert(bad.nodes[w].kind == node_kind::Wrapper); bad.nodes[w].count = 1; },
             _ => { abort("unexpected mode"); },
         }
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var check = snapshot::Control {};
@@ -232,9 +232,9 @@ thread_fn stale_old() {
     var past = source::Value.Undefined; var past_text = source::Value.Undefined;
     {
         var old = source::Heap { code: code }; assert(source::initialize(old));
-        stale = source::allocate(old, source::Node { kind: 3, initialized: true, immutable: true, value: source::number(1) });
+        stale = source::allocate(old, source::Node { kind: node_kind::Binding, initialized: true, immutable: true, value: source::number(1) });
         stale_text = source::text(old, "old"); old_binding.value = stale;
-        for i in 64 { source::allocate(old, source::Node { kind: 0 }); }
+        for i in 64 { source::allocate(old, source::Node { kind: node_kind::Object }); }
         past = source::object(old.nodes.len - 1); for i in 64 { source::text(old, "padding"); } past_text = source::text(old, "past");
         assert(source::valid(old, stale) && old.nodes[stale.id()].immutable);
     }
@@ -245,7 +245,7 @@ thread_fn stale_fresh(old: Stale) {
     let stale = old.stale; let stale_text = old.stale_text; let old_binding = old.old_binding;
     var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/calls.gsp"));
     var fresh = source::Heap { code: code }; assert(source::initialize(fresh));
-    let replacement = source::allocate(fresh, source::Node { kind: 0 }); let new_text = source::text(fresh, "new");
+    let replacement = source::allocate(fresh, source::Node { kind: node_kind::Object }); let new_text = source::text(fresh, "new");
     assert(replacement == stale && new_text == stale_text && old_binding.value == replacement && !fresh.nodes[replacement.id()].immutable);
     for value in [old.past, old.past_text] {
         assert(!source::valid(fresh, value) && fresh.fault == source::Fault.StaleID); fresh.fault = source::Fault.None;
@@ -333,14 +333,14 @@ fn truncated_image() {
 thread_fn truncated_parent() {
     defer { heap_program::finish(); }
     var code = source::Code {}; var parent = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, parent, bindings);
-    let service = source::allocate(parent, source::Node { kind: 0 }); assert(source::install_field(parent, parent.global, "service", service));
+    let service = source::allocate(parent, source::Node { kind: node_kind::Object }); assert(source::install_field(parent, parent.global, "service", service));
     // The service object has an element in the image (light-cljs-804).
     assert(source::install_field(parent, service, "1", source::number(1)) && source::node(parent, service.id()).count == 4);
     var c = snapshot::Control {}; let base = snapshot::capture(parent, bindings, c); assert(c.error == snapshot::Error.None);
     // The derived image: base, a definition's code and rows above it.
     var dc = source::Code {}; var derived = source::Heap { code: dc }; var db: snapshot::Binding[>..] = []; var r = snapshot::Control {}; assert(snapshot::restore(base, dc, derived, db, source::reserve_identity(), r));
     var extra = source::Code {}; extra_code(extra); assert(source::append_code(dc, extra) >= 0);
-    let o = source::allocate(derived, source::Node { kind: 0 }); assert(source::install_field(derived, o, "derived", source::text(derived, "row above the image")));
+    let o = source::allocate(derived, source::Node { kind: node_kind::Object }); assert(source::install_field(derived, o, "derived", source::text(derived, "row above the image")));
     for i in 3 { assert(source::install_field(derived, o, str("k", i), source::number(i))); }
     db.push(snapshot::Binding { id: 100, generation: 1, value: o });
     var d = snapshot::Control {}; let image = snapshot::capture(derived, db, d); assert(d.error == snapshot::Error.None);
@@ -393,7 +393,7 @@ thread_fn layout_parent() {
     var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/accessors.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     // An image object whose shapes and keys are image rows.
-    let point = source::allocate(heap, source::Node { kind: 0 }); assert(source::install_field(heap, heap.global, "point", point));
+    let point = source::allocate(heap, source::Node { kind: node_kind::Object }); assert(source::install_field(heap, heap.global, "point", point));
     assert(source::install_field(heap, point, "x", source::number(1)) && source::install_field(heap, point, "y", source::number(2)));
     var bindings: snapshot::Binding[>..] = [snapshot::Binding { id: 1, generation: 1, value: source::closure(heap, 0, []) }, snapshot::Binding { id: 2, generation: 1, value: point }];
     var c = snapshot::Control {}; let base = snapshot::capture(heap, bindings, c);
@@ -413,7 +413,7 @@ thread_fn layout_worker(base: snapshot::Snapshot) {
         assert(source::retire(job));
         // The same keys in the same order share the image object's shape; a
         // new key extends it above the image, and the image shape gets a child.
-        let p = source::allocate(heap, source::Node { kind: 0 });
+        let p = source::allocate(heap, source::Node { kind: node_kind::Object });
         assert(source::put(heap, p, source::text(heap, "x"), source::number(3)) && source::put(heap, p, source::text(heap, "y"), source::number(4)));
         assert(source::node(heap, p.id()).shape == source::node(heap, point.id()).shape && source::node(heap, p.id()).shape < image.shapes);
         assert(source::put(heap, p, source::text(heap, "z"), source::number(5)) && source::node(heap, p.id()).shape >= image.shapes && heap.image_written);
@@ -437,9 +437,9 @@ fn wrappers_roundtrip() {
 thread_fn wrappers_parent() {
     defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; snapshot_test::prepare(code, heap, bindings);
-    let n = source::allocate(heap, source::Node { kind: 22, value: source::number(-0.0), proto: source::object(source::wrapper_prototype_row(0)) });
-    let b = source::allocate(heap, source::Node { kind: 22, value: source::boolean(true), proto: source::object(source::wrapper_prototype_row(2)) });
-    let s = source::allocate(heap, source::Node { kind: 22, value: source::string(heap, [0xD83D, 0xDE00, 'z']), proto: source::object(source::wrapper_prototype_row(1)) });
+    let n = source::allocate(heap, source::Node { kind: node_kind::Wrapper, value: source::number(-0.0), proto: source::object(source::wrapper_prototype_row(0)) });
+    let b = source::allocate(heap, source::Node { kind: node_kind::Wrapper, value: source::boolean(true), proto: source::object(source::wrapper_prototype_row(2)) });
+    let s = source::allocate(heap, source::Node { kind: node_kind::Wrapper, value: source::string(heap, [0xD83D, 0xDE00, 'z']), proto: source::object(source::wrapper_prototype_row(1)) });
     assert(source::put(heap, n, source::text(heap, "x"), source::number(1)) && source::put(heap, s, source::text(heap, "7"), n));
     assert(source::put(heap, b, source::text(heap, "a"), source::number(2)) && source::put(heap, b, source::text(heap, "b"), s) && source::delete_property(heap, b, source::key_named(heap, "a")) && source::node(heap, b.id()).initialized);
     for v, i in [n, b, s, s] { bindings.push(snapshot::Binding { id: 20 + i, generation: 1, value: v }); }
@@ -454,7 +454,7 @@ thread_fn wrappers_restored(saved: snapshot::Snapshot) {
     assert(snapshot::restore(saved, code, heap, roots, source::reserve_identity(), r));
     let base = roots.len - 4; let n = roots[base].value; let b = roots[base + 1].value; let s = roots[base + 2].value;
     assert(roots[base + 3].value == s && source::get(heap, s, source::text(heap, "7")) == n && source::get(heap, b, source::text(heap, "b")) == s);
-    for v, t in [n, s, b] { assert(source::node(heap, v.id()).kind == 22 && source::prototype(heap, v.id()) == source::object(source::wrapper_prototype_row([0, 1, 2][t]))); }
+    for v, t in [n, s, b] { assert(source::node(heap, v.id()).kind == node_kind::Wrapper && source::prototype(heap, v.id()) == source::object(source::wrapper_prototype_row([0, 1, 2][t]))); }
     assert(source::same_bits(source::node(heap, n.id()).value, source::number(-0.0)) && source::node(heap, b.id()).value.flag() && source::get(heap, n, source::text(heap, "x")).num() == 1);
     assert(source::node(heap, b.id()).initialized && !source::own_entry(heap, b, source::key_named(heap, "a")).found);
     let length = source::own_entry(heap, s, source::key_named(heap, "length")); let high = source::own_entry(heap, s, source::key_named(heap, "0"));
@@ -937,7 +937,7 @@ thread_fn suspension_worker(base: snapshot::Snapshot) {
     // The first job leaves its generator suspended at its yield.
     var first = source::Job { heap: heap };
     assert(source::start(first, bindings[0].value, []) && source::run(first, -1) == tiny::Outcome.Complete);
-    let g = first.result; assert(g.is_object() && source::node(heap, g.id()).kind == source::generator_kind() && source::node(heap, g.id()).length == 1 && heap.conts.len > base.conts.len);
+    let g = first.result; assert(g.is_object() && source::node(heap, g.id()).kind == node_kind::Generator && source::node(heap, g.id()).length == generator_state::SuspendedYield && heap.conts.len > base.conts.len);
     assert(source::retire(first));
     // The reset drops its rows, and the next job cannot name it.
     assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings));
@@ -962,7 +962,7 @@ thread_fn finite_map_parent() {
     var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/calls.gsp"));
     snapshot_test::append(code, embed_file("../corpus/serial/captures.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
-    let input = source::form_collection(heap, 5, [source::number(1), source::number(2)]);
+    let input = source::form_collection(heap, node_kind::List, [source::number(1), source::number(2)]);
     let tail = source::form_sequence(heap, input, 1, false);
     let mapped = source::native_value(heap, 17, [source::builtin(heap, 1), input]);
     var captured: i64 = -1;
@@ -977,7 +977,7 @@ thread_fn finite_map_parent() {
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: mapped }, snapshot::Binding { id: 1, generation: 1, value: mapped }], c);
     assert(c.error == snapshot::Error.None);
     assert(qput(FiniteMap { image: copy(saved), input: input, tail: tail, mapped: mapped, callback: callback, alias: alias, other: other, later_tail: later_tail }));
-    assert(source::node(heap, mapped.id()).kind == 15 && source::node(heap, mapped.id()).length == 0);
+    assert(source::node(heap, mapped.id()).kind == node_kind::LazySeq && source::node(heap, mapped.id()).length == 0);
     // The scratch bitmap and aliased-range scans obey their own byte/work cuts.
     var tight_bytes = snapshot::Control { bytes: snapshot::footprint(saved) + saved.values.len - 1 };
     assert(!snapshot::memo_ranges(saved, tight_bytes) && tight_bytes.error == snapshot::Error.Bytes && tight_bytes.validation_peak == 0);
@@ -1004,7 +1004,7 @@ thread_fn finite_map_worker(parent: FiniteMap) {
         assert(source::form_nth(worker, tail, 0).num() == 2);
         assert(source::form_nth(worker, later_tail, 0).num() == 2);
         assert(worker.values[worker.nodes[callback.id()].start].num() == 99 && worker.nodes[alias.id()].start == worker.nodes[callback.id()].start);
-        assert(worker.nodes[other.id()].kind == 15 && worker.nodes[other.id()].length == 0);
+        assert(worker.nodes[other.id()].kind == node_kind::LazySeq && worker.nodes[other.id()].length == 0);
         assert(source::demand_map(job, other));
         while job.frames.len > 1 { assert(source::run(job, 1) == tiny::Outcome.Yielded); }
         assert(source::form_nth(worker, other, 1).num() == 3);
@@ -1051,16 +1051,16 @@ thread_fn assembly_parent() {
     defer { heap_program::finish(); }
     var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/calls.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); source::boot_runtime(heap);
-    let a = source::allocate(heap, source::Node { kind: 11, value: source::number(7), origin: 2 });
-    let b = source::allocate(heap, source::Node { kind: 11, value: source::number(7), origin: 3 });
-    let left = source::form_collection(heap, 6, [a, b, a]); let joined = source::form_concat(heap, [left, left]);
-    let array = source::allocate(heap, source::Node { kind: 1 });
+    let a = source::allocate(heap, source::Node { kind: node_kind::Scalar, value: source::number(7), origin: 2 });
+    let b = source::allocate(heap, source::Node { kind: node_kind::Scalar, value: source::number(7), origin: 3 });
+    let left = source::form_collection(heap, node_kind::Vector, [a, b, a]); let joined = source::form_concat(heap, [left, left]);
+    let array = source::allocate(heap, source::Node { kind: node_kind::Array });
     let length = source::text(heap, "length");
     for i in 3 { assert(source::put(heap, array, source::key(heap, source::number(i)), if i == 1 { b } else { a })); }
     assert(source::put(heap, array, length, source::number(1)));
     // Growth past a holed run retires it, and a sparse write makes a
     // dictionary array; both images must still validate (light-cljs-785).
-    let grown = source::allocate(heap, source::Node { kind: 1 }); let sparse = source::allocate(heap, source::Node { kind: 1 });
+    let grown = source::allocate(heap, source::Node { kind: node_kind::Array }); let sparse = source::allocate(heap, source::Node { kind: node_kind::Array });
     assert(source::put(heap, grown, source::key(heap, source::number(1)), a) && source::put(heap, grown, source::key(heap, source::number(6)), b));
     assert(source::put(heap, sparse, source::key(heap, source::number(2)), a) && source::put(heap, sparse, source::key(heap, source::number(100000)), b));
     assert(source::node(heap, sparse.id()).initialized && !source::node(heap, grown.id()).initialized && source::node(heap, grown.id()).count == 8);
@@ -1106,10 +1106,10 @@ thread_fn argument_parent() {
         if f.captures == 0 && args && closure { keeper = id; break; }
     }
     assert(keeper >= 0);
-    let object = source::allocate(heap, source::Node { kind: 0 }); assert(source::install_field(heap, object, "n", source::number(7)));
+    let object = source::allocate(heap, source::Node { kind: node_kind::Object }); assert(source::install_field(heap, object, "n", source::number(7)));
     let maker = source::closure(heap, keeper, []);
     let getter = snapshot_test::invoke(heap, maker, [object, object]);
-    let arguments = snapshot_test::invoke(heap, getter, []); assert(source::node(heap, arguments.id()).kind == 14);
+    let arguments = snapshot_test::invoke(heap, getter, []); assert(source::node(heap, arguments.id()).kind == node_kind::Arguments);
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: getter }, snapshot::Binding { id: 1, generation: 1, value: arguments }, snapshot::Binding { id: 2, generation: 1, value: object }], c); assert(c.error == snapshot::Error.None);
     assert(source::install_field(heap, object, "n", source::number(99)));
     snapshot_test::invoke(heap, maker, [source::number(123)]);
@@ -1203,14 +1203,14 @@ thread_fn callable_producer(base: snapshot::Snapshot, identity: bool) {
     assert(snapshot::restore(base, code, producer, bindings, source::reserve_identity(), restore));
     var extra = source::Code {}; extra_code(extra);
     let entry = source::append_code(code, extra);
-    let rt_cell = source::allocate(producer, source::Node { kind: 3, initialized: true, immutable: true, value: bindings[0].value });
+    let rt_cell = source::allocate(producer, source::Node { kind: node_kind::Binding, initialized: true, immutable: true, value: bindings[0].value });
     if identity { producer.source_ranges.push(source::SourceRange { start: 0, count: 3, identity: 77 }); } else { producer.source_bytes.append("a b"); producer.source_ranges.push(source::SourceRange { start: 0, count: 3 }); }
-    let one = source::allocate(producer, source::Node { kind: 11, value: source::number(7), origin: 1, source: 0, span_start: 0, span_end: 1 });
-    let two = source::allocate(producer, source::Node { kind: 11, value: source::number(7), origin: 2, source: 0, span_start: 2, span_end: 3 });
+    let one = source::allocate(producer, source::Node { kind: node_kind::Scalar, value: source::number(7), origin: 1, source: 0, span_start: 0, span_end: 1 });
+    let two = source::allocate(producer, source::Node { kind: node_kind::Scalar, value: source::number(7), origin: 2, source: 0, span_start: 2, span_end: 3 });
     let marked = source::form_op(producer, form_op::Keyword, [source::nil(), source::text(producer, "marked")]);
-    let metadata = source::form_collection(producer, 7, [marked, source::boolean(true)]); producer.nodes[one.id()].metadata = metadata; producer.nodes[two.id()].metadata = metadata;
-    let forms = source::form_collection(producer, 6, [one, two, one]);
-    let cell = source::allocate(producer, source::Node { kind: 3, initialized: true, immutable: true, value: forms });
+    let metadata = source::form_collection(producer, node_kind::Map, [marked, source::boolean(true)]); producer.nodes[one.id()].metadata = metadata; producer.nodes[two.id()].metadata = metadata;
+    let forms = source::form_collection(producer, node_kind::Vector, [one, two, one]);
+    let cell = source::allocate(producer, source::Node { kind: node_kind::Binding, initialized: true, immutable: true, value: forms });
     let function = source::closure(producer, entry, [rt_cell, cell]);
     producer.nodes[function.id()].immutable = true;
     var encoding = snapshot::Control {}; var wire: u8[>..] = []; assert(callable::encode(producer, base, function, wire, encoding, source::reserve_identity()));
@@ -1257,7 +1257,7 @@ thread_fn callable_mode(base: snapshot::Snapshot, original: callable::Publicatio
             0 => { bad.version += 1; }, 1 => { bad.base.checkpoint += 1; },
             2 => { bad.image.ops[bad.image.ops.len - 1].arg = 1; }, // unreachable return operand
             3 => { bad.image.nodes[cell.id()].immutable = false; },
-            4 => { bad.image.nodes[cell.id()].kind = 0; },
+            4 => { bad.image.nodes[cell.id()].kind = node_kind::Object; },
             5 => { bad.image.values[bad.image.nodes[forms.id()].start] = bad.image.bindings[0].value; }, // form cycle
             6 => { bad.image.nodes[function.id()].function = bad.image.functions.len as u32; },
             7 => { bad.image.nodes[rt_cell.id()].value = bad.image.header.global; },
@@ -1288,7 +1288,7 @@ thread_fn callable_mode(base: snapshot::Snapshot, original: callable::Publicatio
             let result = snapshot_test::invoke(target, imported, []); let x = source::form_nth(target, result, 0); let y = source::form_nth(target, result, 1);
             assert(x.id() != y.id() && x.id() == source::form_nth(target, result, 2).id() && source::form_equal(target, x, y));
             assert(target.nodes[x.id()].span_start == 0 && target.nodes[y.id()].span_start == 2);
-            assert(target.nodes[x.id()].metadata.id() == target.nodes[y.id()].metadata.id() && target.nodes[target.nodes[x.id()].metadata.id()].kind == 7);
+            assert(target.nodes[x.id()].metadata.id() == target.nodes[y.id()].metadata.id() && target.nodes[target.nodes[x.id()].metadata.id()].kind == node_kind::Map);
             var valid = snapshot::Control {}; let finished = snapshot::capture(target, roots, valid); assert(valid.error == snapshot::Error.None);
         }
     }

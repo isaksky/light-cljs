@@ -63,13 +63,13 @@ inline fn textual(tag: i64) -> bool { return tag >= form_tag::String && tag <= f
 // Symbol or keyword: a name with an optional namespace.
 inline fn named(tag: i64) -> bool { return tag == form_tag::Symbol || tag == form_tag::Keyword; }
 // The heap node kind of a collection, symbol or keyword tag (source::Node:
-// 5 list .. 8 set, 9 symbol, 10 keyword), and the tag of such a node kind,
-// where 12 (a sequence form_concat or a rest builds) exports as a list.
+// node_kind::List .. node_kind::Keyword), and the tag of such a node kind,
+// where node_kind::Concat (a sequence form_concat or a rest builds) exports as a list.
 inline fn heap_kind(tag: i64) -> i64 {
-    return match tag { form_tag::List => 5, form_tag::Vector => 6, form_tag::Map => 7, form_tag::Set => 8, form_tag::Symbol => 9, _ => 10 };
+    return match tag { form_tag::List => node_kind::List, form_tag::Vector => node_kind::Vector, form_tag::Map => node_kind::Map, form_tag::Set => node_kind::Set, form_tag::Symbol => node_kind::Symbol, _ => node_kind::Keyword };
 }
 inline fn tag_of(kind: i64) -> i64 {
-    return match kind { 6 => form_tag::Vector, 7 => form_tag::Map, 8 => form_tag::Set, 9 => form_tag::Symbol, 10 => form_tag::Keyword, _ => form_tag::List };
+    return match kind { node_kind::Vector => form_tag::Vector, node_kind::Map => form_tag::Map, node_kind::Set => form_tag::Set, node_kind::Symbol => form_tag::Symbol, node_kind::Keyword => form_tag::Keyword, _ => form_tag::List };
 }
 fn poll(c: Control&, count: i64 = 1) -> bool {
     if c.error != Error.None { return false; }
@@ -274,14 +274,14 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     let bytes = source::add_source_bytes(heap, g.bytes);
     // An identity source copies no text: the row names the compiler's source.
     for s in g.sources { source::add_source_range(heap, source::shifted_source(s, bytes)); }
-    let base = source::add_nodes(heap, [], g.nodes.len, source::Node { kind: 11 });
+    let base = source::add_nodes(heap, [], g.nodes.len, source::Node { kind: node_kind::Scalar });
     var links: source::Value[>..] = []; for id in g.children { links.push(source::object(base + id)); }
     let children = source::add_values(heap, links);
     for n, i in g.nodes {
-        var node = source::Node { kind: 11, origin: n.origin, source: if n.source < 0 { source::no_row() } else { (sources + n.source) as u32 }, span_start: n.span_start as u32, span_end: n.span_end as u32 };
+        var node = source::Node { kind: node_kind::Scalar, origin: n.origin, source: if n.source < 0 { source::no_row() } else { (sources + n.source) as u32 }, span_start: n.span_start as u32, span_end: n.span_end as u32 };
         if n.metadata >= 0 { node.metadata = source::object(base + n.metadata); }
         if collection(n.tag) { node.kind = heap_kind(n.tag); node.start = (children + n.start) as u32; node.count = n.count as u32; }
-        else if n.tag == form_tag::Cell { node = source::Node { kind: 18, function: n.number as u32, length: n.count as u32 }; }
+        else if n.tag == form_tag::Cell { node = source::Node { kind: node_kind::Cell, function: n.number as u32, length: n.count as u32 }; }
         else if named(n.tag) {
             node.kind = heap_kind(n.tag); node.value = source::import_text(heap, g.units[n.start..(n.start + n.count)]);
             if n.ns_count >= 0 { node.namespace_value = source::import_text(heap, g.units[n.ns_start..(n.ns_start + n.ns_count)]); }
@@ -322,13 +322,13 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
         if !source::valid(heap, v) { heap.fault = source::Fault.None; return reject(c, Error.Heap); }
         if !v.is_object() { continue; }
         let n = source::node(heap, v.id());
-        if n.kind == 11 && n.value.is_string() { retained_bytes += source::str_len(heap, n.value) * 2; }
-        if n.kind == 9 || n.kind == 10 { retained_bytes += source::str_len(heap, n.value) * 2 + source::str_len(heap, n.namespace_value) * 2; }
-        if n.kind >= 5 && n.kind <= 8 || n.kind == 12 { retained_bytes += n.count * 4; }
+        if n.kind == node_kind::Scalar && n.value.is_string() { retained_bytes += source::str_len(heap, n.value) * 2; }
+        if n.kind == node_kind::Symbol || n.kind == node_kind::Keyword { retained_bytes += source::str_len(heap, n.value) * 2 + source::str_len(heap, n.namespace_value) * 2; }
+        if n.kind >= node_kind::List && n.kind <= node_kind::Set || n.kind == node_kind::Concat { retained_bytes += n.count * 4; }
         if retained_bytes > c.bytes { return reject(c, Error.Bytes); }
-        if n.kind == 11 && n.origin >= 0 && retained.argument { origins.push(v); }
+        if n.kind == node_kind::Scalar && n.origin >= 0 && retained.argument { origins.push(v); }
         if !n.metadata.is_undefined() { pending.push(Retain { value: n.metadata, depth: retained.depth + 1, argument: retained.argument }); }
-        if n.kind >= 5 && n.kind <= 8 || n.kind == 12 {
+        if n.kind >= node_kind::List && n.kind <= node_kind::Set || n.kind == node_kind::Concat {
             if !range(n.start, n.count, heap.values.len) || !poll(c, n.count) { return reject(c); }
             for i in n.count { let at = n.count - i - 1; pending.push(Retain { value: source::slot(heap, n.start + at), depth: retained.depth + 1, argument: retained.argument || retained.depth == 1 && at >= 1 }); }
         }
@@ -346,7 +346,7 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
         if id < 0 {
             if g.nodes.len >= c.nodes { return reject(c, Error.Nodes); }
             id = g.nodes.len; if v.is_object() { ids[v.id()] = id; } rows.push(if v.is_object() { v.id() } else { -1 });
-            var n = Form {}; var node = source::Node { kind: 11, value: v };
+            var n = Form {}; var node = source::Node { kind: node_kind::Scalar, value: v };
             if v.is_object() { node = source::node(heap, v.id()); }
             else {
                 for original in origins {
@@ -357,18 +357,18 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
                     if same { node = candidate; }
                 }
             }
-            var x = if node.kind == 11 { node.value } else { v };
-            if node.kind >= 5 && node.kind <= 8 || node.kind == 12 {
+            var x = if node.kind == node_kind::Scalar { node.value } else { v };
+            if node.kind >= node_kind::List && node.kind <= node_kind::Set || node.kind == node_kind::Concat {
                 n.tag = tag_of(node.kind); n.start = g.children.len; n.count = node.count;
                 if !poll(c, node.count) { return false; }
                 if !range(node.start, node.count, heap.values.len) { return reject(c); }
                 for i in node.count { let field = g.children.len; g.children.push(-1); queue.push(Edge { value: source::slot(heap, node.start + i), parent: id, field: field }); }
-            } else if node.kind == 18 {
+            } else if node.kind == node_kind::Cell {
                 // A cell reference, inside the session only (Control.cells).
                 if !c.cells { return reject(c, Error.Unsupported); }
                 n.tag = form_tag::Cell; n.number = node.function; n.count = node.length;
             } else {
-                if node.kind == 9 || node.kind == 10 { n.tag = tag_of(node.kind); x = node.value; }
+                if node.kind == node_kind::Symbol || node.kind == node_kind::Keyword { n.tag = tag_of(node.kind); x = node.value; }
                 else if x.is_null() { n.tag = form_tag::Nil; } else if x.is_bool() { n.tag = form_tag::Boolean; } else if x.is_number() { n.tag = form_tag::Number; } else if x.is_string() { n.tag = form_tag::String; }
                 else { heap.fault = source::Fault.None; return reject(c, Error.Unsupported); }
                 if !source::valid(heap, x) { heap.fault = source::Fault.None; return reject(c, Error.Unsupported); }

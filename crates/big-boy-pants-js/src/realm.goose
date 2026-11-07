@@ -17,7 +17,7 @@ namespace source;
 // JavaScript in a compiler job cannot write it (Job.owned_nodes,
 // NativeBoundary). The static tables themselves are `let` data, never rows.
 //
-// A built-in function is a node of kind 4 whose `function` field is its
+// A built-in function is node_kind::Builtin whose `function` field is its
 // code, the position of its Builtin in BUILTINS; calls dispatch on the
 // Builtin by `match` (call_builtin). The light-cljs runtime leaves
 // (rt.core.*, boot_runtime) are the same kind of object, installed from
@@ -139,7 +139,7 @@ inline fn generator_prototype_row() -> i64 { return 24; }
 inline fn promise_prototype_row() -> i64 { return 25; }
 // The primitive wrappers (light-cljs-832), indexed as WRAPPER_NAMES:
 // %Number.prototype%, %String.prototype% and %Boolean.prototype%, which are
-// themselves wrapper objects (kind 22) of +0, "" and false, then the three
+// themselves wrapper objects (node_kind::Wrapper) of +0, "" and false, then the three
 // constructors.
 inline fn wrapper_prototype_row(t: i64) -> i64 { return 26 + t; }
 inline fn wrapper_constructor_row(t: i64) -> i64 { return 29 + t; }
@@ -309,7 +309,7 @@ fn code(b: Builtin) -> u32 {
     abort("builtin is not in BUILTINS"); return 0;
 }
 inline fn builtin_count() -> i64 { return BUILTINS.len; }
-// The Builtin of built-in function object o (kind 4); its code was checked
+// The Builtin of built-in function object o (node_kind::Builtin); its code was checked
 // when the row was made or restored (snapshot::validate).
 fn builtin_of(heap: const Heap&, o: i64) -> Builtin {
     let c: i64 = node(heap, o).function;
@@ -340,8 +340,8 @@ fn prototype(heap: const Heap&, o: i64) -> Value {
     if !p.is_hole() { return p; }
     if !heap.global.is_object() { return Value.Null; }
     return match node(heap, o).kind {
-        0, 14 => object(object_prototype_row()), 1 => object(array_prototype_row()), 2, 4 => object(function_prototype_row()), 13 => object(error_prototype_row(0)),
-        22 => primitive_prototype(node(heap, o).value),
+        node_kind::Object, node_kind::Arguments => object(object_prototype_row()), node_kind::Array => object(array_prototype_row()), node_kind::Closure, node_kind::Builtin => object(function_prototype_row()), node_kind::Error => object(error_prototype_row(0)),
+        node_kind::Wrapper => primitive_prototype(node(heap, o).value),
         _ => Value.Null,
     };
 }
@@ -370,19 +370,19 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     for k, o in kinds { if nodes[o].kind != k { return false; } }
     if !nodes[object_prototype_row()].proto.is_null() || nodes[function_prototype_row()].function != code(Builtin.FunctionPrototype) { return false; }
     for t in ERROR_NAMES.len {
-        if nodes[error_prototype_row(t)].kind != 0 || nodes[error_constructor_row(t)].kind != 4 || nodes[error_constructor_row(t)].function != code(ERROR_BUILTINS[t]) { return false; }
+        if nodes[error_prototype_row(t)].kind != node_kind::Object || nodes[error_constructor_row(t)].kind != node_kind::Builtin || nodes[error_constructor_row(t)].function != code(ERROR_BUILTINS[t]) { return false; }
     }
     let constructors: Builtin[] = [Builtin.Object, Builtin.Function, Builtin.Array];
-    for b, i in constructors { let o = object_constructor_row() + i; if nodes[o].kind != 4 || nodes[o].function != code(b) { return false; } }
+    for b, i in constructors { let o = object_constructor_row() + i; if nodes[o].kind != node_kind::Builtin || nodes[o].function != code(b) { return false; } }
     // The wrapper prototypes hold a primitive of their type.
     for b, t in WRAPPER_BUILTINS {
         let p .= nodes[wrapper_prototype_row(t)]; let c .= nodes[wrapper_constructor_row(t)];
-        if p.kind != 22 || wrapper_type(p.value) != t || !p.proto.is_object() || p.proto.id() != object_prototype_row() || c.kind != 4 || c.function != code(b) { return false; }
+        if p.kind != node_kind::Wrapper || wrapper_type(p.value) != t || !p.proto.is_object() || p.proto.id() != object_prototype_row() || c.kind != node_kind::Builtin || c.function != code(b) { return false; }
     }
     // The iterator prototypes inherit %IteratorPrototype%.
     let iterator_prototypes: i64[] = [array_iterator_prototype_row(), string_iterator_prototype_row()];
-    for o in iterator_prototypes { if nodes[o].kind != 0 || !nodes[o].proto.is_object() || nodes[o].proto.id() != iterator_prototype_row() { return false; } }
-    for m, j in REALM_FUNCTIONS { let o = fixed_rows() + j; if nodes[o].kind != 4 || nodes[o].function != code(m.which) || m.which == Builtin.FunctionPrototypeCall && (!call.is_object() || call.id() != o) { return false; } }
+    for o in iterator_prototypes { if nodes[o].kind != node_kind::Object || !nodes[o].proto.is_object() || nodes[o].proto.id() != iterator_prototype_row() { return false; } }
+    for m, j in REALM_FUNCTIONS { let o = fixed_rows() + j; if nodes[o].kind != node_kind::Builtin || nodes[o].function != code(m.which) || m.which == Builtin.FunctionPrototypeCall && (!call.is_object() || call.id() != o) { return false; } }
     return true;
 }
 
@@ -396,24 +396,24 @@ fn build_realm(heap: Heap&) -> bool {
     let empty = key_named(heap, "");
     if heap.fault != Fault.None { return false; }
     var rows: Node[>..] = [];
-    rows.push(Node { kind: 0 });
-    rows.push(Node { kind: 0, proto: Value.Null });
-    rows.push(Node { kind: 4, function: code(Builtin.FunctionPrototype), proto: object(object_prototype_row()) });
-    rows.push(Node { kind: 1, proto: object(object_prototype_row()) });
-    for t in ERROR_NAMES.len { rows.push(Node { kind: 0, proto: object(if t == 0 { object_prototype_row() } else { error_prototype_row(0) }) }); }
-    rows.push(Node { kind: 4, function: code(Builtin.Object) }); rows.push(Node { kind: 4, function: code(Builtin.Function) }); rows.push(Node { kind: 4, function: code(Builtin.Array) });
-    for b, t in ERROR_BUILTINS { rows.push(if t == 0 { Node { kind: 4, function: code(b) } } else { Node { kind: 4, function: code(b), proto: object(error_constructor_row(0)) } }); }
-    rows.push(Node { kind: 0, proto: object(object_prototype_row()) }); rows.push(Node { kind: 0, proto: object(iterator_prototype_row()) }); rows.push(Node { kind: 0, proto: object(object_prototype_row()) });
+    rows.push(Node { kind: node_kind::Object });
+    rows.push(Node { kind: node_kind::Object, proto: Value.Null });
+    rows.push(Node { kind: node_kind::Builtin, function: code(Builtin.FunctionPrototype), proto: object(object_prototype_row()) });
+    rows.push(Node { kind: node_kind::Array, proto: object(object_prototype_row()) });
+    for t in ERROR_NAMES.len { rows.push(Node { kind: node_kind::Object, proto: object(if t == 0 { object_prototype_row() } else { error_prototype_row(0) }) }); }
+    rows.push(Node { kind: node_kind::Builtin, function: code(Builtin.Object) }); rows.push(Node { kind: node_kind::Builtin, function: code(Builtin.Function) }); rows.push(Node { kind: node_kind::Builtin, function: code(Builtin.Array) });
+    for b, t in ERROR_BUILTINS { rows.push(if t == 0 { Node { kind: node_kind::Builtin, function: code(b) } } else { Node { kind: node_kind::Builtin, function: code(b), proto: object(error_constructor_row(0)) } }); }
+    rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     let wrapped: Value[3] = [number(0), empty, boolean(false)];
-    for v in wrapped { rows.push(Node { kind: 22, value: v, proto: object(object_prototype_row()) }); }
-    for b in WRAPPER_BUILTINS { rows.push(Node { kind: 4, function: code(b) }); }
-    rows.push(Node { kind: 0, proto: object(iterator_prototype_row()) }); rows.push(Node { kind: 0, proto: object(iterator_prototype_row()) });
+    for v in wrapped { rows.push(Node { kind: node_kind::Wrapper, value: v, proto: object(object_prototype_row()) }); }
+    for b in WRAPPER_BUILTINS { rows.push(Node { kind: node_kind::Builtin, function: code(b) }); }
+    rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) });
     assert(rows.len == fixed_rows());
-    for m in REALM_FUNCTIONS { rows.push(Node { kind: 4, function: code(m.which) }); }
+    for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
     if !charge(heap, rows.len) || add_nodes(heap, rows) != 0 { if heap.fault == Fault.None { memory(heap); } return false; }
     heap.global = object(global_row());
     // Every built-in function's `length` and `name`.
-    for o in rows.len { if rows[o].kind == 4 && !builtin_metadata(heap, o) { return false; } }
+    for o in rows.len { if rows[o].kind == node_kind::Builtin && !builtin_metadata(heap, o) { return false; } }
     // Constructors and their prototypes.
     let pairs: i64[] = [object_constructor_row(), object_prototype_row(), function_constructor_row(), function_prototype_row(), array_constructor_row(), array_prototype_row()];
     var i: i64 = 0;
@@ -478,11 +478,11 @@ fn link_constructor(heap: Heap&, c: i64, p: i64) -> bool {
 // leaves (RUNTIME_LEAVES): built once, in the image owner, after the realm.
 fn boot_runtime(heap: Heap&) -> Value {
     if heap.boot_count != 0 { heap.fault = Fault.InvalidState; return Value.Undefined; }
-    let rt = allocate(heap, Node { kind: 0 }); let core = allocate(heap, Node { kind: 0 });
+    let rt = allocate(heap, Node { kind: node_kind::Object }); let core = allocate(heap, Node { kind: node_kind::Object });
     install_field(heap, rt, "core", core);
     install_field(heap, heap.global, "__lightNativeRuntime", rt);
     for leaf in RUNTIME_LEAVES {
-        let f = allocate(heap, Node { kind: 4, function: code(leaf.which) });
+        let f = allocate(heap, Node { kind: node_kind::Builtin, function: code(leaf.which) });
         if !f.is_object() || !builtin_metadata(heap, f.id()) { return Value.Undefined; }
         install_field(heap, if leaf.core { core } else { rt }, leaf.key, f);
     }
@@ -492,10 +492,10 @@ fn boot_runtime(heap: Heap&) -> Value {
 
 // The error type (ERROR_NAMES) a catchable fault raises.
 fn fault_type(fault: Fault) -> i64 { return match fault { TypeError => 5, ReferenceError => 3, RangeError => 2, SyntaxError => 4, StackLimit => 7, _ => 0 }; }
-// An error object (kind 13): `code` is error_code of the VM fault it was
+// An error object (node_kind::Error): `code` is error_code of the VM fault it was
 // raised for, 0 for one JavaScript made; its prototype is its type's.
 fn error_object(heap: Heap&, t: i64, code: u32, message: Value) -> Value {
-    let e = allocate(heap, Node { kind: 13, function: code, proto: object(error_prototype_row(t)) });
+    let e = allocate(heap, Node { kind: node_kind::Error, function: code, proto: object(error_prototype_row(t)) });
     if heap.fault != Fault.None { return Value.Undefined; }
     if message.is_string() && !add_own(heap, e.id(), key_named(heap, "message"), message, attr_writable() | attr_configurable()) { return Value.Undefined; }
     return e;
@@ -525,7 +525,7 @@ fn fault_message(job: Job&, fault: Fault, frame: Frame) -> Value {
 // Name an unsupported built-in step (Job.detail) and fail UnsupportedOperand.
 // Whether `v` is the realm's %eval% (a direct-eval site's callee check).
 fn realm_eval(heap: Heap&, v: Value) -> bool {
-    return valid(heap, v) && v.is_object() && node(heap, v.id()).kind == 4 && node(heap, v.id()).function == code(Builtin.Eval);
+    return valid(heap, v) && v.is_object() && node(heap, v.id()).kind == node_kind::Builtin && node(heap, v.id()).function == code(Builtin.Eval);
 }
 fn unsupported_step(job: Job&, b: Builtin, what: const u8[:]) -> Value {
     job.detail.clear();
@@ -544,7 +544,7 @@ inline fn arg(args: const Value[:], i: i64) -> Value { return if i < args.len { 
 
 // Primitive wrappers (light-cljs-832; the Pants engine's realm.rs and
 // vm/builtin.rs, QuickJS's js_number_constructor, js_string_constructor,
-// js_boolean_constructor and JS_ToObject). A wrapper is a node of kind 22
+// js_boolean_constructor and JS_ToObject). A wrapper is node_kind::Wrapper
 // holding its primitive (source_vm.goose, string_key); a job's wrappers are
 // job rows (decision 3), the realm's three prototypes image rows.
 //
@@ -559,14 +559,14 @@ fn to_object(job: Job&, v: Value) -> Value {
 }
 fn wrap(job: Job&, v: Value, proto: Value) -> Value {
     if wrapper_type(v) < 0 { unsupported_detail(job, if v.is_symbol() { "ToObject: Symbol wrapper objects" } else { "ToObject: BigInt wrapper objects" }); return Value.Undefined; }
-    return allocate(job.heap, Node { kind: 22, value: v, proto: proto });
+    return allocate(job.heap, Node { kind: node_kind::Wrapper, value: v, proto: proto });
 }
 // thisNumberValue, thisStringValue and thisBooleanValue for built-in b: the
 // primitive of wrapper type t that `receiver` is or wraps; anything else is
 // a TypeError (QuickJS's wording).
 fn this_primitive(job: Job&, b: Builtin, t: i64, receiver: Value) -> Value {
     let heap .= job.heap;
-    let p = if receiver.is_object() && node(heap, receiver.id()).kind == 22 { node(heap, receiver.id()).value } else { receiver };
+    let p = if receiver.is_object() && node(heap, receiver.id()).kind == node_kind::Wrapper { node(heap, receiver.id()).value } else { receiver };
     if wrapper_type(p) == t { return p; }
     return type_error(job, match t { 0 => "not a number", 1 => "not a string", _ => "not a boolean" });
 }
@@ -676,7 +676,7 @@ fn own_descriptor(job: Job&, b: Builtin, value: Value, kv: Value) -> Value {
     let p = own_entry(heap, o, k);
     if heap.fault != Fault.None || !p.found { return Value.Undefined; }
     if is_pending(p.value) { pending_fault(heap, k); return Value.Undefined; }
-    let d = allocate(heap, Node { kind: 0 });
+    let d = allocate(heap, Node { kind: node_kind::Object });
     if heap.fault != Fault.None { return Value.Undefined; }
     if is_accessor(p.value) {
         let fns = pair(heap, p.value);
@@ -723,8 +723,8 @@ fn object_tag(job: Job&, receiver: Value) -> Value {
     for c in "[object " { units.push(c); }
     if tag.is_string() { append_utf16(heap, tag, units); }
     else {
-        let wrapped = if receiver.is_object() { if node(heap, receiver.id()).kind == 22 { node(heap, receiver.id()).value } else { Value.Undefined } } else { receiver };
-        let name: const u8[:] = if wrapper_type(wrapped) >= 0 { WRAPPER_NAMES[wrapper_type(wrapped)].text } else { match node(heap, receiver.id()).kind { 1 => "Array", 2, 4 => "Function", 13 => "Error", 14 => "Arguments", _ => "Object" } };
+        let wrapped = if receiver.is_object() { if node(heap, receiver.id()).kind == node_kind::Wrapper { node(heap, receiver.id()).value } else { Value.Undefined } } else { receiver };
+        let name: const u8[:] = if wrapper_type(wrapped) >= 0 { WRAPPER_NAMES[wrapper_type(wrapped)].text } else { match node(heap, receiver.id()).kind { node_kind::Array => "Array", node_kind::Closure, node_kind::Builtin => "Function", node_kind::Error => "Error", node_kind::Arguments => "Arguments", _ => "Object" } };
         for c in name { units.push(c); }
     }
     units.push(93);
@@ -779,7 +779,7 @@ fn construct_error(job: Job&, b: Builtin, t: i64, args: const Value[:]) -> Value
 // elements.
 fn construct_array(job: Job&, args: const Value[:]) -> Value {
     let heap .= job.heap;
-    let a = allocate(heap, Node { kind: 1 });
+    let a = allocate(heap, Node { kind: node_kind::Array });
     if heap.fault != Fault.None { return Value.Undefined; }
     if args.len == 1 && args[0].is_number() {
         let n = args[0].num();
@@ -801,7 +801,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         FunctionPrototype => { return Value.Undefined; },
         Object => {
             let v = arg(args, 0);
-            if v.tag() <= value_tag::Null { return allocate(heap, Node { kind: 0 }); }
+            if v.tag() <= value_tag::Null { return allocate(heap, Node { kind: node_kind::Object }); }
             return to_object(job, v);
         },
         Function => { return unsupported_step(job, b, "dynamic functions"); },
@@ -818,7 +818,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
             let kind = node(heap, v.id()).kind;
             // A proxy's [[GetPrototypeOf]] outside for-in fails by name (proxy.goose).
             if kind == node_kind::Proxy { proxy_fault(heap, proxy_method::GetPrototypeOf); return Value.Undefined; }
-            if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 14 && kind != 20 && kind != 21 && kind != 22 && kind != node_kind::Iterator { return unsupported_step(job, b, "a runtime form"); }
+            if kind != node_kind::Object && kind != node_kind::Array && kind != node_kind::Closure && kind != node_kind::Builtin && kind != node_kind::Error && kind != node_kind::Arguments && kind != node_kind::Generator && kind != node_kind::Promise && kind != node_kind::Wrapper && kind != node_kind::Iterator { return unsupported_step(job, b, "a runtime form"); }
             return prototype(heap, v.id());
         },
         ObjectIs => { return boolean(same_value(heap, arg(args, 0), arg(args, 1))); },
@@ -839,7 +839,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         ObjectPrototypeToString => { return object_tag(job, receiver); },
         ObjectGetOwnPropertyDescriptor => { return own_descriptor(job, b, arg(args, 0), arg(args, 1)); },
         // IsArray: a proxy is its final target's (light-cljs-845).
-        ArrayIsArray => { var v = arg(args, 0); while is_proxy(heap, v) { v = node(heap, v.id()).value; } return boolean(v.is_object() && node(heap, v.id()).kind == 1); },
+        ArrayIsArray => { var v = arg(args, 0); while is_proxy(heap, v) { v = node(heap, v.id()).value; } return boolean(v.is_object() && node(heap, v.id()).kind == node_kind::Array); },
         // Proxy called without `new` (light-cljs-845; construct makes one).
         Proxy => { return type_error(job, "Proxy: constructor requires 'new'"); },
         ErrorPrototypeToString => { return error_to_string(job, receiver); },
@@ -882,6 +882,6 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
 // functions and proxies of callable targets are "function", every other
 // object "object".
 fn type_name(heap: Heap&, v: Value) -> Value {
-    let t: i64 = match v { Undefined => 0, Null => 1, Bool => 2, Number => 3, String => 4, Symbol => 5, BigInt => 6, Object x => if node(heap, x.o).kind == 2 || node(heap, x.o).kind == 4 || node(heap, x.o).kind == node_kind::Proxy && proxy_callable(heap, v) { 7 } else { 1 }, _ => 1 };
+    let t: i64 = match v { Undefined => 0, Null => 1, Bool => 2, Number => 3, String => 4, Symbol => 5, BigInt => 6, Object x => if node(heap, x.o).kind == node_kind::Closure || node(heap, x.o).kind == node_kind::Builtin || node(heap, x.o).kind == node_kind::Proxy && proxy_callable(heap, v) { 7 } else { 1 }, _ => 1 };
     return key_named(heap, TYPE_NAMES[t].text);
 }

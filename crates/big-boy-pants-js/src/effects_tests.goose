@@ -175,7 +175,7 @@ thread_fn caught_error(fault: source::Fault, limited: bool) {
         if limited { assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.MemoryLimit && job.fault_function == 0 && job.fault_pc == 0); }
         else {
             let error = job.operands[0]; assert(error.is_object() && source::truthy(heap, error) && source::equal(heap, error, error));
-            let other = source::allocate(heap, source::Node { kind: 13 }); assert(!source::equal(heap, error, other) && !source::form_equal(heap, error, other) && source::form_equal(heap, error, error));
+            let other = source::allocate(heap, source::Node { kind: node_kind::Error }); assert(!source::equal(heap, error, other) && !source::form_equal(heap, error, other) && source::form_equal(heap, error, error));
             assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.is_bool() && !job.result.flag());
             assert(source::retire(job));
             var sc = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 1, generation: 1, value: error }], sc); assert(sc.error == snapshot::Error.None);
@@ -253,8 +253,8 @@ fn contracts(base: const snapshot::Snapshot&, entries: const i64[:]) {
 thread_fn mutable_capture(base: snapshot::Snapshot, entries: i64[]) {
     defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {}; assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), sc));
-    let cell = source::allocate(heap, source::Node { kind: 3, initialized: true, value: source::number(9) });
-    let value = source::form_collection(heap, 6, [source::closure(heap, entries[7], [cell])]); var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
+    let cell = source::allocate(heap, source::Node { kind: node_kind::Binding, initialized: true, value: source::number(9) });
+    let value = source::form_collection(heap, node_kind::Vector, [source::closure(heap, entries[7], [cell])]); var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
     artifact::export_graph(heap, base, imports, value, 100, 1, c);
     assert(c.error == artifact::Error.Mutable && c.path.len == 3);
 }
@@ -307,12 +307,12 @@ thread_fn native_callback(base: snapshot::Snapshot, entries: i64[], quantum: i64
     defer { heap_program::finish(); }
     {
         var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {}; assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), sc));
-        let input = source::form_collection(heap, 6, [source::text(heap, "a"), source::text(heap, "b")]);
+        let input = source::form_collection(heap, node_kind::Vector, [source::text(heap, "a"), source::text(heap, "b")]);
         var job = source::Job { heap: heap, effects_enabled: true }; assert(source::start(job, source::closure(heap, entries[8], []), [source::builtin(heap, 2), source::builtin(heap, 5), input]));
         var authority = effects::Authority {}; authority.grants.append([grant(1, 1, 0, 5), grant(2, 1, 1, 5)]); var sequence: i64 = 0;
         while job.status == tiny::Status.Ready { source::run(job, quantum); if job.effect_pending { assert(effects::service(authority, job, 1, sequence)); } }
         assert(job.status == tiny::Status.Complete && sequence == 2 && authority.receipts.len == 2 && authority.counters[0] == 2);
-        for i in 2 { let symbol = source::node(heap, source::form_nth(heap, job.result, i).id()); let name = symbol.value; assert(symbol.kind == 9 && source::utf16(heap, name) == (if i == 0 { ['a' as u16, '1'] } else { ['b' as u16, '2'] })); }
+        for i in 2 { let symbol = source::node(heap, source::form_nth(heap, job.result, i).id()); let name = symbol.value; assert(symbol.kind == node_kind::Symbol && source::utf16(heap, name) == (if i == 0 { ['a' as u16, '1'] } else { ['b' as u16, '2'] })); }
         assert(source::retire(job));
     }
 }
