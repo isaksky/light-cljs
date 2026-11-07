@@ -145,7 +145,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64) }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6 }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -195,6 +195,8 @@ enum Ins {
     // Typeof (light-cljs-788). ToObject (176, a `with` statement's object;
     // light-cljs-832): v → ToObject(v), boxing a primitive.
     TypeOf, ToObject,
+    // v target → bool, `v instanceof target` (96; light-cljs-834, instanceof_op).
+    Instanceof,
     // Generators and async functions (light-cljs-790, continuations.goose):
     // GeneratorStart only marks code; GeneratorInitialYield, GeneratorYield,
     // AsyncStart and Await detach and settle activations.
@@ -412,10 +414,18 @@ root struct Heap {
 //                (light-cljs-790; continuations.goose): input the
 //                generator, its activation attached above; pc 1 awaits the
 //                value it yields or returns.
+//   HasInstance  InstanceofOperator and OrdinaryHasInstance (light-cljs-834;
+//                instanceof_op): receiver the target C, input the value V;
+//                pc 1 awaits C[@@hasInstance] from its getter, pc 2 a user
+//                @@hasInstance method's result (ToBoolean) or a
+//                native-frame built-in's, pc 3 C.prototype from its getter,
+//                pc 4 V converted by a Convert frame for the built-in
+//                method callee (Number or String). Its result replaces the
+//                operation's operands at operand_base.
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 } }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -567,7 +577,7 @@ fn instruction(op: Op) -> Ins {
         opcode::PendingThrow, opcode::PendingException, opcode::PendingCancel => Ins.Pending { what: op.code as u8 },
         opcode::Typeof => Ins.TypeOf, opcode::ToString => Ins.ToString, opcode::ForInStart => Ins.ForInStart, opcode::ForInNext => Ins.ForInNext, opcode::OwnKeys => Ins.OwnKeys, opcode::IsEnumerable => Ins.IsEnumerable, opcode::CopyDataProperties => Ins.CopyData, opcode::ToPropertyKey => Ins.ToPropertyKey, opcode::RequireCoercible => Ins.RequireCoercible,
         opcode::GeneratorStart => Ins.GeneratorStart, opcode::GeneratorInitialYield => Ins.GeneratorInitialYield, opcode::GeneratorYield => Ins.GeneratorYield, opcode::AsyncStart => Ins.AsyncStart, opcode::Await => Ins.Await,
-        opcode::GetNewTarget => Ins.NewTarget, opcode::ToObject => Ins.ToObject,
+        opcode::GetNewTarget => Ins.NewTarget, opcode::ToObject => Ins.ToObject, opcode::Instanceof => Ins.Instanceof,
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -2765,6 +2775,7 @@ fn native_step(job: Job&) {
         Swap s => { swap_step(job, frame, s.which); },
         Force x => { force_step(job, frame, x.which); },
         Resume => { resume_step(job, frame); },
+        HasInstance => { has_instance_step(job, frame); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -3334,6 +3345,13 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
+                // A user @@hasInstance method or a getter runs above a
+                // HasInstance native frame, which delivers the result.
+                Instanceof => {
+                    settle(job, ran, used); job.frames[top].pc = pc; instanceof_op(job);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
                 Append => {
                     settle(job, ran, used); job.frames[top].pc = pc;
                     let value = job.operands.pop(); let object = job.operands[job.operands.len - 1];
@@ -3583,7 +3601,7 @@ fn construct(job: Job&, argc: i64) {
         FunctionPrototype, ObjectGetPrototypeOf, ObjectIs, ObjectHasOwn, ObjectPrototypeHasOwnProperty, ObjectPrototypeValueOf, ObjectPrototypeToString,
         ArrayIsArray, ErrorPrototypeToString, SymbolFunction, ObjectGetOwnPropertyDescriptor, FunctionPrototypeCall, ArrayPrototypeMap, ArrayPrototypeForEach,
         GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, IteratorPrototypeIterator, Eval,
-        NumberPrototypeValueOf, NumberPrototypeToString, StringPrototypeValueOf, StringPrototypeToString, BooleanPrototypeValueOf, BooleanPrototypeToString => { heap.fault = Fault.TypeError; },
+        NumberPrototypeValueOf, NumberPrototypeToString, StringPrototypeValueOf, StringPrototypeToString, BooleanPrototypeValueOf, BooleanPrototypeToString, FunctionPrototypeHasInstance => { heap.fault = Fault.TypeError; },
         _ => { unsupported_step(job, b, "construct"); },
     }
 }
@@ -4143,6 +4161,166 @@ fn in_op(job: Job&) {
     if heap.fault != Fault.None { return; }
     let found = has_property(heap, object, key);
     if heap.fault == Fault.None { job.operands.push(boolean(found)); }
+}
+
+// ---- instanceof (light-cljs-834; ECMAScript 13.10.2 InstanceofOperator and
+// 7.3.22 OrdinaryHasInstance, the Pants engine's native::start_instanceof
+// and vm/prototype.rs instance_of_prototype, QuickJS's JS_IsInstanceOf and
+// JS_OrdinaryIsInstanceOf).
+//
+// Instanceof: v target → bool. A non-object target is a TypeError; then
+// GetMethod(target, @@hasInstance): a callable method is called with target
+// as receiver and v as its argument, its result converted by ToBoolean; a
+// non-callable one is a TypeError; with none (undefined or null) a
+// non-callable target is a TypeError, and otherwise OrdinaryHasInstance.
+// The realm's Function.prototype[@@hasInstance] is OrdinaryHasInstance with
+// its receiver as C, so it runs here without a call.
+//
+// User code (a user @@hasInstance method, a getter of @@hasInstance or of
+// `prototype`) runs as a frame above a HasInstance native frame (decision 4),
+// which the operation's operands leave first; everything else completes in
+// the instruction. A built-in method that converts its argument (a Convert
+// frame) or runs as a native frame also runs above it. Failing by name (decision 1): a built-in getter, a
+// built-in @@hasInstance method that needs a host effect or a map demand, an
+// arguments object as the target, a class constructor's or async generator's `prototype` (light-cljs-766),
+// and a light-cljs runtime value (a form, cell or cursor, which the V8
+// build's runtime makes instances of its own constructors) as V or on its
+// prototype chain. Bound functions (light-cljs-764) and Proxy
+// (light-cljs-766) do not exist in this VM yet; when they do, a bound C
+// defers to its target and a Proxy's getPrototypeOf trap runs as a frame.
+fn instanceof_op(job: Job&) {
+    let heap .= job.heap;
+    // A scalar form (a primitive with its provenance) is its primitive.
+    let target = job.operands.pop(); let v = form_value(heap, job.operands.pop());
+    if !valid(heap, target) || heap.fault != Fault.None { return; }
+    if !target.is_object() { type_error(job, "invalid 'instanceof' right operand"); return; }
+    // An arguments object's non-index keys (its @@hasInstance and its
+    // prototype's) are not implemented (own_entry, light-cljs-764).
+    if node(heap, target.id()).kind == 14 { unsupported_detail(job, "instanceof: an arguments object as the right operand"); return; }
+    if !convertible(heap, target) { unsupported_detail(job, "instanceof: a light-cljs runtime value as the right operand"); return; }
+    let m, getter = lookup(heap, target, Value.Symbol { s: well_known::HasInstance });
+    if heap.fault != Fault.None { return; }
+    if getter.is_object() { has_instance_await(job, -1, 1, target, v, getter, target, []); return; }
+    has_instance_method(job, -1, target, v, m);
+}
+// The JavaScript object kinds instanceof reads the prototype of: those
+// ToPrimitive converts (convertible) and arguments objects.
+inline fn instance_kind(heap: const Heap&, v: Value) -> bool { return convertible(heap, v) || node(heap, v.id()).kind == 14; }
+// InstanceofOperator from step 3, with m = target[@@hasInstance]. `at` is
+// the HasInstance frame's row, -1 while the instruction runs without one.
+fn has_instance_method(job: Job&, at: i64, c: Value, v: Value, m: Value) {
+    let heap .= job.heap;
+    if m.tag() <= value_tag::Null {
+        if !callable(heap, c) { type_error(job, "invalid 'instanceof' right operand"); return; }
+        ordinary_has_instance(job, at, c, v); return;
+    }
+    if !callable(heap, m) { type_error(job, "Symbol.hasInstance is not a function"); return; }
+    let kind = node(heap, m.id()).kind;
+    if kind == 2 { has_instance_await(job, at, 2, c, v, m, c, [v]); return; }
+    let b = builtin_of(heap, m.id());
+    if b == Builtin.FunctionPrototypeHasInstance { ordinary_has_instance(job, at, c, v); return; }
+    let args: Value[1] = [v];
+    if effect_builtin(b) || b == Builtin.Mapv || b == Builtin.MapSeq || forces(heap, b, args[..]) { unsupported_step(job, b, "as a Symbol.hasInstance method"); return; }
+    // Number(o) and String(o) convert o in a Convert frame first (pc 4); a
+    // native-frame built-in runs above the HasInstance frame (pc 2).
+    let converts, hint = argument_converts(heap, m, args[..]);
+    if converts || native_builtin(b) {
+        let row = has_instance_frame(job, at, if converts { 4 } else { 2 }, c, v, m);
+        if row < 0 { return; }
+        if converts { job.operands.push(v); start_convert(job, hint, hint == Hint.String, 1, 1); }
+        else { native_start(job, b, c, args[..], job.operands.len); }
+        return;
+    }
+    let r = call_builtin(job, node(heap, m.id()).function, c, args[..]);
+    if heap.fault != Fault.None { return; }
+    has_instance_done(job, at, truthy(heap, form_value(heap, r)));
+}
+// OrdinaryHasInstance(C, O). An ordinary function whose `prototype` is
+// still lazy (light-cljs-805) has a prototype no object can inherit yet,
+// since making an object from it (construct, a read) makes it first: O is
+// not an instance, and nothing is made.
+fn ordinary_has_instance(job: Job&, at: i64, c: Value, o: Value) {
+    let heap .= job.heap;
+    if !callable(heap, c) || !o.is_object() { has_instance_done(job, at, false); return; }
+    if !instance_kind(heap, o) { unsupported_detail(job, "instanceof: a light-cljs runtime value"); return; }
+    if node(heap, c.id()).kind == 2 {
+        if unsupported_prototype(heap, c.id()) { unsupported_detail(job, "instanceof: a class constructor's or async generator's prototype"); return; }
+        if lazy_prototype(heap, c.id()) { has_instance_done(job, at, false); return; }
+    }
+    let k = key_named(heap, "prototype");
+    if heap.fault != Fault.None { return; }
+    let p, getter = lookup(heap, c, k);
+    if heap.fault != Fault.None { return; }
+    if getter.is_object() { has_instance_await(job, at, 3, c, o, getter, c, []); return; }
+    has_instance_walk(job, at, o, p);
+}
+// OrdinaryHasInstance from step 5: P = C.prototype must be an object; then
+// O's prototype chain, each kind's default prototype included, one work
+// unit a link.
+fn has_instance_walk(job: Job&, at: i64, o: Value, p: Value) {
+    let heap .= job.heap;
+    if !p.is_object() { type_error(job, "operand 'prototype' property is not an object"); return; }
+    var x = o;
+    loop {
+        let q = prototype(heap, x.id());
+        if !q.is_object() { has_instance_done(job, at, false); return; }
+        if q.id() == p.id() { has_instance_done(job, at, true); return; }
+        if !charge(heap) { return; }
+        if !instance_kind(heap, q) { unsupported_detail(job, "instanceof: a light-cljs runtime value"); return; }
+        x = q;
+    }
+}
+// Run f (a user method or getter) with `receiver` and `args` above the
+// HasInstance frame, pushed first when the instruction has none; its result
+// arrives at `phase`. Only an ordinary function can be a getter here.
+fn has_instance_await(job: Job&, at: i64, phase: i64, c: Value, v: Value, f: Value, receiver: Value, args: const Value[:]) {
+    let heap .= job.heap;
+    if node(heap, f.id()).kind != 2 { unsupported_detail(job, "instanceof: a built-in getter"); return; }
+    let fresh = at < 0;
+    if has_instance_frame(job, at, phase, c, v, Value.Undefined) < 0 { return; }
+    if !push_frame(job, f, receiver, args, false, job.operands.len) && fresh { job.frames.pop(); }
+}
+// The HasInstance frame, at row `at` or pushed when the instruction has
+// none, awaiting `phase`, with `m` the built-in method a phase 4 calls; its
+// row, or -1 at the frame limit.
+fn has_instance_frame(job: Job&, at: i64, phase: i64, c: Value, v: Value, m: Value) -> i64 {
+    if at >= 0 { job.frames[at].pc = phase; job.frames[at].callee = m; return at; }
+    if job.frames.len >= job.heap.limits.frames { job.heap.fault = Fault.StackLimit; return -1; }
+    job.frames.push(Frame { function: -1, pc: phase, local_base: job.locals.len, operand_base: job.operands.len, callee: m, receiver: c, input: v, native: Native.HasInstance });
+    return job.frames.len - 1;
+}
+// The operation's result: pushed by the instruction, or delivered by its
+// finished HasInstance frame.
+fn has_instance_done(job: Job&, at: i64, result: bool) {
+    if at < 0 { job.operands.push(boolean(result)); return; }
+    finish_native(job, job.frames[at], boolean(result));
+}
+// One step of a HasInstance frame (see Native): the awaited value arrived.
+// A scalar form (a primitive with its provenance) is its primitive.
+fn has_instance_step(job: Job&, frame: Frame) {
+    let heap .= job.heap; let at = job.frames.len - 1;
+    let r = form_value(heap, job.operands.pop());
+    if heap.fault != Fault.None { return; }
+    match frame.pc {
+        1 => { has_instance_method(job, at, frame.receiver, frame.input, r); },
+        2 => { has_instance_done(job, at, truthy(heap, r)); },
+        3 => { has_instance_walk(job, at, frame.input, r); },
+        // r is V converted for the built-in method frame.callee.
+        4 => {
+            let args: Value[1] = [r];
+            let result = call_builtin(job, node(heap, frame.callee.id()).function, frame.receiver, args[..]);
+            if heap.fault == Fault.None { has_instance_done(job, at, truthy(heap, form_value(heap, result))); }
+        },
+        _ => { heap.fault = Fault.InvalidState; },
+    }
+}
+// Function.prototype[@@hasInstance](V) (light-cljs-834; QuickJS's
+// js_function_hasInstance): OrdinaryHasInstance with the receiver as C,
+// started from the dispatch loop's call (native_start) with the call's
+// operands cut to `base`, so a `prototype` getter runs above its frame.
+fn start_function_has_instance(job: Job&, receiver: Value, v: Value, base: i64) {
+    job.operands.resize(base);
+    ordinary_has_instance(job, -1, receiver, v);
 }
 
 // ---- Key enumeration (light-cljs-804; the Pants engine's vm/keys.rs and

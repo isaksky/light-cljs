@@ -345,7 +345,7 @@ here proves entry-body execution only. Bootstrap invariants adapt `cc764dbe`,
 **Parsed, exported and executed are distinct.** Per-factory inventories mark
 parsed/exported true and Goose-executed false. Export walks every function,
 including dead functions, and exports every opcode; an operation the Goose VM
-does not implement, such as `instanceof`, fails only when it runs, with
+does not implement, such as for-of iteration (`get_iterator`), fails only when it runs, with
 `Fault.Unsupported` naming it (a direct eval of the global `eval` names
 `direct_eval`).
 These flags describe the export stage. `macros.bb` separately executes the

@@ -20,6 +20,9 @@
 ;; "use strict" directive in the text still applies); bbp- and
 ;; Pants-authored cases run as strict scripts, as the Pants command line and
 ;; the Goose exporter do by default; :module cases run as modules.
+;;
+;; :pants-gap REASON: a case of a feature the Pants engine does not implement
+;; (its VM is not extended for Goose); it is scored against QuickJS alone.
 {:areas
  {:lexing-parsing "Lexing, literals, parsing and source positions (bbp-34, light-cljs-775)"
   :operators-values "Expression operators, primitive values and coercions (bbp-35, light-cljs-762)"
@@ -78,6 +81,8 @@
   "bbp/realm_uncaught_error" {:area :exceptions}
   "bbp/realm_well_known_symbols" {:area :core-builtins}
   "bbp/in_operator" {:area :operators-values}
+  "bbp/instanceof_operator" {:area :operators-values}
+  "bbp/symbol_has_instance" {:area :operators-values :pants-gap "the Pants engine does not consult Symbol.hasInstance or define Function.prototype[Symbol.hasInstance] (rust/src/vm/prototype.rs instance_target)"}
   "bbp/logical_assignment_bindings" {:area :operators-values}
   "bbp/loose_equality_primitives" {:area :operators-values}
   "bbp/strict_equality_same_value" {:area :operators-values}

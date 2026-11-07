@@ -66,7 +66,8 @@ fn latin1_state_check() {
 // implement it yet): 1, `probe`, a configurable, enumerable accessor of the
 // image's functions probeGet and probeSet; 2, `reserved` = 1, neither
 // writable, enumerable nor configurable; 3, `reserved` = 1, writable and
-// enumerable but not configurable.
+// enumerable but not configurable. 4 to 6 are the getters the cases below
+// name.
 fn install(heap: source::Heap&, setup: i64) {
     if setup == 0 { return; }
     let global = heap.global.id();
@@ -89,6 +90,16 @@ fn install(heap: source::Heap&, setup: i64) {
             assert(source::define_own(heap, proto, k, source::closure(heap, named_function(heap.code, "probeGet"), []), attrs, 1));
             assert(source::define_own(heap, proto, k, source::closure(heap, named_function(heap.code, "probeSet"), []), attrs, 2));
         }
+    } else if setup == 6 {
+        // instanceof's getters (instanceof-hooks.js): `prototype` on
+        // Function.prototype, an accessor with protoGet as its getter, and
+        // `hooked`, an ordinary object whose Symbol.hasInstance is an
+        // accessor with hookGet as its getter.
+        let attrs = source::attr_configurable();
+        assert(source::define_own(heap, source::function_prototype_row(), source::key_named(heap, "prototype"), source::closure(heap, named_function(heap.code, "protoGet"), []), attrs, 1));
+        let hooked = source::allocate(heap, source::Node { kind: 0 });
+        assert(source::define_own(heap, hooked.id(), source::Value.Symbol { s: well_known::HasInstance }, source::closure(heap, named_function(heap.code, "hookGet"), []), attrs, 1));
+        assert(source::define_own(heap, global, source::key_named(heap, "hooked"), hooked, source::attr_writable() | source::attr_configurable()));
     } else {
         let k = source::key_named(heap, "reserved");
         assert(source::define_own(heap, global, k, source::number(1), if setup == 2 { 0 } else { source::attr_writable() | source::attr_enumerable() }));
@@ -499,11 +510,12 @@ fn main() {
     // ({}).toString() is the realm's Object.prototype.toString (light-cljs-788).
     check(embed_file("../corpus/serial/unsupported-prototype.gsp"), "utf16:[91,111,98,106,101,99,116,32,79,98,106,101,99,116,93]");
     // Every opcode exports (light-cljs-783): `new Date` on a dead path and in
-    // a dead nested function never runs; `instanceof` reached (after a
-    // construction, light-cljs-831) fails by name even under a `catch`. A
-    // class constructor cannot be called.
+    // a dead nested function never runs; for-of iteration reached (after a
+    // construction, light-cljs-831; `instanceof` runs since light-cljs-834)
+    // fails by name even under a `catch`. A class constructor cannot be
+    // called.
     check(embed_file("../corpus/serial/unsupported-dead.gsp"), "number:7.0");
-    check(embed_file("../corpus/serial/unsupported-reached.gsp"), "Fault.Unsupported:instanceof", source::Fault.Unsupported);
+    check(embed_file("../corpus/serial/unsupported-reached.gsp"), "Fault.Unsupported:get_iterator", source::Fault.Unsupported);
     class_kinds(embed_file("../corpus/serial/calls.gsp"));
     check(embed_file("../corpus/serial/dormant-constants.gsp"), "number:7.0");
     check(embed_file("../corpus/serial/bigint-reached.gsp"), "Fault.Unsupported:const(BigInt)", source::Fault.Unsupported);
@@ -559,6 +571,10 @@ fn control_flow() {
     // A Symbol.toPrimitive getter the test installs: its function, null,
     // non-callable and throwing results.
     check(embed_file("../corpus/serial/to-primitive-getter.gsp"), "boolean:true", source::Fault.None, 4);
+    // instanceof (light-cljs-834): getters of Symbol.hasInstance and
+    // `prototype` the test installs, user methods and their exceptions run
+    // above the operator's HasInstance native frame at every cut.
+    check(embed_file("../corpus/serial/instanceof-hooks.gsp"), "boolean:true", source::Fault.None, 6);
     // map and forEach (light-cljs-789): their callbacks, getters and the
     // length's valueOf run in the built-in's native frame.
     check(embed_file("../corpus/serial/array-callbacks.gsp"), "boolean:true");

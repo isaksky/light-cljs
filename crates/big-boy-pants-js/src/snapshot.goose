@@ -212,6 +212,8 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         Force => object_of(s, f.input, -1),
         Swap => object_of(s, f.callee, -1),
         CopyData => object_of(s, f.callee, 16),
+        // A HasInstance frame at pc 4 calls its built-in method (light-cljs-834).
+        HasInstance => f.pc != 4 || object_of(s, f.callee, 4),
         _ => true,
     };
 }

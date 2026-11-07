@@ -1006,7 +1006,7 @@ mod serial_tests {
             ("string-to-number", "boolean:true"),
             ("unsupported-prototype", "string:[object Object]"),
             // Unimplemented operations: `new Date` on a dead path, and
-            // `instanceof` reached under a `catch` that cannot swallow its
+            // for-of iteration reached under a `catch` that cannot swallow its
             // fault there (serial_tests.goose).
             ("unsupported-dead", "number:7"),
             ("unsupported-reached", "number:1"),
@@ -1147,6 +1147,9 @@ mod serial_tests {
             // engine fails by name.
             ("primitive-receiver", "goose"),
             ("sloppy-this", "goose"),
+            // Getters of Symbol.hasInstance and `prototype` Goose installs,
+            // run by instanceof (light-cljs-834).
+            ("instanceof-hooks", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let options = if name.starts_with("sloppy-") {

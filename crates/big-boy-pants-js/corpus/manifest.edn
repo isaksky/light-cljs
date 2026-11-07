@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "6d003c9fd903965cd237a7fa422d2bdbae948423b1b95cbf81ccefdd924c6b04",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "b177f599318481da72b800fe0dabf11d91a56a1dae94c86f7ad4ac2058ba3fbe",
+  "3e1a2b400724d68a990265e303ca4647fddf77e1faba01bcdf6a330e8a4131ad",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "1a2108185dffceee40083c348fb8b306d46c392910ab5036cfe75b0ae45a205b",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -333,6 +333,10 @@
   "c9ccae78d485ae7397a81b2dd5b6a76925143ae6a8ead2e15bde5d7578e04758",
   "corpus/serial/indirect-eval.js"
   "0b4105090ff256c91c3ba72c25aaa0a652dc89fe1764bf0a520fa78dba67dbf9",
+  "corpus/serial/instanceof-hooks.gsp"
+  "f89a425440e89824dcf8e074c40f6f4770fc806937ad92b54d50a97a24373a9a",
+  "corpus/serial/instanceof-hooks.js"
+  "ae59555b799b0d7a733ad431fd2a9998a9672b6162d556ec05544e83c30acda9",
   "corpus/serial/loop.gsp"
   "0486dfa3b8db2f5cede21377b539bfd564e783879b9c0d26a67477d58725fcf8",
   "corpus/serial/loop.js"
@@ -365,6 +369,14 @@
   "d62f3d59510a3f85c9f4315c676f4e64e7785c8c96b0f317f1ddb40732b1567d",
   "corpus/serial/object-rest.js"
   "7d53bf63de3cb6aa3978a324901c38db5308ac5bb8e582244ba814e219f0a98c",
+  "corpus/serial/primitive-methods.gsp"
+  "f1abcdfc7f3f6e3be3847d942b686143d97c8cf46108cddfa8a9c931909afa8f",
+  "corpus/serial/primitive-methods.js"
+  "c3df122c19acb37639e9a6fa4705d0e6e882dd4f4335934520ea35dac43dea17",
+  "corpus/serial/primitive-receiver.gsp"
+  "cec7131af10093a4f9db5d3b668d92f27dd8c4892f226a359a8aa6935917e788",
+  "corpus/serial/primitive-receiver.js"
+  "375ae6dfd51ea515871eda60565738689d170185c121ab9c757ac1e42c0b3009",
   "corpus/serial/promise-then.gsp"
   "6d234586985169299d7472e3e8a729116209d73133e719b0c0dd75d2a2783c49",
   "corpus/serial/promise-then.js"
@@ -401,6 +413,10 @@
   "8bf9b104bd67da300440d2c793ddc94660091edb7ed7df34b30a11c0842962ed",
   "corpus/serial/script-throw-messages.js"
   "b71111107822f7066479f114111e9c3872766b2a9e367062472fe421f18c4247",
+  "corpus/serial/sloppy-this.gsp"
+  "de05c832420cb142299c08e947dddffc46e32c5fddd048b49dd18cf68a9458d3",
+  "corpus/serial/sloppy-this.js"
+  "298f3ad7d96e6ad88d342e6eaf14d477903570f14580e370d65ce316950a1fc0",
   "corpus/serial/string-to-number.gsp"
   "f7de69b4805678b2b7a11cb0bbc5638b97df7d91a96934b37d3dd2b3a810b85a",
   "corpus/serial/string-to-number.js"
@@ -421,6 +437,14 @@
   "c262c4ac4d4906c03c19a846d5c60468720f7cab177e9b333bb4e9fc7b950d5f",
   "corpus/serial/suspended-wait.js"
   "9b140ad77096771a2de0ec9c4e9c1e858eace97f14a5bcf35ce695e9781c0f5f",
+  "corpus/serial/symbol-base-read.gsp"
+  "0d6db93050b0deed345e2386f7c5128678bc5d0ae8fb963d94be8be00d2aea87",
+  "corpus/serial/symbol-base-read.js"
+  "c4ccaad2cf07d48fce508334c4f70be1bfe3192d216a149d8d0551d28947719a",
+  "corpus/serial/symbol-base-write.gsp"
+  "0e7e6ccbd1e1b7b93c7da77fcd68b421f20ba23d6468f3a61e68eeca3bb5a5d0",
+  "corpus/serial/symbol-base-write.js"
+  "ff74f6aadfcf6146c3294084a1a428338908a6fb28b94a2a67214fe52fc1e8e6",
   "corpus/serial/tdz.gsp"
   "7232b13aa48947df9373a147fe423047a50d73c1cd7eef6cc0a9e017e13e7a31",
   "corpus/serial/tdz.js"
@@ -462,9 +486,9 @@
   "corpus/serial/unsupported-prototype.js"
   "cc6c5a73c0397c5fa7c930846537e9b32d76bac4469adebc6de30c4834c4d3d9",
   "corpus/serial/unsupported-reached.gsp"
-  "0a382134d2146c7ee5d7cfe85abcb05ceb62bd46bc5b9522976bedebb891f49e",
+  "eb5dcbba5e9ba935ab5801b0e8430073a8b42337310795149d96354b8ae9b8cf",
   "corpus/serial/unsupported-reached.js"
-  "6367c60590fdbab10d7ec352fc6bbfaf53ab5603d61fc5d92a8e49bb57a2cc22",
+  "672e1dfb7887aae2204fbcb37e91c25f7c047515ca1bf96434707c419cd5ab14",
   "corpus/synthetic/arithmetic.function.js"
   "a48171116d7fa39dd0029f65a28ac9c9bcc44bddd010457d828181f0a7f05958",
   "corpus/synthetic/arithmetic.gsp"

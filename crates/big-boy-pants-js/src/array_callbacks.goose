@@ -52,7 +52,7 @@ namespace source;
 // native_step dispatches by `match` on its Native variant.
 
 // Whether built-in b runs as a native frame (native_start).
-fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b); }
+fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance; }
 // Start built-in b, called with `receiver` and `args`, as a native frame
 // whose operand base is `base`, where the call's operands began: the
 // dispatch loop's `call` cuts the operands to it and the finished frame
@@ -62,6 +62,8 @@ fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], ba
     if b == Builtin.Swap || b == Builtin.SwapVals { var copied: Value[>..] = []; copied.append(args); start_swap(job, b, copied, base); return; }
     // A generator's next, return and throw (continuations.goose).
     if generator_method(b) { start_resume(job, b, receiver, arg(args, 0), base); return; }
+    // Function.prototype[@@hasInstance] (light-cljs-834; source_vm.goose).
+    if b == Builtin.FunctionPrototypeHasInstance { start_function_has_instance(job, receiver, arg(args, 0), base); return; }
     let callback = arg(args, 0); let this_arg = arg(args, 1);
     job.operands.resize(base);
     start_array_callbacks(job, b, receiver, callback, this_arg, base);

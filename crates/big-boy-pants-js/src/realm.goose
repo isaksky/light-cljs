@@ -56,11 +56,13 @@ enum Builtin {
     // order) and their prototypes' methods.
     Number, String, Boolean,
     NumberPrototypeValueOf, NumberPrototypeToString, StringPrototypeValueOf, StringPrototypeToString, BooleanPrototypeValueOf, BooleanPrototypeToString,
+    // Function.prototype[@@hasInstance] (light-cljs-834), a native frame (source_vm.goose, instanceof).
+    FunctionPrototypeHasInstance,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[77] = [
+let BUILTINS: BuiltinInfo[78] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -100,6 +102,7 @@ let BUILTINS: BuiltinInfo[77] = [
     BuiltinInfo { which: Builtin.NumberPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.NumberPrototypeToString, name: "toString", length: 1 },
     BuiltinInfo { which: Builtin.StringPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.StringPrototypeToString, name: "toString" },
     BuiltinInfo { which: Builtin.BooleanPrototypeValueOf, name: "valueOf" }, BuiltinInfo { which: Builtin.BooleanPrototypeToString, name: "toString" },
+    BuiltinInfo { which: Builtin.FunctionPrototypeHasInstance, name: "[Symbol.hasInstance]", length: 1 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -132,7 +135,7 @@ let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalEr
 let ERROR_BUILTINS:   Builtin[8] = [Builtin.Error, Builtin.EvalError, Builtin.RangeError, Builtin.ReferenceError, Builtin.SyntaxError, Builtin.TypeError, Builtin.URIError, Builtin.InternalError];
 // A built-in method: a property `name` (its BuiltinInfo name) of the fixed row `holder`.
 struct Method { which: Builtin, holder: i64 }
-let REALM_FUNCTIONS: Method[24] = [
+let REALM_FUNCTIONS: Method[25] = [
     Method { which: Builtin.FunctionPrototypeCall, holder: 2 },
     Method { which: Builtin.ObjectGetPrototypeOf, holder: 12 }, Method { which: Builtin.ObjectIs, holder: 12 }, Method { which: Builtin.ObjectHasOwn, holder: 12 },
     Method { which: Builtin.ObjectPrototypeHasOwnProperty, holder: 1 }, Method { which: Builtin.ObjectPrototypeValueOf, holder: 1 }, Method { which: Builtin.ObjectPrototypeToString, holder: 1 },
@@ -152,6 +155,8 @@ let REALM_FUNCTIONS: Method[24] = [
     Method { which: Builtin.NumberPrototypeToString, holder: 26 }, Method { which: Builtin.NumberPrototypeValueOf, holder: 26 },
     Method { which: Builtin.StringPrototypeToString, holder: 27 }, Method { which: Builtin.StringPrototypeValueOf, holder: 27 },
     Method { which: Builtin.BooleanPrototypeToString, holder: 28 }, Method { which: Builtin.BooleanPrototypeValueOf, holder: 28 },
+    // Function.prototype[@@hasInstance] (light-cljs-834), keyed by the well-known symbol.
+    Method { which: Builtin.FunctionPrototypeHasInstance, holder: 2 },
 ];
 inline fn realm_nodes() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
 // The Symbol function's row: its REALM_FUNCTIONS entry, the eleventh.
@@ -159,13 +164,12 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[207] = [
+let PENDING: PendingName[206] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
     // Function.prototype
     PendingName { holder: 2, key: "apply" }, PendingName { holder: 2, key: "bind" }, PendingName { holder: 2, key: "toString" }, PendingName { holder: 2, key: "arguments" }, PendingName { holder: 2, key: "caller" },
-    PendingName { holder: 2, key: "", symbol: 3 },
     // Array.prototype
     PendingName { holder: 3, key: "at" }, PendingName { holder: 3, key: "concat" }, PendingName { holder: 3, key: "copyWithin" }, PendingName { holder: 3, key: "entries" }, PendingName { holder: 3, key: "every" },
     PendingName { holder: 3, key: "fill" }, PendingName { holder: 3, key: "filter" }, PendingName { holder: 3, key: "find" }, PendingName { holder: 3, key: "findIndex" }, PendingName { holder: 3, key: "findLast" },
@@ -384,6 +388,8 @@ fn build_realm(heap: Heap&) -> bool {
     }
     for m, j in REALM_FUNCTIONS {
         if m.which == Builtin.IteratorPrototypeIterator { if !add_own(heap, m.holder, Value.Symbol { s: well_known::Iterator }, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; } continue; }
+        // Non-writable, non-enumerable, non-configurable (ECMAScript 20.2.3.6).
+        if m.which == Builtin.FunctionPrototypeHasInstance { if !add_own(heap, m.holder, Value.Symbol { s: well_known::HasInstance }, object(fixed_rows() + j), 0) { return false; } continue; }
         if !realm_value(heap, m.holder, BUILTINS[code(m.which)].name, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; }
         if m.which == Builtin.FunctionPrototypeCall { heap.call_method = object(fixed_rows() + j); }
     }
@@ -798,7 +804,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         SymbolFunction => { return unsupported_step(job, b, "creating symbols"); },
         NativeCoreBinding => { return core_binding(job, b, arg(args, 0)); },
         Atom, Deref, Reset, CompareAndSet, ResetVals, Volatile, Vreset, AddWatch, RemoveWatch, SetValidator => { return cell_builtin(job, b, args); },
-        Swap, SwapVals, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow => { return unsupported_step(job, b, "called from a native frame"); },
+        Swap, SwapVals, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, FunctionPrototypeHasInstance => { return unsupported_step(job, b, "called from a native frame"); },
         // %IteratorPrototype%[@@iterator]: returns its receiver.
         IteratorPrototypeIterator => { return receiver; },
         // A direct-eval site's call of %eval% never reaches here (Ins.DirectEval).
