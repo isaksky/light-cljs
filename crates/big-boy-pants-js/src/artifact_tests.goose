@@ -275,7 +275,7 @@ thread_fn scalars(base: snapshot::Snapshot) {
     for v, i in values {
         var ec = artifact::Control {}; let a = artifact::export_graph(heap, base, imports, v, 100 + i, 1, ec); assert(ec.error == artifact::Error.None && a.nodes.len == 0);
         var ic = artifact::Control {}; let got = artifact::import_graph(a, base, heap, imports, ic); assert(ic.error == artifact::Error.None && ic.copied_nodes == 0);
-        if v.tag() == 4 { assert(source::utf16(heap, v) == source::utf16(heap, got)); }
+        if v.is_string() { assert(source::utf16(heap, v) == source::utf16(heap, got)); }
         else { assert(source::plain_rows([v]) == source::plain_rows([got])); }
         var encoded: u8[>..] = []; assert(artifact::encode(a, base, encoded, ec));
         let decoded = artifact::decode(encoded, base, ec); assert(ec.error == artifact::Error.None && decoded.len == 1);

@@ -29,7 +29,7 @@ fn code_prefix(p: const Publication&, bytes: const u8[:], functions: const sourc
     // otherwise change meaning when the consumer already has macro/helper code.
     for f in s.functions[e[1]..] { if !snapshot::poll(c) { return false; } if f.start < e[4] || f.constants < e[2] || f.children < e[3] || f.name_len > 0 && f.name_start < e[5] { return fail(c, snapshot::Error.Code); } }
     for op in s.ops[e[4]..] { if !snapshot::poll(c) { return false; } if op.start < e[0] { return fail(c, snapshot::Error.Code); } }
-    for v in s.code_constants[e[2]..] { if !snapshot::poll(c) { return false; } if v.tag() == 4 && v.sid() < e[14] { return fail(c, snapshot::Error.Code); } }
+    for v in s.code_constants[e[2]..] { if !snapshot::poll(c) { return false; } if v.is_string() && v.sid() < e[14] { return fail(c, snapshot::Error.Code); } }
     for r in s.code_strings[e[14]..] { if !snapshot::poll(c) { return false; } if r.start < e[5] { return fail(c, snapshot::Error.Code); } }
     return true;
 }
@@ -98,7 +98,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
     // The root is a closure, or a value that reaches a pending delay cell
     // whose thunk only this transport carries (light-cljs-808): a form or a
     // cell reference.
-    if base < 0 || base > s.nodes.len || s.bindings.len != 1 || s.bindings[0].value.tag() != 5 { return fail(c, snapshot::Error.Link); }
+    if base < 0 || base > s.nodes.len || s.bindings.len != 1 || !s.bindings[0].value.is_object() { return fail(c, snapshot::Error.Link); }
     let root_kind = s.nodes[s.bindings[0].value.id()].kind;
     if root_kind != 2 && root_kind != 18 && (root_kind < 5 || root_kind > 12) { return fail(c, snapshot::Error.Link); }
     if !code_matches(p, heap, c) { return false; }
@@ -120,7 +120,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
             } else {
                 // A cell reference (18) is shareable; an atom was made one
                 // before the publication (source::publish_cells).
-                if n.kind == 0 || n.kind == 1 || n.kind > 12 && n.kind != 18 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.proto.tag() != -1 || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
+                if n.kind == 0 || n.kind == 1 || n.kind > 12 && n.kind != 18 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) || n.kind == 3 && (!n.immutable || !n.initialized) { return fail(c); }
                 ids[id] = heap.nodes.len + slots.len; slots.push(id);
             }
         }
@@ -129,7 +129,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
         if i == edges { colors[id] = 2; stack.pop(); continue; }
         stack[stack.len - 1].next += 1;
         let v = edge(s, n, i, c); if c.error != snapshot::Error.None { return false; }
-        if v.tag() != 5 { continue; }
+        if !v.is_object() { continue; }
         // A frozen base graph must not capture any producer-private object.
         if id < base && v.id() >= base { return fail(c, snapshot::Error.Link); }
         if colors[v.id()] == 1 {
@@ -218,7 +218,7 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     for op in s.ops[e[4]..] { var n = op; n.start += delta[0]; n.end += delta[0]; if source::branches(n.code) { n.arg += delta[4]; } code.ops.push(n); }
     let code_strings = code.strings.len - e[14];
     for r in s.code_strings[e[14]..] { code.strings.push(source::Str { start: r.start + delta[5] as u32, len: r.len }); }
-    for v in s.code_constants[e[2]..] { code.constants.push(if v.tag() == 4 { source::Value.String { s: (v.sid() + code_strings) as u32 } } else { v }); }
+    for v in s.code_constants[e[2]..] { code.constants.push(if v.is_string() { source::Value.String { s: (v.sid() + code_strings) as u32 } } else { v }); }
     for id in s.children[e[3]..] { code.children.push(shifted(id, e[1], delta[1]) as u32); }
     code.units.append(s.code_units[e[5]..]); code.source_bytes.append(s.code_bytes[e[0]..]); source::decode(code);
     // Constants carry heap strings, not offsets into the separate Code owner.

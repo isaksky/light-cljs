@@ -296,7 +296,7 @@ thread_fn factory(bytes: u8[]) {
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let entry = source::closure(heap, 0, []);
     var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
-    assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.tag() == 5);
+    assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.is_object());
     assert(source::node(heap, job.result.id()).kind == 2);
 }
 // Row helpers name their table (light-cljs-800): in a contained worker, a
@@ -369,14 +369,14 @@ thread_fn inline_slots() {
     let n = source::node(heap, o.id());
     assert(n.key_count == 3 && n.key_capacity == 4 && heap.properties.len == rows && heap.values.len == slots + 4 && source::overflow(n) == 1 && source::shape_row(heap, n.shape).count == 3);
     for k, i in [a, b, c] { let v, found = source::own_property(heap, o, k); assert(found && v.num() == [10.0, 2.0, 3.0][i]); }
-    let none, missing = source::own_property(heap, o, source::text(heap, "d")); assert(!missing && none.tag() == 0);
+    let none, missing = source::own_property(heap, o, source::text(heap, "d")); assert(!missing && none.is_undefined());
     // A sparse write turns an array into a dictionary array of records;
     // cutting its length clears the cut-off record.
     let array = source::allocate(heap, source::Node { kind: 1 }); let before = heap.properties.len;
     assert(source::set_element(heap, array, 0, source::number(5)) && source::set_element(heap, array, 5000, source::number(6)));
     let d = source::node(heap, array.id()); assert(d.initialized && d.key_count == 2 && d.key_capacity == 4 && heap.properties.len == before + 4);
     assert(source::put(heap, array, source::text(heap, "length"), source::number(1)));
-    let cut = source::node(heap, array.id()); assert(cut.key_count == 1 && cut.length == 1 && source::dict_at(heap, array.id(), 1).key.tag() == 0);
+    let cut = source::node(heap, array.id()); assert(cut.key_count == 1 && cut.length == 1 && source::dict_at(heap, array.id(), 1).key.is_undefined());
     let kept, present = source::own_element(heap, array, 0); assert(present && kept.num() == 5);
     print("serial source VM: two inline property slots, then an overflow run; dictionary arrays keep records");
 }
@@ -516,7 +516,7 @@ thread_fn continuation_rows(bytes: u8[]) {
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let values = heap.values.len; let conts = heap.conts.len;
     var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
-    assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.tag() == 2 && job.result.flag());
+    assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.is_bool() && job.result.flag());
     assert(heap.values.len - values < 64 && heap.conts.len - conts < 2000 + 64 && heap.conts.len - conts >= 2000);
     assert(source::retire(job));
 }
@@ -565,7 +565,7 @@ thread_fn rejection_outcomes(bytes: u8[], handled: bool) {
         assert(heap.fault == source::Fault.None && job.rejections.len == (if handled { 0 } else { 1 }) && job.queue.len == (if handled { 1 } else { 0 }));
         let outcome = source::run(job, -1);
         if handled {
-            assert(outcome == tiny::Outcome.Complete && job.result.tag() == 2 && job.result.flag());
+            assert(outcome == tiny::Outcome.Complete && job.result.is_bool() && job.result.flag());
             assert(source::promise_state(heap, q.id()).state == 2 && source::promise_state(heap, q.id()).handled && source::promise_state(heap, p.id()).state == 2);
         } else {
             assert(outcome == tiny::Outcome.Failed && job.fault == source::Fault.UnhandledRejection && job.thrown && source::key_is(heap, job.result, "r"));
@@ -623,7 +623,7 @@ thread_fn protected_declarations(bytes: u8[]) {
     assert(source::start(job, source::closure(heap, 0, []), []));
     let properties = heap.properties.len; let nodes = heap.nodes.len;
     assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.NativeBoundary && job.steps == 1);
-    assert(!source::own_entry(heap, heap.global, key(heap, "count")).found && job.lexicals.tag() == 0);
+    assert(!source::own_entry(heap, heap.global, key(heap, "count")).found && job.lexicals.is_undefined());
     assert(heap.properties.len == properties && heap.nodes.len == nodes);
     assert(source::retire(job));
 }
@@ -633,8 +633,8 @@ thread_fn lexical_reset(bytes: u8[]) {
     var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
-    assert(source::run(job, -1) == tiny::Outcome.Complete && job.lexicals.tag() == 5);
-    assert(source::retire(job) && source::reset(job) && job.lexicals.tag() == 0);
+    assert(source::run(job, -1) == tiny::Outcome.Complete && job.lexicals.is_object());
+    assert(source::retire(job) && source::reset(job) && job.lexicals.is_undefined());
 }
 // The realm (light-cljs-788): its fixed rows and default prototypes, a
 // built-in's and a runtime leaf's own `length` and `name` (configurable
@@ -649,12 +649,12 @@ thread_fn realm_model(bytes: u8[]) {
     let object_fn = source::get(heap, source::object(source::global_row()), source::text(heap, "Object"));
     let symbol_fn = source::get(heap, source::object(source::global_row()), source::text(heap, "Symbol"));
     let descriptor = source::get(heap, object_fn, source::text(heap, "getOwnPropertyDescriptor"));
-    assert(symbol_fn.id() == source::symbol_row() && descriptor.tag() == 5 && source::node(heap, descriptor.id()).kind == 4 && heap.fault == source::Fault.None);
+    assert(symbol_fn.id() == source::symbol_row() && descriptor.is_object() && source::node(heap, descriptor.id()).kind == 4 && heap.fault == source::Fault.None);
     assert(source::own_entry(heap, symbol_fn, key(heap, "for")).found && !source::own_entry(heap, descriptor, key(heap, "for")).found && !source::own_entry(heap, descriptor, key(heap, "prototype")).found);
     source::get(heap, symbol_fn, source::text(heap, "keyFor")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     let a = source::allocate(heap, source::Node { kind: 1 }); let o = source::allocate(heap, source::Node { kind: 0 });
     assert(source::prototype(heap, a.id()) == source::object(source::array_prototype_row()) && source::prototype(heap, o.id()) == source::object(source::object_prototype_row()));
-    assert(source::prototype(heap, source::object_prototype_row()).tag() == 1 && source::prototype(heap, heap.call_method.id()) == source::object(source::function_prototype_row()));
+    assert(source::prototype(heap, source::object_prototype_row()).is_null() && source::prototype(heap, heap.call_method.id()) == source::object(source::function_prototype_row()));
     let rt = source::boot_runtime(heap);
     let core = source::get(heap, rt, source::text(heap, "core")); let inc = source::get(heap, core, source::text(heap, "inc"));
     for f in [inc, heap.call_method] {
@@ -664,7 +664,7 @@ thread_fn realm_model(bytes: u8[]) {
     assert(source::key_is(heap, source::get(heap, inc, source::text(heap, "name")), "inc") && source::key_is(heap, source::get(heap, heap.call_method, source::text(heap, "name")), "call"));
     let symbol = source::get(heap, heap.global, source::text(heap, "Symbol"));
     let iterator = source::get(heap, symbol, source::text(heap, "iterator"));
-    assert(heap.fault == source::Fault.None && iterator.tag() == 6 && source::valid(heap, iterator) && source::equal(heap, iterator, source::Value.Symbol { s: 0 }));
+    assert(heap.fault == source::Fault.None && iterator.is_symbol() && source::valid(heap, iterator) && source::equal(heap, iterator, source::Value.Symbol { s: 0 }));
     var text: u8[>..] = []; source::canonical(heap, iterator, text); assert(text[..] == "symbol");
     source::get(heap, a, source::text(heap, "filter")); assert(heap.fault == source::Fault.UnsupportedOperand);
     heap.fault = source::Fault.None; assert(source::key_is(heap, heap.pending, "filter")); heap.pending = source::Value.Undefined;
@@ -697,7 +697,7 @@ thread_fn property_model() {
     let o = source::allocate(heap, source::Node { kind: 0 }); let x = key(heap, "x");
     assert(source::define_own(heap, o.id(), x, source::number(1), source::attr_enumerable()));
     assert(!source::put(heap, o, source::text(heap, "x"), source::number(2)) && heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
-    let setter, accepted = source::write(heap, o, source::text(heap, "x"), source::number(2)); assert(!accepted && setter.tag() == 0 && heap.fault == source::Fault.None);
+    let setter, accepted = source::write(heap, o, source::text(heap, "x"), source::number(2)); assert(!accepted && setter.is_undefined() && heap.fault == source::Fault.None);
     assert(source::define_own(heap, o.id(), x, source::number(1), source::attr_enumerable()) && !source::node(heap, o.id()).initialized);
     assert(!source::define_own(heap, o.id(), x, source::number(2), source::attr_enumerable()) && !source::define_own(heap, o.id(), x, source::number(1), source::attrs_data()));
     assert(!source::delete_property(heap, o, x) && heap.fault == source::Fault.None && source::get(heap, o, x).num() == 1);
@@ -716,9 +716,9 @@ thread_fn property_model() {
     assert(source::define_own(heap, base.id(), g, getter, source::attrs_accessor(), 1) && heap.accessors.len == 4); // after the realm's pending pair
     let child = source::allocate(heap, source::Node { kind: 0 }); assert(source::set_prototype(heap, child.id(), base));
     for target in [base, child] {
-        let v, found = source::lookup(heap, target, a); assert(v.tag() == 0 && found == getter);
+        let v, found = source::lookup(heap, target, a); assert(v.is_undefined() && found == getter);
         let f, ok = source::assign(heap, target, a, source::number(1)); assert(ok && f == setter_fn);
-        let none, refused = source::assign(heap, target, g, source::number(1)); assert(!refused && none.tag() == 0 && heap.fault == source::Fault.None);
+        let none, refused = source::assign(heap, target, g, source::number(1)); assert(!refused && none.is_undefined() && heap.fault == source::Fault.None);
     }
     source::get(heap, child, a); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     assert(!source::node(heap, child.id()).initialized && source::node(heap, child.id()).key_count == 0);
@@ -758,15 +758,15 @@ thread_fn property_model() {
     assert(source::set_prototype(heap, c2.id(), c1) && source::set_prototype(heap, c3.id(), c2));
     assert(source::put(heap, c1, source::text(heap, "deep"), source::number(1)) && source::put(heap, c1, source::text(heap, "s"), source::number(1)) && source::put(heap, c2, source::text(heap, "s"), source::number(2)));
     assert(source::get(heap, c3, source::text(heap, "deep")).num() == 1 && source::get(heap, c3, source::text(heap, "s")).num() == 2 && source::has_property(heap, c3, key(heap, "deep")));
-    assert(source::get(heap, c3, source::text(heap, "nothing")).tag() == 0 && heap.fault == source::Fault.None);
-    assert(!source::set_prototype(heap, c1.id(), c3) && source::node(heap, c1.id()).proto.tag() == -1);
+    assert(source::get(heap, c3, source::text(heap, "nothing")).is_undefined() && heap.fault == source::Fault.None);
+    assert(!source::set_prototype(heap, c1.id(), c3) && source::node(heap, c1.id()).proto.is_hole());
     // The chain ends at the realm's Object.prototype (light-cljs-788): its
     // built-in toString is found, and a name it defines but this VM does not
     // implement (a pending property) fails by name; under a null prototype
     // both are simply absent.
-    let found = source::get(heap, c3, source::text(heap, "toString")); assert(heap.fault == source::Fault.None && found.tag() == 5 && source::node(heap, found.id()).kind == 4);
+    let found = source::get(heap, c3, source::text(heap, "toString")); assert(heap.fault == source::Fault.None && found.is_object() && source::node(heap, found.id()).kind == 4);
     source::get(heap, c3, source::text(heap, "propertyIsEnumerable")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
-    assert(source::set_prototype(heap, c1.id(), source::nil()) && source::get(heap, c3, source::text(heap, "toString")).tag() == 0 && source::get(heap, c3, source::text(heap, "propertyIsEnumerable")).tag() == 0 && heap.fault == source::Fault.None);
+    assert(source::set_prototype(heap, c1.id(), source::nil()) && source::get(heap, c3, source::text(heap, "toString")).is_undefined() && source::get(heap, c3, source::text(heap, "propertyIsEnumerable")).is_undefined() && heap.fault == source::Fault.None);
     // Past shape_limit() keys an object turns to dictionary mode.
     let big = source::allocate(heap, source::Node { kind: 0 });
     for i in source::shape_limit() + 1 { assert(source::put(heap, big, source::text(heap, str("k", i)), source::number(i))); }
@@ -806,7 +806,7 @@ thread_fn named_model() {
     assert(source::put(heap, a, source::text(heap, "9000"), source::number(9)));
     let d = source::node(heap, a.id()); assert(d.initialized && d.shape == 0 && d.key_count == 4 && d.count == 0 && source::get(heap, a, source::text(heap, "more")).num() == 2);
     assert(source::put(heap, a, source::text(heap, "length"), source::number(1)) && source::node(heap, a.id()).key_count == 3 && source::get(heap, a, source::text(heap, "tag")).num() == 1);
-    assert(source::get(heap, a, source::text(heap, "9000")).tag() == 0 && source::delete_property(heap, a, key(heap, "tag")) && source::node(heap, a.id()).key_count == 2);
+    assert(source::get(heap, a, source::text(heap, "9000")).is_undefined() && source::delete_property(heap, a, key(heap, "tag")) && source::node(heap, a.id()).key_count == 2);
     // A delete of a dense array's name moves its elements to records too.
     let b = source::allocate(heap, source::Node { kind: 1 });
     assert(source::put(heap, b, source::text(heap, "0"), source::number(5)) && source::put(heap, b, source::text(heap, "x"), source::number(6)) && source::put(heap, b, source::text(heap, "y"), source::number(7)));
@@ -815,7 +815,7 @@ thread_fn named_model() {
     // other names are absent.
     source::get(heap, b, source::text(heap, "push")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
     source::get(heap, b, source::Value.Symbol { s: 0 }); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
-    assert(source::get(heap, b, source::text(heap, "other")).tag() == 0 && heap.fault == source::Fault.None);
+    assert(source::get(heap, b, source::text(heap, "other")).is_undefined() && heap.fault == source::Fault.None);
     // A closure (light-cljs-806): `length` and `name` come from its code row
     // and are configurable only; while lazy, reads, `in` and key listing
     // answer them and an ordinary function's `prototype` without making
@@ -828,7 +828,7 @@ thread_fn named_model() {
     let f = source::closure(heap, ordinary, []); let g = source::closure(heap, arrow, []);
     assert(source::lazy_prototype(heap, f.id()) && !source::lazy_prototype(heap, g.id()) && source::lazy_function(heap, g.id()));
     let fname = source::get(heap, f, source::text(heap, "name"));
-    assert(fname.tag() == 4 && source::str_len(heap, fname) == heap.code.functions[ordinary].name_len && source::get(heap, g, source::text(heap, "length")).num() == heap.code.functions[arrow].length && heap.fault == source::Fault.None);
+    assert(fname.is_string() && source::str_len(heap, fname) == heap.code.functions[ordinary].name_len && source::get(heap, g, source::text(heap, "length")).num() == heap.code.functions[arrow].length && heap.fault == source::Fault.None);
     assert(source::own_entry(heap, f, key(heap, "length")).attrs == source::attr_configurable() && source::own_entry(heap, f, key(heap, "name")).attrs == source::attr_configurable() && source::has_property(heap, g, key(heap, "name")));
     var lazy: source::Value[>..] = []; assert(source::own_keys(heap, f, lazy) && lazy.len == 3);
     for name, i in ["length", "name", "prototype"] { assert(source::key_is(heap, lazy[i], name)); }
@@ -841,15 +841,15 @@ thread_fn named_model() {
     assert(source::lazy_function(heap, f.id()) && source::lazy_function(heap, g.id()));
     assert(source::materialize_function(heap, f.id()) && !source::lazy_prototype(heap, f.id()) && source::same_text(heap, source::get(heap, f, source::text(heap, "name")), fname));
     let p = source::get(heap, f, source::text(heap, "prototype"));
-    assert(p.tag() == 5 && source::get(heap, p, source::text(heap, "constructor")) == f && source::own_entry(heap, f, key(heap, "prototype")).attrs == source::attr_writable() && source::own_entry(heap, f, key(heap, "length")).attrs == source::attr_configurable());
+    assert(p.is_object() && source::get(heap, p, source::text(heap, "constructor")) == f && source::own_entry(heap, f, key(heap, "prototype")).attrs == source::attr_writable() && source::own_entry(heap, f, key(heap, "length")).attrs == source::attr_configurable());
     assert(source::put(heap, f, source::text(heap, "x"), source::number(1)) && source::get(heap, f, source::text(heap, "x")).num() == 1 && !source::delete_property(heap, f, key(heap, "prototype")));
     var made: source::Value[>..] = []; assert(source::own_keys(heap, f, made) && made.len == 4);
     for name, i in ["length", "name", "prototype", "x"] { assert(source::key_is(heap, made[i], name)); }
-    assert(source::delete_property(heap, f, key(heap, "x")) && source::node(heap, f.id()).initialized && source::get(heap, f, source::text(heap, "x")).tag() == 0 && source::get(heap, f, source::text(heap, "prototype")) == p);
+    assert(source::delete_property(heap, f, key(heap, "x")) && source::node(heap, f.id()).initialized && source::get(heap, f, source::text(heap, "x")).is_undefined() && source::get(heap, f, source::text(heap, "prototype")) == p);
     // Without `name` and `length` a closure is not lazy again: `name` is
     // Function.prototype's, the empty string.
-    assert(source::delete_property(heap, f, key(heap, "name")) && source::delete_property(heap, f, key(heap, "length")) && !source::lazy_function(heap, f.id()) && !source::own_entry(heap, f, key(heap, "name")).found && source::get(heap, f, source::text(heap, "name")).tag() == 4 && source::str_len(heap, source::get(heap, f, source::text(heap, "name"))) == 0);
-    assert(source::get(heap, g, source::text(heap, "prototype")).tag() == 0 && source::materialize_function(heap, g.id()) && source::put(heap, g, source::text(heap, "y"), source::number(2)) && source::get(heap, g, source::text(heap, "call")) == heap.call_method);
+    assert(source::delete_property(heap, f, key(heap, "name")) && source::delete_property(heap, f, key(heap, "length")) && !source::lazy_function(heap, f.id()) && !source::own_entry(heap, f, key(heap, "name")).found && source::get(heap, f, source::text(heap, "name")).is_string() && source::str_len(heap, source::get(heap, f, source::text(heap, "name"))) == 0);
+    assert(source::get(heap, g, source::text(heap, "prototype")).is_undefined() && source::materialize_function(heap, g.id()) && source::put(heap, g, source::text(heap, "y"), source::number(2)) && source::get(heap, g, source::text(heap, "call")) == heap.call_method);
     var arrow_keys: source::Value[>..] = []; assert(source::own_keys(heap, g, arrow_keys) && arrow_keys.len == 3);
     for name, i in ["length", "name", "y"] { assert(source::key_is(heap, arrow_keys[i], name)); }
     source::get(heap, g, source::text(heap, "bind")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
@@ -884,7 +884,7 @@ thread_fn element_runs() {
     let o = source::allocate(heap, source::Node { kind: 0 }); let p = source::allocate(heap, source::Node { kind: 0 });
     assert(source::put(heap, o, source::text(heap, "3"), source::number(3)) && source::put(heap, o, source::text(heap, "name"), source::number(1)) && source::put(heap, o, source::text(heap, "0"), source::number(0)));
     let n = source::node(heap, o.id());
-    assert(n.key_count == 1 && n.count >= 4 && source::object_element(heap, o.id(), 3).num() == 3 && source::object_element(heap, o.id(), 1).tag() == -1);
+    assert(n.key_count == 1 && n.count >= 4 && source::object_element(heap, o.id(), 3).num() == 3 && source::object_element(heap, o.id(), 1).is_hole());
     assert(source::put(heap, p, source::text(heap, "name"), source::number(2)) && source::put(heap, p, source::text(heap, "7"), source::number(7)) && source::node(heap, p.id()).shape == n.shape);
     // "01", "4294967295" and an index far past the run are shape keys.
     let rows = heap.values.len;
@@ -897,14 +897,14 @@ thread_fn element_runs() {
     // attribute keeps it an element.
     let getter = source::closure(heap, 0, []);
     assert(source::define_own(heap, o.id(), key(heap, "0"), source::number(5), source::attrs_data()) && source::object_element(heap, o.id(), 0).num() == 5);
-    assert(source::define_own(heap, o.id(), key(heap, "0"), getter, source::attrs_accessor(), 1) && source::object_element(heap, o.id(), 0).tag() == -1);
+    assert(source::define_own(heap, o.id(), key(heap, "0"), getter, source::attrs_accessor(), 1) && source::object_element(heap, o.id(), 0).is_hole());
     let entry = source::own_entry(heap, o, key(heap, "0")); assert(entry.found && !entry.element && source::is_accessor(entry.value));
-    assert(source::define_own(heap, o.id(), key(heap, "3"), source::number(4), source::attr_writable() | source::attr_configurable()) && source::object_element(heap, o.id(), 3).tag() == -1);
+    assert(source::define_own(heap, o.id(), key(heap, "3"), source::number(4), source::attr_writable() | source::attr_configurable()) && source::object_element(heap, o.id(), 3).is_hole());
     let hidden = source::own_entry(heap, o, key(heap, "3")); assert(hidden.found && hidden.attrs == 5 && hidden.value.num() == 4);
     var after: source::Value[>..] = []; assert(source::own_keys(heap, o, after) && after.len == 6 && source::key_is(heap, after[0], "0") && source::key_is(heap, after[1], "3"));
     // Delete, read through a prototype, and assignment to an inherited
     // element's key: an own element on the receiver.
-    assert(source::put(heap, p, source::text(heap, "2"), source::number(2)) && source::delete_property(heap, p, key(heap, "2")) && source::object_element(heap, p.id(), 2).tag() == -1 && !source::has_property(heap, p, key(heap, "2")));
+    assert(source::put(heap, p, source::text(heap, "2"), source::number(2)) && source::delete_property(heap, p, key(heap, "2")) && source::object_element(heap, p.id(), 2).is_hole() && !source::has_property(heap, p, key(heap, "2")));
     let heir = source::allocate(heap, source::Node { kind: 0 }); assert(source::set_prototype(heap, heir.id(), p));
     assert(source::get(heap, heir, source::text(heap, "7")).num() == 7 && source::put(heap, heir, source::text(heap, "7"), source::number(8)));
     assert(source::object_element(heap, heir.id(), 7).num() == 8 && source::object_element(heap, p.id(), 7).num() == 7);
@@ -926,7 +926,7 @@ thread_fn element_runs() {
 fn next_key(job: source::Job&, it: source::Value) -> source::Value {
     job.operands.push(it); source::for_in_next(job); assert(job.heap.fault == source::Fault.None);
     let more = job.operands.pop(); let k = job.operands.pop();
-    assert(more.flag() == (k.tag() == 4)); return k;
+    assert(more.flag() == (k.is_string())); return k;
 }
 thread_fn for_in_rechecks() {
     defer { heap_program::finish(); }
@@ -943,7 +943,7 @@ thread_fn for_in_rechecks() {
     assert(source::define_own(heap, o.id(), key(heap, "b"), source::number(2), hidden));
     assert(source::key_is(heap, next_key(job, it), "c"));
     assert(source::key_is(heap, next_key(job, it), "y"));
-    assert(next_key(job, it).tag() == 0 && next_key(job, it).tag() == 0);
+    assert(next_key(job, it).is_undefined() && next_key(job, it).is_undefined());
     // Holes alone: the scan of a 64-slot run is charged before it runs.
     let e = source::allocate(heap, source::Node { kind: 0 });
     assert(source::put(heap, e, source::text(heap, "63"), source::number(1)) && source::delete_property(heap, e, key(heap, "63")) && source::node(heap, e.id()).count == 64);
@@ -960,7 +960,7 @@ thread_fn depth_limit(bytes: u8[], frames: i64, fault: source::Fault) {
     var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
     let outcome = source::run(job, -1);
     if fault == source::Fault.None {
-        assert(outcome == tiny::Outcome.Complete && job.result.tag() == 2 && job.result.flag());
+        assert(outcome == tiny::Outcome.Complete && job.result.is_bool() && job.result.flag());
     } else { assert(outcome == tiny::Outcome.Failed && job.fault == fault && !job.thrown); }
 }
 // The keys of the job's named writes, in order, as one string.
@@ -991,7 +991,7 @@ thread_fn cancelled_job(bytes: u8[], sliced: bool, mode: i64) {
     // The innermost finally block runs with a pending cancellation.
     let top = job.frames.len - 1;
     assert(job.status == tiny::Status.Ready && source::own(job, top, source::HandlerKind.Cancel));
-    assert(source::pending_value(job, top, 172).flag() && !source::pending_value(job, top, 118).flag() && source::pending_value(job, top, 170).tag() == 0);
+    assert(source::pending_value(job, top, 172).flag() && !source::pending_value(job, top, 118).flag() && source::pending_value(job, top, 170).is_undefined());
     if mode == 4 { heap.limits.steps = job.steps + 2; }
     if sliced { while source::run(job, 1) == tiny::Outcome.Yielded {} } else { source::run(job, -1); }
     assert(job.status == tiny::Status.Failed && job.fault == source::Fault.Cancelled && !job.thrown);
@@ -1010,9 +1010,9 @@ thread_fn pending_completions(bytes: u8[]) {
     var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, 0, []), []));
     job.handlers.push(source::Handler { frame: 0, pc: 0, operands: 0, locals: 0, kind: source::HandlerKind.Throw, value: source::number(5) });
     assert(source::pending_value(job, 0, 118).flag() && source::pending_value(job, 0, 170).num() == 5 && !source::pending_value(job, 0, 172).flag());
-    assert(!source::pending_value(job, 1, 118).flag() && source::pending_value(job, 1, 170).tag() == 0);
+    assert(!source::pending_value(job, 1, 118).flag() && source::pending_value(job, 1, 170).is_undefined());
     job.handlers[0].kind = source::HandlerKind.Normal;
-    assert(!source::pending_value(job, 0, 118).flag() && source::pending_value(job, 0, 170).tag() == 0);
+    assert(!source::pending_value(job, 0, 118).flag() && source::pending_value(job, 0, 170).is_undefined());
     assert(source::retire(job));
 }
 thread_fn instruction_limit() {
@@ -1038,14 +1038,14 @@ thread_fn array_length_bounds() {
     for i in 4 { assert(source::put(heap, array, source::key(heap, source::number(i)), source::number(i + 10))); }
     assert(source::put(heap, array, length, source::number(2)));
     assert(source::get(heap, array, source::key(heap, source::number(1))).num() == 11);
-    assert(source::get(heap, array, source::key(heap, source::number(2))).tag() == 0);
+    assert(source::get(heap, array, source::key(heap, source::number(2))).is_undefined());
     assert(source::put(heap, array, length, source::number(4)));
-    assert(source::get(heap, array, source::key(heap, source::number(3))).tag() == 0);
+    assert(source::get(heap, array, source::key(heap, source::number(3))).is_undefined());
     assert(source::put(heap, array, source::key(heap, source::number(2)), source::number(99)));
     assert(source::get(heap, array, source::key(heap, source::number(2))).num() == 99);
     assert(source::put(heap, array, length, source::number(0)) && source::node(heap, array.id()).key_count == 0);
     assert(source::put(heap, array, length, source::number(3)));
-    for i in 3 { assert(source::get(heap, array, source::key(heap, source::number(i))).tag() == 0); }
+    for i in 3 { assert(source::get(heap, array, source::key(heap, source::number(i))).is_undefined()); }
     for n in [-1.0, 1.5, 0.0 / 0.0, 1.0 / 0.0, 4294967296.0] {
         assert(!source::put(heap, array, length, source::number(n)) && heap.fault == source::Fault.UnsupportedOperand);
         heap.fault = source::Fault.None; assert(source::node(heap, array.id()).length == 3);
@@ -1092,8 +1092,8 @@ thread_fn sparse_array() {
         assert(source::put(h, a, source::key(h, source::number(524288)), source::number(2)));
         assert(h.nodes[a.id()].initialized && h.nodes[a.id()].count == 0 && h.nodes[a.id()].length == 524289 && h.values.len < 1024);
         assert(source::get(h, a, source::key(h, source::number(524287))).num() + source::get(h, a, source::key(h, source::number(524288))).num() == 3);
-        assert(source::get(h, a, source::key(h, source::number(0))).num() == 5 && source::get(h, a, source::key(h, source::number(7))).tag() == 0);
-        assert(source::put(h, a, k, source::number(524288)) && source::get(h, a, source::key(h, source::number(524288))).tag() == 0 && source::get(h, a, source::key(h, source::number(524287))).num() == 1);
+        assert(source::get(h, a, source::key(h, source::number(0))).num() == 5 && source::get(h, a, source::key(h, source::number(7))).is_undefined());
+        assert(source::put(h, a, k, source::number(524288)) && source::get(h, a, source::key(h, source::number(524288))).is_undefined() && source::get(h, a, source::key(h, source::number(524287))).num() == 1);
     }
 }
 fn argument_limits(bytes: const u8[:]) {
@@ -1187,9 +1187,9 @@ fn class_kinds(bytes: const u8[:]) {
         check(patched, "", source::Fault.TypeError);
     }
     var number: i64 = -1;
-    for i in program::word(bytes, 16) { if program::word(bytes, l.constants + i * 12) == 3 { number = i; } }
+    for i in program::word(bytes, 16) { if program::word(bytes, l.constants + i * 12) == constant::Number { number = i; } }
     assert(number >= 0);
-    for tag, i in [6, 6, 5, 8] {
+    for tag, i in [constant::Symbol, constant::Symbol, value_tag::Object, constant::BigInt + 1] {
         var patched: u8[>..] = []; patched.append(bytes); let at = l.constants + number * 12;
         set_word(patched[..], at, tag); set_word(patched[..], at + 4, if i == 1 { 15 } else { 7 }); set_word(patched[..], at + 8, 0);
         if i > 0 { assert(program::install(image, patched) == program::Error.Operation); continue; }
@@ -1229,7 +1229,7 @@ fn bigint_constants(bytes: const u8[:]) {
     let l = program::layout(bytes); var zero: i64 = -1; var wide: i64 = -1; var bigints: i64 = 0;
     for i in program::word(bytes, 16) {
         let at = l.constants + i * 12;
-        if program::word(bytes, at) != 7 { continue; }
+        if program::word(bytes, at) != constant::BigInt { continue; }
         bigints += 1; let len = program::word(bytes, at + 8);
         if len == 1 { zero = at; } else if len > 2 { wide = at; }
     }

@@ -115,7 +115,7 @@ fn key_runs<T>(s: const T&, c: Control&) -> bool {
         if !poll(c, 1 + n.key_capacity) { return false; }
         if n.key_count > n.key_capacity + (if shaped(n) { source::inline_slots() } else { 0 }) { return reject(c, Error.Link); }
         if !shaped(n) && n.shape != 0 { return reject(c, Error.Link); }
-        for v, i in n.slots { if (if shaped(n) && i < n.key_count { !slot_value(s, v) } else { v.tag() != 0 }) { return reject(c, Error.Link); } }
+        for v, i in n.slots { if (if shaped(n) && i < n.key_count { !slot_value(s, v) } else { !v.is_undefined() }) { return reject(c, Error.Link); } }
         if shaped(n) {
             if !range(n.keys, n.key_capacity, s.values.len) || n.shape != 0 && !range(n.shape, 1, s.shapes.len) || (if n.shape == 0 { 0 } else { s.shapes[n.shape].count }) != n.key_count { return reject(c, Error.Link); }
             continue;
@@ -125,7 +125,7 @@ fn key_runs<T>(s: const T&, c: Control&) -> bool {
         for row in n.keys..(n.keys + n.key_capacity) { if used[row] { return reject(c, Error.Link); } used[row] = true; }
         for row in n.keys..(n.keys + n.key_capacity) {
             let p = s.properties[row];
-            if (if row < n.keys + n.key_count { !key_value(s, p.key) || !slot_value(s, p.value) || p.attrs > 7 } else { p.key.tag() != 0 || p.value.tag() != 0 || p.attrs != 0 }) { return reject(c, Error.Link); }
+            if (if row < n.keys + n.key_count { !key_value(s, p.key) || !slot_value(s, p.value) || p.attrs > 7 } else { !p.key.is_undefined() || !p.value.is_undefined() || p.attrs != 0 }) { return reject(c, Error.Link); }
         }
         records += n.key_capacity;
     }
@@ -145,7 +145,7 @@ fn key_hash<T>(s: const T&, r: source::Str) -> u32 {
 fn property_model<T>(s: const T&, c: Control&) -> bool {
     if !poll(c, s.shapes.len + s.accessors.len + s.keys.len) { return false; }
     for e, r in s.shapes {
-        if r == 0 { if e.parent != 0 || e.key.tag() != 0 || e.attrs != 0 || e.count != 0 || e.sibling != source::no_row() || e.child != source::no_row() && !range(e.child, 1, s.shapes.len) { return reject(c, Error.Link); } continue; }
+        if r == 0 { if e.parent != 0 || !e.key.is_undefined() || e.attrs != 0 || e.count != 0 || e.sibling != source::no_row() || e.child != source::no_row() && !range(e.child, 1, s.shapes.len) { return reject(c, Error.Link); } continue; }
         if e.parent >= r || !key_value(s, e.key) || e.attrs > 7 || e.count != s.shapes[e.parent].count + 1 { return reject(c, Error.Link); }
         if e.sibling != source::no_row() && (e.sibling >= r || s.shapes[e.sibling].parent != e.parent) { return reject(c, Error.Link); }
         if e.child != source::no_row() && (e.child <= r || e.child >= s.shapes.len || s.shapes[e.child].parent != r) { return reject(c, Error.Link); }
@@ -176,7 +176,7 @@ fn property_model<T>(s: const T&, c: Control&) -> bool {
         while state[at] == 0 {
             state[at] = 1; path.push(at);
             let p = s.nodes[at].proto;
-            if p.tag() != 5 { break; }
+            if !p.is_object() { break; }
             at = p.id();
             if state[at] == 1 { return reject(c, Error.Link); }
         }
@@ -184,7 +184,7 @@ fn property_model<T>(s: const T&, c: Control&) -> bool {
     }
     return true;
 }
-fn accessor_half<T>(s: const T&, v: source::Value) -> bool { return v.tag() == 0 || v.tag() == 5 && value(s, v); }
+fn accessor_half<T>(s: const T&, v: source::Value) -> bool { return v.is_undefined() || v.is_object() && value(s, v); }
 // A property's value: any value, or an accessor naming a pair.
 fn slot_value<T>(s: const T&, v: source::Value) -> bool { return match v { Accessor a => range(a.a, 1, s.accessors.len), _ => value(s, v) }; }
 // The number of occupied index slots.
@@ -201,7 +201,7 @@ fn cont_run<T>(s: const T&, first: u32, capacity: u32, kind: i64) -> bool {
     return true;
 }
 // Whether v is an object of node kind `kind` (-1: any kind).
-fn object_of<T>(s: const T&, v: source::Value, kind: i64) -> bool { return v.tag() == 5 && v.id() < s.nodes.len && (kind < 0 || s.nodes[v.id()].kind == kind); }
+fn object_of<T>(s: const T&, v: source::Value, kind: i64) -> bool { return v.is_object() && v.id() < s.nodes.len && (kind < 0 || s.nodes[v.id()].kind == kind); }
 // A native frame's state that its steps read by row: a Resume frame's
 // generator, a MapSeq frame's deferred map, a Force frame's delay, a Swap
 // frame's function and a CopyData frame's key list.
@@ -259,7 +259,7 @@ fn conts_valid<T>(s: const T&, c: Control&) -> bool {
             // A frame's values; the activation that runs it checks the rest.
             Frame x => { let f = x.f; if !value(s, f.callee) || !value(s, f.receiver) || !value(s, f.input) || !value(s, f.output) { return reject(c, Error.Link); } },
             // An async function's boundary names its promise.
-            Saved x => { if !value(s, x.h.value) || x.h.pc < -1 || x.h.kind == source::HandlerKind.Async && (x.h.value.tag() != 5 || s.nodes[x.h.value.id()].kind != 21) { return reject(c, Error.Link); } },
+            Saved x => { if !value(s, x.h.value) || x.h.pc < -1 || x.h.kind == source::HandlerKind.Async && (!x.h.value.is_object() || s.nodes[x.h.value.id()].kind != 21) { return reject(c, Error.Link); } },
             Promise x => {
                 let p = x.p;
                 if p.state > 2 || !value(s, p.result) || !link_or_none(s, p.first, 3) || !link_or_none(s, p.last, 3) || (p.first == source::no_row()) != (p.last == source::no_row()) || p.state != 0 && p.first != source::no_row() || !link_or_none(s, p.activation, 0) { return reject(c, Error.Link); }
@@ -298,7 +298,7 @@ fn payload_bytes<T>(s: const T&) -> i64 {
 }
 fn footprint<T>(s: const T&) -> i64 { let empty: Snapshot[] = [Snapshot {}]; return bytes_of(empty).len + payload_bytes(s); }
 fn value<T>(s: const T&, v: source::Value, code: bool = false, constant: bool = false) -> bool {
-    // Symbol (6) and BigInt (7) constants carry no runtime value (source::load).
+    // Symbol and BigInt constants carry no runtime value (source::load).
     return match v {
         // A well-known symbol is also a row value (the realm's Symbol
         // properties, light-cljs-788).
@@ -334,7 +334,7 @@ fn code_valid<T>(s: const T&, c: Control&) -> bool {
             let kind = (descriptor >> 8) & 255; let width = descriptor >> 16; offset += width + 1;
             if width == 0 && op.arg != 0 || width == 2 && op.arg > 65535 { return reject(c, Error.Code); }
             if kind == operand::Const && !range(op.arg, 1, s.code_constants.len - f.constants) || kind == operand::Local && op.arg >= f.locals || kind == operand::Function && !range(op.arg, 1, s.children.len - f.children) || kind == operand::Capture && op.arg >= f.captures { return reject(c, Error.Code); }
-            if kind == operand::Const && export_name_operand(op.code) && s.code_constants[f.constants + op.arg].tag() != 4 { return reject(c, Error.Code); }
+            if kind == operand::Const && export_name_operand(op.code) && !s.code_constants[f.constants + op.arg].is_string() { return reject(c, Error.Code); }
             if kind == operand::Target && !range(op.arg - f.start, 1, f.count) || op.code == opcode::FormOp && export_form_arity(op.arg) < 0 || kind == operand::Immediate && !program::selector(op.code, op.arg) { return reject(c, Error.Code); }
             // Check stack flow without allocating another decoded Code owner.
             let pop, push = effect(s, f, op);
@@ -393,8 +393,8 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     let l = s.header.limits;
     if l.nodes < 0 || l.values < 0 || l.units < 0 || l.properties < 0 || l.shapes < 0 || l.work < 0 || l.steps < 0 || l.frames < 0 || l.stack < 0 || s.header.work < 0 || s.header.work > l.work || s.header.property_rows < 0 || s.header.property_rows > s.properties.len || s.header.boot < 0 || s.header.boot > 1 || s.header.initializers < 0 || s.header.producers < 0 { return reject(c, Error.Allocator); }
     if !code_valid(s, c) { return false; }
-    if !value(s, s.header.global) || s.header.global.tag() != 5 || s.nodes[s.header.global.id()].kind != 0 { return reject(c, Error.Link); }
-    if !value(s, s.header.call_method) || s.header.call_method.tag() != 5 || s.nodes[s.header.call_method.id()].kind != 4 || s.nodes[s.header.call_method.id()].function != 14 { return reject(c, Error.Link); }
+    if !value(s, s.header.global) || !s.header.global.is_object() || s.nodes[s.header.global.id()].kind != 0 { return reject(c, Error.Link); }
+    if !value(s, s.header.call_method) || !s.header.call_method.is_object() || s.nodes[s.header.call_method.id()].kind != 4 || s.nodes[s.header.call_method.id()].function != 14 { return reject(c, Error.Link); }
     if !source::realm_valid(s.nodes, s.accessors, s.header.global, s.header.call_method) { return reject(c, Error.Link); }
     // A header names a run of its own table; a wide run must need two bytes
     // (some unit above 255), so the encoding stays canonical (source::Str).
@@ -405,7 +405,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     }
     // Holes (Empty) may appear only inside array element runs, counted below.
     var holes: i64 = 0;
-    for v in s.values { if !poll(c) { return false; } if v.tag() == -1 { holes += 1; continue; } if !slot_value(s, v) { return reject(c, Error.Link); } }
+    for v in s.values { if !poll(c) { return false; } if v.is_hole() { holes += 1; continue; } if !slot_value(s, v) { return reject(c, Error.Link); } }
     if s.constants.len != s.code_constants.len { return reject(c, Error.Length); }
     for v, i in s.constants {
         if !poll(c) { return false; }
@@ -414,10 +414,10 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // Live compiler sessions append code after runtime strings exist.
         // String constants keep exact UTF-16 contents, but their runtime range
         // need not have the same offset as the immutable code's string pool.
-        if original.tag() == 4 {
+        if original.is_string() {
             let o = s.code_strings[original.sid()];
             if !poll(c, o.len) { return false; }
-            if v.tag() != 4 { return reject(c, Error.Link); }
+            if !v.is_string() { return reject(c, Error.Link); }
             let r = s.strings[v.sid()];
             if r.len != o.len || !same_units(s, r, s.code_units[o.start..(o.start + o.len)]) { return reject(c, Error.Link); }
         } else if !source::same_bits(v, original) { return reject(c, Error.Link); }
@@ -425,7 +425,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     for p, i in s.properties {
         if !poll(c) { return false; }
         // A row is a record (interned key) or cleared; key runs are checked below.
-        if p.key.tag() != 0 && !key_value(s, p.key) || !slot_value(s, p.value) { return reject(c, Error.Link); }
+        if !p.key.is_undefined() && !key_value(s, p.key) || !slot_value(s, p.value) { return reject(c, Error.Link); }
     }
     for r in s.sources {
         if !source::source_row_ok(r, s.bytes.len) { return reject(c, Error.Link); }
@@ -442,12 +442,12 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // An atom or volatile (17) has a flavor, 0 or 1; a cell reference (18,
         // no state of its own) 0, 1 or 2, a delay, whose value is its thunk
         // or nothing; a job's own delay (19) none (source::Node, cells.goose).
-        if n.kind == 17 && n.length > 1 || n.kind == 18 && (n.length > 2 || n.value.tag() != 0 && (n.length != 2 || n.value.tag() != 5) || n.function > 2147483647) || n.kind == 19 && n.length != 0 { return reject(c, Error.Link); }
+        if n.kind == 17 && n.length > 1 || n.kind == 18 && (n.length > 2 || !n.value.is_undefined() && (n.length != 2 || !n.value.is_object()) || n.function > 2147483647) || n.kind == 19 && n.length != 0 { return reject(c, Error.Link); }
         if n.kind == 1 && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
         // A key list (source::Node kind 16): its walk position lies in its
         // records, and it walks an object or nothing.
-        if n.kind == 0 && n.length != 0 || n.kind == 16 && (n.count != 0 || n.initialized || n.start > n.length || n.length > n.key_count || n.value.tag() != 0 && n.value.tag() != 5) { return reject(c, Error.Link); }
-        if !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source != source::no_row() && n.source >= s.sources.len || n.origin < -1 || n.proto.tag() != -1 && n.proto.tag() != 1 && (n.proto.tag() != 5 || !value(s, n.proto)) { return reject(c, Error.Link); }
+        if n.kind == 0 && n.length != 0 || n.kind == 16 && (n.count != 0 || n.initialized || n.start > n.length || n.length > n.key_count || !n.value.is_undefined() && !n.value.is_object()) { return reject(c, Error.Link); }
+        if !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source != source::no_row() && n.source >= s.sources.len || n.origin < -1 || !n.proto.is_hole() && !n.proto.is_null() && (!n.proto.is_object() || !value(s, n.proto)) { return reject(c, Error.Link); }
         has_memo = has_memo || shaped(n) && n.key_capacity > 0;
         if n.source != source::no_row() && (n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
         // The compiler checks an identity source's UTF-8 boundaries.
@@ -466,19 +466,19 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
             has_memo = has_memo || n.count > 0;
             if !poll(c, n.count) { return false; }
             // Slots at or past an array's length are holes (source::array_length).
-            for v, i in s.values[n.start..(n.start + n.count)] { if v.tag() == -1 { array_holes += 1; } else if n.kind == 1 && i >= n.length { return reject(c, Error.Link); } }
+            for v, i in s.values[n.start..(n.start + n.count)] { if v.is_hole() { array_holes += 1; } else if n.kind == 1 && i >= n.length { return reject(c, Error.Link); } }
         }
         if n.kind == 15 {
             has_memo = has_memo || n.count > 0;
             if n.length > n.count { return reject(c, Error.Link); }
             let input = n.namespace_value;
-            if input.tag() > 1 && (input.tag() != 5 || (s.nodes[input.id()].kind != 5 && s.nodes[input.id()].kind != 12) || s.nodes[input.id()].count != n.count) || input.tag() <= 1 && n.count != 0 { return reject(c, Error.Link); }
+            if input.tag() > value_tag::Null && (!input.is_object() || (s.nodes[input.id()].kind != 5 && s.nodes[input.id()].kind != 12) || s.nodes[input.id()].count != n.count) || input.tag() <= value_tag::Null && n.count != 0 { return reject(c, Error.Link); }
         }
         // A built-in function's code names a Builtin (source::BUILTINS); an
         // error object's, the catchable fault it was raised for or 0.
         if n.kind == 4 && (n.function >= source::builtin_count() || n.function == 9) || n.kind == 13 && n.function > 5 { return reject(c, Error.Unsupported); }
-        if (n.kind == 9 || n.kind == 10) && (n.value.tag() != 4 || n.namespace_value.tag() != 1 && n.namespace_value.tag() != 4) || n.kind == 11 && n.value.tag() > 4 { return reject(c, Error.Link); }
-        if n.metadata.tag() != 0 && n.metadata.tag() != 1 && (n.metadata.tag() != 5 || s.nodes[n.metadata.id()].kind != 7) { return reject(c, Error.Link); }
+        if (n.kind == 9 || n.kind == 10) && (!n.value.is_string() || !n.namespace_value.is_null() && !n.namespace_value.is_string()) || n.kind == 11 && n.value.tag() > value_tag::String { return reject(c, Error.Link); }
+        if !n.metadata.is_undefined() && !n.metadata.is_null() && (!n.metadata.is_object() || s.nodes[n.metadata.id()].kind != 7) { return reject(c, Error.Link); }
     }
     if has_memo && !memo_ranges(s, c) { return false; }
     if !property_model(s, c) || !key_runs(s, c) { return false; }

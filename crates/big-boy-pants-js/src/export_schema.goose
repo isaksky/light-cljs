@@ -353,6 +353,16 @@ let well_known::Search = 12;
 let well_known::Replace = 13;
 let well_known::Split = 14;
 
+// The tag of every constant record (its first word), named as its
+// `Primitive` variant. 5 is never a constant tag.
+let constant::Undefined = 0;
+let constant::Null = 1;
+let constant::Bool = 2;
+let constant::Number = 3;
+let constant::String = 4;
+let constant::Symbol = 6;
+let constant::BigInt = 7;
+
 // A function's constructor kind (function flags bits 8..15).
 let constructor::None = 0;
 let constructor::Ordinary = 1;

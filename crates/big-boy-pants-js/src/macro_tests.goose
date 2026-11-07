@@ -23,7 +23,7 @@ thread_fn churn() {
     var code = source::Code {}; decode(code, embed_file("../corpus/churn-churn.pants.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); let rt = source::boot_runtime(heap);
     let macro = macro_factory(heap, rt);
-    for n in [0, 16, 100] { let result = invoke(heap, macro, [source::nil(), source::nil(), source::number(n)]); assert(result.tag() == 3 && result.num() == (if n == 0 { 0 } else if n == 16 { 168 } else { 5250 })); }
+    for n in [0, 16, 100] { let result = invoke(heap, macro, [source::nil(), source::nil(), source::number(n)]); assert(result.is_number() && result.num() == (if n == 0 { 0 } else if n == 16 { 168 } else { 5250 })); }
     assert(heap.boot_count == 1 && heap.initializer_count == 1); print("real emitted churn: 0/16/100 passed, boot=1 initializer=1");
 }
 thread_fn closure() {

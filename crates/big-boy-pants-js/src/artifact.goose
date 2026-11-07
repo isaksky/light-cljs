@@ -57,12 +57,12 @@ fn valid_value(a: const Artifact&, v: source::Value) -> bool {
 fn shape(a: const Artifact&, n: source::Node, base: const snapshot::Snapshot&, c: Control&) -> bool {
     // A closure with own properties (light-cljs-805) is mutable like an object.
     if n.kind == 0 || n.kind == 1 || n.kind == 2 && (n.key_count != 0 || n.initialized) || n.kind == 3 && (!n.immutable || !n.initialized) { return reject(c, Error.Mutable); }
-    if n.kind < 2 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || n.proto.tag() != -1 || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) { return reject(c, Error.Link); }
+    if n.kind < 2 || n.kind > 12 || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) { return reject(c, Error.Link); }
     if has_values(n) && !snapshot::range(n.start, n.count, a.values.len) || n.kind == 7 && n.count % 2 != 0 { return reject(c, Error.Link); }
     if n.kind == 2 && (!snapshot::range(n.function, 1, base.functions.len) || n.count != base.functions[n.function].captures) || n.kind == 4 && (n.function > 13 || n.function == 9) { return reject(c, Error.Link); }
     if !valid_value(a, n.value) || !valid_value(a, n.namespace_value) || !valid_value(a, n.metadata) { return reject(c, Error.Link); }
-    if n.metadata.tag() > 1 && (n.metadata.tag() != 5 || a.nodes[n.metadata.id()].kind != 7) { return reject(c, Error.Link); }
-    if (n.kind == 9 || n.kind == 10) && (n.value.tag() != 4 || n.namespace_value.tag() != 1 && n.namespace_value.tag() != 4) || n.kind == 11 && n.value.tag() > 4 { return reject(c, Error.Link); }
+    if n.metadata.tag() > value_tag::Null && (!n.metadata.is_object() || a.nodes[n.metadata.id()].kind != 7) { return reject(c, Error.Link); }
+    if (n.kind == 9 || n.kind == 10) && (!n.value.is_string() || !n.namespace_value.is_null() && !n.namespace_value.is_string()) || n.kind == 11 && n.value.tag() > value_tag::String { return reject(c, Error.Link); }
     if n.source != source::no_row() && n.source >= a.sources.len || n.origin < -1 { return reject(c, Error.Link); }
     if n.source != source::no_row() && (n.span_end < n.span_start || !snapshot::range(n.span_start, n.span_end - n.span_start, a.sources[n.source].count)) { return reject(c, Error.Link); }
     // The compiler checks an identity source's UTF-8 boundaries.
@@ -107,7 +107,7 @@ fn validate(a: const Artifact&, base: const snapshot::Snapshot&, c: Control&) ->
     var index:     i64[>..]  = []; index.resize(a.nodes.len, -1); var low: i64[>..] = []; low.resize(a.nodes.len, -1);
     var parent:    i64[>..]  = []; parent.resize(a.nodes.len, -1);
     var component: i64[>..<] = []; var stack: Cursor[>..<] = [];
-    if a.root.tag() == 5 { stack.push(Cursor { id: a.root.id() }); }
+    if a.root.is_object() { stack.push(Cursor { id: a.root.id() }); }
     while stack.len > 0 {
         let id = stack[stack.len - 1].id;
         if color[id] == 0 {
@@ -140,7 +140,7 @@ fn validate(a: const Artifact&, base: const snapshot::Snapshot&, c: Control&) ->
         stack[stack.len - 1].next += 1;
         if !poll(c) { return false; } c.edges += 1;
         let v = edge(a, n, i); if !valid_value(a, v) { return reject(c, Error.Link); }
-        if v.tag() != 5 || color[v.id()] == 2 { continue; }
+        if !v.is_object() || color[v.id()] == 2 { continue; }
         if color[v.id()] == 1 {
             if v.id() == id && n.kind != 2 && n.kind != 3 { c.path.push(id); return reject(c, Error.Cycle); }
             low[id] = min(low[id], index[v.id()]);
@@ -149,12 +149,12 @@ fn validate(a: const Artifact&, base: const snapshot::Snapshot&, c: Control&) ->
     if c.nodes - nodes_before != a.nodes.len { return reject(c, Error.Link); } return true;
 }
 fn export_value(heap: const source::Heap&, v: source::Value, ids: i64[>..]&, slots: i64[>..]&, units: u16[>..]&, strings: source::Str[>..]&, c: Control&) -> source::Value {
-    if v.tag() < 0 || v.tag() > 5 { reject(c, Error.Link); return source::Value.Undefined; }
-    if v.tag() == 5 {
+    if v.tag() < value_tag::Undefined || v.tag() > value_tag::Object { reject(c, Error.Link); return source::Value.Undefined; }
+    if v.is_object() {
         let id = v.id();
         if !snapshot::range(id, 1, heap.nodes.len) { reject(c, Error.Link); return source::Value.Undefined; }
         if ids[id] < 0 { ids[id] = slots.len; slots.push(id); } return source::object(ids[id]);
-    } else if v.tag() == 4 {
+    } else if v.is_string() {
         if !snapshot::range(v.sid(), 1, heap.strings.len) || !poll(c, source::str_len(heap, v)) { reject(c, Error.Link); return source::Value.Undefined; }
         strings.push(source::Str { start: units.len as u32, len: source::str_len(heap, v) as u32 }); source::append_utf16(heap, v, units);
         return source::Value.String { s: (strings.len - 1) as u32 };
@@ -225,8 +225,8 @@ struct NodeSig { kind: i64, function: i64, count: i64, keys: i64, key_count: i64
 fn node_sig(n: source::Node) -> NodeSig { return NodeSig { kind: n.kind, function: n.function, count: n.count, keys: n.keys, key_count: n.key_count, key_capacity: n.key_capacity, length: n.length, initialized: n.initialized, immutable: n.immutable, origin: n.origin, source: if n.source == source::no_row() { -1 } else { 0 }, span_start: n.span_start, span_end: n.span_end }; }
 fn scalar_sig(v: source::Value, length: i64) -> ValueSig { return ValueSig { tag: v.tag(), number: v.num(), a: if v.flag() { 1 } else { 0 }, b: length }; }
 fn signature_value(a: const Artifact&, v: source::Value, out: u8[>..]&, c: Control&) -> bool {
-    if v.tag() == 5 { return signature_bytes([ValueSig { tag: 5, a: a.keys[v.id()].slot, b: a.keys[v.id()].arena }], out, c); }
-    if v.tag() != 4 { return signature_bytes([scalar_sig(v, 0)], out, c); }
+    if v.is_object() { return signature_bytes([ValueSig { tag: 5, a: a.keys[v.id()].slot, b: a.keys[v.id()].arena }], out, c); }
+    if !v.is_string() { return signature_bytes([scalar_sig(v, 0)], out, c); }
     let r = a.strings[v.sid()];
     return signature_bytes([scalar_sig(v, r.len)], out, c) && signature_bytes(a.units[r.start..(r.start + r.len)], out, c);
 }
@@ -254,8 +254,8 @@ fn base_signature<T>(s: const T&, slot: i64, checkpoint: i64, out: u8[>..]&, c: 
     if has_values(original) && !snapshot::range(original.start, original.count, s.values.len) { return reject(c, Error.Link); }
     for i in edge_count(original) {
         if !poll(c) { return false; } let v = edge(s, original, i);
-        if v.tag() == 5 { if !signature_bytes([ValueSig { tag: 5, a: v.id(), b: checkpoint }], out, c) { return false; } }
-        else if v.tag() == 4 {
+        if v.is_object() { if !signature_bytes([ValueSig { tag: 5, a: v.id(), b: checkpoint }], out, c) { return false; } }
+        else if v.is_string() {
             if !snapshot::range(v.sid(), 1, s.strings.len) { return reject(c, Error.Link); }
             let r = s.strings[v.sid()];
             // Signatures carry UTF-16 units whatever the run's table (light-cljs-800).

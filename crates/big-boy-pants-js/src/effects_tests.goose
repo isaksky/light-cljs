@@ -61,7 +61,7 @@ fn counters(base: const snapshot::Snapshot&, entries: const i64[:]) {
         for result in run.results {
             assert(result.terminal.outcome == dependency::Outcome.Success);
             if result.id < 40 { assert(result.artifact.root.num() == (if result.id == 30 { 1 } else { 2 })); }
-            else { assert(result.artifact.root.tag() == 2 && result.artifact.root.flag()); }
+            else { assert(result.artifact.root.is_bool() && result.artifact.root.flag()); }
         }
         if quantum == 1000000 { print("effects workers=", workers, " serialized-restore/execute/publish-ns=", run.ordered_ns, " authority-service-ns=", run.effect_service_ns, " pure-worker-sum-ns=", run.pure_ns); }
     } }
@@ -158,7 +158,7 @@ thread_fn caught_restore(saved: snapshot::Snapshot) {
     // The realm's error object (light-cljs-788): its type's `name`, inherited,
     // and an own non-empty `message`.
     let name = source::get(restored, roots[0].value, source::text(restored, "name")); let message = source::get(restored, roots[0].value, source::text(restored, "message"));
-    assert(restored.fault == source::Fault.None && name.tag() == 4 && message.tag() == 4 && source::str_len(restored, message) > 0);
+    assert(restored.fault == source::Fault.None && name.is_string() && message.is_string() && source::str_len(restored, message) > 0);
 }
 thread_fn caught_error(fault: source::Fault, limited: bool) {
     defer { heap_program::finish(); }
@@ -174,9 +174,9 @@ thread_fn caught_error(fault: source::Fault, limited: bool) {
         source::fail(job, fault, job.frames[0]);
         if limited { assert(source::run(job, -1) == tiny::Outcome.Failed && job.fault == source::Fault.MemoryLimit && job.fault_function == 0 && job.fault_pc == 0); }
         else {
-            let error = job.operands[0]; assert(error.tag() == 5 && source::truthy(heap, error) && source::equal(heap, error, error));
+            let error = job.operands[0]; assert(error.is_object() && source::truthy(heap, error) && source::equal(heap, error, error));
             let other = source::allocate(heap, source::Node { kind: 13 }); assert(!source::equal(heap, error, other) && !source::form_equal(heap, error, other) && source::form_equal(heap, error, error));
-            assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.tag() == 2 && !job.result.flag());
+            assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.is_bool() && !job.result.flag());
             assert(source::retire(job));
             var sc = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 1, generation: 1, value: error }], sc); assert(sc.error == snapshot::Error.None);
             assert(qput(Caught { image: copy(saved) }));
@@ -214,7 +214,7 @@ thread_fn suspended(base: snapshot::Snapshot, entries: i64[], failed: i64, cut: 
                     // job's active mutation ownership released. It is not a
                     // restart of the waiting parent and has no shared grants.
                     assert(heap.live_jobs == 1 && !job.claimed);
-                    let nested = snapshot_test::invoke(heap, source::closure(heap, entries[5], []), []); assert(nested.tag() == 2 && nested.flag() && heap.live_jobs == 1);
+                    let nested = snapshot_test::invoke(heap, source::closure(heap, entries[5], []), []); assert(nested.is_bool() && nested.flag() && heap.live_jobs == 1);
                     assert(dependency::install(table, dependency::Completion { key: key(99), producer: request.producer, terminal: dependency::Terminal { outcome: if failed == 1 { dependency::Outcome.Failed } else { dependency::Outcome.Success } } }));
                     assert(table.deliveries.len == 1 && !job.claimed);
                     if table.deliveries[0].terminal.outcome == dependency::Outcome.Failed { assert(source::deliver_effect(job, source::Value.Undefined, source::Fault.DependencyNeed)); continue; }
@@ -270,7 +270,7 @@ fn measure(base: const snapshot::Snapshot&, entries: const i64[:]) {
             assert(scheduler::dispatch(plan, base, run, scheduler::Options { workers: workers })); check(run);
             assert(run.effect_counters[0] == 32 && run.effect_receipts.len == 48 && run.admitted == 64);
             for state, i in run.states { assert(scheduler::terminal(run, i).outcome == dependency::Outcome.Success); }
-            for result in run.results { if result.id < 100 { assert(result.artifact.root.tag() == 3 && result.artifact.root.num() == (result.id + 1) * 2); } else { assert(result.artifact.root.tag() == 2 && result.artifact.root.flag()); } }
+            for result in run.results { if result.id < 100 { assert(result.artifact.root.is_number() && result.artifact.root.num() == (result.id + 1) * 2); } else { assert(result.artifact.root.is_bool() && result.artifact.root.flag()); } }
             for r, i in run.effect_receipts { assert(r.grant.id == i && r.value == (i / 3) * 2 + (if i % 3 == 0 { 1 } else { 2 })); }
             if sample > 0 { print("effect-sample workers=", workers, " sample=", sample, " ordered-ns=", run.ordered_ns, " service-ns=", run.effect_service_ns, " pure-worker-sum-ns=", run.pure_ns, " dispatch-through-join-ns=", clock_ns() - started); }
         }
@@ -295,7 +295,7 @@ thread_fn result_failure(base: snapshot::Snapshot, entries: i64[]) {
     assert(source::run(job, -1) == tiny::Outcome.Failed && !effects::service(authority, job, 1, sequence) && source::retire(job));
     // Reuse the heap after terminal cleanup for unrelated compiler work.
     heap.limits.nodes += 1024;
-    let nested = snapshot_test::invoke(heap, source::closure(heap, entries[5], []), []); assert(nested.tag() == 2 && nested.flag());
+    let nested = snapshot_test::invoke(heap, source::closure(heap, entries[5], []), []); assert(nested.is_bool() && nested.flag());
     print("post-commit result construction error stays terminal, original receipt retained, resource isolation and unrelated reuse passed");
 }
 

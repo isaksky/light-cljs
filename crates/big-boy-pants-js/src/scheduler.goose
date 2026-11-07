@@ -68,7 +68,7 @@ fn perform(base: const snapshot::Snapshot&, work: const Work&, options: Options,
     heap.limits.stack = min(heap.limits.stack, 1024); heap.limits.frames = min(heap.limits.frames, 64);
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
     var definitions = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots"));
-    if definitions.tag() == 0 { definitions = source::allocate(heap, source::Node { kind: 0 }); source::install_field(heap, heap.global, "__lightCompilerRoots", definitions); }
+    if definitions.is_undefined() { definitions = source::allocate(heap, source::Node { kind: 0 }); source::install_field(heap, heap.global, "__lightCompilerRoots", definitions); }
     // This is a clean heap boundary: no Job exists while prerequisites import.
     for input in work.inputs {
         var c = artifact::Control { bytes: options.packet_bytes }; let value = artifact::import_graph(input.artifact, base, heap, imports, c);
@@ -141,7 +141,7 @@ fn invalid(plan: const Plan&, base: const snapshot::Snapshot&, run: const Run&, 
         if !dependency::valid(run.table, spec.key) || spec.id < 0 || spec.entry < 0 || spec.entry >= base.functions.len || spec.argument_count < 0 || spec.argument_count > 8 || spec.delay_ms < 0 || spec.delay_ms > 100 { return true; }
         if spec.runtime_binding >= 0 { var found = false; for binding in base.bindings { if binding.id == spec.runtime_binding { found = true; } } if !found { return true; } }
         for j in i { if plan.jobs[j].id == spec.id || dependency::same(plan.jobs[j].key, spec.key) { return true; } }
-        for v in spec.arguments[..spec.argument_count] { if v.tag() < 0 || v.tag() > 3 { return true; } }
+        for v in spec.arguments[..spec.argument_count] { if v.tag() < value_tag::Undefined || v.tag() > value_tag::Number { return true; } }
     }
     var previous: i64 = -1;
     for grant in plan.effects { let owner = position(plan, grant.owner); if owner < 0 || !plan.jobs[owner].ordered || owner < previous { return true; } previous = owner; }

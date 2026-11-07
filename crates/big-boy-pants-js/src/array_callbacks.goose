@@ -70,15 +70,15 @@ fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], ba
 // frame's pc 0 takes; a getter runs above the frame.
 fn start_array_callbacks(job: Job&, b: Builtin, receiver: Value, callback: Value, this_arg: Value, base: i64) {
     let heap .= job.heap;
-    if receiver.tag() <= 1 { type_error(job, "cannot convert undefined or null to object"); return; }
-    if receiver.tag() != 5 { unsupported_step(job, b, "primitive wrapper objects"); return; }
+    if receiver.tag() <= value_tag::Null { type_error(job, "cannot convert undefined or null to object"); return; }
+    if !receiver.is_object() { unsupported_step(job, b, "primitive wrapper objects"); return; }
     let k = key_named(heap, "length");
     if heap.fault != Fault.None { return; }
     let v, getter = lookup(heap, receiver, k);
     if heap.fault != Fault.None { return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
     job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: callback, receiver: this_arg, input: receiver, native: Native.ArrayCallbacks { which: b } });
-    if getter.tag() == 5 { run_getter(job, b, getter, receiver); } else { job.operands.push(v); }
+    if getter.is_object() { run_getter(job, b, getter, receiver); } else { job.operands.push(v); }
 }
 // Enter getter `g` with receiver o; its value arrives at the frame's
 // current phase. Only an ordinary function can be a getter here.
@@ -93,7 +93,7 @@ fn array_callbacks_step(job: Job&, frame: Frame, b: Builtin) {
         0 => {
             // A scalar form (a primitive with its provenance) is its primitive.
             let v = form_value(heap, job.operands.pop());
-            if v.tag() == 5 {
+            if v.is_object() {
                 // ToNumber of an object: its ToPrimitive (valueOf, then
                 // toString) in a native frame above this one, as `v - 0`;
                 // the number comes back to this phase.
@@ -103,7 +103,7 @@ fn array_callbacks_step(job: Job&, frame: Frame, b: Builtin) {
                 if !ordinary(heap, v) { unsupported_step(job, b, "ToNumber of a non-ordinary length"); return; }
                 let hook, hook_getter = lookup(heap, v, Value.Symbol { s: well_known::ToPrimitive });
                 if heap.fault != Fault.None { return; }
-                if hook_getter.tag() == 5 || hook.tag() > 1 { unsupported_step(job, b, "a length's @@toPrimitive"); return; }
+                if hook_getter.is_object() || hook.tag() > value_tag::Null { unsupported_step(job, b, "a length's @@toPrimitive"); return; }
                 to_primitive(job, 8, v, number(0)); return;
             }
             let n = numeric(heap, v);
@@ -134,7 +134,7 @@ fn array_callbacks_step(job: Job&, frame: Frame, b: Builtin) {
 }
 // IsCallable: a closure or a built-in function (a class constructor is
 // callable; calling it throws TypeError when its frame is entered).
-inline fn callable(heap: const Heap&, f: Value) -> bool { return f.tag() == 5 && (node(heap, f.id()).kind == 2 || node(heap, f.id()).kind == 4); }
+inline fn callable(heap: const Heap&, f: Value) -> bool { return f.is_object() && (node(heap, f.id()).kind == 2 || node(heap, f.id()).kind == 4); }
 // ArraySpeciesCreate(O, len) without species: a new array of length len
 // when O is not an array or its `constructor` is undefined or the realm's
 // Array; any other constructor object is the species step, not implemented.
@@ -145,9 +145,9 @@ fn array_species_create(job: Job&, b: Builtin, o: Value, len: f64) -> Value {
         if heap.fault != Fault.None { return Value.Undefined; }
         let c, getter = lookup(heap, o, k);
         if heap.fault != Fault.None { return Value.Undefined; }
-        if getter.tag() == 5 { return unsupported_step(job, b, "a constructor getter"); }
-        if c.tag() == 5 { if c.id() != array_constructor_row() { return unsupported_step(job, b, "species constructors"); } }
-        else if c.tag() != 0 { return type_error(job, "array constructor is not an object"); }
+        if getter.is_object() { return unsupported_step(job, b, "a constructor getter"); }
+        if c.is_object() { if c.id() != array_constructor_row() { return unsupported_step(job, b, "species constructors"); } }
+        else if !c.is_undefined() { return type_error(job, "array constructor is not an object"); }
     }
     // ArrayCreate(len).
     if len > 4294967295.0 { job.detail.clear(); for c in "invalid array length" { job.detail.push(c); } heap.fault = Fault.RangeError; return Value.Undefined; }
@@ -181,7 +181,7 @@ fn array_visit(job: Job&, at: i64, b: Builtin) {
     }
     let v, getter = lookup(heap, o, key);
     if heap.fault != Fault.None { return; }
-    if getter.tag() == 5 { job.frames[at].pc = 2; run_getter(job, b, getter, o); return; }
+    if getter.is_object() { job.frames[at].pc = 2; run_getter(job, b, getter, o); return; }
     array_call(job, at, b, v);
 }
 // Call the frame's callback with thisArg and (v, k, O); its result arrives

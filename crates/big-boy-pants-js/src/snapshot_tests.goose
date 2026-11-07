@@ -27,7 +27,7 @@ thread_fn isolation_worker(saved: snapshot::Snapshot, parent: i64, n: i64) {
         var r = snapshot::Control {}; assert(snapshot::restore(saved, worker_code, heap, roots, source::reserve_identity(), r));
         assert(r.copied_bytes == snapshot::payload_bytes(saved) && heap.identity != parent);
         let result = snapshot_test::verify(heap, roots, n);
-        let own, found = source::own_property(heap, roots[6].value, source::text(heap, "parentOnly")); assert(!found && own.tag() == 0);
+        let own, found = source::own_property(heap, roots[6].value, source::text(heap, "parentOnly")); assert(!found && own.is_undefined());
         if n == 10 { var b = bridge::Control {}; assert(bridge::export_graph(heap, [result], artifact, b)); }
         assert(qput(Handle { value: heap.global }));
     }
@@ -194,7 +194,7 @@ thread_fn live_boundary() {
         assert(c.error == snapshot::Error.Boundary && no.nodes.len == 0 && c.copied_bytes == 0 && job.steps == steps && heap.work == work && heap.nodes.len == nodes && job.operands.len == operands && job.locals.len == locals && job.status == tiny::Status.Ready);
         assert(source::plain_rows(job.frames) == source::plain_rows(frames_before) && source::plain_rows(job.locals) == source::plain_rows(locals_before) && source::plain_rows(job.operands) == source::plain_rows(operands_before));
     }
-    assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.tag() == 5);
+    assert(source::run(job, -1) == tiny::Outcome.Complete && job.result.is_object());
     var c = snapshot::Control {}; let terminal = snapshot::capture(heap, [], c); assert(c.error == snapshot::Error.Boundary && terminal.nodes.len == 0);
     let result = job.result; assert(source::retire(job));
     var done = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: result }], done);
@@ -260,7 +260,7 @@ thread_fn dormant_capture() {
     defer { heap_program::finish(); }
     var code = source::Code {}; let entry = snapshot_test::append(code, embed_file("../corpus/serial/dormant-constants.gsp"));
     var symbol: i64 = -1; var bigints: i64 = 0;
-    for v, i in code.constants { if v.tag() == 7 { bigints += 1; if symbol < 0 { symbol = i; } } }
+    for v, i in code.constants { if v.is_bigint() { bigints += 1; if symbol < 0 { symbol = i; } } }
     assert(bigints >= 5 && symbol >= 0);
     // One dormant BigInt becomes a well-known Symbol (exported only by sloppy `with`).
     code.constants[symbol] = source::Value.Symbol { s: well_known::Unscopables };
@@ -273,9 +273,9 @@ thread_fn dormant_restore(dormant: Dormant) {
     let saved .= dormant.image; let entry = dormant.entry;
     var restored_code = source::Code {}; var restored = source::Heap { code: restored_code }; var roots: snapshot::Binding[>..] = [];
     var restore = snapshot::Control {}; assert(snapshot::restore(saved, restored_code, restored, roots, source::reserve_identity(), restore));
-    for v, i in restored.constants { if v.tag() >= 6 { assert(source::plain_rows([v]) == source::plain_rows([dormant.constants[i]])); } }
+    for v, i in restored.constants { if v.tag() >= value_tag::Symbol { assert(source::plain_rows([v]) == source::plain_rows([dormant.constants[i]])); } }
     var second = snapshot::Control {}; snapshot::capture(restored, [], second); assert(second.error == snapshot::Error.None);
-    let result = snapshot_test::invoke(restored, source::closure(restored, entry, []), []); assert(result.tag() == 3 && result.num() == 7);
+    let result = snapshot_test::invoke(restored, source::closure(restored, entry, []), []); assert(result.is_number() && result.num() == 7);
     print("snapshot: dormant Symbol/BigInt constants survive capture, restore and recapture");
 }
 fn reused_destination() {
@@ -297,7 +297,7 @@ thread_fn reused_target(saved: snapshot::Snapshot) {
         var restore = snapshot::Control {}; assert(snapshot::restore(saved, code, heap, roots, source::reserve_identity(), restore));
         // One decoded height a function: a reset leaves none of the last restore's.
         assert(code.heights.len == code.functions.len && code.ins.len == code.ops.len);
-        if stale.tag() != 0 { assert(!source::valid(heap, stale) && heap.fault == source::Fault.StaleID); heap.fault = source::Fault.None; }
+        if !stale.is_undefined() { assert(!source::valid(heap, stale) && heap.fault == source::Fault.StaleID); heap.fault = source::Fault.None; }
         assert(source::start(job, roots[0].value, [source::nil(), source::nil(), source::number(n)]));
         assert(!source::reset(job) && !snapshot::reset(code, heap, roots));
         assert(source::claim(job) && !source::reset(job));
@@ -308,9 +308,9 @@ thread_fn reused_target(saved: snapshot::Snapshot) {
         assert(!source::reset(job) && !snapshot::reset(code, heap, roots));
         assert(source::retire(job) && source::reset(job));
         assert(job.frames.len == 0 && job.locals.len == 0 && job.operands.len == 0 && job.writes.len == 0 && job.handlers.len == 0);
-        assert(job.result.tag() == 0 && job.steps == 0 && job.status == tiny::Status.Ready && !job.registered && !job.effect_pending && job.effect_count == 0);
+        assert(job.result.is_undefined() && job.steps == 0 && job.status == tiny::Status.Ready && !job.registered && !job.effect_pending && job.effect_count == 0);
         assert(snapshot::reset(code, heap, roots));
-        assert(heap.identity == 0 && heap.global.tag() == 0 && heap.live_jobs == 0 && heap.nodes.len == 0 && heap.work == 0 && roots.len == 0 && !code.valid && code.ops.len == 0 && code.heights.len == 0);
+        assert(heap.identity == 0 && heap.global.is_undefined() && heap.live_jobs == 0 && heap.nodes.len == 0 && heap.work == 0 && roots.len == 0 && !code.valid && code.ops.len == 0 && code.heights.len == 0);
         var wrong = snapshot::Control {}; assert(!snapshot::restore(saved, code, heap, roots, saved.header.base, wrong) && wrong.error == snapshot::Error.Identity && heap.identity == 0);
     }
     var corrupt = copy(saved); corrupt.nodes[0].kind = 999; var invalid = snapshot::Control {};
@@ -405,7 +405,7 @@ thread_fn layout_worker(base: snapshot::Snapshot) {
     var first: u8[>..] = [];
     for run in 2 {
         var job = source::Job { heap: heap };
-        assert(source::start(job, bindings[0].value, []) && source::run(job, -1) == tiny::Outcome.Complete && job.result.tag() == 2 && job.result.flag());
+        assert(source::start(job, bindings[0].value, []) && source::run(job, -1) == tiny::Outcome.Complete && job.result.is_bool() && job.result.flag());
         assert(source::retire(job));
         // The same keys in the same order share the image object's shape; a
         // new key extends it above the image, and the image shape gets a child.
@@ -625,7 +625,7 @@ thread_fn suspension_worker(base: snapshot::Snapshot) {
     // The first job leaves its generator suspended at its yield.
     var first = source::Job { heap: heap };
     assert(source::start(first, bindings[0].value, []) && source::run(first, -1) == tiny::Outcome.Complete);
-    let g = first.result; assert(g.tag() == 5 && source::node(heap, g.id()).kind == source::generator_kind() && source::node(heap, g.id()).length == 1 && heap.conts.len > base.conts.len);
+    let g = first.result; assert(g.is_object() && source::node(heap, g.id()).kind == source::generator_kind() && source::node(heap, g.id()).length == 1 && heap.conts.len > base.conts.len);
     assert(source::retire(first));
     // The reset drops its rows, and the next job cannot name it.
     assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings));
@@ -633,7 +633,7 @@ thread_fn suspension_worker(base: snapshot::Snapshot) {
     var second = source::Job { heap: heap };
     assert(!source::start(second, bindings[0].value, [g]) && second.fault == source::Fault.StaleID);
     var third = source::Job { heap: heap };
-    assert(source::start(third, bindings[0].value, []) && source::run(third, -1) == tiny::Outcome.Complete && third.result.tag() == 5 && third.result.id() == g.id());
+    assert(source::start(third, bindings[0].value, []) && source::run(third, -1) == tiny::Outcome.Complete && third.result.is_object() && third.result.id() == g.id());
     assert(source::retire(third) && snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings));
 }
 
@@ -756,7 +756,7 @@ thread_fn assembly_parent() {
     let roots = [snapshot::Binding { id: 0, generation: 1, value: array }, snapshot::Binding { id: 1, generation: 1, value: array }, snapshot::Binding { id: 2, generation: 1, value: joined }];
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, roots, c); assert(c.error == snapshot::Error.None);
     assert(qput(Assembly { image: copy(saved), a: a }));
-    assert(source::node(heap, array.id()).length == 1 && source::get(heap, array, source::key(heap, source::number(2))).tag() == 0);
+    assert(source::node(heap, array.id()).length == 1 && source::get(heap, array, source::key(heap, source::number(2))).is_undefined());
     var bad = copy(saved); bad.nodes[array.id()].length = (bad.header.limits.values + 1) as u32;
     var control = snapshot::Control {}; assert(!snapshot::validate(bad, control) && control.error == snapshot::Error.Allocator);
 }
@@ -773,7 +773,7 @@ thread_fn assembly_restore(parent: Assembly, i: i64) {
         assert(source::form_nth(restored, rjoined, 0).id() != source::form_nth(restored, rjoined, 1).id());
         assert(source::put(restored, rarray, source::text(restored, "length"), source::number(3)));
         assert(source::get(restored, rarray, source::key(restored, source::number(0))).id() == a.id());
-        for j in 1..3 { assert(source::get(restored, rarray, source::key(restored, source::number(j))).tag() == 0); }
+        for j in 1..3 { assert(source::get(restored, rarray, source::key(restored, source::number(j))).is_undefined()); }
         assert(source::put(restored, rarray, source::key(restored, source::number(2)), source::number(i + 10)));
     }
 }
@@ -916,7 +916,7 @@ thread_fn callable_identity(base: snapshot::Snapshot, p: Published) {
     assert(snapshot::restore(base, target_code, target, roots, source::reserve_identity(), sc)); source::append_code(target_code, extra);
     let own = source::add_source_bytes(target, "(own)"); let own_row = source::add_source_range(target, source::SourceRange { start: own as u32, count: 5 });
     var check = snapshot::Control {}; let imported = callable::decode_install(p.wire, base.header, target_code, target, check);
-    assert(check.error == snapshot::Error.None && imported.tag() == 5);
+    assert(check.error == snapshot::Error.None && imported.is_object());
     let result = snapshot_test::invoke(target, imported, []); let x = source::form_nth(target, result, 0); let y = source::form_nth(target, result, 1);
     let nx = target.nodes[x.id()]; let ny = target.nodes[y.id()];
     assert(nx.source == ny.source && nx.source != own_row && nx.span_start == 0 && nx.span_end == 1 && ny.span_start == 2 && ny.span_end == 3);
@@ -967,7 +967,7 @@ thread_fn callable_mode(base: snapshot::Snapshot, original: callable::Publicatio
             var after = snapshot::Control {}; var unchanged = snapshot::capture(target, roots, after); unchanged.header.checkpoint = before.header.checkpoint; assert(after.error == snapshot::Error.None);
             var left: u8[>..] = []; var right: u8[>..] = []; to_bytes([before], left); to_bytes([unchanged], right); assert(left == right);
         } else {
-            assert(check.error == snapshot::Error.None && imported.tag() == 5);
+            assert(check.error == snapshot::Error.None && imported.is_object());
             assert(target.nodes[imported.id()].function == entry + extra.functions.len && target.nodes[imported.id()].immutable);
             // Its name is relocated behind the consumer's own code units.
             let named = target_code.functions[entry + extra.functions.len]; assert(named.name_len == 1 && target_code.units[named.name_start] == 102 && named.name_start >= extra.units.len);

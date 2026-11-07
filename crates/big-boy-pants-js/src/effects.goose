@@ -51,7 +51,7 @@ fn service(a: Authority&, job: source::Job&, owner: i64, sequence: i64&) -> bool
     if index < 0 || a.grants[index].kind != job.effect_kind { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); }
     let g = a.grants[index]; var prefix: u16[>..] = [];
     if g.kind == 5 {
-        if job.effect_count > 1 || job.effect_count == 1 && job.effect_args[0].tag() != 4 { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); }
+        if job.effect_count > 1 || job.effect_count == 1 && !job.effect_args[0].is_string() { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); }
         if job.effect_count == 0 { prefix.append([71, 95, 95]); }
         else { let p = job.effect_args[0]; if !source::valid(job.heap, p) || source::str_len(job.heap, p) > 128 { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); } source::append_utf16(job.heap, p, prefix); }
     } else if job.effect_count != 0 { return source::deliver_effect(job, source::Value.Undefined, source::Fault.EffectContract); }

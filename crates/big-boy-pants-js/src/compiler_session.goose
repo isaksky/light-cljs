@@ -238,7 +238,7 @@ thread_fn preparer(base: snapshot::Snapshot, directory: u8[], id: i64, key: i64,
     let entry = append(code, heap, str(directory, "/definition-", key, ".gsp")); assert(entry >= 0);
     let factory, loaded = initialize(id, heap, source::closure(heap, entry, []), [], base.nodes.len, report, prefix, next); if !loaded { assert(qput(Preparation { report: copy(report) })); return; }
     let function, ready = initialize(id, heap, factory, [rt], base.nodes.len, report, prefix, next); if !ready { assert(qput(Preparation { report: copy(report) })); return; }
-    if !source::valid(heap, function) || function.tag() != 5 || source::node(heap, function.id()).kind != 2 { format(report, "ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
+    if !source::valid(heap, function) || !function.is_object() || source::node(heap, function.id()).kind != 2 { format(report, "ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
     // Every atom the definition reaches becomes a process-wide cell (light-cljs-799).
     var thunks = false; var initial: source::Initial[>..] = []; let refused = source::publish_cells(heap, function, base.nodes.len, thunks, initial);
     if refused.len > 0 { format(report, "ERROR ", id, " preparation-", refused, " function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
@@ -282,7 +282,7 @@ fn load(code: source::Code&, path: const u8[:]) -> i64 {
 }
 fn append(code: source::Code&, heap: source::Heap&, path: const u8[:]) -> i64 {
     let first = code.constants.len; let entry = load(code, path); if entry < 0 { return -1; }
-    for c in code.constants[first..] { var value = c; if c.tag() == 4 { value = source::string(heap, source::code_chars(code, c)); } source::add_constants(heap, [value]); }
+    for c in code.constants[first..] { var value = c; if c.is_string() { value = source::string(heap, source::code_chars(code, c)); } source::add_constants(heap, [value]); }
     return entry;
 }
 fn leaf(id: i64, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64, prefix: const u8[:], next: i64&, address: i64 = 0, timing: i64[4] = [0; 4]) -> source::Value, bool {
@@ -345,7 +345,7 @@ thread_fn run_worker(base: snapshot::Snapshot, directory: u8[], setup: Setup) {
     var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
     assert(snapshot::restore(base, code, heap, bindings, setup.identity, sc));
     let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")); let cache = source::get(heap, heap.global, source::text(heap, "__lightPublishedHelpers"));
-    assert(roots.tag() == 5 && cache.tag() == 5 && roots.id() < base.nodes.len && cache.id() < base.nodes.len);
+    assert(roots.is_object() && cache.is_object() && roots.id() < base.nodes.len && cache.id() < base.nodes.len);
     let service: i64[2] = [roots.id(), cache.id()];
     assert(snapshot::truncate(base, service, setup.identity, code, heap, bindings));
     let image = if setup.check { assert(snapshot::pristine(base, setup.identity, code, heap, bindings)); heap_digest(heap, bindings) } else { 0 };
@@ -459,7 +459,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
         let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], saved.protected, saved.gensym_prefix, next, address, timing(work, started, sc)); if !loaded { return; }
         let value, initialized = leaf(id, heap, factory, [rt], saved.protected, saved.gensym_prefix, next, address, timing(work, started, sc)); if !initialized { return; } function = value;
         if mode == 2 { let exporting = clock_ns();
-            let is_closure = function.tag() == 5 && source::node(heap, function.id()).kind == 2;
+            let is_closure = function.is_object() && source::node(heap, function.id()).kind == 2;
             var publication = snapshot::Control {};
             // Every atom the helper reaches becomes a process-wide cell, and a
             // form helper's graph names it (light-cljs-799).
@@ -522,7 +522,7 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
         if job.effect_kind == 10 && job.effect_count == 2 { delay = job.effect_args[0].num() as i64; epoch = job.effect_args[1].num() as i64; }
         else {
             if job.effect_kind != 9 || job.effect_count != 3 { source::deliver_effect(job, source::Value.Undefined, source::Fault.NativeBoundary); continue; }
-            let v = job.effect_args[2]; if v.tag() != 4 { source::deliver_effect(job, source::Value.Undefined, source::Fault.TypeError); continue; }
+            let v = job.effect_args[2]; if !v.is_string() { source::deliver_effect(job, source::Value.Undefined, source::Fault.TypeError); continue; }
             for u in source::utf16(heap, v) { if u <= 32 || u > 127 { source::deliver_effect(job, source::Value.Undefined, source::Fault.NativeBoundary); break; } name.push(u as u8); } if !job.effect_pending { continue; }
         }
         if work.blocking {
@@ -587,7 +587,7 @@ fn clean_up(job: source::Job&) -> u8[] {
     for w, i in job.writes[from..] {
         if i >= 32 { break; }
         out.append(if i == 0 { " cleanup=" } else { "," });
-        if w.key.tag() != 4 { out.push('?'); continue; }
+        if !w.key.is_string() { out.push('?'); continue; }
         for u, j in source::utf16(job.heap, w.key) { if j >= 64 { break; } out.push(if u > 32 && u < 127 && u != 44 { u as u8 } else { '?' }); }
     }
     return str(out);
@@ -612,7 +612,7 @@ fn serial_call(directory: const u8[:], id: i64, code: source::Code&, heap: sourc
         assert(outcome != tiny::Outcome.Failed);
         if !job.effect_pending { continue; }
         assert(job.effect_kind == 9 && job.effect_count == 3);
-        let name = job.effect_args[2]; assert(name.tag() == 4); var text: u8[>..] = [];
+        let name = job.effect_args[2]; assert(name.is_string()); var text: u8[>..] = [];
         for u in source::utf16(heap, name) { assert(u > 32 && u <= 127); text.push(u as u8); }
         print("NEED ", id, " ", sequence, " ", text, " ", job.steps, " ", job.writes.len); flush_stdout();
         // The compiler answers before it sends anything else.

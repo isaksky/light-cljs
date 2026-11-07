@@ -247,7 +247,7 @@ fn pending_fault(heap: Heap&, k: Value) { if heap.fault == Fault.None { heap.fau
 fn pending_detail(job: Job&) {
     let k = job.heap.pending; job.detail.clear();
     for c in "pending " { job.detail.push(c); }
-    if k.tag() == 4 { append_utf16(job.heap, k, job.detail); } else { for c in "@@" { job.detail.push(c); } for c in export_well_known_symbol(symbol_index(k)) { job.detail.push(c); } }
+    if k.is_string() { append_utf16(job.heap, k, job.detail); } else { for c in "@@" { job.detail.push(c); } for c in export_well_known_symbol(symbol_index(k)) { job.detail.push(c); } }
 }
 // The [[Prototype]] of node o: its own link, or for Empty, the realm's
 // default prototype for its kind (Object.prototype for ordinary objects,
@@ -257,8 +257,8 @@ fn pending_detail(job: Job&) {
 // without initialize (hand-made test heaps, whose global is not set).
 fn prototype(heap: const Heap&, o: i64) -> Value {
     let p = node(heap, o).proto;
-    if p.tag() != -1 { return p; }
-    if heap.global.tag() != 5 { return Value.Null; }
+    if !p.is_hole() { return p; }
+    if !heap.global.is_object() { return Value.Null; }
     return match node(heap, o).kind {
         0, 14 => object(object_prototype_row()), 1 => object(array_prototype_row()), 2, 4 => object(function_prototype_row()), 13 => object(error_prototype_row(0)),
         _ => Value.Null,
@@ -277,16 +277,16 @@ inline fn realm_intrinsic(o: i64) -> bool { return o > global_row() && o < realm
 // row 0 and Function.prototype.call as the call method. Their properties are
 // validated with every other row's.
 fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, call: Value) -> bool {
-    if nodes.len < realm_nodes() || accessors.len < 1 || accessors[0].get.tag() != 0 || accessors[0].set.tag() != 0 || global.tag() != 5 || global.id() != global_row() { return false; }
+    if nodes.len < realm_nodes() || accessors.len < 1 || !accessors[0].get.is_undefined() || !accessors[0].set.is_undefined() || !global.is_object() || global.id() != global_row() { return false; }
     let kinds: i64[] = [0, 0, 4, 1];
     for k, o in kinds { if nodes[o].kind != k { return false; } }
-    if nodes[object_prototype_row()].proto.tag() != 1 || nodes[function_prototype_row()].function != code(Builtin.FunctionPrototype) { return false; }
+    if !nodes[object_prototype_row()].proto.is_null() || nodes[function_prototype_row()].function != code(Builtin.FunctionPrototype) { return false; }
     for t in ERROR_NAMES.len {
         if nodes[error_prototype_row(t)].kind != 0 || nodes[error_constructor_row(t)].kind != 4 || nodes[error_constructor_row(t)].function != code(ERROR_BUILTINS[t]) { return false; }
     }
     let constructors: Builtin[] = [Builtin.Object, Builtin.Function, Builtin.Array];
     for b, i in constructors { let o = object_constructor_row() + i; if nodes[o].kind != 4 || nodes[o].function != code(b) { return false; } }
-    for m, j in REALM_FUNCTIONS { let o = fixed_rows() + j; if nodes[o].kind != 4 || nodes[o].function != code(m.which) || m.which == Builtin.FunctionPrototypeCall && (call.tag() != 5 || call.id() != o) { return false; } }
+    for m, j in REALM_FUNCTIONS { let o = fixed_rows() + j; if nodes[o].kind != 4 || nodes[o].function != code(m.which) || m.which == Builtin.FunctionPrototypeCall && (!call.is_object() || call.id() != o) { return false; } }
     return true;
 }
 
@@ -357,7 +357,7 @@ fn builtin_metadata(heap: Heap&, o: i64) -> bool {
 }
 fn realm_value(heap: Heap&, o: i64, name: const u8[:], v: Value, attrs: u8) -> bool {
     let k = key_named(heap, name);
-    return heap.fault == Fault.None && v.tag() >= 0 && add_own(heap, o, k, v, attrs);
+    return heap.fault == Fault.None && v.tag() >= value_tag::Undefined && add_own(heap, o, k, v, attrs);
 }
 // C.prototype = P (no attributes) and P.constructor = C (writable,
 // configurable).
@@ -373,7 +373,7 @@ fn boot_runtime(heap: Heap&) -> Value {
     install_field(heap, heap.global, "__lightNativeRuntime", rt);
     for leaf in RUNTIME_LEAVES {
         let f = allocate(heap, Node { kind: 4, function: code(leaf.which) });
-        if f.tag() != 5 || !builtin_metadata(heap, f.id()) { return Value.Undefined; }
+        if !f.is_object() || !builtin_metadata(heap, f.id()) { return Value.Undefined; }
         install_field(heap, if leaf.core { core } else { rt }, leaf.key, f);
     }
     if heap.fault == Fault.None { heap.boot_count += 1; }
@@ -387,7 +387,7 @@ fn fault_type(fault: Fault) -> i64 { return match fault { TypeError => 5, Refere
 fn error_object(heap: Heap&, t: i64, code: u32, message: Value) -> Value {
     let e = allocate(heap, Node { kind: 13, function: code, proto: object(error_prototype_row(t)) });
     if heap.fault != Fault.None { return Value.Undefined; }
-    if message.tag() == 4 && !add_own(heap, e.id(), key_named(heap, "message"), message, attr_writable() | attr_configurable()) { return Value.Undefined; }
+    if message.is_string() && !add_own(heap, e.id(), key_named(heap, "message"), message, attr_writable() | attr_configurable()) { return Value.Undefined; }
     return e;
 }
 // The message of a VM fault's error: Job.detail when the operation named
@@ -410,7 +410,7 @@ fn fault_message(job: Job&, fault: Fault, frame: Frame) -> Value {
 // Name an unsupported built-in step (Job.detail) and fail UnsupportedOperand.
 // Whether `v` is the realm's %eval% (a direct-eval site's callee check).
 fn realm_eval(heap: Heap&, v: Value) -> bool {
-    return valid(heap, v) && v.tag() == 5 && node(heap, v.id()).kind == 4 && node(heap, v.id()).function == code(Builtin.Eval);
+    return valid(heap, v) && v.is_object() && node(heap, v.id()).kind == 4 && node(heap, v.id()).function == code(Builtin.Eval);
 }
 fn unsupported_step(job: Job&, b: Builtin, what: const u8[:]) -> Value {
     job.detail.clear();
@@ -440,15 +440,15 @@ fn primitive_string(job: Job&, b: Builtin, v: Value) -> Value {
 }
 // ToPropertyKey without user code (an object's ToPrimitive is not run here).
 fn property_key(job: Job&, b: Builtin, v: Value) -> Value {
-    let k = if v.tag() == 3 && v.num() >= 0 && v.num() < 4294967295.0 && v.num() == trunc(v.num()) { key(job.heap, v) } else { primitive_string(job, b, v) };
+    let k = if v.is_number() && v.num() >= 0 && v.num() < 4294967295.0 && v.num() == trunc(v.num()) { key(job.heap, v) } else { primitive_string(job, b, v) };
     return if job.heap.fault == Fault.None { intern(job.heap, k) } else { Value.Undefined };
 }
 // Whether ToObject(o) has own property k (interned): strings their indices
 // and length, numbers and booleans nothing, objects by kind.
 fn has_own(job: Job&, b: Builtin, o: Value, k: Value) -> bool {
     let heap .= job.heap;
-    if o.tag() == 4 { if key_is(heap, k, "length") { return true; } let i = index(heap, k); return i >= 0 && i < str_len(heap, o); }
-    if o.tag() != 5 { return false; }
+    if o.is_string() { if key_is(heap, k, "length") { return true; } let i = index(heap, k); return i >= 0 && i < str_len(heap, o); }
+    if !o.is_object() { return false; }
     if lazy_prototype(heap, o.id()) && key_is(heap, k, "prototype") { return true; }
     return own_entry(heap, o, k).found;
 }
@@ -462,10 +462,10 @@ fn has_own(job: Job&, b: Builtin, o: Value, k: Value) -> bool {
 // property fail by name.
 fn own_descriptor(job: Job&, b: Builtin, o: Value, kv: Value) -> Value {
     let heap .= job.heap;
-    if o.tag() <= 1 { return type_error(job, "cannot convert undefined or null to object"); }
+    if o.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
     let k = property_key(job, b, kv);
     if heap.fault != Fault.None { return Value.Undefined; }
-    if o.tag() != 5 { return unsupported_step(job, b, "primitive wrapper objects"); }
+    if !o.is_object() { return unsupported_step(job, b, "primitive wrapper objects"); }
     if lazy_prototype(heap, o.id()) && key_is(heap, k, "prototype") { prepare_function(job, o, k, false); }
     let p = own_entry(heap, o, k);
     if heap.fault != Fault.None || !p.found { return Value.Undefined; }
@@ -489,30 +489,30 @@ fn core_binding(job: Job&, b: Builtin, name: Value) -> Value {
     let heap .= job.heap;
     let rt = data_get(job, b, heap.global, "__lightNativeRuntime");
     if heap.fault != Fault.None { return Value.Undefined; }
-    let core = if rt.tag() == 5 { data_get(job, b, rt, "core") } else { Value.Undefined };
+    let core = if rt.is_object() { data_get(job, b, rt, "core") } else { Value.Undefined };
     if heap.fault != Fault.None { return Value.Undefined; }
-    if core.tag() != 5 { heap.fault = Fault.InvalidState; return Value.Undefined; }
-    let d = if name.tag() == 4 { own_descriptor(job, b, core, name) } else { Value.Undefined };
-    if heap.fault != Fault.None || d.tag() == 5 { return d; }
+    if !core.is_object() { heap.fault = Fault.InvalidState; return Value.Undefined; }
+    let d = if name.is_string() { own_descriptor(job, b, core, name) } else { Value.Undefined };
+    if heap.fault != Fault.None || d.is_object() { return d; }
     job.detail.clear();
     for c in BUILTINS[code(b)].name { job.detail.push(c); }
     for c in ": no core leaf " { job.detail.push(c); }
-    if name.tag() == 4 { append_utf16(heap, name, job.detail); }
+    if name.is_string() { append_utf16(heap, name, job.detail); }
     heap.fault = Fault.NativeBoundary;
     return Value.Undefined;
 }
 // Units of `[object Tag]`.
 fn object_tag(job: Job&, receiver: Value) -> Value {
     let heap .= job.heap;
-    if receiver.tag() == 0 { return text(heap, "[object Undefined]"); }
-    if receiver.tag() == 1 { return text(heap, "[object Null]"); }
-    if receiver.tag() != 5 { return unsupported_step(job, Builtin.ObjectPrototypeToString, "a primitive receiver"); }
+    if receiver.is_undefined() { return text(heap, "[object Undefined]"); }
+    if receiver.is_null() { return text(heap, "[object Null]"); }
+    if !receiver.is_object() { return unsupported_step(job, Builtin.ObjectPrototypeToString, "a primitive receiver"); }
     let tag, getter = lookup(heap, receiver, Value.Symbol { s: well_known::ToStringTag });
     if heap.fault != Fault.None { return Value.Undefined; }
-    if getter.tag() == 5 { return unsupported_step(job, Builtin.ObjectPrototypeToString, "a @@toStringTag getter"); }
+    if getter.is_object() { return unsupported_step(job, Builtin.ObjectPrototypeToString, "a @@toStringTag getter"); }
     var units: u16[>..] = [];
     for c in "[object " { units.push(c); }
-    if tag.tag() == 4 { append_utf16(heap, tag, units); }
+    if tag.is_string() { append_utf16(heap, tag, units); }
     else {
         let name: const u8[:] = match node(heap, receiver.id()).kind { 1 => "Array", 2, 4 => "Function", 13 => "Error", 14 => "Arguments", _ => "Object" };
         for c in name { units.push(c); }
@@ -528,17 +528,17 @@ fn data_get(job: Job&, b: Builtin, o: Value, name: const u8[:]) -> Value {
     let k = key_named(heap, name);
     if heap.fault != Fault.None { return Value.Undefined; }
     let v, getter = lookup(heap, o, k);
-    if getter.tag() == 5 && heap.fault == Fault.None { return unsupported_step(job, b, "a getter"); }
+    if getter.is_object() && heap.fault == Fault.None { return unsupported_step(job, b, "a getter"); }
     return v;
 }
 // Error.prototype.toString (no getter, no object-valued name or message).
 fn error_to_string(job: Job&, receiver: Value) -> Value {
     let heap .= job.heap; let b = Builtin.ErrorPrototypeToString;
-    if receiver.tag() != 5 { return type_error(job, "not an object"); }
+    if !receiver.is_object() { return type_error(job, "not an object"); }
     let n = data_get(job, b, receiver, "name"); if heap.fault != Fault.None { return Value.Undefined; }
-    let name = if n.tag() == 0 { key_named(heap, "Error") } else { primitive_string(job, b, n) }; if heap.fault != Fault.None { return Value.Undefined; }
+    let name = if n.is_undefined() { key_named(heap, "Error") } else { primitive_string(job, b, n) }; if heap.fault != Fault.None { return Value.Undefined; }
     let m = data_get(job, b, receiver, "message"); if heap.fault != Fault.None { return Value.Undefined; }
-    let message = if m.tag() == 0 { key_named(heap, "") } else { primitive_string(job, b, m) }; if heap.fault != Fault.None { return Value.Undefined; }
+    let message = if m.is_undefined() { key_named(heap, "") } else { primitive_string(job, b, m) }; if heap.fault != Fault.None { return Value.Undefined; }
     if str_len(heap, message) == 0 { return name; }
     if str_len(heap, name) == 0 { return message; }
     var units: u16[>..] = []; append_utf16(heap, name, units); units.push(58); units.push(32); append_utf16(heap, message, units);
@@ -551,11 +551,11 @@ fn error_to_string(job: Job&, receiver: Value) -> Value {
 fn construct_error(job: Job&, b: Builtin, t: i64, args: const Value[:]) -> Value {
     let heap .= job.heap;
     let m = arg(args, 0);
-    let message = if m.tag() == 0 { Value.Undefined } else { primitive_string(job, b, m) };
+    let message = if m.is_undefined() { Value.Undefined } else { primitive_string(job, b, m) };
     if heap.fault != Fault.None { return Value.Undefined; }
     let e = error_object(heap, t, 0, message);
     let options = arg(args, 1);
-    if heap.fault == Fault.None && options.tag() == 5 {
+    if heap.fault == Fault.None && options.is_object() {
         let k = key_named(heap, "cause");
         if heap.fault == Fault.None && has_property(heap, options, k) {
             let cause = data_get(job, b, options, "cause");
@@ -571,7 +571,7 @@ fn construct_array(job: Job&, args: const Value[:]) -> Value {
     let heap .= job.heap;
     let a = allocate(heap, Node { kind: 1 });
     if heap.fault != Fault.None { return Value.Undefined; }
-    if args.len == 1 && args[0].tag() == 3 {
+    if args.len == 1 && args[0].is_number() {
         let n = args[0].num();
         if !(n >= 0 && n <= 4294967295.0) || n != trunc(n) { job.detail.clear(); for c in "invalid array length" { job.detail.push(c); } heap.fault = Fault.RangeError; return Value.Undefined; }
         array_length(heap, a, args[0]);
@@ -591,8 +591,8 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         FunctionPrototype => { return Value.Undefined; },
         Object => {
             let v = arg(args, 0);
-            if v.tag() <= 1 { return allocate(heap, Node { kind: 0 }); }
-            if v.tag() == 5 { return v; }
+            if v.tag() <= value_tag::Null { return allocate(heap, Node { kind: 0 }); }
+            if v.is_object() { return v; }
             return unsupported_step(job, b, "primitive wrapper objects");
         },
         Function => { return unsupported_step(job, b, "dynamic functions"); },
@@ -603,8 +603,8 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         },
         ObjectGetPrototypeOf => {
             let v = arg(args, 0);
-            if v.tag() <= 1 { return type_error(job, "cannot convert undefined or null to object"); }
-            if v.tag() != 5 { return unsupported_step(job, b, "primitive wrapper prototypes"); }
+            if v.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
+            if !v.is_object() { return unsupported_step(job, b, "primitive wrapper prototypes"); }
             let kind = node(heap, v.id()).kind;
             if kind != 0 && kind != 1 && kind != 2 && kind != 4 && kind != 13 && kind != 14 && kind != 20 && kind != 21 { return unsupported_step(job, b, "a runtime form"); }
             return prototype(heap, v.id());
@@ -614,21 +614,21 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
             let own = b == Builtin.ObjectHasOwn;
             let o = if own { arg(args, 0) } else { receiver };
             // Object.hasOwn converts its object first, hasOwnProperty its key.
-            if own && o.tag() <= 1 { return type_error(job, "cannot convert undefined or null to object"); }
+            if own && o.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
             let k = property_key(job, b, arg(args, if own { 1 } else { 0 }));
             if heap.fault != Fault.None { return Value.Undefined; }
-            if o.tag() <= 1 { return type_error(job, "cannot convert undefined or null to object"); }
+            if o.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
             let found = has_own(job, b, o, k);
             return if heap.fault == Fault.None { boolean(found) } else { Value.Undefined };
         },
         ObjectPrototypeValueOf => {
-            if receiver.tag() <= 1 { return type_error(job, "cannot convert undefined or null to object"); }
-            if receiver.tag() != 5 { return unsupported_step(job, b, "primitive wrapper objects"); }
+            if receiver.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
+            if !receiver.is_object() { return unsupported_step(job, b, "primitive wrapper objects"); }
             return receiver;
         },
         ObjectPrototypeToString => { return object_tag(job, receiver); },
         ObjectGetOwnPropertyDescriptor => { return own_descriptor(job, b, arg(args, 0), arg(args, 1)); },
-        ArrayIsArray => { let v = arg(args, 0); return boolean(v.tag() == 5 && node(heap, v.id()).kind == 1); },
+        ArrayIsArray => { let v = arg(args, 0); return boolean(v.is_object() && node(heap, v.id()).kind == 1); },
         ErrorPrototypeToString => { return error_to_string(job, receiver); },
         FunctionPrototypeCall => { return unsupported_step(job, b, "called from a native frame"); },
         // The dispatch loop runs these as native frames (native_start); a

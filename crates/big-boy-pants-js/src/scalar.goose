@@ -14,10 +14,10 @@ fn scalar(image: const program::Image&, output: tiny::Program&) -> bool {
     for i in program::word(bytes, 16) {
         let at = l.constants + i * 12; let tag = program::word(bytes, at);
         let value: tiny::Value = match tag {
-            0 => tiny::Value.Undefined,
-            1 => tiny::Value.Null,
-            2 => tiny::Value.Bool { value: program::word(bytes, at + 4) == 1 },
-            3 => { let n, ok = binary::read_f64le(bytes, at + 4); assert(ok); tiny::Value.Number { value: n } },
+            constant::Undefined => tiny::Value.Undefined,
+            constant::Null => tiny::Value.Null,
+            constant::Bool => tiny::Value.Bool { value: program::word(bytes, at + 4) == 1 },
+            constant::Number => { let n, ok = binary::read_f64le(bytes, at + 4); assert(ok); tiny::Value.Number { value: n } },
             _ => { return false; },
         };
         constants.push(value);

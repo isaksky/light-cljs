@@ -16,7 +16,7 @@ fn typed_outcome(heap: source::Heap&, job: source::Job&) {
     var value: u8[>..] = [];
     if job.fault == source::Fault.None || job.thrown { source::canonical(heap, job.result, value); }
     else { format(value, "error:", if job.fault == source::Fault.TypeError { "TypeError" } else { "ReferenceError" }); }
-    if job.result.tag() == 5 && (job.fault == source::Fault.None || job.thrown) { print("infrastructure:unsupported outcome identity"); error(); return; }
+    if job.result.is_object() && (job.fault == source::Fault.None || job.thrown) { print("infrastructure:unsupported outcome identity"); error(); return; }
     var out: u8[>..] = []; format(out, "{:status :", if job.fault == source::Fault.None { "returned" } else { "thrown" }, " :value \"", value, "\" :effects [");
     for write in job.writes {
         if source::key_is(heap, write.key, "observed") { var effect: u8[>..] = []; source::canonical(heap, write.value, effect); format(out, "\"", effect, "\" "); }
@@ -59,7 +59,7 @@ fn main() {
         }
         result = job.result;
         if repetitions > 1 {
-            if result.tag() != 3 { print("measurement requires a numeric source result"); error(); return; }
+            if !result.is_number() { print("measurement requires a numeric source result"); error(); return; }
             if i >= warmup { checksum += result.num(); }
         }
     }

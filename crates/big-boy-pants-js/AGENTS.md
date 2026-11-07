@@ -44,13 +44,17 @@ See [README.md](README.md) for the layout.
   expectations. Unsupported operations must fail explicitly without fallback,
   and the Goose compiler path must not use V8.
 - Use Babashka (`bb`) for new checked-in orchestration and fixture scripts.
-- No raw opcode or descriptor numbers in Goose sources. Use the names
+- No raw opcode, descriptor or tag numbers in Goose sources. Use the names
   `src/export_schema.goose` generates from the Rust registry: `opcode::Add`,
   `form_op::CljCount`, `throw_kind::Uninitialized`, `constructor::Ordinary`,
   `well_known::ToPrimitive`, `operand::Target`, `count::Captures`,
-  `flow::Branch`. A new numbering with a Rust-side source gets generated
-  names the same way (`inspection_schema()` in `rust/src/frontend/goose.rs`,
-  then `bb scripts/regenerate.bb`).
+  `flow::Branch`, and `constant::Symbol` for a GSP constant record's tag. A
+  new numbering with a Rust-side source gets generated names the same way
+  (`inspection_schema()` in `rust/src/frontend/goose.rs`, then
+  `bb scripts/regenerate.bb`). Test a VM value's variant with the predicates
+  in `src/source_vm.goose` (`v.is_object()`, `v.is_string()`, `v.is_hole()`)
+  or a `match`; only ordered tests use `v.tag()`, against `value_tag::Null`
+  and its siblings, never a number.
 
 ## Storage and branching
 

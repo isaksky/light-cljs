@@ -58,12 +58,14 @@ fn validate(bytes: const u8[:]) -> Error {
     let nf = word(bytes, 12); let nc = word(bytes, 16); let nch = word(bytes, 20); let ni = word(bytes, 24); let nu = word(bytes, 28);
     for i in nc {
         let at = l.constants + i * 12; let tag = word(bytes, at); let a = word(bytes, at + 4); let b = word(bytes, at + 8);
-        if tag == 5 || tag > 7 { return Error.Operation; }
-        if tag <= 1 && (a != 0 || b != 0) { return Error.Operation; }
-        if tag == 2 && (a > 1 || b != 0) { return Error.Operation; }
-        if tag == 4 && !range(a, b, nu) { return Error.Reference; }
-        if tag == 6 && (export_well_known_symbol(a).len == 0 || b != 0) { return Error.Operation; }
-        if tag == 7 {
+        // The tags are constant::Undefined..String and Symbol..BigInt; the gap
+        // between String and Symbol is the VM's heap-reference value tag.
+        if tag > constant::String && tag < constant::Symbol || tag > constant::BigInt { return Error.Operation; }
+        if (tag == constant::Undefined || tag == constant::Null) && (a != 0 || b != 0) { return Error.Operation; }
+        if tag == constant::Bool && (a > 1 || b != 0) { return Error.Operation; }
+        if tag == constant::String && !range(a, b, nu) { return Error.Reference; }
+        if tag == constant::Symbol && (export_well_known_symbol(a).len == 0 || b != 0) { return Error.Operation; }
+        if tag == constant::BigInt {
             // Sign unit (0 or 1), then little-endian 16-bit digits with no
             // high zero digit; zero is the single unit 0.
             if b == 0 || !range(a, b, nu) { return Error.Reference; }

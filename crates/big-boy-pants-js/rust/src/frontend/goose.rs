@@ -111,10 +111,27 @@ pub const DIRECT_EVAL_CALLS: [Opcode; 4] = [
     Opcode::CallMethodSpread,
 ];
 
-/// Constant tags 6 and 7 (5 is never used: it is the Goose VM's heap-reference
-/// value tag). A Symbol constant names a well-known symbol by its index here.
+/// The tag of a constant record (its first word). 5 is never used: it is the
+/// Goose VM's heap-reference value tag. A Symbol constant names a well-known
+/// symbol by its index here.
+const UNDEFINED_CONSTANT: u32 = 0;
+const NULL_CONSTANT: u32 = 1;
+const BOOL_CONSTANT: u32 = 2;
+const NUMBER_CONSTANT: u32 = 3;
+const STRING_CONSTANT: u32 = 4;
 const SYMBOL_CONSTANT: u32 = 6;
 const BIGINT_CONSTANT: u32 = 7;
+/// Every constant tag, named as its `Primitive` variant (`constant::` in
+/// `inspection_schema`).
+const CONSTANT_TAGS: [(&str, u32); 7] = [
+    ("Undefined", UNDEFINED_CONSTANT),
+    ("Null", NULL_CONSTANT),
+    ("Bool", BOOL_CONSTANT),
+    ("Number", NUMBER_CONSTANT),
+    ("String", STRING_CONSTANT),
+    ("Symbol", SYMBOL_CONSTANT),
+    ("BigInt", BIGINT_CONSTANT),
+];
 pub const WELL_KNOWN_SYMBOLS: [&str; 15] = [
     "iterator",
     "asyncIterator",
@@ -300,19 +317,19 @@ impl Tables {
         let constant_start = bounded(self.constants.len(), MAX_RECORDS, source)?;
         for value in &spec.constants {
             let row = match value {
-                Primitive::Undefined => [0, 0, 0],
-                Primitive::Null => [1, 0, 0],
-                Primitive::Bool(b) => [2, u32::from(*b), 0],
+                Primitive::Undefined => [UNDEFINED_CONSTANT, 0, 0],
+                Primitive::Null => [NULL_CONSTANT, 0, 0],
+                Primitive::Bool(b) => [BOOL_CONSTANT, u32::from(*b), 0],
                 Primitive::Number(n) => {
                     let b = n.to_bits();
-                    [3, b as u32, (b >> 32) as u32]
+                    [NUMBER_CONSTANT, b as u32, (b >> 32) as u32]
                 }
                 Primitive::String(s) => {
                     if let Ok(text) = String::from_utf16(s.code_units()) {
                         self.string_constants.insert(text);
                     }
                     let (start, len) = self.string(s.code_units(), source)?;
-                    [4, start, len]
+                    [STRING_CONSTANT, start, len]
                 }
                 Primitive::Symbol(symbol) => {
                     // The frontend emits only well-known symbols
@@ -549,6 +566,13 @@ pub fn inspection_schema() -> String {
             "let well_known::{}{rest} = {index};\n",
             first.to_uppercase()
         ));
+    }
+    text.push_str(
+        "\n// The tag of every constant record (its first word), named as its\n\
+         // `Primitive` variant. 5 is never a constant tag.\n",
+    );
+    for (variant, tag) in CONSTANT_TAGS {
+        text.push_str(&format!("let constant::{variant} = {tag};\n"));
     }
     text.push_str("\n// A function's constructor kind (function flags bits 8..15).\n");
     for (kind, code) in CONSTRUCTOR_KINDS.iter().zip(0..) {

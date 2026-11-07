@@ -16,16 +16,16 @@ struct Census {
     dead_nodes: i64 = 0, dead_values: i64 = 0, dead_properties: i64 = 0, dead_units: i64 = 0,
 }
 fn mark(heap: const source::Heap&, v: source::Value, nodes: bool[>..]&, units: bool[>..]&, work: i64[>..<]&) {
-    if v.tag() == 5 && v.id() < nodes.len && !nodes[v.id()] { nodes[v.id()] = true; work.push(v.id()); }
+    if v.is_object() && v.id() < nodes.len && !nodes[v.id()] { nodes[v.id()] = true; work.push(v.id()); }
     // Unit rows: the UTF-16 table, then the Latin-1 table.
-    if v.tag() == 4 && v.sid() < heap.strings.len {
+    if v.is_string() && v.sid() < heap.strings.len {
         let r = heap.strings[v.sid()]; let base = if r.wide { 0 } else { heap.units.len }; let length = if r.wide { heap.units.len } else { heap.latin1.len };
         if r.len > 0 && r.len <= length - r.start { for i in r.start..(r.start + r.len) { units[base + i] = true; } }
     }
 }
 // A property's value: an accessor marks its pair's functions.
 fn mark_slot(heap: const source::Heap&, v: source::Value, nodes: bool[>..]&, units: bool[>..]&, work: i64[>..<]&) {
-    if v.tag() == -2 { let p = source::pair(heap, v); mark(heap, p.get, nodes, units, work); mark(heap, p.set, nodes, units, work); } else { mark(heap, v, nodes, units, work); }
+    if v.is_accessor() { let p = source::pair(heap, v); mark(heap, p.get, nodes, units, work); mark(heap, p.set, nodes, units, work); } else { mark(heap, v, nodes, units, work); }
 }
 fn mark_activation(heap: const source::Heap&, row: u32, values: bool[>..]&, nodes: bool[>..]&, units: bool[>..]&, work: i64[>..<]&) {
     let a = source::activation(heap, row);

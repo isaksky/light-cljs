@@ -41,7 +41,7 @@ fn session(arguments: u8[:][>..]&) -> i64 {
         if input.roots.len != 4 { print("bridge input:MalformedRoots"); exit(1); }
         var imported: source::Value[>..] = []; if !bridge::import_graph(heap, input, imported, c) { print("bridge import:", c.error); exit(1); }
         let call = imported[0]; let env = imported[1]; let argv = imported[2]; let which = source::form_value(heap, imported[3]);
-        if which.tag() != 3 || !(which.num() >= 0 && which.num() < macros.len) || which.num() != (which.num() as i64) || source::form_kind(heap, argv) != 6 { print("bridge input:MalformedArguments"); exit(1); }
+        if !which.is_number() || !(which.num() >= 0 && which.num() < macros.len) || which.num() != (which.num() as i64) || source::form_kind(heap, argv) != 6 { print("bridge input:MalformedArguments"); exit(1); }
         var params: source::Value[>..] = [call, env]; for i in source::form_count(heap, argv) { params.push(source::form_nth(heap, argv, i)); }
         let ready = clock_ns();
         let nodes_before = heap.nodes.len; let values_before = heap.values.len; let work_before = heap.work;

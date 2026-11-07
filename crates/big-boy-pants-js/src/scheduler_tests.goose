@@ -19,7 +19,7 @@ fn prepare(code: source::Code&, heap: source::Heap&, roots: snapshot::Binding[>.
     roots.push(snapshot::Binding { id: 1, generation: 1, value: rt });
     // No helper result exists in this initialized base. This is intentionally
     // distinct from snapshot_fixture's preinitialized isolation workload.
-    assert(source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")).tag() == 0);
+    assert(source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")).is_undefined());
 }
 fn job(id: i64, entry: i64, call: bool = false, delay: i64 = 0) -> scheduler::Spec {
     var s = scheduler::Spec { id: id, key: key(id), entry: entry, runtime_binding: 1, call_result: call, delay_ms: delay };
@@ -216,7 +216,7 @@ thread_fn root_reads(base: snapshot::Snapshot) {
     assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), c));
     let receiver = source::allocate(heap, source::Node { kind: 0 }); let name = source::text(heap, "root");
     assert(source::put(heap, receiver, name, source::Value.Undefined));
-    assert(source::form_op(heap, form_op::CljReadRoot, [receiver, source::nil(), name]).tag() == 0 && heap.fault == source::Fault.None);
+    assert(source::form_op(heap, form_op::CljReadRoot, [receiver, source::nil(), name]).is_undefined() && heap.fault == source::Fault.None);
     source::form_op(heap, form_op::CljReadRoot, [receiver, source::nil(), source::text(heap, "missing")]); assert(heap.fault == source::Fault.DependencyNeed);
 }
 fn budgets_and_control(base: const snapshot::Snapshot&, entries: const i64[:]) {

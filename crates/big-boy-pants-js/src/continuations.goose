@@ -145,7 +145,7 @@ fn plain_bytes(t: Task, out: u8[>..]&) { out.append(bytes_of([t.target, t.thenab
 
 inline fn generator_kind() -> i64 { return 20; }
 inline fn promise_kind() -> i64 { return 21; }
-inline fn is_promise(heap: const Heap&, v: Value) -> bool { return v.tag() == 5 && node(heap, v.id()).kind == promise_kind(); }
+inline fn is_promise(heap: const Heap&, v: Value) -> bool { return v.is_object() && node(heap, v.id()).kind == promise_kind(); }
 
 // Rows of heap.conts, named like every table's (light-cljs-800).
 fn cont_row(heap: const Heap&, r: i64) -> Cont { if r < 0 || r >= heap.conts.len { abort("row is not in table conts"); } return heap.conts[r]; }
@@ -208,8 +208,8 @@ fn detach_run(job: Job&, from: i64, reuse: i64, charged: bool) -> i64 {
     var hb = job.handlers.len; while hb > 0 && job.handlers[hb - 1].frame >= from { hb -= 1; }
     let nh = job.handlers.len - hb;
     // Stacks never hold a hole (Empty); a run never does either (snapshot::validate).
-    for v in job.locals[lb..] { if v.tag() == -1 { heap.fault = Fault.InvalidState; return -1; } }
-    for v in job.operands[ob..] { if v.tag() == -1 { heap.fault = Fault.InvalidState; return -1; } }
+    for v in job.locals[lb..] { if v.is_hole() { heap.fault = Fault.InvalidState; return -1; } }
+    for v in job.operands[ob..] { if v.is_hole() { heap.fault = Fault.InvalidState; return -1; } }
     // Frame bases only rise up the stack, and every pc is an instruction or a native step.
     for f in job.frames[from..] { if f.pc < 0 || f.local_base < lb || f.operand_base < ob { heap.fault = Fault.InvalidState; return -1; } }
     var a = Activation { frames: no_row(), frame_count: nf as u32, frame_capacity: 0, values: 0, locals: nl as u32, operands: no as u32, capacity: 0, handlers: no_row(), handler_count: nh as u32, handler_capacity: 0 };
@@ -295,8 +295,8 @@ fn generator_prototype_of(job: Job&, callee: Value) -> Value {
     if heap.fault != Fault.None { return Value.Undefined; }
     let v, getter = lookup(heap, callee, k);
     if heap.fault != Fault.None { return Value.Undefined; }
-    if getter.tag() == 5 { unsupported_detail(job, "a generator function's prototype getter"); return Value.Undefined; }
-    return if v.tag() == 5 { v } else { object(generator_prototype_row()) };
+    if getter.is_object() { unsupported_detail(job, "a generator function's prototype getter"); return Value.Undefined; }
+    return if v.is_object() { v } else { object(generator_prototype_row()) };
 }
 // GeneratorInitialYield at `at`, after the parameters are bound.
 fn initial_yield(job: Job&, top: i64, at: i64) {
@@ -328,7 +328,7 @@ fn generator_yield(job: Job&, top: i64, at: i64) {
 fn start_resume(job: Job&, b: Builtin, receiver: Value, v: Value, base: i64) {
     let heap .= job.heap;
     job.operands.resize(base);
-    if receiver.tag() != 5 || node(heap, receiver.id()).kind != generator_kind() { type_error(job, "not a generator"); return; }
+    if !receiver.is_object() || node(heap, receiver.id()).kind != generator_kind() { type_error(job, "not a generator"); return; }
     if node(heap, receiver.id()).length == 2 { type_error(job, "cannot invoke a running generator"); return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
     let kind: u8 = if b == Builtin.GeneratorPrototypeNext { 0 } else if b == Builtin.GeneratorPrototypeReturn { 1 } else { 2 };
@@ -427,7 +427,7 @@ fn resolve_promise(job: Job&, p: i64, v: Value) {
         settle_promise(job, p, v, false);
         return;
     }
-    if v.tag() == 5 && thenable(job, v) { return; }
+    if v.is_object() && thenable(job, v) { return; }
     if heap.fault == Fault.None { settle_promise(job, p, v, false); }
 }
 // Promise v's visible `then`: 0 the intrinsic one (no own `then`, its
@@ -441,7 +441,7 @@ fn promise_then(job: Job&, v: Value) -> i64 {
     let own = own_entry(heap, v, k);
     if heap.fault != Fault.None { return -1; }
     let proto = prototype(heap, v.id());
-    if !own.found && proto.tag() == 5 && proto.id() == promise_prototype_row() {
+    if !own.found && proto.is_object() && proto.id() == promise_prototype_row() {
         let p = own_entry(heap, proto, k);
         if heap.fault != Fault.None { return -1; }
         if p.found && is_pending(p.value) { return 0; }
@@ -456,7 +456,7 @@ fn thenable(job: Job&, v: Value) -> bool {
     if heap.fault != Fault.None { return true; }
     let then, getter = lookup(heap, v, k);
     if heap.fault != Fault.None { return true; }
-    if getter.tag() == 5 || callable(heap, then) { unsupported_detail(job, "resolving with a thenable object"); return true; }
+    if getter.is_object() || callable(heap, then) { unsupported_detail(job, "resolving with a thenable object"); return true; }
     return false;
 }
 
@@ -497,7 +497,7 @@ fn await_value(job: Job&, top: i64, at: i64) {
     let v = job.operands[job.operands.len - 1];
     var q = v;
     if !is_promise(heap, v) {
-        if v.tag() == 5 && thenable(job, v) { return; }
+        if v.is_object() && thenable(job, v) { return; }
         q = new_promise(heap);
         if heap.fault != Fault.None { return; }
         settle_promise(job, q.id(), v, false);
