@@ -120,7 +120,7 @@ row(((a = 1) => a)() === 1);
 { function F(a = this) { this.d = a; } const o = new F(); row(o.d === o); }
 { let F = (a = this) => a; row(F() === globalThis); }
 // An object literal default with an escaped reserved-word key.
-{ const f = (a = {if: 1, b: 2}) => a.if + a.b; row(f() === 3); }
+{ const f = (a = {\u0069f: 1, b: 2}) => a.if + a.b; row(f() === 3); }
 // Rest parameters: an unmapped `arguments`, and a default that closes over
 // the rest binding.
 {

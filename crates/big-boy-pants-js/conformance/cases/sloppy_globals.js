@@ -42,7 +42,7 @@ let closedW = 1;
 row((function () { return delete closedW; })() === false && closedW === 1);
 { let f = function self() { return delete self; }; row(f() === false); }
 row(delete undefined === false && delete NaN === false && delete Infinity === false);
-row(delete (/* comment */ Infinity) === false && delete undefined === false);
+row(delete (/* comment */ Infinity) === false && delete \u0075ndefined === false);
 NaN;
 row(delete (/* NaN */ 1) && delete (NaN, 1));
 // Compound assignment and update of an implicit global, for-in to an
