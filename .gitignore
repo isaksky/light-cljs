@@ -7,3 +7,7 @@
 /site/dist
 .light-cljs/
 /examples/features/out/
+
+# Build directories left by the bbp Goose scripts (smoke.bb, compiler.bb)
+crates/big-boy-pants-js/scripts/.goose-smoke-*/
+crates/big-boy-pants-js/scripts/.goose-compiler-*/
