@@ -1123,6 +1123,8 @@ mod serial_tests {
         for (name, expected) in [
             ("script-declarations", "boolean:true"),
             ("script-setter", "goose"),
+            // A Symbol.toPrimitive getter Goose installs (light-cljs-828).
+            ("to-primitive-getter", "goose"),
             ("script-reserved-function", "number:1"),
             ("script-reserved-let", "number:2"),
             ("script-reserved-var", "boolean:false"),

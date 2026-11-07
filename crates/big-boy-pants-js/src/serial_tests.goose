@@ -74,6 +74,12 @@ fn install(heap: source::Heap&, setup: i64) {
         let k = source::key_named(heap, "probe"); let attrs = source::attr_enumerable() | source::attr_configurable();
         assert(source::define_own(heap, global, k, source::closure(heap, named_function(heap.code, "probeGet"), []), attrs, 1));
         assert(source::define_own(heap, global, k, source::closure(heap, named_function(heap.code, "probeSet"), []), attrs, 2));
+    } else if setup == 4 {
+        // `hooked`: an object whose Symbol.toPrimitive is an accessor with
+        // hookGet as its getter (to-primitive-getter.js).
+        let hooked = source::allocate(heap, source::Node { kind: 0 }); let attrs = source::attr_configurable();
+        assert(source::define_own(heap, hooked.id(), source::Value.Symbol { s: well_known::ToPrimitive }, source::closure(heap, named_function(heap.code, "hookGet"), []), attrs, 1));
+        assert(source::define_own(heap, global, source::key_named(heap, "hooked"), hooked, source::attr_writable() | source::attr_configurable()));
     } else {
         let k = source::key_named(heap, "reserved");
         assert(source::define_own(heap, global, k, source::number(1), if setup == 2 { 0 } else { source::attr_writable() | source::attr_enumerable() }));
@@ -537,6 +543,9 @@ fn control_flow() {
     // keys, Symbol.toPrimitive's hints and a getter-supplied method, each
     // conversion once at every cut.
     check(embed_file("../corpus/serial/to-primitive.gsp"), "boolean:true");
+    // A Symbol.toPrimitive getter the test installs: its function, null,
+    // non-callable and throwing results.
+    check(embed_file("../corpus/serial/to-primitive-getter.gsp"), "boolean:true", source::Fault.None, 4);
     // map and forEach (light-cljs-789): their callbacks, getters and the
     // length's valueOf run in the built-in's native frame.
     check(embed_file("../corpus/serial/array-callbacks.gsp"), "boolean:true");

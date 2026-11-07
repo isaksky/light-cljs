@@ -7,7 +7,7 @@
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
   "6d003c9fd903965cd237a7fa422d2bdbae948423b1b95cbf81ccefdd924c6b04",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "7067ca18c69d27c7033b889ad5b27ec0259355fc1bc61e68e66aee0d220370bf",
+  "75842e23074c26282e11cddd83b26ff85fee1d1c03df46fb51bd357a844ed762",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
   "1a2108185dffceee40083c348fb8b306d46c392910ab5036cfe75b0ae45a205b",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
@@ -417,6 +417,10 @@
   "7232b13aa48947df9373a147fe423047a50d73c1cd7eef6cc0a9e017e13e7a31",
   "corpus/serial/tdz.js"
   "f1dbb09e8c5f266296006c98f401387b54d1c5bfd01611755116625439d21c90",
+  "corpus/serial/to-primitive-getter.gsp"
+  "350c84a5947571cb67e45026caaa3e7fefb32c3deed17d22585c6d83d5828ccf",
+  "corpus/serial/to-primitive-getter.js"
+  "ab05f88ce047973716d7801ac869ed4cbd08bfa91e14cb7dc135620e7dc1ad42",
   "corpus/serial/to-primitive.gsp"
   "50c2669fa4bc0cf1a2388adf33397241b24dd6e0848f4380de8ee78dc839730b",
   "corpus/serial/to-primitive.js"

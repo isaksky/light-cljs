@@ -1643,7 +1643,7 @@ fn goose_compiler_control_flow_across_helper_waits_and_cancellation() {
     const ROOTS: [(&str, usize); 3] = [("fixture/a", 1), ("fixture/b", 2), ("fixture/s", 3)];
     // Each body runs inside two finally blocks of the macro's frame; the
     // result is the cleanup order's digits, then the completion values.
-    let cases: [(&str, &str, i64, &[usize]); 5] = [
+    let cases: [(&str, &str, i64, &[usize]); 6] = [
         (
             "return",
             "function f() { try { try { note(1); return 7; } finally { note(2); rec.waited = read('fixture/a'); note(3); } } finally { rec.frame = 1; note(4); } } value = f() + rec.waited;",
@@ -1672,6 +1672,16 @@ fn goose_compiler_control_flow_across_helper_waits_and_cancellation() {
         (
             "to-primitive-string",
             "let calls = 0; const s = { valueOf: function () { try { calls += 1; note(1); return read('fixture/s'); } finally { rec.frame = 1; note(4); } } }; value = ((s + 'y') === 'xy' ? 5 : 0) + calls * 100;",
+            1489105,
+            &[3],
+        ),
+        // A property key's toString demands the root inside the Convert
+        // frame of an assignment (light-cljs-828): the base, the converted
+        // key and the assigned value survive the wait, and the key converts
+        // once.
+        (
+            "to-primitive-key",
+            "let calls = 0; const k = { toString: function () { try { calls += 1; note(1); return read('fixture/s'); } finally { rec.frame = 1; note(4); } } }; const o = {}; const r = (o[k] = 5); value = (o.x === 5 && r === 5 ? 5 : 0) + calls * 100;",
             1489105,
             &[3],
         ),
