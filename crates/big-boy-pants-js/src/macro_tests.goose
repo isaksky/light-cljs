@@ -114,9 +114,9 @@ thread_fn bridge_smoke() {
     {
         var heap = source::Heap { code: code }; assert(source::initialize(heap));
         var g = bridge::Graph {}; g.bytes.append("one two"); g.sources.push(source::SourceRange { start: 0, count: 7 });
-        g.nodes.push(bridge::Form { tag: 2, number: 1, origin: 0, source: 0, span_start: 0, span_end: 3 });
-        g.nodes.push(bridge::Form { tag: 2, number: 1, origin: 1, source: 0, span_start: 4, span_end: 7 });
-        g.children.append([0, 1, 0]); g.nodes.push(bridge::Form { tag: 7, start: 0, count: 3 }); g.roots.push(2);
+        g.nodes.push(bridge::Form { tag: form_tag::Number, number: 1, origin: 0, source: 0, span_start: 0, span_end: 3 });
+        g.nodes.push(bridge::Form { tag: form_tag::Number, number: 1, origin: 1, source: 0, span_start: 4, span_end: 7 });
+        g.children.append([0, 1, 0]); g.nodes.push(bridge::Form { tag: form_tag::Vector, start: 0, count: 3 }); g.roots.push(2);
         var c = bridge::Control {}; var roots: source::Value[>..] = [];
         assert(bridge::import_graph(heap, g, roots, c));
         let a = source::form_nth(heap, roots[0], 0); let b = source::form_nth(heap, roots[0], 1); let again = source::form_nth(heap, roots[0], 2);

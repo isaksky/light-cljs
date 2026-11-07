@@ -227,11 +227,11 @@ fn provenance_artifact(base: const snapshot::Snapshot&, identity: bool) -> artif
     var graph = bridge::Graph {};
     if identity { graph.sources.push(source::SourceRange { start: 0, count: 7, identity: 42 }); } else { graph.bytes.append("one two"); graph.sources.push(source::SourceRange { start: 0, count: 7 }); }
     graph.units.append([0xD83D, 0xDE00, 0xD800, 'n', 's', 'x']);
-    graph.nodes.push(bridge::Form { tag: 2, number: 1, origin: 10, source: 0, span_start: 0, span_end: 3 });
-    graph.nodes.push(bridge::Form { tag: 2, number: 1, origin: 11, source: 0, span_start: 4, span_end: 7 });
-    graph.nodes.push(bridge::Form { tag: 3, start: 0, count: 3 }); graph.nodes.push(bridge::Form { tag: 8 });
-    graph.nodes.push(bridge::Form { tag: 4, start: 5, count: 1, ns_start: 3, ns_count: 2, metadata: 3 });
-    graph.children.append([0, 1, 0, 2, 4]); graph.nodes.push(bridge::Form { tag: 7, start: 0, count: 5 }); graph.roots.push(5);
+    graph.nodes.push(bridge::Form { tag: form_tag::Number, number: 1, origin: 10, source: 0, span_start: 0, span_end: 3 });
+    graph.nodes.push(bridge::Form { tag: form_tag::Number, number: 1, origin: 11, source: 0, span_start: 4, span_end: 7 });
+    graph.nodes.push(bridge::Form { tag: form_tag::String, start: 0, count: 3 }); graph.nodes.push(bridge::Form { tag: form_tag::Map });
+    graph.nodes.push(bridge::Form { tag: form_tag::Symbol, start: 5, count: 1, ns_start: 3, ns_count: 2, metadata: 3 });
+    graph.children.append([0, 1, 0, 2, 4]); graph.nodes.push(bridge::Form { tag: form_tag::Vector, start: 0, count: 5 }); graph.roots.push(5);
     var bc = bridge::Control {}; var values: source::Value[>..] = []; assert(bridge::import_graph(heap, graph, values, bc));
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
     let a = artifact::export_graph(heap, base, imports, values[0], 60, 1, c); assert(c.error == artifact::Error.None); return copy(a);
@@ -441,7 +441,7 @@ thread_fn source_spans(base: snapshot::Snapshot) {
     defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
     var graph = bridge::Graph {}; graph.bytes.append("é😀"); graph.sources.push(source::SourceRange { start: 0, count: 6 });
-    graph.nodes.push(bridge::Form { tag: 2, number: 7, source: 0, span_start: 0, span_end: 6 }); graph.roots.push(0);
+    graph.nodes.push(bridge::Form { tag: form_tag::Number, number: 7, source: 0, span_start: 0, span_end: 6 }); graph.roots.push(0);
     var bc = bridge::Control {}; var values: source::Value[>..] = []; assert(bridge::import_graph(heap, graph, values, bc));
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity }; var c = artifact::Control {};
     let saved = artifact::export_graph(heap, base, imports, values[0], 701, 1, c); assert(c.error == artifact::Error.None);

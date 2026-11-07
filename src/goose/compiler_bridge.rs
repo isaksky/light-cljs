@@ -111,6 +111,52 @@ pub(super) const MAX_BYTES: usize = 16 * 1024 * 1024;
 /// six counts: [`Graph::omitted_nodes`] and the rest, as
 /// form_bridge.goose's `Omitted` reads them.
 const OMISSION_WORDS: usize = 6;
+/// GFB2's node tags, a node's first word. form_bridge.goose names the same
+/// numbers (`form_tag::Nil` ..), and `form_tags_match_the_goose_names`
+/// checks that the two agree.
+mod form_tag {
+    pub const NIL: u32 = 0;
+    pub const BOOLEAN: u32 = 1;
+    pub const NUMBER: u32 = 2;
+    pub const STRING: u32 = 3;
+    pub const SYMBOL: u32 = 4;
+    pub const KEYWORD: u32 = 5;
+    pub const LIST: u32 = 6;
+    pub const VECTOR: u32 = 7;
+    pub const MAP: u32 = 8;
+    pub const SET: u32 = 9;
+    /// A cell reference: Goose-only, never in a graph the compiler sends or
+    /// accepts.
+    #[cfg(test)]
+    pub const CELL: u32 = 10;
+    /// Every tag, with its Goose name.
+    #[cfg(test)]
+    pub const NAMED: [(&str, u32); 11] = [
+        ("Nil", NIL),
+        ("Boolean", BOOLEAN),
+        ("Number", NUMBER),
+        ("String", STRING),
+        ("Symbol", SYMBOL),
+        ("Keyword", KEYWORD),
+        ("List", LIST),
+        ("Vector", VECTOR),
+        ("Map", MAP),
+        ("Set", SET),
+        ("Cell", CELL),
+    ];
+    /// List, vector, map or set: a node with children.
+    pub fn collection(tag: u32) -> bool {
+        (LIST..=SET).contains(&tag)
+    }
+    /// String, symbol or keyword: a node with text.
+    pub fn textual(tag: u32) -> bool {
+        (STRING..=KEYWORD).contains(&tag)
+    }
+    /// Symbol or keyword: a node with a name and an optional namespace.
+    pub fn named(tag: u32) -> bool {
+        tag == SYMBOL || tag == KEYWORD
+    }
+}
 fn bad() -> EvalError {
     EvalError("Goose malformed or unsupported form graph".into())
 }
@@ -123,7 +169,7 @@ struct Node {
 impl Default for Node {
     fn default() -> Self {
         Self {
-            tag: 0,
+            tag: form_tag::NIL,
             number: 0.,
             fields: [0, 0, 0, -1, -1, -1, -1, 0, 0],
         }
@@ -270,17 +316,17 @@ fn compatible(
 }
 fn tag(d: &Datum) -> Result<u32, EvalError> {
     Ok(match d.kind() {
-        DatumKind::Nil => 0,
-        DatumKind::Boolean(_) => 1,
-        DatumKind::Integer(_) | DatumKind::Double(_) => 2,
-        DatumKind::String(_) => 3,
-        DatumKind::Symbol(_) => 4,
-        DatumKind::Keyword(_) => 5,
+        DatumKind::Nil => form_tag::NIL,
+        DatumKind::Boolean(_) => form_tag::BOOLEAN,
+        DatumKind::Integer(_) | DatumKind::Double(_) => form_tag::NUMBER,
+        DatumKind::String(_) => form_tag::STRING,
+        DatumKind::Symbol(_) => form_tag::SYMBOL,
+        DatumKind::Keyword(_) => form_tag::KEYWORD,
         DatumKind::Collection { kind, .. } => match kind {
-            CollectionKind::List => 6,
-            CollectionKind::Vector => 7,
-            CollectionKind::Map => 8,
-            CollectionKind::Set => 9,
+            CollectionKind::List => form_tag::LIST,
+            CollectionKind::Vector => form_tag::VECTOR,
+            CollectionKind::Map => form_tag::MAP,
+            CollectionKind::Set => form_tag::SET,
             _ => return Err(bad()),
         },
         _ => return Err(bad()),
@@ -611,7 +657,7 @@ impl Graph {
             self.omit_metadata(&meta, depth + 1, limits, c)?;
         }
         let mut n = Node {
-            tag: 8,
+            tag: form_tag::MAP,
             ..Default::default()
         };
         n.fields[0] = self.children.len() as i32;
@@ -651,7 +697,7 @@ impl Graph {
             tag: tag(&d)?,
             ..Default::default()
         };
-        if n.tag >= 6 {
+        if form_tag::collection(n.tag) {
             let ids = f
                 .children()
                 .iter()
@@ -897,29 +943,29 @@ impl Graph {
         }
         // Validate every edge, including unreachable nodes, before recursive conversion.
         for n in &g.nodes {
-            if n.tag > 9
+            if n.tag > form_tag::SET
                 || n.fields[4] < -1
                 || n.fields[4] >= nodes as i32
                 || n.fields[6] < -1
                 || n.fields[6] >= sources as i32
                 || n.fields[5] < -1
-                || (n.tag == 4 || n.tag == 5) && n.fields[3] < -1
-                || n.tag == 1 && n.number != 0. && n.number != 1.
+                || form_tag::named(n.tag) && n.fields[3] < -1
+                || n.tag == form_tag::BOOLEAN && n.number != 0. && n.number != 1.
             {
                 return Err(bad());
             }
-            if n.tag >= 6 {
+            if form_tag::collection(n.tag) {
                 g.segment(&g.children, n.fields[0], n.fields[1])?;
-            } else if n.tag >= 3 {
+            } else if form_tag::textual(n.tag) {
                 g.segment(&g.units, n.fields[0], n.fields[1])?;
-                if n.tag >= 4 && n.fields[3] != -1 {
+                if form_tag::named(n.tag) && n.fields[3] != -1 {
                     g.segment(&g.units, n.fields[2], n.fields[3])?;
                 }
             }
-            if n.tag == 8 && n.fields[1] % 2 != 0 {
+            if n.tag == form_tag::MAP && n.fields[1] % 2 != 0 {
                 return Err(bad());
             }
-            if n.fields[4] >= 0 && g.nodes[n.fields[4] as usize].tag != 8 {
+            if n.fields[4] >= 0 && g.nodes[n.fields[4] as usize].tag != form_tag::MAP {
                 return Err(bad());
             }
             if n.fields[6] >= 0 {
@@ -953,7 +999,7 @@ impl Graph {
                 let id = *id;
                 let node = &g.nodes[id];
                 states[id] = 1;
-                let children = if node.tag >= 6 {
+                let children = if form_tag::collection(node.tag) {
                     g.segment(&g.children, node.fields[0], node.fields[1])?
                 } else {
                     &[]
@@ -1041,17 +1087,17 @@ impl Graph {
                 let n = &self.g.nodes[id];
                 let f = n.fields;
                 let value = match n.tag {
-                    0 => DatumKind::Nil,
-                    1 => DatumKind::Boolean(n.number != 0.),
+                    form_tag::NIL => DatumKind::Nil,
+                    form_tag::BOOLEAN => DatumKind::Boolean(n.number != 0.),
                     // The executable runtime's scalar is an ECMAScript
                     // Number, as in the V8 bridge: preserve its exact f64 bits,
                     // including negative zero, rather than narrowing integers.
-                    2 => DatumKind::Double(n.number),
-                    3 => {
+                    form_tag::NUMBER => DatumKind::Double(n.number),
+                    form_tag::STRING => {
                         self.c.bytes(f[1] as usize * 2)?;
                         DatumKind::String(self.g.segment(&self.g.units, f[0], f[1])?.into())
                     }
-                    4 | 5 => {
+                    form_tag::SYMBOL | form_tag::KEYWORD => {
                         self.c.bytes((f[1] as usize + f[3].max(0) as usize) * 2)?;
                         let ns = if f[3] < 0 {
                             None
@@ -1059,13 +1105,13 @@ impl Graph {
                             Some(self.g.segment(&self.g.units, f[2], f[3])?)
                         };
                         let name = Name::from_utf16(ns, self.g.segment(&self.g.units, f[0], f[1])?);
-                        if n.tag == 4 {
+                        if n.tag == form_tag::SYMBOL {
                             DatumKind::Symbol(name)
                         } else {
                             DatumKind::Keyword(name)
                         }
                     }
-                    6..=9 => {
+                    form_tag::LIST..=form_tag::SET => {
                         let children = self
                             .g
                             .segment(&self.g.children, f[0], f[1])?
@@ -1074,9 +1120,9 @@ impl Graph {
                             .collect::<Result<Vec<_>, _>>()?;
                         DatumKind::Collection {
                             kind: match n.tag {
-                                6 => CollectionKind::List,
-                                7 => CollectionKind::Vector,
-                                8 => CollectionKind::Map,
+                                form_tag::LIST => CollectionKind::List,
+                                form_tag::VECTOR => CollectionKind::Vector,
+                                form_tag::MAP => CollectionKind::Map,
                                 _ => CollectionKind::Set,
                             },
                             children: children.into(),
@@ -1146,6 +1192,22 @@ mod tests {
     use super::*;
     use crate::evaluator::EvaluatorOptions;
     use std::sync::{Arc, Barrier};
+
+    /// form_bridge.goose declares `let form_tag::<Name> = <n>;` for exactly
+    /// the tags [`form_tag::NAMED`] lists, with the same numbers.
+    #[test]
+    fn form_tags_match_the_goose_names() {
+        let goose = include_str!("../../crates/big-boy-pants-js/src/form_bridge.goose");
+        let declared: Vec<(&str, u32)> = goose
+            .lines()
+            .filter_map(|line| {
+                let rest = line.strip_prefix("let form_tag::")?;
+                let (name, number) = rest.strip_suffix(';')?.split_once(" = ")?;
+                Some((name, number.parse().expect("a form tag's number")))
+            })
+            .collect();
+        assert_eq!(declared, form_tag::NAMED);
+    }
 
     fn control(polls: u64) -> ExecutionControl {
         ExecutionControl::new(&EvaluatorOptions {
@@ -1483,7 +1545,7 @@ mod tests {
         let mut built = Graph::arguments(&stored(&[&call]), limits, &budget()).unwrap();
         let element = built.children[built.nodes[built.roots[0] as usize].fields[0] as usize + 1];
         let mut fresh = Node {
-            tag: 7,
+            tag: form_tag::VECTOR,
             ..Default::default()
         };
         fresh.fields[0] = built.children.len() as i32;
@@ -1569,7 +1631,7 @@ mod tests {
         let start = graph.children.len() as i32;
         graph.children.push(id);
         let mut node = Node {
-            tag: 7,
+            tag: form_tag::VECTOR,
             ..Default::default()
         };
         node.fields[0] = start;
@@ -1606,7 +1668,7 @@ mod tests {
             let budget = Budget::new(limits.nodes, control);
             let graph = Graph {
                 nodes: vec![Node {
-                    tag: 2,
+                    tag: form_tag::NUMBER,
                     number,
                     ..Default::default()
                 }],
@@ -1695,15 +1757,17 @@ mod tests {
     /// validation reads in names, and its height from `id`.
     fn strings_and_names(g: &Graph) -> (usize, usize) {
         g.nodes.iter().fold((0, 0), |(s, n), node| match node.tag {
-            3 => (s + 1, n),
-            4 | 5 if node.fields[3] >= 0 => (s + 2, n + node.fields[3] as usize),
-            4 | 5 => (s + 1, n + node.fields[1] as usize),
+            form_tag::STRING => (s + 1, n),
+            form_tag::SYMBOL | form_tag::KEYWORD if node.fields[3] >= 0 => {
+                (s + 2, n + node.fields[3] as usize)
+            }
+            form_tag::SYMBOL | form_tag::KEYWORD => (s + 1, n + node.fields[1] as usize),
             _ => (s, n),
         })
     }
     fn height(g: &Graph, id: u32) -> usize {
         let n = &g.nodes[id as usize];
-        let mut edges = if n.tag >= 6 {
+        let mut edges = if form_tag::collection(n.tag) {
             g.children[n.fields[0] as usize..][..n.fields[1] as usize].to_vec()
         } else {
             vec![]

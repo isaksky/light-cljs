@@ -15,7 +15,7 @@ namespace cells;
 // or compare-and-sets a flat encoding back, each a message to the owner.
 //
 // A flat value (Flat) is a primitive, or a form graph (bridge::Graph in GFB2
-// bytes, with cell references as tag 10) and its process-wide identity: an
+// bytes, with cell references as form_tag::Cell) and its process-wide identity: an
 // object that leaves a job in a cell value gets one when it first leaves
 // (the owner numbers it), a job remembers the identity of every object it
 // loaded or stored (source::CellRow), and it imports each identity once, so a
@@ -40,35 +40,74 @@ namespace cells;
 // the conformance cases make no cell, so no measured workload needs one
 // (light-cljs-809's census; the JOBS line ends with the bytes held).
 
-// kind: 0 undefined, 1 null, 2 boolean (number 0 or 1), 3 number, 4 string
-// (UTF-16 little-endian units in data), 5 a form graph (GFB2 in data), 6
-// an error a delay's thunk threw (cells.goose error_flat), with an identity;
-// 7 a callable graph (light-cljs-809: a value that reaches a function, as
-// callable::encode_cell publishes it, in data), numbered as a form graph;
-// 8 a function of the session's image, its row in number.
+// A flat value's kind. Goose-private numbers: the owner and the jobs are
+// the only readers.
+let flat_kind::Undefined = 0;
+let flat_kind::Null = 1;
+// A boolean, number 0 or 1.
+let flat_kind::Bool = 2;
+let flat_kind::Number = 3;
+// UTF-16 little-endian units in data.
+let flat_kind::String = 4;
+// A form graph, GFB2 in data.
+let flat_kind::Graph = 5;
+// An error a delay's thunk threw (cells.goose error_flat), with an identity.
+let flat_kind::Thrown = 6;
+// A callable graph (light-cljs-809: a value that reaches a function, as
+// callable::encode_cell publishes it, in data), numbered as a form graph.
+let flat_kind::Callable = 7;
+// A function of the session's image, its row in number.
+let flat_kind::Function = 8;
 // A graph's nodes have identities (light-cljs-808): `nodes` holds one per
 // graph node, 0 for one the owner numbers when it is first stored and -1
 // for one that has none (a primitive child), and `root` is the root's
 // index; `identity` is the root's.
-struct Flat { kind: i64 = 0, number: f64 = 0, identity: i64 = 0, data: u8[] = [], root: i64 = 0, nodes: i64[] = [] }
-// Operations: 1 new cell of `flavor` (0 atom, 1 volatile, 2 delay) holding
-// `value`; 2 load; 3 store `value` (a delay's: realized); 4 compare-and-set:
-// store `value` if the cell holds `expected`, otherwise answer the value it
-// holds; 9 stop (the coordinator, after every job worker is joined; the
-// owner answers with Stats). A delay's (light-cljs-808): 5 force, claimed
-// by `holder` (a macro job's compiler id) when pending; 6 settle the claim
-// with `value`, its thunk's result or, `failed`, what it threw; 7 release
-// every claim `holder` holds (or just its claim of `cell`), for a job
-// that ended or a force that failed without settling.
-struct Request { slot: i64 = -1, op: i64 = 0, cell: i64 = -1, flavor: i64 = 0, expected: Flat = Flat {}, value: Flat = Flat {}, holder: i64 = 0, failed: bool = false }
-// error: 0 none, 1 the session's cell budget, 2 no such cell, 3 the session
-// is halting, 4 no owner (a program that runs no cell owner), 6 a cycle of
-// delay claims, 7 not a delay or not this holder's claim. A delay's state
-// (force and load answers): 0 pending, 1 claimed by the requester, 2
-// realized (value), 3 failed (value, what the thunk threw), 4 claimed by
+struct Flat { kind: i64 = flat_kind::Undefined, number: f64 = 0, identity: i64 = 0, data: u8[] = [], root: i64 = 0, nodes: i64[] = [] }
+// A cell's flavor.
+let cell_flavor::Atom = 0;
+let cell_flavor::Volatile = 1;
+let cell_flavor::Delay = 2;
+// A request's operation. New: a cell of `flavor` holding `value`. Store:
+// `value` (a delay's: realized). CompareAndSet: store `value` if the cell
+// holds `expected`, otherwise answer the value it holds. Stop: the
+// coordinator, after every job worker is joined; the owner answers with
+// Stats. A delay's (light-cljs-808, the operations from Force on): Force,
+// claimed by `holder` (a macro job's compiler id) when pending; Settle the
+// claim with `value`, its thunk's result or, `failed`, what it threw;
+// Release every claim `holder` holds (or just its claim of `cell`), for a
+// job that ended or a force that failed without settling.
+let cell_op::None = 0;
+let cell_op::New = 1;
+let cell_op::Load = 2;
+let cell_op::Store = 3;
+let cell_op::CompareAndSet = 4;
+let cell_op::Force = 5;
+let cell_op::Settle = 6;
+let cell_op::Release = 7;
+let cell_op::Stop = 9;
+struct Request { slot: i64 = -1, op: i64 = cell_op::None, cell: i64 = -1, flavor: i64 = cell_flavor::Atom, expected: Flat = Flat {}, value: Flat = Flat {}, holder: i64 = 0, failed: bool = false }
+// An answer's error. Budget: the session's cell budget. NoOwner: a program
+// that runs no cell owner. NotClaim: not a delay, or not this holder's
+// claim. Encode is never an answer's: a job's own failure to encode a
+// value (cells.goose), in the same numbering.
+let cell_error::None = 0;
+let cell_error::Budget = 1;
+let cell_error::NoCell = 2;
+let cell_error::Halting = 3;
+let cell_error::NoOwner = 4;
+let cell_error::Encode = 5;
+let cell_error::Cycle = 6;
+let cell_error::NotClaim = 7;
+// A delay's state (force and load answers). Claimed: by the requester.
+// Realized: value. Failed: value, what the thunk threw. Waiting: claimed by
 // another job, which the requester waits for: `epoch` names the claim, and
 // the coordinator hears Settled with it when the claim ends.
-struct Answer { ok: bool = true, error: i64 = 0, cell: i64 = -1, value: Flat = Flat {}, state: i64 = 0, epoch: i64 = 0 }
+let delay_state::Pending = 0;
+let delay_state::Claimed = 1;
+let delay_state::Realized = 2;
+let delay_state::Failed = 3;
+let delay_state::Waiting = 4;
+struct Answer { ok: bool = true, error: i64 = cell_error::None, cell: i64 = -1, value: Flat = Flat {}, state: i64 = delay_state::Pending, epoch: i64 = 0 }
 // A delay claim that ended (settled or released) while jobs waited for it,
 // for the coordinator, which resumes them (compiler_session.goose).
 struct Settled { cell: i64, epoch: i64 }
@@ -99,9 +138,9 @@ var enabled: bool = false;
 
 // One cell: its flavor and value, the value's bytes a run of `bytes` and its
 // graph's node identities a run of `ids` (root the root's index). A delay
-// (flavor 2) also has its state (Answer's), the holder of its claim, the
+// (cell_flavor::Delay) also has its state (Answer's), the holder of its claim, the
 // claim's epoch and how many jobs wait for it.
-struct Entry { flavor: i64 = 0, kind: i64 = 0, number: f64 = 0, identity: i64 = 0, start: i64 = 0, len: i64 = 0, ids_start: i64 = 0, ids_len: i64 = 0, root: i64 = 0, state: i64 = 0, holder: i64 = 0, epoch: i64 = 0, waiters: i64 = 0 }
+struct Entry { flavor: i64 = cell_flavor::Atom, kind: i64 = flat_kind::Undefined, number: f64 = 0, identity: i64 = 0, start: i64 = 0, len: i64 = 0, ids_start: i64 = 0, ids_len: i64 = 0, root: i64 = 0, state: i64 = delay_state::Pending, holder: i64 = 0, epoch: i64 = 0, waiters: i64 = 0 }
 // A job waiting for a delay another job claimed: the cycle check follows
 // these from a claim's holder.
 struct WaitEdge { holder: i64, cell: i64 }
@@ -120,14 +159,14 @@ fn budget() -> i64 {
 // thread-local storage). Its slot tokens and halt flag are set first.
 fn prepare() { qlimit<Slot>(slots()); for i in slots() { assert(qput(Slot { slot: i })); } qlimit<Halt>(1); }
 // After every job worker has exited: the owner's totals.
-fn stop() -> Stats { assert(qput(Request { op: 9 })); enabled = false; return qget<Stats>(); }
+fn stop() -> Stats { assert(qput(Request { op: cell_op::Stop })); enabled = false; return qget<Stats>(); }
 fn halt() { qput(Halt {}); }
 fn halted() -> bool { let h, present = qpoll<Halt>(); if present { assert(qput(h)); } return present; }
 // Whether a held value matches the expected one: the same identity for a
 // graph, the same primitive otherwise.
 // A job's expected value names an object by identity whichever transport
 // held it (source::expected), so the two graph kinds compare as one.
-fn graph(kind: i64) -> bool { return kind == 5 || kind == 7; }
+fn graph(kind: i64) -> bool { return kind == flat_kind::Graph || kind == flat_kind::Callable; }
 fn matches(e: const Entry&, data: const u8[:], x: const Flat&) -> bool {
     if graph(e.kind) && graph(x.kind) { return e.identity == x.identity; }
     if e.kind != x.kind { return false; }
@@ -137,7 +176,7 @@ fn serve(limit: i64) {
     var s = Store { limit: limit }; var bytes = slice_pool<u8> {}; var ids = slice_pool<i64> {};
     loop {
         let r = qget<Request>();
-        if r.op == 9 { s.stats.bytes = s.held; assert(qput(s.stats)); return; }
+        if r.op == cell_op::Stop { s.stats.bytes = s.held; assert(qput(s.stats)); return; }
         let started = clock_ns(); s.stats.operations += 1;
         let a = answer(s, bytes, ids, r);
         s.stats.owner_ns += clock_ns() - started;
@@ -150,26 +189,26 @@ fn held_value(s: const Store&, bytes: const slice_pool<u8>&, ids: const slice_po
     return Flat { kind: e.kind, number: e.number, identity: e.identity, data: bytes.items[e.start..(e.start + e.len)], root: e.root, nodes: ids.items[e.ids_start..(e.ids_start + e.ids_len)] };
 }
 fn answer(s: Store&, bytes: slice_pool<u8>&, ids: slice_pool<i64>&, r: const Request&) -> Answer {
-    if r.op == 7 { release(s, r.holder, r.cell); return Answer {}; }
-    if r.op != 1 && (r.cell < 0 || r.cell >= s.entries.len) { return Answer { ok: false, error: 2, cell: r.cell }; }
-    if r.op >= 5 && s.entries[r.cell].flavor != 2 { return Answer { ok: false, error: 7, cell: r.cell }; }
+    if r.op == cell_op::Release { release(s, r.holder, r.cell); return Answer {}; }
+    if r.op != cell_op::New && (r.cell < 0 || r.cell >= s.entries.len) { return Answer { ok: false, error: cell_error::NoCell, cell: r.cell }; }
+    if r.op >= cell_op::Force && s.entries[r.cell].flavor != cell_flavor::Delay { return Answer { ok: false, error: cell_error::NotClaim, cell: r.cell }; }
     // A load, or a compare-and-set the cell refuses, answers what the cell
     // holds; it numbers and charges nothing.
-    if r.op == 2 || r.op == 4 {
+    if r.op == cell_op::Load || r.op == cell_op::CompareAndSet {
         let e .= s.entries[r.cell];
-        if r.op == 2 || !matches(e, bytes.items[e.start..(e.start + e.len)], r.expected) {
-            if r.op == 4 { s.stats.conflicts += 1; }
-            return Answer { ok: r.op == 2, cell: r.cell, value: held_value(s, bytes, ids, r.cell), state: e.state, epoch: e.epoch };
+        if r.op == cell_op::Load || !matches(e, bytes.items[e.start..(e.start + e.len)], r.expected) {
+            if r.op == cell_op::CompareAndSet { s.stats.conflicts += 1; }
+            return Answer { ok: r.op == cell_op::Load, cell: r.cell, value: held_value(s, bytes, ids, r.cell), state: e.state, epoch: e.epoch };
         }
     }
-    if r.op == 5 { return force(s, bytes, ids, r.cell, r.holder); }
-    if r.op == 6 {
+    if r.op == cell_op::Force { return force(s, bytes, ids, r.cell, r.holder); }
+    if r.op == cell_op::Settle {
         let e .= s.entries[r.cell];
-        if e.state != 1 || e.holder != r.holder { return Answer { ok: false, error: 7, cell: r.cell }; }
+        if e.state != delay_state::Claimed || e.holder != r.holder { return Answer { ok: false, error: cell_error::NotClaim, cell: r.cell }; }
     }
     var cell = r.cell;
-    if r.op == 1 {
-        if s.entries.len + s.stats.identities + 1 > s.limit { return Answer { ok: false, error: 1, cell: -1 }; }
+    if r.op == cell_op::New {
+        if s.entries.len + s.stats.identities + 1 > s.limit { return Answer { ok: false, error: cell_error::Budget, cell: -1 }; }
         s.entries.push(Entry { flavor: r.flavor }); cell = s.entries.len - 1; s.stats.cells += 1;
     }
     let stored = store(s, bytes, ids, cell, r.value);
@@ -177,25 +216,25 @@ fn answer(s: Store&, bytes: slice_pool<u8>&, ids: slice_pool<i64>&, r: const Req
     // A delay's stored value realizes it (publication); a settled claim
     // ends, and its waiters hear of it.
     let e .= s.entries[cell];
-    if e.flavor == 2 && (r.op == 3 || r.op == 6) {
-        e.state = if r.op == 6 && r.failed { 3 } else { 2 };
-        if r.op == 6 { end_claim(s, cell); }
+    if e.flavor == cell_flavor::Delay && (r.op == cell_op::Store || r.op == cell_op::Settle) {
+        e.state = if r.op == cell_op::Settle && r.failed { delay_state::Failed } else { delay_state::Realized };
+        if r.op == cell_op::Settle { end_claim(s, cell); }
     }
     return stored;
 }
 // Store `value` into `cell`: a graph's unnumbered nodes get identities here.
 fn store(s: Store&, bytes: slice_pool<u8>&, ids: slice_pool<i64>&, cell: i64, value: const Flat&) -> Answer {
     var numbers: i64 = 0;
-    // A graph's unnumbered objects, or a thrown error (kind 6) stored for the
+    // A graph's unnumbered objects, or a thrown error (flat_kind::Thrown) stored for the
     // first time, get identities here.
     if graph(value.kind) { if value.nodes.len > 0 { for n in value.nodes { if n == 0 { numbers += 1; } } } else if value.identity == 0 { numbers = 1; } }
-    if value.kind == 6 && value.identity == 0 { numbers = 1; }
+    if value.kind == flat_kind::Thrown && value.identity == 0 { numbers = 1; }
     let freed = s.entries[cell].len;
-    if numbers > 0 && s.entries.len + s.stats.identities + numbers > s.limit || s.held - freed + value.data.len > byte_budget() { return Answer { ok: false, error: 1, cell: cell }; }
+    if numbers > 0 && s.entries.len + s.stats.identities + numbers > s.limit || s.held - freed + value.data.len > byte_budget() { return Answer { ok: false, error: cell_error::Budget, cell: cell }; }
     var nodes: i64[>..] = []; nodes.append(value.nodes);
     var identity = value.identity;
     for n, i in nodes { if n == 0 { nodes[i] = s.next; s.next += 1; s.stats.identities += 1; } }
-    if graph(value.kind) && nodes.len > 0 { identity = nodes[value.root]; } else if (graph(value.kind) || value.kind == 6) && identity == 0 { identity = s.next; s.next += 1; s.stats.identities += 1; }
+    if graph(value.kind) && nodes.len > 0 { identity = nodes[value.root]; } else if (graph(value.kind) || value.kind == flat_kind::Thrown) && identity == 0 { identity = s.next; s.next += 1; s.stats.identities += 1; }
     let e .= s.entries[cell];
     s.held -= e.len; if e.len > 0 { bytes.free_slice(bytes.items[e.start..(e.start + e.len)]); }
     if e.ids_len > 0 { ids.free_slice(ids.items[e.ids_start..(e.ids_start + e.ids_len)]); }
@@ -214,18 +253,18 @@ fn force(s: Store&, bytes: const slice_pool<u8>&, ids: const slice_pool<i64>&, c
     // A retry ends the requester's earlier wait.
     drop_edges(s, holder, -1);
     let e .= s.entries[cell];
-    if e.state == 2 || e.state == 3 { return Answer { cell: cell, value: held_value(s, bytes, ids, cell), state: e.state, epoch: e.epoch }; }
-    if e.state == 0 { e.state = 1; e.holder = holder; e.epoch += 1; return Answer { cell: cell, state: 1, epoch: e.epoch }; }
+    if e.state == delay_state::Realized || e.state == delay_state::Failed { return Answer { cell: cell, value: held_value(s, bytes, ids, cell), state: e.state, epoch: e.epoch }; }
+    if e.state == delay_state::Pending { e.state = delay_state::Claimed; e.holder = holder; e.epoch += 1; return Answer { cell: cell, state: delay_state::Claimed, epoch: e.epoch }; }
     var at = e.holder; var steps: i64 = 0;
     while steps <= s.edges.len {
-        if at == holder { return Answer { ok: false, error: 6, cell: cell }; }
+        if at == holder { return Answer { ok: false, error: cell_error::Cycle, cell: cell }; }
         var next: i64 = -1;
         for w in s.edges { if w.holder == at { next = w.cell; break; } }
-        if next < 0 || s.entries[next].state != 1 { break; }
+        if next < 0 || s.entries[next].state != delay_state::Claimed { break; }
         at = s.entries[next].holder; steps += 1;
     }
     s.edges.push(WaitEdge { holder: holder, cell: cell }); e.waiters += 1; s.stats.waits += 1;
-    return Answer { cell: cell, state: 4, epoch: e.epoch };
+    return Answer { cell: cell, state: delay_state::Waiting, epoch: e.epoch };
 }
 // The claim of `cell` ended: its waiters hear of it, and no edge points at it.
 fn end_claim(s: Store&, cell: i64) {
@@ -239,7 +278,7 @@ fn end_claim(s: Store&, cell: i64) {
 // could not catch, a cancellation) or could not settle one.
 fn release(s: Store&, holder: i64, cell: i64) {
     if cell < 0 { drop_edges(s, holder, -1); }
-    for i in s.entries.len { if (cell < 0 || i == cell) && s.entries[i].flavor == 2 && s.entries[i].state == 1 && s.entries[i].holder == holder { s.entries[i].state = 0; end_claim(s, i); } }
+    for i in s.entries.len { if (cell < 0 || i == cell) && s.entries[i].flavor == cell_flavor::Delay && s.entries[i].state == delay_state::Claimed && s.entries[i].holder == holder { s.entries[i].state = delay_state::Pending; end_claim(s, i); } }
 }
 // Drop the wait edges of `holder`, or those into `cell`.
 fn drop_edges(s: Store&, holder: i64, cell: i64) {
@@ -267,14 +306,14 @@ fn receive(slot: i64) -> Answer, bool {
 }
 // One request and its answer, under a slot token.
 fn exchange(r: Request) -> Answer {
-    if !enabled { return Answer { ok: false, error: 4 }; }
+    if !enabled { return Answer { ok: false, error: cell_error::NoOwner }; }
     var slot: i64 = -1;
-    loop { let token, present = qget<Slot>(5); if present { slot = token.slot; break; } if halted() { return Answer { ok: false, error: 3 }; } }
+    loop { let token, present = qget<Slot>(5); if present { slot = token.slot; break; } if halted() { return Answer { ok: false, error: cell_error::Halting }; } }
     var request = copy(r); request.slot = slot; assert(qput(request));
     loop {
         let a, present = receive(slot);
         if present { assert(qput(Slot { slot: slot })); return a; }
-        if halted() { return Answer { ok: false, error: 3 }; }
+        if halted() { return Answer { ok: false, error: cell_error::Halting }; }
     }
-    return Answer { ok: false, error: 3 };
+    return Answer { ok: false, error: cell_error::Halting };
 }

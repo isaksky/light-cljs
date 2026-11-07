@@ -54,7 +54,13 @@ See [README.md](README.md) for the layout.
   `bb scripts/regenerate.bb`). Test a VM value's variant with the predicates
   in `src/source_vm.goose` (`v.is_object()`, `v.is_string()`, `v.is_hole()`)
   or a `match`; only ordered tests use `v.tag()`, against `value_tag::Null`
-  and its siblings, never a number.
+  and its siblings, never a number. A form-graph (GFB2) node's tag is a
+  `form_tag::` name from `src/form_bridge.goose` (`form_tag::Keyword`,
+  `form_tag::Cell`), which the compiler's encoder in
+  `src/goose/compiler_bridge.rs` mirrors as `form_tag::KEYWORD` and a Rust
+  test keeps equal. The cell owner's numbers are Goose-private names in
+  `src/cell_owner.goose`: `flat_kind::Graph`, `cell_op::CompareAndSet`,
+  `cell_flavor::Delay`, `delay_state::Realized`, `cell_error::Budget`.
 
 ## Storage and branching
 

@@ -13,7 +13,7 @@ namespace source;
 // owner is cell_owner.goose).
 //
 // A job's own atom or volatile is a row: a node of kind 17 whose `value` is
-// its state and whose `length` is its flavor (0 atom, 1 volatile). A job's
+// its state and whose `length` is its flavor (cell_flavor::Atom or Volatile). A job's
 // own delay is a node of kind 19: `value` its thunk, pending while truthy,
 // and `namespace_value` the value it realized. They are reclaimed with the
 // job's other rows, and their operations follow the V8 build's runtime
@@ -26,7 +26,7 @@ namespace source;
 // atom, volatile or delay it reaches into a cell (publish_cells): the owner
 // makes the cell and holds its state's flat encoding, and the row becomes a
 // cell reference, kind 18, whose `function` is the cell and `length` its
-// flavor (2 for a delay, whose `value` keeps the thunk). Every job that
+// flavor (cell_flavor::Delay for a delay, whose `value` keeps the thunk). Every job that
 // installs the publication holds the reference; its operations are messages
 // to the owner, made while the job runs (effects of the job: a job that
 // faults afterwards leaves them in place, as shadow-cljs does). deref loads,
@@ -73,9 +73,8 @@ var cell_base: snapshot::Header = snapshot::Header {};
 inline fn atom_kind() -> i64 { return 17; }
 inline fn cell_kind() -> i64 { return 18; }
 inline fn delay_kind() -> i64 { return 19; }
-inline fn delay_flavor() -> i64 { return 2; }
 // The flavor names built-ins use in their errors.
-fn flavor_name(flavor: i64) -> const u8[:] { return if flavor == 0 { "an atom" } else if flavor == 1 { "a volatile" } else { "a delay" }; }
+fn flavor_name(flavor: i64) -> const u8[:] { return if flavor == cell_flavor::Atom { "an atom" } else if flavor == cell_flavor::Volatile { "a volatile" } else { "a delay" }; }
 // A named failure the macro cannot catch: NativeBoundary, `name: what`.
 fn cell_fail(job: Job&, b: Builtin, what: const u8[:]) -> Value {
     job.detail.clear();
@@ -87,7 +86,7 @@ fn cell_fail(job: Job&, b: Builtin, what: const u8[:]) -> Value {
 }
 // An owner error as the operation's named failure.
 fn owner_fail(job: Job&, b: Builtin, error: i64) -> Value {
-    return cell_fail(job, b, match error { 1 => "cell budget", 2 => "no such cell", 3 => "the session is halting", 6 => "a cycle of delay claims", 7 => "not a delay claim this job holds", _ => "no cell owner in this program" });
+    return cell_fail(job, b, match error { cell_error::Budget => "cell budget", cell_error::NoCell => "no such cell", cell_error::Halting => "the session is halting", cell_error::Cycle => "a cycle of delay claims", cell_error::NotClaim => "not a delay claim this job holds", _ => "no cell owner in this program" });
 }
 // The flavor of reference `a` (an atom, volatile or cell), or -1.
 fn reference_flavor(heap: Heap&, a: Value) -> i64 {
@@ -100,7 +99,7 @@ fn is_delay(heap: Heap&, v: Value) -> bool {
     if !valid(heap, v) { heap.fault = Fault.None; return false; }
     if !v.is_object() { return false; }
     let n = node(heap, v.id());
-    return n.kind == delay_kind() || n.kind == cell_kind() && n.length == delay_flavor();
+    return n.kind == delay_kind() || n.kind == cell_kind() && n.length == cell_flavor::Delay;
 }
 
 // Process-wide identities of publications' objects: the object at place
@@ -186,7 +185,7 @@ fn form_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, functi
         if n.metadata.is_object() { work.push(n.metadata); }
         if n.kind >= 5 && n.kind <= 8 || n.kind == 12 { for i in n.count { work.push(slot(heap, n.start + i)); } }
         else if n.kind == atom_kind() { atoms.push(v.id()); work.push(n.value); }
-        else if n.kind == 2 || n.kind == 4 || n.kind == delay_kind() || n.kind == cell_kind() && n.length == delay_flavor() && n.value.is_object() { functions = true; return ""; }
+        else if n.kind == 2 || n.kind == 4 || n.kind == delay_kind() || n.kind == cell_kind() && n.length == cell_flavor::Delay && n.value.is_object() { functions = true; return ""; }
         else if n.kind == 15 { return "an unrealized lazy sequence"; }
         else if n.kind != 9 && n.kind != 10 && n.kind != 11 && n.kind != cell_kind() { return "a mutable JavaScript object"; }
     }
@@ -237,21 +236,21 @@ fn make_cells(heap: Heap&, rows: CellRow[>..]&, atoms: const i64[:], failure: i6
         let n = node(heap, o);
         if n.kind != atom_kind() && n.kind != delay_kind() { states.push(Value.Undefined); made.push(-1); realized.push(false); continue; }
         let delay = n.kind == delay_kind(); let done = delay && !truthy(heap, n.value);
-        let a = cells::exchange(cells::Request { op: 1, flavor: if delay { delay_flavor() } else { n.length } });
+        let a = cells::exchange(cells::Request { op: cell_op::New, flavor: if delay { cell_flavor::Delay } else { n.length } });
         if !a.ok { failure = a.error; return false; }
         states.push(if delay { n.namespace_value } else { n.value }); made.push(a.cell); realized.push(done);
         var r = n; r.kind = cell_kind(); r.function = a.cell as u32; r.namespace_value = Value.Null;
-        if delay { r.length = delay_flavor() as u32; r.value = if done { Value.Undefined } else { n.value }; } else { r.value = Value.Undefined; }
+        if delay { r.length = cell_flavor::Delay; r.value = if done { Value.Undefined } else { n.value }; } else { r.value = Value.Undefined; }
         set_node(heap, o, r);
         remember(rows, o, a.cell, 0);
     }
     for o, i in atoms {
-        if made[i] < 0 || states[i].is_undefined() && !realized[i] || node(heap, o).length == delay_flavor() && !realized[i] { continue; }
+        if made[i] < 0 || states[i].is_undefined() && !realized[i] || node(heap, o).length == cell_flavor::Delay && !realized[i] { continue; }
         if deferring { initial.push(Initial { cell: made[i], state: states[i] }); continue; }
         var stored: i64[>..] = [];
         let f, ok = encode(heap, rows, states[i], failure, stored);
         if !ok { return false; }
-        let a = cells::exchange(cells::Request { op: 3, cell: made[i], value: copy(f) });
+        let a = cells::exchange(cells::Request { op: cell_op::Store, cell: made[i], value: copy(f) });
         if !a.ok { failure = a.error; return false; }
         remember_stored(rows, stored, a.value.nodes);
     }
@@ -264,12 +263,12 @@ fn encode(heap: Heap&, rows: const CellRow[:], v: Value, failure: i64&, stored: 
 // identity its place in `publication` names.
 fn encode(heap: Heap&, rows: const CellRow[:], v: Value, failure: i64&, stored: i64[>..]&, places: const i64[:], publication: i64) -> cells::Flat, bool {
     if v.is_undefined() { return cells::Flat {}, true; }
-    if v.is_null() { return cells::Flat { kind: 1 }, true; }
-    if v.is_bool() { return cells::Flat { kind: 2, number: if v.flag() { 1.0 } else { 0.0 } }, true; }
-    if v.is_number() { return cells::Flat { kind: 3, number: v.num() }, true; }
+    if v.is_null() { return cells::Flat { kind: flat_kind::Null }, true; }
+    if v.is_bool() { return cells::Flat { kind: flat_kind::Bool, number: if v.flag() { 1.0 } else { 0.0 } }, true; }
+    if v.is_number() { return cells::Flat { kind: flat_kind::Number, number: v.num() }, true; }
     if v.is_string() {
         var bytes: u8[>..] = []; for u in utf16(heap, v) { bytes.push((u & 255) as u8); bytes.push((u >> 8) as u8); }
-        return cells::Flat { kind: 4, data: bytes }, true;
+        return cells::Flat { kind: flat_kind::String, data: bytes }, true;
     }
     if v.is_object() && valid(heap, v) && reaches_function(heap, v) { let f, ok = encode_callable(heap, rows, v, failure, stored, places, publication); return copy(f), ok; }
     // A value outlives the call it was made in: the compiler occurrences and
@@ -278,40 +277,40 @@ fn encode(heap: Heap&, rows: const CellRow[:], v: Value, failure: i64&, stored: 
     // an object it did not hand out. The export leaves out the job's source
     // text and spans (light-cljs-809), so it costs what the value reaches.
     var graph = bridge::Graph {}; var c = bridge::Control { cells: true, spans: false }; var bytes: u8[>..] = [];
-    if !v.is_object() || !bridge::export_rows(heap, [v], graph, c, Value.Undefined, stored) { failure = 5; return cells::Flat {}, false; }
+    if !v.is_object() || !bridge::export_rows(heap, [v], graph, c, Value.Undefined, stored) { failure = cell_error::Encode; return cells::Flat {}, false; }
     for n, i in graph.nodes { graph.nodes[i].origin = -1; }
-    if !bridge::encode(graph, bytes, c) { failure = 5; return cells::Flat {}, false; }
+    if !bridge::encode(graph, bytes, c) { failure = cell_error::Encode; return cells::Flat {}, false; }
     // Each object's identity, 0 for one the owner numbers; a primitive has
     // none, and a cell reference its cell's.
     var nodes: i64[>..] = [];
-    for row, i in stored { nodes.push(if row < 0 { -1 } else if graph.nodes[i].tag == 10 { cell_identity(graph.nodes[i].number as i64) } else if publication >= 0 && row < places.len && places[row] >= 0 { publication_identity(publication, places[row]) } else { identity_of(rows, row) }); }
+    for row, i in stored { nodes.push(if row < 0 { -1 } else if graph.nodes[i].tag == form_tag::Cell { cell_identity(graph.nodes[i].number as i64) } else if publication >= 0 && row < places.len && places[row] >= 0 { publication_identity(publication, places[row]) } else { identity_of(rows, row) }); }
     let root = graph.roots[0];
-    return cells::Flat { kind: 5, identity: nodes[root], data: bytes, root: root, nodes: nodes }, true;
+    return cells::Flat { kind: flat_kind::Graph, identity: nodes[root], data: bytes, root: root, nodes: nodes }, true;
 }
 // A value that reaches a function or a job delay (light-cljs-809): a
-// built-in or other function of the image is its row (kind 8: every program
+// built-in or other function of the image is its row (flat_kind::Function: every program
 // holds the same image); anything else is published as a callable helper is
-// (kind 7: callable::encode_cell's bytes, `nodes` the identities of its
+// (flat_kind::Callable: callable::encode_cell's bytes, `nodes` the identities of its
 // installed slots in install order, the root's first), its atoms made cells
 // already. `stored` gets each slot's row.
 fn encode_callable(heap: Heap&, rows: const CellRow[:], v: Value, failure: i64&, stored: i64[>..]&, places: const i64[:], publication: i64) -> cells::Flat, bool {
     stored.clear();
-    if cell_base.base <= 0 { failure = 4; return cells::Flat {}, false; }
+    if cell_base.base <= 0 { failure = cell_error::NoOwner; return cells::Flat {}, false; }
     let n = node(heap, v.id());
     if v.id() < cell_base.ends[6] {
-        if n.kind != 2 && n.kind != 4 { failure = 5; return cells::Flat {}, false; }
-        return cells::Flat { kind: 8, number: v.id() }, true;
+        if n.kind != 2 && n.kind != 4 { failure = cell_error::Encode; return cells::Flat {}, false; }
+        return cells::Flat { kind: flat_kind::Function, number: v.id() }, true;
     }
     var c = snapshot::Control {}; var bytes: u8[>..] = [];
-    if !callable::encode_cell(heap, cell_base, v, bytes, c, stored) { failure = 5; return cells::Flat {}, false; }
+    if !callable::encode_cell(heap, cell_base, v, bytes, c, stored) { failure = cell_error::Encode; return cells::Flat {}, false; }
     var nodes: i64[>..] = [];
     for row in stored {
         let m = node(heap, row);
         nodes.push(if m.kind == cell_kind() { cell_identity(m.function) } else if publication >= 0 && row < places.len && places[row] >= 0 { publication_identity(publication, places[row]) } else { identity_of(rows, row) });
     }
-    return cells::Flat { kind: 7, identity: nodes[0], data: bytes, root: 0, nodes: nodes }, true;
+    return cells::Flat { kind: flat_kind::Callable, identity: nodes[0], data: bytes, root: 0, nodes: nodes }, true;
 }
-// A callable cell value (kind 7) in the job: installed once per identity,
+// A callable cell value (flat_kind::Callable) in the job: installed once per identity,
 // as callable::decode_install installs a helper, while the job runs. Its
 // cell references and objects the job holds already map to the rows it
 // holds (as install_publication maps a publication's), new ones are
@@ -336,7 +335,7 @@ fn decode_callable(job: Job&, b: Builtin, f: const cells::Flat&) -> Value {
         if n.kind == cell_kind() {
             p = cell_row(job.cell_rows, n.function);
             if p < 0 { job.cell_rows.push(CellRow { row: start + i, cell: n.function }); }
-            else if n.length == delay_flavor() && n.value.is_object() && node(heap, p).value.is_undefined() { node_mut(heap, p).value = n.value; }
+            else if n.length == cell_flavor::Delay && n.value.is_object() && node(heap, p).value.is_undefined() { node_mut(heap, p).value = n.value; }
         } else if f.nodes[i] > 0 {
             p = row_of(job.cell_rows, f.nodes[i]);
             if p < 0 { job.cell_rows.push(CellRow { row: start + i, identity: f.nodes[i] }); }
@@ -348,7 +347,7 @@ fn decode_callable(job: Job&, b: Builtin, f: const cells::Flat&) -> Value {
     relink(heap, start, prior, values, constants);
     return mapped(root, start, prior);
 }
-// An error a delay's thunk threw, as its type and message (kind 6; number
+// An error a delay's thunk threw, as its type and message (flat_kind::Thrown; number
 // the type's index in ERROR_NAMES, plus 8 when it has no own message, root
 // its fault code, identity its own, 0 until the owner numbers it), or false
 // for an object that is no error of the realm.
@@ -361,7 +360,7 @@ fn error_flat(heap: Heap&, rows: const CellRow[:], e: Value) -> cells::Flat, boo
     if heap.fault != Fault.None { heap.fault = Fault.None; return cells::Flat {}, false; }
     var bytes: u8[>..] = [];
     if found && message.is_string() { for u in utf16(heap, message) { bytes.push((u & 255) as u8); bytes.push((u >> 8) as u8); } }
-    return cells::Flat { kind: 6, number: t + (if found && message.is_string() { 0 } else { 8 }), identity: identity_of(rows, e.id()), data: bytes, root: n.function }, true;
+    return cells::Flat { kind: flat_kind::Thrown, number: t + (if found && message.is_string() { 0 } else { 8 }), identity: identity_of(rows, e.id()), data: bytes, root: n.function }, true;
 }
 // The value a job stores: checked, its atoms made cells, then encoded. A
 // failure is the operation's named error and changes nothing but the cells
@@ -378,7 +377,7 @@ fn store_value(job: Job&, b: Builtin, v: Value, stored: i64[>..]&) -> cells::Fla
     if !ok { owner_or_bridge(job, b, failure); return cells::Flat {}, false; }
     protect(job, closures); return f, true;
 }
-fn owner_or_bridge(job: Job&, b: Builtin, failure: i64) { if failure == 5 { cell_fail(job, b, "the value does not encode"); } else { owner_fail(job, b, failure); } }
+fn owner_or_bridge(job: Job&, b: Builtin, failure: i64) { if failure == cell_error::Encode { cell_fail(job, b, "the value does not encode"); } else { owner_fail(job, b, failure); } }
 fn units_of(data: const u8[:]) -> u16[>..] {
     var units: u16[>..] = []; var i: i64 = 0;
     while i + 1 < data.len { let low: u16 = data[i]; let high: u16 = data[i + 1]; units.push(low | (high << 8)); i += 2; }
@@ -389,9 +388,9 @@ fn units_of(data: const u8[:]) -> u16[>..] {
 fn decode(job: Job&, b: Builtin, f: const cells::Flat&) -> Value {
     let heap .= job.heap;
     match f.kind {
-        0 => { return Value.Undefined; }, 1 => { return Value.Null; }, 2 => { return boolean(f.number != 0); }, 3 => { return number(f.number); },
-        4 => { return string(heap, units_of(f.data)); },
-        6 => {
+        flat_kind::Undefined => { return Value.Undefined; }, flat_kind::Null => { return Value.Null; }, flat_kind::Bool => { return boolean(f.number != 0); }, flat_kind::Number => { return number(f.number); },
+        flat_kind::String => { return string(heap, units_of(f.data)); },
+        flat_kind::Thrown => {
             // One error object a job for each thrown error.
             let held = row_of(job.cell_rows, f.identity);
             if held >= 0 { return object(held); }
@@ -403,8 +402,8 @@ fn decode(job: Job&, b: Builtin, f: const cells::Flat&) -> Value {
             if heap.fault == Fault.None && f.identity > 0 { job.cell_rows.push(CellRow { row: e.id(), identity: f.identity }); }
             return e;
         },
-        7 => { return decode_callable(job, b, f); },
-        8 => {
+        flat_kind::Callable => { return decode_callable(job, b, f); },
+        flat_kind::Function => {
             // A function of the image: the same row in every program.
             let row = f.number as i64;
             if row < 0 || row >= cell_base.ends[6] || row >= heap.nodes.len || node(heap, row).kind != 2 && node(heap, row).kind != 4 { return cell_fail(job, b, "a cell value does not import"); }
@@ -441,7 +440,7 @@ fn relink(heap: Heap&, base: i64, prior: const i64[:], values: i64, constants: i
     for k in constants..heap.constants.len { heap.constants[k] = mapped(heap.constants[k], base, prior); }
 }
 // Import a cell value's graph, whose nodes have the identities `identities`
-// (0 or -1: none) and may hold cell references (tag 10): an object or cell
+// (0 or -1: none) and may hold cell references (form_tag::Cell): an object or cell
 // the rows already name keeps its row, so every reference to one cell, and
 // every load of one object, in a job is one object; a new one is
 // remembered.
@@ -451,7 +450,7 @@ fn import_known(heap: Heap&, rows: CellRow[>..]&, g: const bridge::Graph&, roots
     var prior: i64[>..] = []; var any = false;
     for n, i in g.nodes {
         var p: i64 = -1;
-        if n.tag == 10 { p = cell_row(rows, n.number as i64); if p < 0 { rows.push(CellRow { row: base + i, cell: n.number as i64 }); } }
+        if n.tag == form_tag::Cell { p = cell_row(rows, n.number as i64); if p < 0 { rows.push(CellRow { row: base + i, cell: n.number as i64 }); } }
         else if i < identities.len && identities[i] > 0 { p = row_of(rows, identities[i]); if p < 0 { rows.push(CellRow { row: base + i, identity: identities[i] }); } }
         prior.push(p); if p >= 0 { any = true; }
     }
@@ -477,7 +476,7 @@ fn install_publication(heap: Heap&, rows: CellRow[>..]&, start: i64, count: i64,
         if n.kind == cell_kind() {
             p = cell_row(rows, n.function);
             if p < 0 { rows.push(CellRow { row: start + i, cell: n.function }); }
-            else if n.length == delay_flavor() && n.value.is_object() && node(heap, p).value.is_undefined() { node_mut(heap, p).value = n.value; }
+            else if n.length == cell_flavor::Delay && n.value.is_object() && node(heap, p).value.is_undefined() { node_mut(heap, p).value = n.value; }
         } else if held { p = row_of(rows, low + i); }
         prior.push(p); if p >= 0 { any = true; }
     }
@@ -503,8 +502,8 @@ fn expected(job: Job&, v: Value) -> cells::Flat {
     let heap .= job.heap;
     if v.is_object() {
         let n = node(heap, v.id());
-        if v.id() < cell_base.ends[6] && (n.kind == 2 || n.kind == 4) { return cells::Flat { kind: 8, number: v.id() }; }
-        return cells::Flat { kind: 5, identity: if n.kind == cell_kind() { cell_identity(n.function) } else { identity_of(job.cell_rows, v.id()) } };
+        if v.id() < cell_base.ends[6] && (n.kind == 2 || n.kind == 4) { return cells::Flat { kind: flat_kind::Function, number: v.id() }; }
+        return cells::Flat { kind: flat_kind::Graph, identity: if n.kind == cell_kind() { cell_identity(n.function) } else { identity_of(job.cell_rows, v.id()) } };
     }
     var failure: i64 = 0; var stored: i64[>..] = []; let f, ok = encode(heap, job.cell_rows, v, failure, stored);
     return f;
@@ -563,7 +562,7 @@ fn store_initial(heap: Heap&, initial: const Initial[:], places: const i64[:], p
         var stored: i64[>..] = []; var failure: i64 = 0;
         let f, ok = encode(heap, rows, s.state, failure, stored, places, publication);
         if !ok { return str("cell-error ", failure); }
-        let a = cells::exchange(cells::Request { op: 3, cell: s.cell, value: copy(f) });
+        let a = cells::exchange(cells::Request { op: cell_op::Store, cell: s.cell, value: copy(f) });
         if !a.ok { return str("cell-error ", a.error); }
     }
     return [];
@@ -584,7 +583,7 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
     match b {
         Atom, Volatile => {
             if args.len > 1 { return cell_fail(job, b, "options (metadata and validators) are not supported"); }
-            return allocate(heap, Node { kind: atom_kind(), length: if b == Builtin.Atom { 0 } else { 1 }, value: arg(args, 0) });
+            return allocate(heap, Node { kind: atom_kind(), length: if b == Builtin.Atom { cell_flavor::Atom } else { cell_flavor::Volatile }, value: arg(args, 0) });
         },
         AddWatch, RemoveWatch, SetValidator => { return cell_fail(job, b, "watches and validators are not supported"); },
         Deref => {
@@ -598,7 +597,7 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
         Reset, Vreset, ResetVals => {
             let a = arg(args, 0); let v = arg(args, 1); let flavor = reference_flavor(heap, a);
             if heap.fault != Fault.None { return Value.Undefined; }
-            if flavor != (if b == Builtin.Vreset { 1 } else { 0 }) { return type_error(job, if b == Builtin.Vreset { "vreset! needs a volatile" } else { "reset! needs an atom" }); }
+            if flavor != (if b == Builtin.Vreset { cell_flavor::Volatile } else { cell_flavor::Atom }) { return type_error(job, if b == Builtin.Vreset { "vreset! needs a volatile" } else { "reset! needs an atom" }); }
             if node(heap, a.id()).kind == atom_kind() {
                 if !writable(job, a.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
                 let old = node(heap, a.id()).value; node_mut(heap, a.id()).value = v;
@@ -608,17 +607,17 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
             let f, ok = store_value(job, b, v, stored); if !ok { return Value.Undefined; }
             let cell: i64 = node(heap, a.id()).function;
             if b != Builtin.ResetVals {
-                let r = cells::exchange(cells::Request { op: 3, cell: cell, value: copy(f) });
+                let r = cells::exchange(cells::Request { op: cell_op::Store, cell: cell, value: copy(f) });
                 if !r.ok { return owner_fail(job, b, r.error); }
                 remember_stored(job.cell_rows, stored, r.value.nodes);
                 return v;
             }
             // reset-vals!: the value replaced, atomically.
             loop {
-                let current = cells::exchange(cells::Request { op: 2, cell: cell });
+                let current = cells::exchange(cells::Request { op: cell_op::Load, cell: cell });
                 if !current.ok { return owner_fail(job, b, current.error); }
                 let old = decode(job, b, current.value); if heap.fault != Fault.None { return Value.Undefined; }
-                let r = cells::exchange(cells::Request { op: 4, cell: cell, expected: expected(job, old), value: copy(f) });
+                let r = cells::exchange(cells::Request { op: cell_op::CompareAndSet, cell: cell, expected: expected(job, old), value: copy(f) });
                 if r.ok { remember_stored(job.cell_rows, stored, r.value.nodes); return form_collection(heap, 6, [old, v]); }
                 if r.error != 0 { return owner_fail(job, b, r.error); }
             }
@@ -626,7 +625,7 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
         },
         CompareAndSet => {
             let a = arg(args, 0); let old = arg(args, 1); let v = arg(args, 2);
-            if reference_flavor(heap, a) != 0 { if heap.fault == Fault.None { type_error(job, "compare-and-set! needs an atom"); } return Value.Undefined; }
+            if reference_flavor(heap, a) != cell_flavor::Atom { if heap.fault == Fault.None { type_error(job, "compare-and-set! needs an atom"); } return Value.Undefined; }
             if node(heap, a.id()).kind == atom_kind() {
                 let same = form_equal(heap, node(heap, a.id()).value, old); if heap.fault != Fault.None { return Value.Undefined; }
                 if !same { return boolean(false); }
@@ -636,7 +635,7 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
             // Compare first, as cljs.core does: a miss neither checks nor
             // shares the replacement (its atoms stay the job's).
             let cell: i64 = node(heap, a.id()).function;
-            let current = cells::exchange(cells::Request { op: 2, cell: cell });
+            let current = cells::exchange(cells::Request { op: cell_op::Load, cell: cell });
             if !current.ok { return owner_fail(job, b, current.error); }
             var held = decode(job, b, current.value); if heap.fault != Fault.None { return Value.Undefined; }
             let same = form_equal(heap, held, old); if heap.fault != Fault.None { return Value.Undefined; }
@@ -644,7 +643,7 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
             var stored: i64[>..] = [];
             let f, ok = store_value(job, b, v, stored); if !ok { return Value.Undefined; }
             loop {
-                let r = cells::exchange(cells::Request { op: 4, cell: cell, expected: expected(job, held), value: copy(f) });
+                let r = cells::exchange(cells::Request { op: cell_op::CompareAndSet, cell: cell, expected: expected(job, held), value: copy(f) });
                 if r.ok { remember_stored(job.cell_rows, stored, r.value.nodes); return boolean(true); }
                 if r.error != 0 { return owner_fail(job, b, r.error); }
                 // Another write came first: compare again with what it stored.
@@ -661,7 +660,7 @@ fn cell_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
 fn load(job: Job&, b: Builtin, a: Value) -> Value {
     let n = node(job.heap, a.id());
     if n.kind == atom_kind() { return n.value; }
-    let r = cells::exchange(cells::Request { op: 2, cell: n.function });
+    let r = cells::exchange(cells::Request { op: cell_op::Load, cell: n.function });
     if !r.ok { return owner_fail(job, b, r.error); }
     return decode(job, b, r.value);
 }
@@ -681,7 +680,7 @@ fn load(job: Job&, b: Builtin, a: Value) -> Value {
 fn start_swap(job: Job&, b: Builtin, args: const Value[:], base: i64) {
     let heap .= job.heap;
     let a = arg(args, 0); let f = arg(args, 1);
-    if reference_flavor(heap, a) != 0 { if heap.fault == Fault.None { type_error(job, "swap! needs an atom"); } return; }
+    if reference_flavor(heap, a) != cell_flavor::Atom { if heap.fault == Fault.None { type_error(job, "swap! needs an atom"); } return; }
     if !callable(heap, f) { type_error(job, "not a function"); return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
     var extra: Value[>..] = []; if args.len > 2 { extra.append(args[2..]); }
@@ -733,7 +732,7 @@ fn swap_commit(job: Job&, at: i64, b: Builtin, r: Value) -> bool {
     } else {
         var stored: i64[>..] = [];
         let f, ok = store_value(job, b, r, stored); if !ok { return true; }
-        let answer = cells::exchange(cells::Request { op: 4, cell: node(heap, a.id()).function, expected: expected(job, frame.output), value: copy(f) });
+        let answer = cells::exchange(cells::Request { op: cell_op::CompareAndSet, cell: node(heap, a.id()).function, expected: expected(job, frame.output), value: copy(f) });
         if !answer.ok && answer.error != 0 { owner_fail(job, b, answer.error); return true; }
         if !answer.ok {
             let current = decode(job, b, answer.value); if heap.fault != Fault.None { return true; }
@@ -759,9 +758,9 @@ fn delay_builtin(job: Job&, b: Builtin, args: const Value[:]) -> Value {
             if !is_delay(heap, d) { return unsupported_step(job, b, "a value that is not a delay"); }
             let n = node(heap, d.id());
             if n.kind == delay_kind() { return boolean(!truthy(heap, n.value)); }
-            let a = cells::exchange(cells::Request { op: 2, cell: n.function });
+            let a = cells::exchange(cells::Request { op: cell_op::Load, cell: n.function });
             if !a.ok { return owner_fail(job, b, a.error); }
-            return boolean(a.state == 2 || a.state == 3);
+            return boolean(a.state == delay_state::Realized || a.state == delay_state::Failed);
         },
         _ => { heap.fault = Fault.InvalidState; return Value.Undefined; },
     }
@@ -772,18 +771,18 @@ fn delay_realized(heap: Heap&, d: Value) -> Value {
     if !is_delay(heap, d) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
     let n = node(heap, d.id());
     if n.kind == delay_kind() { return boolean(!truthy(heap, n.value)); }
-    let a = cells::exchange(cells::Request { op: 2, cell: n.function });
+    let a = cells::exchange(cells::Request { op: cell_op::Load, cell: n.function });
     if !a.ok { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
-    return boolean(a.state == 2 || a.state == 3);
+    return boolean(a.state == delay_state::Realized || a.state == delay_state::Failed);
 }
 // A delay forced where no frame can run its thunk (a built-in calling a
 // callback): its value when realized, otherwise a named failure.
 fn delay_now(job: Job&, b: Builtin, d: Value) -> Value {
     let heap .= job.heap; let n = node(heap, d.id());
     if n.kind == delay_kind() { return if truthy(heap, n.value) { unsupported_step(job, b, "a pending delay forced by a built-in's callback") } else { n.namespace_value }; }
-    let a = cells::exchange(cells::Request { op: 2, cell: n.function });
+    let a = cells::exchange(cells::Request { op: cell_op::Load, cell: n.function });
     if !a.ok { return owner_fail(job, b, a.error); }
-    if a.state != 2 { return unsupported_step(job, b, "a delay forced by a built-in's callback before it realized"); }
+    if a.state != delay_state::Realized { return unsupported_step(job, b, "a delay forced by a built-in's callback before it realized"); }
     return decode(job, b, a.value);
 }
 // Whether the dispatch loop's call of built-in b with `args` forces a delay,
@@ -844,17 +843,17 @@ fn force_step(job: Job&, frame: Frame, b: Builtin) {
     // Outside a macro job (a preparation, a helper production) nothing
     // claims: a realized cell's value, or a named failure.
     if job.cell_holder <= 0 {
-        let a = cells::exchange(cells::Request { op: 2, cell: cell });
+        let a = cells::exchange(cells::Request { op: cell_op::Load, cell: cell });
         if !a.ok { owner_fail(job, b, a.error); return; }
-        if a.state == 2 { let v = decode(job, b, a.value); if heap.fault == Fault.None { finish_native(job, frame, v); } return; }
-        if a.state == 3 { let e = decode(job, b, a.value); if heap.fault == Fault.None { raise(job, e, frame); } return; }
+        if a.state == delay_state::Realized { let v = decode(job, b, a.value); if heap.fault == Fault.None { finish_native(job, frame, v); } return; }
+        if a.state == delay_state::Failed { let e = decode(job, b, a.value); if heap.fault == Fault.None { raise(job, e, frame); } return; }
         cell_fail(job, b, "a pending delay forced outside a macro expansion"); return;
     }
-    let a = cells::exchange(cells::Request { op: 5, cell: cell, holder: job.cell_holder });
+    let a = cells::exchange(cells::Request { op: cell_op::Force, cell: cell, holder: job.cell_holder });
     if !a.ok { owner_fail(job, b, a.error); return; }
-    if a.state == 2 { let v = decode(job, b, a.value); if heap.fault == Fault.None { finish_native(job, frame, v); } return; }
-    if a.state == 3 { let e = decode(job, b, a.value); if heap.fault == Fault.None { raise(job, e, frame); } return; }
-    if a.state == 4 {
+    if a.state == delay_state::Realized { let v = decode(job, b, a.value); if heap.fault == Fault.None { finish_native(job, frame, v); } return; }
+    if a.state == delay_state::Failed { let e = decode(job, b, a.value); if heap.fault == Fault.None { raise(job, e, frame); } return; }
+    if a.state == delay_state::Waiting {
         // Another job holds the claim: wait for it to end, as a dependency.
         job.frames[at].pc = 3;
         request_effect(job, 10, [number(cell), number(a.epoch)], job.frames[at]);
@@ -863,7 +862,7 @@ fn force_step(job: Job&, frame: Frame, b: Builtin) {
     // Claimed: run the thunk in this job, catching what it throws.
     job.claims += 1;
     if !callable(heap, n.value) {
-        cells::exchange(cells::Request { op: 7, cell: cell, holder: job.cell_holder }); job.claims -= 1;
+        cells::exchange(cells::Request { op: cell_op::Release, cell: cell, holder: job.cell_holder }); job.claims -= 1;
         cell_fail(job, b, "a delay whose function this job does not hold"); return;
     }
     push_handler(job, at, HandlerKind.Catch, 2); if heap.fault != Fault.None { return; }
@@ -899,15 +898,15 @@ fn settle(job: Job&, b: Builtin, frame: Frame, v: Value, failed: bool) -> bool {
     var stored: i64[>..] = [];
     let f, ok = settled_value(job, b, v, failed, stored);
     if ok {
-        let a = cells::exchange(cells::Request { op: 6, cell: cell, value: copy(f), holder: job.cell_holder, failed: failed });
+        let a = cells::exchange(cells::Request { op: cell_op::Settle, cell: cell, value: copy(f), holder: job.cell_holder, failed: failed });
         if a.ok {
             job.claims -= 1; remember_stored(job.cell_rows, stored, a.value.nodes);
             // The thrown error is the one later forces in this job throw.
-            if a.value.kind == 6 && identity_of(job.cell_rows, v.id()) == 0 { job.cell_rows.push(CellRow { row: v.id(), identity: a.value.identity }); }
+            if a.value.kind == flat_kind::Thrown && identity_of(job.cell_rows, v.id()) == 0 { job.cell_rows.push(CellRow { row: v.id(), identity: a.value.identity }); }
             return true;
         }
         owner_fail(job, b, a.error);
     }
-    cells::exchange(cells::Request { op: 7, cell: cell, holder: job.cell_holder }); job.claims -= 1;
+    cells::exchange(cells::Request { op: cell_op::Release, cell: cell, holder: job.cell_holder }); job.claims -= 1;
     return false;
 }

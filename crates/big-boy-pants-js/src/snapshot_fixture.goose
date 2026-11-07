@@ -55,12 +55,12 @@ fn prepare(code: source::Code&, heap: source::Heap&, bindings: snapshot::Binding
     // Import all source/form pools and retain distinct occurrences plus aliases.
     var graph = bridge::Graph {}; graph.bytes.append("one two"); graph.sources.push(source::SourceRange { start: 0, count: 7 });
     graph.units.append([0xD83D, 0xDE00, 0xD800, 'n', 's', 'x']);
-    graph.nodes.push(bridge::Form { tag: 2, number: 1, origin: 10, source: 0, span_start: 0, span_end: 3 });
-    graph.nodes.push(bridge::Form { tag: 2, number: 1, origin: 11, source: 0, span_start: 4, span_end: 7 });
-    graph.nodes.push(bridge::Form { tag: 3, start: 0, count: 3 });
-    graph.nodes.push(bridge::Form { tag: 8 });
-    graph.nodes.push(bridge::Form { tag: 4, start: 5, count: 1, ns_start: 3, ns_count: 2, metadata: 3 });
-    graph.children.append([0, 1, 0, 2, 4]); graph.nodes.push(bridge::Form { tag: 7, start: 0, count: 5 }); graph.roots.push(5);
+    graph.nodes.push(bridge::Form { tag: form_tag::Number, number: 1, origin: 10, source: 0, span_start: 0, span_end: 3 });
+    graph.nodes.push(bridge::Form { tag: form_tag::Number, number: 1, origin: 11, source: 0, span_start: 4, span_end: 7 });
+    graph.nodes.push(bridge::Form { tag: form_tag::String, start: 0, count: 3 });
+    graph.nodes.push(bridge::Form { tag: form_tag::Map });
+    graph.nodes.push(bridge::Form { tag: form_tag::Symbol, start: 5, count: 1, ns_start: 3, ns_count: 2, metadata: 3 });
+    graph.children.append([0, 1, 0, 2, 4]); graph.nodes.push(bridge::Form { tag: form_tag::Vector, start: 0, count: 5 }); graph.roots.push(5);
     var c = bridge::Control {}; var roots: source::Value[>..] = []; assert(bridge::import_graph(heap, graph, roots, c));
     bindings.push(snapshot::Binding { id: 8, generation: 12, value: roots[0] });
     // Neither the cell nor its payload has a direct binding: these are

@@ -8,13 +8,13 @@ namespace bridge;
 
 // GFB2: tagged structured graphs, never printed forms. Child and metadata edges
 // name occurrences; repeated IDs preserve aliases, equal nodes are not interned.
-// Tags nil/bool/Number/string/symbol/keyword/list/vector/map/set = 0..9.
+// Tags: form_tag::Nil .. form_tag::Set (below).
 // A source entry is three words, identity, start and count
 // (source::SourceRange): the compiler sends its identity for each source and
 // the source's byte length, no text, and gets the same identities back
 // (light-cljs-817); a source with identity -1 carries its text in `bytes`
 // (Goose's own fixtures). GFB1, which carried every source's text, is refused.
-struct Form { tag: i64 = 0, number: f64 = 0, start: i64 = 0, count: i64 = 0, ns_start: i64 = 0, ns_count: i64 = -1, metadata: i64 = -1, origin: i64 = -1, source: i64 = -1, span_start: i64 = 0, span_end: i64 = 0 }
+struct Form { tag: i64 = form_tag::Nil, number: f64 = 0, start: i64 = 0, count: i64 = 0, ns_start: i64 = 0, ns_count: i64 = -1, metadata: i64 = -1, origin: i64 = -1, source: i64 = -1, span_start: i64 = 0, span_end: i64 = 0 }
 // The omission record (light-cljs-820): what the entries the compiler left
 // out of a narrowed environment (light-cljs-815) would have added to an
 // argument graph, which version 3 of the encoding carries after the six
@@ -30,7 +30,7 @@ struct Form { tag: i64 = 0, number: f64 = 0, start: i64 = 0, count: i64 = 0, ns_
 struct Omitted { nodes: i64 = 0, children: i64 = 0, units: i64 = 0, strings: i64 = 0, names: i64 = 0, depth: i64 = 0 }
 root struct Graph { nodes: Form[>..] = [], children: i64[>..] = [], units: u16[>..] = [], sources: source::SourceRange[>..] = [], bytes: u8[>..] = [], roots: i64[>..] = [], omitted: Omitted = Omitted {} }
 enum Error { None, Malformed, Nodes, Depth, Bytes, Work, Cancelled, Unsupported, Heap }
-// cells: the graph may hold cell references, tag 10 (number the cell,
+// cells: the graph may hold cell references, form_tag::Cell (number the cell,
 // count its flavor; light-cljs-799, cells.goose): a cell's value or a
 // produced helper, which stay inside the Goose session. A job's result for
 // the compiler never does, so a cell there is Unsupported, as the V8 build's
@@ -42,7 +42,35 @@ enum Error { None, Malformed, Nodes, Depth, Bytes, Work, Cancelled, Unsupported,
 // spans polls as heap rows, as it would the imported entries; a job's
 // control lasts as long as the job, through a saved continuation too.
 struct Control { nodes: i64 = 100000, depth: i64 = 128, bytes: i64 = 16777216, work: i64 = 10000000, cancel_after: i64 = -1, visits: i64 = 0, error: Error = Error.None, cancelled: bool = false, cells: bool = false, spans: bool = true, reserved: i64 = 0 }
-inline fn collection(tag: i64) -> bool { return tag >= 6 && tag <= 9; }
+// GFB2's node tags, a node's first word. compiler_bridge.rs names the same
+// numbers (form_tag::NIL ..), and its form_tags_match_the_goose_names test
+// keeps the two equal. A cell reference (Cell) is Goose-only.
+let form_tag::Nil = 0;
+let form_tag::Boolean = 1;
+let form_tag::Number = 2;
+let form_tag::String = 3;
+let form_tag::Symbol = 4;
+let form_tag::Keyword = 5;
+let form_tag::List = 6;
+let form_tag::Vector = 7;
+let form_tag::Map = 8;
+let form_tag::Set = 9;
+let form_tag::Cell = 10;
+// List, vector, map or set: a node with children.
+inline fn collection(tag: i64) -> bool { return tag >= form_tag::List && tag <= form_tag::Set; }
+// String, symbol or keyword: a node with text.
+inline fn textual(tag: i64) -> bool { return tag >= form_tag::String && tag <= form_tag::Keyword; }
+// Symbol or keyword: a name with an optional namespace.
+inline fn named(tag: i64) -> bool { return tag == form_tag::Symbol || tag == form_tag::Keyword; }
+// The heap node kind of a collection, symbol or keyword tag (source::Node:
+// 5 list .. 8 set, 9 symbol, 10 keyword), and the tag of such a node kind,
+// where 12 (a sequence form_concat or a rest builds) exports as a list.
+inline fn heap_kind(tag: i64) -> i64 {
+    return match tag { form_tag::List => 5, form_tag::Vector => 6, form_tag::Map => 7, form_tag::Set => 8, form_tag::Symbol => 9, _ => 10 };
+}
+inline fn tag_of(kind: i64) -> i64 {
+    return match kind { 6 => form_tag::Vector, 7 => form_tag::Map, 8 => form_tag::Set, 9 => form_tag::Symbol, 10 => form_tag::Keyword, _ => form_tag::List };
+}
 fn poll(c: Control&, count: i64 = 1) -> bool {
     if c.error != Error.None { return false; }
     if c.cancelled { c.error = Error.Cancelled; return false; }
@@ -99,8 +127,8 @@ fn validate(g: const Graph&, c: Control&) -> bool {
     for id in g.roots { if id < 0 || id >= g.nodes.len { return reject(c); } }
     for n in g.nodes {
         if !poll(c) { return false; }
-        if n.tag == 10 && (!c.cells || n.number < 0 || n.number > 2147483647 || n.number != (n.number as i64) || n.count < 0 || n.count > 2 || n.metadata >= 0) { return reject(c, Error.Unsupported); }
-        if n.tag < 0 || n.tag > 10 || n.metadata < -1 || n.metadata >= g.nodes.len || n.source < -1 || n.source >= g.sources.len || n.origin < -1 { return reject(c); }
+        if n.tag == form_tag::Cell && (!c.cells || n.number < 0 || n.number > 2147483647 || n.number != (n.number as i64) || n.count < 0 || n.count > 2 || n.metadata >= 0) { return reject(c, Error.Unsupported); }
+        if n.tag < form_tag::Nil || n.tag > form_tag::Cell || n.metadata < -1 || n.metadata >= g.nodes.len || n.source < -1 || n.source >= g.sources.len || n.origin < -1 { return reject(c); }
         if n.source >= 0 && !range(n.span_start, n.span_end - n.span_start, g.sources[n.source].count) { return reject(c); }
         // An identity source has no text here: the compiler checks those
         // spans' UTF-8 boundaries against its own source.
@@ -108,17 +136,17 @@ fn validate(g: const Graph&, c: Control&) -> bool {
             let s = g.sources[n.source]; let text = g.bytes[s.start..(s.start + s.count)];
             if !program::boundary(text, n.span_start) || !program::boundary(text, n.span_end) { return reject(c); }
         }
-        if n.tag == 1 && n.number != 0 && n.number != 1 { return reject(c); }
-        if n.tag >= 3 && n.tag <= 5 && !range(n.start, n.count, g.units.len) { return reject(c); }
-        if (n.tag == 4 || n.tag == 5) && (n.ns_count < -1 || n.ns_count != -1 && !range(n.ns_start, n.ns_count, g.units.len)) { return reject(c); }
-        if n.tag == 4 || n.tag == 5 {
+        if n.tag == form_tag::Boolean && n.number != 0 && n.number != 1 { return reject(c); }
+        if textual(n.tag) && !range(n.start, n.count, g.units.len) { return reject(c); }
+        if named(n.tag) && (n.ns_count < -1 || n.ns_count != -1 && !range(n.ns_start, n.ns_count, g.units.len)) { return reject(c); }
+        if named(n.tag) {
             if n.ns_count >= 0 {
                 if n.ns_count == 0 && n.count == 0 { return reject(c, Error.Unsupported); }
                 for i in n.ns_count { if !poll(c) { return false; } if g.units[n.ns_start + i] == 47 { return reject(c, Error.Unsupported); } }
             } else { for i in n.count { if !poll(c) { return false; } if g.units[n.start + i] == 47 && n.count != 1 { return reject(c, Error.Unsupported); } } }
         }
-        if n.metadata >= 0 && g.nodes[n.metadata].tag != 8 { return reject(c, Error.Unsupported); }
-        if collection(n.tag) && (!range(n.start, n.count, g.children.len) || n.tag == 8 && n.count % 2 != 0) { return reject(c); }
+        if n.metadata >= 0 && g.nodes[n.metadata].tag != form_tag::Map { return reject(c, Error.Unsupported); }
+        if collection(n.tag) && (!range(n.start, n.count, g.children.len) || n.tag == form_tag::Map && n.count % 2 != 0) { return reject(c); }
     }
     // The omitted nodes' own polls and their names' units.
     if !poll(c, o.nodes + o.names) { return false; }
@@ -232,7 +260,7 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     // UTF-16), so work counts the units copied, not the shared input table.
     // An omission's rows (Omitted) count as the graph's own would.
     let o = g.omitted; var text: i64 = o.units;
-    for n in g.nodes { if n.tag == 3 || n.tag == 4 || n.tag == 5 { text += n.count; } if (n.tag == 4 || n.tag == 5) && n.ns_count >= 0 { text += n.ns_count; } }
+    for n in g.nodes { if textual(n.tag) { text += n.count; } if named(n.tag) && n.ns_count >= 0 { text += n.ns_count; } }
     let nodes = g.nodes.len + o.nodes; let children = g.children.len + o.children;
     let work = nodes + children + max(g.units.len + o.units, text) + g.bytes.len + g.sources.len + g.roots.len;
     // Final cancellation and capacity checks precede any session installation.
@@ -252,12 +280,12 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     for n, i in g.nodes {
         var node = source::Node { kind: 11, origin: n.origin, source: if n.source < 0 { source::no_row() } else { (sources + n.source) as u32 }, span_start: n.span_start as u32, span_end: n.span_end as u32 };
         if n.metadata >= 0 { node.metadata = source::object(base + n.metadata); }
-        if collection(n.tag) { node.kind = n.tag - 1; node.start = (children + n.start) as u32; node.count = n.count as u32; }
-        else if n.tag == 10 { node = source::Node { kind: 18, function: n.number as u32, length: n.count as u32 }; }
-        else if n.tag == 4 || n.tag == 5 {
-            node.kind = n.tag + 5; node.value = source::import_text(heap, g.units[n.start..(n.start + n.count)]);
+        if collection(n.tag) { node.kind = heap_kind(n.tag); node.start = (children + n.start) as u32; node.count = n.count as u32; }
+        else if n.tag == form_tag::Cell { node = source::Node { kind: 18, function: n.number as u32, length: n.count as u32 }; }
+        else if named(n.tag) {
+            node.kind = heap_kind(n.tag); node.value = source::import_text(heap, g.units[n.start..(n.start + n.count)]);
             if n.ns_count >= 0 { node.namespace_value = source::import_text(heap, g.units[n.ns_start..(n.ns_start + n.ns_count)]); }
-        } else { node.value = if n.tag == 0 { source::nil() } else if n.tag == 1 { source::boolean(n.number != 0) } else if n.tag == 2 { source::number(n.number) } else { source::import_text(heap, g.units[n.start..(n.start + n.count)]) }; }
+        } else { node.value = if n.tag == form_tag::Nil { source::nil() } else if n.tag == form_tag::Boolean { source::boolean(n.number != 0) } else if n.tag == form_tag::Number { source::number(n.number) } else { source::import_text(heap, g.units[n.start..(n.start + n.count)]) }; }
         source::set_node(heap, base + i, node);
     }
     for id in g.roots { roots.push(source::object(base + id)); }
@@ -331,21 +359,22 @@ fn export_rows(heap: source::Heap&, roots: const source::Value[:], out: Graph&, 
             }
             var x = if node.kind == 11 { node.value } else { v };
             if node.kind >= 5 && node.kind <= 8 || node.kind == 12 {
-                n.tag = if node.kind == 12 { 6 } else { node.kind + 1 }; n.start = g.children.len; n.count = node.count;
+                n.tag = tag_of(node.kind); n.start = g.children.len; n.count = node.count;
                 if !poll(c, node.count) { return false; }
                 if !range(node.start, node.count, heap.values.len) { return reject(c); }
                 for i in node.count { let field = g.children.len; g.children.push(-1); queue.push(Edge { value: source::slot(heap, node.start + i), parent: id, field: field }); }
             } else if node.kind == 18 {
                 // A cell reference, inside the session only (Control.cells).
                 if !c.cells { return reject(c, Error.Unsupported); }
-                n.tag = 10; n.number = node.function; n.count = node.length;
+                n.tag = form_tag::Cell; n.number = node.function; n.count = node.length;
             } else {
-                if node.kind == 9 || node.kind == 10 { n.tag = node.kind - 5; x = node.value; }
-                else { n.tag = if x.is_null() { 0 } else if x.is_bool() { 1 } else if x.is_number() { 2 } else if x.is_string() { 3 } else { -1 }; }
-                if n.tag < 0 || !source::valid(heap, x) { heap.fault = source::Fault.None; return reject(c, Error.Unsupported); }
+                if node.kind == 9 || node.kind == 10 { n.tag = tag_of(node.kind); x = node.value; }
+                else if x.is_null() { n.tag = form_tag::Nil; } else if x.is_bool() { n.tag = form_tag::Boolean; } else if x.is_number() { n.tag = form_tag::Number; } else if x.is_string() { n.tag = form_tag::String; }
+                else { heap.fault = source::Fault.None; return reject(c, Error.Unsupported); }
+                if !source::valid(heap, x) { heap.fault = source::Fault.None; return reject(c, Error.Unsupported); }
                 n.number = if x.is_bool() { if x.flag() { 1.0 } else { 0.0 } } else { x.num() };
                 if x.is_string() { let count = source::str_len(heap, x); if !poll(c, count) { return false; } n.start = g.units.len; n.count = count; source::append_utf16(heap, x, g.units); }
-                if n.tag == 4 || n.tag == 5 { let ns = node.namespace_value; if ns.is_string() { if !source::valid(heap, ns) || !poll(c, source::str_len(heap, ns)) { return reject(c); } n.ns_start = g.units.len; n.ns_count = source::str_len(heap, ns); source::append_utf16(heap, ns, g.units); } }
+                if named(n.tag) { let ns = node.namespace_value; if ns.is_string() { if !source::valid(heap, ns) || !poll(c, source::str_len(heap, ns)) { return reject(c); } n.ns_start = g.units.len; n.ns_count = source::str_len(heap, ns); source::append_utf16(heap, ns, g.units); } }
             }
             n.origin = node.origin;
             if c.spans {

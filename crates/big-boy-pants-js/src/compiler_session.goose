@@ -378,7 +378,7 @@ fn serve(work: const Work&, directory: const u8[:], setup: const Setup&, base: c
     // A job that ended holding delay claims (a fault its thunk could not
     // catch, a cancellation) releases them, so the jobs waiting for them
     // force again (light-cljs-808).
-    if job.claims > 0 && job.cell_holder > 0 { cells::exchange(cells::Request { op: 7, holder: job.cell_holder }); job.claims = 0; }
+    if job.claims > 0 && job.cell_holder > 0 { cells::exchange(cells::Request { op: cell_op::Release, holder: job.cell_holder }); job.claims = 0; }
 }
 // The bytes a worker's VM tables hold: the retirement measure.
 fn table_bytes(code: const source::Code&, heap: const source::Heap&) -> i64 {
@@ -712,7 +712,7 @@ fn resume(w: Waiting&, mode: i64, helper: const u8[:], key: i64, is_callable: bo
 }
 // A saved continuation the coordinator refuses holds delay claims no job
 // will settle: release them, so their waiters force again (light-cljs-808).
-fn abandon(event: const Event&) { if event.kind == 1 && event.saved.claims > 0 { cells::exchange(cells::Request { op: 7, holder: event.id }); } }
+fn abandon(event: const Event&) { if event.kind == 1 && event.saved.claims > 0 { cells::exchange(cells::Request { op: cell_op::Release, holder: event.id }); } }
 // Whether the cell owner reported that `cell`'s claim `epoch` ended.
 fn claim_ended(settled: const cells::Settled[:], cell: i64, epoch: i64) -> bool { for s in settled { if s.cell == cell && s.epoch == epoch { return true; } } return false; }
 // Whether a saved continuation still waits (for its answer or, cancelling,

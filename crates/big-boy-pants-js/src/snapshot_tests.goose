@@ -839,7 +839,7 @@ thread_fn source_span_parent() {
     var code = source::Code {}; snapshot_test::append(code, embed_file("../corpus/serial/calls.gsp"));
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     var graph = bridge::Graph {}; graph.bytes.append("é😀"); graph.sources.push(source::SourceRange { start: 0, count: 6 });
-    graph.nodes.push(bridge::Form { tag: 2, number: 7, source: 0, span_start: 0, span_end: 6 }); graph.roots.push(0);
+    graph.nodes.push(bridge::Form { tag: form_tag::Number, number: 7, source: 0, span_start: 0, span_end: 6 }); graph.roots.push(0);
     var bc = bridge::Control {}; var values: source::Value[>..] = []; assert(bridge::import_graph(heap, graph, values, bc));
     var c = snapshot::Control {}; let saved = snapshot::capture(heap, [snapshot::Binding { id: 0, generation: 1, value: values[0] }], c); assert(c.error == snapshot::Error.None);
     assert(qput(Saved { image: copy(saved) })); assert(qput(Handle { value: values[0] }));

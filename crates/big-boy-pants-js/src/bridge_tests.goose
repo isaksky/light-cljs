@@ -11,14 +11,14 @@ fn graph_init(g: bridge::Graph&) {
     // Empty/non-ASCII/supplementary/lone-surrogate UTF-16 is transported as
     // code units. Two equal leaves are distinct occurrences, with one reused.
     g.units.append([233, 55357, 56832, 55296]); g.bytes.append("one two"); g.sources.push(source::SourceRange { start: 0, count: 7 }); g.sources.push(source::SourceRange { start: 0, count: 7 });
-    g.nodes.push(bridge::Form { tag: 3, count: 0 });
-    g.nodes.push(bridge::Form { tag: 3, start: 0, count: 4 });
-    g.nodes.push(bridge::Form { tag: 2, number: 1, origin: 2, source: 0, span_start: 0, span_end: 3 });
-    g.nodes.push(bridge::Form { tag: 2, number: 1, origin: 3, source: 1, span_start: 4, span_end: 7 });
-    g.nodes.push(bridge::Form { tag: 4, start: 0, count: 1, ns_start: 1, ns_count: 3 });
-    g.nodes.push(bridge::Form { tag: 5, start: 0, count: 1 });
-    g.children.append([5, 1]); g.nodes.push(bridge::Form { tag: 8, start: 0, count: 2 });
-    g.children.append([2, 3, 2, 0, 1, 4, 5]); g.nodes.push(bridge::Form { tag: 7, start: 2, count: 7, metadata: 6 });
+    g.nodes.push(bridge::Form { tag: form_tag::String, count: 0 });
+    g.nodes.push(bridge::Form { tag: form_tag::String, start: 0, count: 4 });
+    g.nodes.push(bridge::Form { tag: form_tag::Number, number: 1, origin: 2, source: 0, span_start: 0, span_end: 3 });
+    g.nodes.push(bridge::Form { tag: form_tag::Number, number: 1, origin: 3, source: 1, span_start: 4, span_end: 7 });
+    g.nodes.push(bridge::Form { tag: form_tag::Symbol, start: 0, count: 1, ns_start: 1, ns_count: 3 });
+    g.nodes.push(bridge::Form { tag: form_tag::Keyword, start: 0, count: 1 });
+    g.children.append([5, 1]); g.nodes.push(bridge::Form { tag: form_tag::Map, start: 0, count: 2 });
+    g.children.append([2, 3, 2, 0, 1, 4, 5]); g.nodes.push(bridge::Form { tag: form_tag::Vector, start: 2, count: 7, metadata: 6 });
     g.roots.push(7);
 }
 thread_fn roundtrip() {
@@ -81,7 +81,7 @@ thread_fn positional_map_equality() {
 thread_fn number_bits() {
     defer { heap_program::finish(); }
     var code = source::Code {}; code_init(code); var g = bridge::Graph {};
-    for number in [-0.0, 0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0] { g.roots.push(g.nodes.len); g.nodes.push(bridge::Form { tag: 2, number: number }); }
+    for number in [-0.0, 0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0] { g.roots.push(g.nodes.len); g.nodes.push(bridge::Form { tag: form_tag::Number, number: number }); }
     var heap = source::Heap { code: code }; assert(source::initialize(heap)); var roots: source::Value[>..] = []; var c = bridge::Control {}; assert(bridge::import_graph(heap, g, roots, c));
     var out = bridge::Graph {}; assert(bridge::export_graph(heap, roots, out, c)); var bytes: u8[>..] = []; assert(bridge::encode(out, bytes, c)); var restored = bridge::Graph {}; assert(bridge::decode(restored, bytes, c));
     for i in 4 { assert(to_bytes([g.nodes[i].number]) == to_bytes([restored.nodes[restored.roots[i]].number])); }
@@ -104,7 +104,7 @@ thread_fn unsupported_values() {
     }
     let object = source::allocate(heap, source::Node { kind: 0 }); let container = source::form_collection(heap, 6, [object]);
     var c = bridge::Control {}; var out = bridge::Graph {}; assert(!bridge::export_graph(heap, [container], out, c) && c.error == bridge::Error.Unsupported && out.nodes.len == 0);
-    var g = bridge::Graph {}; g.units.append([97, 47, 98]); g.nodes.push(bridge::Form { tag: 4, start: 0, count: 3 }); g.roots.push(0);
+    var g = bridge::Graph {}; g.units.append([97, 47, 98]); g.nodes.push(bridge::Form { tag: form_tag::Symbol, start: 0, count: 3 }); g.roots.push(0);
     var bad = bridge::Control {}; var roots: source::Value[>..] = []; let before = heap.nodes.len;
     assert(!bridge::import_graph(heap, g, roots, bad) && bad.error == bridge::Error.Unsupported && roots.len == 0 && heap.nodes.len == before);
 }
@@ -244,10 +244,10 @@ fn main() {
 fn identity_graph(g: bridge::Graph&) {
     g.sources.push(source::SourceRange { start: 0, count: 21, identity: 7 }); g.sources.push(source::SourceRange { start: 0, count: 5, identity: 9 });
     g.sources.push(source::SourceRange { start: 0, count: 40, identity: 11 });
-    g.nodes.push(bridge::Form { tag: 2, number: 1, origin: 1, source: 0, span_start: 1, span_end: 2 });
-    g.nodes.push(bridge::Form { tag: 2, number: 2, origin: 2, source: 0, span_start: 3, span_end: 21 });
-    g.nodes.push(bridge::Form { tag: 0, origin: 3, source: 1, span_start: 0, span_end: 5 });
-    g.children.append([0, 1, 2]); g.nodes.push(bridge::Form { tag: 7, count: 3, origin: 0, source: 0, span_start: 0, span_end: 21 }); g.roots.push(3);
+    g.nodes.push(bridge::Form { tag: form_tag::Number, number: 1, origin: 1, source: 0, span_start: 1, span_end: 2 });
+    g.nodes.push(bridge::Form { tag: form_tag::Number, number: 2, origin: 2, source: 0, span_start: 3, span_end: 21 });
+    g.nodes.push(bridge::Form { tag: form_tag::Nil, origin: 3, source: 1, span_start: 0, span_end: 5 });
+    g.children.append([0, 1, 2]); g.nodes.push(bridge::Form { tag: form_tag::Vector, count: 3, origin: 0, source: 0, span_start: 0, span_end: 21 }); g.roots.push(3);
 }
 // Spans round-trip without text: the wire and the job heap hold no source
 // bytes, an export names the identities its forms came from (and no other),
@@ -295,7 +295,7 @@ thread_fn identity_sources() {
         var r = bridge::Control {}; var graph = bridge::Graph {}; assert(!bridge::decode(graph, bad, r) && r.error == bridge::Error.Malformed && graph.nodes.len == 0);
     }
     var mixed = bridge::Graph {}; mixed.bytes.append("é"); mixed.sources.push(source::SourceRange { start: 0, count: 2 }); mixed.sources.push(source::SourceRange { start: 0, count: 2, identity: 5 });
-    mixed.nodes.push(bridge::Form { tag: 0, source: 1, span_start: 1, span_end: 2 }); mixed.roots.push(0);
+    mixed.nodes.push(bridge::Form { tag: form_tag::Nil, source: 1, span_start: 1, span_end: 2 }); mixed.roots.push(0);
     var m = bridge::Control {}; assert(bridge::validate(mixed, m));
     mixed.nodes[0].source = 0; var split = bridge::Control {}; assert(!bridge::validate(mixed, split) && split.error == bridge::Error.Malformed);
     // Cancellation at every visit, and one unit short of the work and byte budgets.
@@ -340,15 +340,15 @@ thread_fn spanless_export() {
 // units, four string rows, three units of names (`ns`, `s`) and depth 3.
 fn whole_environment(g: bridge::Graph&) {
     g.units.append([97, 98, 110, 115, 120, 121, 122, 115]);
-    g.nodes.push(bridge::Form { tag: 5, start: 0, count: 1 }); g.nodes.push(bridge::Form { tag: 2, number: 1 });
-    g.nodes.push(bridge::Form { tag: 5, start: 1, count: 1, ns_start: 2, ns_count: 2 }); g.nodes.push(bridge::Form { tag: 3, start: 4, count: 3 });
-    g.nodes.push(bridge::Form { tag: 4, start: 7, count: 1 }); g.nodes.push(bridge::Form { tag: 8, start: 0, count: 0 });
-    g.children.append([3, 4]); g.nodes.push(bridge::Form { tag: 7, start: 0, count: 2, metadata: 5 });
-    g.children.append([0, 1, 2, 6]); g.nodes.push(bridge::Form { tag: 8, start: 2, count: 4 }); g.roots.push(7);
+    g.nodes.push(bridge::Form { tag: form_tag::Keyword, start: 0, count: 1 }); g.nodes.push(bridge::Form { tag: form_tag::Number, number: 1 });
+    g.nodes.push(bridge::Form { tag: form_tag::Keyword, start: 1, count: 1, ns_start: 2, ns_count: 2 }); g.nodes.push(bridge::Form { tag: form_tag::String, start: 4, count: 3 });
+    g.nodes.push(bridge::Form { tag: form_tag::Symbol, start: 7, count: 1 }); g.nodes.push(bridge::Form { tag: form_tag::Map, start: 0, count: 0 });
+    g.children.append([3, 4]); g.nodes.push(bridge::Form { tag: form_tag::Vector, start: 0, count: 2, metadata: 5 });
+    g.children.append([0, 1, 2, 6]); g.nodes.push(bridge::Form { tag: form_tag::Map, start: 2, count: 4 }); g.roots.push(7);
 }
 fn narrowed_environment(g: bridge::Graph&) {
-    g.units.push(97); g.nodes.push(bridge::Form { tag: 5, start: 0, count: 1 }); g.nodes.push(bridge::Form { tag: 2, number: 1 });
-    g.children.append([0, 1]); g.nodes.push(bridge::Form { tag: 8, start: 0, count: 2 }); g.roots.push(2);
+    g.units.push(97); g.nodes.push(bridge::Form { tag: form_tag::Keyword, start: 0, count: 1 }); g.nodes.push(bridge::Form { tag: form_tag::Number, number: 1 });
+    g.children.append([0, 1]); g.nodes.push(bridge::Form { tag: form_tag::Map, start: 0, count: 2 }); g.roots.push(2);
     g.omitted = bridge::Omitted { nodes: 5, children: 4, units: 7, strings: 4, names: 3, depth: 3 };
 }
 // The rows a heap's limits count as the job's: nodes, values, code units
@@ -428,8 +428,8 @@ thread_fn omission() {
 thread_fn shared_text_work() {
     defer { heap_program::finish(); }
     var g = bridge::Graph {}; for i in 100 { g.units.push(97); }
-    for i in 50 { g.nodes.push(bridge::Form { tag: 3, start: 0, count: 100 }); g.children.push(i); }
-    g.nodes.push(bridge::Form { tag: 7, start: 0, count: 50 }); g.roots.push(50);
+    for i in 50 { g.nodes.push(bridge::Form { tag: form_tag::String, start: 0, count: 100 }); g.children.push(i); }
+    g.nodes.push(bridge::Form { tag: form_tag::Vector, start: 0, count: 50 }); g.roots.push(50);
     var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
     var probe = bridge::Control {}; assert(bridge::validate(g, probe)); let validation = probe.visits;
     let latin1 = heap.latin1.len; let nodes = heap.nodes.len;
@@ -500,7 +500,7 @@ thread_fn adversarial_forms() {
     // budgets, translated to owned GFB2 graphs rather than another parser.
     var g = bridge::Graph {}; g.bytes.append("é😀"); g.sources.push(source::SourceRange { start: 0, count: g.bytes.len as u32 });
     g.units.append([233 as u16, 55357, 56832, 55296]);
-    g.nodes.push(bridge::Form { tag: 3, count: 4, source: 0, span_start: 0, span_end: g.bytes.len }); g.roots.push(0);
+    g.nodes.push(bridge::Form { tag: form_tag::String, count: 4, source: 0, span_start: 0, span_end: g.bytes.len }); g.roots.push(0);
     var complete = bridge::Control {}; var bytes: u8[>..] = []; assert(bridge::encode(g, bytes, complete));
     var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
     var roots: source::Value[>..] = []; var committed = bridge::Control {}; assert(bridge::import_graph(heap, g, roots, committed));
@@ -522,16 +522,16 @@ thread_fn adversarial_forms() {
     g.nodes[0].span_start = 0; g.bytes[0] = 255;
     var invalid = bridge::Control {}; assert(!bridge::validate(g, invalid));
     for width in [1, 256] {
-        var wide = bridge::Graph {}; wide.nodes.push(bridge::Form { tag: 3, start: 0, count: 4 }); wide.units.append([233 as u16, 55357, 56832, 55296]);
+        var wide = bridge::Graph {}; wide.nodes.push(bridge::Form { tag: form_tag::String, start: 0, count: 4 }); wide.units.append([233 as u16, 55357, 56832, 55296]);
         for i in width { wide.children.push(0); }
-        wide.nodes.push(bridge::Form { tag: 7, count: width }); wide.roots.push(1);
+        wide.nodes.push(bridge::Form { tag: form_tag::Vector, count: width }); wide.roots.push(1);
         var c = bridge::Control { nodes: 2, depth: 2 }; assert(bridge::validate(wide, c));
         var shallow = bridge::Control { depth: 1 }; assert(!bridge::validate(wide, shallow) && shallow.error == bridge::Error.Depth);
         var nodes = bridge::Control { nodes: 1, depth: 1024 }; assert(!bridge::validate(wide, nodes) && nodes.error == bridge::Error.Nodes);
         var text = bridge::Control { depth: 1024, bytes: bridge::footprint(wide) - 1 }; assert(!bridge::validate(wide, text) && text.error == bridge::Error.Bytes);
     }
-    var deep = bridge::Graph {}; deep.nodes.push(bridge::Form { tag: 0 });
-    for i in 256 { deep.children.push(i); deep.nodes.push(bridge::Form { tag: 7, start: i, count: 1 }); } deep.roots.push(256);
+    var deep = bridge::Graph {}; deep.nodes.push(bridge::Form { tag: form_tag::Nil });
+    for i in 256 { deep.children.push(i); deep.nodes.push(bridge::Form { tag: form_tag::Vector, start: i, count: 1 }); } deep.roots.push(256);
     var limit = bridge::Control { depth: 128 }; assert(!bridge::validate(deep, limit) && limit.error == bridge::Error.Depth);
     var enough = bridge::Control { depth: 257 }; assert(bridge::validate(deep, enough));
     var nodes = bridge::Control { nodes: 256, depth: 257 }; assert(!bridge::validate(deep, nodes) && nodes.error == bridge::Error.Nodes);
