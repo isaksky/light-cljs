@@ -366,7 +366,7 @@ inline fn realm_intrinsic(o: i64) -> bool { return o > global_row() && o < realm
 // validated with every other row's.
 fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, call: Value) -> bool {
     if nodes.len < realm_nodes() || accessors.len < 1 || !accessors[0].get.is_undefined() || !accessors[0].set.is_undefined() || !global.is_object() || global.id() != global_row() { return false; }
-    let kinds: i64[] = [0, 0, 4, 1];
+    let kinds: i64[] = [node_kind::Object, node_kind::Object, node_kind::Builtin, node_kind::Array];
     for k, o in kinds { if nodes[o].kind != k { return false; } }
     if !nodes[object_prototype_row()].proto.is_null() || nodes[function_prototype_row()].function != code(Builtin.FunctionPrototype) { return false; }
     for t in ERROR_NAMES.len {

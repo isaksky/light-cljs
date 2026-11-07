@@ -128,7 +128,7 @@ struct SavedHandler { frame: u32 = 0, pc: i64 = 0, operands: u32 = 0, locals: u3
 // pending reactions, activation an async function's detached activation
 // (no_row() for none). handled: a reaction was registered
 // ([[PromiseIsHandled]]).
-struct PromiseState { state: u8 = 0, result: Value = Value.Undefined, first: u32 = 4294967295, last: u32 = 4294967295, activation: u32 = 4294967295, handled: bool = false }
+struct PromiseState { state: u8 = promise_status::Pending, result: Value = Value.Undefined, first: u32 = 4294967295, last: u32 = 4294967295, activation: u32 = 4294967295, handled: bool = false }
 // A reaction of a pending promise: resume the activation of async function
 // promise `target` (resume) or settle promise `target` the same way (an
 // adoption); next is the promise's next reaction.

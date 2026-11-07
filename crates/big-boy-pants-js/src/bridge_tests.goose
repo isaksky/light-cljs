@@ -32,7 +32,7 @@ thread_fn roundtrip() {
         let changed = source::form_assoc(heap, old, source::number(1), source::number(8));
         assert(source::form_nth(heap, old, 1).id() == b.id() && source::form_nth(heap, changed, 0).id() == a.id() && source::form_nth(heap, changed, 2).id() == a.id());
         let append = source::form_assoc(heap, old, source::number(7), a); assert(source::form_count(heap, append) == 8 && source::form_nth(heap, append, 7).id() == a.id());
-        let meta = source::form_op(heap, form_op::CljMeta, [old]); assert(source::form_kind(heap, meta) == 7);
+        let meta = source::form_op(heap, form_op::CljMeta, [old]); assert(source::form_kind(heap, meta) == node_kind::Map);
         let with_meta = source::form_op(heap, form_op::CljWithMeta, [old, source::nil()]); assert(source::form_op(heap, form_op::CljMeta, [with_meta]).is_null() && source::form_op(heap, form_op::CljMeta, [old]).id() == meta.id());
         let map = source::form_assoc(heap, meta, a, old); let map2 = source::form_assoc(heap, map, b, append);
         assert(source::form_count(heap, map) == 2 && source::form_count(heap, map2) == 2 && source::form_get(heap, map, b, source::nil()).id() == old.id() && source::form_get(heap, map2, a, source::nil()).id() == append.id());
@@ -182,7 +182,7 @@ thread_fn update_boundary(operation: i64, mode: i64, cost: i64) {
             let key = source::allocate(heap, source::Node { kind: node_kind::Scalar, value: source::number(7) });
             let equal_key = source::allocate(heap, source::Node { kind: node_kind::Scalar, value: source::number(7) });
             let metadata = source::form_collection(heap, node_kind::Map, []);
-            let old = if operation == 2 || operation == 3 { source::form_collection(heap, node_kind::Map, [key, source::number(1), equal_key, source::number(2)]) } else { source::form_collection(heap, if operation == 4 { 5 } else { 6 }, [key, equal_key]) };
+            let old = if operation == 2 || operation == 3 { source::form_collection(heap, node_kind::Map, [key, source::number(1), equal_key, source::number(2)]) } else { source::form_collection(heap, if operation == 4 { node_kind::List } else { node_kind::Vector }, [key, equal_key]) };
             source::node_mut(heap, old.id()).metadata = metadata; source::node_mut(heap, old.id()).origin = 17; source::node_mut(heap, old.id()).source = 3; source::node_mut(heap, old.id()).span_start = 11; source::node_mut(heap, old.id()).span_end = 22;
             let n = source::node(heap, old.id()); let nodes = heap.nodes.len; let values = heap.values.len; let work = heap.work;
             let count: i64 = if operation == 0 { 2 } else if operation == 1 { 3 } else if operation == 2 { 4 } else if operation == 3 { 6 } else if operation == 6 { 1 } else { 3 };

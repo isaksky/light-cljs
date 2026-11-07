@@ -180,7 +180,7 @@ fn encode_cell(heap: const source::Heap&, base: snapshot::Header, root: source::
     // nothing to a later expansion, which sees it as built afresh.
     for id in slots {
         let k = p.image.nodes[id].kind;
-        if k >= 5 && k <= 12 { p.image.nodes[id].origin = -1; p.image.nodes[id].source = source::no_row(); p.image.nodes[id].span_start = 0; p.image.nodes[id].span_end = 0; }
+        if k >= node_kind::List && k <= node_kind::Concat { p.image.nodes[id].origin = -1; p.image.nodes[id].source = source::no_row(); p.image.nodes[id].span_start = 0; p.image.nodes[id].span_end = 0; }
     }
     installed.clear(); installed.append(slots);
     var bytes: u8[>..] = []; to_bytes([p], bytes);

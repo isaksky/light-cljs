@@ -654,7 +654,7 @@ thread_fn push_receiver(bytes: u8[], receiver: i64, boundary: i64, n: i64) {
     var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let start = heap.nodes.len;
-    let o = source::allocate(heap, source::Node { kind: if receiver == 2 { 0 } else { 1 } });
+    let o = source::allocate(heap, source::Node { kind: if receiver == 2 { node_kind::Object } else { node_kind::Array } });
     if receiver <= 1 { assert(source::put(heap, o, source::text(heap, "0"), source::number(1)) && source::put(heap, o, source::text(heap, "1"), source::number(2))); }
     if receiver == 1 { assert(source::put(heap, o, source::text(heap, "9000"), source::number(3)) && source::node(heap, o.id()).initialized); }
     if receiver == 2 { assert(source::put(heap, o, source::text(heap, "length"), source::number(1))); }
@@ -687,7 +687,7 @@ thread_fn iterator_source(bytes: u8[], shape: i64, boundary: i64) {
     var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let start = heap.nodes.len;
-    let o = source::allocate(heap, source::Node { kind: if shape == 0 { 1 } else { 0 } });
+    let o = source::allocate(heap, source::Node { kind: if shape == 0 { node_kind::Array } else { node_kind::Object } });
     assert(source::put(heap, o, source::text(heap, "0"), source::number(1)) && source::put(heap, o, source::text(heap, "1"), source::number(2)));
     if shape == 1 { assert(source::put(heap, o, source::text(heap, "length"), source::number(2))); }
     let end = heap.nodes.len;
@@ -1665,7 +1665,7 @@ thread_fn runtime_boundary(bytes: u8[]) {
     assert(source::run(factory_job, -1) == tiny::Outcome.Complete);
     var job = source::Job { heap: heap }; assert(source::start(job, factory_job.result, [source::Value.Undefined]));
     assert(source::run(job, -1) == tiny::Outcome.Complete);
-    assert(source::form_kind(heap, job.result) == 6 && source::form_count(heap, job.result) == 2);
+    assert(source::form_kind(heap, job.result) == node_kind::Vector && source::form_count(heap, job.result) == 2);
     assert(source::form_nth(heap, job.result, 0).num() == 2 && source::form_nth(heap, job.result, 1).num() == 3);
 }
 // dup2 and dup3 (light-cljs-830). A hand-assembled one-function image (the

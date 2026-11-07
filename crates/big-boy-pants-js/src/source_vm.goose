@@ -2637,7 +2637,7 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         form_op::Keyword, form_op::Symbol => {
             if (a.tag() > value_tag::Null && !a.is_string()) || !args[1].is_string() { heap.fault = Fault.TypeError; return Value.Undefined; }
             if !named_supported(heap, a, args[1]) { if heap.fault == Fault.None { heap.fault = Fault.NativeBoundary; } return Value.Undefined; }
-            return allocate(heap, Node { kind: if op == form_op::Keyword { 10 } else { 9 }, value: args[1], namespace_value: if a.tag() <= value_tag::Null { nil() } else { a } });
+            return allocate(heap, Node { kind: if op == form_op::Keyword { node_kind::Keyword } else { node_kind::Symbol }, value: args[1], namespace_value: if a.tag() <= value_tag::Null { nil() } else { a } });
         },
         form_op::Kind => { let kind = form_kind(heap, a); return match kind { node_kind::List, node_kind::Concat => text(heap, "list"), node_kind::Vector => text(heap, "vector"), node_kind::Map => text(heap, "map"), node_kind::Set => text(heap, "set"), node_kind::Symbol => text(heap, "symbol"), node_kind::Keyword => text(heap, "keyword"), _ => nil() }; },
         form_op::Count, form_op::CljCount => { return number(form_count(heap, a)); },
@@ -2656,13 +2656,13 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         form_op::Conj, form_op::CljConj => { return form_conj(heap, a, args[1]); },
         form_op::Equals => { return boolean(form_equal(heap, a, args[1])); },
         form_op::Meta, form_op::CljMeta => { return if a.is_object() && !node(heap, a.id()).metadata.is_undefined() { node(heap, a.id()).metadata } else { nil() }; },
-        form_op::WithMeta, form_op::CljWithMeta => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= node_kind::List && kind <= node_kind::Symbol || kind == node_kind::Concat) || (meta.tag() > value_tag::Null && form_kind(heap, meta) != 7) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= value_tag::Null { Value.Undefined } else { args[1] }; n.origin = -1; return allocate(heap, n); },
+        form_op::WithMeta, form_op::CljWithMeta => { let kind = form_kind(heap, a); let meta = form_value(heap, args[1]); if !(kind >= node_kind::List && kind <= node_kind::Symbol || kind == node_kind::Concat) || (meta.tag() > value_tag::Null && form_kind(heap, meta) != node_kind::Map) { heap.fault = Fault.TypeError; return Value.Undefined; } var n = node(heap, a.id()); n.metadata = if meta.tag() <= value_tag::Null { Value.Undefined } else { args[1] }; n.origin = -1; return allocate(heap, n); },
         form_op::Value => { return form_value(heap, a); },
         form_op::CljTruth => { let v = form_value(heap, a); return boolean(v.tag() > value_tag::Null && !(v.is_bool() && !v.flag())); },
         form_op::CljSeq, form_op::CljRest, form_op::CljNext => { return form_sequence(heap, a, if op == form_op::CljSeq { 0 } else { 1 }, op != form_op::CljRest); },
         form_op::CljFirst => { return form_nth(heap, a, 0); },
         form_op::LiteralMap => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != node_kind::List && kind != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); return form_collection(heap, node_kind::Map, run(heap, n.start, n.count)); },
-        form_op::ReaderCollection => { if form_kind(heap, a) != 7 && form_kind(heap, a) != 8 { heap.fault = Fault.TypeError; return Value.Undefined; } return a; },
+        form_op::ReaderCollection => { if form_kind(heap, a) != node_kind::Map && form_kind(heap, a) != node_kind::Set { heap.fault = Fault.TypeError; return Value.Undefined; } return a; },
         form_op::CljCallable => { let kind = form_kind(heap, a); return boolean(kind == node_kind::Vector || kind == node_kind::Map || kind == node_kind::Set || kind == node_kind::Symbol || kind == node_kind::Keyword); },
         form_op::CljCallMember => {
             let value = form_value(heap, a);
@@ -2749,7 +2749,7 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
         if !charge(heap, count) { return Value.Undefined; }
         var values: Value[>..] = [];
         for i in count { let v, found = own_element(heap, array, i); values.push(v); }
-        return form_construct(heap, if id == 10 { 6 } else if id == 11 { 5 } else if id == 12 { 7 } else { 8 }, values);
+        return form_construct(heap, if id == 10 { node_kind::Vector } else if id == 11 { node_kind::List } else if id == 12 { node_kind::Map } else { node_kind::Set }, values);
     }
     if id == 0 && args.len == 1 { return args[0]; }
     // inc is the runtime's `x => x + 1`: a string concatenates "1" (it does
