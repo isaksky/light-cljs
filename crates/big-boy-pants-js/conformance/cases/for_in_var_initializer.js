@@ -7,12 +7,12 @@
 // 2; an initializer that throws leaves it undefined; an anonymous function
 // initializer is named after the binding; closures share the one binding.
 // `tab.push` is replaced by `+=` and `fs.push(f)` by `fs[fs.length] = f`.
-// The script then ends with `5; for (var k = 2 in {}) {}` and a for-in whose
-// body completes with the log: a for-in that runs no iteration completes
-// with undefined, not the 5 before it (checked as a whole script on all
-// three engines; a slice can only observe one completion, so the last loop
-// carries the log, which its body completes with).
-// Completes with "true,true,true,true,true,true,true,true,true|2|x".
+// The script then ends with the completion row, `5; for (var k = 2 in {}) {}`:
+// a for-in that runs no iteration completes with undefined, not the 5 before
+// it. Only the script's own completion can observe that (eval is not on
+// Goose), so the rows above are checked first against their agreed log and a
+// mismatch throws it. Completes with undefined; an engine that kept the 5
+// completes with 5, and one that got a row wrong throws an Error.
 var log = "";
 function row(f) { var v; try { v = f(); } catch (e) { v = "thrown:" + e; } log += (log === "" ? "" : ",") + v; }
 row(function () { var tab = ""; for (var k = 2 in { x: 1, y: 2 }) tab += k; return tab === "xy" && k === "y"; });
@@ -43,5 +43,6 @@ row(function () {
   for (var k = 2 in { x: 1, y: 2 }) fs[fs.length] = () => k;
   return fs[0]() === "y" && fs[1]() === "y";
 });
-5; for (var e = 2 in {}) {}
-for (var last = 3 in { x: 1 }) { log + "|" + e + "|" + last; }
+for (var last = 3 in { x: 1 }) {}
+if (log + "|" + last !== "true,true,true,true,true,true,true,true,true|x") throw new Error(log + "|" + last);
+5; for (var k = 2 in {}) {}
