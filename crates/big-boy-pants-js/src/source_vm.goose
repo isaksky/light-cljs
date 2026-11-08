@@ -4529,13 +4529,16 @@ fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
             value = call_builtin(job, node(heap, f.id()).function, Value.Undefined, job.operands[(base + 1)..]);
         },
         Number, String, Boolean => { value = construct_wrapper(job, b, job.operands[(base + 1)..]); },
+        // new ExceptionInfo(...) takes newTarget's `prototype` itself
+        // (light-cljs-875; realm.goose construct_exception_info).
+        ExceptionInfo => { value = construct_exception_info(job, nt, job.operands[(base + 1)..]); },
         _ => { unsupported_step(job, b, "construct"); return; },
     }
     if heap.fault != Fault.None { return; }
     // A newTarget other than the constructor gives the new object its
     // `prototype` (GetPrototypeFromConstructor; the realm's intrinsic when
     // that is not an object). A proxy ignores it.
-    if b != Builtin.Proxy && !same_value(heap, nt, f) && value.is_object() {
+    if b != Builtin.Proxy && b != Builtin.ExceptionInfo && !same_value(heap, nt, f) && value.is_object() {
         let proto = construct_prototype(job, nt);
         if heap.fault != Fault.None { return; }
         if proto.is_object() { node_mut(heap, value.id()).proto = proto; }
@@ -5432,7 +5435,6 @@ fn ordinary_has_instance(job: Job&, at: i64, bound: Value, o: Value) {
         c = target;
     }
     if !o.is_object() { has_instance_done(job, at, false); return; }
-    if !instance_kind(heap, o) { unsupported_detail(job, "instanceof: a light-cljs runtime value"); return; }
     if node(heap, c.id()).kind == node_kind::Closure {
         if unsupported_prototype(heap, c.id()) { unsupported_detail(job, "instanceof: a class constructor's or async generator's prototype"); return; }
         if lazy_prototype(heap, c.id()) { has_instance_done(job, at, false); return; }
@@ -5446,10 +5448,18 @@ fn ordinary_has_instance(job: Job&, at: i64, bound: Value, o: Value) {
 }
 // OrdinaryHasInstance from step 5: P = C.prototype must be an object; then
 // O's prototype chain, each kind's default prototype included, one work
-// unit a link.
+// unit a link. A light-cljs runtime value as O (light-cljs-875) is an
+// instance of its V8 build runtime's own constructors, none of which is an
+// Error: it is no instance when P is the realm's %Error.prototype%, a
+// native error type's or ExceptionInfo.prototype (error_prototype), and
+// otherwise fails by name.
 fn has_instance_walk(job: Job&, at: i64, o: Value, p: Value) {
     let heap .= job.heap;
     if !p.is_object() { type_error(job, "operand 'prototype' property is not an object"); return; }
+    if !instance_kind(heap, o) {
+        if error_prototype(heap, p.id()) { has_instance_done(job, at, false); return; }
+        unsupported_detail(job, "instanceof: a light-cljs runtime value"); return;
+    }
     var x = o;
     loop {
         // A proxy's [[GetPrototypeOf]] fails by name here (proxy.goose).
@@ -5513,6 +5523,33 @@ fn has_instance_step(job: Job&, frame: Frame) {
 fn start_function_has_instance(job: Job&, receiver: Value, v: Value, base: i64) {
     job.operands.resize(base);
     ordinary_has_instance(job, -1, receiver, v);
+}
+// rt.core.isInstance(c, x) (light-cljs-875), the V8 build's runtime's
+// (src/bbp_runtime.js): for the Delay leaf, whether x is a delay;
+// otherwise `val(x) instanceof c`, as the instruction runs it
+// (instanceof_op), except that the step after GetMethod(c, @@hasInstance)
+// runs from a HasInstance frame's pc 1, so a built-in method's native frame
+// starts from the dispatch loop, not from this one. The runtime's other
+// cases, a multimethod type and a native struct type, are values this
+// runtime has none of: as the right operand of instanceof such a light-cljs
+// value fails by name.
+fn start_is_instance(job: Job&, c: Value, x: Value, base: i64) {
+    let heap .= job.heap;
+    job.operands.resize(base);
+    if is_builtin(heap, c, Builtin.Delay) {
+        let args: Value[1] = [x];
+        let r = call_builtin(job, code(Builtin.IsDelay), Value.Undefined, args[..]);
+        if heap.fault == Fault.None { job.operands.push(r); }
+        return;
+    }
+    let v = form_value(heap, x);
+    if !valid(heap, c) || heap.fault != Fault.None { return; }
+    if !c.is_object() { type_error(job, "invalid 'instanceof' right operand"); return; }
+    if !convertible(heap, c) { unsupported_detail(job, "instanceof: a light-cljs runtime value as the right operand"); return; }
+    let m, getter = lookup(heap, c, Value.Symbol { s: well_known::HasInstance });
+    if heap.fault != Fault.None { return; }
+    if getter.is_object() { has_instance_await(job, -1, 1, c, v, getter, c, []); return; }
+    if has_instance_frame(job, -1, 1, c, v, Value.Undefined) >= 0 { push_operand(job, m); }
 }
 
 // ---- The iteration protocol (light-cljs-843; ECMAScript 7.4.3

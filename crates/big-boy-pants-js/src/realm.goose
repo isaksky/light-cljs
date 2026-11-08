@@ -14,7 +14,8 @@ namespace source;
 // rows 0 to fixed_rows() - 1 are the intrinsics every kind's default
 // prototype names (realm_row), then one built-in function object per entry
 // of REALM_FUNCTIONS, then ExceptionInfo.prototype
-// (exception_info_prototype_row), realm_nodes() rows in all. Every intrinsic is an
+// (exception_info_prototype_row) and the ExceptionInfo function
+// (exception_info_constructor_row), realm_nodes() rows in all. Every intrinsic is an
 // ordinary row of the VM tables (plain u32 IDs, decision 2): its state is
 // its rows, which the worker reset restores like any image row, and
 // JavaScript in a compiler job cannot write it (Job.owned_nodes,
@@ -86,11 +87,18 @@ enum Builtin {
     // (light-cljs-872): rt.nativeInterop and rt.declarationReceiver, and
     // rt.core's exInfo, exData, exMessage, exCause and getIn.
     NativeInterop, DeclarationReceiver, ExInfo, ExData, ExMessage, ExCause, GetIn,
+    // cljs.core.ExceptionInfo (light-cljs-875), a realm row
+    // (exception_info_constructor_row) that rt.core.ExceptionInfo names.
+    ExceptionInfo,
+    // rt.core.isInstance (light-cljs-875): what a native macro unit emits
+    // for `instance?` of a class that is no js/ global, a native frame
+    // (source_vm.goose start_is_instance).
+    IsInstance,
 }
 // A built-in's code (its position here, a node's `function`), its `name`
 // and its `length`.
 struct BuiltinInfo { which: Builtin, name: u8[..24], length: u8 = 0 }
-let BUILTINS: BuiltinInfo[101] = [
+let BUILTINS: BuiltinInfo[103] = [
     BuiltinInfo { which: Builtin.MacroReaderFunction, name: "macroReaderFunction", length: 1 }, BuiltinInfo { which: Builtin.Inc, name: "inc", length: 1 },
     BuiltinInfo { which: Builtin.Mapv, name: "mapv", length: 2 }, BuiltinInfo { which: Builtin.Vec, name: "vec", length: 1 }, BuiltinInfo { which: Builtin.Into, name: "into", length: 2 },
     BuiltinInfo { which: Builtin.Gensym, name: "gensym" }, BuiltinInfo { which: Builtin.SharedIncrement, name: "sharedIncrement" }, BuiltinInfo { which: Builtin.SharedRead, name: "sharedRead" },
@@ -144,7 +152,8 @@ let BUILTINS: BuiltinInfo[101] = [
     BuiltinInfo { which: Builtin.NativeInterop, name: "nativeInterop", length: 2 }, BuiltinInfo { which: Builtin.DeclarationReceiver, name: "declarationReceiver", length: 1 },
     BuiltinInfo { which: Builtin.ExInfo, name: "exInfo" }, BuiltinInfo { which: Builtin.ExData, name: "exData", length: 1 },
     BuiltinInfo { which: Builtin.ExMessage, name: "exMessage", length: 1 }, BuiltinInfo { which: Builtin.ExCause, name: "exCause", length: 1 },
-    BuiltinInfo { which: Builtin.GetIn, name: "getIn" },
+    BuiltinInfo { which: Builtin.GetIn, name: "getIn" }, BuiltinInfo { which: Builtin.ExceptionInfo, name: "ExceptionInfo", length: 3 },
+    BuiltinInfo { which: Builtin.IsInstance, name: "isInstance", length: 2 },
 ];
 // The fixed rows (realm_row). The error types are indexed as ERROR_NAMES:
 // Error, its six native subclasses, and QuickJS's InternalError (the stack
@@ -259,14 +268,18 @@ let REALM_FUNCTIONS: Method[41] = [
     // it as getter and setter (light-cljs-853).
     Method { which: Builtin.FunctionPrototypeToString, holder: 2 }, Method { which: Builtin.ThrowTypeError, holder: 2 },
 ];
-// cljs.core's ExceptionInfo.prototype (light-cljs-872), the realm's last
-// row, after the REALM_FUNCTIONS: an ordinary object inheriting
-// %Error.prototype%, the [[Prototype]] of what rt.core.exInfo makes. No
-// property reaches it: JavaScript gets it only from such an object. Its
-// `constructor` and `toString` (in the V8 build, the ExceptionInfo function
-// and its printer) are pending.
+// cljs.core's ExceptionInfo.prototype (light-cljs-872), after the
+// REALM_FUNCTIONS: an ordinary object inheriting %Error.prototype%, the
+// [[Prototype]] of what rt.core.exInfo and the ExceptionInfo function make.
+// Then the ExceptionInfo function itself (light-cljs-875), the realm's last
+// row: a built-in with [[Construct]] that rt.core.ExceptionInfo names. As
+// the V8 build's runtime (src/bbp_runtime.js) defines an ordinary function,
+// its `prototype` is writable, and the prototype's `constructor` is it. The
+// prototype's `toString`, the V8 build's cljs printer (`#error {:message
+// ...}`), is pending: bbp has no printer of light-cljs values.
 inline fn exception_info_prototype_row() -> i64 { return fixed_rows() + REALM_FUNCTIONS.len; }
-inline fn realm_nodes() -> i64 { return exception_info_prototype_row() + 1; }
+inline fn exception_info_constructor_row() -> i64 { return exception_info_prototype_row() + 1; }
+inline fn realm_nodes() -> i64 { return exception_info_constructor_row() + 1; }
 // The node row of built-in b's REALM_FUNCTIONS entry.
 fn realm_function_row(b: Builtin) -> i64 {
     for m, j in REALM_FUNCTIONS { if m.which == b { return fixed_rows() + j; } }
@@ -355,7 +368,7 @@ let TYPE_NAMES: Name[8] = [Name { text: "undefined" }, Name { text: "object" }, 
 // The light-cljs runtime leaves boot_runtime installs on `rt` (core false)
 // or `rt.core`, in this order.
 struct Leaf { core: bool, key: u8[..24], which: Builtin }
-let RUNTIME_LEAVES: Leaf[43] = [
+let RUNTIME_LEAVES: Leaf[45] = [
     Leaf { core: true, key: "macroReaderFunction", which: Builtin.MacroReaderFunction }, Leaf { core: true, key: "inc", which: Builtin.Inc },
     Leaf { core: true, key: "mapv", which: Builtin.Mapv }, Leaf { core: true, key: "vec", which: Builtin.Vec }, Leaf { core: true, key: "into", which: Builtin.Into },
     Leaf { core: true, key: "sequence", which: Builtin.Sequence }, Leaf { core: true, key: "mapSeq", which: Builtin.MapSeq }, Leaf { core: true, key: "list", which: Builtin.List },
@@ -384,19 +397,24 @@ let RUNTIME_LEAVES: Leaf[43] = [
     Leaf { core: true, key: "Delay", which: Builtin.Delay }, Leaf { core: true, key: "force", which: Builtin.Force },
     Leaf { core: true, key: "realized", which: Builtin.Realized }, Leaf { core: true, key: "isDelay", which: Builtin.IsDelay },
     // What a native compile-time unit emits for (C. args) when C is no
-    // struct type: only a constructor whose construction is its call.
+    // struct type: a constructor whose construction is its call (Delay),
+    // or the ExceptionInfo function (light-cljs-875).
     Leaf { core: false, key: "nativeConstruct", which: Builtin.NativeConstruct },
     // Compiled interop's receiver and operand checks and the Object
     // declaration demand of a member read (light-cljs-872).
     Leaf { core: false, key: "nativeInterop", which: Builtin.NativeInterop }, Leaf { core: false, key: "declarationReceiver", which: Builtin.DeclarationReceiver },
-    // ex-info and its readers, and get-in (light-cljs-872). The
-    // ExceptionInfo function is no leaf: its prototype is a realm row
-    // (exception_info_prototype_row), which no leaf may reach, as a helper
-    // publication's graph walk from `rt` must meet no cycle of objects
-    // (callable.goose graph).
+    // ex-info and its readers, and get-in (light-cljs-872).
     Leaf { core: true, key: "exInfo", which: Builtin.ExInfo }, Leaf { core: true, key: "exData", which: Builtin.ExData },
     Leaf { core: true, key: "exMessage", which: Builtin.ExMessage }, Leaf { core: true, key: "exCause", which: Builtin.ExCause },
     Leaf { core: true, key: "getIn", which: Builtin.GetIn },
+    // The ExceptionInfo function (light-cljs-875): no new object but the
+    // realm row exception_info_constructor_row, so it is the `constructor`
+    // of what exInfo makes. A helper publication's graph walk from `rt`
+    // stops at realm rows (callable.goose graph), so the constructor and
+    // prototype cycles it reaches are no rejected cycle.
+    Leaf { core: true, key: "ExceptionInfo", which: Builtin.ExceptionInfo },
+    // `instance?` of a class that is no js/ global (light-cljs-875).
+    Leaf { core: true, key: "isInstance", which: Builtin.IsInstance },
 ];
 
 // A built-in's code: its position in BUILTINS.
@@ -458,6 +476,12 @@ inline fn realm_row(o: i64) -> bool { return o >= 0 && o < realm_nodes(); }
 // object, whose names the compiler installs and which lacks many of the V8
 // build's, so a name it does not have stays a NativeBoundary there.
 inline fn realm_intrinsic(o: i64) -> bool { return o > global_row() && o < realm_nodes(); }
+// Whether node o is the realm's %Error.prototype%, a native error type's
+// prototype or ExceptionInfo.prototype (light-cljs-875); a heap built
+// without initialize has none.
+fn error_prototype(heap: const Heap&, o: i64) -> bool {
+    return heap.global.is_object() && (o >= error_prototype_row(0) && o < error_prototype_row(ERROR_NAMES.len) || o == exception_info_prototype_row());
+}
 // Whether an image's first rows are this realm's layout (snapshot::validate):
 // the fixed rows' kinds, prototypes and built-in codes, one built-in per
 // REALM_FUNCTIONS entry, the pending pair at accessor row 0, the global at
@@ -496,9 +520,11 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     // %GeneratorFunction.prototype% and its siblings (light-cljs-857).
     for k in FUNCTION_KIND_TAGS.len { let n .= nodes[function_kind_prototype_row(k)]; if n.kind != node_kind::Object || !n.proto.is_object() || n.proto.id() != function_prototype_row() { return false; } }
     for m, j in REALM_FUNCTIONS { let o = fixed_rows() + j; if nodes[o].kind != node_kind::Builtin || nodes[o].function != code(m.which) || m.which == Builtin.FunctionPrototypeCall && (!call.is_object() || call.id() != o) { return false; } }
-    // ExceptionInfo.prototype (light-cljs-872).
+    // ExceptionInfo.prototype (light-cljs-872) and the ExceptionInfo function (light-cljs-875).
     let e .= nodes[exception_info_prototype_row()];
     if e.kind != node_kind::Object || !e.proto.is_object() || e.proto.id() != error_prototype_row(0) { return false; }
+    let f .= nodes[exception_info_constructor_row()];
+    if f.kind != node_kind::Builtin || f.function != code(Builtin.ExceptionInfo) || !f.proto.is_hole() { return false; }
     return true;
 }
 
@@ -531,6 +557,7 @@ fn build_realm(heap: Heap&) -> bool {
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
     rows.push(Node { kind: node_kind::Object, proto: object(error_prototype_row(0)) });
+    rows.push(Node { kind: node_kind::Builtin, function: code(Builtin.ExceptionInfo) });
     if !charge(heap, rows.len) || add_nodes(heap, rows) != 0 { if heap.fault == Fault.None { memory(heap); } return false; }
     heap.global = object(global_row());
     // Every built-in function's `length` and `name`.
@@ -613,8 +640,13 @@ fn build_realm(heap: Heap&) -> bool {
         let k: Value = if p.symbol >= 0 { Value.Symbol { s: p.symbol as u32 } } else { key_named(heap, p.key) };
         if heap.fault != Fault.None || !add_own(heap, p.holder, k, pending(), attr_configurable()) { return false; }
     }
-    let exception_info_pending: Name[2] = [Name { text: "constructor" }, Name { text: "toString" }];
-    for n in exception_info_pending { let k = key_named(heap, n.text); if heap.fault != Fault.None || !add_own(heap, exception_info_prototype_row(), k, pending(), attr_configurable()) { return false; } }
+    // The ExceptionInfo function's `prototype` (an ordinary function's:
+    // writable, neither enumerable nor configurable), its prototype's
+    // `constructor`, and the pending `toString`.
+    let ei = exception_info_constructor_row(); let eip = exception_info_prototype_row();
+    if !realm_value(heap, ei, "prototype", object(eip), attr_writable()) || !realm_value(heap, eip, "constructor", object(ei), attr_writable() | attr_configurable()) { return false; }
+    let to_string = key_named(heap, "toString");
+    if heap.fault != Fault.None || !add_own(heap, eip, to_string, pending(), attr_configurable()) { return false; }
     for n in TYPE_NAMES { key_named(heap, n.text); }
     if heap.fault != Fault.None { return false; }
     assert(heap.nodes.len == realm_nodes());
@@ -644,6 +676,7 @@ fn boot_runtime(heap: Heap&) -> Value {
     install_field(heap, rt, "core", core);
     install_field(heap, heap.global, "__lightNativeRuntime", rt);
     for leaf in RUNTIME_LEAVES {
+        if leaf.which == Builtin.ExceptionInfo { install_field(heap, core, leaf.key, object(exception_info_constructor_row())); continue; }
         let f = allocate(heap, Node { kind: node_kind::Builtin, function: code(leaf.which) });
         if !f.is_object() || !builtin_metadata(heap, f.id()) { return Value.Undefined; }
         install_field(heap, if leaf.core { core } else { rt }, leaf.key, f);
@@ -937,26 +970,66 @@ fn ex_field(job: Job&, b: Builtin, v: Value) -> Value {
 // own, so each is read from %Error.prototype% and its chain.
 let COPIED_ERROR_FIELDS: Name[7] = [Name { text: "name" }, Name { text: "description" }, Name { text: "number" }, Name { text: "fileName" }, Name { text: "lineNumber" }, Name { text: "columnNumber" }, Name { text: "stack" }];
 // rt.core.exInfo(message, data, cause?) (cljs.core/ex-info): `new
-// ExceptionInfo(...)`, an ordinary object inheriting ExceptionInfo.prototype
-// whose own data properties are message (as given), data, cause (null
-// unless given) and the COPIED_ERROR_FIELDS. The message's ToString, which
-// `new Error` runs, runs no JavaScript here (primitive_string).
+// ExceptionInfo(message, data, cause)` (construct_exception_info), cause
+// null unless given.
 fn ex_info(job: Job&, b: Builtin, args: const Value[:]) -> Value {
-    let heap .= job.heap;
     if args.len != 2 && args.len != 3 { return arity_error(job, args.len); }
-    let m = form_value(heap, args[0]);
+    let fields: Value[3] = [args[0], args[1], if args.len == 3 { args[2] } else { nil() }];
+    return construct_exception_info(job, object(exception_info_constructor_row()), fields[..]);
+}
+// The ExceptionInfo function's steps (src/bbp_runtime.js, light-cljs-875)
+// with `this` (receiver) and message, data and cause `fields`: `new
+// Error(val(message))`, whose ToString of the message runs no JavaScript
+// here (primitive_string); the target `this == null ? globalThis :
+// Object(this)`; then the fields and the COPIED_ERROR_FIELDS assigned to it
+// as strict code (the V8 build's runtime is): a row the job did not
+// allocate faults NativeBoundary (decision 3) before anything changes, a
+// setter fails by name, and a refused assignment is a TypeError. Returns
+// the target.
+fn exception_info(job: Job&, b: Builtin, fields: const Value[:], receiver: Value) -> Value {
+    let heap .= job.heap;
+    let m = form_value(heap, fields[0]);
     if heap.fault != Fault.None { return Value.Undefined; }
     if !m.is_undefined() { primitive_string(job, b, m); if heap.fault != Fault.None { return Value.Undefined; } }
-    let e = allocate(heap, Node { kind: node_kind::Object, proto: object(exception_info_prototype_row()) });
+    let e = if receiver.tag() <= value_tag::Null { heap.global } else { to_object(job, receiver) };
     if heap.fault != Fault.None { return Value.Undefined; }
-    let fields: Value[3] = [args[0], args[1], if args.len == 3 { args[2] } else { nil() }];
-    let names:  Name[3]  = [Name { text: "message" }, Name { text: "data" }, Name { text: "cause" }];
-    for v, i in fields { if !realm_value(heap, e.id(), names[i].text, v, attrs_data()) { return Value.Undefined; } }
+    if !writable(job, e.id()) { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    let names: Name[3] = [Name { text: "message" }, Name { text: "data" }, Name { text: "cause" }];
+    for v, i in fields { if !exception_info_field(job, b, e, names[i].text, v) { return Value.Undefined; } }
     for f in COPIED_ERROR_FIELDS {
         let v = data_get(job, b, object(error_prototype_row(0)), f.text);
-        if heap.fault != Fault.None || !realm_value(heap, e.id(), f.text, v, attrs_data()) { return Value.Undefined; }
+        if heap.fault != Fault.None || !exception_info_field(job, b, e, f.text, v) { return Value.Undefined; }
     }
     return e;
+}
+// `new ExceptionInfo(...args)` with newTarget nt (construct,
+// nativeConstruct and exInfo), as for an ordinary function: an ordinary
+// object whose [[Prototype]] is nt's `prototype`, or %Object.prototype%
+// when that is not an object (GetPrototypeFromConstructor), is `this` of
+// the steps.
+fn construct_exception_info(job: Job&, nt: Value, args: const Value[:]) -> Value {
+    let proto = construct_prototype(job, nt);
+    if job.heap.fault != Fault.None { return Value.Undefined; }
+    let o = allocate(job.heap, Node { kind: node_kind::Object, proto: if proto.is_object() { proto } else { object(object_prototype_row()) } });
+    if job.heap.fault != Fault.None { return Value.Undefined; }
+    let fields: Value[3] = [arg(args, 0), arg(args, 1), arg(args, 2)];
+    return exception_info(job, Builtin.ExceptionInfo, fields, o);
+}
+// Whether v is a built-in function object of b.
+fn is_builtin(heap: Heap&, v: Value, b: Builtin) -> bool { return valid(heap, v) && v.is_object() && node(heap, v.id()).kind == node_kind::Builtin && builtin_of(heap, v.id()) == b; }
+// One field of exception_info: `e[name] = v` ([[Set]]).
+fn exception_info_field(job: Job&, b: Builtin, e: Value, name: const u8[:], v: Value) -> bool {
+    let heap .= job.heap;
+    let k = key_named(heap, name);
+    if heap.fault != Fault.None { return false; }
+    prepare_function(job, e, k, true);
+    if heap.fault != Fault.None { return false; }
+    let setter, ok = write(heap, e, k, v);
+    if heap.fault != Fault.None { return false; }
+    if setter.is_object() { unsupported_step(job, b, "a setter on its receiver"); return false; }
+    if !ok { refused_write(job, e, k); return false; }
+    record(job, e, k, v);
+    return heap.fault == Fault.None;
 }
 // rt.core.getIn(m, ks, not-found?) (cljs.core/get-in): `get` along the
 // path's elements; with not-found, a step that misses returns it.
@@ -1369,7 +1442,7 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         SymbolFunction => { return unsupported_step(job, b, "creating symbols"); },
         NativeCoreBinding => { return core_binding(job, b, arg(args, 0)); },
         Atom, Deref, Reset, CompareAndSet, ResetVals, Volatile, Vreset, AddWatch, RemoveWatch, SetValidator => { return cell_builtin(job, b, args); },
-        Swap, SwapVals, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, FunctionPrototypeHasInstance => { return unsupported_step(job, b, "called from a native frame"); },
+        Swap, SwapVals, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, FunctionPrototypeHasInstance, IsInstance => { return unsupported_step(job, b, "called from a native frame"); },
         // %IteratorPrototype%[@@iterator]: returns its receiver.
         IteratorPrototypeIterator => { return receiver; },
         // A direct-eval site's call of %eval% never reaches here (Ins.DirectEval),
@@ -1377,6 +1450,8 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         Eval => { return unsupported_step(job, b, "called outside a native frame"); },
         Delay, Force, Realized, IsDelay => { return delay_builtin(job, b, args); },
         NativeConstruct => {
+            // `new C(...)` of the ExceptionInfo function (light-cljs-875).
+            if is_builtin(heap, arg(args, 0), Builtin.ExceptionInfo) { return construct_exception_info(job, args[0], args[1..]); }
             if !constructible(heap, arg(args, 0)) { return unsupported_step(job, b, "constructing a value other than a Delay"); }
             var rest: Value[>..] = []; if args.len > 1 { rest.append(args[1..]); }
             return delay_builtin(job, Builtin.Delay, rest);
@@ -1402,6 +1477,11 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         NativeInterop => { return form_value(heap, arg(args, 0)); },
         DeclarationReceiver => { return arg(args, 0); },
         ExInfo => { return ex_info(job, b, args); },
+        // ExceptionInfo called, not constructed (light-cljs-875).
+        ExceptionInfo => {
+            let fields: Value[3] = [arg(args, 0), arg(args, 1), arg(args, 2)];
+            return exception_info(job, b, fields, if receiver.is_hole() { Value.Undefined } else { receiver });
+        },
         ExData, ExMessage, ExCause => { return ex_field(job, b, arg(args, 0)); },
         GetIn => { return get_in(job, b, args); },
         // A non-seqable source is cljs.core's error (light-cljs-873).

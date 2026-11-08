@@ -121,6 +121,19 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
         if colors[id] == 0 {
             colors[id] = 1;
             if id < base {
+                // A realm intrinsic (every realm row but the global object)
+                // ends the walk (light-cljs-875): every consumer has the
+                // same rows (initialize in the image owner, realm_valid on
+                // every restore) and no job writes them (decision 3's write
+                // rule), so what it reaches is the consumer's own, whatever
+                // its kind. Its row is still compared with the consumer's,
+                // but its edges are not followed: the realm's constructor
+                // and prototype links are cycles of objects, which the
+                // check below rejects elsewhere.
+                if base >= source::realm_nodes() && source::realm_intrinsic(id) {
+                    if !base_node(p, heap, id, c) { return false; }
+                    ids[id] = id; colors[id] = 2; stack.pop(); continue;
+                }
                 if n.kind == node_kind::Array || n.kind == node_kind::Binding && (!n.immutable || !n.initialized) || n.kind == node_kind::MappedBinding || n.kind == node_kind::ArgumentMap { return fail(c); }
                 if !base_node(p, heap, id, c) { return false; } ids[id] = id;
             } else {

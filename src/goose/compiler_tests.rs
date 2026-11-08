@@ -1762,24 +1762,28 @@ fn goose_compiler_caught_runtime_errors_preserve_identity() {
 /// light-cljs-874's).
 #[cfg(light_v8)]
 fn macro_errors_match_v8(body: &str, uncaught: Option<(&str, &str)>) {
-    let source = format!("(defmacro m [] {body}) (def x (m))");
-    let reference = crate::compile_with_macros(&source, &mut crate::MacroHost::new());
+    source_matches_v8(&format!("(defmacro m [] {body}) (def x (m))"), uncaught);
+}
+/// [`macro_errors_match_v8`] of a whole compiled `source`.
+#[cfg(light_v8)]
+fn source_matches_v8(source: &str, uncaught: Option<(&str, &str)>) {
+    let reference = crate::compile_with_macros(source, &mut crate::MacroHost::new());
     let session = GooseSession::start(&runner(), 1).unwrap();
     let mut host = crate::MacroHost::new();
     host.use_goose_source_macros(session.clone()).unwrap();
-    let goose = crate::compile_with_macros(&source, &mut host);
+    let goose = crate::compile_with_macros(source, &mut host);
     session.close();
     drop(host);
     cleaned(&session);
     match uncaught {
-        None => assert_eq!(goose.unwrap(), reference.unwrap(), "{body}"),
+        None => assert_eq!(goose.unwrap(), reference.unwrap(), "{source}"),
         Some((exception, fault)) => {
             let reference = reference.unwrap_err().to_string();
-            assert!(reference.contains(exception), "{body}: {reference}");
+            assert!(reference.contains(exception), "{source}: {reference}");
             let message = goose.unwrap_err().to_string();
             assert!(
                 message.contains(&format!("Fault.{fault}")) && !message.contains("NativeBoundary"),
-                "{body}: {message}"
+                "{source}: {message}"
             );
         }
     }
@@ -1859,6 +1863,93 @@ fn goose_compiler_macro_throws_and_catches_ex_info() {
         r#"(throw (ex-info "bad arg" {:a 1}))"#,
         Some(("Error: bad arg", "HostEffect")),
     );
+}
+/// cljs.core's ExceptionInfo constructor (light-cljs-875): direct
+/// construction, `instance?`, a `catch` of the type, constructor identity,
+/// its `name` and `length`, and `new` from JavaScript.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_uses_the_exception_info_constructor() {
+    macro_errors_match_v8(
+        r#"(let [e (ExceptionInfo. "x" {:a 1} nil)] [(ex-message e) (ex-data e) (ex-cause e) (instance? ExceptionInfo e) (instance? js/Error e) (.-name e)])"#,
+        None,
+    );
+    macro_errors_match_v8(
+        r#"(let [e (ex-info "m" {})] [(instance? ExceptionInfo e) (= ExceptionInfo (.-constructor e)) (js* "~{} === ~{}" ExceptionInfo (.-constructor e)) (instance? ExceptionInfo (js/Error. "z")) (instance? ExceptionInfo 5)])"#,
+        None,
+    );
+    macro_errors_match_v8(
+        r#"(try (throw (ExceptionInfo. "boom" {:k 2} (js/Error. "c"))) (catch ExceptionInfo e [(ex-data e) (ex-message (ex-cause e))]))"#,
+        None,
+    );
+    macro_errors_match_v8(
+        r#"[(.-name ExceptionInfo) (.-length ExceptionInfo) (= (.-prototype ExceptionInfo) (js/Object.getPrototypeOf (ex-info "p" {})))]"#,
+        None,
+    );
+    macro_errors_match_v8(
+        r#"(let [e (js* "new ~{}(\"j\", 1)" ExceptionInfo)] [(ex-message e) (ex-data e) (nil? (ex-cause e)) (instance? ExceptionInfo e)])"#,
+        None,
+    );
+    macro_errors_match_v8(
+        r#"[(let [E ExceptionInfo] (ex-data (E. "a" 4 nil))) (let [e (js* "Reflect.construct(~{}, [\"r\", 3], Error)" ExceptionInfo)] [(instance? ExceptionInfo e) (instance? js/Error e) (ex-message e)])]"#,
+        None,
+    );
+    // Constructed with another newTarget: the new object inherits its
+    // `prototype` (Object.prototype when that is no object) before the
+    // fields are assigned, so an inherited getter-only `message` refuses
+    // the assignment (a TypeError: the V8 build's runtime is strict code).
+    macro_errors_match_v8(
+        r#"(js* "(() => { function F() {} F.prototype = 1; const a = Reflect.construct(~{}, ['x', 1, null], F); function G() {} G.prototype = {get message() { return 'inherited'; }}; let b; try { Reflect.construct(~{}, ['y', 2, null], G); } catch (e) { b = e.name; } return [Object.getPrototypeOf(a) === Object.prototype, a.message, a.data, b].join(); })()" ExceptionInfo ExceptionInfo)"#,
+        None,
+    );
+    // A light-cljs value is never an instance of an error type.
+    macro_errors_match_v8(
+        "[(instance? ExceptionInfo {}) (instance? ExceptionInfo []) (instance? ExceptionInfo (delay 1)) (instance? js/Error {:a 1}) (instance? js/TypeError '(1))]",
+        None,
+    );
+    // Called with a receiver, it fills that object in, as the V8 build's does.
+    macro_errors_match_v8(
+        r#"(let [o (js* "{}")] (.call ExceptionInfo o "q" 1 2) [(.-message o) (.-data o) (.-cause o) (.-name o)])"#,
+        None,
+    );
+    // A helper that constructs or tests for it: the helper's publication
+    // reaches the realm's ExceptionInfo rows from `rt`.
+    source_matches_v8(
+        r#"(defn mk [m] (ExceptionInfo. m {:z 1} nil)) (defn is [e] (instance? ExceptionInfo e)) (defmacro m [] [(ex-data (mk "h")) (is (mk "i")) (is 1)]) (def x (m))"#,
+        None,
+    );
+    // instance? of the Delay leaf, rt.core.isInstance's other case.
+    macro_errors_match_v8(
+        "(let [d (delay 1)] [(instance? Delay d) (instance? Delay 5)])",
+        None,
+    );
+    macro_errors_match_v8(
+        r#"(throw (ExceptionInfo. "bad arg" {:a 1} nil))"#,
+        Some(("Error: bad arg", "HostEffect")),
+    );
+}
+/// ExceptionInfo called with a realm row as its receiver (light-cljs-875):
+/// the V8 build fills ExceptionInfo.prototype in, while the Goose path's
+/// write rule (decision 3) faults NativeBoundary, which JavaScript cannot
+/// catch, before any field changes.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_exception_info_call_cannot_write_realm_rows() {
+    let call = r#"(defmacro m [] (do (.call ExceptionInfo (.-prototype ExceptionInfo) "q" 1 2) (js* "Object.hasOwn(~{}, 'data')" (.-prototype ExceptionInfo)))) (def x (m))"#;
+    let reference = crate::compile_with_macros(call, &mut crate::MacroHost::new()).unwrap();
+    assert!(reference.contains("true"), "{reference}");
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let mut host = crate::MacroHost::new();
+    host.use_goose_source_macros(session.clone()).unwrap();
+    let message = crate::compile_with_macros(call, &mut host)
+        .unwrap_err()
+        .to_string();
+    assert!(message.contains("Fault.NativeBoundary"), "{message}");
+    session.close();
+    drop(host);
+    cleaned(&session);
 }
 /// get-in, whose `get` of a number is nil, inside a `js*` try (light-cljs-872).
 #[cfg(light_v8)]
