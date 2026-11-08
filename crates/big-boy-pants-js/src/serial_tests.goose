@@ -650,6 +650,9 @@ fn main() {
     // So do the Function constructor's conversions, in its DynamicFunction
     // frame, and the function it compiles (light-cljs-857).
     check(embed_file("../corpus/serial/function-constructor.gsp"), "number:25.0");
+    // A generator function's `constructor` is %GeneratorFunction%, pending
+    // for the generators area (light-cljs-768), never Function.
+    check(embed_file("../corpus/serial/function-kind-constructor.gsp"), "Fault.UnsupportedOperand:pending-constructor", source::Fault.UnsupportedOperand);
     fixed_cells(embed_file("../corpus/serial/mutations.gsp"));
     heap_program::join(thread_spawn(failed_job_isolation, str(embed_file("../corpus/serial/calls.gsp"))));
     allocation_limits(embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/strings.gsp"));

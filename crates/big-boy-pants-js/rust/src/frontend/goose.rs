@@ -1318,6 +1318,10 @@ mod serial_tests {
             // The Function constructor (light-cljs-857): conversions and
             // the new function's loop stop and resume at every limit.
             ("function-constructor", "number:25"),
+            // A generator function's run-time constructor fails by name.
+            ("function-kind-constructor", "goose"),
+            // A dependency wait inside its conversions (snapshot_tests.goose).
+            ("function-constructor-wait", "goose"),
             ("loop", "limit"),
             // Control flow (light-cljs-786): finally blocks, native frames,
             // the call depth limit, and an endless loop that only

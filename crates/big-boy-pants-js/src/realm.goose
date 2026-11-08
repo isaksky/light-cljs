@@ -175,8 +175,28 @@ inline fn arguments_template_row(mapped: bool) -> i64 { return if mapped { 36 } 
 // ordinary object with a null [[Prototype]] whose UNSCOPABLE_NAMES are own
 // data properties, all true.
 inline fn array_unscopables_row() -> i64 { return 37; }
-inline fn fixed_rows() -> i64 { return 38; }
+// %GeneratorFunction.prototype%, %AsyncFunction.prototype% and
+// %AsyncGeneratorFunction.prototype% (light-cljs-857), ordinary objects
+// inheriting %Function.prototype%: the [[Prototype]] of generator, async and
+// async generator closures (prototype). Their `constructor`s, the run-time
+// constructors of those kinds, are pending for the generators area
+// (light-cljs-768), so `(function* () {}).constructor` never reaches the
+// Function constructor. Indexed by function_kind:: (FUNCTION_KIND_TAGS
+// order).
+let function_kind::Generator: i64 = 0;
+let function_kind::Async: i64 = 1;
+let function_kind::AsyncGenerator: i64 = 2;
+inline fn function_kind_prototype_row(k: i64) -> i64 { return 38 + k; }
+inline fn fixed_rows() -> i64 { return 41; }
 struct Name { text: u8[..24] }
+let FUNCTION_KIND_TAGS: Name[3] = [Name { text: "GeneratorFunction" }, Name { text: "AsyncFunction" }, Name { text: "AsyncGeneratorFunction" }];
+// The function_kind:: of closure o's code, -1 for an ordinary function.
+fn function_kind_of(heap: const Heap&, o: i64) -> i64 {
+    let c: i64 = node(heap, o).function;
+    if c < 0 || c >= heap.code.functions.len { return -1; }
+    let f .= heap.code.functions[c];
+    return if f.generator { if f.asynchronous { function_kind::AsyncGenerator } else { function_kind::Generator } } else if f.asynchronous { function_kind::Async } else { -1 };
+}
 let UNSCOPABLE_NAMES: Name[16] = [
     Name { text: "at" }, Name { text: "copyWithin" }, Name { text: "entries" }, Name { text: "fill" }, Name { text: "find" }, Name { text: "findIndex" }, Name { text: "findLast" }, Name { text: "findLastIndex" },
     Name { text: "flat" }, Name { text: "flatMap" }, Name { text: "includes" }, Name { text: "keys" }, Name { text: "toReversed" }, Name { text: "toSorted" }, Name { text: "toSpliced" }, Name { text: "values" },
@@ -239,7 +259,7 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[201] = [
+let PENDING: PendingName[204] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
@@ -259,7 +279,10 @@ let PENDING: PendingName[201] = [
     PendingName { holder: 12, key: "isExtensible" }, PendingName { holder: 12, key: "isFrozen" }, PendingName { holder: 12, key: "isSealed" }, PendingName { holder: 12, key: "keys" },
     PendingName { holder: 12, key: "preventExtensions" }, PendingName { holder: 12, key: "seal" }, PendingName { holder: 12, key: "setPrototypeOf" }, PendingName { holder: 12, key: "values" },
     // Symbol (symbol_row(); its well-known symbols are real)
-    PendingName { holder: 48, key: "prototype" }, PendingName { holder: 48, key: "for" }, PendingName { holder: 48, key: "keyFor" },
+    PendingName { holder: 51, key: "prototype" }, PendingName { holder: 51, key: "for" }, PendingName { holder: 51, key: "keyFor" },
+    // %GeneratorFunction%, %AsyncFunction% and %AsyncGeneratorFunction%
+    // (function_kind_prototype_row; the generators area, light-cljs-768).
+    PendingName { holder: 38, key: "constructor" }, PendingName { holder: 39, key: "constructor" }, PendingName { holder: 40, key: "constructor" },
     // Reflect (reflect_row()): apply and construct are light-cljs-851's;
     // the other eleven belong to the objects and classes area (light-cljs-766).
     PendingName { holder: 34, key: "defineProperty" }, PendingName { holder: 34, key: "deleteProperty" }, PendingName { holder: 34, key: "get" }, PendingName { holder: 34, key: "getOwnPropertyDescriptor" },
@@ -376,7 +399,9 @@ fn pending_detail(job: Job&) {
 // The [[Prototype]] of node o: its own link, or for Empty, the realm's
 // default prototype for its kind (Object.prototype for ordinary objects,
 // errors and arguments objects, Array.prototype for arrays,
-// Function.prototype for closures and built-in functions). Forms and the
+// Function.prototype for ordinary closures and built-in functions, and
+// %GeneratorFunction.prototype% or a sibling for generator and async
+// closures, light-cljs-857). Forms and the
 // other runtime kinds have none, and so does every node of a heap built
 // without initialize (hand-made test heaps, whose global is not set).
 fn prototype(heap: const Heap&, o: i64) -> Value {
@@ -384,7 +409,8 @@ fn prototype(heap: const Heap&, o: i64) -> Value {
     if !p.is_hole() { return p; }
     if !heap.global.is_object() { return Value.Null; }
     return match node(heap, o).kind {
-        node_kind::Object, node_kind::Arguments => object(object_prototype_row()), node_kind::Array => object(array_prototype_row()), node_kind::Closure, node_kind::Builtin, node_kind::BoundFunction => object(function_prototype_row()), node_kind::Error => object(error_prototype_row(0)),
+        node_kind::Object, node_kind::Arguments => object(object_prototype_row()), node_kind::Array => object(array_prototype_row()), node_kind::Builtin, node_kind::BoundFunction => object(function_prototype_row()), node_kind::Error => object(error_prototype_row(0)),
+        node_kind::Closure => { let k = function_kind_of(heap, o); object(if k < 0 { function_prototype_row() } else { function_kind_prototype_row(k) }) },
         node_kind::Wrapper => primitive_prototype(node(heap, o).value),
         _ => Value.Null,
     };
@@ -438,6 +464,8 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     // Its prototype and properties are JavaScript's to change (an unprotected
     // job may delete or add names), so only its kind is layout.
     if nodes[array_unscopables_row()].kind != node_kind::Object { return false; }
+    // %GeneratorFunction.prototype% and its siblings (light-cljs-857).
+    for k in FUNCTION_KIND_TAGS.len { let n .= nodes[function_kind_prototype_row(k)]; if n.kind != node_kind::Object || !n.proto.is_object() || n.proto.id() != function_prototype_row() { return false; } }
     for m, j in REALM_FUNCTIONS { let o = fixed_rows() + j; if nodes[o].kind != node_kind::Builtin || nodes[o].function != code(m.which) || m.which == Builtin.FunctionPrototypeCall && (!call.is_object() || call.id() != o) { return false; } }
     return true;
 }
@@ -467,6 +495,7 @@ fn build_realm(heap: Heap&) -> bool {
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     rows.push(Node { kind: node_kind::Arguments }); rows.push(Node { kind: node_kind::Arguments });
     rows.push(Node { kind: node_kind::Object, proto: Value.Null });
+    for k in FUNCTION_KIND_TAGS.len { rows.push(Node { kind: node_kind::Object, proto: object(function_prototype_row()) }); }
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
     if !charge(heap, rows.len) || add_nodes(heap, rows) != 0 { if heap.fault == Fault.None { memory(heap); } return false; }
@@ -524,6 +553,11 @@ fn build_realm(heap: Heap&) -> bool {
     if !add_own(heap, array_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Array Iterator"), attr_configurable()) || !add_own(heap, string_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "String Iterator"), attr_configurable()) { return false; }
     // %GeneratorPrototype%[@@toStringTag] and %Promise.prototype%[@@toStringTag].
     if !add_own(heap, generator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Generator"), attr_configurable()) || !add_own(heap, promise_prototype_row(), Value.Symbol { s: 4 }, key_named(heap, "Promise"), attr_configurable()) { return false; }
+    // %GeneratorFunction.prototype% and its siblings: @@toStringTag
+    // (ECMAScript 27.3.3.3 and its siblings), and for generators `prototype`
+    // = %GeneratorPrototype% (27.3.3.2), configurable only.
+    for t, k in FUNCTION_KIND_TAGS { if !add_own(heap, function_kind_prototype_row(k), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, t.text), attr_configurable()) { return false; } }
+    if !realm_value(heap, function_kind_prototype_row(function_kind::Generator), "prototype", object(generator_prototype_row()), attr_configurable()) { return false; }
     // Reflect[@@toStringTag] (ECMAScript 28.1.14).
     if !add_own(heap, reflect_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Reflect"), attr_configurable()) { return false; }
     // The well-known symbols, Symbol's non-writable, non-enumerable,
@@ -900,7 +934,8 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         // The Function constructor runs as a DynamicFunction native frame
         // (light-cljs-857; runtime_compile.goose). Generator, async and async
         // generator functions built at run time (%GeneratorFunction% and its
-        // siblings) are the generators area's (light-cljs-768).
+        // siblings) are the generators area's (light-cljs-768): their realm
+        // prototypes' `constructor`s are pending (function_kind_prototype_row).
         Function => { return unsupported_step(job, b, "called outside a native frame"); },
         Array => { return construct_array(job, args); },
         Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError => {

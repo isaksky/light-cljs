@@ -76,6 +76,7 @@
  "bbp/function_constructor"
  "bbp/function_constructor_errors"
  "bbp/function_constructor_text"
+ "bbp/function_kind_prototypes"
  "bbp/function_expression_names"
  "bbp/function_expression_names_sloppy"
  "bbp/function_metadata"

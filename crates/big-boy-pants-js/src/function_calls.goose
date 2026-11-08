@@ -322,6 +322,13 @@ fn begin_list(job: Job&, at: i64, list: Value) -> bool {
 
 // Whether f is a bound function exotic object.
 inline fn is_bound(heap: const Heap&, f: Value) -> bool { return f.is_object() && node(heap, f.id()).kind == node_kind::BoundFunction; }
+// A bound function's [[Prototype]], its target's: the target's own link, or
+// for a default one in a realm, the kind's default (a generator or async
+// closure's is not %Function.prototype%, light-cljs-857).
+fn bound_prototype(heap: const Heap&, target: Value) -> Value {
+    let p = node(heap, target.id()).proto;
+    return if p.is_hole() && heap.global.is_object() && node(heap, target.id()).kind == node_kind::Closure { prototype(heap, target.id()) } else { p };
+}
 // bind called with `target` as its this value and `args` (thisArg, then the
 // bound arguments), its operand base `base`: BoundFunctionCreate, then the
 // Bind frame for the metadata.
@@ -334,7 +341,7 @@ fn start_bind(job: Job&, target: Value, args: const Value[:], base: i64) {
     if !charge(heap, count) { return; }
     let at = add_values(heap, args[first..]);
     if at < 0 { if heap.fault == Fault.None { memory(heap); } return; }
-    let f = allocate(heap, Node { kind: node_kind::BoundFunction, start: at as u32, count: count as u32, value: target, namespace_value: arg(args, 0), proto: node(heap, target.id()).proto });
+    let f = allocate(heap, Node { kind: node_kind::BoundFunction, start: at as u32, count: count as u32, value: target, namespace_value: arg(args, 0), proto: bound_prototype(heap, target) });
     if heap.fault != Fault.None { return; }
     if job.frames.len >= heap.limits.frames { heap.fault = Fault.StackLimit; return; }
     job.operands.resize(base);

@@ -150,7 +150,10 @@ captures, so it sees the global scope and never its caller's. Unlike eval
 code it is not marked `Function.eval`. A newTarget other than Function
 (Reflect.construct) gives it that constructor's `prototype` after the
 compilation. Generator, async and async generator functions made at run
-time are the generators area's (light-cljs-768).
+time are the generators area's (light-cljs-768): so that no lookup reaches
+the ordinary constructor by accident, those closures now inherit realm rows
+38 to 40 (%GeneratorFunction.prototype% and its siblings, `fixed_rows()` 41),
+whose `constructor`s are pending properties that fail by name.
 
 *The library and its cost.* The header opens the library with `dlopen` on
 the first compilation in the process, never at start-up: a program that
