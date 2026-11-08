@@ -151,7 +151,7 @@ fn plain_bytes(n: Node, out: u8[>..]&) {
     plain_bytes(n.value, out); plain_bytes(n.namespace_value, out); plain_bytes(n.metadata, out); plain_bytes(n.proto, out);
     for v in n.slots { plain_bytes(v, out); }
 }
-fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001 }; }
+fn native_code(n: Native) -> i64 { return match n { None => 0, Mapv => 1, MapSeq => 2, Setter => 4, CopyData => 5, Convert c => 3 + (match c.hint { Default => 0, Number => 1, String => 2 }) * 8 + (if c.finish { 4 } else { 0 }) + (c.count as i64) * 32 + (c.method as i64) * 1024, ArrayCallbacks a => -1 - (code(a.which) as i64), Swap s => -1001 - (code(s.which) as i64), Force x => -2001 - (code(x.which) as i64), Resume r => 3001 + (r.kind as i64), HasInstance => 6, ArrayMethod m => -3001 - (code(m.which) as i64), GetIterator => 7, BuiltinIterator m => -4001 - (code(m.which) as i64), ForIn => 8, Proxy p => 5001 + (p.method as i64), Forward w => 6001 + (if w.construct { 1 } else { 0 }), Bind => 7001, FunctionText => 8001, DynamicFunction => 9001 }; }
 fn plain_bytes(f: Frame, out: u8[>..]&) {
     out.append(bytes_of([f.function, f.pc, f.local_base, f.operand_base, f.argument_count, f.index, native_code(f.native)]));
     plain_bytes(f.callee, out); plain_bytes(f.receiver, out); plain_bytes(f.input, out); plain_bytes(f.output, out);
@@ -562,10 +562,12 @@ root struct Heap {
 //   FunctionText Function.prototype.toString of a function without source
 //                text (light-cljs-853; function_calls.goose, which gives its
 //                fields and phase).
+//   DynamicFunction  the Function constructor (light-cljs-857;
+//                runtime_compile.goose, which gives its fields and phase).
 // ToPrimitive's preferred type (ECMAScript 7.1.1): the string a
 // @@toPrimitive method receives and OrdinaryToPrimitive's method order.
 enum Hint { Default, Number, String }
-enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText }
+enum Native { None, Mapv, MapSeq, Setter, CopyData, Convert { hint: Hint, finish: bool, count: u8, method: u8 }, ArrayCallbacks { which: Builtin }, Swap { which: Builtin }, Force { which: Builtin }, Resume { kind: u8 }, HasInstance, ArrayMethod { which: Builtin }, GetIterator, BuiltinIterator { which: Builtin }, ForIn, Proxy { method: u8 }, Forward { construct: bool }, Bind, FunctionText, DynamicFunction }
 // Actual arguments occupy bounded job-local scratch after declared locals.
 // Copies live across yields/helper suspension and disappear on frame unwind.
 // A bytecode frame's `input` is its new.target (light-cljs-831): undefined
@@ -3018,6 +3020,7 @@ fn native_step(job: Job&) {
         Forward w => { forward_step(job, frame, w.construct); },
         Bind => { bind_step(job, frame); },
         FunctionText => { function_text_step(job, frame); },
+        DynamicFunction => { dynamic_function_step(job, frame); },
         None => {},
     }
     if heap.fault != Fault.None { fail(job, heap.fault, frame); }
@@ -3942,10 +3945,11 @@ fn spread_unpack(job: Job&, top: i64, at: i64, method: bool, constructs: bool) -
 // object, a job row inheriting F.prototype (made on first observation, as a
 // read makes it) or, when that is not an object, %Object.prototype%; F's
 // frame runs with it as `this` and F as new.target, and return_value
-// substitutes it for a non-object return value. Object, Array, Function and
-// the Error constructors construct as their call (call_builtin), which is
-// their [[Construct]] when new.target is the constructor itself, as it is
-// for `new`: their prototypes are the realm's. Number, String and Boolean
+// substitutes it for a non-object return value. Object, Array and the Error
+// constructors construct as their call (call_builtin), which is their
+// [[Construct]] when new.target is the constructor itself, as it is for
+// `new`: their prototypes are the realm's. Function constructs as its call
+// does, in its DynamicFunction frame (light-cljs-857). Number, String and Boolean
 // make a wrapper object of their conversion (construct_wrapper,
 // light-cljs-832; an object argument converted first, in the dispatch
 // loop's Convert frame). Not constructors, a catchable
@@ -3995,7 +3999,11 @@ fn construct(job: Job&, argc: i64, new_target: Value = Value.Empty) {
             if same_value(heap, nt, f) { value = call_builtin(job, node(heap, f.id()).function, Value.Undefined, job.operands[(base + 1)..]); }
             else { value = allocate(heap, Node { kind: node_kind::Object }); }
         },
-        Function, Array, Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError => {
+        // The Function constructor's DynamicFunction frame (light-cljs-857;
+        // runtime_compile.goose) delivers the function at `base` and applies
+        // a newTarget other than Function.
+        Function => { start_dynamic_function(job, job.operands[(base + 1)..], base, if same_value(heap, nt, f) { Value.Undefined } else { nt }); return; },
+        Array, Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError => {
             value = call_builtin(job, node(heap, f.id()).function, Value.Undefined, job.operands[(base + 1)..]);
         },
         Number, String, Boolean => { value = construct_wrapper(job, b, job.operands[(base + 1)..]); },

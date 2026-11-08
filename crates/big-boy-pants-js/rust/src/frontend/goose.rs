@@ -1315,6 +1315,9 @@ mod serial_tests {
             ("eval-loop", "number:25"),
             ("cancel-eval", "limit"),
             ("eval-source-limit", "goose"),
+            // The Function constructor (light-cljs-857): conversions and
+            // the new function's loop stop and resume at every limit.
+            ("function-constructor", "number:25"),
             ("loop", "limit"),
             // Control flow (light-cljs-786): finally blocks, native frames,
             // the call depth limit, and an endless loop that only

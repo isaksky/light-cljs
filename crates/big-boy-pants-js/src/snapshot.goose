@@ -242,6 +242,9 @@ fn native_valid<T>(s: const T&, f: source::SavedFrame) -> bool {
         Bind => f.pc >= 0 && f.pc <= 2 && object_of(s, f.callee, node_kind::None) && object_of(s, f.receiver, node_kind::BoundFunction) && f.output.is_number(),
         // A FunctionText frame (light-cljs-853) awaits its function's name.
         FunctionText => f.pc == 0 && object_of(s, f.callee, node_kind::None) && callable_kind(s.nodes[f.callee.id()].kind),
+        // A DynamicFunction frame (light-cljs-857) converts its arguments
+        // from `index` on; its newTarget, if any, is an object.
+        DynamicFunction => f.pc == 0 && f.argument_count >= 0 && f.index >= 0 && f.index <= f.argument_count && (f.receiver.is_undefined() || object_of(s, f.receiver, node_kind::None)),
         _ => true,
     };
 }

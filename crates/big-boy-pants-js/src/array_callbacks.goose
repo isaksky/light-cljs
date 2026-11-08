@@ -54,7 +54,7 @@ namespace source;
 // native_step dispatches by `match` on its Native variant.
 
 // Whether built-in b runs as a native frame (native_start).
-fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval; }
+fn native_builtin(b: Builtin) -> bool { return b == Builtin.ArrayPrototypeMap || b == Builtin.ArrayPrototypeForEach || b == Builtin.Swap || b == Builtin.SwapVals || generator_method(b) || b == Builtin.FunctionPrototypeHasInstance || array_method(b) || iterator_native(b) || forwarding(b) || b == Builtin.FunctionPrototypeBind || b == Builtin.Eval || b == Builtin.Function; }
 // Start built-in b, called with `receiver` and `args`, as a native frame
 // whose operand base is `base`, where the call's operands began: the
 // dispatch loop's `call` cuts the operands to it and the finished frame
@@ -69,6 +69,8 @@ fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], ba
     if b == Builtin.FunctionPrototypeBind { start_bind(job, receiver, args, base); return; }
     // The global eval called indirectly (light-cljs-856; runtime_compile.goose).
     if b == Builtin.Eval { start_indirect_eval(job, args, base); return; }
+    // The Function constructor called (light-cljs-857; runtime_compile.goose).
+    if b == Builtin.Function { start_dynamic_function(job, args, base, Value.Undefined); return; }
     // A generator's next, return and throw (continuations.goose).
     if generator_method(b) { start_resume(job, b, receiver, arg(args, 0), base); return; }
     // Function.prototype[@@hasInstance] (light-cljs-834; source_vm.goose).

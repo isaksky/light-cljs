@@ -897,7 +897,11 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
             if v.tag() <= value_tag::Null { return allocate(heap, Node { kind: node_kind::Object }); }
             return to_object(job, v);
         },
-        Function => { return unsupported_step(job, b, "dynamic functions"); },
+        // The Function constructor runs as a DynamicFunction native frame
+        // (light-cljs-857; runtime_compile.goose). Generator, async and async
+        // generator functions built at run time (%GeneratorFunction% and its
+        // siblings) are the generators area's (light-cljs-768).
+        Function => { return unsupported_step(job, b, "called outside a native frame"); },
         Array => { return construct_array(job, args); },
         Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, InternalError => {
             var t: i64 = 0; for e, i in ERROR_BUILTINS { if e == b { t = i; } }

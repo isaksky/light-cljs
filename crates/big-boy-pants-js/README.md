@@ -388,8 +388,8 @@ the scalar VM. Complete ECMAScript/cljs.core are excluded.
 
 ### Run-time compilation library
 
-Indirect eval (light-cljs-856), and later the Function constructor and
-direct eval, compile JavaScript while a job runs with bbp's Rust frontend
+Indirect eval (light-cljs-856), the Function constructor (light-cljs-857) and
+later direct eval compile JavaScript while a job runs with bbp's Rust frontend
 through an in-process C boundary (`docs/javascript-coverage.md`, decision 1,
 "Run-time compilation"). Every VM program's `.build` sidecar lists
 `src/runtime_compiler.h`, which opens the shared library on the first

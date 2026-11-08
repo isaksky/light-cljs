@@ -117,3 +117,84 @@ fn start_indirect_eval(job: Job&, args: const Value[:], base: i64) {
     if heap.fault != Fault.None { return; }
     if push_frame(job, entry, heap.global, [], false, base) { job.operands.resize(base); }
 }
+// The Function constructor (light-cljs-857; ECMAScript
+// CreateDynamicFunction with kind normal, QuickJS js_function_constructor,
+// the Pants engine's DynamicFunction in rust/src/vm/native/eval.rs).
+// `Function(p1, ..., pn, body)` and `new Function(...)` are the same: every
+// argument converts by ToString in order, then the source the specification
+// gives, "function anonymous(" + p1 + "," + ... + pn + "\n) {\n" + body +
+// "\n}", compiles in the dynamic-function mode (the parameter boundary keeps
+// a `)` in the parameter text from closing the list early, so "a){" is a
+// SyntaxError) and becomes a closure with no captures: its scope is the
+// global one, never the caller's. A compile error is a catchable
+// SyntaxError. Its `name` ("anonymous"), `length`, `prototype` and toString
+// text come from the compiled function, as any function's do.
+//
+// The conversions can run JavaScript (an object's toString or valueOf), so
+// the operation is the DynamicFunction native frame (decision 5), its
+// arguments the frame's operands from operand_base:
+//   argument_count  n, the argument count
+//   index           the next argument to convert
+//   receiver        new.target when it is not Function itself
+//                   (Reflect.construct), whose `prototype` the function
+//                   takes after compilation (GetPrototypeFromConstructor);
+//                   otherwise undefined
+//   pc 0            converts the arguments from `index` on: a primitive in
+//                   place, an object in a Convert frame above this one (hint
+//                   string, then ToString), after which this step runs again
+// Generator, async and async generator functions built at run time
+// (%GeneratorFunction% and its siblings) belong to the generators area
+// (light-cljs-768).
+fn start_dynamic_function(job: Job&, args: const Value[:], base: i64, new_target: Value) {
+    let heap .= job.heap;
+    var copied: Value[>..] = []; copied.append(args);
+    job.operands.resize(base);
+    if job.frames.len >= heap.limits.frames || copied.len > heap.limits.stack - job.locals.len - job.operands.len { heap.fault = Fault.StackLimit; return; }
+    job.frames.push(Frame { function: -1, pc: 0, local_base: job.locals.len, operand_base: base, callee: Value.Undefined, receiver: new_target, argument_count: copied.len, native: Native.DynamicFunction });
+    for v in copied { job.operands.push(v); }
+    dynamic_function_step(job, job.frames[job.frames.len - 1]);
+}
+// One step of the DynamicFunction frame at the top (see above).
+fn dynamic_function_step(job: Job&, frame: Frame) {
+    let heap .= job.heap; let at = job.frames.len - 1;
+    let base = frame.operand_base; let n = frame.argument_count;
+    if job.operands.len != base + n || frame.index < 0 || frame.index > n { heap.fault = Fault.InvalidState; return; }
+    for i in frame.index..n {
+        // A scalar form (a primitive with its provenance) is its primitive.
+        let v = form_value(heap, job.operands[base + i]);
+        if v.is_string() { job.operands[base + i] = v; continue; }
+        if v.is_object() {
+            if !convertible(heap, v) { unsupported_step(job, Builtin.Function, "ToString of a light-cljs runtime value"); return; }
+            job.frames[at].index = i;
+            start_convert(job, Hint.String, true, 1, n - i);
+            return;
+        }
+        let s = to_string(heap, v);
+        if heap.fault != Fault.None {
+            if heap.fault == Fault.TypeError && job.detail.len == 0 { for c in "Cannot convert a Symbol value to a string" { job.detail.push(c); } }
+            return;
+        }
+        job.operands[base + i] = s;
+    }
+    var units: u16[>..] = [];
+    for c in "function anonymous(" { units.push(c); }
+    for i in 0..(n - 1) {
+        if i > 0 { units.push(','); }
+        append_utf16(heap, job.operands[base + i], units);
+    }
+    for c in "\n)" { units.push(c); }
+    let parameter_units = units.len;
+    for c in " {\n" { units.push(c); }
+    if n > 0 { append_utf16(heap, job.operands[base + n - 1], units); }
+    for c in "\n}" { units.push(c); }
+    let root = compile_code(job, "Function", units, runtime_mode::DynamicFunction, false, parameter_units);
+    if root < 0 { return; }
+    let f = closure(heap, root, []);
+    if heap.fault != Fault.None { return; }
+    if frame.receiver.is_object() {
+        let proto = construct_prototype(job, frame.receiver);
+        if heap.fault != Fault.None { return; }
+        if proto.is_object() { node_mut(heap, f.id()).proto = proto; }
+    }
+    finish_native(job, frame, f);
+}

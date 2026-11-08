@@ -90,6 +90,9 @@
   "bbp/indirect_eval_surrogates" {:area :functions-scope}
   "bbp/indirect_eval_syntax_error" {:area :functions-scope}
   "bbp/indirect_eval_proxy" {:area :functions-scope :mode :sloppy}
+  "bbp/function_constructor" {:area :functions-scope}
+  "bbp/function_constructor_errors" {:area :functions-scope}
+  "bbp/function_constructor_text" {:area :functions-scope :pants-gap "the Pants engine keeps Function.prototype.toString unsupported (rust/src/vm/function.rs FUNCTION_PROTOTYPE_NAMES)"}
   "bbp/for_in_chain_order" {:area :statements-loops}
   "bbp/for_in_forms" {:area :statements-loops}
   "bbp/for_heads" {:area :statements-loops}

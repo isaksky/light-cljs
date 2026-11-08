@@ -17,7 +17,7 @@
 // whole class and a method's starts after `static`), computed method keys
 // (SetComputedName, the objects area), a proxy of a function (Goose fails a
 // proxy's [[Get]] of `name` by name, light-cljs-861) and functions from the
-// Function constructor (a later child of light-cljs-764), and a `name`
+// Function constructor (function_constructor_text, light-cljs-857), and a `name`
 // getter (Object.defineProperty is pending; the frame reads the name with
 // bind's get_named). Each row is a `row(...)` check; the script completes
 // with the number of rows, or minus the first failing row's number.

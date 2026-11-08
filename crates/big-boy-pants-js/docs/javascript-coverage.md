@@ -139,6 +139,19 @@ change after `READY`) fails such a compilation by name
 (UnsupportedOperand), as does a program `goose run` executes in-process
 (TinyCC has neither `dlfcn.h` nor the C library's symbols).
 
+*The Function constructor* (light-cljs-857). `Function(...)` and `new
+Function(...)` run as the DynamicFunction native frame
+(`runtime_compile.goose`): the arguments convert by ToString in order, an
+object's in a Convert frame above it (decision 5), then the frame assembles
+`function anonymous(` + the parameters joined by `,` + `\n) {\n` + the body
++ `\n}`, compiles it in the dynamic-function mode with the parameter list's
+end as its boundary, and makes the root function a closure with no
+captures, so it sees the global scope and never its caller's. Unlike eval
+code it is not marked `Function.eval`. A newTarget other than Function
+(Reflect.construct) gives it that constructor's `prototype` after the
+compilation. Generator, async and async generator functions made at run
+time are the generators area's (light-cljs-768).
+
 *The library and its cost.* The header opens the library with `dlopen` on
 the first compilation in the process, never at start-up: a program that
 never compiles at run time neither loads nor needs it, and its start-up
