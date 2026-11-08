@@ -431,6 +431,8 @@ fn rows(work: const Work&, heap: const source::Heap&, job: const source::Job&, b
     for h in job.handlers { roots.push(h.value); }
     for v in job.locals { roots.push(v); } for v in job.operands { roots.push(v); } for v in job.effect_args { roots.push(v); }
     for w in job.writes { roots.push(w.object); roots.push(w.key); roots.push(w.value); }
+    // A site's template object stays live in its cache (light-cljs-862).
+    for t in job.templates { roots.push(source::object(t.object)); }
     let c = census::take(heap, roots); let s .= work.saved.heap;
     return [c.nodes, c.values, c.properties, c.units, s.nodes.len, s.values.len, s.properties.len, s.units.len + s.latin1.len, c.dead_nodes, c.dead_values, c.dead_properties, c.dead_units];
 }

@@ -2396,7 +2396,7 @@ fn reuse_session(
     retained: Option<usize>,
     plan: &[u64],
 ) -> (Vec<(u64, String)>, JobsLine) {
-    let definitions: [(u64, &str); 18] = [
+    let definitions: [(u64, &str); 19] = [
         // Pure: garbage in every table, a fresh object and array.
         (
             1,
@@ -2489,6 +2489,14 @@ fn reuse_session(
             18,
             "rt => (form, env) => { const log = []; const first = async () => { log[log.length] = 1; await null; log[log.length] = 4; const v = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value'); log[log.length] = v; await null; let seen = 0; for (let i = 0; i < log.length; i++) seen = seen * 100 + log[i]; if (seen !== 10203044105) throw seen; return 'side'; }; const second = async () => { log[log.length] = 2; await null; let seen = 0; for (let i = 0; i < log.length; i++) seen = seen * 100 + log[i]; if (seen !== 102030441) throw seen; log[log.length] = 5; return 'other'; }; first(); second(); log[log.length] = 3; return 42; }",
         ),
+        // Tagged templates (light-cljs-862): a site's template object, and
+        // one in eval code, made before a root read are the same objects
+        // after it, frozen and with their contents, whether the job waited
+        // in place or resumed from a saved continuation (Saved.templates).
+        (
+            19,
+            "rt => (form, env) => { \"use strict\"; const tag = s => s; const site = () => tag`k${0}v`; const h = eval(\"(() => tag`e`)\"); const a = site(), b = h(); const v = __rt.cljReadRoot(globalThis.__lightCompilerRoots, null, 'fixture/value'); let n = v; if (site() === a) n += 100; if (h() === b) n += 1000; if (a[0] === 'k' && a.raw[1] === 'v' && b[0] === 'e') n += 10000; try { a[0] = 'z'; } catch (e) { if (e instanceof TypeError && a[0] === 'k') n += 100000; } return n; }",
+        ),
     ];
     let mut env = vec![];
     if let Some(cap) = cap {
@@ -2523,7 +2531,7 @@ fn reuse_session(
         if key == 14 {
             session.answer_key(id, 0, "-1").unwrap();
         }
-        if key == 8 || key == 9 || key == 18 {
+        if key == 8 || key == 9 || key == 18 || key == 19 {
             let helper = if key == 8 {
                 "rt => {const result=41; return function(){return result;};}"
             } else {
@@ -2589,11 +2597,11 @@ fn reuse_session(
     // root the session produced.
     let reads = plan
         .iter()
-        .filter(|&&k| [8, 9, 14, 18].contains(&k))
+        .filter(|&&k| [8, 9, 14, 18, 19].contains(&k))
         .count() as u64;
-    // Definitions 9 and 18 read the same root: one production serves both.
+    // Definitions 9, 18 and 19 read the same root: one production serves them.
     let productions =
-        (plan.contains(&8) as u64) + (plan.iter().any(|k| [9, 18].contains(k)) as u64);
+        (plan.contains(&8) as u64) + (plan.iter().any(|k| [9, 18, 19].contains(k)) as u64);
     let jobs = assert_jobs(&trace, workers, plan.len() as u64 + reads + productions);
     (outcomes, jobs)
 }
@@ -2700,6 +2708,32 @@ fn goose_compiler_saved_continuation_during_promise_drain() {
             "{jobs:?}"
         );
         assert_eq!(jobs.retired, 0, "{jobs:?}");
+    }
+}
+
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_tagged_templates_across_a_saved_continuation() {
+    // Per-site template objects (light-cljs-862) survive a helper wait in
+    // place and, with retention 0, a saved continuation restored on a reused
+    // worker: identity, contents and frozenness of a site's object and of
+    // an eval-compiled site's (restored at the same code rows).
+    for retained in [Some(0), None] {
+        let (outcomes, jobs) = reuse_session(1, Some(16 << 20), retained, &[19, 1, 19]);
+        for (key, outcome) in &outcomes {
+            let expected = if *key == 19 {
+                "Double(111141.0)"
+            } else {
+                "Double(53.0)"
+            };
+            assert!(outcome.contains(expected), "{retained:?} {key}: {outcome}");
+        }
+        assert_eq!(outcomes[0], outcomes[2], "{retained:?}");
+        assert_eq!(
+            jobs.saves,
+            if retained == Some(0) { 2 } else { 0 },
+            "{jobs:?}"
+        );
     }
 }
 
