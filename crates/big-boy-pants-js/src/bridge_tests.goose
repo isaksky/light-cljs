@@ -106,6 +106,44 @@ thread_fn traversal_order() {
     let atom = source::allocate(heap, source::Node { kind: node_kind::Atom }); let ha, oka = source::form_hash(heap, atom); assert(!oka && heap.fault == source::Fault.None);
     print("traversal order: promotion past 8 entries, hash-ordered literals, cell graphs keep it, compiler graphs decide by size, hash paths passed");
 }
+// light-cljs-879: a compiler graph's map or set merges keys or members
+// equal at run time (two occurrences of 1, the reader's 1 and 1.0), inner
+// ones first, as the V8 build's form bridge decodes them: the first key
+// with the last value, the first member; a set is hash-ordered past 8
+// distinct members. Each keeps its origin. A cell graph is not merged.
+fn merge_graph(g: bridge::Graph&, tag: i64, keys: const f64[:], origin: i64 = -1) -> i64 {
+    var ids: i64[>..] = [];
+    for k, i in keys { g.nodes.push(bridge::Form { tag: form_tag::Number, number: k, origin: 10 + i }); ids.push(g.nodes.len - 1); if tag == form_tag::Map { g.nodes.push(bridge::Form { tag: form_tag::Number, number: 100 + i }); ids.push(g.nodes.len - 1); } }
+    let start = g.children.len; g.children.append(ids); g.nodes.push(bridge::Form { tag: tag, start: start, count: ids.len, origin: origin }); return g.nodes.len - 1;
+}
+thread_fn merged_keys() {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    var g = bridge::Graph {};
+    g.roots.push(merge_graph(g, form_tag::Set, [1, 1, 2], 7)); g.roots.push(merge_graph(g, form_tag::Set, [1, 1, 2, 3, 4, 5, 6, 7, 8])); g.roots.push(merge_graph(g, form_tag::Set, [1, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+    g.roots.push(merge_graph(g, form_tag::Map, [1, 2, 1])); g.roots.push(merge_graph(g, form_tag::Map, [1, 1, 2, 3, 4, 5, 6, 7, 8]));
+    let inner = merge_graph(g, form_tag::Set, [1, 1]); let other = merge_graph(g, form_tag::Set, [1]); let start = g.children.len; g.children.append([inner, other]); g.nodes.push(bridge::Form { tag: form_tag::Set, start: start, count: 2 }); g.roots.push(g.nodes.len - 1);
+    var roots: source::Value[>..] = []; var c = bridge::Control {}; assert(bridge::import_graph(heap, g, roots, c));
+    let first = source::node(heap, roots[0].id()); assert(first.count == 2 && first.origin == 7 && source::node(heap, source::slot(heap, first.start).id()).origin == 10 && order_of(heap, roots[0]) == map_order::Insertion);
+    assert(source::form_count(heap, roots[1]) == 8 && order_of(heap, roots[1]) == map_order::Insertion && source::form_count(heap, roots[2]) == 9 && order_of(heap, roots[2]) == map_order::Hash);
+    let map = source::node(heap, roots[3].id()); assert(map.count == 4 && source::node(heap, source::slot(heap, map.start).id()).origin == 10 && source::form_value(heap, source::slot(heap, map.start + 1)).num() == 102);
+    assert(source::form_count(heap, roots[4]) == 8 && order_of(heap, roots[4]) == map_order::Hash && source::form_count(heap, roots[5]) == 1);
+    // A cell value's graph keeps every position.
+    var cells: source::Value[>..] = []; var cc = bridge::Control { cells: true }; assert(bridge::import_graph(heap, g, cells, cc)); assert(source::node(heap, cells[0].id()).count == 3 && source::form_count(heap, cells[5]) == 2);
+    // Merging precedes installation: a merge comparison that exhausts the
+    // work leaves every table as it was.
+    var probe = bridge::Control {}; var counted: source::Value[>..] = []; assert(bridge::import_graph(heap, g, counted, probe));
+    let nodes = heap.nodes.len; let values = heap.values.len;
+    var short = bridge::Control { work: probe.visits - 1 }; var none: source::Value[>..] = [];
+    assert(!bridge::import_graph(heap, g, none, short) && short.error == bridge::Error.Work && none.len == 0 && heap.nodes.len == nodes && heap.values.len == values);
+    // Distinct collection keys rarely share a class: 5,000 one-element
+    // vectors compare almost never (about 80,000 polls, all validation and copying).
+    var wide = bridge::Graph {}; var members: i64[>..] = [];
+    for i in 5000 { wide.nodes.push(bridge::Form { tag: form_tag::Number, number: i }); wide.children.push(wide.nodes.len - 1); wide.nodes.push(bridge::Form { tag: form_tag::Vector, start: wide.children.len - 1, count: 1 }); members.push(wide.nodes.len - 1); }
+    let wstart = wide.children.len; wide.children.append(members); wide.nodes.push(bridge::Form { tag: form_tag::Set, start: wstart, count: 5000 }); wide.roots.push(wide.nodes.len - 1);
+    var wc = bridge::Control {}; var wr: source::Value[>..] = []; assert(bridge::import_graph(heap, wide, wr, wc) && source::form_count(heap, wr[0]) == 5000 && wc.visits < 100000);
+    print("merged keys: equal keys and members merge as the V8 build decodes them, inner first, origins kept, cell graphs positional, before installation, distinct vectors apart passed");
+}
 thread_fn positional_map_equality() {
     defer { heap_program::finish(); }
     var code = source::Code {}; code_init(code); var heap = source::Heap { code: code }; assert(source::initialize(heap));
@@ -288,7 +326,7 @@ fn direct_update_boundaries() {
 }
 // main builds no heap; each heap-building test is its own thread program.
 fn main() {
-    heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order));
+    heap_program::join(thread_spawn(assembly)); heap_program::join(thread_spawn(adversarial_forms)); heap_program::join(thread_spawn(roundtrip)); heap_program::join(thread_spawn(positional_map_equality)); heap_program::join(thread_spawn(traversal_order)); heap_program::join(thread_spawn(merged_keys));
     direct_update_boundaries(); heap_program::join(thread_spawn(number_bits)); heap_program::join(thread_spawn(unsupported_values)); heap_program::join(thread_spawn(primitive_fallback)); heap_program::join(thread_spawn(budgets)); heap_program::join(thread_spawn(shared_text_work)); heap_program::join(thread_spawn(spanless_export)); heap_program::join(thread_spawn(identity_sources)); heap_program::join(thread_spawn(omission));
     print("compiler form bridge: owned graphs/metadata/aliases/UTF16/Number/order, exhaustive cancellation/truncation and transactional limits passed"); }
 

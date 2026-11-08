@@ -2110,6 +2110,83 @@ fn goose_compiler_macro_prints_hash_ordered_collections_as_v8() {
         None,
     );
 }
+/// A macro argument's map or set with keys or members equal at run time
+/// but not to the reader (1 and 1.0) merges as the V8 build's form bridge
+/// decodes it (light-cljs-879): the first key with the last value, the
+/// first member; a set is hash-ordered past 8 distinct members, a map past
+/// 16 operands. Returned unchanged, it is the reader's form again.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_merges_equal_keys_of_macro_arguments_as_v8() {
+    for argument in [
+        "#{1 1.0 2 3 4 5 6 7}",
+        "#{1 1.0 2 3 4 5 6 7 8}",
+        "#{1 1.0 2 3 4 5 6 7 8 9}",
+        "#{9 8 7 6 5 4 3 2 1 1.0 0}",
+        "#{1 1.0}",
+        "{1 :first 1.0 :last 2 :two}",
+        "{1 :a 1.0 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h}",
+        "{1 :a 1.0 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i}",
+        "{1 :a 2 :b 1.0 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 :j}",
+        "#{[1] [1.0] #{2 2.0} #{2}}",
+        "[{1 #{1 1.0}} ^{:m {1 1 1.0 2}} [3]]",
+    ] {
+        source_matches_v8(
+            &format!("(defmacro m [k] [(str k) (pr-str k) (count k)]) (def x (m {argument}))"),
+            None,
+        );
+        source_matches_v8(&format!("(defmacro m [k] k) (def x (m {argument}))"), None);
+    }
+    for (argument, operation) in [
+        ("#{1 1.0 2 3 4 5 6 7}", "(conj k 8)"),
+        ("#{1 1.0 2 3 4 5 6 7}", "(conj (conj k 8) 9)"),
+        ("#{1 1.0 2 3 4 5 6 7 8}", "(conj k 9)"),
+        ("#{1 1.0 2 3 4 5 6 7 8}", "(conj k 1.0)"),
+        (
+            "{1 :a 1.0 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h}",
+            "(assoc k 8 :i)",
+        ),
+        (
+            "{1 :a 1.0 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h}",
+            "(assoc (assoc k 8 :i) 9 :j)",
+        ),
+        (
+            "{1 :a 1.0 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i}",
+            "(assoc k 9 :j)",
+        ),
+        ("{1 :a 1.0 :b 2 :c}", "(assoc k 1 :z)"),
+        ("{1 :a 1.0 :b 2 :c}", "(get k 1)"),
+    ] {
+        source_matches_v8(
+            &format!(
+                "(defmacro m [k] (let [r {operation}] [(str r) (pr-str r)])) (def x (m {argument}))"
+            ),
+            None,
+        );
+        source_matches_v8(
+            &format!("(defmacro m [k] {operation}) (def x (m {argument}))"),
+            None,
+        );
+    }
+    // Large arguments stay within the budgets: 512 keys each merging with
+    // an equal double, returned unchanged, and 5,000 distinct one-element
+    // vectors.
+    let pairs: String = (1..=512)
+        .map(|i| format!("{i} :first{i} "))
+        .chain((1..=512).map(|i| format!("{i}.0 :last{i} ")))
+        .collect();
+    source_matches_v8(&format!("(defmacro m [k] k) (def x (m {{{pairs}}}))"), None);
+    source_matches_v8(
+        &format!("(defmacro m [k] [(count k) (get k 7)]) (def x (m {{{pairs}}}))"),
+        None,
+    );
+    let vectors: String = (0..5000).map(|i| format!("[{i}] ")).collect();
+    source_matches_v8(
+        &format!("(defmacro m [k] (count k)) (def x (m #{{{vectors}}}))"),
+        None,
+    );
+}
 /// cljs.core's range (light-cljs-877), realized: empty and one-element
 /// boundaries, fractional and negative steps, NaN bounds, and an integer
 /// range's indexing, which floors a fractional index, after rest too.

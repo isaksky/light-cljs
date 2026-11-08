@@ -290,7 +290,12 @@ fn compatible(
                 children: bc,
             },
         ) => {
-            if a != b || ac.len() != bc.len() {
+            if a == b
+                && matches!(a, CollectionKind::Map | CollectionKind::Set)
+                && ac.len() < bc.len()
+            {
+                merged(*a == CollectionKind::Map, ac, bc, c, depth, limits)?
+            } else if a != b || ac.len() != bc.len() {
                 false
             } else {
                 let mut same = true;
@@ -312,6 +317,228 @@ fn compatible(
         (None, None) => Ok(true),
         (Some(a), Some(b)) => compatible(&a, &b, c, depth + 1, limits),
         _ => Ok(false),
+    }
+}
+/// Whether a map's or set's `exported` children are exactly the run-time
+/// merge of its `original` reader positions, as Goose's form bridge imports
+/// a map or set whose keys are equal at run time but not to the reader (1
+/// and 1.0; light-cljs-879) and the V8 build's decoder decodes it: each
+/// group of equal keys or members ([`run_time_equal`]) once, at its first
+/// position, with its first key and a map its last value.
+fn merged(
+    map: bool,
+    exported: &[Datum],
+    original: &[Datum],
+    c: &Budget,
+    depth: usize,
+    limits: ConversionLimits,
+) -> Result<bool, EvalError> {
+    let stride = if map { 2 } else { 1 };
+    if !exported.len().is_multiple_of(stride) || !original.len().is_multiple_of(stride) {
+        return Ok(false);
+    }
+    let entries = merge_entries(original, map, c, depth + 1, limits)?;
+    if entries.len() * stride != exported.len() {
+        return Ok(false);
+    }
+    for (entry, &(key, value)) in exported.chunks(stride).zip(&entries) {
+        if !compatible(&entry[0], &original[key * stride], c, depth + 1, limits)?
+            || map && !compatible(&entry[1], &original[value * 2 + 1], c, depth + 1, limits)?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+/// The entries a map's (`map`) or set's reader `children` keep once merged
+/// as the run-time constructors merge them: (the first entry, the last
+/// entry) of each group of equal keys, by entry index, in first-entry
+/// order. Keys are grouped by [`run_time_class`], so only keys of one class
+/// are compared.
+fn merge_entries(
+    children: &[Datum],
+    map: bool,
+    c: &Budget,
+    depth: usize,
+    limits: ConversionLimits,
+) -> Result<Vec<(usize, usize)>, EvalError> {
+    if depth > limits.depth {
+        return Err(EvalError("Goose conversion limit exceeded".into()));
+    }
+    let stride = if map { 2 } else { 1 };
+    let mut groups: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut entries: Vec<(usize, usize)> = vec![];
+    for i in 0..children.len() / stride {
+        c.check()?;
+        let key = &children[i * stride];
+        let candidates = groups.entry(run_time_class(key, c)?).or_default();
+        let mut found = None;
+        for &group in candidates.iter() {
+            if run_time_equal(
+                &children[entries[group].0 * stride],
+                key,
+                c,
+                depth + 1,
+                limits,
+            )? {
+                found = Some(group);
+                break;
+            }
+        }
+        match found {
+            Some(group) => entries[group].1 = i,
+            None => {
+                candidates.push(entries.len());
+                entries.push((i, i));
+            }
+        }
+    }
+    Ok(entries)
+}
+/// A class for [`merge_entries`]: data equal by [`run_time_equal`] have
+/// equal classes (numbers by value with -0 as 0, lists and vectors alike by
+/// their children's classes, maps and sets by kind).
+fn run_time_class(d: &Datum, c: &Budget) -> Result<u64, EvalError> {
+    use std::hash::{Hash, Hasher};
+    c.check()?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    match d.kind() {
+        DatumKind::Nil => 0u8.hash(&mut h),
+        DatumKind::Boolean(b) => (1u8, *b).hash(&mut h),
+        DatumKind::Integer(_) | DatumKind::Double(_) => {
+            let v = number(d).unwrap_or(0.0);
+            (2u8, if v == 0.0 { 0 } else { v.to_bits() }).hash(&mut h)
+        }
+        DatumKind::String(s) => (3u8, &s[..]).hash(&mut h),
+        DatumKind::Symbol(n) => (4u8, n).hash(&mut h),
+        DatumKind::Keyword(n) => (5u8, n).hash(&mut h),
+        DatumKind::Collection { kind, children } => match kind {
+            CollectionKind::List | CollectionKind::Vector => {
+                6u8.hash(&mut h);
+                for child in children.iter() {
+                    run_time_class(child, c)?.hash(&mut h);
+                }
+            }
+            CollectionKind::Map => 7u8.hash(&mut h),
+            _ => 8u8.hash(&mut h),
+        },
+        _ => 9u8.hash(&mut h),
+    }
+    Ok(h.finish())
+}
+fn number(d: &Datum) -> Option<f64> {
+    match d.kind() {
+        DatumKind::Integer(v) => Some(*v as f64),
+        DatumKind::Double(v) => Some(*v),
+        _ => None,
+    }
+}
+/// Whether two of a compiler form's data are equal at run time, as Goose's
+/// form bridge compares them (form_bridge.goose graph_equal) and
+/// ClojureScript's `=` does once the V8 build decodes them: nil, booleans
+/// and numbers by value (an integer and a double alike), strings, symbols
+/// and keywords by their text, lists and vectors by their children in order
+/// (a list equals a vector), maps and sets by their merged entries: the
+/// same count and each key, then its value, found in the other's.
+fn run_time_equal(
+    a: &Datum,
+    b: &Datum,
+    c: &Budget,
+    depth: usize,
+    limits: ConversionLimits,
+) -> Result<bool, EvalError> {
+    use DatumKind::*;
+    c.check()?;
+    if depth > limits.depth {
+        return Err(EvalError("Goose conversion limit exceeded".into()));
+    }
+    if let (Some(x), Some(y)) = (number(a), number(b)) {
+        return Ok(x == y);
+    }
+    Ok(match (a.kind(), b.kind()) {
+        (Nil, Nil) => true,
+        (Boolean(x), Boolean(y)) => x == y,
+        (String(x), String(y)) => x == y,
+        (Symbol(x), Symbol(y)) | (Keyword(x), Keyword(y)) => x == y,
+        (
+            Collection {
+                kind: x,
+                children: xc,
+            },
+            Collection {
+                kind: y,
+                children: yc,
+            },
+        ) => {
+            let sequential =
+                |k: &CollectionKind| matches!(k, CollectionKind::List | CollectionKind::Vector);
+            if sequential(x) && sequential(y) {
+                if xc.len() != yc.len() {
+                    return Ok(false);
+                }
+                for (x, y) in xc.iter().zip(yc.iter()) {
+                    if !run_time_equal(x, y, c, depth + 1, limits)? {
+                        return Ok(false);
+                    }
+                }
+                true
+            } else if x == y && matches!(x, CollectionKind::Map | CollectionKind::Set) {
+                let map = *x == CollectionKind::Map;
+                let stride = if map { 2 } else { 1 };
+                let xe = merge_entries(xc, map, c, depth + 1, limits)?;
+                let ye = merge_entries(yc, map, c, depth + 1, limits)?;
+                if xe.len() != ye.len() {
+                    return Ok(false);
+                }
+                for &(xk, xv) in &xe {
+                    let mut found = false;
+                    for &(yk, yv) in &ye {
+                        if run_time_equal(&xc[xk * stride], &yc[yk * stride], c, depth + 1, limits)?
+                        {
+                            found = !map
+                                || run_time_equal(
+                                    &xc[xv * 2 + 1],
+                                    &yc[yv * 2 + 1],
+                                    c,
+                                    depth + 1,
+                                    limits,
+                                )?;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return Ok(false);
+                    }
+                }
+                true
+            } else {
+                false
+            }
+        }
+        _ => false,
+    })
+}
+/// Records `form` and every form inside it for reuse by the identity of the
+/// matching datum inside `data`, the form's data, which the expansion's
+/// data holds (a form's own datum and its parent's child differ by
+/// identity when the child has metadata), as the V8 build's bridge retains
+/// a restored argument (form_bridge.rs).
+fn retain(reuse: &mut HashMap<usize, Form>, data: &Datum, form: &Form) {
+    reuse.insert(data.identity(), form.clone());
+    reuse.insert(form.data().identity(), form.clone());
+    if let DatumKind::Collection { children, .. } = data.kind() {
+        for (child, form) in children.iter().zip(form.children()) {
+            retain(reuse, child, &form);
+        }
+    }
+    if let (Some(metadata), Some(form)) = (data.metadata(), form.metadata()) {
+        retain(reuse, &metadata, &form);
+    }
+    if let (Some(payload), Some(form)) = (
+        data.compiler_literal_data(),
+        form.node().compiler_payload.and_then(|id| form.at(id)),
+    ) {
+        retain(reuse, &payload, &form);
     }
 }
 fn tag(d: &Datum) -> Result<u32, EvalError> {
@@ -1147,6 +1374,18 @@ impl Graph {
                             d = d.with_metadata(meta);
                         }
                     }
+                    // A map or set Goose merged as it imported it (equal
+                    // keys; light-cljs-879) is the reader's form again, its
+                    // children and metadata too, as the V8 build's bridge
+                    // restores an unchanged argument (form_bridge.rs retain).
+                    let restored = matches!(
+                        (d.kind(), original.data.kind()),
+                        (DatumKind::Collection { children: a, .. }, DatumKind::Collection { children: b, .. })
+                            if a.len() < b.len()
+                    );
+                    if restored {
+                        d = original.data.clone();
+                    }
                     if let Some(form) = &original.form {
                         let span = form.span();
                         if f[6] < 0
@@ -1160,7 +1399,11 @@ impl Graph {
                         if self.g.resolved[f[6] as usize].id() != span.source().id() {
                             return Err(bad());
                         }
-                        self.reuse.insert(d.identity(), form.clone());
+                        if restored {
+                            retain(&mut self.reuse, &d, form);
+                        } else {
+                            self.reuse.insert(d.identity(), form.clone());
+                        }
                     } else if f[6] != -1 {
                         return Err(bad());
                     }
@@ -1588,6 +1831,89 @@ mod tests {
                 .expansion(&call, origin(), &swapped.originals, limits, &budget())
                 .is_err()
         );
+    }
+    /// light-cljs-879: an input map or set returned as Goose merged it (equal
+    /// keys, the first key with the last value) is the reader's form again,
+    /// every position's span, origin, number flavour and metadata kept; a
+    /// run that is not exactly that merge is malformed.
+    #[test]
+    fn goose_compiler_bridge_restores_merged_inputs_exactly() {
+        use crate::compiler_reader::{NamespaceView, read_form};
+        let source = crate::compiler_data::Source::new(
+            "merge.cljs",
+            "(m [#{1 1.0 2} {1 :a 1.0 ^:k [:b] 2 :c} #{[1] (1.0) 3}])",
+        );
+        let call = read_form(&source, &NamespaceView::new("fixture.core", &source))
+            .unwrap()
+            .unwrap();
+        let origin = || ExpansionOrigin {
+            macro_name: Name::new(None, "m"),
+            call: call.span(),
+            definition: None,
+            helpers: vec![],
+        };
+        let limits = ConversionLimits::default();
+        let control = ExecutionControl::new(&Default::default()).unwrap();
+        let budget = || Budget::new(limits.nodes, control.clone());
+        let stored = [super::super::Stored::Form(call.clone(), limits)];
+        // `runs` replaces the vector's three collections' runs, by positions
+        // in their original runs.
+        let returned = |runs: [&[usize]; 3]| {
+            let mut g = Graph::arguments(&stored, limits, &budget()).unwrap();
+            let child = |g: &Graph, node: usize, i: usize| {
+                g.children[g.nodes[node].fields[0] as usize + i] as usize
+            };
+            let vector = child(&g, g.roots[0] as usize, 1);
+            for (i, run) in runs.iter().enumerate() {
+                let node = child(&g, vector, i);
+                let kept: Vec<u32> = run.iter().map(|&p| child(&g, node, p) as u32).collect();
+                g.nodes[node].fields[0] = g.children.len() as i32;
+                g.nodes[node].fields[1] = kept.len() as i32;
+                g.children.extend(kept);
+            }
+            g.roots = vec![vector as u32];
+            let decoded = Graph::decode(&g.encode().unwrap(), &g.originals, limits, &budget())?;
+            decoded.expansion(&call, origin(), &g.originals, limits, &budget())
+        };
+        fn same(a: &Form, b: &Form) {
+            assert_eq!(a.span().bytes(), b.span().bytes());
+            // The reader's origin (Source, or Metadata for `^:k [:b]`), not
+            // the expansion's.
+            assert_eq!(
+                std::mem::discriminant(&a.node().origin),
+                std::mem::discriminant(&b.node().origin)
+            );
+            assert!(!matches!(
+                a.node().origin,
+                crate::compiler_data::Origin::MacroExpansion(_)
+            ));
+            assert!(a.data().value_eq(&b.data()));
+            assert_eq!(a.metadata().is_some(), b.metadata().is_some());
+            if let (Some(a), Some(b)) = (a.metadata(), b.metadata()) {
+                same(&a, &b);
+            }
+            let (ac, bc) = (a.children(), b.children());
+            assert_eq!(ac.len(), bc.len());
+            for (a, b) in ac.iter().zip(&bc) {
+                same(a, b);
+            }
+        }
+        // 1 and 1.0 merge; [1] and (1.0) merge.
+        let form = returned([&[0, 2], &[0, 3, 4, 5], &[0, 2]]).unwrap();
+        same(&form, &call.children()[1]);
+        let set = &form.children()[0].children();
+        assert!(matches!(set[1].data().kind(), DatumKind::Double(_)));
+        // Not the merge: a member dropped, an empty set, a value of another
+        // key, the entries out of order, unequal members merged.
+        for runs in [
+            [&[0][..], &[0, 3, 4, 5], &[0, 2]],
+            [&[], &[0, 3, 4, 5], &[0, 2]],
+            [&[0, 2], &[0, 5, 4, 5], &[0, 2]],
+            [&[0, 2], &[4, 5, 0, 3], &[0, 2]],
+            [&[0, 2], &[0, 3, 4, 5], &[0]],
+        ] {
+            assert!(returned(runs).is_err(), "{runs:?}");
+        }
     }
     #[test]
     fn goose_compiler_bridge_rejects_truncations_and_unreachable_cycles() {

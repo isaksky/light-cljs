@@ -405,8 +405,9 @@ let node_kind::MappedBinding = 27;
 // constant literal or array map of any size (LiteralMap, ArrayMap),
 // printed in insertion order. Hash: a hash-map literal's map (CljZipMap,
 // NewFormMap) of any size, a set literal of more than 8 members
-// (NewFormSet), a compiler form's map or set of more than 8 entries (the
-// form bridge, decoded_hash_ordered), and a map or set an assoc or conj
+// (NewFormSet), a compiler form's map of more than 16 operands or set of
+// more than 8 distinct members (the form bridge, decoded_hash_ordered and
+// merge_keys), and a map or set an assoc or conj
 // took past 8 entries; it stays Hash through every update and prints in
 // ClojureScript's hash order (form_hash, legacy_order_key). The values run
 // stays in insertion order either way, so lookups and equality do not look

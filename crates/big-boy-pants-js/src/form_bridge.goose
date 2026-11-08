@@ -109,7 +109,10 @@ struct Walk { id: i64, edge: i64 = -1 }
 // An omission (Omitted) counts as the nodes it left out would: in the
 // limits, and in the polls each of its nodes, child slots, units and name
 // units would take, which follow the graph's own.
-fn validate(g: const Graph&, c: Control&) -> bool {
+fn validate(g: const Graph&, c: Control&) -> bool { var sets: i64[>..] = []; return validate_graph(g, c, sets, false); }
+// validate, and with `record` the graph's maps and sets in that postorder
+// (each after every map or set it reaches), for import_graph's merge.
+fn validate_graph(g: const Graph&, c: Control&, sets: i64[>..]&, record: bool) -> bool {
     let o = g.omitted;
     if o.nodes != 0 && !omission_ok(o, g.nodes.len, c) { return reject(c); }
     if g.nodes.len + o.nodes > c.nodes { return reject(c, Error.Nodes); }
@@ -174,6 +177,7 @@ fn validate(g: const Graph&, c: Control&) -> bool {
                 if collection(n.tag) { for i in n.count { if !poll(c) { return false; } height = max(height, 1 + heights[g.children[n.start + i]]); } }
                 if height > c.depth { return reject(c, Error.Depth); }
                 heights[w.id] = height; states[w.id] = 2; stack.pop();
+                if record && (n.tag == form_tag::Map || n.tag == form_tag::Set) { sets.push(w.id); }
             }
         }
     }
@@ -258,15 +262,135 @@ fn graph_source(heap: const source::Heap&, row: u32, g: Graph&, ids: i64[>..]&, 
     }
     return ids[row];
 }
-// The traversal order (map_order) of a compiler form's map or set: the V8
-// build's form bridge decodes a map with mapFromArray, a hash map past 16
-// operands (8 entries), and a set with setFromArray, which promotes at its
-// ninth member (light-cljs-877; src/js_runtime.js decodeNode). A cell
-// value's or publication's graph (Control.cells) carries the order itself
+// The traversal order (map_order) of a compiler form's map: the V8 build's
+// form bridge decodes a map with mapFromArray, a hash map past 16 operands
+// (8 key positions, equal keys included), and a set with setFromArray,
+// which promotes at its ninth distinct member (merge_keys;
+// light-cljs-877, src/js_runtime.js decodeNode). A cell value's or
+// publication's graph (Control.cells) carries the order itself
 // (Form.number).
-fn decoded_hash_ordered(n: Form) -> bool { return n.tag == form_tag::Map && n.count > 16 || n.tag == form_tag::Set && n.count > 8; }
+fn decoded_hash_ordered(n: Form) -> bool { return n.tag == form_tag::Map && n.count > 16; }
+// A compiler graph's maps and sets merged as the V8 build's form bridge
+// decodes them (merge_keys): a merged node's run is `kids[start[id]..]`,
+// `count[id]` long (start -1 or empty arrays: its own run); `class` holds
+// the collections' key classes once `known`.
+root struct Merging { kids: i64[>..] = [], start: i64[>..] = [], count: i64[>..] = [], class: u64[>..] = [], known: bool[>..] = [] }
+fn run_count(g: const Graph&, m: const Merging&, id: i64) -> i64 { return if m.start.len > 0 && m.start[id] >= 0 { m.count[id] } else { g.nodes[id].count }; }
+fn run_child(g: const Graph&, m: const Merging&, id: i64, i: i64) -> i64 { return if m.start.len > 0 && m.start[id] >= 0 { m.kids[m.start[id] + i] } else { g.children[g.nodes[id].start + i] }; }
+fn units_hash(units: const u16[:]) -> u64 { var h: u64 = 0; for u in units { h = (h * 31 + u) & 4294967295; } return h; }
+// A node's key class: nodes equal by graph_equal (as form_equal would find
+// them once imported) have equal classes, and most unequal ones differ:
+// numbers by number_hash (1 and 1.0, 0 and -0 meet), text by its units,
+// lists and vectors (equal to each other) by their children in order, maps
+// and sets by their merged entries in any order. A collection's class is
+// kept, so a shared subgraph is hashed once; nesting is the graph's height,
+// which validate bounds.
+recursive fn key_class(g: const Graph&, m: Merging&, id: i64) -> u64 {
+    let n = g.nodes[id];
+    if n.tag == form_tag::Nil { return 1; }
+    if n.tag == form_tag::Boolean { return if n.number != 0 { 2 } else { 3 }; }
+    if n.tag == form_tag::Number { let h: u64 = source::number_hash(n.number); return (4 << 32) | h; }
+    if n.tag == form_tag::String { return (5 << 32) | units_hash(g.units[n.start..(n.start + n.count)]); }
+    if named(n.tag) {
+        let space: u64 = if n.ns_count < 0 { 4294967295 } else { units_hash(g.units[n.ns_start..(n.ns_start + n.ns_count)]) };
+        let kind:  u64 = if n.tag == form_tag::Symbol { 6 } else { 7 };
+        return (kind << 32) | ((units_hash(g.units[n.start..(n.start + n.count)]) * 31 + space) & 4294967295);
+    }
+    if !collection(n.tag) { return 8 << 32; }
+    if m.known.len == 0 { m.known.resize(g.nodes.len, false); m.class.resize(g.nodes.len, 0); }
+    if m.known[id] { return m.class[id]; }
+    let count = run_count(g, m, id); var h: u64 = 0;
+    if n.tag == form_tag::List || n.tag == form_tag::Vector {
+        h = 9 << 32; for i in count { h = h * 1000003 + key_class(g, m, run_child(g, m, id, i)); }
+    } else if n.tag == form_tag::Map {
+        h = 10 << 32; var i: i64 = 0; while i + 1 < count { h += key_class(g, m, run_child(g, m, id, i)) * 31 + key_class(g, m, run_child(g, m, id, i + 1)); i += 2; }
+    } else { h = 11 << 32; for i in count { h += key_class(g, m, run_child(g, m, id, i)); } }
+    m.known[id] = true; m.class[id] = h; return h;
+}
+fn same_units(g: const Graph&, a_start: i64, a_count: i64, b_start: i64, b_count: i64) -> bool { return a_count == b_count && g.units[a_start..(a_start + a_count)] == g.units[b_start..(b_start + b_count)]; }
+// Whether nodes a and b are equal as form_equal finds their imported forms
+// (source_vm.goose): nil, booleans and numbers by value, strings, symbols
+// and keywords by their text, lists and vectors by their children in
+// order (a list equals a vector), maps and sets by their merged runs: the
+// same count and each key, then its value, found in the other's, the first
+// equal key's value. Metadata does not count. A step is a poll.
+recursive fn graph_equal(g: const Graph&, m: Merging&, a: i64, b: i64, c: Control&) -> bool {
+    if !poll(c) { return false; }
+    if a == b { return true; }
+    let x = g.nodes[a]; let y = g.nodes[b];
+    let sequential = (x.tag == form_tag::List || x.tag == form_tag::Vector) && (y.tag == form_tag::List || y.tag == form_tag::Vector);
+    if x.tag != y.tag && !sequential { return false; }
+    if x.tag == form_tag::Nil { return true; }
+    if x.tag == form_tag::Boolean || x.tag == form_tag::Number { return x.number == y.number; }
+    if x.tag == form_tag::String { return same_units(g, x.start, x.count, y.start, y.count); }
+    if named(x.tag) { return same_units(g, x.start, x.count, y.start, y.count) && (x.ns_count < 0 && y.ns_count < 0 || x.ns_count >= 0 && y.ns_count >= 0 && same_units(g, x.ns_start, x.ns_count, y.ns_start, y.ns_count)); }
+    if !collection(x.tag) { return false; }
+    let count = run_count(g, m, a);
+    if count != run_count(g, m, b) { return false; }
+    if x.tag == form_tag::Map || x.tag == form_tag::Set {
+        let stride: i64 = if x.tag == form_tag::Map { 2 } else { 1 };
+        for i in (count / stride) {
+            var found = false;
+            for j in (count / stride) {
+                let same = graph_equal(g, m, run_child(g, m, a, i * stride), run_child(g, m, b, j * stride), c);
+                if c.error != Error.None { return false; }
+                if same { found = stride == 1 || graph_equal(g, m, run_child(g, m, a, i * stride + 1), run_child(g, m, b, j * stride + 1), c); break; }
+            }
+            if c.error != Error.None || !found { return false; }
+        }
+        return true;
+    }
+    for i in count { if !graph_equal(g, m, run_child(g, m, a, i), run_child(g, m, b, i), c) { return false; } }
+    return true;
+}
+struct Keyed { class: u64, index: i64 }
+// Map or set `id`'s keys or members that are equal at run time although
+// the reader kept them apart (1 and 1.0, [1] and '(1)) merge as the V8
+// build's form bridge decodes them (mapFromArray, setFromArray;
+// light-cljs-879): the first key with the last value, the first member,
+// in their first positions. Keys are grouped by key_class and only keys of
+// one class are compared. Before import_graph installs anything, inner
+// maps and sets first (validate's postorder); false on a poll's failure.
+fn merge_keys(g: const Graph&, m: Merging&, id: i64, c: Control&) -> bool {
+    let stride:  i64 = if g.nodes[id].tag == form_tag::Map { 2 } else { 1 };
+    let entries: i64 = g.nodes[id].count / stride;
+    if entries < 2 { return true; }
+    var keys: Keyed[>..] = [];
+    for i in entries { keys.push(Keyed { class: key_class(g, m, run_child(g, m, id, i * stride)), index: i }); }
+    sort(keys) { x, y => x.class < y.class || x.class == y.class && x.index < y.index };
+    // first[i]: the entry whose key entry i merges into, itself if none.
+    var first: i64[>..] = []; var merged: i64 = 0; var at: i64 = 0;
+    while at < entries {
+        var end = at + 1; while end < entries && keys[end].class == keys[at].class { end += 1; }
+        if end - at > 1 {
+            if first.len == 0 { for i in entries { first.push(i); } }
+            for j in (at + 1)..end {
+                for k in at..j {
+                    let a = keys[k].index; let b = keys[j].index;
+                    if first[a] != a { continue; }
+                    let same = graph_equal(g, m, run_child(g, m, id, a * stride), run_child(g, m, id, b * stride), c);
+                    if c.error != Error.None { return false; }
+                    if same { first[b] = a; merged += 1; break; }
+                }
+            }
+        }
+        at = end;
+    }
+    if merged == 0 { return true; }
+    var last: i64[>..] = []; last.resize(entries, -1); for i in entries { last[first[i]] = i; }
+    if m.start.len == 0 { m.start.resize(g.nodes.len, -1); m.count.resize(g.nodes.len, 0); }
+    let start = m.kids.len;
+    for i in entries {
+        if first[i] != i { continue; }
+        m.kids.push(run_child(g, m, id, i * stride));
+        if stride == 2 { m.kids.push(run_child(g, m, id, last[i] * 2 + 1)); }
+    }
+    m.start[id] = start; m.count[id] = m.kids.len - start;
+    return true;
+}
 fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&, c: Control&) -> bool {
-    if !validate(g, c) { return false; }
+    var sets: i64[>..] = [];
+    if !validate_graph(g, c, sets, !c.cells) { return false; }
     // Each string occurrence is copied into its own canonical run (Latin-1 or
     // UTF-16), so work counts the units copied, not the shared input table.
     // An omission's rows (Omitted) count as the graph's own would.
@@ -276,8 +400,12 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     let work = nodes + children + max(g.units.len + o.units, text) + g.bytes.len + g.sources.len + g.roots.len;
     // Final cancellation and capacity checks precede any session installation.
     if !poll(c, work) { return false; }
-    if !source::nodes_fit(heap, nodes) || !source::values_fit(heap, children) || !source::units_fit(heap, text) || 2 * nodes > heap.limits.units - (heap.strings.len - heap.image.strings) || g.bytes.len > c.bytes - heap.source_bytes.len { return reject(c, Error.Heap); }
-    if !source::charge(heap, work) { heap.fault = source::Fault.None; return reject(c, Error.Heap); }
+    // Maps and sets merge equal keys (merge_keys), inner ones first; a merged
+    // run takes new value rows, preflighted with the rest.
+    var m = Merging {};
+    for id in sets { if !merge_keys(g, m, id, c) { return false; } }
+    if !source::nodes_fit(heap, nodes) || !source::values_fit(heap, children + m.kids.len) || !source::units_fit(heap, text) || 2 * nodes > heap.limits.units - (heap.strings.len - heap.image.strings) || g.bytes.len > c.bytes - heap.source_bytes.len { return reject(c, Error.Heap); }
+    if !source::charge(heap, work + m.kids.len) { heap.fault = source::Fault.None; return reject(c, Error.Heap); }
     // The omitted rows are the job's for the rest of it, as if imported.
     source::reserve_rows(heap, o.nodes, o.children, o.units, o.strings); c.reserved += o.nodes;
     // The preflight above reserved every row, so no allocation below fails.
@@ -286,12 +414,12 @@ fn import_graph(heap: source::Heap&, g: const Graph&, roots: source::Value[>..]&
     // An identity source copies no text: the row names the compiler's source.
     for s in g.sources { source::add_source_range(heap, source::shifted_source(s, bytes)); }
     let base = source::add_nodes(heap, [], g.nodes.len, source::Node { kind: node_kind::Scalar });
-    var links: source::Value[>..] = []; for id in g.children { links.push(source::object(base + id)); }
+    var links: source::Value[>..] = []; for id in g.children { links.push(source::object(base + id)); } for id in m.kids { links.push(source::object(base + id)); }
     let children = source::add_values(heap, links);
     for n, i in g.nodes {
         var node = source::Node { kind: node_kind::Scalar, origin: n.origin, source: if n.source < 0 { source::no_row() } else { (sources + n.source) as u32 }, span_start: n.span_start as u32, span_end: n.span_end as u32 };
         if n.metadata >= 0 { node.metadata = source::object(base + n.metadata); }
-        if collection(n.tag) { node.kind = heap_kind(n.tag); node.start = (children + n.start) as u32; node.count = n.count as u32; if c.cells && n.number == 1 && n.tag == form_tag::List { node.kind = node_kind::Concat; node.length = seq_flavor::IntegerRange; } else if c.cells && n.number == 1 || !c.cells && decoded_hash_ordered(n) { node.length = map_order::Hash; } }
+        if collection(n.tag) { node.kind = heap_kind(n.tag); node.start = (children + n.start) as u32; node.count = n.count as u32; if m.start.len > 0 && m.start[i] >= 0 { node.start = (children + g.children.len + m.start[i]) as u32; node.count = m.count[i] as u32; } if c.cells && n.number == 1 && n.tag == form_tag::List { node.kind = node_kind::Concat; node.length = seq_flavor::IntegerRange; } else if c.cells && n.number == 1 || !c.cells && (decoded_hash_ordered(n) || n.tag == form_tag::Set && node.count > 8) { node.length = map_order::Hash; } }
         else if n.tag == form_tag::Cell { node = source::Node { kind: node_kind::Cell, function: n.number as u32, length: n.count as u32 }; }
         else if named(n.tag) {
             node.kind = heap_kind(n.tag); node.value = source::import_text(heap, g.units[n.start..(n.start + n.count)]);
