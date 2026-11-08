@@ -397,7 +397,8 @@ fn bind_step(job: Job&, frame: Frame) {
 // toString of a function compiled from source is its source text
 // ([[SourceText]], QuickJS's debug.source): the byte range the Rust
 // frontend records for it (GSP version 4, Function.has_text), decoded from
-// the image's immutable UTF-8 source to the UTF-16 string returned; Goose
+// the image's immutable source (UTF-8, with run-time source's lone
+// surrogates as WTF-8: program::source_text) to the UTF-16 string returned; Goose
 // never re-parses source. Any other function (a built-in, a bound function,
 // a proxy of a function, a function without text) gives QuickJS's
 // "function " + ToString(Get(F, "name")) + "() {\n    [native code]\n}",
@@ -455,7 +456,8 @@ fn source_text(job: Job&, f: Value) -> bool, Value {
     if !code.has_text { return false, Value.Undefined; }
     if !charge(heap, code.text_end - code.text_start) { return true, Value.Undefined; }
     // The loader and snapshot validation checked the range and the source's
-    // UTF-8.
+    // encoding (program::source_text): a lone surrogate of run-time source
+    // decodes to its exact unit (light-cljs-864).
     var units: u16[>..] = [];
     if !append_utf8(units, heap.code.source_bytes[code.text_start..code.text_end]) { heap.fault = Fault.InvalidState; return true, Value.Undefined; }
     return true, string(heap, units);

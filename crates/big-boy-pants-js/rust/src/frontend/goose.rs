@@ -847,7 +847,7 @@ pub fn export_source_with(
 ) -> Result<Export, SyntaxError> {
     bounded(source.len(), MAX_SOURCE, source)?;
     let executable = crate::frontend::compile_script_for(name, source, options, Backend::Goose)?;
-    encode(&executable, source)
+    encode(&executable, source, &[])
 }
 
 /// What run-time code [`export_runtime`] compiles (light-cljs-856): the
@@ -873,7 +873,9 @@ pub enum RuntimeMode {
 /// Compile JavaScript the Goose VM received while a job runs, given as its
 /// exact UTF-16 code units (lone surrogates carried as [`push_utf16`]
 /// carries them), into a GSP image as [`export_source`] encodes one; its
-/// function 0 is the eval script or the dynamic function's wrapper.
+/// function 0 is the eval script or the dynamic function's wrapper. The
+/// image's source keeps each lone surrogate as generalized UTF-8
+/// ([`encode`], light-cljs-864), so function source text is exact.
 ///
 /// The compilation runs on a helper thread with a 2 MiB stack, as the Pants
 /// engine's eval does (`vm::native::eval`): the frontend's weighted nesting
@@ -922,7 +924,7 @@ pub fn export_runtime(units: &[u16], mode: RuntimeMode) -> Result<Export, Syntax
                     Backend::Goose,
                 ),
             };
-            executable.and_then(|executable| encode(&executable, &source))
+            executable.and_then(|executable| encode(&executable, &source, &surrogates))
         });
     match helper {
         Ok(handle) => handle
@@ -936,10 +938,35 @@ pub fn export_runtime(units: &[u16], mode: RuntimeMode) -> Result<Export, Syntax
 pub fn export_function(source: &str) -> Result<Export, SyntaxError> {
     bounded(source.len(), MAX_SOURCE, source)?;
     let executable = crate::frontend::compile_function(source)?;
-    encode(&executable, source)
+    encode(&executable, source, &[])
 }
 
-fn encode(executable: &Executable, source: &str) -> Result<Export, SyntaxError> {
+/// Write lone surrogate `unit` as the three-byte generalized UTF-8 sequence
+/// of its code point (WTF-8), over the U+FFFD [`push_utf16`] put in its
+/// place: the same three bytes long, so every byte offset stays.
+///
+/// [`push_utf16`]: crate::frontend::push_utf16
+fn surrogate_bytes(unit: u16) -> [u8; 3] {
+    [
+        0xe0 | (unit >> 12) as u8,
+        0x80 | ((unit >> 6) & 0x3f) as u8,
+        0x80 | (unit & 0x3f) as u8,
+    ]
+}
+
+/// The image's source bytes are `source` with each of `surrogates` (as
+/// [`push_utf16`] records them) restored over its U+FFFD as
+/// [`surrogate_bytes`] (light-cljs-864): generalized UTF-8, so a function's
+/// source text decodes to the exact UTF-16 the run-time compiler received.
+/// A lone high surrogate is never directly followed by a lone low one, since
+/// `push_utf16` pairs those, so no sequence is a split pair.
+///
+/// [`push_utf16`]: crate::frontend::push_utf16
+fn encode(
+    executable: &Executable,
+    source: &str,
+    surrogates: &[(usize, u16)],
+) -> Result<Export, SyntaxError> {
     let mut tables = Tables::default();
     assert_eq!(tables.function(executable, source, 0)?, 0);
     let mut bytes = b"GSP\0".to_vec();
@@ -955,7 +982,21 @@ fn encode(executable: &Executable, source: &str) -> Result<Export, SyntaxError> 
     ] {
         word(&mut bytes, n);
     }
+    let at = bytes.len();
     bytes.extend_from_slice(source.as_bytes());
+    for &(offset, unit) in surrogates {
+        if source.as_bytes().get(offset..offset + 3) != Some("\u{fffd}".as_bytes())
+            || !(0xd800..=0xdfff).contains(&unit)
+        {
+            return Err(problem(
+                source,
+                SyntaxErrorKind::Internal,
+                Span::new(0, 0),
+                "lone surrogate outside the Goose export's source",
+            ));
+        }
+        bytes[at + offset..at + offset + 3].copy_from_slice(&surrogate_bytes(unit));
+    }
     for row in &tables.functions {
         for &n in row {
             word(&mut bytes, n);
@@ -1787,6 +1828,42 @@ mod serial_tests {
             )
             .is_err()
         );
+    }
+    /// Light-cljs-864: run-time source keeps each lone surrogate as its
+    /// three-byte WTF-8 sequence, beside a genuine U+FFFD, at the offsets the
+    /// frontend's spans use, in every mode; static source stays UTF-8.
+    #[test]
+    fn runtime_export_keeps_lone_surrogates_in_source() {
+        let units = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        let source = |export: &Export| {
+            let n = u32::from_le_bytes(export.bytes[8..12].try_into().unwrap()) as usize;
+            export.bytes[32..32 + n].to_vec()
+        };
+        let mut text = units("(function f(){/*");
+        text.extend([0xd800, 0xfffd, 0xdc00]);
+        text.extend(units("*/ return '"));
+        text.push(0xdfff);
+        text.extend(units("'})"));
+        let mut expected = b"(function f(){/*".to_vec();
+        expected.extend([0xed, 0xa0, 0x80, 0xef, 0xbf, 0xbd, 0xed, 0xb0, 0x80]);
+        expected.extend(b"*/ return '");
+        expected.extend([0xed, 0xbf, 0xbf]);
+        expected.extend(b"'})");
+        let indirect = export_runtime(&text, RuntimeMode::IndirectEval { strict: false }).unwrap();
+        assert_eq!(source(&indirect), expected);
+        let row = &indirect.bytes[32 + expected.len() + FUNCTION_WORDS * 4..];
+        let word = |i: usize| u32::from_le_bytes(row[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!(word(12) & SOURCE_TEXT != 0);
+        assert_eq!((word(13), word(14)), (1, expected.len() as u32 - 1));
+        let mut body = units("function anonymous(\n) {\n//");
+        body.push(0xdbff);
+        body.extend(units("\n}"));
+        let parameter_units = "function anonymous(\n)".len();
+        let dynamic =
+            export_runtime(&body, RuntimeMode::DynamicFunction { parameter_units }).unwrap();
+        assert!(source(&dynamic).ends_with(&[b'/', b'/', 0xed, 0xaf, 0xbf, b'\n', b'}']));
+        let fixed = export_source("fixed", "'\u{fffd}'").unwrap();
+        assert_eq!(source(&fixed), "'\u{fffd}'".as_bytes());
     }
     /// Light-cljs-860: code compiled while a Goose job runs lowers for Goose
     /// too, so a sloppy function it defines that writes a parameter gets

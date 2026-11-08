@@ -170,7 +170,8 @@ fn plain_rows<T>(rows: const T[:]) -> u8[>..] { var out: u8[>..] = []; for r in 
 // its `length` (ExpectedArgumentCount) (light-cljs-806).
 // has_text, text_start and text_end: the function's source text
 // ([[SourceText]], Function.prototype.toString; light-cljs-853), a byte
-// range of Code.source_bytes on UTF-8 boundaries (both 0 without text: a
+// range of Code.source_bytes (program::source_text) on character
+// boundaries (both 0 without text: a
 // script or a synthesized function).
 // simple: the parameter list is simple (no default, rest or pattern; export
 // flag bit 19, light-cljs-854): sloppy code with one gives its arguments
@@ -4629,7 +4630,8 @@ fn global_op(job: Job&, op: u8, k: Value, strict: bool, eval: bool) {
     }
 }
 // Append UTF-8 `bytes` as UTF-16 units; false (out partly written) for a
-// malformed sequence.
+// malformed sequence. A surrogate code point's three-byte sequence (an
+// image source's lone surrogate, program::source_text) is that unit.
 fn append_utf8(out: u16[>..]&, bytes: const u8[:]) -> bool {
     var i: i64 = 0;
     while i < bytes.len {

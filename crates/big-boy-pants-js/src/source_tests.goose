@@ -30,6 +30,15 @@ fn main() {
     assert(program::validate(malformed) == program::Error.Source);
     set_word(malformed[..], ul.instructions + 8, program::word(unicode, ul.instructions + 8));
     malformed[32 + emoji] = 255; assert(program::validate(malformed) == program::Error.Source);
+    // Source bytes (light-cljs-864): a lone surrogate of run-time source is
+    // its code point's WTF-8 sequence, beside a genuine U+FFFD or a low one
+    // before a high one; never a split pair, an overlong form or a cut-off
+    // sequence.
+    let lone: u8[] = [97, 237, 160, 128, 239, 191, 189, 237, 176, 128, 237, 160, 128, 32, 237, 176, 128];
+    assert(program::source_text(lone));
+    let pair:     u8[] = [237, 160, 128, 237, 176, 128]; assert(!program::source_text(pair));
+    let overlong: u8[] = [224, 128, 128]; assert(!program::source_text(overlong));
+    let cut:      u8[] = [237, 160]; assert(!program::source_text(cut));
     var image = program::Image {}; assert(program::install(image, macro) == program::Error.None);
     var scalar_code = tiny::Program {}; assert(!scalar(image, scalar_code) && !scalar_code.valid);
     // Exhaustive truncation of a genuine source-derived macro image.

@@ -9,7 +9,9 @@
 // property name with `get`, `set`, `async` and `*`; arrows whole. Built-in
 // and bound
 // functions give "function " + name + "() {\n    [native code]\n}"; a
-// receiver that is not callable is a TypeError. The Pants engine refuses
+// receiver that is not callable is a TypeError. A function an eval compiled
+// keeps its source's exact UTF-16, lone surrogates included
+// (light-cljs-864). The Pants engine refuses
 // toString (rust/src/vm/function.rs FUNCTION_PROTOTYPE_NAMES), so this case
 // is scored against QuickJS alone. Left out: classes (Goose does not create
 // a class yet, light-cljs-766; the Rust exporter test
@@ -50,6 +52,18 @@ row(o.f.toString() === "function() {}" && o.a.toString() === "() => 1");
 // Non-ASCII source text.
 var μ = function μ() { return "é😀"; };
 row(μ.toString() === "function μ() { return \"é😀\"; }" && μ.toString().length === 30);
+// Functions compiled at run time by an indirect or a direct eval: the text
+// is the eval source's exact UTF-16 code units, a lone surrogate in a
+// comment or a string literal kept beside a genuine U+FFFD (light-cljs-864).
+{
+  const text = "function f(){/*\ud800*/}";
+  row((0, eval)("(" + text + ")").toString() === text && eval("(" + text + ")").toString() === text);
+  const mixed = "function g(){ /*\udc00�\ud800*/ return '\ud800�\udc00' + `\udc00`; }";
+  row((0, eval)("(" + mixed + ")").toString() === mixed && eval("(" + mixed + ")").toString() === mixed);
+  const outer = "(function () { return (x) => '😀\ud800' + x /* �\udfff */; })()";
+  row((0, eval)(outer).toString() === "(x) => '😀\ud800' + x" && eval(outer).toString() === "(x) => '😀\ud800' + x");
+  row((0, eval)("({ m() { /*\ud800�*/ } })").m.toString() === "m() { /*\ud800�*/ }");
+}
 // Built-in functions.
 row(Function.prototype.toString.toString() === native("toString"));
 row(Object.toString() === native("Object") && Array.prototype.push.toString() === native("push"));

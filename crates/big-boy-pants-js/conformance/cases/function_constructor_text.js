@@ -12,4 +12,7 @@ row(new Function("a", "b", "return a").toString() === "function anonymous(a,b\n)
 row(Function().toString() === "function anonymous(\n) {\n\n}");
 row(Function("return 1").toString() === "function anonymous(\n) {\nreturn 1\n}");
 row(Function("a, b", "c = 1", "").toString() === "function anonymous(a, b,c = 1\n) {\n\n}");
+// The source keeps its exact UTF-16 code units: a lone surrogate in a
+// comment or a string literal beside a genuine U+FFFD (light-cljs-864).
+row(Function("a /*\udc00*/", "/*\ud800�*/ return '\udc00�' + a").toString() === "function anonymous(a /*\udc00*/\n) {\n/*\ud800�*/ return '\udc00�' + a\n}");
 failed === 0 ? rows : -failed;

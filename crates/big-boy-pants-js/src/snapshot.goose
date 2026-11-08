@@ -409,7 +409,7 @@ fn code_valid<T>(s: const T&, c: Control&) -> bool {
     for r in s.code_strings { if !poll(c) { return false; } if !range(r.start, r.len, s.code_units.len) { return reject(c, Error.Code); } }
     for v in s.code_constants { if !poll(c) { return false; } if !value(s, v, true) { return reject(c, Error.Code); } }
     for id in s.children { if !poll(c) { return false; } if !range(id, 1, s.functions.len) { return reject(c, Error.Code); } }
-    if !utf8(s.code_bytes) { return reject(c, Error.Code); }
+    if !program::source_text(s.code_bytes) { return reject(c, Error.Code); }
     if s.ops.len > c.bytes - footprint(s) { return reject(c, Error.Bytes); }
     c.validation_peak = max(c.validation_peak, s.ops.len);
     var used: bool[>..] = []; used.resize(s.ops.len, false);

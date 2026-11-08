@@ -64,6 +64,32 @@ fn range(start: i64, length: i64, count: i64) -> bool { return start <= count &&
 // ThrowKind and built-in global selectors are 0..count; other category-6
 // operands (counts, form operations) have no selector table here.
 fn selector(op: i64, arg: i64) -> bool { let count = export_selector_count(op); return count < 0 || arg < count; }
+// An image's source bytes: UTF-8, except that a lone surrogate of the
+// run-time compiler's UTF-16 input is its code point's three-byte sequence
+// (generalized UTF-8, WTF-8; light-cljs-864), so a function's source text
+// decodes (append_utf8) to the exact units it was compiled from. Shortest
+// forms only, and no high surrogate directly followed by a low one, whose
+// pair has its own four-byte form.
+fn source_text(bytes: const u8[:]) -> bool {
+    var remaining: i64 = 0; var cp: i64 = 0; var minimum: i64 = 0; var high = false;
+    for byte in bytes {
+        if remaining == 0 {
+            if byte < 128 { high = false; continue; }
+            if byte >= 194 && byte <= 223 { remaining = 1; cp = byte & 31; minimum = 128; }
+            else if byte >= 224 && byte <= 239 { remaining = 2; cp = byte & 15; minimum = 2048; }
+            else if byte >= 240 && byte <= 244 { remaining = 3; cp = byte & 7; minimum = 65536; }
+            else { return false; }
+        } else {
+            if (byte & 192) != 128 { return false; }
+            cp = cp * 64 + (byte & 63); remaining -= 1;
+            if remaining == 0 {
+                if cp < minimum || cp > 1114111 || high && cp >= 56320 && cp <= 57343 { return false; }
+                high = cp >= 55296 && cp <= 56319;
+            }
+        }
+    }
+    return remaining == 0;
+}
 fn boundary(source: const u8[:], offset: i64) -> bool {
     return offset <= source.len && (offset == source.len || (source[offset] & 192) != 128);
 }
@@ -94,11 +120,9 @@ fn validate(bytes: const u8[:]) -> Error {
     if l.end > bytes.len { return Error.Truncated; }
     if l.end < bytes.len { return Error.Trailing; }
     let source = bytes[l.source..l.functions];
-    // Validate all UTF-8, including unreferenced source, without confusing
-    // runtime UTF-16 payloads (which may contain lone surrogates) with source.
-    var normalized: u8[>..] = [];
-    each_utf8(source) { cp => normalized.push_utf8(cp); };
-    if normalized[..] != source { return Error.Source; }
+    // Validate all of the source, unreferenced bytes included (source_text:
+    // UTF-8 with lone surrogates of run-time source as WTF-8).
+    if !source_text(source) { return Error.Source; }
     let nf = word(bytes, 12); let nc = word(bytes, 16); let nch = word(bytes, 20); let ni = word(bytes, 24); let nu = word(bytes, 28);
     for i in nc {
         let at = l.constants + i * 12; let tag = word(bytes, at); let a = word(bytes, at + 4); let b = word(bytes, at + 8);

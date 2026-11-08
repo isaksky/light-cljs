@@ -1116,6 +1116,13 @@ thread_fn runtime_code_carried(image: snapshot::Snapshot, base: snapshot::Snapsh
     var job = source::Job { heap: heap, writable_code: code };
     assert(source::start(job, bindings[0].value, []) && source::run(job, -1) == tiny::Outcome.Complete);
     assert(job.result.is_number() && job.result.num() == 2.0);
+    // The indirect eval's closure keeps its source text's lone surrogate
+    // (light-cljs-864): the carried code bytes passed validation as WTF-8.
+    if image.sites.len == 0 {
+        let text = source::function_text(job, bindings[0].value); assert(text.is_string());
+        var lone = false; for u in source::utf16(heap, text) { if u == 55296 { lone = true; } }
+        assert(lone);
+    }
     assert(source::retire(job));
 }
 thread_fn suspension_parent(bytes: u8[]) {

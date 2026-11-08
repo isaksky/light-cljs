@@ -413,7 +413,7 @@ an eval there fails by name.
 ## GSP version 6
 
 Integers are little endian. An image owns one exact immutable UTF-8 source
-buffer (source ID 0), fixed-stride tables and variable payload pools. There are
+buffer (source ID 0; run-time source's lone surrogates as WTF-8, below), fixed-stride tables and variable payload pools. There are
 no host pointers, owning roots or runtime handles. Runtime strings/names are
 exact UTF-16 code-unit ranges, including lone surrogates, separate from source
 UTF-8. Source spans are half-open **byte** ranges. Diagnostic line/column work
@@ -488,8 +488,15 @@ lowers sloppy code for Goose (light-cljs-860): a sloppy function with a
 simple parameter list that can observe a mapped arguments object gets
 NewMappedArguments (opcode 199, which the Rust VM refuses) and keeps its
 parameters in binding cells; the format is unchanged, and a reader generated
-before that opcode refuses such an image as an unknown descriptor.
-`export_schema.goose` is compiled reader code generated from the registry
+before that opcode refuses such an image as an unknown descriptor. An image
+the run-time compiler exports (eval, the Function constructor) keeps each lone
+surrogate of its UTF-16 source as that code point's three-byte generalized
+UTF-8 (WTF-8) sequence where the frontend parsed U+FFFD, so byte offsets are
+unchanged and a function's source text decodes to its exact UTF-16
+(light-cljs-864); a high surrogate is never directly followed by a low one,
+and the loader and snapshot validation (`program::source_text`) admit nothing
+else beyond UTF-8. Earlier version-6 readers refuse such an image as invalid
+source. `export_schema.goose` is compiled reader code generated from the registry
 (descriptors, selectors, name operands, direct-eval call opcodes, each
 opcode's stack effect and control flow, opcode and well-known symbol names);
 an input image cannot supply its own schema. No source behavior is dropped.
