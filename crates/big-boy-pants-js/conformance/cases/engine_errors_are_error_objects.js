@@ -15,13 +15,15 @@
 // arguments (the value-stack limit) and through `map` callbacks (native
 // frames), and a 500-frame recursion runs afterwards, as do 1,000-frame
 // recursions with a try/catch or a try/finally in every frame. `Array(-1)`
-// is a RangeError "invalid array length".
+// is a RangeError "invalid array length". The property read's message is
+// "cannot read property 'x' of undefined" on both oracles (light-cljs-871).
 // Not checked: the other message texts, which differ between the oracles
-// (light-cljs-871 owns run-time error messages); `a.length = -1` (the core
-// built-ins area, light-cljs-767); `JSON.parse` errors (the core built-ins
+// (run_time_error_messages and run_time_error_messages_quickjs hold the
+// run-time messages; light-cljs-839 the callee names); `a.length = -1`
+// (the core built-ins area, light-cljs-767); `JSON.parse` errors (the core built-ins
 // area); the uncaught rethrow's reported position (the harness compares no
 // positions). Completes with
-// "ReferenceError:yyyyyyy0nyy|TypeError:yyyyyyy0nyy|TypeError:yyyyyyy0nyy|ReferenceError:yyyyyyy0nyy|ReferenceError:yyyyyyy0nyy|TypeError:yyyyyyy0nyy|n|y:changed|InternalError:stack overflow:y:n|500|InternalError|InternalError|1000|1000:1001|RangeError:invalid array length".
+// "ReferenceError:yyyyyyy0nyy|TypeError:yyyyyyy0nyy|TypeError:yyyyyyy0nyy|ReferenceError:yyyyyyy0nyy|ReferenceError:yyyyyyy0nyy|TypeError:yyyyyyy0nyy|n|y:changed|InternalError:stack overflow:y:n|500|InternalError|InternalError|1000|1000:1001|RangeError:invalid array length|cannot read property 'x' of undefined".
 (function () {
   var r = [];
   function yn(b) { return b ? "y" : "n"; }
@@ -90,5 +92,7 @@
   r.push(finals(1000) + ":" + unwound);
   // Array(-1).
   try { Array(-1); } catch (e) { r.push(e.name + ":" + e.message); }
+  // The property read's message.
+  try { var u; u.x; } catch (e) { r.push(e.message); }
   return r.join("|");
 })();

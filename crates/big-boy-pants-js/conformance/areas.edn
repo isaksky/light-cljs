@@ -190,6 +190,8 @@
   "bbp/error_constructors" {:area :exceptions}
   "bbp/error_constructor_user_code" {:area :exceptions}
   "bbp/error_to_string_user_code" {:area :exceptions}
+  "bbp/run_time_error_messages" {:area :exceptions}
+  "bbp/run_time_error_messages_quickjs" {:area :exceptions :pants-gap "the Pants engine words these messages otherwise: it names a computed read's key, spells a symbol key 'Symbol(Symbol.iterator)', says \"undefined is not a function\" for a non-iterable for-of operand, \"cannot delete property 'x' of null\", \"cannot destructure null or undefined\" and \"cannot delete non-configurable property\", and names the value and operation in the built-ins' ToObject errors, where QuickJS omits the key, spells 'Symbol.iterator' and says \"cannot convert to object\", \"could not delete property\" and \"not an object\""}
   "bbp/realm_well_known_symbols" {:area :core-builtins}
   "bbp/in_operator" {:area :operators-values}
   "bbp/instanceof_operator" {:area :operators-values}

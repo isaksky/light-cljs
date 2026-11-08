@@ -3659,7 +3659,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 ReadCell => { cell(job, 49); if heap.fault != Fault.None { break; } },
                 WriteCell => { cell(job, 50); if heap.fault != Fault.None { break; } },
                 GetNamed g => {
-                    settle(job, ran, used); job.frames[top].pc = pc; get_property(job, heap.constants[f.constants + g.k]);
+                    settle(job, ran, used); job.frames[top].pc = pc; get_property(job, heap.constants[f.constants + g.k], true);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
@@ -3675,7 +3675,8 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     else {
                         settle(job, ran, used); job.frames[top].pc = pc; job.operands.pop();
                         if i >= 0 && dense(job, object) { job.operands.pop(); let e, found = own_element(heap, object, i); job.operands.push(e); }
-                        else { let k = key(heap, v); get_property(job, k); }
+                        else if object.tag() <= value_tag::Null { job.operands.pop(); base_error(job, object, Value.Undefined, false, false); job.operands.push(Value.Undefined); }
+                        else { let k = key(heap, v); get_property(job, k, false); }
                         if !in_place(job, top, at) { break; }
                         left = fuel(job, allowance, used);
                     }
@@ -3905,7 +3906,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
-                RequireCoercible => { if job.operands[job.operands.len - 1].tag() <= value_tag::Null { heap.fault = Fault.TypeError; break; } },
+                RequireCoercible => { if job.operands[job.operands.len - 1].tag() <= value_tag::Null { type_error(job, "cannot convert to object"); break; } },
                 // Generators and async functions (continuations.goose): each
                 // detaches, ends or settles the frame, so the loop leaves it.
                 GeneratorStart => {},
@@ -4458,7 +4459,7 @@ fn unmap(heap: Heap&, o: i64, i: i64, c: i64, value: Value) {
 fn detach_cell(heap: Heap&, c: i64, value: Value) {
     let cell .= node_mut(heap, c); cell.kind = node_kind::Binding; cell.value = value; cell.length = 0; cell.namespace_value = Value.Null;
 }
-fn get_property(job: Job&, k: Value) {
+fn get_property(job: Job&, k: Value, named: bool) {
     let heap .= job.heap;
     let object = job.operands.pop();
     if job.root_receiver.is_object() && object == job.root_receiver {
@@ -4478,14 +4479,21 @@ fn get_property(job: Job&, k: Value) {
         // primitive base (read) the getter's receiver is the primitive.
         prepare_function(job, object, k, false);
         let value, getter = read(heap, object, k);
-        if heap.fault == Fault.UnsupportedOperand { primitive_gap(job, object); }
-        if heap.fault != Fault.None || !getter.is_object() { job.operands.push(value); return; }
+        if heap.fault != Fault.None { property_fault(job, object, k, named, false); job.operands.push(value); return; }
+        if !getter.is_object() { job.operands.push(value); return; }
         // %ThrowTypeError% (Function.prototype.caller and .arguments) runs in place.
         let done, v = accessor_builtin(job, getter, object, 0);
         if done { job.operands.push(v); }
         else if node(heap, getter.id()).kind != node_kind::Closure { heap.fault = Fault.UnsupportedOperand; job.operands.push(value); }
         else { enter(job, getter, object, []); }
     }
+}
+// The message of a fault of [[Get]] or [[Set]] of key k on `base` (only
+// on the fault path): an undefined or null base's TypeError (base_error),
+// a Symbol or BigInt base's named gap (primitive_gap).
+fn property_fault(job: Job&, base: Value, k: Value, named: bool, write: bool) {
+    if job.heap.fault == Fault.UnsupportedOperand { primitive_gap(job, base); }
+    else if job.heap.fault == Fault.TypeError && base.tag() <= value_tag::Null && job.detail.len == 0 { base_error(job, base, k, named, write); }
 }
 // A property access on a Symbol or BigInt base fails by name (decision 1):
 // %Symbol.prototype% and %BigInt.prototype% are the objects and BigInt
@@ -4501,13 +4509,44 @@ fn not_defined(job: Job&, k: Value) {
     for c in " is not defined" { job.detail.push(c); }
     job.heap.fault = Fault.ReferenceError;
 }
-// A catchable `fault` whose message names global name k between `before`
-// and `after` (the Pants engine's wording).
+// A catchable `fault` whose message names key or name k between `before`
+// and `after` (append_key's spelling). Messages are built here, on the
+// fault path, never by the instruction that may fault.
 fn named_error(job: Job&, fault: Fault, before: const u8[:], k: Value, after: const u8[:]) {
     job.detail.clear(); for c in before { job.detail.push(c); }
-    append_utf16(job.heap, k, job.detail);
+    append_key(job.heap, k, job.detail);
     for c in after { job.detail.push(c); }
     job.heap.fault = fault;
+}
+// Property key or name k as QuickJS spells an atom in a message
+// (JS_AtomGetStr): a string as its code units (an index key is already its
+// digits, key()), a symbol as its description (`Symbol.iterator` for a
+// well-known one), a number as its ToString. Shared by the property-access
+// errors below and the callee names of not-a-function errors.
+fn append_key(heap: Heap&, k: Value, out: u16[>..]&) {
+    if k.is_string() { append_utf16(heap, k, out); return; }
+    if k.is_symbol() { for c in "Symbol." { out.push(c); } for c in export_well_known_symbol(symbol_index(k)) { out.push(c); } return; }
+    if k.is_number() { var digits: u8[>..] = []; number::append_decimal(digits, k.num()); for c in digits { out.push(c); } }
+}
+// The TypeError of a property read (`write` false) or write on an undefined
+// or null base, in QuickJS's wording (JS_GetPropertyInternal,
+// JS_GetPropertyValue and JS_SetPropertyInternal): "cannot read property
+// 'k' of undefined", "cannot set property 'k' of null". A computed read
+// (`named` false) names no key, as QuickJS's OP_get_array_el does not; a
+// write names its key either way.
+fn base_error(job: Job&, base: Value, k: Value, named: bool, write: bool) {
+    job.detail.clear();
+    for c in (if write { "cannot set property " } else { "cannot read property " }) { job.detail.push(c); }
+    if named || write {
+        job.detail.push(39);
+        // QuickJS formats the key with %s, so it ends at an embedded NUL.
+        let at = job.detail.len; append_key(job.heap, k, job.detail);
+        var end = at; while end < job.detail.len && job.detail[end] != 0 { end += 1; }
+        job.detail.resize(end);
+        job.detail.push(39); job.detail.push(32);
+    }
+    for c in (if base.is_null() { "of null" } else { "of undefined" }) { job.detail.push(c); }
+    job.heap.fault = Fault.TypeError;
 }
 // Script declarations and global name resolution (light-cljs-824): the
 // global environment of GlobalDeclarationInstantiation, as the Pants engine's
@@ -4557,7 +4596,7 @@ fn get_global(job: Job&, k: Value, throws: bool) {
         if throws { not_defined(job, key); return; }
         job.operands.push(Value.Undefined); return;
     }
-    job.operands.push(heap.global); get_property(job, key);
+    job.operands.push(heap.global); get_property(job, key, true);
 }
 // Whether global property `own` refuses a function declaration over it
 // (CanDeclareGlobalFunction): a non-configurable property that is not a
@@ -4816,7 +4855,7 @@ fn set_property(job: Job&, value: Value, k: Value, chain: bool, strict: bool) {
     let setter, ok = write(heap, object, k, value);
     if heap.fault == Fault.None && setter.is_object() { call_setter(job, setter, object, value, result); return; }
     if heap.fault == Fault.None { if ok { record(job, object, k, value); } else if strict { refused_write(job, object, k); } }
-    else if heap.fault == Fault.UnsupportedOperand { primitive_gap(job, object); }
+    else { property_fault(job, object, k, true, true); }
     job.operands.push(result);
 }
 // The TypeError of a strict assignment to key k of `object` that [[Set]]
@@ -4871,7 +4910,7 @@ fn delete_op(job: Job&, strict: bool) {
     let heap .= job.heap;
     let kv = job.operands.pop(); let object = job.operands.pop();
     if !valid(heap, object) || !key_valid(heap, kv) { return; }
-    if object.tag() <= value_tag::Null { heap.fault = Fault.TypeError; return; }
+    if object.tag() <= value_tag::Null { type_error(job, "cannot convert to object"); return; }
     let k = key(heap, kv);
     if heap.fault != Fault.None { return; }
     var ok = true;
@@ -4885,7 +4924,7 @@ fn delete_op(job: Job&, strict: bool) {
         ok = delete_property(heap, object, key);
     }
     if heap.fault != Fault.None { return; }
-    if !ok && strict { heap.fault = Fault.TypeError; return; }
+    if !ok && strict { type_error(job, "could not delete property"); return; }
     job.operands.push(boolean(ok));
 }
 // In: k o → bool, `k in o` ([[HasProperty]]). A non-object o is a
@@ -5145,7 +5184,10 @@ fn get_iterator(job: Job&, iterable: Value) {
     // A scalar form (a primitive with its provenance) is its primitive.
     let v = form_value(heap, iterable);
     if heap.fault != Fault.None { return; }
-    if v.tag() <= value_tag::Null || v.is_symbol() { type_error(job, "value is not iterable"); return; }
+    // GetMethod(v, @@iterator) of undefined or null is a property read's
+    // TypeError, as QuickJS's JS_GetIterator words it.
+    if v.tag() <= value_tag::Null { base_error(job, v, Value.Symbol { s: well_known::Iterator }, true, false); return; }
+    if v.is_symbol() { type_error(job, "value is not iterable"); return; }
     if !iteration_object(job, v, "the iterable") { return; }
     let m, getter = read(heap, v, Value.Symbol { s: well_known::Iterator });
     if heap.fault == Fault.UnsupportedOperand { primitive_gap(job, v); }
@@ -5523,7 +5565,7 @@ fn to_property_key(job: Job&) {
     let heap .= job.heap;
     let kv = job.operands.pop(); let base = job.operands[job.operands.len - 1];
     if !valid(heap, base) || !key_valid(heap, kv) { return; }
-    if base.tag() <= value_tag::Null { heap.fault = Fault.TypeError; return; }
+    if base.tag() <= value_tag::Null { base_error(job, base, kv, false, false); return; }
     let k = key(heap, kv);
     if heap.fault != Fault.None { return; }
     let i = index(heap, k);

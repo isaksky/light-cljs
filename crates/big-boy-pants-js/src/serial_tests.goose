@@ -1386,7 +1386,7 @@ thread_fn to_object_opcode(which: i64) {
     var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, f, []), [input]));
     let outcome = source::run(job, -1);
     if which == 3 {
-        let message = "cannot convert undefined or null to object";
+        let message = "cannot convert to object";
         assert(outcome == tiny::Outcome.Failed && job.fault == source::Fault.TypeError && job.detail.len == message.len);
         for c, i in message { assert(job.detail[i] == c); }
         return;

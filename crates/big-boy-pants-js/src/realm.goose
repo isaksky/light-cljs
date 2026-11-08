@@ -630,7 +630,16 @@ fn error_object(heap: Heap&, t: i64, code: u32, message: Value) -> Value {
     return e;
 }
 // The message of a VM fault's error: Job.detail when the operation named
-// one, else the QuickJS wording for the instruction that faulted.
+// one, else the QuickJS wording for the instruction that faulted. A
+// property read, write, delete, ToPropertyKey or RequireCoercible on an
+// undefined or null base words its own message (source_vm.goose
+// base_error, light-cljs-871), naming the key; a refused strict write keeps
+// "cannot set property" (QuickJS's "'x' is read-only" and "no setter for
+// property" and the Pants engine's wordings all differ). "invalid operand"
+// is left to the instructions no JavaScript source makes fault this way:
+// the light-cljs form operations (light-cljs-873), a literal's AppendHole,
+// Append, CheckSpread, SetProto and DefineField on a value the bytecode
+// compiler never gives them.
 fn fault_message(job: Job&, fault: Fault, frame: Frame) -> Value {
     let heap .= job.heap;
     if job.detail.len > 0 { return string(heap, job.detail); }
@@ -640,7 +649,7 @@ fn fault_message(job: Job&, fault: Fault, frame: Frame) -> Value {
         StackLimit => "stack overflow",
         RangeError => "invalid array length",
         ReferenceError => if op == opcode::CellInit || op == opcode::CellGet || op == opcode::CellSet { "lexical variable is not initialized" } else { "variable is not defined" },
-        TypeError => match op { opcode::Call, opcode::CallMethod => "not a function", opcode::Construct => "not a constructor", opcode::GetField, opcode::GetElem => "cannot read property of undefined or null", opcode::PutField, opcode::PutElem, opcode::PutFieldStrict, opcode::PutElemStrict => "cannot set property", opcode::In => "invalid 'in' operand", opcode::Plus, opcode::ToString => "Cannot convert a Symbol value to a string",
+        TypeError => match op { opcode::Call, opcode::CallMethod => "not a function", opcode::Construct => "not a constructor", opcode::PutField, opcode::PutElem, opcode::PutFieldStrict, opcode::PutElemStrict => "cannot set property", opcode::In => "invalid 'in' operand", opcode::Plus, opcode::ToString => "Cannot convert a Symbol value to a string",
             // ToNumber of a symbol (light-cljs-827); `+` without a string
             // operand names its conversion in Job.detail (symbol_detail).
             opcode::Neg, opcode::ToNumber, opcode::ToNumeric, opcode::Inc, opcode::Dec, opcode::ToNumberPair, opcode::Sub, opcode::Mul, opcode::Div, opcode::Rem, opcode::Lt, opcode::Gt, opcode::Le, opcode::Ge, opcode::CompareLt, opcode::CompareGt, opcode::CompareLe, opcode::CompareGe => "Cannot convert a Symbol value to a number",
@@ -683,7 +692,7 @@ inline fn arg(args: const Value[:], i: i64) -> Value { return if i < args.len { 
 // and BigInt areas' (light-cljs-766, light-cljs-771).
 fn to_object(job: Job&, v: Value) -> Value {
     if v.is_object() { return v; }
-    if v.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
+    if v.tag() <= value_tag::Null { return type_error(job, "cannot convert to object"); }
     return wrap(job, v, primitive_prototype(v));
 }
 fn wrap(job: Job&, v: Value, proto: Value) -> Value {
@@ -759,7 +768,7 @@ fn number_to_string(job: Job&, b: Builtin, receiver: Value, args: const Value[:]
         if heap.fault != Fault.None { return Value.Undefined; }
         // ToIntegerOrInfinity: NaN is 0.
         let radix = if n != n { 0.0 } else { trunc(n) };
-        if radix < 2 || radix > 36 { job.detail.clear(); for c in "toString() radix must be between 2 and 36" { job.detail.push(c); } heap.fault = Fault.RangeError; return Value.Undefined; }
+        if radix < 2 || radix > 36 { job.detail.clear(); for c in "radix must be between 2 and 36" { job.detail.push(c); } heap.fault = Fault.RangeError; return Value.Undefined; }
         if radix != 10 { return unsupported_step(job, b, "a radix other than 10"); }
     }
     return to_string(heap, x);
@@ -796,7 +805,7 @@ fn has_own(job: Job&, b: Builtin, o: Value, k: Value) -> bool {
 // property fail by name.
 fn own_descriptor(job: Job&, b: Builtin, value: Value, kv: Value) -> Value {
     let heap .= job.heap;
-    if value.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
+    if value.tag() <= value_tag::Null { return type_error(job, "cannot convert to object"); }
     let k = property_key(job, b, kv);
     if heap.fault != Fault.None { return Value.Undefined; }
     let o = to_object(job, value);
@@ -1139,7 +1148,8 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
         },
         ObjectGetPrototypeOf => {
             let v = arg(args, 0);
-            if v.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
+            // QuickJS's js_object_getPrototypeOf words this "not an object".
+            if v.tag() <= value_tag::Null { return type_error(job, "not an object"); }
             // ToObject's wrapper inherits its realm prototype; none is made.
             if !v.is_object() { let p = primitive_prototype(v); return if p.is_object() { p } else { unsupported_step(job, b, "Symbol and BigInt prototypes") }; }
             let kind = node(heap, v.id()).kind;
@@ -1153,10 +1163,10 @@ fn call_builtin(job: Job&, id: i64, receiver: Value, args: const Value[:]) -> Va
             let own = b == Builtin.ObjectHasOwn;
             let o = if own { arg(args, 0) } else { receiver };
             // Object.hasOwn converts its object first, hasOwnProperty its key.
-            if own && o.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
+            if own && o.tag() <= value_tag::Null { return type_error(job, "cannot convert to object"); }
             let k = property_key(job, b, arg(args, if own { 1 } else { 0 }));
             if heap.fault != Fault.None { return Value.Undefined; }
-            if o.tag() <= value_tag::Null { return type_error(job, "cannot convert undefined or null to object"); }
+            if o.tag() <= value_tag::Null { return type_error(job, "cannot convert to object"); }
             let found = has_own(job, b, o, k);
             return if heap.fault == Fault.None { boolean(found) } else { Value.Undefined };
         },

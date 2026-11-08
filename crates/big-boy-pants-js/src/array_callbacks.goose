@@ -88,7 +88,7 @@ fn native_start(job: Job&, b: Builtin, receiver: Value, args: const Value[:], ba
 // frame's pc 0 takes; a getter runs above the frame.
 fn start_array_callbacks(job: Job&, b: Builtin, receiver: Value, callback: Value, this_arg: Value, base: i64) {
     let heap .= job.heap;
-    if receiver.tag() <= value_tag::Null { type_error(job, "cannot convert undefined or null to object"); return; }
+    if receiver.tag() <= value_tag::Null { type_error(job, "cannot convert to object"); return; }
     if !receiver.is_object() { unsupported_step(job, b, "primitive wrapper objects"); return; }
     let k = key_named(heap, "length");
     if heap.fault != Fault.None { return; }

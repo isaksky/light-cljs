@@ -157,6 +157,8 @@
  "bbp/reclaim_object_loop"
  "bbp/reclaim_string_loop"
  "bbp/reflect_apply_construct"
+ "bbp/run_time_error_messages"
+ "bbp/run_time_error_messages_quickjs"
  "bbp/sloppy_duplicate_parameters"
  "bbp/sloppy_globals"
  "bbp/sloppy_implicit_global_delete"
