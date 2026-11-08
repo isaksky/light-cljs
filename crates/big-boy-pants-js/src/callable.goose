@@ -121,7 +121,7 @@ fn graph<H>(p: const Publication&, expected: snapshot::Header, heap: const H&, i
         if colors[id] == 0 {
             colors[id] = 1;
             if id < base {
-                if n.kind == node_kind::Array || n.kind == node_kind::Binding && (!n.immutable || !n.initialized) { return fail(c); }
+                if n.kind == node_kind::Array || n.kind == node_kind::Binding && (!n.immutable || !n.initialized) || n.kind == node_kind::MappedBinding || n.kind == node_kind::ArgumentMap { return fail(c); }
                 if !base_node(p, heap, id, c) { return false; } ids[id] = id;
             } else {
                 // A cell reference (18) is shareable; an atom was made one

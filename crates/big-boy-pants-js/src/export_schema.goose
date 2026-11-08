@@ -202,6 +202,7 @@ let opcode::NewFormSet = 195;
 let opcode::NewStruct = 196;
 let opcode::NewFixedCell = 197;
 let opcode::NewSealableCell = 198;
+let opcode::NewMappedArguments = 199;
 
 // The selector of every form operation (`FormOp`, the FormOp operand).
 let form_op::Keyword = 0;
@@ -619,6 +620,7 @@ fn export_descriptor(op: i64) -> i64 {
         opcode::NewStruct => 132804,
         opcode::NewFixedCell => 197,
         opcode::NewSealableCell => 198,
+        opcode::NewMappedArguments => 199,
         _ => -1,
     };
 }
@@ -997,6 +999,7 @@ fn export_stack_effect(op: i64) -> i64 {
         opcode::NewStruct => 16843008,
         opcode::NewFixedCell => 256,
         opcode::NewSealableCell => 256,
+        opcode::NewMappedArguments => 256,
         _ => -1,
     };
 }
@@ -1201,6 +1204,7 @@ fn export_opcode_name(op: i64) -> const u8[:] {
         opcode::NewStruct => "new_struct",
         opcode::NewFixedCell => "new_fixed_cell",
         opcode::NewSealableCell => "new_sealable_cell",
+        opcode::NewMappedArguments => "new_mapped_arguments",
         _ => "",
     };
 }

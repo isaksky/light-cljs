@@ -150,6 +150,9 @@
   "bbp/arguments_for_in_and_tag" {:area :functions-scope}
   "bbp/arguments_callee" {:area :functions-scope :pants-gap "the Pants engine defines no arguments `callee` (rust/src/vm/dispatch.rs new_arguments) and refuses an arguments object as instanceof's right operand"}
   "bbp/arguments_callee_sloppy" {:area :functions-scope :mode :sloppy :pants-gap "the Pants engine defines no arguments `callee` (rust/src/vm/dispatch.rs new_arguments)"}
+  "bbp/mapped_arguments_aliasing" {:area :functions-scope :mode :sloppy :pants-gap "the Pants engine's `arguments` is always an unmapped copy, even in sloppy functions (rust/docs/grammar.md)"}
+  "bbp/mapped_arguments_unmapping" {:area :functions-scope :mode :sloppy :pants-gap "the Pants engine's `arguments` is always an unmapped copy, even in sloppy functions (rust/docs/grammar.md)"}
+  "bbp/mapped_arguments_after_return" {:area :functions-scope :mode :sloppy :pants-gap "the Pants engine's `arguments` is always an unmapped copy, even in sloppy functions (rust/docs/grammar.md)"}
   "bbp/sloppy_globals" {:area :functions-scope :mode :sloppy}
   "bbp/function_metadata" {:area :functions-scope}
   "bbp/spread_calls" {:area :functions-scope}

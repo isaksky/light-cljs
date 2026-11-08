@@ -205,7 +205,7 @@ enum Ins {
     Const { k: u32 }, Undefined, Load { slot: u32 }, Store { slot: u32 }, Pop, Dup, Dup2, Dup3, Binary { op: u8 }, Not,
     Jump { to: u32 }, JumpUnless { to: u32 }, Return, NewObject { bare: bool }, NewArray, Try { to: u32 }, Throw, EndTry,
     Unary { op: u8 }, Numeric2, Closure { child: u32 }, Call { argc: u32 }, CallMethod { argc: u32 },
-    Arguments, Rest { skip: u32 }, Callee, Capture { slot: u32 }, NewCell { immutable: bool },
+    Arguments, MappedArguments, Rest { skip: u32 }, Callee, Capture { slot: u32 }, NewCell { immutable: bool },
     InitCell, ReadCell, WriteCell, GetNamed { k: u32 }, GetIndexed, SetNamed { k: u32, strict: bool }, DefineNamed { k: u32, half: u8 },
     SetIndexed { strict: bool }, DefineIndexed { half: u8 }, SetProto, Delete { strict: bool }, In, Append, CheckValue, This { sloppy: bool }, Global, GetGlobal { k: u32, throws: bool },
     Literal { kind: u8, count: u32 }, Form { op: u32 }, ToString, Unsupported { opcode: u8 },
@@ -378,6 +378,19 @@ let node_kind::Proxy = 24;
 // JavaScript object, refused, and a bound function always has `length`
 // and `name`; a worker snapshot carries it like any row.
 let node_kind::BoundFunction = 25;
+// A mapped arguments object's map (light-cljs-860; see "Mapped arguments
+// objects"): start/count=a run of one value per mapped index, the
+// node_kind::MappedBinding cell aliasing that index, or Undefined once
+// it is unmapped; value=that arguments object, which names it in
+// namespace_value.
+let node_kind::ArgumentMap = 26;
+// A parameter's binding cell while it aliases an index of a mapped
+// arguments object: value=the arguments object, length=the index,
+// namespace_value=Null or, once a redefinition moved the property out of
+// the element run, its interned key. Its value is that object's own
+// property; unmapping turns it into an ordinary node_kind::Binding holding
+// the value it had.
+let node_kind::MappedBinding = 27;
 // Errors, generators, promises, wrappers and iterators are ordinary objects
 // with internal slots: their own properties are an Object's, without an
 // element run.
@@ -682,7 +695,10 @@ inline fn boolean(b: bool) -> Value { return Value.Bool { v: b }; }
 // Whether v is a JavaScript object: an object row of any kind JavaScript
 // can hold (functions, arrays, proxies, wrappers, forms ...), not a binding
 // cell or a key list, which only compiled code and native frames see.
-inline fn javascript_object(heap: const Heap&, v: Value) -> bool { return v.is_object() && node(heap, v.id()).kind != node_kind::Binding && node(heap, v.id()).kind != node_kind::KeyList; }
+inline fn javascript_object(heap: const Heap&, v: Value) -> bool { return v.is_object() && !internal_kind(node(heap, v.id()).kind); }
+// The kinds only compiled code and native frames see: binding cells (a
+// mapped parameter's too), key lists and arguments maps.
+inline fn internal_kind(kind: i64) -> bool { return kind == node_kind::Binding || kind == node_kind::KeyList || kind == node_kind::MappedBinding || kind == node_kind::ArgumentMap; }
 // A code constant's units: Code keeps its own string headers over its units.
 fn code_chars(code: const Code&, v: Value) -> const u16[:] { let s = code.strings[v.sid()]; return code.units[s.start..(s.start + s.len)]; }
 fn reject(code: Code&, error: tiny::LoadError, pc: i64) -> bool { code.error = error; code.error_pc = pc; return false; }
@@ -729,7 +745,7 @@ fn instruction(op: Op) -> Ins {
         opcode::CallMethod => if op.direct_eval { Ins.DirectEval { argc: a, method: true, spread: false } } else { Ins.CallMethod { argc: a } },
         opcode::CallSpread, opcode::CallMethodSpread => if op.direct_eval { Ins.DirectEval { argc: 0, method: op.code == opcode::CallMethodSpread, spread: true } } else { Ins.CallSpread { method: op.code == opcode::CallMethodSpread } },
         opcode::ConstructSpread => Ins.ConstructSpread, opcode::CheckSpreadArguments => Ins.CheckSpread,
-        opcode::NewArguments => Ins.Arguments, opcode::Rest => Ins.Rest { skip: a }, opcode::CurrentFunction => Ins.Callee, opcode::GetCapture => Ins.Capture { slot: a },
+        opcode::NewArguments => Ins.Arguments, opcode::NewMappedArguments => Ins.MappedArguments, opcode::Rest => Ins.Rest { skip: a }, opcode::CurrentFunction => Ins.Callee, opcode::GetCapture => Ins.Capture { slot: a },
         opcode::NewCell, opcode::NewSealableCell => Ins.NewCell { immutable: false }, opcode::NewFixedCell => Ins.NewCell { immutable: true },
         opcode::CellInit => Ins.InitCell, opcode::CellGet => Ins.ReadCell, opcode::CellSet => Ins.WriteCell,
         opcode::GetField => Ins.GetNamed { k: a }, opcode::GetElem => Ins.GetIndexed,
@@ -1913,6 +1929,20 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
     // %ThrowTypeError% is not extensible (light-cljs-853): only its own
     // properties can be defined again, by their attributes.
     if sealed(heap, o) { let own = find_own(heap, o, k); if heap.fault != Fault.None || !own.found { return false; } }
+    // A mapped index (light-cljs-860, ECMAScript 10.4.4.2): the definition
+    // writes through; an accessor or a non-writable one then unmaps it, the
+    // parameter keeping its old value or the value just defined.
+    if kind == node_kind::Arguments && node(heap, o).namespace_value.is_object() {
+        let i = element_key(heap, k);
+        if heap.fault != Fault.None { return false; }
+        let c = mapped_cell_of(heap, o, i);
+        if c >= 0 {
+            let before = mapped_value(heap, o, i, c);
+            if heap.fault != Fault.None || !define_own(heap, o, k, value, attrs, half) { return false; }
+            if half != 0 { unmap(heap, o, i, c, before); } else if attrs & attr_writable() == 0 { unmap(heap, o, i, c, value); } else if object_element(heap, o, i).is_hole() { node_mut(heap, c).namespace_value = k; }
+            return true;
+        }
+    }
     if kind == node_kind::Object || kind == node_kind::Arguments || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Iterator { return define_own(heap, o, k, value, attrs, half); }
     if kind == node_kind::Array && !key_is(heap, k, "length") {
         let i = index(heap, k);
@@ -1950,8 +1980,16 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
         node_kind::Object, node_kind::Arguments, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {
             let i = element_key(heap, k);
             if heap.fault != Fault.None { return false; }
-            if !object_element(heap, o, i).is_hole() { if !charge(heap) { return false; } set_slot(heap, node(heap, o).start + i, hole()); return true; }
-            return delete_own(heap, o, k);
+            // A deleted mapped index is unmapped (light-cljs-860, ECMAScript
+            // 10.4.4.5); its parameter keeps the value.
+            let c = mapped_cell_of(heap, o, i);
+            let before = if c >= 0 { mapped_value(heap, o, i, c) } else { Value.Undefined };
+            if heap.fault != Fault.None { return false; }
+            var deleted = false;
+            if !object_element(heap, o, i).is_hole() { if !charge(heap) { return false; } set_slot(heap, node(heap, o).start + i, hole()); deleted = true; }
+            else { deleted = delete_own(heap, o, k); }
+            if deleted && c >= 0 && heap.fault == Fault.None { unmap(heap, o, i, c, before); }
+            return deleted;
         },
         node_kind::Array => {
             if key_is(heap, k, "length") { return false; }
@@ -3561,6 +3599,11 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
+                MappedArguments => {
+                    settle(job, ran, used); job.frames[top].pc = pc; let here = job.frames[top]; mapped_arguments(job, here, f);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
                 Rest r => {
                     settle(job, ran, used); job.frames[top].pc = pc; let here = job.frames[top]; arguments(job, here, f, true, r.skip);
                     if !in_place(job, top, at) { break; }
@@ -3692,7 +3735,7 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     left = fuel(job, allowance, used);
                 },
                 CheckValue => {
-                    let value = job.operands.pop(); if valid(heap, value) && value.is_object() && node(heap, value.id()).kind == node_kind::Binding { heap.fault = Fault.UnsupportedOperand; } job.operands.push(value);
+                    let value = job.operands.pop(); if valid(heap, value) && value.is_object() && (node(heap, value.id()).kind == node_kind::Binding || node(heap, value.id()).kind == node_kind::MappedBinding) { heap.fault = Fault.UnsupportedOperand; } job.operands.push(value);
                     if heap.fault != Fault.None { break; }
                 },
                 This t => {
@@ -4240,7 +4283,118 @@ fn cell(job: Job&, op: i64) {
             else { row.value = value; }
         } else if row.initialized && row.immutable { heap.fault = Fault.ConstAssignment; }
         else { row.value = value; row.initialized = true; }
+    } else if valid(heap, cell) && cell.is_object() && node(heap, cell.id()).kind == node_kind::MappedBinding {
+        mapped_cell(job, op, cell.id(), value);
     } else if heap.fault == Fault.None { heap.fault = Fault.TypeError; }
+}
+// Mapped arguments objects (light-cljs-860; ECMAScript 10.4.4.7
+// CreateMappedArgumentsObject and 10.4.4.1-5, the arguments exotic
+// object's internal methods; QuickJS js_build_mapped_arguments and
+// JS_PROP_VARREF). Only the Goose lowering emits NewMappedArguments, for a
+// sloppy function with a simple parameter list that can observe the
+// aliasing (rust/src/frontend/lower.rs wants_mapped_arguments); every
+// other function keeps NewArguments and plain parameter locals, at no cost.
+// The object is an arguments object exactly as NewArguments makes it, its
+// own property i the truth for the parameter it aliases: each parameter
+// local becomes a cell, for i < argument count a node_kind::MappedBinding
+// naming the object and i (its reads and writes go to the object's own
+// property i, an element or, after a redefinition that kept the mapping, a
+// shape key or record), past it an ordinary binding cell. The object's
+// namespace_value names its node_kind::ArgumentMap, whose run lists the
+// cell of each mapped index. [[Delete]] and a [[DefineOwnProperty]] of an
+// accessor or of a non-writable data property unmap index i: its map entry
+// becomes Undefined and the cell an ordinary binding holding the value the
+// specification leaves it (the old value, or a defined value first written
+// through). Every other operation on the object is an ordinary object's,
+// so reads, writes, enumeration and fnRest's run need no case. A duplicate
+// parameter name leaves its earlier occurrences' cells unread, so only
+// the last occurrence aliases. All links are node rows: a snapshot carries
+// and validates them (snapshot.goose), in-job reclamation reaches and
+// remaps them through the cells' values and the map's run (reclaim.goose),
+// a detached generator or async activation keeps its cells as any local,
+// and direct eval reads the parameters through the same cells (858's
+// eval-site records name the parameter locals, now cells).
+fn mapped_arguments(job: Job&, frame: Frame, f: const Function&) {
+    let heap .= job.heap;
+    let start = frame.local_base + f.locals; let base = frame.local_base;
+    var args: Value[>..] = []; args.append(job.locals[start..(start + frame.argument_count)]);
+    let o = new_mapped_arguments(heap, args[..], frame.callee, job.locals[base..(base + f.params)]);
+    if heap.fault == Fault.None { job.operands.push(o); }
+}
+// The mapped arguments object of the call's arguments `args` and its
+// parameter locals `params`, each of which becomes its cell.
+fn new_mapped_arguments(heap: Heap&, args: const Value[:], callee: Value, params: Value[:]) -> Value {
+    let argc = args.len; let mapped = min(argc, params.len);
+    // One node and argc + 1 values for the object, one node and `mapped`
+    // values for its map, a node a parameter: checked before any changes.
+    if !nodes_fit(heap, params.len + 2) || !values_fit(heap, argc + 1 + mapped) { memory(heap); return Value.Undefined; }
+    let o = new_arguments(heap, args, callee, true);
+    if heap.fault != Fault.None || !charge(heap, mapped) { return Value.Undefined; }
+    let run = add_values(heap, [], mapped);
+    if run < 0 { return Value.Undefined; }
+    let m = allocate(heap, Node { kind: node_kind::ArgumentMap, start: run as u32, count: mapped as u32, value: o });
+    if !m.is_object() { return Value.Undefined; }
+    for i in params.len {
+        let c = if i < argc { allocate(heap, Node { kind: node_kind::MappedBinding, length: i as u32, initialized: true, value: o }) } else { allocate(heap, Node { kind: node_kind::Binding, initialized: true, value: params[i] }) };
+        if !c.is_object() { return Value.Undefined; }
+        if i < argc { set_slot(heap, run + i, c); }
+        params[i] = c;
+    }
+    node_mut(heap, o.id()).namespace_value = m;
+    return o;
+}
+// CellGet, CellSet or CellInit of mapped cell c: the arguments object's
+// own property it aliases. A cell or object the job did not allocate is
+// read-only.
+fn mapped_cell(job: Job&, op: i64, c: i64, value: Value) {
+    let heap .= job.heap;
+    let o: i64 = node(heap, c).value.id(); let i: i64 = node(heap, c).length;
+    if op != opcode::CellGet && (!writable(job, c) || !writable(job, o)) { heap.fault = Fault.NativeBoundary; return; }
+    if op == opcode::CellGet { let v = mapped_value(heap, o, i, c); if heap.fault == Fault.None { job.operands.push(v); } return; }
+    mapped_write(heap, o, i, c, value);
+}
+// Write mapped index i of arguments object o, whose cell is c: its own
+// property, as mapped_value finds it.
+fn mapped_write(heap: Heap&, o: i64, i: i64, c: i64, value: Value) {
+    let v = object_element(heap, o, i);
+    if !v.is_hole() { set_slot(heap, node(heap, o).start + i, value); return; }
+    let k = node(heap, c).namespace_value;
+    if !k.is_string() { heap.fault = Fault.InvalidState; return; }
+    let own = find_own(heap, o, k);
+    if heap.fault != Fault.None { return; }
+    // A mapped property is a writable data property (unmapping keeps it so).
+    if !own.found || is_accessor(own.value) || own.attrs & attr_writable() == 0 { heap.fault = Fault.InvalidState; return; }
+    write_own(heap, o, own.index, value);
+}
+// The value of mapped index i of arguments object o, whose cell is c: its
+// own property, an element or, once a redefinition moved it, the shape key
+// or record of the interned key the cell keeps (its namespace_value), so a
+// cell's reads and writes never allocate.
+fn mapped_value(heap: Heap&, o: i64, i: i64, c: i64) -> Value {
+    let v = object_element(heap, o, i);
+    if !v.is_hole() { return v; }
+    let k = node(heap, c).namespace_value;
+    if !k.is_string() { heap.fault = Fault.InvalidState; return Value.Undefined; }
+    let own = find_own(heap, o, k);
+    if heap.fault != Fault.None { return Value.Undefined; }
+    if !own.found || is_accessor(own.value) { heap.fault = Fault.InvalidState; return Value.Undefined; }
+    return own.value;
+}
+// The cell aliasing index i of arguments object o, or -1 when i is not
+// mapped (or o is not a mapped arguments object).
+fn mapped_cell_of(heap: const Heap&, o: i64, i: i64) -> i64 {
+    let n .= node(heap, o);
+    if n.kind != node_kind::Arguments || !n.namespace_value.is_object() || i < 0 { return -1; }
+    let map .= node(heap, n.namespace_value.id());
+    if i >= map.count { return -1; }
+    let c = slot(heap, map.start + i);
+    return if c.is_object() { c.id() } else { -1 };
+}
+// Unmap index i of arguments object o, whose cell is c: the cell becomes an
+// ordinary binding holding `value`.
+fn unmap(heap: Heap&, o: i64, i: i64, c: i64, value: Value) {
+    set_slot(heap, node(heap, node(heap, o).namespace_value.id()).start + i, Value.Undefined);
+    let cell .= node_mut(heap, c); cell.kind = node_kind::Binding; cell.value = value; cell.length = 0; cell.namespace_value = Value.Null;
 }
 fn get_property(job: Job&, k: Value) {
     let heap .= job.heap;

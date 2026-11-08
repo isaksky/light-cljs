@@ -57,8 +57,9 @@ fn valid_value(a: const Artifact&, v: source::Value) -> bool {
 fn shape(a: const Artifact&, n: source::Node, base: const snapshot::Snapshot&, c: Control&) -> bool {
     // A closure with own properties (light-cljs-805) is mutable like an
     // object, and so is a bound function, which always has them (light-cljs-852),
-    // and an arguments object (light-cljs-854).
-    if n.kind == node_kind::Object || n.kind == node_kind::Arguments || n.kind == node_kind::Array || n.kind == node_kind::Closure && (n.key_count != 0 || n.initialized) || n.kind == node_kind::BoundFunction || n.kind == node_kind::Binding && (!n.immutable || !n.initialized) { return reject(c, Error.Mutable); }
+    // and an arguments object (light-cljs-854) with a mapped parameter's
+    // cell and its map (light-cljs-860).
+    if n.kind == node_kind::MappedBinding || n.kind == node_kind::ArgumentMap || n.kind == node_kind::Object || n.kind == node_kind::Arguments || n.kind == node_kind::Array || n.kind == node_kind::Closure && (n.key_count != 0 || n.initialized) || n.kind == node_kind::BoundFunction || n.kind == node_kind::Binding && (!n.immutable || !n.initialized) { return reject(c, Error.Mutable); }
     if n.kind < node_kind::Closure || n.kind > node_kind::Concat || n.keys != 0 || n.key_count != 0 || n.key_capacity != 0 || n.shape != 0 || !n.proto.is_hole() || source::plain_rows(n.slots) != source::plain_rows([source::Value.Undefined, source::Value.Undefined]) { return reject(c, Error.Link); }
     if has_values(n) && !snapshot::range(n.start, n.count, a.values.len) || n.kind == node_kind::Map && n.count % 2 != 0 { return reject(c, Error.Link); }
     if n.kind == node_kind::Closure && (!snapshot::range(n.function, 1, base.functions.len) || n.count != base.functions[n.function].captures) || n.kind == node_kind::Builtin && (n.function > 13 || n.function == 9) { return reject(c, Error.Link); }

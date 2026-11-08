@@ -5,13 +5,13 @@
  :regenerate "bb crates/big-boy-pants-js/scripts/regenerate.bb",
  :source-sha256
  {"crates/big-boy-pants-js/rust/src/frontend.rs"
-  "6d8d77f9f4c336a44bdc788b3346f89ed7306535c20974e825788ca07757d5a6",
+  "e6005b14ce91a4091df43aa7a2b7c0cc61b0bf233fb900e66bff22b86c68e291",
   "crates/big-boy-pants-js/rust/src/frontend/goose.rs"
-  "7546cd64341c68836a496fd073f39d1574162ce8974aa4dbd79df0017e0ba506",
+  "deaeee40a93a8e0201eec09c566f0542d7e4fe56498dd63c2feaf450ececc2de",
   "crates/big-boy-pants-js/rust/src/frontend/lower.rs"
-  "e5849658b2101a7ee71b832df47dc77206161dc0fbcfc0417f39e2e01d6df165",
+  "a1493c47ae48c1c56156a938809d68ca4f98469d4ca78890812d07624316367c",
   "crates/big-boy-pants-js/rust/src/vm/instr.rs"
-  "1c6a7cbaba89a5756164e4d0902f74e1cc98d27d3bd2ee3c47348540b9f97ace",
+  "fd2799f27679ad704b33ef4a2c40f25cefe66243acea1fed17a2f5724490efa1",
   "crates/big-boy-pants-js/scripts/regenerate.bb"
   "445c05c9f5749d137821cb89532bcbd01b57061e4dbb6376e9d7fc7b56b099f4",
   "src/bbp_reader.js"
@@ -534,13 +534,17 @@
   "corpus/serial/script-throw-messages.js"
   "b71111107822f7066479f114111e9c3872766b2a9e367062472fe421f18c4247",
   "corpus/serial/sloppy-arguments-objects.gsp"
-  "8043d473529edc8938a26aa145bdebf1cd2d050544bb5db2fd00d2a76347d570",
+  "1181f04c1b56a156bc3fd8ed2af22806055ae49b5d29c77ae35088472cfcfc88",
   "corpus/serial/sloppy-arguments-objects.js"
   "3e3fe039876839a4735ee545e0398d02b1ba7a7e5acd78c14a4c8832f3274e05",
   "corpus/serial/sloppy-function-text.gsp"
   "a8a25d3305d13c58906c04d0b2b91092651ef55d343e97883aa59359a5a215a3",
   "corpus/serial/sloppy-function-text.js"
   "f21dfefd0c354c49c038779ee7c44a5174dbe4b1ecc4f24b71b4c5c7bb0caf0c",
+  "corpus/serial/sloppy-mapped-arguments.gsp"
+  "88d650703982b383e88e31549abf055d9cb1389c3b10ff0aba9a6b024784ebe0",
+  "corpus/serial/sloppy-mapped-arguments.js"
+  "3fa8d63c770422d6349f8af5b1e6bdb52fe770dae5877cb68f9244ca5316aaf7",
   "corpus/serial/sloppy-this.gsp"
   "9b7984860cb7d103b14e2086aa9b990e04ccfd184e0a8bef8ee887b8a321ee42",
   "corpus/serial/sloppy-this.js"

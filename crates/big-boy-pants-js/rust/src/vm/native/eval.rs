@@ -77,17 +77,18 @@ impl State {
         } else {
             "<eval>"
         };
+        use crate::frontend::Backend::Pants;
         let executable = std::thread::Builder::new()
             .name("eval-compiler".into())
             .stack_size(2 * 1024 * 1024)
             .spawn(move || match (dynamic_parameters, scope) {
                 (Some(end), _) => {
-                    crate::frontend::compile_dynamic_function(&source, &surrogates, end)
+                    crate::frontend::compile_dynamic_function(&source, &surrogates, end, Pants)
                 }
                 (_, Some(site)) => {
-                    crate::frontend::compile_direct_eval(name, &source, &surrogates, &site)
+                    crate::frontend::compile_direct_eval(name, &source, &surrogates, &site, Pants)
                 }
-                _ => crate::frontend::compile_eval(name, &source, &surrogates, false),
+                _ => crate::frontend::compile_eval(name, &source, &surrogates, false, Pants),
             })
             .map_err(|_| Fault::OutOfMemory("eval compiler thread"))?
             .join()

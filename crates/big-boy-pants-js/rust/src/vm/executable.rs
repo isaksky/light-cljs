@@ -708,7 +708,10 @@ impl Executable {
             uses_arguments: instrs.iter().any(|i| {
                 matches!(
                     i,
-                    Instr::NewArguments | Instr::ForwardArguments | Instr::Rest(_)
+                    Instr::NewArguments
+                        | Instr::NewMappedArguments
+                        | Instr::ForwardArguments
+                        | Instr::Rest(_)
                 )
             }),
             instruction_info: super::dispatch::instruction_info(&instrs),

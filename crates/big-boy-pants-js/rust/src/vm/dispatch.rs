@@ -3094,6 +3094,14 @@ fn step_instruction(
         Instr::NewObjectLiteral | Instr::NewArguments => {
             return allocation_step(state, code, heap, host, instr);
         }
+        // Goose only (light-cljs-860): only the Goose exporter's lowering
+        // emits it, and this VM does not implement mapped arguments
+        // (docs/grammar.md, "Arguments").
+        Instr::NewMappedArguments => {
+            return Err(Fault::Unsupported(
+                "new_mapped_arguments is a Goose-only instruction".into(),
+            ));
+        }
         Instr::HostEffect(op) => {
             let v = state.pop()?;
             let arg = v.to_primitive().ok_or_else(|| {
@@ -3525,6 +3533,8 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::DefinePrivateField | Instr::DefinePrivateMethod | Instr::DefinePrivateGetter | Instr::DefinePrivateSetter => true,
         Instr::IsCell | Instr::IsObject => false,
         Instr::ToObject => true,
+        // Refused when it runs (Goose only, light-cljs-860).
+        Instr::NewMappedArguments => false,
         Instr::CheckHeritage | Instr::InitHeritage | Instr::GetNewTarget | Instr::GetSuperConstructor |
         Instr::ConstructSuper(_) | Instr::ConstructSuperSpread | Instr::BindThis | Instr::ResolveThis | Instr::ForwardArguments => true,
         Instr::GetAsyncIterator | Instr::AsyncGeneratorStart | Instr::GeneratorStart | Instr::GeneratorYield | Instr::GeneratorInitialYield | Instr::GeneratorYieldStar | Instr::AsyncStart | Instr::Await => true,

@@ -2,7 +2,7 @@
 //! The engine frontend supplies parsing, binding resolution and lowering.
 use std::collections::BTreeSet;
 
-use crate::frontend::{ScriptOptions, Span, SyntaxError, SyntaxErrorKind, compile_script_with};
+use crate::frontend::{Backend, ScriptOptions, Span, SyntaxError, SyntaxErrorKind};
 use crate::value::Primitive;
 use crate::vm::Executable;
 use crate::vm::executable::{EvalBinding, EvalBindingKind, EvalSite, EvalSource};
@@ -846,7 +846,7 @@ pub fn export_source_with(
     options: ScriptOptions,
 ) -> Result<Export, SyntaxError> {
     bounded(source.len(), MAX_SOURCE, source)?;
-    let executable = compile_script_with(name, source, options)?;
+    let executable = crate::frontend::compile_script_for(name, source, options, Backend::Goose)?;
     encode(&executable, source)
 }
 
@@ -899,15 +899,28 @@ pub fn export_runtime(units: &[u16], mode: RuntimeMode) -> Result<Export, Syntax
         .stack_size(2 * 1024 * 1024)
         .spawn(move || {
             let executable = match mode {
-                RuntimeMode::IndirectEval { strict } => {
-                    crate::frontend::compile_eval("<eval>", &source, &surrogates, strict)
-                }
+                RuntimeMode::IndirectEval { strict } => crate::frontend::compile_eval(
+                    "<eval>",
+                    &source,
+                    &surrogates,
+                    strict,
+                    Backend::Goose,
+                ),
                 RuntimeMode::DynamicFunction { parameter_units } => {
-                    crate::frontend::compile_dynamic_function(&source, &surrogates, parameter_units)
+                    crate::frontend::compile_dynamic_function(
+                        &source,
+                        &surrogates,
+                        parameter_units,
+                        Backend::Goose,
+                    )
                 }
-                RuntimeMode::DirectEval { site } => {
-                    crate::frontend::compile_direct_eval("<eval>", &source, &surrogates, &site)
-                }
+                RuntimeMode::DirectEval { site } => crate::frontend::compile_direct_eval(
+                    "<eval>",
+                    &source,
+                    &surrogates,
+                    &site,
+                    Backend::Goose,
+                ),
             };
             executable.and_then(|executable| encode(&executable, &source))
         });
@@ -1175,7 +1188,7 @@ mod tests {
         assert!(a.bytes.windows(2).any(|w| w == [0, 216]));
     }
     /// Rows of one GSP table: (byte offset, record count, words per record).
-    fn rows(export: &Export, table: usize) -> Vec<Vec<u32>> {
+    pub(super) fn rows(export: &Export, table: usize) -> Vec<Vec<u32>> {
         let word = |at: usize| u32::from_le_bytes(export.bytes[at..at + 4].try_into().unwrap());
         let widths = [FUNCTION_WORDS, 3, 1, 5];
         let mut at = 32 + word(8) as usize;
@@ -1381,6 +1394,103 @@ mod tests {
             ]
         );
     }
+    /// Light-cljs-860: only the Goose lowering makes mapped arguments
+    /// objects (NewMappedArguments), and only for a sloppy function with a
+    /// simple, nonempty parameter list that could observe the aliasing: it
+    /// assigns a parameter, lets its `arguments` escape (anything but the
+    /// base of a property read) or has a direct eval. The Pants lowering of
+    /// the same sloppy source keeps NewArguments everywhere.
+    #[test]
+    fn mapped_arguments_are_goose_only_and_observable() {
+        use crate::frontend::{Backend, compile_script_for};
+        fn walk(e: &Executable, source: &str, out: &mut Vec<(String, &'static str)>) {
+            let spec = e.to_spec();
+            let (mut offset, mut mapped, mut unmapped) = (0, false, false);
+            while offset < spec.code.len() {
+                let op = Opcode::from_byte(spec.code[offset]).unwrap();
+                mapped |= op == Opcode::NewMappedArguments;
+                unmapped |= op == Opcode::NewArguments;
+                offset += 1 + op.operand().size();
+            }
+            if let Some(span) = e.source_text_span() {
+                let text = &source[span.start..span.end];
+                let name = text
+                    .split(['(', ' '])
+                    .find(|w| !w.is_empty() && *w != "function");
+                let kind = match (mapped, unmapped) {
+                    (true, false) => "mapped",
+                    (false, true) => "unmapped",
+                    (false, false) => "none",
+                    (true, true) => "both",
+                };
+                out.push((name.unwrap_or("").to_string(), kind));
+            }
+            let mut i = 0;
+            while let Some(child) = e.function(i) {
+                walk(&child, source, out);
+                i += 1;
+            }
+        }
+        let source = "function a(x) { x = 2; return arguments[0]; }
+function b(x) { arguments[0] = 2; return x; }
+function c(x) { return arguments.length + arguments[0] + arguments.callee.name; }
+function d(x) { return String(arguments); }
+function e() { arguments[0] = 1; return arguments; }
+function f(x) { eval('x'); return arguments.length; }
+function g(x) { 'use strict'; x = 1; return arguments[0]; }
+function h(x = 1) { x = 2; return arguments[0]; }
+function i(x) { return () => arguments[0] + (x = 1); }
+function j(x) { return x; }
+function k(x, x) { x = 1; return arguments[1]; }
+var o = { m(x) { x = 1; return arguments[0]; } };
+function l(arguments) { arguments = 1; return arguments; }
+function n(x) { var arguments; arguments[0] = 1; return x; }
+function p(x) { function x() {} return arguments[0]; }
+function q(x) { return arguments[0](); }
+function r(x) { delete arguments[0]; return x; }";
+        let mut goose = Vec::new();
+        let executable =
+            compile_script_for("mapped.js", source, ScriptOptions::SLOPPY, Backend::Goose).unwrap();
+        walk(&executable, source, &mut goose);
+        goose.sort();
+        let expected: Vec<(String, &str)> = [
+            ("a", "mapped"),
+            ("b", "mapped"),
+            ("c", "unmapped"),
+            ("d", "mapped"),
+            ("e", "unmapped"),
+            ("f", "mapped"),
+            ("g", "unmapped"),
+            ("h", "unmapped"),
+            ("i", "mapped"),
+            ("j", "none"),
+            ("k", "mapped"),
+            ("l", "none"),
+            ("m", "mapped"),
+            ("n", "mapped"),
+            ("p", "mapped"),
+            ("q", "mapped"),
+            ("r", "mapped"),
+            ("x", "none"),
+            (")", "none"),
+        ]
+        .iter()
+        .map(|(n, k)| (n.to_string(), *k))
+        .collect();
+        let mut expected = expected;
+        expected.sort();
+        assert_eq!(goose, expected);
+        let mut pants = Vec::new();
+        let executable =
+            crate::frontend::compile_script_with("mapped.js", source, ScriptOptions::SLOPPY)
+                .unwrap();
+        walk(&executable, source, &mut pants);
+        assert!(pants.iter().all(|(_, kind)| *kind != "mapped"), "{pants:?}");
+        // The exporter lowers for Goose and accepts the new instruction.
+        let export = export_source_with("mapped.js", source, ScriptOptions::SLOPPY).unwrap();
+        let mapped = Opcode::NewMappedArguments as u32;
+        assert!(rows(&export, 3).iter().any(|row| row[0] & 0xff == mapped));
+    }
     /// Each function's source text is QuickJS's `debug.source` (probed with
     /// qjs at 7d1c13c, light-cljs-853): declarations and expressions from
     /// `function`/`async`, methods and accessors from their property name
@@ -1543,7 +1653,7 @@ var μ = function μ() { return "é"; };"#;
             .filter_map(|line| line.trim().trim_end_matches(',').split_once(" => "))
             .map(|(op, word)| (byte(op), word.parse().unwrap()))
             .collect();
-        assert_eq!(words.len(), 198);
+        assert_eq!(words.len(), 199);
         for (&byte, &word) in &words {
             let op = Opcode::from_byte(byte).unwrap();
             let (base, pushes) = ((word & 255) as usize, ((word >> 8) & 255) as usize);
@@ -1677,6 +1787,52 @@ mod serial_tests {
             )
             .is_err()
         );
+    }
+    /// Light-cljs-860: code compiled while a Goose job runs lowers for Goose
+    /// too, so a sloppy function it defines that writes a parameter gets
+    /// NewMappedArguments, in an indirect eval, a Function body and a direct
+    /// eval alike; a strict one, or one with a default, does not.
+    #[test]
+    fn runtime_modes_lower_mapped_arguments_for_goose() {
+        let units = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        let mapped = |export: &Export| {
+            super::tests::rows(export, 3)
+                .iter()
+                .any(|row| row[0] & 0xff == Opcode::NewMappedArguments as u32)
+        };
+        let eval = |text: &str| {
+            export_runtime(&units(text), RuntimeMode::IndirectEval { strict: false }).unwrap()
+        };
+        assert!(mapped(&eval(
+            "(function (a) { a = 2; return arguments[0]; })"
+        )));
+        assert!(!mapped(&eval(
+            "(function (a) { 'use strict'; a = 2; return arguments[0]; })"
+        )));
+        assert!(!mapped(&eval(
+            "(function (a, b = 1) { a = 2; return arguments[0]; })"
+        )));
+        let body = "function anonymous(a\n) {\na = 2; return arguments[0]\n}";
+        let parameter_units = "function anonymous(a\n)".len();
+        let dynamic = export_runtime(
+            &units(body),
+            RuntimeMode::DynamicFunction { parameter_units },
+        )
+        .unwrap();
+        assert!(mapped(&dynamic));
+        let caller = crate::frontend::compile_script_with(
+            "site.js",
+            "function f() { return eval(s); }",
+            ScriptOptions::SLOPPY,
+        )
+        .unwrap();
+        let site = caller.function(0).unwrap().to_spec().eval_sites[0].clone();
+        let direct = export_runtime(
+            &units("(function (a) { arguments[0] = 2; return a; })"),
+            RuntimeMode::DirectEval { site },
+        )
+        .unwrap();
+        assert!(mapped(&direct));
     }
     #[test]
     fn source_cases_export_and_match_reference_engines() {
@@ -1955,6 +2111,9 @@ mod serial_tests {
             // Arguments objects as ordinary objects and their `callee`, which
             // the Pants engine does not define (light-cljs-854).
             ("sloppy-arguments-objects", "goose"),
+            // Mapped arguments objects (light-cljs-860), which the Pants
+            // engine does not implement.
+            ("sloppy-mapped-arguments", "goose"),
             // `with` statements (light-cljs-855), which strict code cannot
             // compile for the Pants reference run.
             ("sloppy-with", "goose"),
@@ -1976,7 +2135,8 @@ mod serial_tests {
             if expected == "goose" {
                 continue;
             }
-            let executable = compile_script_with(name, &source, ScriptOptions::STRICT).unwrap();
+            let executable =
+                crate::frontend::compile_script_with(name, &source, ScriptOptions::STRICT).unwrap();
             let actual = outcome(
                 Runtime::new()
                     .spawn(&executable, &[])

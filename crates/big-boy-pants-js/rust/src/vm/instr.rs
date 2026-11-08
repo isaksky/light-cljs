@@ -183,6 +183,7 @@
 //! | `NewStruct` | 0xC4 | u16 count n | type v1 … v(n-1) → struct | new struct of a struct type with its field values (light-cljs-478) |
 //! | `NewFixedCell` | 0xC5 | – | → cell | new uninitialized binding cell that is immutable once initialized (light-cljs-646) |
 //! | `NewSealableCell` | 0xC6 | – | → cell | new uninitialized binding cell that `__rt.sealBindings` can make immutable (light-cljs-646) |
+//! | `NewMappedArguments` | 0xC7 | – | → obj | Goose only (light-cljs-860): a sloppy simple-parameter function's mapped arguments object, its parameter locals made binding cells; the Pants VM refuses it |
 //!
 //! Opcodes `0xBF`–`0xC3` are the private form intrinsics behind
 //! `__rt.form*` and `__rt.clj*`, documented in [`crate::vm::intrinsics`] and
@@ -780,6 +781,9 @@ pub enum Opcode {
     NewStruct = 0xC4,
     NewFixedCell = 0xC5,
     NewSealableCell = 0xC6,
+    /// → arguments object. Goose only (light-cljs-860): only the Goose
+    /// exporter's lowering emits it, and the Pants VM refuses it.
+    NewMappedArguments = 0xC7,
 }
 
 /// Operand encoding of an opcode.
@@ -1043,6 +1047,7 @@ impl Opcode {
             0xC4 => NewStruct,
             0xC5 => NewFixedCell,
             0xC6 => NewSealableCell,
+            0xC7 => NewMappedArguments,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1251,6 +1256,7 @@ impl Opcode {
             NewStruct => "new_struct",
             NewFixedCell => "new_fixed_cell",
             NewSealableCell => "new_sealable_cell",
+            NewMappedArguments => "new_mapped_arguments",
             NewFormMap => "new_form_map",
             FormOp => "form_op",
             PutGlobalStrict => "put_global_strict",
@@ -1326,7 +1332,7 @@ impl Opcode {
             | Plus | CompareLt | CompareGt | CompareLe | CompareGe | Typeof | NewObjectLiteral
             | ToString | GetThis | NewArray | AppendElement | AppendHole | GetElem | PutElem
             | Dup2 | ToPropertyKey | SetProto | Instanceof | Delete | In | ForInStart
-            | ForInNext | NewArguments => OperandKind::None,
+            | ForInNext | NewArguments | NewMappedArguments => OperandKind::None,
             GetAsyncIterator | GetIterator | RequireObject | PendingThrow | GetGlobalObject
             | ToNumeric | Inc | Dec | CallSpread | CallMethodSpread | ConstructSpread
             | CheckSpreadArguments => OperandKind::None,
@@ -2296,6 +2302,7 @@ pub(crate) enum Instr {
     NewStruct(u16),
     NewFixedCell,
     NewSealableCell,
+    NewMappedArguments,
 }
 
 impl Instr {
@@ -2418,6 +2425,7 @@ impl Instr {
             Opcode::ForInStart => Instr::ForInStart,
             Opcode::ForInNext => Instr::ForInNext,
             Opcode::NewArguments => Instr::NewArguments,
+            Opcode::NewMappedArguments => Instr::NewMappedArguments,
             Opcode::GeneratorStart => Instr::GeneratorStart,
             Opcode::GeneratorYield => Instr::GeneratorYield,
             Opcode::GeneratorInitialYield => Instr::GeneratorInitialYield,
@@ -2616,6 +2624,7 @@ impl Instr {
             Instr::ForInStart => Opcode::ForInStart,
             Instr::ForInNext => Opcode::ForInNext,
             Instr::NewArguments => Opcode::NewArguments,
+            Instr::NewMappedArguments => Opcode::NewMappedArguments,
             Instr::GeneratorStart => Opcode::GeneratorStart,
             Instr::GeneratorYield => Opcode::GeneratorYield,
             Instr::GeneratorInitialYield => Opcode::GeneratorInitialYield,
@@ -2725,7 +2734,7 @@ impl Instr {
             RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | NewObject
             | NewVectorBuilder | NewMapBuilder | ThrowError(_) | CurrentFunction
             | GetCapture(_) | NewCell | NewFixedCell | NewSealableCell | GetBuiltinGlobal(_)
-            | NewObjectLiteral | GetThis | NewArray | NewArguments => (0, 1),
+            | NewObjectLiteral | GetThis | NewArray | NewArguments | NewMappedArguments => (0, 1),
             GetGlobalObject | GetGlobal(_) | GetGlobalOrUndefined(_) | DeleteGlobal(_) => (0, 1),
             DeclareGlobalLet(_) | DeclareGlobalConst(_) => (1, 1),
             SetLocal(_) | Pop | JumpIfFalse(_) | Return | Throw | InitGlobalLexical(_) => (1, 0),
@@ -2826,6 +2835,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 198);
+        assert_eq!(assigned, 199);
     }
 }

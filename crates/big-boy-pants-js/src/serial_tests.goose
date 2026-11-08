@@ -540,7 +540,91 @@ thread_fn arguments_objects(bytes: u8[]) {
     let m = source::new_arguments(heap, [], source::number(3), true);
     assert(source::get(heap, m, callee).num() == 3 && source::define_property(heap, m, callee, source::number(4), source::attr_writable()) && source::get(heap, m, callee).num() == 4);
     assert(image_valid(heap));
+    mapped_arguments_links(heap);
     print("serial source VM: arguments objects: fnRest over changed lengths and holes, suffix-only rows, element/length/callee redefinition passed");
+}
+// Mapped arguments objects (light-cljs-860): the links NewMappedArguments
+// makes, the [[DefineOwnProperty]] and [[Delete]] rules that keep or cut
+// them (Object.defineProperty is not on Goose yet, so these run here), and
+// snapshot validation of the links.
+fn mapped_arguments_links(heap: source::Heap&) {
+    let zero = source::index_key(heap, 0); let one = source::index_key(heap, 1); let two = source::index_key(heap, 2); let length = source::key_named(heap, "length");
+    var params: source::Value[3] = [source::number(1), source::number(2), source::Value.Undefined];
+    // Two arguments, three parameters: indices 0 and 1 are mapped, the third
+    // parameter's cell is ordinary and holds its value.
+    let a = source::new_mapped_arguments(heap, [source::number(1), source::number(2)], source::number(5), params[..]);
+    assert(heap.fault == source::Fault.None && source::get(heap, a, source::key_named(heap, "callee")).num() == 5);
+    assert(source::node(heap, params[0].id()).kind == node_kind::MappedBinding && source::node(heap, params[2].id()).kind == node_kind::Binding);
+    assert(source::mapped_cell_of(heap, a.id(), 0) == params[0].id() && source::mapped_cell_of(heap, a.id(), 1) == params[1].id() && source::mapped_cell_of(heap, a.id(), 2) == -1);
+    assert(image_valid(heap));
+    // A value redefinition writes through and keeps the link, even with
+    // other attributes (the element moves to a shape key or record).
+    assert(source::define_property(heap, a, zero, source::number(6), source::attrs_data()) && source::mapped_cell_of(heap, a.id(), 0) >= 0 && source::mapped_value(heap, a.id(), 0, params[0].id()).num() == 6 && source::node(heap, params[0].id()).namespace_value.is_null());
+    assert(source::define_property(heap, a, zero, source::number(8), source::attr_writable() | source::attr_configurable()) && source::object_element(heap, a.id(), 0).is_hole());
+    assert(source::mapped_cell_of(heap, a.id(), 0) >= 0 && source::mapped_value(heap, a.id(), 0, params[0].id()).num() == 8 && source::node(heap, params[0].id()).namespace_value == zero);
+    assert(image_valid(heap));
+    // Parameter writes (CellSet's path) and object writes still meet at the
+    // moved property, in shape mode and after a delete made the object a
+    // dictionary.
+    source::mapped_write(heap, a.id(), 0, params[0].id(), source::number(11));
+    assert(heap.fault == source::Fault.None && source::get(heap, a, zero).num() == 11);
+    assert(source::put(heap, a, zero, source::number(12)) && source::mapped_value(heap, a.id(), 0, params[0].id()).num() == 12);
+    assert(source::delete_property(heap, a, length) && source::node(heap, a.id()).initialized && source::mapped_cell_of(heap, a.id(), 0) >= 0);
+    source::mapped_write(heap, a.id(), 0, params[0].id(), source::number(13));
+    assert(heap.fault == source::Fault.None && source::get(heap, a, zero).num() == 13 && source::mapped_value(heap, a.id(), 0, params[0].id()).num() == 13);
+    assert(source::put(heap, a, zero, source::number(8)) && source::mapped_value(heap, a.id(), 0, params[0].id()).num() == 8);
+    assert(image_valid(heap));
+    // Snapshots refuse a moved cell whose key is not its index's text, and
+    // one that keeps no key while its element is gone.
+    let moved = source::node(heap, params[0].id()).namespace_value;
+    for wrong in [length, one, source::Value.Null] {
+        source::node_mut(heap, params[0].id()).namespace_value = wrong;
+        assert(!image_valid_quiet(heap));
+    }
+    source::node_mut(heap, params[0].id()).namespace_value = moved;
+    assert(image_valid(heap));
+    // A non-writable redefinition unmaps after writing through: the
+    // parameter keeps the defined value.
+    assert(source::define_property(heap, a, zero, source::number(7), source::attr_configurable()) && source::mapped_cell_of(heap, a.id(), 0) == -1);
+    assert(source::node(heap, params[0].id()).kind == node_kind::Binding && source::node(heap, params[0].id()).value.num() == 7);
+    // An accessor unmaps first: the parameter keeps its old value.
+    let getter = source::allocate(heap, source::Node { kind: node_kind::Object });
+    assert(source::define_property(heap, a, one, getter, source::attr_configurable(), 1) && source::mapped_cell_of(heap, a.id(), 1) == -1);
+    assert(source::node(heap, params[1].id()).kind == node_kind::Binding && source::node(heap, params[1].id()).value.num() == 2);
+    // An index past the arguments was never mapped.
+    assert(source::define_property(heap, a, two, source::number(3), source::attrs_data()) && source::node(heap, params[2].id()).value.is_undefined());
+    assert(image_valid(heap));
+    // A delete unmaps with the value it had; a non-configurable index is
+    // not deleted and stays mapped.
+    var q: source::Value[2] = [source::number(4), source::number(5)];
+    let b = source::new_mapped_arguments(heap, [source::number(4), source::number(5)], source::Value.Undefined, q[..]);
+    assert(source::put(heap, b, zero, source::number(9)) && source::delete_property(heap, b, zero) && source::mapped_cell_of(heap, b.id(), 0) == -1);
+    assert(source::node(heap, q[0].id()).kind == node_kind::Binding && source::node(heap, q[0].id()).value.num() == 9 && source::get(heap, b, zero).is_undefined());
+    assert(source::define_property(heap, b, one, source::number(5), source::attr_writable() | source::attr_enumerable()) && !source::delete_property(heap, b, one) && source::mapped_cell_of(heap, b.id(), 1) == q[1].id());
+    assert(image_valid(heap));
+    // Snapshots refuse a cell its map does not list, and a map entry that
+    // names another index.
+    let map = source::node(heap, b.id()).namespace_value.id();
+    let entry = source::slot(heap, source::node(heap, map).start + 1);
+    source::set_slot(heap, source::node(heap, map).start + 1, source::Value.Undefined);
+    assert(!image_valid_quiet(heap));
+    source::set_slot(heap, source::node(heap, map).start + 1, entry);
+    source::node_mut(heap, q[1].id()).length = 0;
+    assert(!image_valid_quiet(heap));
+    source::node_mut(heap, q[1].id()).length = 1;
+    assert(image_valid(heap));
+    // A map belongs to one arguments object: a second one naming it is
+    // refused, so validation scans each map once.
+    let other = source::new_arguments(heap, [], source::Value.Undefined, true);
+    source::node_mut(heap, other.id()).namespace_value = source::node(heap, b.id()).namespace_value;
+    assert(!image_valid_quiet(heap));
+    source::node_mut(heap, other.id()).namespace_value = source::Value.Null;
+    assert(image_valid(heap));
+}
+fn image_valid_quiet(heap: const source::Heap&) -> bool {
+    var c = snapshot::Control { bytes: 1 << 40, work: 1 << 40 };
+    let none: snapshot::Binding[] = [];
+    let view = snapshot::borrow(heap, none, if heap.identity == 1 { 2 } else { 1 }); return snapshot::validate(view, c);
 }
 // Small objects keep their first two property values in the header's
 // inline slots; the third spills into an overflow run of values, and the keys
@@ -774,7 +858,7 @@ fn reclamation() {
     heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/async.gsp")), source::Fault.None, 0, 0));
     // Forced collections at every budget cut and at other phases.
     for image in [embed_file("../corpus/serial/generators.gsp"), embed_file("../corpus/serial/async.gsp"), embed_file("../corpus/serial/generator-loop.gsp"), embed_file("../corpus/serial/for-of.gsp"), embed_file("../corpus/serial/builtin-iterators.gsp"),
-                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
+                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
                   embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp")] {
@@ -854,6 +938,11 @@ fn control_flow() {
     // cut (and collection, in reclamation). No limit points: its rows catch
     // TypeErrors, so a stack limit there is caught as any RangeError is.
     check(embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), "boolean:true");
+    // Mapped arguments objects (light-cljs-860): parameters aliased through
+    // closures, after their calls, across yields and after deletes, at
+    // every cut and limit point (and collection, in reclamation).
+    check(embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), "boolean:true");
+    limit_points(embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"));
     // `with` statements (light-cljs-855): object environments, @@unscopables
     // and accessors in native frames, at every cut and limit point.
     check(embed_file("../corpus/serial/sloppy-with.gsp"), "boolean:true");

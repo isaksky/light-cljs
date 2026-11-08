@@ -207,7 +207,7 @@ fn callable_unshareable(heap: Heap&, roots: const Value[:], atoms: i64[>..]&, cl
         if !v.is_object() || marks[v.id()] { continue; }
         marks[v.id()] = true; let n = node(heap, v.id());
         if !charge(heap) { return "a value past the work limit"; }
-        if n.kind == node_kind::Binding && (!n.immutable || !n.initialized) { return "a function that captures a variable it may assign"; }
+        if n.kind == node_kind::Binding && (!n.immutable || !n.initialized) || n.kind == node_kind::MappedBinding { return "a function that captures a variable it may assign"; }
         if v.id() < floor { if n.kind == node_kind::Array { return "a mutable JavaScript object"; } continue; }
         if n.kind == node_kind::LazySeq { return "an unrealized lazy sequence"; }
         if n.kind == node_kind::BoundFunction { return "a bound function (a function with properties, a mutable JavaScript object)"; }

@@ -135,7 +135,9 @@ their identity. Primitive receiver boxing is absent: reading `this` with a
 primitive receiver fails with UnsupportedOperand.
 Strict functions retain their supplied receiver unchanged. `arguments` is always
 an unmapped copy, even in sloppy functions: parameter writes and indexed argument
-writes do not alias each other. These are deliberate subset boundaries, not full
+writes do not alias each other (the Goose lowering alone emits
+`NewMappedArguments`, which this VM refuses; light-cljs-860). These are
+deliberate subset boundaries, not full
 sloppy-mode semantics. Implementation: `src/vm/dispatch.rs::checked_this` and
 `new_arguments`; evidence: `tests/js_functions.rs::call_apply_and_reflect_apply`
 and `sloppy_nullish_receivers_use_the_task_global_object`, plus

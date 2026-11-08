@@ -52,8 +52,9 @@ fn poll(c: Control&, n: i64 = 1) -> bool {
 fn range(start: i64, count: i64, len: i64) -> bool { return start >= 0 && count >= 0 && start <= len && count <= len - start; }
 // Kinds whose start/count name a run of values: an ordinary object's or an
 // array's element run (light-cljs-804), captures, form children, arguments,
-// a deferred map's memo and a bound function's arguments (light-cljs-852).
-fn has_values(kind: i64) -> bool { return kind <= node_kind::Closure || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::Arguments || kind == node_kind::LazySeq || kind == node_kind::BoundFunction; }
+// a deferred map's memo, a bound function's arguments (light-cljs-852) and
+// an arguments map's cells (light-cljs-860).
+fn has_values(kind: i64) -> bool { return kind <= node_kind::Closure || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::Arguments || kind == node_kind::LazySeq || kind == node_kind::BoundFunction || kind == node_kind::ArgumentMap; }
 // An element run (an ordinary object's, an arguments object's or an array's)
 // is exclusive and may hold holes.
 fn elements(kind: i64) -> bool { return kind == node_kind::Object || kind == node_kind::Arguments || kind == node_kind::Array; }
@@ -77,7 +78,7 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
         if !has_values(n.kind) { continue; }
         if !poll(c, n.count) { return false; }
         for slot in n.start..(n.start + n.count) {
-            if n.kind == node_kind::LazySeq || elements(n.kind) {
+            if n.kind == node_kind::LazySeq || elements(n.kind) || n.kind == node_kind::ArgumentMap {
                 if used[slot] != 0 { return reject(c, Error.Link); }
                 used[slot] = 2;
             } else {
@@ -87,6 +88,61 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
         }
     }
     return true;
+}
+// Mapped arguments objects (light-cljs-860; source_vm.goose, "Mapped
+// arguments objects"): an arguments object names nothing or its map, and
+// the map (an exclusive run, memo_ranges) names that object back and
+// nothing else, so each map is scanned once, its entries charged to the
+// work budget; each entry is Undefined or a mapped cell naming that object
+// and its index. A mapped cell names an arguments object whose map lists it
+// at its index, is initialized and mutable and has no run, and its
+// property is where the VM reads it: an element present in the object's
+// run, or, when the cell keeps an interned key (a redefinition moved the
+// property), the decimal text of its index, with no element left in the
+// run (the shape key or record itself is checked when the VM uses it).
+// Rows the checks follow are range-checked first.
+fn argument_links<T>(s: const T&, n: const source::Node&, row: i64, c: Control&) -> bool {
+    if n.kind == node_kind::Arguments && !n.namespace_value.is_null() {
+        if !object_of(s, n.namespace_value, node_kind::ArgumentMap) { return false; }
+        let m = s.nodes[n.namespace_value.id()];
+        if !(m.value.is_object() && m.value.id() == row) || !range(m.start, m.count, s.values.len) || !poll(c, m.count) { return false; }
+        for v, i in s.values[m.start..(m.start + m.count)] {
+            if v.is_undefined() { continue; }
+            if !object_of(s, v, node_kind::MappedBinding) { return false; }
+            let cell = s.nodes[v.id()];
+            if !(cell.value.is_object() && cell.value.id() == row) || cell.length != i { return false; }
+        }
+    }
+    if n.kind == node_kind::ArgumentMap {
+        if !object_of(s, n.value, node_kind::Arguments) || !n.namespace_value.is_null() || n.function != 0 || n.length != 0 || n.initialized { return false; }
+        let o = s.nodes[n.value.id()];
+        if !(o.namespace_value.is_object() && o.namespace_value.id() == row) { return false; }
+    }
+    if n.kind == node_kind::MappedBinding {
+        if !n.initialized || n.immutable || n.start != 0 || n.count != 0 || !object_of(s, n.value, node_kind::Arguments) { return false; }
+        let o = s.nodes[n.value.id()];
+        if !object_of(s, o.namespace_value, node_kind::ArgumentMap) { return false; }
+        let m = s.nodes[o.namespace_value.id()];
+        if n.length >= m.count || !range(m.start, m.count, s.values.len) || !range(o.start, o.count, s.values.len) { return false; }
+        let entry = s.values[m.start + n.length];
+        if !(entry.is_object() && entry.id() == row) { return false; }
+        let present = n.length < o.count && !s.values[o.start + n.length].is_hole();
+        if n.namespace_value.is_null() { return present; }
+        return !present && key_value(s, n.namespace_value) && index_text(s, n.namespace_value, n.length);
+    }
+    return true;
+}
+// Whether interned key k is the canonical decimal text of index i.
+fn index_text<T>(s: const T&, k: source::Value, i: i64) -> bool {
+    if !k.is_string() { return false; }
+    let h = s.strings[k.sid()];
+    if h.wide || h.len == 0 || h.len > 10 || !range(h.start, h.len, s.latin1.len) { return false; }
+    var v: i64 = 0;
+    for b, j in s.latin1[h.start..(h.start + h.len)] {
+        if b < 48 || b > 57 || j == 0 && b == 48 && h.len > 1 { return false; }
+        v = v * 10 + (b as i64) - 48;
+    }
+    return v == i;
 }
 // The kinds with own properties by name (source::Node): ordinary objects,
 // arrays and closures (light-cljs-805), built-in functions and error objects
@@ -504,7 +560,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
     var has_memo = false; var array_holes: i64 = 0;
     for n, row in s.nodes {
         if !poll(c) { return false; }
-        if n.kind < node_kind::Object || n.kind > node_kind::BoundFunction { return reject(c, Error.Unsupported); }
+        if n.kind < node_kind::Object || n.kind > node_kind::MappedBinding { return reject(c, Error.Unsupported); }
         // A proxy (light-cljs-845, proxy.goose) holds an object target, an
         // earlier row, and an object handler, and nothing else.
         if n.kind == node_kind::Proxy && (!n.value.is_object() || n.value.id() >= row || !n.namespace_value.is_object() || n.count != 0 || n.start != 0 || !n.proto.is_null()) { return reject(c, Error.Link); }
@@ -533,7 +589,8 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         // records, and it walks an object or nothing.
         if (n.kind == node_kind::Object || n.kind == node_kind::Arguments) && n.length != 0 || n.kind == node_kind::KeyList && (n.count != 0 || n.initialized || n.start > n.length || n.length > n.key_count || !n.value.is_undefined() && !n.value.is_object()) { return reject(c, Error.Link); }
         if !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source != source::no_row() && n.source >= s.sources.len || n.origin < -1 || !n.proto.is_hole() && !n.proto.is_null() && (!n.proto.is_object() || !value(s, n.proto)) { return reject(c, Error.Link); }
-        has_memo = has_memo || shaped(n) && n.key_capacity > 0;
+        has_memo = has_memo || shaped(n) && n.key_capacity > 0 || n.kind == node_kind::ArgumentMap && n.count > 0;
+        if !argument_links(s, n, row, c) { return reject(c, Error.Link); }
         if n.source != source::no_row() && (n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }
         // The compiler checks an identity source's UTF-8 boundaries.
         if n.source != source::no_row() && source::has_text(s.sources[n.source]) {

@@ -483,7 +483,12 @@ function's locals and captures, and whose record (`encode_eval_site` in
 `rust/src/frontend/goose.rs`: the whole `EvalSite` but its offset) the VM
 hands back unchanged to the run-time compiler, which decodes and checks it
 and compiles the eval code against it. Source and record ranges tile their
-tables in order. Version-5 readers refuse version 6.
+tables in order. Version-5 readers refuse version 6. The Goose exporter
+lowers sloppy code for Goose (light-cljs-860): a sloppy function with a
+simple parameter list that can observe a mapped arguments object gets
+NewMappedArguments (opcode 199, which the Rust VM refuses) and keeps its
+parameters in binding cells; the format is unchanged, and a reader generated
+before that opcode refuses such an image as an unknown descriptor.
 `export_schema.goose` is compiled reader code generated from the registry
 (descriptors, selectors, name operands, direct-eval call opcodes, each
 opcode's stack effect and control flow, opcode and well-known symbol names);

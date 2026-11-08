@@ -196,20 +196,34 @@ const MAX_FUNCTIONS: usize = 1 << 16;
 /// Call arguments and captures are counted by a u16.
 const MAX_COUNT: usize = u16::MAX as usize;
 
+/// The VM the bytecode is lowered for. The Pants engine's own entry points
+/// lower for [`Backend::Pants`] and keep their bytecode; the Goose exporter
+/// lowers for [`Backend::Goose`], which also gives a sloppy function with a
+/// simple parameter list a mapped arguments object when it can observe
+/// one (light-cljs-860; [`Lowerer::wants_mapped_arguments`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Backend {
+    #[default]
+    Pants,
+    Goose,
+}
+
 pub(crate) fn lower_script(
     name: &str,
     source: &str,
     script: &Script,
+    backend: Backend,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(name, source, script, false, None)
+    lower_script_kind(name, source, script, false, None, backend)
 }
 
 pub(crate) fn lower_eval(
     name: &str,
     source: &str,
     script: &Script,
+    backend: Backend,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(name, source, script, true, None)
+    lower_script_kind(name, source, script, true, None, backend)
 }
 
 pub(crate) fn lower_direct_eval(
@@ -217,8 +231,9 @@ pub(crate) fn lower_direct_eval(
     source: &str,
     script: &Script,
     site: &EvalSite,
+    backend: Backend,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(name, source, script, true, Some(site))
+    lower_script_kind(name, source, script, true, Some(site), backend)
 }
 
 fn lower_script_kind(
@@ -227,9 +242,11 @@ fn lower_script_kind(
     script: &Script,
     eval: bool,
     site: Option<&EvalSite>,
+    backend: Backend,
 ) -> Result<Executable, SyntaxError> {
     let lower = |facts| {
         let mut lower = Lowerer::new(source, facts);
+        lower.backend = backend;
         if let Some(site) = site {
             lower.import_eval_bindings(site);
             if !script.strict {
@@ -293,24 +310,31 @@ fn lower_script_kind(
     lower.finish_top(name, 0, 0, JsString::from(""))
 }
 
-pub(crate) fn lower_function(source: &str, function: &Function) -> Result<Executable, SyntaxError> {
-    lower_function_kind(source, function, true)
+pub(crate) fn lower_function(
+    source: &str,
+    function: &Function,
+    backend: Backend,
+) -> Result<Executable, SyntaxError> {
+    lower_function_kind(source, function, true, backend)
 }
 
 pub(crate) fn lower_dynamic_function(
     source: &str,
     function: &Function,
+    backend: Backend,
 ) -> Result<Executable, SyntaxError> {
-    lower_function_kind(source, function, false)
+    lower_function_kind(source, function, false, backend)
 }
 
 fn lower_function_kind(
     source: &str,
     function: &Function,
     bind_name: bool,
+    backend: Backend,
 ) -> Result<Executable, SyntaxError> {
     let lower = |facts| {
         let mut lower = Lowerer::new(source, facts);
+        lower.backend = backend;
         if function.params.len() > MAX_LOCALS {
             return Err(lower.error(
                 SyntaxErrorKind::TooLarge,
@@ -443,6 +467,13 @@ struct Facts {
     captured_uninitialized: bool,
     /// (Function declarations) its own body refers to it.
     self_referenced: bool,
+    /// (A function's self key) a reference resolves to its own `arguments`
+    /// binding, the implicit one or a `var` of that name (light-cljs-860).
+    arguments_used: bool,
+    /// (A function's self key) some such reference is not the base of a
+    /// property read (`arguments.length`, `arguments[i]`): the object may
+    /// be written, deleted from or reach other code.
+    arguments_escape: bool,
 }
 
 impl Facts {
@@ -804,6 +835,12 @@ struct Lowerer<'s> {
     emit: Option<HashMap<usize, Facts>>,
     facts: HashMap<usize, Facts>,
     next_self_key: usize,
+    /// The VM the bytecode is for ([`Backend`]).
+    backend: Backend,
+    /// The identifier being resolved is the base of a property read
+    /// ([`Self::get_field`]), which does not let an `arguments` object
+    /// escape ([`Facts::arguments_escape`]).
+    member_base: bool,
 }
 
 impl<'s> Lowerer<'s> {
@@ -830,6 +867,8 @@ impl<'s> Lowerer<'s> {
             emit: facts,
             facts: HashMap::new(),
             next_self_key: usize::MAX,
+            backend: Backend::Pants,
+            member_base: false,
         }
     }
 
@@ -1353,8 +1392,22 @@ impl<'s> Lowerer<'s> {
         self.cur_mut().scopes.push(Scope::new());
         let mut declared: Vec<&Ident> = Vec::new();
         let mut annex_b_globals: Vec<&Ident> = Vec::new();
+        // Facts are complete in the emit pass, so whether this function's
+        // arguments object is mapped is known before its parameters are
+        // declared (light-cljs-860).
+        let mapped = top_level && !self.analyzing() && self.wants_mapped_arguments(params);
         for p in params {
             self.declare(p, BindingKind::Param, top_level, false)?;
+        }
+        // A mapped arguments object aliases each parameter: every parameter
+        // lives in the binding cell NewMappedArguments makes for it.
+        if mapped {
+            let scope = self.cur_mut().scopes.last_mut().expect("function scope");
+            for p in params {
+                if let Some(b) = scope.get_mut(&p.name) {
+                    b.repr = Repr::Cell;
+                }
+            }
         }
         // A sloppy simple parameter list may repeat a name (the parser
         // rejects it elsewhere); its last occurrence is the binding.
@@ -1437,6 +1490,7 @@ impl<'s> Lowerer<'s> {
                     .first()
                     .and_then(|c| c.first())
                     .map_or(Span::new(0, 0), |s| s.span),
+                mapped,
             )?
         } else {
             None
@@ -1480,6 +1534,10 @@ impl<'s> Lowerer<'s> {
         for name in declared {
             let b = self.local(name)?;
             if arguments.is_some_and(|a| a.key == b.key) {
+                continue;
+            }
+            // NewMappedArguments made the parameters' cells.
+            if mapped && arguments.is_some() && b.kind == BindingKind::Param {
                 continue;
             }
             if b.global {
@@ -1981,8 +2039,16 @@ impl<'s> Lowerer<'s> {
     /// parameter scope (or body scope without defaults). Parameters and
     /// lexical/function declarations shadow it; a plain `var` keeps it.
     /// Arrows and scripts introduce no implicit binding.
+    ///
+    /// `mapped`: the object is a mapped one ([`Self::wants_mapped_arguments`]),
+    /// made by NewMappedArguments, which also turns every parameter local
+    /// into the binding cell it aliases.
     #[inline(never)]
-    fn arguments_binding(&mut self, span: Span) -> Result<Option<Binding>, SyntaxError> {
+    fn arguments_binding(
+        &mut self,
+        span: Span,
+        mapped: bool,
+    ) -> Result<Option<Binding>, SyntaxError> {
         if !self.cur().own_arguments {
             return Ok(None);
         }
@@ -2037,12 +2103,51 @@ impl<'s> Lowerer<'s> {
             self.out().op(Opcode::NewCell, span);
             self.out().op(Opcode::Dup, span);
         }
-        self.out().op(Opcode::NewArguments, span);
+        self.out().op(
+            if mapped {
+                Opcode::NewMappedArguments
+            } else {
+                Opcode::NewArguments
+            },
+            span,
+        );
         if b.repr == Repr::Cell {
             self.out().op(Opcode::CellInit, span);
         }
         self.out().op_u16(Opcode::SetLocal, b.slot, span);
         Ok(Some(b))
+    }
+
+    /// Whether the function being lowered gets a mapped arguments object
+    /// (light-cljs-860; ECMAScript 10.4.4.7 CreateMappedArgumentsObject,
+    /// QuickJS `js_build_mapped_arguments`): only when lowering for Goose,
+    /// for a sloppy ordinary function or method with a simple, nonempty
+    /// parameter list that no parameter names `arguments`, and only when
+    /// the aliasing could be observed. A function that refers to its
+    /// `arguments` only as the base of property reads, assigns no
+    /// parameter and has no direct eval cannot tell a mapped object from
+    /// an unmapped one with the same `callee`, so it keeps NewArguments and
+    /// plain parameter locals. (A getter on Object.prototype reached by
+    /// such a read past the arguments' length receives the object as its
+    /// receiver; docs/javascript-coverage.md, decision 2, records that
+    /// limit.) The parameters' facts are complete in the emit pass.
+    fn wants_mapped_arguments(&self, params: &[Ident]) -> bool {
+        let ctx = self.cur();
+        if self.backend != Backend::Goose
+            || !ctx.own_arguments
+            || ctx.strict
+            || !ctx.simple_parameters
+            || ctx.var_scope != 0
+            || params.is_empty()
+            || params.iter().any(|p| p.name == "arguments")
+        {
+            return false;
+        }
+        let own = self.facts_of(ctx.self_key);
+        own.has_eval
+            || own.arguments_used
+                && (own.arguments_escape
+                    || params.iter().any(|p| self.facts_of(p.span.start).assigned))
     }
 
     /// Resolve `name` as seen from function `level`, adding captures to it
@@ -2099,6 +2204,12 @@ impl<'s> Lowerer<'s> {
             }
             if self.analyzing() {
                 self.fact(b.key).referenced = true;
+                if name == "arguments" && b.kind == BindingKind::Var {
+                    let escape = !self.member_base;
+                    let own = self.fact(self.fns[level].self_key);
+                    own.arguments_used = true;
+                    own.arguments_escape |= escape;
+                }
             }
             if b.global {
                 return self.global_access(name);
@@ -3123,7 +3234,7 @@ impl<'s> Lowerer<'s> {
                 _ => return Err(self.internal(p.span, "parameter is not in its argument slot")),
             }
         }
-        self.arguments_binding(f.span)?;
+        self.arguments_binding(f.span, false)?;
         self.parameter_eval_environment(f.span)?;
         let parameter_slots = self.cur().next_slot;
         let mut sources = Vec::with_capacity(f.params.len());
@@ -3196,7 +3307,7 @@ impl<'s> Lowerer<'s> {
                 }
             }
         }
-        self.arguments_binding(f.span)?;
+        self.arguments_binding(f.span, false)?;
         self.parameter_eval_environment(f.span)?;
         let parameter_slots = self.cur().next_slot;
         for (i, (p, default)) in f.params.iter().zip(&f.defaults).enumerate() {
@@ -5298,7 +5409,10 @@ impl<'s> Lowerer<'s> {
         if super_access {
             self.super_base(base.span, false)?;
         } else {
+            // A plain name read as a property base (light-cljs-860).
+            self.member_base = matches!(base.kind, ExprKind::Identifier(_));
             self.expr(base)?;
+            self.member_base = false;
         }
         for &(link, op_span) in links.iter().rev() {
             if super_access {
@@ -6116,6 +6230,7 @@ impl<'s> Lowerer<'s> {
     fn identifier(&mut self, name: &str, span: Span) -> Result<(), SyntaxError> {
         let at = self.name_span(name, span);
         let access = self.resolve_reference(name);
+        self.member_base = false;
         self.load(access, at)
     }
 

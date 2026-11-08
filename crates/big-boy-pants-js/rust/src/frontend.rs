@@ -38,6 +38,7 @@ pub mod ast;
 mod intrinsics;
 pub mod lexer;
 mod lower;
+pub(crate) use lower::Backend;
 pub(crate) use lower::{ModuleBinding, lower_module, module_bindings};
 mod module;
 mod parser;
@@ -274,8 +275,20 @@ pub fn compile_script_with(
     source: &str,
     options: ScriptOptions,
 ) -> Result<Executable, SyntaxError> {
+    compile_script_for(name, source, options, Backend::Pants)
+}
+
+/// [`compile_script_with`] lowered for `target`: the Goose exporter's
+/// bytecode ([`Backend::Goose`]) differs from the Pants engine's only
+/// where Goose implements more (light-cljs-860, mapped arguments objects).
+pub(crate) fn compile_script_for(
+    name: &str,
+    source: &str,
+    options: ScriptOptions,
+    backend: Backend,
+) -> Result<Executable, SyntaxError> {
     let script = parse_script_with(source, options)?;
-    lower::lower_script(name, source, &script)
+    lower::lower_script(name, source, &script, backend)
 }
 
 /// Carry UTF-16 code units `units[*next..]`, at most `limit` of them (a
@@ -326,9 +339,10 @@ pub(crate) fn compile_eval(
     source: &str,
     surrogates: &[(usize, u16)],
     strict: bool,
+    backend: Backend,
 ) -> Result<Executable, SyntaxError> {
     let script = parser::Parser::with_surrogates(source, strict, surrogates).parse_script()?;
-    lower::lower_eval(name, source, &script)
+    lower::lower_eval(name, source, &script, backend)
 }
 
 /// Compile Function's isolated parameter/body source with no caller scope or
@@ -337,6 +351,7 @@ pub(crate) fn compile_dynamic_function(
     source: &str,
     surrogates: &[(usize, u16)],
     parameter_units: usize,
+    backend: Backend,
 ) -> Result<Executable, SyntaxError> {
     let mut units = 0;
     let parameter_end = source
@@ -359,7 +374,7 @@ pub(crate) fn compile_dynamic_function(
         })?;
     let function = parser::Parser::with_surrogates(source, false, surrogates)
         .parse_dynamic_function(parameter_end)?;
-    lower::lower_dynamic_function(source, &function)
+    lower::lower_dynamic_function(source, &function, backend)
 }
 
 pub(crate) fn compile_direct_eval(
@@ -367,6 +382,7 @@ pub(crate) fn compile_direct_eval(
     source: &str,
     surrogates: &[(usize, u16)],
     site: &crate::vm::executable::EvalSite,
+    backend: Backend,
 ) -> Result<Executable, SyntaxError> {
     let mut parser = parser::Parser::with_surrogates(source, site.strict, surrogates);
     parser.allow_new_target(site.new_target.is_some());
@@ -374,7 +390,7 @@ pub(crate) fn compile_direct_eval(
     parser.allow_super(site.super_home.is_some(), site.super_fields.is_some());
     parser.allow_private(site.bindings.iter().any(|b| b.name.starts_with('#')));
     let script = parser.parse_script()?;
-    lower::lower_direct_eval(name, source, &script, site)
+    lower::lower_direct_eval(name, source, &script, site, backend)
 }
 
 /// Compile `source`, which must consist of exactly one function declaration,
@@ -405,7 +421,7 @@ pub fn compile_function_with(
                 kind: ast::StmtKind::FunctionDecl(function),
                 ..
             },
-        ] => lower::lower_function(source, function),
+        ] => lower::lower_function(source, function, Backend::Pants),
         _ => Err(SyntaxError::new(
             source,
             SyntaxErrorKind::Unsupported,

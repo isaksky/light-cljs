@@ -385,6 +385,54 @@ fields. for-in pushes a `ForIn` frame only when its walk meets a proxy.
 Every other internal method of a proxy fails `UnsupportedOperand` naming
 it (`Proxy: [[Get]]`, `Heap.proxy_method`), for light-cljs-766.
 
+*As landed by light-cljs-860 (mapped arguments objects):* a sloppy
+function with a simple parameter list gets a mapped arguments object
+(ECMAScript 10.4.4.7 CreateMappedArgumentsObject; QuickJS
+`js_build_mapped_arguments`) when it can observe the aliasing, and bbp's
+Rust lowering decides that statically, only when it lowers for Goose
+(`Backend::Goose`, which the Goose exporter and the Goose run-time compiler
+use; the Pants command line and the Pants engine's eval lower for
+`Backend::Pants` and keep today's bytecode, so the Pants oracle is
+unchanged). A function that refers to its `arguments` only as the base of
+property reads (`arguments.length`, `arguments[i]`), assigns no parameter
+and has no direct eval cannot tell the two apart, so it keeps NewArguments
+and plain parameter locals at no cost; strict functions, arrows, functions
+that never mention `arguments` and the compiler path (whose ClojureScript
+output Goose exports as strict code) never change. Otherwise the lowering
+keeps every parameter in a binding cell and emits NewMappedArguments
+(opcode 199, appended to the shared registry; the Rust VM refuses it). On
+Goose it makes the arguments object exactly as NewArguments does and turns
+each parameter local into a cell: below the argument count a mapped cell
+(node kind 27, `node_kind::MappedBinding`: the object and the index), past
+it an ordinary binding cell. The object's own property is the truth while
+an index is mapped: the cell's reads and writes go to it (an element, or a
+shape key or record after a redefinition that kept the mapping), so every
+other operation on the object, the fast element paths and fnRest included,
+is an ordinary object's. The object's `namespace_value` names an argument
+map (node kind 26, `node_kind::ArgumentMap`) whose run lists each mapped
+index's cell; [[Delete]] and a redefinition as an accessor or as
+non-writable unmap an index: the map entry becomes `Undefined` and the
+cell an ordinary binding holding the parameter's value, as data. Links are
+plain node rows, so snapshots validate them (an object's map, each entry's
+cell naming that object and index, each mapped cell listed by its
+object's map), in-job reclamation reaches and remaps them through the
+cells' values and the map's run, a generator's or async function's
+detached activation keeps the cells as any locals, and direct eval reaches
+the parameters through the same cells. A duplicate parameter name leaves
+its earlier occurrences' cells unread, so only the last occurrence
+aliases. One limit of the static decision: a getter on Object.prototype
+reached by `arguments[i]` past the argument count receives the object as
+its receiver and could write a parameter through it while the function
+has an unmapped object; installing such a getter needs
+Object.defineProperty, which Goose does not have yet (light-cljs-766).
+*Rejected:* Goose alone aliasing the indices to the frame's parameter
+slots, or to the cells the lowering already made for captured
+parameters, and detaching them when the frame returns. A parameter that a
+closure captures by value (never assigned in the source) would then miss
+writes through the object, which only a lowering change can see, and the
+detach would need a pass over every returning frame's arguments object,
+the hot return path every function takes.
+
 **Evidence.** Probe P4 measures the value enum at 9 bytes (three values, 27
 bytes); today's `source::Value` is 40. The probe interpreter (P7) runs the
 real exported bytecode with this model; its map benchmark result is in
