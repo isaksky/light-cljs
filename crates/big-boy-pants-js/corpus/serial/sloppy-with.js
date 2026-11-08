@@ -2,7 +2,8 @@
 // the object (HasProperty, then @@unscopables, then [[Get]]/[[Set]]), so
 // getters, setters and an @@unscopables getter run above the reads as
 // native frames; closures made in the body keep the object environment; a
-// call through the object passes it as `this`; Array.prototype's
+// call through the object passes it as `this`, a tagged template's too
+// (light-cljs-862); Array.prototype's
 // @@unscopables hides `values`. serial_tests.goose runs it at every budget
 // cut and with forced collections at every cut.
 var values = "outer", log = "";
@@ -35,4 +36,8 @@ var values = "outer", log = "";
 })() &&
 (function () {
   with ([1, 2]) { return values === "outer" && length === 2 && typeof push === "function"; }
+})() &&
+(function () {
+  var o = { x: 2, f(s) { return this.x + s.length; } };
+  with (o) { return f`` === 3 && f`a${1}` === 4; }
 })();

@@ -297,6 +297,9 @@
 
   ;; ---- QuickJS tests, unmodified text, per-function entries
   ;; bbp-34 lexing, literals, parsing and source positions
+  "bbp/tagged_template_sites" {:area :lexing-parsing}
+  "bbp/tagged_template_objects" {:area :lexing-parsing}
+  "bbp/tagged_template_objects_sloppy" {:area :lexing-parsing :mode :sloppy}
   "quickjs/test_language.js/test_template" {:area :lexing-parsing}
   "quickjs/test_language.js/test_template_skip" {:area :lexing-parsing}
   "quickjs/test_language.js/test_regexp_skip" {:area :lexing-parsing}

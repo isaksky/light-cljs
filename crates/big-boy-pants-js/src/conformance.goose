@@ -102,7 +102,7 @@ fn main() {
         for f in job.frames { roots.push(f.callee); roots.push(f.receiver); roots.push(f.input); roots.push(f.output); }
         for h in job.handlers { roots.push(h.value); }
         for v in job.locals { roots.push(v); } for v in job.operands { roots.push(v); }
-        roots.push(job.entry); roots.push(job.lexicals); for t in job.queue { roots.push(t.value); roots.push(source::object(t.target)); }
+        roots.push(job.entry); roots.push(job.lexicals); for t in job.templates { roots.push(source::object(t.object)); } for t in job.queue { roots.push(t.value); roots.push(source::object(t.target)); }
         let c = census::take(heap, roots); var line: u8[>..] = [];
         format(line, "{:heap {:nodes ", c.nodes, " :values ", c.values, " :properties ", c.properties, " :units ", c.units);
         format(line, " :dead-nodes ", c.dead_nodes, " :dead-values ", c.dead_values, " :dead-properties ", c.dead_properties, " :dead-units ", c.dead_units, "}}");

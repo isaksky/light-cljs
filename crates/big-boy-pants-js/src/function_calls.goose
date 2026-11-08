@@ -5,6 +5,7 @@ import .array_callbacks;
 import .array_methods;
 import .cells;
 import .proxy;
+import .templates;
 
 namespace source;
 
@@ -428,9 +429,10 @@ fn bind_step(job: Job&, frame: Frame) {
 fn is_throw_type_error(heap: const Heap&, f: Value) -> bool {
     return f.is_object() && node(heap, f.id()).kind == node_kind::Builtin && builtin_of(heap, f.id()) == Builtin.ThrowTypeError;
 }
-// Whether node o is not extensible: only %ThrowTypeError%, which QuickJS
-// seals (Object.preventExtensions is pending, so no other object is).
-fn sealed(heap: const Heap&, o: i64) -> bool { return is_throw_type_error(heap, object(o)); }
+// Whether node o is not extensible: %ThrowTypeError%, which QuickJS seals,
+// and a frozen array, a template object (light-cljs-862, templates.goose);
+// Object.preventExtensions is pending, so no other object is.
+fn sealed(heap: const Heap&, o: i64) -> bool { return frozen(heap, o) || is_throw_type_error(heap, object(o)); }
 // %ThrowTypeError% called with `receiver` and `argc` arguments.
 fn throw_type_error(job: Job&, receiver: Value, argc: i64) -> Value {
     let heap .= job.heap;

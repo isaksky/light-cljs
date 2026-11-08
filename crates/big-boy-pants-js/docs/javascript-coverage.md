@@ -644,8 +644,8 @@ over the dead ones in table order and rewrites every link through the
 remap; rows below the floor never move, so values the host holds across a
 run stay valid. Roots: every row below the floor, every shape's key, the
 code constants, the heap's global, call method and pending key, and the
-job's frames, locals, operands, handlers, result, lexicals, root receiver,
-entry, effect arguments and frame, promise queue, unhandled rejections,
+job's frames, locals, operands, handlers, result, lexicals, template
+objects (light-cljs-862), root receiver, entry, effect arguments and frame, promise queue, unhandled rejections,
 cell rows and foreign ranges (whole, so a publication's identities stay
 consecutive and its range a range) and the write log's keys. The write
 log's objects, its values (unless the host reads them: `Job.logged_values`,

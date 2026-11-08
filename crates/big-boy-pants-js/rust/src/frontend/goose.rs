@@ -2115,6 +2115,9 @@ mod serial_tests {
             ("reclaim-bursts", "boolean:true"),
             ("reclaim-observed", "number:2"),
             ("reclaim-live", "goose"),
+            // Tagged templates (light-cljs-862): per-site template objects
+            // at every budget cut and collection (serial_tests.goose).
+            ("tagged-templates", "boolean:true"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let export = export_function(&source).unwrap_or_else(|error| panic!("{name}: {error}"));

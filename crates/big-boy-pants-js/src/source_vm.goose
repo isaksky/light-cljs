@@ -15,6 +15,7 @@ import .number_text;
 import .reclaim;
 import .function_calls;
 import .runtime_compile;
+import .templates;
 
 namespace source;
 
@@ -272,6 +273,9 @@ enum Ins {
     // CheckGlobalLexicalConflict. ThrowError: the compiler's static throw of
     // ThrowKind `kind` (a throw_kind:: selector).
     GlobalOp { op: u8, k: u32 }, ThrowError { kind: u8 },
+    // TemplateObject (111; light-cljs-862, templates.goose): `count` cooked
+    // and raw string pairs → the site's template object.
+    TemplateObject { count: u32 },
 }
 // The row's stack effect from the generated registry table, resolved once at
 // decode (-1 marks a row the table refuses; load never admits one).
@@ -687,6 +691,10 @@ root struct Job {
     // The host reads the write log's values (execute.goose's typed
     // outcome): a collection keeps them; otherwise they are weak.
     logged_values: bool = false,
+    // The template objects of the tagged-template sites the job evaluated
+    // (light-cljs-862; templates.goose, TemplateSite): job-local, saved with
+    // its continuation, a reclamation root, cleared by reset.
+    templates: TemplateSite[>..] = [],
 }
 // A row a job holds that names a process-wide cell (a cell reference) or
 // has a process-wide identity (a value loaded from or stored in a cell, or
@@ -770,6 +778,7 @@ fn instruction(op: Op) -> Ins {
         opcode::GetNewTarget => Ins.NewTarget, opcode::ToObject => Ins.ToObject, opcode::Instanceof => Ins.Instanceof,
         opcode::GetIterator => Ins.GetIterator, opcode::RequireObject => Ins.RequireObject, opcode::AppendHole => Ins.AppendHole,
         opcode::IsCell => Ins.IsCell, opcode::IsObject => Ins.IsObject, opcode::CheckSloppyThis => Ins.SloppyThis, opcode::SetComputedName => Ins.ComputedName { k: a },
+        opcode::TemplateObject => Ins.TemplateObject { count: a },
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -1246,6 +1255,8 @@ fn own_element(heap: Heap&, array: Value, i: i64) -> Value, bool {
 // More than doubling the run would leave most of its slots holes.
 fn sparse_write(count: i64, i: i64) -> bool { return i >= count && i > 2 * count + 1024; }
 fn set_element(heap: Heap&, array: Value, i: i64, value: Value) -> bool {
+    // A built-in's CreateDataPropertyOrThrow into a frozen array (templates.goose).
+    if node(heap, array.id()).immutable { heap.fault = Fault.TypeError; return false; }
     if i >= heap.limits.values { return memory(heap); }
     if !node(heap, array.id()).initialized && sparse_write(node(heap, array.id()).count, i) && !array_to_dictionary(heap, array) { return false; }
     if node(heap, array.id()).initialized {
@@ -1789,12 +1800,14 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             return find_own(heap, o, k);
         },
         node_kind::Array => {
-            if key_is(heap, k, "length") { return Own { found: true, value: number(node(heap, o).length), attrs: attr_writable() }; }
+            // A frozen array's (templates.goose) are neither writable nor configurable.
+            let fixed = node(heap, o).immutable;
+            if key_is(heap, k, "length") { return Own { found: true, value: number(node(heap, o).length), attrs: if fixed { 0 } else { attr_writable() } }; }
             let i = index(heap, k);
             if heap.fault != Fault.None { return Own {}; }
             if i < 0 || node(heap, o).initialized { return find_own(heap, o, k); }
             let v, found = own_element(heap, object, i);
-            return Own { found: found, index: i, value: v, attrs: attrs_data() };
+            return Own { found: found, index: i, value: v, attrs: if fixed { attr_enumerable() } else { attrs_data() } };
         },
         node_kind::Closure => {
             // A lazy closure's `length` and `name` come from its code row.
@@ -1873,10 +1886,14 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     match kind {
         node_kind::Object, node_kind::Arguments, node_kind::Builtin, node_kind::BoundFunction, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {},
         node_kind::Array => {
-            if key_is(heap, k, "length") { return Value.Undefined, array_length(heap, object, value); }
+            // A frozen array (templates.goose) refuses its `length` and
+            // elements; a name goes on below, where its own non-writable
+            // property or its sealing refuses it.
+            let fixed = node(heap, o).immutable;
+            if key_is(heap, k, "length") { return Value.Undefined, !fixed && array_length(heap, object, value); }
             let i = index(heap, k);
             if heap.fault != Fault.None { return Value.Undefined, false; }
-            if i >= 0 { return Value.Undefined, set_element(heap, object, i, value); }
+            if i >= 0 { return Value.Undefined, !fixed && set_element(heap, object, i, value); }
         },
         node_kind::Closure => {
             if !function_key(heap, o, k) || lazy_change(heap, o) { return Value.Undefined, false; }
@@ -1932,6 +1949,8 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
     // %ThrowTypeError% is not extensible (light-cljs-853): only its own
     // properties can be defined again, by their attributes.
     if sealed(heap, o) { let own = find_own(heap, o, k); if heap.fault != Fault.None || !own.found { return false; } }
+    // A frozen array (templates.goose) accepts only a definition that changes nothing.
+    if frozen(heap, o) { return frozen_define(heap, o, k, value, attrs, half); }
     // A mapped index (light-cljs-860, ECMAScript 10.4.4.2): the definition
     // writes through; an accessor or a non-writable one then unmaps it, the
     // parameter keeping its old value or the value just defined.
@@ -1999,6 +2018,8 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
             let i = index(heap, k);
             if heap.fault != Fault.None { return false; }
             if i < 0 || node(heap, o).initialized { return delete_own(heap, o, k); }
+            // A frozen array's elements are not configurable (templates.goose).
+            if node(heap, o).immutable { let v, found = own_element(heap, object, i); return heap.fault == Fault.None && !found; }
             if !charge(heap) { return false; }
             if i < node(heap, o).count && i < node(heap, o).length { set_slot(heap, node(heap, o).start + i, hole()); }
             return true;
@@ -2054,7 +2075,8 @@ fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     if (element_kind(kind) || !node(heap, o).initialized) && !charge(heap, if element_kind(kind) { node(heap, o).count as i64 } else { min(node(heap, o).length, node(heap, o).count) as i64 }) { return false; }
     if kind == node_kind::Array && !node(heap, o).initialized {
         let end = min(node(heap, o).length, node(heap, o).count);
-        for i in end { if !slot(heap, node(heap, o).start + i).is_hole() { keys.push(OwnKey { key: index_key(heap, i), attrs: attrs_data(), index: i }); } }
+        let attrs = if node(heap, o).immutable { attr_enumerable() } else { attrs_data() };
+        for i in end { if !slot(heap, node(heap, o).start + i).is_hole() { keys.push(OwnKey { key: index_key(heap, i), attrs: attrs, index: i }); } }
     } else if element_kind(kind) {
         for i in node(heap, o).count { if !slot(heap, node(heap, o).start + i).is_hole() { keys.push(OwnKey { key: index_key(heap, i), attrs: attrs_data(), index: i }); } }
     }
@@ -2204,6 +2226,8 @@ fn put(heap: Heap&, object: Value, k: Value, value: Value) -> bool {
 fn array_length(heap: Heap&, object: Value, value: Value) -> bool {
     if !value.is_number() || !(value.num() >= 0 && value.num() <= 4294967295.0) || value.num() != trunc(value.num()) { heap.fault = Fault.UnsupportedOperand; return false; }
     let length = value.num() as i64;
+    // A built-in's length update of a frozen array (templates.goose).
+    if node(heap, object.id()).immutable { heap.fault = Fault.TypeError; return false; }
     if length > heap.limits.values { return memory(heap); }
     if node(heap, object.id()).initialized { return dictionary_length(heap, object, length); }
     let start = node(heap, object.id()).start; let end = min(node(heap, object.id()).length, node(heap, object.id()).count);
@@ -2532,7 +2556,7 @@ fn reset(job: Job&) -> bool {
     job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0; job.detail.clear(); job.heap.proxy_method = -1;
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
     job.queue.clear(); job.queue_head = 0; job.draining = false; job.entry = Value.Undefined; job.rejections.clear();
-    job.lexicals = Value.Undefined; job.compiled_ops = 0; job.floor = Tops {}; job.reclaimable = false; job.logged_values = false;
+    job.lexicals = Value.Undefined; job.compiled_ops = 0; job.floor = Tops {}; job.reclaimable = false; job.logged_values = false; job.templates.clear();
     return true;
 }
 // The write log holds named property writes only: the typed outcome's
@@ -3884,6 +3908,11 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     left = fuel(job, allowance, used);
                 },
                 ThrowError t => { throw_error(job, t.kind, at); break; },
+                TemplateObject t => {
+                    settle(job, ran, used); job.frames[top].pc = pc; template_object(job, at, t.count);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
                 DirectEval c => {
                     // The callee sits below the arguments (a spread call's one
                     // packed array), above a method's receiver.
@@ -4739,7 +4768,7 @@ fn install_foreign(job: Job&, start: i64) {
 // read and write its run directly, without building key strings.
 fn dense(job: Job&, object: Value) -> bool {
     let heap .= job.heap;
-    if !object.is_object() || !valid(heap, object) || object.id() < job.protected_nodes || node(heap, object.id()).kind != node_kind::Array { return false; }
+    if !object.is_object() || !valid(heap, object) || object.id() < job.protected_nodes || node(heap, object.id()).kind != node_kind::Array || node(heap, object.id()).immutable { return false; }
     return !(job.root_receiver.is_object() && object == job.root_receiver);
 }
 // An unprotected ordinary object other than the compiler roots object with

@@ -41,7 +41,8 @@ namespace source;
 // a job may write. The other roots: every shape's key (shapes are a
 // transition cache and are kept), the code constants, the heap's global,
 // call method and pending key, and the job's frames, locals, operands,
-// handlers, result, lexicals, root receiver, entry, effect arguments and
+// handlers, result, lexicals, template objects (templates.goose), root
+// receiver, entry, effect arguments and
 // frame, promise queue from its head, unhandled rejections, cell rows (a
 // publication's rows whole, so its identities stay consecutive), foreign
 // ranges (whole, so they stay ranges) and the keys of its write log. The
@@ -209,6 +210,7 @@ fn mark_roots(e: Evacuation&, job: const Job&) {
     mark_frame(e, heap, job.effect_frame);
     for t in job.queue[job.queue_head..] { mark_object(e, t.target); if t.thenable != no_row() { mark_object(e, t.thenable); } mark(e, heap, t.value); }
     for r in job.rejections { mark_object(e, r); }
+    for t in job.templates { mark_object(e, t.object); }
     for c in job.cell_rows { mark_range(e, c.row, c.count); }
     var i: i64 = 0;
     while i + 1 < job.foreign.len { mark_range(e, job.foreign[i], job.foreign[i + 1] - job.foreign[i]); i += 2; }
@@ -413,6 +415,7 @@ fn rewrite_job(e: const Evacuation&, job: Job&) {
     for t in job.queue[job.queue_head..] { var u = t; u.target = node_link(e, t.target); if t.thenable != no_row() { u.thenable = node_link(e, t.thenable); } relink(e, u.value); tasks.push(u); }
     job.queue.clear(); job.queue.append(tasks); job.queue_head = 0;
     for i in job.rejections.len { job.rejections[i] = node_link(e, job.rejections[i]); }
+    for i in job.templates.len { job.templates[i].object = node_link(e, job.templates[i].object); }
     for i in job.cell_rows.len { job.cell_rows[i].row = moved_row(e.nodes[..], e.floor.nodes, job.cell_rows[i].row); }
     for i in job.foreign.len { job.foreign[i] = moved_row(e.nodes[..], e.floor.nodes, job.foreign[i]) as u32; }
 }

@@ -4,7 +4,7 @@
 // light-cljs-855. A closure made in a `with` body keeps the object
 // environment and reads through it later; a call of a name found in the
 // object passes the object as `this` (ECMAScript 9.1.1.2.10 WithBaseObject),
-// through parentheses and spread arguments; a strict function made in the
+// through parentheses, spread arguments and a tagged template (light-cljs-862); a strict function made in the
 // body still resolves through the object, and its GetBindingValue or
 // SetMutableBinding throws ReferenceError when the property is gone by
 // then. Left out: an optional call (`f?.()`) of a name in a `with` body,
@@ -26,6 +26,7 @@ row((function () { var f, o = { x: 0, get step() { return 1; } }; with (o) { f =
 row((function () { var o = { x: 2, f() { return this.x; } }; with (o) { return f() === 2 && (f)() === 2; } })());
 row((function () { var o = { x: 2, f() { return this.x; } }; with (o) { return f(...[]) === 2 && f(...[1, 2]) === 2; } })());
 row((function () { var o = { f() { return this === o; } }; with (o) { return f(); } })());
+row((function () { var o = { x: 2, f() { return this.x; } }; with (o) { return f`` === 2 && f`a${1}` === 2; } })());
 row((function () { var o = { f() { "use strict"; return this; } }; with (o) { return f() === o; } })());
 // A function found outside the object is called with an undefined `this`.
 row((function () { function f() { "use strict"; return this; } with ({}) { return f() === undefined; } })());

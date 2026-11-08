@@ -21,6 +21,8 @@ struct State {
     conts: u8[] = [], queue: u8[] = [], draining: bool = false, entry: u8[] = [], handlers: u8[] = [],
     // The global lexical record (light-cljs-824).
     lexicals: u8[] = [],
+    // The template objects by site (light-cljs-862).
+    templates: u8[] = [],
 }
 fn state(a: source::Job&) -> State {
     return State {
@@ -29,7 +31,7 @@ fn state(a: source::Job&) -> State {
         nodes:      source::plain_rows(a.heap.nodes), values: source::plain_rows(a.heap.values), properties: source::plain_rows(a.heap.properties), units: copy(a.heap.units), latin1: copy(a.heap.latin1), identity: a.heap.identity, work: a.heap.work, heap_fault: a.heap.fault,
         shapes:     source::plain_rows(a.heap.shapes), accessors: source::plain_rows(a.heap.accessors), keys: str(bytes_of(a.heap.keys)),
         conts:      source::plain_rows(a.heap.conts), queue: source::plain_rows(a.queue[a.queue_head..]), draining: a.draining, entry: source::plain_rows([a.entry]), handlers: handler_rows(a.handlers),
-        lexicals:   source::plain_rows([a.lexicals]),
+        lexicals:   source::plain_rows([a.lexicals]), templates: str(bytes_of(a.templates)),
     };
 }
 fn handler_rows(handlers: const source::Handler[:]) -> u8[] {
@@ -50,7 +52,7 @@ fn same_state(a: const State&, b: const State&) {
     assert(a.values == b.values);
     assert(a.properties == b.properties);
     assert(a.shapes == b.shapes && a.accessors == b.accessors && a.keys == b.keys);
-    assert(a.conts == b.conts && a.queue == b.queue && a.draining == b.draining && a.entry == b.entry && a.handlers == b.handlers && a.lexicals == b.lexicals);
+    assert(a.conts == b.conts && a.queue == b.queue && a.draining == b.draining && a.entry == b.entry && a.handlers == b.handlers && a.lexicals == b.lexicals && a.templates == b.templates);
     assert(a.units[..] == b.units[..] && a.latin1[..] == b.latin1[..] && a.identity == b.identity && a.work == b.work && a.heap_fault == b.heap_fault);
 }
 struct Run { status: tiny::Status, steps: i64 }
@@ -785,7 +787,8 @@ thread_fn reclaim_cuts(bytes: u8[], expected: u8[], slice: i64, every: i64) {
     var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
     let entry = source::closure(heap, 0, []);
-    var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
+    // Eval code compiles into the heap's code (tagged-templates).
+    var job = source::Job { heap: heap, writable_code: code }; assert(source::start(job, entry, []));
     var cuts: i64 = 0;
     while source::run(job, slice) == tiny::Outcome.Yielded && !job.effect_pending {
         heap.reclaim = true; source::reclaim(job); cuts += 1;
@@ -901,7 +904,7 @@ fn reclamation() {
                   embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-mapped-arguments.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
-                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp")] {
+                  embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp"), embed_file("../corpus/serial/tagged-templates.gsp")] {
         for slice in [1, 5, 61] { heap_program::join(thread_spawn(reclaim_cuts, str(image), str("boolean:true"), slice, if slice == 1 { 211 } else { 1 })); }
     }
     print("serial source VM: reclamation inside a job past its margins, at every budget cut, and MemoryLimit over a live set passed");
@@ -987,6 +990,11 @@ fn control_flow() {
     // and accessors in native frames, at every cut and limit point.
     check(embed_file("../corpus/serial/sloppy-with.gsp"), "boolean:true");
     limit_points(embed_file("../corpus/serial/sloppy-with.gsp"));
+    // Tagged templates (light-cljs-862): per-site template objects through
+    // loops, a generator, closures, eval code and a Function body, and
+    // frozen arrays, at every cut (and collection, in reclamation). No
+    // limit points: its rows catch TypeErrors.
+    check(embed_file("../corpus/serial/tagged-templates.gsp"), "boolean:true");
     // [[Construct]] (light-cljs-831): ordinary functions with new.target and
     // the return override, through finally and a generator yielding inside
     // the constructor, the realm's constructors and a non-constructor's
