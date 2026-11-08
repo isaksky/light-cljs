@@ -10,11 +10,12 @@
 // undefined (an own `cause` of undefined), the constructors reached through
 // `call`, `Reflect.apply`, `Reflect.construct` with a new target, a bound
 // constructor and `Array.prototype.map`, and a throwing `valueOf` after a
-// non-callable `toString`. Groups: E the Error constructor, one per native
+// non-callable `toString`, a Symbol message throwing before a proxy options
+// object is probed, and Error as a proxy `ownKeys` trap. Groups: E the Error constructor, one per native
 // error type, X the rows written for this slice. Each group completes as one
 // letter per row, "y" for true, "n" for false and "x" for a throw.
 // Completes with
-// "E:yyyyyyyy|TypeError:yyyy|RangeError:yyyy|ReferenceError:yyyy|SyntaxError:yyyy|EvalError:yyyy|URIError:yyyy|InternalError:yyyy|X:yyyyyyyy".
+// "E:yyyyyyyy|TypeError:yyyy|RangeError:yyyy|ReferenceError:yyyy|SyntaxError:yyyy|EvalError:yyyy|URIError:yyyy|InternalError:yyyy|X:yyyyyyyyyy".
 (function () {
   function rows(fns) {
     var s = "";
@@ -91,7 +92,9 @@
     },
     function () { var B = URIError.bind(null, { toString: function () { return "b"; } }); var e = new B(); return e.message === "b" && e instanceof URIError; },
     function () { var a = [{ toString: function () { return "a"; } }].map(EvalError); return a[0].message === "a" && a[0] instanceof EvalError; },
-    function () { var caught = false; try { new Error({ toString: 1, valueOf: function () { throw 9; } }); } catch (e) { caught = e === 9; } return caught; }
+    function () { var caught = false; try { new Error({ toString: 1, valueOf: function () { throw 9; } }); } catch (e) { caught = e === 9; } return caught; },
+    function () { var caught = false; try { new Error(Symbol.iterator, new Proxy({}, {})); } catch (e) { caught = e instanceof TypeError; } return caught; },
+    function () { var caught = false; try { for (var k in new Proxy({ toString: function () { throw 48; } }, { ownKeys: Error })) {} } catch (e) { caught = e === 48; } return caught; }
   ]));
   return out.join("|");
 })();

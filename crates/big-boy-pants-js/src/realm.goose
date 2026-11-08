@@ -943,18 +943,23 @@ fn error_to_string(job: Job&, receiver: Value) -> Value {
 }
 // Whether Get(o, name) runs JavaScript or yields an object to convert (a
 // scalar form too: the frame takes its primitive).
-fn read_runs_code(heap: Heap&, o: Value, name: const u8[:]) -> bool {
+// The data value read, when there is no getter.
+fn read_runs_code(heap: Heap&, o: Value, name: const u8[:]) -> bool, Value {
     let k = key_named(heap, name);
-    if heap.fault != Fault.None { return false; }
+    if heap.fault != Fault.None { return false, Value.Undefined; }
     let v, getter = lookup(heap, o, k);
-    return heap.fault == Fault.None && (getter.is_object() || v.is_object());
+    return heap.fault == Fault.None && (getter.is_object() || v.is_object()), v;
 }
 // Error.prototype.toString with `receiver` as its this value: the plain
-// path, or the ErrorText frame (see above).
+// path, or the ErrorText frame (see above). The probes keep the steps'
+// order: ToString of a Symbol name throws before `message` is read.
 fn start_error_text(job: Job&, receiver: Value, base: i64) {
     let heap .= job.heap; let b = Builtin.ErrorPrototypeToString;
     if !receiver.is_object() { type_error(job, "not an object"); return; }
-    let runs = read_runs_code(heap, receiver, "name") || read_runs_code(heap, receiver, "message");
+    let name_runs, n = read_runs_code(heap, receiver, "name");
+    if heap.fault != Fault.None { return; }
+    var runs = name_runs;
+    if !runs && !n.is_symbol() { let message_runs, _ = read_runs_code(heap, receiver, "message"); runs = message_runs; }
     if heap.fault != Fault.None { return; }
     if !runs {
         let v = error_to_string(job, receiver);
@@ -1012,6 +1017,9 @@ fn start_error(job: Job&, b: Builtin, args: const Value[:], base: i64, proto: Va
     let t = error_type(b);
     if t < 0 { heap.fault = Fault.InvalidState; return; }
     let m = arg(args, 0); let options = arg(args, 1);
+    // ToString(message) precedes InstallErrorCause: a Symbol message throws
+    // before options is probed.
+    if m.is_symbol() { type_error(job, "Cannot convert a Symbol value to a string"); return; }
     let runs = m.is_object() || cause_runs_code(heap, options);
     if heap.fault != Fault.None { return; }
     if !runs {

@@ -10,9 +10,11 @@
 // getters returning undefined (the "Error" and "" defaults), a getter's
 // receiver, a nested Error.prototype.toString inside a conversion, and the
 // conversions that reach Error.prototype.toString as a ToPrimitive method
-// (`+`, `String()`, a template) or through `Reflect.apply`. Each group
+// (`+`, `String()`, a template), through `Reflect.apply` and as an array's
+// `join`, and a Symbol name throwing before an inherited proxy is read for
+// `message`. Each group
 // completes as one letter per row, "y" for true, "n" for false and "x" for a
-// throw. Completes with "T:yyyyyyyy|P:yyyyyyyy".
+// throw. Completes with "T:yyyyyyyy|P:yyyyyyyyyy".
 (function () {
   function rows(fns) {
     var s = "";
@@ -65,7 +67,9 @@
     function () { function F() {} F.prototype = Error.prototype; var o = new F(); o.name = { toString: function () { return "Z"; } }; return "" + o === "Z"; },
     function () { var e = new TypeError("t"); var log = ""; e.name = { toString: function () { log += "s"; return "S"; } }; return String(e) === "S: t" && `${e}` === "S: t" && log === "ss"; },
     function () { return Reflect.apply(ts, { get name() { return "R"; }, message: { valueOf: function () { return 1; }, toString: null } }, []) === "R: 1"; },
-    function () { var e = new Error("x"); e.message = { toString: function () { return "y"; } }; return e.toString() === "Error: y"; }
+    function () { var e = new Error("x"); e.message = { toString: function () { return "y"; } }; return e.toString() === "Error: y"; },
+    function () { var caught = false; try { ts.call({ __proto__: new Proxy({}, {}), name: Symbol.iterator }); } catch (e) { caught = e instanceof TypeError; } return caught; },
+    function () { var a = [1]; a.join = ts; a.name = { toString: function () { return "AN"; } }; a.message = "am"; return String(a) === "AN: am"; }
   ]));
   return out.join("|");
 })();
