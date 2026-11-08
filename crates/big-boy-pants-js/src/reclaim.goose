@@ -233,18 +233,36 @@ fn mark_roots(e: Evacuation&, job: const Job&) {
 // object as before. Only the collection pays: the VM's mapped paths are
 // unchanged, and code without mapped objects lists no cells.
 inline fn marked_node(e: const Evacuation&, r: i64) -> bool { return r < e.floor.nodes || e.nodes[r - e.floor.nodes] != 0; }
+// Mapped cell c's value, as mapped_value finds it (its object's element, or
+// the own data property of the key the cell keeps), but without charging the
+// job's work: the collection is not the job's work, and a job at its work
+// limit still collects. A cell whose property is gone is a broken invariant.
+fn cell_value(heap: const Heap&, c: i64) -> Value {
+    let o: i64 = node(heap, c).value.id(); let i: i64 = node(heap, c).length;
+    let v = object_element(heap, o, i);
+    if !v.is_hole() { return v; }
+    let k = node(heap, c).namespace_value;
+    var found = Value.Undefined; var hit = false;
+    if k.is_string() {
+        let w = key_word(k);
+        if node(heap, o).initialized {
+            var r: i64 = node(heap, o).key_count;
+            while r > 0 && !hit { r -= 1; let p = dict_at(heap, o, r); if key_word(p.key) == w { found = p.value; hit = true; } }
+        } else {
+            var at: i64 = node(heap, o).shape;
+            while at != 0 && !hit { let s .= shape_row(heap, at); if key_word(s.key) == w { found = slot_value(heap, o, s.count - 1); hit = true; } at = s.parent; }
+        }
+    }
+    if !hit || is_accessor(found) { abort("reclamation could not read a mapped parameter"); }
+    return found;
+}
 // Resolves the listed cells from `resolved` on; returns how many are.
-fn mark_cells(e: Evacuation&, heap: Heap&, resolved: i64) -> i64 {
+fn mark_cells(e: Evacuation&, heap: const Heap&, resolved: i64) -> i64 {
     var at = resolved;
     while at < e.cells.len {
         let c = e.cells[at]; at += 1;
-        let o: i64 = node(heap, c).value.id();
         var v = Value.Undefined;
-        if !marked_node(e, o) {
-            v = mapped_value(heap, o, node(heap, c).length, c);
-            if heap.fault != Fault.None { abort("reclamation could not read a mapped parameter"); }
-            mark(e, heap, v);
-        }
+        if !marked_node(e, node(heap, c).value.id()) { v = cell_value(heap, c); mark(e, heap, v); }
         e.kept_values.push(v);
     }
     return at;

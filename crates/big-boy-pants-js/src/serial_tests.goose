@@ -838,7 +838,41 @@ thread_fn reclaim_observed(bytes: u8[], logged: bool) {
     assert(image_valid(heap));
     source::retire(job);
 }
+// A collection that discards a mapped parameter's arguments object
+// (light-cljs-867) at the job's work limit: the parameter's value, a fresh
+// string the redefinition moved to a shape key (or, `dictionary`, a record)
+// of the object, is read without charging work, kept and relocated, and the
+// cell becomes an ordinary binding holding it.
+thread_fn mapped_reclaim_work_limit(bytes: u8[], dictionary: bool) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let entry = source::closure(heap, 0, []);
+    var job = source::Job { heap: heap }; assert(source::start(job, entry, []));
+    // Garbage below the object, so the slide moves the cell and its value.
+    for i in 8 { assert(source::allocate(heap, source::Node { kind: node_kind::Object }).is_object()); }
+    let kept = source::text(heap, "kept");
+    var params: source::Value[2] = [source::number(1), source::number(2)];
+    let a = source::new_mapped_arguments(heap, [source::number(1), source::number(2)], source::Value.Undefined, params[..]);
+    let zero = source::index_key(heap, 0);
+    assert(source::define_property(heap, a, zero, kept, source::attr_writable() | source::attr_configurable()) && source::object_element(heap, a.id(), 0).is_hole());
+    if dictionary { assert(source::delete_property(heap, a, source::key_named(heap, "length")) && source::node(heap, a.id()).initialized); }
+    assert(heap.fault == source::Fault.None && source::node(heap, params[0].id()).namespace_value == zero);
+    job.operands.push(params[0]);
+    let nodes = heap.nodes.len; let work = heap.work;
+    heap.limits.work = heap.work;
+    heap.reclaim = true; source::reclaim(job);
+    assert(heap.reclaims == 1 && heap.fault == source::Fault.None && heap.work == work && heap.nodes.len < nodes);
+    let c = job.operands.pop();
+    assert(c.id() < params[0].id() && source::node(heap, c.id()).kind == node_kind::Binding);
+    var text: u8[>..] = []; source::canonical(heap, source::node(heap, c.id()).value, text);
+    if text[..] != "utf16:[107,101,112,116]" { print("detached value: ", text); }
+    assert(text[..] == "utf16:[107,101,112,116]");
+    assert(image_valid(heap));
+    source::retire(job);
+}
 fn reclamation() {
+    for dictionary in [false, true] { heap_program::join(thread_spawn(mapped_reclaim_work_limit, str(embed_file("../corpus/serial/calls.gsp")), dictionary)); }
     // 600,000 garbage objects, arrays, strings and closures: each loop
     // passes a margin, and the live set stays small.
     heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/reclaim-loops.gsp")), source::Fault.None, 6, 64));
