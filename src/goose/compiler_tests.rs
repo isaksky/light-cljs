@@ -1713,6 +1713,140 @@ fn goose_compiler_caught_runtime_errors_preserve_identity() {
     session.close();
     cleaned(&session);
 }
+/// Compile `(defmacro m [] body) (def x (m))` with the V8 build and on the
+/// Goose path (light-cljs-872). Where the V8 build compiles it, the Goose
+/// path's output is the same. Where `uncaught` names the V8 build's
+/// JavaScript exception, the Goose path fails with an uncaught exception of
+/// that fault, never a NativeBoundary (the diagnostic's text is
+/// light-cljs-874's).
+#[cfg(light_v8)]
+fn macro_errors_match_v8(body: &str, uncaught: Option<(&str, &str)>) {
+    let source = format!("(defmacro m [] {body}) (def x (m))");
+    let reference = crate::compile_with_macros(&source, &mut crate::MacroHost::new());
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let mut host = crate::MacroHost::new();
+    host.use_goose_source_macros(session.clone()).unwrap();
+    let goose = crate::compile_with_macros(&source, &mut host);
+    session.close();
+    drop(host);
+    cleaned(&session);
+    match uncaught {
+        None => assert_eq!(goose.unwrap(), reference.unwrap(), "{body}"),
+        Some((exception, fault)) => {
+            let reference = reference.unwrap_err().to_string();
+            assert!(reference.contains(exception), "{body}: {reference}");
+            let message = goose.unwrap_err().to_string();
+            assert!(
+                message.contains(&format!("Fault.{fault}")) && !message.contains("NativeBoundary"),
+                "{body}: {message}"
+            );
+        }
+    }
+}
+/// An Error a macro constructs with `js/Error.` (light-cljs-872).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_constructs_an_error() {
+    macro_errors_match_v8(r#"(let [e (js/Error. "x")] (.-message e))"#, None);
+    macro_errors_match_v8(
+        r#"(let [e (js/TypeError. "y")] [(.-name e) (instance? js/Error e)])"#,
+        None,
+    );
+}
+/// `js/` globals, which the emitter reads through its `host` helper, and
+/// compiled member reads of them (light-cljs-872).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_reads_host_globals() {
+    macro_errors_match_v8("(.-name js/Error)", None);
+    macro_errors_match_v8("(.-length js/Object)", None);
+    macro_errors_match_v8(r#"(js/Array.isArray (js* "[1]"))"#, None);
+}
+/// A thrown Error caught by a macro's `try` (light-cljs-872).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_catches_a_thrown_error() {
+    macro_errors_match_v8(
+        r#"(try (throw (js* "new Error(\"x\")")) (catch :default e (.-message e)))"#,
+        None,
+    );
+    macro_errors_match_v8("(try (throw 7) (catch :default e e))", None);
+    macro_errors_match_v8(
+        r#"(try (throw (js/RangeError. "r")) (catch js/RangeError e (ex-message e)))"#,
+        None,
+    );
+}
+/// A property read of nil is a TypeError, caught or uncaught (light-cljs-872).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_property_read_of_nil_is_a_type_error() {
+    macro_errors_match_v8(
+        "(try (let [x (identity nil)] (.-foo x)) (catch :default e 1))",
+        None,
+    );
+    macro_errors_match_v8(
+        r#"(try (let [x (identity nil)] (.-foo x)) (catch :default e (.-name e)))"#,
+        None,
+    );
+    macro_errors_match_v8(
+        r#"(let [x (identity nil)] (aget x "foo"))"#,
+        Some(("TypeError: Cannot read properties of null", "TypeError")),
+    );
+}
+/// ex-info, its readers and an uncaught ExceptionInfo (light-cljs-872).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_throws_and_catches_ex_info() {
+    macro_errors_match_v8(
+        r#"(try (throw (ex-info "b" {})) (catch :default e 1))"#,
+        None,
+    );
+    macro_errors_match_v8(
+        r#"(try (throw (ex-info "bad" {:a 1})) (catch :default e (ex-message e)))"#,
+        None,
+    );
+    macro_errors_match_v8(
+        r#"(let [e (ex-info "m" {:a 1 :b 2} (js/Error. "c"))] [(ex-data e) (ex-message (ex-cause e)) (ex-data (js/Error. "z")) (ex-message 5) (instance? js/Error e) (.-name e) (js* "Object.getPrototypeOf(~{}) !== Error.prototype && Object.getPrototypeOf(Object.getPrototypeOf(~{})) === Error.prototype" e e)])"#,
+        None,
+    );
+    macro_errors_match_v8(
+        r#"(throw (ex-info "bad arg" {:a 1}))"#,
+        Some(("Error: bad arg", "HostEffect")),
+    );
+}
+/// get-in, whose `get` of a number is nil, inside a `js*` try (light-cljs-872).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_get_in_matches_v8() {
+    macro_errors_match_v8(
+        r#"(js* "(() => { try { return ~{}; } catch (e) { return e.name + \":\" + e.message; } })()" (get-in 5 [:a]))"#,
+        None,
+    );
+    macro_errors_match_v8(
+        "[(get-in {:a {:b 2}} [:a :b]) (get-in {:a 1} [:z] 9) (get-in {:a nil} [:a] 9) (get-in [[1 2]] [0 1]) (get-in #{:k} [:k]) (get :a 1)]",
+        None,
+    );
+}
+/// The runtime's own Errors (light-cljs-872): a wrong arity of ex-info or
+/// get-in, caught as an Error with the V8 build's message, or uncaught.
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_macro_runtime_errors_match_v8() {
+    for call in [r#"(ex-info "x")"#, "(get-in 1 2 3 4 5 6 7 8 9 10 11 12)"] {
+        macro_errors_match_v8(
+            &format!("(try {call} (catch js/Error e [(.-name e) (ex-message e)]))"),
+            None,
+        );
+    }
+    macro_errors_match_v8(r#"(ex-info "x")"#, Some(("Invalid arity: 1", "HostEffect")));
+}
 /// Control flow across helper waits (light-cljs-803): a pending Return,
 /// Throw or Jump completion of a finally block that demands a root, and a
 /// ToPrimitive native frame whose `valueOf` demands one, survive the wait,

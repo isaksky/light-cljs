@@ -2784,7 +2784,16 @@ fn form_get(heap: Heap&, v: Value, k: Value, fallback: Value) -> Value {
         let i = form_value(heap, k); if !i.is_number() || !(i.num() >= 0 && i.num() < form_count(heap, x)) || i.num() != (i.num() as i64) { return fallback; }
         return form_nth(heap, x, i.num() as i64, fallback);
     }
-    if kind != node_kind::Map { heap.fault = Fault.TypeError; return Value.Undefined; }
+    // As the V8 build's cljGet (the Pants engine's clj::get): a set's
+    // stored member, and `fallback` for a value that is no map, set, vector
+    // or string (light-cljs-872). A lazy sequence stays a boundary (form_op).
+    if kind == node_kind::LazySeq { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
+    if kind == node_kind::Set {
+        let s = node(heap, x.id());
+        for i in s.count { let v = slot(heap, s.start + i); if form_equal(heap, v, k) { return v; } if heap.fault != Fault.None { return Value.Undefined; } }
+        return fallback;
+    }
+    if kind != node_kind::Map { return fallback; }
     let n = node(heap, x.id());
     for i in (n.count / 2) { if form_equal(heap, slot(heap, n.start + i * 2), k) { return slot(heap, n.start + i * 2 + 1); } }
     return fallback;
@@ -2883,6 +2892,10 @@ fn form_op(heap: Heap&, op: i64, args: const Value[:]) -> Value {
         form_op::CljSeq, form_op::CljRest, form_op::CljNext => { return form_sequence(heap, a, if op == form_op::CljSeq { 0 } else { 1 }, op != form_op::CljRest); },
         form_op::CljFirst => { return form_nth(heap, a, 0); },
         form_op::LiteralMap => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != node_kind::List && kind != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); return form_collection(heap, node_kind::Map, run(heap, n.start, n.count)); },
+        // A map literal with entries in a native macro unit (light-cljs-872):
+        // insertion-ordered, equal keys keeping the first key and the last
+        // value (the Pants engine's array_map_from_sequence).
+        form_op::ArrayMap => { let v = form_value(heap, a); let kind = form_kind(heap, v); if kind != node_kind::List && kind != node_kind::Vector { heap.fault = Fault.TypeError; return Value.Undefined; } let n = node(heap, v.id()); return form_construct(heap, node_kind::Map, run(heap, n.start, n.count)); },
         form_op::ReaderCollection => { if form_kind(heap, a) != node_kind::Map && form_kind(heap, a) != node_kind::Set { heap.fault = Fault.TypeError; return Value.Undefined; } return a; },
         form_op::CljCallable => { let kind = form_kind(heap, a); return boolean(kind == node_kind::Vector || kind == node_kind::Map || kind == node_kind::Set || kind == node_kind::Symbol || kind == node_kind::Keyword); },
         form_op::CljCallMember => {
