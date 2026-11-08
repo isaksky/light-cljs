@@ -12,9 +12,10 @@ namespace snapshot;
 // Allocator 1 is the current append-only arena: its complete metadata is the
 // fourteen end cursors. There are deliberately no fictional free lists.
 struct Binding { id: i64, generation: i64, value: source::Value }
+// Version 3 (light-cljs-858) adds the code's direct-eval sites, ends 21..23.
 struct Header {
-    version: i64     = 2, allocator: i64 = 1, base: i64 = 0, checkpoint: i64 = 1,
-    ends:    i64[21] = [0; 21], limits: source::Limits = source::Limits {},
+    version: i64     = 3, allocator: i64 = 1, base: i64 = 0, checkpoint: i64 = 1,
+    ends:    i64[24] = [0; 24], limits: source::Limits = source::Limits {},
     work:    i64     = 0, global: source::Value = source::Value.Undefined, call_method: source::Value = source::Value.Undefined,
     boot:    i64     = 0, initializers: i64 = 0, producers: i64 = 0, property_rows: i64 = 0,
 }
@@ -25,6 +26,7 @@ struct Snapshot {
     nodes:      source::Node[]  = [], values: source::Value[] = [], properties: source::Property[] = [],
     units:      u16[]           = [], strings: source::Str[] = [], constants: source::Value[] = [], bytes: u8[] = [], sources: source::SourceRange[] = [], bindings: Binding[] = [], latin1: u8[] = [],
     shapes:     source::Shape[] = [], accessors: source::Pair[] = [], keys: source::KeySlot[] = [], conts: source::Cont[] = [],
+    sites:      source::Site[]  = [], site_sources: source::SiteSource[] = [], site_records: u8[] = [],
 }
 // A borrowing counterpart lets capture validate before allocating a copy.
 struct View {
@@ -34,6 +36,7 @@ struct View {
     nodes:      const source::Node[:], values: const source::Value[:], properties: const source::Property[:],
     units:      const u16[:], strings: const source::Str[:], constants: const source::Value[:], bytes: const u8[:], sources: const source::SourceRange[:], bindings: const Binding[:], latin1: const u8[:],
     shapes:     const source::Shape[:], accessors: const source::Pair[:], keys: const source::KeySlot[:], conts: const source::Cont[:],
+    sites:      const source::Site[:], site_sources: const source::SiteSource[:], site_records: const u8[:],
 }
 enum Error { None, Boundary, Version, Allocator, Identity, Length, Link, Code, Unsupported, Bytes, Work, Destination }
 struct Control {
@@ -320,14 +323,16 @@ fn same_units<T>(s: const T&, r: source::Str, units: const u16[:]) -> bool {
     for b, i in s.latin1[r.start..(r.start + r.len)] { if units[i] != b { return false; } }
     return true;
 }
-fn ends<T>(s: const T&) -> i64[21] {
+fn ends<T>(s: const T&) -> i64[24] {
     return [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len,
-            s.nodes.len, s.values.len, s.properties.len, s.units.len, s.constants.len, s.bytes.len, s.sources.len, s.bindings.len, s.code_strings.len, s.strings.len, s.latin1.len, s.shapes.len, s.accessors.len, s.keys.len, s.conts.len];
+            s.nodes.len, s.values.len, s.properties.len, s.units.len, s.constants.len, s.bytes.len, s.sources.len, s.bindings.len, s.code_strings.len, s.strings.len, s.latin1.len, s.shapes.len, s.accessors.len, s.keys.len, s.conts.len,
+            s.sites.len, s.site_sources.len, s.site_records.len];
 }
 fn payload_bytes<T>(s: const T&) -> i64 {
     return bytes_of(s.code_bytes).len + bytes_of(s.functions).len + bytes_of(s.code_constants).len + bytes_of(s.children).len + bytes_of(s.ops).len + bytes_of(s.code_units).len
          + bytes_of(s.nodes).len + bytes_of(s.values).len + bytes_of(s.properties).len + bytes_of(s.units).len + bytes_of(s.constants).len + bytes_of(s.bytes).len + bytes_of(s.sources).len + bytes_of(s.bindings).len + bytes_of(s.latin1).len + bytes_of(s.code_strings).len + bytes_of(s.strings).len
-         + bytes_of(s.shapes).len + bytes_of(s.accessors).len + bytes_of(s.keys).len + bytes_of(s.conts).len;
+         + bytes_of(s.shapes).len + bytes_of(s.accessors).len + bytes_of(s.keys).len + bytes_of(s.conts).len
+         + bytes_of(s.sites).len + bytes_of(s.site_sources).len + bytes_of(s.site_records).len;
 }
 fn footprint<T>(s: const T&) -> i64 { let empty: Snapshot[] = [Snapshot {}]; return bytes_of(empty).len + payload_bytes(s); }
 fn value<T>(s: const T&, v: source::Value, code: bool = false, constant: bool = false) -> bool {
@@ -389,7 +394,35 @@ fn code_valid<T>(s: const T&, c: Control&) -> bool {
         }
         next += f.count;
     }
-    return if next == s.ops.len { true } else { reject(c, Error.Code) };
+    if next != s.ops.len { return reject(c, Error.Code); }
+    return sites_valid(s, c);
+}
+// Direct-eval sites (light-cljs-858), as program::validate checks an image's:
+// one per marked call in ascending op order, source and record ranges tiling
+// their tables, sources in capture order with one receiver, and local and
+// capture indices within the calling function's.
+fn sites_valid<T>(s: const T&, c: Control&) -> bool {
+    var marked: i64 = 0; for op in s.ops { if op.direct_eval { marked += 1; } }
+    if marked != s.sites.len || !poll(c, s.sites.len + s.site_sources.len) { return reject(c, Error.Code); }
+    if s.sites.len == 0 { return if s.site_sources.len == 0 && s.site_records.len == 0 { true } else { reject(c, Error.Code) }; }
+    var owner: u32[>..] = []; owner.resize(s.ops.len, 0);
+    for f, id in s.functions { for pc in f.start..(f.start + f.count) { owner[pc] = id as u32; } }
+    var sources: i64 = 0; var records: i64 = 0; var previous: i64 = -1;
+    for site in s.sites {
+        if site.op as i64 <= previous || site.op >= s.ops.len || !s.ops[site.op].direct_eval || site.sources != sources || site.record != records || site.length == 0 || site.count > 65535 || !range(sources, site.count, s.site_sources.len) || !range(records, site.length, s.site_records.len) { return reject(c, Error.Code); }
+        let f = s.functions[owner[site.op]];
+        var last: i64 = -1; var receivers: i64 = 0;
+        for x in s.site_sources[sources..(sources + site.count)] {
+            let kind = x.kind as i64; let role = x.role as i64;
+            if kind > eval_source::NewTarget || role > eval_role::SuperFields || role < last || role == last && role != eval_role::Binding && role != eval_role::Environment || x.cell && role != eval_role::Binding && role != eval_role::SuperFields { return reject(c, Error.Code); }
+            if kind == eval_source::Local && x.index >= f.locals || kind == eval_source::Capture && x.index >= f.captures || kind != eval_source::Local && kind != eval_source::Capture && x.index != 0 { return reject(c, Error.Code); }
+            if role == eval_role::Receiver { receivers += 1; }
+            last = role;
+        }
+        if receivers != 1 { return reject(c, Error.Code); }
+        previous = site.op; sources += site.count; records += site.length;
+    }
+    return if sources == s.site_sources.len && records == s.site_records.len { true } else { reject(c, Error.Code) };
 }
 fn utf8(bytes: const u8[:]) -> bool {
     var remaining: i64 = 0; var cp: i64 = 0; var minimum: i64 = 0;
@@ -417,7 +450,7 @@ fn effect<T>(s: const T&, f: source::Function, op: source::Op) -> i64, i64 {
 }
 fn validate<T>(s: const T&, c: Control&) -> bool {
     if !poll(c) { return false; }
-    if s.header.version != 2 { return reject(c, Error.Version); }
+    if s.header.version != 3 { return reject(c, Error.Version); }
     if s.header.allocator != 1 { return reject(c, Error.Allocator); }
     if s.header.base <= 0 || s.header.base > 2147483647 || s.header.checkpoint <= 0 || s.header.checkpoint > 2147483647 || s.header.checkpoint == s.header.base { return reject(c, Error.Identity); }
     let lengths = ends(s);
@@ -550,7 +583,7 @@ fn borrow(heap: const source::Heap&, bindings: const Binding[:], checkpoint: i64
     var v = View { header: Header { base: heap.identity, checkpoint: checkpoint, limits: heap.limits, work: heap.work, global: heap.global, call_method: heap.call_method, boot: heap.boot_count, initializers: heap.initializer_count, producers: heap.producer_count, property_rows: heap.property_rows },
         code_bytes: code.source_bytes, functions: code.functions, code_constants: code.constants, children: code.children, ops: code.ops, code_units: code.units, code_strings: code.strings,
         nodes:      heap.nodes, values: heap.values, properties: heap.properties, units: heap.units, strings: heap.strings, constants: heap.constants, bytes: heap.source_bytes, sources: heap.source_ranges, bindings: bindings, latin1: heap.latin1[..source::latin1_len(heap)],
-        shapes: heap.shapes, accessors: heap.accessors, keys: heap.keys, conts: heap.conts };
+        shapes: heap.shapes, accessors: heap.accessors, keys: heap.keys, conts: heap.conts, sites: code.sites, site_sources: code.site_sources, site_records: code.site_records };
     v.header.ends = ends(v); return v;
 }
 // `live`: the heap's one job is running a built-in that only reads it (a
@@ -569,7 +602,8 @@ fn capture(heap: const source::Heap&, bindings: const Binding[:], c: Control&, c
     if s.header.checkpoint <= 0 || s.header.checkpoint > 2147483647 || s.header.checkpoint == heap.identity { reject(c, Error.Identity); return Snapshot {}; }
     c.copied_bytes += footprint(s);
     return Snapshot { header: s.header, code_bytes: s.code_bytes, functions: s.functions, code_constants: s.code_constants, children: s.children, ops: s.ops, code_units: s.code_units, code_strings: s.code_strings,
-        nodes: s.nodes, values: s.values, properties: s.properties, units: s.units, strings: s.strings, constants: s.constants, bytes: s.bytes, sources: s.sources, bindings: s.bindings, latin1: s.latin1, shapes: s.shapes, accessors: s.accessors, keys: s.keys, conts: s.conts };
+        nodes: s.nodes, values: s.values, properties: s.properties, units: s.units, strings: s.strings, constants: s.constants, bytes: s.bytes, sources: s.sources, bindings: s.bindings, latin1: s.latin1, shapes: s.shapes, accessors: s.accessors, keys: s.keys, conts: s.conts,
+        sites: s.sites, site_sources: s.site_sources, site_records: s.site_records };
 }
 // Reset only after the dispatch's job has retired. This reestablishes every
 // restore destination invariant; restore still validates the entire image and
@@ -580,6 +614,7 @@ fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> b
     heap.nodes.clear(); heap.values.clear(); heap.properties.clear(); heap.units.clear(); heap.latin1.clear(); heap.latin1_spare = 0; heap.strings.clear(); heap.constants.clear(); heap.source_bytes.clear(); heap.source_ranges.clear();
     heap.shapes.clear(); heap.accessors.clear(); heap.keys.clear(); heap.interned = 0; heap.image_written = false; heap.conts.clear();
     code.source_bytes.clear(); code.functions.clear(); code.constants.clear(); code.children.clear(); code.ops.clear(); code.units.clear(); code.strings.clear(); code.ins.clear(); code.effects.clear(); code.heights.clear(); code.decoded = 0;
+    code.sites.clear(); code.site_sources.clear(); code.site_records.clear();
     code.valid = false; code.error = tiny::LoadError.None; code.error_pc = -1;
     heap.identity = 0; heap.limits = source::Limits {}; heap.work = 0; heap.fault = source::Fault.None; heap.global = source::Value.Undefined; heap.call_method = source::Value.Undefined;
     heap.boot_count = 0; heap.initializer_count = 0; heap.producer_count = 0; heap.property_rows = 0; heap.image = source::Tops {};
@@ -587,11 +622,12 @@ fn reset(code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&) -> b
 }
 fn restore(s: const Snapshot&, code: source::Code&, heap: source::Heap&, bindings: Binding[>..]&, identity: i64, c: Control&) -> bool {
     let started = clock_ns(); defer { c.restore_ns += clock_ns() - started; }
-    if !(heap.code .== code) || heap.identity != 0 || heap.live_jobs != 0 || heap.nodes.len != 0 || heap.values.len != 0 || heap.properties.len != 0 || heap.units.len != 0 || heap.latin1.len != 0 || heap.strings.len != 0 || heap.constants.len != 0 || heap.source_bytes.len != 0 || heap.source_ranges.len != 0 || heap.shapes.len != 0 || heap.accessors.len != 0 || heap.keys.len != 0 || heap.conts.len != 0 || code.valid || code.source_bytes.len != 0 || code.functions.len != 0 || code.constants.len != 0 || code.children.len != 0 || code.ops.len != 0 || code.units.len != 0 || code.strings.len != 0 || bindings.len != 0 { return reject(c, Error.Destination); }
+    if !(heap.code .== code) || heap.identity != 0 || heap.live_jobs != 0 || heap.nodes.len != 0 || heap.values.len != 0 || heap.properties.len != 0 || heap.units.len != 0 || heap.latin1.len != 0 || heap.strings.len != 0 || heap.constants.len != 0 || heap.source_bytes.len != 0 || heap.source_ranges.len != 0 || heap.shapes.len != 0 || heap.accessors.len != 0 || heap.keys.len != 0 || heap.conts.len != 0 || code.valid || code.source_bytes.len != 0 || code.functions.len != 0 || code.constants.len != 0 || code.children.len != 0 || code.ops.len != 0 || code.units.len != 0 || code.strings.len != 0 || code.sites.len != 0 || code.site_sources.len != 0 || code.site_records.len != 0 || bindings.len != 0 { return reject(c, Error.Destination); }
     if identity <= 0 || identity > 2147483647 || identity == s.header.base || identity == s.header.checkpoint { return reject(c, Error.Identity); }
     if !validate(s, c) { return false; }
     // No initialization, producer, publication cache, claim or waiter code.
-    code.source_bytes.append(s.code_bytes); code.functions.append(s.functions); code.constants.append(s.code_constants); code.children.append(s.children); code.ops.append(s.ops); code.units.append(s.code_units); code.strings.append(s.code_strings); source::decode(code); code.valid = true;
+    code.source_bytes.append(s.code_bytes); code.functions.append(s.functions); code.constants.append(s.code_constants); code.children.append(s.children); code.ops.append(s.ops); code.units.append(s.code_units); code.strings.append(s.code_strings);
+    code.sites.append(s.sites); code.site_sources.append(s.site_sources); code.site_records.append(s.site_records); source::decode(code); code.valid = true;
     heap.identity = identity; heap.limits = s.header.limits; heap.work = s.header.work; heap.global = s.header.global; heap.call_method = s.header.call_method;
     heap.boot_count = s.header.boot; heap.initializer_count = s.header.initializers; heap.producer_count = s.header.producers; heap.property_rows = s.header.property_rows;
     // The image install, not an allocation: rows are copied verbatim into
@@ -622,6 +658,7 @@ fn truncate(twin: const Snapshot&, service: const i64[:], identity: i64, code: s
     if !(heap.code .== code) || heap.live_jobs != 0 || !code.valid || code.functions.len < twin.functions.len || heap.nodes.len < twin.nodes.len { return false; }
     code.source_bytes.resize(twin.code_bytes.len); code.functions.resize(twin.functions.len); code.constants.resize(twin.code_constants.len); code.children.resize(twin.children.len);
     code.ops.resize(twin.ops.len); code.units.resize(twin.code_units.len); code.strings.resize(twin.code_strings.len);
+    code.sites.resize(twin.sites.len); code.site_sources.resize(twin.site_sources.len); code.site_records.resize(twin.site_records.len);
     code.ins.resize(twin.ops.len); code.effects.resize(twin.ops.len); code.heights.resize(twin.functions.len); code.decoded = twin.functions.len;
     heap.nodes.resize(twin.nodes.len); heap.values.resize(twin.values.len); heap.properties.resize(twin.properties.len);
     heap.units.resize(twin.units.len); heap.latin1.resize(twin.latin1.len); heap.latin1_spare = 0; heap.strings.resize(twin.strings.len); heap.constants.resize(twin.constants.len);
@@ -658,6 +695,7 @@ fn pristine(twin: const Snapshot&, identity: i64, code: const source::Code&, hea
     if heap.identity != identity || !same_bits(heap.limits, h.limits) || heap.work != h.work || !source::same_bits(heap.global, h.global) || !source::same_bits(heap.call_method, h.call_method) || heap.fault != source::Fault.None || heap.live_jobs != 0 { return false; }
     if heap.boot_count != h.boot || heap.initializer_count != h.initializers || heap.producer_count != h.producers || heap.property_rows != h.property_rows || code.decoded != twin.functions.len || code.heights.len != twin.functions.len || code.ins.len != twin.ops.len { return false; }
     return same_rows(code.source_bytes, twin.code_bytes) && same_rows(code.functions, twin.functions) && same_rows(code.constants, twin.code_constants) && same_rows(code.children, twin.children) && same_rows(code.ops, twin.ops) && same_rows(code.units, twin.code_units) && same_rows(code.strings, twin.code_strings)
+        && same_rows(code.sites, twin.sites) && same_rows(code.site_sources, twin.site_sources) && same_rows(code.site_records, twin.site_records)
         && same_rows(heap.nodes, twin.nodes) && same_rows(heap.values, twin.values) && same_rows(heap.properties, twin.properties) && same_rows(heap.units, twin.units) && same_rows(heap.latin1, twin.latin1) && same_rows(heap.strings, twin.strings) && same_rows(heap.constants, twin.constants)
         && same_rows(heap.source_bytes, twin.bytes) && same_rows(heap.source_ranges, twin.sources) && same_rows(bindings, twin.bindings)
         && same_rows(heap.shapes, twin.shapes) && same_rows(heap.accessors, twin.accessors) && same_rows(heap.keys, twin.keys) && heap.interned == interned(twin) && same_rows(heap.conts, twin.conts);
@@ -679,6 +717,7 @@ fn over_image(s: const Snapshot&, twin: const Snapshot&, service: const i64[:]) 
     if !same_rows(s.accessors[..twin.accessors.len], twin.accessors) || !same_rows(s.conts[..twin.conts.len], twin.conts) { return false; }
     return same_rows(s.code_bytes[..twin.code_bytes.len], twin.code_bytes) && same_rows(s.functions[..twin.functions.len], twin.functions) && same_rows(s.code_constants[..twin.code_constants.len], twin.code_constants) && same_rows(s.children[..twin.children.len], twin.children)
         && same_rows(s.ops[..twin.ops.len], twin.ops) && same_rows(s.code_units[..twin.code_units.len], twin.code_units) && same_rows(s.code_strings[..twin.code_strings.len], twin.code_strings)
+        && same_rows(s.sites[..twin.sites.len], twin.sites) && same_rows(s.site_sources[..twin.site_sources.len], twin.site_sources) && same_rows(s.site_records[..twin.site_records.len], twin.site_records)
         && same_rows(s.units[..twin.units.len], twin.units) && same_rows(s.latin1[..twin.latin1.len], twin.latin1) && same_rows(s.strings[..twin.strings.len], twin.strings)
         && same_rows(s.constants[..twin.constants.len], twin.constants) && same_rows(s.bytes[..twin.bytes.len], twin.bytes) && same_rows(s.sources[..twin.sources.len], twin.sources);
 }
@@ -695,7 +734,8 @@ fn extend(s: const Snapshot&, twin: const Snapshot&, service: const i64[:], code
     if !validate(s, c) { return false; }
     let a = ends(s); let b = twin.header.ends; for n, i in b { if a[i] < n { return reject(c, Error.Destination); } }
     code.source_bytes.append(s.code_bytes[twin.code_bytes.len..]); code.functions.append(s.functions[twin.functions.len..]); code.constants.append(s.code_constants[twin.code_constants.len..]); code.children.append(s.children[twin.children.len..]);
-    code.ops.append(s.ops[twin.ops.len..]); code.units.append(s.code_units[twin.code_units.len..]); code.strings.append(s.code_strings[twin.code_strings.len..]); source::decode(code);
+    code.ops.append(s.ops[twin.ops.len..]); code.units.append(s.code_units[twin.code_units.len..]); code.strings.append(s.code_strings[twin.code_strings.len..]);
+    code.sites.append(s.sites[twin.sites.len..]); code.site_sources.append(s.site_sources[twin.site_sources.len..]); code.site_records.append(s.site_records[twin.site_records.len..]); source::decode(code);
     state(s.header, identity, heap);
     heap.nodes.append(s.nodes[twin.nodes.len..]); heap.values.append(s.values[twin.values.len..]); heap.properties.append(s.properties[twin.properties.len..]);
     heap.units.append(s.units[twin.units.len..]); heap.latin1.append(s.latin1[twin.latin1.len..]); heap.strings.append(s.strings[twin.strings.len..]); heap.constants.append(s.constants[twin.constants.len..]);

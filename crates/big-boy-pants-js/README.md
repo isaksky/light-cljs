@@ -348,8 +348,7 @@ here proves entry-body execution only. Bootstrap invariants adapt `cc764dbe`,
 parsed/exported true and Goose-executed false. Export walks every function,
 including dead functions, and exports every opcode; an operation the Goose VM
 does not implement, such as a `using` declaration (`using_check`), fails only when it runs, with
-`Fault.Unsupported` naming it (a direct eval of the global `eval` names
-`direct_eval`).
+`Fault.Unsupported` naming it.
 These flags describe the export stage. `macros.bb` separately executes the
 supported Pants macro images and compares structured results. The legacy scalar
 adapter still rejects them. The exporter accepts source alone and cannot
@@ -389,7 +388,7 @@ the scalar VM. Complete ECMAScript/cljs.core are excluded.
 ### Run-time compilation library
 
 Indirect eval (light-cljs-856), the Function constructor (light-cljs-857) and
-later direct eval compile JavaScript while a job runs with bbp's Rust frontend
+direct eval (light-cljs-858) compile JavaScript while a job runs with bbp's Rust frontend
 through an in-process C boundary (`docs/javascript-coverage.md`, decision 1,
 "Run-time compilation"). Every VM program's `.build` sidecar lists
 `src/runtime_compiler.h`, which opens the shared library on the first
@@ -411,7 +410,7 @@ and set the variable; the goose-generated-200k gate's `goose build` of
 run time. A program run with `goose run` (in-process TinyCC) cannot load it:
 an eval there fails by name.
 
-## GSP version 5
+## GSP version 6
 
 Integers are little endian. An image owns one exact immutable UTF-8 source
 buffer (source ID 0), fixed-stride tables and variable payload pools. There are
@@ -420,9 +419,9 @@ exact UTF-16 code-unit ranges, including lone surrogates, separate from source
 UTF-8. Source spans are half-open **byte** ranges. Diagnostic line/column work
 is outside ordinary execution.
 
-The 32-byte header is `GSP\0`, `u32 version=5`, then six u32 lengths: source
+The 32-byte header is `GSP\0`, `u32 version=6`, then six u32 lengths: source
 bytes, functions, constants, child IDs, instructions, UTF-16 units. Sections
-follow in that order:
+follow in that order, then the eval-site section:
 
 | Table | Record | Fields |
 | --- | --- | --- |
@@ -431,6 +430,10 @@ follow in that order:
 | Child IDs | u32 | Absolute function IDs; function operands index their parent's child range |
 | Instructions | 5 × u32, 20 bytes | descriptor; operand; source-byte start/end; original function-code byte offset |
 | UTF-16 | u16 | Runtime string/name code units |
+| Eval-site counts | 3 × u32 | sites, sources, record bytes |
+| Eval sites | 5 × u32, 20 bytes | the call's instruction row; source start/count; record byte start/length |
+| Eval-site sources | 3 × u32, 12 bytes | kind (`eval_source::`); local or capture index; role word (`eval_role::` in bits 0..7, `eval_role::Cell` bit 8) |
+| Eval-site records | bytes | each site's opaque scope record |
 
 Descriptor bits 0..7 are the engine opcode, 8..15 the operand category (none,
 constant/name, local, byte target, child, capture, selector/count), 16..23 the
@@ -450,10 +453,10 @@ digit. Those stayed version 2: new values of existing fields, which earlier
 readers refuse explicitly. Version 3 (light-cljs-823) adds descriptor bit 24:
 the exporter sets it on the call at each direct-eval site's offset, which is
 always `call`, `call_method`, `call_spread` or `call_method_spread`
-(`export_direct_eval_call`); the sites' scope descriptors are not exported.
-The VM decodes each marked call to `Ins.DirectEval`, which
-fails `Fault.Unsupported` naming `direct_eval` when its callee is the realm's
-%eval% and is an ordinary call otherwise. Version 4 (light-cljs-853) adds
+(`export_direct_eval_call`). The VM decodes each marked call to
+`Ins.DirectEval`, a direct eval in the caller's scope when its callee is the
+realm's %eval% (version 6 exports the site's scope) and an ordinary call
+otherwise. Version 4 (light-cljs-853) adds
 each function's source text (ECMAScript [[SourceText]], what QuickJS keeps
 as `debug.source`, which `Function.prototype.toString` returns): flags bit
 18 (`function_row::SourceText`) marks it, and the row's last two words are
@@ -469,7 +472,18 @@ function's parameter list is simple (ECMAScript IsSimpleParameterList: no
 default, rest or destructuring pattern; `Executable::has_simple_parameters`).
 A sloppy function with one gives its arguments object a `callee` data
 property, the function; any other function the %ThrowTypeError% accessor.
-Version-4 readers refuse version 5.
+Version-4 readers refuse version 5. Version 6 (light-cljs-858) adds the
+eval-site section after the UTF-16 pool: one site row per marked call, in
+ascending instruction order, whose capture sources (the caller's bindings,
+the receiver, new.target, the dynamic environments nearest first, the super
+home and the derived constructor's field initializer, in the eval closure's
+capture order, each a local, a capture, the running function, `this`, the
+global object or new.target) the loader validates against the calling
+function's locals and captures, and whose record (`encode_eval_site` in
+`rust/src/frontend/goose.rs`: the whole `EvalSite` but its offset) the VM
+hands back unchanged to the run-time compiler, which decodes and checks it
+and compiles the eval code against it. Source and record ranges tile their
+tables in order. Version-5 readers refuse version 6.
 `export_schema.goose` is compiled reader code generated from the registry
 (descriptors, selectors, name operands, direct-eval call opcodes, each
 opcode's stack effect and control flow, opcode and well-known symbol names);

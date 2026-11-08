@@ -1041,14 +1041,21 @@ thread_fn stack_resumed(saved: Waiting, last: bool) {
 // the image, a captured snapshot carries them (with the closure over them)
 // to another program, where the closure runs, and the worker's reset cuts
 // them away: the tables are pristine, and the next job compiles the same
-// code again into the same rows a fresh worker would use.
+// code again into the same rows a fresh worker would use. The direct eval
+// variant (direct-eval-closure.js, light-cljs-858) does the same with the
+// image's eval site and the one its eval code adds (`sites`).
 fn runtime_code() {
-    heap_program::join(thread_spawn(suspension_parent, str(embed_file("../corpus/serial/eval-closure.gsp")))); let base = qget<snapshot::Snapshot>();
-    heap_program::join(thread_spawn(runtime_code_worker, copy(base))); let saved = qget<Saved>();
-    heap_program::join(thread_spawn(runtime_code_carried, copy(saved.image), copy(base)));
-    print("snapshot runtime code: eval code joins a reused worker's code above its image, travels in a snapshot and leaves with the reset");
+    for direct in [false, true] {
+        let bytes = if direct { embed_file("../corpus/serial/direct-eval-closure.gsp") } else { embed_file("../corpus/serial/eval-closure.gsp") };
+        let sites: i64 = if direct { 1 } else { 0 };
+        heap_program::join(thread_spawn(suspension_parent, str(bytes))); let base = qget<snapshot::Snapshot>();
+        assert(base.sites.len == sites && base.header.ends[21] == sites);
+        heap_program::join(thread_spawn(runtime_code_worker, copy(base), sites)); let saved = qget<Saved>();
+        heap_program::join(thread_spawn(runtime_code_carried, copy(saved.image), copy(base)));
+    }
+    print("snapshot runtime code: eval code, indirect or direct, joins a reused worker's code above its image with its eval sites, travels in a snapshot and leaves with the reset");
 }
-thread_fn runtime_code_worker(base: snapshot::Snapshot) {
+thread_fn runtime_code_worker(base: snapshot::Snapshot, sites: i64) {
     defer { heap_program::finish(); }
     let identity = source::reserve_identity(); let rows: i64[] = [];
     var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
@@ -1065,11 +1072,13 @@ thread_fn runtime_code_worker(base: snapshot::Snapshot) {
         let f = source::node(heap, bump.id()).function as i64;
         assert(f > base.functions.len && code.functions.len > base.functions.len && code.ops.len > base.ops.len);
         assert(code.functions[base.functions.len].eval && !code.functions[f].eval && job.compiled_ops == code.ops.len - base.ops.len);
+        // The outer eval code's own direct-eval site joined the image's.
+        assert(code.sites.len == 2 * sites && (sites == 0 || code.sites[1].op as i64 >= base.ops.len));
         assert(source::retire(job));
         if run == 0 {
             first_row = bump.id(); first_function = f;
             var c = snapshot::Control {}; let image = snapshot::capture(heap, [snapshot::Binding { id: 1, generation: 1, value: bump }], c);
-            assert(c.error == snapshot::Error.None && image.functions.len == code.functions.len);
+            assert(c.error == snapshot::Error.None && image.functions.len == code.functions.len && image.sites.len == code.sites.len);
             assert(qput(Saved { image: copy(image) }));
         } else {
             // The next job's tables were a fresh worker's: the same rows.
@@ -1077,17 +1086,34 @@ thread_fn runtime_code_worker(base: snapshot::Snapshot) {
         }
         assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings));
         assert(code.functions.len == base.functions.len && code.ops.len == base.ops.len && code.ins.len == base.ops.len && heap.constants.len == base.code_constants.len);
+        assert(code.sites.len == sites && code.site_records.len == base.site_records.len);
     }
 }
 // The captured snapshot restores in another program with the eval code in
 // its code tables, and the closure runs there: its counter, the eval
-// code's `let` in a binding cell, is 1 from the first call and becomes 2.
+// code's `let` in a binding cell (or the caller's, read through the nested
+// direct eval, which compiles here), is 1 from the first call and becomes 2.
 thread_fn runtime_code_carried(image: snapshot::Snapshot, base: snapshot::Snapshot) {
     defer { heap_program::finish(); }
+    // Snapshot validation checks the eval sites as an image load does: a
+    // site on an unmarked call, a local past its function's, a second
+    // receiver, an empty record and a site table its header does not count
+    // are refused.
+    for mode in (if image.sites.len > 0 { 5 } else { 0 }) {
+        var bad = copy(image); let first = bad.sites[0].sources;
+        match mode {
+            0 => { bad.sites[0].op -= 1; },
+            1 => { var at: i64 = -1; for x, i in bad.site_sources { if x.kind as i64 == eval_source::Local { at = i; } } assert(at >= 0); bad.site_sources[at].index = 65535; },
+            2 => { for i in bad.sites[0].count { bad.site_sources[first + i].role = eval_role::Receiver as u8; } },
+            3 => { bad.sites[0].length = 0; },
+            _ => { bad.header.ends[21] += 1; },
+        }
+        var c = snapshot::Control {}; assert(!snapshot::validate(bad, c) && c.error == (if mode == 4 { snapshot::Error.Length } else { snapshot::Error.Code }));
+    }
     var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
     assert(snapshot::restore(image, code, heap, bindings, source::reserve_identity(), r));
-    assert(code.functions.len > base.functions.len && code.functions[base.functions.len].eval);
-    var job = source::Job { heap: heap };
+    assert(code.functions.len > base.functions.len && code.functions[base.functions.len].eval && code.sites.len == image.sites.len);
+    var job = source::Job { heap: heap, writable_code: code };
     assert(source::start(job, bindings[0].value, []) && source::run(job, -1) == tiny::Outcome.Complete);
     assert(job.result.is_number() && job.result.num() == 2.0);
     assert(source::retire(job));
@@ -1207,7 +1233,7 @@ thread_fn finite_map_malformed(parent: FiniteMap, mode: i64) {
         var dest = source::Code {}; var target = source::Heap { code: dest }; var roots: snapshot::Binding[>..] = []; var restore = snapshot::Control {};
         assert(!snapshot::restore(bad, dest, target, roots, source::reserve_identity(), restore) && restore.error == snapshot::Error.Link && restore.copied_bytes == 0);
         let empty = snapshot::borrow(target, roots, 1);
-        assert(snapshot::ends(empty) == [0; 21] && target.identity == 0 && !dest.valid && target.fault == source::Fault.None);
+        assert(snapshot::ends(empty) == [0; 24] && target.identity == 0 && !dest.valid && target.fault == source::Fault.None);
         var retry = snapshot::Control {}; assert(snapshot::restore(saved, dest, target, roots, source::reserve_identity(), retry));
     }
 }

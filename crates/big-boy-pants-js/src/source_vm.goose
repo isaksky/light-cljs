@@ -183,6 +183,18 @@ struct Function { start: u32, count: u32, constants: u32, children: u32, params:
 // direct_eval: the image marks the row as the call of a direct-eval site
 // (descriptor bit 24, light-cljs-823); only the four call opcodes carry it.
 struct Op { code: i64, arg: i64, offset: i64, start: i64, end: i64, depth: i64 = -1, direct_eval: bool = false }
+// A direct-eval site (light-cljs-858; GSP version 6, program::Layout): the
+// row of its marked call in Code.ops, its capture sources
+// Code.site_sources[sources..sources + count] in the eval closure's capture
+// order, and its scope as the opaque record
+// Code.site_records[record..record + length], which only the run-time
+// compiler reads (runtime_compile.goose, start_direct_eval). Code.sites is
+// in ascending `op` order.
+struct Site { op: u32, sources: u32, count: u32, record: u32, length: u32 }
+// One capture source: kind an eval_source:: name, index the caller's local
+// or capture (0 for the other kinds), role an eval_role:: name, cell whether
+// the value is a binding cell.
+struct SiteSource { kind: u8, role: u8, cell: bool, index: u32 }
 // One decoded instruction per validated `Op` row (light-cljs-785; decision 1
 // of docs/javascript-coverage.md): a fixed-mode enum dispatched by `match` in
 // `execute`. Payloads are the row's validated operand; jump targets are absolute
@@ -236,10 +248,13 @@ enum Ins {
     // GeneratorYieldStar and AsyncGeneratorStart stay Unsupported.
     GeneratorStart, GeneratorInitialYield, GeneratorYield, AsyncStart, Await,
     // The Call, CallMethod, CallSpread or CallMethodSpread of a direct-eval
-    // site (light-cljs-823): when its callee is the realm's %eval% it fails
-    // Unsupported naming `direct_eval` (decision 1); any other callee is an
-    // ordinary call, spread or not.
-    DirectEval { argc: u32, method: bool, spread: bool },
+    // site (light-cljs-823): when its callee is the realm's %eval% it is a
+    // direct eval in the caller's scope (light-cljs-858, start_direct_eval);
+    // any other callee is an ordinary call, spread or not. SloppyThis
+    // (CheckSloppyThis, 146) v → this: eval code's read of a sloppy caller's
+    // receiver, an object unchanged, undefined or null the global object,
+    // any other primitive boxed.
+    DirectEval { argc: u32, method: bool, spread: bool }, SloppyThis,
     // Spread arguments (light-cljs-850; rust/src/vm/dispatch.rs
     // spread_arguments and call_spread): CheckSpread (CheckSpreadArguments)
     // args → args, a RangeError above 65,535 packed elements; CallSpread
@@ -270,6 +285,8 @@ root struct Code {
     // depths: a frame with that much stack room skips the per-instruction
     // stack checks (light-cljs-801).
     heights: u32[>..] = [],
+    // Direct-eval sites (light-cljs-858; Site).
+    sites: Site[>..] = [], site_sources: SiteSource[>..] = [], site_records: u8[>..] = [],
 }
 // Unsupported: an exported opcode (or constant kind) this VM does not
 // implement ran; Job.fault_opcode names it. Like every fault except the
@@ -597,9 +614,6 @@ root struct Job {
     writes:   Write[>..]                 = [], status: tiny::Status = tiny::Status.Ready, result: Value = Value.Undefined,
     handlers: Handler[>..<]              = [],
     fault:    Fault                      = Fault.None, fault_pc: i64 = -1, fault_function: i64 = -1, fault_opcode: i64 = -1, thrown: bool = false,
-    // The Unsupported fault is a direct eval of %eval% (Ins.DirectEval,
-    // light-cljs-823), named `direct_eval` instead of its call opcode.
-    direct_eval: bool = false,
     // The script's global lexical record (light-cljs-824): a dictionary-mode
     // node the job allocated by its first DeclareGlobalLet, DeclareGlobalConst
     // or DeclareGlobalConstValue, one record per script `let`, `const` or
@@ -736,7 +750,7 @@ fn instruction(op: Op) -> Ins {
         opcode::GeneratorStart => Ins.GeneratorStart, opcode::GeneratorInitialYield => Ins.GeneratorInitialYield, opcode::GeneratorYield => Ins.GeneratorYield, opcode::AsyncStart => Ins.AsyncStart, opcode::Await => Ins.Await,
         opcode::GetNewTarget => Ins.NewTarget, opcode::ToObject => Ins.ToObject, opcode::Instanceof => Ins.Instanceof,
         opcode::GetIterator => Ins.GetIterator, opcode::RequireObject => Ins.RequireObject, opcode::AppendHole => Ins.AppendHole,
-        opcode::IsCell => Ins.IsCell, opcode::IsObject => Ins.IsObject, opcode::SetComputedName => Ins.ComputedName { k: a },
+        opcode::IsCell => Ins.IsCell, opcode::IsObject => Ins.IsObject, opcode::CheckSloppyThis => Ins.SloppyThis, opcode::SetComputedName => Ins.ComputedName { k: a },
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -793,6 +807,15 @@ fn load(code: Code&, image: const program::Image&) -> bool {
         code.ops.push(Op { code: program::word(bytes, at) & 255, arg: program::word(bytes, at + 4), offset: program::word(bytes, at + 16), start: program::word(bytes, at + 8), end: program::word(bytes, at + 12), direct_eval: (program::word(bytes, at) >> 24) == 1 });
     }
     for i in program::word(bytes, 28) { let at = l.units + i * 2; code.units.push(bytes[at] | ((bytes[at + 1] as u16) << 8)); }
+    for i in program::word(bytes, l.tail) {
+        let at = l.sites + i * 20;
+        code.sites.push(Site { op: program::word(bytes, at) as u32, sources: program::word(bytes, at + 4) as u32, count: program::word(bytes, at + 8) as u32, record: program::word(bytes, at + 12) as u32, length: program::word(bytes, at + 16) as u32 });
+    }
+    for i in program::word(bytes, l.tail + 4) {
+        let at = l.sources + i * 12; let role = program::word(bytes, at + 8);
+        code.site_sources.push(SiteSource { kind: program::word(bytes, at) as u8, role: (role & 255) as u8, cell: (role & eval_role::Cell) != 0, index: program::word(bytes, at + 4) as u32 });
+    }
+    code.site_records.append(bytes[l.records..l.end]);
     for f in code.functions {
         for i in f.start..(f.start + f.count) {
             let op = code.ops[i]; let pop, push = stack_effect(code, f, op);
@@ -837,8 +860,18 @@ fn append_code(out: Code&, other: const Code&) -> i64 {
     for s in other.strings { out.strings.push(Str { start: s.start + units as u32, len: s.len }); }
     for v in other.constants { out.constants.push(if v.is_string() { Value.String { s: (v.sid() + strings) as u32 } } else { v }); }
     for id in other.children { out.children.push((functions + id) as u32); }
+    // Sites stay in ascending op order: the appended ops are above.
+    let sources = out.site_sources.len; let records = out.site_records.len;
+    for s in other.sites { var n = s; n.op += ops as u32; n.sources += sources as u32; n.record += records as u32; out.sites.push(n); }
+    out.site_sources.append(other.site_sources); out.site_records.append(other.site_records);
     out.units.append(other.units); out.source_bytes.append(other.source_bytes); decode(out); out.valid = true;
     return functions;
+}
+// The direct-eval site of instruction row `op` (Code.sites, ascending), or -1.
+fn site_at(code: const Code&, op: i64) -> i64 {
+    var lo: i64 = 0; var hi = code.sites.len;
+    while lo < hi { let mid = lo + (hi - lo) / 2; if code.sites[mid].op < op { lo = mid + 1; } else { hi = mid; } }
+    return if lo < code.sites.len && code.sites[lo].op == op { lo } else { -1 };
 }
 fn memory(heap: Heap&) -> bool { heap.fault = Fault.MemoryLimit; return false; }
 // The heap's table lengths, as the image tops a restore or reset sets.
@@ -2248,7 +2281,6 @@ fn describe_fault(out: u8[>..]&, code: const Code&, job: const Job&) {
 // Just the operation: `construct`, `const(BigInt)`.
 fn unsupported_operation(out: u8[>..]&, code: const Code&, job: const Job&) {
     if job.fault != Fault.Unsupported || job.fault_opcode < 0 { return; }
-    if job.direct_eval { out.append("direct_eval"); return; }
     out.append(export_opcode_name(job.fault_opcode));
     if job.fault_opcode == opcode::Const {
         let c = code.constants[code.functions[job.fault_function].constants + code.ops[job.fault_pc].arg];
@@ -2459,7 +2491,7 @@ fn reset(job: Job&) -> bool {
     job.protected_nodes = 0; job.owned_nodes = 0; job.foreign.clear(); job.root_receiver = Value.Undefined; job.gensym_prefix.clear(); job.gensym_next = 0; job.effect_args = [Value.Undefined; 8]; job.effect_count = 0; job.detail.clear(); job.heap.proxy_method = -1;
     job.effect_frame = Frame { function: -1, pc: -1, local_base: 0, operand_base: 0, callee: Value.Undefined, receiver: Value.Undefined };
     job.queue.clear(); job.queue_head = 0; job.draining = false; job.entry = Value.Undefined; job.rejections.clear();
-    job.lexicals = Value.Undefined; job.direct_eval = false; job.compiled_ops = 0; job.floor = Tops {}; job.reclaimable = false; job.logged_values = false;
+    job.lexicals = Value.Undefined; job.compiled_ops = 0; job.floor = Tops {}; job.reclaimable = false; job.logged_values = false;
     return true;
 }
 // The write log holds named property writes only: the typed outcome's
@@ -3809,13 +3841,32 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 DirectEval c => {
                     // The callee sits below the arguments (a spread call's one
                     // packed array), above a method's receiver.
+                    // Only the realm's %eval% itself makes a direct eval: a
+                    // Proxy around it, or a bound copy, is an ordinary call.
                     let below = if c.spread { 1 } else { c.argc as i64 };
-                    if realm_eval(heap, job.operands[job.operands.len - below - 1]) { job.direct_eval = true; heap.fault = Fault.Unsupported; break; }
+                    let direct = realm_eval(heap, job.operands[job.operands.len - below - 1]);
                     settle(job, ran, used);
                     let argc: i64 = if c.spread { spread_unpack(job, top, at, c.method, false) } else { c.argc };
                     if argc < 0 { if heap.fault == Fault.None { in_place(job, top, at); } break; }
-                    if !invoke(job, top, at, argc, c.method) { break; }
+                    if direct {
+                        job.frames[top].pc = at + 1;
+                        start_direct_eval(job, top, at, argc, c.method);
+                        if !in_place(job, top, at) { break; }
+                    } else if !invoke(job, top, at, argc, c.method) { break; }
                     left = fuel(job, allowance, used);
+                },
+                SloppyThis => {
+                    let v = job.operands[job.operands.len - 1];
+                    if v.is_undefined() || v.is_null() { job.operands[job.operands.len - 1] = heap.global; }
+                    else if !v.is_object() {
+                        // A primitive receiver is boxed, as This boxes a
+                        // sloppy function's own (OrdinaryCallBindThis).
+                        settle(job, ran, used); job.frames[top].pc = pc;
+                        let boxed = to_object(job, v);
+                        if heap.fault == Fault.None { job.operands[job.operands.len - 1] = boxed; }
+                        if !in_place(job, top, at) { break; }
+                        left = fuel(job, allowance, used);
+                    }
                 },
                 CheckSpread => {
                     let a = job.operands[job.operands.len - 1];

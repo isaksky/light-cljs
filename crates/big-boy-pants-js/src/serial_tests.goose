@@ -159,8 +159,6 @@ thread_fn check_run(bytes: u8[], expected: u8[], fault: source::Fault, setup: i6
         // The fault names the unimplemented opcode it stopped at.
         var text: u8[>..] = []; source::describe_fault(text, code, job); assert(text[..] == expected);
         assert(job.fault_opcode == code.ops[job.fault_pc].code && !job.thrown);
-        // A direct eval names itself, not its call opcode (light-cljs-823).
-        assert(job.direct_eval == (expected[..] == "Fault.Unsupported:direct_eval"));
     } else if expected.len > 0 {
         // A named built-in step an UnsupportedOperand did not implement.
         var text: u8[>..] = []; source::describe_fault(text, code, job); assert(text[..] == expected);
@@ -628,14 +626,16 @@ fn main() {
     check(embed_file("../corpus/serial/dormant-constants.gsp"), "number:7.0");
     check(embed_file("../corpus/serial/bigint-reached.gsp"), "Fault.Unsupported:const(BigInt)", source::Fault.Unsupported);
     bigint_constants(embed_file("../corpus/serial/dormant-constants.gsp"));
-    // Direct eval (light-cljs-823): reached, it fails by name even under a
-    // `catch`; replacing the global `eval` makes the marked call ordinary; an
-    // indirect eval compiles and runs (light-cljs-856). Spread arguments
-    // from a generator are collected (light-cljs-843) and checked
-    // (light-cljs-850); the marked call_spread of %eval% then fails by name,
-    // and the spread variants are checked at decode (direct_eval_decode).
-    check(embed_file("../corpus/serial/direct-eval-reached.gsp"), "Fault.Unsupported:direct_eval", source::Fault.Unsupported);
-    check(embed_file("../corpus/serial/direct-eval-spread.gsp"), "Fault.Unsupported:direct_eval", source::Fault.Unsupported);
+    // Direct eval (light-cljs-858): reached, it compiles in the caller's
+    // scope and runs; replacing the global `eval` makes the marked call
+    // ordinary; an indirect eval compiles and runs (light-cljs-856). Spread
+    // arguments from a generator are collected (light-cljs-843) and checked
+    // (light-cljs-850), and the marked call_spread of %eval% is a direct eval
+    // too; the spread variants are checked at decode (direct_eval_decode). A
+    // loop in direct eval code stops and resumes at every limit.
+    check(embed_file("../corpus/serial/direct-eval-reached.gsp"), "number:2.0");
+    check(embed_file("../corpus/serial/direct-eval-spread.gsp"), "number:2.0");
+    check(embed_file("../corpus/serial/direct-eval-loop.gsp"), "number:25.0");
     // Spread-argument limits (light-cljs-850): collection stops after
     // exactly 65,536 `next` calls and 65,535 arguments enter; under a
     // 128-value stack limit both spread calls are a catchable StackLimit
@@ -876,7 +876,8 @@ fn control_flow() {
         heap_program::join(thread_spawn(cancelled_job, str(embed_file("../corpus/serial/cancel-fault.gsp")), sliced, 3));
         heap_program::join(thread_spawn(cancelled_job, str(embed_file("../corpus/serial/cancel.gsp")), sliced, 4));
         for mode in 3 { heap_program::join(thread_spawn(cancelled_for_of, str(embed_file("../corpus/serial/cancel-for-of.gsp")), sliced, mode)); }
-        heap_program::join(thread_spawn(cancelled_eval, str(embed_file("../corpus/serial/cancel-eval.gsp")), sliced));
+        heap_program::join(thread_spawn(cancelled_eval, str(embed_file("../corpus/serial/cancel-eval.gsp")), sliced, str("inner ")));
+        heap_program::join(thread_spawn(cancelled_eval, str(embed_file("../corpus/serial/cancel-direct-eval.gsp")), sliced, str("inner outer ")));
         if !sliced { heap_program::join(thread_spawn(eval_source_limit, str(embed_file("../corpus/serial/eval-source-limit.gsp")))); }
     }
     heap_program::join(thread_spawn(pending_completions, str(embed_file("../corpus/serial/calls.gsp"))));
@@ -1652,10 +1653,12 @@ thread_fn cancelled_for_of(bytes: u8[], sliced: bool, mode: i64) {
     expected.append(if mode == 1 { "closed " } else { "inner closed " });
     assert(keys[..] == expected[..]);
 }
-// Cancellation inside eval code (cancel-eval.js, light-cljs-856; decision
-// 4): the eval's frame is one of the dispatch loop's, so its finally block
-// runs and the caller's catch block never does; the job fails Cancelled.
-thread_fn cancelled_eval(bytes: u8[], sliced: bool) {
+// Cancellation inside eval code (cancel-eval.js, light-cljs-856, and
+// cancel-direct-eval.js, light-cljs-858; decision 4): the eval's frame is
+// one of the dispatch loop's, so its finally block runs, then the caller's
+// (the writes end with `tail`), and the caller's catch block never does;
+// the job fails Cancelled.
+thread_fn cancelled_eval(bytes: u8[], sliced: bool, tail: u8[]) {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, bytes);
     var heap = source::Heap { code: code }; assert(source::initialize(heap));
@@ -1668,7 +1671,7 @@ thread_fn cancelled_eval(bytes: u8[], sliced: bool) {
     if sliced { while source::run(job, 1) == tiny::Outcome.Yielded {} } else { source::run(job, -1); }
     assert(job.status == tiny::Status.Failed && job.fault == source::Fault.Cancelled && !job.thrown);
     let keys = written(heap, job);
-    expected.append("inner ");
+    expected.append(tail);
     assert(keys[..] == expected[..]);
 }
 // Run-time code stays within what a snapshot admits (eval-source-limit.js,
@@ -2009,12 +2012,14 @@ fn duplicate_image(dup: i64, width: i64) -> u8[] {
     for i in (width - 1) { ops.push(opcode::Pop); }
     ops.push(opcode::Return);
     var bytes: u8[>..] = []; bytes.append("GSP\0");
-    // Version 5, no source, one function, no constants or children.
-    for n in [5, 0, 1, 0, 0, ops.len, 0] { push_word(bytes, n); }
+    // Version 6, no source, one function, no constants or children.
+    for n in [6, 0, 1, 0, 0, ops.len, 0] { push_word(bytes, n); }
     // The function: its instruction run, no constants, children, parameters,
     // locals, captures, name or source text; flags 1 marks it strict.
     for n in [0, ops.len, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0] { push_word(bytes, n); }
     for op, i in ops { for n in [export_descriptor(op), 0, 0, 0, i] { push_word(bytes, n); } }
+    // An empty eval-site section.
+    for n in [0, 0, 0] { push_word(bytes, n); }
     return str(bytes);
 }
 thread_fn duplicate_run(bytes: u8[], width: i64) {

@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use crate::frontend::{ScriptOptions, Span, SyntaxError, SyntaxErrorKind, compile_script_with};
 use crate::value::Primitive;
 use crate::vm::Executable;
+use crate::vm::executable::{EvalBinding, EvalBindingKind, EvalSite, EvalSource};
 use crate::vm::instr::{Opcode, OperandKind};
 
 /// Version 3 (light-cljs-823) adds the direct-eval site bit of instruction
@@ -14,7 +15,11 @@ use crate::vm::instr::{Opcode, OperandKind};
 /// so the row is [`FUNCTION_WORDS`] words; version-3 readers refuse it.
 /// Version 5 (light-cljs-854) adds function flags bit 19
 /// ([`SIMPLE_PARAMETERS`]); version-4 readers refuse it.
-pub const VERSION: u32 = 5;
+/// Version 6 (light-cljs-858) adds the eval-site section after the UTF-16
+/// pool: each direct-eval site's capture sources as validated rows and its
+/// whole scope as an opaque record ([`encode_eval_site`]); version-5 readers
+/// refuse it.
+pub const VERSION: u32 = 6;
 /// The u32 words of a function row (60 bytes): instruction start/count,
 /// constant start/count, child start/count, params, locals, captures,
 /// name-unit start/count, JS length, flags, source-text byte start/end.
@@ -121,9 +126,8 @@ fn flow_code(flow: crate::vm::instr::Flow) -> u32 {
 /// Descriptor bit 24: the instruction is the call of a direct-eval site
 /// (`eval(...)` written as a plain call; `ExecutableSpec::eval_sites`). Image
 /// metadata, not an opcode: only the four call opcodes of
-/// [`DIRECT_EVAL_CALLS`] carry it, and bits 25..31 stay zero. The site's scope
-/// descriptors (bindings, receiver, super home) are not exported; the Goose VM
-/// fails such a call by name when its callee is the realm's %eval%.
+/// [`DIRECT_EVAL_CALLS`] carry it, and bits 25..31 stay zero. Each marked call
+/// has exactly one row in the eval-site section (version 6, light-cljs-858).
 pub const DIRECT_EVAL_SITE: u32 = 1 << 24;
 /// The opcodes the lowerer emits at a direct-eval site's offset.
 pub const DIRECT_EVAL_CALLS: [Opcode; 4] = [
@@ -278,6 +282,284 @@ fn stack_effect_word(op: Opcode) -> u32 {
     base as u32 | (pushes as u32) << 8 | (multiplier as u32) << 16 | source << 24 | flow << 28
 }
 
+/// The kind of a direct-eval site's capture source (`eval_source::` in the
+/// generated schema), in [`EvalSource`]'s order: a source row's first word.
+const EVAL_SOURCES: [&str; 6] = [
+    "Local",
+    "Capture",
+    "CurrentFunction",
+    "This",
+    "GlobalObject",
+    "NewTarget",
+];
+fn eval_source_row(source: EvalSource) -> (u32, u32) {
+    match source {
+        EvalSource::Local(i) => (0, u32::from(i)),
+        EvalSource::Capture(i) => (1, u32::from(i)),
+        EvalSource::CurrentFunction => (2, 0),
+        EvalSource::This => (3, 0),
+        EvalSource::GlobalObject => (4, 0),
+        EvalSource::NewTarget => (5, 0),
+    }
+}
+/// What a capture source supplies (`eval_role::` in the generated schema), in
+/// the capture order of the Pants engine's `start_direct_eval`: every binding,
+/// the receiver, new.target, every dynamic environment (nearest first), the
+/// super home, the derived constructor's field initializer. A source row's
+/// third word: bits 0..7 the role, bit 8 ([`EVAL_CELL`]) the value is a
+/// binding cell.
+const EVAL_ROLES: [&str; 6] = [
+    "Binding",
+    "Receiver",
+    "NewTarget",
+    "Environment",
+    "SuperHome",
+    "SuperFields",
+];
+pub const EVAL_CELL: u32 = 1 << 8;
+
+/// The opaque record of a direct-eval site: the whole [`EvalSite`] but its
+/// offset, which the Goose VM hands back unchanged to the run-time compiler
+/// ([`RuntimeMode::DirectEval`], [`decode_eval_site`]). Little endian:
+///
+/// * u8 flags: bit 0 strict, 1 receiver_strict, 2 class_initializer, 3 a
+///   super home, 4 super fields, 5 the super fields are a cell, 6 new.target,
+///   7 a variable environment;
+/// * the receiver, then each present source among new.target, super home,
+///   super fields and variable environment, in that order, each a source:
+///   u8 kind (an [`EVAL_SOURCES`] index) and u16 index;
+/// * u32 binding count, each binding a string, a source, u8 kind (mutable,
+///   const, function name, import), u8 cell, u16 environments;
+/// * u32 environment count, each a source;
+/// * u32 counts of variable bindings, then of lexical conflicts, each entry
+///   a string;
+///
+/// a string being its u32 byte length and its UTF-8.
+pub fn encode_eval_site(site: &EvalSite) -> Vec<u8> {
+    let mut out = Vec::new();
+    let source = |out: &mut Vec<u8>, s: EvalSource| {
+        let (kind, index) = eval_source_row(s);
+        out.push(kind as u8);
+        out.extend_from_slice(&(index as u16).to_le_bytes());
+    };
+    let string = |out: &mut Vec<u8>, s: &str| {
+        out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+        out.extend_from_slice(s.as_bytes());
+    };
+    let flags = u8::from(site.strict)
+        | u8::from(site.receiver_strict) << 1
+        | u8::from(site.class_initializer) << 2
+        | u8::from(site.super_home.is_some()) << 3
+        | u8::from(site.super_fields.is_some()) << 4
+        | u8::from(site.super_fields.is_some_and(|(_, cell)| cell)) << 5
+        | u8::from(site.new_target.is_some()) << 6
+        | u8::from(site.variable_environment.is_some()) << 7;
+    out.push(flags);
+    source(&mut out, site.receiver);
+    for s in [
+        site.new_target,
+        site.super_home,
+        site.super_fields.map(|(s, _)| s),
+        site.variable_environment,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        source(&mut out, s);
+    }
+    out.extend_from_slice(&(site.bindings.len() as u32).to_le_bytes());
+    for b in &site.bindings {
+        string(&mut out, &b.name);
+        source(&mut out, b.source);
+        out.push(match b.kind {
+            EvalBindingKind::Mutable => 0,
+            EvalBindingKind::Const => 1,
+            EvalBindingKind::FunctionName => 2,
+            EvalBindingKind::Import => 3,
+        });
+        out.push(u8::from(b.cell));
+        out.extend_from_slice(&b.environments.to_le_bytes());
+    }
+    out.extend_from_slice(&(site.environments.len() as u32).to_le_bytes());
+    for s in &site.environments {
+        source(&mut out, *s);
+    }
+    for names in [&site.variable_bindings, &site.lexical_conflicts] {
+        out.extend_from_slice(&(names.len() as u32).to_le_bytes());
+        for name in names {
+            string(&mut out, name);
+        }
+    }
+    out
+}
+
+/// Decode [`encode_eval_site`]'s record: `None` when it is malformed or
+/// breaks a rule the engine's loader checks of a site (`Executable::load`):
+/// unique binding names, every mutable binding a cell, binding environments
+/// within the site's, the variable environment one of them and its static
+/// bindings mutable cells, a consistent super context, and every capture
+/// within u16. The offset is 0: a run-time compilation needs none.
+pub fn decode_eval_site(bytes: &[u8]) -> Option<EvalSite> {
+    struct Reader<'a>(&'a [u8]);
+    impl Reader<'_> {
+        fn take(&mut self, n: usize) -> Option<&[u8]> {
+            if n > self.0.len() {
+                return None;
+            }
+            let (head, rest) = self.0.split_at(n);
+            self.0 = rest;
+            Some(head)
+        }
+        fn u8(&mut self) -> Option<u8> {
+            self.take(1).map(|b| b[0])
+        }
+        fn u16(&mut self) -> Option<u16> {
+            self.take(2).map(|b| u16::from_le_bytes([b[0], b[1]]))
+        }
+        fn u32(&mut self) -> Option<usize> {
+            self.take(4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+        }
+        fn source(&mut self) -> Option<EvalSource> {
+            let kind = self.u8()?;
+            let index = self.u16()?;
+            let source = match kind {
+                0 => EvalSource::Local(index),
+                1 => EvalSource::Capture(index),
+                2 => EvalSource::CurrentFunction,
+                3 => EvalSource::This,
+                4 => EvalSource::GlobalObject,
+                5 => EvalSource::NewTarget,
+                _ => return None,
+            };
+            (kind <= 1 || index == 0).then_some(source)
+        }
+        fn string(&mut self) -> Option<String> {
+            let n = self.u32()?;
+            String::from_utf8(self.take(n)?.to_vec()).ok()
+        }
+        fn count(&mut self) -> Option<usize> {
+            // Every counted entry takes at least three bytes.
+            let n = self.u32()?;
+            (n <= self.0.len() / 3).then_some(n)
+        }
+    }
+    let mut r = Reader(bytes);
+    let flags = r.u8()?;
+    let receiver = r.source()?;
+    let new_target = if flags & 64 != 0 {
+        Some(r.source()?)
+    } else {
+        None
+    };
+    let super_home = if flags & 8 != 0 {
+        Some(r.source()?)
+    } else {
+        None
+    };
+    let super_fields = match (flags & 16 != 0, flags & 32 != 0) {
+        (true, cell) => Some((r.source()?, cell)),
+        (false, false) => None,
+        (false, true) => return None,
+    };
+    let variable_environment = if flags & 128 != 0 {
+        Some(r.source()?)
+    } else {
+        None
+    };
+    let mut bindings = Vec::new();
+    for _ in 0..r.count()? {
+        let name = r.string()?;
+        let source = r.source()?;
+        let kind = match r.u8()? {
+            0 => EvalBindingKind::Mutable,
+            1 => EvalBindingKind::Const,
+            2 => EvalBindingKind::FunctionName,
+            3 => EvalBindingKind::Import,
+            _ => return None,
+        };
+        let cell = match r.u8()? {
+            0 => false,
+            1 => true,
+            _ => return None,
+        };
+        let environments = r.u16()?;
+        bindings.push(EvalBinding {
+            name,
+            source,
+            kind,
+            cell,
+            environments,
+        });
+    }
+    let mut environments = Vec::new();
+    for _ in 0..r.count()? {
+        environments.push(r.source()?);
+    }
+    let mut lists = [Vec::new(), Vec::new()];
+    for list in &mut lists {
+        for _ in 0..r.count()? {
+            list.push(r.string()?);
+        }
+    }
+    let [variable_bindings, lexical_conflicts] = lists;
+    if !r.0.is_empty() {
+        return None;
+    }
+    let site = EvalSite {
+        offset: 0,
+        strict: flags & 1 != 0,
+        bindings,
+        receiver,
+        receiver_strict: flags & 2 != 0,
+        class_initializer: flags & 4 != 0,
+        super_home,
+        super_fields,
+        new_target,
+        environments,
+        variable_environment,
+        variable_bindings,
+        lexical_conflicts,
+    };
+    let mut names = BTreeSet::new();
+    let invalid = eval_captures(&site).len() > usize::from(u16::MAX)
+        || site.class_initializer && site.super_home.is_none()
+        || site.super_fields.is_some()
+            && (site.super_home.is_none() || site.new_target.is_none() || site.class_initializer)
+        || site
+            .variable_environment
+            .is_some_and(|s| !site.environments.contains(&s))
+        || site.variable_bindings.iter().any(|name| {
+            !site
+                .bindings
+                .iter()
+                .any(|b| b.name == *name && b.kind == EvalBindingKind::Mutable && b.cell)
+        })
+        || site.bindings.iter().any(|b| {
+            !names.insert(b.name.as_str())
+                || (b.kind == EvalBindingKind::Mutable && !b.cell)
+                || usize::from(b.environments) > site.environments.len()
+        });
+    (!invalid).then_some(site)
+}
+
+/// A site's capture sources in the eval closure's capture order (the Pants
+/// engine's `start_direct_eval`, `lower_direct_eval`'s capture places): each
+/// with its role (an [`EVAL_ROLES`] index) and whether it is a cell.
+fn eval_captures(site: &EvalSite) -> Vec<(EvalSource, u32, bool)> {
+    let mut out: Vec<_> = site
+        .bindings
+        .iter()
+        .map(|b| (b.source, 0, b.cell))
+        .collect();
+    out.push((site.receiver, 1, false));
+    out.extend(site.new_target.map(|s| (s, 2, false)));
+    out.extend(site.environments.iter().map(|s| (*s, 3, false)));
+    out.extend(site.super_home.map(|s| (s, 4, false)));
+    out.extend(site.super_fields.map(|(s, cell)| (s, 5, cell)));
+    out
+}
+
 #[derive(Default)]
 struct Tables {
     functions: Vec<[u32; FUNCTION_WORDS]>,
@@ -285,6 +567,12 @@ struct Tables {
     children: Vec<u32>,
     instructions: Vec<[u32; 5]>,
     units: Vec<u16>,
+    /// The eval-site section (version 6): per site its call's instruction
+    /// row, source start/count and record byte start/length; per source its
+    /// kind, index and role word; the records' bytes.
+    sites: Vec<[u32; 5]>,
+    site_sources: Vec<[u32; 3]>,
+    site_records: Vec<u8>,
     operations: BTreeSet<&'static str>,
     string_constants: BTreeSet<String>,
     form_operations: BTreeSet<String>,
@@ -319,10 +607,11 @@ impl Tables {
         let id = bounded(self.functions.len(), MAX_FUNCTIONS - 1, source)?;
         self.functions.push([0; FUNCTION_WORDS]);
         let spec = executable.to_spec();
-        // Direct-eval sites export as marked calls (light-cljs-823): the
-        // program runs, and only a direct eval that executes fails, by name.
+        // Direct-eval sites export as marked calls (light-cljs-823), each with
+        // its row in the eval-site section (light-cljs-858), in offset order.
         let eval_offsets: BTreeSet<u32> = spec.eval_sites.iter().map(|s| s.offset).collect();
         let mut marked = 0;
+        let mut site_rows = std::collections::BTreeMap::new();
         // Children are constructed first, then their IDs form one contiguous
         // range. IDs survive all subsequent table growth.
         let mut children = Vec::new();
@@ -425,6 +714,7 @@ impl Tables {
                     ));
                 }
                 marked += 1;
+                site_rows.insert(offset as u32, self.instructions.len() as u32);
                 DIRECT_EVAL_SITE
             } else {
                 0
@@ -448,13 +738,45 @@ impl Tables {
             offset += 1 + size;
             index += 1;
         }
-        if marked != eval_offsets.len() {
+        if marked != eval_offsets.len() || marked != spec.eval_sites.len() {
             return Err(problem(
                 source,
                 SyntaxErrorKind::Internal,
                 Span::new(0, 0),
                 "direct eval site is not an instruction in Goose export",
             ));
+        }
+        let mut sites: Vec<&EvalSite> = spec.eval_sites.iter().collect();
+        sites.sort_by_key(|s| s.offset);
+        for site in sites {
+            let captures = eval_captures(site);
+            let record = encode_eval_site(site);
+            let source_start = bounded(self.site_sources.len(), MAX_RECORDS, source)?;
+            bounded(
+                self.site_sources.len().saturating_add(captures.len()),
+                MAX_RECORDS,
+                source,
+            )?;
+            let record_start = bounded(self.site_records.len(), MAX_SOURCE, source)?;
+            bounded(
+                self.site_records.len().saturating_add(record.len()),
+                MAX_SOURCE,
+                source,
+            )?;
+            bounded(self.sites.len() + 1, MAX_RECORDS, source)?;
+            self.sites.push([
+                site_rows[&site.offset],
+                source_start,
+                captures.len() as u32,
+                record_start,
+                record.len() as u32,
+            ]);
+            for (s, role, cell) in captures {
+                let (kind, index) = eval_source_row(s);
+                self.site_sources
+                    .push([kind, index, role | if cell { EVAL_CELL } else { 0 }]);
+            }
+            self.site_records.extend_from_slice(&record);
         }
         let name = spec
             .function_name
@@ -529,9 +851,9 @@ pub fn export_source_with(
 }
 
 /// What run-time code [`export_runtime`] compiles (light-cljs-856): the
-/// Goose VM's indirect eval, its Function constructor (light-cljs-857) and,
-/// later, direct eval (light-cljs-858), whose site record is not defined yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Goose VM's indirect eval, its Function constructor (light-cljs-857) and
+/// direct eval (light-cljs-858).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuntimeMode {
     /// Global script code of an indirect eval: sloppy unless `strict` or its
     /// own directive prologue says "use strict" (ECMAScript PerformEval).
@@ -541,6 +863,11 @@ pub enum RuntimeMode {
     /// list's closing `)` ending `parameter_units` UTF-16 units in, as the
     /// Pants engine's `DynamicFunction` places it (CreateDynamicFunction).
     DynamicFunction { parameter_units: usize },
+    /// Eval code of a direct eval, compiled against its call site's scope
+    /// (`compile_direct_eval`): the site the image's eval-site record
+    /// encodes ([`decode_eval_site`]). Its captures are the site's sources
+    /// in [`eval_captures`] order.
+    DirectEval { site: EvalSite },
 }
 
 /// Compile JavaScript the Goose VM received while a job runs, given as its
@@ -577,6 +904,9 @@ pub fn export_runtime(units: &[u16], mode: RuntimeMode) -> Result<Export, Syntax
                 }
                 RuntimeMode::DynamicFunction { parameter_units } => {
                     crate::frontend::compile_dynamic_function(&source, &surrogates, parameter_units)
+                }
+                RuntimeMode::DirectEval { site } => {
+                    crate::frontend::compile_direct_eval("<eval>", &source, &surrogates, &site)
                 }
             };
             executable.and_then(|executable| encode(&executable, &source))
@@ -634,6 +964,26 @@ fn encode(executable: &Executable, source: &str) -> Result<Export, SyntaxError> 
     for n in &tables.units {
         bytes.extend_from_slice(&n.to_le_bytes());
     }
+    // The eval-site section (version 6): three u32 counts, then the site
+    // rows, the source rows and the record bytes.
+    for n in [
+        tables.sites.len() as u32,
+        tables.site_sources.len() as u32,
+        tables.site_records.len() as u32,
+    ] {
+        word(&mut bytes, n);
+    }
+    for row in &tables.sites {
+        for &n in row {
+            word(&mut bytes, n);
+        }
+    }
+    for row in &tables.site_sources {
+        for &n in row {
+            word(&mut bytes, n);
+        }
+    }
+    bytes.extend_from_slice(&tables.site_records);
     Ok(Export {
         bytes,
         functions: tables.functions.len(),
@@ -719,6 +1069,21 @@ pub fn inspection_schema() -> String {
          let function_row::SimpleParameters = {SIMPLE_PARAMETERS};\n",
         FUNCTION_WORDS * 4
     ));
+    text.push_str(
+        "\n// A direct-eval site's capture source kind (an eval-site source row's\n\
+         // first word, GSP version 6), named as its Rust `EvalSource` variant.\n",
+    );
+    for (code, kind) in EVAL_SOURCES.iter().enumerate() {
+        text.push_str(&format!("let eval_source::{kind} = {code};\n"));
+    }
+    text.push_str(
+        "\n// What a capture source supplies (bits 0..7 of a source row's third\n\
+         // word), in capture order; bit 8 (eval_role::Cell) marks a binding cell.\n",
+    );
+    for (code, role) in EVAL_ROLES.iter().enumerate() {
+        text.push_str(&format!("let eval_role::{role} = {code};\n"));
+    }
+    text.push_str(&format!("let eval_role::Cell = {EVAL_CELL};\n"));
     text.push_str(
         "\n// Every opcode's tables; -1, false or \"\" for an unassigned byte.\n\
          fn export_descriptor(op: i64) -> i64 {\n    return match op {\n",
@@ -880,11 +1245,100 @@ mod tests {
         }
         // No descriptor sets bits 25..31.
         assert!(rows(&export, 3).iter().all(|row| row[0] >> 24 <= 1));
-        assert_eq!(VERSION, 5);
+        assert_eq!(VERSION, 6);
         assert_eq!(
             u32::from_le_bytes(export.bytes[4..8].try_into().unwrap()),
-            5
+            6
         );
+        // Version 6 (light-cljs-858): one site row per marked call, in row
+        // order, its sources in capture order and its record the site.
+        let (sites, sources, records) = eval_section(&export);
+        let instructions = rows(&export, 3);
+        let marked_rows: Vec<u32> = (0..instructions.len() as u32)
+            .filter(|&i| instructions[i as usize][0] & DIRECT_EVAL_SITE != 0)
+            .collect();
+        assert_eq!(sites.iter().map(|s| s[0]).collect::<Vec<_>>(), marked_rows);
+        let (mut next_source, mut next_record) = (0, 0);
+        for site in &sites {
+            assert_eq!((site[1], site[3]), (next_source, next_record));
+            let record = &records[site[3] as usize..(site[3] + site[4]) as usize];
+            let decoded = decode_eval_site(record).expect("the record decodes");
+            assert_eq!(encode_eval_site(&decoded), record);
+            let expected: Vec<[u32; 3]> = eval_captures(&decoded)
+                .into_iter()
+                .map(|(s, role, cell)| {
+                    let (kind, index) = eval_source_row(s);
+                    [kind, index, role | if cell { EVAL_CELL } else { 0 }]
+                })
+                .collect();
+            assert_eq!(
+                &sources[site[1] as usize..(site[1] + site[2]) as usize],
+                &expected[..]
+            );
+            // `f(s)`: the binding `s` (and `f`, `g`...) resolve in the caller.
+            assert!(decoded.bindings.iter().any(|b| b.name == "s"));
+            next_source += site[2];
+            next_record += site[4];
+        }
+        assert_eq!(
+            (next_source as usize, next_record as usize),
+            (sources.len(), records.len())
+        );
+    }
+    /// The eval-site section after the UTF-16 pool: site rows, source rows and
+    /// record bytes.
+    fn eval_section(export: &Export) -> (Vec<[u32; 5]>, Vec<[u32; 3]>, Vec<u8>) {
+        let bytes = &export.bytes;
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let mut at = 32 + word(8) as usize;
+        for (t, width) in [FUNCTION_WORDS * 4, 12, 4, 20, 2].iter().enumerate() {
+            at += word(12 + 4 * t) as usize * width;
+        }
+        let (ns, nsrc, nrec) = (
+            word(at) as usize,
+            word(at + 4) as usize,
+            word(at + 8) as usize,
+        );
+        at += 12;
+        let sites = (0..ns)
+            .map(|i| std::array::from_fn(|w| word(at + (i * 5 + w) * 4)))
+            .collect();
+        at += ns * 20;
+        let sources = (0..nsrc)
+            .map(|i| std::array::from_fn(|w| word(at + (i * 3 + w) * 4)))
+            .collect();
+        at += nsrc * 12;
+        assert_eq!(at + nrec, bytes.len());
+        (sites, sources, bytes[at..].to_vec())
+    }
+    /// A site record round-trips; a malformed or inconsistent one is refused.
+    #[test]
+    fn eval_site_records_round_trip_and_refuse_malformed_bytes() {
+        let source = "function f(a) { 'use strict'; let b = 1; return () => eval(a + b); } \
+                      function g(x = eval('1')) { var v; with ({}) { eval(x); } }";
+        let export = export_source_with("eval.js", source, ScriptOptions::SLOPPY).unwrap();
+        let (sites, _, records) = eval_section(&export);
+        assert_eq!(sites.len(), 3);
+        for site in &sites {
+            let record = &records[site[3] as usize..(site[3] + site[4]) as usize];
+            let decoded = decode_eval_site(record).unwrap();
+            assert_eq!(encode_eval_site(&decoded), record);
+            for cut in 0..record.len() {
+                assert!(decode_eval_site(&record[..cut]).is_none(), "{cut}");
+            }
+            let mut longer = record.to_vec();
+            longer.push(0);
+            assert!(decode_eval_site(&longer).is_none());
+            // A site whose variable environment is not one of its
+            // environments is refused, as the engine's loader refuses it.
+            let mut bad = decoded.clone();
+            bad.variable_environment = Some(EvalSource::Local(9));
+            bad.environments.retain(|s| *s != EvalSource::Local(9));
+            assert!(decode_eval_site(&encode_eval_site(&bad)).is_none());
+        }
+        let strict =
+            decode_eval_site(&records[sites[0][3] as usize..][..sites[0][4] as usize]).unwrap();
+        assert!(strict.strict && strict.bindings.iter().any(|b| b.name == "b"));
     }
     /// Function flags bit 19 marks a simple parameter list (light-cljs-854):
     /// not a default, rest or destructured parameter, nor the script.
@@ -1297,12 +1751,16 @@ mod serial_tests {
             // Nor BigInt values: constants on dead paths, then one reached.
             ("dormant-constants", "number:7"),
             ("bigint-reached", "string:bigint"),
-            // Direct eval (light-cljs-823): Goose fails a reached one by name
-            // under a `catch`, spread or not; a marked call whose `eval` is
-            // not %eval% is an ordinary call (serial_tests.goose).
+            // Direct eval (light-cljs-858): Goose runs a reached one in the
+            // caller's scope, spread or not; a marked call whose `eval` is
+            // not %eval% is an ordinary call; a loop in direct eval code
+            // stops and resumes at every limit and cancellation inside it
+            // runs the caller's finally blocks (serial_tests.goose).
             ("direct-eval-reached", "number:2"),
             ("direct-eval-spread", "number:2"),
             ("direct-eval-replaced", "number:2"),
+            ("direct-eval-loop", "number:25"),
+            ("cancel-direct-eval", "limit"),
             // Spread-argument limits (light-cljs-850), the Pants engine's
             // 65,535 (Node collects the whole iterator): serial_tests.goose
             // runs it under the default and a 128-value stack limit.
@@ -1312,6 +1770,9 @@ mod serial_tests {
             // worker's reset (snapshot_tests.goose).
             ("indirect-eval", "number:2"),
             ("eval-closure", "goose"),
+            // So does one a direct eval makes, with the eval sites of the
+            // image and of the eval code (light-cljs-858).
+            ("direct-eval-closure", "goose"),
             ("eval-loop", "number:25"),
             ("cancel-eval", "limit"),
             ("eval-source-limit", "goose"),

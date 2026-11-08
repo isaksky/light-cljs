@@ -10,6 +10,8 @@ fn main() {
         var image = program::Image {};
         let result = program::install(image, bytes);
         if result != program::Error.None { print(path, ": ", result); abort("invalid program image"); }
-        print(path, ": functions=", program::word(bytes, 12), ", instructions=", program::word(bytes, 24), ", bytes=", bytes.len);
+        // Direct-eval sites and their capture sources (GSP version 6).
+        let l = program::layout(bytes);
+        print(path, ": functions=", program::word(bytes, 12), ", instructions=", program::word(bytes, 24), ", eval-sites=", program::word(bytes, l.tail), ", eval-sources=", program::word(bytes, l.tail + 4), ", bytes=", bytes.len);
     }
 }

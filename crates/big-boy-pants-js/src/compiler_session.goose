@@ -388,7 +388,7 @@ fn serve(work: const Work&, directory: const u8[:], setup: const Setup&, base: c
 // The bytes a worker's VM tables hold: the retirement measure.
 fn table_bytes(code: const source::Code&, heap: const source::Heap&) -> i64 {
     return bytes_of(code.source_bytes).len + bytes_of(code.functions).len + bytes_of(code.constants).len + bytes_of(code.children).len + bytes_of(code.ops).len + bytes_of(code.units).len + bytes_of(code.strings).len + bytes_of(code.ins).len + bytes_of(code.effects).len + bytes_of(code.heights).len
-         + retained(heap) + bytes_of(heap.strings).len;
+         + bytes_of(code.sites).len + bytes_of(code.site_sources).len + code.site_records.len + retained(heap) + bytes_of(heap.strings).len;
 }
 // FNV-1a over an image's table bytes: equal images, equal digests.
 fn mix(h: u64, bytes: const u8[:]) -> u64 { var x = h; for b in bytes { x = (x ^ b) * 1099511628211; } return x; }
@@ -396,6 +396,7 @@ fn heap_digest(heap: const source::Heap&, bindings: const snapshot::Binding[:]) 
 fn digest<T>(s: const T&) -> u64 {
     var h: u64 = 14695981039346656037;
     h = mix(h, bytes_of(s.code_bytes)); h = mix(h, bytes_of(s.functions)); h = mix(h, bytes_of(s.code_constants)); h = mix(h, bytes_of(s.children)); h = mix(h, bytes_of(s.ops)); h = mix(h, bytes_of(s.code_units)); h = mix(h, bytes_of(s.code_strings));
+    h = mix(h, bytes_of(s.sites)); h = mix(h, bytes_of(s.site_sources)); h = mix(h, s.site_records);
     h = mix(h, bytes_of(s.nodes)); h = mix(h, bytes_of(s.values)); h = mix(h, bytes_of(s.properties)); h = mix(h, bytes_of(s.units)); h = mix(h, bytes_of(s.strings)); h = mix(h, bytes_of(s.constants)); h = mix(h, bytes_of(s.bytes)); h = mix(h, bytes_of(s.sources)); h = mix(h, bytes_of(s.latin1)); h = mix(h, bytes_of(s.shapes)); h = mix(h, bytes_of(s.accessors)); h = mix(h, bytes_of(s.keys));
     return h;
 }

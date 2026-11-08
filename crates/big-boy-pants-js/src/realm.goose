@@ -48,8 +48,8 @@ enum Builtin {
     Delay, Force, Realized, IsDelay, NativeConstruct,
     // Generators (light-cljs-790; continuations.goose).
     GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, IteratorPrototypeIterator,
-    // %eval% (light-cljs-823): a direct-eval call of it fails Unsupported
-    // naming `direct eval` (source_vm.goose, Ins.DirectEval); any other call
+    // %eval% (light-cljs-823): a direct-eval call of it is a direct eval
+    // (light-cljs-858; source_vm.goose, Ins.DirectEval); any other call
     // is an indirect eval (light-cljs-856; runtime_compile.goose).
     Eval,
     // The primitive wrapper constructors (light-cljs-832; WRAPPER_NAMES

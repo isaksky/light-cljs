@@ -40,11 +40,13 @@ fn main() {
     assert(image.valid && image.bytes[..] == original[..]);
     // Version 2 predates the direct-eval site bit (light-cljs-823), version 3
     // the function source text (light-cljs-853), version 4 the simple
-    // parameter list bit (light-cljs-854).
+    // parameter list bit (light-cljs-854), version 5 the eval-site section
+    // (light-cljs-858).
     set_word(bad[..], 4, 2); assert(program::validate(bad) == program::Error.Version);
     set_word(bad[..], 4, 3); assert(program::validate(bad) == program::Error.Version);
     set_word(bad[..], 4, 4); assert(program::validate(bad) == program::Error.Version);
-    set_word(bad[..], 4, 5); set_word(bad[..], 12, 65537); assert(program::validate(bad) == program::Error.Limits);
+    set_word(bad[..], 4, 5); assert(program::validate(bad) == program::Error.Version);
+    set_word(bad[..], 4, 6); set_word(bad[..], 12, 65537); assert(program::validate(bad) == program::Error.Limits);
     set_word(bad[..], 12, program::word(macro, 12));
     let l = program::layout(macro);
     set_word(bad[..], l.functions, 4294967295); assert(program::validate(bad) == program::Error.Range);
@@ -67,9 +69,10 @@ fn main() {
             set_word(bad[..], at + 4, program::word(macro, at + 4));
         }
         // The direct-eval site bit (24) is valid only on the four call
-        // opcodes; bits 25..31 never are.
+        // opcodes, and only with the call's eval-site row (light-cljs-858),
+        // which this image has none of; bits 25..31 never are.
         set_word(bad[..], at, descriptor | 16777216);
-        assert((program::validate(bad) == program::Error.None) == export_direct_eval_call(descriptor & 255));
+        assert(program::validate(bad) == (if export_direct_eval_call(descriptor & 255) { program::Error.Reference } else { program::Error.Operation }));
         set_word(bad[..], at, descriptor | 33554432); assert(program::validate(bad) == program::Error.Operation);
         set_word(bad[..], at, descriptor);
     }
@@ -117,17 +120,57 @@ fn main() {
         assert(program::install(image, orphan) == program::Error.Reference);
         assert(image.valid && image.bytes[..] == original[..]);
     }
-    print("source export: arithmetic=27.5, control=7307, wide=299; macro inspection; malformed/truncation/transaction checks passed");
+    eval_sites(embed_file("../corpus/serial/direct-eval-reached.gsp"));
+    print("source export: arithmetic=27.5, control=7307, wide=299; macro inspection; malformed/truncation/transaction/eval-site checks passed");
+}
+// The eval-site section (GSP version 6, light-cljs-858) of an image with one
+// direct eval: each malformed site, source or record range is refused.
+fn eval_sites(good: const u8[:]) {
+    assert(program::validate(good) == program::Error.None);
+    for n in good.len { assert(program::validate(good[..n]) != program::Error.None); }
+    let l = program::layout(good); assert(program::word(good, l.tail) == 1);
+    let count = program::word(good, l.sites + 8); assert(count >= 1);
+    var bad: u8[>..] = []; bad.append(good);
+    // The site names an unmarked instruction, or none.
+    let op = program::word(good, l.sites);
+    for n in [op - 1, program::word(good, 24)] { set_word(bad[..], l.sites, n); assert(program::validate(bad) == program::Error.Reference); }
+    set_word(bad[..], l.sites, op);
+    // Source and record ranges tile their tables; a record is non-empty.
+    set_word(bad[..], l.sites + 4, 1); assert(program::validate(bad) == program::Error.Range); set_word(bad[..], l.sites + 4, 0);
+    set_word(bad[..], l.sites + 8, count + 1); assert(program::validate(bad) == program::Error.Range); set_word(bad[..], l.sites + 8, count);
+    let length = program::word(good, l.sites + 16);
+    set_word(bad[..], l.sites + 16, 0); assert(program::validate(bad) == program::Error.Range); set_word(bad[..], l.sites + 16, length);
+    // Kinds and roles: an unknown kind, an index on a non-indexed kind, a
+    // second receiver, an unknown role bit, a local past the function's.
+    var receiver: i64 = -1;
+    for j in count {
+        let at = l.sources + j * 12;
+        if (program::word(good, at + 8) & 255) == eval_role::Receiver { receiver = at; }
+        set_word(bad[..], at, eval_source::NewTarget + 1); assert(program::validate(bad) == program::Error.Operation); set_word(bad[..], at, program::word(good, at));
+        set_word(bad[..], at + 8, program::word(good, at + 8) | 512); assert(program::validate(bad) == program::Error.Operation); set_word(bad[..], at + 8, program::word(good, at + 8));
+        if program::word(good, at) == eval_source::Local {
+            set_word(bad[..], at + 4, 65535); assert(program::validate(bad) == program::Error.Reference); set_word(bad[..], at + 4, program::word(good, at + 4));
+        }
+    }
+    assert(receiver >= 0);
+    set_word(bad[..], receiver, eval_source::This); set_word(bad[..], receiver + 4, 1); assert(program::validate(bad) == program::Error.Operation);
+    set_word(bad[..], receiver, program::word(good, receiver)); set_word(bad[..], receiver + 4, program::word(good, receiver + 4));
+    set_word(bad[..], receiver + 8, eval_role::Binding); assert(program::validate(bad) == program::Error.Operation);
+    set_word(bad[..], receiver + 8, program::word(good, receiver + 8)); assert(program::validate(bad) == program::Error.None);
+    // The marked call without its site row: a Reference error.
+    var bare: u8[>..] = []; bare.append(good[..l.tail]); for n in [0, 0, 0] { push_word(bare, n); }
+    assert(program::validate(bare) == program::Error.Reference);
 }
 
 fn push_word(bytes: u8[>..]&, value: i64) { for i in 4 { bytes.push(((value >> (8 * i)) & 255) as u8); } }
 fn depth_limit(count: i64, expected: program::Error) {
     var bytes: u8[>..] = []; bytes.append("GSP\0");
-    for n in [5, 0, count, 0, count - 1, count * 2, 0] { push_word(bytes, n); }
+    for n in [6, 0, count, 0, count - 1, count * 2, 0] { push_word(bytes, n); }
     for i in count {
         for n in [i * 2, 2, 0, 0, i, if i + 1 < count { 1 } else { 0 }, 0, 0, 0, 0, 0, 0, 0, 0, 0] { push_word(bytes, n); }
     }
     for i in (count - 1) { push_word(bytes, i + 1); }
     for i in count { for n in [export_descriptor(opcode::Undefined), 0, 0, 0, 0, export_descriptor(opcode::Return), 0, 0, 0, 1] { push_word(bytes, n); } }
+    for n in [0, 0, 0] { push_word(bytes, n); }
     assert(program::validate(bytes) == expected);
 }

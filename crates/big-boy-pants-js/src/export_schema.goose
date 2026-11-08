@@ -399,6 +399,25 @@ let function_row::SourceText = 262144;
 // Function flags bit 19 (GSP version 5): a simple parameter list.
 let function_row::SimpleParameters = 524288;
 
+// A direct-eval site's capture source kind (an eval-site source row's
+// first word, GSP version 6), named as its Rust `EvalSource` variant.
+let eval_source::Local = 0;
+let eval_source::Capture = 1;
+let eval_source::CurrentFunction = 2;
+let eval_source::This = 3;
+let eval_source::GlobalObject = 4;
+let eval_source::NewTarget = 5;
+
+// What a capture source supplies (bits 0..7 of a source row's third
+// word), in capture order; bit 8 (eval_role::Cell) marks a binding cell.
+let eval_role::Binding = 0;
+let eval_role::Receiver = 1;
+let eval_role::NewTarget = 2;
+let eval_role::Environment = 3;
+let eval_role::SuperHome = 4;
+let eval_role::SuperFields = 5;
+let eval_role::Cell = 256;
+
 // Every opcode's tables; -1, false or "" for an unassigned byte.
 fn export_descriptor(op: i64) -> i64 {
     return match op {

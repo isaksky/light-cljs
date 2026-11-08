@@ -17,8 +17,14 @@ fn same(a: source::Node, b: source::Node) -> bool {
         && same(a.value, b.value) && same(a.namespace_value, b.namespace_value) && same(a.metadata, b.metadata) && a.origin == b.origin && a.source == b.source && a.span_start == b.span_start && a.span_end == b.span_end
         && a.shape == b.shape && same(a.proto, b.proto) && source::plain_rows(a.slots) == source::plain_rows(b.slots);
 }
-fn code_prefix(p: const Publication&, bytes: const u8[:], functions: const source::Function[:], constants: const source::Value[:], children: const u32[:], ops: const source::Op[:], units: const u16[:], strings: const source::Str[:], c: snapshot::Control&) -> bool {
+fn code_prefix(p: const Publication&, bytes: const u8[:], functions: const source::Function[:], constants: const source::Value[:], children: const u32[:], ops: const source::Op[:], units: const u16[:], strings: const source::Str[:], sites: const source::Site[:], site_sources: const source::SiteSource[:], site_records: const u8[:], c: snapshot::Control&) -> bool {
     let s .= p.image; let e = p.base.ends;
+    // Direct-eval sites (light-cljs-858): the base's are shared; a suffix
+    // site belongs to suffix code, with suffix sources and record bytes.
+    if !snapshot::range(0, e[21], s.sites.len) || !snapshot::range(0, e[21], sites.len) || !snapshot::range(0, e[22], s.site_sources.len) || !snapshot::range(0, e[22], site_sources.len) || !snapshot::range(0, e[23], s.site_records.len) || !snapshot::range(0, e[23], site_records.len) { return fail(c, snapshot::Error.Code); }
+    if !snapshot::poll(c, e[21] + e[22] + e[23]) { return false; }
+    if bytes_of(s.sites[..e[21]]) != bytes_of(sites[..e[21]]) || bytes_of(s.site_sources[..e[22]]) != bytes_of(site_sources[..e[22]]) || s.site_records[..e[23]] != site_records[..e[23]] { return fail(c, snapshot::Error.Code); }
+    for x in s.sites[e[21]..] { if !snapshot::poll(c) { return false; } if x.op < e[4] || x.sources < e[22] || x.record < e[23] { return fail(c, snapshot::Error.Code); } }
     let lengths:     i64[6] = [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len];
     let destination: i64[6] = [bytes.len, functions.len, constants.len, children.len, ops.len, units.len];
     for i in 6 { if !snapshot::range(0, e[i], lengths[i]) || !snapshot::range(0, e[i], destination[i]) { return fail(c, snapshot::Error.Code); } }
@@ -37,9 +43,9 @@ fn code_prefix(p: const Publication&, bytes: const u8[:], functions: const sourc
 // code, or the frozen base snapshot itself (encode), so a producer's
 // self-check builds no second heap (light-cljs-794).
 fn code_matches(p: const Publication&, heap: const source::Heap&, c: snapshot::Control&) -> bool {
-    let code .= heap.code; return code_prefix(p, code.source_bytes, code.functions, code.constants, code.children, code.ops, code.units, code.strings, c);
+    let code .= heap.code; return code_prefix(p, code.source_bytes, code.functions, code.constants, code.children, code.ops, code.units, code.strings, code.sites, code.site_sources, code.site_records, c);
 }
-fn code_matches(p: const Publication&, s: const snapshot::Snapshot&, c: snapshot::Control&) -> bool { return code_prefix(p, s.code_bytes, s.functions, s.code_constants, s.children, s.ops, s.code_units, s.code_strings, c); }
+fn code_matches(p: const Publication&, s: const snapshot::Snapshot&, c: snapshot::Control&) -> bool { return code_prefix(p, s.code_bytes, s.functions, s.code_constants, s.children, s.ops, s.code_units, s.code_strings, s.sites, s.site_sources, s.site_records, c); }
 fn base_node<H>(p: const Publication&, heap: const H&, id: i64, c: snapshot::Control&) -> bool {
     let s .= p.image; let n = s.nodes[id];
     if id >= heap.nodes.len || !same(n, heap.nodes[id]) { return fail(c, snapshot::Error.Link); }
@@ -220,6 +226,9 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     for r in s.code_strings[e[14]..] { code.strings.push(source::Str { start: r.start + delta[5] as u32, len: r.len }); }
     for v in s.code_constants[e[2]..] { code.constants.push(if v.is_string() { source::Value.String { s: (v.sid() + code_strings) as u32 } } else { v }); }
     for id in s.children[e[3]..] { code.children.push(shifted(id, e[1], delta[1]) as u32); }
+    let site_sources = code.site_sources.len - e[22]; let site_records = code.site_records.len - e[23];
+    for x in s.sites[e[21]..] { var n = x; n.op += delta[4] as u32; n.sources += site_sources as u32; n.record += site_records as u32; code.sites.push(n); }
+    code.site_sources.append(s.site_sources[e[22]..]); code.site_records.append(s.site_records[e[23]..]);
     code.units.append(s.code_units[e[5]..]); code.source_bytes.append(s.code_bytes[e[0]..]); source::decode(code);
     // Constants carry heap strings, not offsets into the separate Code owner.
     // The base prefix of strings is shared (checked in graph); the rest follow.

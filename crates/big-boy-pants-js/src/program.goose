@@ -7,7 +7,13 @@ enum Error { None, Header, Version, Limits, Truncated, Source, Range, Reference,
 // An installed immutable image owns exact bytes. Inspection borrows ranges;
 // there are no pointers, runtime values, or line/column indexes in the image.
 root struct Image { bytes: u8[>..] = [], valid: bool = false }
-struct Layout { source: i64, functions: i64, constants: i64, children: i64, instructions: i64, units: i64, end: i64 }
+// The eval-site section (version 6, light-cljs-858) follows the UTF-16 pool
+// at `tail`: three u32 counts (sites, sources, record bytes), then the site
+// rows (5 words: the call's instruction row, source start and count, record
+// byte start and length), the source rows (3 words: an eval_source:: kind, a
+// local or capture index, a role word whose bits 0..7 are an eval_role:: and
+// whose eval_role::Cell bit marks a binding cell) and the records' bytes.
+struct Layout { source: i64, functions: i64, constants: i64, children: i64, instructions: i64, units: i64, tail: i64 = 0, sites: i64 = 0, sources: i64 = 0, records: i64 = 0, end: i64 }
 fn word(bytes: const u8[:], offset: i64) -> i64 {
     var n: i64 = 0;
     for i in 4 { n |= (bytes[offset + i] as i64) << (8 * i); }
@@ -21,7 +27,38 @@ fn layout(bytes: const u8[:]) -> Layout {
     let children = constants + word(bytes, 16) * 12;
     let instructions = children + word(bytes, 20) * 4;
     let units = instructions + word(bytes, 24) * 20;
-    return Layout { source: source, functions: functions, constants: constants, children: children, instructions: instructions, units: units, end: units + word(bytes, 28) * 2 };
+    let tail = units + word(bytes, 28) * 2;
+    // Bytes too short for the section's counts end past the image.
+    if tail < 0 || tail > bytes.len - 12 { return Layout { source: source, functions: functions, constants: constants, children: children, instructions: instructions, units: units, tail: tail, sites: tail + 12, sources: tail + 12, records: tail + 12, end: tail + 12 }; }
+    let sites = tail + 12; let sources = sites + word(bytes, tail) * 20; let records = sources + word(bytes, tail + 4) * 12;
+    return Layout { source: source, functions: functions, constants: constants, children: children, instructions: instructions, units: units, tail: tail, sites: sites, sources: sources, records: records, end: records + word(bytes, tail + 8) };
+}
+// The eval site whose call is instruction row `op` of a validated image, or -1.
+fn site_row(bytes: const u8[:], l: Layout, op: i64) -> i64 {
+    var lo: i64 = 0; var hi = word(bytes, l.tail);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if word(bytes, l.sites + mid * 20) < op { lo = mid + 1; } else { hi = mid; }
+    }
+    return if lo < word(bytes, l.tail) && word(bytes, l.sites + lo * 20) == op { lo } else { -1 };
+}
+// One site's source rows: every kind an eval_source::, an index only for a
+// local or a capture, roles in capture order (bindings, the receiver once,
+// new.target, environments, super home, super fields; eval_role::), the cell
+// bit only on a binding or the super fields.
+fn site_sources_valid(bytes: const u8[:], l: Layout, start: i64, count: i64) -> bool {
+    var last: i64 = -1; var receivers: i64 = 0;
+    for j in count {
+        let at = l.sources + (start + j) * 12; let kind = word(bytes, at); let index = word(bytes, at + 4); let role_word = word(bytes, at + 8);
+        let role = role_word & 255; let cell = (role_word & eval_role::Cell) != 0;
+        if kind > eval_source::NewTarget || (role_word & ~(255 | eval_role::Cell)) != 0 || role > eval_role::SuperFields || role < last { return false; }
+        if role == last && role != eval_role::Binding && role != eval_role::Environment { return false; }
+        if cell && role != eval_role::Binding && role != eval_role::SuperFields { return false; }
+        if kind != eval_source::Local && kind != eval_source::Capture && index != 0 || index > 65535 { return false; }
+        if role == eval_role::Receiver { receivers += 1; }
+        last = role;
+    }
+    return receivers == 1;
 }
 fn range(start: i64, length: i64, count: i64) -> bool { return start <= count && length <= count - start; }
 // ThrowKind and built-in global selectors are 0..count; other category-6
@@ -47,10 +84,13 @@ fn validate(bytes: const u8[:]) -> Error {
     // whose byte range is the function row's words 13 and 14.
     // Version 5 (light-cljs-854): function flags bit 19 marks a simple
     // parameter list (function_row::SimpleParameters).
-    if word(bytes, 4) != 5 { return Error.Version; }
+    // Version 6 (light-cljs-858): the eval-site section (Layout).
+    if word(bytes, 4) != 6 { return Error.Version; }
     if word(bytes, 8) > 8388608 || word(bytes, 12) == 0 || word(bytes, 12) > 65536 { return Error.Limits; }
     for offset in [16, 20, 24, 28] { if word(bytes, offset) > 1048576 { return Error.Limits; } }
     let l = layout(bytes);
+    if l.sites > bytes.len { return Error.Truncated; }
+    if word(bytes, l.tail) > 1048576 || word(bytes, l.tail + 4) > 1048576 || word(bytes, l.tail + 8) > 8388608 { return Error.Limits; }
     if l.end > bytes.len { return Error.Truncated; }
     if l.end < bytes.len { return Error.Trailing; }
     let source = bytes[l.source..l.functions];
@@ -79,6 +119,20 @@ fn validate(bytes: const u8[:]) -> Error {
     }
     // Pool entries can be outside all function ranges; validate those IDs too.
     for i in nch { if word(bytes, l.children + i * 4) >= nf { return Error.Reference; } }
+    // Eval sites: ascending call rows, one per marked call (checked with the
+    // instructions below); source and record ranges tile their tables in
+    // order, each record non-empty and each site's capture count a u16.
+    let ns = word(bytes, l.tail); var sources: i64 = 0; var records: i64 = 0; var previous: i64 = -1;
+    for s in ns {
+        let at = l.sites + s * 20; let op = word(bytes, at);
+        if op <= previous || op >= ni { return Error.Reference; }
+        if word(bytes, at + 4) != sources || word(bytes, at + 12) != records || word(bytes, at + 16) == 0 { return Error.Range; }
+        let count = word(bytes, at + 8);
+        if count > 65535 || !range(sources, count, word(bytes, l.tail + 4)) || !range(records, word(bytes, at + 16), word(bytes, l.tail + 8)) { return Error.Range; }
+        if !site_sources_valid(bytes, l, sources, count) { return Error.Operation; }
+        previous = op; sources += count; records += word(bytes, at + 16);
+    }
+    if sources != word(bytes, l.tail + 4) || records != word(bytes, l.tail + 8) { return Error.Range; }
     var used:       bool[>..] = []; used.resize(ni, false);
     var child_used: bool[>..] = []; child_used.resize(nf, false); child_used[0] = true;
     var depths:     i64[>..]  = []; depths.resize(nf, 0);
@@ -116,6 +170,17 @@ fn validate(bytes: const u8[:]) -> Error {
             // a direct-eval site (only export_direct_eval_call's opcodes);
             // bits 25..31 are zero.
             if export_descriptor(op) != descriptor || site > 1 || site == 1 && !export_direct_eval_call(op) { return Error.Operation; }
+            // A marked call has its site row, and only a marked call; the
+            // site's local and capture sources are this function's.
+            let row = if ns > 0 { site_row(bytes, l, start + i) } else { -1 };
+            if (row >= 0) != (site == 1) { return Error.Reference; }
+            if row >= 0 {
+                let first = word(bytes, l.sites + row * 20 + 4);
+                for j in word(bytes, l.sites + row * 20 + 8) {
+                    let src = l.sources + (first + j) * 12; let kind = word(bytes, src); let index = word(bytes, src + 4);
+                    if kind == eval_source::Local && index >= locals || kind == eval_source::Capture && index >= captures { return Error.Reference; }
+                }
+            }
             if op == opcode::FormOp && export_form_arity(word(bytes, at + 4)) < 0 { return Error.Operation; }
             let arg = word(bytes, at + 4); let kind = (descriptor >> 8) & 255; let size = descriptor >> 16;
             if kind == operand::Immediate && !selector(op, arg) { return Error.Operation; }

@@ -25,7 +25,7 @@ namespace source;
 // the image in `out`; SyntaxError, the frontend's message in `out` (UTF-8);
 // Refused, the frontend refused the request (`out` says why); Unavailable,
 // the library could not be loaded (`out` says why).
-extern fn compile_runtime(out: u8[>..]&, units: const u16&, count: i64, mode: i32, strict: bool, parameter_units: i64, line: i64&, column: i64&) -> i32 = "goose_runtime_compile";
+extern fn compile_runtime(out: u8[>..]&, units: const u16&, count: i64, mode: i32, strict: bool, parameter_units: i64, site: const u8&, site_len: i64, line: i64&, column: i64&) -> i32 = "goose_runtime_compile";
 let runtime_mode::IndirectEval: i32 = 0;
 let runtime_mode::DynamicFunction: i32 = 1;
 let runtime_mode::DirectEval: i32 = 2;
@@ -49,8 +49,9 @@ fn runtime_unsupported(job: Job&, what: const u8[:], why: const u8[:]) -> i64 {
 // the heap's fault set. A compile error is a catchable SyntaxError with the
 // frontend's message. The rows count against Limits.code (a MemoryLimit),
 // and the source and the instructions against the work budget. `what` names
-// the operation in a failure (`eval`).
-fn compile_code(job: Job&, what: const u8[:], units: const u16[:], mode: i32, strict: bool, parameter_units: i64) -> i64 {
+// the operation in a failure (`eval`). `site` is a direct eval's opaque site
+// record (runtime_mode::DirectEval; Code.sites), empty for the other modes.
+fn compile_code(job: Job&, what: const u8[:], units: const u16[:], mode: i32, strict: bool, parameter_units: i64, site: const u8[:] = []) -> i64 {
     let heap .= job.heap;
     let code = job.writable_code;
     if code == null { return runtime_unsupported(job, what, "the job's code is not writable here"); }
@@ -58,8 +59,9 @@ fn compile_code(job: Job&, what: const u8[:], units: const u16[:], mode: i32, st
     // The boundary takes a reference to the first unit: an empty source
     // passes a placeholder and a count of 0.
     var padded: u16[>..] = []; padded.append(units); if padded.len == 0 { padded.push(0); }
+    var record: u8[>..]  = []; record.append(site); if record.len == 0 { record.push(0); }
     var out:    u8[>..]  = []; var line: i64 = 0; var column: i64 = 0;
-    let status = compile_runtime(out, padded[0], units.len, mode, strict, parameter_units, line, column);
+    let status = compile_runtime(out, padded[0], units.len, mode, strict, parameter_units, record[0], site.len, line, column);
     if status == runtime_status::SyntaxError {
         job.detail.clear();
         if !append_utf8(job.detail, out) { for c in "invalid source" { job.detail.push(c); } }
@@ -116,6 +118,62 @@ fn start_indirect_eval(job: Job&, args: const Value[:], base: i64) {
     let entry = closure(heap, root, []);
     if heap.fault != Fault.None { return; }
     if push_frame(job, entry, heap.global, [], false, base) { job.operands.resize(base); }
+}
+// A direct eval (light-cljs-858; ECMAScript PerformEval with direct true,
+// the Pants engine's start_direct_eval and eval_source in
+// rust/src/vm/native.rs): the marked call at instruction row `at` of the
+// frame at `top`, whose callee is the realm's %eval%, with `argc` arguments
+// above it (a method form's receiver below it is ignored). A non-string
+// first argument is the result, unchanged; extra arguments were evaluated
+// and are ignored. A string compiles in the caller's scope: the run-time
+// compiler gets the call's site record (Code.sites) and compiles eval code
+// against it (compile_direct_eval: strict or sloppy as the caller, its
+// bindings, receiver, new.target, dynamic environments and super context);
+// a compile error is a catchable SyntaxError. The eval code is a closure
+// whose captures are the site's sources read from this frame now, in its
+// capture order: a local or the closure's capture (a binding cell is the
+// cell itself, so eval code shares the caller's variable), the running
+// function, the frame's receiver (eval code checks a sloppy caller's with
+// SloppyThis), the global object, new.target. Sloppy eval code declares its
+// `var` and function bindings through the caller's variable environment, a
+// binding cell among those captures (light-cljs-855), or as configurable
+// globals at script level (global_op with Function.eval). The closure runs
+// in a new frame of the dispatch loop (decision 4: the job's budget, limits
+// and cancellation apply inside it), with no receiver of its own, and its
+// completion value arrives where the call's result goes. A call without a
+// site record fails by name.
+fn start_direct_eval(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
+    let heap .= job.heap;
+    let base = job.operands.len - argc - (if method { 2 } else { 1 });
+    let x = if argc > 0 { job.operands[job.operands.len - argc] } else { Value.Undefined };
+    if !x.is_string() { job.operands.resize(base); job.operands.push(x); return; }
+    let row = site_at(heap.code, at);
+    if row < 0 { runtime_unsupported(job, "eval", "the direct-eval call has no site record"); return; }
+    let site = heap.code.sites[row]; let frame = job.frames[top];
+    var captures: Value[>..] = [];
+    for source in heap.code.site_sources[site.sources..(site.sources + site.count)] {
+        let kind = source.kind as i64;
+        if kind == eval_source::Local {
+            if source.index >= heap.code.functions[frame.function].locals { heap.fault = Fault.InvalidState; return; }
+            captures.push(job.locals[frame.local_base + source.index]);
+        } else if kind == eval_source::Capture {
+            let callee = frame.callee;
+            if !callee.is_object() || node(heap, callee.id()).kind != node_kind::Closure || source.index >= node(heap, callee.id()).count { heap.fault = Fault.InvalidState; return; }
+            captures.push(slot(heap, node(heap, callee.id()).start + source.index));
+        } else if kind == eval_source::CurrentFunction { captures.push(frame.callee);
+        } else if kind == eval_source::This { captures.push(frame.receiver);
+        } else if kind == eval_source::GlobalObject { captures.push(heap.global);
+        } else if kind == eval_source::NewTarget { captures.push(frame.input);
+        } else { heap.fault = Fault.InvalidState; return; }
+    }
+    var record: u8[>..] = []; record.append(heap.code.site_records[site.record..(site.record + site.length)]);
+    let units = utf16(heap, x);
+    let root = compile_code(job, "eval", units, runtime_mode::DirectEval, false, 0, record);
+    if root < 0 { return; }
+    if heap.code.functions[root].captures != captures.len { runtime_unsupported(job, "eval", "the compiled eval code's captures differ from its site's sources"); return; }
+    let entry = closure(heap, root, captures);
+    if heap.fault != Fault.None { return; }
+    if push_frame(job, entry, Value.Undefined, [], false, base) { job.operands.resize(base); }
 }
 // The Function constructor (light-cljs-857; ECMAScript
 // CreateDynamicFunction with kind normal, QuickJS js_function_constructor,

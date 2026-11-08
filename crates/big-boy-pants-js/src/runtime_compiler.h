@@ -12,16 +12,19 @@
    Status: 0 `out` holds a GSP image; 1 a compile error, `out` its UTF-8
    message and *line/*column its position; 2 the frontend refused (`out` the
    reason); 3 the library or its symbols could not be loaded (`out` why).
+   `site`/`site_len` is a direct eval's opaque site record (light-cljs-858;
+   mode 2), and `site_len` 0 for the other modes.
 
    `goose run` (in-process TinyCC, the `--debug` runs without `build`) has
    neither dlfcn.h nor the C library's symbols, so there every call is
    status 3: run-time compilation needs a program `goose build` made. */
 #if defined(__TINYC__)
 static gs_i32 goose_runtime_compile(gs_rref out, r_u16 units, gs_i64 count, gs_i32 mode,
-                                    uint8_t strict, gs_i64 parameter_units, r_i64 line,
-                                    r_i64 column) {
+                                    uint8_t strict, gs_i64 parameter_units, r_u8 site,
+                                    gs_i64 site_len, r_i64 line, r_i64 column) {
     static const char why[] = "goose run cannot load the run-time compiler; use goose build";
-    (void)units; (void)count; (void)mode; (void)strict; (void)parameter_units;
+    (void)units; (void)count; (void)mode; (void)strict; (void)parameter_units; (void)site;
+    (void)site_len;
     gs_bld_append(out, why, (int64_t)(sizeof why - 1));
     *line = 0;
     *column = 0;
@@ -84,8 +87,8 @@ static void goose_runtime_open(void) {
 }
 
 static gs_i32 goose_runtime_compile(gs_rref out, r_u16 units, gs_i64 count, gs_i32 mode,
-                                    uint8_t strict, gs_i64 parameter_units, r_i64 line,
-                                    r_i64 column) {
+                                    uint8_t strict, gs_i64 parameter_units, r_u8 site,
+                                    gs_i64 site_len, r_i64 line, r_i64 column) {
     /* Every worker thread may compile; the library opens once. */
     pthread_once(&goose_runtime_once, goose_runtime_open);
     if (!goose_runtime_compile_entry) {
@@ -95,7 +98,8 @@ static gs_i32 goose_runtime_compile(gs_rref out, r_u16 units, gs_i64 count, gs_i
     uint8_t *data = NULL;
     int64_t length = 0, at_line = 0, at_column = 0;
     int32_t status = goose_runtime_compile_entry((const uint16_t *)units, count, mode, strict,
-                                                 parameter_units, NULL, 0, &data, &length,
+                                                 parameter_units, (const uint8_t *)site,
+                                                 site_len, &data, &length,
                                                  &at_line, &at_column);
     if (data && length > 0) gs_bld_append(out, data, length);
     goose_runtime_free_entry(data, length);

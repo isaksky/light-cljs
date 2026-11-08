@@ -90,15 +90,41 @@ JavaScript exception, so `catch` cannot swallow it and the harness always
 sees it as explicit-unsupported; the same holds for any unimplemented part of
 a built-in. Constants gain Symbol and BigInt tags and
 functions gain the class and generator constructor kinds as their areas need
-them. Direct `eval` is a named execution-time fault, not an export refusal
-(light-cljs-823): the exporter marks the call of each direct-eval site in the
-image (descriptor bit 24, GSP version 3; image metadata, not an opcode), and
-the VM decodes each marked call to `Ins.DirectEval`, which
-fails `Fault.Unsupported` naming `direct_eval` when its callee is the realm's
-%eval% and is an ordinary call otherwise. The global `eval` is that built-in;
-calling it any other way is an indirect eval, which compiles at run time
-(below, light-cljs-856). The sites' scope descriptors are not exported yet;
-direct eval stays with light-cljs-858.
+them. **Direct `eval`** runs in the caller's scope (light-cljs-858). The
+exporter marks the call of each direct-eval site (descriptor bit 24, GSP
+version 3; image metadata, not an opcode) and, since GSP version 6, exports
+the site's scope: the capture sources the compiler recorded for it (every
+caller binding the eval code may reach, then the receiver, new.target, the
+dynamic environments nearest first, the super home and the derived
+constructor's field initializer, each a local, a capture, the running
+function, `this`, the global object or new.target) as validated rows, and the
+whole `EvalSite` as an opaque record (`encode_eval_site`). The loader checks
+one site per marked call, the sources in capture order and within the calling
+function's locals and captures; snapshot validation checks the same. The VM
+decodes each marked call to `Ins.DirectEval`. When its callee is the realm's
+%eval% itself (a Proxy or a bound copy is an ordinary call, bbp-282), a
+non-string first argument is the result and extra arguments were evaluated
+and are ignored; a string goes to the run-time compiler below with the site's
+record, which compiles it against that scope as the Pants engine does
+(`compile_direct_eval`: strict or sloppy as the caller, its bindings with
+their const and function-name rules, the temporal dead zone, the lexical
+names a sloppy `var` may not redeclare, new.target and super only where the
+caller has them). The caller's values for the sources, read from its frame
+at the call, become the eval closure's captures (a binding cell is the cell,
+so the eval code shares the caller's variable); the closure runs in a new
+frame of the dispatch loop with no receiver of its own, and its completion
+value is the call's result. Eval code reads a sloppy caller's receiver
+through `CheckSloppyThis` (undefined and null are the global object, another
+primitive is boxed, as a sloppy function's own `this` is). Sloppy eval code
+declares its `var` and function bindings through the caller's variable
+environment, a binding cell holding a null-prototype object (light-cljs-855),
+so closures made before or after the eval see them, or, at script level, as
+configurable globals; in parameter expressions that environment is the
+parameter scope's. A `super` reference in eval code stops at the super
+opcodes the objects-classes area implements. No fallback: a call without a
+site, or eval code whose capture count is not its site's, fails
+UnsupportedOperand by name. Calling the global `eval` any other way is an
+indirect eval (below, light-cljs-856).
 
 **Run-time compilation** (light-cljs-856). Indirect eval, and after it the
 Function constructor (light-cljs-857) and direct eval (light-cljs-858), hand
@@ -112,8 +138,8 @@ compile_runtime` over it. The input is the source's exact UTF-16 code units
 (lone surrogates carried as the Pants engine's eval carries them, bbp-279:
 `frontend::push_utf16`, which the Pants engine now shares), the mode
 (indirect eval; the Function constructor's source with its parameter
-boundary; direct eval with an opaque site record, refused until
-light-cljs-858 defines it) and the strictness; the output is a GSP image
+boundary; direct eval with its site's opaque record, light-cljs-858) and the
+strictness; the output is a GSP image
 (`frontend::goose::export_runtime`) or a compile error with its message and
 position, which becomes a catchable SyntaxError. The frontend runs on a
 helper thread with a 2 MiB stack, as the Pants engine's eval does, because

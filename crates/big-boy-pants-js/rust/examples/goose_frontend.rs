@@ -25,14 +25,17 @@
 //! Modes: 0 indirect eval (`strict` 1 compiles the script strict, otherwise
 //! its prologue decides); 1 the Function constructor's source, the
 //! parameter list's closing `)` ending `parameter_units` units in; 2 direct
-//! eval with the opaque site record `site`/`site_len`, which light-cljs-858
-//! defines (refused until then).
+//! eval (light-cljs-858) against the site whose opaque record, as the image
+//! carries it ([`encode_eval_site`]), is the `site_len` bytes at `site`; a
+//! record that does not decode is refused. `strict` is 0 in mode 2: the
+//! site says whether the caller is strict.
 //!
 //! [`export_runtime`]: big_boy_pants_js::frontend::goose::export_runtime
+//! [`encode_eval_site`]: big_boy_pants_js::frontend::goose::encode_eval_site
 //! [`SyntaxError`]: big_boy_pants_js::frontend::SyntaxError
 
 use big_boy_pants_js::frontend::SyntaxErrorKind;
-use big_boy_pants_js::frontend::goose::{RuntimeMode, export_runtime};
+use big_boy_pants_js::frontend::goose::{RuntimeMode, decode_eval_site, export_runtime};
 
 const IMAGE: i32 = 0;
 const SYNTAX_ERROR: i32 = 1;
@@ -43,6 +46,7 @@ fn compile(
     mode: i32,
     strict: i32,
     parameter_units: i64,
+    site: &[u8],
 ) -> (i32, Vec<u8>, i64, i64) {
     let mode = match (mode, strict) {
         (0, 0 | 1) => RuntimeMode::IndirectEval {
@@ -53,14 +57,17 @@ fn compile(
                 parameter_units: parameter_units as usize,
             }
         }
-        (2, _) => {
-            return (
-                REFUSED,
-                b"direct eval: no site record yet (light-cljs-858)".to_vec(),
-                0,
-                0,
-            );
-        }
+        (2, 0) => match decode_eval_site(site) {
+            Some(site) => RuntimeMode::DirectEval { site },
+            None => {
+                return (
+                    REFUSED,
+                    b"direct eval: a malformed site record".to_vec(),
+                    0,
+                    0,
+                );
+            }
+        },
         _ => return (REFUSED, b"bad run-time compiler arguments".to_vec(), 0, 0),
     };
     match export_runtime(units, mode) {
@@ -78,8 +85,8 @@ fn compile(
 /// # Safety
 ///
 /// `units` points to `count` readable UTF-16 units (any pointer when
-/// `count` is 0); `data`, `length`, `line` and `column` are writable. The
-/// site record is not read yet.
+/// `count` is 0); `site` points to `site_len` readable bytes (any pointer
+/// when `site_len` is 0); `data`, `length`, `line` and `column` are writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bbp_goose_compile(
     units: *const u16,
@@ -87,8 +94,8 @@ pub unsafe extern "C" fn bbp_goose_compile(
     mode: i32,
     strict: i32,
     parameter_units: i64,
-    _site: *const u8,
-    _site_len: i64,
+    site: *const u8,
+    site_len: i64,
     data: *mut *mut u8,
     length: *mut i64,
     line: *mut i64,
@@ -103,8 +110,14 @@ pub unsafe extern "C" fn bbp_goose_compile(
             .map(|i| unsafe { units.add(i).read_unaligned() })
             .collect()
     };
+    let site: Vec<u8> = if site_len <= 0 || site.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: the caller passes `site_len` readable bytes.
+        unsafe { std::slice::from_raw_parts(site, site_len as usize) }.to_vec()
+    };
     let (status, bytes, at_line, at_column) =
-        std::panic::catch_unwind(|| compile(&units, mode, strict, parameter_units))
+        std::panic::catch_unwind(|| compile(&units, mode, strict, parameter_units, &site))
             .unwrap_or_else(|_| (REFUSED, b"the run-time compiler panicked".to_vec(), 0, 0));
     let bytes = bytes.into_boxed_slice();
     // SAFETY: the caller passes writable out-parameters.

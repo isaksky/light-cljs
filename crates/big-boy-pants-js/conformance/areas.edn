@@ -84,6 +84,12 @@
   "bbp/driver_names_are_free" {:area :functions-scope}
   "bbp/eval_dead_site" {:area :functions-scope}
   "bbp/eval_direct_call" {:area :functions-scope}
+  "bbp/direct_eval_strict" {:area :functions-scope}
+  "bbp/direct_eval_receivers" {:area :functions-scope :mode :sloppy}
+  "bbp/direct_eval_sloppy_vars" {:area :functions-scope :mode :sloppy}
+  "bbp/direct_eval_parameter_scope" {:area :functions-scope :mode :sloppy}
+  "bbp/direct_eval_with" {:area :functions-scope :mode :sloppy}
+  "bbp/direct_eval_closures_in_loops" {:area :functions-scope}
   "bbp/indirect_eval_completion" {:area :functions-scope}
   "bbp/indirect_eval_globals" {:area :functions-scope :mode :sloppy}
   "bbp/indirect_eval_global_lexicals" {:area :functions-scope :mode :sloppy}
