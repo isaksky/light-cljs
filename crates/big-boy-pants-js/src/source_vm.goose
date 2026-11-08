@@ -2348,7 +2348,13 @@ fn unwind_to(job: Job&, h: Handler) -> bool {
 fn describe_fault(out: u8[>..]&, code: const Code&, job: const Job&) {
     format(out, job.fault);
     if job.fault == Fault.Unsupported && job.fault_opcode >= 0 { out.push(':'); unsupported_operation(out, code, job); }
-    if job.fault != Fault.Unsupported && job.detail.len > 0 { out.push(':'); for u in job.detail { out.push(if u == 32 { 45 } else if u > 126 { 63 } else { u as u8 }); } }
+    // Printable ASCII, a control character as `?` too, so the text stays
+    // one protocol line; bounded as describe_uncaught's (a key in the
+    // message can be long).
+    if job.fault != Fault.Unsupported && job.detail.len > 0 {
+        out.push(':');
+        for u, i in job.detail { if i >= description_limit() { out.append("..."); return; } out.push(if u == 32 { 45 } else if u > 126 || u < 32 { 63 } else { u as u8 }); }
+    }
 }
 // Just the operation: `construct`, `const(BigInt)`.
 fn unsupported_operation(out: u8[>..]&, code: const Code&, job: const Job&) {
@@ -2383,10 +2389,149 @@ fn raise(job: Job&, value: Value, frame: Frame) {
 }
 // An exception no handler caught ends the job: an error object a fault
 // raised reports that fault, any other value is a thrown result.
+// The fault's error keeps the message it was raised with (error_object keeps
+// it in the node's value), whatever JavaScript did to its properties since:
+// Job.detail carries it to the report (describe_uncaught).
 fn uncaught(job: Job&, value: Value, frame: Frame) {
-    if value.is_object() && node(job.heap, value.id()).kind == node_kind::Error && node(job.heap, value.id()).function != 0 { terminate(job, error_fault(node(job.heap, value.id()).function), frame); return; }
+    if value.is_object() && node(job.heap, value.id()).kind == node_kind::Error && node(job.heap, value.id()).function != 0 {
+        let original = node(job.heap, value.id()).value;
+        job.detail.clear(); if original.is_string() { append_utf16(job.heap, original, job.detail); }
+        terminate(job, error_fault(node(job.heap, value.id()).function), frame); return;
+    }
     job.result = value; job.thrown = true; terminate(job, Fault.HostEffect, frame);
 }
+// The longest description describe_uncaught reports, in bytes before its
+// "..." (the Pants engine bounds engine messages, bbp-268, bbp-286).
+fn description_limit() -> i64 { return 1024; }
+// What a failed job threw, as the V8 build's diagnostic and the Pants
+// engine's "uncaught exception: " text describe it (exceptions.rs
+// uncaught_error_objects_report_name_and_message and
+// unhandled_failures_report_the_source_position_and_call_chain), appended to
+// `out`; false, appending nothing, when the job did not end with an uncaught
+// exception. A thrown primitive is printed as JavaScript prints it; an error
+// object (an Error, or an object inheriting %Error.prototype%, as
+// cljs.core's ExceptionInfo does) as Error.prototype.toString prints it from
+// data properties; one whose name or message is an accessor or an object,
+// and every other object, as "an object". A catchable fault no handler
+// caught is its error's name and message (an error a fault raised keeps its
+// original kind and message when rethrown: uncaught). Nothing runs
+// JavaScript and nothing recurses; the job's work count and fault are left
+// as they were. The text is UTF-8 on one line (escape_description).
+fn describe_uncaught(out: u8[>..]&, job: Job&) -> bool {
+    if job.status != tiny::Status.Failed { return false; }
+    var units: u16[>..] = [];
+    if job.thrown && job.fault == Fault.HostEffect {
+        let heap .= job.heap;
+        let fault = heap.fault; let work = heap.work; heap.fault = Fault.None; heap.work = 0;
+        describe_value(heap, job.result, units);
+        heap.fault = fault; heap.work = work;
+    } else if !job.thrown && catchable(job.fault) {
+        for c in error_name(job.fault) { units.push(c); }
+        var message: u16[>..] = [];
+        if job.detail.len > 0 { message.append(job.detail[..]); }
+        else {
+            let code .= job.heap.code;
+            let op = if job.fault_function >= 0 && job.fault_pc >= 0 && job.fault_pc < code.ops.len { code.ops[job.fault_pc].code } else { -1 };
+            for c in fault_words(job.fault, op) { message.push(c); }
+        }
+        if message.len > 0 { units.push(58); units.push(32); units.append(message[..]); }
+    } else { return false; }
+    escape_description(out, units[..]);
+    return true;
+}
+// A thrown value's description (describe_uncaught) in UTF-16 units.
+fn describe_value(heap: Heap&, v: Value, out: u16[>..]&) {
+    if !v.is_object() { primitive_text(heap, v, out); return; }
+    if !error_like(heap, v) { for c in "an object" { out.push(c); } return; }
+    var name: u16[>..] = []; var message: u16[>..] = [];
+    if !error_field(heap, v, "name", "Error", name) || !error_field(heap, v, "message", "", message) { heap.fault = Fault.None; for c in "an object" { out.push(c); } return; }
+    // Error.prototype.toString: name alone, message alone, or both.
+    out.append(name[..]);
+    if name.len > 0 && message.len > 0 { out.push(58); out.push(32); }
+    out.append(message[..]);
+}
+// ToString of primitive v as JavaScript prints it, without running
+// JavaScript: a symbol (only the well-known ones exist) as
+// Symbol(Symbol.iterator); a BigInt has no digits here yet.
+fn primitive_text(heap: const Heap&, v: Value, out: u16[>..]&) {
+    var bytes: u8[>..] = [];
+    match v {
+        Undefined => { bytes.append("undefined"); },
+        Null => { bytes.append("null"); },
+        Bool b => { bytes.append(if b.v { "true" } else { "false" }); },
+        Number n => { number::append_decimal(bytes, n.v); },
+        String => { append_utf16(heap, v, out); return; },
+        Symbol => { bytes.append("Symbol(Symbol."); bytes.append(export_well_known_symbol(symbol_index(v))); bytes.push(')'); },
+        BigInt => { bytes.append("a BigInt"); },
+        _ => { bytes.append("an object"); },
+    }
+    for c in bytes { out.push(c); }
+}
+// Whether object v is an error to describe by name and message: an Error
+// object, or one with %Error.prototype% on its prototype chain (a realm
+// heap's; a hand-made test heap has no realm). Follows at most 10,000
+// prototypes; a proxy or a kind without a prototype ends the walk.
+fn error_like(heap: Heap&, v: Value) -> bool {
+    if node(heap, v.id()).kind == node_kind::Error { return true; }
+    if !heap.global.is_object() { return false; }
+    var at = v;
+    for i in 10000 {
+        if node(heap, at.id()).kind == node_kind::Proxy { return false; }
+        let p = prototype(heap, at.id());
+        if !p.is_object() { return false; }
+        if p.id() == error_prototype_row(0) { return true; }
+        at = p;
+    }
+    return false;
+}
+// Data property `field` of error v, own or inherited, as text (ToString of a
+// primitive; `fallback` when absent or undefined), into out: false for an
+// accessor, an object value, a symbol, a proxy on the chain or any other
+// lookup that would need JavaScript (Pants engine native/error.rs
+// diagnostic). Leaves heap.fault set on a failed lookup; the caller clears it.
+fn error_field(heap: Heap&, v: Value, field: const u8[:], fallback: const u8[:], out: u16[>..]&) -> bool {
+    let k = find_key(heap, field);
+    if k.is_undefined() { for c in fallback { out.push(c); } return true; }
+    var at = v;
+    for i in 10000 {
+        if node(heap, at.id()).kind == node_kind::Proxy { return false; }
+        let p = own_entry(heap, at, k);
+        if heap.fault != Fault.None { return false; }
+        if p.found {
+            if is_accessor(p.value) || p.value.is_object() || p.value.is_symbol() || p.value.is_hole() { return false; }
+            if p.value.is_undefined() { for c in fallback { out.push(c); } } else { primitive_text(heap, p.value, out); }
+            return true;
+        }
+        let proto = prototype(heap, at.id());
+        if !proto.is_object() { for c in fallback { out.push(c); } return true; }
+        at = proto;
+    }
+    return false;
+}
+// A description as one line of UTF-8 for the runner's protocol: printable
+// ASCII as is, a line break, tab or other control character as \n, \r, \t or
+// \u00XX, a surrogate pair as its code point and a lone surrogate as U+FFFD
+// (JavaScript's ToString shows it so), cut at a code point after
+// description_limit() bytes with "...".
+fn escape_description(out: u8[>..]&, units: const u16[:]) {
+    let start = out.len; var i: i64 = 0;
+    while i < units.len {
+        if out.len - start >= description_limit() { out.append("..."); return; }
+        let u: i64 = units[i]; i += 1;
+        var c = u;
+        if u >= 55296 && u <= 56319 && i < units.len && units[i] >= 56320 && units[i] <= 57343 { let low: i64 = units[i]; c = 65536 + ((u - 55296) << 10) + (low - 56320); i += 1; }
+        else if u >= 55296 && u <= 57343 { c = 65533; }
+        if c == 10 { out.append("\\n"); }
+        else if c == 13 { out.append("\\r"); }
+        else if c == 9 { out.append("\\t"); }
+        else if c < 32 || c == 127 { out.append("\\u00"); out.push(hex_digit(c >> 4)); out.push(hex_digit(c & 15)); }
+        else if c < 128 { out.push(c as u8); }
+        else if c < 2048 { out.push((192 | (c >> 6)) as u8); out.push((128 | (c & 63)) as u8); }
+        else if c < 65536 { out.push((224 | (c >> 12)) as u8); out.push((128 | ((c >> 6) & 63)) as u8); out.push((128 | (c & 63)) as u8); }
+        else { out.push((240 | (c >> 18)) as u8); out.push((128 | ((c >> 12) & 63)) as u8); out.push((128 | ((c >> 6) & 63)) as u8); out.push((128 | (c & 63)) as u8); }
+    }
+}
+inline fn hex_digit(d: i64) -> u8 { return (if d < 10 { 48 + d } else { 87 + d }) as u8; }
 // Return `value` from the frame at `top` (light-cljs-786): its innermost
 // finally handler, if any, becomes a pending Return completion and its block
 // runs first (the entries above it, catch handlers and the pending
@@ -3473,6 +3618,14 @@ inline fn key_converts(heap: const Heap&, base: Value, k: Value) -> bool { retur
 // bytes without building a string.
 fn key_named(heap: Heap&, name: const u8[:]) -> Value {
     if !charge(heap, name.len + 1) { return Value.Undefined; }
+    let found = find_key(heap, name);
+    if !found.is_undefined() { return found; }
+    let k = text(heap, name);
+    return if heap.fault == Fault.None { intern(heap, k) } else { Value.Undefined };
+}
+// The interned key spelled `name`, or Undefined when there is none: a
+// lookup that charges no work and makes nothing (describe_uncaught).
+fn find_key(heap: const Heap&, name: const u8[:]) -> Value {
     var h: u32 = 2166136261; for b in name { h = (h ^ b) * 16777619; }
     if heap.keys.len > 0 {
         let mask = heap.keys.len - 1; var i = h & mask;
@@ -3482,8 +3635,7 @@ fn key_named(heap: Heap&, name: const u8[:]) -> Value {
             i = (i + 1) & mask;
         }
     }
-    let k = text(heap, name);
-    return if heap.fault == Fault.None { intern(heap, k) } else { Value.Undefined };
+    return Value.Undefined;
 }
 // After binary_value of operator op on a and b failed with a TypeError, a
 // symbol's conversion, its message in Job.detail: ToString when op is `+`

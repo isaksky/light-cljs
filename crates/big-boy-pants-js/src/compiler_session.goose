@@ -231,7 +231,9 @@ fn initialize(id: i64, code: source::Code&, heap: source::Heap&, callee: source:
     if !source::start(job, callee, args) || source::run(job, -1) != tiny::Outcome.Complete {
         let pc = job.fault_pc; let start = if pc >= 0 && pc < heap.code.ops.len { heap.code.ops[pc].start } else { -1 }; let end = if pc >= 0 && pc < heap.code.ops.len { heap.code.ops[pc].end } else { -1 };
         var fault: u8[>..] = []; source::describe_fault(fault, heap.code, job);
-        format(report, "ERROR ", id, " preparation-", fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end); return source::Value.Undefined, false;
+        format(report, "ERROR ", id, " preparation-", fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end);
+        var described: u8[>..] = []; if source::describe_uncaught(described, job) { format(report, " uncaught=", described); }
+        return source::Value.Undefined, false;
     }
     return job.result, true;
 }
@@ -317,7 +319,11 @@ fn fail(id: i64, heap: source::Heap&, job: source::Job&, address: i64 = 0, timin
     let pc = job.fault_pc; var start: i64 = -1; var end: i64 = -1;
     if pc >= 0 && pc < heap.code.ops.len { start = heap.code.ops[pc].start; end = heap.code.ops[pc].end; }
     var fault: u8[>..] = []; source::describe_fault(fault, heap.code, job);
-    let text = str(fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end, " writes=", job.writes.len);
+    var text:  u8[>..] = []; format(text, fault, " function=", job.fault_function, " pc=", pc, " emitted-span=", start, ":", end, " writes=", job.writes.len);
+    // An uncaught exception's description ends the line (light-cljs-874):
+    // the compiler reports it where the V8 build reports the thrown value.
+    var described: u8[>..] = [];
+    if source::describe_uncaught(described, job) { format(text, " uncaught=", described); }
     publish(Event { id: id, kind: 3, name: copy(text), address: address, timing: timing });
 }
 fn reset(graph: bridge::Graph&) { graph.nodes.clear(); graph.children.clear(); graph.units.clear(); graph.sources.clear(); graph.bytes.clear(); graph.roots.clear(); graph.omitted = bridge::Omitted {}; }

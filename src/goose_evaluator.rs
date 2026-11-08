@@ -30,6 +30,22 @@ const CLOSE_LIMIT: Duration = Duration::from_secs(60);
 fn error(e: impl std::fmt::Display) -> EvalError {
     EvalError(format!("Goose: {e}"))
 }
+/// A runner's failure line. An uncaught exception's line ends with
+/// ` uncaught=` and the thrown value's description (light-cljs-874), which
+/// leads the error, where the V8 build puts the thrown value
+/// (`macro app.macros/m: 42; definition …`); the Goose fault details
+/// (function, pc, emitted span) follow it.
+/// A reply line without its line ending only: a failure's description may
+/// end in spaces that belong to the thrown value.
+fn protocol_line(line: &str) -> String {
+    line.trim_start().trim_end_matches(['\n', '\r']).to_owned()
+}
+fn failure(line: &str) -> EvalError {
+    match line.split_once(" uncaught=") {
+        Some((fault, description)) => EvalError(format!("{description}; Goose: {fault}")),
+        None => error(line),
+    }
+}
 #[derive(Clone, Debug)]
 enum Event {
     Ready,
@@ -350,7 +366,7 @@ impl GooseSession {
                         "PRODUCED" if parts.len() == 3 && parts[2].parse::<u64>().is_ok() => {
                             Event::Produced
                         }
-                        "ERROR" | "FAULT" => Event::Failure(line.trim().to_owned()),
+                        "ERROR" | "FAULT" => Event::Failure(protocol_line(&line)),
                         _ => return None,
                     };
                     Some((id, event))
@@ -788,7 +804,7 @@ impl GooseSession {
                             .lock()
                             .unwrap()
                             .clone()
-                            .unwrap_or_else(|| error(message)));
+                            .unwrap_or_else(|| failure(&message)));
                     }
                     Ok(_) => return Err(error("unexpected protocol message")),
                     Err(mpsc::RecvTimeoutError::Timeout) => {}

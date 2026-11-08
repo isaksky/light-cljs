@@ -1233,10 +1233,19 @@ fn goose_compiler_prepared_definition_keeps_live_helper_contexts() {
 #[test]
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_preparation_failure_cleanup() {
-    for source in [
-        "rt => 42",
-        "rt => { null.x; return (form, env) => 1; }",
-        "rt => { globalThis.forbidden = 1; return (form, env) => 1; }",
+    // An uncaught exception's description leads the error (light-cljs-874).
+    for (source, described) in [
+        ("rt => 42", None),
+        (
+            "rt => { null.x; return (form, env) => 1; }",
+            Some("TypeError: cannot read property 'x' of null"),
+        ),
+        (
+            "rt => { globalThis.forbidden = 1; return (form, env) => 1; }",
+            None,
+        ),
+        ("rt => { throw 42; }", Some("42")),
+        ("rt => { throw Error('init'); }", Some("Error: init")),
     ] {
         let session = GooseSession::start(&runner(), 2).unwrap();
         let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
@@ -1246,6 +1255,13 @@ fn goose_compiler_preparation_failure_cleanup() {
             failure.0.contains("preparation-") && failure.0.contains("emitted-span="),
             "{failure}"
         );
+        match described {
+            Some(text) => assert!(
+                failure.0.starts_with(&format!("{text}; Goose: ERROR ")),
+                "{failure}"
+            ),
+            None => assert!(failure.0.starts_with("Goose: "), "{failure}"),
+        }
         assert_eq!(session.stats().preparations, 0);
         assert_eq!(session.stats().jobs, 0);
         cleaned(&session);
@@ -1871,6 +1887,170 @@ fn goose_compiler_macro_runtime_errors_match_v8() {
         );
     }
     macro_errors_match_v8(r#"(ex-info "x")"#, Some(("Invalid arity: 1", "HostEffect")));
+}
+/// Compile `(defmacro m [] body) (def x (m))`, whose macro throws, with the
+/// V8 build and on the Goose path (light-cljs-874): both diagnostics place
+/// the description where the V8 build does, after the same location and
+/// macro name; the V8 build's is `v8`, the Goose path's `goose` followed by
+/// its fault details.
+#[cfg(light_v8)]
+fn uncaught_matches_v8(body: &str, v8: &str, goose: &str) {
+    let source = format!("(defmacro m [] {body}) (def x (m))");
+    let reference = crate::compile_with_macros(&source, &mut crate::MacroHost::new())
+        .unwrap_err()
+        .to_string();
+    let session = GooseSession::start(&runner(), 1).unwrap();
+    let mut host = crate::MacroHost::new();
+    host.use_goose_source_macros(session.clone()).unwrap();
+    let message = crate::compile_with_macros(&source, &mut host)
+        .unwrap_err()
+        .to_string();
+    session.close();
+    drop(host);
+    cleaned(&session);
+    let v8_at = reference
+        .find(&format!("/m: {v8}; definition "))
+        .unwrap_or_else(|| panic!("{body}: {reference}"));
+    let goose_at = message
+        .find(&format!("/m: {goose}; Goose: ERROR "))
+        .unwrap_or_else(|| panic!("{body}: {message}"));
+    assert_eq!(reference[..v8_at], message[..goose_at], "{body}");
+    let details = &message[goose_at..];
+    assert!(
+        details.contains(" function=")
+            && details.contains(" emitted-span=")
+            && details.contains("; definition "),
+        "{body}: {message}"
+    );
+}
+/// The pellet's macros (light-cljs-874): a thrown primitive, an Error that
+/// JavaScript or cljs.core makes, an ExceptionInfo, and an engine-raised
+/// TypeError (the same name, Goose's message, light-cljs-871).
+#[cfg(light_v8)]
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_uncaught_macro_exceptions_are_described_as_v8() {
+    uncaught_matches_v8("(throw 42)", "42", "42");
+    for (body, text) in [
+        (
+            r#"(js* "(() => { throw new Error(\"j\"); })()")"#,
+            "Error: j",
+        ),
+        (r#"(throw (js/Error. "stop here"))"#, "Error: stop here"),
+        (r#"(throw (ex-info "bad arg" {:a 1}))"#, "Error: bad arg"),
+        ("(nth [1] 10)", "Error: Index out of bounds"),
+        (r#"(throw "plain")"#, "plain"),
+        ("(throw nil)", "null"),
+    ] {
+        uncaught_matches_v8(body, text, text);
+    }
+    // A computed read names no key in Goose's (QuickJS's) wording.
+    uncaught_matches_v8(
+        r#"(let [x (identity nil)] (aget x "foo"))"#,
+        "TypeError: Cannot read properties of null (reading 'foo')",
+        "TypeError: cannot read property of null",
+    );
+}
+/// The description rules (light-cljs-874; the Pants engine's exceptions.rs
+/// uncaught_error_objects_report_name_and_message and
+/// unhandled_failures_report_the_source_position_and_call_chain): an error
+/// object as Error.prototype.toString prints it from data properties, one
+/// whose name or message would run JavaScript or is an object as "an
+/// object", a primitive as JavaScript prints it, any other object "an
+/// object"; a fault's error keeps its kind and message when rethrown after
+/// they changed; the text is one line of UTF-8, bounded.
+#[test]
+#[ignore = "build native runner with compiler.bb"]
+fn goose_compiler_uncaught_exceptions_are_described() {
+    let long = "x".repeat(3000);
+    let long_body = format!("throw '{long}';");
+    let long_text = format!("{}...", "x".repeat(1024));
+    // A 131,072-unit key: the message passes the runner's 65,536-byte line.
+    let long_key_body = "let k = 'k'; for (let i = 0; i < 17; i++) k += k; try { null[k] = 1; } catch (e) { throw e; }";
+    let long_key_text = format!(
+        "{}...",
+        &format!("TypeError: cannot set property '{}", "k".repeat(1024))[..1024]
+    );
+    let cases: Vec<(&str, &str)> = vec![
+        ("throw Error('boom');", "Error: boom"),
+        (
+            "let e = Error('boom'); e.name = 'Custom'; throw e;",
+            "Custom: boom",
+        ),
+        ("let e = Error('boom'); e.name = ''; throw e;", "boom"),
+        ("throw Error();", "Error"),
+        ("throw new TypeError('t');", "TypeError: t"),
+        ("let e = Error('boom'); e.message = 5; throw e;", "Error: 5"),
+        (
+            // Object.defineProperty of an accessor is not implemented on
+            // Goose yet; an inheriting literal's getter is the same case.
+            "throw {__proto__: Error.prototype, message: 'boom', get name() { throw 99; }};",
+            "an object",
+        ),
+        (
+            "let e = Error('boom'); e.message = {toString() { throw 99; }}; throw e;",
+            "an object",
+        ),
+        (
+            "throw {__proto__: TypeError.prototype, message: 'inherits'};",
+            "TypeError: inherits",
+        ),
+        ("throw undefined;", "undefined"),
+        ("throw null;", "null"),
+        ("throw true;", "true"),
+        ("throw -1.5;", "-1.5"),
+        ("throw 1 / 0;", "Infinity"),
+        ("throw 'a\\nb\\u0001';", "a\\nb\\u0001"),
+        (
+            "throw '\\u00e9\\ud83d\\ude00\\ud800';",
+            "\u{e9}\u{1f600}\u{fffd}",
+        ),
+        ("throw Symbol.iterator;", "Symbol(Symbol.iterator)"),
+        ("throw {};", "an object"),
+        ("throw __rt.formVector(1);", "an object"),
+        (
+            "return null.foo;",
+            "TypeError: cannot read property 'foo' of null",
+        ),
+        (
+            "try { null.foo; } catch (e) { e.message = 'x'; e.name = 'Custom'; throw e; }",
+            "TypeError: cannot read property 'foo' of null",
+        ),
+        (
+            "try { x; let x = 1; } finally { }",
+            "ReferenceError: cannot access 'x' before initialization",
+        ),
+        (
+            "return __rt.cljNth(__rt.formVector(1), 10);",
+            "Error: Index out of bounds",
+        ),
+        (&long_body, &long_text),
+        // A rethrown fault's message stays on one line and bounded, in
+        // the fault details too.
+        (
+            "try { null['a\\nb'] = 1; } catch (e) { throw e; }",
+            "TypeError: cannot set property 'a\\nb' of null",
+        ),
+        (&long_key_body, &long_key_text),
+        // Spaces ending the description are the thrown value's.
+        ("throw 'stop ';", "stop "),
+        ("throw 'nb\\u00a0';", "nb\u{a0}"),
+        ("throw ' ';", " "),
+    ];
+    // A failed call ends its session, so each case has its own.
+    for (body, text) in cases {
+        let s = GooseSession::start(&runner(), 1).unwrap();
+        let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
+        let (f, args, _) = inputs(&e, &format!("rt => (form,env) => {{ {body} }}"));
+        let error = e.call(f, &args).unwrap_err().to_string();
+        assert!(
+            error.starts_with(&format!("{text}; Goose: ERROR "))
+                && error.contains(" emitted-span="),
+            "{body}: {error}"
+        );
+        s.close();
+        cleaned(&s);
+    }
 }
 /// Each call of `calls` in a macro's `(try call (catch :default e ...))`,
 /// giving the caught error's name and message (or the call's value), on
@@ -4519,7 +4699,10 @@ fn goose_compiler_namespace_pool_runs_no_engine() {
 #[ignore = "build native runner with compiler.bb"]
 fn goose_compiler_namespace_pool_failure_and_cancellation_tear_down() {
     for (body, expected) in [
-        ("(m/boom)", "macro m.macros/boom: Goose"),
+        (
+            "(m/boom)",
+            "macro m.macros/boom: Error: Index out of bounds; Goose",
+        ),
         ("(m/spin)", "Fault.InstructionLimit"),
         ("", "deadline"),
         ("", "cancelled"),
@@ -5359,6 +5542,43 @@ fn goose_compiler_shared_delay_realizes_once() {
             "workers={workers} {env:?}"
         );
         assert_eq!(jobs.delay_waits, 1, "workers={workers} {env:?}: {jobs:?}");
+    }
+
+    // A thunk that rethrows a fault's error after changing its message: the
+    // stored error keeps the fault's original message, which a job that
+    // forces it uncaught reports (light-cljs-874).
+    let changed = "rt => new rt.core.Delay(() => { try { null.foo; } catch (e) { e.message = 'changed'; throw e; } }, null)";
+    for (workers, env) in delay_variants() {
+        let session =
+            GooseSession::start_env(&runner(), workers, Some("readiness-test"), &env).unwrap();
+        let e = GooseEvaluator::new(session.clone(), &Default::default()).unwrap();
+        let raw = raw_inputs(&e);
+        raw_helper(&session, 1, 1, 43, changed);
+        let first = raw_job(
+            &session,
+            &raw,
+            1,
+            &format!(
+                "const d = {}; try {{ rt.core.force(d); return -1; }} catch (e) {{ return e.message === 'changed' ? 1 : 0; }}",
+                root("fixture/changed")
+            ),
+        );
+        let caught = raw_outcome(&raw, &first);
+        raw_helper(&session, 2, 1, 43, changed);
+        let second = raw_job(&session, &raw, 2, &force("fixture/changed"));
+        let uncaught = raw_outcome(&raw, &second);
+        // Starts, root reads (2 + 2), productions (counter, delay).
+        raw_close(&session, workers, 2 + 4 + 2);
+        assert_eq!(
+            caught.as_deref(),
+            Ok("Double(1.0)"),
+            "workers={workers} {env:?}"
+        );
+        let message = uncaught.unwrap_err();
+        assert!(
+            message.ends_with(" uncaught=TypeError: cannot read property 'foo' of null"),
+            "workers={workers} {env:?}: {message}"
+        );
     }
 
     // A cycle of claims: job 1 claims d1, job 2 claims d2, each thunk

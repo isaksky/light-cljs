@@ -655,9 +655,12 @@ fn boot_runtime(heap: Heap&) -> Value {
 // The error type (ERROR_NAMES) a catchable fault raises.
 fn fault_type(fault: Fault) -> i64 { return match fault { TypeError => 5, ReferenceError => 3, RangeError => 2, SyntaxError => 4, StackLimit => 7, _ => 0 }; }
 // An error object (node_kind::Error): `code` is error_code of the VM fault it was
-// raised for, 0 for one JavaScript made; its prototype is its type's.
+// raised for, 0 for one JavaScript made; its prototype is its type's. A
+// fault's error also keeps its message in the node's value, out of
+// JavaScript's reach, for the report if it is rethrown uncaught
+// (source_vm.goose uncaught).
 fn error_object(heap: Heap&, t: i64, code: u32, message: Value) -> Value {
-    let e = allocate(heap, Node { kind: node_kind::Error, function: code, proto: object(error_prototype_row(t)) });
+    let e = allocate(heap, Node { kind: node_kind::Error, function: code, value: if code != 0 && message.is_string() { message } else { Value.Undefined }, proto: object(error_prototype_row(t)) });
     if heap.fault != Fault.None { return Value.Undefined; }
     if message.is_string() && !add_own(heap, e.id(), key_named(heap, "message"), message, attr_writable() | attr_configurable()) { return Value.Undefined; }
     return e;
@@ -681,7 +684,12 @@ fn fault_message(job: Job&, fault: Fault, frame: Frame) -> Value {
     if job.detail.len > 0 { return string(heap, job.detail); }
     let code .= heap.code;
     let op = if frame.function >= 0 && frame.pc >= 0 && frame.pc < code.ops.len { code.ops[frame.pc].code } else { -1 };
-    let words: const u8[:] = match fault {
+    return text(heap, fault_words(fault, op));
+}
+// fault_message's wording for a fault without Job.detail at opcode `op`
+// (-1 for none), shared with the uncaught report (describe_uncaught).
+fn fault_words(fault: Fault, op: i64) -> const u8[:] {
+    return match fault {
         StackLimit => "stack overflow",
         RangeError => "invalid array length",
         ReferenceError => if op == opcode::CellInit || op == opcode::CellGet || op == opcode::CellSet { "lexical variable is not initialized" } else { "variable is not defined" },
@@ -694,7 +702,6 @@ fn fault_message(job: Job&, fault: Fault, frame: Frame) -> Value {
         SyntaxError => "invalid global declaration",
         _ => "host effect failed",
     };
-    return text(heap, words);
 }
 // Name an unsupported built-in step (Job.detail) and fail UnsupportedOperand.
 // Whether `v` is the realm's %eval% (a direct-eval site's callee check).

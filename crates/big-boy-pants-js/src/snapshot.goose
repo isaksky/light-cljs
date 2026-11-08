@@ -623,8 +623,10 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
             if input.tag() > value_tag::Null && (!input.is_object() || (s.nodes[input.id()].kind != node_kind::List && s.nodes[input.id()].kind != node_kind::Concat) || s.nodes[input.id()].count != n.count) || input.tag() <= value_tag::Null && n.count != 0 { return reject(c, Error.Link); }
         }
         // A built-in function's code names a Builtin (source::BUILTINS); an
-        // error object's, the catchable fault it was raised for or 0.
+        // error object's, the catchable fault it was raised for or 0, and
+        // its value a fault's error's original message or undefined.
         if n.kind == node_kind::Builtin && (n.function >= source::builtin_count() || n.function == 9) || n.kind == node_kind::Error && n.function > 5 { return reject(c, Error.Unsupported); }
+        if n.kind == node_kind::Error && !n.value.is_undefined() && (n.function == 0 || !n.value.is_string()) { return reject(c, Error.Link); }
         if (n.kind == node_kind::Symbol || n.kind == node_kind::Keyword) && (!n.value.is_string() || !n.namespace_value.is_null() && !n.namespace_value.is_string()) || n.kind == node_kind::Scalar && n.value.tag() > value_tag::String { return reject(c, Error.Link); }
         if !n.metadata.is_undefined() && !n.metadata.is_null() && (!n.metadata.is_object() || s.nodes[n.metadata.id()].kind != node_kind::Map) { return reject(c, Error.Link); }
     }

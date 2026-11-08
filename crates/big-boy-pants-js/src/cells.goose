@@ -374,7 +374,13 @@ fn error_flat(heap: Heap&, rows: const CellRow[:], e: Value) -> cells::Flat, boo
     if heap.fault != Fault.None { heap.fault = Fault.None; return cells::Flat {}, false; }
     var bytes: u8[>..] = [];
     if found && message.is_string() { for u in utf16(heap, message) { bytes.push((u & 255) as u8); bytes.push((u >> 8) as u8); } }
-    return cells::Flat { kind: flat_kind::Thrown, number: t + (if found && message.is_string() { 0 } else { 8 }), identity: identity_of(rows, e.id()), data: bytes, root: n.function }, true;
+    // A fault's error carries its original message (source_vm.goose
+    // uncaught) after the public one: number gains 16 * (the public
+    // message's byte length + 1).
+    var split: i64 = 0;
+    if n.function != 0 && n.value.is_string() { split = bytes.len + 1; for u in utf16(heap, n.value) { bytes.push((u & 255) as u8); bytes.push((u >> 8) as u8); } }
+    let number: f64 = t + (if found && message.is_string() { 0 } else { 8 }) + 16 * split;
+    return cells::Flat { kind: flat_kind::Thrown, number: number, identity: identity_of(rows, e.id()), data: bytes, root: n.function }, true;
 }
 // The value a job stores: checked, its atoms made cells, then encoded. A
 // failure is the operation's named error and changes nothing but the cells
@@ -408,11 +414,15 @@ fn decode(job: Job&, b: Builtin, f: const cells::Flat&) -> Value {
             // One error object a job for each thrown error.
             let held = row_of(job.cell_rows, f.identity);
             if held >= 0 { return object(held); }
-            let t = (f.number as i64) % 8; let bare = f.number >= 8;
-            if f.number < 0 || f.number >= 16 || f.root < 0 || f.root > 5 { return cell_fail(job, b, "a cell value does not import"); }
-            let message = if bare { Value.Undefined } else { string(heap, units_of(f.data)) };
+            // error_flat's number: type, 8 for no message, 16 * (split + 1)
+            // when a fault's original message follows the public one.
+            let word = f.number as i64; let low = word % 16; let split = if word >= 16 { word / 16 - 1 } else { f.data.len };
+            let t = low % 8; let bare = low >= 8;
+            if f.number < 0 || f.number != word || split > f.data.len || split % 2 != 0 || word >= 16 && f.root == 0 || f.root < 0 || f.root > 5 { return cell_fail(job, b, "a cell value does not import"); }
+            let message = if bare { Value.Undefined } else { string(heap, units_of(f.data[..split])) };
             if heap.fault != Fault.None { return Value.Undefined; }
             let e = error_object(heap, t, f.root as u32, message);
+            if heap.fault == Fault.None && word >= 16 { let original = string(heap, units_of(f.data[split..])); if heap.fault == Fault.None { node_mut(heap, e.id()).value = original; } }
             if heap.fault == Fault.None && f.identity > 0 { job.cell_rows.push(CellRow { row: e.id(), identity: f.identity }); }
             return e;
         },
