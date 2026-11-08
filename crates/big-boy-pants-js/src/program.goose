@@ -45,7 +45,9 @@ fn validate(bytes: const u8[:]) -> Error {
     // Version 3 (light-cljs-823): descriptor bit 24 marks a direct-eval call.
     // Version 4 (light-cljs-853): function flags bit 18 marks source text,
     // whose byte range is the function row's words 13 and 14.
-    if word(bytes, 4) != 4 { return Error.Version; }
+    // Version 5 (light-cljs-854): function flags bit 19 marks a simple
+    // parameter list (function_row::SimpleParameters).
+    if word(bytes, 4) != 5 { return Error.Version; }
     if word(bytes, 8) > 8388608 || word(bytes, 12) == 0 || word(bytes, 12) > 65536 { return Error.Limits; }
     for offset in [16, 20, 24, 28] { if word(bytes, offset) > 1048576 { return Error.Limits; } }
     let l = layout(bytes);
@@ -91,8 +93,9 @@ fn validate(bytes: const u8[:]) -> Error {
         let flags = word(bytes, f + 48);
         // Strict bit 0; constructor kind bits 8..15 (none, ordinary, base,
         // derived, default derived class); generator bit 16, async bit 17;
-        // source text bit 18 (function_row::SourceText).
-        if (flags & 255) > 1 || ((flags >> 8) & 255) > constructor::DefaultDerivedClass || (flags >> 16) > 7 { return Error.Operation; }
+        // source text bit 18 (function_row::SourceText); a simple parameter
+        // list bit 19 (function_row::SimpleParameters).
+        if (flags & 255) > 1 || ((flags >> 8) & 255) > constructor::DefaultDerivedClass || (flags >> 16) > 15 { return Error.Operation; }
         // The source text: a non-empty byte range of the image's source on
         // UTF-8 boundaries, or both words 0 without the flag.
         let text_start = word(bytes, f + 52); let text_end = word(bytes, f + 56);

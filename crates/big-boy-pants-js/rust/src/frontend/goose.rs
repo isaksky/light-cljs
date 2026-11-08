@@ -12,7 +12,9 @@ use crate::vm::instr::{Opcode, OperandKind};
 /// Version 4 (light-cljs-853) adds each function's source text: function
 /// flags bit 18 ([`SOURCE_TEXT`]) and the function row's words 13 and 14,
 /// so the row is [`FUNCTION_WORDS`] words; version-3 readers refuse it.
-pub const VERSION: u32 = 4;
+/// Version 5 (light-cljs-854) adds function flags bit 19
+/// ([`SIMPLE_PARAMETERS`]); version-4 readers refuse it.
+pub const VERSION: u32 = 5;
 /// The u32 words of a function row (60 bytes): instruction start/count,
 /// constant start/count, child start/count, params, locals, captures,
 /// name-unit start/count, JS length, flags, source-text byte start/end.
@@ -24,6 +26,12 @@ pub const FUNCTION_WORDS: usize = 15;
 /// synthesized function, whose `Function.prototype.toString` is the
 /// native-code form.
 pub const SOURCE_TEXT: u32 = 1 << 18;
+/// Function flags bit 19: the parameter list is simple (ECMAScript
+/// IsSimpleParameterList: no default, rest or destructuring pattern;
+/// `Executable::has_simple_parameters`). Sloppy code with one makes a mapped
+/// arguments object, whose `callee` is the function; any other makes an
+/// unmapped one, whose `callee` is the %ThrowTypeError% accessor.
+pub const SIMPLE_PARAMETERS: u32 = 1 << 19;
 pub const MAX_SOURCE: usize = 8 * 1024 * 1024;
 pub const MAX_RECORDS: usize = 1_048_576;
 pub const MAX_FUNCTIONS: usize = 65_536;
@@ -488,7 +496,13 @@ impl Tables {
             name_start,
             name_len,
             u32::from(spec.function_length.unwrap_or(spec.params)),
-            function_flags(&spec) | text_flag,
+            function_flags(&spec)
+                | text_flag
+                | if executable.has_simple_parameters() {
+                    SIMPLE_PARAMETERS
+                } else {
+                    0
+                },
             text_start,
             text_end,
         ];
@@ -639,7 +653,9 @@ pub fn inspection_schema() -> String {
         "\n// A function row's bytes and its source-text flag (function flags\n\
          // bit 18, GSP version 4): words 13 and 14 hold the text's byte range.\n\
          let function_row::Bytes = {};\n\
-         let function_row::SourceText = {SOURCE_TEXT};\n",
+         let function_row::SourceText = {SOURCE_TEXT};\n\
+         // Function flags bit 19 (GSP version 5): a simple parameter list.\n\
+         let function_row::SimpleParameters = {SIMPLE_PARAMETERS};\n",
         FUNCTION_WORDS * 4
     ));
     text.push_str(
@@ -803,10 +819,51 @@ mod tests {
         }
         // No descriptor sets bits 25..31.
         assert!(rows(&export, 3).iter().all(|row| row[0] >> 24 <= 1));
-        assert_eq!(VERSION, 4);
+        assert_eq!(VERSION, 5);
         assert_eq!(
             u32::from_le_bytes(export.bytes[4..8].try_into().unwrap()),
-            4
+            5
+        );
+    }
+    /// Function flags bit 19 marks a simple parameter list (light-cljs-854):
+    /// not a default, rest or destructured parameter, nor the script.
+    #[test]
+    fn simple_parameter_lists_are_flagged() {
+        let source = "function a(x, y) {}\nfunction b() {}\nvar m = { m(p) {} };\nvar e = (q) => q;\nfunction c(x = 1) {}\nfunction d(...r) {}\nfunction f({ k }) {}\nfunction g(x, [y]) {}";
+        let export = export_source("simple.js", source).unwrap();
+        let mut simple = Vec::new();
+        let mut other = Vec::new();
+        for row in rows(&export, 0) {
+            if row[12] & SOURCE_TEXT == 0 {
+                assert_eq!(row[12] & SIMPLE_PARAMETERS, 0, "the script");
+                continue;
+            }
+            let text = &source[row[13] as usize..row[14] as usize];
+            if row[12] & SIMPLE_PARAMETERS != 0 {
+                simple.push(text);
+            } else {
+                other.push(text);
+            }
+        }
+        simple.sort_unstable();
+        other.sort_unstable();
+        assert_eq!(
+            simple,
+            [
+                "(q) => q",
+                "function a(x, y) {}",
+                "function b() {}",
+                "m(p) {}"
+            ]
+        );
+        assert_eq!(
+            other,
+            [
+                "function c(x = 1) {}",
+                "function d(...r) {}",
+                "function f({ k }) {}",
+                "function g(x, [y]) {}"
+            ]
         );
     }
     /// Each function's source text is QuickJS's `debug.source` (probed with
@@ -911,7 +968,7 @@ var μ = function μ() { return "é"; };"#;
         );
         let mut kinds: Vec<u32> = rows(&export, 0)
             .iter()
-            .map(|f| (f[12] & !SOURCE_TEXT) >> 8)
+            .map(|f| (f[12] & !(SOURCE_TEXT | SIMPLE_PARAMETERS)) >> 8)
             .collect();
         kinds.sort();
         // Script (0); A, B, C, the default derived B's (2, 4, 3); g, h, k, o:
@@ -1318,6 +1375,9 @@ mod serial_tests {
             // Pants engine keeps unsupported (light-cljs-853).
             ("sloppy-function-text", "goose"),
             ("function-text-kinds", "goose"),
+            // Arguments objects as ordinary objects and their `callee`, which
+            // the Pants engine does not define (light-cljs-854).
+            ("sloppy-arguments-objects", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let options = if name.starts_with("sloppy-") {

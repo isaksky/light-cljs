@@ -846,13 +846,16 @@ fn goose_compiler_wrapper_conventions_and_boundaries() {
             "const f=function(){return this;}; return __rt.fnApplyReceiver(f)===f && f.call()===undefined && f.call(null)===null && f.call(7)===7;",
             None,
         ),
+        // Arguments objects are ordinary objects (light-cljs-854): an element
+        // write leaves the strict parameter alone, and a strict `callee` is
+        // the %ThrowTypeError% accessor.
         (
-            "function f(a){arguments[0]=3; return a;} return f(1);",
-            Some("Fault.UnsupportedOperand"),
+            "function f(a){arguments[0]=3; return a===1 && arguments[0]===3;} return f(1);",
+            None,
         ),
         (
             "function f(){return arguments.callee;} return f();",
-            Some("Fault.UnsupportedOperand"),
+            Some("Fault.TypeError"),
         ),
         (
             "function f(){return arguments.__proto__;} return f();",
@@ -4554,6 +4557,7 @@ fn goose_compiler_cell_effects_and_named_errors() {
                 "rt.core.reset(a, {n: 1}); return 0;",
                 "rt.core.addWatch(a, 1, () => 0); return 0;",
                 "rt.core.reset(a, rt.vectorFromArray([(function f() {}).bind(null)])); return 0;",
+                "rt.core.reset(a, rt.vectorFromArray([(function () { return arguments; })(1)])); return 0;",
                 "return rt.core.compareAndSet(a, 1, 5) ? rt.core.deref(a) : -1;",
             ],
         );
@@ -4587,11 +4591,19 @@ fn goose_compiler_cell_effects_and_named_errors() {
                 .contains("Fault.NativeBoundary:reset:-cannot-share-a-bound-function"),
             "{outcomes:?}"
         );
+        // An arguments object (light-cljs-854) is a mutable JavaScript object.
+        assert!(
+            outcomes[5]
+                .as_ref()
+                .unwrap_err()
+                .contains("Fault.NativeBoundary:reset:-cannot-share-a-mutable-JavaScript-object"),
+            "{outcomes:?}"
+        );
         // None changed the cell: it still holds the faulting job's 1.
-        assert_eq!(outcomes[5].as_deref(), Ok("Double(5.0)"), "{outcomes:?}");
+        assert_eq!(outcomes[6].as_deref(), Ok("Double(5.0)"), "{outcomes:?}");
         assert_eq!((jobs.cells, jobs.conflicts), (1, 0), "{jobs:?}");
         assert!(
-            jobs.cell_operations >= 6 && jobs.owner_ns > 0 && jobs.delay_waits == 0,
+            jobs.cell_operations >= 7 && jobs.owner_ns > 0 && jobs.delay_waits == 0,
             "{jobs:?}"
         );
     }

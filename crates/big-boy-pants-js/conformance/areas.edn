@@ -130,6 +130,10 @@
   "bbp/use_strict_completion_single_quoted" {:area :functions-scope}
   "bbp/arguments_reads" {:area :functions-scope}
   "bbp/arguments_reads_sloppy" {:area :functions-scope :mode :sloppy}
+  "bbp/arguments_writes_and_delete" {:area :functions-scope}
+  "bbp/arguments_for_in_and_tag" {:area :functions-scope}
+  "bbp/arguments_callee" {:area :functions-scope :pants-gap "the Pants engine defines no arguments `callee` (rust/src/vm/dispatch.rs new_arguments) and refuses an arguments object as instanceof's right operand"}
+  "bbp/arguments_callee_sloppy" {:area :functions-scope :mode :sloppy :pants-gap "the Pants engine defines no arguments `callee` (rust/src/vm/dispatch.rs new_arguments)"}
   "bbp/sloppy_globals" {:area :functions-scope :mode :sloppy}
   "bbp/function_metadata" {:area :functions-scope}
   "bbp/spread_calls" {:area :functions-scope}

@@ -269,6 +269,11 @@ pub(crate) struct DebugInfo {
     /// function. Metadata only: this VM does not implement
     /// `Function.prototype.toString`; the Goose exporter reads it.
     pub(crate) text: Option<crate::frontend::Span>,
+    /// The parameter list is simple (ECMAScript IsSimpleParameterList: no
+    /// default, rest or destructuring pattern), so sloppy code gets a mapped
+    /// arguments object. Metadata only: this VM makes every arguments object
+    /// unmapped; the Goose exporter reads it (light-cljs-854).
+    pub(crate) simple_parameters: bool,
 }
 
 impl Code {
@@ -425,6 +430,7 @@ impl Executable {
         locations: Vec<SourceLocation>,
         construct_callees: std::collections::HashMap<usize, crate::frontend::Span>,
         text: Option<crate::frontend::Span>,
+        simple_parameters: bool,
     ) -> Result<Executable, ValidationError> {
         Executable::load_with(
             spec,
@@ -434,6 +440,7 @@ impl Executable {
                 locations: locations.into(),
                 construct_callees,
                 text,
+                simple_parameters,
             }),
         )
     }
@@ -757,6 +764,12 @@ impl Executable {
     /// ([`DebugInfo`]'s `text`), for compiled code that has one.
     pub fn source_text_span(&self) -> Option<crate::frontend::Span> {
         self.0.debug.as_ref()?.text
+    }
+
+    /// Whether compiled code's parameter list is simple ([`DebugInfo`]'s
+    /// `simple_parameters`); false for code loaded from a spec.
+    pub fn has_simple_parameters(&self) -> bool {
+        self.0.debug.as_ref().is_some_and(|d| d.simple_parameters)
     }
 
     /// The code re-encoded in the byte format, as a spec that
@@ -1286,6 +1299,7 @@ mod tests {
             vec![at],
             Default::default(),
             None,
+            false,
         )
         .unwrap_err();
         assert_eq!(
@@ -1302,6 +1316,7 @@ mod tests {
             vec![at, at],
             Default::default(),
             None,
+            false,
         )
         .unwrap();
         assert_eq!(exe.source_location(1), Some(at));

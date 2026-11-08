@@ -121,7 +121,7 @@ thread_fn invalid(base: snapshot::Snapshot, a: artifact::Artifact) {
     defer { heap_program::finish(); }
     var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; restored(base, code, heap, roots);
     var imports = artifact::Imports { base: base.header.checkpoint, session: heap.identity };
-    for mode in 13 {
+    for mode in 14 {
         var bad = copy(a);
         match mode {
             0 => { bad.root = source::object(bad.nodes.len); },
@@ -137,6 +137,8 @@ thread_fn invalid(base: snapshot::Snapshot, a: artifact::Artifact) {
             10 => { bad.keys[0].arena = base.header.checkpoint; bad.keys[0].slot = 0; },
             11 => { bad.version = 0; },
             12 => { bad.nodes[0].count -= 1; bad.values[bad.nodes[0].start + bad.nodes[0].count] = source::object(bad.nodes.len); },
+            // An arguments object is a mutable JavaScript object (light-cljs-854).
+            13 => { bad.nodes[0].kind = node_kind::Arguments; },
             _ => {},
         }
         var wire: u8[>..] = []; to_bytes([bad], wire); var decode = artifact::Control {};
@@ -145,7 +147,7 @@ thread_fn invalid(base: snapshot::Snapshot, a: artifact::Artifact) {
         // cache below; the stateless decoder cannot know prior publications.
         if mode == 10 { assert(rejected.len == 1 && decode.error == artifact::Error.None); }
         else { assert(rejected.len == 0 && decode.error != artifact::Error.None); }
-        reject_import(bad, base, heap, imports, match mode { 2 => artifact::Error.Mutable, 3 => artifact::Error.Cycle, 4, 11 => artifact::Error.Version, 10 => artifact::Error.Conflict, _ => artifact::Error.Link });
+        reject_import(bad, base, heap, imports, match mode { 2, 13 => artifact::Error.Mutable, 3 => artifact::Error.Cycle, 4, 11 => artifact::Error.Version, 10 => artifact::Error.Conflict, _ => artifact::Error.Link });
     }
     // A rejection must not positively classify any earlier visited sibling.
     {
@@ -194,6 +196,16 @@ thread_fn invalid(base: snapshot::Snapshot, a: artifact::Artifact) {
         let inside = source::form_collection(heap, node_kind::Vector, [source::number(1), bound]); let outer = state(heap, imports);
         var nested_bound = artifact::Control {}; artifact::export_graph(heap, base, imports, inside, 37, 1, nested_bound);
         assert(nested_bound.error == artifact::Error.Mutable && nested_bound.path.len == 2 && imports.definitions.len == definitions && state(heap, imports) == outer);
+    }
+    // An arguments object (light-cljs-854), directly and inside a vector.
+    {
+        let args = source::new_arguments(heap, [source::number(1)], source::Value.Undefined, false);
+        let definitions = imports.definitions.len; let before = state(heap, imports);
+        var direct = artifact::Control {}; let none = artifact::export_graph(heap, base, imports, args, 38, 1, direct);
+        assert(direct.error == artifact::Error.Mutable && direct.path.len == 1 && none.nodes.len == 0 && imports.definitions.len == definitions && state(heap, imports) == before);
+        let inside = source::form_collection(heap, node_kind::Vector, [source::number(1), args]);
+        var nested_args = artifact::Control {}; artifact::export_graph(heap, base, imports, inside, 39, 1, nested_args);
+        assert(nested_args.error == artifact::Error.Mutable && nested_args.path.len == 2 && imports.definitions.len == definitions);
     }
     // An occurrence is scalar-only, but its metadata still participates.
     let metadata = source::form_collection(heap, node_kind::Map, [source::number(1), mutable]); source::node_mut(heap, wrapped.id()).metadata = metadata; var oc = artifact::Control {}; artifact::export_graph(heap, base, imports, wrapped, 33, 1, oc); assert(oc.error == artifact::Error.Mutable && oc.path.len >= 3);

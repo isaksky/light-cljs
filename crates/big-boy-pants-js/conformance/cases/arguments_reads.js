@@ -6,12 +6,12 @@
 // it, construct calls, @@iterator and for-of, and a ReferenceError for
 // `arguments` at script level. The entry-function row (explicit undefined
 // kept beside a default) is a script call here; the `__rt.reduce` callback
-// row runs the callback in a loop. Left out until their pellets land:
-// element writes (light-cljs-854); Object.getOwnPropertyDescriptor and
-// Object.keys of the object (light-cljs-854 and the objects area,
-// light-cljs-766). The `call`, `apply`, `Reflect.apply` and `bind` row
-// is whole (light-cljs-852). Each row is a `row(...)` check; the script
-// completes with the number of rows, or minus the first failing row's number.
+// row runs the callback in a loop. Row 5 (an element write) and rows 6 and
+// 20 (descriptors, Object.keys counted with for-in) are
+// arguments_writes_and_delete's (light-cljs-854). The `call`, `apply`,
+// `Reflect.apply` and `bind` row is whole (light-cljs-852). Each row is a
+// `row(...)` check; the script completes with the number of rows, or minus
+// the first failing row's number.
 var rows = 0, failed = 0;
 function row(ok) { rows++; if (ok !== true && failed === 0) failed = rows; }
 function name(thunk) { try { thunk(); return "none"; } catch (e) { return e.name; } }

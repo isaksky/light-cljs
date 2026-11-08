@@ -329,6 +329,7 @@ fn lower_function_kind(
         lower.cur_mut().own_arguments = true;
         lower.cur_mut().constructor_kind = constructor_kind(function);
         lower.cur_mut().text = Some(function.span);
+        lower.cur_mut().simple_parameters = !function.has_non_simple_parameters();
         lower.function_body(function)?;
         let end = Span::new(function.span.end.saturating_sub(1), function.span.end);
         lower.out().op(Opcode::Undefined, end);
@@ -626,6 +627,10 @@ struct FnCtx {
     /// The function's source text span ([`Sealed::text`]); set by
     /// [`Lowerer::closure_with_fields`] for a function written in the source.
     text: Option<Span>,
+    /// The parameter list is simple (no default, rest or pattern), set with
+    /// `text`: sloppy code with one gets a mapped arguments object, whose
+    /// `callee` is the function (light-cljs-854; the Goose exporter reads it).
+    simple_parameters: bool,
     in_parameters: bool,
     /// Only the original script registers lexicals; eval and functions use
     /// ordinary scope-local bindings for their own lexical declarations.
@@ -758,6 +763,9 @@ struct Sealed {
     /// script, eval code and synthesized functions (class field
     /// initializers).
     text: Option<Span>,
+    /// IsSimpleParameterList of the function's parameters (light-cljs-854;
+    /// [`FnCtx::simple_parameters`]).
+    simple_parameters: bool,
 }
 
 struct Lowerer<'s> {
@@ -970,6 +978,7 @@ impl<'s> Lowerer<'s> {
             module: false,
             eval_sites: Vec::new(),
             text: None,
+            simple_parameters: false,
             in_parameters: false,
             script_lexicals: false,
             global_declarations: script,
@@ -1041,6 +1050,7 @@ impl<'s> Lowerer<'s> {
             children,
             eval_sites,
             text,
+            simple_parameters,
             ..
         } = ctx;
         if u32::try_from(out.code.len()).is_err() {
@@ -1074,6 +1084,7 @@ impl<'s> Lowerer<'s> {
             constants: out.constants,
             children,
             text,
+            simple_parameters,
         });
         Ok(self.sealed.len() - 1)
     }
@@ -1133,6 +1144,7 @@ impl<'s> Lowerer<'s> {
                 locations,
                 f.construct_callees,
                 f.text,
+                f.simple_parameters,
             )
             .map_err(|e| {
                 self.error(
@@ -3120,6 +3132,7 @@ impl<'s> Lowerer<'s> {
         } else {
             Some(f.span)
         };
+        self.cur_mut().simple_parameters = !f.has_non_simple_parameters();
         if self.cur().constructor_kind.is_class() {
             let fields = self.resolve("*instance-fields*");
             self.cur_mut().instance_fields = Some(fields);

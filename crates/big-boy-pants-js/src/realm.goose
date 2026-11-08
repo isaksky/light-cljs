@@ -164,7 +164,14 @@ inline fn array_iterator_prototype_row() -> i64 { return 32; }
 inline fn string_iterator_prototype_row() -> i64 { return 33; }
 // The Reflect namespace object (light-cljs-851), an ordinary object.
 inline fn reflect_row() -> i64 { return 34; }
-inline fn fixed_rows() -> i64 { return 35; }
+// The arguments object templates (light-cljs-854; source_vm.goose
+// new_arguments): two node_kind::Arguments rows no JavaScript reaches,
+// whose shapes hold `length`, @@iterator and `callee`, and whose slots hold
+// @@iterator's value and, for the unmapped one, `callee`'s %ThrowTypeError%
+// pair: the unmapped object's (strict code, or a non-simple parameter list)
+// and the mapped object's, whose `callee` each object fills in.
+inline fn arguments_template_row(mapped: bool) -> i64 { return if mapped { 36 } else { 35 }; }
+inline fn fixed_rows() -> i64 { return 37; }
 struct Name { text: u8[..24] }
 let WRAPPER_NAMES:    Name[3]    = [Name { text: "Number" }, Name { text: "String" }, Name { text: "Boolean" }];
 let WRAPPER_BUILTINS: Builtin[3] = [Builtin.Number, Builtin.String, Builtin.Boolean];
@@ -244,7 +251,7 @@ let PENDING: PendingName[202] = [
     PendingName { holder: 12, key: "isExtensible" }, PendingName { holder: 12, key: "isFrozen" }, PendingName { holder: 12, key: "isSealed" }, PendingName { holder: 12, key: "keys" },
     PendingName { holder: 12, key: "preventExtensions" }, PendingName { holder: 12, key: "seal" }, PendingName { holder: 12, key: "setPrototypeOf" }, PendingName { holder: 12, key: "values" },
     // Symbol (symbol_row(); its well-known symbols are real)
-    PendingName { holder: 45, key: "prototype" }, PendingName { holder: 45, key: "for" }, PendingName { holder: 45, key: "keyFor" },
+    PendingName { holder: 47, key: "prototype" }, PendingName { holder: 47, key: "for" }, PendingName { holder: 47, key: "keyFor" },
     // Reflect (reflect_row()): apply and construct are light-cljs-851's;
     // the other eleven belong to the objects and classes area (light-cljs-766).
     PendingName { holder: 34, key: "defineProperty" }, PendingName { holder: 34, key: "deleteProperty" }, PendingName { holder: 34, key: "get" }, PendingName { holder: 34, key: "getOwnPropertyDescriptor" },
@@ -413,6 +420,12 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
     for o in iterator_prototypes { if nodes[o].kind != node_kind::Object || !nodes[o].proto.is_object() || nodes[o].proto.id() != iterator_prototype_row() { return false; } }
     // Reflect is an ordinary object (light-cljs-851).
     if nodes[reflect_row()].kind != node_kind::Object || !nodes[reflect_row()].proto.is_object() || nodes[reflect_row()].proto.id() != object_prototype_row() { return false; }
+    // The arguments templates (light-cljs-854): shape-mode, three properties,
+    // no elements, `length` 0 and @@iterator %Array.prototype.values%.
+    for mapped in [false, true] {
+        let t .= nodes[arguments_template_row(mapped)];
+        if t.kind != node_kind::Arguments || t.initialized || t.shape == 0 || t.key_count != 3 || t.count != 0 || !t.proto.is_hole() || !same_bits(t.slots[0], number(0)) || !t.slots[1].is_object() || t.slots[1].id() != realm_function_row(Builtin.ArrayPrototypeValues) { return false; }
+    }
     for m, j in REALM_FUNCTIONS { let o = fixed_rows() + j; if nodes[o].kind != node_kind::Builtin || nodes[o].function != code(m.which) || m.which == Builtin.FunctionPrototypeCall && (!call.is_object() || call.id() != o) { return false; } }
     return true;
 }
@@ -440,6 +453,7 @@ fn build_realm(heap: Heap&) -> bool {
     for b in WRAPPER_BUILTINS { rows.push(Node { kind: node_kind::Builtin, function: code(b) }); }
     rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) });
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
+    rows.push(Node { kind: node_kind::Arguments }); rows.push(Node { kind: node_kind::Arguments });
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
     if !charge(heap, rows.len) || add_nodes(heap, rows) != 0 { if heap.fault == Fault.None { memory(heap); } return false; }
@@ -455,6 +469,7 @@ fn build_realm(heap: Heap&) -> bool {
         let p = error_prototype_row(t);
         if !link_constructor(heap, error_constructor_row(t), p) || !realm_value(heap, p, "name", key_named(heap, ERROR_NAMES[t].text), attr_writable() | attr_configurable()) || !realm_value(heap, p, "message", key_named(heap, ""), attr_writable() | attr_configurable()) { return false; }
     }
+    var thrower_pair = Value.Undefined;
     for m, j in REALM_FUNCTIONS {
         if m.which == Builtin.IteratorPrototypeIterator || m.which == Builtin.StringPrototypeIterator { if !add_own(heap, m.holder, Value.Symbol { s: well_known::Iterator }, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; } continue; }
         // Non-writable, non-enumerable, non-configurable (ECMAScript 20.2.3.6).
@@ -466,6 +481,7 @@ fn build_realm(heap: Heap&) -> bool {
             let thrower = object(fixed_rows() + j);
             let a = add_accessor(heap, Pair { get: thrower, set: thrower });
             if a < 0 { if heap.fault == Fault.None { memory(heap); } return false; }
+            thrower_pair = Value.Accessor { a: a as u32 };
             let names: Name[2] = [Name { text: "caller" }, Name { text: "arguments" }];
             for n in names { let k = key_named(heap, n.text); if heap.fault != Fault.None || !add_own(heap, m.holder, k, Value.Accessor { a: a as u32 }, attr_configurable()) { return false; } }
             continue;
@@ -474,6 +490,17 @@ fn build_realm(heap: Heap&) -> bool {
         if m.which == Builtin.FunctionPrototypeCall { heap.call_method = object(fixed_rows() + j); }
         // Array.prototype[@@iterator] is the `values` function object (ECMAScript 23.1.3.40).
         if m.which == Builtin.ArrayPrototypeValues && !add_own(heap, m.holder, Value.Symbol { s: well_known::Iterator }, object(fixed_rows() + j), attr_writable() | attr_configurable()) { return false; }
+    }
+    // The arguments object templates: `length` 0 and @@iterator (writable,
+    // configurable), then `callee`: the %ThrowTypeError% pair (neither
+    // enumerable nor configurable) or a writable, configurable data property
+    // (QuickJS's js_build_arguments and js_build_mapped_arguments).
+    let callee = key_named(heap, "callee"); let length = key_named(heap, "length");
+    if heap.fault != Fault.None || !is_accessor(thrower_pair) { if heap.fault == Fault.None { heap.fault = Fault.InvalidState; } return false; }
+    for mapped in [false, true] {
+        let t = arguments_template_row(mapped);
+        if !add_own(heap, t, length, number(0), attr_writable() | attr_configurable()) || !add_own(heap, t, Value.Symbol { s: well_known::Iterator }, object(realm_function_row(Builtin.ArrayPrototypeValues)), attr_writable() | attr_configurable()) { return false; }
+        if !add_own(heap, t, callee, if mapped { Value.Undefined } else { thrower_pair }, if mapped { attr_writable() | attr_configurable() } else { 0 }) { return false; }
     }
     // %ArrayIteratorPrototype%[@@toStringTag] and %StringIteratorPrototype%[@@toStringTag].
     if !add_own(heap, array_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Array Iterator"), attr_configurable()) || !add_own(heap, string_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "String Iterator"), attr_configurable()) { return false; }

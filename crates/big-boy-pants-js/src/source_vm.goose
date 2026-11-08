@@ -171,7 +171,10 @@ fn plain_rows<T>(rows: const T[:]) -> u8[>..] { var out: u8[>..] = []; for r in 
 // ([[SourceText]], Function.prototype.toString; light-cljs-853), a byte
 // range of Code.source_bytes on UTF-8 boundaries (both 0 without text: a
 // script or a synthesized function).
-struct Function { start: u32, count: u32, constants: u32, children: u32, params: u32, locals: u32, captures: u32, strict: bool, kind: i64 = 0, generator: bool = false, asynchronous: bool = false, name_start: u32 = 0, name_len: u32 = 0, length: u32 = 0, has_text: bool = false, text_start: u32 = 0, text_end: u32 = 0 }
+// simple: the parameter list is simple (no default, rest or pattern; export
+// flag bit 19, light-cljs-854): sloppy code with one gives its arguments
+// object a `callee` data property, any other the %ThrowTypeError% accessor.
+struct Function { start: u32, count: u32, constants: u32, children: u32, params: u32, locals: u32, captures: u32, strict: bool, kind: i64 = 0, generator: bool = false, asynchronous: bool = false, name_start: u32 = 0, name_len: u32 = 0, length: u32 = 0, has_text: bool = false, text_start: u32 = 0, text_end: u32 = 0, simple: bool = false }
 // direct_eval: the image marks the row as the call of a direct-eval site
 // (descriptor bit 24, light-cljs-823); only the four call opcodes carry it.
 struct Op { code: i64, arg: i64, offset: i64, start: i64, end: i64, depth: i64 = -1, direct_eval: bool = false }
@@ -300,7 +303,10 @@ let node_kind::Scalar = 11;    // a scalar form occurrence
 // A concatenated sequence (form_concat, a rest), read as a list.
 let node_kind::Concat = 12;
 let node_kind::Error = 13;     // an opaque caught runtime error
-let node_kind::Arguments = 14; // read-only unmapped arguments
+// An arguments object (light-cljs-854): an ordinary object with an element
+// run whose class is Arguments (Object.prototype.toString); see "Arguments
+// objects".
+let node_kind::Arguments = 14;
 // A finite lazy (deferred) map: value=callback, namespace_value=input,
 // start/count=reserved memo range, length=completed callbacks.
 let node_kind::LazySeq = 15;
@@ -342,6 +348,7 @@ let node_kind::BoundFunction = 25;
 // Errors, generators, promises, wrappers and iterators are ordinary objects
 // with internal slots: their own properties are an Object's, without an
 // element run.
+// An arguments object is an ordinary object with its element run.
 // Closure immutable marks fnApplyNull's immutable receiver convention.
 // Errors preserve object identity/truthiness;
 // property access/coercion and form transport reject unsupported inspection.
@@ -735,7 +742,7 @@ fn load(code: Code&, image: const program::Image&) -> bool {
     code.source_bytes.append(bytes[l.source..l.functions]);
     for i in program::word(bytes, 12) {
         let at = l.functions + i * function_row::Bytes; let flags = program::word(bytes, at + 48);
-        code.functions.push(Function { start: program::word(bytes, at) as u32, count: program::word(bytes, at + 4) as u32, constants: program::word(bytes, at + 8) as u32, children: program::word(bytes, at + 16) as u32, params: program::word(bytes, at + 24) as u32, locals: program::word(bytes, at + 28) as u32, captures: program::word(bytes, at + 32) as u32, strict: (flags & 1) == 1, kind: (flags >> 8) & 255, generator: ((flags >> 16) & 1) == 1, asynchronous: ((flags >> 17) & 1) == 1, name_start: program::word(bytes, at + 36) as u32, name_len: program::word(bytes, at + 40) as u32, length: program::word(bytes, at + 44) as u32, has_text: (flags & function_row::SourceText) != 0, text_start: program::word(bytes, at + 52) as u32, text_end: program::word(bytes, at + 56) as u32 });
+        code.functions.push(Function { start: program::word(bytes, at) as u32, count: program::word(bytes, at + 4) as u32, constants: program::word(bytes, at + 8) as u32, children: program::word(bytes, at + 16) as u32, params: program::word(bytes, at + 24) as u32, locals: program::word(bytes, at + 28) as u32, captures: program::word(bytes, at + 32) as u32, strict: (flags & 1) == 1, kind: (flags >> 8) & 255, generator: ((flags >> 16) & 1) == 1, asynchronous: ((flags >> 17) & 1) == 1, name_start: program::word(bytes, at + 36) as u32, name_len: program::word(bytes, at + 40) as u32, length: program::word(bytes, at + 44) as u32, has_text: (flags & function_row::SourceText) != 0, text_start: program::word(bytes, at + 52) as u32, text_end: program::word(bytes, at + 56) as u32, simple: (flags & function_row::SimpleParameters) != 0 });
     }
     for i in program::word(bytes, 16) {
         let at = l.constants + i * 12; let tag = program::word(bytes, at);
@@ -1219,6 +1226,10 @@ fn element_key(heap: Heap&, k: Value) -> i64 {
     if c < 48 || c > 57 { return -1; }
     return index(heap, k);
 }
+// Whether objects of this kind keep their index-keyed data properties in an
+// element run as an ordinary object does: ordinary and arguments objects
+// (light-cljs-854). Arrays have their own element rules.
+checkfree inline fn element_kind(kind: i64) -> bool { return kind == node_kind::Object || kind == node_kind::Arguments; }
 // Element i of ordinary object o, or a hole.
 checkfree fn object_element(heap: const Heap&, o: i64, i: i64) -> Value {
     let n .= node(heap, o);
@@ -1278,8 +1289,8 @@ fn array_to_dictionary(heap: Heap&, array: Value) -> bool {
 // own_keys orders index keys first. Ordinary objects keep their other properties in shapes or dictionary
 // records (Node). The internal methods (own_entry, lookup, assign, define_own,
 // has_property, delete_property, own_keys) dispatch on the object kind by
-// `match`, where the exotic kinds (arrays and their `length`, read-only
-// arguments, functions' `call`) override the ordinary ones; a kind whose
+// `match`, where the exotic kinds (arrays and their `length`, functions'
+// `call`) override the ordinary ones; a kind whose
 // properties are not implemented yet fails UnsupportedOperand. None of them
 // runs JavaScript: a getter or setter they find goes back to the dispatch
 // loop (get_property, set_property), which runs it as a frame.
@@ -1491,7 +1502,7 @@ fn same_value(heap: Heap&, a: Value, b: Value) -> bool {
 // value; any other turns it into a shape key or record, the element becoming
 // a hole only once that property exists.
 fn define_own(heap: Heap&, o: i64, k: Value, value: Value, attrs: u8, half: i64 = 0) -> bool {
-    let i = if node(heap, o).kind == node_kind::Object { element_key(heap, k) } else { -1 };
+    let i = if element_kind(node(heap, o).kind) { element_key(heap, k) } else { -1 };
     if heap.fault != Fault.None { return false; }
     let data = half == 0 && attrs == attrs_data();
     if i >= 0 && !object_element(heap, o, i).is_hole() {
@@ -1644,11 +1655,10 @@ fn string_key(heap: Heap&, o: i64, k: Value) -> bool, i64 {
     let i = index(heap, k);
     return i >= 0 && i < str_len(heap, s), i;
 }
-// [[GetOwnProperty]] by object kind (interned key k): ordinary objects their
-// shapes or records; arrays their writable, non-enumerable, non-configurable
+// [[GetOwnProperty]] by object kind (interned key k): ordinary and arguments
+// objects their element runs and shapes or records; arrays their writable, non-enumerable, non-configurable
 // `length`, their elements and their named properties (light-cljs-805: shape
-// keys of a dense array, records of a dictionary array); read-only unmapped
-// arguments their `length` and indices; closures their own properties (see
+// keys of a dense array, records of a dictionary array); closures their own properties (see
 // above) and, failing those, `call` (Function.prototype's, until the realm),
 // built-ins only `call`; primitive wrappers (node_kind::Wrapper) their ordinary
 // properties and, for a String object, its exotic `length` and indices
@@ -1665,7 +1675,7 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             if i < 0 { return Own { found: true, value: number(str_len(heap, s)), attrs: 0 }; }
             return Own { found: true, index: i, value: unit_string(heap, s, i), attrs: attr_enumerable() };
         },
-        node_kind::Object, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {
+        node_kind::Object, node_kind::Arguments, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {
             if node(heap, o).count > 0 {
                 let i = element_key(heap, k);
                 if heap.fault != Fault.None { return Own {}; }
@@ -1681,18 +1691,6 @@ fn own_entry(heap: Heap&, object: Value, k: Value) -> Own {
             if i < 0 || node(heap, o).initialized { return find_own(heap, o, k); }
             let v, found = own_element(heap, object, i);
             return Own { found: found, index: i, value: v, attrs: attrs_data() };
-        },
-        node_kind::Arguments => {
-            // Unmapped, read-only arguments subset. Mutation, callee and
-            // prototypes fail explicitly; no frame slot or parameter alias
-            // escapes to the heap.
-            if key_is(heap, k, "length") { return Own { found: true, value: number(node(heap, o).count), attrs: attr_writable() | attr_configurable() }; }
-            // Its @@iterator is %Array.prototype.values% (ECMAScript 10.4.4.6, light-cljs-844).
-            if k.is_symbol() && symbol_index(k) == well_known::Iterator && heap.global.is_object() { return Own { found: true, value: Value.Object { o: realm_function_row(Builtin.ArrayPrototypeValues) as u32 }, attrs: attr_writable() | attr_configurable() }; }
-            let i = index(heap, k);
-            if i < 0 { if heap.fault == Fault.None { heap.fault = Fault.UnsupportedOperand; } return Own {}; }
-            if i >= node(heap, o).count { return Own {}; }
-            return Own { found: true, index: i, value: slot(heap, node(heap, o).start + i), attrs: attrs_data() };
         },
         node_kind::Closure => {
             // A lazy closure's `length` and `name` come from its code row.
@@ -1769,7 +1767,7 @@ fn has_property(heap: Heap&, object: Value, k: Value) -> bool {
 fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
     match kind {
-        node_kind::Object, node_kind::Builtin, node_kind::BoundFunction, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {},
+        node_kind::Object, node_kind::Arguments, node_kind::Builtin, node_kind::BoundFunction, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {},
         node_kind::Array => {
             if key_is(heap, k, "length") { return Value.Undefined, array_length(heap, object, value); }
             let i = index(heap, k);
@@ -1788,8 +1786,9 @@ fn assign(heap: Heap&, object: Value, k: Value, value: Value) -> Value, bool {
         _ => { heap.fault = Fault.UnsupportedOperand; return Value.Undefined, false; },
     }
     // An element is a writable data property (light-cljs-804); only an
-    // ordinary object keeps index keys outside its shape or records here.
-    let i = if kind == node_kind::Object { element_key(heap, k) } else { -1 };
+    // ordinary object (or arguments object) keeps index keys outside its
+    // shape or records here.
+    let i = if element_kind(kind) { element_key(heap, k) } else { -1 };
     if heap.fault != Fault.None { return Value.Undefined, false; }
     if !object_element(heap, o, i).is_hole() { set_slot(heap, node(heap, o).start + i, value); return Value.Undefined, true; }
     let own = find_own(heap, o, k);
@@ -1829,7 +1828,7 @@ fn define_property(heap: Heap&, object: Value, k: Value, value: Value, attrs: u8
     // %ThrowTypeError% is not extensible (light-cljs-853): only its own
     // properties can be defined again, by their attributes.
     if sealed(heap, o) { let own = find_own(heap, o, k); if heap.fault != Fault.None || !own.found { return false; } }
-    if kind == node_kind::Object || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Iterator { return define_own(heap, o, k, value, attrs, half); }
+    if kind == node_kind::Object || kind == node_kind::Arguments || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Iterator { return define_own(heap, o, k, value, attrs, half); }
     if kind == node_kind::Array && !key_is(heap, k, "length") {
         let i = index(heap, k);
         if heap.fault != Fault.None { return false; }
@@ -1863,7 +1862,7 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
     let o: i64 = object.id();
     match node(heap, o).kind {
         node_kind::Builtin, node_kind::BoundFunction => { return delete_own(heap, o, k); },
-        node_kind::Object, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {
+        node_kind::Object, node_kind::Arguments, node_kind::Error, node_kind::Generator, node_kind::Promise, node_kind::Iterator => {
             let i = element_key(heap, k);
             if heap.fault != Fault.None { return false; }
             if !object_element(heap, o, i).is_hole() { if !charge(heap) { return false; } set_slot(heap, node(heap, o).start + i, hole()); return true; }
@@ -1908,7 +1907,7 @@ fn delete_property(heap: Heap&, object: Value, k: Value) -> bool {
 struct OwnKey { key: Value, attrs: u8 = 0, index: i64 = -1 }
 fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     let o: i64 = object.id(); let kind = node(heap, o).kind;
-    if kind != node_kind::Object && kind != node_kind::Array && kind != node_kind::Closure && kind != node_kind::Builtin && kind != node_kind::BoundFunction && kind != node_kind::Error && kind != node_kind::Generator && kind != node_kind::Promise && kind != node_kind::Wrapper && kind != node_kind::Iterator || kind == node_kind::Closure && unsupported_prototype(heap, o) {
+    if kind != node_kind::Object && kind != node_kind::Array && kind != node_kind::Closure && kind != node_kind::Builtin && kind != node_kind::BoundFunction && kind != node_kind::Error && kind != node_kind::Generator && kind != node_kind::Promise && kind != node_kind::Wrapper && kind != node_kind::Iterator && kind != node_kind::Arguments || kind == node_kind::Closure && unsupported_prototype(heap, o) {
         // A proxy's runs in a native frame (proxy.goose), not here.
         if kind == node_kind::Proxy { proxy_fault(heap, proxy_method::OwnPropertyKeys); } else { heap.fault = Fault.UnsupportedOperand; }
         return false;
@@ -1926,11 +1925,11 @@ fn own_property_keys(heap: Heap&, object: Value, out: OwnKey[>..]&) -> bool {
     }
     var keys: OwnKey[>..] = [];
     // An element run's scan costs a work unit a slot, holes included.
-    if (kind == node_kind::Object || !node(heap, o).initialized) && !charge(heap, if kind == node_kind::Object { node(heap, o).count as i64 } else { min(node(heap, o).length, node(heap, o).count) as i64 }) { return false; }
+    if (element_kind(kind) || !node(heap, o).initialized) && !charge(heap, if element_kind(kind) { node(heap, o).count as i64 } else { min(node(heap, o).length, node(heap, o).count) as i64 }) { return false; }
     if kind == node_kind::Array && !node(heap, o).initialized {
         let end = min(node(heap, o).length, node(heap, o).count);
         for i in end { if !slot(heap, node(heap, o).start + i).is_hole() { keys.push(OwnKey { key: index_key(heap, i), attrs: attrs_data(), index: i }); } }
-    } else if kind == node_kind::Object {
+    } else if element_kind(kind) {
         for i in node(heap, o).count { if !slot(heap, node(heap, o).start + i).is_hole() { keys.push(OwnKey { key: index_key(heap, i), attrs: attrs_data(), index: i }); } }
     }
     // Shape keys or records: a dense array's are its named properties
@@ -2804,8 +2803,39 @@ fn native_value(heap: Heap&, id: i64, args: const Value[:]) -> Value {
     if id == 15 && args.len == 2 {
         let object = args[0]; let skip = args[1];
         if !valid(heap, object) || !object.is_object() || node(heap, object.id()).kind != node_kind::Arguments || !skip.is_number() || !(skip.num() >= 0 && skip.num() <= 65535) || skip.num() != (skip.num() as i64) { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
-        let n = node(heap, object.id()); let offset = min(n.count as i64, skip.num() as i64);
-        return form_collection(heap, node_kind::List, run(heap, n.start + offset, n.count - offset));
+        // An arguments object as NewArguments made it (its template's shape,
+        // `length` its argument count) is read from its run; any other
+        // through its `length` and elements (light-cljs-854).
+        let o: i64 = object.id(); let n .= node(heap, o);
+        let length = n.slots[0];
+        if heap.global.is_object() && !n.initialized && (n.shape == node(heap, arguments_template_row(false)).shape || n.shape == node(heap, arguments_template_row(true)).shape) && length.is_number() && length.num() == n.count {
+            let count: i64 = n.count; let offset = min(count, skip.num() as i64); var whole = true;
+            for v in run(heap, n.start + offset, count - offset) { if v.is_hole() { whole = false; } }
+            if whole { return form_collection(heap, node_kind::List, run(heap, n.start + offset, count - offset)); }
+        }
+        let k = key_named(heap, "length");
+        let len = if heap.fault == Fault.None { get(heap, object, k) } else { Value.Undefined };
+        if heap.fault != Fault.None { return Value.Undefined; }
+        // ToLength, as Array.prototype.slice.call(args, start) gives it; an
+        // object length (ToPrimitive, a frame) fails by name, a symbol is a
+        // TypeError.
+        if len.is_object() || len.is_bigint() { heap.fault = Fault.UnsupportedOperand; return Value.Undefined; }
+        if len.is_symbol() { heap.fault = Fault.TypeError; return Value.Undefined; }
+        let n = numeric(heap, len);
+        if heap.fault != Fault.None { return Value.Undefined; }
+        let end: i64 = if !(n > 0) { 0 } else { min(trunc(n), max_safe_integer()) as i64 };
+        let first = min(end, skip.num() as i64);
+        if !values_fit(heap, end - first) { memory(heap); return Value.Undefined; }
+        var values: Value[>..] = [];
+        for i in first..end {
+            let e = object_element(heap, o, i);
+            if !e.is_hole() { values.push(e); continue; }
+            let ik = index_key(heap, i);
+            let v = if heap.fault == Fault.None { get(heap, object, ik) } else { Value.Undefined };
+            if heap.fault != Fault.None { return Value.Undefined; }
+            values.push(v);
+        }
+        return form_collection(heap, node_kind::List, values);
     }
     if id >= 10 && id <= 13 && args.len == 1 {
         let array = args[0];
@@ -3020,7 +3050,7 @@ fn finish_native(job: Job&, frame: Frame, result: Value) {
 fn convertible(heap: const Heap&, v: Value) -> bool {
     if !v.is_object() { return false; }
     let kind = node(heap, v.id()).kind;
-    return kind == node_kind::Object || kind == node_kind::Array || kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::Proxy;
+    return kind == node_kind::Object || kind == node_kind::Array || kind == node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::BoundFunction || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::Proxy || kind == node_kind::Arguments;
 }
 // Whether call or construction of f with arguments `args` converts the
 // first argument first, and with which hint (light-cljs-832): Number(o) and
@@ -4017,18 +4047,52 @@ fn call(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
         else { let value = call_builtin(job, id, receiver, args); job.operands.resize(base); job.operands.push(value); }
     } else if push_frame(job, callee, receiver, job.operands[first..], false, base) { job.operands.resize(base); }
 }
-// `arguments` (unmapped, read-only) or a rest array after `skip` parameters.
+// Arguments objects (light-cljs-854; ECMAScript 10.4.4.6
+// CreateUnmappedArgumentsObject, QuickJS js_build_arguments). NewArguments
+// makes an ordinary object of kind node_kind::Arguments (its class, for
+// Object.prototype.toString) inheriting %Object.prototype%: its elements
+// are the call's arguments, an element run, and its other own properties,
+// in a shape, are `length` (writable, configurable), @@iterator =
+// %Array.prototype.values% (writable, configurable) and `callee`. A sloppy
+// function with a simple parameter list (Function.simple) gets `callee` =
+// the function, a writable, configurable data property, as the mapped
+// object's is (parameter aliasing is light-cljs-860's); every other gets
+// the %ThrowTypeError% accessor pair, neither enumerable nor configurable.
+// Every later read, write, delete, definition and enumeration is an
+// ordinary object's. Creation copies the shape and the two inline slots
+// of the realm's template (arguments_template_row), so it costs one node
+// and one run of values: the arguments, then `callee`'s overflow slot.
+// Without a realm the object gets `length`, and `callee` when mapped,
+// one property at a time.
+fn new_arguments(heap: Heap&, args: const Value[:], callee: Value, mapped: bool) -> Value {
+    let argc = args.len;
+    if !values_fit(heap, argc + 1) || !nodes_fit(heap, 1) { memory(heap); return Value.Undefined; }
+    if !charge(heap, argc + 1) { return Value.Undefined; }
+    if !heap.global.is_object() {
+        let offset = add_values(heap, args);
+        if offset < 0 { return Value.Undefined; }
+        let o = allocate(heap, Node { kind: node_kind::Arguments, start: offset as u32, count: argc as u32 });
+        if !o.is_object() { return Value.Undefined; }
+        let length = key_named(heap, "length");
+        if heap.fault != Fault.None || !add_own(heap, o.id(), length, number(argc), attr_writable() | attr_configurable()) { return Value.Undefined; }
+        if mapped { let k = key_named(heap, "callee"); if heap.fault != Fault.None || !add_own(heap, o.id(), k, callee, attr_writable() | attr_configurable()) { return Value.Undefined; } }
+        return o;
+    }
+    let t = arguments_template_row(mapped);
+    let shape = node(heap, t).shape; let iterator = node(heap, t).slots[1]; let extra: i64 = overflow(node(heap, t));
+    let offset = add_values(heap, args, extra, if mapped { callee } else { slot(heap, node(heap, t).keys) });
+    if offset < 0 { return Value.Undefined; }
+    return allocate(heap, Node { kind: node_kind::Arguments, start: offset as u32, count: argc as u32, keys: (offset + argc) as u32, key_count: (extra + inline_slots()) as u32, key_capacity: extra as u32, shape: shape, slots: [number(argc), iterator] });
+}
+// `arguments` (new_arguments) or a rest array after `skip` parameters.
 fn arguments(job: Job&, frame: Frame, f: const Function&, rest: bool, skip_count: i64) {
     let heap .= job.heap;
     let start = frame.local_base + f.locals;
     let skip = if rest { min(skip_count, frame.argument_count) } else { 0 };
     let args = job.locals[(start + skip)..(start + frame.argument_count)];
     if !rest {
-        if !values_fit(heap, args.len) || !nodes_fit(heap, 1) { memory(heap); }
-        else if charge(heap, args.len) {
-            let offset = add_values(heap, args);
-            job.operands.push(allocate(heap, Node { kind: node_kind::Arguments, start: offset as u32, count: args.len as u32 }));
-        }
+        let o = new_arguments(heap, args, frame.callee, !f.strict && f.simple);
+        if heap.fault == Fault.None { job.operands.push(o); }
     } else {
         let array = allocate(heap, Node { kind: node_kind::Array });
         if array.is_object() { for value, i in args { if !valid(heap, value) || !set_element(heap, array, i, value) { break; } } }
@@ -4386,7 +4450,7 @@ inline fn object_hit(job: const Job&, object: Value, i: i64) -> bool {
     let heap .= job.heap;
     if i < 0 || !object.is_object() || object.id() >= heap.nodes.len || object.id() < job.protected_nodes || job.root_receiver.is_object() && object == job.root_receiver { return false; }
     let n .= node(heap, object.id());
-    return n.kind == node_kind::Object && i < n.count && !slot(heap, n.start + i).is_hole();
+    return element_kind(n.kind) && i < n.count && !slot(heap, n.start + i).is_hole();
 }
 // [[Set]] from an assignment (light-cljs-787): chain, the expression yields
 // the object (88), else the value. A setter runs through a Setter native
@@ -4521,9 +4585,6 @@ fn instanceof_op(job: Job&) {
     let target = job.operands.pop(); let v = form_value(heap, job.operands.pop());
     if !valid(heap, target) || heap.fault != Fault.None { return; }
     if !target.is_object() { type_error(job, "invalid 'instanceof' right operand"); return; }
-    // An arguments object's non-index keys (its @@hasInstance and its
-    // prototype's) are not implemented (own_entry, light-cljs-764).
-    if node(heap, target.id()).kind == node_kind::Arguments { unsupported_detail(job, "instanceof: an arguments object as the right operand"); return; }
     if !convertible(heap, target) { unsupported_detail(job, "instanceof: a light-cljs runtime value as the right operand"); return; }
     let m, getter = lookup(heap, target, Value.Symbol { s: well_known::HasInstance });
     if heap.fault != Fault.None { return; }
@@ -4531,8 +4592,8 @@ fn instanceof_op(job: Job&) {
     has_instance_method(job, -1, target, v, m);
 }
 // The JavaScript object kinds instanceof reads the prototype of: those
-// ToPrimitive converts (convertible) and arguments objects.
-inline fn instance_kind(heap: const Heap&, v: Value) -> bool { return convertible(heap, v) || node(heap, v.id()).kind == node_kind::Arguments; }
+// ToPrimitive converts (convertible).
+inline fn instance_kind(heap: const Heap&, v: Value) -> bool { return convertible(heap, v); }
 // InstanceofOperator from step 3, with m = target[@@hasInstance]. `at` is
 // the HasInstance frame's row, -1 while the instruction runs without one.
 fn has_instance_method(job: Job&, at: i64, c: Value, v: Value, m: Value) {
@@ -4755,7 +4816,7 @@ fn iteration_object(job: Job&, v: Value, what: const u8[:]) -> bool {
     // names (get_property). A protected array is iterated: its @@iterator is
     // the realm's and its cursor only reads it (light-cljs-844).
     if job.root_receiver.is_object() && v == job.root_receiver || !realm_intrinsic(v.id()) && v.id() < job.protected_nodes && node(heap, v.id()).kind != node_kind::Array { heap.fault = Fault.NativeBoundary; return false; }
-    if !convertible(heap, v) && node(heap, v.id()).kind != node_kind::Arguments {
+    if !convertible(heap, v) {
         job.detail.clear(); for c in "GetIterator: a light-cljs runtime value as " { job.detail.push(c); } for c in what { job.detail.push(c); }
         heap.fault = Fault.UnsupportedOperand; return false;
     }

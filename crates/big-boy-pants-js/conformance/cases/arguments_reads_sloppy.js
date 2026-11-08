@@ -9,10 +9,11 @@
 // block-level function declaration (Annex B, light-cljs-859) is involved;
 // the script-level `function arguments` row runs one function deep. Left
 // out: `function f(a=()=>arguments) { var arguments=7; return a; }
-// f()().length===0`, false on QuickJS (true on the Pants engine and Goose);
-// the rest-parameter row that writes `arguments[1]` (light-cljs-854). Each
-// row is a `row(...)` check; the script completes with the number of rows, or
-// minus the first failing row's number.
+// f()().length===0`, false on QuickJS (true on the Pants engine and Goose).
+// The rest-parameter row that writes `arguments[1]` is last (light-cljs-854;
+// a rest parameter makes the object unmapped). Each row is a `row(...)`
+// check; the script completes with the number of rows, or minus the first
+// failing row's number.
 var rows = 0, failed = 0;
 function row(ok) { rows++; if (ok !== true && failed === 0) failed = rows; }
 row(typeof arguments === "undefined");
@@ -34,4 +35,5 @@ row((function () { function f(a = () => arguments) { let arguments = 7; return a
 row((function () { function f(a = () => arguments) { function arguments() {} return a; } return f()().length === 0; })());
 row((function () { function f() { { let arguments = 7; if (arguments !== 7) return false; } return arguments[0] === 1; } return f(1); })());
 row((function () { function f(...arguments) { return arguments[0] === 7; } return f(7); })());
+row((function () { function f(a, ...r) { a = 8; arguments[1] = 9; return arguments[0] === 1 && r[0] === 2 && arguments.length === 3; } return f(1, 2, 3); })());
 failed === 0 ? rows : -failed;

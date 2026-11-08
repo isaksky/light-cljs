@@ -51,9 +51,9 @@ fn range(start: i64, count: i64, len: i64) -> bool { return start >= 0 && count 
 // array's element run (light-cljs-804), captures, form children, arguments,
 // a deferred map's memo and a bound function's arguments (light-cljs-852).
 fn has_values(kind: i64) -> bool { return kind <= node_kind::Closure || kind >= node_kind::List && kind <= node_kind::Set || kind == node_kind::Concat || kind == node_kind::Arguments || kind == node_kind::LazySeq || kind == node_kind::BoundFunction; }
-// An element run (an ordinary object's or an array's) is exclusive and may
-// hold holes.
-fn elements(kind: i64) -> bool { return kind == node_kind::Object || kind == node_kind::Array; }
+// An element run (an ordinary object's, an arguments object's or an array's)
+// is exclusive and may hold holes.
+fn elements(kind: i64) -> bool { return kind == node_kind::Object || kind == node_kind::Arguments || kind == node_kind::Array; }
 // All ranges have already passed bounds validation. Immutable views may share
 // slots, but an unrealized map owns its entire writable memo exclusively,
 // including the completed prefix. Charge both scratch initialization and each
@@ -87,8 +87,9 @@ fn memo_ranges<T>(s: const T&, c: Control&) -> bool {
 }
 // The kinds with own properties by name (source::Node): ordinary objects,
 // arrays and closures (light-cljs-805), built-in functions and error objects
-// (light-cljs-788), generators, promises and primitive wrappers, iterators and bound functions.
-fn named(kind: i64) -> bool { return kind >= node_kind::Object && kind <= node_kind::Closure || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::BoundFunction; }
+// (light-cljs-788), generators, promises and primitive wrappers, iterators,
+// bound functions and arguments objects (light-cljs-854).
+fn named(kind: i64) -> bool { return kind >= node_kind::Object && kind <= node_kind::Closure || kind == node_kind::Arguments || kind == node_kind::Builtin || kind == node_kind::Error || kind == node_kind::Generator || kind == node_kind::Promise || kind == node_kind::Wrapper || kind == node_kind::Iterator || kind == node_kind::BoundFunction; }
 // A shape-mode object, dense array or closure: without `initialized`.
 fn shaped(n: const source::Node&) -> bool { return named(n.kind) && !n.initialized; }
 // A dictionary-mode object, a dictionary array or a closure's records.
@@ -494,7 +495,7 @@ fn validate<T>(s: const T&, c: Control&) -> bool {
         if n.kind == node_kind::Array && (n.length > l.values || n.length > 4294967295) { return reject(c, Error.Allocator); }
         // A key list (node_kind::KeyList): its walk position lies in its
         // records, and it walks an object or nothing.
-        if n.kind == node_kind::Object && n.length != 0 || n.kind == node_kind::KeyList && (n.count != 0 || n.initialized || n.start > n.length || n.length > n.key_count || !n.value.is_undefined() && !n.value.is_object()) { return reject(c, Error.Link); }
+        if (n.kind == node_kind::Object || n.kind == node_kind::Arguments) && n.length != 0 || n.kind == node_kind::KeyList && (n.count != 0 || n.initialized || n.start > n.length || n.length > n.key_count || !n.value.is_undefined() && !n.value.is_object()) { return reject(c, Error.Link); }
         if !value(s, n.value) || !value(s, n.namespace_value) || !value(s, n.metadata) || n.source != source::no_row() && n.source >= s.sources.len || n.origin < -1 || !n.proto.is_hole() && !n.proto.is_null() && (!n.proto.is_object() || !value(s, n.proto)) { return reject(c, Error.Link); }
         has_memo = has_memo || shaped(n) && n.key_capacity > 0;
         if n.source != source::no_row() && (n.span_end < n.span_start || !range(n.span_start, n.span_end - n.span_start, s.sources[n.source].count)) { return reject(c, Error.Link); }

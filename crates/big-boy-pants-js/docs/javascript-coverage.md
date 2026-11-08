@@ -209,12 +209,12 @@ rest in an overflow run of `values`. A delete, an attribute change or more
 than 64 keys moves it to dictionary mode, records of key, value and
 attributes in `properties`. The internal methods (`own_entry`, `lookup`,
 `assign`, `define_property`, `has_property`, `delete_property`, `own_keys`)
-dispatch on the object kind with `match`; arrays, read-only arguments and
-functions' `call` override the ordinary ones, other kinds fail by name. A
-getter runs as a frame entered from the read; a setter runs under a
-`Setter` native frame that drops its return value. Reused workers: a job
-that adds a transition to an image shape or a key to the index marks the
-image written, and the reset copies both back from the twin
+dispatch on the object kind with `match`; arrays and functions' `call`
+override the ordinary ones (arguments objects are ordinary, light-cljs-854),
+other kinds fail by name. A getter runs as a frame entered from the read; a
+setter runs under a `Setter` native frame that drops its return value.
+Reused workers: a job that adds a transition to an image shape or a key to
+the index marks the image written, and the reset copies both back from the twin
 (`snapshot::truncate`), so a job's shapes and keys vanish with its rows.
 
 *As landed by light-cljs-804 (key enumeration):* an ordinary object keeps

@@ -488,6 +488,62 @@ thread_fn string_to_number_budget() {
     assert(source::native_value(heap, 1, [source::boolean(true)]).num() == 2);
     print("serial source VM: StringToNumber charges its units, Latin-1 or UTF-16; a symbol's ToNumber is a TypeError");
 }
+// Arguments objects (light-cljs-854) through the Goose API: fnRest reads an
+// unchanged object's run and any other through ToLength of its `length`
+// and its elements, allocating only the suffix it returns; descriptors
+// redefine elements, `length` and `callee` as an ordinary object's do; the
+// heap still validates as a snapshot.
+thread_fn arguments_objects(bytes: u8[]) {
+    defer { heap_program::finish(); }
+    var code = source::Code {}; decode(code, bytes);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let length = source::key_named(heap, "length"); let callee = source::key_named(heap, "callee");
+    let fresh = source::new_arguments(heap, [source::number(7), source::number(8), source::number(9)], source::Value.Undefined, false);
+    let rest = source::native_value(heap, 15, [fresh, source::number(1)]);
+    assert(heap.fault == source::Fault.None && source::form_count(heap, rest) == 2 && source::form_nth(heap, rest, 0).num() == 8);
+    // ToLength of a numeric string, NaN, a negative number, a fraction and
+    // no `length` at all; a hole reads through the prototype as undefined.
+    let lengths: source::Value[5] = [source::text(heap, "1"), source::number(0.0 / 0.0), source::number(-3), source::number(2.5), source::Value.Undefined];
+    let counts:  i64[5]           = [1, 0, 0, 2, 0];
+    for v, i in lengths {
+        let a = source::new_arguments(heap, [source::number(7), source::number(8), source::number(9)], source::Value.Undefined, false);
+        if v.is_undefined() { assert(source::delete_property(heap, a, length)); } else { assert(source::put(heap, a, length, v)); }
+        let r = source::native_value(heap, 15, [a, source::number(0)]);
+        assert(heap.fault == source::Fault.None && source::form_count(heap, r) == counts[i]);
+    }
+    let holed = source::new_arguments(heap, [source::number(1), source::number(2)], source::Value.Undefined, false);
+    assert(source::delete_property(heap, holed, source::index_key(heap, 0)) && source::put(heap, holed, length, source::number(3)));
+    // Only the suffix needs rows: one row left, a one-element suffix fits.
+    let saved = heap.limits.values;
+    heap.limits.values = heap.values.len - heap.image.values + 1;
+    let tail = source::native_value(heap, 15, [holed, source::number(2)]);
+    assert(heap.fault == source::Fault.None && source::form_count(heap, tail) == 1 && source::form_nth(heap, tail, 0).is_undefined());
+    heap.limits.values = saved;
+    let whole = source::native_value(heap, 15, [holed, source::number(0)]);
+    assert(heap.fault == source::Fault.None && source::form_count(heap, whole) == 3 && source::form_nth(heap, whole, 0).is_undefined() && source::form_nth(heap, whole, 1).num() == 2);
+    // Redefinitions: a non-writable element leaves the run, refuses writes
+    // and keeps its value; `length` becomes non-enumerable-only; the unmapped
+    // `callee` accessor is non-configurable.
+    let d = source::new_arguments(heap, [source::number(4), source::number(5)], source::Value.Undefined, false);
+    let zero = source::index_key(heap, 0);
+    assert(source::define_property(heap, d, zero, source::number(6), source::attr_enumerable() | source::attr_configurable()));
+    assert(source::object_element(heap, d.id(), 0).is_hole() && source::get(heap, d, zero).num() == 6);
+    assert(!source::put(heap, d, zero, source::number(1)) && heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
+    assert(source::get(heap, d, zero).num() == 6);
+    assert(source::define_property(heap, d, length, source::number(9), 0) && source::get(heap, d, length).num() == 9);
+    assert(!source::put(heap, d, length, source::number(1)) && heap.fault == source::Fault.TypeError); heap.fault = source::Fault.None;
+    assert(!source::define_property(heap, d, callee, source::number(1), source::attrs_data()) && heap.fault == source::Fault.None);
+    assert(!source::delete_property(heap, d, callee));
+    var keys:  source::Value[>..] = []; assert(source::own_keys(heap, d, keys));
+    var names: u8[>..]            = [];
+    for k in keys { if k.is_string() { var units: u16[>..] = []; source::append_utf16(heap, k, units); for u in units { names.push(u as u8); } names.push(44); } }
+    assert(names[..] == "0,1,length,callee,");
+    // A mapped object's `callee` is configurable data.
+    let m = source::new_arguments(heap, [], source::number(3), true);
+    assert(source::get(heap, m, callee).num() == 3 && source::define_property(heap, m, callee, source::number(4), source::attr_writable()) && source::get(heap, m, callee).num() == 4);
+    assert(image_valid(heap));
+    print("serial source VM: arguments objects: fnRest over changed lengths and holes, suffix-only rows, element/length/callee redefinition passed");
+}
 // Small objects keep their first two property values in the header's
 // inline slots; the third spills into an overflow run of values, and the keys
 // live in shared shapes (light-cljs-800, light-cljs-787).
@@ -536,6 +592,7 @@ fn main() {
     check(embed_file("../corpus/serial/calls.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/arguments.gsp"), "boolean:true");
     argument_limits(embed_file("../corpus/serial/arguments.gsp"));
+    heap_program::join(thread_spawn(arguments_objects, str(embed_file("../corpus/serial/arguments.gsp"))));
     check(embed_file("../corpus/serial/captures.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/mutations.gsp"), "boolean:true");
     check(embed_file("../corpus/serial/control.gsp"), "boolean:true");
@@ -708,7 +765,7 @@ fn reclamation() {
     heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/async.gsp")), source::Fault.None, 0, 0));
     // Forced collections at every budget cut and at other phases.
     for image in [embed_file("../corpus/serial/generators.gsp"), embed_file("../corpus/serial/async.gsp"), embed_file("../corpus/serial/generator-loop.gsp"), embed_file("../corpus/serial/for-of.gsp"), embed_file("../corpus/serial/builtin-iterators.gsp"),
-                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
+                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
                   embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp")] {
@@ -783,6 +840,11 @@ fn control_flow() {
     check(embed_file("../corpus/serial/sloppy-function-text.gsp"), "boolean:true");
     limit_points(embed_file("../corpus/serial/sloppy-function-text.gsp"));
     text_kinds(embed_file("../corpus/serial/function-text-kinds.gsp"));
+    // Arguments objects as ordinary objects (light-cljs-854): writes,
+    // deletes, for-in and `callee` of unmapped and mapped objects, at every
+    // cut (and collection, in reclamation). No limit points: its rows catch
+    // TypeErrors, so a stack limit there is caught as any RangeError is.
+    check(embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), "boolean:true");
     // [[Construct]] (light-cljs-831): ordinary functions with new.target and
     // the return override, through finally and a generator yielding inside
     // the constructor, the realm's constructors and a non-constructor's
@@ -1866,8 +1928,8 @@ fn duplicate_image(dup: i64, width: i64) -> u8[] {
     for i in (width - 1) { ops.push(opcode::Pop); }
     ops.push(opcode::Return);
     var bytes: u8[>..] = []; bytes.append("GSP\0");
-    // Version 4, no source, one function, no constants or children.
-    for n in [4, 0, 1, 0, 0, ops.len, 0] { push_word(bytes, n); }
+    // Version 5, no source, one function, no constants or children.
+    for n in [5, 0, 1, 0, 0, ops.len, 0] { push_word(bytes, n); }
     // The function: its instruction run, no constants, children, parameters,
     // locals, captures, name or source text; flags 1 marks it strict.
     for n in [0, ops.len, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0] { push_word(bytes, n); }

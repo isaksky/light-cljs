@@ -81,10 +81,12 @@ Validated Goose: `v2026.3-267-g369c7a2c (runtime 3025e5810379)`.
 
 The wrapper subset retains all actual arguments in bounded job-local storage,
 including excess arguments, through yields and helper suspension. `NewArguments`
-copies them to an independently owned, read-only unmapped object; `Rest` builds
-a fresh ordinary array. Indexed reads and `length` work; arguments mutation,
-`callee`, and prototype inspection fail explicitly. Export uses the frontend's
-strict mode, so mapped sloppy arguments are outside this subset.
+copies them into an ordinary object of class Arguments (light-cljs-854): its
+elements, `length`, @@iterator and `callee` (the function for a sloppy
+function with a simple parameter list, else the %ThrowTypeError% accessor),
+built from the realm's template shapes as QuickJS builds it; writes, deletes,
+redefinitions and for-in are an ordinary object's. `Rest` builds a fresh
+ordinary array. Parameter aliasing (the mapped object) is not implemented.
 Arguments objects compare by identity, including as form map keys/set members;
 separate calls with the same arguments remain distinct.
 
@@ -384,7 +386,7 @@ Selected runtime source is reference material, **not executable Goose export**;
 its classes, private stores, protocol/reader machinery and host hooks are outside
 the scalar VM. Complete ECMAScript/cljs.core are excluded.
 
-## GSP version 4
+## GSP version 5
 
 Integers are little endian. An image owns one exact immutable UTF-8 source
 buffer (source ID 0), fixed-stride tables and variable payload pools. There are
@@ -393,7 +395,7 @@ exact UTF-16 code-unit ranges, including lone surrogates, separate from source
 UTF-8. Source spans are half-open **byte** ranges. Diagnostic line/column work
 is outside ordinary execution.
 
-The 32-byte header is `GSP\0`, `u32 version=4`, then six u32 lengths: source
+The 32-byte header is `GSP\0`, `u32 version=5`, then six u32 lengths: source
 bytes, functions, constants, child IDs, instructions, UTF-16 units. Sections
 follow in that order:
 
@@ -436,7 +438,13 @@ synthesized function such as a class field initializer). The Rust lowerer
 records the range (`Executable::source_text_span`): a declaration or
 expression from `function`/`async`, a method or accessor from its property
 name with `get`, `set`, `async` or `*`, an arrow whole and a class
-constructor the whole class. Version-3 readers refuse version 4.
+constructor the whole class. Version-3 readers refuse version 4. Version 5
+(light-cljs-854) adds flags bit 19 (`function_row::SimpleParameters`): the
+function's parameter list is simple (ECMAScript IsSimpleParameterList: no
+default, rest or destructuring pattern; `Executable::has_simple_parameters`).
+A sloppy function with one gives its arguments object a `callee` data
+property, the function; any other function the %ThrowTypeError% accessor.
+Version-4 readers refuse version 5.
 `export_schema.goose` is compiled reader code generated from the registry
 (descriptors, selectors, name operands, direct-eval call opcodes, each
 opcode's stack effect and control flow, opcode and well-known symbol names);

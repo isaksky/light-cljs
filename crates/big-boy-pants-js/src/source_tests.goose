@@ -39,10 +39,12 @@ fn main() {
     set_word(bad[..], 4, 1); assert(program::install(image, bad) == program::Error.Version);
     assert(image.valid && image.bytes[..] == original[..]);
     // Version 2 predates the direct-eval site bit (light-cljs-823), version 3
-    // the function source text (light-cljs-853).
+    // the function source text (light-cljs-853), version 4 the simple
+    // parameter list bit (light-cljs-854).
     set_word(bad[..], 4, 2); assert(program::validate(bad) == program::Error.Version);
     set_word(bad[..], 4, 3); assert(program::validate(bad) == program::Error.Version);
-    set_word(bad[..], 4, 4); set_word(bad[..], 12, 65537); assert(program::validate(bad) == program::Error.Limits);
+    set_word(bad[..], 4, 4); assert(program::validate(bad) == program::Error.Version);
+    set_word(bad[..], 4, 5); set_word(bad[..], 12, 65537); assert(program::validate(bad) == program::Error.Limits);
     set_word(bad[..], 12, program::word(macro, 12));
     let l = program::layout(macro);
     set_word(bad[..], l.functions, 4294967295); assert(program::validate(bad) == program::Error.Range);
@@ -83,6 +85,10 @@ fn main() {
         }
         texts += 1;
         set_word(bad[..], at + 48, flags & ~function_row::SourceText); assert(program::validate(bad) == program::Error.Source); set_word(bad[..], at + 48, flags);
+        // A simple parameter list, bit 19 (light-cljs-854), is either way
+        // valid; bit 20 is unassigned.
+        set_word(bad[..], at + 48, flags ^ function_row::SimpleParameters); assert(program::validate(bad) == program::Error.None);
+        set_word(bad[..], at + 48, flags | (function_row::SimpleParameters * 2)); assert(program::validate(bad) == program::Error.Operation); set_word(bad[..], at + 48, flags);
         set_word(bad[..], at + 56, start); assert(program::validate(bad) == program::Error.Source);
         set_word(bad[..], at + 56, program::word(macro, 8) + 1); assert(program::validate(bad) == program::Error.Source); set_word(bad[..], at + 56, end);
     }
@@ -117,7 +123,7 @@ fn main() {
 fn push_word(bytes: u8[>..]&, value: i64) { for i in 4 { bytes.push(((value >> (8 * i)) & 255) as u8); } }
 fn depth_limit(count: i64, expected: program::Error) {
     var bytes: u8[>..] = []; bytes.append("GSP\0");
-    for n in [4, 0, count, 0, count - 1, count * 2, 0] { push_word(bytes, n); }
+    for n in [5, 0, count, 0, count - 1, count * 2, 0] { push_word(bytes, n); }
     for i in count {
         for n in [i * 2, 2, 0, 0, i, if i + 1 < count { 1 } else { 0 }, 0, 0, 0, 0, 0, 0, 0, 0, 0] { push_word(bytes, n); }
     }

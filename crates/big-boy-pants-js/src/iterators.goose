@@ -90,7 +90,7 @@ fn array_iterator(job: Job&, b: Builtin, receiver: Value) -> Value {
     let o = to_object(job, v);
     if heap.fault != Fault.None { return Value.Undefined; }
     if job.root_receiver.is_object() && o == job.root_receiver { heap.fault = Fault.NativeBoundary; return Value.Undefined; }
-    if !convertible(heap, o) && node(heap, o.id()).kind != node_kind::Arguments { return unsupported_step(job, b, "a light-cljs runtime value as the receiver"); }
+    if !convertible(heap, o) { return unsupported_step(job, b, "a light-cljs runtime value as the receiver"); }
     let iteration = if b == Builtin.ArrayPrototypeKeys { iteration::Keys } else if b == Builtin.ArrayPrototypeEntries { iteration::Entries } else { iteration::Values };
     return new_cursor(job, o, iteration);
 }
