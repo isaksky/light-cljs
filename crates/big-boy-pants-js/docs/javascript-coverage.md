@@ -159,11 +159,22 @@ it. Decision 3 keeps: the worker's reset truncates the code tables to the
 image with every other table, so the next job's code is a fresh worker's; a
 saved continuation or captured snapshot carries the whole code tables, eval
 code included, and validates them on restore (`snapshot::code_valid`), and a
-callable publication carries its code suffix (`callable.goose`). A job
-without writable code (a coordinator's leaf job, whose image must not
-change after `READY`) fails such a compilation by name
+callable publication carries its code suffix (`callable.goose`).
+Initializers compile too (light-cljs-863): a definition's factory runs in
+its preparer, a thread program over a copy of the base image, so its eval
+code joins the prepared definition's code above the image, and the
+definition snapshot carries it to every job that installs it
+(`snapshot::extend`); a helper's initializer runs in its production job on
+a job worker, and a closure helper's callable publication carries the eval
+code as part of its code suffix, relocated behind whatever code the
+consuming worker already holds (a data helper leaves no code behind). In
+the serial measurement control, whose one heap keeps every definition, the
+code stays in that heap. The coordinator's image never changes: no job runs
+there. A job without writable code fails such a compilation by name
 (UnsupportedOperand), as does a program `goose run` executes in-process
-(TinyCC has neither `dlfcn.h` nor the C library's symbols).
+(TinyCC has neither `dlfcn.h` nor the C library's symbols). Code that does
+not compile at run time is unaffected: a job's writable code is one
+reference, read only when it compiles.
 
 *The Function constructor* (light-cljs-857). `Function(...)` and `new
 Function(...)` run as the DynamicFunction native frame

@@ -526,7 +526,7 @@ thread_fn bound_malformed(saved: snapshot::Snapshot, mode: i64) {
     }
 }
 // main builds no heap; every heap is its own thread program.
-fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); heap_program::join(thread_spawn(live_boundary)); }
+fn main() { dormant_constants(); callable_publication(); finite_map_ownership(); assembly_ownership(); source_spans(); argument_ownership(); isolation(); wrappers_roundtrip(); bound_roundtrip(); malformed(); stale_classification(); reused_destination(); truncated_image(); reused_layouts(); suspended_continuations(); runtime_code(); runtime_eval_callable_publication(); heap_program::join(thread_spawn(live_boundary)); }
 
 // Suspended continuations (light-cljs-790; decision 4, amended by
 // light-cljs-792). A dependency wait while a generator is suspended at its
@@ -1124,6 +1124,71 @@ thread_fn runtime_code_carried(image: snapshot::Snapshot, base: snapshot::Snapsh
         assert(lone);
     }
     assert(source::retire(job));
+}
+// A closure compiled by eval leaves its job as a callable publication
+// (light-cljs-863: a helper initializer may compile, and the helper it
+// produces outlives the job). The producer, a reused worker over the
+// calls.gsp image, runs an indirect eval whose script makes a closure over
+// its own immutable bindings; the publication's code suffix carries the
+// eval code. The producer's reset leaves its tables
+// pristine. A consumer that already appended unrelated code installs the
+// closure, its eval code relocated behind that code, and calls it.
+fn runtime_eval_callable_publication() {
+    heap_program::join(thread_spawn(callable_base)); let saved = qget<Saved>(); let base .= saved.image;
+    heap_program::join(thread_spawn(runtime_eval_producer, copy(base))); let p = qget<Published>();
+    heap_program::join(thread_spawn(runtime_eval_consumer, copy(base), copy(p.wire)));
+    print("snapshot runtime eval publication: a closure eval compiled travels with its code suffix to a consumer with code of its own, and the producer's reset is pristine");
+}
+thread_fn runtime_eval_producer(base: snapshot::Snapshot) {
+    defer { heap_program::finish(); }
+    let identity = source::reserve_identity(); let rows: i64[] = [];
+    var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var r = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, bindings, identity, r) && snapshot::truncate(base, rows, identity, code, heap, bindings));
+    // What the global eval does with a string (start_indirect_eval): compile
+    // it as an indirect eval's script into the job's code, then run its root
+    // with the global object as `this`.
+    var job = source::Job { heap: heap, owned_nodes: heap.nodes.len, writable_code: code };
+    let units = source::utf16(heap, source::text(heap, "const k = 41; const get = function () { return k; }; (function plus(x) { return get() + x; })"));
+    let root = source::compile_code(job, "eval", units, runtime_mode::IndirectEval, false, 0); assert(root == base.functions.len);
+    assert(source::start(job, source::closure(heap, root, []), [], heap.global) && source::run(job, -1) == tiny::Outcome.Complete);
+    let plus = job.result; assert(source::retire(job));
+    assert(plus.is_object() && source::node(heap, plus.id()).kind == node_kind::Closure);
+    let f = source::node(heap, plus.id()).function as i64;
+    assert(f > base.functions.len && code.functions[base.functions.len].eval && !code.functions[f].eval);
+    // The closure captures another closure of the eval code, `get`, which
+    // captures the script's `const` (immutable once initialized, so the
+    // compiler captures its value): the publication carries both closures.
+    let n = source::node(heap, plus.id()); var inner = false;
+    for i in n.count {
+        let v = heap.values[n.start + i];
+        if v.is_object() && v.id() >= base.nodes.len && source::node(heap, v.id()).kind == node_kind::Closure {
+            let g = source::node(heap, v.id()); assert(g.function as i64 > base.functions.len && g.count == 1);
+            let k = heap.values[g.start]; inner = k.is_number() && k.num() == 41.0;
+        }
+    }
+    assert(inner);
+    var encoding = snapshot::Control {}; var wire: u8[>..] = []; assert(callable::encode(heap, base, plus, wire, encoding, source::reserve_identity()));
+    assert(encoding.error == snapshot::Error.None);
+    // The worker's reset cuts the eval code and the closure away.
+    assert(snapshot::truncate(base, rows, identity, code, heap, bindings) && snapshot::pristine(base, identity, code, heap, bindings));
+    assert(code.functions.len == base.functions.len && code.ops.len == base.ops.len && heap.nodes.len == base.nodes.len);
+    assert(qput(Published { wire: copy(wire), entry: f, runtime: bindings[0].value, rt_cell: source::Value.Undefined, two: source::Value.Undefined, forms: source::Value.Undefined, cell: source::Value.Undefined, function: plus }));
+}
+thread_fn runtime_eval_consumer(base: snapshot::Snapshot, wire: u8[]) {
+    defer { heap_program::finish(); }
+    var extra = source::Code {}; extra_code(extra);
+    var code = source::Code {}; var heap = source::Heap { code: code }; var roots: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
+    assert(snapshot::restore(base, code, heap, roots, source::reserve_identity(), sc)); source::append_code(code, extra);
+    let suffix = base.functions.len + extra.functions.len;
+    var check = snapshot::Control {}; let imported = callable::decode_install(wire, base.header, code, heap, check);
+    assert(check.error == snapshot::Error.None && imported.is_object());
+    // The eval code's root, still marked as eval code, and the closure's
+    // function sit behind the consumer's own code.
+    let f = source::node(heap, imported.id()).function as i64;
+    assert(code.functions[suffix].eval && f > suffix && !code.functions[f].eval && code.functions[f].start >= base.ops.len + extra.ops.len);
+    let result = snapshot_test::invoke(heap, imported, [source::number(1)]);
+    assert(result.is_number() && result.num() == 42.0);
+    var valid = snapshot::Control {}; let finished = snapshot::capture(heap, roots, valid); assert(valid.error == snapshot::Error.None);
 }
 thread_fn suspension_parent(bytes: u8[]) {
     defer { heap_program::finish(); }

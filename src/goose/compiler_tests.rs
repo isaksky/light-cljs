@@ -375,16 +375,42 @@ fn goose_compiler_runtime_eval() {
     // session's job worker. Each call compiles again on the reused worker,
     // whose reset drops the code it added (BBP_RESET_CHECK=1 in compiler.bb
     // compares its tables with the image after every job).
-    for workers in [1, 2] {
-        let s = GooseSession::start(&runner(), workers).unwrap();
+    // light-cljs-863: the definition's factory compiles too, in its
+    // preparation: an indirect eval's closure and a direct eval's value
+    // join the prepared definition, whose snapshot carries their code to
+    // every job. So does a demanded helper's initializer, in its production
+    // job: a closure helper publishes the eval code as its code suffix, and
+    // a data helper's value was computed by eval code. The serial control
+    // (one retained heap) compiles in its macro job, its definition's
+    // factory and its helpers' initializers alike.
+    for (workers, mode) in [(1, None), (2, None), (1, Some("serial"))] {
+        let s = GooseSession::start_mode(&runner(), workers, mode).unwrap();
         let e = GooseEvaluator::new(s.clone(), &Default::default()).unwrap();
-        let source = r#"rt => (form,env) => {
-            const bump=(0,eval)("let n=40; () => ++n");
-            let syntax=false;
-            try { (0,eval)("1 +"); } catch(e) { syntax=e instanceof SyntaxError; }
-            return (0,eval)("1 + 1")===2 && (0,eval)(5)===5 && bump()===41 && bump()===42 && syntax;
+        let source = r#"rt => {
+            const add=(0,eval)("(function add(x) { return x + 1; })");
+            const direct=(function(x) { return eval("x * 2"); })(20);
+            return (form,env) => {
+                const bump=(0,eval)("let n=40; () => ++n");
+                let syntax=false;
+                try { (0,eval)("1 +"); } catch(e) { syntax=e instanceof SyntaxError; }
+                const twice=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/twice');
+                const value=__rt.cljReadRoot(globalThis.__lightCompilerRoots,null,'fixture/value');
+                return (0,eval)("1 + 1")===2 && (0,eval)(5)===5 && bump()===41 && bump()===42 && syntax
+                    && add(direct)===41 && twice(21)===42 && __rt.formValue(value)===42;
+            };
         }"#;
         let (f, args, call) = inputs(&e, source);
+        serve(
+            &e,
+            &[("fixture/twice", 42), ("fixture/value", 43)],
+            |unit| {
+                Ok(if unit == 42 {
+                    r#"rt => (0,eval)("const k = 2; (function twice(x) { return k * x; })")"#.into()
+                } else {
+                    r#"rt => (0,eval)("40 + 2")"#.into()
+                })
+            },
+        );
         for _ in 0..3 {
             let value = e.call(f, &args).unwrap();
             let output = e
@@ -396,6 +422,21 @@ fn goose_compiler_runtime_eval() {
                     .value_eq(&Datum::new(DatumKind::Boolean(true)))
             );
         }
+        let trace = s.trace();
+        assert_eq!(
+            trace
+                .iter()
+                .filter(|line| line.starts_with("PREPARED "))
+                .count(),
+            1
+        );
+        assert_eq!(
+            trace
+                .iter()
+                .filter(|line| line.starts_with("PRODUCED "))
+                .count(),
+            2
+        );
         s.close();
         cleaned(&s);
     }

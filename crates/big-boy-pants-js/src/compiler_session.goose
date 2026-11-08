@@ -220,9 +220,11 @@ fn helper_next(prefix: const u8[:]) -> i64 { return if prefix.len > 0 { 1 } else
 // Preparation runs before admission, in a thread program the coordinator
 // spawns and joins (light-cljs-794: the coordinator's base image is its only
 // heap). It cannot invoke compiler callbacks: those remain body effects in
-// private resumable jobs. A failure's ERROR line goes to report.
-fn initialize(id: i64, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64, report: u8[>..]&, prefix: const u8[:], next: i64&) -> source::Value, bool {
-    var job = source::Job { heap: heap, protected_nodes: protected }; defer { source::retire(job); } scope(job, prefix, next); defer { next = job.gensym_next; }
+// private resumable jobs. It may compile at run time (light-cljs-863): eval
+// code joins `code` above the image, and the definition snapshot carries
+// it. A failure's ERROR line goes to report.
+fn initialize(id: i64, code: source::Code&, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64, report: u8[>..]&, prefix: const u8[:], next: i64&) -> source::Value, bool {
+    var job = source::Job { heap: heap, protected_nodes: protected, writable_code: code }; defer { source::retire(job); } scope(job, prefix, next); defer { next = job.gensym_next; }
     if !source::start(job, callee, args) || source::run(job, -1) != tiny::Outcome.Complete {
         let pc = job.fault_pc; let start = if pc >= 0 && pc < heap.code.ops.len { heap.code.ops[pc].start } else { -1 }; let end = if pc >= 0 && pc < heap.code.ops.len { heap.code.ops[pc].end } else { -1 };
         var fault: u8[>..] = []; source::describe_fault(fault, heap.code, job);
@@ -230,8 +232,8 @@ fn initialize(id: i64, heap: source::Heap&, callee: source::Value, args: const s
     }
     return job.result, true;
 }
-fn initialize(id: i64, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64, prefix: const u8[:], next: i64&) -> source::Value, bool {
-    var report: u8[>..] = []; let value, ok = initialize(id, heap, callee, args, protected, report, prefix, next); if !ok { print(report); flush_stdout(); } return value, ok;
+fn initialize(id: i64, code: source::Code&, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64, prefix: const u8[:], next: i64&) -> source::Value, bool {
+    var report: u8[>..] = []; let value, ok = initialize(id, code, heap, callee, args, protected, report, prefix, next); if !ok { print(report); flush_stdout(); } return value, ok;
 }
 // The prepared definition snapshot, or the ERROR line that refused it.
 struct Preparation { ok: bool = false, image: snapshot::Snapshot = snapshot::Snapshot {}, report: u8[] = [], gensym_next: i64 = 0 }
@@ -241,8 +243,8 @@ thread_fn preparer(base: snapshot::Snapshot, directory: u8[], id: i64, key: i64,
     var code = source::Code {}; var heap = source::Heap { code: code }; var bindings: snapshot::Binding[>..] = []; var sc = snapshot::Control {};
     assert(snapshot::restore(base, code, heap, bindings, identity, sc)); let rt = bindings[0].value;
     let entry = append(code, heap, str(directory, "/definition-", key, ".gsp")); assert(entry >= 0);
-    let factory, loaded = initialize(id, heap, source::closure(heap, entry, []), [], base.nodes.len, report, prefix, next); if !loaded { assert(qput(Preparation { report: copy(report) })); return; }
-    let function, ready = initialize(id, heap, factory, [rt], base.nodes.len, report, prefix, next); if !ready { assert(qput(Preparation { report: copy(report) })); return; }
+    let factory, loaded = initialize(id, code, heap, source::closure(heap, entry, []), [], base.nodes.len, report, prefix, next); if !loaded { assert(qput(Preparation { report: copy(report) })); return; }
+    let function, ready = initialize(id, code, heap, factory, [rt], base.nodes.len, report, prefix, next); if !ready { assert(qput(Preparation { report: copy(report) })); return; }
     if !source::valid(heap, function) || !function.is_object() || source::node(heap, function.id()).kind != node_kind::Closure { format(report, "ERROR ", id, " preparation-TypeError function=-1 pc=-1 emitted-span=-1:-1"); assert(qput(Preparation { report: copy(report) })); return; }
     // Every atom the definition reaches becomes a process-wide cell (light-cljs-799).
     var thunks = false; var initial: source::Initial[>..] = []; let refused = source::publish_cells(heap, function, base.nodes.len, thunks, initial);
@@ -290,8 +292,11 @@ fn append(code: source::Code&, heap: source::Heap&, path: const u8[:]) -> i64 {
     for c in code.constants[first..] { var value = c; if c.is_string() { value = source::string(heap, source::code_chars(code, c)); } source::add_constants(heap, [value]); }
     return entry;
 }
-fn leaf(id: i64, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64, prefix: const u8[:], next: i64&, address: i64 = 0, timing: i64[4] = [0; 4]) -> source::Value, bool {
-    let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")); var job = source::Job { heap: heap, protected_nodes: protected, root_receiver: roots }; defer { source::retire(job); } scope(job, prefix, next); defer { next = job.gensym_next; }
+// A helper's initializer, in its production job: it may compile at run time
+// into the worker's `code` (light-cljs-863), which a callable publication
+// carries as part of its code suffix and the worker's reset cuts away.
+fn leaf(id: i64, code: source::Code&, heap: source::Heap&, callee: source::Value, args: const source::Value[:], protected: i64, prefix: const u8[:], next: i64&, address: i64 = 0, timing: i64[4] = [0; 4]) -> source::Value, bool {
+    let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots")); var job = source::Job { heap: heap, protected_nodes: protected, root_receiver: roots, writable_code: code }; defer { source::retire(job); } scope(job, prefix, next); defer { next = job.gensym_next; }
     source::start(job, callee, args); if source::run(job, -1) != tiny::Outcome.Complete { fail(id, heap, job, address, timing); return source::Value.Undefined, false; } return job.result, true;
 }
 // The job's continuation, its stack detached into activation row `reuse`
@@ -462,8 +467,8 @@ fn execute(work: const Work&, directory: const u8[:], started: i64, setup: const
         assert(bridge::decode(graph, work.arguments, control)); assert(bridge::import_graph(heap, graph, args, control)); assert(args.len >= 2); call = args[0]; costs[1] += clock_ns() - importing;
     } else if mode == 2 {
         let loading = clock_ns(); let entry = append(code, heap, str(directory, "/definition-", work.definition, ".gsp")); assert(entry >= 0); costs[0] += clock_ns() - loading;
-        let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], saved.protected, saved.gensym_prefix, next, address, timing(work, started, sc)); if !loaded { return; }
-        let value, initialized = leaf(id, heap, factory, [rt], saved.protected, saved.gensym_prefix, next, address, timing(work, started, sc)); if !initialized { return; } function = value;
+        let factory, loaded = leaf(id, code, heap, source::closure(heap, entry, []), [], saved.protected, saved.gensym_prefix, next, address, timing(work, started, sc)); if !loaded { return; }
+        let value, initialized = leaf(id, code, heap, factory, [rt], saved.protected, saved.gensym_prefix, next, address, timing(work, started, sc)); if !initialized { return; } function = value;
         if mode == 2 { let exporting = clock_ns();
             let is_closure = function.is_object() && source::node(heap, function.id()).kind == node_kind::Closure;
             var publication = snapshot::Control {};
@@ -611,7 +616,7 @@ fn identity(saved: const Saved&) -> i64 { var id = source::reserve_identity(); w
 // does not admit nested macro jobs while waiting for that helper's source.
 fn serial_call(directory: const u8[:], id: i64, code: source::Code&, heap: source::Heap&, rt: source::Value, function: source::Value, args: const source::Value[:], prefix: const u8[:], next: i64&) -> source::Value {
     let roots = source::get(heap, heap.global, source::text(heap, "__lightCompilerRoots"));
-    var job = source::Job { heap: heap, effects_enabled: true, helpers_enabled: true, root_receiver: roots }; defer { source::retire(job); } scope(job, prefix, next); defer { next = job.gensym_next; }
+    var job = source::Job { heap: heap, effects_enabled: true, helpers_enabled: true, root_receiver: roots, writable_code: code }; defer { source::retire(job); } scope(job, prefix, next); defer { next = job.gensym_next; }
     assert(source::start(job, function, args)); var sequence: i64 = 0;
     loop {
         let outcome = source::run(job, 10000); if outcome == tiny::Outcome.Complete { return job.result; }
@@ -626,8 +631,8 @@ fn serial_call(directory: const u8[:], id: i64, code: source::Code&, heap: sourc
         let key = answer.key; let scoped = answer.prefix[..];
         if key == -1 { assert(source::deliver_effect(job, source::Value.Undefined, source::Fault.HostEffect)); sequence += 1; continue; }
         let entry = append(code, heap, str(directory, "/definition-", answer.definition, ".gsp")); assert(entry >= 0);
-        var produced = helper_next(scoped); let factory, loaded = leaf(id, heap, source::closure(heap, entry, []), [], 0, scoped, produced); assert(loaded);
-        let value, done = leaf(id, heap, factory, [rt], 0, scoped, produced); assert(done);
+        var produced = helper_next(scoped); let factory, loaded = leaf(id, code, heap, source::closure(heap, entry, []), [], 0, scoped, produced); assert(loaded);
+        let value, done = leaf(id, code, heap, factory, [rt], 0, scoped, produced); assert(done);
         source::put(heap, job.effect_args[0], job.effect_args[2], value); assert(source::deliver_effect(job, value));
         print("PRODUCED ", id, " ", key); print("RESUME ", id); flush_stdout(); sequence += 1;
     }
@@ -649,7 +654,7 @@ fn serial(directory: const u8[:], code: source::Code&, heap: source::Heap&, rt: 
         let id = call.id; let started = clock_ns(); let key = call.key; let prefix = call.prefix[..]; var next = call.next; var function = source::Value.Undefined; var found = false;
         for d in definitions { if d.key == key { function = d.function; found = true; break; } }
         if !found { let entry = append(code, heap, str(directory, "/definition-", key, ".gsp")); assert(entry >= 0);
-            let factory, a = initialize(id, heap, source::closure(heap, entry, []), [], 0, prefix, next); if !a { continue; } let value, b = initialize(id, heap, factory, [rt], 0, prefix, next); if !b { continue; } function = value; definitions.push(SerialDefinition { key: key, function: function }); print("PREPARED ", id, " ", key); flush_stdout(); }
+            let factory, a = initialize(id, code, heap, source::closure(heap, entry, []), [], 0, prefix, next); if !a { continue; } let value, b = initialize(id, code, heap, factory, [rt], 0, prefix, next); if !b { continue; } function = value; definitions.push(SerialDefinition { key: key, function: function }); print("PREPARED ", id, " ", key); flush_stdout(); }
         let loaded = clock_ns();
         var graph = bridge::Graph {}; var c = bridge::Control {}; assert(bridge::decode(graph, call.arguments, c)); var args: source::Value[>..] = []; assert(bridge::import_graph(heap, graph, args, c));
         let ready = clock_ns(); let value = serial_call(directory, id, code, heap, rt, function, args, prefix, next); let invoked = clock_ns();

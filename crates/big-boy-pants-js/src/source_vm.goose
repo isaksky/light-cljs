@@ -669,8 +669,10 @@ root struct Job {
     // elsewhere, where such an addition fails by name): a function loaded
     // from a cell installs its code there in a macro job (light-cljs-809),
     // and run-time compilation appends its functions (light-cljs-856,
-    // runtime_compile.goose), compiled_ops instructions so far. The worker's
-    // reset cuts both away (snapshot::truncate).
+    // runtime_compile.goose), compiled_ops instructions so far, in a macro
+    // job and in a definition's or helper's initializer (light-cljs-863),
+    // whose prepared definition or callable publication carries the code
+    // on. The worker's reset cuts both away (snapshot::truncate).
     writable_code: Code? = null, compiled_ops: i64 = 0,
     // Promise jobs (light-cljs-790; continuations.goose): the job's FIFO of
     // reactions, `queue_head` its next; `draining` once the entry has
