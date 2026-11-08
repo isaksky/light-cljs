@@ -1378,6 +1378,9 @@ mod serial_tests {
             // Arguments objects as ordinary objects and their `callee`, which
             // the Pants engine does not define (light-cljs-854).
             ("sloppy-arguments-objects", "goose"),
+            // `with` statements (light-cljs-855), which strict code cannot
+            // compile for the Pants reference run.
+            ("sloppy-with", "goose"),
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.js"))).unwrap();
             let options = if name.starts_with("sloppy-") {

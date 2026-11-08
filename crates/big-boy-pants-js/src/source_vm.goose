@@ -186,7 +186,7 @@ struct Op { code: i64, arg: i64, offset: i64, start: i64, end: i64, depth: i64 =
 // does not implement decodes to `Unsupported` and fails by name when it runs.
 enum Ins {
     Const { k: u32 }, Undefined, Load { slot: u32 }, Store { slot: u32 }, Pop, Dup, Dup2, Dup3, Binary { op: u8 }, Not,
-    Jump { to: u32 }, JumpUnless { to: u32 }, Return, NewObject, NewArray, Try { to: u32 }, Throw, EndTry,
+    Jump { to: u32 }, JumpUnless { to: u32 }, Return, NewObject { bare: bool }, NewArray, Try { to: u32 }, Throw, EndTry,
     Unary { op: u8 }, Numeric2, Closure { child: u32 }, Call { argc: u32 }, CallMethod { argc: u32 },
     Arguments, Rest { skip: u32 }, Callee, Capture { slot: u32 }, NewCell { immutable: bool },
     InitCell, ReadCell, WriteCell, GetNamed { k: u32 }, GetIndexed, SetNamed { k: u32, strict: bool }, DefineNamed { k: u32, half: u8 },
@@ -216,6 +216,15 @@ enum Ins {
     // AppendHole (89; light-cljs-844) arr → arr: an array literal's elided
     // element, the length one more and no element (a hole).
     AppendHole,
+    // Dynamic environments (light-cljs-855; rust/src/frontend/lower.rs
+    // environment_lookup): IsCell (174) v → bool, whether v is a binding
+    // cell (a sloppy eval's variable environment) rather than a `with`
+    // object; IsObject (175) v → bool, whether v is a JavaScript object (an
+    // @@unscopables value).
+    IsCell, IsObject,
+    // SetComputedName (135) key f → key f: a computed-key literal
+    // function's `name` (set_computed_name), `k` the prefix constant.
+    ComputedName { k: u32 },
     // Generators and async functions (light-cljs-790, continuations.goose):
     // GeneratorStart only marks code; GeneratorInitialYield, GeneratorYield,
     // AsyncStart and Await detach and settle activations.
@@ -644,6 +653,10 @@ root struct Job {
 struct CellRow { row: i64, cell: i64 = -1, identity: i64 = 0, count: i64 = 1 }
 inline fn number(n: f64) -> Value { return Value.Number { v: n }; }
 inline fn boolean(b: bool) -> Value { return Value.Bool { v: b }; }
+// Whether v is a JavaScript object: an object row of any kind JavaScript
+// can hold (functions, arrays, proxies, wrappers, forms ...), not a binding
+// cell or a key list, which only compiled code and native frames see.
+inline fn javascript_object(heap: const Heap&, v: Value) -> bool { return v.is_object() && node(heap, v.id()).kind != node_kind::Binding && node(heap, v.id()).kind != node_kind::KeyList; }
 // A code constant's units: Code keeps its own string headers over its units.
 fn code_chars(code: const Code&, v: Value) -> const u16[:] { let s = code.strings[v.sid()]; return code.units[s.start..(s.start + s.len)]; }
 fn reject(code: Code&, error: tiny::LoadError, pc: i64) -> bool { code.error = error; code.error_pc = pc; return false; }
@@ -680,7 +693,7 @@ fn instruction(op: Op) -> Ins {
         opcode::Add, opcode::Sub, opcode::Mul, opcode::Lt, opcode::StrictEq, opcode::Div, opcode::Rem, opcode::Gt, opcode::Le, opcode::Ge, opcode::LooseEq, opcode::Plus, opcode::CompareLt, opcode::CompareGt, opcode::CompareLe, opcode::CompareGe => Ins.Binary { op: op.code as u8 },
         opcode::BitAnd, opcode::BitOr, opcode::BitXor, opcode::Shl, opcode::Sar, opcode::UShr, opcode::Pow => Ins.Binary { op: op.code as u8 },
         opcode::Not => Ins.Not, opcode::Jump => Ins.Jump { to: a }, opcode::JumpIfFalse => Ins.JumpUnless { to: a }, opcode::Return => Ins.Return,
-        opcode::NewObject, opcode::NewObjectLiteral => Ins.NewObject, opcode::NewArray => Ins.NewArray, opcode::PushCatch => Ins.Try { to: a }, opcode::Throw => Ins.Throw, opcode::PopCatch => Ins.EndTry,
+        opcode::NewObject => Ins.NewObject { bare: true }, opcode::NewObjectLiteral => Ins.NewObject { bare: false }, opcode::NewArray => Ins.NewArray, opcode::PushCatch => Ins.Try { to: a }, opcode::Throw => Ins.Throw, opcode::PopCatch => Ins.EndTry,
         opcode::Neg, opcode::ToNumber, opcode::ToNumeric, opcode::Inc, opcode::Dec, opcode::BitNot => Ins.Unary { op: op.code as u8 }, opcode::ToNumberPair => Ins.Numeric2,
         // Method, an object literal's method, getter or setter: obj c1..cn
         // → obj f, a closure like Function's; its home object only serves
@@ -711,6 +724,7 @@ fn instruction(op: Op) -> Ins {
         opcode::GeneratorStart => Ins.GeneratorStart, opcode::GeneratorInitialYield => Ins.GeneratorInitialYield, opcode::GeneratorYield => Ins.GeneratorYield, opcode::AsyncStart => Ins.AsyncStart, opcode::Await => Ins.Await,
         opcode::GetNewTarget => Ins.NewTarget, opcode::ToObject => Ins.ToObject, opcode::Instanceof => Ins.Instanceof,
         opcode::GetIterator => Ins.GetIterator, opcode::RequireObject => Ins.RequireObject, opcode::AppendHole => Ins.AppendHole,
+        opcode::IsCell => Ins.IsCell, opcode::IsObject => Ins.IsObject, opcode::SetComputedName => Ins.ComputedName { k: a },
         _ => Ins.Unsupported { opcode: op.code as u8 },
     };
 }
@@ -1585,7 +1599,9 @@ fn delete_own(heap: Heap&, o: i64, k: Value) -> bool {
 // whose [[Prototype]] is %GeneratorPrototype% and which has no
 // `constructor`. Not implemented, failing UnsupportedOperand by name: a class
 // constructor's eager `prototype` and an async generator's, and therefore
-// those functions' key lists; computed names (SetComputedName). Built-ins
+// those functions' key lists. A computed-key literal function's name
+// (SetComputedName, light-cljs-855) makes its properties at once, with
+// that name (set_computed_name). Built-ins
 // (node_kind::Builtin) have their own `length` and `name` from the realm (light-cljs-788).
 fn constructor_kind(heap: const Heap&, o: i64) -> i64 { return heap.code.functions[node(heap, o).function].kind; }
 fn lazy_function(heap: const Heap&, o: i64) -> bool {
@@ -1628,8 +1644,32 @@ fn lazy_change(heap: Heap&, o: i64) -> bool {
 // `prototype`. A rejection (MemoryLimit) leaves a fault set.
 fn materialize_function(heap: Heap&, o: i64) -> bool {
     if !lazy_function(heap, o) { return heap.fault == Fault.None; }
-    let length = key_named(heap, "length"); let name = key_named(heap, "name");
     let n = function_name(heap, o);
+    return heap.fault == Fault.None && materialize_named(heap, o, n);
+}
+// SetComputedName (light-cljs-855; rust/src/vm/dispatch.rs
+// computed_name_step): key f → key f, where f is the fresh closure of a
+// literal's computed-key method, getter or setter and key its property key
+// (ToPropertyKey's: a string, a symbol or an index). Its `name` is the
+// constant prefix ("", "get " or "set ") and the key's spelling, a
+// well-known symbol's bracketed description (`[Symbol.unscopables]`); its
+// properties are made now, with that name.
+fn set_computed_name(job: Job&, prefix: Value) {
+    let heap .= job.heap;
+    let f = job.operands[job.operands.len - 1]; let k = job.operands[job.operands.len - 2];
+    if !f.is_object() || !valid(heap, f) || !lazy_function(heap, f.id()) || !prefix.is_string() { heap.fault = Fault.InvalidState; return; }
+    var units: u16[>..] = [];
+    append_utf16(heap, prefix, units);
+    if k.is_symbol() { for c in "[Symbol." { units.push(c); } for c in export_well_known_symbol(symbol_index(k)) { units.push(c); } units.push(93); }
+    else if k.is_string() { append_utf16(heap, k, units); }
+    else if k.is_number() { let s = to_string(heap, k); if heap.fault != Fault.None { return; } append_utf16(heap, s, units); }
+    else { heap.fault = Fault.InvalidState; return; }
+    if !units_fit(heap, units.len) { memory(heap); return; }
+    let n = string(heap, units);
+    if heap.fault == Fault.None { materialize_named(heap, f.id(), n); }
+}
+fn materialize_named(heap: Heap&, o: i64, n: Value) -> bool {
+    let length = key_named(heap, "length"); let name = key_named(heap, "name");
     if heap.fault != Fault.None || !add_own(heap, o, length, function_length(heap, o), attr_configurable()) || !add_own(heap, o, name, n, attr_configurable()) { return false; }
     if !has_prototype(heap, o) { return true; }
     let constructor = key_named(heap, "constructor"); let prototype = key_named(heap, "prototype");
@@ -3351,8 +3391,11 @@ fn execute(job: Job&, allowance: i64) -> i64 {
             match program[at] {
                 Const c => {
                     let v = heap.constants[f.constants + c.k];
-                    // Symbol and BigInt constants have no VM value yet.
-                    if v.tag() >= value_tag::Symbol { heap.fault = Fault.Unsupported; break; }
+                    // A Symbol constant is a well-known symbol, the value
+                    // Symbol's properties hold (an @@unscopables read in a
+                    // `with` body, light-cljs-855); a BigInt constant has no
+                    // VM value yet.
+                    if v.is_bigint() { heap.fault = Fault.Unsupported; break; }
                     job.operands.push(v);
                 },
                 Undefined => { job.operands.push(Value.Undefined); },
@@ -3389,8 +3432,12 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                     let v = job.operands.pop(); return_value(job, top, v, at);
                     break;
                 },
-                NewObject => {
-                    settle(job, ran, used); job.frames[top].pc = pc; let v = allocate(heap, Node { kind: node_kind::Object }); job.operands.push(v);
+                // NewObject (16) makes a null-prototype object, the private
+                // binding object of a sloppy eval's variable environment
+                // (rust/src/vm/dispatch.rs, light-cljs-855); NewObjectLiteral an
+                // ordinary one.
+                NewObject n => {
+                    settle(job, ran, used); job.frames[top].pc = pc; let v = allocate(heap, if n.bare { Node { kind: node_kind::Object, proto: Value.Null } } else { Node { kind: node_kind::Object } }); job.operands.push(v);
                     if !in_place(job, top, at) { break; }
                     left = fuel(job, allowance, used);
                 },
@@ -3573,6 +3620,15 @@ fn execute(job: Job&, allowance: i64) -> i64 {
                 // An elided element: a dense array the job may write grows
                 // by one, its new slot a hole (array_length), for the
                 // instruction's own work unit.
+                // A dynamic environment is a binding cell or a `with`
+                // object (rust/src/vm/dispatch.rs IsCell and IsObject).
+                IsCell => { let v = job.operands.pop(); job.operands.push(boolean(v.is_object() && node(heap, v.id()).kind == node_kind::Binding)); },
+                IsObject => { let v = job.operands.pop(); job.operands.push(boolean(javascript_object(heap, v))); },
+                ComputedName c => {
+                    settle(job, ran, used); job.frames[top].pc = pc; set_computed_name(job, heap.constants[f.constants + c.k]);
+                    if !in_place(job, top, at) { break; }
+                    left = fuel(job, allowance, used);
+                },
                 AppendHole => {
                     let object = job.operands[job.operands.len - 1];
                     if !dense(job, object) { heap.fault = Fault.TypeError; break; }

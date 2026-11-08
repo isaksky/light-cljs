@@ -667,6 +667,7 @@ fn main() {
     named_properties();
     heap_program::join(thread_spawn(realm_model, str(embed_file("../corpus/serial/calls.gsp"))));
     for which in 4 { heap_program::join(thread_spawn(to_object_opcode, which)); }
+    for which in 9 { heap_program::join(thread_spawn(environment_opcodes, true, which)); heap_program::join(thread_spawn(environment_opcodes, false, which)); }
     // Image comparisons are bit-exact: NaN matches itself, -0 differs from +0.
     assert(source::same_bits(source::number(0.0 / 0.0), source::number(0.0 / 0.0)) && !source::same_bits(source::number(0.0), source::number(-0.0)));
     print("serial source VM: calls/captures/cells/properties/truth/UTF16/errors, exact slices and limits passed");
@@ -765,7 +766,7 @@ fn reclamation() {
     heap_program::join(thread_spawn(reclaim_run, str(embed_file("../corpus/serial/async.gsp")), source::Fault.None, 0, 0));
     // Forced collections at every budget cut and at other phases.
     for image in [embed_file("../corpus/serial/generators.gsp"), embed_file("../corpus/serial/async.gsp"), embed_file("../corpus/serial/generator-loop.gsp"), embed_file("../corpus/serial/for-of.gsp"), embed_file("../corpus/serial/builtin-iterators.gsp"),
-                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
+                  embed_file("../corpus/serial/native-frame.gsp"), embed_file("../corpus/serial/array-callbacks.gsp"), embed_file("../corpus/serial/array-push-join.gsp"), embed_file("../corpus/serial/bound-functions.gsp"), embed_file("../corpus/serial/sloppy-function-text.gsp"), embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), embed_file("../corpus/serial/sloppy-with.gsp"), embed_file("../corpus/serial/to-primitive.gsp"), embed_file("../corpus/serial/finally.gsp"),
                   embed_file("../corpus/serial/proxy-for-in.gsp"), embed_file("../corpus/serial/for-in.gsp"), embed_file("../corpus/serial/object-rest.gsp"), embed_file("../corpus/serial/accessors.gsp"), embed_file("../corpus/serial/prototypes.gsp"),
                   embed_file("../corpus/serial/deletes.gsp"), embed_file("../corpus/serial/captures.gsp"), embed_file("../corpus/serial/calls.gsp"), embed_file("../corpus/serial/strings.gsp"), embed_file("../corpus/serial/construct.gsp"),
                   embed_file("../corpus/serial/array-names.gsp"), embed_file("../corpus/serial/function-names.gsp"), embed_file("../corpus/serial/index-keys.gsp"), embed_file("../corpus/serial/mutations.gsp")] {
@@ -845,6 +846,10 @@ fn control_flow() {
     // cut (and collection, in reclamation). No limit points: its rows catch
     // TypeErrors, so a stack limit there is caught as any RangeError is.
     check(embed_file("../corpus/serial/sloppy-arguments-objects.gsp"), "boolean:true");
+    // `with` statements (light-cljs-855): object environments, @@unscopables
+    // and accessors in native frames, at every cut and limit point.
+    check(embed_file("../corpus/serial/sloppy-with.gsp"), "boolean:true");
+    limit_points(embed_file("../corpus/serial/sloppy-with.gsp"));
     // [[Construct]] (light-cljs-831): ordinary functions with new.target and
     // the return override, through finally and a generator yielding inside
     // the constructor, the realm's constructors and a non-constructor's
@@ -1241,6 +1246,30 @@ thread_fn to_object_opcode(which: i64) {
     assert(n.kind == node_kind::Wrapper && source::same_value(heap, n.value, input) && source::prototype(heap, job.result.id()) == source::object(source::wrapper_prototype_row(source::wrapper_type(input))));
     if which == 0 { assert(source::own_entry(heap, job.result, key(heap, "length")).value.num() == 2); }
 }
+// IsCell and IsObject (174 and 175; light-cljs-855), in synthetic functions
+// `x => IsCell(x)` and `x => IsObject(x)` (compiled code reaches a binding
+// cell environment only through a sloppy direct eval): a binding cell is a
+// cell and no JavaScript object; an ordinary object, an array, a function
+// and a wrapper are objects and no cells; primitives are neither.
+thread_fn environment_opcodes(cell: bool, which: i64) {
+    defer { heap_program::finish(); }
+    var synthetic = source::Code {};
+    synthetic.functions.push(source::Function { start: 0, count: 3, constants: 0, children: 0, params: 1, locals: 1, captures: 0, strict: true });
+    let test = if cell { opcode::IsCell } else { opcode::IsObject };
+    for op, i in [opcode::GetLocal, test, opcode::Return] { synthetic.ops.push(source::Op { code: op, arg: 0, offset: [0, 3, 4][i], start: 0, end: 0, depth: [0, 1, 1][i] }); }
+    synthetic.valid = true;
+    var code = source::Code {}; let f = source::append_code(code, synthetic);
+    var heap = source::Heap { code: code }; assert(source::initialize(heap));
+    let input: source::Value = match which {
+        0 => source::allocate(heap, source::Node { kind: node_kind::Binding }), 1 => source::object(source::global_row()), 2 => source::object(source::array_prototype_row()),
+        3 => source::object(source::function_prototype_row()), 4 => source::object(source::wrapper_prototype_row(1)), 5 => source::text(heap, "ab"), 6 => source::number(5),
+        7 => source::Value.Null, _ => source::Value.Symbol { s: well_known::Unscopables },
+    };
+    var job = source::Job { heap: heap }; assert(source::start(job, source::closure(heap, f, []), [input]));
+    assert(source::run(job, -1) == tiny::Outcome.Complete);
+    let expected = if cell { which == 0 } else { which >= 1 && which <= 4 };
+    assert(job.result == source::boolean(expected));
+}
 thread_fn property_model() {
     defer { heap_program::finish(); }
     var code = source::Code {}; decode(code, embed_file("../corpus/serial/calls.gsp"));
@@ -1377,10 +1406,19 @@ thread_fn named_model() {
     let b = source::allocate(heap, source::Node { kind: node_kind::Array });
     assert(source::put(heap, b, source::text(heap, "0"), source::number(5)) && source::put(heap, b, source::text(heap, "x"), source::number(6)) && source::put(heap, b, source::text(heap, "y"), source::number(7)));
     assert(source::delete_property(heap, b, key(heap, "x")) && source::node(heap, b.id()).initialized && source::get(heap, b, source::text(heap, "0")).num() == 5 && source::get(heap, b, source::text(heap, "y")).num() == 7);
-    // The pending %Array.prototype%: its names and symbol keys fail by name,
-    // other names are absent; its @@iterator is `values` (light-cljs-844).
+    // The pending %Array.prototype%: its pending names fail by name, other
+    // names are absent; its @@iterator is `values` (light-cljs-844) and its
+    // @@unscopables the realm's null-prototype object (light-cljs-855).
     source::get(heap, b, source::text(heap, "pop")); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
-    source::get(heap, b, source::Value.Symbol { s: well_known::Unscopables }); assert(heap.fault == source::Fault.UnsupportedOperand); heap.fault = source::Fault.None;
+    let unscopables = source::get(heap, b, source::Value.Symbol { s: well_known::Unscopables });
+    assert(heap.fault == source::Fault.None && unscopables == source::object(source::array_unscopables_row()) && source::prototype(heap, unscopables.id()).is_null());
+    assert(source::get(heap, unscopables, source::text(heap, "flatMap")) == source::boolean(true) && source::get(heap, unscopables, source::text(heap, "push")).is_undefined());
+    let u = source::own_entry(heap, source::object(source::array_prototype_row()), source::Value.Symbol { s: well_known::Unscopables });
+    assert(u.found && u.attrs == source::attr_configurable());
+    // Its names are JavaScript's to change: the realm stays valid after a
+    // delete and an addition (snapshot validation).
+    assert(source::delete_property(heap, unscopables, key(heap, "values")) && source::put(heap, unscopables, source::text(heap, "extra"), source::number(1)) && heap.fault == source::Fault.None);
+    assert(source::realm_valid(heap.nodes, heap.accessors, heap.global, heap.call_method));
     assert(source::get(heap, b, source::Value.Symbol { s: well_known::Iterator }) == source::get(heap, b, source::text(heap, "values")) && heap.fault == source::Fault.None);
     assert(source::get(heap, b, source::text(heap, "other")).is_undefined() && heap.fault == source::Fault.None);
     // A closure (light-cljs-806): `length` and `name` come from its code row
@@ -1778,8 +1816,10 @@ thread_fn allocation_limit(bytes: u8[], strings: u8[], mode: i64) {
 
 fn set_word(bytes: u8[:], at: i64, n: i64) { for i in 4 { bytes[at + i] = ((n >> (i * 8)) & 255) as u8; } }
 // GSP function kinds and constant tags (light-cljs-783): calling a class
-// constructor throws TypeError; a Symbol constant validates and fails by name
-// when pushed; unknown kinds and tags are refused before installation.
+// constructor throws TypeError; a Symbol constant validates and pushes its
+// well-known symbol (light-cljs-855: calls.js's last number, 5, becomes
+// Symbol.unscopables, so its final `===` is false); unknown kinds and tags
+// are refused before installation.
 fn class_kinds(bytes: const u8[:]) {
     let l = program::layout(bytes); let functions = program::word(bytes, 12); assert(functions > 1);
     var image = program::Image {};
@@ -1797,7 +1837,7 @@ fn class_kinds(bytes: const u8[:]) {
         var patched: u8[>..] = []; patched.append(bytes); let at = l.constants + number * 12;
         set_word(patched[..], at, tag); set_word(patched[..], at + 4, if i == 1 { 15 } else { 7 }); set_word(patched[..], at + 8, 0);
         if i > 0 { assert(program::install(image, patched) == program::Error.Operation); continue; }
-        check(patched, "Fault.Unsupported:const(Symbol)", source::Fault.Unsupported);
+        check(patched, "boolean:false");
     }
 }
 // construct.js with F's constructor kind patched (light-cljs-831): as a

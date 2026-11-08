@@ -171,8 +171,16 @@ inline fn reflect_row() -> i64 { return 34; }
 // pair: the unmapped object's (strict code, or a non-simple parameter list)
 // and the mapped object's, whose `callee` each object fills in.
 inline fn arguments_template_row(mapped: bool) -> i64 { return if mapped { 36 } else { 35 }; }
-inline fn fixed_rows() -> i64 { return 37; }
+// Array.prototype[@@unscopables] (light-cljs-855; ECMAScript 23.1.3.41): an
+// ordinary object with a null [[Prototype]] whose UNSCOPABLE_NAMES are own
+// data properties, all true.
+inline fn array_unscopables_row() -> i64 { return 37; }
+inline fn fixed_rows() -> i64 { return 38; }
 struct Name { text: u8[..24] }
+let UNSCOPABLE_NAMES: Name[16] = [
+    Name { text: "at" }, Name { text: "copyWithin" }, Name { text: "entries" }, Name { text: "fill" }, Name { text: "find" }, Name { text: "findIndex" }, Name { text: "findLast" }, Name { text: "findLastIndex" },
+    Name { text: "flat" }, Name { text: "flatMap" }, Name { text: "includes" }, Name { text: "keys" }, Name { text: "toReversed" }, Name { text: "toSorted" }, Name { text: "toSpliced" }, Name { text: "values" },
+];
 let WRAPPER_NAMES:    Name[3]    = [Name { text: "Number" }, Name { text: "String" }, Name { text: "Boolean" }];
 let WRAPPER_BUILTINS: Builtin[3] = [Builtin.Number, Builtin.String, Builtin.Boolean];
 let ERROR_NAMES:      Name[8]    = [Name { text: "Error" }, Name { text: "EvalError" }, Name { text: "RangeError" }, Name { text: "ReferenceError" }, Name { text: "SyntaxError" }, Name { text: "TypeError" }, Name { text: "URIError" }, Name { text: "InternalError" }];
@@ -231,7 +239,7 @@ inline fn symbol_row() -> i64 { return fixed_rows() + 10; }
 // A pending property of the fixed row `holder`: a name, or with `symbol`
 // >= 0 a well-known symbol (export_well_known_symbol).
 struct PendingName { holder: i64, key: u8[..32], symbol: i64 = -1 }
-let PENDING: PendingName[202] = [
+let PENDING: PendingName[201] = [
     // Object.prototype
     PendingName { holder: 1, key: "__proto__" }, PendingName { holder: 1, key: "isPrototypeOf" }, PendingName { holder: 1, key: "propertyIsEnumerable" }, PendingName { holder: 1, key: "toLocaleString" },
     PendingName { holder: 1, key: "__defineGetter__" }, PendingName { holder: 1, key: "__defineSetter__" }, PendingName { holder: 1, key: "__lookupGetter__" }, PendingName { holder: 1, key: "__lookupSetter__" },
@@ -243,7 +251,7 @@ let PENDING: PendingName[202] = [
     PendingName { holder: 3, key: "pop" }, PendingName { holder: 3, key: "reduce" }, PendingName { holder: 3, key: "reduceRight" }, PendingName { holder: 3, key: "reverse" },
     PendingName { holder: 3, key: "shift" }, PendingName { holder: 3, key: "slice" }, PendingName { holder: 3, key: "some" }, PendingName { holder: 3, key: "sort" }, PendingName { holder: 3, key: "splice" },
     PendingName { holder: 3, key: "toLocaleString" }, PendingName { holder: 3, key: "toReversed" }, PendingName { holder: 3, key: "toSorted" }, PendingName { holder: 3, key: "toSpliced" },
-    PendingName { holder: 3, key: "unshift" }, PendingName { holder: 3, key: "with" }, PendingName { holder: 3, key: "", symbol: well_known::Unscopables },
+    PendingName { holder: 3, key: "unshift" }, PendingName { holder: 3, key: "with" },
     // Object
     PendingName { holder: 12, key: "assign" }, PendingName { holder: 12, key: "create" }, PendingName { holder: 12, key: "defineProperties" }, PendingName { holder: 12, key: "defineProperty" },
     PendingName { holder: 12, key: "entries" }, PendingName { holder: 12, key: "freeze" }, PendingName { holder: 12, key: "fromEntries" },
@@ -251,7 +259,7 @@ let PENDING: PendingName[202] = [
     PendingName { holder: 12, key: "isExtensible" }, PendingName { holder: 12, key: "isFrozen" }, PendingName { holder: 12, key: "isSealed" }, PendingName { holder: 12, key: "keys" },
     PendingName { holder: 12, key: "preventExtensions" }, PendingName { holder: 12, key: "seal" }, PendingName { holder: 12, key: "setPrototypeOf" }, PendingName { holder: 12, key: "values" },
     // Symbol (symbol_row(); its well-known symbols are real)
-    PendingName { holder: 47, key: "prototype" }, PendingName { holder: 47, key: "for" }, PendingName { holder: 47, key: "keyFor" },
+    PendingName { holder: 48, key: "prototype" }, PendingName { holder: 48, key: "for" }, PendingName { holder: 48, key: "keyFor" },
     // Reflect (reflect_row()): apply and construct are light-cljs-851's;
     // the other eleven belong to the objects and classes area (light-cljs-766).
     PendingName { holder: 34, key: "defineProperty" }, PendingName { holder: 34, key: "deleteProperty" }, PendingName { holder: 34, key: "get" }, PendingName { holder: 34, key: "getOwnPropertyDescriptor" },
@@ -426,6 +434,10 @@ fn realm_valid(nodes: const Node[:], accessors: const Pair[:], global: Value, ca
         let t .= nodes[arguments_template_row(mapped)];
         if t.kind != node_kind::Arguments || t.initialized || t.shape == 0 || t.key_count != 3 || t.count != 0 || !t.proto.is_hole() || !same_bits(t.slots[0], number(0)) || !t.slots[1].is_object() || t.slots[1].id() != realm_function_row(Builtin.ArrayPrototypeValues) { return false; }
     }
+    // Array.prototype[@@unscopables] (light-cljs-855): an ordinary object.
+    // Its prototype and properties are JavaScript's to change (an unprotected
+    // job may delete or add names), so only its kind is layout.
+    if nodes[array_unscopables_row()].kind != node_kind::Object { return false; }
     for m, j in REALM_FUNCTIONS { let o = fixed_rows() + j; if nodes[o].kind != node_kind::Builtin || nodes[o].function != code(m.which) || m.which == Builtin.FunctionPrototypeCall && (!call.is_object() || call.id() != o) { return false; } }
     return true;
 }
@@ -454,6 +466,7 @@ fn build_realm(heap: Heap&) -> bool {
     rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) }); rows.push(Node { kind: node_kind::Object, proto: object(iterator_prototype_row()) });
     rows.push(Node { kind: node_kind::Object, proto: object(object_prototype_row()) });
     rows.push(Node { kind: node_kind::Arguments }); rows.push(Node { kind: node_kind::Arguments });
+    rows.push(Node { kind: node_kind::Object, proto: Value.Null });
     assert(rows.len == fixed_rows());
     for m in REALM_FUNCTIONS { rows.push(Node { kind: node_kind::Builtin, function: code(m.which) }); }
     if !charge(heap, rows.len) || add_nodes(heap, rows) != 0 { if heap.fault == Fault.None { memory(heap); } return false; }
@@ -502,6 +515,11 @@ fn build_realm(heap: Heap&) -> bool {
         if !add_own(heap, t, length, number(0), attr_writable() | attr_configurable()) || !add_own(heap, t, Value.Symbol { s: well_known::Iterator }, object(realm_function_row(Builtin.ArrayPrototypeValues)), attr_writable() | attr_configurable()) { return false; }
         if !add_own(heap, t, callee, if mapped { Value.Undefined } else { thrower_pair }, if mapped { attr_writable() | attr_configurable() } else { 0 }) { return false; }
     }
+    // Array.prototype[@@unscopables]: each name a writable, enumerable,
+    // configurable `true` (CreateDataPropertyOrThrow); the property itself
+    // configurable only (ECMAScript 23.1.3.41).
+    for n in UNSCOPABLE_NAMES { if !realm_value(heap, array_unscopables_row(), n.text, boolean(true), attr_writable() | attr_enumerable() | attr_configurable()) { return false; } }
+    if !add_own(heap, array_prototype_row(), Value.Symbol { s: well_known::Unscopables }, object(array_unscopables_row()), attr_configurable()) { return false; }
     // %ArrayIteratorPrototype%[@@toStringTag] and %StringIteratorPrototype%[@@toStringTag].
     if !add_own(heap, array_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "Array Iterator"), attr_configurable()) || !add_own(heap, string_iterator_prototype_row(), Value.Symbol { s: well_known::ToStringTag }, key_named(heap, "String Iterator"), attr_configurable()) { return false; }
     // %GeneratorPrototype%[@@toStringTag] and %Promise.prototype%[@@toStringTag].
