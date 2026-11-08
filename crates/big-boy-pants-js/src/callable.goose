@@ -212,6 +212,8 @@ fn install(p: const Publication&, expected: snapshot::Header, code: source::Code
     let delta:   i64[6] = [code.source_bytes.len - e[0], code.functions.len - e[1], code.constants.len - e[2], code.children.len - e[3], code.ops.len - e[4], code.units.len - e[5]];
     let lengths: i64[6] = [s.code_bytes.len, s.functions.len, s.code_constants.len, s.children.len, s.ops.len, s.code_units.len];
     for i in 6 { if lengths[i] + delta[i] > 8388608 { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; } }
+    // The merged direct-eval site tables stay within a snapshot's lengths too.
+    if s.sites.len - e[21] > 8388608 - code.sites.len || s.site_sources.len - e[22] > 8388608 - code.site_sources.len || s.site_records.len - e[23] > 8388608 - code.site_records.len { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; }
     var count: i64 = 0; for id in slots { if snapshot::has_values(s.nodes[id].kind) { count += s.nodes[id].count; } }
     if !source::nodes_fit(heap, slots.len) || !source::values_fit(heap, count) || !source::units_fit(heap, s.units.len + s.latin1.len) || s.strings.len > heap.limits.units - (heap.strings.len - heap.image.strings) || s.code_constants.len - e[2] > heap.limits.values - heap.constants.len || s.bytes.len > 8388608 - heap.source_bytes.len || s.sources.len > 1048576 - heap.source_ranges.len || s.functions.len + delta[1] > 65536 || s.code_bytes.len + delta[0] > 8388608 { fail(c, snapshot::Error.Bytes); return source::Value.Undefined; }
     // Cover existing destination + full decoded image + staging/mapping work.

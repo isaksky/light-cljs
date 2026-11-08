@@ -80,6 +80,9 @@ fn compile_code(job: Job&, what: const u8[:], units: const u16[:], mode: i32, st
     // (snapshot::code_valid: 65,536 functions, 8 MiB of source), so a
     // continuation that captures the job's code never fails on it.
     if part.functions.len > 65536 - code.functions.len || part.source_bytes.len > 8388608 - code.source_bytes.len { heap.fault = Fault.MemoryLimit; return -1; }
+    // So do its direct-eval site tables (light-cljs-858), each within a
+    // snapshot table's 8,388,608 rows.
+    if part.sites.len > 8388608 - code.sites.len || part.site_sources.len > 8388608 - code.site_sources.len || part.site_records.len > 8388608 - code.site_records.len { heap.fault = Fault.MemoryLimit; return -1; }
     if !charge(heap, part.ops.len) { return -1; }
     // Code constants and heap constants share their rows (initialize): the
     // new constants' strings become heap strings, as a session's appended
@@ -161,7 +164,17 @@ fn start_direct_eval(job: Job&, top: i64, at: i64, argc: i64, method: bool) {
             if !callee.is_object() || node(heap, callee.id()).kind != node_kind::Closure || source.index >= node(heap, callee.id()).count { heap.fault = Fault.InvalidState; return; }
             captures.push(slot(heap, node(heap, callee.id()).start + source.index));
         } else if kind == eval_source::CurrentFunction { captures.push(frame.callee);
-        } else if kind == eval_source::This { captures.push(frame.receiver);
+        } else if kind == eval_source::This {
+            // A sloppy caller's primitive receiver is boxed once, in its
+            // frame, as This boxes it (OrdinaryCallBindThis), so eval code
+            // and the caller read the one wrapper.
+            var receiver = frame.receiver;
+            if !heap.code.functions[frame.function].strict && !receiver.is_object() && !receiver.is_undefined() && !receiver.is_null() {
+                receiver = to_object(job, receiver);
+                if heap.fault != Fault.None { return; }
+                job.frames[top].receiver = receiver;
+            }
+            captures.push(receiver);
         } else if kind == eval_source::GlobalObject { captures.push(heap.global);
         } else if kind == eval_source::NewTarget { captures.push(frame.input);
         } else { heap.fault = Fault.InvalidState; return; }

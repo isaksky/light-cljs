@@ -4,12 +4,16 @@
 // primitive; undefined and null become the global object. The Pants engine
 // fails this by name (checked_this), so its conformance slice,
 // conformance/cases/sloppy_this_boxing.js, is an oracle disagreement; these
-// are that slice's rows, where Goose matches QuickJS. Completes with true.
+// are that slice's rows, where Goose matches QuickJS. Direct eval code reads
+// the same wrapper as its caller (light-cljs-858). Completes with true.
 function self() { return this; }
 function strictSelf() { "use strict"; return this; }
 function same() { return this === this; }
 function arrow() { var a = () => this; return a() === this && typeof a() === "object"; }
 function write() { this.x = 1; return this.x; }
+function evalSame() { return eval("this === this"); }
+function evalCaller() { var e = eval("this"); return e === this && typeof e === "object"; }
+function evalArrow() { var a = eval("() => this"); return a() === this && a() === a(); }
 var one = self.call(1);
 var s = self.call("ab");
 var b = self.call(false);
@@ -22,4 +26,5 @@ typeof one === "object" && Object.getPrototypeOf(one) === Number.prototype && on
   self.call(undefined) === globalThis && self.call(null) === globalThis && self() === globalThis &&
   strictSelf.call(undefined) === undefined && strictSelf.call(null) === null &&
   write.call(3) === 1 && Object.prototype.toString.call(self.call(3)) === "[object Number]" &&
-  self.call(o) === o && strictSelf.call(o) === o;
+  self.call(o) === o && strictSelf.call(o) === o &&
+  evalSame.call(1) && evalCaller.call("s") && evalArrow.call(2);
